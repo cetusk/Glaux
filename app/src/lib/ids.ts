@@ -22,3 +22,7 @@ export function newClipId(): string {
 export function newTrackId(): string {
   return `trk_${base36(6)}`;
 }
+
+export function newFxId(): string {
+  return `fx_${base36(6)}`;
+}

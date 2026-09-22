@@ -119,6 +119,23 @@ fn set_projects_dir(path: String) -> Result<Value, String> {
     Ok(json!({ "default_dir": path }))
 }
 
+/// 音作りビュー用: トラックの音源・エフェクトの spec + 現在値 + path。
+/// 追加できるエフェクトのカタログも返す。
+#[tauri::command]
+async fn get_track_params(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, version) = state.handle.get_project().await?;
+    let track = project
+        .track(&tid)
+        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let mut v = glaux_mcp::server::track_params_json(track)?;
+    v["project_version"] = json!(version);
+    v["track_id"] = json!(track_id);
+    v["available_effects"] =
+        serde_json::to_value(glaux_dsp::effect_catalog()).unwrap_or(Value::Null);
+    Ok(v)
+}
+
 // ---- 音色プリセット(glaux-mcp の presets モジュールを共用) ---------------
 
 #[tauri::command]
@@ -749,6 +766,7 @@ fn main() -> Result<()> {
             list_presets,
             save_preset,
             load_preset,
+            get_track_params,
             create_project,
             export_project_wav,
             apply_edit,

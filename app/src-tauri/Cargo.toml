@@ -14,6 +14,7 @@ tauri-build.workspace = true
 glaux-core = { path = "../../crates/glaux-core" }
 glaux-mcp = { path = "../../crates/glaux-mcp" }
 glaux-engine = { path = "../../crates/glaux-engine" }
+glaux-dsp = { path = "../../crates/glaux-dsp" }
 chrono.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog.workspace = true

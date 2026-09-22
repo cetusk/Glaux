@@ -21,3 +21,11 @@ export interface FocusClip {
 }
 
 export const pianoRollStore = $state<{ focus: FocusClip | null }>({ focus: null });
+
+/// 音作りビューで開いているトラック。ChatPanel が「音作り中のトラック」として指示に添える。
+export interface SoundDesignFocus {
+  trackId: string;
+  trackName: string;
+}
+
+export const soundDesignStore = $state<{ focus: SoundDesignFocus | null }>({ focus: null });

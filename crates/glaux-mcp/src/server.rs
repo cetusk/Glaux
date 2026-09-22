@@ -219,6 +219,88 @@ fn range_default(range: &glaux_core::ParamRange) -> Value {
     }
 }
 
+/// トラックの音源・エフェクトの「spec + 現在値 + path」ビュー。
+/// MCP の `list_params`(track_id 指定)とアプリの音作りビューが共用する。
+pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
+    let (device_name, device_params, is_default) = match &track.device {
+        Some(d) => match &d.source {
+            glaux_core::PluginSource::Builtin { name } => (name.clone(), d.params.clone(), false),
+            other => {
+                return Err(format!(
+                    "このトラックのデバイスは内蔵ではありません({other:?})。今は builtin のみ対応"
+                ))
+            }
+        },
+        None => (
+            glaux_dsp::DEFAULT_INSTRUMENT.to_owned(),
+            Default::default(),
+            true,
+        ),
+    };
+    let specs = glaux_dsp::instrument_params(&device_name)
+        .ok_or_else(|| format!("未知の内蔵デバイス: {device_name}"))?;
+
+    let param_list: Vec<Value> = specs
+        .iter()
+        .map(|spec| {
+            let current = device_params
+                .get(spec.name)
+                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                .unwrap_or_else(|| range_default(&spec.range));
+            let mut v = serde_json::to_value(spec).expect("ParamSpec serializes");
+            v["path"] = json!(format!("device/{}", spec.name));
+            v["current"] = current;
+            v
+        })
+        .collect();
+
+    // エフェクトチェーン(spec + current)
+    let effects_list: Vec<Value> = track
+        .effects
+        .iter()
+        .map(|e| {
+            let name = match &e.source {
+                glaux_core::PluginSource::Builtin { name } => name.clone(),
+                other => format!("{other:?}"),
+            };
+            let fx_params: Vec<Value> = glaux_dsp::effect_params_spec(&name)
+                .map(|specs| {
+                    specs
+                        .iter()
+                        .map(|spec| {
+                            let current = e
+                                .params
+                                .get(spec.name)
+                                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                                .unwrap_or_else(|| range_default(&spec.range));
+                            let mut v = serde_json::to_value(spec).expect("ParamSpec serializes");
+                            v["path"] = json!(format!("fx/{}/{}", e.id, spec.name));
+                            v["current"] = current;
+                            v
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            json!({
+                "id": e.id,
+                "name": name,
+                "bypass": e.bypass,
+                "params": fx_params,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "device": {
+            "name": device_name,
+            // true なら device 未設定でデフォルト音源が鳴っている状態
+            "is_default_fallback": is_default,
+        },
+        "params": param_list,
+        "effects": effects_list,
+    }))
+}
+
 impl GlauxServer {
     pub fn new(handle: SessionHandle) -> Self {
         GlauxServer {
@@ -489,88 +571,10 @@ impl GlauxServer {
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
 
-        let (device_name, device_params, is_default) = match &track.device {
-            Some(d) => match &d.source {
-                glaux_core::PluginSource::Builtin { name } => {
-                    (name.clone(), d.params.clone(), false)
-                }
-                other => {
-                    return Err(format!(
-                    "このトラックのデバイスは内蔵ではありません({other:?})。今は builtin のみ対応"
-                ))
-                }
-            },
-            None => (
-                glaux_dsp::DEFAULT_INSTRUMENT.to_owned(),
-                Default::default(),
-                true,
-            ),
-        };
-        let specs = glaux_dsp::instrument_params(&device_name)
-            .ok_or_else(|| format!("未知の内蔵デバイス: {device_name}"))?;
-
-        let param_list: Vec<Value> = specs
-            .iter()
-            .map(|spec| {
-                let current = device_params
-                    .get(spec.name)
-                    .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
-                    .unwrap_or_else(|| range_default(&spec.range));
-                let mut v = serde_json::to_value(spec).expect("ParamSpec serializes");
-                v["path"] = json!(format!("device/{}", spec.name));
-                v["current"] = current;
-                v
-            })
-            .collect();
-
-        // エフェクトチェーン(spec + current)
-        let effects_list: Vec<Value> = track
-            .effects
-            .iter()
-            .map(|e| {
-                let name = match &e.source {
-                    glaux_core::PluginSource::Builtin { name } => name.clone(),
-                    other => format!("{other:?}"),
-                };
-                let fx_params: Vec<Value> = glaux_dsp::effect_params_spec(&name)
-                    .map(|specs| {
-                        specs
-                            .iter()
-                            .map(|spec| {
-                                let current = e
-                                    .params
-                                    .get(spec.name)
-                                    .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
-                                    .unwrap_or_else(|| range_default(&spec.range));
-                                let mut v =
-                                    serde_json::to_value(spec).expect("ParamSpec serializes");
-                                v["path"] = json!(format!("fx/{}/{}", e.id, spec.name));
-                                v["current"] = current;
-                                v
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                json!({
-                    "id": e.id,
-                    "name": name,
-                    "bypass": e.bypass,
-                    "params": fx_params,
-                })
-            })
-            .collect();
-
-        Ok(Json(json!({
-            "project_version": version,
-            "track_id": track_id,
-            "device": {
-                "name": device_name,
-                // true なら device 未設定でデフォルト音源が鳴っている状態
-                "is_default_fallback": is_default,
-            },
-            "params": param_list,
-            "effects": effects_list,
-        })))
+        let mut v = track_params_json(track)?;
+        v["project_version"] = json!(version);
+        v["track_id"] = json!(track_id);
+        Ok(Json(v))
     }
 
     #[tool(

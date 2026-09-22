@@ -108,6 +108,47 @@ export interface RecentProject {
   current: boolean;
 }
 
+// ---- 音作りビュー(get_track_params の返り値) ----
+
+export type ParamRangeView =
+  | { kind: "float"; min: number; max: number; default: number; skew?: number }
+  | { kind: "int"; min: number; max: number; default: number }
+  | { kind: "bool"; default: boolean }
+  | { kind: "enum"; default: string; choices: string[] };
+
+export interface ParamView {
+  name: string;
+  display_name: string;
+  unit?: string | null;
+  range: ParamRangeView;
+  description: string;
+  /** set_param に渡すパス(device/... or fx/<id>/...) */
+  path: string;
+  current: unknown;
+}
+
+export interface EffectView {
+  id: string;
+  name: string;
+  bypass: boolean;
+  params: ParamView[];
+}
+
+export interface EffectCatalogEntry {
+  name: string;
+  description: string;
+  params: unknown[];
+}
+
+export interface TrackParams {
+  track_id: string;
+  device: { name: string; is_default_fallback: boolean };
+  params: ParamView[];
+  effects: EffectView[];
+  available_effects: EffectCatalogEntry[];
+  project_version: number;
+}
+
 export interface PresetInfo {
   name: string;
   description?: string;

@@ -4,7 +4,7 @@
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
   import ClipPreview from "./ClipPreview.svelte";
   import { newTrackId } from "./ids";
-  import { pianoRollStore, selectionStore } from "./selection.svelte";
+  import { pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
   import type { Clip, PresetInfo, Project, Track } from "./types";
 
   let {
@@ -368,6 +368,18 @@
             title="オートメーションレーンを開閉"
           >
             〜
+          </button>
+          <button
+            class="ms"
+            class:auto-on={soundDesignStore.focus?.trackId === track.id}
+            onclick={() =>
+              (soundDesignStore.focus =
+                soundDesignStore.focus?.trackId === track.id
+                  ? null
+                  : { trackId: track.id, trackName: track.name })}
+            title="音作りビューを開閉(つまみ・エフェクト・プリセット)"
+          >
+            🎛
           </button>
         </div>
         <div class="head-row">

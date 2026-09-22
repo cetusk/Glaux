@@ -3,7 +3,7 @@
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
   import { playDoneChime, playErrorChime } from "./settings.svelte";
-  import { pianoRollStore, selectionStore } from "./selection.svelte";
+  import { pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
 
   interface Msg {
     role: "user" | "assistant" | "tool" | "notice" | "error";
@@ -61,6 +61,13 @@
         `(tick ${range.startTick}〜${range.endTick})。` +
         `編集・分析はこの範囲内に限定し、範囲外のノートやクリップは変更しないでください。\n`;
       shown = `〔小節 ${range.startBar + 1}〜${range.endBar + 1}〕 ${shown}`;
+    }
+    const sd = soundDesignStore.focus;
+    if (sd) {
+      prefix +=
+        `【音作り中のトラック(ユーザーが音作りビューで開いている)】「${sd.trackName}」(${sd.trackId})。` +
+        `音色・エフェクトに関する指示は、特に指定がなければこのトラックが対象です。\n`;
+      shown = `〔🎛 ${sd.trackName}〕 ${shown}`;
     }
     const fullPrompt = prefix ? `${prefix}\n${prompt}` : prompt;
     push({ role: "user", text: shown });
@@ -159,6 +166,11 @@
   {#if pianoRollStore.focus}
     <div class="range-chip">
       <span>対象クリップ: {pianoRollStore.focus.clipName}(ピアノロールで編集中)</span>
+    </div>
+  {/if}
+  {#if soundDesignStore.focus}
+    <div class="range-chip">
+      <span>🎛 音作り中: {soundDesignStore.focus.trackName}(音色の指示はこのトラックへ)</span>
     </div>
   {/if}
   {#if selectionStore.range}

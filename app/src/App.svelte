@@ -9,6 +9,7 @@
   import ProjectMenu from "./lib/ProjectMenu.svelte";
   import PianoRoll from "./lib/PianoRoll.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
+  import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import { applyTheme } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import { pianoRollStore, selectionStore } from "./lib/selection.svelte";
@@ -662,6 +663,7 @@
           playing={transport.playing}
           onSeek={seek}
         />
+        <SoundDesignPanel {project} />
       {:else}
         <div class="loading">読み込み中…</div>
       {/if}

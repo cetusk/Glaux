@@ -94,6 +94,12 @@ export function exportWav(): Promise<{ path: string; seconds: number }> {
   return invoke("export_project_wav");
 }
 
+// ---- 音作りビュー ----
+
+export function getTrackParams(trackId: string): Promise<import("./types").TrackParams> {
+  return invoke("get_track_params", { trackId });
+}
+
 // ---- 音色プリセット ----
 
 export function listPresets(): Promise<{ presets: PresetInfo[] }> {
