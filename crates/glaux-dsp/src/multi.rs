@@ -5,8 +5,11 @@
 //! (.sf2 のパースとプリセット/インストゥルメントの合成)はエンジン側
 //! (`glaux-engine/src/sf2.rs`)が行い、dsp は出来上がったゾーン列を鳴らすだけ。
 //!
-//! SF2 のモジュレータ・フィルタ・LFO は第 1 段では省略(音量エンベロープと
-//! ループがあれば GM 音源の実用度は十分高い)。
+//! 第 2 段でローパスフィルタ(initialFilterFc/Q)、ビブラート LFO、
+//! モジュレーション LFO(ピッチ / フィルタ)、モジュレーションエンベロープ
+//! (ピッチ / フィルタ)に対応した([`ZoneMod`])。これらは 32 サンプルごとの
+//! 制御レートで評価する(pow / tan をサンプルごとに呼ばない)。
+//! CC 経由のモジュレータ(モジュレーションホイール等)は未対応。
 
 use crate::expr::PitchExpr;
 use crate::sampler::SampleData;
@@ -28,6 +31,73 @@ pub struct ZoneEnv {
     pub release: f32,
 }
 
+/// ゾーンの変調設定(SF2 ジェネレータ由来)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZoneMod {
+    /// 初期カットオフ(Hz)。既定 13500 = 実質バイパス
+    pub cutoff_hz: f32,
+    /// フィルタ Q(dB)
+    pub q_db: f32,
+    /// ビブラート LFO: ピッチへの深さ(セント)/ 周波数(Hz)/ 開始までの遅延(秒)
+    pub vib_to_pitch: f32,
+    pub vib_freq: f32,
+    pub vib_delay: f32,
+    /// モジュレーション LFO: ピッチ(セント)/ フィルタ(セント)/ 周波数(Hz)/ 遅延(秒)
+    pub mod_to_pitch: f32,
+    pub mod_to_filter: f32,
+    pub mod_freq: f32,
+    pub mod_delay: f32,
+    /// モジュレーションエンベロープ: ピッチ(セント)/ フィルタ(セント)と時間(秒)
+    pub env_to_pitch: f32,
+    pub env_to_filter: f32,
+    pub env_delay: f32,
+    pub env_attack: f32,
+    pub env_hold: f32,
+    pub env_decay: f32,
+    /// 0..=1(レベル)
+    pub env_sustain: f32,
+    pub env_release: f32,
+}
+
+impl Default for ZoneMod {
+    fn default() -> Self {
+        ZoneMod {
+            cutoff_hz: 13_500.0,
+            q_db: 0.0,
+            vib_to_pitch: 0.0,
+            vib_freq: 8.2,
+            vib_delay: 0.0,
+            mod_to_pitch: 0.0,
+            mod_to_filter: 0.0,
+            mod_freq: 8.2,
+            mod_delay: 0.0,
+            env_to_pitch: 0.0,
+            env_to_filter: 0.0,
+            env_delay: 0.0,
+            env_attack: 0.001,
+            env_hold: 0.0,
+            env_decay: 0.001,
+            env_sustain: 1.0,
+            env_release: 0.001,
+        }
+    }
+}
+
+impl ZoneMod {
+    /// 変調もフィルタも効かない(= 処理を省ける)か
+    fn is_inert(&self) -> bool {
+        self.cutoff_hz >= 13_000.0
+            && self.vib_to_pitch == 0.0
+            && self.mod_to_pitch == 0.0
+            && self.mod_to_filter == 0.0
+            && self.env_to_pitch == 0.0
+            && self.env_to_filter == 0.0
+    }
+}
+
+/// 制御レート(サンプル)。LFO / エンベロープ / フィルタ係数をこの間隔で更新する
+const CTRL_RATE: u32 = 32;
+
 /// 1 ゾーン = 1 サンプル + 適用範囲 + 再生条件。
 #[derive(Clone, Debug)]
 pub struct Zone {
@@ -46,6 +116,8 @@ pub struct Zone {
     /// ゾーン固有のゲイン(initialAttenuation 由来、リニア)
     pub gain: f32,
     pub env: ZoneEnv,
+    /// フィルタ・LFO・モジュレーションエンベロープ
+    pub modu: ZoneMod,
 }
 
 impl Zone {
@@ -83,6 +155,101 @@ struct ZonePlayer {
     env: f32,
     stage: u8,
     hold_left: f32,
+    /// ---- 変調(制御レートで更新)----
+    /// LFO / エンベロープ由来のピッチ倍率
+    pitch_mul: f64,
+    /// フィルタを通すか(カットオフが開き切っていれば省く)
+    filter_on: bool,
+    /// TPT SVF の係数と状態
+    a1: f32,
+    a2: f32,
+    a3: f32,
+    ic1: f32,
+    ic2: f32,
+    /// モジュレーションエンベロープ
+    menv: f32,
+    menv_stage: u8,
+    menv_hold_left: f32,
+}
+
+impl ZonePlayer {
+    /// モジュレーションエンベロープを `dt` 秒ぶん進めて現在値(0..1)を返す。
+    fn advance_menv(&mut self, m: &ZoneMod, released: bool, dt: f32) -> f32 {
+        if released && self.menv_stage != STAGE_RELEASE {
+            self.menv_stage = STAGE_RELEASE;
+        }
+        match self.menv_stage {
+            STAGE_ATTACK => {
+                self.menv += dt / m.env_attack.max(0.001);
+                if self.menv >= 1.0 {
+                    self.menv = 1.0;
+                    self.menv_stage = STAGE_HOLD;
+                    self.menv_hold_left = m.env_hold;
+                }
+            }
+            STAGE_HOLD => {
+                self.menv_hold_left -= dt;
+                if self.menv_hold_left <= 0.0 {
+                    self.menv_stage = STAGE_DECAY;
+                }
+            }
+            STAGE_DECAY => {
+                let coef = (-dt / m.env_decay.max(0.001)).exp();
+                self.menv = m.env_sustain + (self.menv - m.env_sustain) * coef;
+            }
+            _ => {
+                let coef = (-dt / m.env_release.max(0.001)).exp();
+                self.menv *= coef;
+            }
+        }
+        self.menv
+    }
+
+    /// 制御レートの更新: LFO・エンベロープからピッチ倍率とフィルタ係数を決める。
+    fn update_control(&mut self, z: &Zone, t: f32, vib: f32, lfo: f32, released: bool, sr: f32) {
+        let m = &z.modu;
+        let menv = if m.env_to_pitch != 0.0 || m.env_to_filter != 0.0 {
+            self.advance_menv(m, released, CTRL_RATE as f32 / sr)
+        } else {
+            0.0
+        };
+        let vib = if t >= m.vib_delay { vib } else { 0.0 };
+        let lfo = if t >= m.mod_delay { lfo } else { 0.0 };
+
+        let cents = vib * m.vib_to_pitch + lfo * m.mod_to_pitch + menv * m.env_to_pitch;
+        self.pitch_mul = if cents == 0.0 {
+            1.0
+        } else {
+            (2.0_f64).powf(cents as f64 / 1200.0)
+        };
+
+        let fc_cents = lfo * m.mod_to_filter + menv * m.env_to_filter;
+        let fc = m.cutoff_hz * (2.0_f32).powf(fc_cents / 1200.0);
+        if fc >= 13_000.0 {
+            self.filter_on = false;
+            return;
+        }
+        self.filter_on = true;
+        let fc = fc.clamp(20.0, sr * 0.45);
+        let g = (std::f32::consts::PI * fc / sr).tan();
+        // Q(dB)→ 減衰係数 k = 1/Q。0dB で Butterworth 相当
+        let q = (10.0_f32).powf(m.q_db.clamp(0.0, 96.0) / 20.0);
+        let k = (1.0 / q).clamp(0.05, 2.0);
+        self.a1 = 1.0 / (1.0 + g * (g + k));
+        self.a2 = g * self.a1;
+        self.a3 = g * self.a2;
+    }
+
+    /// TPT 状態変数フィルタ(ローパス出力)。
+    #[inline]
+    fn filter(&mut self, x: f32) -> f32 {
+        let v3 = x - self.ic2;
+        let v1 = self.a1 * self.ic1 + self.a2 * v3;
+        let v2 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
+        self.ic1 = 2.0 * v1 - self.ic1;
+        self.ic2 = 2.0 * v2 - self.ic2;
+        v2
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +261,13 @@ pub struct MultiVoice {
     released: bool,
     expr: PitchExpr,
     sample_rate: f32,
+    /// 経過サンプル数(制御レートのタイミングと LFO 遅延に使う)
+    age: u32,
+    /// LFO 位相(0..1)。ビブラート LFO とモジュレーション LFO
+    vib_phase: f32,
+    mod_phase: f32,
+    /// いずれかのゾーンに変調があるか(無ければ制御レート処理を丸ごと省く)
+    modulated: bool,
 }
 
 impl MultiVoice {
@@ -112,6 +286,7 @@ impl MultiVoice {
         let vel_midi = (vel * 127.0).clamp(1.0, 127.0) as u8;
         let mut players = [ZonePlayer::default(); MAX_LAYERS];
         let mut n = 0usize;
+        let mut modulated = false;
         for (i, z) in p.zones.iter().enumerate() {
             if n >= MAX_LAYERS {
                 break;
@@ -120,7 +295,7 @@ impl MultiVoice {
                 continue;
             }
             let semis = pitch as f64 - z.root as f64;
-            players[n] = ZonePlayer {
+            let mut pl = ZonePlayer {
                 active: true,
                 zone: i as u16,
                 pos: 0.0,
@@ -129,7 +304,14 @@ impl MultiVoice {
                 env: 0.0,
                 stage: STAGE_ATTACK,
                 hold_left: z.env.hold * sample_rate,
+                pitch_mul: 1.0,
+                ..ZonePlayer::default()
             };
+            if !z.modu.is_inert() {
+                modulated = true;
+                pl.update_control(z, 0.0, 0.0, 0.0, false, sample_rate);
+            }
+            players[n] = pl;
             n += 1;
         }
         MultiVoice {
@@ -139,6 +321,10 @@ impl MultiVoice {
             released: false,
             expr: PitchExpr::new(articulation, sample_rate),
             sample_rate,
+            age: 0,
+            vib_phase: 0.0,
+            mod_phase: 0.0,
+            modulated,
         }
     }
 
@@ -162,6 +348,31 @@ impl MultiVoice {
         } else {
             1.0
         };
+
+        // 制御レート: LFO を進め、各ゾーンのピッチ倍率とフィルタ係数を更新
+        if self.modulated && self.age % CTRL_RATE == 0 {
+            let t = self.age as f32 / sr;
+            let vib = (self.vib_phase * std::f32::consts::TAU).sin();
+            let lfo = (self.mod_phase * std::f32::consts::TAU).sin();
+            let (mut vib_freq, mut mod_freq) = (0.0f32, 0.0f32);
+            for pl in &mut self.players {
+                if !pl.active {
+                    continue;
+                }
+                let Some(z) = p.zones.get(pl.zone as usize) else {
+                    continue;
+                };
+                if z.modu.is_inert() {
+                    continue;
+                }
+                pl.update_control(z, t, vib, lfo, self.released, sr);
+                vib_freq = vib_freq.max(z.modu.vib_freq);
+                mod_freq = mod_freq.max(z.modu.mod_freq);
+            }
+            self.vib_phase = (self.vib_phase + vib_freq * CTRL_RATE as f32 / sr).fract();
+            self.mod_phase = (self.mod_phase + mod_freq * CTRL_RATE as f32 / sr).fract();
+        }
+        self.age = self.age.wrapping_add(1);
 
         let mut out = 0.0f32;
         for pl in &mut self.players {
@@ -187,8 +398,11 @@ impl MultiVoice {
                 continue;
             }
             let frac = (pl.pos - i as f64) as f32;
-            let s = frames[i] + (frames[i + 1] - frames[i]) * frac;
-            pl.pos += pl.rate * ratio;
+            let mut s = frames[i] + (frames[i + 1] - frames[i]) * frac;
+            pl.pos += pl.rate * ratio * pl.pitch_mul;
+            if pl.filter_on {
+                s = pl.filter(s);
+            }
 
             // 音量エンベロープ
             match pl.stage {
@@ -266,6 +480,7 @@ mod tests {
             root,
             gain: 1.0,
             env: env(),
+            modu: ZoneMod::default(),
         }
     }
 
@@ -342,6 +557,104 @@ mod tests {
             }
         }
         assert!(stopped, "リリースで消えるはず");
+    }
+
+    /// 明るさの指標: 隣接差分 RMS / RMS(音量に依らない高域の割合)
+    fn brightness(v: &[f32]) -> f32 {
+        let dd: f32 = v.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+        let ss: f32 = v.iter().map(|s| s * s).sum();
+        (dd / ss.max(1e-12)).sqrt()
+    }
+
+    /// 倍音を含む波形(矩形波)のサンプル
+    fn square_data(freq: f32, secs: f32, sr: f32) -> Arc<SampleData> {
+        let frames = (0..(sr * secs) as usize)
+            .map(|i| {
+                if ((i as f32 * freq / sr).fract()) < 0.5 {
+                    0.5
+                } else {
+                    -0.5
+                }
+            })
+            .collect();
+        Arc::new(SampleData {
+            frames,
+            sample_rate: sr,
+        })
+    }
+
+    #[test]
+    fn lowpass_filter_darkens_tone() {
+        let data = square_data(220.0, 0.5, 48_000.0);
+        let mut dark = zone(0, 127, 57.0, data.clone());
+        dark.modu.cutoff_hz = 300.0;
+        let render = |z: Zone| {
+            let p = MultiSamplerParams {
+                zones: Arc::new(vec![z]),
+                gain: 1.0,
+            };
+            let mut v = MultiVoice::start(&p, 57, 1.0, Articulation::Normal, 48_000.0);
+            (0..9_600).map(|_| v.next(&p)).collect::<Vec<f32>>()
+        };
+        let open = brightness(&render(zone(0, 127, 57.0, data)));
+        let closed = brightness(&render(dark));
+        assert!(
+            closed < open * 0.4,
+            "カットオフ 300Hz で高域が落ちるはず: open={open} closed={closed}"
+        );
+    }
+
+    #[test]
+    fn vibrato_lfo_modulates_pitch() {
+        let data = sine_data(220.0, 1.0, 48_000.0);
+        let mut z = zone(0, 127, 57.0, data);
+        z.modu.vib_to_pitch = 100.0; // ±半音
+        z.modu.vib_freq = 6.0;
+        z.modu.vib_delay = 0.0;
+        let p = MultiSamplerParams {
+            zones: Arc::new(vec![z]),
+            gain: 1.0,
+        };
+        let mut v = MultiVoice::start(&p, 57, 1.0, Articulation::Normal, 48_000.0);
+        let out: Vec<f32> = (0..48_000).map(|_| v.next(&p)).collect();
+        // ゼロクロス間隔(周期)の最小と最大が半音ぶん(約 6%)以上開く
+        let crossings: Vec<usize> = out
+            .windows(2)
+            .enumerate()
+            .filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0)
+            .map(|(i, _)| i)
+            .collect();
+        let periods: Vec<usize> = crossings.windows(2).map(|w| w[1] - w[0]).collect();
+        let (mn, mx) = periods[10..]
+            .iter()
+            .fold((usize::MAX, 0), |(a, b), &x| (a.min(x), b.max(x)));
+        assert!(
+            mx as f32 / mn as f32 > 1.06,
+            "ビブラートで周期が揺れるはず: min={mn} max={mx}"
+        );
+    }
+
+    #[test]
+    fn mod_envelope_opens_filter_then_closes() {
+        let data = square_data(220.0, 1.0, 48_000.0);
+        let mut z = zone(0, 127, 57.0, data);
+        z.modu.cutoff_hz = 300.0;
+        z.modu.env_to_filter = 4800.0; // +4 オクターブ開く
+        z.modu.env_attack = 0.005;
+        z.modu.env_decay = 0.15;
+        z.modu.env_sustain = 0.0;
+        let p = MultiSamplerParams {
+            zones: Arc::new(vec![z]),
+            gain: 1.0,
+        };
+        let mut v = MultiVoice::start(&p, 57, 1.0, Articulation::Normal, 48_000.0);
+        let out: Vec<f32> = (0..48_000).map(|_| v.next(&p)).collect();
+        let early = brightness(&out[480..4_800]); // 10〜100ms: 開いている
+        let late = brightness(&out[38_400..48_000]); // 800ms〜: 閉じた
+        assert!(
+            early > late * 2.0,
+            "エンベロープで開いてから閉じるはず: early={early} late={late}"
+        );
     }
 
     #[test]

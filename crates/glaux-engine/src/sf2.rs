@@ -159,6 +159,54 @@ pub fn build_zones(font: &SoundFont, bank: u16, preset: u16) -> Option<Arc<Vec<Z
                     .clamp(0.01, 10.0),
             };
 
+            // フィルタ・LFO・モジュレーションエンベロープ
+            // (Hz / 秒 はプリセット側が倍率、セント / dB は加算)
+            let modu = glaux_dsp::ZoneMod {
+                cutoff_hz: (ir.get_initial_filter_cutoff_frequency()
+                    * pr.get_initial_filter_cutoff_frequency())
+                .clamp(20.0, 20_000.0),
+                q_db: (ir.get_initial_filter_q() + pr.get_initial_filter_q()).clamp(0.0, 96.0),
+                vib_to_pitch: (ir.get_vibrato_lfo_to_pitch() + pr.get_vibrato_lfo_to_pitch())
+                    as f32,
+                vib_freq: (ir.get_frequency_vibrato_lfo() * pr.get_frequency_vibrato_lfo())
+                    .clamp(0.1, 100.0),
+                vib_delay: (ir.get_delay_vibrato_lfo() * pr.get_delay_vibrato_lfo())
+                    .clamp(0.0, 20.0),
+                mod_to_pitch: (ir.get_modulation_lfo_to_pitch() + pr.get_modulation_lfo_to_pitch())
+                    as f32,
+                mod_to_filter: (ir.get_modulation_lfo_to_filter_cutoff_frequency()
+                    + pr.get_modulation_lfo_to_filter_cutoff_frequency())
+                    as f32,
+                mod_freq: (ir.get_frequency_modulation_lfo() * pr.get_frequency_modulation_lfo())
+                    .clamp(0.1, 100.0),
+                mod_delay: (ir.get_delay_modulation_lfo() * pr.get_delay_modulation_lfo())
+                    .clamp(0.0, 20.0),
+                env_to_pitch: (ir.get_modulation_envelope_to_pitch()
+                    + pr.get_modulation_envelope_to_pitch()) as f32,
+                env_to_filter: (ir.get_modulation_envelope_to_filter_cutoff_frequency()
+                    + pr.get_modulation_envelope_to_filter_cutoff_frequency())
+                    as f32,
+                env_delay: (ir.get_delay_modulation_envelope()
+                    * pr.get_delay_modulation_envelope())
+                .clamp(0.0, 20.0),
+                env_attack: (ir.get_attack_modulation_envelope()
+                    * pr.get_attack_modulation_envelope())
+                .clamp(0.001, 20.0),
+                env_hold: (ir.get_hold_modulation_envelope() * pr.get_hold_modulation_envelope())
+                    .clamp(0.0, 20.0),
+                env_decay: (ir.get_decay_modulation_envelope()
+                    * pr.get_decay_modulation_envelope())
+                .clamp(0.001, 30.0),
+                env_sustain: (1.0
+                    - (ir.get_sustain_modulation_envelope()
+                        + pr.get_sustain_modulation_envelope())
+                        / 100.0)
+                    .clamp(0.0, 1.0),
+                env_release: (ir.get_release_modulation_envelope()
+                    * pr.get_release_modulation_envelope())
+                .clamp(0.001, 20.0),
+            };
+
             zones.push(Zone {
                 key_lo: key_lo.clamp(0, 127) as u8,
                 key_hi: key_hi.clamp(0, 127) as u8,
@@ -173,6 +221,7 @@ pub fn build_zones(font: &SoundFont, bank: u16, preset: u16) -> Option<Arc<Vec<Z
                 root,
                 gain,
                 env,
+                modu,
             });
         }
     }
