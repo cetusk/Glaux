@@ -209,15 +209,22 @@ pub struct DistortionParams {
 
 // ========================== Sidechain Comp =============================
 
+/// ダッカー型サイドチェイン。
+/// レベル追従型だとキックの胴鳴りの間ずっと沈み「揺れ」にならないため、
+/// キックの立ち上がりをトリガーに固定形状のエンベロープで沈む方式にしている。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SidechainParams {
     /// 検出信号にするトラックの index(構築時に ID から解決済み)。
     /// u32::MAX なら未解決(ダッキングしない)
     pub source_track: u32,
-    pub threshold_db: f32,
-    pub ratio: f32,
-    pub attack_coef: f32,
-    pub release_coef: f32,
+    /// トリガーしきい値(リニア振幅)
+    pub threshold: f32,
+    /// 沈み込みの底のゲイン(リニア。duck_db から変換済み)
+    pub duck_floor: f32,
+    /// 底まで沈む時間(サンプル)
+    pub attack_samples: f32,
+    /// 浮かび上がる時間(サンプル)
+    pub release_samples: f32,
 }
 
 // ======================= 統合(定義と状態) =============================
@@ -248,8 +255,12 @@ pub struct EffectState {
     kind: EffectKind,
     // EQ: 3 バンド × 2ch
     eq: [[BiquadState; 3]; 2],
-    // Compressor / Sidechain
+    // Compressor / Sidechain の検出エンベロープ
     envelope: f32,
+    // Sidechain(ダッカー)のトリガー状態
+    duck_pos: f32,
+    duck_active: bool,
+    key_was_above: bool,
     // Distortion のトーン用 1 次 LP(2ch)
     tone_lp: [f32; 2],
     // Reverb
@@ -262,6 +273,9 @@ impl Default for EffectState {
             kind: EffectKind::None,
             eq: Default::default(),
             envelope: 0.0,
+            duck_pos: 0.0,
+            duck_active: false,
+            key_was_above: false,
             tone_lp: [0.0; 2],
             reverb: [ReverbChannel::new(0), ReverbChannel::new(STEREO_SPREAD)],
         }
@@ -286,6 +300,9 @@ impl EffectState {
             self.kind = kind;
             self.eq = Default::default();
             self.envelope = 0.0;
+            self.duck_pos = 0.0;
+            self.duck_active = false;
+            self.key_was_above = false;
             self.tone_lp = [0.0; 2];
             self.reverb[0].reset();
             self.reverb[1].reset();
@@ -343,21 +360,41 @@ impl EffectState {
                 (shape(l, 0), shape(r, 1))
             }
             EffectParams::Sidechain(sc) => {
+                // 検出信号を高速フォロワで整える(生波形の振動でチャタらないように)
                 let level = key.abs();
-                let coef = if level > self.envelope {
-                    sc.attack_coef
+                if level > self.envelope {
+                    self.envelope += (level - self.envelope) * 0.3;
                 } else {
-                    sc.release_coef
-                };
-                self.envelope += (level - self.envelope) * coef;
-                let level_db = 20.0 * self.envelope.max(1e-6).log10();
-                let over = level_db - sc.threshold_db;
-                let gain_db = if over > 0.0 {
-                    -over * (1.0 - 1.0 / sc.ratio)
+                    self.envelope += (level - self.envelope) * 0.0008; // 約 25ms
+                }
+                // 立ち上がり(下→上のしきい値クロス)でトリガー。キックごとにリトリガー
+                let above = self.envelope > sc.threshold;
+                if above && !self.key_was_above {
+                    self.duck_pos = 0.0;
+                    self.duck_active = true;
+                }
+                self.key_was_above = above;
+
+                let gain = if self.duck_active {
+                    let g = if self.duck_pos < sc.attack_samples {
+                        // 底へ沈む
+                        let t = self.duck_pos / sc.attack_samples.max(1.0);
+                        1.0 + (sc.duck_floor - 1.0) * t
+                    } else {
+                        // キックの余韻に関係なく release_samples かけて浮上
+                        let t = (self.duck_pos - sc.attack_samples) / sc.release_samples.max(1.0);
+                        if t >= 1.0 {
+                            self.duck_active = false;
+                            1.0
+                        } else {
+                            sc.duck_floor + (1.0 - sc.duck_floor) * t
+                        }
+                    };
+                    self.duck_pos += 1.0;
+                    g
                 } else {
-                    0.0
+                    1.0
                 };
-                let gain = 10.0_f32.powf(gain_db / 20.0);
                 (l * gain, r * gain)
             }
         }
@@ -640,16 +677,17 @@ pub static SIDECHAIN_SPECS: &[ParamSpec] = &[
         description: "ソースがこれを超えたときに沈み込む。低いほど敏感。",
     },
     ParamSpec {
-        name: "ratio",
-        display_name: "レシオ",
-        unit: None,
+        name: "duck_db",
+        display_name: "沈み込みの深さ",
+        unit: Some("dB"),
         range: ParamRange::Float {
-            min: 1.0,
-            max: 20.0,
-            default: 6.0,
-            skew: Some(0.5),
+            min: 0.0,
+            max: 24.0,
+            default: 8.0,
+            skew: None,
         },
-        description: "沈み込みの深さ。4〜8 で心地よいポンピング、それ以上でガッツリ潜る。",
+        description: "キックのたびに沈む深さ。6〜10 で心地よいポンピング、\
+            12 以上でガッツリ潜る EDM 的な揺れ。",
     },
     ParamSpec {
         name: "attack_ms",
@@ -661,7 +699,7 @@ pub static SIDECHAIN_SPECS: &[ParamSpec] = &[
             default: 5.0,
             skew: Some(0.3),
         },
-        description: "沈み始める速さ。短いほどキックの頭がクッキリ抜ける。",
+        description: "底まで沈む速さ。短いほどキックの頭がクッキリ抜ける。",
     },
     ParamSpec {
         name: "release_ms",
@@ -669,12 +707,13 @@ pub static SIDECHAIN_SPECS: &[ParamSpec] = &[
         unit: Some("ms"),
         range: ParamRange::Float {
             min: 20.0,
-            max: 500.0,
-            default: 120.0,
+            max: 1000.0,
+            default: 200.0,
             skew: Some(0.3),
         },
-        description: "浮き上がってくる速さ。EDM のポンピング感はここで決まる。\
-            テンポに合わせて 80〜200ms あたりを探ると気持ちよい。",
+        description: "浮き上がる時間。ポンピングの「揺れ」はここで決まる。\
+            ビートに合わせるのがコツ: 8 分音符の長さ(60000/BPM/2 ms)前後、\
+            例えば 128BPM なら 200〜230ms にすると気持ちよく揺れる。",
     },
 ];
 
@@ -803,7 +842,6 @@ pub fn bake_effect(
         }
         "sidechain" => {
             let s = SIDECHAIN_SPECS;
-            let coef = |ms: f32| 1.0 - (-1.0 / (ms.max(0.1) * 0.001 * sample_rate)).exp();
             let source_track = match map.get("source") {
                 Some(ParamValue::Enum(id)) if !id.is_empty() => {
                     resolve_track(id).unwrap_or(u32::MAX)
@@ -812,10 +850,12 @@ pub fn bake_effect(
             };
             Some(EffectParams::Sidechain(SidechainParams {
                 source_track,
-                threshold_db: get(map, s, "threshold_db").clamp(-50.0, 0.0),
-                ratio: get(map, s, "ratio").clamp(1.0, 20.0),
-                attack_coef: coef(get(map, s, "attack_ms")),
-                release_coef: coef(get(map, s, "release_ms")),
+                threshold: 10.0_f32.powf(get(map, s, "threshold_db").clamp(-50.0, 0.0) / 20.0),
+                duck_floor: 10.0_f32.powf(-get(map, s, "duck_db").clamp(0.0, 24.0) / 20.0),
+                attack_samples: get(map, s, "attack_ms").clamp(0.1, 50.0) * 0.001 * sample_rate,
+                release_samples: get(map, s, "release_ms").clamp(20.0, 1000.0)
+                    * 0.001
+                    * sample_rate,
             }))
         }
         _ => None,

@@ -162,6 +162,41 @@
     };
   }
 
+  // ---- トラックの右クリックメニュー(移動・削除) ----
+
+  let trackMenu = $state<{ trackId: string; index: number; x: number; y: number } | null>(null);
+
+  function openTrackMenu(e: MouseEvent, track: Track, index: number) {
+    e.preventDefault();
+    trackMenu = { trackId: track.id, index, x: e.clientX, y: e.clientY };
+  }
+
+  function moveTrack(toIndex: number) {
+    const menu = trackMenu;
+    trackMenu = null;
+    if (!menu || toIndex < 0 || toIndex >= project.tracks.length) return;
+    const track = project.tracks[menu.index];
+    api
+      .applyEdit(
+        [{ op: "move_track", id: menu.trackId, to_index: toIndex }],
+        `${track?.name ?? "トラック"} を${toIndex < menu.index ? "上" : "下"}へ移動`,
+      )
+      .catch(() => {});
+  }
+
+  function deleteTrack() {
+    const menu = trackMenu;
+    trackMenu = null;
+    if (!menu) return;
+    const track = project.tracks[menu.index];
+    api
+      .applyEdit(
+        [{ op: "remove_track", id: menu.trackId }],
+        `${track?.name ?? "トラック"} を削除`,
+      )
+      .catch(() => {});
+  }
+
   function addTrack() {
     const id = newTrackId();
     api
@@ -227,7 +262,8 @@
 
   {#each project.tracks as track, ti (track.id)}
     <div class="track-row" class:alt={ti % 2 === 1}>
-      <div class="track-head">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="track-head" oncontextmenu={(e) => openTrackMenu(e, track, ti)}>
         <div class="head-row">
           <div class="track-name" style={track.color ? `color:${track.color}` : ""}>
             {track.name}
@@ -280,6 +316,26 @@
       </div>
     </div>
   {/each}
+
+  {#if trackMenu}
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="menu-backdrop" onclick={() => (trackMenu = null)} oncontextmenu={(e) => { e.preventDefault(); trackMenu = null; }}></div>
+    <div class="track-menu" style="left:{trackMenu.x}px;top:{trackMenu.y}px">
+      <button disabled={trackMenu.index === 0} onclick={() => moveTrack(trackMenu!.index - 1)}>
+        ↑ 上へ移動
+      </button>
+      <button
+        disabled={trackMenu.index >= project.tracks.length - 1}
+        onclick={() => moveTrack(trackMenu!.index + 1)}
+      >
+        ↓ 下へ移動
+      </button>
+      <div class="menu-sep"></div>
+      <button class="danger" onclick={deleteTrack} title="Ctrl+Z で元に戻せます">
+        🗑 トラックを削除
+      </button>
+    </div>
+  {/if}
 
   <div class="add-track-row">
     <button class="add-track" onclick={addTrack} title="MIDI トラックを追加(音源は後から AI に頼むか自動で subtractive)">
@@ -495,6 +551,49 @@
   .empty {
     padding: 40px;
     color: var(--text-dim);
+  }
+
+  .menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+  }
+
+  .track-menu {
+    position: fixed;
+    z-index: 20;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    padding: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 160px;
+  }
+
+  .track-menu button {
+    text-align: left;
+    border: none;
+    background: none;
+    padding: 6px 10px;
+    border-radius: 5px;
+  }
+
+  .track-menu button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+
+  .track-menu button.danger:hover {
+    background: #5c2b33;
+    color: #ffb4c0;
+  }
+
+  .menu-sep {
+    height: 1px;
+    background: var(--border);
+    margin: 2px 4px;
   }
 
   .add-track-row {
