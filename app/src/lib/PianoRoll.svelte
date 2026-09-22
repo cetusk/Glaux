@@ -75,12 +75,16 @@
   let drumHighlight = $state<number | null>(null);
 
   let snapTicks = $state(480); // 1/8
+  // T = 3 連符(PPQ 960: 1/4T=640, 1/8T=320, 1/16T=160)
   const snapOptions = [
     { label: "1 小節", ticks: 3840 },
     { label: "1/2", ticks: 1920 },
     { label: "1/4", ticks: 960 },
+    { label: "1/4T", ticks: 640 },
     { label: "1/8", ticks: 480 },
+    { label: "1/8T", ticks: 320 },
     { label: "1/16", ticks: 240 },
+    { label: "1/16T", ticks: 160 },
   ];
 
   const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -104,7 +108,7 @@
         dp: number;
         ids: string[];
       }
-    | { mode: "resize"; noteId: string; startTick: number; dt: number }
+    | { mode: "resize"; ids: string[]; startTick: number; dt: number }
     | { mode: "select"; x0: number; y0: number; x1: number; y1: number };
   let drag = $state<Drag | null>(null);
 
@@ -234,11 +238,12 @@
       }
     }
     if (drag?.mode === "resize" && drag.dt !== 0) {
-      const n = currentClip.notes.find((note) => note.id === drag.noteId);
-      if (n) {
+      const ids = new Set(drag.ids);
+      g.strokeStyle = "#ffd98a";
+      g.fillStyle = "rgba(255, 194, 71, 0.35)";
+      for (const n of currentClip.notes) {
+        if (!ids.has(n.id)) continue;
         const dur = Math.max(60, n.dur + drag.dt);
-        g.strokeStyle = "#ffd98a";
-        g.fillStyle = "rgba(255, 194, 71, 0.35)";
         g.beginPath();
         g.roundRect(n.pos * pxPerTick, (127 - n.pitch) * rowH + 1.5, Math.max(dur * pxPerTick, 4), rowH - 3, 3);
         g.fill();
@@ -448,7 +453,13 @@
         selected = new Set([hit.id]);
       }
       if (nearRightEdge(hit, x)) {
-        drag = { mode: "resize", noteId: hit.id, startTick: x / pxPerTick, dt: 0 };
+        // 選択中のノートの端なら、選択全体をまとめてリサイズ
+        drag = {
+          mode: "resize",
+          ids: [...(selected.has(hit.id) ? selected : new Set([hit.id]))],
+          startTick: x / pxPerTick,
+          dt: 0,
+        };
       } else {
         drag = {
           mode: "move",
@@ -562,13 +573,20 @@
     }
 
     if (d.mode === "resize" && d.dt !== 0) {
-      const n = currentClip.notes.find((note) => note.id === d.noteId);
-      if (!n) return;
-      const dur = Math.max(60, Math.min(currentClip.length - n.pos, n.dur + d.dt));
-      applyEdit(
-        [{ op: "update_notes", clip: currentClip.id, changes: [{ id: n.id, dur }] }],
-        "ノートの長さを変更",
-      );
+      const changes = currentClip.notes
+        .filter((n) => d.ids.includes(n.id))
+        .map((n) => ({
+          id: n.id,
+          dur: Math.max(60, Math.min(currentClip.length - n.pos, n.dur + d.dt)),
+        }));
+      if (changes.length > 0) {
+        applyEdit(
+          [{ op: "update_notes", clip: currentClip.id, changes }],
+          changes.length === 1
+            ? "ノートの長さを変更"
+            : `ノートの長さを変更(${changes.length} 個)`,
+        );
+      }
     }
   }
 
@@ -803,7 +821,7 @@
             {/each}
           </select>
         </label>
-        <span class="hint">クリック: 挿入カーソル(←/→ で移動) / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl+C/X/V: コピペ / 選択して M/S/A: ミュート・スタッカート・アクセント / Ctrl・Shift+ホイール: ズーム</span>
+        <span class="hint">ドラッグ: 複数選択(まとめて移動・端で長さ変更) / Ctrl+C/X/V: コピペ(別クリップへの貼り付けも可) / M/S/A: 奏法 / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl・Shift+ホイール: ズーム</span>
         <button onclick={close} title="閉じる(Esc)">✕</button>
       </div>
     </div>

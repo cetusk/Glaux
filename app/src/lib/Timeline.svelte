@@ -3,7 +3,7 @@
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
   import ClipPreview from "./ClipPreview.svelte";
-  import { newTrackId } from "./ids";
+  import { newClipId, newTrackId } from "./ids";
   import { pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
   import type { Clip, PresetInfo, Project, Track } from "./types";
 
@@ -160,6 +160,56 @@
       trackName: track.name,
       anchorTick: Math.max(0, (e.offsetX ?? 0) / pxPerTick),
     };
+  }
+
+  /// 空きレーンのダブルクリック: その小節にクリップを作ってピアノロールを開く
+  function onLaneDblClick(e: MouseEvent, track: Track) {
+    if (track.kind !== "midi") return;
+    if ((e.target as HTMLElement).closest(".clip")) return; // 既存クリップは openPianoRoll 側
+    const lane = e.currentTarget as HTMLElement;
+    const x = e.clientX - lane.getBoundingClientRect().left;
+    const tick = Math.max(0, x / pxPerTick);
+    const bar = barAtTick(barList, tick);
+    let start = bar.tick;
+    // 小節頭が前のクリップに食われていたらその終端から
+    const covering = track.clips.find((c) => start >= c.start && start < c.start + c.length);
+    if (covering) start = covering.start + covering.length;
+    // 長さ: 4 小節ぶん(拍子を考慮)。次のクリップの手前まででクランプ
+    let length = 0;
+    for (let i = bar.index; i < Math.min(bar.index + 4, barList.length); i++) {
+      length += barList[i].len;
+    }
+    if (length === 0) length = 3840 * 4;
+    const nextStart = track.clips
+      .map((c) => c.start)
+      .filter((s) => s >= start + 1)
+      .sort((a, b) => a - b)[0];
+    if (nextStart !== undefined) length = Math.min(length, nextStart - start);
+    if (length < 240) return; // 置く隙間がない
+
+    const clipId = newClipId();
+    const name = `クリップ ${bar.index + 1}`;
+    api
+      .applyEdit(
+        [
+          {
+            op: "add_clip",
+            track: track.id,
+            clip: { id: clipId, name, start, length, kind: "midi", notes: [] },
+          },
+        ],
+        `${track.name} の ${bar.index + 1} 小節目にクリップを追加`,
+      )
+      .then(() => {
+        pianoRollStore.focus = {
+          clipId,
+          clipName: name,
+          trackId: track.id,
+          trackName: track.name,
+          anchorTick: 0,
+        };
+      })
+      .catch(() => {});
   }
 
   // ---- オートメーションレーンの開閉 ----
@@ -413,7 +463,15 @@
           <code>{track.id}</code>
         </div>
       </div>
-      <div class="lane" style="width:{totalPx}px">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="lane"
+        style="width:{totalPx}px"
+        ondblclick={(e) => onLaneDblClick(e, track)}
+        title={track.kind === "midi" && track.clips.length === 0
+          ? "ダブルクリックでクリップを作成してピアノロールを開く"
+          : ""}
+      >
         {#each barList as bar (bar.index)}
           <div class="grid-line" style="left:{bar.tick * pxPerTick}px"></div>
         {/each}
