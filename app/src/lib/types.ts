@@ -1,6 +1,12 @@
 // project.json / MCP レスポンスに対応する型(glaux-core の serde 形と一致させる)
 
-export type Articulation = "normal" | "palm_mute" | "staccato" | "accent";
+export type Articulation =
+  | "normal"
+  | "palm_mute"
+  | "staccato"
+  | "accent"
+  | "vibrato"
+  | "bend";
 
 export interface Note {
   id: string;

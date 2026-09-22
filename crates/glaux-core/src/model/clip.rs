@@ -22,6 +22,10 @@ pub enum Articulation {
     Staccato,
     /// アクセント: その音だけ強く・明るく強調
     Accent,
+    /// ビブラート: 音の後半にピッチの揺れが深くなっていく
+    Vibrato,
+    /// チョーキング(ベンド): 全音下から書かれた音程へ滑り上がる
+    Bend,
 }
 
 impl Articulation {

@@ -458,7 +458,10 @@ impl GlauxServer {
         set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?} / \
         set_title {title}(曲名の変更)/ \
         ノートには articulation を付けられる: \"palm_mute\"(ブリッジミュート。減衰が速いこもった刻み)/ \
-        \"staccato\"(音価半分で切る)/ \"accent\"(強く明るく)。省略で通常。update_notes でも変更可。\
+        \"staccato\"(音価半分で切る)/ \"accent\"(強く明るく)/ \
+        \"vibrato\"(後半にかけて深くなるピッチの揺れ。ロングトーンの表情付け)/ \
+        \"bend\"(チョーキング: 全音下から書かれた音程へ滑り上がる。ギターソロの決め音に)。\
+        省略で通常。update_notes でも変更可。\
         メタルの「ズクズク」した刻みは distortion + 低音 + palm_mute ノートの組み合わせで作る。\
         set_automation_points {track,target,points}(target は \"track/volume_db\" か \"track/pan\"、\
         points は [{tick,value,curve?}] で curve は linear/hold/exponential。\

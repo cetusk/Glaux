@@ -199,6 +199,8 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                             Articulation::PalmMute,
                             Articulation::Staccato,
                             Articulation::Accent,
+                            Articulation::Vibrato,
+                            Articulation::Bend,
                         ]
                         .choose(rng)
                         .unwrap(),
@@ -262,6 +264,8 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                                     Articulation::PalmMute,
                                     Articulation::Staccato,
                                     Articulation::Accent,
+                                    Articulation::Vibrato,
+                                    Articulation::Bend,
                                 ]
                                 .choose(rng)
                                 .unwrap(),

@@ -37,6 +37,8 @@ pub struct PluckVoice {
     /// 実効明るさ(奏法込み)
     bright: f32,
     amp: f32,
+    /// ピッチ表現(ビブラート / チョーキング)
+    expr: crate::expr::PitchExpr,
     /// note_off 後のフェード(押さえて止める)
     release_env: f32,
     released: bool,
@@ -97,6 +99,7 @@ impl PluckVoice {
             loop_gain,
             bright,
             amp: vel * amp_mul,
+            expr: crate::expr::PitchExpr::new(articulation, sample_rate),
             release_env: 1.0,
             released: false,
             env: 0.5,
@@ -122,9 +125,16 @@ impl PluckVoice {
     }
 
     pub fn next(&mut self, p: &PluckParams) -> f32 {
+        // ピッチ表現(ビブラート / チョーキング): 実効周期を比で割る
+        let period = if self.expr.is_active() {
+            (self.period / self.expr.next_ratio(self.sample_rate))
+                .clamp(2.0, (DELAY_MAX - 3) as f32)
+        } else {
+            self.period
+        };
         // 弦の 1 サンプル: 周期前の 2 点の平均(ローパス)と生値を明るさでブレンド
-        let s0 = self.read_at(self.period);
-        let s1 = self.read_at(self.period + 1.0);
+        let s0 = self.read_at(period);
+        let s1 = self.read_at(period + 1.0);
         let avg = 0.5 * (s0 + s1);
         let filtered = avg + self.bright * (s0 - avg);
         let new = filtered * self.loop_gain;
@@ -221,6 +231,36 @@ mod tests {
         );
         // 頭のアタックは鳴る
         assert!(rms(&muted[..2_400]) > 0.02);
+    }
+
+    #[test]
+    fn bend_slides_up_to_written_pitch() {
+        // チョーキング: 序盤は全音下(周期が長い)、0.22 秒以降は書かれた音程
+        let p = default_params();
+        let out = render(&p, Articulation::Bend, 48_000);
+        let peak_lag = |window: &[f32]| {
+            let mut best_lag = 0usize;
+            let mut best = f32::MIN;
+            for lag in 120..400 {
+                let c: f32 = (0..3_000).map(|i| window[i] * window[i + lag]).sum();
+                if c > best {
+                    best = c;
+                    best_lag = lag;
+                }
+            }
+            best_lag
+        };
+        let early = peak_lag(&out[0..4_000]); // 0〜83ms(まだ下)
+        let late = peak_lag(&out[24_000..30_000]); // 0.5 秒以降(到達済み)
+        let expected = 48_000.0 / 220.0;
+        assert!(
+            (late as f32 - expected).abs() < expected * 0.08,
+            "到達後は書かれた音程のはず: {late}"
+        );
+        assert!(
+            early as f32 > late as f32 * 1.05,
+            "序盤は低い(周期が長い)はず: early={early} late={late}"
+        );
     }
 
     #[test]

@@ -123,7 +123,8 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     release_ms を 8 分音符の長さ = 60000/BPM/2 に合わせると気持ちよく揺れる)、\
     ギターの歪みやメタルは distortion(square 波 + 高 drive)、\
     メタルのブリッジミュートの刻み(ズクズク)はノートに articulation: \"palm_mute\" を付けます\
-    (add_notes / update_notes。ほかに staccato / accent。低めの音 + distortion と組み合わせると効果的)。\
+    (add_notes / update_notes。ほかに staccato / accent、ロングトーンの表情付けに vibrato、\
+    ギターソロの決め音に bend = チョーキング(全音下から滑り上がる)。低めの音 + 歪みと組み合わせると効果的)。\
     ビルドアップにはドラムのノート 55(リバースクラッシュ)が使えます。\
     音色プリセット: 良い音ができたら save_preset で保存できます(全プロジェクト共通のライブラリ)。\
     音作りの依頼では、まず list_presets に使える音がないか確認 → load_preset で適用 → 微調整、\

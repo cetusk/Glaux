@@ -208,7 +208,16 @@
       // 奏法マーカー(M=ブリッジミュート / S=スタッカート / >=アクセント)
       const art = n.articulation;
       if (art && art !== "normal" && w >= 13 && rowH >= 9) {
-        const label = art === "palm_mute" ? "M" : art === "staccato" ? "S" : ">";
+        const label =
+          art === "palm_mute"
+            ? "M"
+            : art === "staccato"
+              ? "S"
+              : art === "accent"
+                ? ">"
+                : art === "vibrato"
+                  ? "~"
+                  : "↑";
         g.fillStyle = "rgba(10, 10, 20, 0.85)";
         g.font = `bold ${Math.min(rowH - 4, 10)}px sans-serif`;
         g.textBaseline = "middle";
@@ -719,6 +728,8 @@
     palm_mute: "ブリッジミュート",
     staccato: "スタッカート",
     accent: "アクセント",
+    vibrato: "ビブラート",
+    bend: "チョーキング",
   };
 
   /// 選択ノートの奏法をトグルする(全部が同じ奏法なら通常に戻す)
@@ -793,14 +804,26 @@
         !e.ctrlKey &&
         !e.metaKey &&
         !e.altKey &&
-        (e.code === "KeyM" || e.code === "KeyS" || e.code === "KeyA")
+        (e.code === "KeyM" ||
+          e.code === "KeyS" ||
+          e.code === "KeyA" ||
+          e.code === "KeyV" ||
+          e.code === "KeyB")
       ) {
         // 奏法トグル(選択ノートに対して)
         if (selected.size === 0) return;
         e.preventDefault();
-        toggleArticulation(
-          e.code === "KeyM" ? "palm_mute" : e.code === "KeyS" ? "staccato" : "accent",
-        );
+        const art: Articulation =
+          e.code === "KeyM"
+            ? "palm_mute"
+            : e.code === "KeyS"
+              ? "staccato"
+              : e.code === "KeyA"
+                ? "accent"
+                : e.code === "KeyV"
+                  ? "vibrato"
+                  : "bend";
+        toggleArticulation(art);
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         deleteNotes([...selected]);
@@ -855,7 +878,7 @@
             {/each}
           </select>
         </label>
-        <span class="hint">ドラッグ: 複数選択(まとめて移動・端で長さ変更) / Ctrl+C/X/V: コピペ(別クリップへの貼り付けも可) / M/S/A: 奏法 / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl・Shift+ホイール: ズーム</span>
+        <span class="hint">ドラッグ: 複数選択(まとめて移動・端で長さ変更) / Ctrl+C/X/V: コピペ(別クリップへの貼り付けも可) / M/S/A/V/B: 奏法(ミュート・スタッカート・アクセント・ビブラート・チョーキング) / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl・Shift+ホイール: ズーム</span>
         <button onclick={close} title="閉じる(Esc)">✕</button>
       </div>
     </div>

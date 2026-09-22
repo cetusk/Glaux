@@ -16,6 +16,7 @@
 
 mod drum;
 mod effects;
+mod expr;
 mod params;
 mod pluck;
 mod subtractive;

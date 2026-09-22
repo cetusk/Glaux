@@ -75,7 +75,7 @@ impl ArtMod {
     fn from(a: glaux_core::Articulation) -> ArtMod {
         use glaux_core::Articulation as A;
         match a {
-            A::Normal | A::Staccato => ArtMod {
+            A::Normal | A::Staccato | A::Vibrato | A::Bend => ArtMod {
                 cutoff_mul: 1.0,
                 decay_mul: 1.0,
                 sustain_mul: 1.0,
@@ -109,6 +109,8 @@ pub struct SubtractiveVoice {
     amp: f32,
     /// 奏法によるボイス固有の倍率
     art: ArtMod,
+    /// ピッチ表現(ビブラート / チョーキング)
+    expr: crate::expr::PitchExpr,
     /// ユニゾン各声部の位相
     phases: [f32; MAX_UNISON],
     /// サブオシレータの位相
@@ -156,6 +158,7 @@ impl SubtractiveVoice {
             freq,
             amp: vel * art.amp_mul,
             art,
+            expr: crate::expr::PitchExpr::new(articulation, sample_rate),
             phases,
             sub_phase: 0.0,
             rng: (freq.to_bits() | 1).wrapping_mul(0x9e37_79b9),
@@ -198,6 +201,13 @@ impl SubtractiveVoice {
             }
         }
 
+        // ---- ピッチ表現(ビブラート / チョーキング) ----
+        let base_freq = if self.expr.is_active() {
+            self.freq * self.expr.next_ratio(sr)
+        } else {
+            self.freq
+        };
+
         // ---- オシレータ(ユニゾン対応) ----
         let n = (p.unison as usize).clamp(1, MAX_UNISON);
         let mut osc = 0.0f32;
@@ -209,7 +219,7 @@ impl SubtractiveVoice {
                 (i as f32 / (n - 1) as f32) * 2.0 - 1.0
             };
             let ratio = (2.0f32).powf(spread * p.detune_cents / 1200.0);
-            let dt = self.freq * ratio / sr;
+            let dt = base_freq * ratio / sr;
             let t = self.phases[i];
             osc += match p.waveform {
                 Waveform::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
@@ -231,7 +241,7 @@ impl SubtractiveVoice {
 
         // サブオシレータ(1 オクターブ下のサイン。ベースの土台)
         if p.sub > 0.0 {
-            self.sub_phase += self.freq * 0.5 / sr;
+            self.sub_phase += base_freq * 0.5 / sr;
             if self.sub_phase >= 1.0 {
                 self.sub_phase -= 1.0;
             }
@@ -414,6 +424,38 @@ mod tests {
         assert!(
             rms(&render(Articulation::Accent)) > rms(&render(Articulation::Normal)) * 1.15,
             "アクセントは目立って大きいはず"
+        );
+    }
+
+    #[test]
+    fn vibrato_wobbles_after_onset() {
+        use glaux_core::Articulation;
+        let p = SubtractiveParams {
+            waveform: Waveform::Sine,
+            filter_env: 0.0,
+            ..default_params()
+        };
+        let render = |a: Articulation| {
+            let mut v = SubtractiveVoice::start(&p, 220.0, 1.0, a, 48_000.0);
+            (0..48_000).map(|_| v.next(&p)).collect::<Vec<f32>>()
+        };
+        let normal = render(Articulation::Normal);
+        let vib = render(Articulation::Vibrato);
+        // 出だし(揺れる前)はほぼ同じ
+        let head_diff: f32 = normal[..2_400]
+            .iter()
+            .zip(&vib[..2_400])
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        // 後半は位相がずれて大きく異なる
+        let tail_diff: f32 = normal[24_000..]
+            .iter()
+            .zip(&vib[24_000..])
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            tail_diff > head_diff * 20.0,
+            "後半にかけて揺れが深くなるはず: head={head_diff} tail={tail_diff}"
         );
     }
 
