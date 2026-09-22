@@ -20,7 +20,23 @@ export interface FocusClip {
   anchorTick?: number;
 }
 
-export const pianoRollStore = $state<{ focus: FocusClip | null }>({ focus: null });
+/// ピアノロールの状態。`focus` = 上(メイン)ペイン、`second` = 分割時の下ペイン。
+/// `active` はキーボード操作(コピペ・削除・奏法)を受け付けるペイン。
+export const pianoRollStore = $state<{
+  focus: FocusClip | null;
+  second: FocusClip | null;
+  active: "main" | "second";
+}>({ focus: null, second: null, active: "main" });
+
+/// ノートのクリップボード(ピアノロールの 2 ペイン間・クリップ間で共有)。
+export interface ClipboardNote {
+  dpos: number;
+  dur: number;
+  pitch: number;
+  vel: number;
+  articulation?: string;
+}
+export const noteClipboard = $state<{ items: ClipboardNote[] }>({ items: [] });
 
 /// 音作りビューで開いているトラック。ChatPanel が「音作り中のトラック」として指示に添える。
 export interface SoundDesignFocus {

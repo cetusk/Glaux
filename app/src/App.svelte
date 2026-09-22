@@ -701,12 +701,32 @@
             onSeek={seek}
           />
         </div>
-        <PianoRoll
-          {project}
-          playheadTick={transport.tick}
-          playing={transport.playing}
-          onSeek={seek}
-        />
+        {#if pianoRollStore.focus}
+          <!-- 分割時は上下 2 ペイン。各 PianoRoll のルート(.overlay)は
+               absolute inset:0 なので、pane で相対配置の枠を与える -->
+          <div class="roll-split" class:two={pianoRollStore.second !== null}>
+            <div class="roll-pane">
+              <PianoRoll
+                {project}
+                pane="main"
+                playheadTick={transport.tick}
+                playing={transport.playing}
+                onSeek={seek}
+              />
+            </div>
+            {#if pianoRollStore.second}
+              <div class="roll-pane second">
+                <PianoRoll
+                  {project}
+                  pane="second"
+                  playheadTick={transport.tick}
+                  playing={transport.playing}
+                  onSeek={seek}
+                />
+              </div>
+            {/if}
+          </div>
+        {/if}
         <SoundDesignPanel {project} />
       {:else}
         <div class="loading">読み込み中…</div>
@@ -775,6 +795,24 @@
   .play {
     min-width: 44px;
     font-size: 14px;
+  }
+
+  .roll-split {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .roll-pane {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .roll-pane.second {
+    border-top: 2px solid var(--accent-dim);
   }
 
   .loop-on {

@@ -6,7 +6,7 @@
   import Fretboard from "./Fretboard.svelte";
   import { drumName } from "./drumMap";
   import { newNoteId } from "./ids";
-  import { pianoRollStore } from "./selection.svelte";
+  import { noteClipboard, pianoRollStore } from "./selection.svelte";
   import type { Articulation, MidiClip, Note, Project, Track } from "./types";
 
   let {
@@ -14,17 +14,23 @@
     playheadTick = 0,
     playing = false,
     onSeek,
+    pane = "main",
   }: {
     project: Project;
     playheadTick?: number;
     playing?: boolean;
     onSeek?: (tick: number) => void;
+    /// "main" = 上ペイン(閉じると分割ごと閉じる)、"second" = 分割で開いた下ペイン
+    pane?: "main" | "second";
   } = $props();
+
+  /// このペインが表示しているクリップ
+  const myFocus = $derived(pane === "main" ? pianoRollStore.focus : pianoRollStore.second);
 
   // ---- 対象クリップ(プロジェクト更新のたびに再導出 = AI の編集がライブ反映) ----
 
   const found = $derived.by((): { track: Track; clip: MidiClip } | null => {
-    const focus = pianoRollStore.focus;
+    const focus = myFocus;
     if (!focus) return null;
     for (const track of project.tracks) {
       for (const clip of track.clips) {
@@ -38,13 +44,55 @@
 
   // クリップが消えた(AI が削除した等)ら閉じる
   $effect(() => {
-    if (pianoRollStore.focus && !found) {
-      pianoRollStore.focus = null;
+    if (myFocus && !found) {
+      close();
     }
   });
 
   function close() {
-    pianoRollStore.focus = null;
+    if (pane === "main") {
+      pianoRollStore.focus = null;
+      pianoRollStore.second = null;
+      pianoRollStore.active = "main";
+    } else {
+      pianoRollStore.second = null;
+      pianoRollStore.active = "main";
+    }
+  }
+
+  // ---- 分割(2 ペイン): 別クリップを下に開いてコピペ・見比べ ----
+
+  /// 分割ペインに開ける MIDI クリップ(自分以外)
+  const otherClips = $derived.by(() => {
+    const out: { track: Track; clip: MidiClip }[] = [];
+    for (const t of project.tracks) {
+      for (const c of t.clips) {
+        if (c.kind === "midi" && c.id !== myFocus?.clipId) out.push({ track: t, clip: c });
+      }
+    }
+    return out;
+  });
+
+  function openSplit(clipId: string) {
+    const hit = otherClips.find((o) => o.clip.id === clipId);
+    if (!hit) return;
+    pianoRollStore.second = {
+      clipId: hit.clip.id,
+      clipName: hit.clip.name,
+      trackId: hit.track.id,
+      trackName: hit.track.name,
+      anchorTick: 0,
+    };
+    pianoRollStore.active = "second";
+  }
+
+  /// 上下のクリップを入れ替える
+  function swapPanes() {
+    const a = pianoRollStore.focus;
+    const b = pianoRollStore.second;
+    if (!a || !b) return;
+    pianoRollStore.focus = b;
+    pianoRollStore.second = a;
   }
 
   // ---- 座標系 ----
@@ -438,7 +486,7 @@
 
   // 開いたときにノートのある高さへスクロール
   $effect(() => {
-    const focus = pianoRollStore.focus;
+    const focus = myFocus;
     if (!focus) return;
     lastFollowTick = null;
     sveltick().then(() => {
@@ -721,25 +769,26 @@
   }
 
   // クリップをまたいで使えるコピーバッファ(min pos からの相対位置で保持)
-  let clipboard: { dpos: number; dur: number; pitch: number; vel: number }[] = [];
-
   function copySelection(cut: boolean) {
     const currentClip = clip;
     if (!currentClip) return;
     const notes = currentClip.notes.filter((n) => selected.has(n.id));
     if (notes.length === 0) return;
     const minPos = Math.min(...notes.map((n) => n.pos));
-    clipboard = notes.map((n) => ({
+    // クリップボードは全ペイン・全クリップで共有(分割ペイン間のコピペ)
+    noteClipboard.items = notes.map((n) => ({
       dpos: n.pos - minPos,
       dur: n.dur,
       pitch: n.pitch,
       vel: n.vel,
+      articulation: n.articulation,
     }));
     if (cut) deleteNotes(notes.map((n) => n.id));
   }
 
   function paste() {
     const currentClip = clip;
+    const clipboard = noteClipboard.items;
     if (!currentClip || clipboard.length === 0) return;
     const anchor = Math.max(0, Math.min(hoverSnapTick, currentClip.length - 60));
     const notes = clipboard.map((c) => ({
@@ -748,6 +797,7 @@
       dur: c.dur,
       pitch: c.pitch,
       vel: c.vel,
+      ...(c.articulation && c.articulation !== "normal" ? { articulation: c.articulation } : {}),
     }));
     selected = new Set(notes.map((n) => n.id));
     preview(notes[0].pitch);
@@ -853,7 +903,8 @@
 
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!pianoRollStore.focus) return;
+      // 分割時はアクティブなペイン(最後にクリックした方)だけがキーを受ける
+      if (!myFocus || pianoRollStore.active !== pane) return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT")) return;
       if ((e.ctrlKey || e.metaKey) && e.code === "KeyC") {
@@ -923,14 +974,41 @@
 </script>
 
 {#if found}
-  <div class="overlay">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="overlay"
+    class:inactive={pianoRollStore.second !== null && pianoRollStore.active !== pane}
+    onpointerdowncapture={() => (pianoRollStore.active = pane)}
+  >
     <div class="head">
       <div class="head-left">
+        {#if pianoRollStore.second}
+          <span class="pane-tag">{pane === "main" ? "上" : "下"}</span>
+        {/if}
         <span class="clip-name">{found.clip.name}</span>
         <span class="track-name">{found.track.name}</span>
         <code class="dim">{found.clip.id}</code>
       </div>
       <div class="head-right">
+        {#if pane === "main"}
+          <select
+            class="split"
+            value=""
+            onchange={(e) => {
+              const v = (e.currentTarget as HTMLSelectElement).value;
+              if (v) openSplit(v);
+              (e.currentTarget as HTMLSelectElement).value = "";
+            }}
+            title="別のクリップを下に開いて見比べ・コピペ(Ctrl+C → 下をクリック → Ctrl+V)"
+          >
+            <option value="">⫶ 分割…</option>
+            {#each otherClips as o (o.clip.id)}
+              <option value={o.clip.id}>{o.track.name} / {o.clip.name}</option>
+            {/each}
+          </select>
+        {:else}
+          <button onclick={swapPanes} title="上下のクリップを入れ替える">⇅</button>
+        {/if}
         {#if isDrum}
           <button
             class:kit-on={showKit}
@@ -970,7 +1048,7 @@
           </select>
         </label>
         <span class="hint">ドラッグ: 複数選択(まとめて移動・端で長さ変更) / Ctrl+C/X/V: コピペ(別クリップも可) / 奏法: {artHint} / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl・Shift+ホイール: ズーム</span>
-        <button onclick={close} title="閉じる(Esc)">✕</button>
+        <button onclick={close} title={pane === "main" ? "閉じる(Esc)" : "この分割ペインを閉じる(Esc)"}>✕</button>
       </div>
     </div>
 
@@ -1043,6 +1121,24 @@
     background: var(--bg);
     display: flex;
     flex-direction: column;
+  }
+
+  /* 分割時: 非アクティブなペインのヘッダを少し落として、キーがどちらに効くか示す */
+  .overlay.inactive .head {
+    opacity: 0.6;
+  }
+
+  .pane-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent);
+  }
+
+  .split {
+    font-size: 11px;
+    max-width: 160px;
   }
 
   .head {
