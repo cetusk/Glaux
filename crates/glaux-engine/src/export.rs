@@ -29,7 +29,7 @@ pub fn render_project(
     bank: &crate::data::SampleBank,
 ) -> Result<Vec<f32>, ExportError> {
     let data = build_playback_data(project, sample_rate, bank);
-    if data.events.is_empty() {
+    if data.events.is_empty() && data.audio_events.is_empty() {
         return Err(ExportError::Empty);
     }
     let shared = Arc::new(Shared::new(data));

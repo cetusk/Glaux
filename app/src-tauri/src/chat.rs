@@ -149,6 +149,8 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     set_automation_points(target: track/volume_db または track/pan)で描けます。\
     音色の時間変化(フィルタスイープ、EDM のビルドアップで cutoff を開いていく等)も\
     target: device/<パラメータ名>(例 device/cutoff)で同様に描けます。\
+    音声素材: 人間が ⏺ で録音した演奏や WAV は音声トラック(kind: audio)のクリップとして置かれます。\
+    それらは get_project で見え、analyze_audio で聴けます。WAV の配置を頼まれたら import_audio_clip を使います。\
     ミックスバランス: analyze_audio の per_track: true で各トラックのラウドネスと帯域の一覧が取れます。\
     定石: 主役(リード等)は伴奏より 2〜4dB 上に置く / 帯域の重心が被るトラックは EQ で住み分ける /\
     それでも埋もれるなら伴奏側に sidechain。音量を上げる前に、まず被りを削ることを検討してください。\

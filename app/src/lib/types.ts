@@ -173,6 +173,8 @@ export interface AiActivity {
 export interface TransportState {
   available: boolean;
   playing: boolean;
+  /** 録音中(入力デバイス → 音声クリップ) */
+  recording?: boolean;
   tick: number;
   /** ループ区間 [開始tick, 終了tick]。null ならループなし */
   loop?: [number, number] | null;

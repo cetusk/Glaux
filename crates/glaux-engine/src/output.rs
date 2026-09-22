@@ -33,6 +33,8 @@ pub struct EngineHandle {
     graveyard: Arc<Mutex<Vec<Arc<PlaybackData>>>>,
     /// デコード済みサンプルのキャッシュ(サンプラー音源用)
     bank: Arc<Mutex<SampleBank>>,
+    /// 進行中の録音(あれば)。開始時の tick も一緒に持つ
+    recording: Arc<Mutex<Option<(crate::record::Recording, Tick)>>>,
 }
 
 impl EngineHandle {
@@ -143,6 +145,32 @@ impl EngineHandle {
         self.shared.preview.store(packed, Ordering::Release);
     }
 
+    /// 録音を開始する(既定の入力デバイス → `path` にモノラル WAV)。
+    /// 戻り値は録音開始時点の再生位置(tick)。既に録音中ならエラー。
+    pub fn start_recording(&self, path: std::path::PathBuf) -> Result<Tick, EngineError> {
+        let mut slot = self.recording.lock().expect("recording lock");
+        if slot.is_some() {
+            return Err(EngineError::Stream("既に録音中です".into()));
+        }
+        let start_tick = self.playhead_tick();
+        let rec = crate::record::start_recording(path)?;
+        *slot = Some((rec, start_tick));
+        Ok(start_tick)
+    }
+
+    /// 録音を止めて WAV を確定する。戻り値は (結果, 開始 tick)。
+    pub fn stop_recording(&self) -> Result<(crate::record::RecordResult, Tick), EngineError> {
+        let taken = self.recording.lock().expect("recording lock").take();
+        let Some((rec, start_tick)) = taken else {
+            return Err(EngineError::Stream("録音していません".into()));
+        };
+        Ok((rec.stop()?, start_tick))
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.recording.lock().expect("recording lock").is_some()
+    }
+
     /// 再生ヘッド位置(tick)。
     pub fn playhead_tick(&self) -> Tick {
         let pos = self.shared.pos.load(Ordering::Acquire);
@@ -246,6 +274,7 @@ fn open_stream() -> Result<(cpal::Stream, EngineHandle), EngineError> {
         loop_ticks: Arc::new(Mutex::new(None)),
         graveyard: Arc::new(Mutex::new(Vec::new())),
         bank: Arc::new(Mutex::new(SampleBank::default())),
+        recording: Arc::new(Mutex::new(None)),
     };
     Ok((stream, handle))
 }

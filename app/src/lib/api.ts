@@ -115,6 +115,34 @@ export function importSample(
   return invoke("import_sample", { trackId, path });
 }
 
+/** WAV を音声クリップとして音声トラックに置く(履歴 1 件)。 */
+export function importAudioClip(
+  trackId: string,
+  path: string,
+  startTick: number,
+): Promise<{ clip_id: string; asset_id: string; project_version: number }> {
+  return invoke("import_audio_clip", { trackId, path, startTick: Math.max(0, Math.round(startTick)) });
+}
+
+// ---- 録音 ----
+
+/** 録音を開始する(再生も同時に始まる)。 */
+export function recordStart(): Promise<{ start_tick: number }> {
+  return invoke("record_start");
+}
+
+/** 録音を止めて音声クリップとして配置する。trackId 省略で最初の音声トラック(無ければ新設)。 */
+export function recordStop(trackId: string | null = null): Promise<{
+  clip_id: string;
+  track_id: string;
+  seconds: number;
+  clipped: number;
+  dropped: number;
+  project_version: number;
+}> {
+  return invoke("record_stop", { trackId });
+}
+
 // ---- SoundFont ----
 
 export function listSoundfonts(): Promise<{ dir: string; files: string[] }> {

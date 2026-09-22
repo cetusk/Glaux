@@ -164,6 +164,130 @@ async fn import_sample(
     Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }))
 }
 
+/// WAV を音声クリップとして音声トラックに置く(履歴 1 件)。
+#[tauri::command]
+async fn import_audio_clip(
+    state: State<'_, AppState>,
+    track_id: String,
+    path: String,
+    start_tick: Option<u64>,
+) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let imported =
+        glaux_mcp::assets::import_wav(std::path::Path::new(&dir), std::path::Path::new(&path))?;
+    let name = std::path::Path::new(&path)
+        .file_stem()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "audio".to_owned());
+    let clip_id = glaux_core::ClipId::new();
+    let cmds = glaux_mcp::assets::audio_clip_commands(
+        &project,
+        &tid,
+        &imported,
+        clip_id.clone(),
+        Tick(start_tick.unwrap_or(0)),
+        &name,
+    )?;
+    let track_name = project
+        .track(&tid)
+        .map(|t| t.name.clone())
+        .unwrap_or_default();
+    let label = format!("{track_name} に音声クリップ「{name}」を配置");
+    let (_, m) = state
+        .handle
+        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "clip_id": clip_id, "asset_id": imported.id, "project_version": m.project_version }))
+}
+
+// ---- 録音 ------------------------------------------------------------------
+
+/// 録音を開始する(既定の入力デバイス)。再生も同時に始める(伴奏を聴きながら録る)。
+/// 一時ファイルは `<プロジェクト>/audio/rec_<時刻>.wav`。停止時に内容ハッシュ名で登録し直す。
+#[tauri::command]
+fn record_start(state: State<'_, AppState>) -> Result<Value, String> {
+    let engine = state.engine()?;
+    let dir = state.project_dir();
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let path = std::path::PathBuf::from(&dir).join(format!("audio/rec_{stamp}.wav"));
+    let start_tick = engine.start_recording(path).map_err(|e| e.to_string())?;
+    engine.play();
+    Ok(json!({ "start_tick": start_tick }))
+}
+
+/// 録音を止めて WAV を確定し、音声トラックのクリップとして置く(履歴 1 件)。
+/// `track_id` 省略時は最初の音声トラック、無ければ「録音」トラックを新設する。
+#[tauri::command]
+async fn record_stop(
+    state: State<'_, AppState>,
+    track_id: Option<String>,
+) -> Result<Value, String> {
+    let engine = state.engine()?.clone();
+    engine.pause();
+    let (result, start_tick) = engine.stop_recording().map_err(|e| e.to_string())?;
+    if result.frames == 0 {
+        let _ = std::fs::remove_file(&result.path);
+        return Err("録音データが空でした(入力デバイスの設定を確認してください)".to_owned());
+    }
+    let dir = state.project_dir();
+    let imported = glaux_mcp::assets::import_wav(std::path::Path::new(&dir), &result.path)?;
+    // 一時ファイルはハッシュ名でコピー済みなので消す
+    let _ = std::fs::remove_file(&result.path);
+
+    let (project, _) = state.handle.get_project().await?;
+    let mut cmds = Vec::new();
+    let tid = match track_id {
+        Some(id) => glaux_core::TrackId::parse(&id).map_err(|e| e.to_string())?,
+        None => match project
+            .tracks
+            .iter()
+            .find(|t| t.kind == glaux_core::TrackKind::Audio)
+        {
+            Some(t) => t.id.clone(),
+            None => {
+                let id = glaux_core::TrackId::new();
+                cmds.push(Command::AddTrack {
+                    track: glaux_core::Track::new(id.clone(), "録音", glaux_core::TrackKind::Audio),
+                    index: None,
+                });
+                id
+            }
+        },
+    };
+    // 新設トラックはまだ project に無いので、仮に足したコピーでコマンドを組む
+    let mut project_view = project.clone();
+    if let Some(Command::AddTrack { track, .. }) = cmds.first() {
+        project_view.tracks.push(track.clone());
+    }
+    let clip_id = glaux_core::ClipId::new();
+    let name = format!("録音 {}", chrono::Local::now().format("%H:%M"));
+    cmds.extend(glaux_mcp::assets::audio_clip_commands(
+        &project_view,
+        &tid,
+        &imported,
+        clip_id.clone(),
+        start_tick,
+        &name,
+    )?);
+    let label = format!("{name}(録音)を配置");
+    let (_, m) = state
+        .handle
+        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "clip_id": clip_id,
+        "track_id": tid,
+        "seconds": result.frames as f64 / result.sample_rate as f64,
+        "clipped": result.clipped,
+        "dropped": result.dropped,
+        "project_version": m.project_version,
+    }))
+}
+
 /// 音作りビュー用: トラックの音源・エフェクトの spec + 現在値 + path。
 /// 追加できるエフェクトのカタログも返す。
 #[tauri::command]
@@ -539,10 +663,13 @@ fn transport_state(state: State<'_, AppState>) -> Value {
         Some(e) => json!({
             "available": true,
             "playing": e.is_playing(),
+            "recording": e.is_recording(),
             "tick": e.playhead_tick(),
             "loop": e.loop_region().map(|(s, gl_end)| json!([s, gl_end])),
         }),
-        None => json!({ "available": false, "playing": false, "tick": 0, "loop": null }),
+        None => {
+            json!({ "available": false, "playing": false, "recording": false, "tick": 0, "loop": null })
+        }
     }
 }
 
@@ -902,6 +1029,9 @@ fn main() -> Result<()> {
             export_project_wav,
             apply_edit,
             revert_entry,
+            import_audio_clip,
+            record_start,
+            record_stop,
             send_chat,
             cancel_chat,
             reset_chat,

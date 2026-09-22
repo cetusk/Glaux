@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
@@ -168,14 +169,29 @@
     };
   }
 
+  /// 音声トラックの空きレーン: WAV を選んでその小節に音声クリップとして置く
+  async function importAudioAt(track: Track, startTick: number) {
+    const file = await pickFile({
+      title: "音声ファイル(WAV)をクリップとして配置",
+      filters: [{ name: "WAV", extensions: ["wav"] }],
+    });
+    if (typeof file !== "string") return;
+    await api.importAudioClip(track.id, file, startTick).catch(() => {});
+  }
+
   /// 空きレーンのダブルクリック: その小節にクリップを作ってピアノロールを開く
+  /// (音声トラックなら WAV を選んで配置)
   function onLaneDblClick(e: MouseEvent, track: Track) {
-    if (track.kind !== "midi" || suppressOpen) return;
+    if (suppressOpen) return;
     if ((e.target as HTMLElement).closest(".clip")) return; // 既存クリップは openPianoRoll 側
     const lane = e.currentTarget as HTMLElement;
     const x = e.clientX - lane.getBoundingClientRect().left;
     const tick = Math.max(0, x / pxPerTick);
     const bar = barAtTick(barList, tick);
+    if (track.kind === "audio") {
+      void importAudioAt(track, bar.tick);
+      return;
+    }
     let start = bar.tick;
     // 小節頭が前のクリップに食われていたらその終端から
     const covering = track.clips.find((c) => start >= c.start && start < c.start + c.length);
@@ -436,17 +452,16 @@
     }
   }
 
-  function addTrack() {
+  function addTrack(kind: "midi" | "audio" = "midi") {
     const id = newTrackId();
+    const name =
+      kind === "audio"
+        ? `音声 ${project.tracks.filter((t) => t.kind === "audio").length + 1}`
+        : `トラック ${project.tracks.length + 1}`;
     api
       .applyEdit(
-        [
-          {
-            op: "add_track",
-            track: { id, name: `トラック ${project.tracks.length + 1}`, kind: "midi" },
-          },
-        ],
-        "トラックを追加",
+        [{ op: "add_track", track: { id, name, kind } }],
+        kind === "audio" ? "音声トラックを追加" : "トラックを追加",
       )
       .catch(() => {});
   }
@@ -595,9 +610,11 @@
         data-track-id={track.id}
         style="width:{totalPx}px"
         ondblclick={(e) => onLaneDblClick(e, track)}
-        title={track.kind === "midi" && track.clips.length === 0
-          ? "ダブルクリックでクリップを作成してピアノロールを開く"
-          : ""}
+        title={track.kind === "audio"
+          ? "ダブルクリックで WAV をその小節に配置(録音は ⏺ ボタン)"
+          : track.clips.length === 0
+            ? "ダブルクリックでクリップを作成してピアノロールを開く"
+            : ""}
       >
         {#each barList as bar (bar.index)}
           <div class="grid-line" style="left:{bar.tick * pxPerTick}px"></div>
@@ -615,7 +632,7 @@
             onpointerup={onClipUp}
             onpointercancel={() => (clipDrag = null)}
           >
-            <span class="clip-name">{clip.name}</span>
+            <span class="clip-name">{clip.kind === "audio" ? "🎵 " : ""}{clip.name}</span>
             {#if clip.kind === "midi"}
               <ClipPreview {clip} widthPx={clip.length * pxPerTick} />
             {/if}
@@ -710,8 +727,11 @@
   {/if}
 
   <div class="add-track-row">
-    <button class="add-track" onclick={addTrack} title="MIDI トラックを追加(音源は後から AI に頼むか自動で subtractive)">
+    <button class="add-track" onclick={() => addTrack("midi")} title="MIDI トラックを追加(音源は後から AI に頼むか自動で subtractive)">
       + トラックを追加
+    </button>
+    <button class="add-track" onclick={() => addTrack("audio")} title="音声トラックを追加(WAV の配置・録音先。空きレーンをダブルクリックで WAV を配置)">
+      + 🎵 音声トラック
     </button>
   </div>
 </div>

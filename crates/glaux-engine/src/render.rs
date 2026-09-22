@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub const MAX_VOICES: usize = 64;
+/// 同時に再生する音声クリップ数
+pub const MAX_AUDIO_VOICES: usize = 16;
 /// 同時プレビュー(試聴)ボイス数
 pub const MAX_PREVIEW_VOICES: usize = 8;
 /// シーク要求なしを表す番兵値
@@ -70,6 +72,15 @@ struct Voice {
     state: VoiceState,
 }
 
+/// 再生中の音声クリップ。波形は `data.audio_events[idx]` を参照する
+/// (データ差し替え時は resync で作り直すので添字が古くなることはない)。
+#[derive(Clone, Copy)]
+struct AudioVoice {
+    idx: usize,
+    /// 波形内の再生位置(ネイティブレートのフレーム、小数)
+    pos: f64,
+}
+
 /// UI からの試聴用ボイス。停止中でも鳴り、トラックエフェクトは通さない。
 /// instrument はサンプラーで Arc を含むため Copy ではない(clone は参照カウントのみ)。
 #[derive(Clone)]
@@ -86,6 +97,9 @@ struct PreviewVoice {
 pub struct Renderer {
     shared: Arc<Shared>,
     voices: Vec<Voice>,
+    audio_voices: Vec<AudioVoice>,
+    /// `data.audio_events` の次に開始するイベントの添字
+    next_audio: usize,
     preview_voices: Vec<PreviewVoice>,
     /// 最後に消費した試聴要求のカウンタ
     last_preview: u64,
@@ -104,6 +118,8 @@ pub struct Renderer {
     /// 直前に見ていた `PlaybackData` のアドレス(差し替え検出用)
     last_data: usize,
     pos: u64,
+    /// 直前ブロックで再生中だったか(再開時に音声クリップを途中から鳴らし直す)
+    was_playing: bool,
     /// `pos` に対応する音楽的位置(tick)。データ差し替え(テンポ変更)時に
     /// この tick を保ったままサンプル位置を換算し直す
     last_tick: f64,
@@ -139,6 +155,8 @@ impl Renderer {
         Renderer {
             shared,
             voices: Vec::with_capacity(MAX_VOICES),
+            audio_voices: Vec::with_capacity(MAX_AUDIO_VOICES),
+            next_audio: 0,
             preview_voices: Vec::with_capacity(MAX_PREVIEW_VOICES),
             last_preview: 0,
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
@@ -148,7 +166,32 @@ impl Renderer {
             next_event: 0,
             last_data: 0,
             pos: 0,
+            was_playing: false,
             last_tick: 0.0,
+        }
+    }
+
+    /// 音声クリップの再生状態を現在位置に合わせて作り直す。
+    /// 位置をまたいでいるクリップは途中から鳴らす(シーク・ループ折返し・
+    /// 編集によるデータ差し替えのどれでも音が途切れない)。
+    fn resync_audio(&mut self, data: &PlaybackData) {
+        self.audio_voices.clear();
+        self.next_audio = data.audio_events.partition_point(|e| e.start < self.pos);
+        for (idx, ev) in data.audio_events[..self.next_audio].iter().enumerate() {
+            if ev.end <= self.pos || self.audio_voices.len() >= MAX_AUDIO_VOICES {
+                continue;
+            }
+            if !data
+                .tracks
+                .get(ev.track as usize)
+                .is_some_and(|m| m.audible)
+            {
+                continue;
+            }
+            self.audio_voices.push(AudioVoice {
+                idx,
+                pos: ev.offset + (self.pos - ev.start) as f64 * ev.rate,
+            });
         }
     }
 
@@ -183,6 +226,7 @@ impl Renderer {
             self.voices.clear();
             self.auto_cursors = [(0, 0); MAX_TRACKS];
             self.next_event = data.events.partition_point(|e| e.start < self.pos);
+            self.resync_audio(data);
             // 旧データの Arc(サンプル波形等)を掴んだままにしないようスクラッチを戻す
             for s in self.inst_scratch.iter_mut() {
                 *s = glaux_dsp::InstrumentParams::default();
@@ -234,8 +278,13 @@ impl Renderer {
         }
 
         let playing = self.shared.playing.load(Ordering::Acquire);
+        if playing && !self.was_playing && !resync {
+            self.resync_audio(data);
+        }
+        self.was_playing = playing;
         if !playing {
             self.voices.clear();
+            self.audio_voices.clear();
             if self.preview_voices.is_empty() {
                 self.last_tick = data.sample_to_tick(self.pos);
                 self.shared.pos.store(self.pos, Ordering::Release);
@@ -284,6 +333,27 @@ impl Renderer {
                 });
                 self.auto_cursors = [(0, 0); MAX_TRACKS];
                 self.next_event = data.events.partition_point(|e| e.start < self.pos);
+                self.resync_audio(data);
+            }
+
+            // このサンプル位置で始まる音声クリップを開始
+            while playing
+                && self.next_audio < data.audio_events.len()
+                && data.audio_events[self.next_audio].start <= self.pos
+            {
+                let idx = self.next_audio;
+                self.next_audio += 1;
+                let ev = &data.audio_events[idx];
+                let audible = data
+                    .tracks
+                    .get(ev.track as usize)
+                    .is_some_and(|m| m.audible);
+                if audible && self.audio_voices.len() < MAX_AUDIO_VOICES {
+                    self.audio_voices.push(AudioVoice {
+                        idx,
+                        pos: ev.offset,
+                    });
+                }
             }
 
             // このサンプル位置で始まるノートを発音(容量超過分は捨てる)
@@ -357,6 +427,40 @@ impl Renderer {
                     None => {
                         direct_l += sample * mix.gain_l;
                         direct_r += sample * mix.gain_r;
+                    }
+                }
+                i += 1;
+            }
+
+            // 音声クリップ(線形補間で読み出し、フェードを掛けてトラックへ合算)
+            let mut i = 0;
+            while i < self.audio_voices.len() {
+                let v = &mut self.audio_voices[i];
+                let ev = &data.audio_events[v.idx];
+                let frames = &ev.data.frames;
+                let i0 = v.pos as usize;
+                if self.pos >= ev.end || i0 + 1 >= frames.len() {
+                    self.audio_voices.swap_remove(i);
+                    continue;
+                }
+                let frac = (v.pos - i0 as f64) as f32;
+                let mut sample = (frames[i0] + (frames[i0 + 1] - frames[i0]) * frac) * ev.gain;
+                let since_start = self.pos - ev.start;
+                if ev.fade_in > 0 && since_start < ev.fade_in {
+                    sample *= since_start as f32 / ev.fade_in as f32;
+                }
+                let until_end = ev.end - self.pos;
+                if ev.fade_out > 0 && until_end < ev.fade_out {
+                    sample *= until_end as f32 / ev.fade_out as f32;
+                }
+                v.pos += ev.rate;
+                match track_mono.get_mut(ev.track as usize) {
+                    Some(acc) => *acc += sample,
+                    None => {
+                        if let Some(mix) = data.tracks.get(ev.track as usize) {
+                            direct_l += sample * mix.gain_l;
+                            direct_r += sample * mix.gain_r;
+                        }
                     }
                 }
                 i += 1;
@@ -520,6 +624,7 @@ mod tests {
                 instrument: test_instrument(),
                 effects: vec![],
             }],
+            audio_events: vec![],
             master_effects: vec![],
             master_amp: 1.0,
             end_sample: end,

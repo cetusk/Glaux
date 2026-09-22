@@ -260,8 +260,38 @@
   async function stopPlayback() {
     if (!transport.available) return;
     try {
+      if (transport.recording) {
+        await finishRecording();
+        return;
+      }
       await api.transportStop();
       transport = await api.transportState();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  let recordNotice = $state<string | null>(null);
+
+  async function finishRecording() {
+    const r = await api.recordStop(null);
+    transport = await api.transportState();
+    const warn =
+      r.clipped > 0 ? `(${r.clipped} サンプルがクリップしました。入力レベルを下げてください)` : "";
+    recordNotice = `録音を配置しました: ${r.seconds.toFixed(1)} 秒${warn}`;
+    setTimeout(() => (recordNotice = null), 6000);
+  }
+
+  /// ⏺: 録音開始 / 停止。停止すると音声トラックにクリップとして置かれる
+  async function toggleRecord() {
+    if (!transport.available) return;
+    try {
+      if (transport.recording) {
+        await finishRecording();
+      } else {
+        await api.recordStart();
+        transport = await api.transportState();
+      }
     } catch (e) {
       error = String(e);
     }
@@ -541,6 +571,20 @@
       >
         🔁
       </button>
+      <button
+        class="rec"
+        class:rec-on={transport.recording}
+        onclick={toggleRecord}
+        disabled={!transport.available}
+        title={transport.recording
+          ? "録音を止めて音声トラックにクリップとして配置"
+          : "録音(既定の入力デバイス)。再生ヘッド位置から録り、停止すると音声トラックに置かれます"}
+      >
+        ⏺
+      </button>
+      {#if recordNotice}
+        <span class="rec-notice">{recordNotice}</span>
+      {/if}
       {#if editingBpm}
         <!-- svelte-ignore a11y_autofocus -->
         <input
@@ -737,6 +781,28 @@
     border-color: var(--accent-dim);
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  }
+
+  .rec {
+    color: #e05555;
+  }
+
+  .rec-on {
+    border-color: #e05555;
+    background: color-mix(in srgb, #e05555 25%, var(--bg-panel));
+    animation: rec-blink 1s ease-in-out infinite;
+  }
+
+  @keyframes rec-blink {
+    50% {
+      background: color-mix(in srgb, #e05555 55%, var(--bg-panel));
+    }
+  }
+
+  .rec-notice {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-left: 4px;
   }
 
   .bpm-btn {

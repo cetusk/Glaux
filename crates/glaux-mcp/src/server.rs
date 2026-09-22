@@ -173,6 +173,20 @@ pub struct ImportSampleParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ImportAudioClipParams {
+    /// 置き先の音声トラック ID(`trk_xxxxxx`、kind: "audio")。
+    pub track_id: String,
+    /// WAV ファイルの絶対パス(ユーザーのマシン上のファイル)。WAV のみ対応。
+    pub path: String,
+    /// クリップの開始位置(tick)。省略で曲頭(0)。
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// クリップ名。省略でファイル名。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SavePresetParams {
     /// 保存元のトラック ID(`trk_xxxxxx`)。そのトラックの音源 + エフェクトチェーンを保存する。
     pub track_id: String,
@@ -997,6 +1011,57 @@ impl GlauxServer {
         Ok(Json(v))
     }
 
+    #[tool(
+        description = "WAV ファイルを音声クリップとして音声トラック(kind: \"audio\")に置く。\
+        ボーカル・実録ギター・ループ素材など「そのまま鳴らす」音声はこれ(音程を付けて\
+        鳴らしたいワンショットは import_sample でサンプラー音源にする)。\
+        クリップ長は WAV の秒数をその位置のテンポで tick に換算。元の速度で再生される\
+        (テンポ追従ストレッチは未対応)。ファイルはプロジェクトの audio/ にコピーされる。\
+        音声トラックがなければ先に apply_commands の add_track(kind: \"audio\")で作る。"
+    )]
+    async fn import_audio_clip(
+        &self,
+        params: Parameters<ImportAudioClipParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("import_audio_clip");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let imported =
+            crate::assets::import_wav(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
+        let file_name = std::path::Path::new(&p.path)
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "audio".to_owned());
+        let name = p.name.unwrap_or(file_name);
+        let clip_id = glaux_core::ClipId::new();
+        let start = glaux_core::Tick(p.start_tick.unwrap_or(0));
+        let cmds = crate::assets::audio_clip_commands(
+            &project,
+            &track_id,
+            &imported,
+            clip_id.clone(),
+            start,
+            &name,
+        )?;
+        let track_name = project
+            .track(&track_id)
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        let label = format!("{track_name} に音声クリップ「{name}」を配置");
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["clip_id"] = json!(clip_id);
+        v["asset_id"] = json!(imported.id);
+        v["seconds"] = json!(imported.asset.frames as f64 / imported.asset.sample_rate as f64);
+        Ok(Json(v))
+    }
+
     // ---- 音色プリセット ----------------------------------------------------
     // 「音源 + エフェクトチェーン」をパッチとして設定ディレクトリに保存し、
     // 曲プロジェクトをまたいで再利用する。
@@ -1294,6 +1359,8 @@ impl ServerHandler for GlauxServer {
                  音作りの依頼ではまず list_presets で使える音がないか確認 → load_preset で適用 → 微調整。\
                  大きな試行錯誤の前に checkpoint を打ち、気に入らなければ revert_to で戻る。\
                  「さっきのあの編集だけ戻して」は revert {entry_id}(後続の編集は保持される)。\
+                 音声素材(録音・WAV)は音声トラック(kind: \"audio\")のクリップとして再生される。\
+                 WAV を置くときは import_audio_clip。人間の録音も同じ形で入ってくるので analyze_audio で聴ける。\
                  すべての編集は履歴に残り、get_history(author: \"ai\")で自分の過去の作業を確認できる。",
             )
     }

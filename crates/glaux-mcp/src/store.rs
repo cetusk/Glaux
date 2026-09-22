@@ -230,8 +230,7 @@ impl Store {
             .open(self.dir.join("history.archive.jsonl"))
             .and_then(|mut f| {
                 for e in &dropped {
-                    let line = serde_json::to_string(e)
-                        .map_err(std::io::Error::other)?;
+                    let line = serde_json::to_string(e).map_err(std::io::Error::other)?;
                     writeln!(f, "{line}")?;
                 }
                 Ok(())

@@ -52,6 +52,36 @@ pub struct NoteEvent {
     pub articulation: glaux_core::Articulation,
 }
 
+/// 音声クリップ 1 つ分の再生イベント。サンプル位置は曲頭からの絶対値。
+#[derive(Clone, Debug)]
+pub struct AudioEvent {
+    pub start: u64,
+    pub end: u64,
+    /// `PlaybackData::tracks` への添字
+    pub track: u32,
+    /// モノラル化済みの波形(ネイティブレート)
+    pub data: Arc<SampleData>,
+    /// 波形内の再生開始位置(ネイティブレートのフレーム)
+    pub offset: f64,
+    /// 1 出力サンプルあたりの進み(ネイティブレート / エンジンレート)
+    pub rate: f64,
+    /// リニアゲイン(clip.gain_db 由来)
+    pub gain: f32,
+    /// フェードイン / アウト(出力サンプル数)
+    pub fade_in: u64,
+    pub fade_out: u64,
+}
+
+impl PartialEq for AudioEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.start == other.start
+            && self.end == other.end
+            && self.track == other.track
+            && Arc::ptr_eq(&self.data, &other.data)
+            && self.offset == other.offset
+    }
+}
+
 /// トラックのミックス設定(音量・パン・mute/solo を反映済み)。
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackMix {
@@ -89,6 +119,8 @@ pub struct TempoSeg {
 pub struct PlaybackData {
     /// `start` 昇順
     pub events: Vec<NoteEvent>,
+    /// 音声クリップ。`start` 昇順
+    pub audio_events: Vec<AudioEvent>,
     pub tracks: Vec<TrackMix>,
     /// マスターバスのエフェクトチェーン
     pub master_effects: Vec<BakedEffect>,
@@ -440,10 +472,38 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
     );
 
     let mut events = Vec::new();
+    let mut audio_events = Vec::new();
     for (ti, track) in project.tracks.iter().enumerate() {
         for clip in &track.clips {
             let ClipContent::Midi { notes, .. } = &clip.content else {
-                continue; // 音声クリップは MVP では鳴らさない
+                if let ClipContent::Audio {
+                    asset,
+                    offset_samples,
+                    gain_db,
+                    fade_in_ms,
+                    fade_out_ms,
+                    ..
+                } = &clip.content
+                {
+                    let Some(data) = bank.get(asset) else {
+                        tracing::warn!("音声クリップの波形が未読込のため鳴らしません: {asset}");
+                        continue;
+                    };
+                    let start = to_sample(clip.start);
+                    let end = to_sample(clip.start + clip.length).max(start + 1);
+                    audio_events.push(AudioEvent {
+                        start,
+                        end,
+                        track: ti as u32,
+                        data: data.clone(),
+                        offset: *offset_samples as f64,
+                        rate: data.sample_rate as f64 / sample_rate,
+                        gain: db_to_amp(*gain_db),
+                        fade_in: (*fade_in_ms as f64 * 0.001 * sample_rate) as u64,
+                        fade_out: (*fade_out_ms as f64 * 0.001 * sample_rate) as u64,
+                    });
+                }
+                continue;
             };
             for note in notes {
                 if note.pos >= clip.length {
@@ -475,7 +535,13 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         }
     }
     events.sort_by_key(|e| e.start);
-    let end_sample = events.iter().map(|e| e.end).max().unwrap_or(0);
+    audio_events.sort_by_key(|e| e.start);
+    let end_sample = events
+        .iter()
+        .map(|e| e.end)
+        .chain(audio_events.iter().map(|e| e.end))
+        .max()
+        .unwrap_or(0);
 
     let tempo = project
         .tempo_map
@@ -490,6 +556,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
 
     PlaybackData {
         events,
+        audio_events,
         tracks,
         master_effects,
         master_amp: db_to_amp(project.master.volume_db),
@@ -822,6 +889,97 @@ mod tests {
             96_000 + 4800,
             "テンポ変更後も音楽的位置(tick)が保たれるはず"
         );
+    }
+
+    /// 1 秒のサイン波 WAV を書き、それを音声クリップとして置いたプロジェクトを作る
+    fn audio_clip_project(dir: &std::path::Path, clip_start: u64, clip_len: u64) -> Project {
+        use glaux_core::{Asset, AssetId, TrackKind};
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(dir.join("audio/tone.wav"), spec).unwrap();
+        for i in 0..48_000 {
+            let s = (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin();
+            w.write_sample((s * 20_000.0) as i16).unwrap();
+        }
+        w.finalize().unwrap();
+
+        let mut project = Project::new("a");
+        let asset_id = AssetId::from_sha256_hex("abcd").unwrap();
+        project.assets.insert(
+            asset_id.clone(),
+            Asset {
+                path: "audio/tone.wav".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                frames: 48_000,
+            },
+        );
+        let mut track = Track::new(TrackId::new(), "Gt", TrackKind::Audio);
+        track.clips.push(Clip::new_audio(
+            ClipId::new(),
+            "take",
+            Tick(clip_start),
+            Tick(clip_len),
+            asset_id,
+        ));
+        project.tracks.push(track);
+        project
+    }
+
+    #[test]
+    fn audio_clip_plays_in_its_region_only() {
+        use crate::export::render_project;
+        let tmp = tempfile::tempdir().unwrap();
+        // クリップは 0.5 秒(tick 960)から 1 小節(2 秒)だが波形は 1 秒しかない
+        let project = audio_clip_project(tmp.path(), 960, 3840);
+        let bank = SampleBank::load(&project, tmp.path());
+        let data = build_playback_data(&project, 48_000.0, &bank);
+        assert_eq!(data.audio_events.len(), 1);
+        assert_eq!(data.audio_events[0].start, 24_000);
+        assert_eq!(data.end_sample, 24_000 + 96_000);
+
+        let out = render_project(&project, 48_000.0, &bank).unwrap();
+        let rms = |a: f64, b: f64| {
+            let e = ((b * 96_000.0) as usize).min(out.len());
+            let sl = &out[(a * 96_000.0) as usize..e];
+            (sl.iter().map(|s| s * s).sum::<f32>() / sl.len() as f32).sqrt()
+        };
+        assert!(rms(0.0, 0.4) < 1e-4, "クリップ前は無音");
+        assert!(rms(0.6, 1.4) > 0.2, "クリップ区間は鳴る");
+        assert!(rms(1.6, 1.9) < 1e-4, "波形を読み切ったら止まる");
+    }
+
+    #[test]
+    fn audio_clip_resumes_mid_clip_after_seek_and_pause() {
+        use crate::render::{Renderer, Shared};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+        let tmp = tempfile::tempdir().unwrap();
+        let project = audio_clip_project(tmp.path(), 0, 3840);
+        let bank = SampleBank::load(&project, tmp.path());
+        let shared = Arc::new(Shared::new(build_playback_data(&project, 48_000.0, &bank)));
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 4800 * 2];
+        let rms = |b: &[f32]| (b.iter().map(|s| s * s).sum::<f32>() / b.len() as f32).sqrt();
+
+        // クリップ途中(0.5 秒)へシークして再生 → 鳴る
+        shared.seek.store(24_000, Ordering::Release);
+        shared.playing.store(true, Ordering::Release);
+        r.process(&mut buf, 2);
+        assert!(rms(&buf) > 0.2, "途中からでも鳴るはず");
+
+        // 一時停止 → 無音、再開 → 続きから鳴る
+        shared.playing.store(false, Ordering::Release);
+        r.process(&mut buf, 2);
+        assert!(rms(&buf) < 1e-6);
+        shared.playing.store(true, Ordering::Release);
+        r.process(&mut buf, 2);
+        assert!(rms(&buf) > 0.2, "再開後も鳴るはず");
     }
 
     #[test]

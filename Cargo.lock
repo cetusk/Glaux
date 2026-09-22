@@ -1338,6 +1338,7 @@ dependencies = [
  "rustfft",
  "rustysynth",
  "serde",
+ "tempfile",
  "thiserror 1.0.69",
  "tracing",
 ]
