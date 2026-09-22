@@ -3,7 +3,8 @@
   // プリセットを操作するパネル(docs/HANDOFF.md §8-6 Phase 1)。
   // すべての編集は Command API(apply_edit)経由なので履歴に載り undo できる。
   import * as api from "./api";
-  import { newClipId, newFxId, newNoteId } from "./ids";
+  import { newClipId, newFxId } from "./ids";
+  import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
   import { soundDesignStore } from "./selection.svelte";
   import type { ParamView, PresetInfo, Project, Track, TrackParams } from "./types";
 
@@ -184,9 +185,6 @@
     );
   }
 
-  /// 音の判断に使う 4 小節: ロングトーン → 8 分の刻み → 分散和音 → オクターブ上
-  const PHRASE_NAME = "試聴フレーズ";
-
   const phraseClip = $derived(
     track?.clips.find((c) => c.kind === "midi" && c.name === PHRASE_NAME) ?? null,
   );
@@ -196,15 +194,6 @@
     if (!t || phraseClip) return;
     // 既存クリップの後ろに置く(なければ先頭)
     const start = t.clips.reduce((end, c) => Math.max(end, c.start + c.length), 0);
-    const notes: { id: string; pos: number; dur: number; pitch: number; vel: number }[] = [];
-    notes.push({ id: newNoteId(), pos: 0, dur: 3840, pitch: 48, vel: 100 }); // ロングトーン
-    for (let i = 0; i < 8; i++) {
-      notes.push({ id: newNoteId(), pos: 3840 + i * 480, dur: 240, pitch: 48, vel: 100 }); // 刻み
-    }
-    for (const [i, pitch] of [48, 52, 55, 60].entries()) {
-      notes.push({ id: newNoteId(), pos: 7680 + i * 960, dur: 720, pitch, vel: 100 }); // 分散和音
-    }
-    notes.push({ id: newNoteId(), pos: 11520, dur: 3840, pitch: 60, vel: 100 }); // オクターブ上
     applyEdit(
       [
         {
@@ -214,9 +203,9 @@
             id: newClipId(),
             name: PHRASE_NAME,
             start,
-            length: 3840 * 4,
+            length: PHRASE_LEN,
             kind: "midi",
-            notes,
+            notes: phraseNotes(),
           },
         },
       ],

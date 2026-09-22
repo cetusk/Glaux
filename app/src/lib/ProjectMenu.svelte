@@ -2,7 +2,9 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
-  import { selectionStore } from "./selection.svelte";
+  import { newClipId, newTrackId } from "./ids";
+  import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
+  import { selectionStore, soundDesignStore } from "./selection.svelte";
   import type { RecentProject } from "./types";
 
   let { title }: { title: string } = $props();
@@ -117,12 +119,57 @@
     }
   }
 
+  let soundLab = $state(false);
+
+  /// 作業フォルダ配下の SoundLab サブフォルダ(音作りプロジェクトの置き場)
+  function soundLabDir(): string {
+    const base = (parentDir || defaultDir).replace(/[\\/]+$/, "");
+    const sep = base.includes("\\") ? "\\" : "/";
+    return `${base}${sep}SoundLab`;
+  }
+
   async function createNew() {
     if (busy || !newName.trim()) return;
     busy = true;
     menuError = null;
     try {
-      await api.createProject(parentDir, newName);
+      if (soundLab) {
+        // 音作りテンプレート: SoundLab/ 配下に作成 → トラック + 試聴フレーズ →
+        // ループ ON → 音作りビューを開いた状態にする
+        await api.createProject(soundLabDir(), newName);
+        const trackId = newTrackId();
+        await api.applyEdit(
+          [
+            {
+              op: "add_track",
+              track: {
+                id: trackId,
+                name: "Sound",
+                kind: "midi",
+                device: { type: "builtin", name: "subtractive" },
+              },
+            },
+            {
+              op: "add_clip",
+              track: trackId,
+              clip: {
+                id: newClipId(),
+                name: PHRASE_NAME,
+                start: 0,
+                length: PHRASE_LEN,
+                kind: "midi",
+                notes: phraseNotes(),
+              },
+            },
+          ],
+          "音作りテンプレートを作成",
+        );
+        soundDesignStore.focus = { trackId, trackName: "Sound" };
+        // ループ ON(オーディオデバイスが無い環境では黙って諦める)
+        api.transportSetLoop(0, PHRASE_LEN).catch(() => {});
+      } else {
+        await api.createProject(parentDir, newName);
+      }
       afterSwitch();
     } catch (e) {
       menuError = String(e);
@@ -164,8 +211,12 @@
           />
           <button onclick={createNew} disabled={busy || !newName.trim()}>作成</button>
         </div>
+        <label class="lab-check" title="1 トラック + 試聴フレーズ + ループ ON + 音作りビューを開いた状態で作成(作業フォルダ内の SoundLab/ に置かれます)">
+          <input type="checkbox" bind:checked={soundLab} disabled={busy} />
+          🎨 音作り用テンプレートで作成
+        </label>
         <button class="loc" onclick={browseParentDir} title="クリックで作業フォルダを変更(既定として保存されます)">
-          作業フォルダ: {parentDir || defaultDir}
+          {soundLab ? "場所" : "作業フォルダ"}: {soundLab ? soundLabDir() : parentDir || defaultDir}
         </button>
       </div>
 
@@ -298,6 +349,19 @@
   .new-row input:focus {
     outline: none;
     border-color: var(--accent-dim);
+  }
+
+  .lab-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-dim);
+  }
+
+  .lab-check:hover {
+    color: var(--text);
   }
 
   .loc {
