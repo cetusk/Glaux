@@ -36,6 +36,7 @@ app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の
   - `docs/HANDOFF.md` のコマンド一覧を更新
 - `Project` のスキーマを変えたら `tests/schema.rs` の FIXTURE を更新し、`FORMAT_VERSION` を上げるか判断する
 - `cargo test` が通らない状態でコミットしない
+- **マイルストーン(機能のまとまり)ごとにコミットして `origin/main`(github.com/cetusk/Glaux)へ push する**。fmt / clippy / テスト / フロントビルドが通っていることを確認してから。コミットメッセージは日本語で、何がどう変わったかを本文に列挙する
 - 浮動小数を JSON に書く箇所では `serde_json` の `float_roundtrip` が有効であることに依存している(外さない)
 
 ## 命名規則
