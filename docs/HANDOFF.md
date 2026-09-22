@@ -4,8 +4,8 @@
 状態(2026-09-22 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
 - `glaux-core`: モデル(セクション・奏法込み)/ Command(約 25 種)/ 履歴 /
   和声分析(harmony)/ リズム分析(rhythm)
-- `glaux-mcp`: **22 ツール** = 基本 9(get_project / apply_commands / undo / redo / checkpoint /
-  revert_to / get_history / list_params / analyze_audio)+ 分析 2(analyze_harmony /
+- `glaux-mcp`: **23 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
+  revert_to / revert / get_history / list_params / analyze_audio)+ 分析 2(analyze_harmony /
   analyze_rhythm)+ ノート便利 4(transpose / shift / quantize / scale_velocity)+
   プリセット 4(list / save / load / delete)+ 素材 3(import_sample / list_soundfonts /
   set_soundfont_instrument)。stdio 単体 + アプリ内 HTTP の両対応。
@@ -269,7 +269,7 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
   端に当たって丸めた場合は `clamped` を返して AI に知らせる。
   実質 no-op(全ノート変更なし)のときは履歴を汚さず `changed: 0` を返す
 
-残り(未実装): `get_clip` / `get_history_entry` / `revert(entry_id)` / `new_ids` / `render`
+残り(未実装): `get_clip` / `get_history_entry` / `new_ids` / `render`(`revert(entry_id)` は実装済み 2026-09-22)
 
 ### `crates/glaux-engine`(MVP 済)
 
@@ -437,7 +437,7 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
   コンポーネント内のクラス衝突を防がない)。canvas 側を `note-layer` に改名して解決。
   headless Chrome + Tauri API モックの UI 検証で再現→修正確認済み。
   **教訓: 同一コンポーネント内で用途の違う要素に同じクラス名を使わない**
-- 未実装(次段階): `revert(entry_id)` の UI、
+- 未実装(次段階): 
   段階的開示のデバイスパネル、チャットのターン境界と
   AI インジケータの連動はチャット経由のみ正確(外部 MCP クライアントは近似のまま)
 
@@ -701,7 +701,10 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
 
 ### バックログ(順不同)
 
-- `revert(entry_id)` の UI(履歴パネルから AI の編集を個別却下)
+- ~~`revert(entry_id)` の UI~~ → **実装済み(2026-09-22)**: コアの `Session::revert` を
+  アクター(`RevertEntry`)・MCP ツール `revert {entry_id}`・Tauri `revert_entry` に配線。
+  履歴パネルの各エントリに ↩ ボタン(取り消し済みは非表示)。conflicts(後続の編集が
+  同じ対象を触っている)は履歴パネル上部に警告表示。revert 自体も履歴に載り undo 可
 - 途中の拍子変更を人間が UI から挿入・削除(ルーラー右クリック等。今は AI 経由のみ)
 - 分割ピアノロール(2 クリップを並べて表示し、見ながらコピペ。コピーバッファ自体は
   クリップ間で共有済みなので、これは「見ながら」の UX 改善)

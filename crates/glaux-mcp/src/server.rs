@@ -70,6 +70,12 @@ pub struct RevertToParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct RevertEntryParams {
+    /// 取り消す履歴エントリの ID(`hst_xxxxxx`。get_history で確認)。
+    pub entry_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ListParamsParams {
     /// 対象トラック ID(`trk_xxxxxx`)。省略すると内蔵楽器のカタログ
     /// (利用できる楽器名と全パラメータ仕様)を返す。
@@ -612,6 +618,29 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("revert_to");
         let m = flatten(self.handle.revert_to(params.0.label).await)?;
         Ok(Json(mutated_json(&m)))
+    }
+
+    #[tool(
+        description = "履歴の途中のエントリを 1 件だけ取り消す(git revert 相当)。\
+        逆コマンドが新しいエントリとして積まれるので、取り消した事実も履歴に残り、それ自体も undo できる。\
+        undo と違い、そのエントリより後の編集は保持される。\
+        「さっきの AI のあの編集だけ戻して」に使う。entry_id は get_history で確認。\
+        返り値の conflicts に ID が入っている場合、後続の編集が同じ対象を触っており\
+        意図しない結果になっている可能性があるので、get_project で結果を確認すること。"
+    )]
+    async fn revert(
+        &self,
+        params: Parameters<RevertEntryParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("revert");
+        let id = EntryId::parse(&params.0.entry_id).map_err(|e| e.to_string())?;
+        let author = self.author(&ctx);
+        let (entry, conflicts, m) = flatten(self.handle.revert_entry(id, author).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry);
+        v["conflicts"] = json!(conflicts);
+        Ok(Json(v))
     }
 
     #[tool(
@@ -1264,6 +1293,7 @@ impl ServerHandler for GlauxServer {
                  音色プリセット: 良い音ができたら save_preset で保存し(全プロジェクト共通)、\
                  音作りの依頼ではまず list_presets で使える音がないか確認 → load_preset で適用 → 微調整。\
                  大きな試行錯誤の前に checkpoint を打ち、気に入らなければ revert_to で戻る。\
+                 「さっきのあの編集だけ戻して」は revert {entry_id}(後続の編集は保持される)。\
                  すべての編集は履歴に残り、get_history(author: \"ai\")で自分の過去の作業を確認できる。",
             )
     }

@@ -165,6 +165,77 @@ async fn full_editing_flow() {
 }
 
 #[tokio::test]
+async fn revert_single_entry_keeps_later_edits() {
+    let fx = setup().await;
+
+    // トラック追加 → 音量変更 → マスター音量、の 3 エントリ
+    let r = call(&fx, "apply_commands", add_track_args("trk_gtr001", "Gt")).await;
+    ok_json(&r);
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [ { "op": "set_track_prop", "id": "trk_gtr001", "prop": "volume_db", "value": -9.0 } ],
+            "label": "音量を下げる",
+        }),
+    )
+    .await;
+    let vol_entry = ok_json(&r)["entry_id"].as_str().unwrap().to_owned();
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [ { "op": "set_master_volume", "volume_db": -3.0 } ],
+            "label": "マスター音量",
+        }),
+    )
+    .await;
+    ok_json(&r);
+
+    // 真ん中の「音量を下げる」だけを取り消す
+    let r = call(&fx, "revert", json!({ "entry_id": vol_entry })).await;
+    let v = ok_json(&r);
+    assert_eq!(v["conflicts"], json!([]), "対象が違うので衝突なし");
+    assert_eq!(v["project_version"], 4, "revert 自体が履歴に積まれる");
+
+    // 音量は元に戻り、後続のマスター音量変更は保持される
+    let r = call(&fx, "get_project", json!({})).await;
+    let v = ok_json(&r);
+    assert_eq!(v["project"]["tracks"][0]["volume_db"], 0.0);
+    assert_eq!(v["project"]["master"]["volume_db"], -3.0);
+
+    // 履歴には reverts 付きのエントリが載る
+    let r = call(&fx, "get_history", json!({})).await;
+    let entries = ok_json(&r)["entries"].as_array().unwrap().clone();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[3]["reverts"], json!(vol_entry));
+
+    // 同じ対象を触った後続編集があると conflicts で警告される
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [ { "op": "set_track_prop", "id": "trk_gtr001", "prop": "pan", "value": 0.5 } ],
+            "label": "パン変更",
+        }),
+    )
+    .await;
+    ok_json(&r);
+    let first_entry = entries[0]["id"].as_str().unwrap().to_owned();
+    let r = call(&fx, "revert", json!({ "entry_id": first_entry })).await;
+    let v = ok_json(&r);
+    let conflicts = v["conflicts"].as_array().unwrap();
+    assert!(
+        !conflicts.is_empty(),
+        "同一トラックの後続編集が衝突扱いになるはず"
+    );
+
+    // 存在しないエントリはツールエラー
+    let r = call(&fx, "revert", json!({ "entry_id": "hst_nonono" })).await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn include_notes_false_returns_note_counts() {
     let fx = setup().await;
     call(&fx, "apply_commands", add_track_args("trk_keys01", "Keys")).await;

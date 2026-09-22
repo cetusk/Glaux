@@ -27,6 +27,13 @@ export function redo(): Promise<{ redone: number; project_version: number }> {
   return invoke("redo");
 }
 
+/** 履歴の途中のエントリを 1 件だけ取り消す(git revert 相当)。 */
+export function revertEntry(
+  entryId: string,
+): Promise<{ entry_id: string; conflicts: string[]; project_version: number }> {
+  return invoke("revert_entry", { entryId });
+}
+
 export function appInfo(): Promise<AppInfo> {
   return invoke("app_info");
 }

@@ -62,6 +62,9 @@ pub struct Mutated {
     pub save_error: Option<String>,
 }
 
+/// `RevertEntry` の返り値: (revert エントリ, 衝突エントリ一覧, Mutated)。
+pub type RevertOutcome = (EntryId, Vec<EntryId>, Mutated);
+
 pub enum Request {
     GetProject {
         reply: oneshot::Sender<(Project, usize)>,
@@ -88,6 +91,13 @@ pub enum Request {
     RevertTo {
         label: String,
         reply: oneshot::Sender<Result<Mutated, CoreError>>,
+    },
+    /// 履歴の途中のエントリを個別に取り消す(`git revert` 相当)。
+    /// 成功時は (新しく積まれた revert エントリ, 衝突エントリ一覧, Mutated)。
+    RevertEntry {
+        id: EntryId,
+        author: Author,
+        reply: oneshot::Sender<Result<RevertOutcome, CoreError>>,
     },
     GetHistory {
         /// `Author` の種別名("human" | "ai" | "system")。None なら全部。
@@ -240,6 +250,16 @@ impl SessionHandle {
             .await
     }
 
+    /// 履歴の途中のエントリを個別に取り消す。
+    pub async fn revert_entry(
+        &self,
+        id: EntryId,
+        author: Author,
+    ) -> Result<Result<RevertOutcome, CoreError>, String> {
+        self.request(|reply| Request::RevertEntry { id, author, reply })
+            .await
+    }
+
     pub async fn get_history(
         &self,
         author_kind: Option<String>,
@@ -372,6 +392,13 @@ fn handle(
             let result = session
                 .revert_to(&label)
                 .map(|changes| mutated(session, store, events, changes));
+            let _ = reply.send(result);
+        }
+        Request::RevertEntry { id, author, reply } => {
+            let result = session.revert(&id, author).map(|r| {
+                let m = mutated(session, store, events, r.changes);
+                (r.entry, r.conflicts, m)
+            });
             let _ = reply.send(result);
         }
         Request::GetHistory {

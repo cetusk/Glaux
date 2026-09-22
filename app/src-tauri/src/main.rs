@@ -466,6 +466,23 @@ async fn apply_edit(
     Ok(json!({ "entry_id": entry_id, "project_version": m.project_version }))
 }
 
+/// 履歴の途中のエントリを 1 件だけ取り消す(`git revert` 相当)。
+/// 逆コマンドが新エントリとして積まれるので、取り消し自体も undo できる。
+#[tauri::command]
+async fn revert_entry(state: State<'_, AppState>, entry_id: String) -> Result<Value, String> {
+    let id = EntryId::parse(&entry_id).map_err(|e| e.to_string())?;
+    let (entry, conflicts, m) = state
+        .handle
+        .revert_entry(id, Author::Human)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "entry_id": entry,
+        "conflicts": conflicts,
+        "project_version": m.project_version,
+    }))
+}
+
 // ---- エクスポート ----------------------------------------------------------
 
 /// プロジェクトを WAV に書き出す(`<プロジェクト>/export/` 配下、48kHz/16bit)。
@@ -884,6 +901,7 @@ fn main() -> Result<()> {
             create_project,
             export_project_wav,
             apply_edit,
+            revert_entry,
             send_chat,
             cancel_chat,
             reset_chat,

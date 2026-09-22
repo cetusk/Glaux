@@ -31,7 +31,7 @@
 ```
 crates/
   glaux-core    プロジェクトモデル・Command・Git ライクな履歴・和声/リズム分析(依存最小の純データ層)
-  glaux-mcp     MCP サーバー(22 ツール)+ Session アクター + プリセット/アセット管理
+  glaux-mcp     MCP サーバー(23 ツール)+ Session アクター + プリセット/アセット管理
   glaux-engine  リアルタイムオーディオ(cpal)・WAV 書き出し・音声解析・SoundFont 読み込み
   glaux-dsp     内蔵楽器 5 種 + エフェクト 6 種 + 奏法(すべて RT セーフ・聴感説明付き)
 app/            Tauri + Svelte 5 のデスクトップアプリ(アプリ内 MCP・チャット同梱)

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import * as api from "./api";
   import type { Author, EntrySummary } from "./types";
 
   let { entries }: { entries: EntrySummary[] } = $props();
@@ -8,6 +9,33 @@
   const MAX_SHOWN = 120;
   const reversed = $derived([...entries].reverse().slice(0, MAX_SHOWN));
   const hidden = $derived(Math.max(0, entries.length - MAX_SHOWN));
+
+  /// 既に取り消し済みのエントリ ID(↩ ボタンを出さない)
+  const revertedIds = $derived(
+    new Set(entries.map((e) => e.reverts).filter((x): x is string => !!x)),
+  );
+
+  let notice = $state<string | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showNotice(text: string) {
+    notice = text;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => (notice = null), 6000);
+  }
+
+  function revert(e: EntrySummary) {
+    api
+      .revertEntry(e.id)
+      .then((r) => {
+        if (r.conflicts.length > 0) {
+          showNotice(
+            `取り消しました。ただし後続の ${r.conflicts.length} 件の編集が同じ対象を触っているため、結果を確認してください。`,
+          );
+        }
+      })
+      .catch((err) => showNotice(`取り消せませんでした: ${err}`));
+  }
 
   function authorLabel(a: Author): string {
     switch (a.kind) {
@@ -30,12 +58,24 @@
   {#if entries.length === 0}
     <div class="empty">まだ編集はありません</div>
   {/if}
+  {#if notice}
+    <div class="notice">{notice}</div>
+  {/if}
   <ul>
     {#each reversed as e (e.id)}
       <li class="entry {e.author.kind}">
         <div class="head">
           <span class="badge {e.author.kind}">{authorLabel(e.author)}</span>
-          <span class="time">{timeText(e.timestamp)}</span>
+          <span class="head-right">
+            <span class="time">{timeText(e.timestamp)}</span>
+            {#if !revertedIds.has(e.id)}
+              <button
+                class="revert-btn"
+                title="この編集だけ取り消す(後の編集は保持。取り消し自体も履歴に載り undo できます)"
+                onclick={() => revert(e)}>↩</button
+              >
+            {/if}
+          </span>
         </div>
         <div class="label">{e.label}</div>
         <div class="meta">
@@ -154,6 +194,38 @@
     color: var(--text-dim);
     font-size: 13px;
     padding: 12px 0;
+  }
+
+  .head-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .revert-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1;
+    padding: 2px 5px;
+    cursor: pointer;
+  }
+
+  .revert-btn:hover {
+    color: #e8a07c;
+    border-color: #e8a07c;
+  }
+
+  .notice {
+    background: color-mix(in srgb, #e8a07c 15%, transparent);
+    border: 1px solid #e8a07c;
+    border-radius: 6px;
+    color: #e8a07c;
+    font-size: 12px;
+    padding: 6px 9px;
+    margin-bottom: 8px;
   }
   .more {
     font-size: 10px;
