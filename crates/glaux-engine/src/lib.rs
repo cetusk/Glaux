@@ -20,7 +20,7 @@ pub mod export;
 pub mod output;
 pub mod render;
 
-pub use analyze::{analyze_project, Analysis};
+pub use analyze::{analyze_project, analyze_project_tracks, Analysis, TrackAnalysis};
 pub use data::{build_playback_data, PlaybackData};
 pub use export::{export_wav, render_project, ExportError};
 pub use output::{start_engine, EngineError, EngineHandle};

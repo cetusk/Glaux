@@ -47,6 +47,42 @@ pub struct Analysis {
     pub clipped: bool,
 }
 
+/// 1 トラックぶんの要約(ミックスバランスの比較用)。
+#[derive(Clone, Debug, Serialize)]
+pub struct TrackAnalysis {
+    pub track_id: String,
+    pub name: String,
+    pub loudness_lufs: f64,
+    pub rms_db: f64,
+    pub peak_db: f64,
+    pub spectral_centroid_hz: f64,
+    pub band_energy: BandEnergy,
+}
+
+/// 各トラックをソロでレンダして要約を返す(音が出ないトラックは省く)。
+/// 「リードが埋もれている」のようなトラック間の相対バランスを判断する材料。
+pub fn analyze_project_tracks(
+    project: &Project,
+    range: Option<(Tick, Tick)>,
+) -> Vec<TrackAnalysis> {
+    project
+        .tracks
+        .iter()
+        .filter_map(|t| {
+            let a = analyze_project(project, Some(std::slice::from_ref(&t.id)), range).ok()?;
+            Some(TrackAnalysis {
+                track_id: t.id.to_string(),
+                name: t.name.clone(),
+                loudness_lufs: a.loudness_lufs,
+                rms_db: a.rms_db,
+                peak_db: a.peak_db,
+                spectral_centroid_hz: a.spectral_centroid_hz,
+                band_energy: a.band_energy,
+            })
+        })
+        .collect()
+}
+
 /// プロジェクトを解析する。`track_ids` で対象トラックを、`range` で tick 範囲を絞れる。
 pub fn analyze_project(
     project: &Project,
@@ -397,6 +433,28 @@ mod tests {
         // 範囲指定(後半 1 小節 = ハットは冒頭のみなので無音に近い…ではなく Bass が続く)
         let a = analyze_project(&project, None, Some((Tick(3840), Tick(7680)))).unwrap();
         assert!(a.duration_seconds < 2.5);
+    }
+
+    #[test]
+    fn per_track_analysis_reveals_balance() {
+        let mut project = Project::new("t");
+        let mut quiet = midi_track("Lead", vec![(0, 3840, 72, 100)]);
+        quiet.volume_db = -18.0;
+        project.tracks.push(quiet);
+        let loud = midi_track("Bass", vec![(0, 3840, 33, 110)]);
+        project.tracks.push(loud);
+
+        let tracks = analyze_project_tracks(&project, None);
+        assert_eq!(tracks.len(), 2);
+        let lead = tracks.iter().find(|t| t.name == "Lead").unwrap();
+        let bass = tracks.iter().find(|t| t.name == "Bass").unwrap();
+        assert!(
+            bass.loudness_lufs > lead.loudness_lufs + 6.0,
+            "音量差が数値に出るはず: bass={} lead={}",
+            bass.loudness_lufs,
+            lead.loudness_lufs
+        );
+        assert!(bass.band_energy.low > lead.band_energy.low);
     }
 
     #[test]

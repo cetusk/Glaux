@@ -326,6 +326,10 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
   (UI の小節範囲マスクと併用できる)。FFT は rustfft、解析は常に 48kHz。
   ツール description に指標の読み方(-14 LUFS 目安、low>0.6 はこもり等)を記載。
   システムプロンプトにも「編集 → analyze_audio → 微調整のループを回せ」を明記。
+  **per_track: true**(2026-09-22 追加)で各トラックをソロでレンダした要約
+  (loudness / band_energy / 重心)をうるさい順の一覧で返す。「リードが埋もれる」等の
+  **トラック間バランス診断**はこれを使う。ミキシングの定石(主役は伴奏より 2〜4dB 上、
+  帯域の住み分け、音量より先に被り削り)を description とシステムプロンプトに記載。
   spec の estimated_tempo / key / chords は未実装(MIDI からの推定は AI 自身ができるため保留)
 - 未実装: エフェクト(compressor / eq / reverb)、サンプラー、ノートオフ後のドラムのチョーク
 

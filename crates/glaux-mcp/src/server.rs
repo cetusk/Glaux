@@ -89,6 +89,10 @@ pub struct AnalyzeAudioParams {
     /// 解析範囲の終了 tick。省略で曲末まで。
     #[serde(default)]
     pub end_tick: Option<u64>,
+    /// true にすると各トラックをソロでレンダした要約(loudness / band_energy 等)を
+    /// tracks 配列として追加で返す。ミックスバランスの診断はこれを使う。
+    #[serde(default)]
+    pub per_track: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -412,7 +416,11 @@ impl GlauxServer {
         band_energy=low(<250Hz)/mid/high(>4kHz) の比率(low>0.6 はこもり気味、high>0.5 は刺さり気味。\
         バランスの取れた曲はおおむね low 0.3-0.5 / mid 0.3-0.5 / high 0.05-0.25)、\
         spectral_centroid_hz=明るさの重心、onsets_ticks=発音タイミング(リズムの確認用)。\
-        track_ids に 1 トラックだけ渡せば単体を聴ける。start/end_tick で範囲を絞れる(範囲指定の指示と併用推奨)。"
+        track_ids に 1 トラックだけ渡せば単体を聴ける。start/end_tick で範囲を絞れる(範囲指定の指示と併用推奨)。\
+        【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy 一覧が返る。\
+        目立たせたいトラック(リード/ボーカル的存在)は伴奏より 2〜4dB 上、\
+        同じ帯域に重心が密集していたら EQ で住み分け(片方の被り帯域を削る)か\
+        sidechain で空間を空ける。「あるトラックが埋もれる」相談ではまず per_track で全体像を見ること。"
     )]
     async fn analyze_audio(&self, params: Parameters<AnalyzeAudioParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("analyze_audio");
@@ -440,15 +448,31 @@ impl GlauxServer {
         };
 
         // レンダ + FFT は CPU バウンドなのでブロッキングスレッドで
-        let analysis = tokio::task::spawn_blocking(move || {
-            glaux_engine::analyze_project(&project, track_ids.as_deref(), range)
+        let per_track = p.per_track.unwrap_or(false);
+        let (analysis, track_summaries) = tokio::task::spawn_blocking(move || {
+            let a = glaux_engine::analyze_project(&project, track_ids.as_deref(), range);
+            let t = if per_track {
+                Some(glaux_engine::analyze_project_tracks(&project, range))
+            } else {
+                None
+            };
+            (a, t)
         })
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("解析できません: {e}"))?;
+        .map_err(|e| e.to_string())?;
+        let analysis = analysis.map_err(|e| format!("解析できません: {e}"))?;
 
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
+        if let Some(mut tracks) = track_summaries {
+            // うるさい順に並べる(バランス診断で読みやすい)
+            tracks.sort_by(|a, b| {
+                b.loudness_lufs
+                    .partial_cmp(&a.loudness_lufs)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            v["tracks"] = serde_json::to_value(&tracks).map_err(|e| e.to_string())?;
+        }
         Ok(Json(v))
     }
 

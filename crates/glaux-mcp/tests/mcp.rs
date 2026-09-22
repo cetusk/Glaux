@@ -461,3 +461,43 @@ async fn switch_project_swaps_session_for_all_handles() {
     // 存在しないフォルダ指定は open_or_create が新規作成する(切り替え自体は成功)
     // 一方、呼び出し側(アプリ)は create=false 時に project.json の存在を事前検証する
 }
+
+#[tokio::test]
+async fn analyze_audio_per_track_reveals_balance() {
+    let fx = setup().await;
+    // 静かなリードと大きいベース
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_lead02", "name": "Lead", "kind": "midi", "volume_db": -18.0 } },
+                { "op": "add_clip", "track": "trk_lead02",
+                  "clip": { "id": "clp_ld0001", "name": "L", "start": 0, "length": 3840, "kind": "midi",
+                    "notes": [ { "id": "nt_ld0001", "pos": 0, "dur": 3840, "pitch": 72, "vel": 100 } ] } },
+                { "op": "add_track", "track": { "id": "trk_bass03", "name": "Bass", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_bass03",
+                  "clip": { "id": "clp_bs0001", "name": "B", "start": 0, "length": 3840, "kind": "midi",
+                    "notes": [ { "id": "nt_bs0001", "pos": 0, "dur": 3840, "pitch": 33, "vel": 110 } ] } }
+            ],
+            "label": "バランステスト用",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+
+    let r = call(&fx, "analyze_audio", json!({ "per_track": true })).await;
+    let v = ok_json(&r);
+    let tracks = v["tracks"].as_array().expect("tracks が返るはず");
+    assert_eq!(tracks.len(), 2);
+    // うるさい順ソート: Bass が先頭
+    assert_eq!(tracks[0]["name"], "Bass");
+    assert_eq!(tracks[1]["name"], "Lead");
+    let diff =
+        tracks[0]["loudness_lufs"].as_f64().unwrap() - tracks[1]["loudness_lufs"].as_f64().unwrap();
+    assert!(diff > 6.0, "音量差が数値に出るはず: {diff}");
+
+    // per_track なしなら tracks は付かない
+    let r = call(&fx, "analyze_audio", json!({})).await;
+    assert!(ok_json(&r).get("tracks").is_none());
+}
