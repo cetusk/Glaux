@@ -181,6 +181,39 @@ export function recordStop(
   return invoke("record_stop", { trackId, autoGain });
 }
 
+// ---- MIDI キーボード ----
+
+/** MIDI 入力ポートの一覧と接続中のポート。 */
+export function midiInputs(): Promise<{ inputs: string[]; current: string | null }> {
+  return invoke("midi_inputs");
+}
+
+/** MIDI 入力に接続する(null = 切断)。 */
+export function setMidiInput(name: string | null): Promise<{ current: string | null }> {
+  return invoke("set_midi_input", { name: name || null });
+}
+
+/** MIDI キーボードで鳴らすトラック(null = 既定音色)。 */
+export function setLiveTarget(trackId: string | null): Promise<void> {
+  return invoke("set_live_target", { trackId });
+}
+
+/** MIDI 録音を開始する(再生も同時に始まる)。 */
+export function midiRecordStart(opts: {
+  countInBars: number;
+  metronome: boolean;
+}): Promise<{ clip_start: number; count_in_ticks: number }> {
+  return invoke("midi_record_start", opts);
+}
+
+/** MIDI 録音を止めてクリップとして置く。quantizeTicks > 0 で開始位置をグリッドに丸める。 */
+export function midiRecordStop(
+  trackId: string | null,
+  quantizeTicks = 0,
+): Promise<{ clip_id: string; track_id: string; notes: number; project_version: number }> {
+  return invoke("midi_record_stop", { trackId, quantizeTicks });
+}
+
 // ---- オーディオデバイス ----
 
 export interface AudioDevices {

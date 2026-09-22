@@ -308,7 +308,7 @@ MVP の割り切り(将来課題):
   再計算。バイパス中のエフェクトのレーンは鳴らさない。マスターのエフェクトはレーン対象外)に対応
 - 発音中のデータ差し替えはボイスを切り直す(クリックノイズが出うる)
 
-今後: `ParamChanged` の軽量差し替え、MIDI 入力は `midir`、
+今後: `ParamChanged` の軽量差し替え(MIDI 入力は `midir` で実装済み、`midi.rs`)、
 WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出しは `hound`
 
 ### `crates/glaux-dsp`(楽器 済)
@@ -525,7 +525,7 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
 新しい奏法・楽器を足すときは `articulations_for` と PianoRoll の `ARTS_BY_INSTRUMENT` の両方を更新すること。
 
 **まだ持っていない感覚**: 生波形の知覚(analyze_audio は要約統計のみ)、
-人間の演奏のリアルタイム入力(録音・MIDI 入力なし)、
+人間の演奏は録音・MIDI 入力で取り込めるが、AI がリアルタイムに聴くことはできない、
 曲全体の構成メタデータ(セクション名はクリップ名で代用)、
 リズム・グルーヴの明示的認識(オンセットのみ。スウィング検出等は未実装)。
 
@@ -808,6 +808,29 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   🎛(エフェクト数を表示)で、音作りビューを「マスター」モード(エフェクトの節だけ)で開く。
   エフェクト一覧の JSON は `server::effects_json` をトラック・マスターで共用。チャットには
   「音作り中: マスターバス」と添える
+- **MIDI キーボード入力(2026-09-23)**: `glaux-engine/src/midi.rs`(依存 `midir` 0.11。
+  cpal 0.18 と alsa 0.11 を共有できる版)。
+  - ライブ演奏: midir の受信コールバック → `LiveQueue`(固定 256 の AtomicU32 リング。
+    取り出しはロックフリー、積む側だけ短いロックで直列化)→ レンダラがブロック頭で取り出し、
+    `LiveVoice`(固定 32、満杯なら離した音から捨てる)を送り先トラックの楽器で発音して
+    `track_mono` に足す = トラックのエフェクト・音量・パンを通る。停止中も鳴り、
+    最後の音の後 4 秒は残響のためにレンダリングを続ける。チャンネルはオムニ。
+    CC64 サステイン、CC120/123 で全消音。note off は送り先を問わず同じ音高を離す
+  - 送り先: `Shared::live_track`(index)。ハンドルは TrackId で持ち、`set_project` のたびに
+    index を解決し直す。UI はトラック見出しの 🎹(MIDI トラックのみ、1 つだけアーム)→
+    ピアノロールで開いているトラック → 最初の MIDI トラック の順で決めて `set_live_target`
+  - MIDI 録音: 🎹 アーム中は ⏺ が MIDI 録音(`midi_record_start` / `midi_record_stop`)。
+    受信時刻は `Shared::audible_pos()`(レンダラが書いた `pos` から 1 ブロック戻し、
+    書き込みからの経過時間で補間。デバイス固有の出力遅延は含まない概算)で tick 化。
+    `pair_notes`(ペダル中の note off は踏み終わりまで延長、打ち直しは前を切る、未解放は停止位置)
+    → `take_to_notes`(カウントイン中の食い気味は 16 分以内なら頭へ、位置合わせは設定で
+    しない / 16 分 / 8 分 / 3 連 8 分)→ クリップ長は小節単位に切り上げて `add_clip` 1 件
+  - Tauri: `midi_inputs` / `set_midi_input` / `set_live_target` / `midi_record_start` /
+    `midi_record_stop`、`transport_state` に `midi_recording` / `midi_idle_ms`。
+    設定パネルに「MIDI キーボード」(入力選択・受信ランプ・位置合わせ)、フッターに 🎹 機器名。
+    選んだ入力は localStorage(`settings.midiInput`)に保存し起動時に再接続
+  - **サンドボックスに MIDI 機器が無いため実機未検証**(キュー・解釈・対組み・レンダラの
+    ライブ発音 / ペダル / 上限は単体テスト済み、UI はハーネスで確認)
 - **ループクリップ / 拍子の UI(2026-09-23)**:
   - ループ: `ClipContent::Midi` に `loop_len: Option<Tick>`(既存の `loop` フラグと組で使う)、
     コマンド `set_clip_loop`。展開は `Clip::playback_notes()` に一元化し、再生(engine data.rs)・

@@ -10,6 +10,7 @@ description = "Realtime audio engine for Glaux: cpal output, RT-safe renderer, p
 glaux-core = { path = "../glaux-core" }
 glaux-dsp = { path = "../glaux-dsp" }
 cpal.workspace = true
+midir.workspace = true
 arc-swap.workspace = true
 hound.workspace = true
 rustysynth.workspace = true

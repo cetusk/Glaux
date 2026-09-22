@@ -53,6 +53,46 @@
     await loadDevices();
   }
 
+  // ---- MIDI キーボード ----
+  let midi = $state<{ inputs: string[]; current: string | null } | null>(null);
+  let midiMsg = $state<string | null>(null);
+  /** 直近に MIDI を受信したか(受信ランプ) */
+  let midiActive = $state(false);
+
+  async function loadMidi() {
+    try {
+      midi = await api.midiInputs();
+    } catch (e) {
+      midiMsg = String(e);
+    }
+  }
+
+  async function pickMidi(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    try {
+      await api.setMidiInput(v || null);
+      settings.midiInput = v;
+      saveSettings();
+      midiMsg = null;
+    } catch (err) {
+      midiMsg = String(err);
+    }
+    await loadMidi();
+  }
+
+  $effect(() => {
+    if (!midi?.current) return;
+    const timer = setInterval(async () => {
+      try {
+        const t = await api.transportState();
+        midiActive = t.midi_idle_ms != null && t.midi_idle_ms < 300;
+      } catch {
+        // エンジン無しでも設定画面は動かす
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  });
+
   // ---- 入力テスト(レベルメーター) ----
   let monitoring = $state(false);
   let levelDb = $state(-90);
@@ -144,6 +184,7 @@
 
   onMount(() => {
     loadDevices();
+    loadMidi();
     return () => {
       if (monitoring) api.inputMonitor(false).catch(() => {});
     };
@@ -248,6 +289,54 @@
         <div class="meter-zone" style="left:{meterPct(-12)}%;width:{meterPct(-6) - meterPct(-12)}%"></div>
       </div>
       <div class="hint">{levelPeakHold.toFixed(0)} dB — {levelAdvice}(目安: 声の一番大きい所が -12〜-6dB の帯に入る)</div>
+    {/if}
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      MIDI キーボード
+      <button class="mini" onclick={loadMidi} title="一覧を更新(USB 機器を抜き差しした後など)">🔄</button>
+    </div>
+    {#if midi}
+      <label class="row col">
+        <span>🎹 入力 <span class="lamp" class:lit={midiActive} title="受信ランプ(鍵盤を弾くと光る)"></span></span>
+        <select value={settings.midiInput} onchange={pickMidi}>
+          <option value="">使わない</option>
+          {#each midi.inputs as d (d)}
+            <option value={d}>{d}</option>
+          {/each}
+          {#if settings.midiInput && !midi.inputs.includes(settings.midiInput)}
+            <option value={settings.midiInput}>{settings.midiInput}(未接続)</option>
+          {/if}
+        </select>
+      </label>
+      {#if midi.inputs.length === 0}
+        <div class="hint">MIDI 機器が見つかりません。接続してから 🔄 を押してください。</div>
+      {/if}
+      <div class="hint">
+        トラック見出しの 🎹 で鳴らすトラックを選びます(未選択なら既定の音色)。
+        🎹 のトラックがあるとき ⏺ は MIDI 録音になります。
+      </div>
+    {:else}
+      <div class="hint">読み込み中…</div>
+    {/if}
+    <label class="row">
+      MIDI 録音の位置合わせ
+      <select
+        value={String(settings.midiQuantize)}
+        onchange={(e) => {
+          settings.midiQuantize = Number((e.currentTarget as HTMLSelectElement).value);
+          saveSettings();
+        }}
+      >
+        <option value="0">しない(弾いたまま)</option>
+        <option value="240">16 分音符</option>
+        <option value="480">8 分音符</option>
+        <option value="160">3 連 8 分</option>
+      </select>
+    </label>
+    {#if midiMsg}
+      <div class="hint warn">{midiMsg}</div>
     {/if}
   </div>
 
@@ -381,6 +470,20 @@
   .strong {
     color: var(--accent);
     font-weight: 600;
+  }
+
+  .lamp {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-left: 4px;
+    background: var(--border);
+    vertical-align: middle;
+  }
+  .lamp.lit {
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
   }
 
   .meter {

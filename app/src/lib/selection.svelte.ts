@@ -48,3 +48,8 @@ export const soundDesignStore = $state<{ focus: SoundDesignFocus | null }>({ foc
 
 /// 音作りビューをマスターバスで開くときの trackId
 export const MASTER_FOCUS_ID = "__master__";
+
+/// MIDI キーボードの送り先として「アーム」したトラック(🎹)。1 つだけ。
+/// アームしたトラックがあると ⏺ は MIDI 録音になる。
+/// 未アームなら、ピアノロールで開いているトラック → 最初の MIDI トラックの音で鳴らす
+export const midiArmStore = $state<{ trackId: string | null }>({ trackId: null });

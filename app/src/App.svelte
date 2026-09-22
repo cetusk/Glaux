@@ -14,6 +14,7 @@
   import { chatStatus } from "./lib/aiStatus.svelte";
   import {
     MASTER_FOCUS_ID,
+    midiArmStore,
     pianoRollStore,
     selectionStore,
     soundDesignStore,
@@ -145,15 +146,49 @@
   }
 
   // 使用中のオーディオデバイス(フッター表示用)
-  let audioDev = $state<{ output: string | null; input: string | null; rate: number } | null>(null);
+  let audioDev = $state<{
+    output: string | null;
+    input: string | null;
+    rate: number;
+    midi: string | null;
+  } | null>(null);
   async function refreshAudioDev() {
     try {
       const d = await api.audioDevices();
-      audioDev = { output: d.current_output, input: d.current_input, rate: d.sample_rate };
+      const m = await api.midiInputs().catch(() => ({ current: null }));
+      audioDev = {
+        output: d.current_output,
+        input: d.current_input,
+        rate: d.sample_rate,
+        midi: m.current,
+      };
     } catch {
       // オーディオが使えない環境
     }
   }
+
+  // MIDI キーボードの送り先: アームしたトラック → ピアノロールで開いているトラック →
+  // 最初の MIDI トラック。変わったときだけエンジンへ伝える
+  const liveTarget = $derived.by(() => {
+    const tracks = project?.tracks ?? [];
+    const isMidi = (id: string | null | undefined) =>
+      !!id && tracks.some((t) => t.id === id && t.kind === "midi");
+    if (isMidi(midiArmStore.trackId)) return midiArmStore.trackId;
+    if (isMidi(pianoRollStore.focus?.trackId)) return pianoRollStore.focus!.trackId;
+    return tracks.find((t) => t.kind === "midi")?.id ?? null;
+  });
+  let sentLiveTarget: string | null | undefined = undefined;
+  $effect(() => {
+    const target = liveTarget;
+    if (!transport.available || target === sentLiveTarget) return;
+    sentLiveTarget = target;
+    api.setLiveTarget(target).catch(() => {});
+  });
+  // アームしたトラックが消えたら解除
+  $effect(() => {
+    const id = midiArmStore.trackId;
+    if (id && project && !project.tracks.some((t) => t.id === id)) midiArmStore.trackId = null;
+  });
 
   onMount(() => {
     applyTheme();
@@ -168,6 +203,11 @@
       }
       if (settings.inputDevice) {
         await api.setInputDevice(settings.inputDevice).catch(() => {});
+      }
+      if (settings.midiInput) {
+        await api.setMidiInput(settings.midiInput).catch(() => {
+          recordNotice = `前回の MIDI 入力「${settings.midiInput}」が見つかりません(接続して設定で選び直してください)`;
+        });
       }
       refreshAudioDev();
     })();
@@ -341,6 +381,14 @@
   let lastRecorded = $state<{ clipId: string; trackId: string } | null>(null);
   let recordNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 
+  async function finishMidiRecording() {
+    const r = await api.midiRecordStop(midiArmStore.trackId, settings.midiQuantize);
+    transport = await api.transportState();
+    recordNotice = `MIDI 録音を配置しました: ${r.notes} ノート`;
+    clearTimeout(recordNoticeTimer);
+    recordNoticeTimer = setTimeout(() => (recordNotice = null), 8000);
+  }
+
   async function finishRecording() {
     const r = await api.recordStop(null, settings.autoGain);
     transport = await api.transportState();
@@ -387,18 +435,33 @@
     }
   }
 
-  /// ⏺: 録音開始 / 停止。停止すると音声トラックにクリップとして置かれる
+  /// 🎹 アーム中のトラック名(⏺ が MIDI 録音になる)
+  const midiArm = $derived(
+    project?.tracks.find((t) => t.id === midiArmStore.trackId && t.kind === "midi") ?? null,
+  );
+
+  /// ⏺: 録音開始 / 停止。停止すると音声トラック(🎹 アーム中は MIDI トラック)に
+  /// クリップとして置かれる
   async function toggleRecord() {
     if (!transport.available) return;
     try {
-      if (transport.recording) {
+      if (transport.midi_recording) {
+        await finishMidiRecording();
+      } else if (transport.recording) {
         await finishRecording();
       } else {
-        await api.recordStart({
-          countInBars: settings.countInBars,
-          latencyMs: settings.recordLatencyMs,
-          metronome: settings.metronomeOnRecord,
-        });
+        if (midiArm) {
+          await api.midiRecordStart({
+            countInBars: settings.countInBars,
+            metronome: settings.metronomeOnRecord,
+          });
+        } else {
+          await api.recordStart({
+            countInBars: settings.countInBars,
+            latencyMs: settings.recordLatencyMs,
+            metronome: settings.metronomeOnRecord,
+          });
+        }
         transport = await api.transportState();
         if (settings.countInBars > 0) {
           recordNotice = `カウントイン ${settings.countInBars} 小節のあと録音位置になります`;
@@ -698,11 +761,15 @@
         class:rec-on={transport.recording}
         onclick={toggleRecord}
         disabled={!transport.available}
-        title={transport.recording
-          ? "録音を止めて音声トラックにクリップとして配置"
-          : "録音(既定の入力デバイス)。再生ヘッド位置から録り、停止すると音声トラックに置かれます"}
+        title={transport.midi_recording
+          ? "MIDI 録音を止めてクリップとして配置"
+          : transport.recording
+            ? "録音を止めて音声トラックにクリップとして配置"
+            : midiArm
+              ? `MIDI 録音(🎹 ${midiArm.name})。再生ヘッド位置から録り、停止するとそのトラックに置かれます`
+              : "録音(既定の入力デバイス)。再生ヘッド位置から録り、停止すると音声トラックに置かれます"}
       >
-        ⏺
+        {midiArm && !transport.recording ? "⏺🎹" : "⏺"}
       </button>
       {#if transport.playing || dspWarn}
         <span
@@ -714,7 +781,7 @@
             ⚠{dspCounts.overruns}/{dspCounts.late}{/if}
         </span>
       {/if}
-      {#if transport.recording}
+      {#if transport.recording && !transport.midi_recording}
         <span
           class="rec-meter"
           title={`入力レベル ${(recLevel).toFixed(0)} dBFS(目安: -12〜-6dB)`}
@@ -925,7 +992,7 @@
         title="使用中のオーディオデバイス(クリックで設定を開いて変更)"
       >
         🔈 {audioDev.output ?? "なし"}{audioDev.rate ? ` ${(audioDev.rate / 1000).toFixed(1)}kHz` : ""} · 🎤
-        {audioDev.input ?? "なし"}
+        {audioDev.input ?? "なし"}{audioDev.midi ? ` · 🎹 ${audioDev.midi}` : ""}
       </button>
     {/if}
   </footer>

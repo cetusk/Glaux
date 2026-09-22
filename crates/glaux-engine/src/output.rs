@@ -4,9 +4,10 @@
 //! 生成・保持する。UI 側には Send + Sync な [`EngineHandle`] だけを渡す。
 
 use crate::data::{build_playback_data, PlaybackData, SampleBank};
+use crate::midi::{MidiConnection, MidiSink, MidiTake, RecordedNote, LIVE_NO_TRACK};
 use crate::render::{Renderer, Shared, NO_SEEK};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use glaux_core::{Project, TempoMap, Tick};
+use glaux_core::{Project, TempoMap, Tick, TrackId};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -44,6 +45,32 @@ pub struct EngineHandle {
     bank: Arc<Mutex<SampleBank>>,
     /// 進行中の録音(あれば)
     recording: Arc<Mutex<Option<RecordSession>>>,
+    /// 接続中の MIDI 入力
+    midi: Arc<Mutex<Option<MidiConnection>>>,
+    /// MIDI 録音のイベント(受信コールバックが書く)と、その付帯情報
+    midi_take: Arc<Mutex<Option<MidiTake>>>,
+    midi_rec: Arc<Mutex<Option<MidiRecSession>>>,
+    /// 最後に MIDI を受信した時刻(`Shared::epoch` からの ms + 1。0 = 未受信)
+    midi_seen: Arc<AtomicU64>,
+    /// ライブ演奏の送り先トラックと、index 解決用の直近のトラック順
+    live_target: Arc<Mutex<Option<TrackId>>>,
+    track_order: Arc<Mutex<Vec<TrackId>>>,
+}
+
+/// 進行中の MIDI 録音の付帯情報。
+struct MidiRecSession {
+    clip_start: Tick,
+    metronome_auto: bool,
+}
+
+/// MIDI 録音停止の結果。
+pub struct MidiRecordOutcome {
+    /// クリップを置く位置(カウントイン後)
+    pub clip_start: Tick,
+    /// 停止位置(tick)
+    pub stop_tick: Tick,
+    /// 組み立てたノート(絶対 tick)
+    pub notes: Vec<RecordedNote>,
 }
 
 /// 進行中の録音の付帯情報。
@@ -84,6 +111,9 @@ impl EngineHandle {
         };
         let old = self.shared.data.swap(data);
         *self.tempo.lock().expect("tempo lock") = project.tempo_map.clone();
+        *self.track_order.lock().expect("order lock") =
+            project.tracks.iter().map(|t| t.id.clone()).collect();
+        self.update_live_track();
         // テンポが変わっているかもしれないのでループ区間のサンプル位置を焼き直す
         if let Some((start, end)) = *self.loop_ticks.lock().expect("loop lock") {
             self.write_loop_samples(start, end);
@@ -191,7 +221,7 @@ impl EngineHandle {
         metronome_on: bool,
     ) -> Result<Tick, EngineError> {
         let mut slot = self.recording.lock().expect("recording lock");
-        if slot.is_some() {
+        if slot.is_some() || self.is_midi_recording() {
             return Err(EngineError::Stream("既に録音中です".into()));
         }
         let now = self.playhead_tick();
@@ -254,6 +284,133 @@ impl EngineHandle {
 
     pub fn is_recording(&self) -> bool {
         self.recording.lock().expect("recording lock").is_some()
+    }
+
+    // ---- MIDI キーボード ----
+
+    /// MIDI 入力に接続する(None = 切断)。以前の接続は切る。
+    pub fn set_midi_input(&self, name: Option<String>) -> Result<(), EngineError> {
+        let mut slot = self.midi.lock().expect("midi lock");
+        *slot = None;
+        // 押しっぱなしで切断されても音が残らないように
+        self.shared.live.push(crate::midi::LiveEvent::AllOff);
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let sink = MidiSink {
+            shared: self.shared.clone(),
+            tempo: self.tempo.clone(),
+            sample_rate: self.sample_rate.clone(),
+            take: self.midi_take.clone(),
+            last_seen: self.midi_seen.clone(),
+        };
+        *slot = Some(MidiConnection::open(&name, sink).map_err(EngineError::Stream)?);
+        Ok(())
+    }
+
+    /// 接続中の MIDI 入力名。
+    pub fn midi_input(&self) -> Option<String> {
+        self.midi
+            .lock()
+            .expect("midi lock")
+            .as_ref()
+            .map(|c| c.name.clone())
+    }
+
+    /// 最後に MIDI を受信してからの経過ミリ秒(未受信なら None)。受信ランプ用。
+    pub fn midi_idle_ms(&self) -> Option<u64> {
+        let seen = self.midi_seen.load(Ordering::Acquire);
+        (seen > 0)
+            .then(|| (self.shared.epoch.elapsed().as_millis() as u64).saturating_sub(seen - 1))
+    }
+
+    /// ライブ演奏(MIDI キーボード)の送り先トラック。None なら既定音色で鳴らす。
+    /// 切り替えたら発音中の音は離す。
+    pub fn set_live_target(&self, track: Option<TrackId>) {
+        *self.live_target.lock().expect("live lock") = track;
+        self.shared.live.push(crate::midi::LiveEvent::AllOff);
+        self.update_live_track();
+    }
+
+    pub fn live_target(&self) -> Option<TrackId> {
+        self.live_target.lock().expect("live lock").clone()
+    }
+
+    fn update_live_track(&self) {
+        let target = self.live_target.lock().expect("live lock").clone();
+        let index = target.and_then(|id| {
+            self.track_order
+                .lock()
+                .expect("order lock")
+                .iter()
+                .position(|t| *t == id)
+        });
+        self.shared.live_track.store(
+            index.map_or(LIVE_NO_TRACK, |i| (i as u32).min(LIVE_NO_TRACK - 1)),
+            Ordering::Release,
+        );
+    }
+
+    /// MIDI 録音を開始する。`count_in_ticks` ぶん先にクリップを置き、その間は
+    /// カウントインする。戻り値はクリップを置く位置。呼び出し側はこの直後に
+    /// [`play`](Self::play) する。
+    pub fn start_midi_recording(
+        &self,
+        count_in_ticks: Tick,
+        metronome_on: bool,
+    ) -> Result<Tick, EngineError> {
+        let mut rec = self.midi_rec.lock().expect("midi rec lock");
+        if rec.is_some() || self.is_recording() {
+            return Err(EngineError::Stream("既に録音中です".into()));
+        }
+        if self.midi_input().is_none() {
+            return Err(EngineError::Stream(
+                "MIDI 入力が接続されていません(設定で選んでください)".into(),
+            ));
+        }
+        let clip_start = self.playhead_tick() + count_in_ticks;
+        let metronome_auto = metronome_on && !self.shared.metronome.load(Ordering::Acquire);
+        if metronome_on {
+            self.shared.metronome.store(true, Ordering::Release);
+        }
+        self.shared.recording.store(true, Ordering::Release);
+        *self.midi_take.lock().expect("take lock") = Some(MidiTake::default());
+        *rec = Some(MidiRecSession {
+            clip_start,
+            metronome_auto,
+        });
+        Ok(clip_start)
+    }
+
+    /// MIDI 録音を止めてノートを組み立てる。
+    pub fn stop_midi_recording(&self) -> Result<MidiRecordOutcome, EngineError> {
+        let Some(s) = self.midi_rec.lock().expect("midi rec lock").take() else {
+            return Err(EngineError::Stream("MIDI 録音していません".into()));
+        };
+        let stop_tick = {
+            let sample = self.shared.audible_pos();
+            let tempo = self.tempo.lock().expect("tempo lock");
+            tempo.seconds_to_tick(sample / self.sample_rate())
+        };
+        let take = self
+            .midi_take
+            .lock()
+            .expect("take lock")
+            .take()
+            .unwrap_or_default();
+        self.shared.recording.store(false, Ordering::Release);
+        if s.metronome_auto {
+            self.shared.metronome.store(false, Ordering::Release);
+        }
+        Ok(MidiRecordOutcome {
+            clip_start: s.clip_start,
+            stop_tick,
+            notes: crate::midi::pair_notes(&take.events, stop_tick.0 as f64),
+        })
+    }
+
+    pub fn is_midi_recording(&self) -> bool {
+        self.midi_rec.lock().expect("midi rec lock").is_some()
     }
 
     /// オーディオ処理の負荷統計(直近区間の平均・最大はリセットされる)。
@@ -440,6 +597,12 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                 graveyard: Arc::new(Mutex::new(Vec::new())),
                 bank: Arc::new(Mutex::new(SampleBank::default())),
                 recording: Arc::new(Mutex::new(None)),
+                midi: Arc::new(Mutex::new(None)),
+                midi_take: Arc::new(Mutex::new(None)),
+                midi_rec: Arc::new(Mutex::new(None)),
+                midi_seen: Arc::new(AtomicU64::new(0)),
+                live_target: Arc::new(Mutex::new(None)),
+                track_order: Arc::new(Mutex::new(Vec::new())),
             };
             let _ = tx.send(Ok(handle.clone()));
             // ストリームはこのスレッドが持ち続ける(cpal::Stream は Send でない)
@@ -538,3 +701,9 @@ fn open_stream(
         .map_err(|e| EngineError::Stream(e.to_string()))?;
     Ok((stream, sample_rate, dev_name))
 }
+
+// ハンドルは UI・MCP の複数スレッドで共有する(MIDI 接続を持っても Send + Sync を保つ)
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<EngineHandle>();
+};

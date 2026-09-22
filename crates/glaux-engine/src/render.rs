@@ -11,10 +11,11 @@
 //! 焼き込まれたパラメータ([`crate::data::TrackMix::instrument`])で発音する。
 
 use crate::data::{db_to_amp, pan_gains, AutoPoint, PlaybackData, MAX_EFFECT_SLOTS, MAX_TRACKS};
+use crate::midi::{LiveEvent, LiveQueue, LIVE_NO_TRACK};
 use arc_swap::ArcSwap;
 use glaux_core::Curve;
 use glaux_dsp::{EffectParams, EffectState, VoiceState};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub const MAX_VOICES: usize = 64;
@@ -22,6 +23,12 @@ pub const MAX_VOICES: usize = 64;
 pub const MAX_AUDIO_VOICES: usize = 16;
 /// 同時プレビュー(試聴)ボイス数
 pub const MAX_PREVIEW_VOICES: usize = 8;
+/// MIDI キーボードのライブ発音ボイス数
+pub const MAX_LIVE_VOICES: usize = 32;
+/// 1 ブロックで取り出すライブイベントの上限(暴走した入力で処理が伸びないように)
+const MAX_LIVE_EVENTS_PER_BLOCK: usize = 256;
+/// ライブ演奏の後、停止中でもエフェクトの残響を鳴らし切る時間(秒)
+const LIVE_TAIL_SECS: f32 = 4.0;
 /// シーク要求なしを表す番兵値
 pub const NO_SEEK: u64 = u64::MAX;
 /// リリースが終わらないボイスの強制解放(秒)。スタック防止の保険
@@ -53,6 +60,16 @@ pub struct Shared {
     pub data: ArcSwap<PlaybackData>,
     /// 負荷の統計(オーディオスレッドが書き、UI が読む)。[`DspStats`] 参照
     pub stats: StatsCounters,
+    /// MIDI キーボードのライブ演奏イベント(MIDI 受信スレッドが積み、レンダラが取り出す)
+    pub live: LiveQueue,
+    /// ライブ演奏の送り先トラック index(`LIVE_NO_TRACK` なら既定音色)
+    pub live_track: AtomicU32,
+    /// 時刻の基準(`pos_nanos` や MIDI 受信時刻の起点)
+    pub epoch: std::time::Instant,
+    /// 直前ブロックのフレーム数と、`pos` を書いた時刻(`epoch` からの ns)。
+    /// MIDI 録音で「いま聞こえている位置」をブロック内まで推定するのに使う
+    pub block_frames: AtomicU32,
+    pub pos_nanos: AtomicU64,
 }
 
 /// オーディオ処理の負荷統計(アトミック。オーディオスレッドからロックなしで更新)。
@@ -132,7 +149,29 @@ impl Shared {
             click_only: AtomicBool::new(false),
             data: ArcSwap::from_pointee(data),
             stats: StatsCounters::default(),
+            live: LiveQueue::default(),
+            live_track: AtomicU32::new(LIVE_NO_TRACK),
+            epoch: std::time::Instant::now(),
+            block_frames: AtomicU32::new(0),
+            pos_nanos: AtomicU64::new(0),
         }
+    }
+
+    /// いま聞こえている(と推定される)再生位置(サンプル、小数)。
+    /// レンダラは 1 ブロック先まで書いてから `pos` を更新するので、1 ブロック分戻し、
+    /// 前回の書き込みからの経過時間ぶん進める(1 ブロック以内に制限)。概算であり、
+    /// デバイス固有の出力遅延までは含まない
+    pub fn audible_pos(&self) -> f64 {
+        let pos = self.pos.load(Ordering::Acquire) as f64;
+        if !self.playing.load(Ordering::Acquire) {
+            return pos;
+        }
+        let block = self.block_frames.load(Ordering::Acquire) as f64;
+        let sr = self.data.load().sample_rate;
+        let written = self.pos_nanos.load(Ordering::Acquire);
+        let now = self.epoch.elapsed().as_nanos() as u64;
+        let elapsed = now.saturating_sub(written) as f64 * 1e-9 * sr;
+        (pos - block + elapsed.min(block)).max(0.0)
     }
 }
 
@@ -194,6 +233,20 @@ struct PreviewVoice {
     state: VoiceState,
 }
 
+/// MIDI キーボードのライブ発音ボイス。送り先トラックの楽器で鳴らし、
+/// トラックのエフェクト・音量・パンを通す(停止中でも鳴る)。
+#[derive(Clone)]
+struct LiveVoice {
+    /// 送り先トラック index(`LIVE_NO_TRACK` なら既定音色でマスター直行)
+    track: u32,
+    pitch: u8,
+    released: bool,
+    /// ペダルで保持中(ペダルを離したらリリース)
+    sustained: bool,
+    instrument: glaux_dsp::InstrumentParams,
+    state: VoiceState,
+}
+
 pub struct Renderer {
     shared: Arc<Shared>,
     voices: Vec<Voice>,
@@ -203,6 +256,11 @@ pub struct Renderer {
     preview_voices: Vec<PreviewVoice>,
     /// 最後に消費した試聴要求のカウンタ
     last_preview: u64,
+    live_voices: Vec<LiveVoice>,
+    /// サステインペダルを踏んでいるか
+    sustain: bool,
+    /// ライブ演奏の残響を停止中にも鳴らす残りサンプル数
+    live_tail: u32,
     /// エフェクト状態プール(リバーブのバッファ込みで起動時に確保)
     effect_states: Vec<EffectState>,
     /// トラックごとの無音連続サンプル数(残響が消えたらエフェクト処理を省く)
@@ -266,6 +324,9 @@ impl Renderer {
             next_audio: 0,
             preview_voices: Vec::with_capacity(MAX_PREVIEW_VOICES),
             last_preview: 0,
+            live_voices: Vec::with_capacity(MAX_LIVE_VOICES),
+            sustain: false,
+            live_tail: 0,
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
@@ -424,6 +485,9 @@ impl Renderer {
             }
         }
 
+        // MIDI キーボードのライブ演奏(ブロック頭でまとめて反映。遅れは最大 1 ブロック)
+        self.consume_live(data, sr);
+
         let playing = self.shared.playing.load(Ordering::Acquire);
         if playing && !self.was_playing && !resync {
             self.resync_audio(data);
@@ -432,11 +496,18 @@ impl Renderer {
         if !playing {
             self.voices.clear();
             self.audio_voices.clear();
-            if self.preview_voices.is_empty() {
+            if self.preview_voices.is_empty() && self.live_voices.is_empty() && self.live_tail == 0
+            {
                 self.last_tick = data.sample_to_tick(self.pos);
-                self.shared.pos.store(self.pos, Ordering::Release);
+                self.publish_pos(out.len() / channels);
                 return;
             }
+        }
+        let block_frames = out.len() / channels;
+        if self.live_voices.is_empty() {
+            self.live_tail = self.live_tail.saturating_sub(block_frames as u32);
+        } else {
+            self.live_tail = (LIVE_TAIL_SECS * sr) as u32;
         }
 
         let hard_limit = (VOICE_HARD_LIMIT_SECS * sr) as u64;
@@ -657,6 +728,31 @@ impl Renderer {
                 i += 1;
             }
 
+            // MIDI キーボードのライブ発音(送り先トラックのエフェクトを通す)
+            let mut i = 0;
+            while i < self.live_voices.len() {
+                let v = &mut self.live_voices[i];
+                if v.released && v.state.finished(&v.instrument) {
+                    self.live_voices.swap_remove(i);
+                    continue;
+                }
+                let sample = v.state.next(&v.instrument);
+                match data.tracks.get(v.track as usize) {
+                    Some(mix) => match track_mono.get_mut(v.track as usize) {
+                        Some(acc) => *acc += sample,
+                        None => {
+                            direct_l += sample * mix.gain_l;
+                            direct_r += sample * mix.gain_r;
+                        }
+                    },
+                    None => {
+                        direct_l += sample * 0.8;
+                        direct_r += sample * 0.8;
+                    }
+                }
+                i += 1;
+            }
+
             // サイドチェインの検出信号: ソーストラックの生ミックス(エフェクト前)。
             // track_mono はこの時点で全トラック分確定しているので、処理順に依存しない
             let sidechain_key = |p: &EffectParams| -> f32 {
@@ -774,7 +870,100 @@ impl Renderer {
         }
 
         self.last_tick = data.sample_to_tick(self.pos);
-        self.shared.pos.store(self.pos, Ordering::Release);
+        self.publish_pos(frames);
+    }
+
+    /// 再生位置を UI・MIDI 受信側へ公開する(書いた時刻とブロック長も添える)。
+    fn publish_pos(&self, frames: usize) {
+        let sh = &self.shared;
+        sh.pos.store(self.pos, Ordering::Release);
+        sh.block_frames.store(frames as u32, Ordering::Release);
+        sh.pos_nanos
+            .store(sh.epoch.elapsed().as_nanos() as u64, Ordering::Release);
+    }
+
+    /// ライブ演奏キューを取り出して発音・消音する(アロケーションなし)。
+    fn consume_live(&mut self, data: &PlaybackData, sr: f32) {
+        for _ in 0..MAX_LIVE_EVENTS_PER_BLOCK {
+            let Some(ev) = self.shared.live.pop() else {
+                break;
+            };
+            match ev {
+                LiveEvent::NoteOn { track, pitch, vel } => {
+                    // 同じ音高を打ち直したら前の音はリリースへ
+                    for v in self.live_voices.iter_mut() {
+                        if v.pitch == pitch && !v.released {
+                            v.state.note_off();
+                            v.released = true;
+                            v.sustained = false;
+                        }
+                    }
+                    if self.live_voices.len() >= MAX_LIVE_VOICES {
+                        // 満杯なら離した音を優先して(無ければ先頭を)捨てる
+                        let victim = self
+                            .live_voices
+                            .iter()
+                            .position(|v| v.released)
+                            .unwrap_or(0);
+                        self.live_voices.swap_remove(victim);
+                    }
+                    let (instrument, track) = match data.tracks.get(track as usize) {
+                        Some(mix) if track != LIVE_NO_TRACK => (mix.instrument.clone(), track),
+                        _ => (glaux_dsp::InstrumentParams::default(), LIVE_NO_TRACK),
+                    };
+                    let state = VoiceState::start(
+                        &instrument,
+                        crate::data::pitch_to_freq(pitch),
+                        pitch,
+                        vel as f32 / 127.0,
+                        glaux_core::Articulation::Normal,
+                        sr,
+                    );
+                    self.live_voices.push(LiveVoice {
+                        track,
+                        pitch,
+                        released: false,
+                        sustained: false,
+                        instrument,
+                        state,
+                    });
+                }
+                LiveEvent::NoteOff { pitch } => {
+                    for v in self.live_voices.iter_mut() {
+                        if v.pitch == pitch && !v.released {
+                            if self.sustain {
+                                v.sustained = true;
+                            } else {
+                                v.state.note_off();
+                                v.released = true;
+                            }
+                        }
+                    }
+                }
+                LiveEvent::Sustain(on) => {
+                    self.sustain = on;
+                    if !on {
+                        for v in self.live_voices.iter_mut() {
+                            if v.sustained && !v.released {
+                                v.state.note_off();
+                                v.released = true;
+                                v.sustained = false;
+                            }
+                        }
+                    }
+                }
+                LiveEvent::AllOff => {
+                    self.sustain = false;
+                    for v in self.live_voices.iter_mut() {
+                        if !v.released {
+                            v.state.note_off();
+                            v.released = true;
+                            v.sustained = false;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1084,6 +1273,83 @@ mod tests {
         assert!(rms(&block) < 1e-3, "試聴は終わるはず");
         // 再生位置は動かない
         assert_eq!(shared.pos.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn live_midi_notes_sound_while_paused_and_release() {
+        let shared = Arc::new(Shared::new(data_with_note(0, 4800, true)));
+        let mut r = Renderer::new(shared.clone());
+        assert!(rms(&render_block(&mut r, 4800)) < 1e-6, "何も無ければ無音");
+        shared.live.push(LiveEvent::NoteOn {
+            track: 0,
+            pitch: 60,
+            vel: 120,
+        });
+        let block = render_block(&mut r, 4800);
+        assert!(rms(&block) > 0.05, "停止中でもライブ演奏は鳴るはず");
+        // 押している間は鳴り続ける
+        assert!(rms(&render_block(&mut r, 4800)) > 0.05);
+        shared.live.push(LiveEvent::NoteOff { pitch: 60 });
+        let _ = render_block(&mut r, 4800);
+        assert!(rms(&render_block(&mut r, 4800)) < 1e-3, "離したら消える");
+        assert_eq!(shared.pos.load(Ordering::Acquire), 0, "再生位置は動かない");
+    }
+
+    #[test]
+    fn live_sustain_pedal_holds_until_released() {
+        let shared = Arc::new(Shared::new(data_with_note(0, 4800, true)));
+        let mut r = Renderer::new(shared.clone());
+        shared.live.push(LiveEvent::Sustain(true));
+        shared.live.push(LiveEvent::NoteOn {
+            track: 0,
+            pitch: 64,
+            vel: 100,
+        });
+        let _ = render_block(&mut r, 480);
+        shared.live.push(LiveEvent::NoteOff { pitch: 64 });
+        let _ = render_block(&mut r, 4800);
+        assert!(
+            rms(&render_block(&mut r, 4800)) > 0.05,
+            "ペダル中は鳴り続ける"
+        );
+        shared.live.push(LiveEvent::Sustain(false));
+        let _ = render_block(&mut r, 4800);
+        assert!(
+            rms(&render_block(&mut r, 4800)) < 1e-3,
+            "ペダルを離したら消える"
+        );
+    }
+
+    #[test]
+    fn live_voices_are_capped_and_all_off_silences() {
+        let shared = Arc::new(Shared::new(data_with_note(0, 4800, true)));
+        let mut r = Renderer::new(shared.clone());
+        for p in 0..100u8 {
+            shared.live.push(LiveEvent::NoteOn {
+                track: LIVE_NO_TRACK,
+                pitch: p,
+                vel: 10,
+            });
+        }
+        let _ = render_block(&mut r, 480);
+        assert!(r.live_voices.len() <= MAX_LIVE_VOICES);
+        assert!(r.live_voices.capacity() <= MAX_LIVE_VOICES, "再確保しない");
+        shared.live.push(LiveEvent::AllOff);
+        for _ in 0..8 {
+            let _ = render_block(&mut r, 48_000); // 既定音色のリリースを待つ
+        }
+        assert!(r.live_voices.is_empty());
+    }
+
+    #[test]
+    fn audible_pos_trails_written_pos_by_up_to_a_block() {
+        let shared = Arc::new(Shared::new(data_with_note(0, 48_000, true)));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 960);
+        let _ = render_block(&mut r, 960);
+        let a = shared.audible_pos();
+        assert!((960.0..=1920.0).contains(&a), "{a}");
     }
 
     #[test]

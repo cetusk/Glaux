@@ -180,6 +180,10 @@ export interface TransportState {
   playing: boolean;
   /** 録音中(入力デバイス → 音声クリップ) */
   recording?: boolean;
+  /** MIDI 録音中(recording も true になる) */
+  midi_recording?: boolean;
+  /** 最後に MIDI を受信してからの経過 ms(未受信なら null) */
+  midi_idle_ms?: number | null;
   /** メトロノーム ON */
   metronome?: boolean;
   /** 入力レベルのピーク(dBFS。前回の取得から)。録音も入力テストもしていなければ null */

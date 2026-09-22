@@ -6,7 +6,7 @@
   import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
   import { newClipId, newNoteId, newTrackId } from "./ids";
-  import { pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
+  import { midiArmStore, pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
   import type { Clip, PresetInfo, Project, Track } from "./types";
 
   let {
@@ -931,6 +931,17 @@
           <button class="ms" class:solo-on={track.solo} onclick={() => toggleSolo(track)} title="ソロ">
             S
           </button>
+          {#if track.kind === "midi"}
+            <button
+              class="ms"
+              class:arm-on={midiArmStore.trackId === track.id}
+              onclick={() =>
+                (midiArmStore.trackId = midiArmStore.trackId === track.id ? null : track.id)}
+              title="MIDI キーボードでこのトラックを弾く(ON の間は ⏺ が MIDI 録音になります)"
+            >
+              🎹
+            </button>
+          {/if}
           <button
             class="ms"
             class:auto-on={autoLanes[track.id] !== undefined}
@@ -1296,6 +1307,11 @@
     background: #6b6130;
     border-color: #8a7d44;
     color: var(--accent);
+  }
+
+  .ms.arm-on {
+    background: #6b3030;
+    border-color: #a04848;
   }
 
   .ms.auto-on {

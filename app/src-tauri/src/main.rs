@@ -290,17 +290,8 @@ async fn record_start(
     let path = std::path::PathBuf::from(&dir).join(format!("audio/rec_{stamp}.wav"));
     // カウントインの長さ: 現在位置の拍子で bars 小節
     let (project, _) = state.handle.get_project().await?;
-    let now = engine.playhead_tick();
-    let sig = project
-        .time_sig_map
-        .iter()
-        .rev()
-        .find(|e| e.tick <= now)
-        .or_else(|| project.time_sig_map.first());
-    let bar_ticks = sig
-        .map(|e| 3840 * e.num as u64 / e.den.max(1) as u64)
-        .unwrap_or(3840);
-    let count_in = Tick(bar_ticks * count_in_bars.unwrap_or(1) as u64);
+    let count_in =
+        Tick(bar_ticks_at(&project, engine.playhead_tick()) * count_in_bars.unwrap_or(1) as u64);
     let clip_start = engine
         .start_recording(
             path,
@@ -312,6 +303,151 @@ async fn record_start(
     engine.play();
     engine.mark_play_started();
     Ok(json!({ "clip_start": clip_start, "count_in_ticks": count_in }))
+}
+
+/// `at` の位置の拍子での 1 小節の長さ(tick)。
+fn bar_ticks_at(project: &glaux_core::Project, at: Tick) -> u64 {
+    project
+        .time_sig_map
+        .iter()
+        .rev()
+        .find(|e| e.tick <= at)
+        .or_else(|| project.time_sig_map.first())
+        .map(|e| 3840 * e.num as u64 / e.den.max(1) as u64)
+        .unwrap_or(3840)
+}
+
+// ---- MIDI キーボード ----
+
+/// MIDI 入力ポートの一覧と接続中のポート。
+#[tauri::command]
+fn midi_inputs(state: State<'_, AppState>) -> Value {
+    json!({
+        "inputs": glaux_engine::list_midi_inputs(),
+        "current": state.engine.as_ref().and_then(|e| e.midi_input()),
+    })
+}
+
+/// MIDI 入力に接続する(name 省略・空 = 切断)。
+#[tauri::command]
+fn set_midi_input(state: State<'_, AppState>, name: Option<String>) -> Result<Value, String> {
+    let engine = state.engine()?;
+    engine
+        .set_midi_input(name.filter(|n| !n.is_empty()))
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "current": engine.midi_input() }))
+}
+
+/// MIDI キーボードで鳴らすトラック(省略 = 既定音色)。
+#[tauri::command]
+fn set_live_target(state: State<'_, AppState>, track_id: Option<String>) -> Result<(), String> {
+    let id = track_id
+        .filter(|s| !s.is_empty())
+        .map(|s| glaux_core::TrackId::parse(&s).map_err(|e| e.to_string()))
+        .transpose()?;
+    state.engine()?.set_live_target(id);
+    Ok(())
+}
+
+/// MIDI 録音を開始する(count_in_bars 小節のカウントイン後の位置にクリップを置く)。
+#[tauri::command]
+async fn midi_record_start(
+    state: State<'_, AppState>,
+    count_in_bars: Option<u32>,
+    metronome: Option<bool>,
+) -> Result<Value, String> {
+    let engine = state.engine()?.clone();
+    let (project, _) = state.handle.get_project().await?;
+    let count_in =
+        Tick(bar_ticks_at(&project, engine.playhead_tick()) * count_in_bars.unwrap_or(1) as u64);
+    let clip_start = engine
+        .start_midi_recording(count_in, metronome.unwrap_or(true))
+        .map_err(|e| e.to_string())?;
+    engine.play();
+    Ok(json!({ "clip_start": clip_start, "count_in_ticks": count_in }))
+}
+
+/// MIDI 録音を止めて、弾いたノートを MIDI クリップとして置く(履歴 1 件)。
+/// `track_id` 省略時はライブ演奏の送り先 → 最初の MIDI トラック → 新設の順。
+/// `quantize_ticks` > 0 なら開始位置をそのグリッドに丸める。
+#[tauri::command]
+async fn midi_record_stop(
+    state: State<'_, AppState>,
+    track_id: Option<String>,
+    quantize_ticks: Option<u64>,
+) -> Result<Value, String> {
+    let engine = state.engine()?.clone();
+    engine.pause();
+    let outcome = engine.stop_midi_recording().map_err(|e| e.to_string())?;
+    let notes = glaux_engine::midi::take_to_notes(
+        &outcome.notes,
+        outcome.clip_start,
+        quantize_ticks.unwrap_or(0),
+    );
+    if notes.is_empty() {
+        return Err("カウントインより後に弾かれたノートがありませんでした".to_owned());
+    }
+    let (project, _) = state.handle.get_project().await?;
+    let is_midi = |id: &glaux_core::TrackId| {
+        project
+            .tracks
+            .iter()
+            .any(|t| &t.id == id && t.kind == glaux_core::TrackKind::Midi)
+    };
+    let mut cmds = Vec::new();
+    let requested = track_id
+        .filter(|s| !s.is_empty())
+        .map(|s| glaux_core::TrackId::parse(&s).map_err(|e| e.to_string()))
+        .transpose()?;
+    let tid = match requested
+        .or_else(|| engine.live_target())
+        .filter(|id| is_midi(id))
+        .or_else(|| {
+            project
+                .tracks
+                .iter()
+                .find(|t| t.kind == glaux_core::TrackKind::Midi)
+                .map(|t| t.id.clone())
+        }) {
+        Some(id) => id,
+        None => {
+            let id = glaux_core::TrackId::new();
+            cmds.push(Command::AddTrack {
+                track: glaux_core::Track::new(id.clone(), "MIDI 録音", glaux_core::TrackKind::Midi),
+                index: None,
+            });
+            id
+        }
+    };
+    // クリップ長: 最後のノートの終わり(と停止位置)を小節単位に切り上げ
+    let bar = bar_ticks_at(&project, outcome.clip_start).max(1);
+    let last_end = notes.iter().map(|n| n.end().0).max().unwrap_or(0);
+    let played = outcome.stop_tick.0.saturating_sub(outcome.clip_start.0);
+    let length = Tick(last_end.max(played).div_ceil(bar).max(1) * bar);
+    let clip_id = glaux_core::ClipId::new();
+    let name = format!("MIDI 録音 {}", chrono::Local::now().format("%H:%M"));
+    let count = notes.len();
+    let mut clip =
+        glaux_core::Clip::new_midi(clip_id.clone(), name.clone(), outcome.clip_start, length);
+    if let Some(ns) = clip.notes_mut() {
+        *ns = notes;
+    }
+    cmds.push(Command::AddClip {
+        track: tid.clone(),
+        clip,
+    });
+    let label = format!("{name}(ノート {count} 個)を配置");
+    let (_, m) = state
+        .handle
+        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "clip_id": clip_id,
+        "track_id": tid,
+        "notes": count,
+        "project_version": m.project_version,
+    }))
 }
 
 /// 録音を止めて WAV を確定し、音声トラックのクリップとして置く(履歴 1 件)。
@@ -946,7 +1082,9 @@ fn transport_state(state: State<'_, AppState>) -> Value {
         Some(e) => json!({
             "available": true,
             "playing": e.is_playing(),
-            "recording": e.is_recording(),
+            "recording": e.is_recording() || e.is_midi_recording(),
+            "midi_recording": e.is_midi_recording(),
+            "midi_idle_ms": e.midi_idle_ms(),
             "metronome": e.metronome(),
             "input_peak_db": e.take_input_peak_db(),
             "input_monitor": e.input_monitoring(),
@@ -1330,6 +1468,11 @@ fn main() -> Result<()> {
             transcribe_clip,
             record_start,
             record_stop,
+            midi_inputs,
+            set_midi_input,
+            set_live_target,
+            midi_record_start,
+            midi_record_stop,
             audio_devices,
             get_master_params,
             set_output_device,
