@@ -7,6 +7,11 @@
 //! 起動時は `history.jsonl` からの再構築を試みる(過去セッションの履歴の上で
 //! undo / revert ができる)。再構築結果が `project.json` と一致しないときは
 //! `project.json` を正として採用し、既存の履歴は `history.jsonl.orphan` に退避する。
+//!
+//! 履歴が [`COMPACT_AT`] 件を超えたら compaction する: 直近 [`COMPACT_KEEP`] 件だけ
+//! `history.jsonl` に残し、その起点となる状態を `history.base.json` に書く
+//! (再構築は base + history)。捨てた分は `history.archive.jsonl` に追記して
+//! 記録としては残す(undo の対象からは外れる)。
 
 use anyhow::{Context, Result};
 use glaux_core::{History, Project, Session};
@@ -14,6 +19,11 @@ use std::cell::Cell;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// この件数を超えたら履歴を compaction する
+pub const COMPACT_AT: usize = 3000;
+/// compaction 後に残す直近の件数(= 起動後に undo できる上限)
+pub const COMPACT_KEEP: usize = 1500;
 
 pub struct Store {
     dir: PathBuf,
@@ -70,11 +80,15 @@ impl Store {
             return None;
         }
 
+        let base_path = self.base_path();
         let orphan = |reason: &str| {
             tracing::warn!(
                 "history.jsonl を再構築に使えません({reason})。history.jsonl.orphan に退避します"
             );
             let _ = fs::rename(&history_path, self.dir.join("history.jsonl.orphan"));
+            if base_path.exists() {
+                let _ = fs::rename(&base_path, self.dir.join("history.base.json.orphan"));
+            }
         };
 
         let entries = match History::entries_from_jsonl(&text) {
@@ -85,9 +99,24 @@ impl Store {
             }
         };
 
-        // 履歴は「メタ情報だけ引き継いだ空プロジェクト」からの全記録という前提
-        let mut base = Project::new(expected.meta.title.clone());
-        base.meta = expected.meta.clone();
+        // 起点: compaction 済みなら history.base.json、そうでなければ
+        // 「メタ情報だけ引き継いだ空プロジェクト」からの全記録という前提
+        let base = if base_path.exists() {
+            match fs::read_to_string(&base_path)
+                .ok()
+                .and_then(|t| Project::from_json(&t).ok())
+            {
+                Some(b) => b,
+                None => {
+                    orphan("history.base.json を読めない");
+                    return None;
+                }
+            }
+        } else {
+            let mut base = Project::new(expected.meta.title.clone());
+            base.meta = expected.meta.clone();
+            base
+        };
 
         match Session::replay(base, entries) {
             Ok(session) if session.project() == expected => Some(session),
@@ -168,8 +197,63 @@ impl Store {
         self.save(session)
     }
 
+    /// 履歴が長くなりすぎていれば compaction する(既定のしきい値)。
+    /// 戻り値は compaction したかどうか。
+    pub fn maybe_compact(&self, session: &mut Session) -> Result<bool> {
+        self.maybe_compact_with(session, COMPACT_AT, COMPACT_KEEP)
+    }
+
+    /// しきい値を指定して compaction する(テスト用にも公開)。
+    /// 起点を `history.base.json` に書いてから履歴を全書き換えし、
+    /// 捨てたエントリは `history.archive.jsonl` に追記する。
+    pub fn maybe_compact_with(
+        &self,
+        session: &mut Session,
+        at: usize,
+        keep: usize,
+    ) -> Result<bool> {
+        if session.history().len() <= at {
+            return Ok(false);
+        }
+        let Some((base, dropped)) = session.compact(keep).context("履歴の compaction に失敗")?
+        else {
+            return Ok(false);
+        };
+        let base_json = base
+            .to_json()
+            .context("history.base.json のシリアライズに失敗")?;
+        write_atomic(&self.base_path(), base_json.as_bytes())?;
+        // 捨てた分は記録として残す(失敗しても compaction 自体は成立させる)
+        let archive = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.dir.join("history.archive.jsonl"))
+            .and_then(|mut f| {
+                for e in &dropped {
+                    let line = serde_json::to_string(e)
+                        .map_err(std::io::Error::other)?;
+                    writeln!(f, "{line}")?;
+                }
+                Ok(())
+            });
+        if let Err(e) = archive {
+            tracing::warn!("history.archive.jsonl への追記に失敗: {e}");
+        }
+        self.save(session)?;
+        tracing::info!(
+            "履歴を compaction しました({} 件を退避、{} 件を保持)",
+            dropped.len(),
+            session.history().len()
+        );
+        Ok(true)
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    fn base_path(&self) -> PathBuf {
+        self.dir.join("history.base.json")
     }
 
     fn project_path(&self) -> PathBuf {

@@ -373,9 +373,13 @@ fn handle(
             label,
             reply,
         } => {
-            let result = session
-                .apply(*command, author, label)
-                .map(|(id, changes)| (id, mutated(session, store, events, changes)));
+            let result = session.apply(*command, author, label).map(|(id, changes)| {
+                // 履歴が長くなりすぎたら切り詰める(保存は mutated 内の全書き換えで行われる)
+                if let Err(e) = store.maybe_compact(session) {
+                    tracing::warn!("履歴の compaction に失敗: {e:#}");
+                }
+                (id, mutated(session, store, events, changes))
+            });
             let _ = reply.send(result);
         }
         Request::Undo { n, reply } => {

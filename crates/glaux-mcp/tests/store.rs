@@ -93,3 +93,54 @@ fn incremental_save_appends_and_falls_back_on_undo() {
     assert!(reopened.project().track(&id1).is_some());
     assert!(reopened.project().track(&id2).is_none());
 }
+
+#[test]
+fn compaction_keeps_reopen_and_undo_working() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Song.glaux");
+    let dir_s = dir.to_str().unwrap();
+
+    let (store, mut session) = Store::open_or_create(dir_s).unwrap();
+    let mut ids = Vec::new();
+    for i in 0..40 {
+        let (id, cmd) = add_track_cmd(&format!("T{i}"));
+        ids.push(id);
+        session.apply(cmd, Author::Human, format!("T{i}")).unwrap();
+        store.save_after_change(&session).unwrap();
+    }
+    assert_eq!(session.history().len(), 40);
+
+    // しきい値 30 超 → 直近 10 件だけ残す
+    assert!(store.maybe_compact_with(&mut session, 30, 10).unwrap());
+    assert_eq!(session.history().len(), 10);
+    assert!(dir.join("history.base.json").exists());
+    let lines = fs::read_to_string(dir.join("history.jsonl")).unwrap();
+    assert_eq!(lines.lines().count(), 10);
+    let archive = fs::read_to_string(dir.join("history.archive.jsonl")).unwrap();
+    assert_eq!(archive.lines().count(), 30);
+    // 2 回目は何もしない
+    assert!(!store.maybe_compact_with(&mut session, 30, 10).unwrap());
+
+    // 追記パスは compaction 後も動く
+    let (id41, cmd) = add_track_cmd("T40");
+    session.apply(cmd, Author::Human, "T40").unwrap();
+    store.save_after_change(&session).unwrap();
+    let expected = session.project().clone();
+    drop(session);
+
+    // 再オープン: base + 履歴 11 件で復元され、全トラックがあり、undo は残った分だけ
+    let (_s2, mut reopened) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(reopened.project(), &expected);
+    assert_eq!(reopened.history().len(), 11);
+    assert!(reopened.project().track(&ids[0]).is_some());
+    for _ in 0..11 {
+        reopened.undo().unwrap().unwrap();
+    }
+    assert!(!reopened.can_undo());
+    assert!(reopened.project().track(&id41).is_none());
+    assert!(
+        reopened.project().track(&ids[29]).is_some(),
+        "起点に含まれる分は残る"
+    );
+    assert!(reopened.project().track(&ids[30]).is_none());
+}

@@ -104,6 +104,9 @@ pub struct Renderer {
     /// 直前に見ていた `PlaybackData` のアドレス(差し替え検出用)
     last_data: usize,
     pos: u64,
+    /// `pos` に対応する音楽的位置(tick)。データ差し替え(テンポ変更)時に
+    /// この tick を保ったままサンプル位置を換算し直す
+    last_tick: f64,
 }
 
 /// オートメーション点列を区分補間で評価する(core の `AutomationLane::value_at` と同義)。
@@ -145,6 +148,7 @@ impl Renderer {
             next_event: 0,
             last_data: 0,
             pos: 0,
+            last_tick: 0.0,
         }
     }
 
@@ -161,7 +165,9 @@ impl Renderer {
 
         // データ差し替え・シークのどちらでも発音状態を作り直す
         let mut resync = false;
+        let mut swapped = false;
         if data_addr != self.last_data {
+            swapped = self.last_data != 0;
             self.last_data = data_addr;
             resync = true;
         }
@@ -169,6 +175,9 @@ impl Renderer {
         if seek != NO_SEEK {
             self.pos = seek;
             resync = true;
+        } else if swapped && !data.tempo.is_empty() {
+            // テンポが変わっていても音楽的位置(tick)を保つ
+            self.pos = data.tick_to_sample(self.last_tick);
         }
         if resync {
             self.voices.clear();
@@ -228,6 +237,7 @@ impl Renderer {
         if !playing {
             self.voices.clear();
             if self.preview_voices.is_empty() {
+                self.last_tick = data.sample_to_tick(self.pos);
                 self.shared.pos.store(self.pos, Ordering::Release);
                 return;
             }
@@ -457,6 +467,7 @@ impl Renderer {
             self.shared.playing.store(false, Ordering::Release);
         }
 
+        self.last_tick = data.sample_to_tick(self.pos);
         self.shared.pos.store(self.pos, Ordering::Release);
     }
 }
@@ -513,6 +524,7 @@ mod tests {
             master_amp: 1.0,
             end_sample: end,
             sample_rate: 48_000.0,
+            tempo: vec![],
         }
     }
 

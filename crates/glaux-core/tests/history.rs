@@ -481,6 +481,47 @@ fn replay_reconstructs_project() {
 }
 
 #[test]
+fn compact_keeps_recent_entries_and_replayable_base() {
+    let mut rng = StdRng::seed_from_u64(11);
+    let seed = seed_project();
+    let mut s = Session::new(seed.clone());
+    for i in 0..200 {
+        let cmd = random_command(s.project(), &mut rng, 0);
+        let _ = s.apply(cmd, Author::Human, format!("step {i}"));
+    }
+    let before = s.project().clone();
+    let total = s.history().len();
+    assert!(total > 50);
+    s.checkpoint("old"); // 切り捨て後は消える
+                         // 途中のチェックポイントも作っておく(切り捨て境界より後なら生き残る)
+    let keep = 30;
+
+    let (base, dropped) = s.compact(keep).unwrap().expect("compact されるはず");
+    assert_eq!(dropped.len(), total - keep);
+    assert_eq!(s.history().len(), keep);
+    assert_eq!(s.project(), &before, "現在状態は変わらない");
+    // 起点 + 残した履歴 = 現在状態
+    let entries = s.history().applied().to_vec();
+    let rebuilt = Session::replay(base.clone(), entries).unwrap();
+    assert_eq!(rebuilt.project(), &before);
+    // 捨てた履歴を元の起点に適用すると base になる
+    let front = Session::replay(seed, dropped).unwrap();
+    assert_eq!(front.project(), &base);
+    // 末尾に付けたチェックポイントは index が詰められて残る
+    assert_eq!(s.history().checkpoints().get("old"), Some(&keep));
+    // 残った分は undo できる
+    assert!(s.can_undo());
+    s.undo().unwrap().unwrap();
+    assert_eq!(s.history().len(), keep - 1);
+
+    // redo スタックがある間は compact しない
+    assert!(s.compact(5).unwrap().is_none());
+    s.redo().unwrap().unwrap();
+    // keep 以上のときも何もしない
+    assert!(s.compact(keep).unwrap().is_none());
+}
+
+#[test]
 fn undo_redo_and_checkpoints() {
     let mut s = Session::new(seed_project());
     let start = s.project().clone();

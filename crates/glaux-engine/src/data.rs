@@ -3,9 +3,9 @@
 //! - **UI(非オーディオ)スレッドで**構築し、`ArcSwap` でオーディオスレッドに渡す。
 //!   オーディオスレッドはこのデータを読むだけで、一切アロケーションしない。
 //! - ノートは絶対サンプル位置に展開してソート済み。テンポは構築時に焼き込む
-//!   (テンポ変更があればデータごと作り直す。再生位置はサンプルで保持しているため、
-//!   再生中のテンポ変更では音楽的位置が僅かにずれる。Tick ベースの位置管理は将来課題)。
-//! - 音声クリップは未対応(MVP は MIDI のみ。`glaux-dsp` 実装後に差し替える)。
+//!   (テンポ変更があればデータごと作り直す)。再生位置はサンプルで保持するが、
+//!   テンポ区間表([`TempoSeg`])も焼き込んであり、レンダラは差し替え時に
+//!   音楽的位置(tick)を保ったままサンプル位置を換算し直す。
 
 use glaux_core::{AssetId, ClipContent, Curve, Effect, ParamPath, Project, Tick};
 use glaux_dsp::{EffectParams, InstrumentParams, SampleData};
@@ -76,6 +76,14 @@ pub struct TrackMix {
     pub effects: Vec<BakedEffect>,
 }
 
+/// テンポ区間(サンプル位置 ⇔ tick の相互変換用)。`sample` 昇順。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TempoSeg {
+    pub sample: u64,
+    pub tick: u64,
+    pub samples_per_tick: f64,
+}
+
 /// オーディオスレッドが読む再生データ一式。イミュータブル。
 #[derive(Clone, Debug, Default)]
 pub struct PlaybackData {
@@ -88,6 +96,29 @@ pub struct PlaybackData {
     /// 最後のノートが終わるサンプル位置(自動停止に使う)
     pub end_sample: u64,
     pub sample_rate: f64,
+    /// テンポマップの焼き込み。データ差し替え時に「音楽的位置(tick)」を
+    /// 保ったままサンプル位置を換算し直すために使う(空なら換算しない)
+    pub tempo: Vec<TempoSeg>,
+}
+
+impl PlaybackData {
+    /// サンプル位置 → tick(小数)。区分線形。
+    pub fn sample_to_tick(&self, sample: u64) -> f64 {
+        let idx = self.tempo.partition_point(|s| s.sample <= sample);
+        let Some(seg) = idx.checked_sub(1).and_then(|i| self.tempo.get(i)) else {
+            return 0.0;
+        };
+        seg.tick as f64 + (sample - seg.sample) as f64 / seg.samples_per_tick
+    }
+
+    /// tick(小数)→ サンプル位置。
+    pub fn tick_to_sample(&self, tick: f64) -> u64 {
+        let idx = self.tempo.partition_point(|s| (s.tick as f64) <= tick);
+        let Some(seg) = idx.checked_sub(1).and_then(|i| self.tempo.get(i)) else {
+            return 0;
+        };
+        seg.sample + ((tick - seg.tick as f64) * seg.samples_per_tick).round() as u64
+    }
 }
 
 /// 読み込み済みサンプルの置き場(サンプラー音源用)。
@@ -446,6 +477,17 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
     events.sort_by_key(|e| e.start);
     let end_sample = events.iter().map(|e| e.end).max().unwrap_or(0);
 
+    let tempo = project
+        .tempo_map
+        .events()
+        .iter()
+        .map(|ev| TempoSeg {
+            sample: to_sample(ev.tick),
+            tick: ev.tick.0,
+            samples_per_tick: sample_rate * 60.0 / (ev.bpm * project.ppq as f64),
+        })
+        .collect();
+
     PlaybackData {
         events,
         tracks,
@@ -453,6 +495,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         master_amp: db_to_amp(project.master.volume_db),
         end_sample,
         sample_rate,
+        tempo,
     }
 }
 
@@ -723,6 +766,62 @@ mod tests {
         let tail_r = energy(n / 2..n * 3 / 4, 1);
         assert!(head_l > head_r * 5.0, "冒頭は左寄りのはず");
         assert!(tail_r > tail_l * 2.0, "後半は右寄りのはず");
+    }
+
+    #[test]
+    fn tempo_segments_convert_both_ways() {
+        use glaux_core::{TempoEvent, TempoMap};
+        // 0〜3840 tick は 120bpm(25 samples/tick)、以降 60bpm(50 samples/tick)
+        let mut project = project_with_notes(vec![]);
+        project.tempo_map = TempoMap::new(vec![
+            TempoEvent {
+                tick: Tick(0),
+                bpm: 120.0,
+            },
+            TempoEvent {
+                tick: Tick(3840),
+                bpm: 60.0,
+            },
+        ])
+        .unwrap();
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        assert_eq!(data.tempo.len(), 2);
+        assert_eq!(data.tempo[1].sample, 96_000);
+        assert!((data.sample_to_tick(48_000) - 1920.0).abs() < 1e-9);
+        assert!((data.sample_to_tick(96_000 + 50_000) - 4840.0).abs() < 1e-9);
+        assert_eq!(data.tick_to_sample(1920.0), 48_000);
+        assert_eq!(data.tick_to_sample(4840.0), 146_000);
+    }
+
+    #[test]
+    fn tempo_change_keeps_musical_position() {
+        use crate::render::{Renderer, Shared};
+        use glaux_core::{TempoEvent, TempoMap};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let mk = |bpm: f64| {
+            let mut p = project_with_notes(vec![note(0, 3840 * 4, 60, 100)]);
+            p.tempo_map = TempoMap::new(vec![TempoEvent { tick: Tick(0), bpm }]).unwrap();
+            build_playback_data(&p, 48_000.0, &SampleBank::default())
+        };
+        let shared = Arc::new(Shared::new(mk(120.0)));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 4800 * 2];
+        for _ in 0..10 {
+            r.process(&mut buf, 2); // 1 秒 = tick 1920 @120bpm
+        }
+        assert_eq!(shared.pos.load(Ordering::Acquire), 48_000);
+
+        // 60bpm に差し替え: tick 1920 は 2 秒 = 96000 サンプルに相当する
+        shared.data.store(Arc::new(mk(60.0)));
+        r.process(&mut buf, 2);
+        assert_eq!(
+            shared.pos.load(Ordering::Acquire),
+            96_000 + 4800,
+            "テンポ変更後も音楽的位置(tick)が保たれるはず"
+        );
     }
 
     #[test]

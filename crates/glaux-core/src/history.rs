@@ -269,4 +269,30 @@ impl Session {
             conflicts,
         })
     }
+
+    /// 履歴の compaction: 古いエントリを捨てて直近 `keep` 件だけ残す。
+    ///
+    /// 戻り値は (残した履歴の起点となるプロジェクト状態, 捨てたエントリ)。
+    /// 起点は「現在状態に、残すエントリの逆コマンドを新しい順に適用したもの」で、
+    /// `Session::replay(起点, 残したエントリ)` が現在状態を再現する。
+    /// redo スタックがある間・件数が `keep` 以下のときは何もしない(Ok(None))。
+    /// 逆コマンドが適用できない(履歴が壊れている)場合はエラーで、状態は変えない。
+    pub fn compact(&mut self, keep: usize) -> Result<Option<(Project, Vec<HistoryEntry>)>> {
+        let n = self.history.entries.len();
+        if self.history.cursor != n || n <= keep {
+            return Ok(None);
+        }
+        let drop = n - keep;
+        let mut base = self.project.clone();
+        for e in self.history.entries[drop..].iter().rev() {
+            base.apply(&e.inverse)?;
+        }
+        let dropped: Vec<HistoryEntry> = self.history.entries.drain(..drop).collect();
+        self.history.cursor -= drop;
+        self.history.checkpoints.retain(|_, idx| *idx >= drop);
+        for idx in self.history.checkpoints.values_mut() {
+            *idx -= drop;
+        }
+        Ok(Some((base, dropped)))
+    }
 }
