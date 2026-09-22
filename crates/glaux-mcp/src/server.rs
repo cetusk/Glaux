@@ -164,7 +164,8 @@ pub struct SetSoundfontParams {
 pub struct ImportSampleParams {
     /// 音源を設定するトラック ID(`trk_xxxxxx`)。
     pub track_id: String,
-    /// WAV ファイルの絶対パス(ユーザーのマシン上のファイル)。WAV のみ対応。
+    /// 音声ファイルの絶対パス(ユーザーのマシン上のファイル)。WAV / MP3 / FLAC / OGG / M4A に対応
+    /// (WAV 以外は取り込み時に WAV へ変換される)。
     pub path: String,
     /// サンプル自身の音程(MIDI ノート番号。60 = C4)。この音で等速再生になる。
     /// 省略時 60。音程のない素材(ドラムワンショット等)は 60 のままでよい。
@@ -176,7 +177,8 @@ pub struct ImportSampleParams {
 pub struct ImportAudioClipParams {
     /// 置き先の音声トラック ID(`trk_xxxxxx`、kind: "audio")。
     pub track_id: String,
-    /// WAV ファイルの絶対パス(ユーザーのマシン上のファイル)。WAV のみ対応。
+    /// 音声ファイルの絶対パス(ユーザーのマシン上のファイル)。WAV / MP3 / FLAC / OGG / M4A に対応
+    /// (WAV 以外は取り込み時に WAV へ変換される)。
     pub path: String,
     /// クリップの開始位置(tick)。省略で曲頭(0)。
     #[serde(default)]
@@ -990,7 +992,7 @@ impl GlauxServer {
 
         let dir = self.handle.project_dir().await?;
         let imported =
-            crate::assets::import_wav(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
+            crate::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
 
         let mut params_map = glaux_core::ParamMap::new();
         if let Some(root) = p.root {
@@ -1032,7 +1034,7 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "WAV ファイルを音声クリップとして音声トラック(kind: \"audio\")に置く。\
+        description = "音声ファイル(WAV / MP3 / FLAC / OGG / M4A)を音声クリップとして音声トラック(kind: \"audio\")に置く。\
         ボーカル・実録ギター・ループ素材など「そのまま鳴らす」音声はこれ(音程を付けて\
         鳴らしたいワンショットは import_sample でサンプラー音源にする)。\
         クリップ長は WAV の秒数をその位置のテンポで tick に換算。元の速度で再生される\
@@ -1050,7 +1052,7 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project().await?;
         let dir = self.handle.project_dir().await?;
         let imported =
-            crate::assets::import_wav(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
+            crate::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
         let file_name = std::path::Path::new(&p.path)
             .file_stem()
             .map(|n| n.to_string_lossy().into_owned())
@@ -1426,7 +1428,7 @@ impl ServerHandler for GlauxServer {
                  大きな試行錯誤の前に checkpoint を打ち、気に入らなければ revert_to で戻る。\
                  「さっきのあの編集だけ戻して」は revert {entry_id}(後続の編集は保持される)。\
                  音声素材(録音・WAV)は音声トラック(kind: \"audio\")のクリップとして再生される。\
-                 WAV を置くときは import_audio_clip。人間の録音も同じ形で入ってくるので analyze_audio で聴ける。\
+                 音声ファイル(WAV / MP3 等)を置くときは import_audio_clip。人間の録音も同じ形で入ってくるので analyze_audio で聴ける。\
                  鼻歌・単旋律の録音は transcribe_audio で MIDI クリップにできる(その後キー確認と整えを忘れずに)。\
                  すべての編集は履歴に残り、get_history(author: \"ai\")で自分の過去の作業を確認できる。",
             )

@@ -639,7 +639,7 @@
         ⏺
       </button>
       {#if recordNotice}
-        <span class="rec-notice">{recordNotice}</span>
+        <span class="rec-notice" title={recordNotice}>{recordNotice}</span>
       {/if}
       {#if lastRecorded}
         <button class="rec-midi" onclick={transcribeLast} title="録音(鼻歌・歌など単旋律)を譜起こしして MIDI クリップにする">
@@ -898,15 +898,23 @@
     }
   }
 
+  /* ヘッダーの高さを変えないよう 1 行に収め、はみ出しは省略(全文はホバーで) */
   .rec-notice {
     font-size: 11px;
     color: var(--text-dim);
     margin-left: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 16em;
+    min-width: 0;
   }
 
   .rec-midi {
     border-color: var(--accent-dim);
     color: var(--accent);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .bpm-btn {

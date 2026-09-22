@@ -1,7 +1,9 @@
 //! 音声アセットの取り込み。
 //!
-//! WAV を内容ハッシュ(sha256)名でプロジェクトの `audio/` にコピーし、
+//! 音声ファイルを内容ハッシュ(sha256)名でプロジェクトの `audio/` に置き、
 //! `Asset` メタデータを返す。同じ内容は同じ ID になるので重複コピーしない。
+//! WAV はそのままコピー、mp3 / flac / ogg / m4a などは symphonia でデコードして
+//! 32bit float WAV に変換して置く(エンジンは WAV だけ読めばよい)。
 
 use glaux_core::{Asset, AssetId, Clip, ClipId, Command, Project, Tick, TrackId, TrackKind};
 use std::path::Path;
@@ -11,6 +13,132 @@ pub struct ImportedSample {
     pub asset: Asset,
     /// 既にプロジェクトに同内容のファイルがあった
     pub already_present: bool,
+}
+
+/// 取り込める拡張子(小文字)。UI のファイル選択フィルタと揃えること。
+pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg", "m4a", "aac"];
+
+/// 音声ファイルをプロジェクトへ取り込む(WAV 以外は WAV に変換)。
+pub fn import_audio(project_dir: &Path, src: &Path) -> Result<ImportedSample, String> {
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext == "wav" {
+        return import_wav(project_dir, src);
+    }
+    let bytes =
+        std::fs::read(src).map_err(|e| format!("読み込めません({}): {e}", src.display()))?;
+    use sha2::Digest;
+    let hex = format!("{:x}", sha2::Sha256::digest(&bytes));
+    let id = AssetId::from_sha256_hex(&hex).map_err(|e| e.to_string())?;
+    let rel_path = format!("audio/{hex}.wav");
+    let dest = project_dir.join(&rel_path);
+
+    let already_present = dest.exists();
+    let (channels, sample_rate, frames) = if already_present {
+        let r = hound::WavReader::open(&dest).map_err(|e| e.to_string())?;
+        (r.spec().channels, r.spec().sample_rate, r.duration() as u64)
+    } else {
+        let (samples, channels, sample_rate) = decode_audio(bytes, &ext)?;
+        std::fs::create_dir_all(project_dir.join("audio")).map_err(|e| e.to_string())?;
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let tmp = dest.with_extension("tmp");
+        let mut w = hound::WavWriter::create(&tmp, spec).map_err(|e| e.to_string())?;
+        for v in &samples {
+            w.write_sample(*v).map_err(|e| e.to_string())?;
+        }
+        w.finalize().map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
+        (
+            channels,
+            sample_rate,
+            samples.len() as u64 / channels.max(1) as u64,
+        )
+    };
+    if frames == 0 {
+        return Err("音声データが空です".to_owned());
+    }
+    Ok(ImportedSample {
+        id,
+        asset: Asset {
+            path: rel_path,
+            sample_rate,
+            channels,
+            frames,
+        },
+        already_present,
+    })
+}
+
+/// symphonia で音声をデコードする。戻り値は (インターリーブ f32, チャンネル数, サンプルレート)。
+fn decode_audio(bytes: Vec<u8>, ext: &str) -> Result<(Vec<f32>, u16, u32), String> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+    use symphonia::core::errors::Error;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension(ext);
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| format!("この形式は読めません({ext}): {e}"))?;
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or("音声トラックがありません")?;
+    let track_id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| format!("デコーダを作れません: {e}"))?;
+
+    let mut out = Vec::new();
+    let mut channels = 0u16;
+    let mut rate = 0u32;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(Error::ResetRequired) => break,
+            Err(e) => return Err(format!("読み込み中にエラー: {e}")),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(buf) => {
+                let spec = *buf.spec();
+                channels = spec.channels.count() as u16;
+                rate = spec.rate;
+                let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
+                sb.copy_interleaved_ref(buf);
+                out.extend_from_slice(sb.samples());
+            }
+            // 壊れたフレームは飛ばして続ける(mp3 の先頭などでよくある)
+            Err(Error::DecodeError(_)) => continue,
+            Err(e) => return Err(format!("デコードに失敗: {e}")),
+        }
+    }
+    if channels == 0 || rate == 0 {
+        return Err("音声データが空です".to_owned());
+    }
+    Ok((out, channels, rate))
 }
 
 /// WAV ファイルをプロジェクトへ取り込む。
@@ -193,6 +321,29 @@ mod tests {
         let b = import_wav(&proj, &src).unwrap();
         assert!(b.already_present);
         assert_eq!(a.id, b.id);
+    }
+
+    #[test]
+    fn decodes_other_formats_via_symphonia() {
+        // symphonia 経由の経路を、拡張子を偽った WAV で通す(形式はプローブで判定される)
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("take.wav");
+        write_test_wav(&src);
+        let disguised = tmp.path().join("take.flac");
+        std::fs::copy(&src, &disguised).unwrap();
+        let proj = tmp.path().join("Song.glaux");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        let a = import_audio(&proj, &disguised).unwrap();
+        assert_eq!(a.asset.frames, 4800);
+        assert_eq!(a.asset.sample_rate, 48_000);
+        assert!(a.asset.path.ends_with(".wav"));
+        let r = hound::WavReader::open(proj.join(&a.asset.path)).unwrap();
+        assert_eq!(r.spec().sample_format, hound::SampleFormat::Float);
+        // 2 回目は変換済みファイルを再利用
+        let b = import_audio(&proj, &disguised).unwrap();
+        assert!(b.already_present);
+        assert_eq!(b.asset.frames, 4800);
     }
 
     #[test]

@@ -21,7 +21,7 @@
   プロジェクト管理(作成/切替/移動/SoundLab)・履歴・チャット・WAV 書き出し
 実機確認済みのハイライト: AI がチャット指示で作曲 → analyze_audio/harmony/rhythm で
 自己確認 → エフェクト・プリセット・SoundFont で音作り、のループが完走。
-AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 149 件。
+AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 150 件。
 
 この文書は、企画段階の議論で決めたことを **理由付きで** 残したものです。
 判断を覆すときは、ここに書いてある理由を上回る根拠を示してください。
@@ -765,7 +765,12 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     ±2400 cents、線形補間・両端保持)。`PitchCurve` → `PitchExpr` で奏法と掛け合わせ。
     UI は表示のみ(編集は AI 経由。`update_notes` の pitch_curve)
   - ~~ドラム用 SF2 キット UI~~ → 実装済み(2026-09-22。bank 128 でキット図表示)
-  - 残り: 非 WAV 素材(symphonia)、ピッチカーブの手描き UI
+  - ~~非 WAV 素材~~ → **実装済み(2026-09-22)**: `assets::import_audio` が拡張子で分岐し、
+    WAV はそのままコピー、mp3 / flac / ogg(vorbis)/ m4a・aac は symphonia 0.5 でデコードして
+    32bit float WAV(`audio/<sha256>.wav`)に変換して置く(エンジンは WAV だけ読む)。
+    UI のファイル選択・MCP import_sample / import_audio_clip が対応。
+    手動確認用 `cargo run -p glaux-mcp --example import_check -- <file>`
+  - 残り: ピッチカーブの手描き UI
 - ~~音声クリップ再生・録音~~ → **実装済み(2026-09-22)**:
   - 再生: `AudioEvent` を固定プール(16)で線形補間再生。offset / gain_db / fade を反映。
     シーク・ループ折返し・一時停止からの再開・編集によるデータ差し替えのいずれでも

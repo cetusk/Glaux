@@ -133,7 +133,7 @@ async fn import_sample(
         .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
     let dir = state.project_dir();
     let imported =
-        glaux_mcp::assets::import_wav(std::path::Path::new(&dir), std::path::Path::new(&path))?;
+        glaux_mcp::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))?;
 
     let mut cmds = Vec::new();
     if !project.assets.contains_key(&imported.id) {
@@ -176,7 +176,7 @@ async fn import_audio_clip(
     let (project, _) = state.handle.get_project().await?;
     let dir = state.project_dir();
     let imported =
-        glaux_mcp::assets::import_wav(std::path::Path::new(&dir), std::path::Path::new(&path))?;
+        glaux_mcp::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))?;
     let name = std::path::Path::new(&path)
         .file_stem()
         .map(|n| n.to_string_lossy().into_owned())

@@ -191,14 +191,14 @@
     }
   }
 
-  /// 音声トラックの空きレーン: WAV を選んでその小節に音声クリップとして置く
+  /// 音声トラックの空きレーン: 音声ファイルを選んでその小節に音声クリップとして置く
   async function importAudioAt(track: Track, startTick: number) {
     const file = await pickFile({
-      title: "音声ファイル(WAV)をクリップとして配置",
-      filters: [{ name: "WAV", extensions: ["wav"] }],
+      title: "音声ファイルをクリップとして配置",
+      filters: [{ name: "音声(WAV / MP3 / FLAC / OGG / M4A)", extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
     });
     if (typeof file !== "string") return;
-    await api.importAudioClip(track.id, file, startTick).catch(() => {});
+    await api.importAudioClip(track.id, file, startTick).catch((e) => alert(`取り込めませんでした: ${e}`));
   }
 
   /// 空きレーンのダブルクリック: その小節にクリップを作ってピアノロールを開く
@@ -633,7 +633,7 @@
         style="width:{totalPx}px"
         ondblclick={(e) => onLaneDblClick(e, track)}
         title={track.kind === "audio"
-          ? "ダブルクリックで WAV をその小節に配置(録音は ⏺ ボタン)"
+          ? "ダブルクリックで音声ファイル(WAV / MP3 等)をその小節に配置(録音は ⏺ ボタン)"
           : track.clips.length === 0
             ? "ダブルクリックでクリップを作成してピアノロールを開く"
             : ""}
@@ -772,7 +772,7 @@
     <button class="add-track" onclick={() => addTrack("midi")} title="MIDI トラックを追加(音源は後から AI に頼むか自動で subtractive)">
       + トラックを追加
     </button>
-    <button class="add-track" onclick={() => addTrack("audio")} title="音声トラックを追加(WAV の配置・録音先。空きレーンをダブルクリックで WAV を配置)">
+    <button class="add-track" onclick={() => addTrack("audio")} title="音声トラックを追加(音声ファイルの配置・録音先。空きレーンをダブルクリックで WAV / MP3 等を配置)">
       + 🎵 音声トラック
     </button>
   </div>

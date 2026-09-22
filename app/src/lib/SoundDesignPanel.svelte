@@ -103,8 +103,8 @@
     const t = track;
     if (!t) return;
     const file = await pickFile({
-      title: "サンプル(WAV)を読み込む",
-      filters: [{ name: "WAV", extensions: ["wav"] }],
+      title: "サンプル(WAV / MP3 等)を読み込む",
+      filters: [{ name: "音声(WAV / MP3 / FLAC / OGG / M4A)", extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
     });
     if (typeof file !== "string") return;
     try {
