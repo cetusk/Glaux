@@ -584,7 +584,8 @@ impl GlauxServer {
         1〜2 小節を作ってループにし、resize_clip で伸ばすのが速い。ループ範囲より後ろのノートは鳴らない)/ \
         set_automation_points {track,target,points}(target は \"track/volume_db\" / \"track/pan\" / \
         \"device/<パラメータ名>\"(例 device/cutoff。list_params にある連続値パラメータ。\
-        値はパラメータと同じ単位)、points は [{tick,value,curve?}] で curve は \
+        値はパラメータと同じ単位)/ \"fx/<エフェクト ID>/<パラメータ名>\"(そのトラックのエフェクト。\
+        例 リバーブの mix をサビで上げる、EQ の high_gain_db を開いていく)、points は [{tick,value,curve?}] で curve は \
         linear/hold/exponential。フェードイン・ビルドアップの音量カーブ・左右の揺れ・\
         フィルタスイープなど時間変化する表現に使う。\
         レーンがあるとフェーダー/つまみの値より優先。空配列でレーン削除)。\

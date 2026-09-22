@@ -85,6 +85,40 @@ pub struct EqParams {
     pub low: BiquadCoeffs,
     pub mid: BiquadCoeffs,
     pub high: BiquadCoeffs,
+    /// 係数を計算し直すための生の値(オートメーション用)
+    pub raw: EqRaw,
+}
+
+/// EQ の生の値(周波数 Hz・ゲイン dB・Q)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EqRaw {
+    pub low_freq: f32,
+    pub low_gain_db: f32,
+    pub mid_freq: f32,
+    pub mid_q: f32,
+    pub mid_gain_db: f32,
+    pub high_freq: f32,
+    pub high_gain_db: f32,
+}
+
+impl EqParams {
+    fn from_raw(sample_rate: f32, r: EqRaw) -> EqParams {
+        EqParams {
+            low: BiquadCoeffs::low_shelf(sample_rate, r.low_freq, r.low_gain_db.clamp(-15.0, 15.0)),
+            mid: BiquadCoeffs::peaking(
+                sample_rate,
+                r.mid_freq,
+                r.mid_q,
+                r.mid_gain_db.clamp(-15.0, 15.0),
+            ),
+            high: BiquadCoeffs::high_shelf(
+                sample_rate,
+                r.high_freq,
+                r.high_gain_db.clamp(-15.0, 15.0),
+            ),
+            raw: r,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -939,6 +973,73 @@ fn get(map: &ParamMap, specs: &[ParamSpec], name: &str) -> f32 {
     }
 }
 
+impl EffectParams {
+    /// オートメーション用: 連続パラメータを生の値(ParamSpec と同じ単位)で上書きする。
+    /// `bake_effect` と同じクランプ・変換を通す。対象外のパラメータは無視して false。
+    /// オーディオスレッドからブロック単位で呼ばれる前提(アロケーションしない)。
+    pub fn set_continuous(&mut self, name: &str, v: f32, sample_rate: f32) -> bool {
+        let tau = std::f32::consts::TAU;
+        let db = |x: f32| 10.0_f32.powf(x / 20.0);
+        match self {
+            EffectParams::Eq(p) => {
+                let mut r = p.raw;
+                match name {
+                    "low_freq" => r.low_freq = v,
+                    "low_gain_db" => r.low_gain_db = v,
+                    "mid_freq" => r.mid_freq = v,
+                    "mid_q" => r.mid_q = v,
+                    "mid_gain_db" => r.mid_gain_db = v,
+                    "high_freq" => r.high_freq = v,
+                    "high_gain_db" => r.high_gain_db = v,
+                    _ => return false,
+                }
+                *p = EqParams::from_raw(sample_rate, r);
+            }
+            EffectParams::Compressor(p) => {
+                let coef = |ms: f32| 1.0 - (-1.0 / (ms.max(0.1) * 0.001 * sample_rate)).exp();
+                match name {
+                    "threshold_db" => p.threshold_db = v.clamp(-40.0, 0.0),
+                    "ratio" => p.ratio = v.clamp(1.0, 20.0),
+                    "attack_ms" => p.attack_coef = coef(v),
+                    "release_ms" => p.release_coef = coef(v),
+                    "makeup_db" => p.makeup = db(v.clamp(0.0, 24.0)),
+                    _ => return false,
+                }
+            }
+            EffectParams::Reverb(p) => match name {
+                "mix" => p.mix = v.clamp(0.0, 1.0),
+                "size" => p.feedback = 0.7 + v.clamp(0.0, 1.0) * 0.28,
+                "damping" => p.damping = v.clamp(0.0, 1.0),
+                _ => return false,
+            },
+            EffectParams::Distortion(p) => match name {
+                "drive_db" => p.drive = db(v.clamp(0.0, 40.0)),
+                "tone" => p.tone_coef = (-tau * v.clamp(500.0, 12000.0) / sample_rate).exp(),
+                "mix" => p.mix = v.clamp(0.0, 1.0),
+                "level_db" => p.level = db(v.clamp(-24.0, 6.0)),
+                _ => return false,
+            },
+            EffectParams::Amp(p) => match name {
+                "gain_db" => p.gain = db(v.clamp(0.0, 54.0)),
+                "tone" => {
+                    p.tone_coef = (-tau * (900.0 + v.clamp(0.0, 1.0) * 5500.0) / sample_rate).exp()
+                }
+                "presence" => p.presence = v.clamp(0.0, 1.0),
+                "level_db" => p.level = db(v.clamp(-30.0, 6.0)),
+                _ => return false,
+            },
+            EffectParams::Sidechain(p) => match name {
+                "threshold_db" => p.threshold = db(v.clamp(-50.0, 0.0)),
+                "duck_db" => p.duck_floor = db(-v.clamp(0.0, 24.0)),
+                "attack_ms" => p.attack_samples = v.clamp(0.1, 50.0) * 0.001 * sample_rate,
+                "release_ms" => p.release_samples = v.clamp(20.0, 1000.0) * 0.001 * sample_rate,
+                _ => return false,
+            },
+        }
+        true
+    }
+}
+
 /// `Effect`(builtin)を焼き込み済み定義に変換する。未知の名前は None。
 /// `resolve_track` はサイドチェインの source(トラック ID 文字列)を index に引く
 /// (エンジンがプロジェクトを知っているので、そちらから渡してもらう)。
@@ -954,24 +1055,18 @@ pub fn bake_effect(
     match name.as_str() {
         "eq" => {
             let s = EQ_SPECS;
-            Some(EffectParams::Eq(EqParams {
-                low: BiquadCoeffs::low_shelf(
-                    sample_rate,
-                    get(map, s, "low_freq"),
-                    get(map, s, "low_gain_db").clamp(-15.0, 15.0),
-                ),
-                mid: BiquadCoeffs::peaking(
-                    sample_rate,
-                    get(map, s, "mid_freq"),
-                    get(map, s, "mid_q"),
-                    get(map, s, "mid_gain_db").clamp(-15.0, 15.0),
-                ),
-                high: BiquadCoeffs::high_shelf(
-                    sample_rate,
-                    get(map, s, "high_freq"),
-                    get(map, s, "high_gain_db").clamp(-15.0, 15.0),
-                ),
-            }))
+            Some(EffectParams::Eq(EqParams::from_raw(
+                sample_rate,
+                EqRaw {
+                    low_freq: get(map, s, "low_freq"),
+                    low_gain_db: get(map, s, "low_gain_db"),
+                    mid_freq: get(map, s, "mid_freq"),
+                    mid_q: get(map, s, "mid_q"),
+                    mid_gain_db: get(map, s, "mid_gain_db"),
+                    high_freq: get(map, s, "high_freq"),
+                    high_gain_db: get(map, s, "high_gain_db"),
+                },
+            )))
         }
         "compressor" => {
             let s = COMPRESSOR_SPECS;
@@ -1051,6 +1146,33 @@ pub fn bake_effect(
 mod tests {
     use super::*;
     use glaux_core::{Effect, FxId};
+
+    #[test]
+    fn set_continuous_matches_baking() {
+        // オートメーションで上書きした結果が、最初からその値で焼いたものと一致する
+        let cases: &[(&str, &str, f64)] = &[
+            ("eq", "high_gain_db", 9.0),
+            ("eq", "mid_freq", 1500.0),
+            ("compressor", "ratio", 8.0),
+            ("compressor", "makeup_db", 6.0),
+            ("reverb", "mix", 0.8),
+            ("distortion", "drive_db", 30.0),
+            ("amp", "tone", 0.2),
+            ("sidechain", "duck_db", 12.0),
+        ];
+        let none = |_: &str| None;
+        for (fx, name, v) in cases {
+            let mut from_default = bake_effect(&effect(fx, &[]), 48_000.0, &none).unwrap();
+            assert!(
+                from_default.set_continuous(name, *v as f32, 48_000.0),
+                "{fx}/{name}"
+            );
+            let direct = bake_effect(&effect(fx, &[(name, *v)]), 48_000.0, &none).unwrap();
+            assert_eq!(from_default, direct, "{fx}/{name}");
+        }
+        let mut eq = bake_effect(&effect("eq", &[]), 48_000.0, &none).unwrap();
+        assert!(!eq.set_continuous("no_such", 1.0, 48_000.0));
+    }
 
     fn effect(name: &str, params: &[(&str, f64)]) -> Effect {
         let mut e = Effect::builtin(FxId::new(), name);

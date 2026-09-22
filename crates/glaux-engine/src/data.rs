@@ -102,6 +102,9 @@ pub struct TrackMix {
     /// device/<param> のオートメーション(raw 値)。ブロックレートで
     /// `InstrumentParams::set_continuous` に流し込む(フィルタスイープ等)
     pub device_auto: Vec<(String, Vec<AutoPoint>)>,
+    /// fx/<id>/<param> のオートメーション(エフェクトの状態スロット, パラメータ名, 点列)。
+    /// ブロックレートで `EffectParams::set_continuous` に流し込む
+    pub fx_auto: Vec<(u32, String, Vec<AutoPoint>)>,
     /// 焼き込み済みの楽器パラメータ(glaux-dsp)
     pub instrument: InstrumentParams,
     /// エフェクトチェーン(bypass 除外・焼き込み済み)。楽器 → チェーン → 音量/パン の順
@@ -415,6 +418,19 @@ fn bake_chain(
     next_slot: &mut u32,
     resolve_track: &dyn Fn(&str) -> Option<u32>,
 ) -> Vec<BakedEffect> {
+    bake_chain_with_ids(effects, sample_rate, next_slot, resolve_track)
+        .into_iter()
+        .map(|(_, b)| b)
+        .collect()
+}
+
+/// `bake_chain` と同じだが、各エフェクトの ID も返す(オートメーションのスロット解決用)。
+fn bake_chain_with_ids(
+    effects: &[Effect],
+    sample_rate: f32,
+    next_slot: &mut u32,
+    resolve_track: &dyn Fn(&str) -> Option<u32>,
+) -> Vec<(glaux_core::FxId, BakedEffect)> {
     effects
         .iter()
         .filter(|e| !e.bypass)
@@ -429,7 +445,7 @@ fn bake_chain(
             }
             let slot = *next_slot;
             *next_slot += 1;
-            Some(BakedEffect { params, slot })
+            Some((e.id.clone(), BakedEffect { params, slot }))
         })
         .collect()
 }
@@ -504,6 +520,38 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
             let (pl, pr) = pan_gains(t.pan);
             let gain = db_to_amp(t.volume_db);
             let instrument = bake_track_instrument(t, bank, sample_rate as f32);
+            let chain = bake_chain_with_ids(
+                &t.effects,
+                sample_rate as f32,
+                &mut next_slot,
+                &resolve_track,
+            );
+            // fx/<id>/<param> のレーンを、焼いたエフェクトのスロットに解決する
+            // (バイパス中・未知のエフェクトのレーンは鳴らさない)
+            let fx_auto = t
+                .automation
+                .iter()
+                .filter_map(|lane| {
+                    let ParamPath::Effect { id, name } = &lane.target else {
+                        return None;
+                    };
+                    let (_, baked) = chain.iter().find(|(fid, _)| fid == id)?;
+                    if lane.points.is_empty() {
+                        return None;
+                    }
+                    let mut points: Vec<AutoPoint> = lane
+                        .points
+                        .iter()
+                        .map(|p| AutoPoint {
+                            sample: to_sample(p.tick),
+                            value: p.value as f32,
+                            curve: p.curve,
+                        })
+                        .collect();
+                    points.sort_by_key(|p| p.sample);
+                    Some((baked.slot, name.clone(), points))
+                })
+                .collect();
             TrackMix {
                 gain_l: gain * pl,
                 gain_r: gain * pr,
@@ -513,13 +561,9 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 vol_db_auto: bake_lane(t, "volume_db"),
                 pan_auto: bake_lane(t, "pan"),
                 device_auto: bake_device_lanes(t),
+                fx_auto,
                 instrument,
-                effects: bake_chain(
-                    &t.effects,
-                    sample_rate as f32,
-                    &mut next_slot,
-                    &resolve_track,
-                ),
+                effects: chain.into_iter().map(|(_, b)| b).collect(),
             }
         })
         .collect();
@@ -887,6 +931,51 @@ mod tests {
             tail > head * 2.0,
             "スイープで高域の割合が増えるはず: head={head} tail={tail}"
         );
+    }
+
+    #[test]
+    fn effect_param_automation_changes_output() {
+        use crate::export::render_project;
+        use glaux_core::{AutomationLane, AutomationPoint, Curve, Effect, FxId, ParamPath};
+        // 歪みの出力レベルを -24dB → +6dB に上げていく。後半ほど大きくなるはず
+        let mut project = project_with_notes(vec![note(0, 3840, 57, 110)]);
+        let fx_id = FxId::new();
+        let mut dist = Effect::builtin(fx_id.clone(), "distortion");
+        dist.params.insert("level_db".into(), (-24.0).into());
+        project.tracks[0].effects.push(dist);
+        project.tracks[0].automation.push(AutomationLane {
+            target: ParamPath::effect(fx_id, "level_db"),
+            points: vec![
+                AutomationPoint {
+                    tick: Tick(0),
+                    value: -24.0,
+                    curve: Curve::Linear,
+                },
+                AutomationPoint {
+                    tick: Tick(3840),
+                    value: 6.0,
+                    curve: Curve::Linear,
+                },
+            ],
+        });
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        assert_eq!(data.tracks[0].fx_auto.len(), 1);
+        let out = render_project(&project, 48_000.0, &Default::default()).unwrap();
+        let rms = |a: f64, b: f64| {
+            let sl = &out[(a * 96_000.0) as usize..(b * 96_000.0) as usize];
+            (sl.iter().map(|s| s * s).sum::<f32>() / sl.len() as f32).sqrt()
+        };
+        let head = rms(0.1, 0.4);
+        let tail = rms(1.5, 1.9);
+        assert!(
+            tail > head * 5.0,
+            "レベルが上がっていくはず: head={head} tail={tail}"
+        );
+
+        // バイパスしたエフェクトのレーンは無視される
+        project.tracks[0].effects[0].bypass = true;
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        assert!(data.tracks[0].fx_auto.is_empty());
     }
 
     #[test]

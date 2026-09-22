@@ -213,6 +213,8 @@ pub struct Renderer {
     /// レーンのあるトラックだけブロック頭でベースからコピーして値を上書きする。
     /// 起動時に確保し、以後アロケーションしない(clone は Arc 参照カウントのみ)
     inst_scratch: Vec<glaux_dsp::InstrumentParams>,
+    /// fx オートメーション適用済みのエフェクト定義(状態スロット別)。None なら焼いたまま使う
+    fx_scratch: Vec<Option<EffectParams>>,
     /// `data.events` の次に発音するイベントの添字
     next_event: usize,
     /// 直前に見ていた `PlaybackData` のアドレス(差し替え検出用)
@@ -268,6 +270,7 @@ impl Renderer {
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
             inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
+            fx_scratch: vec![None; MAX_EFFECT_SLOTS],
             next_event: 0,
             last_data: 0,
             pos: 0,
@@ -372,6 +375,9 @@ impl Renderer {
             for s in self.inst_scratch.iter_mut() {
                 *s = glaux_dsp::InstrumentParams::default();
             }
+            for s in self.fx_scratch.iter_mut() {
+                *s = None;
+            }
             // スロットの中身が変わっていたらエフェクト状態を作り直す(アロケーションなし)
             for fx in data
                 .tracks
@@ -455,6 +461,24 @@ impl Renderer {
         // 音色パラメータのオートメーション: ブロック頭で評価してスクラッチに適用する
         // (1 ブロック ≈ 数 ms なので聴感上は連続。発音中のボイスにも効く =
         //  フィルタスイープ等が鳴る)
+        // エフェクトのパラメータのオートメーションも同様(スロット別の作業用コピー)
+        for mix in data.tracks.iter().take(MAX_TRACKS) {
+            for (slot, name, points) in &mix.fx_auto {
+                let Some(fx) = mix.effects.iter().find(|f| f.slot == *slot) else {
+                    continue;
+                };
+                let s = *slot as usize;
+                if s >= self.fx_scratch.len() {
+                    continue;
+                }
+                let mut p = self.fx_scratch[s].unwrap_or(fx.params);
+                let mut cursor = points.partition_point(|pt| pt.sample <= self.pos);
+                cursor = cursor.saturating_sub(1);
+                let v = eval_auto(points, &mut cursor, self.pos);
+                p.set_continuous(name, v, sr);
+                self.fx_scratch[s] = Some(p);
+            }
+        }
         for (ti, mix) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
             if mix.device_auto.is_empty() {
                 continue;
@@ -689,9 +713,12 @@ impl Renderer {
                 }
                 let (mut fl, mut fr) = (mono, mono);
                 for fx in &mix.effects {
-                    let key = sidechain_key(&fx.params);
+                    let params = self.fx_scratch[fx.slot as usize]
+                        .as_ref()
+                        .unwrap_or(&fx.params);
+                    let key = sidechain_key(params);
                     let state = &mut self.effect_states[fx.slot as usize];
-                    (fl, fr) = state.process(&fx.params, fl, fr, key);
+                    (fl, fr) = state.process(params, fl, fr, key);
                 }
                 l += fl * gl;
                 r += fr * gr;
@@ -797,6 +824,7 @@ mod tests {
                 vol_db_auto: vec![],
                 pan_auto: vec![],
                 device_auto: vec![],
+                fx_auto: vec![],
                 instrument: test_instrument(),
                 effects: vec![],
             }],

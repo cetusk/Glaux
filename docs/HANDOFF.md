@@ -302,8 +302,10 @@ MVP の割り切り(将来課題):
   ループクリップは対応済み(2026-09-23)。タイムストレッチ(Stretch::Follow)は未対応
 - オートメーションは track/volume_db・track/pan(サンプル単位で補間)と
   device/<パラメータ>(音色。ブロックレート ≈ 数 ms で評価、
-  `InstrumentParams::set_continuous` に raw 値を流し込む)に対応。
-  fx/<id>/<パラメータ> のレーンは未対応
+  `InstrumentParams::set_continuous` に raw 値を流し込む)、
+  fx/<id>/<パラメータ>(2026-09-23。`EffectParams::set_continuous` がブロック頭で係数を計算し直し、
+  レンダラのスロット別作業コピー `fx_scratch` に適用。EQ は生の値 `EqRaw` を保持して帯域の係数を
+  再計算。バイパス中のエフェクトのレーンは鳴らさない。マスターのエフェクトはレーン対象外)に対応
 - 発音中のデータ差し替えはボイスを切り直す(クリックノイズが出うる)
 
 今後: `ParamChanged` の軽量差し替え、MIDI 入力は `midir`、
