@@ -1,0 +1,333 @@
+//! 楽器の `ParamSpec` 定義と、`ParamMap`(値のみ)からの焼き込み。
+//!
+//! description は AI が読む唯一の「つまみの説明書」。聴感上の効果を書くこと。
+
+use crate::drum::DrumParams;
+use crate::subtractive::{SubtractiveParams, Waveform};
+use crate::voice::{InstrumentKind, InstrumentParams};
+use glaux_core::{Device, ParamMap, ParamRange, ParamSpec, ParamValue, PluginSource};
+
+pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "waveform",
+        display_name: "波形",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["saw", "square", "triangle", "sine"],
+            default: "saw",
+        },
+        description: "音の基本キャラクター。saw は明るく厚い、square は木管っぽく中空、\
+            triangle は丸く柔らかい、sine は最も澄んだ純音。",
+    },
+    ParamSpec {
+        name: "cutoff",
+        display_name: "カットオフ",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 40.0,
+            max: 12000.0,
+            default: 8000.0,
+            skew: Some(0.3),
+        },
+        description: "下げると音がこもって暗くなり、上げると明るく開ける。\
+            ベースは 200〜800、パッドは 1000〜3000、リードは 3000 以上が目安。",
+    },
+    ParamSpec {
+        name: "resonance",
+        display_name: "レゾナンス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 0.95,
+            default: 0.15,
+            skew: None,
+        },
+        description: "カットオフ付近を強調する癖の強さ。上げるとミョンミョンした\
+            シンセらしい鳴りになり、上げすぎるとピーキーで耳に刺さる。",
+    },
+    ParamSpec {
+        name: "attack",
+        display_name: "アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 2.0,
+            default: 0.005,
+            skew: Some(0.3),
+        },
+        description: "音の立ち上がりの速さ。短いとパーカッシブ、長いとふわっと\
+            立ち上がるパッド向きになる。",
+    },
+    ParamSpec {
+        name: "decay",
+        display_name: "ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 3.0,
+            default: 0.15,
+            skew: Some(0.3),
+        },
+        description: "立ち上がり後にサスティンレベルまで落ちる時間。\
+            短いとプラック(はじいた)感が出る。",
+    },
+    ParamSpec {
+        name: "sustain",
+        display_name: "サスティン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.7,
+            skew: None,
+        },
+        description: "押している間の音量。0 に近いとプラック/スタッカート的、\
+            1 に近いとオルガンのように持続する。",
+    },
+    ParamSpec {
+        name: "release",
+        display_name: "リリース",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 4.0,
+            default: 0.2,
+            skew: Some(0.3),
+        },
+        description: "ノートを離した後の余韻の長さ。長いと残響感が出るが、\
+            速いフレーズでは音が濁る。",
+    },
+    ParamSpec {
+        name: "filter_env",
+        display_name: "フィルターエンベロープ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.35,
+            skew: None,
+        },
+        description: "音の出だしでカットオフが一時的に開く量。上げると\
+            「ビャッ」というシンセらしいアタック感が付く。",
+    },
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 6.0,
+            default: -9.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。和音を弾くと音が重なるので\
+            クリップするなら下げる。",
+    },
+];
+
+pub static DRUM_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 6.0,
+            default: -6.0,
+            skew: None,
+        },
+        description: "ドラムキット全体の音量。",
+    },
+    ParamSpec {
+        name: "decay",
+        display_name: "ディケイ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.25,
+            max: 4.0,
+            default: 1.0,
+            skew: Some(0.5),
+        },
+        description: "全パーツの減衰時間の倍率。下げるとタイトで締まった音、\
+            上げるとルーズで残響っぽくなる。",
+    },
+    ParamSpec {
+        name: "tone",
+        display_name: "トーン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            skew: None,
+        },
+        description: "明るさ。上げるとキックのクリックやスネア・ハットの\
+            高域成分が増えて抜けが良くなり、下げると丸くローファイになる。",
+    },
+    ParamSpec {
+        name: "tune",
+        display_name: "チューニング",
+        unit: Some("semitones"),
+        range: ParamRange::Float {
+            min: -12.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "キック・タムなど音程を持つパーツのピッチを半音単位でずらす。",
+    },
+];
+
+/// 楽器カタログの 1 行(MCP の `list_params` がそのまま返す)。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct InstrumentInfo {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub params: &'static [ParamSpec],
+}
+
+/// 内蔵楽器の一覧。
+pub fn instrument_catalog() -> Vec<InstrumentInfo> {
+    vec![
+        InstrumentInfo {
+            name: "subtractive",
+            description: "減算方式シンセ。ベース・リード・パッド・プラックなど\
+                メロディ楽器全般に使う。device 未設定トラックの既定音源。",
+            params: SUBTRACTIVE_SPECS,
+        },
+        InstrumentInfo {
+            name: "drum",
+            description: "ドラムシンセ。MIDI ノート番号(GM 配置)で音色が決まる: \
+                36=キック, 38=スネア, 39=クラップ, 42=クローズドハット, 46=オープンハット, \
+                41〜50=タム, 49/51=シンバル。ドラムトラックには set_device でこれを設定する。",
+            params: DRUM_SPECS,
+        },
+    ]
+}
+
+/// 楽器名 → ParamSpec 一覧。
+pub fn instrument_params(name: &str) -> Option<&'static [ParamSpec]> {
+    match name {
+        "subtractive" => Some(SUBTRACTIVE_SPECS),
+        "drum" => Some(DRUM_SPECS),
+        _ => None,
+    }
+}
+
+fn get_f32(map: &ParamMap, specs: &[ParamSpec], name: &str) -> f32 {
+    if let Some(v) = map.get(name).and_then(ParamValue::as_f64) {
+        return v as f32;
+    }
+    match specs.iter().find(|s| s.name == name).map(|s| &s.range) {
+        Some(ParamRange::Float { default, .. }) => *default as f32,
+        Some(ParamRange::Int { default, .. }) => *default as f32,
+        _ => 0.0,
+    }
+}
+
+fn get_enum<'a>(map: &'a ParamMap, specs: &[ParamSpec], name: &'a str) -> &'a str {
+    if let Some(ParamValue::Enum(s)) = map.get(name) {
+        return s;
+    }
+    match specs.iter().find(|s| s.name == name).map(|s| &s.range) {
+        Some(ParamRange::Enum { default, .. }) => default,
+        _ => "",
+    }
+}
+
+fn db_to_amp(db: f32) -> f32 {
+    10.0_f32.powf(db / 20.0)
+}
+
+static EMPTY_PARAMS: ParamMap = ParamMap::new();
+
+/// トラックの `Device` から再生用パラメータを焼き込む。
+/// device が無い場合は既定の subtractive。内蔵以外(CLAP / サンプラー)や
+/// 未知の名前も当面 subtractive で代用する。
+pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentParams) {
+    let (name, map): (&str, &ParamMap) = match device {
+        Some(d) => match &d.source {
+            PluginSource::Builtin { name } => (name.as_str(), &d.params),
+            _ => (crate::DEFAULT_INSTRUMENT, &d.params),
+        },
+        None => (crate::DEFAULT_INSTRUMENT, &EMPTY_PARAMS),
+    };
+
+    match name {
+        "drum" => {
+            let s = DRUM_SPECS;
+            let p = DrumParams {
+                gain: db_to_amp(get_f32(map, s, "gain_db")),
+                decay: get_f32(map, s, "decay").clamp(0.25, 4.0),
+                tone: get_f32(map, s, "tone").clamp(0.0, 1.0),
+                tune: get_f32(map, s, "tune").clamp(-12.0, 12.0),
+            };
+            (InstrumentKind::Drum, InstrumentParams::Drum(p))
+        }
+        _ => {
+            let s = SUBTRACTIVE_SPECS;
+            let p = SubtractiveParams {
+                waveform: Waveform::parse(get_enum(map, s, "waveform")),
+                cutoff: get_f32(map, s, "cutoff").clamp(40.0, 12000.0),
+                resonance: get_f32(map, s, "resonance").clamp(0.0, 0.95),
+                attack: get_f32(map, s, "attack").clamp(0.001, 2.0),
+                decay: get_f32(map, s, "decay").clamp(0.01, 3.0),
+                sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
+                release: get_f32(map, s, "release").clamp(0.01, 4.0),
+                filter_env: get_f32(map, s, "filter_env").clamp(0.0, 1.0),
+                gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+            };
+            (
+                InstrumentKind::Subtractive,
+                InstrumentParams::Subtractive(p),
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bake_defaults_when_no_device() {
+        let (kind, params) = bake_instrument(None);
+        assert_eq!(kind, InstrumentKind::Subtractive);
+        let InstrumentParams::Subtractive(p) = params else {
+            panic!("expected subtractive");
+        };
+        assert_eq!(p.waveform, Waveform::Saw);
+        assert!((p.cutoff - 8000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn bake_overrides_and_clamps() {
+        let mut device = Device::builtin("subtractive");
+        device.params.insert("cutoff".into(), 500.0.into());
+        device.params.insert("waveform".into(), "square".into());
+        device.params.insert("resonance".into(), 99.0.into()); // clamp される
+        let (_, params) = bake_instrument(Some(&device));
+        let InstrumentParams::Subtractive(p) = params else {
+            panic!()
+        };
+        assert_eq!(p.waveform, Waveform::Square);
+        assert!((p.cutoff - 500.0).abs() < 1e-3);
+        assert!(p.resonance <= 0.95);
+    }
+
+    #[test]
+    fn bake_drum_and_unknown_falls_back() {
+        let (kind, _) = bake_instrument(Some(&Device::builtin("drum")));
+        assert_eq!(kind, InstrumentKind::Drum);
+        let (kind, _) = bake_instrument(Some(&Device::builtin("no_such_synth")));
+        assert_eq!(kind, InstrumentKind::Subtractive);
+    }
+
+    #[test]
+    fn catalog_names_resolve() {
+        for info in instrument_catalog() {
+            assert!(instrument_params(info.name).is_some());
+            assert!(!info.params.is_empty());
+        }
+    }
+}

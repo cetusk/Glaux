@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/glaux-core",
+    "crates/glaux-mcp",
+    "crates/glaux-engine",
+    "crates/glaux-dsp",
+    "app/src-tauri",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "1"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+# glaux-mcp(rmcp は MSRV 1.88 を要求するので glaux-mcp の rust-version は個別指定)
+rmcp = { version = "3.4", features = ["transport-io"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+schemars = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+# app(Tauri)
+tauri = "2"
+tauri-build = "2"
+tauri-plugin-dialog = "2"
+axum = "0.8"
+# glaux-engine
+cpal = "0.18"
+arc-swap = "1"
+hound = "3"
+rustfft = "6"
+
+# tauri dev(デバッグビルド)でもオーディオ経路は最適化する。
+# レンダラ・DSP・FFT が debug のままだと CPU 余裕が減り、analyze/export も遅い。
+[profile.dev.package.glaux-dsp]
+opt-level = 3
+[profile.dev.package.glaux-engine]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+[profile.dev.package.hound]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

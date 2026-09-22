@@ -1,0 +1,11 @@
+[package]
+name = "glaux-dsp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Built-in instruments for Glaux (subtractive synth, drum synth) with ParamSpec registry for AI control"
+
+[dependencies]
+glaux-core = { path = "../glaux-core" }
+serde.workspace = true

@@ -1,0 +1,77 @@
+//! 楽器の種別ディスパッチ。glaux-engine のボイスプールが保持する型。
+//!
+//! すべて `Copy` 可能な小さい値型で、`next` / `note_off` / `finished` は
+//! アロケーションしない(RT セーフ)。
+
+use crate::drum::{DrumParams, DrumVoice};
+use crate::subtractive::{SubtractiveParams, SubtractiveVoice};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InstrumentKind {
+    Subtractive,
+    Drum,
+}
+
+/// トラックごとに焼き込まれたパラメータ。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InstrumentParams {
+    Subtractive(SubtractiveParams),
+    Drum(DrumParams),
+}
+
+impl Default for InstrumentParams {
+    fn default() -> Self {
+        crate::params::bake_instrument(None).1
+    }
+}
+
+/// 発音中の 1 ボイス。
+#[derive(Clone, Copy, Debug)]
+pub enum VoiceState {
+    Subtractive(SubtractiveVoice),
+    Drum(DrumVoice),
+}
+
+impl VoiceState {
+    pub fn start(
+        params: &InstrumentParams,
+        freq: f32,
+        pitch: u8,
+        vel: f32,
+        sample_rate: f32,
+    ) -> VoiceState {
+        match params {
+            InstrumentParams::Subtractive(p) => {
+                VoiceState::Subtractive(SubtractiveVoice::start(p, freq, vel, sample_rate))
+            }
+            InstrumentParams::Drum(p) => {
+                VoiceState::Drum(DrumVoice::start(p, pitch, vel, sample_rate))
+            }
+        }
+    }
+
+    /// 1 サンプル生成。`params` はボイス生成時と同じ楽器種であること
+    /// (種別が変わるデータ差し替え時はエンジンがボイスを作り直す)。
+    pub fn next(&mut self, params: &InstrumentParams) -> f32 {
+        match (self, params) {
+            (VoiceState::Subtractive(v), InstrumentParams::Subtractive(p)) => v.next(p),
+            (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.next(p),
+            _ => 0.0,
+        }
+    }
+
+    pub fn note_off(&mut self) {
+        match self {
+            VoiceState::Subtractive(v) => v.note_off(),
+            VoiceState::Drum(v) => v.note_off(),
+        }
+    }
+
+    pub fn finished(&self, params: &InstrumentParams) -> bool {
+        match (self, params) {
+            (VoiceState::Subtractive(v), _) => v.finished(),
+            (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.finished(p),
+            (VoiceState::Drum(_), _) => true,
+        }
+    }
+}

@@ -1,0 +1,82 @@
+# 🦉 Glaux
+
+**AI と共同作業できる、シンプルで軽量なデスクトップ DAW**(Rust + Tauri + Svelte 5)
+
+名前はギリシャ語のフクロウ **γλαύξ**(グラウクス)から。アテナの肩に乗る知恵のフクロウであり、語源は「輝く」にも通じます。
+
+> Your wise co-writer — Music, within reach.
+
+## なにができるか
+
+- **AI との共同作曲**: アプリ内チャットで「4 小節のベースラインを作って」「この範囲をもっと盛り上げて」と頼むと、AI がプロジェクトを直接編集します。編集はタイムラインにリアルタイムで反映されます
+- **AI の耳**: AI は `analyze_audio`(ラウドネス LUFS・帯域バランス・クリップ検出など)で自分の編集結果を「聴いて」、EQ・コンプ・リバーブでミックスを自分で調整できます
+- **人間の編集**: ピアノロール(ステップ入力・コピペ・ズーム・試聴)、ドラムキット図からの打ち込み、トラック操作、小節範囲を指定した AI への指示(マスク)
+- **双方向のキャッチアップ**: 人間の編集も AI の編集も同じ履歴に author 付きで記録され、AI は次のターンで人間の変更を自動で把握します。Undo/Redo・チェックポイント・`git revert` 相当の個別取り消しにも対応
+- **再生と書き出し**: 内蔵シンセ(subtractive / drum)+ エフェクトで再生し、WAV に書き出せます
+
+## なぜ AI と相性が良いのか
+
+既存の DAW はバイナリ/独自形式で、AI を後付けしにくい。Glaux は最初から AI を前提に設計しています:
+
+- プロジェクトは**人間が読める JSON**(`project.json`)+ **author 付きコマンドログ**(`history.jsonl`)
+- すべての編集(UI も AI も)が同じ **Command API** を通る。逆コマンド方式で完全な Undo が保証される
+- **MCP サーバー**(stdio / HTTP)を内蔵し、Claude などの MCP クライアントから直接操作できる
+
+## アーキテクチャ
+
+```
+crates/
+  glaux-core    プロジェクトモデル・Command・Git ライクな履歴(依存最小の純データ層)
+  glaux-mcp     MCP サーバー(9 ツール)+ Session アクター
+  glaux-engine  リアルタイムオーディオ(cpal)・WAV 書き出し・音声解析(AI の耳)
+  glaux-dsp     内蔵楽器(subtractive / drum)+ エフェクト(eq / compressor / reverb)
+app/            Tauri + Svelte 5 のデスクトップアプリ(アプリ内 MCP・チャット同梱)
+```
+
+- 時間は整数 Tick(PPQ=960)。オーディオスレッドはアロケーション・ロックなし
+- 設計判断とその理由は [`docs/HANDOFF.md`](docs/HANDOFF.md) に、開発規約は [`CLAUDE.md`](CLAUDE.md) にすべて記録しています
+
+## 動かす(Windows)
+
+必要なもの: [Rust](https://rustup.rs) 1.88+ / [Node.js](https://nodejs.org) LTS / WebView2(Windows 11 は同梱)
+
+```bat
+scripts\glaux-app.bat [C:\path\to\MySong.glaux]
+```
+
+初回はビルドに数分かかります。プロジェクトフォルダは無ければ自動作成されます。
+
+チャット機能はホストにインストール済みの [Claude Code](https://claude.com/claude-code) を利用します(アプリが `claude` CLI を起動します)。
+
+### MCP クライアントから直接つなぐ
+
+アプリ起動中は HTTP MCP サーバーが立っています:
+
+```bat
+claude mcp add --transport http glaux http://127.0.0.1:41920/mcp
+```
+
+アプリなしで単体検証する場合は stdio 版もあります:
+
+```bat
+claude mcp add glaux -- cmd /c "<repo>\scripts\glaux-mcp.bat" "C:\path\to\MySong.glaux"
+```
+
+公開ツール: `get_project` / `apply_commands` / `undo` / `redo` / `checkpoint` / `revert_to` / `get_history` / `list_params` / `analyze_audio`
+
+## 開発
+
+```
+cargo test --workspace
+cargo clippy --workspace --all-targets
+```
+
+Linux でもコア・エンジンのビルドとテストは可能です(ALSA ヘッダが必要。アプリのビルドには webkit2gtk 等)。
+
+## ステータス
+
+活発に開発中の実験プロジェクトです。ロードマップと既知の課題は [`docs/HANDOFF.md`](docs/HANDOFF.md) の §8 を参照してください。
+
+## ライセンス
+
+MIT または Apache-2.0 のデュアルライセンスです([LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE))。

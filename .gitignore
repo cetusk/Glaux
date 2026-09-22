@@ -1,0 +1,20 @@
+# ビルド成果物
+/target
+**/*.rs.bk
+node_modules
+dist
+app/src-tauri/gen/
+
+# ローカル環境・個人設定(コミットしない)
+.claude/settings.local.json
+claude_sandbox.bat
+.DS_Store
+
+# ローカルの作業データ(テスト用プロジェクト・デバッグ用スクショ。
+# チャットのセッション ID 等を含むため公開しない)
+/tests
+/debugs
+
+# 一時ファイル
+*.tmp
+*.log

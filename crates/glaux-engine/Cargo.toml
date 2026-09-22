@@ -1,0 +1,18 @@
+[package]
+name = "glaux-engine"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Realtime audio engine for Glaux: cpal output, RT-safe renderer, playback data built from the project model"
+
+[dependencies]
+glaux-core = { path = "../glaux-core" }
+glaux-dsp = { path = "../glaux-dsp" }
+cpal.workspace = true
+arc-swap.workspace = true
+hound.workspace = true
+rustfft.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

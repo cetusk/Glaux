@@ -1,0 +1,60 @@
+/* Glaux — ダークテーマ基調の DAW UI */
+
+:root {
+  --bg: #16141f;
+  --bg-panel: #1e1b2e;
+  --bg-lane: #232035;
+  --bg-lane-alt: #26233a;
+  --border: #35314d;
+  --text: #e8e5f4;
+  --text-dim: #8f8aa8;
+  --accent: #ffc247; /* フクロウの目の琥珀色 */
+  --accent-dim: #b98c33;
+  --clip-midi: #4f8fdd;
+  --clip-audio: #4fbf9a;
+  --ai: #b07ce8;
+  --human: #5da2e8;
+  --system: #7a7690;
+  font-family: "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  font-size: 14px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+button {
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+code {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+}

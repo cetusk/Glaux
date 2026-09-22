@@ -1,0 +1,464 @@
+//! アプリ内チャット: UI からの指示をヘッドレス `claude` に渡す。
+//!
+//! 仕組み:
+//! - 送信ごとに `claude -p <指示> --output-format stream-json` を起動する。
+//!   認証はホストの Claude Code ログインをそのまま使う(API キー不要)。
+//! - その Claude には `--mcp-config` でこのアプリ自身の HTTP MCP サーバーだけを渡し
+//!   (`--strict-mcp-config`)、glaux ツールを `--allowedTools mcp__glaux` で自動許可する。
+//!   編集は従来どおり MCP → Session アクター経由なので、タイムライン反映・
+//!   AI インジケータ・履歴ハイライトはそのまま機能する。
+//! - 会話の継続は `--resume <session_id>`。stream-json の init イベントから
+//!   session_id を拾って保持する。
+//! - stdout の NDJSON を [`parse_line`] で UI 向けイベントに変換し、Tauri イベント
+//!   `chat-event` として送る。
+
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use tauri::Emitter;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::{Child, Command};
+
+/// UI(チャットパネル)に流すイベント。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatEvent {
+    /// セッション開始(claude プロセスの初期化完了)
+    Started,
+    /// アシスタントの発話テキスト(メッセージ単位で届く)
+    AssistantText { text: String },
+    /// ツール呼び出し(名前は `mcp__glaux__` プレフィックスを剥がしたもの)
+    ToolUse { name: String },
+    /// ターン完了。`text` は最終応答の全文
+    Result { ok: bool, text: String },
+    /// 補足情報(会話のフォールバックなど。エラーほど深刻ではない)
+    Notice { text: String },
+    /// 起動失敗・異常終了など
+    Error { message: String },
+}
+
+/// stream-json の 1 行を UI イベントに変換する。session_id を拾ったら返す。
+pub fn parse_line(line: &str) -> (Vec<ChatEvent>, Option<String>) {
+    let v: Value = match serde_json::from_str(line.trim()) {
+        Ok(v) => v,
+        Err(_) => return (vec![], None),
+    };
+    let session_id = v["session_id"].as_str().map(str::to_owned);
+
+    let events = match v["type"].as_str() {
+        Some("system") if v["subtype"] == "init" => vec![ChatEvent::Started],
+        Some("assistant") => {
+            let mut out = Vec::new();
+            if let Some(blocks) = v["message"]["content"].as_array() {
+                for block in blocks {
+                    match block["type"].as_str() {
+                        Some("text") => {
+                            if let Some(t) = block["text"].as_str() {
+                                if !t.trim().is_empty() {
+                                    out.push(ChatEvent::AssistantText { text: t.to_owned() });
+                                }
+                            }
+                        }
+                        Some("tool_use") => {
+                            if let Some(name) = block["name"].as_str() {
+                                let name = name.strip_prefix("mcp__glaux__").unwrap_or(name);
+                                out.push(ChatEvent::ToolUse {
+                                    name: name.to_owned(),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            out
+        }
+        Some("result") => {
+            let ok = !v["is_error"].as_bool().unwrap_or(false)
+                && v["subtype"].as_str() == Some("success");
+            let text = v["result"].as_str().unwrap_or_default().to_owned();
+            vec![ChatEvent::Result { ok, text }]
+        }
+        _ => vec![],
+    };
+    (events, session_id)
+}
+
+/// チャットの実行状態。`AppState` が保持する。
+pub struct ChatManager {
+    mcp_url: String,
+    /// 現在のプロジェクトフォルダ(プロジェクト切り替えで変わる)
+    project_dir: Mutex<String>,
+    session_id: Mutex<Option<String>>,
+    /// チャットの AI に最後に見せた履歴エントリ ID。
+    /// これ以降の人間の編集を次のターンでコンテキストとして注入する
+    last_seen_entry: Mutex<Option<String>>,
+    child: Mutex<Option<Child>>,
+    running: AtomicBool,
+}
+
+const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作曲アシスタントです。\
+    プロジェクトの閲覧・編集は必ず glaux MCP ツール(get_project / apply_commands / undo / \
+    checkpoint / revert_to / get_history など)で行い、project.json などのファイルを直接読み書き\
+    しないでください。\
+    重要: このプロジェクトは人間(ユーザー)も UI から並行して編集します。あなたの会話の記憶は\
+    古くなっている可能性があるため、各レスポンスの project_version と履歴(get_history)を信頼し、\
+    編集の前には必要に応じて get_project で最新状態を確認してください。\
+    音源: トラックには set_device で内蔵楽器(subtractive=シンセ全般 / drum=ドラム)を設定でき、\
+    list_params でパラメータの意味・範囲・現在値を確認して set_param で音作りができます。\
+    ドラムのトラックには必ず drum を設定してください。\
+    耳: analyze_audio で自分の編集結果を数値で聴けます(ラウドネス・帯域バランス・クリップ検出など)。\
+    音作りやミックス調整では、編集 → analyze_audio で確認 → 微調整のループを回してください。\
+    返答は簡潔な日本語で、行った編集の要点だけ述べてください。";
+
+impl ChatManager {
+    pub fn new(mcp_url: String, project_dir: String) -> Self {
+        // 前回のセッション ID があれば読み込み、アプリ再起動をまたいで会話を継続する
+        let session_id = read_cache(&session_file(&project_dir));
+        if session_id.is_some() {
+            tracing::info!("前回のチャットセッションを再開します");
+        }
+        let last_seen_entry = read_cache(&last_seen_file(&project_dir));
+        ChatManager {
+            mcp_url,
+            project_dir: Mutex::new(project_dir),
+            session_id: Mutex::new(session_id),
+            last_seen_entry: Mutex::new(last_seen_entry),
+            child: Mutex::new(None),
+            running: AtomicBool::new(false),
+        }
+    }
+
+    fn project_dir(&self) -> String {
+        self.project_dir.lock().expect("project_dir lock").clone()
+    }
+
+    /// プロジェクト切り替え。実行中の指示は中断し、新プロジェクトの
+    /// 会話キャッシュ(セッション ID / last_seen)を読み込み直す。
+    pub fn switch_project(&self, dir: String) {
+        self.cancel();
+        let session_id = read_cache(&session_file(&dir));
+        let last_seen = read_cache(&last_seen_file(&dir));
+        *self.project_dir.lock().expect("project_dir lock") = dir;
+        *self.session_id.lock().expect("session_id lock") = session_id;
+        *self.last_seen_entry.lock().expect("last_seen lock") = last_seen;
+    }
+
+    pub fn last_seen_entry(&self) -> Option<String> {
+        self.last_seen_entry.lock().expect("last_seen lock").clone()
+    }
+
+    /// AI に見せた最新の履歴エントリ ID を記録・永続化する。
+    pub fn set_last_seen_entry(&self, id: Option<String>) {
+        *self.last_seen_entry.lock().expect("last_seen lock") = id.clone();
+        write_cache(&last_seen_file(&self.project_dir()), id.as_deref());
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    fn has_session(&self) -> bool {
+        self.session_id.lock().expect("session_id lock").is_some()
+    }
+
+    /// セッション ID を更新し、`cache/chat-session.txt` に永続化する。
+    fn set_session_id(&self, sid: String) {
+        let mut guard = self.session_id.lock().expect("session_id lock");
+        if guard.as_deref() == Some(sid.as_str()) {
+            return;
+        }
+        *guard = Some(sid.clone());
+        drop(guard);
+        write_cache(&session_file(&self.project_dir()), Some(&sid));
+    }
+
+    /// 会話をリセットする(次の送信が新しいセッションになる)。
+    /// `last_seen_entry` は会話ではなく「AI に何を見せたか」の記録なので保持する。
+    pub fn reset(&self) {
+        *self.session_id.lock().expect("session_id lock") = None;
+        let _ = std::fs::remove_file(session_file(&self.project_dir()));
+    }
+
+    /// 実行中の claude プロセスを止める。
+    pub fn cancel(&self) {
+        let child = self.child.lock().expect("child lock").take();
+        if let Some(mut child) = child {
+            // kill は非同期だが、start_kill で即シグナルだけ送れば十分
+            let _ = child.start_kill();
+        }
+    }
+
+    fn build_command(&self, prompt: &str) -> Command {
+        // Windows: ネイティブ版は claude.exe、npm 版は claude.cmd。
+        // Rust の Command は .cmd を安全に(引数をエスケープして)起動できる。
+        #[cfg(windows)]
+        let program = "claude.cmd";
+        #[cfg(not(windows))]
+        let program = "claude";
+        let mut cmd = Command::new(program);
+        self.configure(&mut cmd, prompt);
+        cmd
+    }
+
+    #[cfg(windows)]
+    fn build_command_fallback(&self, prompt: &str) -> Command {
+        let mut cmd = Command::new("claude");
+        self.configure(&mut cmd, prompt);
+        cmd
+    }
+
+    fn configure(&self, cmd: &mut Command, prompt: &str) {
+        let mcp_config = json!({
+            "mcpServers": { "glaux": { "type": "http", "url": self.mcp_url } }
+        });
+        cmd.arg("-p")
+            .arg(prompt)
+            .args(["--output-format", "stream-json", "--verbose"])
+            .arg("--mcp-config")
+            .arg(mcp_config.to_string())
+            .arg("--strict-mcp-config")
+            .args(["--allowedTools", "mcp__glaux"])
+            .arg("--append-system-prompt")
+            .arg(SYSTEM_PROMPT)
+            .current_dir(self.project_dir())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(sid) = self.session_id.lock().expect("session_id lock").as_ref() {
+            cmd.args(["--resume", sid]);
+        }
+        #[cfg(windows)]
+        {
+            // コンソールウィンドウを出さない(CREATE_NO_WINDOW)
+            cmd.creation_flags(0x0800_0000);
+        }
+    }
+
+    fn spawn(&self, prompt: &str) -> std::io::Result<Child> {
+        match self.build_command(prompt).spawn() {
+            Ok(child) => Ok(child),
+            #[cfg(windows)]
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.build_command_fallback(prompt).spawn()
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// セッション ID の保存先(`cache/` は再生成可能データ置き場。Git 管理外)。
+fn session_file(project_dir: &str) -> std::path::PathBuf {
+    std::path::Path::new(project_dir)
+        .join("cache")
+        .join("chat-session.txt")
+}
+
+fn last_seen_file(project_dir: &str) -> std::path::PathBuf {
+    std::path::Path::new(project_dir)
+        .join("cache")
+        .join("chat-last-seen.txt")
+}
+
+fn read_cache(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+fn write_cache(path: &std::path::Path, value: Option<&str>) {
+    match value {
+        Some(v) => {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(path, v) {
+                tracing::warn!("キャッシュを保存できません({}): {e}", path.display());
+            }
+        }
+        None => {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn emit(app: &tauri::AppHandle, event: &ChatEvent) {
+    let _ = app.emit("chat-event", event);
+}
+
+/// 1 回の指示を実行する。完了(または失敗)までブロックするので、
+/// 呼び出し側は tauri::async_runtime::spawn で回すこと。
+pub async fn run_turn(app: tauri::AppHandle, mgr: std::sync::Arc<ChatManager>, prompt: String) {
+    if mgr.running.swap(true, Ordering::SeqCst) {
+        emit(
+            &app,
+            &ChatEvent::Error {
+                message: "前の指示がまだ実行中です".to_owned(),
+            },
+        );
+        return;
+    }
+
+    let had_resume = mgr.has_session();
+    let mut saw_init = false;
+    let mut result = run_turn_inner(&app, &mgr, &prompt, &mut saw_init).await;
+
+    // 保存していたセッションが claude 側に残っていない場合、init 前に失敗する。
+    // その場合だけ新しい会話にフォールバックして 1 回やり直す。
+    if result.is_err() && had_resume && !saw_init {
+        mgr.reset();
+        emit(
+            &app,
+            &ChatEvent::Notice {
+                text: "前回の会話を再開できなかったため、新しい会話で続けます".to_owned(),
+            },
+        );
+        result = run_turn_inner(&app, &mgr, &prompt, &mut saw_init).await;
+    }
+
+    mgr.child.lock().expect("child lock").take();
+    mgr.running.store(false, Ordering::SeqCst);
+
+    if let Err(message) = result {
+        emit(&app, &ChatEvent::Error { message });
+    }
+}
+
+async fn run_turn_inner(
+    app: &tauri::AppHandle,
+    mgr: &ChatManager,
+    prompt: &str,
+    saw_init: &mut bool,
+) -> Result<(), String> {
+    let mut child = mgr.spawn(prompt).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "claude コマンドが見つかりません。Claude Code をインストールして PATH を通してください"
+                .to_owned()
+        } else {
+            format!("claude を起動できません: {e}")
+        }
+    })?;
+
+    let stdout = child.stdout.take().ok_or("stdout を取得できません")?;
+    let mut stderr = child.stderr.take().ok_or("stderr を取得できません")?;
+    *mgr.child.lock().expect("child lock") = Some(child);
+
+    // stderr は別タスクで吸っておき、異常終了時のエラーメッセージに使う
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        let _ = stderr.read_to_string(&mut buf).await;
+        buf
+    });
+
+    let mut lines = BufReader::new(stdout).lines();
+    let mut got_result = false;
+    while let Ok(Some(line)) = lines.next_line().await {
+        let (events, session_id) = parse_line(&line);
+        if let Some(sid) = session_id {
+            mgr.set_session_id(sid);
+        }
+        for ev in &events {
+            match ev {
+                ChatEvent::Started => *saw_init = true,
+                ChatEvent::Result { .. } => got_result = true,
+                _ => {}
+            }
+            emit(app, ev);
+        }
+    }
+
+    // プロセス終了を待つ(child は cancel() に取られている可能性がある)
+    let status = {
+        let child = mgr.child.lock().expect("child lock").take();
+        match child {
+            Some(mut child) => Some(child.wait().await.map_err(|e| e.to_string())?),
+            None => None, // cancel 済み
+        }
+    };
+
+    match status {
+        None => Err("キャンセルしました".to_owned()),
+        Some(s) if s.success() || got_result => Ok(()),
+        Some(s) => {
+            let stderr_text = stderr_task.await.unwrap_or_default();
+            let tail: String = stderr_text
+                .lines()
+                .rev()
+                .take(5)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(format!("claude が異常終了しました({s})\n{tail}"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_init_and_captures_session_id() {
+        let (events, sid) =
+            parse_line(r#"{"type":"system","subtype":"init","session_id":"abc-123","tools":[]}"#);
+        assert_eq!(events, vec![ChatEvent::Started]);
+        assert_eq!(sid.as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn parses_assistant_text_and_tool_use() {
+        let line = r#"{"type":"assistant","session_id":"abc","message":{"content":[
+            {"type":"text","text":"ベースを追加します"},
+            {"type":"tool_use","name":"mcp__glaux__apply_commands","input":{}}
+        ]}}"#;
+        let (events, _) = parse_line(line);
+        assert_eq!(
+            events,
+            vec![
+                ChatEvent::AssistantText {
+                    text: "ベースを追加します".to_owned()
+                },
+                ChatEvent::ToolUse {
+                    name: "apply_commands".to_owned()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_result_success_and_error() {
+        let (events, _) =
+            parse_line(r#"{"type":"result","subtype":"success","is_error":false,"result":"完了"}"#);
+        assert_eq!(
+            events,
+            vec![ChatEvent::Result {
+                ok: true,
+                text: "完了".to_owned()
+            }]
+        );
+
+        let (events, _) = parse_line(
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":""}"#,
+        );
+        assert_eq!(
+            events,
+            vec![ChatEvent::Result {
+                ok: false,
+                text: String::new()
+            }]
+        );
+    }
+
+    #[test]
+    fn ignores_garbage_and_unknown_types() {
+        assert_eq!(parse_line("not json").0, vec![]);
+        assert_eq!(parse_line(r#"{"type":"user","message":{}}"#).0, vec![]);
+        // 空テキストブロックは出さない
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"  "}]}}"#;
+        assert_eq!(parse_line(line).0, vec![]);
+    }
+}

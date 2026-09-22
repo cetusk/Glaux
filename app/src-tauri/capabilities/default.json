@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "メインウィンドウの既定権限。core:default にイベント購読(listen)などが含まれる",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}
