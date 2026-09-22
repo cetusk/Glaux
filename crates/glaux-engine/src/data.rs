@@ -7,8 +7,11 @@
 //!   再生中のテンポ変更では音楽的位置が僅かにずれる。Tick ベースの位置管理は将来課題)。
 //! - 音声クリップは未対応(MVP は MIDI のみ。`glaux-dsp` 実装後に差し替える)。
 
-use glaux_core::{ClipContent, Curve, Effect, ParamPath, Project, Tick};
-use glaux_dsp::{EffectParams, InstrumentParams};
+use glaux_core::{AssetId, ClipContent, Curve, Effect, ParamPath, Project, Tick};
+use glaux_dsp::{EffectParams, InstrumentParams, SampleData};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
 /// エフェクト状態プールのスロット数(エンジン起動時に固定確保)。
 /// これを超えたエフェクトは無視される(構築時に警告)。
@@ -84,6 +87,95 @@ pub struct PlaybackData {
     pub sample_rate: f64,
 }
 
+/// 読み込み済みサンプルの置き場(サンプラー音源用)。
+/// UI(非オーディオ)スレッドで構築し、`Arc` で `PlaybackData` に焼き込む。
+/// 編集のたびに WAV をデコードし直さないよう、アセット ID ごとにキャッシュする。
+#[derive(Default)]
+pub struct SampleBank {
+    map: HashMap<AssetId, Arc<SampleData>>,
+}
+
+impl SampleBank {
+    pub fn get(&self, id: &AssetId) -> Option<&Arc<SampleData>> {
+        self.map.get(id)
+    }
+
+    /// プロジェクトの全アセットを読み込む(読み込み済みは再利用、消えたものは破棄)。
+    pub fn sync(&mut self, project: &Project, project_dir: &Path) {
+        self.map.retain(|id, _| project.assets.contains_key(id));
+        for (id, asset) in &project.assets {
+            if self.map.contains_key(id) {
+                continue;
+            }
+            match load_wav_mono(&project_dir.join(&asset.path)) {
+                Ok(data) => {
+                    self.map.insert(id.clone(), Arc::new(data));
+                }
+                Err(e) => {
+                    tracing::warn!("サンプルを読み込めません({}): {e}", asset.path);
+                }
+            }
+        }
+    }
+
+    /// 使い捨て(オフラインレンダ・解析用)に全アセットを読み込む。
+    pub fn load(project: &Project, project_dir: &Path) -> SampleBank {
+        let mut bank = SampleBank::default();
+        bank.sync(project, project_dir);
+        bank
+    }
+}
+
+/// WAV をモノラル f32 に読み込む(ステレオは平均で合算)。
+fn load_wav_mono(path: &Path) -> Result<SampleData, String> {
+    let mut reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
+    let spec = reader.spec();
+    let channels = spec.channels.max(1) as usize;
+    let raw: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?,
+        hound::SampleFormat::Int => {
+            let scale = 1.0 / (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .map(|s| s.map(|v| v as f32 * scale))
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?
+        }
+    };
+    let frames = raw
+        .chunks_exact(channels)
+        .map(|c| c.iter().sum::<f32>() / channels as f32)
+        .collect();
+    Ok(SampleData {
+        frames,
+        sample_rate: spec.sample_rate as f32,
+    })
+}
+
+/// トラックの音源を焼き込む(サンプラーは SampleBank から波形を解決)。
+fn bake_track_instrument(
+    t: &glaux_core::Track,
+    bank: &SampleBank,
+    sample_rate: f32,
+) -> InstrumentParams {
+    if let Some(d) = &t.device {
+        if let glaux_core::PluginSource::Sampler { asset } = &d.source {
+            if let Some(data) = bank.get(asset) {
+                return InstrumentParams::Sampler(glaux_dsp::bake_sampler(
+                    &d.params,
+                    data.clone(),
+                    sample_rate,
+                ));
+            }
+            tracing::warn!("サンプル未読込のため subtractive で代用: {asset}");
+        }
+    }
+    glaux_dsp::bake_instrument(t.device.as_ref()).1
+}
+
 pub fn db_to_amp(db: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
@@ -125,7 +217,7 @@ fn bake_chain(
 }
 
 /// プロジェクト全体を再生データに展開する。
-pub fn build_playback_data(project: &Project, sample_rate: f64) -> PlaybackData {
+pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBank) -> PlaybackData {
     let any_solo = project.tracks.iter().any(|t| t.solo);
     let to_sample =
         |tick: Tick| -> u64 { (project.tempo_map.tick_to_seconds(tick) * sample_rate) as u64 };
@@ -167,7 +259,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64) -> PlaybackData 
         .map(|t| {
             let (pl, pr) = pan_gains(t.pan);
             let gain = db_to_amp(t.volume_db);
-            let (_, instrument) = glaux_dsp::bake_instrument(t.device.as_ref());
+            let instrument = bake_track_instrument(t, bank, sample_rate as f32);
             TrackMix {
                 gain_l: gain * pl,
                 gain_r: gain * pr,
@@ -273,7 +365,7 @@ mod tests {
     fn expands_notes_to_samples_at_120bpm() {
         // 120bpm: 960 tick = 0.5s = 24000 samples @48k
         let project = project_with_notes(vec![note(960, 960, 69, 127)]);
-        let data = build_playback_data(&project, 48_000.0);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         assert_eq!(data.events.len(), 1);
         let e = &data.events[0];
         assert_eq!(e.start, 24_000);
@@ -287,7 +379,7 @@ mod tests {
     fn staccato_halves_note_length() {
         let mut n = note(960, 960, 69, 127);
         n.articulation = glaux_core::Articulation::Staccato;
-        let data = build_playback_data(&project_with_notes(vec![n]), 48_000.0);
+        let data = build_playback_data(&project_with_notes(vec![n]), 48_000.0, &Default::default());
         let e = &data.events[0];
         assert_eq!(e.start, 24_000);
         assert_eq!(e.end, 36_000, "音価の半分で切れるはず");
@@ -300,7 +392,7 @@ mod tests {
             note(3000, 5000, 60, 100), // クリップ長 3840 で切り詰め
             note(0, 480, 64, 100),
         ]);
-        let data = build_playback_data(&project, 48_000.0);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         assert_eq!(data.events.len(), 2);
         assert!(data.events[0].start <= data.events[1].start);
         // 3840 tick = 2.0s = 96000 samples が終端
@@ -314,14 +406,14 @@ mod tests {
         t2.solo = true;
         project.tracks.push(t2);
 
-        let data = build_playback_data(&project, 48_000.0);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         // T2 が solo なので T1 は聞こえない
         assert!(!data.tracks[0].audible);
         assert!(data.tracks[1].audible);
 
         project.tracks[1].solo = false;
         project.tracks[0].mute = true;
-        let data = build_playback_data(&project, 48_000.0);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         assert!(!data.tracks[0].audible);
         assert!(data.tracks[1].audible);
     }
@@ -340,7 +432,7 @@ mod tests {
             .effects
             .push(Effect::builtin(FxId::new(), "compressor"));
 
-        let data = build_playback_data(&project, 48_000.0);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         // bypass は除外され、スロットは通しで振られる
         assert_eq!(data.tracks[0].effects.len(), 1);
         assert_eq!(data.tracks[0].effects[0].slot, 0);
@@ -359,8 +451,8 @@ mod tests {
         rv.params.insert("size".into(), 0.9.into());
         wet_project.tracks[0].effects.push(rv);
 
-        let dry = render_project(&dry_project, 48_000.0).unwrap();
-        let wet = render_project(&wet_project, 48_000.0).unwrap();
+        let dry = render_project(&dry_project, 48_000.0, &Default::default()).unwrap();
+        let wet = render_project(&wet_project, 48_000.0, &Default::default()).unwrap();
         assert!(
             wet.len() > dry.len(),
             "残響で音の長さが伸びるはず({} vs {})",
@@ -392,7 +484,7 @@ mod tests {
                 },
             ],
         });
-        let out = render_project(&project, 48_000.0).unwrap();
+        let out = render_project(&project, 48_000.0, &Default::default()).unwrap();
         let rms = |sl: &[f32]| (sl.iter().map(|s| s * s).sum::<f32>() / sl.len() as f32).sqrt();
         // ステレオ interleaved: 秒 → サンプル対
         let sec = |a: f64, b: f64| &out[(a * 96_000.0) as usize..(b * 96_000.0) as usize];
@@ -429,7 +521,7 @@ mod tests {
                 },
             ],
         });
-        let out = render_project(&project, 48_000.0).unwrap();
+        let out = render_project(&project, 48_000.0, &Default::default()).unwrap();
         let n = out.len() / 2;
         let energy = |range: std::ops::Range<usize>, ch: usize| -> f32 {
             range.map(|i| out[i * 2 + ch].powi(2)).sum()
@@ -447,7 +539,7 @@ mod tests {
         let mut project = project_with_notes(vec![]);
         project.tracks[0].pan = -1.0; // full L
         project.tracks[0].volume_db = -6.0;
-        let data = build_playback_data(&project, 48_000.0);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         let t = &data.tracks[0];
         assert!(t.gain_l > 0.0);
         assert!(t.gain_r.abs() < 1e-6);

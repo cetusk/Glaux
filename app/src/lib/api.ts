@@ -100,6 +100,14 @@ export function getTrackParams(trackId: string): Promise<import("./types").Track
   return invoke("get_track_params", { trackId });
 }
 
+/** WAV を取り込んでトラックの音源を sampler にする(1 undo)。 */
+export function importSample(
+  trackId: string,
+  path: string,
+): Promise<{ asset_id: string; project_version: number }> {
+  return invoke("import_sample", { trackId, path });
+}
+
 // ---- 音色プリセット ----
 
 export function listPresets(): Promise<{ presets: PresetInfo[] }> {

@@ -13,6 +13,8 @@ glaux-dsp = { path = "../glaux-dsp" }
 glaux-engine = { path = "../glaux-engine" }
 rmcp.workspace = true
 chrono.workspace = true
+sha2.workspace = true
+hound.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

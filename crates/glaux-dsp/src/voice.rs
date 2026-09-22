@@ -5,6 +5,7 @@
 
 use crate::drum::{DrumParams, DrumVoice};
 use crate::pluck::{PluckParams, PluckVoice};
+use crate::sampler::{SamplerParams, SamplerVoice};
 use crate::subtractive::{SubtractiveParams, SubtractiveVoice};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -12,14 +13,18 @@ pub enum InstrumentKind {
     Subtractive,
     Drum,
     Pluck,
+    Sampler,
 }
 
 /// トラックごとに焼き込まれたパラメータ。
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Sampler は波形の `Arc` を持つため Copy ではない(clone は参照カウントのみで
+/// アロケーションしないので、オーディオスレッドでも安全)。
+#[derive(Clone, Debug, PartialEq)]
 pub enum InstrumentParams {
     Subtractive(SubtractiveParams),
     Drum(DrumParams),
     Pluck(PluckParams),
+    Sampler(SamplerParams),
 }
 
 impl Default for InstrumentParams {
@@ -38,6 +43,7 @@ pub enum VoiceState {
     Subtractive(SubtractiveVoice),
     Drum(DrumVoice),
     Pluck(PluckVoice),
+    Sampler(SamplerVoice),
 }
 
 impl VoiceState {
@@ -69,6 +75,13 @@ impl VoiceState {
             InstrumentParams::Pluck(p) => {
                 VoiceState::Pluck(PluckVoice::start(p, freq, vel, articulation, sample_rate))
             }
+            InstrumentParams::Sampler(p) => VoiceState::Sampler(SamplerVoice::start(
+                p,
+                pitch,
+                vel,
+                articulation,
+                sample_rate,
+            )),
         }
     }
 
@@ -79,6 +92,7 @@ impl VoiceState {
             (VoiceState::Subtractive(v), InstrumentParams::Subtractive(p)) => v.next(p),
             (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.next(p),
             (VoiceState::Pluck(v), InstrumentParams::Pluck(p)) => v.next(p),
+            (VoiceState::Sampler(v), InstrumentParams::Sampler(p)) => v.next(p),
             _ => 0.0,
         }
     }
@@ -88,6 +102,7 @@ impl VoiceState {
             VoiceState::Subtractive(v) => v.note_off(),
             VoiceState::Drum(v) => v.note_off(),
             VoiceState::Pluck(v) => v.note_off(),
+            VoiceState::Sampler(v) => v.note_off(),
         }
     }
 
@@ -97,6 +112,7 @@ impl VoiceState {
             (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.finished(p),
             (VoiceState::Drum(_), _) => true,
             (VoiceState::Pluck(v), _) => v.finished(),
+            (VoiceState::Sampler(v), _) => v.finished(),
         }
     }
 }

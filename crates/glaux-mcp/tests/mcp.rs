@@ -744,3 +744,85 @@ async fn preset_tools_save_and_apply_across_tracks() {
     let r = call(&fx, "delete_preset", json!({ "name": "スーパーソー" })).await;
     assert_eq!(ok_json(&r)["deleted"], "スーパーソー");
 }
+
+#[tokio::test]
+async fn import_sample_sets_sampler_device() {
+    let fx = setup().await;
+    call(
+        &fx,
+        "apply_commands",
+        add_track_args("trk_gtr001", "Guitar"),
+    )
+    .await;
+
+    // テスト用 WAV を書く
+    let wav_dir = tempfile::tempdir().unwrap();
+    let wav = wav_dir.path().join("riff.wav");
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 44_100,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(&wav, spec).unwrap();
+    for i in 0..4410 {
+        let s = ((i as f32 * 0.03).sin() * 10_000.0) as i16;
+        w.write_sample(s).unwrap(); // L
+        w.write_sample(s).unwrap(); // R
+    }
+    w.finalize().unwrap();
+
+    let r = call(
+        &fx,
+        "import_sample",
+        json!({
+            "track_id": "trk_gtr001",
+            "path": wav.to_string_lossy(),
+            "root": 57,
+        }),
+    )
+    .await;
+    let v = ok_json(&r);
+    let asset_id = v["asset_id"].as_str().unwrap().to_owned();
+    assert!(asset_id.starts_with("sha256:"));
+    assert_eq!(v["sample_rate"], 44_100);
+    assert_eq!(v["frames"], 4410);
+
+    // プロジェクト側: アセット登録 + デバイスが sampler + ファイルコピー済み
+    let r = call(&fx, "get_project", json!({})).await;
+    let p = ok_json(&r)["project"].clone();
+    let asset = &p["assets"][&asset_id];
+    assert_eq!(asset["channels"], 2);
+    let rel = asset["path"].as_str().unwrap();
+    assert!(fx.dir.join(rel).exists(), "audio/ にコピーされるはず");
+    let device = &p["tracks"][0]["device"];
+    assert_eq!(device["type"], "sampler");
+    assert_eq!(device["asset"], asset_id);
+    assert_eq!(device["params"]["root"], 57);
+
+    // list_params は sampler のスペックを返す
+    let r = call(&fx, "list_params", json!({ "track_id": "trk_gtr001" })).await;
+    let v = ok_json(&r);
+    assert_eq!(v["device"]["name"], "sampler");
+    assert!(v["params"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["name"] == "root" && s["current"] == 57));
+
+    // 1 undo で音源設定ごと戻る
+    call(&fx, "undo", json!({})).await;
+    let r = call(&fx, "get_project", json!({})).await;
+    assert!(ok_json(&r)["project"]["tracks"][0]["device"].is_null());
+
+    // WAV でないファイルはエラー
+    let bad = wav_dir.path().join("bad.wav");
+    std::fs::write(&bad, b"not a wav").unwrap();
+    let r = call(
+        &fx,
+        "import_sample",
+        json!({ "track_id": "trk_gtr001", "path": bad.to_string_lossy() }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}

@@ -105,6 +105,8 @@ pub enum Request {
         dir: String,
         reply: oneshot::Sender<Result<(String, usize), String>>,
     },
+    /// 現在のプロジェクトフォルダの絶対パスを返す。
+    ProjectDir { reply: oneshot::Sender<String> },
     /// 現在のプロジェクトフォルダを別の場所へ移動して開き直す。
     /// フォルダ移動をアクター内で行うことで、進行中の保存と直列化される
     /// (移動中に古い場所へ書き込まれる競合が起きない)。成功時は (タイトル, バージョン)。
@@ -259,6 +261,11 @@ impl SessionHandle {
             .await?
     }
 
+    /// 現在のプロジェクトフォルダの絶対パス。
+    pub async fn project_dir(&self) -> Result<String, String> {
+        self.request(|reply| Request::ProjectDir { reply }).await
+    }
+
     /// 現在のプロジェクトフォルダを `dest` へ移動して開き直す。
     pub async fn move_project(&self, dest: String) -> Result<(String, usize), String> {
         self.request(|reply| Request::MoveProject { dest, reply })
@@ -392,6 +399,9 @@ fn handle(
                 Err(e) => Err(format!("{e:#}")),
             };
             let _ = reply.send(result);
+        }
+        Request::ProjectDir { reply } => {
+            let _ = reply.send(store.dir().to_string_lossy().into_owned());
         }
         Request::MoveProject { dest, reply } => {
             let from = store.dir().to_path_buf();

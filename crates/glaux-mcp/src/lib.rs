@@ -8,6 +8,7 @@
 //! Tauri アプリからも同じ [`actor::SessionHandle`] を使う想定。
 
 pub mod actor;
+pub mod assets;
 pub mod presets;
 pub mod server;
 pub mod store;

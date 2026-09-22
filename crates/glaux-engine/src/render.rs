@@ -71,7 +71,8 @@ struct Voice {
 }
 
 /// UI からの試聴用ボイス。停止中でも鳴り、トラックエフェクトは通さない。
-#[derive(Clone, Copy)]
+/// instrument はサンプラーで Arc を含むため Copy ではない(clone は参照カウントのみ)。
+#[derive(Clone)]
 struct PreviewVoice {
     /// note_off までの残りサンプル数
     remaining: u32,
@@ -190,25 +191,26 @@ impl Renderer {
             let pitch = ((preview_req >> 8) & 0xFF) as u8;
             let vel = (preview_req & 0xFF) as u8;
             let (instrument, gain_l, gain_r) = match data.tracks.get(track) {
-                Some(mix) => (mix.instrument, mix.gain_l, mix.gain_r),
+                Some(mix) => (mix.instrument.clone(), mix.gain_l, mix.gain_r),
                 None => (glaux_dsp::InstrumentParams::default(), 0.8, 0.8),
             };
             if self.preview_voices.len() < MAX_PREVIEW_VOICES {
                 let freq = crate::data::pitch_to_freq(pitch);
+                let state = VoiceState::start(
+                    &instrument,
+                    freq,
+                    pitch,
+                    vel as f32 / 127.0,
+                    glaux_core::Articulation::Normal,
+                    sr,
+                );
                 self.preview_voices.push(PreviewVoice {
                     remaining: (dur_ms as f32 / 1000.0 * sr) as u32,
                     released: false,
                     gain_l,
                     gain_r,
                     instrument,
-                    state: VoiceState::start(
-                        &instrument,
-                        freq,
-                        pitch,
-                        vel as f32 / 127.0,
-                        glaux_core::Articulation::Normal,
-                        sr,
-                    ),
+                    state,
                 });
             }
         }

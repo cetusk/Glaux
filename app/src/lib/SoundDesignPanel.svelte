@@ -2,6 +2,7 @@
   // 音作りビュー: トラック 1 本にフォーカスして音源のつまみ・エフェクトチェーン・
   // プリセットを操作するパネル(docs/HANDOFF.md §8-6 Phase 1)。
   // すべての編集は Command API(apply_edit)経由なので履歴に載り undo できる。
+  import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { newClipId, newFxId } from "./ids";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
@@ -90,11 +91,28 @@
 
   function setDevice(name: string) {
     const t = track;
-    if (!t || t.device?.name === name) return;
+    if (!t || name === "sampler" || t.device?.name === name) return;
     applyEdit(
       [{ op: "set_device", track: t.id, device: { type: "builtin", name } }],
       `${t.name} の音源を ${name} に変更`,
     );
+  }
+
+  /// WAV を選んでこのトラックの音源を sampler にする
+  async function importSample() {
+    const t = track;
+    if (!t) return;
+    const file = await pickFile({
+      title: "サンプル(WAV)を読み込む",
+      filters: [{ name: "WAV", extensions: ["wav"] }],
+    });
+    if (typeof file !== "string") return;
+    try {
+      await api.importSample(t.id, file);
+      presetMsg = "サンプルを設定しました(root にサンプルの実音を合わせてください)";
+    } catch (e) {
+      presetMsg = String(e);
+    }
   }
 
   function addEffect(name: string) {
@@ -264,7 +282,11 @@
             <option value="subtractive">subtractive(シンセ)</option>
             <option value="drum">drum(ドラム)</option>
             <option value="pluck">pluck(撥弦: ギター/ベース)</option>
+            <option value="sampler" disabled>sampler(下の読込ボタンから)</option>
           </select>
+          <button onclick={importSample} title="WAV をプロジェクトに取り込み、この音源を sampler にする">
+            🎼 WAV
+          </button>
           <select bind:value={selectedPreset} title="プリセット(全プロジェクト共通)">
             <option value="">プリセット…</option>
             {#each presets as p (p.name)}

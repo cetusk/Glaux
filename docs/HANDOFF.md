@@ -656,7 +656,23 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
   マーカーは ~ / ↑。**連続ピッチカーブ(自由描画)の本格版はサンプラー検討と併せて設計**
 - クリップの移動・リサイズ等のタイムライン直接編集
 - 段階的開示のデバイスパネル(UI からつまみを操作。今は AI 経由のみ)
-- 音声クリップ再生・サンプラー・録音、ループクリップ(clip.loop フラグ)の再生対応
+- ~~サンプラー音源~~ → **実装済み(2026-09-22。第 1 段 = ワンショット)**:
+  - `glaux-dsp/src/sampler.rs`: `PluginSource::Sampler { asset }` を音源として再生。
+    root(サンプルの実音)からのピッチ差を再生レートに変換(線形補間)。
+    2ms デクリック + release_ms フェード。vibrato / bend(PitchExpr)もレートに掛かる
+  - RT セーフ設計: 波形は `Arc<SampleData>`(engine の `SampleBank` が WAV をモノラル
+    デコードしてキャッシュ。編集ごとの再デコードなし)。`InstrumentParams` は
+    Copy → Clone に変更(Arc の clone は参照カウントのみでアロケーションなし)
+  - 取り込み: `glaux_mcp::assets::import_wav`(sha256 内容ハッシュで audio/ にコピー、
+    同内容は重複しない)。AI は `import_sample` ツール、人間は音作りビューの
+    「🎼 WAV」ボタン。取り込み + set_device は 1 Batch = 1 undo
+  - 署名変更: `build_playback_data` / `render_project` / `export_wav` /
+    `analyze_project(_tracks)` に `&SampleBank`、`EngineHandle::set_project` に
+    `project_dir` が追加。`SessionHandle::project_dir()` 新設
+  - 残り(第 2 段以降): ループ点付きサンプル、音域マッピング(複数サンプル)、
+    連続ピッチカーブ、非 WAV(mp3/flac)対応(symphonia)
+- 音声クリップ再生・録音、ループクリップ(clip.loop フラグ)の再生対応
+  (サンプラーの SampleBank 基盤を流用できる)
 - 再生位置の Tick 管理(再生中のテンポ変更でのずれ解消)
 - 外部 MCP クライアント使用時の AI インジケータ精度(今は 20 秒近似)
 - `history.jsonl` 肥大化対策(スナップショット + 差分)

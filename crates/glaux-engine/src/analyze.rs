@@ -64,12 +64,14 @@ pub struct TrackAnalysis {
 pub fn analyze_project_tracks(
     project: &Project,
     range: Option<(Tick, Tick)>,
+    bank: &crate::data::SampleBank,
 ) -> Vec<TrackAnalysis> {
     project
         .tracks
         .iter()
         .filter_map(|t| {
-            let a = analyze_project(project, Some(std::slice::from_ref(&t.id)), range).ok()?;
+            let a =
+                analyze_project(project, Some(std::slice::from_ref(&t.id)), range, bank).ok()?;
             Some(TrackAnalysis {
                 track_id: t.id.to_string(),
                 name: t.name.clone(),
@@ -88,6 +90,7 @@ pub fn analyze_project(
     project: &Project,
     track_ids: Option<&[TrackId]>,
     range: Option<(Tick, Tick)>,
+    bank: &crate::data::SampleBank,
 ) -> Result<Analysis, ExportError> {
     // 対象トラックだけ残したコピーを作ってレンダする
     let mut target = project.clone();
@@ -98,7 +101,7 @@ pub fn analyze_project(
             t.solo = false;
         }
     }
-    let stereo = render_project(&target, SAMPLE_RATE)?;
+    let stereo = render_project(&target, SAMPLE_RATE, bank)?;
 
     // tick 範囲 → サンプル範囲でスライス
     let (offset_seconds, sliced): (f64, &[f32]) = match range {
@@ -383,7 +386,7 @@ mod tests {
         project
             .tracks
             .push(midi_track("Bass", vec![(0, 3840, 33, 110)]));
-        let a = analyze_project(&project, None, None).unwrap();
+        let a = analyze_project(&project, None, None, &Default::default()).unwrap();
         assert!(a.duration_seconds > 1.5);
         assert!(
             a.band_energy.low > 0.5,
@@ -401,7 +404,7 @@ mod tests {
         let mut track = midi_track("Hats", (0..8).map(|i| (i * 480, 120, 42, 100)).collect());
         track.device = Some(Device::builtin("drum"));
         project.tracks.push(track);
-        let a = analyze_project(&project, None, None).unwrap();
+        let a = analyze_project(&project, None, None, &Default::default()).unwrap();
         assert!(
             a.band_energy.high > 0.3,
             "ハットは高域寄り: {:?}",
@@ -428,11 +431,17 @@ mod tests {
         project.tracks.push(hats);
 
         // Bass だけ解析 → 低域寄り
-        let a = analyze_project(&project, Some(&[bass_id]), None).unwrap();
+        let a = analyze_project(&project, Some(&[bass_id]), None, &Default::default()).unwrap();
         assert!(a.band_energy.low > 0.5);
 
         // 範囲指定(後半 1 小節 = ハットは冒頭のみなので無音に近い…ではなく Bass が続く)
-        let a = analyze_project(&project, None, Some((Tick(3840), Tick(7680)))).unwrap();
+        let a = analyze_project(
+            &project,
+            None,
+            Some((Tick(3840), Tick(7680))),
+            &Default::default(),
+        )
+        .unwrap();
         assert!(a.duration_seconds < 2.5);
     }
 
@@ -445,7 +454,7 @@ mod tests {
         let loud = midi_track("Bass", vec![(0, 3840, 33, 110)]);
         project.tracks.push(loud);
 
-        let tracks = analyze_project_tracks(&project, None);
+        let tracks = analyze_project_tracks(&project, None, &Default::default());
         assert_eq!(tracks.len(), 2);
         let lead = tracks.iter().find(|t| t.name == "Lead").unwrap();
         let bass = tracks.iter().find(|t| t.name == "Bass").unwrap();
@@ -461,6 +470,6 @@ mod tests {
     #[test]
     fn empty_selection_is_error() {
         let project = Project::new("t");
-        assert!(analyze_project(&project, None, None).is_err());
+        assert!(analyze_project(&project, None, None, &Default::default()).is_err());
     }
 }

@@ -109,6 +109,18 @@ pub struct GetHistoryParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ImportSampleParams {
+    /// 音源を設定するトラック ID(`trk_xxxxxx`)。
+    pub track_id: String,
+    /// WAV ファイルの絶対パス(ユーザーのマシン上のファイル)。WAV のみ対応。
+    pub path: String,
+    /// サンプル自身の音程(MIDI ノート番号。60 = C4)。この音で等速再生になる。
+    /// 省略時 60。音程のない素材(ドラムワンショット等)は 60 のままでよい。
+    #[serde(default)]
+    pub root: Option<u8>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SavePresetParams {
     /// 保存元のトラック ID(`trk_xxxxxx`)。そのトラックの音源 + エフェクトチェーンを保存する。
     pub track_id: String,
@@ -225,9 +237,12 @@ pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
     let (device_name, device_params, is_default) = match &track.device {
         Some(d) => match &d.source {
             glaux_core::PluginSource::Builtin { name } => (name.clone(), d.params.clone(), false),
+            glaux_core::PluginSource::Sampler { .. } => {
+                ("sampler".to_owned(), d.params.clone(), false)
+            }
             other => {
                 return Err(format!(
-                    "このトラックのデバイスは内蔵ではありません({other:?})。今は builtin のみ対応"
+                    "このトラックのデバイスは対応外です({other:?})。builtin / sampler のみ対応"
                 ))
             }
         },
@@ -622,10 +637,13 @@ impl GlauxServer {
 
         // レンダ + FFT は CPU バウンドなのでブロッキングスレッドで
         let per_track = p.per_track.unwrap_or(false);
+        let project_dir = self.handle.project_dir().await?;
         let (analysis, track_summaries) = tokio::task::spawn_blocking(move || {
-            let a = glaux_engine::analyze_project(&project, track_ids.as_deref(), range);
+            // サンプラー音源の WAV を読み込む(オフライン解析なのでキャッシュなしでよい)
+            let bank = glaux_engine::SampleBank::load(&project, std::path::Path::new(&project_dir));
+            let a = glaux_engine::analyze_project(&project, track_ids.as_deref(), range, &bank);
             let t = if per_track {
-                Some(glaux_engine::analyze_project_tracks(&project, range))
+                Some(glaux_engine::analyze_project_tracks(&project, range, &bank))
             } else {
                 None
             };
@@ -676,6 +694,69 @@ impl GlauxServer {
         Ok(Json(
             json!({ "project_version": version, "entries": entries }),
         ))
+    }
+
+    #[tool(
+        description = "WAV ファイルをプロジェクトに取り込み、トラックの音源を sampler にする。\
+        サンプルは内容ハッシュ名で <プロジェクト>/audio/ にコピーされ、ノートは root からの\
+        ピッチ変換で再生される(実録の質感が欲しいときに使う)。\
+        音程のある素材は root にサンプルの実音を指定すること(例: A3 の単音ギターなら 57)。\
+        取り込み + 音源設定は 1 Batch = 1 回の undo で戻せる。WAV 以外はエラー。"
+    )]
+    async fn import_sample(
+        &self,
+        params: Parameters<ImportSampleParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("import_sample");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+
+        let dir = self.handle.project_dir().await?;
+        let imported =
+            crate::assets::import_wav(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
+
+        let mut params_map = glaux_core::ParamMap::new();
+        if let Some(root) = p.root {
+            params_map.insert(
+                "root".to_owned(),
+                glaux_core::ParamValue::Int(root.min(127) as i64),
+            );
+        }
+        let mut cmds = Vec::new();
+        if !project.assets.contains_key(&imported.id) {
+            cmds.push(Command::AddAsset {
+                id: imported.id.clone(),
+                asset: imported.asset.clone(),
+            });
+        }
+        cmds.push(Command::SetDevice {
+            track: track_id.clone(),
+            device: Some(glaux_core::Device {
+                source: glaux_core::PluginSource::Sampler {
+                    asset: imported.id.clone(),
+                },
+                params: params_map,
+            }),
+        });
+        let file_name = std::path::Path::new(&p.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sample".to_owned());
+        let label = format!("{} にサンプル「{file_name}」を設定", track.name);
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["asset_id"] = json!(imported.id);
+        v["sample_rate"] = json!(imported.asset.sample_rate);
+        v["frames"] = json!(imported.asset.frames);
+        Ok(Json(v))
     }
 
     // ---- 音色プリセット ----------------------------------------------------

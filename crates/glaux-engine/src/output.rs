@@ -3,7 +3,7 @@
 //! `cpal::Stream` は `Send` ではないので、専用スレッドを立ててそこでストリームを
 //! 生成・保持する。UI 側には Send + Sync な [`EngineHandle`] だけを渡す。
 
-use crate::data::{build_playback_data, PlaybackData};
+use crate::data::{build_playback_data, PlaybackData, SampleBank};
 use crate::render::{Renderer, Shared, NO_SEEK};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use glaux_core::{Project, TempoMap, Tick};
@@ -31,6 +31,8 @@ pub struct EngineHandle {
     loop_ticks: Arc<Mutex<Option<(Tick, Tick)>>>,
     /// 差し替えた旧データの解放をオーディオスレッドで起こさないための退避場所
     graveyard: Arc<Mutex<Vec<Arc<PlaybackData>>>>,
+    /// デコード済みサンプルのキャッシュ(サンプラー音源用)
+    bank: Arc<Mutex<SampleBank>>,
 }
 
 impl EngineHandle {
@@ -39,8 +41,13 @@ impl EngineHandle {
     }
 
     /// プロジェクトから再生データを構築して差し替える(UI スレッドで呼ぶ)。
-    pub fn set_project(&self, project: &Project) {
-        let data = Arc::new(build_playback_data(project, self.sample_rate));
+    /// `project_dir` はサンプラー音源の WAV 解決に使う。
+    pub fn set_project(&self, project: &Project, project_dir: &std::path::Path) {
+        let data = {
+            let mut bank = self.bank.lock().expect("bank lock");
+            bank.sync(project, project_dir);
+            Arc::new(build_playback_data(project, self.sample_rate, &bank))
+        };
         let old = self.shared.data.swap(data);
         *self.tempo.lock().expect("tempo lock") = project.tempo_map.clone();
         // テンポが変わっているかもしれないのでループ区間のサンプル位置を焼き直す
@@ -238,6 +245,7 @@ fn open_stream() -> Result<(cpal::Stream, EngineHandle), EngineError> {
         tempo: Arc::new(Mutex::new(TempoMap::default())),
         loop_ticks: Arc::new(Mutex::new(None)),
         graveyard: Arc::new(Mutex::new(Vec::new())),
+        bank: Arc::new(Mutex::new(SampleBank::default())),
     };
     Ok((stream, handle))
 }

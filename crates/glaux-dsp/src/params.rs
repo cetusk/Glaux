@@ -283,6 +283,46 @@ pub static PLUCK_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static SAMPLER_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "root",
+        display_name: "ルート音程",
+        unit: None,
+        range: ParamRange::Int {
+            min: 0,
+            max: 127,
+            default: 60,
+        },
+        description: "サンプル自身の音程(MIDI ノート番号。60 = C4)。この音で等速再生になり、\
+            離れるほどピッチ変換で速く/遅く再生される。サンプルの実音に合わせること。",
+    },
+    ParamSpec {
+        name: "release_ms",
+        display_name: "リリース",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 5.0,
+            max: 2000.0,
+            default: 80.0,
+            skew: Some(0.4),
+        },
+        description: "ノート終了後のフェード時間。短いとブツッと切れず自然に止まり、\
+            長いと余韻が重なる。",
+    },
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。",
+    },
+];
+
 /// 楽器カタログの 1 行(MCP の `list_params` がそのまま返す)。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct InstrumentInfo {
@@ -310,6 +350,14 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
             params: DRUM_SPECS,
         },
         InstrumentInfo {
+            name: "sampler",
+            description: "単一サンプル再生(ワンショット)。WAV を root 基準のピッチ変換で\
+                鳴らす。実録の質感(本物のギター、ボーカルチョップ、生ドラムの\
+                ワンショット等)はこれを使う。導入は import_sample ツール\
+                (UI では音作りビューの「サンプルを読み込み」)。",
+            params: SAMPLER_SPECS,
+        },
+        InstrumentInfo {
             name: "pluck",
             description: "撥弦の物理モデル(Karplus-Strong)。アコースティックギター・\
                 ベース・ハープなど「弾く弦」の音はこれを使う。エレキギターは pluck + \
@@ -326,6 +374,7 @@ pub fn instrument_params(name: &str) -> Option<&'static [ParamSpec]> {
         "subtractive" => Some(SUBTRACTIVE_SPECS),
         "drum" => Some(DRUM_SPECS),
         "pluck" => Some(PLUCK_SPECS),
+        "sampler" => Some(SAMPLER_SPECS),
         _ => None,
     }
 }
@@ -356,6 +405,22 @@ fn db_to_amp(db: f32) -> f32 {
 }
 
 static EMPTY_PARAMS: ParamMap = ParamMap::new();
+
+/// サンプラーの焼き込み(波形はエンジン側で読み込んで渡す)。
+pub fn bake_sampler(
+    map: &ParamMap,
+    data: std::sync::Arc<crate::sampler::SampleData>,
+    sample_rate: f32,
+) -> crate::sampler::SamplerParams {
+    let s = SAMPLER_SPECS;
+    let release_ms = get_f32(map, s, "release_ms").clamp(5.0, 2000.0);
+    crate::sampler::SamplerParams {
+        data,
+        root: get_f32(map, s, "root").clamp(0.0, 127.0) as u8,
+        gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 12.0)),
+        release_coef: 1.0 / (release_ms * 0.001 * sample_rate),
+    }
+}
 
 /// トラックの `Device` から再生用パラメータを焼き込む。
 /// device が無い場合は既定の subtractive。内蔵以外(CLAP / サンプラー)や

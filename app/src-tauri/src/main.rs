@@ -119,6 +119,51 @@ fn set_projects_dir(path: String) -> Result<Value, String> {
     Ok(json!({ "default_dir": path }))
 }
 
+/// WAV をプロジェクトに取り込み、トラックの音源を sampler にする(音作りビュー用)。
+#[tauri::command]
+async fn import_sample(
+    state: State<'_, AppState>,
+    track_id: String,
+    path: String,
+) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let track = project
+        .track(&tid)
+        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let dir = state.project_dir();
+    let imported =
+        glaux_mcp::assets::import_wav(std::path::Path::new(&dir), std::path::Path::new(&path))?;
+
+    let mut cmds = Vec::new();
+    if !project.assets.contains_key(&imported.id) {
+        cmds.push(Command::AddAsset {
+            id: imported.id.clone(),
+            asset: imported.asset.clone(),
+        });
+    }
+    cmds.push(Command::SetDevice {
+        track: tid,
+        device: Some(glaux_core::Device {
+            source: glaux_core::PluginSource::Sampler {
+                asset: imported.id.clone(),
+            },
+            params: glaux_core::ParamMap::new(),
+        }),
+    });
+    let file_name = std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sample".to_owned());
+    let label = format!("{} にサンプル「{file_name}」を設定", track.name);
+    let (_, m) = state
+        .handle
+        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }))
+}
+
 /// 音作りビュー用: トラックの音源・エフェクトの spec + 現在値 + path。
 /// 追加できるエフェクトのカタログも返す。
 #[tauri::command]
@@ -393,8 +438,10 @@ async fn export_project_wav(state: State<'_, AppState>) -> Result<Value, String>
 
     // レンダリングは CPU バウンドなのでブロッキングスレッドで
     let path_for_render = path.clone();
+    let project_dir = state.project_dir();
     let seconds = tauri::async_runtime::spawn_blocking(move || {
-        glaux_engine::export_wav(&project, &path_for_render, 48_000.0)
+        let bank = glaux_engine::SampleBank::load(&project, std::path::Path::new(&project_dir));
+        glaux_engine::export_wav(&project, &path_for_render, 48_000.0, &bank)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -715,8 +762,21 @@ fn main() -> Result<()> {
             if let Some(engine) = engine.clone() {
                 let session = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Ok((project, _)) = session.get_project().await {
-                        engine.set_project(&project);
+                    // プロジェクト移動・切り替えに追従するため dir は毎回引く
+                    let sync = |project: glaux_core::Project, dir: String| {
+                        let engine = engine.clone();
+                        async move {
+                            tauri::async_runtime::spawn_blocking(move || {
+                                engine.set_project(&project, std::path::Path::new(&dir));
+                            })
+                            .await
+                            .ok();
+                        }
+                    };
+                    if let (Ok((project, _)), Ok(dir)) =
+                        (session.get_project().await, session.project_dir().await)
+                    {
+                        sync(project, dir).await;
                     }
                     let mut rx = session.subscribe();
                     loop {
@@ -728,8 +788,10 @@ fn main() -> Result<()> {
                                 while matches!(rx.try_recv(), Ok(_) | Err(TryRecvError::Lagged(_)))
                                 {
                                 }
-                                if let Ok((project, _)) = session.get_project().await {
-                                    engine.set_project(&project);
+                                if let (Ok((project, _)), Ok(dir)) =
+                                    (session.get_project().await, session.project_dir().await)
+                                {
+                                    sync(project, dir).await;
                                 }
                             }
                             Err(RecvError::Closed) => break,
@@ -769,6 +831,7 @@ fn main() -> Result<()> {
             save_preset,
             load_preset,
             get_track_params,
+            import_sample,
             create_project,
             export_project_wav,
             apply_edit,

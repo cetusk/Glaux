@@ -13,19 +13,24 @@
 //! - `subtractive`: 減算方式シンセ(PolyBLEP オシレータ + SVF ローパス + ADSR)
 //! - `drum`: ドラムシンセ(MIDI ノート番号でキック/スネア/ハイハット等を弾き分け)
 //! - `pluck`: 撥弦の物理モデル(Karplus-Strong。ギター/ベース/ハープ)
+//! - `sampler`: 単一サンプル再生(ワンショット。実録の質感)
 
 mod drum;
 mod effects;
 mod expr;
 mod params;
 mod pluck;
+mod sampler;
 mod subtractive;
 mod voice;
 
 pub use drum::DrumParams;
 pub use effects::{bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState};
-pub use params::{bake_instrument, instrument_catalog, instrument_params, InstrumentInfo};
+pub use params::{
+    bake_instrument, bake_sampler, instrument_catalog, instrument_params, InstrumentInfo,
+};
 pub use pluck::PluckParams;
+pub use sampler::{SampleData, SamplerParams, SamplerVoice};
 pub use subtractive::{SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
 

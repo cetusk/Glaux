@@ -23,8 +23,12 @@ pub enum ExportError {
 
 /// プロジェクト全体をステレオ・インターリーブの f32 にレンダリングする。
 /// 終端はレンダラの自動停止(余韻込み)に任せ、末尾の無音は切り詰める。
-pub fn render_project(project: &Project, sample_rate: f64) -> Result<Vec<f32>, ExportError> {
-    let data = build_playback_data(project, sample_rate);
+pub fn render_project(
+    project: &Project,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+) -> Result<Vec<f32>, ExportError> {
+    let data = build_playback_data(project, sample_rate, bank);
     if data.events.is_empty() {
         return Err(ExportError::Empty);
     }
@@ -57,8 +61,13 @@ pub fn render_project(project: &Project, sample_rate: f64) -> Result<Vec<f32>, E
 }
 
 /// プロジェクトを 16bit ステレオ WAV に書き出す。返り値は書き出した秒数。
-pub fn export_wav(project: &Project, path: &Path, sample_rate: f64) -> Result<f64, ExportError> {
-    let samples = render_project(project, sample_rate)?;
+pub fn export_wav(
+    project: &Project,
+    path: &Path,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+) -> Result<f64, ExportError> {
+    let samples = render_project(project, sample_rate, bank)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -102,7 +111,7 @@ mod tests {
 
     #[test]
     fn renders_project_offline() {
-        let samples = render_project(&test_project(), 48_000.0).unwrap();
+        let samples = render_project(&test_project(), 48_000.0, &Default::default()).unwrap();
         // 0.5 秒のノート + 余韻。ステレオなので偶数長
         assert!(samples.len() % 2 == 0);
         assert!(samples.len() as f64 / 2.0 / 48_000.0 > 0.5);
@@ -114,7 +123,7 @@ mod tests {
     fn writes_valid_wav() {
         let dir = std::env::temp_dir().join("glaux-export-test");
         let path = dir.join("out.wav");
-        let seconds = export_wav(&test_project(), &path, 48_000.0).unwrap();
+        let seconds = export_wav(&test_project(), &path, 48_000.0, &Default::default()).unwrap();
         assert!(seconds > 0.5);
 
         let reader = hound::WavReader::open(&path).unwrap();
@@ -129,7 +138,7 @@ mod tests {
     fn empty_project_is_an_error() {
         let project = Project::new("Empty");
         assert!(matches!(
-            render_project(&project, 48_000.0),
+            render_project(&project, 48_000.0, &Default::default()),
             Err(ExportError::Empty)
         ));
     }

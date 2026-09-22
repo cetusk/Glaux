@@ -36,6 +36,7 @@ axum = "0.8"
 cpal = "0.18"
 arc-swap = "1"
 hound = "3"
+sha2 = "0.10"
 rustfft = "6"
 
 # tauri dev(デバッグビルド)でもオーディオ経路は最適化する。
