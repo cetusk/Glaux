@@ -96,6 +96,17 @@ pub struct ChatManager {
     last_seen_entry: Mutex<Option<String>>,
     child: Mutex<Option<Child>>,
     running: AtomicBool,
+    /// 使うモデル(`claude --model` に渡す)。None なら Claude Code の既定
+    model: Mutex<Option<String>>,
+}
+
+/// `--model` に渡してよい値か(英数字と . _ - [ ] のみ。別オプションの注入を防ぐ)。
+pub fn valid_model_name(m: &str) -> bool {
+    !m.is_empty()
+        && m.len() <= 64
+        && !m.starts_with('-')
+        && m.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '[' | ']'))
 }
 
 const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作曲アシスタントです。\
@@ -164,6 +175,20 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     返答は簡潔な日本語で、行った編集の要点だけ述べてください。";
 
 impl ChatManager {
+    /// 次のターンから使うモデルを設定する(None / 空文字で既定)。
+    pub fn set_model(&self, model: Option<String>) -> Result<(), String> {
+        let model = model
+            .filter(|m| !m.trim().is_empty())
+            .map(|m| m.trim().to_owned());
+        if let Some(m) = &model {
+            if !valid_model_name(m) {
+                return Err(format!("モデル名が不正です: {m}"));
+            }
+        }
+        *self.model.lock().expect("model lock") = model;
+        Ok(())
+    }
+
     pub fn new(mcp_url: String, project_dir: String) -> Self {
         // 前回のセッション ID があれば読み込み、アプリ再起動をまたいで会話を継続する
         let session_id = read_cache(&session_file(&project_dir));
@@ -178,6 +203,7 @@ impl ChatManager {
             last_seen_entry: Mutex::new(last_seen_entry),
             child: Mutex::new(None),
             running: AtomicBool::new(false),
+            model: Mutex::new(None),
         }
     }
 
@@ -280,6 +306,9 @@ impl ChatManager {
             .stderr(std::process::Stdio::piped());
         if let Some(sid) = self.session_id.lock().expect("session_id lock").as_ref() {
             cmd.args(["--resume", sid]);
+        }
+        if let Some(model) = self.model.lock().expect("model lock").as_ref() {
+            cmd.args(["--model", model]);
         }
         #[cfg(windows)]
         {
@@ -465,6 +494,29 @@ async fn run_turn_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_names_are_validated() {
+        for ok in [
+            "opus",
+            "sonnet",
+            "haiku",
+            "claude-opus-5-5",
+            "claude-opus-5-5[1m]",
+            "claude-3.5",
+        ] {
+            assert!(valid_model_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "--dangerously-skip-permissions",
+            "opus sonnet",
+            "a;b",
+            "x/y",
+        ] {
+            assert!(!valid_model_name(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn parses_init_and_captures_session_id() {

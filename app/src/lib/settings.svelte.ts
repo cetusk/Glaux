@@ -25,6 +25,8 @@ interface Settings {
   countInBars: number;
   /// 録音中はメトロノームを自動で鳴らす
   metronomeOnRecord: boolean;
+  /// チャットの AI モデル(`claude --model` に渡す)。空文字 = Claude Code の既定
+  chatModel: string;
 }
 
 function load(): Settings {
@@ -38,6 +40,7 @@ function load(): Settings {
         recordLatencyMs: typeof v.recordLatencyMs === "number" ? v.recordLatencyMs : 60,
         countInBars: typeof v.countInBars === "number" ? v.countInBars : 1,
         metronomeOnRecord: v.metronomeOnRecord !== false,
+        chatModel: typeof v.chatModel === "string" ? v.chatModel : "",
       };
     }
   } catch {
@@ -49,6 +52,7 @@ function load(): Settings {
     recordLatencyMs: 60,
     countInBars: 1,
     metronomeOnRecord: true,
+    chatModel: "",
   };
 }
 

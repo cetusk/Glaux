@@ -913,7 +913,9 @@ async fn send_chat(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     prompt: String,
+    model: Option<String>,
 ) -> Result<(), String> {
+    state.chat.set_model(model)?;
     let prompt = prompt.trim().to_owned();
     if prompt.is_empty() {
         return Err("指示が空です".to_owned());

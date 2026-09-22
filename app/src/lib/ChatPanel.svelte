@@ -2,7 +2,31 @@
   import { onMount, tick } from "svelte";
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
-  import { playDoneChime, playErrorChime } from "./settings.svelte";
+  import { playDoneChime, playErrorChime, saveSettings, settings } from "./settings.svelte";
+
+  // モデルの選択肢(値は claude --model に渡すエイリアス。"" は Claude Code の既定)
+  const MODELS = [
+    { value: "", label: "既定" },
+    { value: "opus", label: "Opus" },
+    { value: "sonnet", label: "Sonnet" },
+    { value: "haiku", label: "Haiku" },
+  ];
+  const isCustomModel = $derived(!MODELS.some((m) => m.value === settings.chatModel));
+
+  function pickModel(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    if (v === "__custom") {
+      const name = window.prompt("モデル名(例: claude-opus-5-5、claude-sonnet-5)", settings.chatModel);
+      if (name === null) {
+        (e.currentTarget as HTMLSelectElement).value = settings.chatModel;
+        return;
+      }
+      settings.chatModel = name.trim();
+    } else {
+      settings.chatModel = v;
+    }
+    saveSettings();
+  }
   import { pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
 
   interface Msg {
@@ -75,7 +99,7 @@
     input = "";
     chatStatus.running = true;
     try {
-      await api.sendChat(fullPrompt);
+      await api.sendChat(fullPrompt, settings.chatModel);
     } catch (e) {
       push({ role: "error", text: String(e) });
       chatStatus.running = false;
@@ -140,9 +164,26 @@
 <div class="chat">
   <div class="chat-head">
     <h2>AI に指示</h2>
-    <button class="small" onclick={newConversation} disabled={chatStatus.running} title="会話の文脈をリセットする">
-      新しい会話
-    </button>
+    <div class="head-right">
+      <select
+        class="model"
+        value={isCustomModel ? "__current" : settings.chatModel}
+        onchange={pickModel}
+        disabled={chatStatus.running}
+        title="AI のモデル(次の指示から反映。会話の文脈はそのまま引き継がれます)"
+      >
+        {#each MODELS as m (m.value)}
+          <option value={m.value}>{m.label}</option>
+        {/each}
+        {#if isCustomModel}
+          <option value="__current">{settings.chatModel}</option>
+        {/if}
+        <option value="__custom">その他(モデル名を入力)…</option>
+      </select>
+      <button class="small" onclick={newConversation} disabled={chatStatus.running} title="会話の文脈をリセットする">
+        新しい会話
+      </button>
+    </div>
   </div>
 
   <div class="messages" bind:this={scroller}>
@@ -214,6 +255,17 @@
     justify-content: space-between;
     align-items: center;
     padding: 10px 10px 6px;
+  }
+
+  .head-right {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .model {
+    font-size: 11px;
+    max-width: 150px;
   }
 
   h2 {

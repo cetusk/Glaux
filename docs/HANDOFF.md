@@ -771,6 +771,11 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     UI のファイル選択・MCP import_sample / import_audio_clip が対応。
     手動確認用 `cargo run -p glaux-mcp --example import_check -- <file>`
   - 残り: ピッチカーブの手描き UI
+- **チャットの AI モデル選択(2026-09-22)**: チャットパネルのヘッダーで 既定 / Opus / Sonnet /
+  Haiku / 任意のモデル名 を選ぶと、次の指示から `claude -p ... --model <名前>` で起動する
+  (`ChatManager::set_model`、`send_chat` の `model` 引数)。`--resume` と併用できるので
+  会話の文脈は引き継がれる。モデル名は英数字と `. _ - [ ]` のみ許可(`valid_model_name`、
+  別オプションの注入防止)。選択は localStorage(`settings.chatModel`)に保存
 - ~~音声クリップ再生・録音~~ → **実装済み(2026-09-22)**:
   - 再生: `AudioEvent` を固定プール(16)で線形補間再生。offset / gain_db / fade を反映。
     シーク・ループ折返し・一時停止からの再開・編集によるデータ差し替えのいずれでも
