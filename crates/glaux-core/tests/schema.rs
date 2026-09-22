@@ -42,7 +42,8 @@ const FIXTURE: &str = r##"{
           "kind": "midi",
           "notes": [
             { "id": "nt_000001", "pos": 0,   "dur": 480, "pitch": 36, "vel": 100 },
-            { "id": "nt_000002", "pos": 960, "dur": 480, "pitch": 36, "vel": 90 }
+            { "id": "nt_000002", "pos": 960, "dur": 480, "pitch": 36, "vel": 90,
+              "articulation": "palm_mute" }
           ],
           "loop": false
         }

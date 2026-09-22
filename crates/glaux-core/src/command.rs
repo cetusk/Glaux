@@ -9,7 +9,7 @@
 
 use crate::id::{AssetId, ClipId, FxId, NoteId, TrackId};
 use crate::model::{
-    Asset, AutomationPoint, Clip, Device, Effect, Note, ParamPath, ParamValue, Track,
+    Articulation, Asset, AutomationPoint, Clip, Device, Effect, Note, ParamPath, ParamValue, Track,
 };
 use crate::time::{TempoEvent, Tick, TimeSigEvent};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,9 @@ pub struct NoteChange {
     pub pitch: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vel: Option<u8>,
+    /// 奏法の変更。`"normal"` を渡すと通常に戻す
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub articulation: Option<Articulation>,
 }
 
 impl NoteChange {
@@ -48,6 +51,7 @@ impl NoteChange {
             dur: None,
             pitch: None,
             vel: None,
+            articulation: None,
         }
     }
     pub fn pos(mut self, v: Tick) -> Self {
@@ -64,6 +68,10 @@ impl NoteChange {
     }
     pub fn vel(mut self, v: u8) -> Self {
         self.vel = Some(v);
+        self
+    }
+    pub fn articulation(mut self, v: Articulation) -> Self {
+        self.articulation = Some(v);
         self
     }
 }

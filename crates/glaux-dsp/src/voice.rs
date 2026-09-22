@@ -38,13 +38,24 @@ impl VoiceState {
         freq: f32,
         pitch: u8,
         vel: f32,
+        articulation: glaux_core::Articulation,
         sample_rate: f32,
     ) -> VoiceState {
         match params {
-            InstrumentParams::Subtractive(p) => {
-                VoiceState::Subtractive(SubtractiveVoice::start(p, freq, vel, sample_rate))
-            }
+            InstrumentParams::Subtractive(p) => VoiceState::Subtractive(SubtractiveVoice::start(
+                p,
+                freq,
+                vel,
+                articulation,
+                sample_rate,
+            )),
             InstrumentParams::Drum(p) => {
+                // ドラムは音程楽器ほど奏法の情報がない。アクセントの強調だけ反映する
+                let vel = if articulation == glaux_core::Articulation::Accent {
+                    (vel * 1.3).min(1.0)
+                } else {
+                    vel
+                };
                 VoiceState::Drum(DrumVoice::start(p, pitch, vel, sample_rate))
             }
         }

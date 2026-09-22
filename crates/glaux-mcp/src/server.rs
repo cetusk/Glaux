@@ -346,6 +346,9 @@ impl GlauxServer {
         専用ツール(transpose_notes / shift_notes / quantize_notes / scale_velocity)の方が速くて確実。\
         代表例: add_track {track,index?} / add_clip {track,clip} / add_notes {clip,notes} / update_notes {clip,changes} / \
         set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?} / \
+        ノートには articulation を付けられる: \"palm_mute\"(ブリッジミュート。減衰が速いこもった刻み)/ \
+        \"staccato\"(音価半分で切る)/ \"accent\"(強く明るく)。省略で通常。update_notes でも変更可。\
+        メタルの「ズクズク」した刻みは distortion + 低音 + palm_mute ノートの組み合わせで作る。\
         set_automation_points {track,target,points}(target は \"track/volume_db\" か \"track/pan\"、\
         points は [{tick,value,curve?}] で curve は linear/hold/exponential。\
         フェードイン・ビルドアップの音量カーブ・左右の揺れなど時間変化するミックスに使う。\
@@ -826,6 +829,7 @@ impl ServerHandler for GlauxServer {
                  set_param(fx/<id>/<名前>)で調整する。マスターにも掛けられる。\
                  EDM のポンピングは sidechain(source にキックのトラック ID)、\
                  supersaw は subtractive の unison + detune、歪みは distortion。\
+                 メタルのブリッジミュートはノートの articulation: \"palm_mute\"(+ distortion)。\
                  大きな試行錯誤の前に checkpoint を打ち、気に入らなければ revert_to で戻る。\
                  すべての編集は履歴に残り、get_history(author: \"ai\")で自分の過去の作業を確認できる。",
             )

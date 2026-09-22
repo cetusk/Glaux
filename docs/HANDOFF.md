@@ -200,9 +200,9 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 | `move_clip {id, start, track?}` | 同 | トラック間移動は kind 一致が必要 |
 | `resize_clip {id, length}` | 同 | length > 0 |
 | `split_clip {id, at, new_id}` | `batch[remove_clip, replace_clip]` | 音声は `offset_samples` をテンポマップから計算 |
-| `add_notes {clip, notes}` | `remove_notes` | pitch/vel ≤ 127 |
+| `add_notes {clip, notes}` | `remove_notes` | pitch/vel ≤ 127。`Note.articulation`(palm_mute / staccato / accent、省略で normal)対応 |
 | `remove_notes {clip, ids}` | `add_notes` | |
-| `update_notes {clip, changes}` | 同 (旧値、逆順) | `NoteChange` は Option フィールドの部分更新 |
+| `update_notes {clip, changes}` | 同 (旧値、逆順) | `NoteChange` は Option フィールドの部分更新(articulation 含む) |
 | `set_param {track, path, value}` | 同 or `unset_param` | path: `device/<n>`, `fx/<id>/<n>`, `track/volume_db|pan` |
 | `unset_param {track, path}` | `set_param` | |
 | `set_device {track, device?}` | 同 | |
@@ -531,12 +531,20 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
    - 未実装のまま: 第 2 オシレータ、EDM キックの専用チューニング(tune/decay で代用)、
      エンジンのバス構造(サイドチェインは上記方式で不要になった)
 
-5. **アーティキュレーション設計(ブリッジミュート等)**
-   - 「同じ音源で奏法を切り替える」表現。メタルのブリッジミュートが代表例
-   - 案 A: `Note` に articulation フィールドを追加(スキーマ変更 + コマンド拡張。本命)
-   - 案 B: キースイッチ(特定ノート番号で切替。変更不要だが暗黙的で AI に不親切)
-   - 案 C(今すぐ可能な回避策): 別トラックで代用。palm mute ≒ 短 decay + 低 cutoff
-   - ギター音源そのもの(Karplus-Strong 物理モデル or サンプラー)も併せて検討
+5. ~~アーティキュレーション設計~~ → **実装済み(2026-09-22。案 A)**
+   - `Note.articulation: Articulation`(normal / **palm_mute** / staccato / accent)。
+     normal は JSON に書かない(`skip_serializing_if`)ので旧ファイルと互換、
+     FORMAT_VERSION 据え置き。`NoteChange.articulation` で部分更新可(可逆)
+   - 音の実装: トラック共有の `SubtractiveParams` は変えず、**ボイス側の倍率(`ArtMod`)**で表現
+     - palm_mute: cutoff×0.3 + decay×0.18 + sustain 0(ズンズンした刻み。distortion と併用推奨)
+     - staccato: 音価を半分に短縮(エンジンの `build_playback_data`)+ release 短め
+     - accent: amp×1.4 + cutoff×1.5(強く・明るく)
+     - drum はアクセントの音量強調のみ反映
+   - UI: ピアノロールでノート上にマーカー(M / S / >)表示、選択して **M / S / A キー**でトグル
+     (全選択が同じ奏法なら解除)。AI へは apply_commands の説明・instructions・
+     システムプロンプトに記載(メタルの刻み = distortion + palm_mute)
+   - 将来: ギター音源そのもの(Karplus-Strong or サンプラー)、legato/slide(ボイス跨ぎが
+     必要なので現アーキテクチャでは大工事)
 
 6. **音作りプロジェクト(サウンドデザインモード)+ プリセット**
    - 「音を作るためのプロジェクト」: 単音/短フレーズをループ試聴しながらパッチを練る

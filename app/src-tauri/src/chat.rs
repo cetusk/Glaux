@@ -116,6 +116,8 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     太いベースは sub、EDM のポンピングは sidechain エフェクト(source にキックのトラック ID、\
     release_ms を 8 分音符の長さ = 60000/BPM/2 に合わせると気持ちよく揺れる)、\
     ギターの歪みやメタルは distortion(square 波 + 高 drive)、\
+    メタルのブリッジミュートの刻み(ズクズク)はノートに articulation: \"palm_mute\" を付けます\
+    (add_notes / update_notes。ほかに staccato / accent。低めの音 + distortion と組み合わせると効果的)。\
     ビルドアップにはドラムのノート 55(リバースクラッシュ)が使えます。\
     耳: analyze_audio で自分の編集結果を数値で聴けます(ラウドネス・帯域バランス・クリップ検出など)。\
     音作りやミックス調整では、編集 → analyze_audio で確認 → 微調整のループを回してください。\

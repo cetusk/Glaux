@@ -47,6 +47,7 @@ fn seed_project() -> Project {
                     dur: Tick(480),
                     pitch: 48 + n as u8,
                     vel: 100,
+                    articulation: Articulation::Normal,
                 });
             }
             p.apply(&Command::AddClip {
@@ -193,6 +194,14 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         dur: Tick(240),
                         pitch: rng.gen_range(36..84),
                         vel: rng.gen_range(1..=127),
+                        articulation: *[
+                            Articulation::Normal,
+                            Articulation::PalmMute,
+                            Articulation::Staccato,
+                            Articulation::Accent,
+                        ]
+                        .choose(rng)
+                        .unwrap(),
                     })
                     .collect();
                 return Command::AddNotes {
@@ -245,6 +254,18 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         }
                         if rng.gen() {
                             ch = ch.dur(Tick(rng.gen_range(1..4) * 240));
+                        }
+                        if rng.gen() {
+                            ch = ch.articulation(
+                                *[
+                                    Articulation::Normal,
+                                    Articulation::PalmMute,
+                                    Articulation::Staccato,
+                                    Articulation::Accent,
+                                ]
+                                .choose(rng)
+                                .unwrap(),
+                            );
                         }
                         ch
                     })
@@ -574,6 +595,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             dur: Tick(480),
             pitch: 60,
             vel: 100,
+            articulation: Articulation::Normal,
         }, // 左に残る
         Note {
             id: ids[1].clone(),
@@ -581,6 +603,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             dur: Tick(480),
             pitch: 62,
             vel: 100,
+            articulation: Articulation::Normal,
         }, // 分割点(1920)をまたぐ → 切り詰め
         Note {
             id: ids[2].clone(),
@@ -588,6 +611,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             dur: Tick(480),
             pitch: 64,
             vel: 100,
+            articulation: Articulation::Normal,
         }, // 右へ移動
     ]);
     p.apply(&Command::AddClip { track: tid, clip }).unwrap();

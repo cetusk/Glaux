@@ -363,6 +363,7 @@ mod tests {
         if let ClipContent::Midi { notes: n, .. } = &mut clip.content {
             for (pos, dur, pitch, vel) in notes {
                 n.push(Note {
+                    articulation: Default::default(),
                     id: NoteId::new(),
                     pos: Tick(pos),
                     dur: Tick(dur),

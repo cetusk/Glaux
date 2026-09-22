@@ -6,7 +6,7 @@
   import { drumName } from "./drumMap";
   import { newNoteId } from "./ids";
   import { pianoRollStore } from "./selection.svelte";
-  import type { MidiClip, Note, Project, Track } from "./types";
+  import type { Articulation, MidiClip, Note, Project, Track } from "./types";
 
   let {
     project,
@@ -198,6 +198,15 @@
       g.strokeStyle = isSel ? "#ffd98a" : "rgba(255,255,255,0.25)";
       g.lineWidth = 1;
       g.stroke();
+      // 奏法マーカー(M=ブリッジミュート / S=スタッカート / >=アクセント)
+      const art = n.articulation;
+      if (art && art !== "normal" && w >= 13 && rowH >= 9) {
+        const label = art === "palm_mute" ? "M" : art === "staccato" ? "S" : ">";
+        g.fillStyle = "rgba(10, 10, 20, 0.85)";
+        g.font = `bold ${Math.min(rowH - 4, 10)}px sans-serif`;
+        g.textBaseline = "middle";
+        g.fillText(label, x + 3, y + rowH / 2 + 0.5);
+      }
     }
   }
 
@@ -662,6 +671,35 @@
     deleteNotes(selected.has(hit.id) ? [...selected] : [hit.id]);
   }
 
+  const ART_LABELS: Record<Articulation, string> = {
+    normal: "通常",
+    palm_mute: "ブリッジミュート",
+    staccato: "スタッカート",
+    accent: "アクセント",
+  };
+
+  /// 選択ノートの奏法をトグルする(全部が同じ奏法なら通常に戻す)
+  function toggleArticulation(art: Articulation) {
+    const currentClip = clip;
+    if (!currentClip || selected.size === 0) return;
+    const notes = currentClip.notes.filter((n) => selected.has(n.id));
+    if (notes.length === 0) return;
+    const allHave = notes.every((n) => (n.articulation ?? "normal") === art);
+    const target: Articulation = allHave ? "normal" : art;
+    applyEdit(
+      [
+        {
+          op: "update_notes",
+          clip: currentClip.id,
+          changes: notes.map((n) => ({ id: n.id, articulation: target })),
+        },
+      ],
+      allHave
+        ? `${ART_LABELS[art]}を解除(${notes.length} ノート)`
+        : `${ART_LABELS[art]}を設定(${notes.length} ノート)`,
+    );
+  }
+
   function onRulerClick(e: MouseEvent) {
     const currentClip = clip;
     if (!currentClip || !onSeek) return;
@@ -708,6 +746,18 @@
             scroller.scrollLeft = Math.max(0, ix - view * 0.7);
           }
         }
+      } else if (
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        (e.code === "KeyM" || e.code === "KeyS" || e.code === "KeyA")
+      ) {
+        // 奏法トグル(選択ノートに対して)
+        if (selected.size === 0) return;
+        e.preventDefault();
+        toggleArticulation(
+          e.code === "KeyM" ? "palm_mute" : e.code === "KeyS" ? "staccato" : "accent",
+        );
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         deleteNotes([...selected]);
@@ -753,7 +803,7 @@
             {/each}
           </select>
         </label>
-        <span class="hint">クリック: 挿入カーソル(←/→ で移動) / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl+C/X/V: コピペ / Ctrl・Shift+ホイール: ズーム</span>
+        <span class="hint">クリック: 挿入カーソル(←/→ で移動) / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl+C/X/V: コピペ / 選択して M/S/A: ミュート・スタッカート・アクセント / Ctrl・Shift+ホイール: ズーム</span>
         <button onclick={close} title="閉じる(Esc)">✕</button>
       </div>
     </div>

@@ -8,7 +8,7 @@ mod track;
 
 pub use asset::Asset;
 pub use automation::{AutomationLane, AutomationPoint, Curve};
-pub use clip::{Clip, ClipContent, Note, Stretch};
+pub use clip::{Articulation, Clip, ClipContent, Note, Stretch};
 pub use param::{ParamMap, ParamPath, ParamRange, ParamSpec, ParamValue};
 pub use track::{Device, Effect, MasterBus, PluginSource, Track, TrackKind};
 

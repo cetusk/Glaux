@@ -60,10 +60,55 @@ enum EnvStage {
 
 const MAX_UNISON: usize = 7;
 
+/// ノート単位の奏法(アーティキュレーション)によるパラメータ倍率。
+/// トラック共有の `SubtractiveParams` を書き換えずに、ボイス側で音を変える。
+#[derive(Clone, Copy, Debug)]
+struct ArtMod {
+    cutoff_mul: f32,
+    decay_mul: f32,
+    sustain_mul: f32,
+    release_mul: f32,
+    amp_mul: f32,
+}
+
+impl ArtMod {
+    fn from(a: glaux_core::Articulation) -> ArtMod {
+        use glaux_core::Articulation as A;
+        match a {
+            A::Normal | A::Staccato => ArtMod {
+                cutoff_mul: 1.0,
+                decay_mul: 1.0,
+                sustain_mul: 1.0,
+                // スタッカートは音価の短縮(エンジン側)が主。切れ際だけ締める
+                release_mul: if a == A::Staccato { 0.5 } else { 1.0 },
+                amp_mul: 1.0,
+            },
+            // こもった「ズンズン」: カットオフを絞り、速く減衰しきる
+            A::PalmMute => ArtMod {
+                cutoff_mul: 0.3,
+                decay_mul: 0.18,
+                sustain_mul: 0.0,
+                release_mul: 0.6,
+                amp_mul: 1.0,
+            },
+            // その音だけ強く・明るく
+            A::Accent => ArtMod {
+                cutoff_mul: 1.5,
+                decay_mul: 1.0,
+                sustain_mul: 1.0,
+                release_mul: 1.0,
+                amp_mul: 1.4,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SubtractiveVoice {
     freq: f32,
     amp: f32,
+    /// 奏法によるボイス固有の倍率
+    art: ArtMod,
     /// ユニゾン各声部の位相
     phases: [f32; MAX_UNISON],
     /// サブオシレータの位相
@@ -93,8 +138,15 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
 }
 
 impl SubtractiveVoice {
-    pub fn start(p: &SubtractiveParams, freq: f32, vel: f32, sample_rate: f32) -> Self {
+    pub fn start(
+        p: &SubtractiveParams,
+        freq: f32,
+        vel: f32,
+        articulation: glaux_core::Articulation,
+        sample_rate: f32,
+    ) -> Self {
         let _ = p;
+        let art = ArtMod::from(articulation);
         // 各声部の初期位相をずらす(揃っていると立ち上がりが位相打ち消しでうねる)
         let mut phases = [0.0f32; MAX_UNISON];
         for (i, ph) in phases.iter_mut().enumerate() {
@@ -102,7 +154,8 @@ impl SubtractiveVoice {
         }
         SubtractiveVoice {
             freq,
-            amp: vel,
+            amp: vel * art.amp_mul,
+            art,
             phases,
             sub_phase: 0.0,
             rng: (freq.to_bits() | 1).wrapping_mul(0x9e37_79b9),
@@ -125,7 +178,8 @@ impl SubtractiveVoice {
     pub fn next(&mut self, p: &SubtractiveParams) -> f32 {
         let sr = self.sample_rate;
 
-        // ---- ADSR(attack は線形、decay/release は指数) ----
+        // ---- ADSR(attack は線形、decay/release は指数)。奏法の倍率を反映 ----
+        let sustain = p.sustain * self.art.sustain_mul;
         match self.stage {
             EnvStage::Attack => {
                 self.env += 1.0 / (p.attack.max(0.0005) * sr);
@@ -135,11 +189,11 @@ impl SubtractiveVoice {
                 }
             }
             EnvStage::Decay => {
-                let coef = 1.0 - 1.0 / (p.decay.max(0.005) * sr);
-                self.env = p.sustain + (self.env - p.sustain) * coef;
+                let coef = 1.0 - 1.0 / ((p.decay * self.art.decay_mul).max(0.005) * sr);
+                self.env = sustain + (self.env - sustain) * coef;
             }
             EnvStage::Release => {
-                let coef = 1.0 - 1.0 / (p.release.max(0.005) * sr);
+                let coef = 1.0 - 1.0 / ((p.release * self.art.release_mul).max(0.005) * sr);
                 self.env *= coef;
             }
         }
@@ -195,7 +249,8 @@ impl SubtractiveVoice {
         }
 
         // ---- SVF ローパス(TPT)。エンベロープでカットオフを開く ----
-        let fc = (p.cutoff * (2.0_f32).powf(p.filter_env * self.env * 3.0)).min(sr * 0.45);
+        let fc = (p.cutoff * self.art.cutoff_mul * (2.0_f32).powf(p.filter_env * self.env * 3.0))
+            .clamp(40.0, sr * 0.45);
         let g = (std::f32::consts::PI * fc / sr).tan();
         let k = 2.0 * (1.0 - p.resonance.min(0.95));
         let a1 = 1.0 / (1.0 + g * (g + k));
@@ -238,7 +293,8 @@ mod tests {
     #[test]
     fn produces_sound_then_decays_after_note_off() {
         let p = default_params();
-        let mut v = SubtractiveVoice::start(&p, 220.0, 1.0, 48_000.0);
+        let mut v =
+            SubtractiveVoice::start(&p, 220.0, 1.0, glaux_core::Articulation::Normal, 48_000.0);
         let held: Vec<f32> = (0..4800).map(|_| v.next(&p)).collect();
         assert!(rms(&held) > 0.05, "発音中は音が出るはず");
 
@@ -263,7 +319,8 @@ mod tests {
                 filter_env: 0.0,
                 ..default_params()
             };
-            let mut v = SubtractiveVoice::start(&p, 220.0, 1.0, 48_000.0);
+            let mut v =
+                SubtractiveVoice::start(&p, 220.0, 1.0, glaux_core::Articulation::Normal, 48_000.0);
             let out: Vec<f32> = (0..9600).map(|_| v.next(&p)).collect();
             out.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f32>()
         };
@@ -276,7 +333,8 @@ mod tests {
     #[test]
     fn unison_thickens_and_sub_noise_add_energy() {
         let render = |p: SubtractiveParams| {
-            let mut v = SubtractiveVoice::start(&p, 220.0, 1.0, 48_000.0);
+            let mut v =
+                SubtractiveVoice::start(&p, 220.0, 1.0, glaux_core::Articulation::Normal, 48_000.0);
             (0..9600).map(|_| v.next(&p)).collect::<Vec<f32>>()
         };
         let single = render(default_params());
@@ -313,13 +371,61 @@ mod tests {
     }
 
     #[test]
+    fn palm_mute_decays_fast_and_darkens() {
+        use glaux_core::Articulation;
+        let p = default_params();
+        let render = |a: Articulation| {
+            let mut v = SubtractiveVoice::start(&p, 110.0, 1.0, a, 48_000.0);
+            (0..24_000).map(|_| v.next(&p)).collect::<Vec<f32>>()
+        };
+        let normal = render(Articulation::Normal);
+        let muted = render(Articulation::PalmMute);
+
+        // 0.5 秒経過時点(sustain 継続 vs 減衰しきり)の残エネルギー差
+        let late_rms = |v: &[f32]| rms(&v[19_200..]);
+        assert!(
+            late_rms(&muted) < late_rms(&normal) * 0.2,
+            "パームミュートは早く減衰しきるはず: muted={} normal={}",
+            late_rms(&muted),
+            late_rms(&normal)
+        );
+
+        // 立ち上がり(最初の 0.1 秒)は音が出ている(無音になっては困る)
+        assert!(rms(&muted[..4_800]) > 0.03, "頭のアタックは鳴るはず");
+
+        // 高域エネルギー(隣接差分)が小さい = こもっている
+        let hf = |v: &[f32]| {
+            v[..4_800]
+                .windows(2)
+                .map(|w| (w[1] - w[0]).powi(2))
+                .sum::<f32>()
+        };
+        assert!(hf(&muted) < hf(&normal) * 0.5, "こもった音になるはず");
+    }
+
+    #[test]
+    fn accent_is_louder() {
+        use glaux_core::Articulation;
+        let p = default_params();
+        let render = |a: Articulation| {
+            let mut v = SubtractiveVoice::start(&p, 220.0, 0.6, a, 48_000.0);
+            (0..9_600).map(|_| v.next(&p)).collect::<Vec<f32>>()
+        };
+        assert!(
+            rms(&render(Articulation::Accent)) > rms(&render(Articulation::Normal)) * 1.15,
+            "アクセントは目立って大きいはず"
+        );
+    }
+
+    #[test]
     fn waveforms_differ() {
         let render = |w: Waveform| {
             let p = SubtractiveParams {
                 waveform: w,
                 ..default_params()
             };
-            let mut v = SubtractiveVoice::start(&p, 220.0, 1.0, 48_000.0);
+            let mut v =
+                SubtractiveVoice::start(&p, 220.0, 1.0, glaux_core::Articulation::Normal, 48_000.0);
             (0..4800).map(|_| v.next(&p)).collect::<Vec<f32>>()
         };
         let saw = render(Waveform::Saw);

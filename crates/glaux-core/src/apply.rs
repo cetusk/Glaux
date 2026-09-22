@@ -459,6 +459,9 @@ impl Project {
                     if let Some(v) = ch.vel {
                         inv.vel = Some(std::mem::replace(&mut n.vel, v));
                     }
+                    if let Some(v) = ch.articulation {
+                        inv.articulation = Some(std::mem::replace(&mut n.articulation, v));
+                    }
                     inverse_changes.push(inv);
                 }
                 inverse_changes.reverse();

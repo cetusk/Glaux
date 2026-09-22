@@ -7,6 +7,29 @@ use crate::id::{AssetId, ClipId, NoteId};
 use crate::time::Tick;
 use serde::{Deserialize, Serialize};
 
+/// ノート単位の奏法(アーティキュレーション)。
+/// 「同じ音源で奏法を切り替える」表現(メタルのブリッジミュート等)。
+/// `Normal` は JSON に書かない(= フィールド省略)ので旧ファイルとそのまま互換。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Articulation {
+    /// 通常(既定)
+    #[default]
+    Normal,
+    /// ブリッジ(パーム)ミュート: 減衰が速く、こもった「ズンズン」した音
+    PalmMute,
+    /// スタッカート: 音価の半分で切る歯切れのよい発音
+    Staccato,
+    /// アクセント: その音だけ強く・明るく強調
+    Accent,
+}
+
+impl Articulation {
+    pub fn is_normal(&self) -> bool {
+        *self == Articulation::Normal
+    }
+}
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Note {
     pub id: NoteId,
@@ -17,6 +40,9 @@ pub struct Note {
     pub pitch: u8,
     /// ベロシティ 1..=127
     pub vel: u8,
+    /// 奏法。省略時 Normal
+    #[serde(default, skip_serializing_if = "Articulation::is_normal")]
+    pub articulation: Articulation,
 }
 
 impl Note {

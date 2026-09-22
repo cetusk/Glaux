@@ -45,6 +45,8 @@ pub struct NoteEvent {
     pub amp: f32,
     /// `PlaybackData::tracks` への添字
     pub track: u32,
+    /// 奏法(パームミュート等)。ボイス起動時に音色へ反映する
+    pub articulation: glaux_core::Articulation,
 }
 
 /// トラックのミックス設定(音量・パン・mute/solo を反映済み)。
@@ -209,7 +211,11 @@ pub fn build_playback_data(project: &Project, sample_rate: f64) -> PlaybackData 
                 };
                 let start_tick = clip.start + note.pos;
                 let start = to_sample(start_tick);
-                let end = to_sample(start_tick + dur).max(start + 1);
+                let mut end = to_sample(start_tick + dur).max(start + 1);
+                // スタッカートは音価の半分で切る(歯切れの表現)
+                if note.articulation == glaux_core::Articulation::Staccato {
+                    end = start + ((end - start) / 2).max(1);
+                }
                 events.push(NoteEvent {
                     start,
                     end,
@@ -217,6 +223,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64) -> PlaybackData 
                     pitch: note.pitch,
                     amp: note.vel as f32 / 127.0,
                     track: ti as u32,
+                    articulation: note.articulation,
                 });
             }
         }
@@ -241,6 +248,7 @@ mod tests {
 
     fn note(pos: u64, dur: u64, pitch: u8, vel: u8) -> glaux_core::Note {
         glaux_core::Note {
+            articulation: Default::default(),
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(dur),
@@ -273,6 +281,17 @@ mod tests {
         assert!((e.freq - 440.0).abs() < 1e-3);
         assert!((e.amp - 1.0).abs() < 1e-6);
         assert_eq!(data.end_sample, 48_000);
+    }
+
+    #[test]
+    fn staccato_halves_note_length() {
+        let mut n = note(960, 960, 69, 127);
+        n.articulation = glaux_core::Articulation::Staccato;
+        let data = build_playback_data(&project_with_notes(vec![n]), 48_000.0);
+        let e = &data.events[0];
+        assert_eq!(e.start, 24_000);
+        assert_eq!(e.end, 36_000, "音価の半分で切れるはず");
+        assert_eq!(e.articulation, glaux_core::Articulation::Staccato);
     }
 
     #[test]

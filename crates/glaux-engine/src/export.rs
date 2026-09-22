@@ -87,6 +87,7 @@ mod tests {
         let mut clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(1920));
         if let ClipContent::Midi { notes, .. } = &mut clip.content {
             notes.push(Note {
+                articulation: Default::default(),
                 id: NoteId::new(),
                 pos: Tick(0),
                 dur: Tick(960),

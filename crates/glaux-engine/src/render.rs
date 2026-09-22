@@ -191,7 +191,14 @@ impl Renderer {
                     gain_l,
                     gain_r,
                     instrument,
-                    state: VoiceState::start(&instrument, freq, pitch, vel as f32 / 127.0, sr),
+                    state: VoiceState::start(
+                        &instrument,
+                        freq,
+                        pitch,
+                        vel as f32 / 127.0,
+                        glaux_core::Articulation::Normal,
+                        sr,
+                    ),
                 });
             }
         }
@@ -223,7 +230,14 @@ impl Renderer {
                             end: e.end,
                             track: e.track,
                             released: false,
-                            state: VoiceState::start(&mix.instrument, e.freq, e.pitch, e.amp, sr),
+                            state: VoiceState::start(
+                                &mix.instrument,
+                                e.freq,
+                                e.pitch,
+                                e.amp,
+                                e.articulation,
+                                sr,
+                            ),
                         });
                     }
                 }
@@ -399,6 +413,7 @@ mod tests {
     fn data_with_note(start: u64, end: u64, audible: bool) -> PlaybackData {
         PlaybackData {
             events: vec![NoteEvent {
+                articulation: Default::default(),
                 start,
                 end,
                 freq: 440.0,
