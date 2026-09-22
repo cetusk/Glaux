@@ -11,7 +11,7 @@
   import SettingsPanel from "./lib/SettingsPanel.svelte";
   import { applyTheme } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
-  import { pianoRollStore } from "./lib/selection.svelte";
+  import { pianoRollStore, selectionStore } from "./lib/selection.svelte";
 
   let project = $state<Project | null>(null);
   let projectVersion = $state(0);
@@ -203,6 +203,12 @@
           e.preventDefault();
           togglePlay();
           break;
+        case "KeyL":
+          if (e.ctrlKey || e.metaKey || e.altKey) break;
+          // ピアノロールを開いているときは奏法キーと同系統の扱いにせず、そのままトグル
+          e.preventDefault();
+          toggleLoop();
+          break;
         case "ArrowLeft":
           // ピアノロール表示中は挿入カーソル移動(PianoRoll 側)に譲る
           if (pianoRollStore.focus) return;
@@ -315,6 +321,50 @@
     if (navBars.length === 0) return;
     seek(nextBarHead(navBars, transport.tick));
   }
+
+  // ---- ループ再生 ----
+  // ルーラーで範囲選択していればその区間、なければ曲全体をループする。
+  // ループ中に選択を変えると区間も追従する。
+
+  let loopOn = $state(false);
+
+  // エンジン側の実状態に追従(プロジェクト切り替えでの自動解除など)
+  $effect(() => {
+    loopOn = transport.loop != null;
+  });
+
+  function loopRange(): { start: number; end: number } | null {
+    const r = selectionStore.range;
+    const start = r ? r.startTick : 0;
+    const end = r ? r.endTick : contentEndTick;
+    return end > start ? { start, end } : null;
+  }
+
+  async function toggleLoop() {
+    if (!transport.available) return;
+    try {
+      if (loopOn) {
+        await api.transportClearLoop();
+        loopOn = false;
+        return;
+      }
+      const range = loopRange();
+      if (!range) return; // 空プロジェクトなど
+      await api.transportSetLoop(range.start, range.end);
+      loopOn = true;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  // ループ中に範囲選択・曲の長さが変わったら区間を更新
+  $effect(() => {
+    void selectionStore.range;
+    void contentEndTick;
+    if (!loopOn) return;
+    const range = loopRange();
+    if (range) api.transportSetLoop(range.start, range.end).catch(() => {});
+  });
 
   let exporting = $state(false);
   let exportMsg = $state<string | null>(null);
@@ -482,6 +532,14 @@
       </button>
       <button onclick={nextBar} disabled={!transport.available} title="次の小節頭へ(→)">⏩</button>
       <button onclick={seekEnd} disabled={!transport.available} title="終端へ(End)">⏭</button>
+      <button
+        class:loop-on={loopOn}
+        onclick={toggleLoop}
+        disabled={!transport.available}
+        title="ループ再生(L)。ルーラーで範囲選択するとその区間、なければ曲全体"
+      >
+        🔁
+      </button>
       {#if editingBpm}
         <!-- svelte-ignore a11y_autofocus -->
         <input
@@ -671,6 +729,12 @@
   .play {
     min-width: 44px;
     font-size: 14px;
+  }
+
+  .loop-on {
+    border-color: var(--accent-dim);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
   }
 
   .bpm-btn {

@@ -136,6 +136,18 @@ export function transportSeek(tick: number): Promise<void> {
   return invoke("transport_seek", { tick: Math.max(0, Math.round(tick)) });
 }
 
+/** ループ区間を設定する(tick)。 */
+export function transportSetLoop(startTick: number, endTick: number): Promise<void> {
+  return invoke("transport_set_loop", {
+    startTick: Math.max(0, Math.round(startTick)),
+    endTick: Math.max(0, Math.round(endTick)),
+  });
+}
+
+export function transportClearLoop(): Promise<void> {
+  return invoke("transport_clear_loop");
+}
+
 /** ノートを 1 音だけ試聴する(そのトラックの音源・音量・パンで鳴る)。 */
 export function previewNote(trackId: string, pitch: number): Promise<void> {
   return invoke("preview_note", { trackId, pitch });

@@ -201,6 +201,7 @@ async fn open_project(
 
     if let Some(engine) = &state.engine {
         engine.stop();
+        engine.clear_loop(); // ループ区間は前のプロジェクトの tick なので持ち越さない
     }
     let (title, version) = state.handle.switch_project(path.clone()).await?;
     state.chat.switch_project(path.clone());
@@ -265,6 +266,7 @@ async fn move_project(
     if let Some(engine) = &state.engine {
         engine.stop();
     }
+    // 同一プロジェクトの移動なのでループ区間はそのまま有効
     let (mut title, mut version) = state.handle.move_project(dest_str.clone()).await?;
 
     // フォルダ名を変えたらタイトルも合わせる(履歴に載るので undo 可)
@@ -411,9 +413,26 @@ fn transport_state(state: State<'_, AppState>) -> Value {
             "available": true,
             "playing": e.is_playing(),
             "tick": e.playhead_tick(),
+            "loop": e.loop_region().map(|(s, gl_end)| json!([s, gl_end])),
         }),
-        None => json!({ "available": false, "playing": false, "tick": 0 }),
+        None => json!({ "available": false, "playing": false, "tick": 0, "loop": null }),
     }
+}
+
+/// ループ区間を設定する(tick)。再生位置が終端に達すると区間頭へ戻る。
+#[tauri::command]
+fn transport_set_loop(
+    state: State<'_, AppState>,
+    start_tick: u64,
+    end_tick: u64,
+) -> Result<(), String> {
+    state.engine()?.set_loop(Tick(start_tick), Tick(end_tick))
+}
+
+#[tauri::command]
+fn transport_clear_loop(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine()?.clear_loop();
+    Ok(())
 }
 
 #[tauri::command]
@@ -737,6 +756,8 @@ fn main() -> Result<()> {
             cancel_chat,
             reset_chat,
             transport_state,
+            transport_set_loop,
+            transport_clear_loop,
             transport_play,
             transport_pause,
             transport_stop,

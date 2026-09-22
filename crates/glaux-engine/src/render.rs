@@ -37,6 +37,11 @@ pub struct Shared {
     /// ノート試聴要求(パック形式)。UI が書き、レンダラがカウンタ変化で検出する。
     /// bits: [63:48]=カウンタ [47:32]=トラック index [31:16]=長さ(ms) [15:8]=pitch [7:0]=vel
     pub preview: AtomicU64,
+    /// ループ区間(サンプル)。`loop_end <= loop_start` ならループなし。
+    /// 2 つのアトミックに分かれているため一瞬だけ不整合になり得るが、
+    /// 影響は 1 ブロックのジャンプ位置に限られる(実害なし)
+    pub loop_start: AtomicU64,
+    pub loop_end: AtomicU64,
     pub data: ArcSwap<PlaybackData>,
 }
 
@@ -47,6 +52,8 @@ impl Shared {
             pos: AtomicU64::new(0),
             seek: AtomicU64::new(NO_SEEK),
             preview: AtomicU64::new(0),
+            loop_start: AtomicU64::new(0),
+            loop_end: AtomicU64::new(0),
             data: ArcSwap::from_pointee(data),
         }
     }
@@ -215,7 +222,26 @@ impl Renderer {
         let hard_limit = (VOICE_HARD_LIMIT_SECS * sr) as u64;
         let frames = out.len() / channels;
 
+        // ループ区間(このブロックの間は固定値として扱う)
+        let loop_start = self.shared.loop_start.load(Ordering::Acquire);
+        let loop_end = self.shared.loop_end.load(Ordering::Acquire);
+        let looping = loop_end > loop_start;
+
         for frame in 0..frames {
+            // ループ終端に達したら区間頭へ。発音中の音は note_off でリリースに回し
+            // (ぶつ切りのクリックを避ける)、イベント・オートメーションのカーソルを再同期
+            if playing && looping && self.pos >= loop_end {
+                self.pos = loop_start;
+                for v in &mut self.voices {
+                    if !v.released {
+                        v.state.note_off();
+                        v.released = true;
+                    }
+                }
+                self.auto_cursors = [(0, 0); MAX_TRACKS];
+                self.next_event = data.events.partition_point(|e| e.start < self.pos);
+            }
+
             // このサンプル位置で始まるノートを発音(容量超過分は捨てる)
             while playing
                 && self.next_event < data.events.len()
@@ -375,9 +401,9 @@ impl Renderer {
             }
         }
 
-        // 曲が終わって余韻も消えたら自動停止
+        // 曲が終わって余韻も消えたら自動停止(ループ中は止めない)
         let tail = (TAIL_SECS * data.sample_rate) as u64;
-        if playing && data.end_sample > 0 && self.pos > data.end_sample + tail {
+        if playing && !looping && data.end_sample > 0 && self.pos > data.end_sample + tail {
             self.shared.playing.store(false, Ordering::Release);
         }
 
@@ -463,6 +489,61 @@ mod tests {
         let block = render_block(&mut r, 4800);
         assert!(rms(&block) < 1e-3, "ノート終了後はほぼ無音のはず");
         assert_eq!(shared.pos.load(Ordering::Acquire), 4800 * 3);
+    }
+
+    #[test]
+    fn loop_region_wraps_and_retriggers_notes() {
+        // ノート 0..4800、ループ区間 0..9600
+        let shared = Arc::new(Shared::new(data_with_note(0, 4800, true)));
+        shared.playing.store(true, Ordering::Release);
+        shared.loop_start.store(0, Ordering::Release);
+        shared.loop_end.store(9600, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+
+        // 1 周目: 前半は鳴り、後半は無音に向かう
+        let first = render_block(&mut r, 4800);
+        assert!(rms(&first) > 0.1);
+        let _ = render_block(&mut r, 4800); // pos = 9600 → 次のブロック頭で巻き戻る
+
+        // 2 周目に入った直後: ノートが再トリガされて再び鳴る
+        let wrapped = render_block(&mut r, 4800);
+        assert!(rms(&wrapped) > 0.1, "ループ 2 周目でも音が鳴るはず");
+        let pos = shared.pos.load(Ordering::Acquire);
+        assert!(pos <= 9600, "再生位置がループ区間内に戻るはず: {pos}");
+        assert!(shared.playing.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn looping_disables_auto_stop() {
+        // 曲の終端(4800)+ 余韻 2 秒を大きく超える位置までループ区間を広げても
+        // 自動停止しないこと
+        let shared = Arc::new(Shared::new(data_with_note(0, 4800, true)));
+        shared.playing.store(true, Ordering::Release);
+        shared.loop_start.store(0, Ordering::Release);
+        shared.loop_end.store(48_000 * 4, Ordering::Release); // 4 秒
+        let mut r = Renderer::new(shared.clone());
+
+        // end_sample + tail = 4800 + 96000 = 100800 を超えるまで進める
+        for _ in 0..30 {
+            let _ = render_block(&mut r, 4800);
+        }
+        assert!(
+            shared.playing.load(Ordering::Acquire),
+            "ループ中は自動停止しないはず"
+        );
+
+        // ループを解除すると従来どおり自動停止する
+        shared.loop_end.store(0, Ordering::Release);
+        shared.loop_start.store(0, Ordering::Release);
+        let mut stopped = false;
+        for _ in 0..40 {
+            let _ = render_block(&mut r, 4800);
+            if !shared.playing.load(Ordering::Acquire) {
+                stopped = true;
+                break;
+            }
+        }
+        assert!(stopped, "ループ解除後は曲末で自動停止するはず");
     }
 
     #[test]

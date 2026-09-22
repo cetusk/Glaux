@@ -125,6 +125,8 @@ export interface TransportState {
   available: boolean;
   playing: boolean;
   tick: number;
+  /** ループ区間 [開始tick, 終了tick]。null ならループなし */
+  loop?: [number, number] | null;
 }
 
 export type ChatEvent =

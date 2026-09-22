@@ -27,6 +27,8 @@ pub struct EngineHandle {
     sample_rate: f64,
     /// 再生ヘッドの tick 変換・シーク用に最新のテンポマップを持つ
     tempo: Arc<Mutex<TempoMap>>,
+    /// ループ区間(tick)。テンポが変わったらサンプル位置を焼き直すために保持
+    loop_ticks: Arc<Mutex<Option<(Tick, Tick)>>>,
     /// 差し替えた旧データの解放をオーディオスレッドで起こさないための退避場所
     graveyard: Arc<Mutex<Vec<Arc<PlaybackData>>>>,
 }
@@ -41,6 +43,10 @@ impl EngineHandle {
         let data = Arc::new(build_playback_data(project, self.sample_rate));
         let old = self.shared.data.swap(data);
         *self.tempo.lock().expect("tempo lock") = project.tempo_map.clone();
+        // テンポが変わっているかもしれないのでループ区間のサンプル位置を焼き直す
+        if let Some((start, end)) = *self.loop_ticks.lock().expect("loop lock") {
+            self.write_loop_samples(start, end);
+        }
         let mut graveyard = self.graveyard.lock().expect("graveyard lock");
         graveyard.push(old);
         // オーディオスレッドは数ブロックで新データに移るので、少数残せば十分
@@ -76,6 +82,44 @@ impl EngineHandle {
 
     pub fn is_playing(&self) -> bool {
         self.shared.playing.load(Ordering::Acquire)
+    }
+
+    /// ループ区間を設定する(tick)。再生位置が終端に達すると区間頭へ戻る。
+    pub fn set_loop(&self, start: Tick, end: Tick) -> Result<(), String> {
+        if end <= start {
+            return Err("ループ終端は始端より後にすること".to_owned());
+        }
+        *self.loop_ticks.lock().expect("loop lock") = Some((start, end));
+        self.write_loop_samples(start, end);
+        Ok(())
+    }
+
+    /// ループを解除する。
+    pub fn clear_loop(&self) {
+        *self.loop_ticks.lock().expect("loop lock") = None;
+        // end を先に 0 にしてから start を消す(常に「無効」側へ倒れる)
+        self.shared.loop_end.store(0, Ordering::Release);
+        self.shared.loop_start.store(0, Ordering::Release);
+    }
+
+    /// 現在のループ区間(tick)。
+    pub fn loop_region(&self) -> Option<(Tick, Tick)> {
+        *self.loop_ticks.lock().expect("loop lock")
+    }
+
+    fn write_loop_samples(&self, start: Tick, end: Tick) {
+        let tempo = self.tempo.lock().expect("tempo lock");
+        let s = (tempo.tick_to_seconds(start) * self.sample_rate) as u64;
+        let e = (tempo.tick_to_seconds(end) * self.sample_rate) as u64;
+        drop(tempo);
+        if e <= s {
+            self.shared.loop_end.store(0, Ordering::Release);
+            self.shared.loop_start.store(0, Ordering::Release);
+            return;
+        }
+        // 旧区間との混合で end <= start にならないよう、end を後から書く
+        self.shared.loop_start.store(s, Ordering::Release);
+        self.shared.loop_end.store(e, Ordering::Release);
     }
 
     /// ノートを 1 音だけ試聴する(ピアノロールの編集フィードバック用)。
@@ -192,6 +236,7 @@ fn open_stream() -> Result<(cpal::Stream, EngineHandle), EngineError> {
         shared,
         sample_rate,
         tempo: Arc::new(Mutex::new(TempoMap::default())),
+        loop_ticks: Arc::new(Mutex::new(None)),
         graveyard: Arc::new(Mutex::new(Vec::new())),
     };
     Ok((stream, handle))
