@@ -262,11 +262,11 @@
     // 行の縞(黒鍵行を暗く)
     for (let pitch = 0; pitch < 128; pitch++) {
       const y = (127 - pitch) * rowH;
-      g.fillStyle = BLACK.has(pitch % 12) ? "#201d31" : "#262339";
+      g.fillStyle = BLACK.has(pitch % 12) ? "#1b1b1b" : "#232323";
       g.fillRect(0, y, contentW, rowH);
       if (pitch % 12 === 0) {
         // C の行の下線を強調
-        g.fillStyle = "#3a3654";
+        g.fillStyle = "#3a3a3a";
         g.fillRect(0, y + rowH - 1, contentW, 1);
       }
     }
@@ -282,12 +282,12 @@
     const clipEnd = clipStart + currentClip.length;
     for (const bar of songBars) {
       if (bar.tick >= clipStart) {
-        g.fillStyle = "#4a4568";
+        g.fillStyle = "#4a4a4a";
         g.fillRect((bar.tick - clipStart) * pxPerTick, 0, 1, contentH);
       }
       // 拍線(分母の音価 = 1 拍)
       const beatLen = (project.ppq * 4) / bar.den;
-      g.fillStyle = "#332f4c";
+      g.fillStyle = "#333333";
       for (let t = bar.tick + beatLen; t < bar.tick + bar.len; t += beatLen) {
         if (t <= clipStart || t >= clipEnd) continue;
         g.fillRect((t - clipStart) * pxPerTick, 0, 1, contentH);
@@ -295,7 +295,7 @@
     }
     // スナップグリッド(拍より細かいときだけ)
     if (snapTicks < 960) {
-      g.fillStyle = "#2b2841";
+      g.fillStyle = "#2a2a2a";
       for (let t = 0; t <= currentClip.length; t += snapTicks) {
         if (t % 960 !== 0) g.fillRect(t * pxPerTick, 0, 1, contentH);
       }
@@ -352,7 +352,7 @@
                 : art === "vibrato"
                   ? "~"
                   : "↑";
-        g.fillStyle = "rgba(10, 10, 20, 0.85)";
+        g.fillStyle = "rgba(12, 12, 12, 0.85)";
         g.font = `bold ${Math.min(rowH - 4, 10)}px sans-serif`;
         g.textBaseline = "middle";
         g.fillText(label, x + 3, y + rowH / 2 + 0.5);

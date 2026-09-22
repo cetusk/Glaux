@@ -34,8 +34,8 @@
         <stop offset="100%" stop-color="#bcb4a5" />
       </radialGradient>
       <radialGradient id="kick-g" cx="0.42" cy="0.4">
-        <stop offset="0%" stop-color="#57506e" />
-        <stop offset="100%" stop-color="#2c2840" />
+        <stop offset="0%" stop-color="#555555" />
+        <stop offset="100%" stop-color="#2a2a2a" />
       </radialGradient>
     </defs>
 
@@ -65,14 +65,14 @@
         {:else if p.kind === "pad"}
           <!-- 電子パッド(クラップ) -->
           <rect class="sel" x={p.cx - p.r - 4} y={p.cy - p.r * 0.8} width={(p.r + 4) * 2}
-            height={p.r * 1.6} rx="6" fill="#3a3450" stroke="#565073" stroke-width="1.5" />
+            height={p.r * 1.6} rx="6" fill="#383838" stroke="#555555" stroke-width="1.5" />
           <rect x={p.cx - p.r + 1} y={p.cy - p.r * 0.8 + 5} width={p.r * 2 - 2}
-            height={p.r * 1.6 - 10} rx="3" fill="#4c4566" />
+            height={p.r * 1.6 - 10} rx="3" fill="#4a4a4a" />
           <text x={p.cx} y={p.cy + 4}>{p.short}</text>
         {:else}
           <!-- 太鼓: シェル(リム)+ ヘッド + ラグ -->
           <circle class="sel" cx={p.cx} cy={p.cy} r={p.r}
-            fill={p.pitch === 36 ? "url(#kick-g)" : "#4a445f"} stroke="#1d1a2b" stroke-width="1.5" />
+            fill={p.pitch === 36 ? "url(#kick-g)" : "#484848"} stroke="#1b1b1b" stroke-width="1.5" />
           <circle cx={p.cx} cy={p.cy} r={p.r - 3.5}
             fill={p.pitch === 36 ? "url(#kick-g)" : "url(#head-g)"} />
           {#if p.pitch === 38}
@@ -84,10 +84,10 @@
             </g>
           {/if}
           {#if p.pitch === 36}
-            <circle cx={p.cx} cy={p.cy} r={p.r * 0.32} fill="#1d1a2b" opacity="0.5" />
+            <circle cx={p.cx} cy={p.cy} r={p.r * 0.32} fill="#1b1b1b" opacity="0.5" />
           {/if}
           {#each lugs(p, p.r > 30 ? 10 : 8) as l}
-            <circle cx={l.x} cy={l.y} r="1.6" fill="#8b849e" />
+            <circle cx={l.x} cy={l.y} r="1.6" fill="#8c8c8c" />
           {/each}
           <text class={p.pitch === 36 ? "" : "t-dark"} x={p.cx} y={p.cy + 4}>{p.short}</text>
         {/if}

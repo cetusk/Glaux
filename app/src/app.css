@@ -1,20 +1,20 @@
-/* Glaux — ダークテーマ基調の DAW UI */
+/* Glaux — ダークテーマ基調の DAW UI(無彩色のダークグレー) */
 
 :root {
-  --bg: #16141f;
-  --bg-panel: #1e1b2e;
-  --bg-lane: #232035;
-  --bg-lane-alt: #26233a;
-  --border: #35314d;
-  --text: #e8e5f4;
-  --text-dim: #8f8aa8;
+  --bg: #141414;
+  --bg-panel: #1c1c1c;
+  --bg-lane: #212121;
+  --bg-lane-alt: #252525;
+  --border: #333333;
+  --text: #e6e6e6;
+  --text-dim: #8e8e8e;
   --accent: #ffc247; /* フクロウの目の琥珀色 */
   --accent-dim: #b98c33;
   --clip-midi: #4f8fdd;
   --clip-audio: #4fbf9a;
   --ai: #b07ce8;
   --human: #5da2e8;
-  --system: #7a7690;
+  --system: #7a7a7a;
   font-family: "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
   font-size: 14px;
   color-scheme: dark;
