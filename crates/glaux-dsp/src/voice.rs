@@ -4,12 +4,14 @@
 //! アロケーションしない(RT セーフ)。
 
 use crate::drum::{DrumParams, DrumVoice};
+use crate::pluck::{PluckParams, PluckVoice};
 use crate::subtractive::{SubtractiveParams, SubtractiveVoice};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InstrumentKind {
     Subtractive,
     Drum,
+    Pluck,
 }
 
 /// トラックごとに焼き込まれたパラメータ。
@@ -17,6 +19,7 @@ pub enum InstrumentKind {
 pub enum InstrumentParams {
     Subtractive(SubtractiveParams),
     Drum(DrumParams),
+    Pluck(PluckParams),
 }
 
 impl Default for InstrumentParams {
@@ -26,10 +29,15 @@ impl Default for InstrumentParams {
 }
 
 /// 発音中の 1 ボイス。
+/// PluckVoice はディレイライン(固定長バッファ)を内包するため他より大きいが、
+/// ボイス起動はオーディオスレッド上なので Box(アロケーション)にはできない。
+/// プールは起動時に固定容量で確保されるためメモリ増は既知・有限。
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 pub enum VoiceState {
     Subtractive(SubtractiveVoice),
     Drum(DrumVoice),
+    Pluck(PluckVoice),
 }
 
 impl VoiceState {
@@ -58,6 +66,9 @@ impl VoiceState {
                 };
                 VoiceState::Drum(DrumVoice::start(p, pitch, vel, sample_rate))
             }
+            InstrumentParams::Pluck(p) => {
+                VoiceState::Pluck(PluckVoice::start(p, freq, vel, articulation, sample_rate))
+            }
         }
     }
 
@@ -67,6 +78,7 @@ impl VoiceState {
         match (self, params) {
             (VoiceState::Subtractive(v), InstrumentParams::Subtractive(p)) => v.next(p),
             (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.next(p),
+            (VoiceState::Pluck(v), InstrumentParams::Pluck(p)) => v.next(p),
             _ => 0.0,
         }
     }
@@ -75,6 +87,7 @@ impl VoiceState {
         match self {
             VoiceState::Subtractive(v) => v.note_off(),
             VoiceState::Drum(v) => v.note_off(),
+            VoiceState::Pluck(v) => v.note_off(),
         }
     }
 
@@ -83,6 +96,7 @@ impl VoiceState {
             (VoiceState::Subtractive(v), _) => v.finished(),
             (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.finished(p),
             (VoiceState::Drum(_), _) => true,
+            (VoiceState::Pluck(v), _) => v.finished(),
         }
     }
 }

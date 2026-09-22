@@ -263,6 +263,7 @@
           >
             <option value="subtractive">subtractive(シンセ)</option>
             <option value="drum">drum(ドラム)</option>
+            <option value="pluck">pluck(撥弦: ギター/ベース)</option>
           </select>
           <select bind:value={selectedPreset} title="プリセット(全プロジェクト共通)">
             <option value="">プリセット…</option>

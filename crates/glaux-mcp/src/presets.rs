@@ -182,6 +182,97 @@ pub fn list(dir: &Path) -> Vec<PresetInfo> {
     out
 }
 
+/// 出荷時プリセット。初回起動時に一度だけ書き込む(ユーザーが削除したら復活させない)。
+fn factory_presets() -> Vec<Preset> {
+    let float = |v: f64| glaux_core::ParamValue::Float(v);
+    let device = |name: &str, params: &[(&str, f64)]| {
+        let mut d = Device::builtin(name);
+        for (k, v) in params {
+            d.params.insert((*k).to_owned(), float(*v));
+        }
+        d
+    };
+    let fx = |name: &str, params: &[(&str, f64)]| PresetEffect {
+        source: PluginSource::Builtin {
+            name: name.to_owned(),
+        },
+        bypass: false,
+        params: params
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), float(*v)))
+            .collect(),
+    };
+    let preset = |name: &str, desc: &str, device: Device, effects: Vec<PresetEffect>| Preset {
+        format: PRESET_FORMAT.to_owned(),
+        version: PRESET_VERSION,
+        name: name.to_owned(),
+        description: Some(desc.to_owned()),
+        device,
+        effects,
+        created: chrono::Local::now().to_rfc3339(),
+    };
+
+    vec![
+        preset(
+            "アコースティックギター",
+            "pluck 素の弦。アルペジオやストローク系のバッキングに",
+            device(
+                "pluck",
+                &[("decay", 3.5), ("brightness", 0.45), ("pick", 0.45)],
+            ),
+            vec![fx("reverb", &[("mix", 0.15), ("size", 0.4)])],
+        ),
+        preset(
+            "クリーンエレキ",
+            "pluck + 軽い歪み。カッティングやクリーントーンのリフに",
+            device(
+                "pluck",
+                &[("decay", 2.0), ("brightness", 0.65), ("pick", 0.7)],
+            ),
+            vec![fx(
+                "distortion",
+                &[("drive_db", 4.0), ("tone", 0.6), ("mix", 0.6)],
+            )],
+        ),
+        preset(
+            "メタルギター",
+            "pluck + 強い歪み。低音の刻みは palm_mute ノートと組み合わせる",
+            device(
+                "pluck",
+                &[("decay", 1.6), ("brightness", 0.7), ("pick", 0.9)],
+            ),
+            vec![fx(
+                "distortion",
+                &[("drive_db", 14.0), ("tone", 0.55), ("level_db", -4.0)],
+            )],
+        ),
+    ]
+}
+
+/// 出荷時プリセットを書き込む(初回のみ。既存ファイルには触れない)。
+/// アプリ起動時に呼ぶ。マーカーファイルで「一度導入済み」を記録するので、
+/// ユーザーが削除したプリセットが復活することはない。
+pub fn ensure_factory(dir: &Path) {
+    let marker = dir.join(".factory-installed");
+    if marker.exists() {
+        return;
+    }
+    for p in factory_presets() {
+        // 同名がある場合は上書きしない
+        let path = preset_path(dir, &p.name);
+        if path.exists() {
+            continue;
+        }
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&p) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+    let _ = std::fs::write(&marker, "v1\n");
+}
+
 /// プリセットを削除する。
 pub fn remove(dir: &Path, name: &str) -> Result<(), String> {
     validate_name(name)?;

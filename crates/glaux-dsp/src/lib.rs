@@ -12,16 +12,19 @@
 //! 現在の内蔵楽器:
 //! - `subtractive`: 減算方式シンセ(PolyBLEP オシレータ + SVF ローパス + ADSR)
 //! - `drum`: ドラムシンセ(MIDI ノート番号でキック/スネア/ハイハット等を弾き分け)
+//! - `pluck`: 撥弦の物理モデル(Karplus-Strong。ギター/ベース/ハープ)
 
 mod drum;
 mod effects;
 mod params;
+mod pluck;
 mod subtractive;
 mod voice;
 
 pub use drum::DrumParams;
 pub use effects::{bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState};
 pub use params::{bake_instrument, instrument_catalog, instrument_params, InstrumentInfo};
+pub use pluck::PluckParams;
 pub use subtractive::{SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
 

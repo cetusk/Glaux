@@ -658,6 +658,8 @@ fn main() -> Result<()> {
     );
     let project_title = session.project().meta.title.clone();
     projects::push_recent(&project_dir, &project_title);
+    // 出荷時プリセット(ギター系など)を初回のみ導入
+    glaux_mcp::presets::ensure_factory(&glaux_mcp::presets::default_dir());
     let handle = SessionHandle::spawn(session, store);
 
     let engine = match glaux_engine::start_engine() {

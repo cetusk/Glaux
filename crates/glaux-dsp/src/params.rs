@@ -3,6 +3,7 @@
 //! description は AI が読む唯一の「つまみの説明書」。聴感上の効果を書くこと。
 
 use crate::drum::DrumParams;
+use crate::pluck::PluckParams;
 use crate::subtractive::{SubtractiveParams, Waveform};
 use crate::voice::{InstrumentKind, InstrumentParams};
 use glaux_core::{Device, ParamMap, ParamRange, ParamSpec, ParamValue, PluginSource};
@@ -228,6 +229,60 @@ pub static DRUM_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static PLUCK_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "decay",
+        display_name: "ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.05,
+            max: 8.0,
+            default: 2.5,
+            skew: Some(0.4),
+        },
+        description: "弦の鳴りの長さ。短いとミュートっぽく歯切れよく、\
+            長いとサスティンが伸びてアルペジオが響き合う。",
+    },
+    ParamSpec {
+        name: "brightness",
+        display_name: "明るさ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 0.95,
+            default: 0.5,
+            skew: None,
+        },
+        description: "弦の明るさ(高域がどれだけ長く残るか)。上げるとスチール弦の\
+            ジャキッとした鳴り、下げるとナイロン弦のような丸い音。",
+    },
+    ParamSpec {
+        name: "pick",
+        display_name: "ピック",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.6,
+            skew: None,
+        },
+        description: "ピッキングの硬さ。上げるとアタックが硬くアグレッシブに、\
+            下げると指弾きのように柔らかくなる。",
+    },
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 6.0,
+            default: -6.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。",
+    },
+];
+
 /// 楽器カタログの 1 行(MCP の `list_params` がそのまま返す)。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct InstrumentInfo {
@@ -254,6 +309,14 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
                 ドラムトラックには set_device でこれを設定する。",
             params: DRUM_SPECS,
         },
+        InstrumentInfo {
+            name: "pluck",
+            description: "撥弦の物理モデル(Karplus-Strong)。アコースティックギター・\
+                ベース・ハープなど「弾く弦」の音はこれを使う。エレキギターは pluck + \
+                distortion(メタルの刻みはさらにノートに articulation: palm_mute)。\
+                シンセ的なプラックではなく本物の弦の減衰が欲しいときの第一候補。",
+            params: PLUCK_SPECS,
+        },
     ]
 }
 
@@ -262,6 +325,7 @@ pub fn instrument_params(name: &str) -> Option<&'static [ParamSpec]> {
     match name {
         "subtractive" => Some(SUBTRACTIVE_SPECS),
         "drum" => Some(DRUM_SPECS),
+        "pluck" => Some(PLUCK_SPECS),
         _ => None,
     }
 }
@@ -306,6 +370,16 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
     };
 
     match name {
+        "pluck" => {
+            let s = PLUCK_SPECS;
+            let p = PluckParams {
+                decay: get_f32(map, s, "decay").clamp(0.05, 8.0),
+                brightness: get_f32(map, s, "brightness").clamp(0.0, 0.95),
+                pick: get_f32(map, s, "pick").clamp(0.0, 1.0),
+                gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+            };
+            (InstrumentKind::Pluck, InstrumentParams::Pluck(p))
+        }
         "drum" => {
             let s = DRUM_SPECS;
             let p = DrumParams {

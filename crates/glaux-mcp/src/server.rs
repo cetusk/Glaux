@@ -943,7 +943,9 @@ impl ServerHandler for GlauxServer {
                  まず get_project(include_notes: false)で構造を把握 → apply_commands で編集、が基本の流れ。\
                  ノートの移調・時間移動・クオンタイズ・ベロシティ調整は専用ツール\
                  (transpose_notes / shift_notes / quantize_notes / scale_velocity)が使える。\
-                 音源: トラックには set_device で内蔵楽器(subtractive / drum)を設定でき、\
+                 音源: トラックには set_device で内蔵楽器(subtractive / drum / pluck)を設定でき、\
+                 ギター・ベース・ハープなど「弾く弦」の音は pluck(撥弦の物理モデル)を使う。\
+                 エレキギターは pluck + distortion、メタルの刻みはさらに palm_mute ノート。\
                  list_params でパラメータの意味と現在値を確認して set_param で調整する。\
                  ドラムトラックには drum を設定すること。\
                  analyze_audio が「耳」の代わり: 編集結果をレンダしてラウドネス・帯域バランス等を返す。\
