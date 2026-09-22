@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
+  import { playDoneChime, playErrorChime } from "./settings.svelte";
   import { pianoRollStore, selectionStore } from "./selection.svelte";
 
   interface Msg {
@@ -109,6 +110,8 @@
             if (!ev.ok && ev.text) {
               push({ role: "error", text: ev.text });
             }
+            if (ev.ok) playDoneChime();
+            else playErrorChime();
             break;
           case "notice":
             push({ role: "notice", text: ev.text });
@@ -116,6 +119,7 @@
           case "error":
             chatStatus.running = false;
             push({ role: "error", text: ev.message });
+            playErrorChime();
             break;
         }
       })

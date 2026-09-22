@@ -104,14 +104,22 @@
   let overlayEl: HTMLCanvasElement | undefined = $state();
   let scroller: HTMLDivElement | undefined = $state();
 
+  // ブラウザの Canvas 実サイズ上限(超えると描画が黙って全部消える)。
+  // 長いクリップ × ズームで超えうるので、上限内に収まる解像度スケールに落とす
+  // (見た目は CSS サイズのまま。極端な場合だけ少しぼやける)
+  const MAX_CANVAS_PX = 15000;
+
   function ensureSize(c: HTMLCanvasElement): CanvasRenderingContext2D {
     const dpr = window.devicePixelRatio || 1;
-    if (c.width !== Math.round(contentW * dpr) || c.height !== Math.round(contentH * dpr)) {
-      c.width = Math.round(contentW * dpr);
-      c.height = Math.round(contentH * dpr);
+    const scale = Math.min(dpr, MAX_CANVAS_PX / contentW, MAX_CANVAS_PX / contentH);
+    const w = Math.max(1, Math.round(contentW * scale));
+    const h = Math.max(1, Math.round(contentH * scale));
+    if (c.width !== w || c.height !== h) {
+      c.width = w;
+      c.height = h;
     }
     const g = c.getContext("2d")!;
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.setTransform(scale, 0, 0, scale, 0, 0);
     return g;
   }
 

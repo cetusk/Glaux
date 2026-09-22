@@ -7,6 +7,8 @@
   import ChatPanel from "./lib/ChatPanel.svelte";
   import ProjectMenu from "./lib/ProjectMenu.svelte";
   import PianoRoll from "./lib/PianoRoll.svelte";
+  import SettingsPanel from "./lib/SettingsPanel.svelte";
+  import { applyTheme } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import { pianoRollStore } from "./lib/selection.svelte";
 
@@ -17,6 +19,9 @@
   let error = $state<string | null>(null);
   let mcpCopied = $state(false);
   let transport = $state<TransportState>({ available: false, playing: false, tick: 0 });
+  let showSettings = $state(false);
+  let editingBpm = $state(false);
+  let bpmInput = $state("");
 
   // レイアウト(ドラッグで調整、localStorage に保存)
   function loadNum(key: string, fallback: number): number {
@@ -131,6 +136,7 @@
   }
 
   onMount(() => {
+    applyTheme();
     api.appInfo().then((i) => (info = i));
     refresh();
 
@@ -319,6 +325,40 @@
     }
   }
 
+  function startBpmEdit() {
+    bpmInput = String(bpm);
+    editingBpm = true;
+  }
+
+  async function commitBpm() {
+    editingBpm = false;
+    if (!project) return;
+    const v = Number(bpmInput);
+    if (!Number.isFinite(v)) return;
+    const clamped = Math.min(300, Math.max(20, v));
+    if (Math.abs(clamped - bpm) < 1e-9) return;
+    const events = project.tempo_map.map((e, i) =>
+      i === 0 ? { ...e, bpm: clamped } : e,
+    );
+    try {
+      await api.applyEdit(
+        [{ op: "set_tempo", events }],
+        `BPM を ${clamped} に変更`,
+      );
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function onBpmKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitBpm();
+    } else if (e.key === "Escape") {
+      editingBpm = false;
+    }
+  }
+
   async function setMasterVolume(e: Event) {
     const v = Number((e.currentTarget as HTMLInputElement).value);
     try {
@@ -386,7 +426,24 @@
       </button>
       <button onclick={nextBar} disabled={!transport.available} title="次の小節頭へ(→)">⏩</button>
       <button onclick={seekEnd} disabled={!transport.available} title="終端へ(End)">⏭</button>
-      <span class="stat">{bpm} BPM</span>
+      {#if editingBpm}
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="bpm-input"
+          type="number"
+          min="20"
+          max="300"
+          step="0.5"
+          autofocus
+          bind:value={bpmInput}
+          onkeydown={onBpmKeydown}
+          onblur={commitBpm}
+        />
+      {:else}
+        <button class="stat bpm-btn" onclick={startBpmEdit} title="クリックで BPM を編集">
+          {bpm} BPM
+        </button>
+      {/if}
       <span class="stat">{timeSig}</span>
       <span class="stat" title="適用済み履歴エントリ数">v{projectVersion}</span>
       <button onclick={doUndo} title="直前の編集を取り消す">↶ Undo</button>
@@ -406,6 +463,7 @@
       <button onclick={doExport} disabled={exporting} title="WAV に書き出す(プロジェクト内 export フォルダ)">
         {exporting ? "書き出し中…" : "⬇ WAV"}
       </button>
+      <button onclick={() => (showSettings = true)} title="設定">⚙</button>
     </div>
     {#if indicator !== "idle"}
       <div class="ai-indicator" class:thinking={indicator === "session"}>
@@ -461,6 +519,10 @@
     </section>
   </main>
 
+  {#if showSettings}
+    <SettingsPanel onClose={() => (showSettings = false)} />
+  {/if}
+
   <footer>
     {#if exportMsg}
       <code class="export-msg">{exportMsg}</code>
@@ -508,6 +570,25 @@
   .play {
     min-width: 44px;
     font-size: 14px;
+  }
+
+  .bpm-btn {
+    border: none;
+    cursor: pointer;
+  }
+
+  .bpm-btn:hover {
+    color: var(--accent);
+  }
+
+  .bpm-input {
+    width: 70px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--accent-dim);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 13px;
   }
 
   .master {

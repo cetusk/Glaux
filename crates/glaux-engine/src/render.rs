@@ -79,6 +79,8 @@ pub struct Renderer {
     last_preview: u64,
     /// エフェクト状態プール(リバーブのバッファ込みで起動時に確保)
     effect_states: Vec<EffectState>,
+    /// トラックごとの無音連続サンプル数(残響が消えたらエフェクト処理を省く)
+    track_silence: [u32; MAX_TRACKS],
     /// `data.events` の次に発音するイベントの添字
     next_event: usize,
     /// 直前に見ていた `PlaybackData` のアドレス(差し替え検出用)
@@ -94,6 +96,7 @@ impl Renderer {
             preview_voices: Vec::with_capacity(MAX_PREVIEW_VOICES),
             last_preview: 0,
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
+            track_silence: [u32::MAX; MAX_TRACKS],
             next_event: 0,
             last_data: 0,
             pos: 0,
@@ -246,8 +249,24 @@ impl Renderer {
             // (エフェクトの残響はボイスが消えた後も続くので、毎フレーム全トラックを回す)
             let mut l = direct_l;
             let mut r = direct_r;
+            // 残響テールが確実に消えるまでの猶予(これを超えて無音ならエフェクトを省く)
+            let tail_limit = (4.0 * sr) as u32;
             for (ti, mix) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
                 let mono = track_mono[ti];
+                if mono == 0.0 {
+                    self.track_silence[ti] = self.track_silence[ti].saturating_add(1);
+                } else {
+                    self.track_silence[ti] = 0;
+                }
+                if mix.effects.is_empty() {
+                    l += mono * mix.gain_l;
+                    r += mono * mix.gain_r;
+                    continue;
+                }
+                // 長く無音のトラックはチェーンごとスキップ(CPU 節約)
+                if self.track_silence[ti] > tail_limit {
+                    continue;
+                }
                 let (mut fl, mut fr) = (mono, mono);
                 for fx in &mix.effects {
                     let key = sidechain_key(&fx.params);

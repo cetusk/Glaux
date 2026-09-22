@@ -1,0 +1,99 @@
+// DAW の設定(フロントエンドのみで完結するもの)。localStorage に保存。
+
+export interface AccentPreset {
+  name: string;
+  label: string;
+  accent: string;
+  dim: string;
+}
+
+export const ACCENT_PRESETS: AccentPreset[] = [
+  { name: "turquoise", label: "ターコイズ", accent: "#2dd4bf", dim: "#1f9e90" },
+  { name: "amber", label: "アンバー", accent: "#ffc247", dim: "#b98c33" },
+  { name: "violet", label: "バイオレット", accent: "#b07ce8", dim: "#8459b3" },
+  { name: "sky", label: "スカイ", accent: "#38bdf8", dim: "#2a8fc0" },
+  { name: "rose", label: "ローズ", accent: "#fb7185", dim: "#c05467" },
+  { name: "lime", label: "ライム", accent: "#a3e635", dim: "#7cae28" },
+];
+
+interface Settings {
+  accent: string;
+  notifyOnAiDone: boolean;
+}
+
+function load(): Settings {
+  try {
+    const raw = localStorage.getItem("glaux.settings");
+    if (raw) {
+      const v = JSON.parse(raw);
+      return {
+        accent: typeof v.accent === "string" ? v.accent : "turquoise",
+        notifyOnAiDone: v.notifyOnAiDone !== false,
+      };
+    }
+  } catch {
+    // 壊れていたら既定値
+  }
+  return { accent: "turquoise", notifyOnAiDone: true };
+}
+
+export const settings = $state<Settings>(load());
+
+export function saveSettings() {
+  try {
+    localStorage.setItem("glaux.settings", JSON.stringify({ ...settings }));
+  } catch {
+    // localStorage が使えなくても動作に支障なし
+  }
+}
+
+/** アクセントカラーを CSS 変数に反映する(起動時と変更時に呼ぶ)。 */
+export function applyTheme() {
+  const preset =
+    ACCENT_PRESETS.find((p) => p.name === settings.accent) ?? ACCENT_PRESETS[0];
+  const root = document.documentElement;
+  root.style.setProperty("--accent", preset.accent);
+  root.style.setProperty("--accent-dim", preset.dim);
+}
+
+// ---- AI 完了通知(WebAudio の短いチャイム。プラグイン不要) ----
+
+let audioCtx: AudioContext | undefined;
+
+function beep(freq: number, start: number, dur: number, gain: number) {
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime + start;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = "triangle";
+  osc.frequency.value = freq;
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(gain, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  osc.connect(g).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.05);
+}
+
+/** AI のターン完了チャイム(成功)。 */
+export function playDoneChime() {
+  if (!settings.notifyOnAiDone) return;
+  try {
+    audioCtx ??= new AudioContext();
+    beep(880, 0, 0.18, 0.12);
+    beep(1318.5, 0.12, 0.28, 0.1); // E6: 明るい上行
+  } catch {
+    // 音が出せない環境では黙って無視
+  }
+}
+
+/** AI のターン失敗の通知(低い音)。 */
+export function playErrorChime() {
+  if (!settings.notifyOnAiDone) return;
+  try {
+    audioCtx ??= new AudioContext();
+    beep(220, 0, 0.35, 0.12);
+  } catch {
+    // 同上
+  }
+}

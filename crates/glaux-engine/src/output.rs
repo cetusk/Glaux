@@ -159,14 +159,34 @@ fn open_stream() -> Result<(cpal::Stream, EngineHandle), EngineError> {
     }));
     let mut renderer = Renderer::new(shared.clone());
 
-    let stream = device
-        .build_output_stream(
-            config.config(),
-            move |out: &mut [f32], _| renderer.process(out, channels),
-            |e| tracing::error!("オーディオストリームエラー: {e}"),
-            None,
-        )
-        .map_err(|e| EngineError::Stream(e.to_string()))?;
+    // バッファは大きめ(1024 フレーム ≒ 21ms @48k)を要求してスパイク耐性を稼ぐ。
+    // ドライバが拒否したらデフォルトにフォールバック
+    let mut stream_config = config.config();
+    stream_config.buffer_size = cpal::BufferSize::Fixed(1024);
+    let err_fn = |e| tracing::error!("オーディオストリームエラー: {e}");
+    let stream = match device.build_output_stream(
+        stream_config,
+        {
+            let shared = shared.clone();
+            let mut r = Renderer::new(shared);
+            move |out: &mut [f32], _| r.process(out, channels)
+        },
+        err_fn,
+        None,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("バッファ 1024 での起動に失敗({e})。既定バッファで再試行");
+            device
+                .build_output_stream(
+                    config.config(),
+                    move |out: &mut [f32], _| renderer.process(out, channels),
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| EngineError::Stream(e.to_string()))?
+        }
+    };
 
     let handle = EngineHandle {
         shared,
