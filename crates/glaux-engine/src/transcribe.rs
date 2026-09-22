@@ -187,6 +187,17 @@ fn median_filter(frames: &mut [Frame]) {
     }
 }
 
+/// 診断用: フレームごとの (時刻 秒, 推定 MIDI(音量フロア適用前), RMS dB)。
+#[doc(hidden)]
+pub fn debug_frames(data: &SampleData, opts: &TranscribeOptions) -> Vec<(f64, Option<f32>, f32)> {
+    let (frames, _) = analyze_frames(data, opts);
+    frames
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (i as f64 * HOP_SEC as f64, f.midi, f.rms_db))
+        .collect()
+}
+
 /// 音声(モノラル)を単旋律のノート列に起こす。
 pub fn transcribe_mono(data: &SampleData, opts: &TranscribeOptions) -> Vec<TranscribedNote> {
     let (mut frames, peak_db) = analyze_frames(data, opts);
@@ -211,6 +222,8 @@ pub fn transcribe_mono(data: &SampleData, opts: &TranscribeOptions) -> Vec<Trans
     let mut notes: Vec<TranscribedNote> = Vec::new();
     // (開始 frame, pitch, dB 列, 再アタックで始まったか)
     let mut cur: Option<(usize, u8, Vec<f32>, bool)> = None;
+    // 現在のノートのピッチ列(変化の判定は、ここまでの中央値と比べる)
+    let mut cur_midi: Vec<f32> = Vec::new();
     let mut gap = 0usize;
 
     let finish = |cur: &mut Option<(usize, u8, Vec<f32>, bool)>,
@@ -246,8 +259,15 @@ pub fn transcribe_mono(data: &SampleData, opts: &TranscribeOptions) -> Vec<Trans
                 gap = 0;
                 let p = rounded(m);
                 match &mut cur {
-                    None => cur = Some((i, p, vec![f.rms_db], false)),
-                    Some((start, pitch, dbs, _)) => {
+                    None => {
+                        cur = Some((i, p, vec![f.rms_db], false));
+                        cur_midi = vec![m];
+                    }
+                    Some((start, _pitch, dbs, _)) => {
+                        let center = {
+                            let mut v = cur_midi.clone();
+                            median(&mut v).unwrap_or(m)
+                        };
                         // 音量の立ち上がり(同じ音程の再アタック "タタタ")
                         // 直前がノート内の最大から 6dB 以上落ちた「谷」であることも条件にし、
                         // 1 音の中の音量の揺れで切らない
@@ -257,17 +277,20 @@ pub fn transcribe_mono(data: &SampleData, opts: &TranscribeOptions) -> Vec<Trans
                             && f.rms_db - frames[i - 3].rms_db > 8.0
                             && frames[i - 3].rms_db < note_max - 6.0
                             && i - *start >= min_frames;
-                        // 半音の変化: 現在の音程から HYST 以上離れた値が STABLE フレーム続く
-                        let far = |mm: f32| (mm - *pitch as f32).abs() > HYST && rounded(mm) == p;
-                        let changed = p != *pitch
+                        // 半音の変化: ここまでの中央値から HYST 以上離れ、同じ半音に
+                        // 留まる値が STABLE フレーム続く(半音の中間で歌っても割れない)
+                        let far = |mm: f32| (mm - center).abs() > HYST && rounded(mm) == p;
+                        let changed = p != rounded(center)
                             && far(m)
                             && (1..STABLE)
                                 .all(|k| frames.get(i + k).and_then(|g| g.midi).is_some_and(far));
                         if onset || changed {
                             finish(&mut cur, i, &mut notes);
                             cur = Some((i, p, vec![f.rms_db], onset));
+                            cur_midi = vec![m];
                         } else {
                             dbs.push(f.rms_db);
+                            cur_midi.push(m);
                         }
                     }
                 }
@@ -277,12 +300,133 @@ pub fn transcribe_mono(data: &SampleData, opts: &TranscribeOptions) -> Vec<Trans
     let n = frames.len();
     finish(&mut cur, n.saturating_sub(gap.min(n)), &mut notes);
 
+    let env = fine_envelope(data);
+    split_at_dips(&mut notes, &env);
     assign_pitches(&mut notes, &frames);
     absorb_glides(&mut notes, &frames);
+    merge_short_runs(&mut notes, opts.min_note_ms as f64 / 1000.0);
     assign_pitches(&mut notes, &frames);
     merge_fragments(&mut notes, opts.min_note_ms as f64 / 1000.0);
-    refine_onsets(&mut notes, &fine_envelope(data));
+    refine_onsets(&mut notes, &env);
     notes
+}
+
+/// 音量の谷で分ける: ノート内でピークから 25dB 以上落ちた区間が 30ms 以上続けば、
+/// そこは音の切れ目(「テッテ」の「ッ」)。ピッチ検出の解析窓(〜40ms)は無音の
+/// 区間に前後からはみ出して有声と判定するため、短い休符はピッチ列だけでは見えない。
+/// 後ろ側は歌い直し(reattack)扱いにして、同音でも結合されないようにする。
+fn split_at_dips(notes: &mut Vec<TranscribedNote>, env: &[f32]) {
+    const DEPTH_DB: f32 = 25.0;
+    const MIN_DIP: f64 = 0.03;
+    let hop = ENV_HOP_SEC as f64;
+    let mut out = Vec::with_capacity(notes.len());
+    for n in notes.drain(..) {
+        let s = (n.start_sec / hop) as usize;
+        let e = ((n.end_sec / hop) as usize).min(env.len());
+        if e <= s + 2 {
+            out.push(n);
+            continue;
+        }
+        let peak = env[s..e].iter().cloned().fold(f32::MIN, f32::max);
+        let floor = peak - DEPTH_DB;
+        let mut cur = n.clone();
+        let mut k = s;
+        while k < e {
+            if env[k] >= floor {
+                k += 1;
+                continue;
+            }
+            let dip_start = k;
+            while k < e && env[k] < floor {
+                k += 1;
+            }
+            let (ds, de) = (dip_start as f64 * hop, k as f64 * hop);
+            // ノートの頭・お尻の減衰は谷ではない(内側にあって、後ろに音が続くときだけ)
+            if de - ds >= MIN_DIP && dip_start > s && k < e {
+                let mut first = cur.clone();
+                first.end_sec = ds;
+                out.push(first);
+                cur.start_sec = de;
+                cur.reattack = true;
+            }
+        }
+        out.push(cur);
+    }
+    // ノート間の隙間にも同じ深い谷があれば、後ろの音は別の発音(同音でも結合しない)。
+    // 谷の浅い隙間(息の混じりで有声判定が途切れただけ)は結合の対象に残す
+    for i in 1..out.len() {
+        let (ps, pe) = (out[i - 1].start_sec, out[i - 1].end_sec);
+        let (cs, ce) = (out[i].start_sec, out[i].end_sec);
+        let peak_of = |a: f64, b: f64| -> f32 {
+            let (a, b) = ((a / hop) as usize, ((b / hop) as usize).min(env.len()));
+            env.get(a..b.max(a))
+                .map_or(f32::MIN, |v| v.iter().cloned().fold(f32::MIN, f32::max))
+        };
+        let peak = peak_of(ps, pe).max(peak_of(cs, ce));
+        let (gs, ge) = ((pe / hop) as usize, ((cs / hop) as usize).min(env.len()));
+        let mut run = 0usize;
+        let mut longest = 0usize;
+        for &v in env.get(gs..ge.max(gs)).unwrap_or(&[]) {
+            run = if v < peak - DEPTH_DB { run + 1 } else { 0 };
+            longest = longest.max(run);
+        }
+        if longest as f64 * hop >= MIN_DIP {
+            out[i].reattack = true;
+        }
+    }
+    *notes = out;
+}
+
+/// 短い断片の結合: 最短ノート長未満の断片が隙間なく隣に続いていれば(歌い直しでない限り)
+/// 隣と 1 つの音にまとめる。「テ」のように子音の直後に音程が大きく動く短い音は、
+/// 音程の変化で 20〜40ms の断片に割れてしまい、そのままだと全部捨てられて音ごと消える。
+/// 長い隣があればそちらへ、断片同士なら断片同士でまとめ、音程は後で決め直す。
+fn merge_short_runs(notes: &mut Vec<TranscribedNote>, min_note_sec: f64) {
+    const TOUCH: f64 = 0.04;
+    loop {
+        let dur = |n: &TranscribedNote| n.end_sec - n.start_sec;
+        // いちばん短い断片から処理する
+        let Some(i) = (0..notes.len())
+            .filter(|&i| dur(&notes[i]) < min_note_sec)
+            .filter(|&i| {
+                let prev = i > 0
+                    && !notes[i].reattack
+                    && notes[i].start_sec - notes[i - 1].end_sec < TOUCH;
+                let next = i + 1 < notes.len()
+                    && !notes[i + 1].reattack
+                    && notes[i + 1].start_sec - notes[i].end_sec < TOUCH;
+                prev || next
+            })
+            .min_by(|&a, &b| {
+                dur(&notes[a])
+                    .partial_cmp(&dur(&notes[b]))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        else {
+            break;
+        };
+        let prev_ok =
+            i > 0 && !notes[i].reattack && notes[i].start_sec - notes[i - 1].end_sec < TOUCH;
+        let next_ok = i + 1 < notes.len()
+            && !notes[i + 1].reattack
+            && notes[i + 1].start_sec - notes[i].end_sec < TOUCH;
+        // 両側につながるなら長い方へ
+        let into_prev = match (prev_ok, next_ok) {
+            (true, true) => dur(&notes[i - 1]) >= dur(&notes[i + 1]),
+            (p, _) => p,
+        };
+        let n = notes.remove(i);
+        if into_prev {
+            let p = &mut notes[i - 1];
+            p.end_sec = p.end_sec.max(n.end_sec);
+            p.vel = p.vel.max(n.vel);
+        } else {
+            let m = &mut notes[i];
+            m.start_sec = m.start_sec.min(n.start_sec);
+            m.reattack = n.reattack;
+            m.vel = m.vel.max(n.vel);
+        }
+    }
 }
 
 /// ノート区間の有声フレームのピッチ(MIDI 小数)。
@@ -303,8 +447,8 @@ fn median(v: &mut [f32]) -> Option<f32> {
     Some(v[v.len() / 2])
 }
 
-/// ノートの音程を「冒頭 30% を除いた区間の中央値」で決め直す。
-/// 出だしのしゃくれ(下から滑り上がる)に引っ張られないようにする。
+/// ノートの音程を「冒頭 30% と末尾 20% を除いた区間の中央値」で決め直す。
+/// 出だしのしゃくれ(下から滑り上がる)と語尾のずり下げに引っ張られないようにする。
 fn assign_pitches(notes: &mut [TranscribedNote], frames: &[Frame]) {
     for n in notes.iter_mut() {
         let v = note_pitches(n, frames);
@@ -312,7 +456,8 @@ fn assign_pitches(notes: &mut [TranscribedNote], frames: &[Frame]) {
             continue;
         }
         let skip = (v.len() * 3 / 10).min(v.len() - 1);
-        let mut tail = v[skip..].to_vec();
+        let keep_end = (v.len() - v.len() / 5).max(skip + 1);
+        let mut tail = v[skip..keep_end].to_vec();
         if let Some(m) = median(&mut tail) {
             n.pitch = m.round().clamp(0.0, 127.0) as u8;
         }
@@ -432,7 +577,10 @@ fn merge_fragments(notes: &mut Vec<TranscribedNote>, min_note_sec: f64) {
         }
         out.push(n);
     }
-    out.retain(|n| n.end_sec - n.start_sec >= min_note_sec);
+    // 断片は merge_short_runs で結合済みなので、ここで残る短い音は前後を無音で
+    // 区切られた独立した音(「テッ」の「テ」など)。50ms あれば残す
+    let min_island = min_note_sec.min(0.05);
+    out.retain(|n| n.end_sec - n.start_sec >= min_island);
     *notes = out;
 }
 
@@ -728,6 +876,48 @@ mod tests {
         let notes = transcribe_mono(&data, &TranscribeOptions::default());
         let pitches: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
         assert_eq!(pitches, vec![64], "{notes:?}");
+    }
+
+    #[test]
+    fn short_syllables_with_pitch_drop_are_kept() {
+        // 「テッテレー」: 90ms の短い音(出だしから 3 半音下がる)+ 無音 + … + 長い音
+        let sr = 48_000.0f32;
+        let mut frames = Vec::new();
+        let mut phase = 0.0f32;
+        let mut push = |pitch: f32, secs: f32, drop: f32, frames: &mut Vec<f32>| {
+            let n = (secs * sr) as usize;
+            for i in 0..n {
+                let t = i as f32 / sr;
+                let p = pitch + drop * (1.0 - (t / secs));
+                let f0 = 440.0 * (2.0f32).powf((p - 69.0) / 12.0);
+                phase += f0 / sr;
+                let ph = phase * std::f32::consts::TAU;
+                let env = (t / 0.008).min(1.0) * (((secs - t) / 0.015).min(1.0));
+                frames.push(0.3 * env * (ph.sin() + 0.5 * (2.0 * ph).sin()));
+            }
+        };
+        let rest = |secs: f32, frames: &mut Vec<f32>| {
+            frames.extend(std::iter::repeat_n(0.0f32, (secs * sr) as usize));
+        };
+        push(55.0, 0.09, 3.0, &mut frames); // テ
+        rest(0.10, &mut frames); // ッ
+        push(55.0, 0.09, 3.0, &mut frames); // テ
+        rest(0.03, &mut frames);
+        push(57.0, 0.12, 0.0, &mut frames); // レ
+        push(59.0, 0.5, 0.0, &mut frames); // ー
+        let data = SampleData {
+            frames,
+            sample_rate: sr,
+        };
+        let notes = transcribe_mono(&data, &TranscribeOptions::default());
+        assert_eq!(notes.len(), 4, "{notes:?}");
+        let pitches: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
+        assert_eq!(pitches[2..], [57, 59], "{notes:?}");
+        // 短い「テ」は音程が下がり切るまでの範囲(55〜58)に入っていれば良い
+        assert!(
+            pitches[..2].iter().all(|p| (55..=58).contains(p)),
+            "{notes:?}"
+        );
     }
 
     #[test]
