@@ -3,8 +3,11 @@
 
   let { entries }: { entries: EntrySummary[] } = $props();
 
-  // 新しい順に表示
-  const reversed = $derived([...entries].reverse());
+  // 新しい順に表示。件数が増えると全件再描画が重くなり(つまみ操作で履歴は
+  // どんどん増える)、再生中の音切れの一因になるため表示は直近だけに絞る
+  const MAX_SHOWN = 120;
+  const reversed = $derived([...entries].reverse().slice(0, MAX_SHOWN));
+  const hidden = $derived(Math.max(0, entries.length - MAX_SHOWN));
 
   function authorLabel(a: Author): string {
     switch (a.kind) {
@@ -44,6 +47,9 @@
         </div>
       </li>
     {/each}
+    {#if hidden > 0}
+      <li class="more">…以前の {hidden} 件は表示を省略(履歴自体は保持されています)</li>
+    {/if}
   </ul>
 </div>
 
@@ -148,5 +154,11 @@
     color: var(--text-dim);
     font-size: 13px;
     padding: 12px 0;
+  }
+  .more {
+    font-size: 10px;
+    color: var(--text-dim);
+    padding: 6px 4px;
+    list-style: none;
   }
 </style>

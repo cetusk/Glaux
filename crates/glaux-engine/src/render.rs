@@ -64,6 +64,9 @@ struct Voice {
     end: u64,
     track: u32,
     released: bool,
+    /// ループ折り返しを何回またいだか。リリースの長い音が周回ごとに世代累積して
+    /// ボイスプールを食い潰さないよう、2 回またいだら強制解放する
+    wraps: u8,
     state: VoiceState,
 }
 
@@ -229,15 +232,19 @@ impl Renderer {
 
         for frame in 0..frames {
             // ループ終端に達したら区間頭へ。発音中の音は note_off でリリースに回し
-            // (ぶつ切りのクリックを避ける)、イベント・オートメーションのカーソルを再同期
+            // (ぶつ切りのクリックを避ける)、イベント・オートメーションのカーソルを再同期。
+            // 旧世代のボイスは 1 周分のリリース猶予の後に解放する(無限に世代が
+            // 積み重なって CPU が漸増するのを防ぐ)
             if playing && looping && self.pos >= loop_end {
                 self.pos = loop_start;
-                for v in &mut self.voices {
+                self.voices.retain_mut(|v| {
                     if !v.released {
                         v.state.note_off();
                         v.released = true;
                     }
-                }
+                    v.wraps = v.wraps.saturating_add(1);
+                    v.wraps < 2
+                });
                 self.auto_cursors = [(0, 0); MAX_TRACKS];
                 self.next_event = data.events.partition_point(|e| e.start < self.pos);
             }
@@ -256,6 +263,7 @@ impl Renderer {
                             end: e.end,
                             track: e.track,
                             released: false,
+                            wraps: 0,
                             state: VoiceState::start(
                                 &mix.instrument,
                                 e.freq,
@@ -511,6 +519,34 @@ mod tests {
         let pos = shared.pos.load(Ordering::Acquire);
         assert!(pos <= 9600, "再生位置がループ区間内に戻るはず: {pos}");
         assert!(shared.playing.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn loop_wraps_do_not_accumulate_released_voices() {
+        // リリースの非常に長い音 + 短いループ。折り返しごとに旧世代を解放しないと
+        // ボイスが際限なく積み重なって CPU が漸増する(実機で「段々カクつく」報告の原因)
+        let mut data = data_with_note(0, 4700, true);
+        if let InstrumentParams::Subtractive(p) = &mut data.tracks[0].instrument {
+            p.release = 100.0;
+            p.sustain = 1.0;
+        }
+        let shared = Arc::new(Shared::new(data));
+        shared.playing.store(true, Ordering::Release);
+        shared.loop_start.store(0, Ordering::Release);
+        shared.loop_end.store(4800, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+
+        for _ in 0..30 {
+            let _ = render_block(&mut r, 4800); // 1 ブロック = ちょうど 1 周
+        }
+        assert!(
+            r.voices.len() <= 3,
+            "旧世代ボイスが解放されず {} 個残っている",
+            r.voices.len()
+        );
+        // 音は出続けている(現行世代は生きている)
+        let block = render_block(&mut r, 2400);
+        assert!(rms(&block) > 0.05);
     }
 
     #[test]
