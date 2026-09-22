@@ -108,6 +108,14 @@ export interface RecentProject {
   current: boolean;
 }
 
+export interface PresetInfo {
+  name: string;
+  description?: string;
+  instrument: string;
+  effects: string[];
+  created: string;
+}
+
 export interface AiActivity {
   tool: string;
   busy: boolean;

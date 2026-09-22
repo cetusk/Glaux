@@ -109,6 +109,34 @@ pub struct GetHistoryParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct SavePresetParams {
+    /// 保存元のトラック ID(`trk_xxxxxx`)。そのトラックの音源 + エフェクトチェーンを保存する。
+    pub track_id: String,
+    /// プリセット名(ファイル名になる。日本語可。/ \ : * ? " < > | は不可)。
+    pub name: String,
+    /// 用途メモ(例: 「EDM リード用。unison 7 + distortion」)。
+    #[serde(default)]
+    pub description: Option<String>,
+    /// 同名プリセットがあるとき上書きする。既定 false。
+    #[serde(default)]
+    pub overwrite: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct LoadPresetParams {
+    /// 適用先のトラック ID(`trk_xxxxxx`)。
+    pub track_id: String,
+    /// 適用するプリセット名(list_presets で確認)。
+    pub name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DeletePresetParams {
+    /// 削除するプリセット名。
+    pub name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct TransposeNotesParams {
     /// 対象クリップ ID(`clp_xxxxxx`)。
     pub clip_id: String,
@@ -643,6 +671,96 @@ impl GlauxServer {
         ))
     }
 
+    // ---- 音色プリセット ----------------------------------------------------
+    // 「音源 + エフェクトチェーン」をパッチとして設定ディレクトリに保存し、
+    // 曲プロジェクトをまたいで再利用する。
+
+    #[tool(
+        description = "保存済みの音色プリセット一覧を返す(名前・説明・音源・エフェクト構成)。\
+        プリセットは全プロジェクト共通のライブラリ。音作りを頼まれたら、まずここに\
+        使える音がないか確認するとよい。"
+    )]
+    async fn list_presets(&self) -> ToolResult {
+        let _activity = self.handle.begin_activity("list_presets");
+        let (_, version) = self.handle.get_project().await?;
+        Ok(Json(json!({
+            "project_version": version,
+            "presets": crate::presets::list(&crate::presets::default_dir()),
+        })))
+    }
+
+    #[tool(
+        description = "トラックの現在の音(音源のパラメータ + エフェクトチェーン)を\
+        名前を付けてプリセット保存する。良い音ができたら保存しておくと、別の曲でも\
+        load_preset で呼び出せる。description には用途と音の特徴を書くこと\
+        (後で一覧から選ぶときの手掛かりになる)。"
+    )]
+    async fn save_preset(&self, params: Parameters<SavePresetParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("save_preset");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, version) = self.handle.get_project().await?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+        let preset = crate::presets::save(
+            &crate::presets::default_dir(),
+            track,
+            &p.name,
+            p.description,
+            p.overwrite.unwrap_or(false),
+        )?;
+        Ok(Json(json!({
+            "project_version": version,
+            "saved": preset.name,
+            "instrument": match &preset.device.source {
+                glaux_core::PluginSource::Builtin { name } => name.clone(),
+                other => format!("{other:?}"),
+            },
+            "effect_count": preset.effects.len(),
+        })))
+    }
+
+    #[tool(
+        description = "プリセットをトラックに適用する。音源を差し替え、既存のエフェクト\
+        チェーンをプリセットの内容で置き換える(1 回の undo でまとめて戻せる)。\
+        適用後に微調整するときは list_params で現在値を確認してから set_param。"
+    )]
+    async fn load_preset(
+        &self,
+        params: Parameters<LoadPresetParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("load_preset");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+        let preset = crate::presets::load(&crate::presets::default_dir(), &p.name)?;
+        let label = format!("{} にプリセット「{}」を適用", track.name, preset.name);
+        let cmds = crate::presets::apply_commands(track, &preset);
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["applied"] = json!(preset.name);
+        Ok(Json(v))
+    }
+
+    #[tool(
+        description = "プリセットをライブラリから削除する(元に戻せない。undo の対象外)。\
+        ユーザーに頼まれたときだけ使うこと。"
+    )]
+    async fn delete_preset(&self, params: Parameters<DeletePresetParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("delete_preset");
+        let name = params.0.name;
+        crate::presets::remove(&crate::presets::default_dir(), &name)?;
+        Ok(Json(json!({ "deleted": name })))
+    }
+
     // ---- ノート便利ツール ------------------------------------------------
     // 「現在値を読んで絶対値に変換」をサーバー側で肩代わりする相対編集。
     // 中身はすべて UpdateNotes 1 コマンド = 1 回の undo で戻せる。
@@ -831,6 +949,8 @@ impl ServerHandler for GlauxServer {
                  EDM のポンピングは sidechain(source にキックのトラック ID)、\
                  supersaw は subtractive の unison + detune、歪みは distortion。\
                  メタルのブリッジミュートはノートの articulation: \"palm_mute\"(+ distortion)。\
+                 音色プリセット: 良い音ができたら save_preset で保存し(全プロジェクト共通)、\
+                 音作りの依頼ではまず list_presets で使える音がないか確認 → load_preset で適用 → 微調整。\
                  大きな試行錯誤の前に checkpoint を打ち、気に入らなければ revert_to で戻る。\
                  すべての編集は履歴に残り、get_history(author: \"ai\")で自分の過去の作業を確認できる。",
             )

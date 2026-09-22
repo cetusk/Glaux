@@ -5,6 +5,7 @@ import type {
   AppInfo,
   ChatEvent,
   HistorySnapshot,
+  PresetInfo,
   ProjectSnapshot,
   RecentProject,
   TransportState,
@@ -91,6 +92,26 @@ export function createProject(
 /** プロジェクトを WAV に書き出す(<プロジェクト>/export/ 配下)。 */
 export function exportWav(): Promise<{ path: string; seconds: number }> {
   return invoke("export_project_wav");
+}
+
+// ---- 音色プリセット ----
+
+export function listPresets(): Promise<{ presets: PresetInfo[] }> {
+  return invoke("list_presets");
+}
+
+/** トラックの現在の音(音源 + エフェクト)をプリセット保存する。 */
+export function savePreset(
+  trackId: string,
+  name: string,
+  overwrite = false,
+): Promise<{ saved: string }> {
+  return invoke("save_preset", { trackId, name, overwrite });
+}
+
+/** プリセットをトラックに適用する(音源差し替え + エフェクト置換。1 undo)。 */
+export function loadPreset(trackId: string, name: string): Promise<{ applied: string }> {
+  return invoke("load_preset", { trackId, name });
 }
 
 // ---- トランスポート(再生) ----

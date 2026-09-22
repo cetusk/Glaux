@@ -119,6 +119,59 @@ fn set_projects_dir(path: String) -> Result<Value, String> {
     Ok(json!({ "default_dir": path }))
 }
 
+// ---- 音色プリセット(glaux-mcp の presets モジュールを共用) ---------------
+
+#[tauri::command]
+fn list_presets() -> Value {
+    json!({ "presets": glaux_mcp::presets::list(&glaux_mcp::presets::default_dir()) })
+}
+
+/// トラックの現在の音(音源 + エフェクトチェーン)をプリセット保存する。
+#[tauri::command]
+async fn save_preset(
+    state: State<'_, AppState>,
+    track_id: String,
+    name: String,
+    overwrite: bool,
+) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let track = project
+        .track(&tid)
+        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let preset = glaux_mcp::presets::save(
+        &glaux_mcp::presets::default_dir(),
+        track,
+        &name,
+        None,
+        overwrite,
+    )?;
+    Ok(json!({ "saved": preset.name }))
+}
+
+/// プリセットをトラックに適用する(音源差し替え + エフェクト置換。1 undo)。
+#[tauri::command]
+async fn load_preset(
+    state: State<'_, AppState>,
+    track_id: String,
+    name: String,
+) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let track = project
+        .track(&tid)
+        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let preset = glaux_mcp::presets::load(&glaux_mcp::presets::default_dir(), &name)?;
+    let label = format!("{} にプリセット「{}」を適用", track.name, preset.name);
+    let cmds = glaux_mcp::presets::apply_commands(track, &preset);
+    let (_, m) = state
+        .handle
+        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "applied": preset.name, "project_version": m.project_version }))
+}
+
 fn set_window_title(app: &tauri::AppHandle, title: &str) {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main") {
@@ -674,6 +727,9 @@ fn main() -> Result<()> {
             set_projects_dir,
             open_project,
             move_project,
+            list_presets,
+            save_preset,
+            load_preset,
             create_project,
             export_project_wav,
             apply_edit,

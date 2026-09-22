@@ -5,7 +5,7 @@
   import ClipPreview from "./ClipPreview.svelte";
   import { newTrackId } from "./ids";
   import { pianoRollStore, selectionStore } from "./selection.svelte";
-  import type { Clip, Project, Track } from "./types";
+  import type { Clip, PresetInfo, Project, Track } from "./types";
 
   let {
     project,
@@ -225,10 +225,19 @@
   ];
 
   let deviceMenu = $state<{ track: Track; x: number; y: number } | null>(null);
+  let presets = $state<PresetInfo[]>([]);
+  let presetName = $state("");
+  let presetMsg = $state<string | null>(null);
 
   function openDeviceMenu(e: MouseEvent, track: Track) {
     e.stopPropagation();
+    presetMsg = null;
+    presetName = "";
     deviceMenu = { track, x: e.clientX, y: e.clientY };
+    api
+      .listPresets()
+      .then((r) => (presets = r.presets))
+      .catch(() => (presets = []));
   }
 
   function setDevice(name: string) {
@@ -248,6 +257,30 @@
         `${menu.track.name} の音源を ${name} に変更`,
       )
       .catch(() => {});
+  }
+
+  function applyPreset(name: string) {
+    const menu = deviceMenu;
+    deviceMenu = null;
+    if (!menu) return;
+    api.loadPreset(menu.track.id, name).catch((e) => {
+      console.error(e);
+    });
+  }
+
+  async function saveCurrentPreset() {
+    const menu = deviceMenu;
+    const name = presetName.trim();
+    if (!menu || !name) return;
+    try {
+      await api.savePreset(menu.track.id, name);
+      presetMsg = `保存しました: ${name}`;
+      presetName = "";
+      const r = await api.listPresets();
+      presets = r.presets;
+    } catch (e) {
+      presetMsg = String(e);
+    }
   }
 
   function addTrack() {
@@ -415,6 +448,40 @@
         </button>
       {/each}
       <div class="menu-note">切り替えると音源パラメータは初期値に戻ります(Ctrl+Z で取り消せます)。細かい音作りは AI に依頼してください。</div>
+
+      <div class="menu-sep"></div>
+      <div class="preset-title">プリセット(全プロジェクト共通)</div>
+      {#if presets.length === 0}
+        <div class="menu-note">まだありません。良い音ができたら下の欄で保存できます。</div>
+      {:else}
+        {#each presets as p (p.name)}
+          <button
+            onclick={() => applyPreset(p.name)}
+            title={`${p.description ?? ""}\n音源: ${p.instrument}${p.effects.length ? " / FX: " + p.effects.join(" → ") : ""}\n適用すると音源とエフェクトが置き換わります(Ctrl+Z 可)`}
+          >
+            <span class="dev-label">🎨 {p.name}</span>
+            <span class="dev-desc">{p.instrument}{p.effects.length ? ` + ${p.effects.join(", ")}` : ""}</span>
+          </button>
+        {/each}
+      {/if}
+      <div class="preset-save">
+        <input
+          type="text"
+          placeholder="今の音を保存(名前)"
+          bind:value={presetName}
+          onkeydown={(e) => {
+            if (e.key === "Enter" && !e.isComposing) {
+              e.preventDefault();
+              saveCurrentPreset();
+            }
+          }}
+          onclick={(e) => e.stopPropagation()}
+        />
+        <button class="save-btn" disabled={!presetName.trim()} onclick={saveCurrentPreset}>保存</button>
+      </div>
+      {#if presetMsg}
+        <div class="menu-note">{presetMsg}</div>
+      {/if}
     </div>
   {/if}
 
@@ -654,6 +721,41 @@
     padding: 4px 10px 2px;
     max-width: 230px;
     line-height: 1.5;
+  }
+
+  .preset-title {
+    font-size: 10px;
+    color: var(--text-dim);
+    padding: 2px 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .preset-save {
+    display: flex;
+    gap: 4px;
+    padding: 4px 8px 2px;
+  }
+
+  .preset-save input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+
+  .preset-save input:focus {
+    outline: none;
+    border-color: var(--accent-dim);
+  }
+
+  .preset-save .save-btn {
+    font-size: 11px;
+    padding: 2px 8px;
   }
 
   .kind {

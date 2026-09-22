@@ -657,3 +657,90 @@ async fn note_utility_tools_validate_inputs() {
     let r = call(&fx, "get_history", json!({})).await;
     assert_eq!(ok_json(&r)["entries"].as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn preset_tools_save_and_apply_across_tracks() {
+    // プリセット置き場をテスト用に隔離(default_dir は APPDATA/XDG を見る)
+    let preset_tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", preset_tmp.path());
+    std::env::set_var("APPDATA", preset_tmp.path());
+
+    let fx = setup().await;
+    // 音作り済みのトラック(supersaw + distortion)
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_lead01", "name": "Lead", "kind": "midi" } },
+                { "op": "set_device", "track": "trk_lead01",
+                  "device": { "type": "builtin", "name": "subtractive",
+                    "params": { "unison": 7, "detune_cents": 25.0 } } },
+                { "op": "add_effect", "track": "trk_lead01",
+                  "effect": { "id": "fx_dist01", "type": "builtin", "name": "distortion",
+                    "params": { "drive": 6.0 } } },
+                { "op": "add_track", "track": { "id": "trk_lead02", "name": "Lead2", "kind": "midi" } },
+                { "op": "add_effect", "track": "trk_lead02",
+                  "effect": { "id": "fx_rev001", "type": "builtin", "name": "reverb" } }
+            ],
+            "label": "準備",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+
+    // 保存 → 一覧
+    let r = call(
+        &fx,
+        "save_preset",
+        json!({ "track_id": "trk_lead01", "name": "スーパーソー", "description": "EDM リード" }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["saved"], "スーパーソー");
+    assert_eq!(v["effect_count"], 1);
+
+    let r = call(&fx, "list_presets", json!({})).await;
+    let presets = ok_json(&r)["presets"].as_array().unwrap().clone();
+    assert!(presets.iter().any(|p| p["name"] == "スーパーソー"));
+
+    // 別トラックへ適用: 音源が差し替わり、既存の reverb はプリセットの distortion に置き換わる
+    let r = call(
+        &fx,
+        "load_preset",
+        json!({ "track_id": "trk_lead02", "name": "スーパーソー" }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["applied"], "スーパーソー");
+
+    let r = call(&fx, "get_project", json!({ "track_ids": ["trk_lead02"] })).await;
+    let track = &ok_json(&r)["project"]["tracks"][0];
+    assert_eq!(track["device"]["name"], "subtractive");
+    assert_eq!(track["device"]["params"]["unison"], 7);
+    let effects = track["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects[0]["name"], "distortion");
+    assert_eq!(effects[0]["params"]["drive"], 6.0);
+
+    // 1 回の undo でまとめて元に戻る(device なし + reverb)
+    call(&fx, "undo", json!({})).await;
+    let r = call(&fx, "get_project", json!({ "track_ids": ["trk_lead02"] })).await;
+    let track = &ok_json(&r)["project"]["tracks"][0];
+    assert!(track["device"].is_null());
+    assert_eq!(track["effects"][0]["name"], "reverb");
+
+    // 上書き保護と削除
+    let r = call(
+        &fx,
+        "save_preset",
+        json!({ "track_id": "trk_lead01", "name": "スーパーソー" }),
+    )
+    .await;
+    assert_eq!(
+        r.is_error,
+        Some(true),
+        "上書きは overwrite なしで失敗するはず"
+    );
+    let r = call(&fx, "delete_preset", json!({ "name": "スーパーソー" })).await;
+    assert_eq!(ok_json(&r)["deleted"], "スーパーソー");
+}
