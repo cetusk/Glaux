@@ -10,7 +10,7 @@
   import PianoRoll from "./lib/PianoRoll.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
-  import { applyTheme } from "./lib/settings.svelte";
+  import { applyTheme, settings } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import { pianoRollStore, selectionStore } from "./lib/selection.svelte";
 
@@ -311,6 +311,16 @@
     }
   }
 
+  async function toggleMetronome() {
+    if (!transport.available) return;
+    try {
+      await api.transportSetMetronome(!transport.metronome);
+      transport = await api.transportState();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   /// ⏺: 録音開始 / 停止。停止すると音声トラックにクリップとして置かれる
   async function toggleRecord() {
     if (!transport.available) return;
@@ -318,8 +328,17 @@
       if (transport.recording) {
         await finishRecording();
       } else {
-        await api.recordStart();
+        await api.recordStart({
+          countInBars: settings.countInBars,
+          latencyMs: settings.recordLatencyMs,
+          metronome: settings.metronomeOnRecord,
+        });
         transport = await api.transportState();
+        if (settings.countInBars > 0) {
+          recordNotice = `カウントイン ${settings.countInBars} 小節のあと録音位置になります`;
+          clearTimeout(recordNoticeTimer);
+          recordNoticeTimer = setTimeout(() => (recordNotice = null), 5000);
+        }
       }
     } catch (e) {
       error = String(e);
@@ -599,6 +618,14 @@
         title="ループ再生(L)。ルーラーで範囲選択するとその区間、なければ曲全体"
       >
         🔁
+      </button>
+      <button
+        class:loop-on={transport.metronome}
+        onclick={toggleMetronome}
+        disabled={!transport.available}
+        title="メトロノーム(拍ごとにクリック。小節頭は高い音)"
+      >
+        ⏱
       </button>
       <button
         class="rec"

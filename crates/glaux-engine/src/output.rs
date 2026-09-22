@@ -33,8 +33,31 @@ pub struct EngineHandle {
     graveyard: Arc<Mutex<Vec<Arc<PlaybackData>>>>,
     /// デコード済みサンプルのキャッシュ(サンプラー音源用)
     bank: Arc<Mutex<SampleBank>>,
-    /// 進行中の録音(あれば)。開始時の tick も一緒に持つ
-    recording: Arc<Mutex<Option<(crate::record::Recording, Tick)>>>,
+    /// 進行中の録音(あれば)
+    recording: Arc<Mutex<Option<RecordSession>>>,
+}
+
+/// 進行中の録音の付帯情報。
+struct RecordSession {
+    rec: crate::record::Recording,
+    /// クリップを置く位置(カウントイン後)
+    clip_start: Tick,
+    /// 入力ストリームが動き出した時刻と、再生を始めた時刻(準備時間 = 差)
+    ready_at: std::time::Instant,
+    play_at: Option<std::time::Instant>,
+    /// 波形の頭から捨てる秒数(カウントイン + レイテンシ補正)
+    skip_secs: f64,
+    /// 録音開始時にメトロノームを自動 ON にした(停止時に戻す)
+    metronome_auto: bool,
+}
+
+/// 録音停止の結果。
+pub struct RecordOutcome {
+    pub result: crate::record::RecordResult,
+    /// クリップを置く位置
+    pub clip_start: Tick,
+    /// 波形の頭から捨てるサンプル数(準備時間 + カウントイン + レイテンシ補正)
+    pub offset_samples: u64,
 }
 
 impl EngineHandle {
@@ -146,29 +169,85 @@ impl EngineHandle {
     }
 
     /// 録音を開始する(既定の入力デバイス → `path` にモノラル WAV)。
-    /// 戻り値は録音開始時点の再生位置(tick)。既に録音中ならエラー。
-    pub fn start_recording(&self, path: std::path::PathBuf) -> Result<Tick, EngineError> {
+    /// `count_in_ticks` ぶん先の位置にクリップを置き、その間はメトロノームで
+    /// カウントインする(`metronome_on` なら録音中メトロノームを自動 ON)。
+    /// `latency_secs` は出力レイテンシ補正(聴いて歌う分の遅れを前へ詰める)。
+    /// 戻り値はクリップを置く位置(tick)。既に録音中ならエラー。
+    /// 呼び出し側はこの直後に [`play`](Self::play) → [`mark_play_started`](Self::mark_play_started)。
+    pub fn start_recording(
+        &self,
+        path: std::path::PathBuf,
+        count_in_ticks: Tick,
+        latency_secs: f64,
+        metronome_on: bool,
+    ) -> Result<Tick, EngineError> {
         let mut slot = self.recording.lock().expect("recording lock");
         if slot.is_some() {
             return Err(EngineError::Stream("既に録音中です".into()));
         }
-        let start_tick = self.playhead_tick();
+        let now = self.playhead_tick();
+        let clip_start = now + count_in_ticks;
+        let count_in_secs = {
+            let tempo = self.tempo.lock().expect("tempo lock");
+            tempo.tick_to_seconds(clip_start) - tempo.tick_to_seconds(now)
+        };
         let rec = crate::record::start_recording(path)?;
-        *slot = Some((rec, start_tick));
-        Ok(start_tick)
+        let metronome_auto = metronome_on && !self.shared.metronome.load(Ordering::Acquire);
+        if metronome_on {
+            self.shared.metronome.store(true, Ordering::Release);
+        }
+        self.shared.recording.store(true, Ordering::Release);
+        *slot = Some(RecordSession {
+            rec,
+            clip_start,
+            ready_at: std::time::Instant::now(),
+            play_at: None,
+            skip_secs: count_in_secs + latency_secs,
+            metronome_auto,
+        });
+        Ok(clip_start)
     }
 
-    /// 録音を止めて WAV を確定する。戻り値は (結果, 開始 tick)。
-    pub fn stop_recording(&self) -> Result<(crate::record::RecordResult, Tick), EngineError> {
+    /// 再生を始めた時刻を記録する(録音開始の準備時間を波形の頭から差し引くため)。
+    pub fn mark_play_started(&self) {
+        if let Some(s) = self.recording.lock().expect("recording lock").as_mut() {
+            s.play_at = Some(std::time::Instant::now());
+        }
+    }
+
+    /// 録音を止めて WAV を確定する。
+    pub fn stop_recording(&self) -> Result<RecordOutcome, EngineError> {
         let taken = self.recording.lock().expect("recording lock").take();
-        let Some((rec, start_tick)) = taken else {
+        self.shared.recording.store(false, Ordering::Release);
+        let Some(s) = taken else {
             return Err(EngineError::Stream("録音していません".into()));
         };
-        Ok((rec.stop()?, start_tick))
+        if s.metronome_auto {
+            self.shared.metronome.store(false, Ordering::Release);
+        }
+        let result = s.rec.stop()?;
+        let lead = s
+            .play_at
+            .map(|p| p.duration_since(s.ready_at).as_secs_f64())
+            .unwrap_or(0.0);
+        let offset_samples = ((lead + s.skip_secs).max(0.0) * result.sample_rate as f64) as u64;
+        Ok(RecordOutcome {
+            result,
+            clip_start: s.clip_start,
+            offset_samples,
+        })
     }
 
     pub fn is_recording(&self) -> bool {
         self.recording.lock().expect("recording lock").is_some()
+    }
+
+    pub fn set_metronome(&self, on: bool) {
+        self.shared.metronome.store(on, Ordering::Release);
+    }
+
+    pub fn metronome(&self) -> bool {
+        self.shared.metronome.load(Ordering::Acquire)
     }
 
     /// 再生ヘッド位置(tick)。

@@ -44,6 +44,10 @@ pub struct Shared {
     /// 影響は 1 ブロックのジャンプ位置に限られる(実害なし)
     pub loop_start: AtomicU64,
     pub loop_end: AtomicU64,
+    /// メトロノーム(拍ごとのクリック)を鳴らすか
+    pub metronome: AtomicBool,
+    /// 録音中(曲末の自動停止を抑止する)
+    pub recording: AtomicBool,
     pub data: ArcSwap<PlaybackData>,
 }
 
@@ -56,6 +60,8 @@ impl Shared {
             preview: AtomicU64::new(0),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
+            metronome: AtomicBool::new(false),
+            recording: AtomicBool::new(false),
             data: ArcSwap::from_pointee(data),
         }
     }
@@ -79,6 +85,31 @@ struct AudioVoice {
     idx: usize,
     /// 波形内の再生位置(ネイティブレートのフレーム、小数)
     pos: f64,
+}
+
+/// メトロノームのクリック(減衰するサイン波。小節頭は高い音)。
+#[derive(Clone, Copy, Default)]
+struct Click {
+    active: bool,
+    age: u32,
+    downbeat: bool,
+}
+
+impl Click {
+    fn next(&mut self, sr: f32) -> f32 {
+        if !self.active {
+            return 0.0;
+        }
+        let t = self.age as f32 / sr;
+        if t > 0.06 {
+            self.active = false;
+            return 0.0;
+        }
+        self.age += 1;
+        let freq = if self.downbeat { 1500.0 } else { 1000.0 };
+        let env = (-t / 0.012).exp();
+        0.35 * env * (t * freq * std::f32::consts::TAU).sin()
+    }
 }
 
 /// UI からの試聴用ボイス。停止中でも鳴り、トラックエフェクトは通さない。
@@ -120,6 +151,9 @@ pub struct Renderer {
     pos: u64,
     /// 直前ブロックで再生中だったか(再開時に音声クリップを途中から鳴らし直す)
     was_playing: bool,
+    /// メトロノーム: 次のクリック位置と発音中のクリック
+    next_beat: Option<crate::data::Beat>,
+    click: Click,
     /// `pos` に対応する音楽的位置(tick)。データ差し替え(テンポ変更)時に
     /// この tick を保ったままサンプル位置を換算し直す
     last_tick: f64,
@@ -167,6 +201,8 @@ impl Renderer {
             last_data: 0,
             pos: 0,
             was_playing: false,
+            next_beat: None,
+            click: Click::default(),
             last_tick: 0.0,
         }
     }
@@ -300,6 +336,16 @@ impl Renderer {
         let loop_end = self.shared.loop_end.load(Ordering::Acquire);
         let looping = loop_end > loop_start;
 
+        // メトロノーム: このブロックで最初に来る拍を求める(resync 後も自然に追従)
+        let metronome = self.shared.metronome.load(Ordering::Acquire);
+        if metronome && playing {
+            if self.next_beat.map_or(true, |b| b.sample < self.pos) {
+                self.next_beat = data.next_beat(self.pos);
+            }
+        } else {
+            self.next_beat = None;
+        }
+
         // 音色パラメータのオートメーション: ブロック頭で評価してスクラッチに適用する
         // (1 ブロック ≈ 数 ms なので聴感上は連続。発音中のボイスにも効く =
         //  フィルタスイープ等が鳴る)
@@ -334,6 +380,21 @@ impl Renderer {
                 self.auto_cursors = [(0, 0); MAX_TRACKS];
                 self.next_event = data.events.partition_point(|e| e.start < self.pos);
                 self.resync_audio(data);
+                if metronome {
+                    self.next_beat = data.next_beat(self.pos);
+                }
+            }
+
+            // メトロノーム: 拍の位置でクリックを鳴らす
+            if let Some(b) = self.next_beat {
+                if playing && self.pos >= b.sample {
+                    self.click = Click {
+                        active: true,
+                        age: 0,
+                        downbeat: b.downbeat,
+                    };
+                    self.next_beat = data.next_beat(self.pos + 1);
+                }
             }
 
             // このサンプル位置で始まる音声クリップを開始
@@ -553,19 +614,27 @@ impl Renderer {
                 let state = &mut self.effect_states[fx.slot as usize];
                 (l, r) = state.process(&fx.params, l, r, key);
             }
+            // クリックはマスターエフェクト・マスター音量を通さず直接足す
+            let click = self.click.next(sr);
             let base = frame * channels;
-            out[base] = (l * data.master_amp).tanh();
+            out[base] = (l * data.master_amp + click).tanh();
             if channels >= 2 {
-                out[base + 1] = (r * data.master_amp).tanh();
+                out[base + 1] = (r * data.master_amp + click).tanh();
             }
             if playing {
                 self.pos += 1;
             }
         }
 
-        // 曲が終わって余韻も消えたら自動停止(ループ中は止めない)
+        // 曲が終わって余韻も消えたら自動停止(ループ中・録音中は止めない)
         let tail = (TAIL_SECS * data.sample_rate) as u64;
-        if playing && !looping && data.end_sample > 0 && self.pos > data.end_sample + tail {
+        let recording = self.shared.recording.load(Ordering::Acquire);
+        if playing
+            && !looping
+            && !recording
+            && data.end_sample > 0
+            && self.pos > data.end_sample + tail
+        {
             self.shared.playing.store(false, Ordering::Release);
         }
 
@@ -629,6 +698,7 @@ mod tests {
             end_sample: end,
             sample_rate: 48_000.0,
             tempo: vec![],
+            sigs: vec![],
         }
     }
 
@@ -767,6 +837,40 @@ mod tests {
             r.voices.len(),
             0,
             "鳴り終わったボイスはノート終了前に解放されるはず"
+        );
+    }
+
+    #[test]
+    fn metronome_clicks_on_beats_and_recording_blocks_auto_stop() {
+        // 無音のデータ(ノートは可聴でない)+ 120bpm のテンポ表 → 拍位置でだけ音が出る
+        let mut data = data_with_note(0, 1, false);
+        data.tempo = vec![crate::data::TempoSeg {
+            sample: 0,
+            tick: 0,
+            samples_per_tick: 25.0,
+        }];
+        data.sigs = vec![(0, 4, 4)];
+        data.end_sample = 1;
+        let shared = Arc::new(Shared::new(data));
+        shared.playing.store(true, Ordering::Release);
+        shared.metronome.store(true, Ordering::Release);
+        shared.recording.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        // 0.5 秒 = 1 拍。拍頭直後 30ms は鳴り、拍の後半は無音
+        let block = render_block(&mut r, 1440); // 0..30ms
+        assert!(rms(&block) > 0.05, "拍頭でクリックが鳴るはず");
+        let _ = render_block(&mut r, 24_000 - 1440 - 4800);
+        let quiet = render_block(&mut r, 4800); // 拍の直前 100ms
+        assert!(rms(&quiet) < 1e-4, "拍の間は無音");
+        let next = render_block(&mut r, 1440); // 2 拍目の頭
+        assert!(rms(&next) > 0.05, "次の拍でも鳴るはず");
+        // end_sample + 余韻 2 秒を大きく超えても録音中は止まらない
+        for _ in 0..40 {
+            let _ = render_block(&mut r, 4800);
+        }
+        assert!(
+            shared.playing.load(Ordering::Acquire),
+            "録音中は自動停止しない"
         );
     }
 

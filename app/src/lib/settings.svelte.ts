@@ -19,6 +19,12 @@ export const ACCENT_PRESETS: AccentPreset[] = [
 interface Settings {
   accent: string;
   notifyOnAiDone: boolean;
+  /// 録音: 出力レイテンシ補正(ms)。聴いて歌う分の遅れをこの値だけ前へ詰める
+  recordLatencyMs: number;
+  /// 録音: カウントインの小節数(0 で無し)
+  countInBars: number;
+  /// 録音中はメトロノームを自動で鳴らす
+  metronomeOnRecord: boolean;
 }
 
 function load(): Settings {
@@ -29,12 +35,21 @@ function load(): Settings {
       return {
         accent: typeof v.accent === "string" ? v.accent : "turquoise",
         notifyOnAiDone: v.notifyOnAiDone !== false,
+        recordLatencyMs: typeof v.recordLatencyMs === "number" ? v.recordLatencyMs : 60,
+        countInBars: typeof v.countInBars === "number" ? v.countInBars : 1,
+        metronomeOnRecord: v.metronomeOnRecord !== false,
       };
     }
   } catch {
     // 壊れていたら既定値
   }
-  return { accent: "turquoise", notifyOnAiDone: true };
+  return {
+    accent: "turquoise",
+    notifyOnAiDone: true,
+    recordLatencyMs: 60,
+    countInBars: 1,
+    metronomeOnRecord: true,
+  };
 }
 
 export const settings = $state<Settings>(load());

@@ -146,9 +146,17 @@ export function transcribeClip(
 
 // ---- 録音 ----
 
-/** 録音を開始する(再生も同時に始まる)。 */
-export function recordStart(): Promise<{ start_tick: number }> {
-  return invoke("record_start");
+/** 録音を開始する(再生も同時に始まる)。カウントイン後の位置にクリップが置かれる。 */
+export function recordStart(opts: {
+  countInBars: number;
+  latencyMs: number;
+  metronome: boolean;
+}): Promise<{ clip_start: number; count_in_ticks: number }> {
+  return invoke("record_start", opts);
+}
+
+export function transportSetMetronome(on: boolean): Promise<void> {
+  return invoke("transport_set_metronome", { on });
 }
 
 /** 録音を止めて音声クリップとして配置する。trackId 省略で最初の音声トラック(無ければ新設)。 */

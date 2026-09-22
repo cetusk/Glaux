@@ -177,6 +177,8 @@ export interface TransportState {
   playing: boolean;
   /** 録音中(入力デバイス → 音声クリップ) */
   recording?: boolean;
+  /** メトロノーム ON */
+  metronome?: boolean;
   tick: number;
   /** ループ区間 [開始tick, 終了tick]。null ならループなし */
   loop?: [number, number] | null;

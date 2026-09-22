@@ -60,10 +60,70 @@
     </label>
   </div>
 
+  <div class="section">
+    <div class="section-title">録音</div>
+    <label class="row">
+      カウントイン
+      <select
+        value={String(settings.countInBars)}
+        onchange={(e) => {
+          settings.countInBars = Number((e.currentTarget as HTMLSelectElement).value);
+          saveSettings();
+        }}
+      >
+        <option value="0">なし</option>
+        <option value="1">1 小節</option>
+        <option value="2">2 小節</option>
+      </select>
+    </label>
+    <label class="row">
+      <input
+        type="checkbox"
+        checked={settings.metronomeOnRecord}
+        onchange={(e) => {
+          settings.metronomeOnRecord = (e.currentTarget as HTMLInputElement).checked;
+          saveSettings();
+        }}
+      />
+      録音中はメトロノームを鳴らす
+    </label>
+    <label class="row">
+      レイテンシ補正
+      <input
+        class="num"
+        type="number"
+        min="0"
+        max="500"
+        step="5"
+        value={settings.recordLatencyMs}
+        onchange={(e) => {
+          settings.recordLatencyMs = Math.max(0, Number((e.currentTarget as HTMLInputElement).value) || 0);
+          saveSettings();
+        }}
+      />
+      ms
+    </label>
+    <div class="hint">
+      録音が拍より遅れて置かれるなら値を増やし、早すぎるなら減らします(目安: 出力デバイスの遅延 20〜100ms)。
+    </div>
+  </div>
+
   <div class="note">設定はこの PC に保存されます(プロジェクトには含まれません)。</div>
 </div>
 
 <style>
+  .num {
+    width: 64px;
+    margin: 0 4px 0 8px;
+  }
+
+  .hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    line-height: 1.5;
+  }
+
   .backdrop {
     position: fixed;
     inset: 0;

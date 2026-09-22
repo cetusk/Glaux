@@ -62,6 +62,19 @@ pub fn audio_clip_commands(
     start: Tick,
     name: &str,
 ) -> Result<Vec<Command>, String> {
+    audio_clip_commands_with_offset(project, track_id, imported, clip_id, start, name, 0)
+}
+
+/// `offset_samples` ぶん波形の頭を飛ばして置く版(録音のカウントイン・レイテンシ補正)。
+pub fn audio_clip_commands_with_offset(
+    project: &Project,
+    track_id: &TrackId,
+    imported: &ImportedSample,
+    clip_id: ClipId,
+    start: Tick,
+    name: &str,
+    offset_samples: u64,
+) -> Result<Vec<Command>, String> {
     let track = project
         .track(track_id)
         .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
@@ -72,7 +85,9 @@ pub fn audio_clip_commands(
             track.name
         ));
     }
-    let secs = imported.asset.frames as f64 / imported.asset.sample_rate.max(1) as f64;
+    let offset_samples = offset_samples.min(imported.asset.frames.saturating_sub(1));
+    let secs =
+        (imported.asset.frames - offset_samples) as f64 / imported.asset.sample_rate.max(1) as f64;
     let start_secs = project.tempo_map.tick_to_seconds(start);
     let end_tick = project.tempo_map.seconds_to_tick(start_secs + secs);
     let length = Tick(end_tick.0.saturating_sub(start.0).max(1));
@@ -84,9 +99,17 @@ pub fn audio_clip_commands(
             asset: imported.asset.clone(),
         });
     }
+    let mut clip = Clip::new_audio(clip_id, name, start, length, imported.id.clone());
+    if let glaux_core::ClipContent::Audio {
+        offset_samples: off,
+        ..
+    } = &mut clip.content
+    {
+        *off = offset_samples;
+    }
     cmds.push(Command::AddClip {
         track: track_id.clone(),
-        clip: Clip::new_audio(clip_id, name, start, length, imported.id.clone()),
+        clip,
     });
     Ok(cmds)
 }

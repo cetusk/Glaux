@@ -27,5 +27,5 @@ pub mod transcribe;
 pub use analyze::{analyze_project, analyze_project_tracks, Analysis, TrackAnalysis};
 pub use data::{build_playback_data, load_wav_mono, wave_peaks, PlaybackData, SampleBank};
 pub use export::{export_wav, render_project, ExportError};
-pub use output::{start_engine, EngineError, EngineHandle};
+pub use output::{start_engine, EngineError, EngineHandle, RecordOutcome};
 pub use record::RecordResult;

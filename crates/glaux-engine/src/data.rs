@@ -133,6 +133,15 @@ pub struct PlaybackData {
     /// テンポマップの焼き込み。データ差し替え時に「音楽的位置(tick)」を
     /// 保ったままサンプル位置を換算し直すために使う(空なら換算しない)
     pub tempo: Vec<TempoSeg>,
+    /// 拍子イベント(tick, 分子, 分母)。メトロノームの拍・小節頭の判定に使う
+    pub sigs: Vec<(u64, u8, u8)>,
+}
+
+/// メトロノームの次のクリック。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Beat {
+    pub sample: u64,
+    pub downbeat: bool,
 }
 
 impl PlaybackData {
@@ -143,6 +152,37 @@ impl PlaybackData {
             return 0.0;
         };
         seg.tick as f64 + (sample - seg.sample) as f64 / seg.samples_per_tick
+    }
+
+    /// `pos`(サンプル)以降で最初に来る拍。テンポ・拍子が無ければ None。
+    pub fn next_beat(&self, pos: u64) -> Option<Beat> {
+        if self.tempo.is_empty() {
+            return None;
+        }
+        let tick = self.sample_to_tick(pos);
+        let (sig_tick, num, den) = self
+            .sigs
+            .iter()
+            .rev()
+            .find(|(t, _, _)| (*t as f64) <= tick)
+            .copied()
+            .or_else(|| self.sigs.first().copied())
+            .unwrap_or((0, 4, 4));
+        let beat_len = (3840.0 / den.max(1) as f64).max(1.0);
+        let idx = ((tick - sig_tick as f64) / beat_len).floor().max(0.0);
+        // 今の拍がちょうど pos 以上なら今の拍、そうでなければ次の拍
+        for k in 0..2 {
+            let i = idx + k as f64;
+            let beat_tick = sig_tick as f64 + i * beat_len;
+            let sample = self.tick_to_sample(beat_tick);
+            if sample >= pos {
+                return Some(Beat {
+                    sample,
+                    downbeat: (i as u64) % num.max(1) as u64 == 0,
+                });
+            }
+        }
+        None
     }
 
     /// tick(小数)→ サンプル位置。
@@ -583,6 +623,12 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         })
         .collect();
 
+    let sigs = project
+        .time_sig_map
+        .iter()
+        .map(|e| (e.tick.0, e.num, e.den))
+        .collect();
+
     PlaybackData {
         events,
         audio_events,
@@ -592,6 +638,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         end_sample,
         sample_rate,
         tempo,
+        sigs,
     }
 }
 
@@ -888,6 +935,35 @@ mod tests {
         assert!((data.sample_to_tick(96_000 + 50_000) - 4840.0).abs() < 1e-9);
         assert_eq!(data.tick_to_sample(1920.0), 48_000);
         assert_eq!(data.tick_to_sample(4840.0), 146_000);
+    }
+
+    #[test]
+    fn next_beat_follows_time_signature() {
+        use glaux_core::TimeSigEvent;
+        let mut project = project_with_notes(vec![]);
+        project.time_sig_map = vec![
+            TimeSigEvent {
+                tick: Tick(0),
+                num: 4,
+                den: 4,
+            },
+            TimeSigEvent {
+                tick: Tick(3840),
+                num: 7,
+                den: 8,
+            },
+        ];
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        // 120bpm: 1 拍(4 分)= 24000 サンプル
+        let b0 = data.next_beat(0).unwrap();
+        assert_eq!((b0.sample, b0.downbeat), (0, true));
+        let b1 = data.next_beat(1).unwrap();
+        assert_eq!((b1.sample, b1.downbeat), (24_000, false));
+        // 2 小節目(tick 3840 = 96000)からは 8 分拍 = 12000 サンプル、7 拍で小節
+        let b = data.next_beat(96_001).unwrap();
+        assert_eq!((b.sample, b.downbeat), (108_000, false));
+        let bar3 = data.next_beat(96_000 + 12_000 * 7).unwrap();
+        assert!(bar3.downbeat);
     }
 
     #[test]

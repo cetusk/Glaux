@@ -273,15 +273,43 @@ async fn transcribe_clip(
 
 /// 録音を開始する(既定の入力デバイス)。再生も同時に始める(伴奏を聴きながら録る)。
 /// 一時ファイルは `<プロジェクト>/audio/rec_<時刻>.wav`。停止時に内容ハッシュ名で登録し直す。
+/// `count_in_bars` 小節ぶんメトロノームでカウントインしてからクリップ位置になる。
+/// `latency_ms` は出力レイテンシ補正(聴いて歌う分の遅れ。設定値)。
 #[tauri::command]
-fn record_start(state: State<'_, AppState>) -> Result<Value, String> {
-    let engine = state.engine()?;
+async fn record_start(
+    state: State<'_, AppState>,
+    count_in_bars: Option<u32>,
+    latency_ms: Option<f64>,
+    metronome: Option<bool>,
+) -> Result<Value, String> {
+    let engine = state.engine()?.clone();
     let dir = state.project_dir();
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let path = std::path::PathBuf::from(&dir).join(format!("audio/rec_{stamp}.wav"));
-    let start_tick = engine.start_recording(path).map_err(|e| e.to_string())?;
+    // カウントインの長さ: 現在位置の拍子で bars 小節
+    let (project, _) = state.handle.get_project().await?;
+    let now = engine.playhead_tick();
+    let sig = project
+        .time_sig_map
+        .iter()
+        .rev()
+        .find(|e| e.tick <= now)
+        .or_else(|| project.time_sig_map.first());
+    let bar_ticks = sig
+        .map(|e| 3840 * e.num as u64 / e.den.max(1) as u64)
+        .unwrap_or(3840);
+    let count_in = Tick(bar_ticks * count_in_bars.unwrap_or(1) as u64);
+    let clip_start = engine
+        .start_recording(
+            path,
+            count_in,
+            latency_ms.unwrap_or(0.0).clamp(0.0, 1000.0) / 1000.0,
+            metronome.unwrap_or(true),
+        )
+        .map_err(|e| e.to_string())?;
     engine.play();
-    Ok(json!({ "start_tick": start_tick }))
+    engine.mark_play_started();
+    Ok(json!({ "clip_start": clip_start, "count_in_ticks": count_in }))
 }
 
 /// 録音を止めて WAV を確定し、音声トラックのクリップとして置く(履歴 1 件)。
@@ -293,7 +321,12 @@ async fn record_stop(
 ) -> Result<Value, String> {
     let engine = state.engine()?.clone();
     engine.pause();
-    let (result, start_tick) = engine.stop_recording().map_err(|e| e.to_string())?;
+    let outcome = engine.stop_recording().map_err(|e| e.to_string())?;
+    let (result, start_tick, offset) = (outcome.result, outcome.clip_start, outcome.offset_samples);
+    if result.frames <= offset {
+        let _ = std::fs::remove_file(&result.path);
+        return Err("カウントインより後に録音データがありません".to_owned());
+    }
     if result.frames == 0 {
         let _ = std::fs::remove_file(&result.path);
         return Err("録音データが空でした(入力デバイスの設定を確認してください)".to_owned());
@@ -330,13 +363,14 @@ async fn record_stop(
     }
     let clip_id = glaux_core::ClipId::new();
     let name = format!("録音 {}", chrono::Local::now().format("%H:%M"));
-    cmds.extend(glaux_mcp::assets::audio_clip_commands(
+    cmds.extend(glaux_mcp::assets::audio_clip_commands_with_offset(
         &project_view,
         &tid,
         &imported,
         clip_id.clone(),
         start_tick,
         &name,
+        offset,
     )?);
     let label = format!("{name}(録音)を配置");
     let (_, m) = state
@@ -347,7 +381,7 @@ async fn record_stop(
     Ok(json!({
         "clip_id": clip_id,
         "track_id": tid,
-        "seconds": result.frames as f64 / result.sample_rate as f64,
+        "seconds": (result.frames - offset) as f64 / result.sample_rate as f64,
         "clipped": result.clipped,
         "dropped": result.dropped,
         "project_version": m.project_version,
@@ -730,11 +764,12 @@ fn transport_state(state: State<'_, AppState>) -> Value {
             "available": true,
             "playing": e.is_playing(),
             "recording": e.is_recording(),
+            "metronome": e.metronome(),
             "tick": e.playhead_tick(),
             "loop": e.loop_region().map(|(s, gl_end)| json!([s, gl_end])),
         }),
         None => {
-            json!({ "available": false, "playing": false, "recording": false, "tick": 0, "loop": null })
+            json!({ "available": false, "playing": false, "recording": false, "metronome": false, "tick": 0, "loop": null })
         }
     }
 }
@@ -752,6 +787,12 @@ fn transport_set_loop(
 #[tauri::command]
 fn transport_clear_loop(state: State<'_, AppState>) -> Result<(), String> {
     state.engine()?.clear_loop();
+    Ok(())
+}
+
+#[tauri::command]
+fn transport_set_metronome(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    state.engine()?.set_metronome(on);
     Ok(())
 }
 
@@ -1100,6 +1141,7 @@ fn main() -> Result<()> {
             transcribe_clip,
             record_start,
             record_stop,
+            transport_set_metronome,
             send_chat,
             cancel_chat,
             reset_chat,
