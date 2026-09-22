@@ -18,3 +18,4 @@ claude_sandbox.bat
 # 一時ファイル
 *.tmp
 *.log
+/SoundFonts/
