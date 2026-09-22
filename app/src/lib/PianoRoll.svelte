@@ -764,47 +764,49 @@
     {/if}
 
     <div class="body" bind:this={scroller} onpointermove={updateHover}>
+      <!-- Flex 行構成: grid アイテムの sticky は自分のグリッド領域内でしか
+           動けず無効化されるため、行(上固定)+ 列(左固定)で組む -->
       <div class="grid" style="width:{KEY_W + contentW}px">
-        <div class="corner" style="width:{KEY_W}px;height:{RULER_H}px"></div>
-        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-        <div
-          class="ruler"
-          style="width:{contentW}px;height:{RULER_H}px"
-          onclick={onRulerClick}
-        >
-          {#each rulerBars as bar (bar.index)}
-            <span class="bar-no" style="left:{(bar.tick - (clip?.start ?? 0)) * pxPerTick}px">
-              {bar.index + 1}{#if bar.sigChange}<span class="sig-chip">{bar.num}/{bar.den}</span>{/if}
-            </span>
-          {/each}
+        <div class="top-row" style="height:{RULER_H}px">
+          <div class="corner" style="width:{KEY_W}px"></div>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <div class="ruler" style="width:{contentW}px" onclick={onRulerClick}>
+            {#each rulerBars as bar (bar.index)}
+              <span class="bar-no" style="left:{(bar.tick - (clip?.start ?? 0)) * pxPerTick}px">
+                {bar.index + 1}{#if bar.sigChange}<span class="sig-chip">{bar.num}/{bar.den}</span>{/if}
+              </span>
+            {/each}
+          </div>
         </div>
-        <div class="keys" style="width:{KEY_W}px;height:{contentH}px">
-          {#each Array(128) as _, row}
-            {@const pitch = 127 - row}
-            <div
-              class="key"
-              class:black={BLACK.has(pitch % 12)}
-              class:drum-key={isDrum && drumName(pitch) !== undefined}
-              style="height:{rowH}px"
-            >
-              {#if isDrum && drumName(pitch)}
-                <span class="drum-label">{drumName(pitch)?.short}</span>
-              {:else if pitch % 12 === 0}<span>{noteName(pitch)}</span>{/if}
-            </div>
-          {/each}
-        </div>
-        <div class="stack" style="width:{contentW}px;height:{contentH}px">
-          <canvas bind:this={canvasEl} style="width:{contentW}px;height:{contentH}px"></canvas>
-          <canvas
-            class="overlay"
-            bind:this={overlayEl}
-            style="width:{contentW}px;height:{contentH}px"
-            onpointerdown={onPointerDown}
-            onpointermove={onPointerMove}
-            onpointerup={onPointerUp}
-            ondblclick={onDblClick}
-            oncontextmenu={onContextMenu}
-          ></canvas>
+        <div class="content-row">
+          <div class="keys" style="width:{KEY_W}px;height:{contentH}px">
+            {#each Array(128) as _, row}
+              {@const pitch = 127 - row}
+              <div
+                class="key"
+                class:black={BLACK.has(pitch % 12)}
+                class:drum-key={isDrum && drumName(pitch) !== undefined}
+                style="height:{rowH}px"
+              >
+                {#if isDrum && drumName(pitch)}
+                  <span class="drum-label">{drumName(pitch)?.short}</span>
+                {:else if pitch % 12 === 0}<span>{noteName(pitch)}</span>{/if}
+              </div>
+            {/each}
+          </div>
+          <div class="stack" style="width:{contentW}px;height:{contentH}px">
+            <canvas bind:this={canvasEl} style="width:{contentW}px;height:{contentH}px"></canvas>
+            <canvas
+              class="overlay"
+              bind:this={overlayEl}
+              style="width:{contentW}px;height:{contentH}px"
+              onpointerdown={onPointerDown}
+              onpointermove={onPointerMove}
+              onpointerup={onPointerUp}
+              ondblclick={onDblClick}
+              oncontextmenu={onContextMenu}
+            ></canvas>
+          </div>
         </div>
       </div>
     </div>
@@ -888,26 +890,30 @@
     overflow: auto;
   }
 
-  .grid {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    grid-template-rows: auto 1fr;
+  .top-row {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 3;
+  }
+
+  .content-row {
+    display: flex;
   }
 
   .corner {
     position: sticky;
-    top: 0;
     left: 0;
-    z-index: 3;
+    z-index: 4;
+    flex-shrink: 0;
     background: var(--bg-panel);
     border-right: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
   }
 
   .ruler {
-    position: sticky;
-    top: 0;
-    z-index: 2;
+    position: relative;
+    flex-shrink: 0;
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     cursor: pointer;
@@ -939,9 +945,11 @@
     position: sticky;
     left: 0;
     z-index: 2;
+    flex-shrink: 0;
     background: var(--bg-panel);
     border-right: 1px solid var(--border);
   }
+
 
   .key {
     font-size: 9px;
@@ -973,6 +981,7 @@
 
   .stack {
     position: relative;
+    flex-shrink: 0;
   }
 
   canvas {

@@ -585,12 +585,17 @@
   <main>
     <section class="timeline-area">
       {#if project}
-        <Timeline
-          {project}
-          playheadTick={transport.tick}
-          playing={transport.playing}
-          onSeek={seek}
-        />
+        <!-- スクローラーとピアノロールのオーバーレイは親を分ける:
+             overflow 要素の absolute 子はスクロール原点に張り付くため、
+             スクロール中に開くと画面外に出てしまう -->
+        <div class="timeline-scroll">
+          <Timeline
+            {project}
+            playheadTick={transport.tick}
+            playing={transport.playing}
+            onSeek={seek}
+          />
+        </div>
         <PianoRoll
           {project}
           playheadTick={transport.tick}
@@ -802,8 +807,16 @@
   .timeline-area {
     flex: 1;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
     position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .timeline-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
   }
 
   .bottom-area {
