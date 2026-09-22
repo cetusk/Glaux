@@ -333,6 +333,8 @@ pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
             "is_default_fallback": is_default,
         },
         "params": param_list,
+        // この楽器で効く奏法(Note.articulation)。載っていないものは no-op
+        "articulations": glaux_dsp::articulations_for(&device_name),
         "effects": effects_list,
     }))
 }

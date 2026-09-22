@@ -85,6 +85,46 @@
   });
   let fretTuningOverride = $state<"guitar" | "bass" | null>(null);
   const fretTuning = $derived(fretTuningOverride ?? defaultTuning);
+
+  // この楽器で効く奏法(glaux-dsp params.rs の articulations_for と同期を保つこと)
+  const ARTS_BY_INSTRUMENT: Record<string, { art: Articulation; key: string; label: string }[]> = {
+    subtractive: [
+      { art: "palm_mute", key: "M", label: "ミュート" },
+      { art: "staccato", key: "S", label: "スタッカート" },
+      { art: "accent", key: "A", label: "アクセント" },
+      { art: "vibrato", key: "V", label: "ビブラート" },
+      { art: "bend", key: "B", label: "チョーキング" },
+    ],
+    drum: [{ art: "accent", key: "A", label: "アクセント" }],
+    pluck: [
+      { art: "palm_mute", key: "M", label: "ブリッジミュート" },
+      { art: "staccato", key: "S", label: "スタッカート" },
+      { art: "accent", key: "A", label: "アクセント" },
+      { art: "vibrato", key: "V", label: "ビブラート" },
+      { art: "bend", key: "B", label: "チョーキング" },
+    ],
+    sampler: [
+      { art: "staccato", key: "S", label: "スタッカート" },
+      { art: "accent", key: "A", label: "アクセント" },
+      { art: "vibrato", key: "V", label: "ビブラート" },
+      { art: "bend", key: "B", label: "チョーキング" },
+    ],
+    sf2: [
+      { art: "staccato", key: "S", label: "スタッカート" },
+      { art: "accent", key: "A", label: "アクセント" },
+      { art: "vibrato", key: "V", label: "ビブラート" },
+      { art: "bend", key: "B", label: "チョーキング" },
+    ],
+  };
+  const instrumentName = $derived(
+    deviceRaw?.type === "sf2" ? "sf2" : (found?.track.device?.name ?? "subtractive"),
+  );
+  const availableArts = $derived(
+    ARTS_BY_INSTRUMENT[instrumentName] ?? ARTS_BY_INSTRUMENT.subtractive,
+  );
+  const artHint = $derived(
+    availableArts.map((a) => `${a.key}=${a.label}`).join(" "),
+  );
   /// 挿入カーソル(クリックで固定。キット/フレット打ち込み先。←/→ でスナップ移動)
   let insertTick = $state(0);
   let showKit = $state(true);
@@ -824,20 +864,13 @@
           e.code === "KeyV" ||
           e.code === "KeyB")
       ) {
-        // 奏法トグル(選択ノートに対して)
+        // 奏法トグル(選択ノートに対して。この楽器で効くものだけ)
         if (selected.size === 0) return;
+        const key = e.code.slice(3); // "KeyM" → "M"
+        const entry = availableArts.find((a) => a.key === key);
+        if (!entry) return;
         e.preventDefault();
-        const art: Articulation =
-          e.code === "KeyM"
-            ? "palm_mute"
-            : e.code === "KeyS"
-              ? "staccato"
-              : e.code === "KeyA"
-                ? "accent"
-                : e.code === "KeyV"
-                  ? "vibrato"
-                  : "bend";
-        toggleArticulation(art);
+        toggleArticulation(entry.art);
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         deleteNotes([...selected]);
@@ -904,7 +937,7 @@
             {/each}
           </select>
         </label>
-        <span class="hint">ドラッグ: 複数選択(まとめて移動・端で長さ変更) / Ctrl+C/X/V: コピペ(別クリップへの貼り付けも可) / M/S/A/V/B: 奏法(ミュート・スタッカート・アクセント・ビブラート・チョーキング) / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl・Shift+ホイール: ズーム</span>
+        <span class="hint">ドラッグ: 複数選択(まとめて移動・端で長さ変更) / Ctrl+C/X/V: コピペ(別クリップも可) / 奏法: {artHint} / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl・Shift+ホイール: ズーム</span>
         <button onclick={close} title="閉じる(Esc)">✕</button>
       </div>
     </div>

@@ -483,11 +483,25 @@ Glaux の AI が「何を知覚し、何を操作できるか」の一覧。新�
 | **記憶(長期)** | get_history + project_version | 履歴はプロジェクト側に永続。author=human で「人間が何をしたか」をキャッチアップ(チャットは差分を自動注入) |
 | **手(作曲)** | apply_commands + 便利ツール | ノート/クリップ/トラック編集。transpose/shift/quantize/scale_velocity は相対編集の代行 |
 | **手(音作り)** | list_params + set_param + add_effect | 全つまみに聴感説明付き。音源 5 種(subtractive/drum/pluck/sampler/sf2)+ エフェクト 6 種(eq/comp/reverb/dist/amp/sidechain) |
-| **表現(奏法)** | Note.articulation | palm_mute / staccato / accent / vibrato / bend |
+| **表現(奏法)** | Note.articulation | 楽器ごとに対応が異なる(下表)。カタログ(list_params)に楽器別の説明付きで載る |
 | **表現(時間変化)** | set_automation_points | 音量・パンのカーブ(フェード・ビルドアップ) |
 | **道具箱** | presets / soundfonts | save_preset / load_preset(全プロジェクト共通)、list_soundfonts / set_soundfont_instrument(GM 楽器一式)、import_sample(実録 WAV) |
 | **安全網** | checkpoint / revert_to / undo | 試行錯誤の足場。Batch = 1 undo |
 | **場の把握** | UI からの文脈注入 | 範囲選択・開いているクリップ・音作り中のトラックが指示に自動で付く |
+
+### 奏法 × 楽器の対応表(glaux-dsp `articulations_for` が正)
+
+| 奏法 | subtractive | drum | pluck | sampler / sf2 | 効果 |
+|---|---|---|---|---|---|
+| palm_mute (M) | ○(こもった刻み) | − | ◎(ブリッジミュート。本命) | − | 減衰を速く・暗く |
+| staccato (S) | ○ | − | ○ | ○ | 音価半分 + 短リリース |
+| accent (A) | ○ | ○ | ○ | ○ | 強く(楽器により明るく) |
+| vibrato (V) | ○ | − | ○ | ○ | 後半に深くなる揺れ |
+| bend (B) | ○ | − | ◎(チョーキング) | ○ | 全音下から滑り上がる |
+
+対応外の奏法を付けてもエラーにはならないが音は変わらない(no-op)。
+UI のショートカットは楽器に応じて絞り込まれ、ヒント文にもその楽器のぶんだけ表示される。
+新しい奏法・楽器を足すときは `articulations_for` と PianoRoll の `ARTS_BY_INSTRUMENT` の両方を更新すること。
 
 **まだ持っていない感覚**: 生波形の知覚(analyze_audio は要約統計のみ)、和声・キーの明示的認識
 (ノートから自力推論)、人間の演奏のリアルタイム入力(録音・MIDI 入力なし)、

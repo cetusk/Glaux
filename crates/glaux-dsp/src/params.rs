@@ -336,12 +336,97 @@ pub static SF2_SPECS: &[ParamSpec] = &[ParamSpec {
     description: "楽器自体の音量。トラック音量と別。",
 }];
 
+/// 奏法(アーティキュレーション)の楽器別説明。
+/// 同じ奏法でも楽器によって効き方が違う(または効かない)ので、楽器ごとに持つ。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ArticulationInfo {
+    /// JSON に書く値(Note.articulation)
+    pub name: &'static str,
+    /// ピアノロールのショートカットキー
+    pub key: &'static str,
+    pub display_name: &'static str,
+    /// この楽器での聴感上の効果
+    pub description: &'static str,
+}
+
+const ART_STACCATO: ArticulationInfo = ArticulationInfo {
+    name: "staccato",
+    key: "S",
+    display_name: "スタッカート",
+    description: "音価の半分で切る歯切れのよい発音。",
+};
+const ART_ACCENT: ArticulationInfo = ArticulationInfo {
+    name: "accent",
+    key: "A",
+    display_name: "アクセント",
+    description: "その音だけ強く目立たせる。",
+};
+const ART_VIBRATO: ArticulationInfo = ArticulationInfo {
+    name: "vibrato",
+    key: "V",
+    display_name: "ビブラート",
+    description: "音の後半にかけて深くなるピッチの揺れ。ロングトーンの表情付け。",
+};
+const ART_BEND: ArticulationInfo = ArticulationInfo {
+    name: "bend",
+    key: "B",
+    display_name: "チョーキング",
+    description: "全音下から書かれた音程へ滑り上がる。フレーズの決め音に。",
+};
+
+pub static SUBTRACTIVE_ARTS: &[ArticulationInfo] = &[
+    ArticulationInfo {
+        name: "palm_mute",
+        key: "M",
+        display_name: "ミュート",
+        description: "カットオフを絞って速く減衰させた、こもった短い音。シンセの刻みに。",
+    },
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+];
+pub static DRUM_ARTS: &[ArticulationInfo] = &[ArticulationInfo {
+    name: "accent",
+    key: "A",
+    display_name: "アクセント",
+    description: "そのヒットだけ強く。ゴーストノートとの対比でグルーヴを作る。",
+}];
+pub static PLUCK_ARTS: &[ArticulationInfo] = &[
+    ArticulationInfo {
+        name: "palm_mute",
+        key: "M",
+        display_name: "ブリッジミュート",
+        description: "掌で弦を押さえた「ズクズク」した刻み。メタルのリフの主役(+amp)。",
+    },
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+];
+pub static SAMPLER_ARTS: &[ArticulationInfo] = &[ART_STACCATO, ART_ACCENT, ART_VIBRATO, ART_BEND];
+pub static SF2_ARTS: &[ArticulationInfo] = &[ART_STACCATO, ART_ACCENT, ART_VIBRATO, ART_BEND];
+
+/// 楽器名 → 対応する奏法の一覧。載っていない奏法を付けてもエラーにはならないが
+/// 音への効果はない(no-op)。
+pub fn articulations_for(instrument: &str) -> &'static [ArticulationInfo] {
+    match instrument {
+        "drum" => DRUM_ARTS,
+        "pluck" => PLUCK_ARTS,
+        "sampler" => SAMPLER_ARTS,
+        "sf2" => SF2_ARTS,
+        _ => SUBTRACTIVE_ARTS,
+    }
+}
+
 /// 楽器カタログの 1 行(MCP の `list_params` がそのまま返す)。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct InstrumentInfo {
     pub name: &'static str,
     pub description: &'static str,
     pub params: &'static [ParamSpec],
+    /// この楽器で効く奏法(Note.articulation)
+    pub articulations: &'static [ArticulationInfo],
 }
 
 /// 内蔵楽器の一覧。
@@ -352,6 +437,7 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
             description: "減算方式シンセ。ベース・リード・パッド・プラックなど\
                 メロディ楽器全般に使う。device 未設定トラックの既定音源。",
             params: SUBTRACTIVE_SPECS,
+            articulations: SUBTRACTIVE_ARTS,
         },
         InstrumentInfo {
             name: "drum",
@@ -361,6 +447,7 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
                 ビルドアップに。ノートの開始位置から立ち上がり、鳴り終わりをドロップ頭に合わせる)。\
                 ドラムトラックには set_device でこれを設定する。",
             params: DRUM_SPECS,
+            articulations: DRUM_ARTS,
         },
         InstrumentInfo {
             name: "sf2",
@@ -370,6 +457,7 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
                 list_soundfonts で置いてある .sf2 とプリセットを確認し、\
                 set_soundfont_instrument でトラックに設定する。",
             params: SF2_SPECS,
+            articulations: SF2_ARTS,
         },
         InstrumentInfo {
             name: "sampler",
@@ -378,6 +466,7 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
                 ワンショット等)はこれを使う。導入は import_sample ツール\
                 (UI では音作りビューの「サンプルを読み込み」)。",
             params: SAMPLER_SPECS,
+            articulations: SAMPLER_ARTS,
         },
         InstrumentInfo {
             name: "pluck",
@@ -386,6 +475,7 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
                 distortion(メタルの刻みはさらにノートに articulation: palm_mute)。\
                 シンセ的なプラックではなく本物の弦の減衰が欲しいときの第一候補。",
             params: PLUCK_SPECS,
+            articulations: PLUCK_ARTS,
         },
     ]
 }

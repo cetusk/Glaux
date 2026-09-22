@@ -885,18 +885,21 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
             description: "3 バンド EQ(低域シェルフ + 中域ピーク + 高域シェルフ)。\
                 帯域バランスの調整に使う。analyze_audio の band_energy と組み合わせると効果的。",
             params: EQ_SPECS,
+            articulations: &[],
         },
         crate::params::InstrumentInfo {
             name: "compressor",
             description: "コンプレッサー。音量のばらつきを揃え、音圧や密度を上げる。\
                 かけすぎ(crest_factor が 6dB 以下)に注意。",
             params: COMPRESSOR_SPECS,
+            articulations: &[],
         },
         crate::params::InstrumentInfo {
             name: "reverb",
             description: "リバーブ(残響)。奥行きと空間を作る。パッドやリードに薄く\
                 かけると馴染む。低音楽器には控えめに。",
             params: REVERB_SPECS,
+            articulations: &[],
         },
         crate::params::InstrumentInfo {
             name: "distortion",
@@ -904,6 +907,7 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
                 ドラムの太さ足し、アンプ(amp)前段のブースターに。エレキギターの\
                 本格的な歪みは pluck + amp を使う。",
             params: DISTORTION_SPECS,
+            articulations: &[],
         },
         crate::params::InstrumentInfo {
             name: "amp",
@@ -912,6 +916,7 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
                 「アンプを通したエレキ」になる。gain_db 30 前後から歪み、40 以上でメタル。\
                 distortion をペダルとして前段に挿すとさらに凶暴になる。",
             params: AMP_SPECS,
+            articulations: &[],
         },
         crate::params::InstrumentInfo {
             name: "sidechain",
@@ -919,6 +924,7 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
                 このトラックを沈み込ませる。EDM のポンピング/ビートダウンの要。\
                 ベースやパッドに挿し、source にキックのトラック ID を設定して使う。",
             params: SIDECHAIN_SPECS,
+            articulations: &[],
         },
     ]
 }

@@ -30,7 +30,8 @@ pub use drum::DrumParams;
 pub use effects::{bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState};
 pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, MAX_LAYERS};
 pub use params::{
-    bake_instrument, bake_sampler, bake_sf2, instrument_catalog, instrument_params, InstrumentInfo,
+    articulations_for, bake_instrument, bake_sampler, bake_sf2, instrument_catalog,
+    instrument_params, ArticulationInfo, InstrumentInfo,
 };
 pub use pluck::PluckParams;
 pub use sampler::{SampleData, SamplerParams, SamplerVoice};
