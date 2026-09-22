@@ -379,6 +379,25 @@
     const g = ensureSize(c);
     g.clearRect(0, 0, contentW, contentH);
 
+    // 描画中のピッチカーブ(なぞった軌跡)
+    if (curveDraw) {
+      const n = currentClip.notes.find((m) => m.id === curveDraw!.noteId);
+      if (n) {
+        const cy = (127 - n.pitch) * rowH + rowH / 2;
+        const pts = [...curveDraw.pts].sort((a, b) => a.t - b.t);
+        g.strokeStyle = "rgba(255, 120, 200, 0.95)";
+        g.lineWidth = 2;
+        g.beginPath();
+        pts.forEach((p, i) => {
+          const px = (n.pos + p.t) * pxPerTick;
+          const py = cy - (p.c / 100) * rowH;
+          if (i === 0) g.moveTo(px, py);
+          else g.lineTo(px, py);
+        });
+        g.stroke();
+      }
+    }
+
     // ドラッグ中の移動/リサイズゴースト
     if (drag?.mode === "move" && (drag.dt !== 0 || drag.dp !== 0)) {
       const ids = new Set(drag.ids);
@@ -465,6 +484,7 @@
   $effect(() => {
     void clip;
     void drag;
+    void curveDraw;
     void playheadTick;
     void insertTick;
     void hoverSnapTick;
@@ -570,6 +590,68 @@
       }
     }
     return null;
+  }
+
+  // ---- ピッチカーブの手描き(「〜 カーブ」モード) ----
+
+  const MAX_CURVE_POINTS = 8;
+  const MAX_CENTS = 2400;
+  let curveMode = $state(false);
+  /// 描いている途中の軌跡(ノート先頭からの tick, セント)
+  let curveDraw = $state<{ noteId: string; pts: { t: number; c: number }[] } | null>(null);
+
+  /// カーブを描く対象: 押した時刻にかかるノートのうち、選択中を優先し、なければ高さが近いもの
+  function curveTarget(x: number, y: number): Note | null {
+    const currentClip = clip;
+    if (!currentClip) return null;
+    const tick = x / pxPerTick;
+    const covering = currentClip.notes.filter((n) => tick >= n.pos && tick <= n.pos + n.dur);
+    if (covering.length === 0) return null;
+    const sel = covering.filter((n) => selected.has(n.id));
+    const pool = sel.length > 0 ? sel : covering;
+    const rowPitch = 127 - y / rowH;
+    return pool.reduce((a, b) => (Math.abs(a.pitch - rowPitch) <= Math.abs(b.pitch - rowPitch) ? a : b));
+  }
+
+  function curveSample(n: Note, x: number, y: number): { t: number; c: number } {
+    const t = Math.max(0, Math.min(n.dur, x / pxPerTick - n.pos));
+    const centerY = (127 - n.pitch) * rowH + rowH / 2;
+    const c = Math.max(-MAX_CENTS, Math.min(MAX_CENTS, ((centerY - y) / rowH) * 100));
+    return { t, c };
+  }
+
+  /// なぞった軌跡を最大 8 点に間引く(時間方向に等間隔で取り、線形補間で値を読む)
+  function simplifyCurve(pts: { t: number; c: number }[]): { tick: number; cents: number }[] {
+    const sorted = [...pts].sort((a, b) => a.t - b.t);
+    if (sorted.length === 0) return [];
+    const t0 = sorted[0].t;
+    const t1 = sorted[sorted.length - 1].t;
+    const valueAt = (t: number) => {
+      let i = sorted.findIndex((p) => p.t >= t);
+      if (i <= 0) return sorted[Math.max(0, i)].c;
+      const a = sorted[i - 1];
+      const b = sorted[i];
+      const f = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
+      return a.c + (b.c - a.c) * f;
+    };
+    const n = t1 - t0 < 1 ? 1 : MAX_CURVE_POINTS;
+    const out: { tick: number; cents: number }[] = [];
+    for (let k = 0; k < n; k++) {
+      const t = n === 1 ? t0 : t0 + ((t1 - t0) * k) / (n - 1);
+      const tick = Math.round(t);
+      if (out.length > 0 && out[out.length - 1].tick === tick) continue;
+      out.push({ tick, cents: Math.round(valueAt(t)) });
+    }
+    return out;
+  }
+
+  function commitCurve(noteId: string, curve: { tick: number; cents: number }[]) {
+    const currentClip = clip;
+    if (!currentClip) return;
+    applyEdit(
+      [{ op: "update_notes", clip: currentClip.id, changes: [{ id: noteId, pitch_curve: curve }] }],
+      curve.length === 0 ? "ピッチカーブを削除" : "ピッチカーブを描画",
+    );
   }
 
   function nearRightEdge(n: Note, x: number): boolean {
@@ -741,6 +823,14 @@
     if (!currentClip) return;
     const x = e.offsetX;
     const y = e.offsetY;
+    if (curveMode) {
+      const n = curveTarget(x, y);
+      if (!n) return;
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      selected = new Set([n.id]);
+      curveDraw = { noteId: n.id, pts: [curveSample(n, x, y)] };
+      return;
+    }
     const hit = noteAt(x, y);
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 
@@ -794,6 +884,11 @@
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (curveDraw) {
+      const n = clip?.notes.find((m) => m.id === curveDraw!.noteId);
+      if (n) curveDraw = { ...curveDraw, pts: [...curveDraw.pts, curveSample(n, e.offsetX, e.offsetY)] };
+      return;
+    }
     updateHover(e);
     if (!drag) {
       // カーソル形状
@@ -824,6 +919,12 @@
   }
 
   function onPointerUp() {
+    if (curveDraw) {
+      const d = curveDraw;
+      curveDraw = null;
+      commitCurve(d.noteId, simplifyCurve(d.pts));
+      return;
+    }
     const currentClip = clip;
     if (!drag || !currentClip) {
       drag = null;
@@ -894,6 +995,7 @@
   }
 
   function onDblClick(e: MouseEvent) {
+    if (curveMode) return;
     const currentClip = clip;
     if (!currentClip) return;
     if (noteAt(e.offsetX, e.offsetY)) return;
@@ -1010,6 +1112,13 @@
   }
 
   function onContextMenu(e: MouseEvent) {
+    if (curveMode) {
+      // カーブモードの右クリック: そのノートのカーブを消す
+      e.preventDefault();
+      const n = curveTarget(e.offsetX, e.offsetY);
+      if (n && n.pitch_curve && n.pitch_curve.length > 0) commitCurve(n.id, []);
+      return;
+    }
     e.preventDefault();
     const hit = noteAt(e.offsetX, e.offsetY);
     if (!hit) return;
@@ -1116,7 +1225,11 @@
         deleteNotes([...selected]);
       } else if (e.key === "Escape") {
         e.preventDefault();
-        if (drag) {
+        if (curveDraw) {
+          curveDraw = null;
+        } else if (curveMode) {
+          curveMode = false;
+        } else if (drag) {
           drag = null;
         } else if (selected.size > 0) {
           selected = new Set();
@@ -1204,6 +1317,13 @@
           </button>
         {/if}
         <button
+          class:kit-on={curveMode}
+          onclick={() => (curveMode = !curveMode)}
+          title="ピッチカーブを手で描く: ノートの上をなぞると、その高さのずれ(1 行 = 半音)がカーブになる。右クリックでカーブを消す"
+        >
+          〜 カーブ
+        </button>
+        <button
           class:kit-on={showVel}
           onclick={() => (showVel = !showVel)}
           title="ベロシティ(音の強さ)の帯の表示/非表示。縦棒を上下にドラッグで変更、選択中のノートはまとめて変わる"
@@ -1273,6 +1393,7 @@
                  グリッド・ノート・鍵盤が全部この canvas の下に隠れる(過去の実バグ) -->
             <canvas
               class="note-layer"
+              class:curve-mode={curveMode}
               bind:this={overlayEl}
               style="width:{contentW}px;height:{contentH}px"
               onpointerdown={onPointerDown}
@@ -1547,6 +1668,10 @@
 
   .vel-layer {
     cursor: ns-resize;
+  }
+
+  .note-layer.curve-mode {
+    cursor: crosshair;
   }
 
   canvas {
