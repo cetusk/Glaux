@@ -27,6 +27,8 @@ enum DrumSound {
     OpenHat,
     Tom,
     Cymbal,
+    /// ビルドアップ用。ノート開始から迫り上がり、終端で切れる
+    ReverseCrash,
     Perc,
 }
 
@@ -38,7 +40,8 @@ fn sound_for_pitch(pitch: u8) -> DrumSound {
         42 | 44 => DrumSound::ClosedHat,
         46 => DrumSound::OpenHat,
         41 | 43 | 45 | 47 | 48 | 50 => DrumSound::Tom,
-        49 | 51 | 52 | 53 | 55 | 57 | 59 => DrumSound::Cymbal,
+        55 => DrumSound::ReverseCrash,
+        49 | 51 | 52 | 53 | 57 | 59 => DrumSound::Cymbal,
         _ => DrumSound::Perc,
     }
 }
@@ -96,6 +99,7 @@ impl DrumVoice {
             DrumSound::OpenHat => 0.40,
             DrumSound::Tom => 0.35,
             DrumSound::Cymbal => 0.9,
+            DrumSound::ReverseCrash => 1.6,
             DrumSound::Perc => 0.15,
         };
         base * p.decay
@@ -157,6 +161,14 @@ impl DrumVoice {
                 self.phase += freq / sr;
                 (self.phase * std::f32::consts::TAU).sin() * (-t * 10.0 / p.decay).exp()
             }
+            DrumSound::ReverseCrash => {
+                // 逆再生シンバル風: ノイズが指数的に迫り上がり、終端で切れる
+                let progress = (t / dur).clamp(0.0, 1.0);
+                let env = (progress * progress * progress).min(1.0);
+                let n = self.noise();
+                self.lp += (n - self.lp) * (0.2 + 0.3 * (1.0 - p.tone));
+                (n - self.lp) * env * (0.6 + 0.4 * p.tone)
+            }
             DrumSound::Perc => {
                 let freq = 400.0 * tune;
                 self.phase += freq / sr;
@@ -195,6 +207,7 @@ mod tests {
     #[test]
     fn kick_and_snare_sound_and_finish() {
         let p = params();
+        // 55(リバースクラッシュ)は立ち上がりが無音なので専用テストで検証
         for pitch in [36u8, 38, 42, 46, 45, 39, 49] {
             let out = render(pitch, 4800);
             assert!(rms(&out) > 0.01, "pitch {pitch} が鳴るはず");
@@ -222,6 +235,27 @@ mod tests {
             kick_ratio * 5.0 < hat_ratio,
             "kick={kick_ratio}, hat={hat_ratio}"
         );
+    }
+
+    #[test]
+    fn reverse_crash_swells_toward_end() {
+        // 前半より後半のほうが大きい(迫り上がる)
+        let out = render(55, 48_000); // 1 秒(全長 1.6 秒の途中まで)
+        let first = rms(&out[..24_000]);
+        let second = rms(&out[24_000..]);
+        assert!(second > first * 2.0, "first={first} second={second}");
+        assert!(second > 0.01, "終盤はしっかり鳴るはず");
+
+        // 全長を過ぎたら finished
+        let p = params();
+        let mut v = DrumVoice::start(&p, 55, 1.0, 48_000.0);
+        for _ in 0..48_000 * 2 {
+            v.next(&p);
+            if v.finished(&p) {
+                break;
+            }
+        }
+        assert!(v.finished(&p));
     }
 
     #[test]

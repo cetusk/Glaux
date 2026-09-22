@@ -81,12 +81,17 @@ fn pan_gains(pan: f32) -> (f32, f32) {
 }
 
 /// エフェクトチェーンを焼き込み、状態プールのスロットを割り当てる。
-fn bake_chain(effects: &[Effect], sample_rate: f32, next_slot: &mut u32) -> Vec<BakedEffect> {
+fn bake_chain(
+    effects: &[Effect],
+    sample_rate: f32,
+    next_slot: &mut u32,
+    resolve_track: &dyn Fn(&str) -> Option<u32>,
+) -> Vec<BakedEffect> {
     effects
         .iter()
         .filter(|e| !e.bypass)
         .filter_map(|e| {
-            let params = glaux_dsp::bake_effect(e, sample_rate)?;
+            let params = glaux_dsp::bake_effect(e, sample_rate, resolve_track)?;
             if *next_slot as usize >= MAX_EFFECT_SLOTS {
                 tracing::warn!(
                     "エフェクトが多すぎます({MAX_EFFECT_SLOTS} 超)。{} を無視",
@@ -107,6 +112,15 @@ pub fn build_playback_data(project: &Project, sample_rate: f64) -> PlaybackData 
     let to_sample =
         |tick: Tick| -> u64 { (project.tempo_map.tick_to_seconds(tick) * sample_rate) as u64 };
 
+    // サイドチェインの source(トラック ID)→ index 解決
+    let resolve_track = |id: &str| -> Option<u32> {
+        project
+            .tracks
+            .iter()
+            .position(|t| t.id.as_str() == id)
+            .map(|i| i as u32)
+    };
+
     let mut next_slot: u32 = 0;
     let tracks: Vec<TrackMix> = project
         .tracks
@@ -120,11 +134,21 @@ pub fn build_playback_data(project: &Project, sample_rate: f64) -> PlaybackData 
                 gain_r: gain * pr,
                 audible: !t.mute && (!any_solo || t.solo),
                 instrument,
-                effects: bake_chain(&t.effects, sample_rate as f32, &mut next_slot),
+                effects: bake_chain(
+                    &t.effects,
+                    sample_rate as f32,
+                    &mut next_slot,
+                    &resolve_track,
+                ),
             }
         })
         .collect();
-    let master_effects = bake_chain(&project.master.effects, sample_rate as f32, &mut next_slot);
+    let master_effects = bake_chain(
+        &project.master.effects,
+        sample_rate as f32,
+        &mut next_slot,
+        &resolve_track,
+    );
 
     let mut events = Vec::new();
     for (ti, track) in project.tracks.iter().enumerate() {

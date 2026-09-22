@@ -111,6 +111,56 @@ pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
             「ビャッ」というシンセらしいアタック感が付く。",
     },
     ParamSpec {
+        name: "unison",
+        display_name: "ユニゾン",
+        unit: None,
+        range: ParamRange::Int {
+            min: 1,
+            max: 7,
+            default: 1,
+        },
+        description: "同じ音を微妙にピッチをずらして重ねる本数。3〜7 + detune で\
+            EDM の分厚い supersaw になる。1 で従来どおり。",
+    },
+    ParamSpec {
+        name: "detune",
+        display_name: "デチューン",
+        unit: Some("cents"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 60.0,
+            default: 12.0,
+            skew: None,
+        },
+        description: "ユニゾンの広がり(半音=100)。上げるほど太くうねるが、\
+            上げすぎると音程感が薄れる。supersaw は 15〜30 が目安。",
+    },
+    ParamSpec {
+        name: "sub",
+        display_name: "サブオシレータ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "1 オクターブ下のサイン波を混ぜる量。ベースの土台・胸に来る低域。\
+            EDM ベースは 0.5〜1.0 が定番。",
+    },
+    ParamSpec {
+        name: "noise",
+        display_name: "ノイズ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "ホワイトノイズを混ぜる量。息っぽさ・ざらつき・シュワッとした質感。",
+    },
+    ParamSpec {
         name: "gain_db",
         display_name: "ゲイン",
         unit: Some("dB"),
@@ -199,7 +249,9 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
             name: "drum",
             description: "ドラムシンセ。MIDI ノート番号(GM 配置)で音色が決まる: \
                 36=キック, 38=スネア, 39=クラップ, 42=クローズドハット, 46=オープンハット, \
-                41〜50=タム, 49/51=シンバル。ドラムトラックには set_device でこれを設定する。",
+                41〜50=タム, 49/51=シンバル, 55=リバースクラッシュ(盛り上がり前の\
+                ビルドアップに。ノートの開始位置から立ち上がり、鳴り終わりをドロップ頭に合わせる)。\
+                ドラムトラックには set_device でこれを設定する。",
             params: DRUM_SPECS,
         },
     ]
@@ -275,6 +327,10 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
                 release: get_f32(map, s, "release").clamp(0.01, 4.0),
                 filter_env: get_f32(map, s, "filter_env").clamp(0.0, 1.0),
+                unison: get_f32(map, s, "unison").clamp(1.0, 7.0) as u8,
+                detune_cents: get_f32(map, s, "detune").clamp(0.0, 60.0),
+                sub: get_f32(map, s, "sub").clamp(0.0, 1.0),
+                noise: get_f32(map, s, "noise").clamp(0.0, 1.0),
                 gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
             };
             (

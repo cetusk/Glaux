@@ -12,7 +12,7 @@
 
 use crate::data::{PlaybackData, MAX_EFFECT_SLOTS, MAX_TRACKS};
 use arc_swap::ArcSwap;
-use glaux_dsp::{EffectState, VoiceState};
+use glaux_dsp::{EffectParams, EffectState, VoiceState};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -229,6 +229,19 @@ impl Renderer {
                 i += 1;
             }
 
+            // サイドチェインの検出信号: ソーストラックの生ミックス(エフェクト前)。
+            // track_mono はこの時点で全トラック分確定しているので、処理順に依存しない
+            let sidechain_key = |p: &EffectParams| -> f32 {
+                if let EffectParams::Sidechain(sc) = p {
+                    track_mono
+                        .get(sc.source_track as usize)
+                        .copied()
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                }
+            };
+
             // トラックごとに 楽器合算 → エフェクトチェーン → 音量/パン → マスター
             // (エフェクトの残響はボイスが消えた後も続くので、毎フレーム全トラックを回す)
             let mut l = direct_l;
@@ -237,8 +250,9 @@ impl Renderer {
                 let mono = track_mono[ti];
                 let (mut fl, mut fr) = (mono, mono);
                 for fx in &mix.effects {
+                    let key = sidechain_key(&fx.params);
                     let state = &mut self.effect_states[fx.slot as usize];
-                    (fl, fr) = state.process(&fx.params, fl, fr);
+                    (fl, fr) = state.process(&fx.params, fl, fr, key);
                 }
                 l += fl * mix.gain_l;
                 r += fr * mix.gain_r;
@@ -265,8 +279,9 @@ impl Renderer {
 
             // マスターバスのエフェクト → マスター音量 → ソフトクリップ
             for fx in &data.master_effects {
+                let key = sidechain_key(&fx.params);
                 let state = &mut self.effect_states[fx.slot as usize];
-                (l, r) = state.process(&fx.params, l, r);
+                (l, r) = state.process(&fx.params, l, r, key);
             }
             let base = frame * channels;
             out[base] = (l * data.master_amp).tanh();
@@ -305,6 +320,10 @@ mod tests {
             sustain: 1.0,
             release: 0.01,
             filter_env: 0.0,
+            unison: 1,
+            detune_cents: 0.0,
+            sub: 0.0,
+            noise: 0.0,
             gain: 1.0,
         })
     }

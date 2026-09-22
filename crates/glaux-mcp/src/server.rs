@@ -494,8 +494,10 @@ impl ServerHandler for GlauxServer {
                  ドラムトラックには drum を設定すること。\
                  analyze_audio が「耳」の代わり: 編集結果をレンダしてラウドネス・帯域バランス等を返す。\
                  ミックス調整は 編集 → analyze_audio → 微調整 のループで行う。\
-                 エフェクト(eq / compressor / reverb)は add_effect で追加し、\
+                 エフェクト(eq / compressor / reverb / distortion / sidechain)は add_effect で追加し、\
                  set_param(fx/<id>/<名前>)で調整する。マスターにも掛けられる。\
+                 EDM のポンピングは sidechain(source にキックのトラック ID)、\
+                 supersaw は subtractive の unison + detune、歪みは distortion。\
                  大きな試行錯誤の前に checkpoint を打ち、気に入らなければ revert_to で戻る。\
                  すべての編集は履歴に残り、get_history(author: \"ai\")で自分の過去の作業を確認できる。",
             )

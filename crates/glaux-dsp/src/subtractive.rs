@@ -39,6 +39,14 @@ pub struct SubtractiveParams {
     pub release: f32,
     /// エンベロープでカットオフを開く量 0..=1(1 で約 +3 オクターブ)
     pub filter_env: f32,
+    /// ユニゾン本数 1..=7(supersaw)
+    pub unison: u8,
+    /// ユニゾンのデチューン幅(セント)
+    pub detune_cents: f32,
+    /// 1 オクターブ下のサブオシレータ量 0..=1
+    pub sub: f32,
+    /// ノイズ量 0..=1
+    pub noise: f32,
     /// リニアゲイン(dB から変換済み)
     pub gain: f32,
 }
@@ -50,11 +58,18 @@ enum EnvStage {
     Release,
 }
 
+const MAX_UNISON: usize = 7;
+
 #[derive(Clone, Copy, Debug)]
 pub struct SubtractiveVoice {
     freq: f32,
     amp: f32,
-    phase: f32,
+    /// ユニゾン各声部の位相
+    phases: [f32; MAX_UNISON],
+    /// サブオシレータの位相
+    sub_phase: f32,
+    /// ノイズ用 xorshift 状態
+    rng: u32,
     // ADSR
     stage: EnvStage,
     env: f32,
@@ -80,10 +95,17 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
 impl SubtractiveVoice {
     pub fn start(p: &SubtractiveParams, freq: f32, vel: f32, sample_rate: f32) -> Self {
         let _ = p;
+        // 各声部の初期位相をずらす(揃っていると立ち上がりが位相打ち消しでうねる)
+        let mut phases = [0.0f32; MAX_UNISON];
+        for (i, ph) in phases.iter_mut().enumerate() {
+            *ph = (i as f32 * 0.371) % 1.0;
+        }
         SubtractiveVoice {
             freq,
             amp: vel,
-            phase: 0.0,
+            phases,
+            sub_phase: 0.0,
+            rng: (freq.to_bits() | 1).wrapping_mul(0x9e37_79b9),
             stage: EnvStage::Attack,
             env: 0.0,
             ic1: 0.0,
@@ -122,22 +144,54 @@ impl SubtractiveVoice {
             }
         }
 
-        // ---- オシレータ ----
-        let dt = self.freq / sr;
-        let t = self.phase;
-        let osc = match p.waveform {
-            Waveform::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
-            Waveform::Square => {
-                let raw = if t < 0.5 { 1.0 } else { -1.0 };
-                let t2 = if t + 0.5 >= 1.0 { t - 0.5 } else { t + 0.5 };
-                raw + poly_blep(t, dt) - poly_blep(t2, dt)
+        // ---- オシレータ(ユニゾン対応) ----
+        let n = (p.unison as usize).clamp(1, MAX_UNISON);
+        let mut osc = 0.0f32;
+        for i in 0..n {
+            // 声部を中心対称にデチューン(-1..+1)
+            let spread = if n == 1 {
+                0.0
+            } else {
+                (i as f32 / (n - 1) as f32) * 2.0 - 1.0
+            };
+            let ratio = (2.0f32).powf(spread * p.detune_cents / 1200.0);
+            let dt = self.freq * ratio / sr;
+            let t = self.phases[i];
+            osc += match p.waveform {
+                Waveform::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
+                Waveform::Square => {
+                    let raw = if t < 0.5 { 1.0 } else { -1.0 };
+                    let t2 = if t + 0.5 >= 1.0 { t - 0.5 } else { t + 0.5 };
+                    raw + poly_blep(t, dt) - poly_blep(t2, dt)
+                }
+                Waveform::Triangle => 4.0 * (t - 0.5).abs() - 1.0,
+                Waveform::Sine => (t * std::f32::consts::TAU).sin(),
+            };
+            self.phases[i] += dt;
+            if self.phases[i] >= 1.0 {
+                self.phases[i] -= 1.0;
             }
-            Waveform::Triangle => 4.0 * (t - 0.5).abs() - 1.0,
-            Waveform::Sine => (t * std::f32::consts::TAU).sin(),
-        };
-        self.phase += dt;
-        if self.phase >= 1.0 {
-            self.phase -= 1.0;
+        }
+        // 本数で音量が膨らみすぎないよう等パワー正規化
+        osc /= (n as f32).sqrt();
+
+        // サブオシレータ(1 オクターブ下のサイン。ベースの土台)
+        if p.sub > 0.0 {
+            self.sub_phase += self.freq * 0.5 / sr;
+            if self.sub_phase >= 1.0 {
+                self.sub_phase -= 1.0;
+            }
+            osc += (self.sub_phase * std::f32::consts::TAU).sin() * p.sub;
+        }
+
+        // ノイズ(息・ざらつき)
+        if p.noise > 0.0 {
+            let mut x = self.rng;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            self.rng = x;
+            osc += ((x as f32 / u32::MAX as f32) * 2.0 - 1.0) * p.noise;
         }
 
         // ---- SVF ローパス(TPT)。エンベロープでカットオフを開く ----
@@ -169,6 +223,10 @@ mod tests {
             sustain: 0.7,
             release: 0.05,
             filter_env: 0.35,
+            unison: 1,
+            detune_cents: 12.0,
+            sub: 0.0,
+            noise: 0.0,
             gain: 0.35,
         }
     }
@@ -212,6 +270,45 @@ mod tests {
         assert!(
             hf_energy(400.0) < hf_energy(8000.0) * 0.3,
             "低カットオフはこもるはず"
+        );
+    }
+
+    #[test]
+    fn unison_thickens_and_sub_noise_add_energy() {
+        let render = |p: SubtractiveParams| {
+            let mut v = SubtractiveVoice::start(&p, 220.0, 1.0, 48_000.0);
+            (0..9600).map(|_| v.next(&p)).collect::<Vec<f32>>()
+        };
+        let single = render(default_params());
+        let super_saw = render(SubtractiveParams {
+            unison: 7,
+            detune_cents: 25.0,
+            ..default_params()
+        });
+        // デチューンで波形が変わる(単純な一致はしない)
+        let diff: f32 = single
+            .iter()
+            .zip(&super_saw)
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(diff > 10.0, "ユニゾンで音が変わるはず");
+        assert!(rms(&super_saw) > 0.05);
+
+        let with_sub = render(SubtractiveParams {
+            sub: 0.8,
+            cutoff: 400.0,
+            filter_env: 0.0,
+            ..default_params()
+        });
+        let without = render(SubtractiveParams {
+            sub: 0.0,
+            cutoff: 400.0,
+            filter_env: 0.0,
+            ..default_params()
+        });
+        assert!(
+            rms(&with_sub) > rms(&without) * 1.1,
+            "サブオシレータで低域が増えるはず"
         );
     }
 
