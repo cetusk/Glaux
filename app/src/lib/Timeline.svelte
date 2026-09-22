@@ -5,7 +5,7 @@
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
-  import { newClipId, newTrackId } from "./ids";
+  import { newClipId, newNoteId, newTrackId } from "./ids";
   import { pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
   import type { Clip, PresetInfo, Project, Track } from "./types";
 
@@ -45,6 +45,9 @@
     if (clipDrag?.moved && clipDrag.clip.id === clip.id) {
       start = clipDrag.previewStart;
       length = clipDrag.previewLength;
+    } else if (clipDrag?.moved && clipDrag.mode === "move" && clipDrag.group.has(clip.id)) {
+      // 複数選択の一括移動: 掴んだクリップと同じだけずらす
+      start = Math.max(0, clip.start + (clipDrag.previewStart - clipDrag.clip.start));
     }
     const left = start * pxPerTick;
     const width = Math.max(length * pxPerTick, 8);
@@ -268,12 +271,23 @@
     previewStart: number;
     previewLength: number;
     previewTrackId: string;
+    /// 一緒に動かす選択中のクリップ(掴んだクリップを含む)
+    group: Set<string>;
   } | null>(null);
   /// ドラッグ直後の dblclick でピアノロールが開かないようにする
   let suppressOpen = false;
 
   function onClipDown(e: PointerEvent, track: Track, clip: Clip) {
     if (e.button !== 0) return;
+    // Ctrl / Shift クリック: 選択に追加・除外(ドラッグはしない)
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      const next = new Set(selectedClips);
+      if (next.has(clip.id)) next.delete(clip.id);
+      else next.add(clip.id);
+      selectedClips = next;
+      return;
+    }
+    if (!selectedClips.has(clip.id)) selectedClips = new Set([clip.id]);
     const mode = (e.target as HTMLElement).classList.contains("clip-resize") ? "resize" : "move";
     clipDrag = {
       clip,
@@ -285,6 +299,7 @@
       previewStart: clip.start,
       previewLength: clip.length,
       previewTrackId: track.id,
+      group: new Set(selectedClips),
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
@@ -303,7 +318,14 @@
       d.previewLength = Math.max(240, Math.round(raw / snap) * snap);
     } else {
       const raw = d.clip.start + dxTick;
-      d.previewStart = Math.max(0, Math.round(raw / snap) * snap);
+      // 一括移動では、いちばん左のクリップが 0 より前に出ないように抑える
+      const minStart = Math.min(
+        ...allClips().filter((c) => d.group.has(c.clip.id)).map((c) => c.clip.start),
+      );
+      const lowest = d.clip.start - minStart;
+      d.previewStart = Math.max(lowest, Math.round(raw / snap) * snap);
+      // 縦方向(トラック移動)は 1 つだけ動かすときに限る
+      if (d.group.size > 1) return;
       // 縦方向: ポインタ直下のレーンが同種トラックなら移動先にする
       const lane = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
         ".lane",
@@ -321,7 +343,23 @@
   function onClipUp() {
     const d = clipDrag;
     clipDrag = null;
-    if (!d || !d.moved) return;
+    if (!d) return;
+    if (!d.moved) {
+      // クリックだけ: 複数選択中でもそのクリップ 1 つの選択に絞る
+      selectedClips = new Set([d.clip.id]);
+      return;
+    }
+    if (d.mode === "move" && d.group.size > 1) {
+      const delta = d.previewStart - d.clip.start;
+      if (delta === 0) return;
+      suppressOpen = true;
+      setTimeout(() => (suppressOpen = false), 400);
+      const cmds = allClips()
+        .filter((c) => d.group.has(c.clip.id))
+        .map((c) => ({ op: "move_clip", id: c.clip.id, start: Math.max(0, c.clip.start + delta) }));
+      api.applyEdit(cmds, `クリップ ${cmds.length} 個を移動`).catch(() => {});
+      return;
+    }
     suppressOpen = true;
     setTimeout(() => (suppressOpen = false), 400);
     if (d.mode === "resize") {
@@ -350,6 +388,192 @@
         )
         .catch(() => {});
     }
+  }
+
+  // ---- クリップの選択・分割・削除・コピー ----
+
+  let selectedClips = $state<Set<string>>(new Set());
+
+  function allClips(): { track: Track; clip: Clip }[] {
+    return project.tracks.flatMap((track) => track.clips.map((clip) => ({ track, clip })));
+  }
+
+  // 消えたクリップ(undo・AI の削除)を選択から外す。
+  // 貼り付け直後の新しいクリップは、まだプロジェクトに届いていないだけなので残す
+  // (「前回あって今回ない」ものだけ外す)
+  let knownClipIds = new Set<string>();
+  $effect(() => {
+    const ids = new Set(allClips().map((c) => c.clip.id));
+    const gone = [...selectedClips].filter((id) => knownClipIds.has(id) && !ids.has(id));
+    knownClipIds = ids;
+    if (gone.length > 0) {
+      selectedClips = new Set([...selectedClips].filter((id) => !gone.includes(id)));
+    }
+  });
+
+  function selectedList(): { track: Track; clip: Clip }[] {
+    return allClips().filter((c) => selectedClips.has(c.clip.id));
+  }
+
+  function deleteClips(ids: string[]) {
+    if (ids.length === 0) return;
+    api
+      .applyEdit(
+        ids.map((id) => ({ op: "remove_clip", id })),
+        ids.length === 1 ? "クリップを削除" : `クリップ ${ids.length} 個を削除`,
+      )
+      .catch(() => {});
+    selectedClips = new Set();
+  }
+
+  /// `at`(絶対 tick)で分割。範囲外のクリップは対象外。
+  function splitClips(targets: Clip[], at: number) {
+    const cmds = targets
+      .filter((c) => at > c.start && at < c.start + c.length)
+      .map((c) => ({ op: "split_clip", id: c.id, at: Math.round(at), new_id: newClipId() }));
+    if (cmds.length === 0) return false;
+    api
+      .applyEdit(cmds, cmds.length === 1 ? "クリップを分割" : `クリップ ${cmds.length} 個を分割`)
+      .catch(() => {});
+    return true;
+  }
+
+  /// クリップを新しい ID(ノートも新 ID)で複製した add_clip 用の JSON を作る
+  function cloneClip(clip: Clip, start: number): Record<string, unknown> {
+    const c = JSON.parse(JSON.stringify(clip)) as Record<string, unknown>;
+    c.id = newClipId();
+    c.start = Math.max(0, Math.round(start));
+    if (clip.kind === "midi") {
+      c.notes = clip.notes.map((n) => ({ ...n, id: newNoteId() }));
+    }
+    return c;
+  }
+
+  /// コピー: クリップの中身と、元のトラック・先頭からの相対位置を覚える
+  let clipBoard: { trackId: string; offset: number; clip: Clip }[] = [];
+
+  function copyClips(cut: boolean) {
+    const list = selectedList();
+    if (list.length === 0) return;
+    const minStart = Math.min(...list.map((c) => c.clip.start));
+    clipBoard = list.map((c) => ({
+      trackId: c.track.id,
+      offset: c.clip.start - minStart,
+      clip: JSON.parse(JSON.stringify(c.clip)) as Clip,
+    }));
+    if (cut) deleteClips(list.map((c) => c.clip.id));
+  }
+
+  /// 貼り付け: 再生ヘッド(1 拍に丸める)を先頭に、元のトラックへ置く
+  function pasteClips() {
+    if (clipBoard.length === 0) return;
+    const at = Math.round(playheadTick / project.ppq) * project.ppq;
+    const tracks = new Set(project.tracks.map((t) => t.id));
+    const cmds = clipBoard
+      .filter((b) => tracks.has(b.trackId))
+      .map((b) => ({ op: "add_clip", track: b.trackId, clip: cloneClip(b.clip, at + b.offset) }));
+    if (cmds.length === 0) return;
+    api.applyEdit(cmds, `クリップ ${cmds.length} 個を貼り付け`).catch(() => {});
+    selectedClips = new Set(cmds.map((c) => c.clip.id as string));
+  }
+
+  /// 複製: 選択範囲の直後に同じ並びで置く
+  function duplicateClips() {
+    const list = selectedList();
+    if (list.length === 0) return;
+    const minStart = Math.min(...list.map((c) => c.clip.start));
+    const maxEnd = Math.max(...list.map((c) => c.clip.start + c.clip.length));
+    const cmds = list.map((c) => ({
+      op: "add_clip",
+      track: c.track.id,
+      clip: cloneClip(c.clip, maxEnd + (c.clip.start - minStart)),
+    }));
+    api.applyEdit(cmds, `クリップ ${cmds.length} 個を複製`).catch(() => {});
+    selectedClips = new Set(cmds.map((c) => c.clip.id as string));
+  }
+
+  // キー操作(ピアノロール表示中・入力中はピアノロール / 入力欄に譲る)
+  $effect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT")) return;
+      if (pianoRollStore.focus) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.code === "KeyA") {
+        e.preventDefault();
+        selectedClips = new Set(allClips().map((c) => c.clip.id));
+      } else if (selectedClips.size === 0 && !(mod && e.code === "KeyV")) {
+        return;
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        deleteClips([...selectedClips]);
+      } else if (mod && e.code === "KeyC") {
+        e.preventDefault();
+        copyClips(false);
+      } else if (mod && e.code === "KeyX") {
+        e.preventDefault();
+        copyClips(true);
+      } else if (mod && e.code === "KeyV") {
+        e.preventDefault();
+        pasteClips();
+      } else if (mod && e.code === "KeyD") {
+        e.preventDefault();
+        duplicateClips();
+      } else if (!mod && !e.altKey && e.code === "KeyS") {
+        e.preventDefault();
+        splitClips(selectedList().map((c) => c.clip), playheadTick);
+      } else if (e.key === "Escape") {
+        selectedClips = new Set();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // 右クリックメニュー
+  let clipMenu = $state<{ x: number; y: number; clip: Clip; at: number } | null>(null);
+
+  function onClipContext(e: MouseEvent, clip: Clip) {
+    e.preventDefault();
+    if (!selectedClips.has(clip.id)) selectedClips = new Set([clip.id]);
+    const lane = (e.currentTarget as HTMLElement).closest(".lane") as HTMLElement | null;
+    const x = lane ? e.clientX - lane.getBoundingClientRect().left : clip.start * pxPerTick;
+    const snap = e.altKey ? 1 : project.ppq;
+    const at = Math.round(x / pxPerTick / snap) * snap;
+    clipMenu = { x: e.clientX, y: e.clientY, clip, at };
+  }
+
+  function menuAction(action: "split" | "split-head" | "dup" | "copy" | "cut" | "delete") {
+    const m = clipMenu;
+    clipMenu = null;
+    if (!m) return;
+    const targets = selectedClips.has(m.clip.id) ? selectedList().map((c) => c.clip) : [m.clip];
+    switch (action) {
+      case "split":
+        splitClips(targets, m.at);
+        break;
+      case "split-head":
+        splitClips(targets, playheadTick);
+        break;
+      case "dup":
+        duplicateClips();
+        break;
+      case "copy":
+        copyClips(false);
+        break;
+      case "cut":
+        copyClips(true);
+        break;
+      case "delete":
+        deleteClips(targets.map((c) => c.id));
+        break;
+    }
+  }
+
+  function barLabel(tick: number): string {
+    const b = barAtTick(barList, tick);
+    const beat = Math.floor((tick - b.tick) / project.ppq) + 1;
+    return `${b.index + 1} 小節 ${beat} 拍`;
   }
 
   // ---- オートメーションレーンの開閉 ----
@@ -632,6 +856,11 @@
         data-track-id={track.id}
         style="width:{totalPx}px"
         ondblclick={(e) => onLaneDblClick(e, track)}
+        onpointerdown={(e) => {
+          if (!(e.target as HTMLElement).closest(".clip") && !(e.ctrlKey || e.shiftKey)) {
+            selectedClips = new Set();
+          }
+        }}
         title={track.kind === "audio"
           ? "ダブルクリックで音声ファイル(WAV / MP3 等)をその小節に配置(録音は ⏺ ボタン)"
           : track.clips.length === 0
@@ -645,10 +874,13 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="clip {clip.kind}"
-            class:dragging={clipDrag?.moved && clipDrag.clip.id === clip.id}
+            class:dragging={clipDrag?.moved &&
+              (clipDrag.clip.id === clip.id || (clipDrag.mode === "move" && clipDrag.group.has(clip.id)))}
+            class:selected={selectedClips.has(clip.id)}
             style={clipStyle(clip)}
-            title={`${clip.name} (${clip.id})${clip.kind === "midi" ? " — ダブルクリックでピアノロール、ドラッグで移動(Alt でスナップ解除)、右端で長さ変更" : " — ドラッグで移動、右端で長さ変更"}`}
+            title={`${clip.name} (${clip.id})${clip.kind === "midi" ? " — ダブルクリックでピアノロール" : ""} / クリックで選択(Ctrl・Shift で複数)/ ドラッグで移動(Alt でスナップ解除)/ 右端で長さ変更 / 右クリックで分割・複製・削除 / S: 再生ヘッドで分割、Delete: 削除、Ctrl+C/X/V/D`}
             ondblclick={(e) => openPianoRoll(track, clip, e)}
+            oncontextmenu={(e) => onClipContext(e, clip)}
             onpointerdown={(e) => onClipDown(e, track, clip)}
             onpointermove={onClipDragMove}
             onpointerup={onClipUp}
@@ -694,6 +926,25 @@
       />
     {/if}
   {/each}
+
+  {#if clipMenu}
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="menu-backdrop" onclick={() => (clipMenu = null)} oncontextmenu={(e) => { e.preventDefault(); clipMenu = null; }}></div>
+    <div class="track-menu clip-menu" style="left:{clipMenu.x}px;top:{clipMenu.y}px">
+      {#if selectedClips.size > 1}
+        <div class="menu-note">選択中のクリップ {selectedClips.size} 個が対象</div>
+      {/if}
+      <button onclick={() => menuAction("split")}>✂ ここで分割({barLabel(clipMenu.at)})</button>
+      <button onclick={() => menuAction("split-head")}>✂ 再生ヘッドで分割 <span class="key">S</span></button>
+      <div class="menu-sep"></div>
+      <button onclick={() => menuAction("dup")}>⧉ 複製(直後に並べる) <span class="key">Ctrl+D</span></button>
+      <button onclick={() => menuAction("copy")}>コピー <span class="key">Ctrl+C</span></button>
+      <button onclick={() => menuAction("cut")}>切り取り <span class="key">Ctrl+X</span></button>
+      <div class="menu-sep"></div>
+      <button class="danger" onclick={() => menuAction("delete")}>🗑 削除 <span class="key">Delete</span></button>
+      <div class="menu-note">貼り付け(Ctrl+V)は再生ヘッドの位置・元のトラックに置かれます</div>
+    </div>
+  {/if}
 
   {#if deviceMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -1084,6 +1335,22 @@
     cursor: grab;
     touch-action: none;
     user-select: none;
+  }
+
+  .clip.selected {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  .clip-menu .key {
+    float: right;
+    margin-left: 16px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .clip-menu .danger {
+    color: #e8a07c;
   }
 
   .clip.dragging {
