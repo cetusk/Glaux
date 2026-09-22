@@ -57,6 +57,11 @@ impl Project {
         let mut clip_ids = HashSet::new();
         let mut fx_ids = HashSet::new();
 
+        for e in &self.master.effects {
+            if !fx_ids.insert(&e.id) {
+                issues.push(Issue::error(format!("duplicate effect id {}", e.id)));
+            }
+        }
         for t in &self.tracks {
             if !track_ids.insert(&t.id) {
                 issues.push(Issue::error(format!("duplicate track id {}", t.id)));

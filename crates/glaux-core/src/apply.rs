@@ -562,7 +562,9 @@ impl Project {
                 effect,
                 index,
             } => {
-                if self.effect_location(&effect.id).is_some() {
+                if self.effect_location(&effect.id).is_some()
+                    || self.master_effect_index(&effect.id).is_some()
+                {
                     return Err(CoreError::DuplicateId(effect.id.to_string()));
                 }
                 let t = self
@@ -581,6 +583,16 @@ impl Project {
                 })
             }
             RemoveEffect { id } => {
+                if let Some(ei) = self.master_effect_index(id) {
+                    let effect = self.master.effects.remove(ei);
+                    return Ok(Applied {
+                        inverse: AddMasterEffect {
+                            effect,
+                            index: Some(ei),
+                        },
+                        changes: vec![Change::MasterChanged],
+                    });
+                }
                 let (ti, ei) = self
                     .effect_location(id)
                     .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
@@ -596,6 +608,16 @@ impl Project {
                 })
             }
             SetEffectBypass { id, bypass } => {
+                if let Some(ei) = self.master_effect_index(id) {
+                    let old = std::mem::replace(&mut self.master.effects[ei].bypass, *bypass);
+                    return Ok(Applied {
+                        inverse: SetEffectBypass {
+                            id: id.clone(),
+                            bypass: old,
+                        },
+                        changes: vec![Change::MasterChanged],
+                    });
+                }
                 let (ti, ei) = self
                     .effect_location(id)
                     .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
@@ -607,6 +629,48 @@ impl Project {
                         bypass: old,
                     },
                     changes: vec![Change::EffectsChanged { track }],
+                })
+            }
+
+            AddMasterEffect { effect, index } => {
+                if self.effect_location(&effect.id).is_some()
+                    || self.master_effect_index(&effect.id).is_some()
+                {
+                    return Err(CoreError::DuplicateId(effect.id.to_string()));
+                }
+                let len = self.master.effects.len();
+                let idx = index.unwrap_or(len);
+                check_index(idx, len + 1)?;
+                self.master.effects.insert(idx, effect.clone());
+                Ok(Applied {
+                    inverse: RemoveEffect {
+                        id: effect.id.clone(),
+                    },
+                    changes: vec![Change::MasterChanged],
+                })
+            }
+            SetMasterParam { path, value } => {
+                let old = self.set_master_param(path, Some(value))?;
+                Ok(Applied {
+                    inverse: match old {
+                        Some(v) => SetMasterParam {
+                            path: path.clone(),
+                            value: v,
+                        },
+                        None => UnsetMasterParam { path: path.clone() },
+                    },
+                    changes: vec![Change::MasterChanged],
+                })
+            }
+            UnsetMasterParam { path } => {
+                let old = self.set_master_param(path, None)?;
+                let v = old.ok_or_else(|| CoreError::ParamNotSet(path.clone()))?;
+                Ok(Applied {
+                    inverse: SetMasterParam {
+                        path: path.clone(),
+                        value: v,
+                    },
+                    changes: vec![Change::MasterChanged],
                 })
             }
 
@@ -801,6 +865,23 @@ impl Project {
                 Ok(set_in_map(&mut t.effects[ei].params, name, value))
             }
         }
+    }
+}
+
+impl Project {
+    /// マスターバスのエフェクトのパラメータ(`fx/<id>/<name>` のみ)。
+    fn set_master_param(
+        &mut self,
+        path: &ParamPath,
+        value: Option<&ParamValue>,
+    ) -> Result<Option<ParamValue>> {
+        let ParamPath::Effect { id, name } = path else {
+            return Err(CoreError::UnknownParam(path.clone()));
+        };
+        let ei = self
+            .master_effect_index(id)
+            .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
+        Ok(set_in_map(&mut self.master.effects[ei].params, name, value))
     }
 }
 

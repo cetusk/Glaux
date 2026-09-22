@@ -95,9 +95,9 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
 
     loop {
         let choice = if depth == 0 {
-            rng.gen_range(0..20)
+            rng.gen_range(0..23)
         } else {
-            rng.gen_range(0..21)
+            rng.gen_range(0..24)
         };
         match choice {
             0 => {
@@ -389,6 +389,32 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                     })
                     .collect();
                 return Command::SetSections { sections };
+            }
+            20 => {
+                return Command::AddMasterEffect {
+                    effect: Effect::builtin(FxId::new(), "compressor"),
+                    index: None,
+                };
+            }
+            21 => {
+                let Some(e) = p.master.effects.choose(rng) else {
+                    continue;
+                };
+                return Command::SetMasterParam {
+                    path: ParamPath::effect(e.id.clone(), "ratio"),
+                    value: ParamValue::Float(rng.gen_range(1.0..8.0)),
+                };
+            }
+            22 => {
+                let Some(e) = p.master.effects.choose(rng) else {
+                    continue;
+                };
+                if e.params.is_empty() {
+                    continue;
+                }
+                return Command::UnsetMasterParam {
+                    path: ParamPath::effect(e.id.clone(), e.params.keys().next().unwrap().clone()),
+                };
             }
             19 => {
                 let Some(c) = midi_clips.choose(rng) else {

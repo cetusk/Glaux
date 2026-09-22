@@ -316,6 +316,43 @@ fn range_default(range: &glaux_core::ParamRange) -> Value {
 
 /// トラックの音源・エフェクトの「spec + 現在値 + path」ビュー。
 /// MCP の `list_params`(track_id 指定)とアプリの音作りビューが共用する。
+/// エフェクトチェーンの spec + 現在値 + path(トラック・マスター共用)。
+pub fn effects_json(effects: &[glaux_core::Effect]) -> Vec<Value> {
+    effects
+        .iter()
+        .map(|e| {
+            let name = match &e.source {
+                glaux_core::PluginSource::Builtin { name } => name.clone(),
+                other => format!("{other:?}"),
+            };
+            let fx_params: Vec<Value> = glaux_dsp::effect_params_spec(&name)
+                .map(|specs| {
+                    specs
+                        .iter()
+                        .map(|spec| {
+                            let current = e
+                                .params
+                                .get(spec.name)
+                                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                                .unwrap_or_else(|| range_default(&spec.range));
+                            let mut v = serde_json::to_value(spec).expect("ParamSpec serializes");
+                            v["path"] = json!(format!("fx/{}/{}", e.id, spec.name));
+                            v["current"] = current;
+                            v
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            json!({
+                "id": e.id,
+                "name": name,
+                "bypass": e.bypass,
+                "params": fx_params,
+            })
+        })
+        .collect()
+}
+
 pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
     let (device_name, device_params, is_default) = match &track.device {
         Some(d) => match &d.source {
@@ -354,40 +391,7 @@ pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
         .collect();
 
     // エフェクトチェーン(spec + current)
-    let effects_list: Vec<Value> = track
-        .effects
-        .iter()
-        .map(|e| {
-            let name = match &e.source {
-                glaux_core::PluginSource::Builtin { name } => name.clone(),
-                other => format!("{other:?}"),
-            };
-            let fx_params: Vec<Value> = glaux_dsp::effect_params_spec(&name)
-                .map(|specs| {
-                    specs
-                        .iter()
-                        .map(|spec| {
-                            let current = e
-                                .params
-                                .get(spec.name)
-                                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
-                                .unwrap_or_else(|| range_default(&spec.range));
-                            let mut v = serde_json::to_value(spec).expect("ParamSpec serializes");
-                            v["path"] = json!(format!("fx/{}/{}", e.id, spec.name));
-                            v["current"] = current;
-                            v
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            json!({
-                "id": e.id,
-                "name": name,
-                "bypass": e.bypass,
-                "params": fx_params,
-            })
-        })
-        .collect();
+    let effects_list = effects_json(&track.effects);
 
     Ok(json!({
         "device": {
@@ -572,6 +576,9 @@ impl GlauxServer {
         (例: ギターのチョーキングを 1 拍かけて上げる = [{tick:0,cents:-200},{tick:960,cents:0}]、\
         ダイブ = [{tick:0,cents:0},{tick:1920,cents:-1200}])。update_notes の pitch_curve で差し替え、[] で削除。\
         メタルの「ズクズク」した刻みは distortion + 低音 + palm_mute ノートの組み合わせで作る。\
+        マスターバスのエフェクトは add_master_effect {effect, index?} / set_master_param {path: \"fx/<id>/<名前>\", value} / \
+        unset_master_param {path}、削除とバイパスはトラックと同じ remove_effect / set_effect_bypass \
+        (マスターのチェーンは get_project の master.effects で見える。仕上げのコンプ・EQ・リミッター的な使い方に)/ \
         set_clip_loop {id, loop_len}(MIDI クリップのループ。loop_len に繰り返す長さ(クリップ先頭から、\
         tick)を渡すと、クリップ長までその範囲が繰り返し鳴る。null で解除。ドラムパターンやリフは \
         1〜2 小節を作ってループにし、resize_clip で伸ばすのが速い。ループ範囲より後ろのノートは鳴らない)/ \

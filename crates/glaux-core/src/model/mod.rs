@@ -139,6 +139,12 @@ impl Project {
         self.tracks
             .iter()
             .flat_map(|t| t.effects.iter().map(|e| &e.id))
+            .chain(self.master.effects.iter().map(|e| &e.id))
+    }
+
+    /// マスターバスのエフェクトの位置。
+    pub fn master_effect_index(&self, id: &FxId) -> Option<usize> {
+        self.master.effects.iter().position(|e| &e.id == id)
     }
 
     /// プロジェクト全体の終端 Tick

@@ -27,7 +27,7 @@
     }
     saveSettings();
   }
-  import { pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
+  import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
 
   interface Msg {
     role: "user" | "assistant" | "tool" | "notice" | "error";
@@ -107,7 +107,12 @@
       shown = `〔小節 ${range.startBar + 1}〜${range.endBar + 1}〕 ${shown}`;
     }
     const sd = soundDesignStore.focus;
-    if (sd) {
+    if (sd && sd.trackId === MASTER_FOCUS_ID) {
+      prefix +=
+        "【音作り中: マスターバス(ユーザーがマスターのエフェクトを開いている)】" +
+        "エフェクトに関する指示は、特に指定がなければマスター(add_master_effect / set_master_param)が対象です。\n";
+      shown = `〔🎛 マスター〕 ${shown}`;
+    } else if (sd) {
       prefix +=
         `【音作り中のトラック(ユーザーが音作りビューで開いている)】「${sd.trackName}」(${sd.trackId})。` +
         `音色・エフェクトに関する指示は、特に指定がなければこのトラックが対象です。\n`;
@@ -231,7 +236,11 @@
   {/if}
   {#if soundDesignStore.focus}
     <div class="range-chip">
-      <span>🎛 音作り中: {soundDesignStore.focus.trackName}(音色の指示はこのトラックへ)</span>
+      <span
+        >🎛 音作り中: {soundDesignStore.focus.trackName}{soundDesignStore.focus.trackId === MASTER_FOCUS_ID
+          ? "(エフェクトの指示はマスターへ)"
+          : "(音色の指示はこのトラックへ)"}</span
+      >
     </div>
   {/if}
   {#if selectionStore.range}

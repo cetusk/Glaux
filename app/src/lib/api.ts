@@ -107,6 +107,11 @@ export function getTrackParams(trackId: string): Promise<import("./types").Track
   return invoke("get_track_params", { trackId });
 }
 
+/** マスターバスのエフェクトチェーン(音作りビューのマスターモード用)。 */
+export function getMasterParams(): Promise<import("./types").TrackParams> {
+  return invoke("get_master_params");
+}
+
 /** WAV を取り込んでトラックの音源を sampler にする(1 undo)。 */
 export function importSample(
   trackId: string,

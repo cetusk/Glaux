@@ -6,7 +6,7 @@
   import * as api from "./api";
   import { newClipId, newFxId } from "./ids";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
-  import { soundDesignStore } from "./selection.svelte";
+  import { MASTER_FOCUS_ID, soundDesignStore } from "./selection.svelte";
   import type { ParamView, PresetInfo, Project, Track, TrackParams } from "./types";
 
   let { project }: { project: Project } = $props();
@@ -17,9 +17,14 @@
     return project.tracks.find((t) => t.id === focus.trackId) ?? null;
   });
 
+  /// マスターバスを開いている(エフェクトチェーンだけを扱う)
+  const isMaster = $derived(soundDesignStore.focus?.trackId === MASTER_FOCUS_ID);
+  /// 履歴ラベル用の対象名
+  const targetName = $derived(isMaster ? "マスター" : (track?.name ?? ""));
+
   // トラックが消えたら閉じる
   $effect(() => {
-    if (soundDesignStore.focus && !track) {
+    if (soundDesignStore.focus && !track && !isMaster) {
       soundDesignStore.focus = null;
     }
   });
@@ -35,13 +40,13 @@
 
   $effect(() => {
     const t = track;
+    const master = isMaster;
     void project; // 依存: どの編集でも現在値を取り直す
-    if (!t) {
+    if (!t && !master) {
       info = null;
       return;
     }
-    api
-      .getTrackParams(t.id)
+    (master ? api.getMasterParams() : api.getTrackParams(t!.id))
       .then((r) => {
         info = r;
         loadError = null;
@@ -61,14 +66,18 @@
 
   function commitParam(p: ParamView, raw: string | number | boolean) {
     const t = track;
-    if (!t) return;
+    if (!t && !isMaster) return;
     let value: unknown = raw;
     if (p.range.kind === "float") value = Number(raw);
     if (p.range.kind === "int") value = Math.round(Number(raw));
     if (p.range.kind === "bool") value = Boolean(raw);
     applyEdit(
-      [{ op: "set_param", track: t.id, path: p.path, value }],
-      `${t.name} の ${p.display_name} を変更`,
+      [
+        isMaster
+          ? { op: "set_master_param", path: p.path, value }
+          : { op: "set_param", track: t!.id, path: p.path, value },
+      ],
+      `${targetName} の ${p.display_name} を変更`,
     );
   }
 
@@ -117,31 +126,22 @@
 
   function addEffect(name: string) {
     const t = track;
-    if (!t || !name) return;
+    if ((!t && !isMaster) || !name) return;
+    const effect = { id: newFxId(), type: "builtin", name };
     applyEdit(
-      [
-        {
-          op: "add_effect",
-          track: t.id,
-          effect: { id: newFxId(), type: "builtin", name },
-        },
-      ],
-      `${t.name} に ${name} を追加`,
+      [isMaster ? { op: "add_master_effect", effect } : { op: "add_effect", track: t!.id, effect }],
+      `${targetName} に ${name} を追加`,
     );
   }
 
   function removeEffect(id: string, name: string) {
-    const t = track;
-    if (!t) return;
-    applyEdit([{ op: "remove_effect", id }], `${t.name} の ${name} を削除`);
+    applyEdit([{ op: "remove_effect", id }], `${targetName} の ${name} を削除`);
   }
 
   function toggleBypass(id: string, name: string, bypass: boolean) {
-    const t = track;
-    if (!t) return;
     applyEdit(
       [{ op: "set_effect_bypass", id, bypass: !bypass }],
-      `${t.name} の ${name} を${bypass ? "有効化" : "バイパス"}`,
+      `${targetName} の ${name} を${bypass ? "有効化" : "バイパス"}`,
     );
   }
 
@@ -307,11 +307,11 @@
   }
 </script>
 
-{#if track}
+{#if track || isMaster}
   <div class="sd-panel">
     <div class="sd-head">
-      <span class="sd-title">🎛 {track.name}</span>
-      <span class="sd-sub">音作りビュー</span>
+      <span class="sd-title">🎛 {isMaster ? "マスター" : track?.name}</span>
+      <span class="sd-sub">{isMaster ? "マスターバスのエフェクト(全体に掛かる)" : "音作りビュー"}</span>
       <button class="sd-close" onclick={close} title="閉じる">✕</button>
     </div>
 
@@ -320,6 +320,7 @@
     {/if}
 
     <div class="sd-body">
+      {#if track}
       <!-- 試聴 -->
       <div class="sec">
         <div class="sec-title">試聴</div>
@@ -422,8 +423,9 @@
         {/if}
       </div>
 
+      {/if}
       <!-- 音源パラメータ -->
-      {#if info}
+      {#if info && track}
         <div class="sec">
           <div class="sec-title">
             パラメータ({info.device.name}{info.device.is_default_fallback ? " *未設定" : ""})
@@ -462,8 +464,9 @@
             </div>
           {/each}
         </div>
-
-        <!-- エフェクトチェーン -->
+      {/if}
+      {#if info}
+        <!-- エフェクトチェーン(トラック・マスター共通) -->
         <div class="sec">
           <div class="sec-title">エフェクト({info.effects.length})</div>
           {#each info.effects as fx (fx.id)}

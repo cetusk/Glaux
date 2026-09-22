@@ -179,8 +179,23 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<usize>,
     },
+    /// トラック・マスターのどちらのエフェクトでも削除できる
     RemoveEffect {
         id: FxId,
+    },
+    /// マスターバスにエフェクトを追加する(`index` 省略で末尾)
+    AddMasterEffect {
+        effect: Effect,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    /// マスターバスのエフェクトのパラメータ(path は `fx/<id>/<name>`)
+    SetMasterParam {
+        path: ParamPath,
+        value: ParamValue,
+    },
+    UnsetMasterParam {
+        path: ParamPath,
     },
     SetEffectBypass {
         id: FxId,
@@ -318,6 +333,16 @@ impl Command {
             }
             RemoveEffect { id } | SetEffectBypass { id, .. } => {
                 out.insert(T::Effect(id.clone()));
+            }
+            AddMasterEffect { effect, .. } => {
+                out.insert(T::Master);
+                out.insert(T::Effect(effect.id.clone()));
+            }
+            SetMasterParam { path, .. } | UnsetMasterParam { path } => {
+                out.insert(T::Master);
+                if let ParamPath::Effect { id, .. } = path {
+                    out.insert(T::Effect(id.clone()));
+                }
             }
             SetAutomationPoints { track, target, .. } => {
                 out.insert(T::Track(track.clone()));

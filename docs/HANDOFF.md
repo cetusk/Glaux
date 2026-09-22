@@ -208,6 +208,8 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 | `replace_clip {id, clip}` | 同 (旧 clip) | |
 | `move_clip {id, start, track?}` | 同 | トラック間移動は kind 一致が必要 |
 | `resize_clip {id, length}` | 同 | length > 0 |
+| `add_master_effect {effect, index?}` | `remove_effect` | マスターバスにエフェクト(2026-09-23)。`remove_effect` / `set_effect_bypass` はマスターのエフェクトも対象 |
+| `set_master_param {path, value}` / `unset_master_param {path}` | 同 / 逆 | マスターのエフェクトのつまみ(path は `fx/<id>/<name>`) |
 | `set_clip_loop {id, loop_len}` | 同(元の loop_len) | MIDI クリップのループ。loop_len(繰り返す長さ、クリップ先頭から)で ON、null で OFF。再生・分析は `Clip::playback_notes` で展開 |
 | `split_clip {id, at, new_id}` | `batch[remove_clip, replace_clip]` | 音声は `offset_samples` をテンポマップから計算 |
 | `add_notes {clip, notes}` | `remove_notes` | pitch/vel ≤ 127。`Note.articulation`(palm_mute / staccato / accent、省略で normal)対応 |
@@ -227,7 +229,7 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 | `add_asset {id, asset}` / `remove_asset {id}` | 互いに | |
 | `batch {commands, label}` | `batch` (逆順) | 途中失敗で巻き戻し |
 
-**未実装で必要になりそうなもの**: `move_effect`、マスターバスのエフェクト操作、クリップ単位オートメーション、
+**未実装で必要になりそうなもの**: `move_effect`、クリップ単位オートメーション、
 `set_clip_prop`(name/loop/gain/fade を個別に変える。今は `replace_clip` で代替)、トラックのグループ/バス。
 
 ---
@@ -795,6 +797,12 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   - 自動音量: `record_stop(auto_gain)` が使う範囲のピークを -6dBFS に合わせる gain_db を
     クリップに設定(0〜+30dB、下げない。元の WAV は変えない)。波形表示もクリップの音量を反映
   - ヘッダーは常に 1 行(`white-space: nowrap` + 横スクロール、MCP の URL 表示から縮む)
+- **マスターバスのエフェクト(2026-09-23)**: コマンド `add_master_effect` / `set_master_param` /
+  `unset_master_param` を追加し、`remove_effect` / `set_effect_bypass` はマスターも探す。
+  エフェクト ID の重複検査(apply・validate)にマスターを含めた。UI はヘッダーのマスター音量横の
+  🎛(エフェクト数を表示)で、音作りビューを「マスター」モード(エフェクトの節だけ)で開く。
+  エフェクト一覧の JSON は `server::effects_json` をトラック・マスターで共用。チャットには
+  「音作り中: マスターバス」と添える
 - **ループクリップ / 拍子の UI(2026-09-23)**:
   - ループ: `ClipContent::Midi` に `loop_len: Option<Tick>`(既存の `loop` フラグと組で使う)、
     コマンド `set_clip_loop`。展開は `Clip::playback_notes()` に一元化し、再生(engine data.rs)・

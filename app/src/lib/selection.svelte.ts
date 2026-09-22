@@ -45,3 +45,6 @@ export interface SoundDesignFocus {
 }
 
 export const soundDesignStore = $state<{ focus: SoundDesignFocus | null }>({ focus: null });
+
+/// 音作りビューをマスターバスで開くときの trackId
+export const MASTER_FOCUS_ID = "__master__";

@@ -574,6 +574,20 @@ async fn get_track_params(state: State<'_, AppState>, track_id: String) -> Resul
     Ok(v)
 }
 
+/// 音作りビュー(マスター)用: マスターバスのエフェクトチェーン。
+#[tauri::command]
+async fn get_master_params(state: State<'_, AppState>) -> Result<Value, String> {
+    let (project, version) = state.handle.get_project().await?;
+    Ok(json!({
+        "track_id": "__master__",
+        "device": { "name": "master", "is_default_fallback": false },
+        "params": [],
+        "effects": glaux_mcp::server::effects_json(&project.master.effects),
+        "available_effects": serde_json::to_value(glaux_dsp::effect_catalog()).unwrap_or(Value::Null),
+        "project_version": version,
+    }))
+}
+
 // ---- SoundFont ------------------------------------------------------------
 
 #[tauri::command]
@@ -1317,6 +1331,7 @@ fn main() -> Result<()> {
             record_start,
             record_stop,
             audio_devices,
+            get_master_params,
             set_output_device,
             set_input_device,
             input_monitor,

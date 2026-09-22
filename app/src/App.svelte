@@ -12,7 +12,12 @@
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import { applyTheme, settings } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
-  import { pianoRollStore, selectionStore } from "./lib/selection.svelte";
+  import {
+    MASTER_FOCUS_ID,
+    pianoRollStore,
+    selectionStore,
+    soundDesignStore,
+  } from "./lib/selection.svelte";
 
   let project = $state<Project | null>(null);
   let projectVersion = $state(0);
@@ -798,6 +803,18 @@
           onchange={setMasterVolume}
         />
         <span class="stat">{(project?.master.volume_db ?? 0).toFixed(1)} dB</span>
+        <button
+          class="master-fx"
+          class:on={soundDesignStore.focus?.trackId === MASTER_FOCUS_ID}
+          onclick={() =>
+            (soundDesignStore.focus =
+              soundDesignStore.focus?.trackId === MASTER_FOCUS_ID
+                ? null
+                : { trackId: MASTER_FOCUS_ID, trackName: "マスター" })}
+          title="マスターのエフェクト(曲全体に掛かるコンプ・EQ・リバーブ等)"
+        >
+          🎛{#if (project?.master.effects.length ?? 0) > 0}<span class="fx-count">{project?.master.effects.length}</span>{/if}
+        </button>
       </div>
       <button onclick={doExport} disabled={exporting} title="WAV に書き出す(プロジェクト内 export フォルダ)">
         {exporting ? "書き出し中…" : "⬇ WAV"}
@@ -1239,6 +1256,21 @@
     justify-content: space-between;
     align-items: center;
     gap: 12px;
+  }
+
+  .master-fx {
+    padding: 2px 6px;
+  }
+
+  .master-fx.on {
+    border-color: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .fx-count {
+    font-size: 10px;
+    margin-left: 2px;
+    color: var(--accent);
   }
 
   .audio-dev {
