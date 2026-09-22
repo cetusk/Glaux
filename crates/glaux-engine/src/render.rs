@@ -260,6 +260,7 @@ impl Renderer {
         }
         if resync {
             self.voices.clear();
+            self.next_beat = None; // シークで戻ったら拍を取り直す
             self.auto_cursors = [(0, 0); MAX_TRACKS];
             self.next_event = data.events.partition_point(|e| e.start < self.pos);
             self.resync_audio(data);
@@ -872,6 +873,26 @@ mod tests {
             shared.playing.load(Ordering::Acquire),
             "録音中は自動停止しない"
         );
+    }
+
+    #[test]
+    fn metronome_clicks_again_after_seeking_back() {
+        let mut data = data_with_note(0, 1, false);
+        data.tempo = vec![crate::data::TempoSeg {
+            sample: 0,
+            tick: 0,
+            samples_per_tick: 25.0,
+        }];
+        data.sigs = vec![(0, 4, 4)];
+        let shared = Arc::new(Shared::new(data));
+        shared.playing.store(true, Ordering::Release);
+        shared.metronome.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        // 1.5 拍ぶん進めてから先頭へ戻す → 先頭の拍がもう一度鳴る
+        let _ = render_block(&mut r, 36_000);
+        shared.seek.store(0, Ordering::Release);
+        let block = render_block(&mut r, 1440);
+        assert!(rms(&block) > 0.05, "戻った小節でもクリックが鳴るはず");
     }
 
     #[test]
