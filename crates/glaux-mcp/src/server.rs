@@ -572,6 +572,9 @@ impl GlauxServer {
         (例: ギターのチョーキングを 1 拍かけて上げる = [{tick:0,cents:-200},{tick:960,cents:0}]、\
         ダイブ = [{tick:0,cents:0},{tick:1920,cents:-1200}])。update_notes の pitch_curve で差し替え、[] で削除。\
         メタルの「ズクズク」した刻みは distortion + 低音 + palm_mute ノートの組み合わせで作る。\
+        set_clip_loop {id, loop_len}(MIDI クリップのループ。loop_len に繰り返す長さ(クリップ先頭から、\
+        tick)を渡すと、クリップ長までその範囲が繰り返し鳴る。null で解除。ドラムパターンやリフは \
+        1〜2 小節を作ってループにし、resize_clip で伸ばすのが速い。ループ範囲より後ろのノートは鳴らない)/ \
         set_automation_points {track,target,points}(target は \"track/volume_db\" / \"track/pan\" / \
         \"device/<パラメータ名>\"(例 device/cutoff。list_params にある連続値パラメータ。\
         値はパラメータと同じ単位)、points は [{tick,value,curve?}] で curve は \

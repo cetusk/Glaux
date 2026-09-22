@@ -534,7 +534,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
     let mut audio_events = Vec::new();
     for (ti, track) in project.tracks.iter().enumerate() {
         for clip in &track.clips {
-            let ClipContent::Midi { notes, .. } = &clip.content else {
+            let ClipContent::Midi { .. } = &clip.content else {
                 if let ClipContent::Audio {
                     asset,
                     offset_samples,
@@ -564,16 +564,9 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 }
                 continue;
             };
-            for note in notes {
-                if note.pos >= clip.length {
-                    continue;
-                }
-                // クリップ末尾をまたぐノートは切り詰める
-                let dur = if note.pos + note.dur > clip.length {
-                    clip.length - note.pos
-                } else {
-                    note.dur
-                };
+            // クリップ外の切り捨て・ループの繰り返し展開は core の playback_notes に任せる
+            for note in &clip.playback_notes() {
+                let dur = note.dur;
                 let start_tick = clip.start + note.pos;
                 let start = to_sample(start_tick);
                 let mut end = to_sample(start_tick + dur).max(start + 1);
@@ -683,6 +676,24 @@ mod tests {
         assert!((e.freq - 440.0).abs() < 1e-3);
         assert!((e.amp - 1.0).abs() < 1e-6);
         assert_eq!(data.end_sample, 48_000);
+    }
+
+    #[test]
+    fn loop_clip_repeats_in_playback() {
+        use glaux_core::ClipContent;
+        // 1 拍ぶんのパターン(頭に 1 音)を 1 小節のクリップでループ → 4 回鳴る
+        let mut project = project_with_notes(vec![note(0, 240, 60, 100)]);
+        if let ClipContent::Midi {
+            looped, loop_len, ..
+        } = &mut project.tracks[0].clips[0].content
+        {
+            *looped = true;
+            *loop_len = Some(Tick(960));
+        }
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let starts: Vec<u64> = data.events.iter().map(|e| e.start).collect();
+        // 120bpm: 960 tick = 24000 サンプル。クリップ長 3840 の中で 4 回
+        assert_eq!(starts, vec![0, 24_000, 48_000, 72_000]);
     }
 
     #[test]

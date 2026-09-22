@@ -130,6 +130,13 @@ pub enum Command {
         id: ClipId,
         length: Tick,
     },
+    /// MIDI クリップのループ(繰り返し)を設定する。`loop_len` に繰り返す長さ(クリップ先頭から)を
+    /// 指定するとループ ON、`null` で OFF。ループ中はクリップを伸ばすと中身が繰り返し鳴る。
+    SetClipLoop {
+        id: ClipId,
+        #[serde(default)]
+        loop_len: Option<Tick>,
+    },
     /// `at`(絶対 Tick)で分割。右側が `new_id` になる。
     /// MIDI: 分割点をまたぐノートは左側で切り詰める。
     SplitClip {
@@ -267,7 +274,7 @@ impl Command {
                 out.insert(T::Track(track.clone()));
                 out.insert(T::Clip(clip.id.clone()));
             }
-            RemoveClip { id } | ResizeClip { id, .. } => {
+            RemoveClip { id } | ResizeClip { id, .. } | SetClipLoop { id, .. } => {
                 out.insert(T::Clip(id.clone()));
             }
             ReplaceClip { id, clip } => {

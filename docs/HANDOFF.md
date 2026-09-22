@@ -21,7 +21,7 @@
   プロジェクト管理(作成/切替/移動/SoundLab)・履歴・チャット・WAV 書き出し
 実機確認済みのハイライト: AI がチャット指示で作曲 → analyze_audio/harmony/rhythm で
 自己確認 → エフェクト・プリセット・SoundFont で音作り、のループが完走。
-AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 156 件。
+AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 158 件。
 
 この文書は、企画段階の議論で決めたことを **理由付きで** 残したものです。
 判断を覆すときは、ここに書いてある理由を上回る根拠を示してください。
@@ -208,6 +208,7 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 | `replace_clip {id, clip}` | 同 (旧 clip) | |
 | `move_clip {id, start, track?}` | 同 | トラック間移動は kind 一致が必要 |
 | `resize_clip {id, length}` | 同 | length > 0 |
+| `set_clip_loop {id, loop_len}` | 同(元の loop_len) | MIDI クリップのループ。loop_len(繰り返す長さ、クリップ先頭から)で ON、null で OFF。再生・分析は `Clip::playback_notes` で展開 |
 | `split_clip {id, at, new_id}` | `batch[remove_clip, replace_clip]` | 音声は `offset_samples` をテンポマップから計算 |
 | `add_notes {clip, notes}` | `remove_notes` | pitch/vel ≤ 127。`Note.articulation`(palm_mute / staccato / accent、省略で normal)対応 |
 | `remove_notes {clip, ids}` | `add_notes` | |
@@ -296,7 +297,7 @@ MVP の割り切り(将来課題):
   データ差し替え時に tick を保ったまま換算し直すので、再生中のテンポ変更でずれない
   (2026-09-22)。tick⇔秒変換は `TempoMap` を使用
 - 音声クリップは再生対応(2026-09-22。固定プール 16、線形補間、フェード、途中再開)。
-  ループクリップ(clip.loop)とタイムストレッチ(Stretch::Follow)は未対応
+  ループクリップは対応済み(2026-09-23)。タイムストレッチ(Stretch::Follow)は未対応
 - オートメーションは track/volume_db・track/pan(サンプル単位で補間)と
   device/<パラメータ>(音色。ブロックレート ≈ 数 ms で評価、
   `InstrumentParams::set_continuous` に raw 値を流し込む)に対応。
@@ -711,7 +712,7 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   アクター(`RevertEntry`)・MCP ツール `revert {entry_id}`・Tauri `revert_entry` に配線。
   履歴パネルの各エントリに ↩ ボタン(取り消し済みは非表示)。conflicts(後続の編集が
   同じ対象を触っている)は履歴パネル上部に警告表示。revert 自体も履歴に載り undo 可
-- 途中の拍子変更を人間が UI から挿入・削除(ルーラー右クリック等。今は AI 経由のみ)
+- ~~途中の拍子変更を人間が UI から挿入・削除~~ → 実装済み(2026-09-23。ルーラー右クリック / 拍子チップ)
 - ~~分割ピアノロール~~ → **実装済み(2026-09-22)**: 上ペインの「⫶ 分割…」で別クリップを
   下に開く(`pianoRollStore.second`)。クリックしたペインがアクティブ(`active`)になり
   キー操作を受ける。クリップボードは `noteClipboard` ストアで共有(奏法も一緒にコピー)。
@@ -794,6 +795,17 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   - 自動音量: `record_stop(auto_gain)` が使う範囲のピークを -6dBFS に合わせる gain_db を
     クリップに設定(0〜+30dB、下げない。元の WAV は変えない)。波形表示もクリップの音量を反映
   - ヘッダーは常に 1 行(`white-space: nowrap` + 横スクロール、MCP の URL 表示から縮む)
+- **ループクリップ / 拍子の UI(2026-09-23)**:
+  - ループ: `ClipContent::Midi` に `loop_len: Option<Tick>`(既存の `loop` フラグと組で使う)、
+    コマンド `set_clip_loop`。展開は `Clip::playback_notes()` に一元化し、再生(engine data.rs)・
+    和声分析・リズム分析がこれを使う(ループ境界をまたぐ音は境界で切る、ループ範囲より後ろの
+    ノートは鳴らない)。UI: クリップ右クリック「ループにする(今の長さを繰り返す)/ 解除 /
+    繰り返しをノートに展開」、名前に 🔁、縮小表示は 2 回目以降を薄く + 境目の線。
+    ピアノロールは繰り返す 1 回分だけを編集範囲にし、再生ヘッドは 1 回分の中に畳んで表示。
+    ループ中のクリップの分割は、同じ Batch 内で先に replace_clip で展開してから split_clip
+  - 拍子: ルーラー右クリックで「N 小節目から拍子を変更」(分子・分母、4/4・3/4・6/8・7/8・5/4・12/8
+    のプリセット)、拍子チップのクリックで同じメニュー + 「この拍子変更を削除」。
+    set_time_sig の events を丸ごと作り直し、直前と同じ拍子の変更は取り除く
 - **タイムラインのクリップ操作(2026-09-23)**: クリックで選択(Ctrl / Shift で追加・除外、
   Ctrl+A で全選択、空白クリック / Esc で解除、選択は枠線表示)、複数選択のまとめドラッグ移動
   (トラック間移動は 1 つのときのみ)、Delete で削除、S で再生ヘッド位置で分割、
@@ -843,7 +855,7 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     UI は「+ 🎵 音声トラック」+ 空きレーンのダブルクリックで WAV 配置
   - 波形表示: `AudioClipPreview.svelte`(Tauri `clip_peaks` がクリップ参照範囲の
     min/max ピークを返す。クリップ ID + 範囲 + 幅でキャッシュ)
-  - 残り: ループクリップ(clip.loop)、タイムストレッチ(Stretch::Follow)
+  - 残り: タイムストレッチ(Stretch::Follow)(ループクリップは 2026-09-23 に対応)
 - **譜起こし(単旋律 → MIDI)実装済み(2026-09-22)**: `glaux-engine/src/transcribe.rs`。
   「鼻歌を録音して即 MIDI 化」が主用途。10ms フレームで YIN(CMND しきい値 0.15 +
   放物線補間)→ 音量(-40dB 以内)と明瞭度で有声判定 → 中央値フィルタ(窓 5)→

@@ -92,6 +92,10 @@ pub enum ClipContent {
         notes: Vec<Note>,
         #[serde(default, rename = "loop")]
         looped: bool,
+        /// ループ時に繰り返す長さ(クリップ先頭から)。`looped` が true のときだけ意味を持つ。
+        /// クリップ長がこれより長いと、その範囲のノートが繰り返し鳴る
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        loop_len: Option<Tick>,
     },
     Audio {
         asset: AssetId,
@@ -129,6 +133,7 @@ impl Clip {
             content: ClipContent::Midi {
                 notes: vec![],
                 looped: false,
+                loop_len: None,
             },
         }
     }
@@ -175,6 +180,60 @@ impl Clip {
         match &mut self.content {
             ClipContent::Midi { notes, .. } => Some(notes),
             _ => None,
+        }
+    }
+
+    /// ループの繰り返し長(ループでなければ None)。
+    pub fn loop_len(&self) -> Option<Tick> {
+        match &self.content {
+            ClipContent::Midi {
+                looped: true,
+                loop_len: Some(l),
+                ..
+            } if l.0 > 0 => Some(*l),
+            _ => None,
+        }
+    }
+
+    /// 再生・分析で実際に鳴るノート列(クリップ先頭からの位置)。
+    /// クリップ長の外は切り捨て・切り詰め、ループクリップは繰り返しを展開する
+    /// (ループ境界をまたぐノートは境界で切る。ループ長より後ろのノートは鳴らない)。
+    /// 展開したノートは元と同じ ID を持つので、編集には使わないこと。
+    pub fn playback_notes(&self) -> Vec<Note> {
+        let Some(notes) = self.notes() else {
+            return vec![];
+        };
+        let len = self.length.0;
+        let clip_to = |n: &Note, offset: u64, limit: u64| -> Option<Note> {
+            let pos = n.pos.0 + offset;
+            let end = (n.pos.0 + n.dur.0).min(limit) + offset;
+            let end = end.min(len);
+            (pos < len && end > pos).then(|| Note {
+                pos: Tick(pos),
+                dur: Tick(end - pos),
+                ..n.clone()
+            })
+        };
+        match self.loop_len() {
+            None => notes
+                .iter()
+                .filter_map(|n| clip_to(n, 0, u64::MAX))
+                .collect(),
+            Some(l) => {
+                let l = l.0;
+                let mut out = Vec::new();
+                let mut offset = 0;
+                while offset < len {
+                    out.extend(
+                        notes
+                            .iter()
+                            .filter(|n| n.pos.0 < l)
+                            .filter_map(|n| clip_to(n, offset, l)),
+                    );
+                    offset += l;
+                }
+                out
+            }
         }
     }
 }

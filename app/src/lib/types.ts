@@ -27,7 +27,10 @@ export interface MidiClip {
   length: number;
   kind: "midi";
   notes: Note[];
-  looped?: boolean;
+  /** ループ(繰り返し)。JSON のキーは "loop" */
+  loop?: boolean;
+  /** ループ時に繰り返す長さ(クリップ先頭から、tick) */
+  loop_len?: number;
 }
 
 export interface AudioClip {

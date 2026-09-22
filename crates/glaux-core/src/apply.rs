@@ -275,6 +275,33 @@ impl Project {
                     changes: vec![Change::ClipsChanged { track }],
                 })
             }
+            SetClipLoop { id, loop_len } => {
+                if loop_len.is_some_and(|l| l.0 == 0) {
+                    return Err(CoreError::OutOfRange("loop_len must be > 0".into()));
+                }
+                let (ti, ci) = self
+                    .clip_location(id)
+                    .ok_or_else(|| CoreError::ClipNotFound(id.clone()))?;
+                let track = self.tracks[ti].id.clone();
+                let ClipContent::Midi {
+                    looped,
+                    loop_len: cur,
+                    ..
+                } = &mut self.tracks[ti].clips[ci].content
+                else {
+                    return Err(CoreError::NotMidiClip(id.clone()));
+                };
+                let old = if *looped { *cur } else { None };
+                *looped = loop_len.is_some();
+                *cur = *loop_len;
+                Ok(Applied {
+                    inverse: SetClipLoop {
+                        id: id.clone(),
+                        loop_len: old,
+                    },
+                    changes: vec![Change::ClipsChanged { track }],
+                })
+            }
             SplitClip { id, at, new_id } => {
                 if self.clip_location(new_id).is_some() {
                     return Err(CoreError::DuplicateId(new_id.to_string()));

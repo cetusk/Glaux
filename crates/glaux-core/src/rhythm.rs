@@ -51,13 +51,11 @@ pub fn analyze(
             }
         }
         for c in &t.clips {
-            let ClipContent::Midi { notes, .. } = &c.content else {
+            if !matches!(c.content, ClipContent::Midi { .. }) {
                 continue;
-            };
-            for n in notes {
-                if n.pos.0 >= c.length.0 {
-                    continue;
-                }
+            }
+            // ループクリップの繰り返しも含めた「実際に鳴るノート」
+            for n in c.playback_notes() {
                 let start = c.start.0 + n.pos.0;
                 onsets.push(start);
                 max_end = max_end.max(start + n.dur.0);

@@ -95,9 +95,9 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
 
     loop {
         let choice = if depth == 0 {
-            rng.gen_range(0..19)
-        } else {
             rng.gen_range(0..20)
+        } else {
+            rng.gen_range(0..21)
         };
         match choice {
             0 => {
@@ -390,6 +390,16 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                     .collect();
                 return Command::SetSections { sections };
             }
+            19 => {
+                let Some(c) = midi_clips.choose(rng) else {
+                    continue;
+                };
+                let loop_len = rng.gen_bool(0.7).then(|| Tick(rng.gen_range(1..5) * 960));
+                return Command::SetClipLoop {
+                    id: c.id.clone(),
+                    loop_len,
+                };
+            }
             _ => {
                 // Batch: 2〜4 個を順に生成(前のコマンドの結果に依存する可能性があるので仮適用しながら作る)
                 let mut scratch = p.clone();
@@ -531,6 +541,50 @@ fn compact_keeps_recent_entries_and_replayable_base() {
     s.redo().unwrap().unwrap();
     // keep 以上のときも何もしない
     assert!(s.compact(keep).unwrap().is_none());
+}
+
+#[test]
+fn loop_clip_expands_notes_for_playback() {
+    let mut clip = Clip::new_midi(ClipId::new(), "drums", Tick(0), Tick(3840 * 4));
+    let n = |pos: u64, dur: u64| Note {
+        id: NoteId::new(),
+        pos: Tick(pos),
+        dur: Tick(dur),
+        pitch: 36,
+        vel: 100,
+        articulation: Articulation::Normal,
+        pitch_curve: vec![],
+    };
+    // 1 小節パターン: 頭と、ループ境界をまたぐ音と、ループ外の音
+    *clip.notes_mut().unwrap() = vec![n(0, 480), n(3600, 480), n(5000, 480)];
+    // ループなし: クリップ内のノートがそのまま
+    assert_eq!(clip.playback_notes().len(), 3);
+
+    let mut p = Project::new("loop");
+    let tid = TrackId::new();
+    p.apply(&Command::AddTrack {
+        track: Track::new(tid.clone(), "D", TrackKind::Midi),
+        index: None,
+    })
+    .unwrap();
+    let cid = clip.id.clone();
+    p.apply(&Command::AddClip { track: tid, clip }).unwrap();
+    let applied = p
+        .apply(&Command::SetClipLoop {
+            id: cid.clone(),
+            loop_len: Some(Tick(3840)),
+        })
+        .unwrap();
+    let (_, clip) = p.clip(&cid).unwrap();
+    let played = clip.playback_notes();
+    // 4 小節 × 2 音(ループ外の 5000 は鳴らない)
+    assert_eq!(played.len(), 8);
+    assert_eq!(played[2].pos, Tick(3840));
+    // 境界をまたぐ音はループ境界で切れる
+    assert_eq!(played[1].dur, Tick(240));
+    // 逆コマンドで元に戻る
+    p.apply(&applied.inverse).unwrap();
+    assert_eq!(p.clip(&cid).unwrap().1.loop_len(), None);
 }
 
 #[test]

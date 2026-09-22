@@ -141,6 +141,75 @@
 
   const selection = $derived(selectionStore.range);
 
+  // ---- 拍子の変更(ルーラー右クリック / 拍子チップのクリック) ----
+
+  let sigMenu = $state<{ x: number; y: number; barIndex: number; num: string; den: string } | null>(
+    null,
+  );
+  const DENS = [1, 2, 4, 8, 16, 32];
+
+  function openSigMenu(e: MouseEvent, barIndex: number) {
+    e.preventDefault();
+    const bar = barList[Math.min(barIndex, barList.length - 1)];
+    sigMenu = {
+      x: e.clientX,
+      y: e.clientY,
+      barIndex: bar.index,
+      num: String(bar.num),
+      den: String(bar.den),
+    };
+  }
+
+  function onRulerContext(e: MouseEvent) {
+    const lane = e.currentTarget as HTMLElement;
+    const x = e.clientX - lane.getBoundingClientRect().left;
+    openSigMenu(e, barAtTick(barList, Math.max(0, x / pxPerTick)).index);
+  }
+
+  /// 拍子イベント列を整える: tick 順に並べ、直前と同じ拍子の変更は取り除く
+  function normalizeSigs(events: { tick: number; num: number; den: number }[]) {
+    const sorted = [...events].sort((a, b) => a.tick - b.tick);
+    const out: typeof sorted = [];
+    for (const ev of sorted) {
+      const prev = out[out.length - 1];
+      if (prev && prev.num === ev.num && prev.den === ev.den) continue;
+      out.push(ev);
+    }
+    if (out.length === 0 || out[0].tick !== 0) out.unshift({ tick: 0, num: 4, den: 4 });
+    return out;
+  }
+
+  function applySig() {
+    const m = sigMenu;
+    if (!m) return;
+    const num = Math.round(Number(m.num));
+    const den = Number(m.den);
+    if (!(num >= 1 && num <= 32) || !DENS.includes(den)) return;
+    const bar = barList[m.barIndex];
+    const events = normalizeSigs([
+      ...project.time_sig_map.filter((e) => e.tick !== bar.tick),
+      { tick: bar.tick, num, den },
+    ]);
+    sigMenu = null;
+    api
+      .applyEdit(
+        [{ op: "set_time_sig", events }],
+        `${bar.index + 1} 小節目から拍子を ${num}/${den} に変更`,
+      )
+      .catch(() => {});
+  }
+
+  function removeSig() {
+    const m = sigMenu;
+    if (!m) return;
+    const bar = barList[m.barIndex];
+    sigMenu = null;
+    const events = normalizeSigs(project.time_sig_map.filter((e) => e.tick !== bar.tick));
+    api
+      .applyEdit([{ op: "set_time_sig", events }], `${bar.index + 1} 小節目の拍子変更を削除`)
+      .catch(() => {});
+  }
+
   // ---- トラック操作(Command API 経由、author: human) ----
 
   function setVolume(t: Track, e: Event) {
@@ -426,14 +495,57 @@
     selectedClips = new Set();
   }
 
+  /// ループクリップの繰り返しを実際のノートに展開した replace_clip(ループは解除)。
+  function expandLoopCommand(clip: Clip): Record<string, unknown> | null {
+    if (clip.kind !== "midi" || !clip.loop || !clip.loop_len) return null;
+    const L = clip.loop_len;
+    const notes: Record<string, unknown>[] = [];
+    for (let offset = 0; offset < clip.length; offset += L) {
+      for (const n of clip.notes) {
+        if (n.pos >= L) continue;
+        const pos = n.pos + offset;
+        if (pos >= clip.length) continue;
+        const end = Math.min(n.pos + n.dur, L) + offset;
+        notes.push({ ...n, id: newNoteId(), pos, dur: Math.min(end, clip.length) - pos });
+      }
+    }
+    const c = JSON.parse(JSON.stringify(clip)) as Record<string, unknown>;
+    c.notes = notes;
+    c.loop = false;
+    delete c.loop_len;
+    return { op: "replace_clip", id: clip.id, clip: c };
+  }
+
+  function setLoop(clip: Clip, on: boolean) {
+    if (clip.kind !== "midi") return;
+    api
+      .applyEdit(
+        [{ op: "set_clip_loop", id: clip.id, loop_len: on ? clip.length : null }],
+        on ? `${clip.name} をループにする` : `${clip.name} のループを解除`,
+      )
+      .catch(() => {});
+  }
+
+  function expandLoop(clip: Clip) {
+    const cmd = expandLoopCommand(clip);
+    if (!cmd) return;
+    api.applyEdit([cmd], `${clip.name} の繰り返しをノートに展開`).catch(() => {});
+  }
+
   /// `at`(絶対 tick)で分割。範囲外のクリップは対象外。
+  /// ループクリップは繰り返しをノートに展開してから分割する(同じ 1 undo)
   function splitClips(targets: Clip[], at: number) {
     const cmds = targets
       .filter((c) => at > c.start && at < c.start + c.length)
-      .map((c) => ({ op: "split_clip", id: c.id, at: Math.round(at), new_id: newClipId() }));
+      .flatMap((c) => {
+        const expand = expandLoopCommand(c);
+        const split = { op: "split_clip", id: c.id, at: Math.round(at), new_id: newClipId() };
+        return expand ? [expand, split] : [split];
+      });
     if (cmds.length === 0) return false;
+    const n = cmds.filter((c) => c.op === "split_clip").length;
     api
-      .applyEdit(cmds, cmds.length === 1 ? "クリップを分割" : `クリップ ${cmds.length} 個を分割`)
+      .applyEdit(cmds, n === 1 ? "クリップを分割" : `クリップ ${n} 個を分割`)
       .catch(() => {});
     return true;
   }
@@ -543,7 +655,9 @@
     clipMenu = { x: e.clientX, y: e.clientY, clip, at };
   }
 
-  function menuAction(action: "split" | "split-head" | "dup" | "copy" | "cut" | "delete") {
+  function menuAction(
+    action: "split" | "split-head" | "dup" | "copy" | "cut" | "delete" | "loop-on" | "loop-off" | "expand",
+  ) {
     const m = clipMenu;
     clipMenu = null;
     if (!m) return;
@@ -566,6 +680,15 @@
         break;
       case "delete":
         deleteClips(targets.map((c) => c.id));
+        break;
+      case "loop-on":
+        setLoop(m.clip, true);
+        break;
+      case "loop-off":
+        setLoop(m.clip, false);
+        break;
+      case "expand":
+        expandLoop(m.clip);
         break;
     }
   }
@@ -767,10 +890,18 @@
       onpointerdown={onRulerDown}
       onpointermove={onRulerMove}
       onpointerup={onRulerUp}
+      oncontextmenu={onRulerContext}
+      title="クリックで移動、ドラッグで範囲選択、右クリックでその小節から拍子を変更"
     >
       {#each barList as bar (bar.index)}
         <div class="bar-mark" style="left:{bar.tick * pxPerTick}px">
-          {bar.index + 1}{#if bar.sigChange}<span class="sig-chip">{bar.num}/{bar.den}</span>{/if}
+          {bar.index + 1}{#if bar.sigChange}<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions --><span
+              class="sig-chip"
+              title="クリックで拍子を編集・削除"
+              onpointerdown={(e) => e.stopPropagation()}
+              onpointerup={(e) => e.stopPropagation()}
+              onclick={(e) => openSigMenu(e, bar.index)}>{bar.num}/{bar.den}</span
+            >{/if}
         </div>
       {/each}
     </div>
@@ -886,7 +1017,9 @@
             onpointerup={onClipUp}
             onpointercancel={() => (clipDrag = null)}
           >
-            <span class="clip-name">{clip.kind === "audio" ? "🎵 " : ""}{clip.name}</span>
+            <span class="clip-name"
+              >{clip.kind === "audio" ? "🎵 " : clip.loop && clip.loop_len ? "🔁 " : ""}{clip.name}</span
+            >
             {#if clip.kind === "midi"}
               <ClipPreview {clip} widthPx={clip.length * pxPerTick} />
             {:else}
@@ -927,12 +1060,65 @@
     {/if}
   {/each}
 
+  {#if sigMenu}
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="menu-backdrop" onclick={() => (sigMenu = null)} oncontextmenu={(e) => { e.preventDefault(); sigMenu = null; }}></div>
+    <div class="track-menu sig-menu" style="left:{sigMenu.x}px;top:{sigMenu.y}px">
+      <div class="preset-title">{sigMenu.barIndex + 1} 小節目から拍子を変更</div>
+      <div class="sig-form">
+        <input
+          class="sig-num"
+          type="number"
+          min="1"
+          max="32"
+          bind:value={sigMenu.num}
+          onkeydown={(e) => e.key === "Enter" && applySig()}
+        />
+        <span>/</span>
+        <select bind:value={sigMenu.den}>
+          {#each DENS as d (d)}
+            <option value={String(d)}>{d}</option>
+          {/each}
+        </select>
+        <button class="sig-apply" onclick={applySig}>適用</button>
+      </div>
+      <div class="sig-presets">
+        {#each ["4/4", "3/4", "6/8", "7/8", "5/4", "12/8"] as p (p)}
+          <button
+            class="sig-preset"
+            onclick={() => {
+              if (!sigMenu) return;
+              const [n, d] = p.split("/");
+              sigMenu.num = n;
+              sigMenu.den = d;
+              applySig();
+            }}>{p}</button
+          >
+        {/each}
+      </div>
+      {#if sigMenu.barIndex > 0 && project.time_sig_map.some((e) => e.tick === barList[sigMenu!.barIndex].tick)}
+        <div class="menu-sep"></div>
+        <button class="danger" onclick={removeSig}>🗑 この拍子変更を削除(前の拍子に戻す)</button>
+      {/if}
+      <div class="menu-note">ノートの位置は変わらず、この小節から先の小節線だけが変わります(Ctrl+Z で戻せます)</div>
+    </div>
+  {/if}
+
   {#if clipMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="menu-backdrop" onclick={() => (clipMenu = null)} oncontextmenu={(e) => { e.preventDefault(); clipMenu = null; }}></div>
     <div class="track-menu clip-menu" style="left:{clipMenu.x}px;top:{clipMenu.y}px">
       {#if selectedClips.size > 1}
         <div class="menu-note">選択中のクリップ {selectedClips.size} 個が対象</div>
+      {/if}
+      {#if clipMenu.clip.kind === "midi"}
+        {#if clipMenu.clip.loop && clipMenu.clip.loop_len}
+          <button onclick={() => menuAction("loop-off")}>🔁 ループを解除</button>
+          <button onclick={() => menuAction("expand")}>🔁 繰り返しをノートに展開(個別に編集できるように)</button>
+        {:else}
+          <button onclick={() => menuAction("loop-on")}>🔁 ループにする(今の長さを繰り返す。右端を伸ばすと繰り返し)</button>
+        {/if}
+        <div class="menu-sep"></div>
       {/if}
       <button onclick={() => menuAction("split")}>✂ ここで分割({barLabel(clipMenu.at)})</button>
       <button onclick={() => menuAction("split-head")}>✂ 再生ヘッドで分割 <span class="key">S</span></button>
@@ -1349,8 +1535,43 @@
     color: var(--text-dim);
   }
 
-  .clip-menu .danger {
+  .clip-menu .danger,
+  .sig-menu .danger {
     color: #e8a07c;
+  }
+
+  /* 小節番号(.bar-mark)はクリックを素通しするが、拍子チップは押せるようにする */
+  .sig-chip {
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  .sig-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 6px;
+  }
+
+  .sig-num {
+    width: 52px;
+  }
+
+  .sig-apply {
+    margin-left: auto;
+  }
+
+  .sig-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 2px 6px;
+  }
+
+  .track-menu .sig-preset {
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    font-size: 12px;
   }
 
   .clip.dragging {

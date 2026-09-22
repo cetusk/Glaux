@@ -46,7 +46,8 @@ const FIXTURE: &str = r##"{
               "articulation": "palm_mute",
               "pitch_curve": [ { "tick": 0, "cents": -200.0 }, { "tick": 240, "cents": 0.0 } ] }
           ],
-          "loop": false
+          "loop": true,
+          "loop_len": 1920
         }
       ],
       "automation": [

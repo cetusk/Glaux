@@ -160,13 +160,13 @@ pub fn analyze(
             }
         }
         for c in &t.clips {
-            let ClipContent::Midi { notes, .. } = &c.content else {
+            if !matches!(c.content, ClipContent::Midi { .. }) {
                 continue;
-            };
-            for n in notes {
+            }
+            // ループクリップの繰り返しも含めた「実際に鳴るノート」
+            for n in c.playback_notes() {
                 let start = c.start.0 + n.pos.0;
-                let end = start + n.dur.0.min(c.length.0.saturating_sub(n.pos.0));
-                events.push((start, end, n.pitch));
+                events.push((start, start + n.dur.0, n.pitch));
             }
         }
     }

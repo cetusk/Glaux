@@ -105,13 +105,25 @@
   const pxPerTick = $derived(pxPerBeat / 960);
 
   const clip = $derived(found?.clip ?? null);
-  const contentW = $derived(clip ? Math.max(clip.length * pxPerTick, 200) : 200);
+
+  /// 編集範囲の長さ: ループクリップは繰り返す 1 回分、それ以外はクリップ長
+  function lenOf(c: MidiClip): number {
+    return c.loop && c.loop_len ? c.loop_len : c.length;
+  }
+  /// 再生ヘッドのクリップ内位置(ループ中は 1 回分の中に畳む)。クリップ外なら -1
+  function relTick(c: MidiClip): number {
+    const rel = playheadTick - c.start;
+    if (rel < 0 || rel > c.length) return -1;
+    return c.loop && c.loop_len ? rel % c.loop_len : rel;
+  }
+
+  const contentW = $derived(clip ? Math.max(lenOf(clip) * pxPerTick, 200) : 200);
   const contentH = $derived(128 * rowH);
 
   // 曲の絶対小節列(拍子イベント考慮)のうち、このクリップに重なる部分
   const songBars = $derived.by(() => {
     if (!clip) return [];
-    const end = clip.start + clip.length;
+    const end = clip.start + lenOf(clip);
     return buildBars(project, end, 1, 0).filter(
       (b) => b.tick + b.len > clip.start && b.tick < end,
     );
@@ -279,7 +291,7 @@
 
     // 拍・小節線(拍子イベントを考慮した曲の絶対グリッド。クリップ相対に変換)
     const clipStart = currentClip.start;
-    const clipEnd = clipStart + currentClip.length;
+    const clipEnd = clipStart + lenOf(currentClip);
     for (const bar of songBars) {
       if (bar.tick >= clipStart) {
         g.fillStyle = "#4a4a4a";
@@ -296,7 +308,7 @@
     // スナップグリッド(拍より細かいときだけ)
     if (snapTicks < 960) {
       g.fillStyle = "#2a2a2a";
-      for (let t = 0; t <= currentClip.length; t += snapTicks) {
+      for (let t = 0; t <= lenOf(currentClip); t += snapTicks) {
         if (t % 960 !== 0) g.fillRect(t * pxPerTick, 0, 1, contentH);
       }
     }
@@ -375,7 +387,7 @@
       g.lineWidth = 1;
       for (const n of currentClip.notes) {
         if (!ids.has(n.id)) continue;
-        const pos = Math.max(0, Math.min(currentClip.length - 1, n.pos + drag.dt));
+        const pos = Math.max(0, Math.min(lenOf(currentClip) - 1, n.pos + drag.dt));
         const pitch = Math.max(0, Math.min(127, n.pitch + drag.dp));
         g.beginPath();
         g.roundRect(pos * pxPerTick, (127 - pitch) * rowH + 1.5, Math.max(n.dur * pxPerTick, 4), rowH - 3, 3);
@@ -410,7 +422,7 @@
     }
 
     // 挿入カーソル(クリックで固定。ドラム打ち込み先)
-    if (insertTick <= currentClip.length) {
+    if (insertTick <= lenOf(currentClip)) {
       const ix = insertTick * pxPerTick;
       g.fillStyle = "#5da2e8";
       g.fillRect(ix, 0, 1.5, contentH);
@@ -423,15 +435,15 @@
     }
 
     // ホバー位置(薄い線。Ctrl+V の貼り付け先の目印)
-    if (hoverSnapTick <= currentClip.length) {
+    if (hoverSnapTick <= lenOf(currentClip)) {
       const hx = hoverSnapTick * pxPerTick;
       g.fillStyle = "rgba(255, 194, 71, 0.28)";
       g.fillRect(hx, 0, 1, contentH);
     }
 
     // 再生ヘッド(クリップ内にあるときだけ)
-    const rel = playheadTick - currentClip.start;
-    if (rel >= 0 && rel <= currentClip.length) {
+    const rel = relTick(currentClip);
+    if (rel >= 0) {
       g.fillStyle = "#ffc247";
       g.fillRect(rel * pxPerTick, 0, 1.5, contentH);
     }
@@ -474,8 +486,8 @@
     const first = lastFollowTick === null;
     lastFollowTick = playheadTick;
     if (first) return; // 開いた直後はアンカー位置へのスクロールを優先
-    const rel = playheadTick - currentClip.start;
-    if (rel < 0 || rel > currentClip.length) return;
+    const rel = relTick(currentClip);
+    if (rel < 0) return;
     const px = KEY_W + rel * pxPerTick;
     const view = scroller.clientWidth;
     const left = scroller.scrollLeft;
@@ -500,7 +512,7 @@
       const anchor = focus.anchorTick ?? 0;
       insertTick = Math.max(
         0,
-        Math.min(snapFloor(anchor), currentClip.length - 60),
+        Math.min(snapFloor(anchor), lenOf(currentClip) - 60),
       );
       scroller.scrollLeft = Math.max(0, anchor * pxPerTick - scroller.clientWidth / 2);
     });
@@ -830,7 +842,7 @@
         selected = new Set();
         insertTick = Math.max(
           0,
-          Math.min(snapFloor(d.x0 / pxPerTick), currentClip.length - 60),
+          Math.min(snapFloor(d.x0 / pxPerTick), lenOf(currentClip) - 60),
         );
         return;
       }
@@ -851,7 +863,7 @@
         .filter((n) => d.ids.includes(n.id))
         .map((n) => ({
           id: n.id,
-          pos: Math.max(0, Math.min(currentClip.length - 1, n.pos + d.dt)),
+          pos: Math.max(0, Math.min(lenOf(currentClip) - 1, n.pos + d.dt)),
           pitch: Math.max(0, Math.min(127, n.pitch + d.dp)),
         }));
       if (changes.length > 0) {
@@ -868,7 +880,7 @@
         .filter((n) => d.ids.includes(n.id))
         .map((n) => ({
           id: n.id,
-          dur: Math.max(60, Math.min(currentClip.length - n.pos, n.dur + d.dt)),
+          dur: Math.max(60, Math.min(lenOf(currentClip) - n.pos, n.dur + d.dt)),
         }));
       if (changes.length > 0) {
         applyEdit(
@@ -885,9 +897,9 @@
     const currentClip = clip;
     if (!currentClip) return;
     if (noteAt(e.offsetX, e.offsetY)) return;
-    const pos = Math.max(0, Math.min(snapFloor(e.offsetX / pxPerTick), currentClip.length - 60));
+    const pos = Math.max(0, Math.min(snapFloor(e.offsetX / pxPerTick), lenOf(currentClip) - 60));
     const pitch = Math.max(0, Math.min(127, 127 - Math.floor(e.offsetY / rowH)));
-    const dur = Math.min(snapTicks, currentClip.length - pos);
+    const dur = Math.min(snapTicks, lenOf(currentClip) - pos);
     const id = newNoteId();
     selected = new Set([id]);
     preview(pitch);
@@ -935,10 +947,10 @@
     const currentClip = clip;
     const clipboard = noteClipboard.items;
     if (!currentClip || clipboard.length === 0) return;
-    const anchor = Math.max(0, Math.min(hoverSnapTick, currentClip.length - 60));
+    const anchor = Math.max(0, Math.min(hoverSnapTick, lenOf(currentClip) - 60));
     const notes = clipboard.map((c) => ({
       id: newNoteId(),
-      pos: Math.max(0, Math.min(currentClip.length - 1, anchor + c.dpos)),
+      pos: Math.max(0, Math.min(lenOf(currentClip) - 1, anchor + c.dpos)),
       dur: c.dur,
       pitch: c.pitch,
       vel: c.vel,
@@ -965,8 +977,8 @@
         scroller.scrollTop = Math.max(0, y - scroller.clientHeight / 2);
       }
     }
-    const pos = Math.max(0, Math.min(insertTick, currentClip.length - 60));
-    const dur = Math.min(Math.max(snapTicks / 2, 120), currentClip.length - pos);
+    const pos = Math.max(0, Math.min(insertTick, lenOf(currentClip) - 60));
+    const dur = Math.min(Math.max(snapTicks / 2, 120), lenOf(currentClip) - pos);
     const id = newNoteId();
     selected = new Set([id]);
     applyEdit(
@@ -987,8 +999,8 @@
         scroller.scrollTop = Math.max(0, y - scroller.clientHeight / 2);
       }
     }
-    const pos = Math.max(0, Math.min(insertTick, currentClip.length - 60));
-    const dur = Math.min(snapTicks, currentClip.length - pos);
+    const pos = Math.max(0, Math.min(insertTick, lenOf(currentClip) - 60));
+    const dur = Math.min(snapTicks, lenOf(currentClip) - pos);
     const id = newNoteId();
     selected = new Set([id]);
     applyEdit(
@@ -1068,7 +1080,7 @@
         const delta = e.code === "ArrowLeft" ? -snapTicks : snapTicks;
         insertTick = Math.max(
           0,
-          Math.min(insertTick + delta, currentClip.length - 60),
+          Math.min(insertTick + delta, lenOf(currentClip) - 60),
         );
         // カーソルが画面端を超えたらスクロール追従(進行方向に余白を確保)
         if (scroller) {
@@ -1132,6 +1144,13 @@
         {/if}
         <span class="clip-name">{found.clip.name}</span>
         <span class="track-name">{found.track.name}</span>
+        {#if found.clip.loop && found.clip.loop_len}
+          <span
+            class="loop-tag"
+            title="ループクリップ: ここで編集した範囲がクリップの長さまで繰り返し鳴ります"
+          >🔁 {(found.clip.loop_len / (project.ppq * 4)).toFixed(found.clip.loop_len % (project.ppq * 4) === 0 ? 0 : 2)} 小節ぶんを繰り返し</span
+          >
+        {/if}
         <code class="dim">{found.clip.id}</code>
       </div>
       <div class="head-right">
@@ -1351,6 +1370,11 @@
   }
 
   /* ヘッダーは 1 行に保つ(ボタン類は折り返さず、説明文だけ省略表示) */
+  .loop-tag {
+    font-size: 11px;
+    color: var(--accent);
+  }
+
   .head-right {
     display: flex;
     align-items: center;
