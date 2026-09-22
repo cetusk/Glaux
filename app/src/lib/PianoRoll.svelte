@@ -3,6 +3,7 @@
   import * as api from "./api";
   import { buildBars } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
+  import Fretboard from "./Fretboard.svelte";
   import { drumName } from "./drumMap";
   import { newNoteId } from "./ids";
   import { pianoRollStore } from "./selection.svelte";
@@ -69,9 +70,11 @@
   });
 
   const isDrum = $derived(found?.track.device?.name === "drum");
-  /// 挿入カーソル(クリックで固定。ドラム打ち込み先。←/→ でスナップ移動)
+  const isGuitar = $derived(found?.track.device?.name === "pluck");
+  /// 挿入カーソル(クリックで固定。キット/フレット打ち込み先。←/→ でスナップ移動)
   let insertTick = $state(0);
   let showKit = $state(true);
+  let showFret = $state(true);
   let drumHighlight = $state<number | null>(null);
 
   let snapTicks = $state(480); // 1/8
@@ -682,6 +685,28 @@
     );
   }
 
+  /// フレット盤のクリック → 挿入カーソル位置に打ち込み(スナップ長)
+  function hitFret(pitch: number) {
+    const currentClip = clip;
+    if (!currentClip) return;
+    preview(pitch);
+    drumHighlight = pitch;
+    if (scroller) {
+      const y = (127 - pitch) * rowH;
+      if (y < scroller.scrollTop + RULER_H || y > scroller.scrollTop + scroller.clientHeight - rowH * 2) {
+        scroller.scrollTop = Math.max(0, y - scroller.clientHeight / 2);
+      }
+    }
+    const pos = Math.max(0, Math.min(insertTick, currentClip.length - 60));
+    const dur = Math.min(snapTicks, currentClip.length - pos);
+    const id = newNoteId();
+    selected = new Set([id]);
+    applyEdit(
+      [{ op: "add_notes", clip: currentClip.id, notes: [{ id, pos, dur, pitch, vel: 100 }] }],
+      `ノートを打ち込み(${noteName(pitch)})`,
+    );
+  }
+
   function onContextMenu(e: MouseEvent) {
     e.preventDefault();
     const hit = noteAt(e.offsetX, e.offsetY);
@@ -813,6 +838,15 @@
             🥁 キット
           </button>
         {/if}
+        {#if isGuitar}
+          <button
+            class:kit-on={showFret}
+            onclick={() => (showFret = !showFret)}
+            title="フレット盤の表示/非表示"
+          >
+            🎸 フレット
+          </button>
+        {/if}
         <label class="snap">
           スナップ
           <select bind:value={snapTicks}>
@@ -829,6 +863,9 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     {#if isDrum && showKit}
       <DrumKit highlight={drumHighlight} onHit={hitDrum} />
+    {/if}
+    {#if isGuitar && showFret}
+      <Fretboard highlight={drumHighlight} onHit={hitFret} />
     {/if}
 
     <div class="body" bind:this={scroller} onpointermove={updateHover}>
