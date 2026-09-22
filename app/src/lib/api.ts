@@ -59,6 +59,11 @@ export function listRecentProjects(): Promise<{
   return invoke("list_recent_projects");
 }
 
+/** 既定の作業フォルダ(新規プロジェクトの作成先)を変更・永続化する。 */
+export function setProjectsDir(path: string): Promise<{ default_dir: string }> {
+  return invoke("set_projects_dir", { path });
+}
+
 /** プロジェクトを開く(インプロセス切り替え。MCP・チャット・エンジンは追従する)。 */
 export function openProject(
   path: string,

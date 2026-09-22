@@ -217,6 +217,39 @@
       .catch(() => {});
   }
 
+  // ---- 音源(デバイス)の選択メニュー ----
+
+  const INSTRUMENTS = [
+    { name: "subtractive", label: "🎹 subtractive", desc: "シンセ全般(リード・ベース・パッド)" },
+    { name: "drum", label: "🥁 drum", desc: "ドラムシンセ(GM 配置、キット UI 対応)" },
+  ];
+
+  let deviceMenu = $state<{ track: Track; x: number; y: number } | null>(null);
+
+  function openDeviceMenu(e: MouseEvent, track: Track) {
+    e.stopPropagation();
+    deviceMenu = { track, x: e.clientX, y: e.clientY };
+  }
+
+  function setDevice(name: string) {
+    const menu = deviceMenu;
+    deviceMenu = null;
+    if (!menu) return;
+    if (menu.track.device?.name === name) return; // 変更なし
+    api
+      .applyEdit(
+        [
+          {
+            op: "set_device",
+            track: menu.track.id,
+            device: { type: "builtin", name },
+          },
+        ],
+        `${menu.track.name} の音源を ${name} に変更`,
+      )
+      .catch(() => {});
+  }
+
   function addTrack() {
     const id = newTrackId();
     api
@@ -322,9 +355,15 @@
         </div>
         <div class="track-meta">
           <span class="kind {track.kind}">{track.kind}</span>
-          <span class="dev" title={track.device?.name ? "音源" : "音源未設定(既定の subtractive で発音)"}>
-            🎹 {track.device?.name ?? "subtractive*"}
-          </span>
+          <button
+            class="dev"
+            onclick={(e) => openDeviceMenu(e, track)}
+            title={track.device?.name
+              ? "クリックで音源を変更"
+              : "音源未設定(既定の subtractive で発音)。クリックで選択"}
+          >
+            🎹 {track.device?.name ?? "subtractive*"} ▾
+          </button>
           <code>{track.id}</code>
         </div>
       </div>
@@ -359,6 +398,25 @@
       />
     {/if}
   {/each}
+
+  {#if deviceMenu}
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="menu-backdrop" onclick={() => (deviceMenu = null)} oncontextmenu={(e) => { e.preventDefault(); deviceMenu = null; }}></div>
+    <div class="track-menu" style="left:{deviceMenu.x}px;top:{deviceMenu.y}px">
+      {#each INSTRUMENTS as inst (inst.name)}
+        <button
+          class:active-dev={(deviceMenu.track.device?.name ?? "subtractive") === inst.name}
+          onclick={() => setDevice(inst.name)}
+        >
+          <span class="dev-label">
+            {inst.label}{(deviceMenu.track.device?.name ?? "subtractive") === inst.name ? " ✓" : ""}
+          </span>
+          <span class="dev-desc">{inst.desc}</span>
+        </button>
+      {/each}
+      <div class="menu-note">切り替えると音源パラメータは初期値に戻ります(Ctrl+Z で取り消せます)。細かい音作りは AI に依頼してください。</div>
+    </div>
+  {/if}
 
   {#if trackMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -562,6 +620,40 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    border: none;
+    background: none;
+    padding: 0;
+    font-size: 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .dev:hover {
+    color: var(--accent);
+  }
+
+  .dev-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .dev-desc {
+    display: block;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .track-menu button.active-dev {
+    border: 1px solid var(--accent-dim);
+  }
+
+  .menu-note {
+    font-size: 9px;
+    color: var(--text-dim);
+    padding: 4px 10px 2px;
+    max-width: 230px;
+    line-height: 1.5;
   }
 
   .kind {

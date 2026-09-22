@@ -112,6 +112,13 @@ fn list_recent_projects(state: State<'_, AppState>) -> Value {
     json!({ "recent": list, "default_dir": projects::default_projects_dir() })
 }
 
+/// 既定の作業フォルダ(新規プロジェクトの作成先)を変更する。
+#[tauri::command]
+fn set_projects_dir(path: String) -> Result<Value, String> {
+    projects::set_projects_dir(&path)?;
+    Ok(json!({ "default_dir": path }))
+}
+
 fn set_window_title(app: &tauri::AppHandle, title: &str) {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main") {
@@ -576,6 +583,7 @@ fn main() -> Result<()> {
             redo,
             app_info,
             list_recent_projects,
+            set_projects_dir,
             open_project,
             create_project,
             export_project_wav,

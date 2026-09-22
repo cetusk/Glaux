@@ -63,8 +63,49 @@ pub fn push_recent(path: &str, title: &str) {
     }
 }
 
-/// 新規プロジェクトの既定の親フォルダ(`<ホーム>/Music/Glaux`)。
+fn settings_file() -> PathBuf {
+    config_dir().join("settings.json")
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct AppSettings {
+    /// ユーザーが選んだ既定の作業(プロジェクト作成)フォルダ
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    projects_dir: Option<String>,
+}
+
+fn load_settings() -> AppSettings {
+    std::fs::read_to_string(settings_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings(s: &AppSettings) -> Result<(), String> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
+    std::fs::write(settings_file(), json).map_err(|e| e.to_string())
+}
+
+/// 既定の作業フォルダを保存する(存在しないフォルダはエラー)。
+pub fn set_projects_dir(path: &str) -> Result<(), String> {
+    if !std::path::Path::new(path).is_dir() {
+        return Err(format!("フォルダが見つかりません: {path}"));
+    }
+    let mut s = load_settings();
+    s.projects_dir = Some(path.to_owned());
+    save_settings(&s)
+}
+
+/// 新規プロジェクトの既定の親フォルダ。
+/// ユーザーが保存した作業フォルダがあればそれを、なければ `<ホーム>/Music/Glaux`。
 pub fn default_projects_dir() -> String {
+    if let Some(dir) = load_settings().projects_dir {
+        if std::path::Path::new(&dir).is_dir() {
+            return dir;
+        }
+    }
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_owned());

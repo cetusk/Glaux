@@ -58,8 +58,17 @@
   }
 
   async function browseParentDir() {
-    const dir = await pickFolder({ directory: true, title: "新規プロジェクトの作成場所" });
-    if (typeof dir === "string") parentDir = dir;
+    const dir = await pickFolder({ directory: true, title: "作業フォルダ(新規プロジェクトの作成先)" });
+    if (typeof dir === "string") {
+      parentDir = dir;
+      // 次回起動後も同じ場所を使えるよう既定として保存する
+      try {
+        await api.setProjectsDir(dir);
+        defaultDir = dir;
+      } catch (e) {
+        menuError = String(e);
+      }
+    }
   }
 
   async function createNew() {
@@ -109,8 +118,8 @@
           />
           <button onclick={createNew} disabled={busy || !newName.trim()}>作成</button>
         </div>
-        <button class="loc" onclick={browseParentDir} title="クリックで作成場所を変更">
-          場所: {parentDir || defaultDir}
+        <button class="loc" onclick={browseParentDir} title="クリックで作業フォルダを変更(既定として保存されます)">
+          作業フォルダ: {parentDir || defaultDir}
         </button>
       </div>
 
