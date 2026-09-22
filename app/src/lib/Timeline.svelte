@@ -38,8 +38,14 @@
   const totalPx = $derived(barsEndTick(barList) * pxPerTick);
 
   function clipStyle(clip: Clip): string {
-    const left = clip.start * pxPerTick;
-    const width = Math.max(clip.length * pxPerTick, 8);
+    let start = clip.start;
+    let length = clip.length;
+    if (clipDrag?.moved && clipDrag.clip.id === clip.id) {
+      start = clipDrag.previewStart;
+      length = clipDrag.previewLength;
+    }
+    const left = start * pxPerTick;
+    const width = Math.max(length * pxPerTick, 8);
     return `left:${left}px;width:${width}px`;
   }
 
@@ -152,7 +158,7 @@
   }
 
   function openPianoRoll(track: Track, clip: Clip, e: MouseEvent) {
-    if (clip.kind !== "midi") return;
+    if (clip.kind !== "midi" || suppressOpen) return;
     pianoRollStore.focus = {
       clipId: clip.id,
       clipName: clip.name,
@@ -164,7 +170,7 @@
 
   /// 空きレーンのダブルクリック: その小節にクリップを作ってピアノロールを開く
   function onLaneDblClick(e: MouseEvent, track: Track) {
-    if (track.kind !== "midi") return;
+    if (track.kind !== "midi" || suppressOpen) return;
     if ((e.target as HTMLElement).closest(".clip")) return; // 既存クリップは openPianoRoll 側
     const lane = e.currentTarget as HTMLElement;
     const x = e.clientX - lane.getBoundingClientRect().left;
@@ -210,6 +216,102 @@
         };
       })
       .catch(() => {});
+  }
+
+  // ---- クリップのドラッグ編集(本体で移動、右端でリサイズ) ----
+
+  let clipDrag = $state<{
+    clip: Clip;
+    trackId: string;
+    mode: "move" | "resize";
+    startX: number;
+    startY: number;
+    moved: boolean;
+    previewStart: number;
+    previewLength: number;
+    previewTrackId: string;
+  } | null>(null);
+  /// ドラッグ直後の dblclick でピアノロールが開かないようにする
+  let suppressOpen = false;
+
+  function onClipDown(e: PointerEvent, track: Track, clip: Clip) {
+    if (e.button !== 0) return;
+    const mode = (e.target as HTMLElement).classList.contains("clip-resize") ? "resize" : "move";
+    clipDrag = {
+      clip,
+      trackId: track.id,
+      mode,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      previewStart: clip.start,
+      previewLength: clip.length,
+      previewTrackId: track.id,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function onClipDragMove(e: PointerEvent) {
+    const d = clipDrag;
+    if (!d) return;
+    if (!d.moved && Math.abs(e.clientX - d.startX) < 4 && Math.abs(e.clientY - d.startY) < 4) {
+      return;
+    }
+    d.moved = true;
+    const snap = e.altKey ? 1 : project.ppq; // 1 拍スナップ(Alt で解除)
+    const dxTick = (e.clientX - d.startX) / pxPerTick;
+    if (d.mode === "resize") {
+      const raw = d.clip.length + dxTick;
+      d.previewLength = Math.max(240, Math.round(raw / snap) * snap);
+    } else {
+      const raw = d.clip.start + dxTick;
+      d.previewStart = Math.max(0, Math.round(raw / snap) * snap);
+      // 縦方向: ポインタ直下のレーンが同種トラックなら移動先にする
+      const lane = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
+        ".lane",
+      ) as HTMLElement | null;
+      const tid = lane?.dataset.trackId;
+      if (tid) {
+        const t = project.tracks.find((t) => t.id === tid);
+        if (t && t.kind === (d.clip.kind === "midi" ? "midi" : "audio")) {
+          d.previewTrackId = tid;
+        }
+      }
+    }
+  }
+
+  function onClipUp() {
+    const d = clipDrag;
+    clipDrag = null;
+    if (!d || !d.moved) return;
+    suppressOpen = true;
+    setTimeout(() => (suppressOpen = false), 400);
+    if (d.mode === "resize") {
+      if (d.previewLength !== d.clip.length) {
+        api
+          .applyEdit(
+            [{ op: "resize_clip", id: d.clip.id, length: d.previewLength }],
+            `${d.clip.name} の長さを ${(d.previewLength / (project.ppq * 4)).toFixed(2)} 小節相当に変更`,
+          )
+          .catch(() => {});
+      }
+    } else if (d.previewStart !== d.clip.start || d.previewTrackId !== d.trackId) {
+      const cmd: Record<string, unknown> = {
+        op: "move_clip",
+        id: d.clip.id,
+        start: d.previewStart,
+      };
+      if (d.previewTrackId !== d.trackId) cmd.track = d.previewTrackId;
+      const destName = project.tracks.find((t) => t.id === d.previewTrackId)?.name ?? "";
+      api
+        .applyEdit(
+          [cmd],
+          d.previewTrackId !== d.trackId
+            ? `${d.clip.name} を ${destName} へ移動`
+            : `${d.clip.name} を移動`,
+        )
+        .catch(() => {});
+    }
   }
 
   // ---- オートメーションレーンの開閉 ----
@@ -487,6 +589,10 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="lane"
+        class:drop-target={clipDrag?.moved &&
+          clipDrag.previewTrackId === track.id &&
+          clipDrag.previewTrackId !== clipDrag.trackId}
+        data-track-id={track.id}
         style="width:{totalPx}px"
         ondblclick={(e) => onLaneDblClick(e, track)}
         title={track.kind === "midi" && track.clips.length === 0
@@ -500,14 +606,20 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="clip {clip.kind}"
+            class:dragging={clipDrag?.moved && clipDrag.clip.id === clip.id}
             style={clipStyle(clip)}
-            title={`${clip.name} (${clip.id})${clip.kind === "midi" ? " — ダブルクリックでピアノロール" : ""}`}
+            title={`${clip.name} (${clip.id})${clip.kind === "midi" ? " — ダブルクリックでピアノロール、ドラッグで移動(Alt でスナップ解除)、右端で長さ変更" : " — ドラッグで移動、右端で長さ変更"}`}
             ondblclick={(e) => openPianoRoll(track, clip, e)}
+            onpointerdown={(e) => onClipDown(e, track, clip)}
+            onpointermove={onClipDragMove}
+            onpointerup={onClipUp}
+            onpointercancel={() => (clipDrag = null)}
           >
             <span class="clip-name">{clip.name}</span>
             {#if clip.kind === "midi"}
               <ClipPreview {clip} widthPx={clip.length * pxPerTick} />
             {/if}
+            <div class="clip-resize"></div>
           </div>
         {/each}
       </div>
@@ -907,6 +1019,30 @@
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.25);
     padding: 2px 6px;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .clip.dragging {
+    opacity: 0.65;
+    cursor: grabbing;
+    z-index: 2;
+  }
+
+  .clip-resize {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 8px;
+    cursor: ew-resize;
+    z-index: 2;
+  }
+
+  .lane.drop-target {
+    outline: 2px dashed var(--accent, #7aa2f7);
+    outline-offset: -2px;
   }
 
   .clip.midi {
