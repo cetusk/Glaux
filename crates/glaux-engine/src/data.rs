@@ -10,7 +10,7 @@
 use glaux_core::{AssetId, ClipContent, Curve, Effect, ParamPath, Project, Tick};
 use glaux_dsp::{EffectParams, InstrumentParams, SampleData};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// エフェクト状態プールのスロット数(エンジン起動時に固定確保)。
@@ -90,9 +90,25 @@ pub struct PlaybackData {
 /// 読み込み済みサンプルの置き場(サンプラー音源用)。
 /// UI(非オーディオ)スレッドで構築し、`Arc` で `PlaybackData` に焼き込む。
 /// 編集のたびに WAV をデコードし直さないよう、アセット ID ごとにキャッシュする。
-#[derive(Default)]
 pub struct SampleBank {
     map: HashMap<AssetId, Arc<SampleData>>,
+    /// SoundFont ライブラリフォルダ(既定は `sf2::default_dir()`)
+    sf2_dir: PathBuf,
+    /// パース済み SoundFont(ファイル名 → フォント)
+    fonts: HashMap<String, Arc<rustysynth::SoundFont>>,
+    /// 構築済みゾーン列((ファイル名, bank, preset) → zones)
+    multis: HashMap<(String, u16, u16), Arc<Vec<glaux_dsp::Zone>>>,
+}
+
+impl Default for SampleBank {
+    fn default() -> Self {
+        SampleBank {
+            map: HashMap::new(),
+            sf2_dir: crate::sf2::default_dir(),
+            fonts: HashMap::new(),
+            multis: HashMap::new(),
+        }
+    }
 }
 
 impl SampleBank {
@@ -100,7 +116,23 @@ impl SampleBank {
         self.map.get(id)
     }
 
-    /// プロジェクトの全アセットを読み込む(読み込み済みは再利用、消えたものは破棄)。
+    /// テスト・特殊環境用: SoundFont ライブラリフォルダを差し替える。
+    pub fn with_sf2_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.sf2_dir = dir.into();
+        self
+    }
+
+    pub fn get_multi(
+        &self,
+        soundfont: &str,
+        bank: u16,
+        preset: u16,
+    ) -> Option<&Arc<Vec<glaux_dsp::Zone>>> {
+        self.multis.get(&(soundfont.to_owned(), bank, preset))
+    }
+
+    /// プロジェクトの全アセットと SoundFont プリセットを読み込む
+    /// (読み込み済みは再利用、使われなくなったものは破棄)。
     pub fn sync(&mut self, project: &Project, project_dir: &Path) {
         self.map.retain(|id, _| project.assets.contains_key(id));
         for (id, asset) in &project.assets {
@@ -113,6 +145,54 @@ impl SampleBank {
                 }
                 Err(e) => {
                     tracing::warn!("サンプルを読み込めません({}): {e}", asset.path);
+                }
+            }
+        }
+
+        // SoundFont: プロジェクトが参照しているプリセットのゾーンを構築
+        let mut used: std::collections::HashSet<(String, u16, u16)> =
+            std::collections::HashSet::new();
+        for t in &project.tracks {
+            if let Some(d) = &t.device {
+                if let glaux_core::PluginSource::Sf2 {
+                    soundfont,
+                    bank,
+                    preset,
+                } = &d.source
+                {
+                    used.insert((soundfont.clone(), *bank, *preset));
+                }
+            }
+        }
+        self.multis.retain(|k, _| used.contains(k));
+        let used_fonts: std::collections::HashSet<&String> =
+            used.iter().map(|(f, _, _)| f).collect();
+        self.fonts.retain(|f, _| used_fonts.contains(f));
+        for (file, bank, preset) in used {
+            if self.multis.contains_key(&(file.clone(), bank, preset)) {
+                continue;
+            }
+            let font = match self.fonts.get(&file) {
+                Some(f) => f.clone(),
+                None => match crate::sf2::load_font(&self.sf2_dir.join(&file)) {
+                    Ok(f) => {
+                        self.fonts.insert(file.clone(), f.clone());
+                        f
+                    }
+                    Err(e) => {
+                        tracing::warn!("{e}");
+                        continue;
+                    }
+                },
+            };
+            match crate::sf2::build_zones(&font, bank, preset) {
+                Some(zones) => {
+                    self.multis.insert((file.clone(), bank, preset), zones);
+                }
+                None => {
+                    tracing::warn!(
+                        "SoundFont にプリセットがありません: {file} bank={bank} preset={preset}"
+                    );
                 }
             }
         }
@@ -162,15 +242,28 @@ fn bake_track_instrument(
     sample_rate: f32,
 ) -> InstrumentParams {
     if let Some(d) = &t.device {
-        if let glaux_core::PluginSource::Sampler { asset } = &d.source {
-            if let Some(data) = bank.get(asset) {
-                return InstrumentParams::Sampler(glaux_dsp::bake_sampler(
-                    &d.params,
-                    data.clone(),
-                    sample_rate,
-                ));
+        match &d.source {
+            glaux_core::PluginSource::Sampler { asset } => {
+                if let Some(data) = bank.get(asset) {
+                    return InstrumentParams::Sampler(glaux_dsp::bake_sampler(
+                        &d.params,
+                        data.clone(),
+                        sample_rate,
+                    ));
+                }
+                tracing::warn!("サンプル未読込のため subtractive で代用: {asset}");
             }
-            tracing::warn!("サンプル未読込のため subtractive で代用: {asset}");
+            glaux_core::PluginSource::Sf2 {
+                soundfont,
+                bank: b,
+                preset,
+            } => {
+                if let Some(zones) = bank.get_multi(soundfont, *b, *preset) {
+                    return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
+                }
+                tracing::warn!("SoundFont 未読込のため subtractive で代用: {soundfont}");
+            }
+            _ => {}
         }
     }
     glaux_dsp::bake_instrument(t.device.as_ref()).1

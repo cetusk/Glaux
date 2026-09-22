@@ -19,6 +19,7 @@ pub mod data;
 pub mod export;
 pub mod output;
 pub mod render;
+pub mod sf2;
 
 pub use analyze::{analyze_project, analyze_project_tracks, Analysis, TrackAnalysis};
 pub use data::{build_playback_data, PlaybackData, SampleBank};

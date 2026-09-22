@@ -669,8 +669,24 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
   - 署名変更: `build_playback_data` / `render_project` / `export_wav` /
     `analyze_project(_tracks)` に `&SampleBank`、`EngineHandle::set_project` に
     `project_dir` が追加。`SessionHandle::project_dir()` 新設
-  - 残り(第 2 段以降): ループ点付きサンプル、音域マッピング(複数サンプル)、
-    連続ピッチカーブ、非 WAV(mp3/flac)対応(symphonia)
+  - ~~第 2 段: ループ点 + 音域マッピング~~ → **SoundFont 対応として実装済み(2026-09-22)**
+- **SoundFont(.sf2)対応 = RSE 相当の楽器ライブラリ(2026-09-22)**:
+  「同梱サンプルが無い」問題への回答。FluidR3_GM 等のフリー .sf2 を 1 つ置けば
+  GM 全 128 楽器 + ドラムキットが本物っぽく鳴る
+  - パースは rustysynth(MIT・依存なし)。`glaux-engine/src/sf2.rs` がプリセット層 ×
+    インストゥルメント層の合成(音域/ベロシティ交差、チューニング/減衰は加算、
+    エンベロープ時間は乗算)を行い `glaux_dsp::Zone` 列に落とす
+  - 再生は `glaux-dsp/src/multi.rs` のマルチサンプラー: ゾーン選択(key×vel、
+    最大 4 レイヤー同時 = ステレオペア対応)+ ループ(mode1/3)+
+    AHDSR 音量エンベロープ。vibrato / bend も効く。モジュレータ・フィルタ・LFO は省略
+  - .sf2 はプロジェクトにコピーせず **`<設定>/glaux/soundfonts/` の共有ライブラリ**を
+    ファイル名参照(`PluginSource::Sf2 { soundfont, bank, preset }`。100MB 級のため)。
+    SampleBank がフォント/ゾーンをキャッシュ
+  - MCP: `list_soundfonts`(ファイル一覧 / file 指定でプリセット一覧)、
+    `set_soundfont_instrument`(存在検証つき)。UI: 音作りビューに SoundFont セクション
+    (.sf2 追加 → プリセット選択 → 適用)
+  - テスト: 最小 SF2 バイナリをテスト内で生成してパース〜ゾーン構築を検証
+  - 残り: SF2 のフィルタ/LFO/モジュレータ、連続ピッチカーブ、非 WAV 素材(symphonia)
 - 音声クリップ再生・録音、ループクリップ(clip.loop フラグ)の再生対応
   (サンプラーの SampleBank 基盤を流用できる)
 - 再生位置の Tick 管理(再生中のテンポ変更でのずれ解消)

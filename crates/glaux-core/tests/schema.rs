@@ -161,3 +161,28 @@ fn rejects_bad_ids_and_kinds() {
     // 読めた場合でも validate が拾う
     let _ = p.validate();
 }
+
+#[test]
+fn sf2_device_serializes_with_type_tag() {
+    let device = Device {
+        source: PluginSource::Sf2 {
+            soundfont: "FluidR3_GM.sf2".into(),
+            bank: 0,
+            preset: 24,
+        },
+        params: ParamMap::new(),
+    };
+    let json = serde_json::to_value(&device).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "type": "sf2",
+            "soundfont": "FluidR3_GM.sf2",
+            "bank": 0,
+            "preset": 24,
+            "params": {},
+        })
+    );
+    let back: Device = serde_json::from_value(json).unwrap();
+    assert_eq!(back, device);
+}

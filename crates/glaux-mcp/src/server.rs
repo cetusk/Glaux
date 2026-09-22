@@ -109,6 +109,26 @@ pub struct GetHistoryParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ListSoundfontsParams {
+    /// 指定するとその .sf2 のプリセット一覧(bank / preset / 名前)を返す。
+    /// 省略でライブラリフォルダ内のファイル一覧。
+    #[serde(default)]
+    pub file: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SetSoundfontParams {
+    /// 音源を設定するトラック ID(`trk_xxxxxx`)。
+    pub track_id: String,
+    /// ライブラリフォルダ内の .sf2 ファイル名(list_soundfonts で確認)。
+    pub soundfont: String,
+    /// バンク番号(GM 音色は 0、GM ドラムキットは 128 が慣例)。
+    pub bank: u16,
+    /// プリセット(プログラム)番号。
+    pub preset: u16,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ImportSampleParams {
     /// 音源を設定するトラック ID(`trk_xxxxxx`)。
     pub track_id: String,
@@ -240,6 +260,7 @@ pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
             glaux_core::PluginSource::Sampler { .. } => {
                 ("sampler".to_owned(), d.params.clone(), false)
             }
+            glaux_core::PluginSource::Sf2 { .. } => ("sf2".to_owned(), d.params.clone(), false),
             other => {
                 return Err(format!(
                     "このトラックのデバイスは対応外です({other:?})。builtin / sampler のみ対応"
@@ -697,6 +718,93 @@ impl GlauxServer {
     }
 
     #[tool(
+        description = "SoundFont ライブラリを一覧する。引数なしで .sf2 ファイル一覧、\
+        file を指定するとそのフォントのプリセット一覧(bank / preset / 名前)。\
+        ピアノ・ストリングス・ブラスなど本物っぽい楽器一式が欲しいときは、まずここを確認して\
+        set_soundfont_instrument で設定する。ライブラリフォルダに .sf2 が無い場合は、\
+        ユーザーに FluidR3_GM などのフリー SoundFont の導入を提案すること。"
+    )]
+    async fn list_soundfonts(&self, params: Parameters<ListSoundfontsParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("list_soundfonts");
+        let dir = glaux_engine::sf2::default_dir();
+        match params.0.file {
+            None => Ok(Json(json!({
+                "dir": dir.to_string_lossy(),
+                "files": glaux_engine::sf2::list_files(&dir),
+            }))),
+            Some(file) => {
+                let font = tokio::task::spawn_blocking({
+                    let path = dir.join(&file);
+                    move || glaux_engine::sf2::load_font(&path)
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                Ok(Json(json!({
+                    "file": file,
+                    "presets": glaux_engine::sf2::list_presets(&font),
+                })))
+            }
+        }
+    }
+
+    #[tool(
+        description = "トラックの音源を SoundFont のプリセットにする(sf2 マルチサンプラー)。\
+        soundfont / bank / preset は list_soundfonts で確認したものを渡す。\
+        GM 配列の目安: 0=ピアノ, 24=ギター(ナイロン), 25(スチール), 30(歪みギター), \
+        32〜39=ベース, 40=バイオリン, 48=ストリングス, 56=トランペット, 73=フルート。\
+        ドラムは bank 128。設定は undo で戻せる。"
+    )]
+    async fn set_soundfont_instrument(
+        &self,
+        params: Parameters<SetSoundfontParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("set_soundfont_instrument");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+
+        // 事前検証: フォントとプリセットの存在(音が出ない設定を防ぐ)
+        let dir = glaux_engine::sf2::default_dir();
+        let (bank, preset) = (p.bank, p.preset);
+        let preset_name = tokio::task::spawn_blocking({
+            let path = dir.join(&p.soundfont);
+            move || -> Result<String, String> {
+                let font = glaux_engine::sf2::load_font(&path)?;
+                glaux_engine::sf2::list_presets(&font)
+                    .into_iter()
+                    .find(|m| m.bank == bank && m.preset == preset)
+                    .map(|m| m.name)
+                    .ok_or_else(|| format!("プリセットがありません: bank={bank} preset={preset}"))
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+
+        let label = format!("{} の音源を「{preset_name}」(SoundFont)に変更", track.name);
+        let command = Command::SetDevice {
+            track: track_id,
+            device: Some(glaux_core::Device {
+                source: glaux_core::PluginSource::Sf2 {
+                    soundfont: p.soundfont,
+                    bank: p.bank,
+                    preset: p.preset,
+                },
+                params: glaux_core::ParamMap::new(),
+            }),
+        };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["preset_name"] = json!(preset_name);
+        Ok(Json(v))
+    }
+
+    #[tool(
         description = "WAV ファイルをプロジェクトに取り込み、トラックの音源を sampler にする。\
         サンプルは内容ハッシュ名で <プロジェクト>/audio/ にコピーされ、ノートは root からの\
         ピッチ変換で再生される(実録の質感が欲しいときに使う)。\
@@ -1028,6 +1136,8 @@ impl ServerHandler for GlauxServer {
                  ノートの移調・時間移動・クオンタイズ・ベロシティ調整は専用ツール\
                  (transpose_notes / shift_notes / quantize_notes / scale_velocity)が使える。\
                  音源: トラックには set_device で内蔵楽器(subtractive / drum / pluck)を設定でき、\
+                 本物っぽい楽器一式(ピアノ・ストリングス・ブラス等)は SoundFont: \
+                 list_soundfonts で確認 → set_soundfont_instrument で設定(無ければユーザーに導入を提案)。\
                  ギター・ベース・ハープなど「弾く弦」の音は pluck(撥弦の物理モデル)を使う。\
                  エレキギターは pluck + amp(アンプシミュレータ。gain_db 30 前後から歪み、40 以上でメタル)。\
                  メタルの刻みはさらに palm_mute ノート。出荷時プリセット(クリーンエレキ / クランチギター / \

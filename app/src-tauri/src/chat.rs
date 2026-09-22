@@ -113,6 +113,10 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     pluck=撥弦の物理モデル)を設定でき、\
     list_params でパラメータの意味・範囲・現在値を確認して set_param で音作りができます。\
     ドラムのトラックには必ず drum を設定してください。\
+    本物っぽい楽器一式(ピアノ・ストリングス・ブラス・ギター等)は SoundFont が使えます: \
+    list_soundfonts で置いてある .sf2 とプリセットを確認し、set_soundfont_instrument で設定します。\
+    .sf2 が 1 つも無ければ「FluidR3_GM.sf2 などのフリー SoundFont を設定の SoundFont フォルダに\
+    置いてください」とユーザーに案内してください。\
     実録の音(録音済みの WAV)を鳴らしたいときは import_sample ツールでトラックの音源を \
     sampler にできます(path は WAV の絶対パス、root にサンプルの実音を指定)。\
     ギター・ベース・ハープなど「弾く弦」の音は pluck が第一候補です。\

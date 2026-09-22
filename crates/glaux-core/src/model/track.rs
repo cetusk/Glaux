@@ -28,6 +28,13 @@ pub enum PluginSource {
     },
     /// 単一サンプルを鳴らすサンプラー
     Sampler { asset: AssetId },
+    /// SoundFont(.sf2)のプリセット。`soundfont` はライブラリフォルダ
+    /// (`~/.config/glaux/soundfonts/`)内のファイル名
+    Sf2 {
+        soundfont: String,
+        bank: u16,
+        preset: u16,
+    },
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]

@@ -181,6 +181,52 @@ async fn get_track_params(state: State<'_, AppState>, track_id: String) -> Resul
     Ok(v)
 }
 
+// ---- SoundFont ------------------------------------------------------------
+
+#[tauri::command]
+fn list_soundfonts() -> Value {
+    let dir = glaux_engine::sf2::default_dir();
+    json!({
+        "dir": dir.to_string_lossy(),
+        "files": glaux_engine::sf2::list_files(&dir),
+    })
+}
+
+/// .sf2 のプリセット一覧(重いのでブロッキングスレッドで)。
+#[tauri::command]
+async fn list_soundfont_presets(file: String) -> Result<Value, String> {
+    let path = glaux_engine::sf2::default_dir().join(&file);
+    let presets = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        let font = glaux_engine::sf2::load_font(&path)?;
+        Ok(glaux_engine::sf2::list_presets(&font))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(json!({ "file": file, "presets": presets }))
+}
+
+/// .sf2 をライブラリフォルダへコピーして登録する。
+#[tauri::command]
+async fn add_soundfont(path: String) -> Result<Value, String> {
+    let src = std::path::PathBuf::from(&path);
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| "ファイル名が取れません".to_owned())?;
+    let dir = glaux_engine::sf2::default_dir();
+    let dest = dir.join(&name);
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        // 検証を兼ねて一度パースする
+        glaux_engine::sf2::load_font(&src)?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(json!({ "file": name }))
+}
+
 // ---- 音色プリセット(glaux-mcp の presets モジュールを共用) ---------------
 
 #[tauri::command]
@@ -832,6 +878,9 @@ fn main() -> Result<()> {
             load_preset,
             get_track_params,
             import_sample,
+            list_soundfonts,
+            list_soundfont_presets,
+            add_soundfont,
             create_project,
             export_project_wav,
             apply_edit,

@@ -14,10 +14,12 @@
 //! - `drum`: ドラムシンセ(MIDI ノート番号でキック/スネア/ハイハット等を弾き分け)
 //! - `pluck`: 撥弦の物理モデル(Karplus-Strong。ギター/ベース/ハープ)
 //! - `sampler`: 単一サンプル再生(ワンショット。実録の質感)
+//! - `sf2`: マルチサンプラー(SoundFont のゾーンを再生。GM 音源一式が鳴る)
 
 mod drum;
 mod effects;
 mod expr;
+mod multi;
 mod params;
 mod pluck;
 mod sampler;
@@ -26,8 +28,9 @@ mod voice;
 
 pub use drum::DrumParams;
 pub use effects::{bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState};
+pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, MAX_LAYERS};
 pub use params::{
-    bake_instrument, bake_sampler, instrument_catalog, instrument_params, InstrumentInfo,
+    bake_instrument, bake_sampler, bake_sf2, instrument_catalog, instrument_params, InstrumentInfo,
 };
 pub use pluck::PluckParams;
 pub use sampler::{SampleData, SamplerParams, SamplerVoice};

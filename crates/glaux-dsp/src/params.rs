@@ -323,6 +323,19 @@ pub static SAMPLER_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static SF2_SPECS: &[ParamSpec] = &[ParamSpec {
+    name: "gain_db",
+    display_name: "ゲイン",
+    unit: Some("dB"),
+    range: ParamRange::Float {
+        min: -24.0,
+        max: 12.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "楽器自体の音量。トラック音量と別。",
+}];
+
 /// 楽器カタログの 1 行(MCP の `list_params` がそのまま返す)。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct InstrumentInfo {
@@ -350,6 +363,15 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
             params: DRUM_SPECS,
         },
         InstrumentInfo {
+            name: "sf2",
+            description: "SoundFont(.sf2)のプリセットを鳴らすマルチサンプラー。\
+                音域・ベロシティごとの多段サンプル + ループで、ピアノ・ストリングス・\
+                ギター・ブラスなど「本物っぽい楽器一式」が使える。\
+                list_soundfonts で置いてある .sf2 とプリセットを確認し、\
+                set_soundfont_instrument でトラックに設定する。",
+            params: SF2_SPECS,
+        },
+        InstrumentInfo {
             name: "sampler",
             description: "単一サンプル再生(ワンショット)。WAV を root 基準のピッチ変換で\
                 鳴らす。実録の質感(本物のギター、ボーカルチョップ、生ドラムの\
@@ -375,6 +397,7 @@ pub fn instrument_params(name: &str) -> Option<&'static [ParamSpec]> {
         "drum" => Some(DRUM_SPECS),
         "pluck" => Some(PLUCK_SPECS),
         "sampler" => Some(SAMPLER_SPECS),
+        "sf2" => Some(SF2_SPECS),
         _ => None,
     }
 }
@@ -405,6 +428,18 @@ fn db_to_amp(db: f32) -> f32 {
 }
 
 static EMPTY_PARAMS: ParamMap = ParamMap::new();
+
+/// SoundFont マルチサンプラーの焼き込み(ゾーンはエンジン側で構築して渡す)。
+pub fn bake_sf2(
+    map: &ParamMap,
+    zones: std::sync::Arc<Vec<crate::multi::Zone>>,
+) -> crate::multi::MultiSamplerParams {
+    let s = SF2_SPECS;
+    crate::multi::MultiSamplerParams {
+        zones,
+        gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 12.0)),
+    }
+}
 
 /// サンプラーの焼き込み(波形はエンジン側で読み込んで渡す)。
 pub fn bake_sampler(

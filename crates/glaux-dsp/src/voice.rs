@@ -4,6 +4,7 @@
 //! アロケーションしない(RT セーフ)。
 
 use crate::drum::{DrumParams, DrumVoice};
+use crate::multi::{MultiSamplerParams, MultiVoice};
 use crate::pluck::{PluckParams, PluckVoice};
 use crate::sampler::{SamplerParams, SamplerVoice};
 use crate::subtractive::{SubtractiveParams, SubtractiveVoice};
@@ -14,6 +15,7 @@ pub enum InstrumentKind {
     Drum,
     Pluck,
     Sampler,
+    Sf2,
 }
 
 /// トラックごとに焼き込まれたパラメータ。
@@ -25,6 +27,7 @@ pub enum InstrumentParams {
     Drum(DrumParams),
     Pluck(PluckParams),
     Sampler(SamplerParams),
+    Sf2(MultiSamplerParams),
 }
 
 impl Default for InstrumentParams {
@@ -44,6 +47,7 @@ pub enum VoiceState {
     Drum(DrumVoice),
     Pluck(PluckVoice),
     Sampler(SamplerVoice),
+    Sf2(MultiVoice),
 }
 
 impl VoiceState {
@@ -82,6 +86,9 @@ impl VoiceState {
                 articulation,
                 sample_rate,
             )),
+            InstrumentParams::Sf2(p) => {
+                VoiceState::Sf2(MultiVoice::start(p, pitch, vel, articulation, sample_rate))
+            }
         }
     }
 
@@ -93,6 +100,7 @@ impl VoiceState {
             (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.next(p),
             (VoiceState::Pluck(v), InstrumentParams::Pluck(p)) => v.next(p),
             (VoiceState::Sampler(v), InstrumentParams::Sampler(p)) => v.next(p),
+            (VoiceState::Sf2(v), InstrumentParams::Sf2(p)) => v.next(p),
             _ => 0.0,
         }
     }
@@ -103,6 +111,7 @@ impl VoiceState {
             VoiceState::Drum(v) => v.note_off(),
             VoiceState::Pluck(v) => v.note_off(),
             VoiceState::Sampler(v) => v.note_off(),
+            VoiceState::Sf2(v) => v.note_off(),
         }
     }
 
@@ -113,6 +122,7 @@ impl VoiceState {
             (VoiceState::Drum(_), _) => true,
             (VoiceState::Pluck(v), _) => v.finished(),
             (VoiceState::Sampler(v), _) => v.finished(),
+            (VoiceState::Sf2(v), _) => v.finished(),
         }
     }
 }

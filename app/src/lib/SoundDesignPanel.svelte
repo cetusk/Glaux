@@ -192,6 +192,74 @@
 
   let selectedPreset = $state("");
 
+  // ---- SoundFont ----
+
+  let sfFiles = $state<string[]>([]);
+  let sfFile = $state("");
+  let sfPresets = $state<{ bank: number; preset: number; name: string }[]>([]);
+  let sfSelected = $state(""); // "bank:preset"
+  let sfMsg = $state<string | null>(null);
+
+  async function refreshSoundfonts() {
+    try {
+      sfFiles = (await api.listSoundfonts()).files;
+    } catch {
+      sfFiles = [];
+    }
+  }
+
+  $effect(() => {
+    if (soundDesignStore.focus) refreshSoundfonts();
+  });
+
+  async function pickSfFile(file: string) {
+    sfFile = file;
+    sfPresets = [];
+    sfSelected = "";
+    if (!file) return;
+    sfMsg = "プリセットを読み込み中…";
+    try {
+      sfPresets = (await api.listSoundfontPresets(file)).presets;
+      sfMsg = null;
+    } catch (e) {
+      sfMsg = String(e);
+    }
+  }
+
+  function applySoundfont() {
+    const t = track;
+    if (!t || !sfFile || !sfSelected) return;
+    const [bank, preset] = sfSelected.split(":").map(Number);
+    const name = sfPresets.find((p) => p.bank === bank && p.preset === preset)?.name ?? sfFile;
+    applyEdit(
+      [
+        {
+          op: "set_device",
+          track: t.id,
+          device: { type: "sf2", soundfont: sfFile, bank, preset },
+        },
+      ],
+      `${t.name} の音源を「${name}」(SoundFont)に変更`,
+    );
+  }
+
+  async function addSoundfontFile() {
+    const file = await pickFile({
+      title: "SoundFont(.sf2)をライブラリに追加",
+      filters: [{ name: "SoundFont", extensions: ["sf2"] }],
+    });
+    if (typeof file !== "string") return;
+    sfMsg = "コピー中…";
+    try {
+      const r = await api.addSoundfont(file);
+      sfMsg = `追加しました: ${r.file}`;
+      await refreshSoundfonts();
+      pickSfFile(r.file);
+    } catch (e) {
+      sfMsg = String(e);
+    }
+  }
+
   // ---- 試聴(ソロ・試聴フレーズ) ----
 
   function toggleSolo() {
@@ -283,6 +351,7 @@
             <option value="drum">drum(ドラム)</option>
             <option value="pluck">pluck(撥弦: ギター/ベース)</option>
             <option value="sampler" disabled>sampler(下の読込ボタンから)</option>
+            <option value="sf2" disabled>sf2(下の SoundFont から)</option>
           </select>
           <button onclick={importSample} title="WAV をプロジェクトに取り込み、この音源を sampler にする">
             🎼 WAV
@@ -311,6 +380,46 @@
           <button disabled={!presetName.trim()} onclick={savePreset}>保存</button>
         </div>
         {#if presetMsg}<div class="hint">{presetMsg}</div>{/if}
+      </div>
+
+      <!-- SoundFont -->
+      <div class="sec">
+        <div class="sec-title">SoundFont(本物っぽい楽器一式)</div>
+        <div class="row gap">
+          <select
+            class="grow"
+            value={sfFile}
+            onchange={(e) => pickSfFile((e.currentTarget as HTMLSelectElement).value)}
+          >
+            <option value="">.sf2 を選択…</option>
+            {#each sfFiles as f (f)}
+              <option value={f}>{f}</option>
+            {/each}
+          </select>
+          <button onclick={addSoundfontFile} title=".sf2 をライブラリフォルダへコピーして追加">
+            + 追加
+          </button>
+        </div>
+        {#if sfPresets.length > 0}
+          <div class="row gap">
+            <select class="grow" bind:value={sfSelected}>
+              <option value="">プリセットを選択…</option>
+              {#each sfPresets as p (`${p.bank}:${p.preset}`)}
+                <option value={`${p.bank}:${p.preset}`}>
+                  {p.bank}:{String(p.preset).padStart(3, "0")} {p.name}
+                </option>
+              {/each}
+            </select>
+            <button disabled={!sfSelected} onclick={applySoundfont}>適用</button>
+          </div>
+        {/if}
+        {#if sfMsg}<div class="hint">{sfMsg}</div>{/if}
+        {#if sfFiles.length === 0}
+          <div class="hint">
+            まだ .sf2 がありません。FluidR3_GM などのフリー SoundFont をダウンロードして
+            「+ 追加」から登録すると、ピアノ・ストリングス等の GM 音源一式が使えます。
+          </div>
+        {/if}
       </div>
 
       <!-- 音源パラメータ -->

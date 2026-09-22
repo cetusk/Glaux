@@ -12,6 +12,7 @@ glaux-dsp = { path = "../glaux-dsp" }
 cpal.workspace = true
 arc-swap.workspace = true
 hound.workspace = true
+rustysynth.workspace = true
 rustfft.workspace = true
 serde.workspace = true
 thiserror.workspace = true

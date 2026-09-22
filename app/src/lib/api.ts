@@ -108,6 +108,23 @@ export function importSample(
   return invoke("import_sample", { trackId, path });
 }
 
+// ---- SoundFont ----
+
+export function listSoundfonts(): Promise<{ dir: string; files: string[] }> {
+  return invoke("list_soundfonts");
+}
+
+export function listSoundfontPresets(
+  file: string,
+): Promise<{ file: string; presets: { bank: number; preset: number; name: string }[] }> {
+  return invoke("list_soundfont_presets", { file });
+}
+
+/** .sf2 をライブラリフォルダへコピーして登録する。 */
+export function addSoundfont(path: string): Promise<{ file: string }> {
+  return invoke("add_soundfont", { path });
+}
+
 // ---- 音色プリセット ----
 
 export function listPresets(): Promise<{ presets: PresetInfo[] }> {
