@@ -67,6 +67,9 @@ pub struct TrackMix {
     pub vol_db_auto: Vec<AutoPoint>,
     /// track/pan のオートメーション(-1..1)。空ならフェーダー値を使う
     pub pan_auto: Vec<AutoPoint>,
+    /// device/<param> のオートメーション(raw 値)。ブロックレートで
+    /// `InstrumentParams::set_continuous` に流し込む(フィルタスイープ等)
+    pub device_auto: Vec<(String, Vec<AutoPoint>)>,
     /// 焼き込み済みの楽器パラメータ(glaux-dsp)
     pub instrument: InstrumentParams,
     /// エフェクトチェーン(bypass 除外・焼き込み済み)。楽器 → チェーン → 音量/パン の順
@@ -345,6 +348,32 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         points
     };
 
+    // device/<param> のレーンをまとめて焼き込む(値は raw のまま。適用は再生時)
+    let bake_device_lanes = |t: &glaux_core::Track| -> Vec<(String, Vec<AutoPoint>)> {
+        t.automation
+            .iter()
+            .filter_map(|lane| {
+                let ParamPath::Device { name } = &lane.target else {
+                    return None;
+                };
+                if lane.points.is_empty() {
+                    return None;
+                }
+                let mut points: Vec<AutoPoint> = lane
+                    .points
+                    .iter()
+                    .map(|p| AutoPoint {
+                        sample: to_sample(p.tick),
+                        value: p.value as f32,
+                        curve: p.curve,
+                    })
+                    .collect();
+                points.sort_by_key(|p| p.sample);
+                Some((name.clone(), points))
+            })
+            .collect()
+    };
+
     let mut next_slot: u32 = 0;
     let tracks: Vec<TrackMix> = project
         .tracks
@@ -361,6 +390,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 base_pan: t.pan,
                 vol_db_auto: bake_lane(t, "volume_db"),
                 pan_auto: bake_lane(t, "pan"),
+                device_auto: bake_device_lanes(t),
                 instrument,
                 effects: bake_chain(
                     &t.effects,
@@ -590,6 +620,74 @@ mod tests {
         assert!(
             tail > 0.06,
             "レーンがフェーダー(-60dB)より優先されるはず: {tail}"
+        );
+    }
+
+    #[test]
+    fn device_automation_lane_is_baked() {
+        use glaux_core::{AutomationLane, AutomationPoint, Curve, ParamPath};
+        let mut project = project_with_notes(vec![note(0, 480, 60, 100)]);
+        project.tracks[0].automation.push(AutomationLane {
+            target: ParamPath::device("cutoff"),
+            points: vec![AutomationPoint {
+                tick: Tick(960),
+                value: 200.0,
+                curve: Curve::Linear,
+            }],
+        });
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        assert_eq!(data.tracks[0].device_auto.len(), 1);
+        let (name, points) = &data.tracks[0].device_auto[0];
+        assert_eq!(name, "cutoff");
+        assert_eq!(points[0].sample, 24_000); // 120bpm: 960 tick = 0.5s
+        assert!((points[0].value - 200.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cutoff_automation_sweeps_brightness() {
+        use crate::export::render_project;
+        use glaux_core::{AutomationLane, AutomationPoint, Curve, ParamPath};
+
+        // 低カットオフ → 高カットオフのスイープ。後半ほど高域(隣接差分)が増える
+        let mut project = project_with_notes(vec![note(0, 3840, 45, 110)]);
+        let mut device = glaux_core::Device::builtin("subtractive");
+        device.params.insert("sustain".into(), 1.0.into());
+        device.params.insert("release".into(), 0.05.into());
+        device.params.insert("filter_env".into(), 0.0.into()); // スイープはレーンだけで
+        project.tracks[0].device = Some(device);
+        project.tracks[0].automation.push(AutomationLane {
+            target: ParamPath::device("cutoff"),
+            points: vec![
+                AutomationPoint {
+                    tick: Tick(0),
+                    value: 150.0,
+                    curve: Curve::Hold, // 1 秒間こもったまま
+                },
+                AutomationPoint {
+                    tick: Tick(1920), // 1 秒で全開に
+                    value: 9000.0,
+                    curve: Curve::Linear,
+                },
+            ],
+        });
+        let out = render_project(&project, 48_000.0, &Default::default()).unwrap();
+        // 左 ch の「隣接差分 RMS / RMS」= 音量に依らない高域の割合で前半と後半を比較
+        let brightness = |a: f64, b: f64| -> f32 {
+            let s = (a * 48_000.0) as usize;
+            let e = (b * 48_000.0) as usize;
+            let (mut dd, mut ss) = (0.0f32, 0.0f32);
+            for i in s..e {
+                let d = out[(i + 1) * 2] - out[i * 2];
+                dd += d * d;
+                ss += out[i * 2] * out[i * 2];
+            }
+            (dd / ss.max(1e-12)).sqrt()
+        };
+        let head = brightness(0.2, 0.6);
+        let tail = brightness(1.4, 1.9);
+        assert!(
+            tail > head * 2.0,
+            "スイープで高域の割合が増えるはず: head={head} tail={tail}"
         );
     }
 

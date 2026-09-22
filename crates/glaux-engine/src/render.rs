@@ -95,6 +95,10 @@ pub struct Renderer {
     track_silence: [u32; MAX_TRACKS],
     /// オートメーション評価カーソル(vol, pan)。単調前進、resync でリセット
     auto_cursors: [(usize, usize); MAX_TRACKS],
+    /// device オートメーション適用済みの楽器パラメータ(トラック別スクラッチ)。
+    /// レーンのあるトラックだけブロック頭でベースからコピーして値を上書きする。
+    /// 起動時に確保し、以後アロケーションしない(clone は Arc 参照カウントのみ)
+    inst_scratch: Vec<glaux_dsp::InstrumentParams>,
     /// `data.events` の次に発音するイベントの添字
     next_event: usize,
     /// 直前に見ていた `PlaybackData` のアドレス(差し替え検出用)
@@ -137,6 +141,7 @@ impl Renderer {
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
+            inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
             next_event: 0,
             last_data: 0,
             pos: 0,
@@ -169,6 +174,10 @@ impl Renderer {
             self.voices.clear();
             self.auto_cursors = [(0, 0); MAX_TRACKS];
             self.next_event = data.events.partition_point(|e| e.start < self.pos);
+            // 旧データの Arc(サンプル波形等)を掴んだままにしないようスクラッチを戻す
+            for s in self.inst_scratch.iter_mut() {
+                *s = glaux_dsp::InstrumentParams::default();
+            }
             // スロットの中身が変わっていたらエフェクト状態を作り直す(アロケーションなし)
             for fx in data
                 .tracks
@@ -232,6 +241,22 @@ impl Renderer {
         let loop_end = self.shared.loop_end.load(Ordering::Acquire);
         let looping = loop_end > loop_start;
 
+        // 音色パラメータのオートメーション: ブロック頭で評価してスクラッチに適用する
+        // (1 ブロック ≈ 数 ms なので聴感上は連続。発音中のボイスにも効く =
+        //  フィルタスイープ等が鳴る)
+        for (ti, mix) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
+            if mix.device_auto.is_empty() {
+                continue;
+            }
+            self.inst_scratch[ti] = mix.instrument.clone();
+            for (name, points) in &mix.device_auto {
+                let mut cursor = points.partition_point(|p| p.sample <= self.pos);
+                cursor = cursor.saturating_sub(1);
+                let v = eval_auto(points, &mut cursor, self.pos);
+                self.inst_scratch[ti].set_continuous(name, v);
+            }
+        }
+
         for frame in 0..frames {
             // ループ終端に達したら区間頭へ。発音中の音は note_off でリリースに回し
             // (ぶつ切りのクリックを避ける)、イベント・オートメーションのカーソルを再同期。
@@ -261,13 +286,20 @@ impl Renderer {
                 let mix = data.tracks.get(e.track as usize);
                 if let Some(mix) = mix.filter(|m| m.audible) {
                     if self.voices.len() < MAX_VOICES {
+                        // 発音時パラメータ(pluck 等)にもスイープ中の値を反映する
+                        let ti = e.track as usize;
+                        let inst = if !mix.device_auto.is_empty() && ti < MAX_TRACKS {
+                            &self.inst_scratch[ti]
+                        } else {
+                            &mix.instrument
+                        };
                         self.voices.push(Voice {
                             end: e.end,
                             track: e.track,
                             released: false,
                             wraps: 0,
                             state: VoiceState::start(
-                                &mix.instrument,
+                                inst,
                                 e.freq,
                                 e.pitch,
                                 e.amp,
@@ -295,14 +327,21 @@ impl Renderer {
                     v.state.note_off();
                     v.released = true;
                 }
+                // device オートメーションのあるトラックはスクラッチ(適用済み)を読む
+                let ti = v.track as usize;
+                let inst = if !mix.device_auto.is_empty() && ti < MAX_TRACKS {
+                    &self.inst_scratch[ti]
+                } else {
+                    &mix.instrument
+                };
                 // 鳴り終わったボイスはノート終了を待たずに解放する
                 // (減衰しきったピアノ・読み切ったワンショット等が
                 //  スロットと CPU を占有し続けないように)
-                if v.state.finished(&mix.instrument) || self.pos >= v.end + hard_limit {
+                if v.state.finished(inst) || self.pos >= v.end + hard_limit {
                     self.voices.swap_remove(i);
                     continue;
                 }
-                let sample = v.state.next(&mix.instrument);
+                let sample = v.state.next(inst);
                 match track_mono.get_mut(v.track as usize) {
                     Some(acc) => *acc += sample,
                     None => {
@@ -466,6 +505,7 @@ mod tests {
                 base_pan: 0.0,
                 vol_db_auto: vec![],
                 pan_auto: vec![],
+                device_auto: vec![],
                 instrument: test_instrument(),
                 effects: vec![],
             }],

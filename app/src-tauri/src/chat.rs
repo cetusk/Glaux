@@ -147,6 +147,8 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     音作りやミックス調整では、編集 → analyze_audio で確認 → 微調整のループを回してください。\
     時間変化するミックス(フェードイン/アウト、ビルドアップの音量カーブ、パンの揺れ)は\
     set_automation_points(target: track/volume_db または track/pan)で描けます。\
+    音色の時間変化(フィルタスイープ、EDM のビルドアップで cutoff を開いていく等)も\
+    target: device/<パラメータ名>(例 device/cutoff)で同様に描けます。\
     ミックスバランス: analyze_audio の per_track: true で各トラックのラウドネスと帯域の一覧が取れます。\
     定石: 主役(リード等)は伴奏より 2〜4dB 上に置く / 帯域の重心が被るトラックは EQ で住み分ける /\
     それでも埋もれるなら伴奏側に sidechain。音量を上げる前に、まず被りを削ることを検討してください。\

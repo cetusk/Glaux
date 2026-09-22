@@ -530,10 +530,12 @@ impl GlauxServer {
         \"bend\"(チョーキング: 全音下から書かれた音程へ滑り上がる。ギターソロの決め音に)。\
         省略で通常。update_notes でも変更可。\
         メタルの「ズクズク」した刻みは distortion + 低音 + palm_mute ノートの組み合わせで作る。\
-        set_automation_points {track,target,points}(target は \"track/volume_db\" か \"track/pan\"、\
-        points は [{tick,value,curve?}] で curve は linear/hold/exponential。\
-        フェードイン・ビルドアップの音量カーブ・左右の揺れなど時間変化するミックスに使う。\
-        レーンがあるとフェーダー値より優先。空配列でレーン削除)。\
+        set_automation_points {track,target,points}(target は \"track/volume_db\" / \"track/pan\" / \
+        \"device/<パラメータ名>\"(例 device/cutoff。list_params にある連続値パラメータ。\
+        値はパラメータと同じ単位)、points は [{tick,value,curve?}] で curve は \
+        linear/hold/exponential。フェードイン・ビルドアップの音量カーブ・左右の揺れ・\
+        フィルタスイープなど時間変化する表現に使う。\
+        レーンがあるとフェーダー/つまみの値より優先。空配列でレーン削除)。\
         失敗時はどのコマンドで失敗したかがエラーメッセージに入る(batch failed at command #N)。"
     )]
     async fn apply_commands(

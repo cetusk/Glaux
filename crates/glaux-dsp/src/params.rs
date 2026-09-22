@@ -547,6 +547,56 @@ pub fn bake_sampler(
     }
 }
 
+impl crate::InstrumentParams {
+    /// オートメーション用: 連続パラメータを raw 値(ParamSpec と同じ単位)で上書きする。
+    /// `bake_*` と同じクランプ・変換(dB → リニア等)を通すので、
+    /// `device/cutoff` 等のレーン値をそのまま渡せばよい。
+    /// その楽器に無いパラメータ・連続でないパラメータ(waveform 等)は無視して false。
+    /// オーディオスレッドから呼ばれる前提(アロケーションしない)。
+    pub fn set_continuous(&mut self, name: &str, value: f32) -> bool {
+        use crate::InstrumentParams as I;
+        match self {
+            I::Subtractive(p) => match name {
+                "cutoff" => p.cutoff = value.clamp(40.0, 12000.0),
+                "resonance" => p.resonance = value.clamp(0.0, 0.95),
+                "attack" => p.attack = value.clamp(0.001, 2.0),
+                "decay" => p.decay = value.clamp(0.01, 3.0),
+                "sustain" => p.sustain = value.clamp(0.0, 1.0),
+                "release" => p.release = value.clamp(0.01, 4.0),
+                "filter_env" => p.filter_env = value.clamp(0.0, 1.0),
+                "detune" => p.detune_cents = value.clamp(0.0, 60.0),
+                "sub" => p.sub = value.clamp(0.0, 1.0),
+                "noise" => p.noise = value.clamp(0.0, 1.0),
+                "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
+                _ => return false,
+            },
+            I::Drum(p) => match name {
+                "gain_db" => p.gain = db_to_amp(value),
+                "decay" => p.decay = value.clamp(0.25, 4.0),
+                "tone" => p.tone = value.clamp(0.0, 1.0),
+                "tune" => p.tune = value.clamp(-12.0, 12.0),
+                _ => return false,
+            },
+            I::Pluck(p) => match name {
+                "decay" => p.decay = value.clamp(0.05, 8.0),
+                "brightness" => p.brightness = value.clamp(0.0, 0.95),
+                "pick" => p.pick = value.clamp(0.0, 1.0),
+                "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
+                _ => return false,
+            },
+            I::Sampler(p) => match name {
+                "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 12.0)),
+                _ => return false,
+            },
+            I::Sf2(p) => match name {
+                "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 12.0)),
+                _ => return false,
+            },
+        }
+        true
+    }
+}
+
 /// トラックの `Device` から再生用パラメータを焼き込む。
 /// device が無い場合は既定の subtractive。内蔵以外(CLAP / サンプラー)や
 /// 未知の名前も当面 subtractive で代用する。
@@ -641,6 +691,22 @@ mod tests {
         assert_eq!(kind, InstrumentKind::Drum);
         let (kind, _) = bake_instrument(Some(&Device::builtin("no_such_synth")));
         assert_eq!(kind, InstrumentKind::Subtractive);
+    }
+
+    #[test]
+    fn set_continuous_converts_and_clamps() {
+        let mut p = InstrumentParams::default();
+        assert!(p.set_continuous("cutoff", 500.0));
+        assert!(p.set_continuous("gain_db", -6.0));
+        assert!(p.set_continuous("resonance", 5.0)); // clamp される
+        assert!(!p.set_continuous("waveform", 1.0)); // 連続でないものは no-op
+        assert!(!p.set_continuous("no_such", 1.0));
+        let InstrumentParams::Subtractive(s) = p else {
+            panic!("expected subtractive");
+        };
+        assert!((s.cutoff - 500.0).abs() < 1e-3);
+        assert!((s.gain - db_to_amp(-6.0)).abs() < 1e-6);
+        assert!(s.resonance <= 0.95);
     }
 
     #[test]
