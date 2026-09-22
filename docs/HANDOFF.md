@@ -4,23 +4,24 @@
 状態(2026-09-22 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
 - `glaux-core`: モデル(セクション・奏法込み)/ Command(約 25 種)/ 履歴 /
   和声分析(harmony)/ リズム分析(rhythm)
-- `glaux-mcp`: **23 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
+- `glaux-mcp`: **24 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
   revert_to / revert / get_history / list_params / analyze_audio)+ 分析 2(analyze_harmony /
   analyze_rhythm)+ ノート便利 4(transpose / shift / quantize / scale_velocity)+
-  プリセット 4(list / save / load / delete)+ 素材 3(import_sample / list_soundfonts /
-  set_soundfont_instrument)。stdio 単体 + アプリ内 HTTP の両対応。
+  プリセット 4(list / save / load / delete)+ 素材 4(import_sample / import_audio_clip /
+  list_soundfonts / set_soundfont_instrument)。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
   ほかに presets / assets モジュール(アプリと共用)
-- `glaux-engine`: 再生(ループ・オートメーション・自動停止)・WAV エクスポート・
-  音声解析(AI の耳)・SoundFont 読み込み(sf2.rs)・サンプルキャッシュ(SampleBank)
+- `glaux-engine`: 再生(ループ・オートメーション・音声クリップ・自動停止・テンポ変更時の
+  位置保持)・録音(record.rs)・WAV エクスポート・音声解析(AI の耳)・
+  SoundFont 読み込み(sf2.rs、フィルタ/LFO 込み)・サンプルキャッシュ(SampleBank)
 - `glaux-dsp`: 楽器 5 種(subtractive / drum / pluck / sampler / sf2)+
   エフェクト 6 種(eq / compressor / reverb / distortion / amp / sidechain)+
-  奏法 5 種(楽器別カタログ)+ ピッチ表現(expr)
+  奏法 5 種(楽器別カタログ)+ ピッチ表現(expr: 奏法 + 連続ピッチカーブ)
 - `app/`: タイムライン(セクション・拍子対応グリッド)・ピアノロール(奏法・3 連・
   フレット盤・ドラムキット)・音作りビュー・プリセット/SoundFont UI・ループ再生・
   プロジェクト管理(作成/切替/移動/SoundLab)・履歴・チャット・WAV 書き出し
 実機確認済みのハイライト: AI がチャット指示で作曲 → analyze_audio/harmony/rhythm で
 自己確認 → エフェクト・プリセット・SoundFont で音作り、のループが完走。
-AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 116 件。
+AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 135 件。
 
 この文書は、企画段階の議論で決めたことを **理由付きで** 残したものです。
 判断を覆すときは、ここに書いてある理由を上回る根拠を示してください。
@@ -291,9 +292,11 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 
 MVP の割り切り(将来課題):
 
-- **再生位置はサンプル保持**。再生中のテンポ変更で音楽的位置が僅かにずれる
-  (当初方針の「Tick で持つ」への移行は将来。tick⇔秒変換は `TempoMap` を使用)
-- 音声クリップ・ループクリップは未対応
+- **再生位置はサンプル保持**だが、`PlaybackData::tempo`(テンポ区間表)を使って
+  データ差し替え時に tick を保ったまま換算し直すので、再生中のテンポ変更でずれない
+  (2026-09-22)。tick⇔秒変換は `TempoMap` を使用
+- 音声クリップは再生対応(2026-09-22。固定プール 16、線形補間、フェード、途中再開)。
+  ループクリップ(clip.loop)とタイムストレッチ(Stretch::Follow)は未対応
 - オートメーションは track/volume_db・track/pan(サンプル単位で補間)と
   device/<パラメータ>(音色。ブロックレート ≈ 数 ms で評価、
   `InstrumentParams::set_continuous` に raw 値を流し込む)に対応。
@@ -460,7 +463,7 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
 - `get_project` の分割・フィルタ API の形
 - CLAP の `state` を `params` にどこまで写すか
 - 音声ファイルの取り込み時に `audio/` へコピーするか参照するか ← コピー推奨(プロジェクトフォルダで完結)
-- `history.jsonl` の肥大化対策(スナップショット + 以降の差分、`git gc` 相当)
+- ~~`history.jsonl` の肥大化対策~~ → compaction 実装済み(§8 バックログ参照)
 
 ---
 
@@ -706,8 +709,10 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   履歴パネルの各エントリに ↩ ボタン(取り消し済みは非表示)。conflicts(後続の編集が
   同じ対象を触っている)は履歴パネル上部に警告表示。revert 自体も履歴に載り undo 可
 - 途中の拍子変更を人間が UI から挿入・削除(ルーラー右クリック等。今は AI 経由のみ)
-- 分割ピアノロール(2 クリップを並べて表示し、見ながらコピペ。コピーバッファ自体は
-  クリップ間で共有済みなので、これは「見ながら」の UX 改善)
+- ~~分割ピアノロール~~ → **実装済み(2026-09-22)**: 上ペインの「⫶ 分割…」で別クリップを
+  下に開く(`pianoRollStore.second`)。クリックしたペインがアクティブ(`active`)になり
+  キー操作を受ける。クリップボードは `noteClipboard` ストアで共有(奏法も一緒にコピー)。
+  下ペインは ⇅ で上下入れ替え、Esc/✕ でそのペインだけ閉じる
 - ~~ギター用フレット盤 UI~~ → 実装済み(2026-09-22。`Fretboard.svelte`。標準チューニング
   6 弦 × 0〜15F、クリックで挿入カーソル位置に打ち込み。pluck トラックで 🎸 ボタン開閉)
 - ~~ビブラート/チョーキング(簡易版)~~ → 実装済み(2026-09-22)。articulation に
@@ -752,10 +757,31 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     `set_soundfont_instrument`(存在検証つき)。UI: 音作りビューに SoundFont セクション
     (.sf2 追加 → プリセット選択 → 適用)
   - テスト: 最小 SF2 バイナリをテスト内で生成してパース〜ゾーン構築を検証
-  - 残り: SF2 のフィルタ/LFO/モジュレータ、連続ピッチカーブ、非 WAV 素材(symphonia)
-- 音声クリップ再生・録音、ループクリップ(clip.loop フラグ)の再生対応
-  (サンプラーの SampleBank 基盤を流用できる)
-- 再生位置の Tick 管理(再生中のテンポ変更でのずれ解消)
+  - ~~SF2 のフィルタ/LFO/モジュレータ~~ → **実装済み(2026-09-22)**: `ZoneMod`
+    (initialFilterFc/Q、ビブラート LFO、モジュレーション LFO のピッチ/フィルタ、
+    モジュレーションエンベロープのピッチ/フィルタ)。32 サンプルの制御レートで評価し
+    TPT SVF ローパスに反映。CC 経由のモジュレータ(モジュレーションホイール等)は未対応
+  - ~~連続ピッチカーブ~~ → **実装済み(2026-09-22)**: `Note.pitch_curve`(最大 8 点、
+    ±2400 cents、線形補間・両端保持)。`PitchCurve` → `PitchExpr` で奏法と掛け合わせ。
+    UI は表示のみ(編集は AI 経由。`update_notes` の pitch_curve)
+  - ~~ドラム用 SF2 キット UI~~ → 実装済み(2026-09-22。bank 128 でキット図表示)
+  - 残り: 非 WAV 素材(symphonia)、ピッチカーブの手描き UI
+- ~~音声クリップ再生・録音~~ → **実装済み(2026-09-22)**:
+  - 再生: `AudioEvent` を固定プール(16)で線形補間再生。offset / gain_db / fade を反映。
+    シーク・ループ折返し・一時停止からの再開・編集によるデータ差し替えのいずれでも
+    途中から途切れず鳴る(`Renderer::resync_audio`)
+  - 録音: `record.rs`。既定の入力デバイス → ロックフリー SPSC リング(AtomicU32)→
+    書き込みスレッドがモノラル 16bit WAV。`EngineHandle::start/stop_recording`。
+    Tauri `record_start`(再生も開始)/ `record_stop`(音声トラックに配置、無ければ
+    「録音」トラックを新設)。UI は ⏺ ボタン(録音中は点滅)。**サンドボックスには
+    入力デバイスが無いため実機未検証**(リング・WAV 書き出しは単体テスト済み)
+  - 取り込み: `assets::audio_clip_commands`、MCP `import_audio_clip`、
+    UI は「+ 🎵 音声トラック」+ 空きレーンのダブルクリックで WAV 配置
+  - 残り: ループクリップ(clip.loop)、タイムストレッチ(Stretch::Follow)、波形表示
+- ~~再生位置の Tick 管理~~ → **実装済み(2026-09-22)**: `PlaybackData::tempo`(テンポ区間表)
+  + `Renderer::last_tick`。データ差し替え時に tick を保ってサンプル位置を換算し直す
 - 外部 MCP クライアント使用時の AI インジケータ精度(今は 20 秒近似)
-- `history.jsonl` 肥大化対策(スナップショット + 差分)
-- CLAP プラグイン対応、ブラウザ版(WASM)
+- ~~`history.jsonl` 肥大化対策~~ → **実装済み(2026-09-22)**: `Session::compact(keep)` +
+  `Store::maybe_compact`(3000 件超で直近 1500 件に。起点を `history.base.json`、
+  捨てた分を `history.archive.jsonl` に保存。再オープンは base + history で復元)
+- CLAP プラグイン対応、ブラウザ版(WASM)— 別プロジェクト級のため保留
