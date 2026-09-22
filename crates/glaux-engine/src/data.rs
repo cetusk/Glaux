@@ -7,7 +7,7 @@
 //!   再生中のテンポ変更では音楽的位置が僅かにずれる。Tick ベースの位置管理は将来課題)。
 //! - 音声クリップは未対応(MVP は MIDI のみ。`glaux-dsp` 実装後に差し替える)。
 
-use glaux_core::{ClipContent, Effect, Project, Tick};
+use glaux_core::{ClipContent, Curve, Effect, ParamPath, Project, Tick};
 use glaux_dsp::{EffectParams, InstrumentParams};
 
 /// エフェクト状態プールのスロット数(エンジン起動時に固定確保)。
@@ -22,6 +22,14 @@ pub const MAX_TRACKS: usize = 64;
 pub struct BakedEffect {
     pub params: EffectParams,
     pub slot: u32,
+}
+
+/// サンプル位置に焼き込んだオートメーション点。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutoPoint {
+    pub sample: u64,
+    pub value: f32,
+    pub curve: Curve,
 }
 
 /// 1 ノート分の再生イベント。サンプル位置は曲頭からの絶対値。
@@ -46,6 +54,14 @@ pub struct TrackMix {
     pub gain_r: f32,
     /// mute / solo 判定の結果。false なら発音しない
     pub audible: bool,
+    /// 静的な音量(リニア)とパン。オートメーションと組み合わせるときに使う
+    pub base_amp: f32,
+    pub base_pan: f32,
+    /// track/volume_db のオートメーション(dB 値)。空ならフェーダー値を使う。
+    /// レーンがあるときは**フェーダーより優先**(一般的な DAW と同じ)
+    pub vol_db_auto: Vec<AutoPoint>,
+    /// track/pan のオートメーション(-1..1)。空ならフェーダー値を使う
+    pub pan_auto: Vec<AutoPoint>,
     /// 焼き込み済みの楽器パラメータ(glaux-dsp)
     pub instrument: InstrumentParams,
     /// エフェクトチェーン(bypass 除外・焼き込み済み)。楽器 → チェーン → 音量/パン の順
@@ -75,7 +91,7 @@ pub fn pitch_to_freq(pitch: u8) -> f32 {
 }
 
 /// 等パワーパン。pan は -1.0(L) ..= 1.0(R)。
-fn pan_gains(pan: f32) -> (f32, f32) {
+pub fn pan_gains(pan: f32) -> (f32, f32) {
     let t = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
     (t.cos(), t.sin())
 }
@@ -121,6 +137,27 @@ pub fn build_playback_data(project: &Project, sample_rate: f64) -> PlaybackData 
             .map(|i| i as u32)
     };
 
+    // track/volume_db・track/pan のレーンをサンプル位置に焼き込む
+    let bake_lane = |t: &glaux_core::Track, name: &str| -> Vec<AutoPoint> {
+        let mut points: Vec<AutoPoint> = t
+            .automation
+            .iter()
+            .find(|lane| matches!(&lane.target, ParamPath::Track { name: n } if n == name))
+            .map(|lane| {
+                lane.points
+                    .iter()
+                    .map(|p| AutoPoint {
+                        sample: to_sample(p.tick),
+                        value: p.value as f32,
+                        curve: p.curve,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        points.sort_by_key(|p| p.sample);
+        points
+    };
+
     let mut next_slot: u32 = 0;
     let tracks: Vec<TrackMix> = project
         .tracks
@@ -133,6 +170,10 @@ pub fn build_playback_data(project: &Project, sample_rate: f64) -> PlaybackData 
                 gain_l: gain * pl,
                 gain_r: gain * pr,
                 audible: !t.mute && (!any_solo || t.solo),
+                base_amp: gain,
+                base_pan: t.pan,
+                vol_db_auto: bake_lane(t, "volume_db"),
+                pan_auto: bake_lane(t, "pan"),
                 instrument,
                 effects: bake_chain(
                     &t.effects,
@@ -307,6 +348,79 @@ mod tests {
             wet.len(),
             dry.len()
         );
+    }
+
+    #[test]
+    fn volume_automation_fades_and_overrides_fader() {
+        use crate::export::render_project;
+        use glaux_core::{AutomationLane, AutomationPoint, Curve, ParamPath};
+
+        // フェーダーは -60dB(ほぼ無音)だが、レーンが -60 → 0dB のフェードインを描く
+        let mut project = project_with_notes(vec![note(0, 3840, 69, 127)]);
+        project.tracks[0].volume_db = -60.0;
+        project.tracks[0].automation.push(AutomationLane {
+            target: ParamPath::track("volume_db"),
+            points: vec![
+                AutomationPoint {
+                    tick: Tick(0),
+                    value: -60.0,
+                    curve: Curve::Linear,
+                },
+                AutomationPoint {
+                    tick: Tick(1920), // 1 秒でフェード完了、残り 1 秒は 0dB
+                    value: 0.0,
+                    curve: Curve::Linear,
+                },
+            ],
+        });
+        let out = render_project(&project, 48_000.0).unwrap();
+        let rms = |sl: &[f32]| (sl.iter().map(|s| s * s).sum::<f32>() / sl.len() as f32).sqrt();
+        // ステレオ interleaved: 秒 → サンプル対
+        let sec = |a: f64, b: f64| &out[(a * 96_000.0) as usize..(b * 96_000.0) as usize];
+        let head = rms(sec(0.0, 0.4));
+        let tail = rms(sec(1.2, 1.8)); // フェード完了後・ノート内
+        assert!(
+            tail > head * 4.0,
+            "フェードインするはず: head={head} tail={tail}"
+        );
+        assert!(
+            tail > 0.06,
+            "レーンがフェーダー(-60dB)より優先されるはず: {tail}"
+        );
+    }
+
+    #[test]
+    fn pan_automation_moves_left_to_right() {
+        use crate::export::render_project;
+        use glaux_core::{AutomationLane, AutomationPoint, Curve, ParamPath};
+
+        let mut project = project_with_notes(vec![note(0, 3840, 69, 110)]);
+        project.tracks[0].automation.push(AutomationLane {
+            target: ParamPath::track("pan"),
+            points: vec![
+                AutomationPoint {
+                    tick: Tick(0),
+                    value: -1.0,
+                    curve: Curve::Linear,
+                },
+                AutomationPoint {
+                    tick: Tick(3840),
+                    value: 1.0,
+                    curve: Curve::Linear,
+                },
+            ],
+        });
+        let out = render_project(&project, 48_000.0).unwrap();
+        let n = out.len() / 2;
+        let energy = |range: std::ops::Range<usize>, ch: usize| -> f32 {
+            range.map(|i| out[i * 2 + ch].powi(2)).sum()
+        };
+        let head_l = energy(0..n / 4, 0);
+        let head_r = energy(0..n / 4, 1);
+        let tail_l = energy(n / 2..n * 3 / 4, 0);
+        let tail_r = energy(n / 2..n * 3 / 4, 1);
+        assert!(head_l > head_r * 5.0, "冒頭は左寄りのはず");
+        assert!(tail_r > tail_l * 2.0, "後半は右寄りのはず");
     }
 
     #[test]

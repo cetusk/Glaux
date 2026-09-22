@@ -215,7 +215,11 @@ impl GlauxServer {
         新規 ID は呼び出し側が生成して渡す(トラック trk_、クリップ clp_、ノート nt_、エフェクト fx_ + 英数 6 桁。例 trk_a1b2c3)。\
         相対操作(「半音上げる」等)は不可。現在値を読んで絶対値を計算してから送ること。\
         代表例: add_track {track,index?} / add_clip {track,clip} / add_notes {clip,notes} / update_notes {clip,changes} / \
-        set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?}。\
+        set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?} / \
+        set_automation_points {track,target,points}(target は \"track/volume_db\" か \"track/pan\"、\
+        points は [{tick,value,curve?}] で curve は linear/hold/exponential。\
+        フェードイン・ビルドアップの音量カーブ・左右の揺れなど時間変化するミックスに使う。\
+        レーンがあるとフェーダー値より優先。空配列でレーン削除)。\
         失敗時はどのコマンドで失敗したかがエラーメッセージに入る(batch failed at command #N)。"
     )]
     async fn apply_commands(

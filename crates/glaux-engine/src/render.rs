@@ -10,8 +10,9 @@
 //! 音源は glaux-dsp の内蔵楽器(subtractive / drum)。トラックの device 設定から
 //! 焼き込まれたパラメータ([`crate::data::TrackMix::instrument`])で発音する。
 
-use crate::data::{PlaybackData, MAX_EFFECT_SLOTS, MAX_TRACKS};
+use crate::data::{db_to_amp, pan_gains, AutoPoint, PlaybackData, MAX_EFFECT_SLOTS, MAX_TRACKS};
 use arc_swap::ArcSwap;
+use glaux_core::Curve;
 use glaux_dsp::{EffectParams, EffectState, VoiceState};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -81,11 +82,38 @@ pub struct Renderer {
     effect_states: Vec<EffectState>,
     /// トラックごとの無音連続サンプル数(残響が消えたらエフェクト処理を省く)
     track_silence: [u32; MAX_TRACKS],
+    /// オートメーション評価カーソル(vol, pan)。単調前進、resync でリセット
+    auto_cursors: [(usize, usize); MAX_TRACKS],
     /// `data.events` の次に発音するイベントの添字
     next_event: usize,
     /// 直前に見ていた `PlaybackData` のアドレス(差し替え検出用)
     last_data: usize,
     pos: u64,
+}
+
+/// オートメーション点列を区分補間で評価する(core の `AutomationLane::value_at` と同義)。
+/// `cursor` は「sample <= pos の最後の点」の添字で、単調に前進させる。
+fn eval_auto(points: &[AutoPoint], cursor: &mut usize, pos: u64) -> f32 {
+    while *cursor + 1 < points.len() && points[*cursor + 1].sample <= pos {
+        *cursor += 1;
+    }
+    let a = points[*cursor];
+    if pos < a.sample {
+        return a.value; // 最初の点より前
+    }
+    let Some(b) = points.get(*cursor + 1) else {
+        return a.value; // 最後の点より後
+    };
+    let span = (b.sample - a.sample) as f32;
+    if span <= 0.0 {
+        return a.value;
+    }
+    let t = (pos - a.sample) as f32 / span;
+    match a.curve {
+        Curve::Hold => a.value,
+        Curve::Linear => a.value + (b.value - a.value) * t,
+        Curve::Exponential => a.value + (b.value - a.value) * t * t,
+    }
 }
 
 impl Renderer {
@@ -97,6 +125,7 @@ impl Renderer {
             last_preview: 0,
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
             track_silence: [u32::MAX; MAX_TRACKS],
+            auto_cursors: [(0, 0); MAX_TRACKS],
             next_event: 0,
             last_data: 0,
             pos: 0,
@@ -127,6 +156,7 @@ impl Renderer {
         }
         if resync {
             self.voices.clear();
+            self.auto_cursors = [(0, 0); MAX_TRACKS];
             self.next_event = data.events.partition_point(|e| e.start < self.pos);
             // スロットの中身が変わっていたらエフェクト状態を作り直す(アロケーションなし)
             for fx in data
@@ -258,9 +288,28 @@ impl Renderer {
                 } else {
                     self.track_silence[ti] = 0;
                 }
+                // 音量・パン: オートメーションレーンがあればフェーダーより優先
+                let (gl, gr) = if mix.vol_db_auto.is_empty() && mix.pan_auto.is_empty() {
+                    (mix.gain_l, mix.gain_r)
+                } else {
+                    let (vol_cur, pan_cur) = &mut self.auto_cursors[ti];
+                    let amp = if mix.vol_db_auto.is_empty() {
+                        mix.base_amp
+                    } else {
+                        db_to_amp(eval_auto(&mix.vol_db_auto, vol_cur, self.pos))
+                    };
+                    let pan = if mix.pan_auto.is_empty() {
+                        mix.base_pan
+                    } else {
+                        eval_auto(&mix.pan_auto, pan_cur, self.pos).clamp(-1.0, 1.0)
+                    };
+                    let (pl, pr) = pan_gains(pan);
+                    (amp * pl, amp * pr)
+                };
+
                 if mix.effects.is_empty() {
-                    l += mono * mix.gain_l;
-                    r += mono * mix.gain_r;
+                    l += mono * gl;
+                    r += mono * gr;
                     continue;
                 }
                 // 長く無音のトラックはチェーンごとスキップ(CPU 節約)
@@ -273,8 +322,8 @@ impl Renderer {
                     let state = &mut self.effect_states[fx.slot as usize];
                     (fl, fr) = state.process(&fx.params, fl, fr, key);
                 }
-                l += fl * mix.gain_l;
-                r += fr * mix.gain_r;
+                l += fl * gl;
+                r += fr * gr;
             }
 
             // 試聴ボイス(停止中でも鳴る。トラックエフェクトはバイパス)
@@ -361,6 +410,10 @@ mod tests {
                 gain_l: 1.0,
                 gain_r: 1.0,
                 audible,
+                base_amp: 1.0,
+                base_pan: 0.0,
+                vol_db_auto: vec![],
+                pan_auto: vec![],
                 instrument: test_instrument(),
                 effects: vec![],
             }],
