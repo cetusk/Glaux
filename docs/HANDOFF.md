@@ -2,17 +2,25 @@
 
 作成日: 2026-09-21(最終更新: 2026-09-22)
 状態(2026-09-22 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
-- `glaux-core`: モデル / Command / 履歴
-- `glaux-mcp`: 13 ツール(get_project / apply_commands / undo / redo / checkpoint / revert_to /
-  get_history / list_params / analyze_audio + ノート便利ツール transpose_notes / shift_notes /
-  quantize_notes / scale_velocity)。stdio 単体 + アプリ内 HTTP の両対応
-- `glaux-engine`: 再生・WAV エクスポート・音声解析(AI の耳)
-- `glaux-dsp`: 楽器(subtractive / drum)+ エフェクト(eq / compressor / reverb)
-- `app/`: タイムライン・履歴・チャット(ヘッドレス claude)・トランスポート・範囲マスク・
-  音量/M/S 操作・WAV 書き出し
-実機確認済みのハイライト: AI がチャット指示で作曲 → analyze_audio で自分の耳を使い →
-エフェクトでミックス調整、のループが完走(「音圧配分が良くなって迫力が上がった」との評価)。
-プロジェクト管理 UI も実装済み。今後の課題の全体像と優先順位は §8 を参照。
+- `glaux-core`: モデル(セクション・奏法込み)/ Command(約 25 種)/ 履歴 /
+  和声分析(harmony)/ リズム分析(rhythm)
+- `glaux-mcp`: **22 ツール** = 基本 9(get_project / apply_commands / undo / redo / checkpoint /
+  revert_to / get_history / list_params / analyze_audio)+ 分析 2(analyze_harmony /
+  analyze_rhythm)+ ノート便利 4(transpose / shift / quantize / scale_velocity)+
+  プリセット 4(list / save / load / delete)+ 素材 3(import_sample / list_soundfonts /
+  set_soundfont_instrument)。stdio 単体 + アプリ内 HTTP の両対応。
+  ほかに presets / assets モジュール(アプリと共用)
+- `glaux-engine`: 再生(ループ・オートメーション・自動停止)・WAV エクスポート・
+  音声解析(AI の耳)・SoundFont 読み込み(sf2.rs)・サンプルキャッシュ(SampleBank)
+- `glaux-dsp`: 楽器 5 種(subtractive / drum / pluck / sampler / sf2)+
+  エフェクト 6 種(eq / compressor / reverb / distortion / amp / sidechain)+
+  奏法 5 種(楽器別カタログ)+ ピッチ表現(expr)
+- `app/`: タイムライン(セクション・拍子対応グリッド)・ピアノロール(奏法・3 連・
+  フレット盤・ドラムキット)・音作りビュー・プリセット/SoundFont UI・ループ再生・
+  プロジェクト管理(作成/切替/移動/SoundLab)・履歴・チャット・WAV 書き出し
+実機確認済みのハイライト: AI がチャット指示で作曲 → analyze_audio/harmony/rhythm で
+自己確認 → エフェクト・プリセット・SoundFont で音作り、のループが完走。
+AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 116 件。
 
 この文書は、企画段階の議論で決めたことを **理由付きで** 残したものです。
 判断を覆すときは、ここに書いてある理由を上回る根拠を示してください。
