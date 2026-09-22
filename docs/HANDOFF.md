@@ -1,10 +1,11 @@
 # 引き継ぎ文書(HANDOFF)
 
-作成日: 2026-09-21(最終更新: 2026-09-21)
-状態(2026-09-21 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
+作成日: 2026-09-21(最終更新: 2026-09-22)
+状態(2026-09-22 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
 - `glaux-core`: モデル / Command / 履歴
-- `glaux-mcp`: 9 ツール(get_project / apply_commands / undo / redo / checkpoint / revert_to /
-  get_history / list_params / analyze_audio)。stdio 単体 + アプリ内 HTTP の両対応
+- `glaux-mcp`: 13 ツール(get_project / apply_commands / undo / redo / checkpoint / revert_to /
+  get_history / list_params / analyze_audio + ノート便利ツール transpose_notes / shift_notes /
+  quantize_notes / scale_velocity)。stdio 単体 + アプリ内 HTTP の両対応
 - `glaux-engine`: 再生・WAV エクスポート・音声解析(AI の耳)
 - `glaux-dsp`: 楽器(subtractive / drum)+ エフェクト(eq / compressor / reverb)
 - `app/`: タイムライン・履歴・チャット(ヘッドレス claude)・トランスポート・範囲マスク・
@@ -253,14 +254,13 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 - MCP はリクエストを並行処理するので、クライアントが応答を待たず連投すると実行順は保証されない
   (アクターが状態は守る。通常の AI クライアントは逐次呼び出しなので問題にならない)
 
-残り(未実装): `get_clip` / `list_params`(glaux-dsp の ParamSpec 待ち)/ `get_history_entry` /
-`revert(entry_id)` / 便利ツール(transpose_notes / shift_notes / scale_velocity / quantize_notes)/
-`new_ids` / `analyze_audio`・`render`(エンジン実装後)
+- **便利ツール実装済み(2026-09-22)**: `transpose_notes` / `shift_notes` / `quantize_notes` /
+  `scale_velocity`。MCP 層で現在値を読んで絶対値の `UpdateNotes` **1 コマンド**に変換する
+  (= 1 回の undo で戻せる)。note_ids 省略で全ノート、指定で部分編集。
+  端に当たって丸めた場合は `clamped` を返して AI に知らせる。
+  実質 no-op(全ノート変更なし)のときは履歴を汚さず `changed: 0` を返す
 
-### 次の作業の論点
-
-- `analyze_audio` の返す情報(エンジン実装後): ラウドネス(LUFS)、スペクトル重心、低/中/高域のエネルギー比、オンセット位置、推定ピッチ/コード。LLM は生音声を扱えないので **テキストで聴かせる**
-- 相対操作の便利ツール(transpose_notes 等)は MCP 層で現在値を読んで絶対値の `update_notes` に変換する方針(決定済み、未実装)
+残り(未実装): `get_clip` / `get_history_entry` / `revert(entry_id)` / `new_ids` / `render`
 
 ### `crates/glaux-engine`(MVP 済)
 
@@ -568,8 +568,11 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
      ある場合は「4/4*」と表示)。**途中からの拍子変更の挿入は AI 経由**(`set_time_sig` は
      全置換なので UI 化するなら既存イベントとのマージ UI が要る → バックログ)
 
-9. **MCP 便利ツール**(transpose_notes / shift_notes / quantize_notes / scale_velocity)
-   - AI の編集の効率と確実性を上げる(現在値読み→絶対値変換をサーバー側で肩代わり)
+9. ~~MCP 便利ツール~~ → **実装済み(2026-09-22)**(transpose_notes / shift_notes /
+   quantize_notes / scale_velocity)
+   - 現在値読み→絶対値変換をサーバー側で肩代わり。詳細は「glaux-mcp」節の便利ツール項を参照。
+     apply_commands の description・サーバー instructions・アプリ内チャットの
+     システムプロンプトから誘導している
 
 ### バックログ(順不同)
 

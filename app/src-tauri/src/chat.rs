@@ -105,6 +105,10 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     重要: このプロジェクトは人間(ユーザー)も UI から並行して編集します。あなたの会話の記憶は\
     古くなっている可能性があるため、各レスポンスの project_version と履歴(get_history)を信頼し、\
     編集の前には必要に応じて get_project で最新状態を確認してください。\
+    ノートの移調・時間移動・クオンタイズ・ベロシティ一括調整には専用ツール\
+    (transpose_notes / shift_notes / quantize_notes / scale_velocity)があります。\
+    「1 オクターブ上げて」「1 拍後ろに」のような相対編集は、自分で update_notes を\
+    組み立てるよりこれらを使う方が速くて確実です。\
     音源: トラックには set_device で内蔵楽器(subtractive=シンセ全般 / drum=ドラム)を設定でき、\
     list_params でパラメータの意味・範囲・現在値を確認して set_param で音作りができます。\
     ドラムのトラックには必ず drum を設定してください。\

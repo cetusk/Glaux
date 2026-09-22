@@ -108,6 +108,58 @@ pub struct GetHistoryParams {
     pub limit: Option<u32>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct TransposeNotesParams {
+    /// 対象クリップ ID(`clp_xxxxxx`)。
+    pub clip_id: String,
+    /// 移動量(半音単位)。正で上、負で下。12 で 1 オクターブ。
+    pub semitones: i32,
+    /// 対象ノート ID(`nt_xxxxxx`)の配列。省略でクリップ内の全ノート。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ShiftNotesParams {
+    /// 対象クリップ ID(`clp_xxxxxx`)。
+    pub clip_id: String,
+    /// 移動量(tick)。正で後ろ、負で前。960 = 4 分音符、3840 = 4/4 の 1 小節。
+    pub delta_ticks: i64,
+    /// 対象ノート ID の配列。省略でクリップ内の全ノート。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct QuantizeNotesParams {
+    /// 対象クリップ ID(`clp_xxxxxx`)。
+    pub clip_id: String,
+    /// グリッド間隔(tick)。240 = 1/16、480 = 1/8、960 = 1/4。
+    pub grid_ticks: u64,
+    /// 掛かり具合 0.0〜1.0。1.0 でグリッドに完全一致、0.5 で半分だけ寄せる
+    /// (人間味を残すなら 0.5〜0.8)。省略時 1.0。
+    #[serde(default)]
+    pub strength: Option<f64>,
+    /// 対象ノート ID の配列。省略でクリップ内の全ノート。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ScaleVelocityParams {
+    /// 対象クリップ ID(`clp_xxxxxx`)。
+    pub clip_id: String,
+    /// 倍率。vel = round(vel * factor + offset)。省略時 1.0。
+    #[serde(default)]
+    pub factor: Option<f64>,
+    /// 加算量。負で弱く。省略時 0。factor とどちらかは必ず指定する。
+    #[serde(default)]
+    pub offset: Option<f64>,
+    /// 対象ノート ID の配列。省略でクリップ内の全ノート。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+}
+
 // ---- ヘルパー -----------------------------------------------------------
 
 type ToolResult = Result<Json<Value>, String>;
@@ -155,6 +207,82 @@ impl GlauxServer {
             .map(|info| info.client_info.name.clone())
             .unwrap_or_else(|| "unknown".to_owned());
         Author::Ai { model }
+    }
+
+    /// 便利ツール共通: MIDI クリップの現在のノート(と選択部分集合)を読む。
+    async fn load_notes(
+        &self,
+        clip_id: &str,
+        note_ids: &Option<Vec<String>>,
+    ) -> Result<
+        (
+            glaux_core::ClipId,
+            glaux_core::Tick,
+            Vec<glaux_core::Note>,
+            usize,
+        ),
+        String,
+    > {
+        let id = glaux_core::ClipId::parse(clip_id).map_err(|e| e.to_string())?;
+        let (project, version) = self.handle.get_project().await?;
+        let (_track, clip) = project
+            .clip(&id)
+            .ok_or_else(|| format!("clip not found: {id}"))?;
+        let notes = clip
+            .notes()
+            .ok_or_else(|| format!("clip {id} は MIDI クリップではありません"))?;
+        let selected: Vec<glaux_core::Note> = match note_ids {
+            None => notes.to_vec(),
+            Some(list) => {
+                let mut out = Vec::with_capacity(list.len());
+                let mut seen = std::collections::HashSet::new();
+                for s in list {
+                    let nid = glaux_core::NoteId::parse(s).map_err(|e| e.to_string())?;
+                    if !seen.insert(nid.clone()) {
+                        continue; // 重複指定は無視
+                    }
+                    let n = notes
+                        .iter()
+                        .find(|n| n.id == nid)
+                        .ok_or_else(|| format!("note not found in clip {id}: {s}"))?;
+                    out.push(n.clone());
+                }
+                out
+            }
+        };
+        Ok((id, clip.length, selected, version))
+    }
+
+    /// 便利ツール共通: 変更を UpdateNotes 1 コマンドとして適用する。
+    /// 変更が空(全部が実質 no-op)なら履歴を汚さず changed: 0 を返す。
+    async fn apply_note_changes(
+        &self,
+        clip: glaux_core::ClipId,
+        changes: Vec<glaux_core::NoteChange>,
+        clamped: usize,
+        label: String,
+        version: usize,
+        ctx: &RequestContext<RoleServer>,
+    ) -> ToolResult {
+        if changes.is_empty() {
+            return Ok(Json(json!({
+                "project_version": version,
+                "changed": 0,
+                "note": "対象ノートはすべて変更不要でした",
+            })));
+        }
+        let changed = changes.len();
+        let command = Command::UpdateNotes { clip, changes };
+        let author = self.author(ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(changed);
+        if clamped > 0 {
+            // 端に当たって値を丸めたことを AI に知らせる(意図とずれている可能性)
+            v["clamped"] = json!(clamped);
+        }
+        Ok(Json(v))
     }
 }
 
@@ -214,6 +342,8 @@ impl GlauxServer {
         commands には glaux の Command JSON({\"op\": ..., ...})を並べる。複数渡すと 1 つの Batch になり、1 回の undo でまとめて戻せる。\
         新規 ID は呼び出し側が生成して渡す(トラック trk_、クリップ clp_、ノート nt_、エフェクト fx_ + 英数 6 桁。例 trk_a1b2c3)。\
         相対操作(「半音上げる」等)は不可。現在値を読んで絶対値を計算してから送ること。\
+        ただしノートの移調・時間移動・クオンタイズ・ベロシティ一括調整は\
+        専用ツール(transpose_notes / shift_notes / quantize_notes / scale_velocity)の方が速くて確実。\
         代表例: add_track {track,index?} / add_clip {track,clip} / add_notes {clip,notes} / update_notes {clip,changes} / \
         set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?} / \
         set_automation_points {track,target,points}(target は \"track/volume_db\" か \"track/pan\"、\
@@ -508,6 +638,174 @@ impl GlauxServer {
             json!({ "project_version": version, "entries": entries }),
         ))
     }
+
+    // ---- ノート便利ツール ------------------------------------------------
+    // 「現在値を読んで絶対値に変換」をサーバー側で肩代わりする相対編集。
+    // 中身はすべて UpdateNotes 1 コマンド = 1 回の undo で戻せる。
+
+    #[tool(
+        description = "クリップ内のノートを半音単位で移調する(相対編集の代行)。\
+        semitones: +12 で 1 オクターブ上、-12 で下。note_ids 省略で全ノート。\
+        音域(0..127)からはみ出す音は端に丸め、丸めた個数を clamped で返す\
+        (clamped が付いたら意図どおりか確認を)。転調・オクターブ移動はこれを使い、\
+        自分で update_notes を組み立てない。"
+    )]
+    async fn transpose_notes(
+        &self,
+        params: Parameters<TransposeNotesParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("transpose_notes");
+        let p = params.0;
+        let (clip, _len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
+        if p.semitones == 0 {
+            return Err("semitones が 0 です(変更なし)".to_owned());
+        }
+        let mut clamped = 0usize;
+        let changes: Vec<_> = notes
+            .iter()
+            .map(|n| {
+                let raw = n.pitch as i32 + p.semitones;
+                let new = raw.clamp(0, 127) as u8;
+                if raw != new as i32 {
+                    clamped += 1;
+                }
+                (n, new)
+            })
+            .filter(|(n, new)| n.pitch != *new)
+            .map(|(n, new)| glaux_core::NoteChange::new(n.id.clone()).pitch(new))
+            .collect();
+        let label = format!("{:+} 半音移調({} ノート)", p.semitones, changes.len());
+        self.apply_note_changes(clip, changes, clamped, label, version, &ctx)
+            .await
+    }
+
+    #[tool(
+        description = "クリップ内のノートを時間方向に移動する(相対編集の代行)。\
+        delta_ticks: 正で後ろ、負で前(960 = 4 分音符、3840 = 4/4 の 1 小節)。note_ids 省略で全ノート。\
+        クリップ範囲(0..length-1)からはみ出す開始位置は端に丸め、丸めた個数を clamped で返す\
+        (前に寄せすぎてタイミングが崩れていないか確認を)。\
+        フレーズ全体を 1 拍ずらす・裏拍に移す、などはこれを使う。"
+    )]
+    async fn shift_notes(
+        &self,
+        params: Parameters<ShiftNotesParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("shift_notes");
+        let p = params.0;
+        let (clip, len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
+        if p.delta_ticks == 0 {
+            return Err("delta_ticks が 0 です(変更なし)".to_owned());
+        }
+        let max_pos = len.0.saturating_sub(1) as i64;
+        let mut clamped = 0usize;
+        let changes: Vec<_> = notes
+            .iter()
+            .map(|n| {
+                let raw = n.pos.0 as i64 + p.delta_ticks;
+                let new = raw.clamp(0, max_pos) as u64;
+                if raw != new as i64 {
+                    clamped += 1;
+                }
+                (n, new)
+            })
+            .filter(|(n, new)| n.pos.0 != *new)
+            .map(|(n, new)| glaux_core::NoteChange::new(n.id.clone()).pos(glaux_core::Tick(new)))
+            .collect();
+        let label = format!("{:+} tick 移動({} ノート)", p.delta_ticks, changes.len());
+        self.apply_note_changes(clip, changes, clamped, label, version, &ctx)
+            .await
+    }
+
+    #[tool(description = "ノートの開始位置をグリッドに寄せる(クオンタイズ)。\
+        grid_ticks: 240 = 1/16、480 = 1/8。strength 1.0 で完全一致、0.5〜0.8 で人間味を残す。\
+        note_ids 省略で全ノート。長さ(dur)は変えない。\
+        人間の打ち込みのヨレを直すときは、先に get_project でリズムの意図(シャッフル等)がないか確認してから。")]
+    async fn quantize_notes(
+        &self,
+        params: Parameters<QuantizeNotesParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("quantize_notes");
+        let p = params.0;
+        if p.grid_ticks == 0 {
+            return Err("grid_ticks は 1 以上にすること".to_owned());
+        }
+        let strength = p.strength.unwrap_or(1.0);
+        if !(0.0..=1.0).contains(&strength) {
+            return Err(format!("strength は 0.0〜1.0(got: {strength})"));
+        }
+        let (clip, len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
+        let max_pos = len.0.saturating_sub(1);
+        let changes: Vec<_> = notes
+            .iter()
+            .map(|n| {
+                let pos = n.pos.0;
+                let target = ((pos as f64 / p.grid_ticks as f64).round() as u64) * p.grid_ticks;
+                let new = (pos as f64 + (target as f64 - pos as f64) * strength).round() as u64;
+                (n, new.min(max_pos))
+            })
+            .filter(|(n, new)| n.pos.0 != *new)
+            .map(|(n, new)| glaux_core::NoteChange::new(n.id.clone()).pos(glaux_core::Tick(new)))
+            .collect();
+        let label = format!(
+            "クオンタイズ 1/{}({} ノート)",
+            3840 / p.grid_ticks.max(1),
+            changes.len()
+        );
+        self.apply_note_changes(clip, changes, 0, label, version, &ctx)
+            .await
+    }
+
+    #[tool(
+        description = "ノートのベロシティをまとめて変える。vel = round(vel * factor + offset) を 1..127 に丸める。\
+        例: factor 0.8 で全体を弱く、offset +15 で底上げ、factor 0.5 + offset 40 でダイナミクスを圧縮。\
+        note_ids 省略で全ノート。端に丸めた個数を clamped で返す。\
+        「このフレーズを弱く」「ゴーストノートを作る」などに使う。"
+    )]
+    async fn scale_velocity(
+        &self,
+        params: Parameters<ScaleVelocityParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("scale_velocity");
+        let p = params.0;
+        if p.factor.is_none() && p.offset.is_none() {
+            return Err("factor と offset のどちらかは指定すること".to_owned());
+        }
+        let factor = p.factor.unwrap_or(1.0);
+        let offset = p.offset.unwrap_or(0.0);
+        if !(0.0..=16.0).contains(&factor) {
+            return Err(format!("factor は 0.0〜16.0(got: {factor})"));
+        }
+        let (clip, _len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
+        let mut clamped = 0usize;
+        let changes: Vec<_> = notes
+            .iter()
+            .map(|n| {
+                let raw = (n.vel as f64 * factor + offset).round();
+                let new = raw.clamp(1.0, 127.0) as u8;
+                if raw != new as f64 {
+                    clamped += 1;
+                }
+                (n, new)
+            })
+            .filter(|(n, new)| n.vel != *new)
+            .map(|(n, new)| glaux_core::NoteChange::new(n.id.clone()).vel(new))
+            .collect();
+        let label = format!(
+            "ベロシティ調整 ×{factor}{}({} ノート)",
+            if offset != 0.0 {
+                format!(" {offset:+}")
+            } else {
+                String::new()
+            },
+            changes.len()
+        );
+        self.apply_note_changes(clip, changes, clamped, label, version, &ctx)
+            .await
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -517,6 +815,8 @@ impl ServerHandler for GlauxServer {
             .with_instructions(
                 "Glaux(AI と共同作業できる DAW)のプロジェクト編集サーバー。\
                  まず get_project(include_notes: false)で構造を把握 → apply_commands で編集、が基本の流れ。\
+                 ノートの移調・時間移動・クオンタイズ・ベロシティ調整は専用ツール\
+                 (transpose_notes / shift_notes / quantize_notes / scale_velocity)が使える。\
                  音源: トラックには set_device で内蔵楽器(subtractive / drum)を設定でき、\
                  list_params でパラメータの意味と現在値を確認して set_param で調整する。\
                  ドラムトラックには drum を設定すること。\

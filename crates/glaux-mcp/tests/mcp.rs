@@ -501,3 +501,159 @@ async fn analyze_audio_per_track_reveals_balance() {
     let r = call(&fx, "analyze_audio", json!({})).await;
     assert!(ok_json(&r).get("tracks").is_none());
 }
+
+#[tokio::test]
+async fn note_utility_tools_edit_and_undo_as_one_step() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_keys01", "Keys")).await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_clip", "track": "trk_keys01",
+                  "clip": { "id": "clp_riff01", "name": "Riff", "start": 0, "length": 3840, "kind": "midi",
+                    "notes": [
+                        { "id": "nt_aaa001", "pos": 10,  "dur": 480, "pitch": 60,  "vel": 100 },
+                        { "id": "nt_bbb001", "pos": 490, "dur": 480, "pitch": 64,  "vel": 80 },
+                        { "id": "nt_ccc001", "pos": 960, "dur": 480, "pitch": 126, "vel": 120 }
+                    ] } }
+            ],
+            "label": "リフを追加",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+
+    // 1. 移調 +12: 126 は 127 に丸められる(clamped: 1)
+    let r = call(
+        &fx,
+        "transpose_notes",
+        json!({ "clip_id": "clp_riff01", "semitones": 12 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["changed"], 3);
+    assert_eq!(v["clamped"], 1);
+
+    // 2. 選択ノートだけ後ろへ移動
+    let r = call(
+        &fx,
+        "shift_notes",
+        json!({ "clip_id": "clp_riff01", "delta_ticks": 480, "note_ids": ["nt_aaa001"] }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["changed"], 1);
+
+    // 3. クオンタイズ 1/8: 490 の 2 音が 480 に寄る(960 は変更なし)
+    let r = call(
+        &fx,
+        "quantize_notes",
+        json!({ "clip_id": "clp_riff01", "grid_ticks": 480 }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["changed"], 2);
+
+    // 4. ベロシティを半分に
+    let r = call(
+        &fx,
+        "scale_velocity",
+        json!({ "clip_id": "clp_riff01", "factor": 0.5 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["changed"], 3);
+    assert!(v.get("clamped").is_none());
+
+    // 5. 全部グリッド上なので no-op: 履歴を汚さない
+    let before = ok_json(&call(&fx, "get_history", json!({})).await)["entries"]
+        .as_array()
+        .unwrap()
+        .len();
+    let r = call(
+        &fx,
+        "quantize_notes",
+        json!({ "clip_id": "clp_riff01", "grid_ticks": 480 }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["changed"], 0);
+    let after = ok_json(&call(&fx, "get_history", json!({})).await)["entries"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(before, after, "no-op は履歴エントリを作らない");
+
+    // 最終状態(ノートは pos, pitch, id 順にソートされる)
+    let r = call(&fx, "get_project", json!({})).await;
+    let notes = ok_json(&r)["project"]["tracks"][0]["clips"][0]["notes"].clone();
+    assert_eq!(
+        notes,
+        json!([
+            { "id": "nt_aaa001", "pos": 480, "dur": 480, "pitch": 72,  "vel": 50 },
+            { "id": "nt_bbb001", "pos": 480, "dur": 480, "pitch": 76,  "vel": 40 },
+            { "id": "nt_ccc001", "pos": 960, "dur": 480, "pitch": 127, "vel": 60 }
+        ])
+    );
+
+    // undo 1 回 = ベロシティ調整だけが戻る(1 ツール呼び出し = 1 履歴エントリ)
+    call(&fx, "undo", json!({})).await;
+    let r = call(&fx, "get_project", json!({})).await;
+    let notes = ok_json(&r)["project"]["tracks"][0]["clips"][0]["notes"].clone();
+    assert_eq!(notes[0]["vel"], 100);
+    assert_eq!(notes[0]["pos"], 480, "位置の編集は残る");
+}
+
+#[tokio::test]
+async fn note_utility_tools_validate_inputs() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_keys01", "Keys")).await;
+    call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_clip", "track": "trk_keys01",
+                  "clip": { "id": "clp_riff01", "name": "Riff", "start": 0, "length": 3840, "kind": "midi",
+                    "notes": [ { "id": "nt_aaa001", "pos": 0, "dur": 480, "pitch": 60, "vel": 100 } ] } }
+            ],
+            "label": "リフを追加",
+        }),
+    )
+    .await;
+
+    // 変更量ゼロ・範囲外・対象なしはツールエラー
+    for (tool, args) in [
+        (
+            "transpose_notes",
+            json!({ "clip_id": "clp_riff01", "semitones": 0 }),
+        ),
+        (
+            "shift_notes",
+            json!({ "clip_id": "clp_riff01", "delta_ticks": 0 }),
+        ),
+        (
+            "quantize_notes",
+            json!({ "clip_id": "clp_riff01", "grid_ticks": 0 }),
+        ),
+        (
+            "quantize_notes",
+            json!({ "clip_id": "clp_riff01", "grid_ticks": 480, "strength": 1.5 }),
+        ),
+        ("scale_velocity", json!({ "clip_id": "clp_riff01" })),
+        (
+            "transpose_notes",
+            json!({ "clip_id": "clp_nothere", "semitones": 1 }),
+        ),
+        (
+            "transpose_notes",
+            json!({ "clip_id": "clp_riff01", "semitones": 1, "note_ids": ["nt_zzz999"] }),
+        ),
+    ] {
+        let r = call(&fx, tool, args.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{tool} {args} は失敗するはず");
+    }
+
+    // エラーは履歴に残らない
+    let r = call(&fx, "get_history", json!({})).await;
+    assert_eq!(ok_json(&r)["entries"].as_array().unwrap().len(), 2);
+}
