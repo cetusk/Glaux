@@ -31,7 +31,16 @@
     return { parent, stem: folder.replace(/\.glaux$/i, "") };
   }
 
+  // ドロップダウンは画面基準(fixed)で出す。ヘッダーは横スクロールのため overflow が
+  // 付いており、absolute だとヘッダーの枠で切り取られて裏に隠れる
+  let titleBtn: HTMLButtonElement | undefined = $state();
+  let menuPos = $state({ left: 0, top: 0 });
+
   async function toggle() {
+    if (!openMenu && titleBtn) {
+      const r = titleBtn.getBoundingClientRect();
+      menuPos = { left: Math.max(8, r.left), top: r.bottom + 6 };
+    }
     openMenu = !openMenu;
     menuError = null;
     if (openMenu) {
@@ -186,7 +195,7 @@
 </script>
 
 <div class="menu-root">
-  <button class="title-btn" onclick={toggle} title="プロジェクトを切り替える">
+  <button class="title-btn" bind:this={titleBtn} onclick={toggle} title="プロジェクトを切り替える">
     <span class="title-text">{title}</span>
     <span class="chev">▾</span>
   </button>
@@ -194,7 +203,7 @@
   {#if openMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="backdrop" onclick={() => (openMenu = false)}></div>
-    <div class="dropdown">
+    <div class="dropdown" style="left:{menuPos.left}px;top:{menuPos.top}px">
       {#if menuError}
         <div class="menu-error">{menuError}</div>
       {/if}
@@ -297,14 +306,12 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    z-index: 9;
+    z-index: 39;
   }
 
   .dropdown {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    z-index: 10;
+    position: fixed;
+    z-index: 40;
     width: 380px;
     background: var(--bg-panel);
     border: 1px solid var(--border);
