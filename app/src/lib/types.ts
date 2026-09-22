@@ -29,6 +29,17 @@ export interface AudioClip {
 
 export type Clip = MidiClip | AudioClip;
 
+export interface AutomationPoint {
+  tick: number;
+  value: number;
+  curve?: "linear" | "hold" | "exponential";
+}
+
+export interface AutomationLane {
+  target: string;
+  points: AutomationPoint[];
+}
+
 export interface Track {
   id: string;
   name: string;
@@ -41,7 +52,7 @@ export interface Track {
   device?: { type?: string; name?: string; params?: Record<string, unknown> } | null;
   effects: unknown[];
   clips: Clip[];
-  automation: unknown[];
+  automation: AutomationLane[];
 }
 
 export interface Project {

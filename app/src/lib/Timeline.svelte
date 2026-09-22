@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "./api";
+  import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import ClipPreview from "./ClipPreview.svelte";
   import { newTrackId } from "./ids";
   import { pianoRollStore, selectionStore } from "./selection.svelte";
@@ -162,6 +163,26 @@
     };
   }
 
+  // ---- オートメーションレーンの開閉 ----
+
+  let autoLanes = $state<Record<string, "volume_db" | "pan">>({});
+
+  function toggleAutoLane(trackId: string) {
+    if (autoLanes[trackId]) {
+      const next = { ...autoLanes };
+      delete next[trackId];
+      autoLanes = next;
+    } else {
+      autoLanes = { ...autoLanes, [trackId]: "volume_db" };
+    }
+  }
+
+  function hasVolumeLane(t: Track): boolean {
+    return t.automation.some(
+      (l) => l.target === "track/volume_db" && l.points.length > 0,
+    );
+  }
+
   // ---- トラックの右クリックメニュー(移動・削除) ----
 
   let trackMenu = $state<{ trackId: string; index: number; x: number; y: number } | null>(null);
@@ -274,6 +295,14 @@
           <button class="ms" class:solo-on={track.solo} onclick={() => toggleSolo(track)} title="ソロ">
             S
           </button>
+          <button
+            class="ms"
+            class:auto-on={autoLanes[track.id] !== undefined}
+            onclick={() => toggleAutoLane(track.id)}
+            title="オートメーションレーンを開閉"
+          >
+            〜
+          </button>
         </div>
         <div class="head-row">
           <input
@@ -283,6 +312,10 @@
             max="6"
             step="0.5"
             value={track.volume_db}
+            disabled={hasVolumeLane(track)}
+            title={hasVolumeLane(track)
+              ? "音量オートメーション使用中(フェーダーより優先されます)"
+              : ""}
             onchange={(e) => setVolume(track, e)}
           />
           <span class="db">{volumeText(track)}</span>
@@ -315,6 +348,16 @@
         {/each}
       </div>
     </div>
+    {#if autoLanes[track.id]}
+      <AutomationLaneRow
+        {track}
+        target={autoLanes[track.id]}
+        {pxPerTick}
+        {totalPx}
+        onTarget={(t) => (autoLanes = { ...autoLanes, [track.id]: t })}
+        onClose={() => toggleAutoLane(track.id)}
+      />
+    {/if}
   {/each}
 
   {#if trackMenu}
@@ -420,6 +463,11 @@
   .ms.solo-on {
     background: #6b6130;
     border-color: #8a7d44;
+    color: var(--accent);
+  }
+
+  .ms.auto-on {
+    border-color: var(--accent-dim);
     color: var(--accent);
   }
 
