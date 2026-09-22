@@ -46,6 +46,26 @@
 
   let messages = $state<Msg[]>([]);
   let input = $state("");
+
+  // 入力欄は内容に合わせて高くなる(1 行〜5 行。それ以上は欄の中でスクロール)
+  const MAX_LINES = 5;
+  let inputEl: HTMLTextAreaElement | undefined = $state();
+  $effect(() => {
+    void input;
+    const el = inputEl;
+    if (!el) return;
+    const cs = getComputedStyle(el);
+    const line = parseFloat(cs.lineHeight) || 18;
+    const extra =
+      parseFloat(cs.paddingTop) +
+      parseFloat(cs.paddingBottom) +
+      parseFloat(cs.borderTopWidth) +
+      parseFloat(cs.borderBottomWidth);
+    el.style.height = "auto";
+    const max = line * MAX_LINES + extra;
+    el.style.height = `${Math.min(el.scrollHeight + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth), max)}px`;
+    el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
+  });
   let scroller: HTMLDivElement | undefined = $state();
 
   // プロジェクト切り替えで会話表示をクリアする(会話自体はプロジェクトごとに保存されている)
@@ -228,6 +248,7 @@
 
   <div class="input-row">
     <textarea
+      bind:this={inputEl}
       rows="2"
       placeholder="AI への指示を入力(Enter で送信 / Shift+Enter で改行)"
       bind:value={input}
@@ -395,10 +416,9 @@
 
   textarea {
     flex: 1;
-    resize: vertical;
-    min-height: 40px;
-    max-height: 45vh;
     resize: none;
+    line-height: 1.4;
+    box-sizing: border-box;
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
