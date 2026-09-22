@@ -701,7 +701,8 @@
 
   // ---- オートメーションレーンの開閉 ----
 
-  let autoLanes = $state<Record<string, "volume_db" | "pan">>({});
+  /// 開いているオートメーションレーン(トラック ID → 表示中のパラメータのパス)
+  let autoLanes = $state<Record<string, string>>({});
 
   function toggleAutoLane(trackId: string) {
     if (autoLanes[trackId]) {
@@ -709,7 +710,10 @@
       delete next[trackId];
       autoLanes = next;
     } else {
-      autoLanes = { ...autoLanes, [trackId]: "volume_db" };
+      // 描かれているレーンがあればそれを、無ければ音量を開く
+      const t = project.tracks.find((t) => t.id === trackId);
+      const existing = t?.automation.find((l) => l.points.length > 0)?.target;
+      autoLanes = { ...autoLanes, [trackId]: existing ?? "track/volume_db" };
     }
   }
 

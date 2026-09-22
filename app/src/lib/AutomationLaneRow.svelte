@@ -1,5 +1,6 @@
 <script lang="ts">
-  // トラック下に開くオートメーションレーン(音量 / パン)。
+  // トラック下に開くオートメーションレーン。対象は音量・パン・音源のつまみ
+  // (device/<名前>)・エフェクトのつまみ(fx/<id>/<名前>)。
   // ダブルクリックで点追加、ドラッグで移動、右クリックで削除。
   // すべて set_automation_points(レーン全置換)として Command API に流す。
   import * as api from "./api";
@@ -14,10 +15,11 @@
     onClose,
   }: {
     track: Track;
-    target: "volume_db" | "pan";
+    /** レーンのパラメータ(track/volume_db, track/pan, device/<名前>, fx/<id>/<名前>) */
+    target: string;
     pxPerTick: number;
     totalPx: number;
-    onTarget: (t: "volume_db" | "pan") => void;
+    onTarget: (t: string) => void;
     onClose: () => void;
   } = $props();
 
@@ -25,26 +27,97 @@
   const PAD = 5;
   const SNAP = 240; // 1/16 音符
 
-  const range = $derived(
-    target === "volume_db" ? { min: -60, max: 6 } : { min: -1, max: 1 },
-  );
+  /// 選べるパラメータ(範囲・単位・現在値つき)
+  interface Target {
+    path: string;
+    label: string;
+    min: number;
+    max: number;
+    unit: string;
+    current: number;
+    int: boolean;
+    /** 周波数のように範囲が広い正の値は対数目盛り */
+    log: boolean;
+  }
 
-  const lane = $derived(
-    track.automation.find((l) => l.target === `track/${target}`),
+  const BUILTIN: Target[] = $derived([
+    { path: "track/volume_db", label: "音量", min: -60, max: 6, unit: " dB", current: track.volume_db, int: false, log: false },
+    { path: "track/pan", label: "パン", min: -1, max: 1, unit: "", current: track.pan, int: false, log: false },
+  ]);
+
+  let paramTargets = $state<Target[]>([]);
+  $effect(() => {
+    // 音源・エフェクトの構成が変わったら一覧を取り直す
+    void track.device;
+    void track.effects;
+    api
+      .getTrackParams(track.id)
+      .then((info) => {
+        const out: Target[] = [];
+        const add = (prefix: string, p: import("./types").ParamView) => {
+          if (p.range.kind !== "float" && p.range.kind !== "int") return;
+          const { min, max } = p.range;
+          out.push({
+            path: p.path,
+            label: `${prefix}${p.display_name}`,
+            min,
+            max,
+            unit: p.unit ? ` ${p.unit}` : "",
+            current: Number(p.current),
+            int: p.range.kind === "int",
+            log: min > 0 && max / min >= 100,
+          });
+        };
+        for (const p of info.params) add("音色: ", p);
+        for (const fx of info.effects) for (const p of fx.params) add(`${fx.name}: `, p);
+        paramTargets = out;
+      })
+      .catch(() => (paramTargets = []));
+  });
+
+  const allTargets = $derived([...BUILTIN, ...paramTargets]);
+  const cur = $derived(
+    allTargets.find((t) => t.path === target) ?? {
+      path: target,
+      label: target,
+      min: 0,
+      max: 1,
+      unit: "",
+      current: 0,
+      int: false,
+      log: false,
+    },
   );
+  const range = $derived({ min: cur.min, max: cur.max });
+
+  const lane = $derived(track.automation.find((l) => l.target === target));
   const points = $derived(lane?.points ?? []);
+  /// レーンが描かれているパラメータ(一覧で目印を付ける)
+  const lanePaths = $derived(
+    new Set(track.automation.filter((l) => l.points.length > 0).map((l) => l.target)),
+  );
 
-  /// レーンが無いときに表示する基準値(フェーダーの現在値)
-  const faderValue = $derived(target === "volume_db" ? track.volume_db : track.pan);
+  /// レーンが無いときに表示する基準値(フェーダー・つまみの現在値)
+  const faderValue = $derived(cur.current);
+
+  function norm(v: number): number {
+    if (cur.log) {
+      return (Math.log(v) - Math.log(range.min)) / (Math.log(range.max) - Math.log(range.min));
+    }
+    return (v - range.min) / (range.max - range.min);
+  }
 
   function yOf(v: number): number {
-    const t = (range.max - v) / (range.max - range.min);
+    const t = 1 - Math.min(1, Math.max(0, norm(v)));
     return PAD + t * (LANE_H - PAD * 2);
   }
 
   function valueOf(y: number): number {
-    const t = (y - PAD) / (LANE_H - PAD * 2);
-    const v = range.max - t * (range.max - range.min);
+    const t = 1 - (y - PAD) / (LANE_H - PAD * 2);
+    const u = Math.min(1, Math.max(0, t));
+    const v = cur.log
+      ? Math.exp(Math.log(range.min) + u * (Math.log(range.max) - Math.log(range.min)))
+      : range.min + u * (range.max - range.min);
     return Math.min(range.max, Math.max(range.min, v));
   }
 
@@ -66,10 +139,11 @@
     g.setTransform(scale, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, totalPx, LANE_H);
 
-    // 基準線(音量 0dB / パン中央)
-    const zeroY = yOf(0);
-    g.fillStyle = "rgba(255,255,255,0.12)";
-    g.fillRect(0, zeroY, totalPx, 1);
+    // 基準線(音量 0dB / パン中央。0 を含む範囲のときだけ)
+    if (range.min < 0 && range.max > 0) {
+      g.fillStyle = "rgba(255,255,255,0.12)";
+      g.fillRect(0, yOf(0), totalPx, 1);
+    }
 
     // ドラッグ中のプレビューを織り込んだ点列
     const pts: AutomationPoint[] = points.map((p, i) =>
@@ -150,7 +224,7 @@
           {
             op: "set_automation_points",
             track: track.id,
-            target: `track/${target}`,
+            target,
             points: sorted,
           },
         ],
@@ -169,7 +243,16 @@
   }
 
   function roundValue(v: number): number {
-    return target === "volume_db" ? Math.round(v * 10) / 10 : Math.round(v * 100) / 100;
+    if (cur.int) return Math.round(v);
+    // 範囲に応じた有効桁(範囲の 1/1000 程度)に丸める
+    const span = Math.abs(v) > 0 && cur.log ? Math.abs(v) : range.max - range.min;
+    const step = Math.pow(10, Math.floor(Math.log10(Math.max(span, 1e-6))) - 2);
+    return Math.round(v / step) * step;
+  }
+
+  function fmt(v: number): string {
+    const digits = cur.int || Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2;
+    return `${v.toFixed(digits)}${cur.unit}`;
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -198,14 +281,14 @@
     const next = points.map((p, i) =>
       i === d.index ? { ...p, tick: d.tick, value: d.value } : p,
     );
-    commit(next, `${track.name} の${label(target)}オートメーションを編集`);
+    commit(next, `${track.name} の「${label(target)}」オートメーションを編集`);
   }
 
   function onDblClick(e: MouseEvent) {
     if (hitPoint(e.offsetX, e.offsetY) >= 0) return;
     const tick = Math.max(0, Math.round(e.offsetX / pxPerTick / SNAP) * SNAP);
     const value = roundValue(valueOf(e.offsetY));
-    commit([...points, { tick, value }], `${track.name} の${label(target)}に点を追加`);
+    commit([...points, { tick, value }], `${track.name} の「${label(target)}」に点を追加`);
   }
 
   function onContextMenu(e: MouseEvent) {
@@ -216,35 +299,53 @@
     commit(
       next,
       next.length === 0
-        ? `${track.name} の${label(target)}オートメーションを削除`
-        : `${track.name} の${label(target)}の点を削除`,
+        ? `${track.name} の「${label(target)}」オートメーションを削除`
+        : `${track.name} の「${label(target)}」の点を削除`,
     );
   }
 
-  function label(t: "volume_db" | "pan"): string {
-    return t === "volume_db" ? "音量" : "パン";
+  function label(_t: string): string {
+    return cur.label;
   }
 </script>
 
 <div class="auto-row">
   <div class="auto-head">
     <div class="tabs">
-      <button class:active={target === "volume_db"} onclick={() => onTarget("volume_db")}>
-        音量
+      <button class:active={target === "track/volume_db"} onclick={() => onTarget("track/volume_db")}>
+        音量{lanePaths.has("track/volume_db") ? "●" : ""}
       </button>
-      <button class:active={target === "pan"} onclick={() => onTarget("pan")}>パン</button>
+      <button class:active={target === "track/pan"} onclick={() => onTarget("track/pan")}>
+        パン{lanePaths.has("track/pan") ? "●" : ""}
+      </button>
       <button class="close" onclick={onClose} title="レーンを閉じる">✕</button>
     </div>
+    {#if paramTargets.length > 0}
+      <select
+        class="param-pick"
+        value={target.startsWith("track/") ? "" : target}
+        onchange={(e) => {
+          const v = (e.currentTarget as HTMLSelectElement).value;
+          if (v) onTarget(v);
+        }}
+        title="音色・エフェクトのつまみを時間で動かす(● はレーンが描かれているもの)"
+      >
+        <option value="">音色・エフェクトのつまみ…</option>
+        {#each paramTargets as t (t.path)}
+          <option value={t.path}>{lanePaths.has(t.path) ? "● " : ""}{t.label}</option>
+        {/each}
+      </select>
+    {/if}
     <div class="hint">
       {#if points.length === 0}
-        ダブルクリックで点を追加(破線 = フェーダー値)
+        ダブルクリックで点を追加(破線 = 今の値)
       {:else}
-        ドラッグ: 移動 / 右クリック: 削除 / レーンがフェーダーより優先
+        ドラッグ: 移動 / 右クリック: 削除 / レーンがつまみより優先
       {/if}
     </div>
     <div class="range-label">
-      <span>{range.max}{target === "volume_db" ? " dB" : ""}</span>
-      <span>{range.min}{target === "volume_db" ? " dB" : ""}</span>
+      <span>{fmt(range.max)}</span>
+      <span>{fmt(range.min)}</span>
     </div>
   </div>
   <div class="lane" style="width:{totalPx}px;height:{LANE_H}px">
@@ -298,6 +399,12 @@
     border: none;
     background: none;
     color: var(--text-dim);
+  }
+
+  .param-pick {
+    width: 100%;
+    margin-top: 4px;
+    font-size: 10px;
   }
 
   .hint {
