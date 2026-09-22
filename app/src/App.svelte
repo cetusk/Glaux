@@ -272,6 +272,9 @@
   }
 
   let recordNotice = $state<string | null>(null);
+  /// 直前に録音したクリップ(「♪ MIDI 化」ボタンの対象)
+  let lastRecorded = $state<{ clipId: string; trackId: string } | null>(null);
+  let recordNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 
   async function finishRecording() {
     const r = await api.recordStop(null);
@@ -279,7 +282,33 @@
     const warn =
       r.clipped > 0 ? `(${r.clipped} サンプルがクリップしました。入力レベルを下げてください)` : "";
     recordNotice = `録音を配置しました: ${r.seconds.toFixed(1)} 秒${warn}`;
-    setTimeout(() => (recordNotice = null), 6000);
+    lastRecorded = { clipId: r.clip_id, trackId: r.track_id };
+    clearTimeout(recordNoticeTimer);
+    recordNoticeTimer = setTimeout(() => {
+      recordNotice = null;
+      lastRecorded = null;
+    }, 20000);
+  }
+
+  /// 録音した鼻歌をそのまま MIDI にしてピアノロールで開く
+  async function transcribeLast() {
+    const target = lastRecorded;
+    if (!target) return;
+    try {
+      const r = await api.transcribeClip(target.clipId);
+      const track = project?.tracks.find((t) => t.id === r.track_id);
+      pianoRollStore.focus = {
+        clipId: r.clip_id,
+        clipName: "録音 (MIDI)",
+        trackId: r.track_id,
+        trackName: track?.name ?? "MIDI",
+        anchorTick: 0,
+      };
+      recordNotice = `${r.note_count} ノートを MIDI にしました。AI に「キーを確認して整えて」と頼めます`;
+      lastRecorded = null;
+    } catch (e) {
+      error = String(e);
+    }
   }
 
   /// ⏺: 録音開始 / 停止。停止すると音声トラックにクリップとして置かれる
@@ -585,6 +614,11 @@
       {#if recordNotice}
         <span class="rec-notice">{recordNotice}</span>
       {/if}
+      {#if lastRecorded}
+        <button class="rec-midi" onclick={transcribeLast} title="録音(鼻歌・歌など単旋律)を譜起こしして MIDI クリップにする">
+          ♪ MIDI 化
+        </button>
+      {/if}
       {#if editingBpm}
         <!-- svelte-ignore a11y_autofocus -->
         <input
@@ -841,6 +875,11 @@
     font-size: 11px;
     color: var(--text-dim);
     margin-left: 4px;
+  }
+
+  .rec-midi {
+    border-color: var(--accent-dim);
+    color: var(--accent);
   }
 
   .bpm-btn {

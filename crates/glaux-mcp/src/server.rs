@@ -187,6 +187,21 @@ pub struct ImportAudioClipParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct TranscribeAudioParams {
+    /// 譜起こしする音声クリップ ID(`clp_xxxxxx`、kind: "audio")。
+    pub clip_id: String,
+    /// ノートを置く MIDI トラック ID。省略すると音声トラックの直後に「<名前> MIDI」を新設。
+    #[serde(default)]
+    pub dest_track_id: Option<String>,
+    /// 開始位置と長さを丸めるグリッド(tick)。既定 240(1/16)。0 で丸めない。
+    #[serde(default)]
+    pub quantize_ticks: Option<u64>,
+    /// これより短いノートは捨てる(ms)。既定 80。
+    #[serde(default)]
+    pub min_note_ms: Option<f32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SavePresetParams {
     /// 保存元のトラック ID(`trk_xxxxxx`)。そのトラックの音源 + エフェクトチェーンを保存する。
     pub track_id: String,
@@ -1067,6 +1082,52 @@ impl GlauxServer {
         Ok(Json(v))
     }
 
+    #[tool(
+        description = "音声クリップ(鼻歌・歌・単音のギター等の**単旋律**)を譜起こしして、\
+        同じ位置・長さの MIDI クリップを作る(履歴 1 件)。和音・複数楽器・ドラムは対象外。\
+        人間が ⏺ で鼻歌を録音したら、これで MIDI にしてから analyze_harmony でキーを確認し、\
+        オクターブ誤検出(前後と 12 半音ずれた短い音)や外れた音を update_notes で整える、が定石。\
+        結果には note_count と、新設した場合の track_id が入る。"
+    )]
+    async fn transcribe_audio(
+        &self,
+        params: Parameters<TranscribeAudioParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("transcribe_audio");
+        let p = params.0;
+        let clip_id = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
+        let dest = match &p.dest_track_id {
+            Some(id) => Some(glaux_core::TrackId::parse(id).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let mut opts = glaux_engine::transcribe::TranscribeOptions::default();
+        if let Some(ms) = p.min_note_ms {
+            opts.min_note_ms = ms.clamp(20.0, 2000.0);
+        }
+        let t = crate::transcribe::transcribe_clip_commands(
+            &project,
+            std::path::Path::new(&dir),
+            &clip_id,
+            dest.as_ref(),
+            p.quantize_ticks.unwrap_or(240),
+            &opts,
+        )?;
+        let label = format!("音声クリップを譜起こし({} ノート)", t.note_count);
+        let command = Command::batch(label.clone(), t.commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["clip_id"] = json!(t.clip_id);
+        v["track_id"] = json!(t.track_id);
+        v["created_track"] = json!(t.created_track);
+        v["note_count"] = json!(t.note_count);
+        Ok(Json(v))
+    }
+
     // ---- 音色プリセット ----------------------------------------------------
     // 「音源 + エフェクトチェーン」をパッチとして設定ディレクトリに保存し、
     // 曲プロジェクトをまたいで再利用する。
@@ -1366,6 +1427,7 @@ impl ServerHandler for GlauxServer {
                  「さっきのあの編集だけ戻して」は revert {entry_id}(後続の編集は保持される)。\
                  音声素材(録音・WAV)は音声トラック(kind: \"audio\")のクリップとして再生される。\
                  WAV を置くときは import_audio_clip。人間の録音も同じ形で入ってくるので analyze_audio で聴ける。\
+                 鼻歌・単旋律の録音は transcribe_audio で MIDI クリップにできる(その後キー確認と整えを忘れずに)。\
                  すべての編集は履歴に残り、get_history(author: \"ai\")で自分の過去の作業を確認できる。",
             )
     }

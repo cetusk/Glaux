@@ -124,6 +124,26 @@ export function importAudioClip(
   return invoke("import_audio_clip", { trackId, path, startTick: Math.max(0, Math.round(startTick)) });
 }
 
+/** 音声クリップの波形ピーク(表示用)。 */
+export function clipPeaks(clipId: string, buckets: number): Promise<{ peaks: [number, number][] }> {
+  return invoke("clip_peaks", { clipId, buckets });
+}
+
+/** 音声クリップ(単旋律)を譜起こしして MIDI クリップを作る(履歴 1 件)。 */
+export function transcribeClip(
+  clipId: string,
+  destTrackId: string | null = null,
+  quantizeTicks = 240,
+): Promise<{
+  clip_id: string;
+  track_id: string;
+  note_count: number;
+  created_track: boolean;
+  project_version: number;
+}> {
+  return invoke("transcribe_clip", { clipId, destTrackId, quantizeTicks });
+}
+
 // ---- 録音 ----
 
 /** 録音を開始する(再生も同時に始まる)。 */

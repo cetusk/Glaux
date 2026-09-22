@@ -3,6 +3,7 @@
   import * as api from "./api";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
+  import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
   import { newClipId, newTrackId } from "./ids";
   import { pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
@@ -167,6 +168,27 @@
       trackName: track.name,
       anchorTick: Math.max(0, (e.offsetX ?? 0) / pxPerTick),
     };
+  }
+
+  /// 音声クリップ(単旋律)を譜起こしして MIDI クリップにし、ピアノロールで開く
+  let transcribing = $state<string | null>(null);
+  async function transcribe(track: Track, clip: Clip) {
+    if (transcribing) return;
+    transcribing = clip.id;
+    try {
+      const r = await api.transcribeClip(clip.id);
+      pianoRollStore.focus = {
+        clipId: r.clip_id,
+        clipName: `${clip.name} (MIDI)`,
+        trackId: r.track_id,
+        trackName: r.created_track ? `${track.name} MIDI` : track.name,
+        anchorTick: 0,
+      };
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      transcribing = null;
+    }
   }
 
   /// 音声トラックの空きレーン: WAV を選んでその小節に音声クリップとして置く
@@ -635,6 +657,26 @@
             <span class="clip-name">{clip.kind === "audio" ? "🎵 " : ""}{clip.name}</span>
             {#if clip.kind === "midi"}
               <ClipPreview {clip} widthPx={clip.length * pxPerTick} />
+            {:else}
+              <AudioClipPreview
+                clipId={clip.id}
+                start={clip.start}
+                length={clip.length}
+                widthPx={clip.length * pxPerTick}
+              />
+              <button
+                class="transcribe"
+                disabled={transcribing !== null}
+                title="譜起こし: この音声(鼻歌・歌・単音)を MIDI クリップにする(単旋律のみ)"
+                onpointerdown={(e) => e.stopPropagation()}
+                ondblclick={(e) => e.stopPropagation()}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  transcribe(track, clip);
+                }}
+              >
+                {transcribing === clip.id ? "…" : "♪"}
+              </button>
             {/if}
             <div class="clip-resize"></div>
           </div>
@@ -1058,6 +1100,21 @@
     width: 8px;
     cursor: ew-resize;
     z-index: 2;
+  }
+
+  .transcribe {
+    position: absolute;
+    top: 2px;
+    right: 10px;
+    z-index: 3;
+    font-size: 11px;
+    line-height: 1;
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    background: rgba(0, 0, 0, 0.35);
+    color: #fff;
+    cursor: pointer;
   }
 
   .lane.drop-target {

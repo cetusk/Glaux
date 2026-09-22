@@ -12,3 +12,4 @@ pub mod assets;
 pub mod presets;
 pub mod server;
 pub mod store;
+pub mod transcribe;

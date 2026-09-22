@@ -203,6 +203,72 @@ async fn import_audio_clip(
     Ok(json!({ "clip_id": clip_id, "asset_id": imported.id, "project_version": m.project_version }))
 }
 
+/// 音声クリップの波形ピーク(表示用)。
+#[tauri::command]
+async fn clip_peaks(
+    state: State<'_, AppState>,
+    clip_id: String,
+    buckets: u32,
+) -> Result<Value, String> {
+    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let buckets = buckets.clamp(1, 4096) as usize;
+    let peaks = tokio::task::spawn_blocking(move || {
+        glaux_mcp::transcribe::clip_peaks(&project, std::path::Path::new(&dir), &cid, buckets)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(json!({ "peaks": peaks }))
+}
+
+/// 音声クリップ(単旋律)を譜起こしして MIDI クリップを作る(履歴 1 件)。
+#[tauri::command]
+async fn transcribe_clip(
+    state: State<'_, AppState>,
+    clip_id: String,
+    dest_track_id: Option<String>,
+    quantize_ticks: Option<u64>,
+) -> Result<Value, String> {
+    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let dest = match dest_track_id {
+        Some(id) => Some(glaux_core::TrackId::parse(&id).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let q = quantize_ticks.unwrap_or(240);
+    let t = tokio::task::spawn_blocking(move || {
+        glaux_mcp::transcribe::transcribe_clip_commands(
+            &project,
+            std::path::Path::new(&dir),
+            &cid,
+            dest.as_ref(),
+            q,
+            &glaux_engine::transcribe::TranscribeOptions::default(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let label = format!("音声クリップを譜起こし({} ノート)", t.note_count);
+    let (_, m) = state
+        .handle
+        .apply(
+            Command::batch(label.clone(), t.commands),
+            Author::Human,
+            label,
+        )
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "clip_id": t.clip_id,
+        "track_id": t.track_id,
+        "note_count": t.note_count,
+        "created_track": t.created_track,
+        "project_version": m.project_version,
+    }))
+}
+
 // ---- 録音 ------------------------------------------------------------------
 
 /// 録音を開始する(既定の入力デバイス)。再生も同時に始める(伴奏を聴きながら録る)。
@@ -1030,6 +1096,8 @@ fn main() -> Result<()> {
             apply_edit,
             revert_entry,
             import_audio_clip,
+            clip_peaks,
+            transcribe_clip,
             record_start,
             record_stop,
             send_chat,

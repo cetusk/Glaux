@@ -274,8 +274,25 @@ impl SampleBank {
     }
 }
 
+/// 波形の縮小表示用ピーク列: 区間ごとの (最小, 最大)。`buckets` 個に分ける。
+pub fn wave_peaks(frames: &[f32], buckets: usize) -> Vec<(f32, f32)> {
+    if frames.is_empty() || buckets == 0 {
+        return vec![];
+    }
+    let per = frames.len() as f64 / buckets as f64;
+    (0..buckets)
+        .map(|b| {
+            let s = (b as f64 * per) as usize;
+            let e = (((b + 1) as f64 * per) as usize).clamp(s + 1, frames.len());
+            frames[s..e]
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
+        })
+        .collect()
+}
+
 /// WAV をモノラル f32 に読み込む(ステレオは平均で合算)。
-fn load_wav_mono(path: &Path) -> Result<SampleData, String> {
+pub fn load_wav_mono(path: &Path) -> Result<SampleData, String> {
     let mut reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;

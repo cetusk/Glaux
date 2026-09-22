@@ -4,11 +4,11 @@
 状態(2026-09-22 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
 - `glaux-core`: モデル(セクション・奏法込み)/ Command(約 25 種)/ 履歴 /
   和声分析(harmony)/ リズム分析(rhythm)
-- `glaux-mcp`: **24 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
+- `glaux-mcp`: **25 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
   revert_to / revert / get_history / list_params / analyze_audio)+ 分析 2(analyze_harmony /
   analyze_rhythm)+ ノート便利 4(transpose / shift / quantize / scale_velocity)+
-  プリセット 4(list / save / load / delete)+ 素材 4(import_sample / import_audio_clip /
-  list_soundfonts / set_soundfont_instrument)。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
+  プリセット 4(list / save / load / delete)+ 素材 5(import_sample / import_audio_clip /
+  transcribe_audio / list_soundfonts / set_soundfont_instrument)。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
   ほかに presets / assets モジュール(アプリと共用)
 - `glaux-engine`: 再生(ループ・オートメーション・音声クリップ・自動停止・テンポ変更時の
   位置保持)・録音(record.rs)・WAV エクスポート・音声解析(AI の耳)・
@@ -21,7 +21,7 @@
   プロジェクト管理(作成/切替/移動/SoundLab)・履歴・チャット・WAV 書き出し
 実機確認済みのハイライト: AI がチャット指示で作曲 → analyze_audio/harmony/rhythm で
 自己確認 → エフェクト・プリセット・SoundFont で音作り、のループが完走。
-AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 135 件。
+AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参照。テストは 139 件。
 
 この文書は、企画段階の議論で決めたことを **理由付きで** 残したものです。
 判断を覆すときは、ここに書いてある理由を上回る根拠を示してください。
@@ -777,7 +777,18 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     入力デバイスが無いため実機未検証**(リング・WAV 書き出しは単体テスト済み)
   - 取り込み: `assets::audio_clip_commands`、MCP `import_audio_clip`、
     UI は「+ 🎵 音声トラック」+ 空きレーンのダブルクリックで WAV 配置
-  - 残り: ループクリップ(clip.loop)、タイムストレッチ(Stretch::Follow)、波形表示
+  - 波形表示: `AudioClipPreview.svelte`(Tauri `clip_peaks` がクリップ参照範囲の
+    min/max ピークを返す。クリップ ID + 範囲 + 幅でキャッシュ)
+  - 残り: ループクリップ(clip.loop)、タイムストレッチ(Stretch::Follow)
+- **譜起こし(単旋律 → MIDI)実装済み(2026-09-22)**: `glaux-engine/src/transcribe.rs`。
+  「鼻歌を録音して即 MIDI 化」が主用途。10ms フレームで YIN(CMND しきい値 0.15 +
+  放物線補間)→ 音量(-40dB 以内)と明瞭度で有声判定 → 中央値フィルタ(窓 5)→
+  「半音変化が 3 フレーム安定 / 8dB の立ち上がり / 無声 2 フレーム」で区切り →
+  80ms 未満は捨てる → テンポマップで tick 化(既定 1/16 クオンタイズ)。
+  配線: `glaux-mcp/src/transcribe.rs`(共通)、MCP `transcribe_audio`(計 25 ツール)、
+  Tauri `transcribe_clip`、UI は音声クリップの ♪ ボタンと録音直後の「♪ MIDI 化」。
+  合成した鼻歌信号(倍音 + ビブラート + ノイズ)でメロディ・再アタック・低い声・
+  tick 変換をテスト。**次段: basic-pitch(ONNX)で和音・ピアノ、その先でステム分離**
 - ~~再生位置の Tick 管理~~ → **実装済み(2026-09-22)**: `PlaybackData::tempo`(テンポ区間表)
   + `Renderer::last_tick`。データ差し替え時に tick を保ってサンプル位置を換算し直す
 - 外部 MCP クライアント使用時の AI インジケータ精度(今は 20 秒近似)
