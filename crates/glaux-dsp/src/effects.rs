@@ -207,6 +207,52 @@ pub struct DistortionParams {
     pub level: f32,
 }
 
+// =============================== Amp ===================================
+
+/// ギターアンプシミュレータ。
+/// pluck(エレキ)は「アンプに繋いでいない生の弦」しか出さない。エレキの音の
+/// 大半はアンプ側(大ゲインの多段クリップ + キャビネットの箱鳴り)が作るので、
+/// それを 1 エフェクトとして再現する。distortion がペダル 1 個ぶんの軽い歪み
+/// なのに対し、こちらは 54dB 級のプリゲインを持つ。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AmpParams {
+    /// プリゲイン(リニア。gain_db から変換済み)
+    pub gain: f32,
+    /// 段間 LP の係数(クリップ段の間で高域を丸め、フィジーさを抑える)
+    pub stage_coef: f32,
+    /// 歪み後トーン LP の係数(exp(-2πfc/sr)。1 に近いほど暗い)
+    pub tone_coef: f32,
+    /// プレゼンス量 0..1(3kHz 以上のエッジ)
+    pub presence: f32,
+    /// プレゼンス分離用 LP の係数
+    pub pres_coef: f32,
+    /// キャビネットシミュ有効
+    pub cab: bool,
+    /// キャビ HP(約 80Hz)の帰還係数
+    pub cab_hp_r: f32,
+    /// キャビ LP(約 4.2kHz、3 段 = 18dB/oct)の係数
+    pub cab_lp_coef: f32,
+    /// DC ブロッカの帰還係数(非対称クリップで生じる直流を除く)
+    pub dc_r: f32,
+    /// 出力レベル(リニア)
+    pub level: f32,
+}
+
+/// アンプ 1ch 分のフィルタ状態。
+#[derive(Clone, Copy, Default)]
+struct AmpChState {
+    dc_in: f32,
+    dc_out: f32,
+    stage_lp: f32,
+    tone_lp: f32,
+    pres_lp: f32,
+    cab_hp_in: f32,
+    cab_hp_out: f32,
+    cab_lp1: f32,
+    cab_lp2: f32,
+    cab_lp3: f32,
+}
+
 // ========================== Sidechain Comp =============================
 
 /// ダッカー型サイドチェイン。
@@ -236,6 +282,7 @@ pub enum EffectParams {
     Compressor(CompressorParams),
     Reverb(ReverbParams),
     Distortion(DistortionParams),
+    Amp(AmpParams),
     Sidechain(SidechainParams),
 }
 
@@ -246,6 +293,7 @@ enum EffectKind {
     Compressor,
     Reverb,
     Distortion,
+    Amp,
     Sidechain,
 }
 
@@ -263,6 +311,8 @@ pub struct EffectState {
     key_was_above: bool,
     // Distortion のトーン用 1 次 LP(2ch)
     tone_lp: [f32; 2],
+    // Amp のフィルタ群(2ch)
+    amp: [AmpChState; 2],
     // Reverb
     reverb: [ReverbChannel; 2],
 }
@@ -277,6 +327,7 @@ impl Default for EffectState {
             duck_active: false,
             key_was_above: false,
             tone_lp: [0.0; 2],
+            amp: Default::default(),
             reverb: [ReverbChannel::new(0), ReverbChannel::new(STEREO_SPREAD)],
         }
     }
@@ -289,6 +340,7 @@ impl EffectState {
             EffectParams::Compressor(_) => EffectKind::Compressor,
             EffectParams::Reverb(_) => EffectKind::Reverb,
             EffectParams::Distortion(_) => EffectKind::Distortion,
+            EffectParams::Amp(_) => EffectKind::Amp,
             EffectParams::Sidechain(_) => EffectKind::Sidechain,
         }
     }
@@ -304,6 +356,7 @@ impl EffectState {
             self.duck_active = false;
             self.key_was_above = false;
             self.tone_lp = [0.0; 2];
+            self.amp = Default::default();
             self.reverb[0].reset();
             self.reverb[1].reset();
         }
@@ -358,6 +411,39 @@ impl EffectState {
                     (x * (1.0 - d.mix) + toned * d.mix) * d.level
                 };
                 (shape(l, 0), shape(r, 1))
+            }
+            EffectParams::Amp(a) => {
+                let ch = |x: f32, st: &mut AmpChState| -> f32 {
+                    // DC ブロック
+                    let hp = x - st.dc_in + a.dc_r * st.dc_out;
+                    st.dc_in = x;
+                    st.dc_out = hp;
+                    // プリアンプ 2 段。段間 LP でフィジーさを抑え、
+                    // 2 段目は非対称クリップ(偶数次倍音 = 真空管っぽい太さ)
+                    let s1 = (hp * a.gain * 0.5).tanh();
+                    st.stage_lp += (s1 - st.stage_lp) * a.stage_coef;
+                    let s2 = (st.stage_lp * 2.4 + 0.12).tanh() - 0.119_4;
+                    // トーン
+                    st.tone_lp += (s2 - st.tone_lp) * (1.0 - a.tone_coef);
+                    let mut y = st.tone_lp;
+                    // プレゼンス(3kHz 以上を足してピッキングの輪郭を立てる)
+                    st.pres_lp += (y - st.pres_lp) * a.pres_coef;
+                    y += (y - st.pres_lp) * a.presence * 1.4;
+                    // キャビネット(HP 80Hz + LP 4.2kHz × 3 の箱鳴り帯域。
+                    // 歪みのフィジーな超高域はスピーカーからはほぼ出ない)
+                    if a.cab {
+                        let c = y - st.cab_hp_in + a.cab_hp_r * st.cab_hp_out;
+                        st.cab_hp_in = y;
+                        st.cab_hp_out = c;
+                        st.cab_lp1 += (c - st.cab_lp1) * a.cab_lp_coef;
+                        st.cab_lp2 += (st.cab_lp1 - st.cab_lp2) * a.cab_lp_coef;
+                        st.cab_lp3 += (st.cab_lp2 - st.cab_lp3) * a.cab_lp_coef;
+                        y = st.cab_lp3;
+                    }
+                    y * a.level
+                };
+                let [sl, sr] = &mut self.amp;
+                (ch(l, sl), ch(r, sr))
             }
             EffectParams::Sidechain(sc) => {
                 // 検出信号を高速フォロワで整える(生波形の振動でチャタらないように)
@@ -651,6 +737,68 @@ pub static DISTORTION_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static AMP_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 54.0,
+            default: 30.0,
+            skew: None,
+        },
+        description: "歪みの深さ(プリアンプのゲイン)。〜10 でクリーン、15〜25 で\
+            クランチ、30 前後でオーバードライブ、40 以上でメタル級ハイゲイン。\
+            上げるほどサスティンも伸びる。",
+    },
+    ParamSpec {
+        name: "tone",
+        display_name: "トーン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            skew: None,
+        },
+        description: "歪み後の明るさ。下げると太く丸く、上げるとザクザクとエッジが立つ。",
+    },
+    ParamSpec {
+        name: "presence",
+        display_name: "プレゼンス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.35,
+            skew: None,
+        },
+        description: "高域のエッジ(3kHz 以上)。上げるとピッキングの輪郭が立つ。\
+            上げすぎると刺さる。",
+    },
+    ParamSpec {
+        name: "cab",
+        display_name: "キャビネット",
+        unit: None,
+        range: ParamRange::Bool { default: true },
+        description: "スピーカーキャビネットの箱鳴り(80Hz〜4.5kHz に整形)。\
+            OFF はライン直結の広帯域で、通常は ON のままにする。",
+    },
+    ParamSpec {
+        name: "level_db",
+        display_name: "レベル",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -30.0,
+            max: 6.0,
+            default: -12.0,
+            skew: None,
+        },
+        description: "出力音量。ゲインを上げると音圧が大きく上がるのでここで戻す。",
+    },
+];
+
 pub static SIDECHAIN_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "source",
@@ -723,6 +871,7 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "compressor" => Some(COMPRESSOR_SPECS),
         "reverb" => Some(REVERB_SPECS),
         "distortion" => Some(DISTORTION_SPECS),
+        "amp" => Some(AMP_SPECS),
         "sidechain" => Some(SIDECHAIN_SPECS),
         _ => None,
     }
@@ -751,10 +900,18 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
         },
         crate::params::InstrumentInfo {
             name: "distortion",
-            description: "ディストーション/サチュレーション。ギターの歪み、EDM の\
-                荒い質感、ドラムの太さ足しに。subtractive(square 波)+ 高 drive で\
-                エレキギター風になる。",
+            description: "ディストーション/サチュレーションペダル。EDM の荒い質感、\
+                ドラムの太さ足し、アンプ(amp)前段のブースターに。エレキギターの\
+                本格的な歪みは pluck + amp を使う。",
             params: DISTORTION_SPECS,
+        },
+        crate::params::InstrumentInfo {
+            name: "amp",
+            description: "ギターアンプシミュレータ(多段クリップ + トーン + プレゼンス + \
+                キャビネット)。pluck のエレキ化はこれが本体: pluck → amp で初めて\
+                「アンプを通したエレキ」になる。gain_db 30 前後から歪み、40 以上でメタル。\
+                distortion をペダルとして前段に挿すとさらに凶暴になる。",
+            params: AMP_SPECS,
         },
         crate::params::InstrumentInfo {
             name: "sidechain",
@@ -838,6 +995,28 @@ pub fn bake_effect(
                 tone_coef: (-std::f32::consts::TAU * tone_hz / sample_rate).exp(),
                 mix: get(map, s, "mix").clamp(0.0, 1.0),
                 level: 10.0_f32.powf(get(map, s, "level_db").clamp(-24.0, 6.0) / 20.0),
+            }))
+        }
+        "amp" => {
+            let s = AMP_SPECS;
+            let tau = std::f32::consts::TAU;
+            let lp_coef = |fc: f32| 1.0 - (-tau * fc / sample_rate).exp();
+            let tone = get(map, s, "tone").clamp(0.0, 1.0);
+            let cab = match map.get("cab") {
+                Some(ParamValue::Bool(b)) => *b,
+                _ => true,
+            };
+            Some(EffectParams::Amp(AmpParams {
+                gain: 10.0_f32.powf(get(map, s, "gain_db").clamp(0.0, 54.0) / 20.0),
+                stage_coef: lp_coef(6000.0),
+                tone_coef: (-tau * (900.0 + tone * 5500.0) / sample_rate).exp(),
+                presence: get(map, s, "presence").clamp(0.0, 1.0),
+                pres_coef: lp_coef(3000.0),
+                cab,
+                cab_hp_r: (-tau * 80.0 / sample_rate).exp(),
+                cab_lp_coef: lp_coef(4200.0),
+                dc_r: (-tau * 20.0 / sample_rate).exp(),
+                level: 10.0_f32.powf(get(map, s, "level_db").clamp(-30.0, 6.0) / 20.0),
             }))
         }
         "sidechain" => {
@@ -1001,6 +1180,76 @@ mod tests {
             ducked = ducked.min(l.abs());
         }
         assert!(ducked < 0.25, "key が鳴ると沈むはず: {ducked}");
+    }
+
+    #[test]
+    fn amp_high_gain_clips_small_input_into_sustain() {
+        // 小さな入力(減衰した弦を想定)でも大ゲインで持ち上げて頭打ちにする
+        // = 実機アンプの「サスティンが伸びる」挙動の源。
+        // 入力を 4 倍(+12dB)にしても出力がほとんど増えなければ頭打ちしている
+        let p = bake(&effect("amp", &[("gain_db", 45.0), ("level_db", 0.0)])).unwrap();
+        let rms_at = |amp_in: f32| {
+            let mut state = EffectState::default();
+            state.ensure_kind(&p);
+            let mut sum = 0.0f64;
+            let mut n = 0usize;
+            for i in 0..9600 {
+                let x = (i as f32 * 110.0 * std::f32::consts::TAU / 48_000.0).sin() * amp_in;
+                let (l, _) = state.process(&p, x, x, 0.0);
+                if i > 4800 {
+                    sum += (l as f64) * (l as f64);
+                    n += 1;
+                }
+            }
+            (sum / n as f64).sqrt() as f32
+        };
+        let quiet = rms_at(0.03);
+        let loud = rms_at(0.12);
+        assert!(
+            quiet > 0.1,
+            "0.03 の入力が大きく持ち上がるはず: rms={quiet}"
+        );
+        assert!(
+            loud / quiet < 1.6,
+            "入力 4 倍でも出力はほぼ増えない(頭打ち)はず: 比 {}",
+            loud / quiet
+        );
+    }
+
+    #[test]
+    fn amp_cab_shapes_band() {
+        // キャビネット ON は OFF より高域が削れる(箱鳴りの帯域整形)
+        let make = |cab: bool| {
+            // tone を最大にして高域を残し、キャビの整形だけを比較する
+            let mut e = effect(
+                "amp",
+                &[("gain_db", 30.0), ("tone", 1.0), ("level_db", 0.0)],
+            );
+            e.params
+                .insert("cab".to_owned(), glaux_core::ParamValue::Bool(cab));
+            bake(&e).unwrap()
+        };
+        let energy_hf = |p: &EffectParams| {
+            let mut state = EffectState::default();
+            state.ensure_kind(p);
+            let mut prev = 0.0f32;
+            let mut acc = 0.0f64;
+            for i in 0..9600 {
+                let x = (i as f32 * 220.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.2;
+                let (l, _) = state.process(p, x, x, 0.0);
+                if i > 4800 {
+                    acc += ((l - prev) as f64).powi(2);
+                }
+                prev = l;
+            }
+            acc
+        };
+        let on = energy_hf(&make(true));
+        let off = energy_hf(&make(false));
+        assert!(
+            on < off * 0.75,
+            "キャビ ON は高域が整形されるはず: on={on} off={off}"
+        );
     }
 
     #[test]

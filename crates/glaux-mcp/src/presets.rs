@@ -224,53 +224,76 @@ fn factory_presets() -> Vec<Preset> {
         ),
         preset(
             "クリーンエレキ",
-            "pluck + 軽い歪み。カッティングやクリーントーンのリフに",
+            "pluck + アンプ(低ゲイン)。カッティングやクリーントーンのリフに",
             device(
                 "pluck",
-                &[("decay", 2.0), ("brightness", 0.65), ("pick", 0.7)],
+                &[("decay", 2.2), ("brightness", 0.65), ("pick", 0.7)],
             ),
             vec![fx(
-                "distortion",
-                &[("drive_db", 4.0), ("tone", 0.6), ("mix", 0.6)],
+                "amp",
+                &[("gain_db", 12.0), ("tone", 0.6), ("level_db", -8.0)],
+            )],
+        ),
+        preset(
+            "クランチギター",
+            "pluck + アンプ(中ゲイン)。ロックのバッキングに",
+            device(
+                "pluck",
+                &[("decay", 1.8), ("brightness", 0.65), ("pick", 0.8)],
+            ),
+            vec![fx(
+                "amp",
+                &[("gain_db", 24.0), ("tone", 0.55), ("level_db", -12.0)],
             )],
         ),
         preset(
             "メタルギター",
-            "pluck + 強い歪み。低音の刻みは palm_mute ノートと組み合わせる",
+            "pluck + アンプ(ハイゲイン)。低音の刻みは palm_mute ノートと組み合わせる",
             device(
                 "pluck",
                 &[("decay", 1.6), ("brightness", 0.7), ("pick", 0.9)],
             ),
             vec![fx(
-                "distortion",
-                &[("drive_db", 14.0), ("tone", 0.55), ("level_db", -4.0)],
+                "amp",
+                &[
+                    ("gain_db", 44.0),
+                    ("tone", 0.5),
+                    ("presence", 0.45),
+                    ("level_db", -16.0),
+                ],
             )],
         ),
     ]
 }
 
-/// 出荷時プリセットを書き込む(初回のみ。既存ファイルには触れない)。
-/// アプリ起動時に呼ぶ。マーカーファイルで「一度導入済み」を記録するので、
-/// ユーザーが削除したプリセットが復活することはない。
+/// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
+/// (ユーザーが独自に作った別名のプリセットには触れない)。
+const FACTORY_VERSION: &str = "v2";
+
+/// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
+/// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)
+/// - マーカーが旧版: 同名の出荷時プリセットを新定義で上書きして版を上げる
+/// - マーカーなし(初回): 同名の既存ファイルがあれば尊重して残す
 pub fn ensure_factory(dir: &Path) {
     let marker = dir.join(".factory-installed");
-    if marker.exists() {
+    let installed = std::fs::read_to_string(&marker).unwrap_or_default();
+    if installed.trim() == FACTORY_VERSION {
+        return;
+    }
+    let fresh_install = installed.trim().is_empty();
+    if std::fs::create_dir_all(dir).is_err() {
         return;
     }
     for p in factory_presets() {
-        // 同名がある場合は上書きしない
         let path = preset_path(dir, &p.name);
-        if path.exists() {
-            continue;
-        }
-        if std::fs::create_dir_all(dir).is_err() {
-            return;
+        if path.exists() && fresh_install {
+            continue; // 初回導入で同名がある = ユーザー作かもしれないので触らない
         }
         if let Ok(json) = serde_json::to_string_pretty(&p) {
             let _ = std::fs::write(&path, json);
         }
     }
-    let _ = std::fs::write(&marker, "v1\n");
+    let _ = std::fs::write(&marker, format!("{FACTORY_VERSION}\n"));
 }
 
 /// プリセットを削除する。

@@ -113,8 +113,11 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     pluck=撥弦の物理モデル)を設定でき、\
     list_params でパラメータの意味・範囲・現在値を確認して set_param で音作りができます。\
     ドラムのトラックには必ず drum を設定してください。\
-    ギター・ベース・ハープなど「弾く弦」の音は pluck が第一候補です\
-    (エレキ = pluck + distortion、メタルの刻み = さらにノートに palm_mute)。\
+    ギター・ベース・ハープなど「弾く弦」の音は pluck が第一候補です。\
+    エレキギターの音は pluck 単体では「アンプに繋いでいない生弦」なので、\
+    必ず amp エフェクト(アンプシミュレータ)を後段に入れます: gain_db 〜12 でクリーン、\
+    24 前後でクランチ、40 以上でメタル。刻みはさらにノートに palm_mute。\
+    出荷時プリセット(クリーンエレキ / クランチギター / メタルギター)の load_preset が早道です。\
     ジャンル表現の道具: EDM の supersaw は subtractive の unison=5〜7 + detune、\
     太いベースは sub、EDM のポンピングは sidechain エフェクト(source にキックのトラック ID、\
     release_ms を 8 分音符の長さ = 60000/BPM/2 に合わせると気持ちよく揺れる)、\

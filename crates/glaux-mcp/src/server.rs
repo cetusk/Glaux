@@ -945,7 +945,9 @@ impl ServerHandler for GlauxServer {
                  (transpose_notes / shift_notes / quantize_notes / scale_velocity)が使える。\
                  音源: トラックには set_device で内蔵楽器(subtractive / drum / pluck)を設定でき、\
                  ギター・ベース・ハープなど「弾く弦」の音は pluck(撥弦の物理モデル)を使う。\
-                 エレキギターは pluck + distortion、メタルの刻みはさらに palm_mute ノート。\
+                 エレキギターは pluck + amp(アンプシミュレータ。gain_db 30 前後から歪み、40 以上でメタル)。\
+                 メタルの刻みはさらに palm_mute ノート。出荷時プリセット(クリーンエレキ / クランチギター / \
+                 メタルギター)を load_preset するのが早い。\
                  list_params でパラメータの意味と現在値を確認して set_param で調整する。\
                  ドラムトラックには drum を設定すること。\
                  analyze_audio が「耳」の代わり: 編集結果をレンダしてラウドネス・帯域バランス等を返す。\
