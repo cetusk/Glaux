@@ -14,6 +14,7 @@
 pub mod apply;
 pub mod command;
 pub mod error;
+pub mod harmony;
 pub mod history;
 pub mod id;
 pub mod model;

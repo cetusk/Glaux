@@ -826,3 +826,45 @@ async fn import_sample_sets_sampler_device() {
     .await;
     assert_eq!(r.is_error, Some(true));
 }
+
+#[tokio::test]
+async fn analyze_harmony_detects_key_and_chords() {
+    let fx = setup().await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_keys01", "name": "Keys", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_keys01",
+                  "clip": { "id": "clp_prog01", "name": "prog", "start": 0, "length": 15360, "kind": "midi",
+                    "notes": [
+                        { "id": "nt_c00001", "pos": 0, "dur": 3840, "pitch": 60, "vel": 100 },
+                        { "id": "nt_e00001", "pos": 0, "dur": 3840, "pitch": 64, "vel": 100 },
+                        { "id": "nt_g00001", "pos": 0, "dur": 3840, "pitch": 67, "vel": 100 },
+                        { "id": "nt_f00001", "pos": 3840, "dur": 3840, "pitch": 53, "vel": 100 },
+                        { "id": "nt_a00001", "pos": 3840, "dur": 3840, "pitch": 57, "vel": 100 },
+                        { "id": "nt_c00002", "pos": 3840, "dur": 3840, "pitch": 60, "vel": 100 },
+                        { "id": "nt_g00002", "pos": 7680, "dur": 3840, "pitch": 55, "vel": 100 },
+                        { "id": "nt_b00001", "pos": 7680, "dur": 3840, "pitch": 59, "vel": 100 },
+                        { "id": "nt_d00001", "pos": 7680, "dur": 3840, "pitch": 62, "vel": 100 },
+                        { "id": "nt_c00003", "pos": 11520, "dur": 3840, "pitch": 48, "vel": 100 },
+                        { "id": "nt_e00002", "pos": 11520, "dur": 3840, "pitch": 64, "vel": 100 },
+                        { "id": "nt_g00003", "pos": 11520, "dur": 3840, "pitch": 67, "vel": 100 }
+                    ] } }
+            ],
+            "label": "C → F → G → C",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+
+    let r = call(&fx, "analyze_harmony", json!({})).await;
+    let v = ok_json(&r);
+    assert_eq!(v["key"]["name"], "C major");
+    assert_eq!(v["chords"][0]["chord"], "C");
+    assert_eq!(v["chords"][1]["chord"], "F");
+    assert_eq!(v["chords"][2]["chord"], "G");
+    assert_eq!(v["chords"][3]["chord"], "C");
+    assert_eq!(v["note_count"], 12);
+}

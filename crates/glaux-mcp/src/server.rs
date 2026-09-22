@@ -96,6 +96,19 @@ pub struct AnalyzeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct AnalyzeHarmonyParams {
+    /// 対象トラック ID の配列。省略で全トラック(ドラムは自動で除外される)。
+    #[serde(default)]
+    pub track_ids: Option<Vec<String>>,
+    /// 分析範囲の開始 tick。省略で曲頭から。
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// 分析範囲の終了 tick。省略で曲末まで。
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct GetHistoryParams {
     /// 作者で絞り込む: "human" | "ai" | "system"。省略で全部。
     #[serde(default)]
@@ -691,6 +704,40 @@ impl GlauxServer {
     }
 
     #[tool(
+        description = "あなたの「音楽理論の目」。ノートデータからキーと小節ごとのコード進行を推定する\
+        (オーディオではなく記号的分析。ドラムトラックは自動で除外)。\
+        作曲・アレンジの前にまずこれで現状の調性を把握するとよい: \
+        メロディを足すときはキーのスケール音を基本に、ハモリ・ベースはその小節のコードトーンから選ぶ。\
+        confidence が低い小節は経過音が多いか複合和音なので鵜呑みにしない。\
+        out_of_key_ratio が高い(> 0.15)場合は転調や借用和音を含む可能性がある。\
+        すべて推定値であり、意図的な不協和・転調を「修正」しないこと。"
+    )]
+    async fn analyze_harmony(&self, params: Parameters<AnalyzeHarmonyParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("analyze_harmony");
+        let p = params.0;
+        let (project, version) = self.handle.get_project().await?;
+        let track_ids: Option<Vec<glaux_core::TrackId>> = match &p.track_ids {
+            None => None,
+            Some(ids) => Some(
+                ids.iter()
+                    .map(|s| glaux_core::TrackId::parse(s).map_err(|e| e.to_string()))
+                    .collect::<Result<_, _>>()?,
+            ),
+        };
+        let range = match (p.start_tick, p.end_tick) {
+            (None, None) => None,
+            (s, e) => Some((
+                glaux_core::Tick(s.unwrap_or(0)),
+                glaux_core::Tick(e.unwrap_or(u64::MAX)),
+            )),
+        };
+        let analysis = glaux_core::harmony::analyze(&project, track_ids.as_deref(), range);
+        let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
+        v["project_version"] = json!(version);
+        Ok(Json(v))
+    }
+
+    #[tool(
         description = "編集履歴の一覧を返す(古い→新しい)。各エントリはコマンド本体を含まない軽量ビュー。\
         author: \"ai\" で自分(AI)の過去の作業だけを振り返れる。前回確認済みの位置からは since に最後に見たエントリ ID を渡す。\
         セッションをまたいでも履歴はプロジェクトに保存されている。"
@@ -1146,7 +1193,9 @@ impl ServerHandler for GlauxServer {
                  メタルギター)を load_preset するのが早い。\
                  list_params でパラメータの意味と現在値を確認して set_param で調整する。\
                  ドラムトラックには drum を設定すること。\
-                 analyze_audio が「耳」の代わり: 編集結果をレンダしてラウドネス・帯域バランス等を返す。\
+                 analyze_audio が「耳」: 編集結果をレンダしてラウドネス・帯域バランス等を返す。\
+                 analyze_harmony が「音楽理論の目」: ノートからキーと小節ごとのコード進行を推定する。\
+                 メロディ・ハモリ・ベースを足す前に呼ぶと調性に合った音を選べる。\
                  ミックス調整は 編集 → analyze_audio → 微調整 のループで行う。\
                  エフェクト(eq / compressor / reverb / distortion / sidechain)は add_effect で追加し、\
                  set_param(fx/<id>/<名前>)で調整する。マスターにも掛けられる。\
