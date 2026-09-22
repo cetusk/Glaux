@@ -470,6 +470,29 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
 
 ---
 
+## 7.5 AI の感覚マップ(2026-09-22 整理)
+
+Glaux の AI が「何を知覚し、何を操作できるか」の一覧。新しい能力を足すときはここを更新する。
+
+| 感覚 | 実体 | 内容 |
+|---|---|---|
+| **視覚(楽譜)** | get_project | 全トラック・ノート・パラメータ・テンポ/拍子を JSON で読む。include_notes: false で構造だけ俯瞰 |
+| **聴覚** | analyze_audio | オフラインレンダ → LUFS / ピーク / クレスト / 帯域バランス / スペクトル重心 / オンセット。per_track でミックス内の各トラックの埋もれ診断 |
+| **時間感覚** | tick(PPQ 960)+ tempo/time_sig_map | 絶対 tick で位置を把握。拍子変更・テンポ変更も読める |
+| **記憶(短期)** | 会話セッション(--resume) | アプリ再起動をまたいで会話継続 |
+| **記憶(長期)** | get_history + project_version | 履歴はプロジェクト側に永続。author=human で「人間が何をしたか」をキャッチアップ(チャットは差分を自動注入) |
+| **手(作曲)** | apply_commands + 便利ツール | ノート/クリップ/トラック編集。transpose/shift/quantize/scale_velocity は相対編集の代行 |
+| **手(音作り)** | list_params + set_param + add_effect | 全つまみに聴感説明付き。音源 5 種(subtractive/drum/pluck/sampler/sf2)+ エフェクト 6 種(eq/comp/reverb/dist/amp/sidechain) |
+| **表現(奏法)** | Note.articulation | palm_mute / staccato / accent / vibrato / bend |
+| **表現(時間変化)** | set_automation_points | 音量・パンのカーブ(フェード・ビルドアップ) |
+| **道具箱** | presets / soundfonts | save_preset / load_preset(全プロジェクト共通)、list_soundfonts / set_soundfont_instrument(GM 楽器一式)、import_sample(実録 WAV) |
+| **安全網** | checkpoint / revert_to / undo | 試行錯誤の足場。Batch = 1 undo |
+| **場の把握** | UI からの文脈注入 | 範囲選択・開いているクリップ・音作り中のトラックが指示に自動で付く |
+
+**まだ持っていない感覚**: 生波形の知覚(analyze_audio は要約統計のみ)、和声・キーの明示的認識
+(ノートから自力推論)、人間の演奏のリアルタイム入力(録音・MIDI 入力なし)、
+曲全体の構成メタデータ(セクション名はクリップ名で代用)。
+
 ## 8. 課題整理・ロードマップ(2026-09-21 整理)
 
 実機での作曲テストを経て出た要望と既存の残課題を、優先度付きで整理する。

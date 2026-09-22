@@ -4,20 +4,32 @@
   let {
     highlight,
     onHit,
+    tuning = "guitar",
   }: {
     highlight: number | null;
     onHit: (pitch: number) => void;
+    /// guitar = 6 弦 EADGBE / bass = 4 弦 EADG(1 オクターブ下)
+    tuning?: "guitar" | "bass";
   } = $props();
 
-  // 標準チューニング。タブ譜と同じく上が 1 弦(高い E)
-  const STRINGS = [
-    { label: "e", base: 64 },
-    { label: "B", base: 59 },
-    { label: "G", base: 55 },
-    { label: "D", base: 50 },
-    { label: "A", base: 45 },
-    { label: "E", base: 40 },
-  ];
+  // 標準チューニング。タブ譜と同じく上が細い弦
+  const TUNINGS = {
+    guitar: [
+      { label: "e", base: 64 },
+      { label: "B", base: 59 },
+      { label: "G", base: 55 },
+      { label: "D", base: 50 },
+      { label: "A", base: 45 },
+      { label: "E", base: 40 },
+    ],
+    bass: [
+      { label: "G", base: 43 },
+      { label: "D", base: 38 },
+      { label: "A", base: 33 },
+      { label: "E", base: 28 },
+    ],
+  };
+  const STRINGS = $derived(TUNINGS[tuning]);
   const FRET_COUNT = 16; // 0(開放)〜15
   const MARKS = new Set([3, 5, 7, 9, 15]);
 

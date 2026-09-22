@@ -70,7 +70,21 @@
   });
 
   const isDrum = $derived(found?.track.device?.name === "drum");
-  const isGuitar = $derived(found?.track.device?.name === "pluck");
+  // フレット盤: 撥弦(pluck)と SoundFont のトラックで使える
+  const deviceRaw = $derived(found?.track.device as Record<string, unknown> | null | undefined);
+  const isFrettable = $derived(
+    found?.track.device?.name === "pluck" || deviceRaw?.type === "sf2",
+  );
+  // SoundFont のベース系プリセット(GM 32〜39)は既定でベース指板にする
+  const defaultTuning = $derived.by((): "guitar" | "bass" => {
+    const preset = deviceRaw?.preset;
+    if (deviceRaw?.type === "sf2" && typeof preset === "number" && preset >= 32 && preset <= 39) {
+      return "bass";
+    }
+    return "guitar";
+  });
+  let fretTuningOverride = $state<"guitar" | "bass" | null>(null);
+  const fretTuning = $derived(fretTuningOverride ?? defaultTuning);
   /// 挿入カーソル(クリックで固定。キット/フレット打ち込み先。←/→ でスナップ移動)
   let insertTick = $state(0);
   let showKit = $state(true);
@@ -861,13 +875,25 @@
             🥁 キット
           </button>
         {/if}
-        {#if isGuitar}
+        {#if isFrettable}
+          <select
+            class="tuning"
+            value={fretTuning}
+            onchange={(e) =>
+              (fretTuningOverride = (e.currentTarget as HTMLSelectElement).value as
+                | "guitar"
+                | "bass")}
+            title="フレット盤のチューニング"
+          >
+            <option value="guitar">🎸 ギター(6 弦)</option>
+            <option value="bass">🎸 ベース(4 弦)</option>
+          </select>
           <button
             class:kit-on={showFret}
             onclick={() => (showFret = !showFret)}
             title="フレット盤の表示/非表示"
           >
-            🎸 フレット
+            フレット
           </button>
         {/if}
         <label class="snap">
@@ -887,8 +913,8 @@
     {#if isDrum && showKit}
       <DrumKit highlight={drumHighlight} onHit={hitDrum} />
     {/if}
-    {#if isGuitar && showFret}
-      <Fretboard highlight={drumHighlight} onHit={hitFret} />
+    {#if isFrettable && showFret}
+      <Fretboard highlight={drumHighlight} onHit={hitFret} tuning={fretTuning} />
     {/if}
 
     <div class="body" bind:this={scroller} onpointermove={updateHover}>
@@ -1103,6 +1129,15 @@
   .drum-label {
     color: var(--accent);
     font-weight: 700;
+  }
+
+  .tuning {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 4px;
+    font-size: 11px;
   }
 
   .kit-on {
