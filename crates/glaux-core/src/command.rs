@@ -9,7 +9,8 @@
 
 use crate::id::{AssetId, ClipId, FxId, NoteId, TrackId};
 use crate::model::{
-    Articulation, Asset, AutomationPoint, Clip, Device, Effect, Note, ParamPath, ParamValue, Track,
+    Articulation, Asset, AutomationPoint, Clip, Device, Effect, Note, ParamPath, ParamValue,
+    SectionMarker, Track,
 };
 use crate::time::{TempoEvent, Tick, TimeSigEvent};
 use serde::{Deserialize, Serialize};
@@ -193,6 +194,10 @@ pub enum Command {
     SetTitle {
         title: String,
     },
+    /// 曲の構成マーカー(intro / verse / chorus 等)を丸ごと置き換える
+    SetSections {
+        sections: Vec<SectionMarker>,
+    },
     AddAsset {
         id: AssetId,
         asset: Asset,
@@ -222,6 +227,7 @@ pub enum Target {
     TimeSig,
     Master,
     Meta,
+    Sections,
 }
 
 impl Command {
@@ -315,6 +321,9 @@ impl Command {
             }
             SetTitle { .. } => {
                 out.insert(T::Meta);
+            }
+            SetSections { .. } => {
+                out.insert(T::Sections);
             }
             AddAsset { id, .. } | RemoveAsset { id } => {
                 out.insert(T::Asset(id.clone()));

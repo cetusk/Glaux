@@ -94,9 +94,9 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
 
     loop {
         let choice = if depth == 0 {
-            rng.gen_range(0..18)
-        } else {
             rng.gen_range(0..19)
+        } else {
+            rng.gen_range(0..20)
         };
         match choice {
             0 => {
@@ -368,6 +368,15 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 return Command::SetTitle {
                     title: format!("title{}", rng.gen_range(0..100)),
                 }
+            }
+            18 => {
+                let sections = (0..rng.gen_range(0..4))
+                    .map(|i| SectionMarker {
+                        tick: Tick(rng.gen_range(0..8) * 3840),
+                        name: format!("sec{i}"),
+                    })
+                    .collect();
+                return Command::SetSections { sections };
             }
             _ => {
                 // Batch: 2〜4 個を順に生成(前のコマンドの結果に依存する可能性があるので仮適用しながら作る)

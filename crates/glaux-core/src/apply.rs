@@ -63,6 +63,7 @@ pub enum Change {
     MasterChanged,
     AssetsChanged,
     MetaChanged,
+    SectionsChanged,
 }
 
 impl Project {
@@ -632,6 +633,15 @@ impl Project {
                 Ok(Applied {
                     inverse: SetTitle { title: old },
                     changes: vec![Change::MetaChanged],
+                })
+            }
+            SetSections { sections } => {
+                let mut new = sections.clone();
+                new.sort_by_key(|m| m.tick);
+                let old = std::mem::replace(&mut self.sections, new);
+                Ok(Applied {
+                    inverse: SetSections { sections: old },
+                    changes: vec![Change::SectionsChanged],
                 })
             }
             SetTimeSig { events } => {

@@ -75,6 +75,8 @@ export interface Project {
   tracks: Track[];
   master: { volume_db: number; effects: unknown[] };
   assets: Record<string, unknown>;
+  /** 曲の構成マーカー(tick 昇順)。省略 = なし */
+  sections?: { tick: number; name: string }[];
 }
 
 export type Author =

@@ -186,3 +186,38 @@ fn sf2_device_serializes_with_type_tag() {
     let back: Device = serde_json::from_value(json).unwrap();
     assert_eq!(back, device);
 }
+
+#[test]
+fn sections_serialize_and_apply() {
+    let mut p = Project::new("s");
+    // 空なら JSON に現れない(旧ファイル互換)
+    assert!(!p.to_json().unwrap().contains("sections"));
+
+    p.apply(&Command::SetSections {
+        sections: vec![
+            SectionMarker {
+                tick: Tick(3840 * 8),
+                name: "サビ".into(),
+            },
+            SectionMarker {
+                tick: Tick(0),
+                name: "intro".into(),
+            },
+        ],
+    })
+    .unwrap();
+    // tick 昇順に並ぶ
+    assert_eq!(p.sections[0].name, "intro");
+    assert_eq!(p.sections[1].name, "サビ");
+    let json = serde_json::to_value(&p.sections).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!([
+            { "tick": 0, "name": "intro" },
+            { "tick": 30720, "name": "サビ" }
+        ])
+    );
+    // 往復
+    let back = Project::from_json(&p.to_json().unwrap()).unwrap();
+    assert_eq!(p, back);
+}

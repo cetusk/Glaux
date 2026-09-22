@@ -373,6 +373,27 @@
     ></div>
   {/if}
 
+  <!-- セクションマーカー(曲の構成。AI が set_sections で管理) -->
+  {#if project.sections && project.sections.length > 0}
+    <div class="section-row">
+      <div class="track-head section-head"></div>
+      <div class="lane" style="width:{totalPx}px">
+        {#each project.sections as sec, i (sec.tick)}
+          {@const next = project.sections?.[i + 1]?.tick}
+          <div
+            class="section-band"
+            style="left:{sec.tick * pxPerTick}px;{next !== undefined
+              ? `width:${(next - sec.tick) * pxPerTick}px`
+              : `right:0`}"
+            title={`${sec.name}(tick ${sec.tick}〜)`}
+          >
+            {sec.name}
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <!-- 小節ルーラー(クリックでシーク、ドラッグで範囲選択) -->
   <div class="ruler-row">
     <div class="track-head ruler-head"></div>
@@ -685,6 +706,38 @@
   .ruler-head {
     padding: 0;
     height: 24px;
+  }
+
+  .section-row {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-head {
+    padding: 0;
+    height: 18px;
+  }
+
+  .section-row .lane {
+    height: 18px;
+    position: relative;
+    background: var(--bg-panel);
+  }
+
+  .section-band {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    padding: 0 6px;
+    font-size: 10px;
+    line-height: 14px;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-left: 2px solid var(--accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
   }
 
   .ruler-row .lane {

@@ -109,6 +109,19 @@ pub struct AnalyzeHarmonyParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct AnalyzeRhythmParams {
+    /// 対象トラック ID の配列。省略で全トラック(リズムはドラムも対象)。
+    #[serde(default)]
+    pub track_ids: Option<Vec<String>>,
+    /// 分析範囲の開始 tick。省略で曲頭から。
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// 分析範囲の終了 tick。省略で曲末まで。
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct GetHistoryParams {
     /// 作者で絞り込む: "human" | "ai" | "system"。省略で全部。
     #[serde(default)]
@@ -508,6 +521,9 @@ impl GlauxServer {
         代表例: add_track {track,index?} / add_clip {track,clip} / add_notes {clip,notes} / update_notes {clip,changes} / \
         set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?} / \
         set_title {title}(曲名の変更)/ \
+        set_sections {sections: [{tick, name}]}(曲の構成マーカーを丸ごと置換。\
+        intro / Aメロ / サビ 等。各セクションはそのマーカーから次のマーカーの手前まで。\
+        構成を決めたら早めに打っておくと「サビだけ〜して」の指示を tick 範囲に解決できる)/ \
         ノートには articulation を付けられる: \"palm_mute\"(ブリッジミュート。減衰が速いこもった刻み)/ \
         \"staccato\"(音価半分で切る)/ \"accent\"(強く明るく)/ \
         \"vibrato\"(後半にかけて深くなるピッチの揺れ。ロングトーンの表情付け)/ \
@@ -732,6 +748,40 @@ impl GlauxServer {
             )),
         };
         let analysis = glaux_core::harmony::analyze(&project, track_ids.as_deref(), range);
+        let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
+        v["project_version"] = json!(version);
+        Ok(Json(v))
+    }
+
+    #[tool(
+        description = "あなたの「リズム感」。ノートの発音位置からグルーヴを推定する: \
+        swing_ratio(1.0=ストレート、1.33≈3 連シャッフル)/ grid(straight | triplet)/ \
+        syncopation(裏に乗る発音の割合)/ avg_deviation_ticks(グリッドからのずれ。\
+        0=機械的、15〜40≈ヒューマナイズ)/ density_per_bar。\
+        既存の曲にフレーズを足すときは、まずこれで「ノリ」を測り、\
+        同じスウィング・同じグリッドで書くこと(ストレートな曲に 3 連を混ぜない、逆も同様)。\
+        ドラムだけの track_ids 指定でビートのノリ、メロディだけ指定でフレージングのノリを個別に見られる。"
+    )]
+    async fn analyze_rhythm(&self, params: Parameters<AnalyzeRhythmParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("analyze_rhythm");
+        let p = params.0;
+        let (project, version) = self.handle.get_project().await?;
+        let track_ids: Option<Vec<glaux_core::TrackId>> = match &p.track_ids {
+            None => None,
+            Some(ids) => Some(
+                ids.iter()
+                    .map(|s| glaux_core::TrackId::parse(s).map_err(|e| e.to_string()))
+                    .collect::<Result<_, _>>()?,
+            ),
+        };
+        let range = match (p.start_tick, p.end_tick) {
+            (None, None) => None,
+            (s, e) => Some((
+                glaux_core::Tick(s.unwrap_or(0)),
+                glaux_core::Tick(e.unwrap_or(u64::MAX)),
+            )),
+        };
+        let analysis = glaux_core::rhythm::analyze(&project, track_ids.as_deref(), range);
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
         Ok(Json(v))
@@ -1196,6 +1246,13 @@ impl ServerHandler for GlauxServer {
                  analyze_audio が「耳」: 編集結果をレンダしてラウドネス・帯域バランス等を返す。\
                  analyze_harmony が「音楽理論の目」: ノートからキーと小節ごとのコード進行を推定する。\
                  メロディ・ハモリ・ベースを足す前に呼ぶと調性に合った音を選べる。\
+                 analyze_rhythm が「リズム感」: スウィング・グリッド・シンコペーションを測る。\
+                 既存曲にフレーズを足す前に呼び、同じノリで書くこと。\
+                 曲の構成は sections(set_sections)で管理し、「サビ」等の指示は tick 範囲に解決する。\
+                 【セルフレビューの習慣】まとまった編集を終えたら、完了報告の前に必ず自己確認する: \
+                 (1) analyze_harmony で調性が意図どおりか、(2) analyze_audio でクリップや\
+                 バランス破綻がないか。問題があればその場で直してから報告し、\
+                 報告には確認結果(キー・LUFS 等)を一言添える。\
                  ミックス調整は 編集 → analyze_audio → 微調整 のループで行う。\
                  エフェクト(eq / compressor / reverb / distortion / sidechain)は add_effect で追加し、\
                  set_param(fx/<id>/<名前>)で調整する。マスターにも掛けられる。\

@@ -46,6 +46,17 @@ pub struct Project {
     /// BTreeMap で JSON の順序を安定させる
     #[serde(default)]
     pub assets: BTreeMap<AssetId, Asset>,
+    /// 曲の構成マーカー(intro / verse / chorus 等)。tick 昇順。
+    /// 各セクションはそのマーカーの tick から次のマーカーの手前まで
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<SectionMarker>,
+}
+
+/// 曲構成のマーカー。「サビだけ盛り上げて」のような構造単位の指示に使う。
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SectionMarker {
+    pub tick: Tick,
+    pub name: String,
 }
 
 fn default_time_sig() -> Vec<TimeSigEvent> {
@@ -77,6 +88,7 @@ impl Project {
             tracks: vec![],
             master: MasterBus::default(),
             assets: BTreeMap::new(),
+            sections: vec![],
         }
     }
 
