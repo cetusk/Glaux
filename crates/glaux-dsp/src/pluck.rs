@@ -38,7 +38,7 @@ pub struct PluckVoice {
     bright: f32,
     amp: f32,
     /// ピッチ表現(ビブラート / チョーキング)
-    expr: crate::expr::PitchExpr,
+    pub(crate) expr: crate::expr::PitchExpr,
     /// note_off 後のフェード(押さえて止める)
     release_env: f32,
     released: bool,

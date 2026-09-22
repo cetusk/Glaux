@@ -110,7 +110,7 @@ pub struct SubtractiveVoice {
     /// 奏法によるボイス固有の倍率
     art: ArtMod,
     /// ピッチ表現(ビブラート / チョーキング)
-    expr: crate::expr::PitchExpr,
+    pub(crate) expr: crate::expr::PitchExpr,
     /// ユニゾン各声部の位相
     phases: [f32; MAX_UNISON],
     /// サブオシレータの位相

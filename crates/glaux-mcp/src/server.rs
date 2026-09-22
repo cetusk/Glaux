@@ -549,6 +549,11 @@ impl GlauxServer {
         \"vibrato\"(後半にかけて深くなるピッチの揺れ。ロングトーンの表情付け)/ \
         \"bend\"(チョーキング: 全音下から書かれた音程へ滑り上がる。ギターソロの決め音に)。\
         省略で通常。update_notes でも変更可。\
+        連続ピッチカーブ: ノートの pitch_curve に [{tick, cents}](tick はノート先頭からの相対、\
+        cents は書かれた音程からのずれ。100 = 半音、±2400 まで、最大 8 点、点の間は線形補間、\
+        両端は保持)を書くと自由なベンド・ポルタメント・うねりが作れる\
+        (例: ギターのチョーキングを 1 拍かけて上げる = [{tick:0,cents:-200},{tick:960,cents:0}]、\
+        ダイブ = [{tick:0,cents:0},{tick:1920,cents:-1200}])。update_notes の pitch_curve で差し替え、[] で削除。\
         メタルの「ズクズク」した刻みは distortion + 低音 + palm_mute ノートの組み合わせで作る。\
         set_automation_points {track,target,points}(target は \"track/volume_db\" / \"track/pan\" / \
         \"device/<パラメータ名>\"(例 device/cutoff。list_params にある連続値パラメータ。\

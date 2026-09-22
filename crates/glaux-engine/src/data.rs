@@ -50,6 +50,8 @@ pub struct NoteEvent {
     pub track: u32,
     /// 奏法(パームミュート等)。ボイス起動時に音色へ反映する
     pub articulation: glaux_core::Articulation,
+    /// 連続ピッチカーブ(ノート先頭からのサンプル数, セント)。空なら無し
+    pub curve: glaux_dsp::PitchCurve,
 }
 
 /// 音声クリップ 1 つ分の再生イベント。サンプル位置は曲頭からの絶対値。
@@ -522,6 +524,15 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 if note.articulation == glaux_core::Articulation::Staccato {
                     end = start + ((end - start) / 2).max(1);
                 }
+                // ピッチカーブ: 相対 tick → ノート先頭からのサンプル数(テンポ考慮)
+                let curve_pts: Vec<(f32, f32)> = note
+                    .pitch_curve
+                    .iter()
+                    .map(|p| {
+                        let at = to_sample(start_tick + p.tick).saturating_sub(start) as f32;
+                        (at, p.cents)
+                    })
+                    .collect();
                 events.push(NoteEvent {
                     start,
                     end,
@@ -530,6 +541,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     amp: note.vel as f32 / 127.0,
                     track: ti as u32,
                     articulation: note.articulation,
+                    curve: glaux_dsp::PitchCurve::from_points(&curve_pts),
                 });
             }
         }
@@ -574,6 +586,7 @@ mod tests {
     fn note(pos: u64, dur: u64, pitch: u8, vel: u8) -> glaux_core::Note {
         glaux_core::Note {
             articulation: Default::default(),
+            pitch_curve: vec![],
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(dur),

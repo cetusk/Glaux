@@ -34,6 +34,20 @@ impl Articulation {
     }
 }
 
+/// 連続ピッチカーブの 1 点。ノート先頭からの相対 tick と、書かれた音程からの
+/// ずれ(セント。100 = 半音)。点の間は線形補間、最初の点より前 / 最後の点より後は
+/// その値を保持する。
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct PitchPoint {
+    pub tick: Tick,
+    pub cents: f32,
+}
+
+/// ピッチカーブの点数上限(ボイス側が固定長で持つため)
+pub const MAX_PITCH_POINTS: usize = 8;
+/// ピッチカーブの振れ幅の上限(セント)
+pub const MAX_PITCH_CENTS: f32 = 2400.0;
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Note {
     pub id: NoteId,
@@ -47,6 +61,10 @@ pub struct Note {
     /// 奏法。省略時 Normal
     #[serde(default, skip_serializing_if = "Articulation::is_normal")]
     pub articulation: Articulation,
+    /// 連続ピッチカーブ(自由描画のベンド・ポルタメント等)。空なら無し。
+    /// 奏法(vibrato / bend)と併用できる(掛け合わせ)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pitch_curve: Vec<PitchPoint>,
 }
 
 impl Note {

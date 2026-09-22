@@ -367,6 +367,7 @@ mod tests {
             for (pos, dur, pitch, vel) in notes {
                 n.push(Note {
                     articulation: Default::default(),
+                    pitch_curve: vec![],
                     id: NoteId::new(),
                     pos: Tick(pos),
                     dur: Tick(dur),

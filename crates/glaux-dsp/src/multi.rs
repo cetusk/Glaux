@@ -259,7 +259,7 @@ pub struct MultiVoice {
     layer_norm: f32,
     amp: f32,
     released: bool,
-    expr: PitchExpr,
+    pub(crate) expr: PitchExpr,
     sample_rate: f32,
     /// 経過サンプル数(制御レートのタイミングと LFO 遅延に使う)
     age: u32,

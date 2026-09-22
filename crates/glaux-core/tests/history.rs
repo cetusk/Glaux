@@ -48,6 +48,7 @@ fn seed_project() -> Project {
                     pitch: 48 + n as u8,
                     vel: 100,
                     articulation: Articulation::Normal,
+                    pitch_curve: vec![],
                 });
             }
             p.apply(&Command::AddClip {
@@ -204,6 +205,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         ]
                         .choose(rng)
                         .unwrap(),
+                        pitch_curve: vec![],
                     })
                     .collect();
                 return Command::AddNotes {
@@ -270,6 +272,16 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                                 .choose(rng)
                                 .unwrap(),
                             );
+                        }
+                        if rng.gen() {
+                            let n = rng.gen_range(0..4);
+                            let curve = (0..n)
+                                .map(|i| PitchPoint {
+                                    tick: Tick(i * 120),
+                                    cents: rng.gen_range(-200.0..200.0),
+                                })
+                                .collect();
+                            ch = ch.pitch_curve(curve);
                         }
                         ch
                     })
@@ -655,6 +667,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             pitch: 60,
             vel: 100,
             articulation: Articulation::Normal,
+            pitch_curve: vec![],
         }, // 左に残る
         Note {
             id: ids[1].clone(),
@@ -663,6 +676,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             pitch: 62,
             vel: 100,
             articulation: Articulation::Normal,
+            pitch_curve: vec![],
         }, // 分割点(1920)をまたぐ → 切り詰め
         Note {
             id: ids[2].clone(),
@@ -671,6 +685,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             pitch: 64,
             vel: 100,
             articulation: Articulation::Normal,
+            pitch_curve: vec![],
         }, // 右へ移動
     ]);
     p.apply(&Command::AddClip { track: tid, clip }).unwrap();

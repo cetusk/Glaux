@@ -16,6 +16,8 @@ export interface Note {
   vel: number;
   /** 奏法。省略 = normal */
   articulation?: Articulation;
+  /** 連続ピッチカーブ(ノート先頭からの相対 tick, セント)。省略 = なし */
+  pitch_curve?: { tick: number; cents: number }[];
 }
 
 export interface MidiClip {

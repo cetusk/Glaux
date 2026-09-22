@@ -92,6 +92,17 @@ impl VoiceState {
         }
     }
 
+    /// ノートのピッチカーブを付ける(ドラムは無視)。発音直後に呼ぶ。
+    pub fn set_curve(&mut self, curve: &crate::expr::PitchCurve) {
+        match self {
+            VoiceState::Subtractive(v) => v.expr.set_curve(curve),
+            VoiceState::Pluck(v) => v.expr.set_curve(curve),
+            VoiceState::Sampler(v) => v.expr.set_curve(curve),
+            VoiceState::Sf2(v) => v.expr.set_curve(curve),
+            VoiceState::Drum(_) => {}
+        }
+    }
+
     /// 1 サンプル生成。`params` はボイス生成時と同じ楽器種であること
     /// (種別が変わるデータ差し替え時はエンジンがボイスを作り直す)。
     pub fn next(&mut self, params: &InstrumentParams) -> f32 {

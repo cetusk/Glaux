@@ -267,6 +267,30 @@
       g.strokeStyle = isSel ? "#ffd98a" : "rgba(255,255,255,0.25)";
       g.lineWidth = 1;
       g.stroke();
+      // ピッチカーブ(AI が描いたベンド等)。1 行 = 半音として折れ線で重ねる
+      const curve = n.pitch_curve;
+      if (curve && curve.length > 0 && w >= 6) {
+        const cy = y + rowH / 2;
+        g.beginPath();
+        let first = true;
+        const pts = [...curve];
+        if (pts[0].tick > 0) pts.unshift({ tick: 0, cents: pts[0].cents });
+        const last = pts[pts.length - 1];
+        if (last.tick < n.dur) pts.push({ tick: n.dur, cents: last.cents });
+        for (const p of pts) {
+          const px = x + Math.min(p.tick, n.dur) * pxPerTick;
+          const py = cy - (p.cents / 100) * rowH;
+          if (first) {
+            g.moveTo(px, py);
+            first = false;
+          } else {
+            g.lineTo(px, py);
+          }
+        }
+        g.strokeStyle = "rgba(255, 120, 200, 0.95)";
+        g.lineWidth = 1.5;
+        g.stroke();
+      }
       // 奏法マーカー(M=ブリッジミュート / S=スタッカート / >=アクセント)
       const art = n.articulation;
       if (art && art !== "normal" && w >= 13 && rowH >= 9) {

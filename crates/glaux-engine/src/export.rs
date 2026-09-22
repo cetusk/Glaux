@@ -97,6 +97,7 @@ mod tests {
         if let ClipContent::Midi { notes, .. } = &mut clip.content {
             notes.push(Note {
                 articulation: Default::default(),
+                pitch_curve: vec![],
                 id: NoteId::new(),
                 pos: Tick(0),
                 dur: Tick(960),

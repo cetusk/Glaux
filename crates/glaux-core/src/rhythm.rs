@@ -164,6 +164,7 @@ mod tests {
                 pitch: 42,
                 vel: 100,
                 articulation: Articulation::Normal,
+                pitch_curve: vec![],
             });
         }
         p.apply(&Command::AddClip { track: tid, clip }).unwrap();

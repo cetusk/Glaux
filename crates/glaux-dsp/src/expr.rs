@@ -1,10 +1,55 @@
 //! ノート単位のピッチ表現(ビブラート / チョーキング)。
 //!
-//! `Articulation::Vibrato` / `Articulation::Bend` をボイス内の周波数比の
-//! 時間変化として実装する。subtractive と pluck の両方が共用する。
-//! 連続ピッチカーブ(自由な描画)の本格版はサンプラー検討時に別途設計する。
+//! `Articulation::Vibrato` / `Articulation::Bend` と、ノートに描かれた連続
+//! ピッチカーブ([`PitchCurve`])をボイス内の周波数比の時間変化として実装する。
+//! subtractive / pluck / sampler / sf2 が共用する。
 
 use glaux_core::Articulation;
+
+/// ボイスが持つ固定長のピッチカーブ(サンプル位置, セント)。
+/// `glaux_core::Note::pitch_curve` をエンジンがサンプル位置に換算したもの。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PitchCurve {
+    pub pts: [(f32, f32); glaux_core::MAX_PITCH_POINTS],
+    pub len: u8,
+}
+
+impl PitchCurve {
+    /// (ノート先頭からのサンプル数, セント) の列から作る。上限を超えた分は捨てる。
+    pub fn from_points(points: &[(f32, f32)]) -> PitchCurve {
+        let mut c = PitchCurve::default();
+        for (i, p) in points.iter().take(glaux_core::MAX_PITCH_POINTS).enumerate() {
+            c.pts[i] = *p;
+            c.len = (i + 1) as u8;
+        }
+        c
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// `age`(サンプル)でのセント値。区分線形、両端は保持。
+    fn cents_at(&self, age: f32) -> f32 {
+        let n = self.len as usize;
+        if n == 0 {
+            return 0.0;
+        }
+        let pts = &self.pts[..n];
+        if age <= pts[0].0 {
+            return pts[0].1;
+        }
+        for w in pts.windows(2) {
+            let (t0, c0) = w[0];
+            let (t1, c1) = w[1];
+            if age < t1 {
+                let span = (t1 - t0).max(1.0);
+                return c0 + (c1 - c0) * ((age - t0) / span);
+            }
+        }
+        pts[n - 1].1
+    }
+}
 
 /// ピッチの時間変化。1 サンプルごとに `next_ratio` で周波数比を得る。
 #[derive(Clone, Copy, Debug)]
@@ -19,6 +64,8 @@ pub(crate) struct PitchExpr {
     bend_samples: f32,
     phase: f32,
     age: f32,
+    /// ノートに描かれた連続ピッチカーブ(空なら無効)
+    curve: PitchCurve,
 }
 
 const INERT: PitchExpr = PitchExpr {
@@ -28,6 +75,10 @@ const INERT: PitchExpr = PitchExpr {
     bend_samples: 1.0,
     phase: 0.0,
     age: 0.0,
+    curve: PitchCurve {
+        pts: [(0.0, 0.0); glaux_core::MAX_PITCH_POINTS],
+        len: 0,
+    },
 };
 
 impl PitchExpr {
@@ -49,9 +100,14 @@ impl PitchExpr {
         }
     }
 
+    /// ピッチカーブを付ける(奏法の効果と掛け合わせ)。
+    pub(crate) fn set_curve(&mut self, curve: &PitchCurve) {
+        self.curve = *curve;
+    }
+
     /// 効果を持つか(持たないボイスは呼び出しを省ける)。
     pub(crate) fn is_active(&self) -> bool {
-        self.vib_cents != 0.0 || self.bend_start != 1.0
+        self.vib_cents != 0.0 || self.bend_start != 1.0 || !self.curve.is_empty()
     }
 
     /// 現在の周波数比を返し、時間を 1 サンプル進める。
@@ -74,6 +130,43 @@ impl PitchExpr {
             // 小さい cents に対する 2^(c/1200) の一次近似(±30 セントで誤差は無視できる)
             ratio *= 1.0 + cents * (std::f32::consts::LN_2 / 1200.0);
         }
+        if !self.curve.is_empty() {
+            let cents = self.curve.cents_at(self.age);
+            if cents != 0.0 {
+                ratio *= (cents * (std::f32::consts::LN_2 / 1200.0)).exp();
+            }
+        }
         ratio
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curve_interpolates_and_holds_ends() {
+        let c = PitchCurve::from_points(&[(0.0, -200.0), (100.0, 0.0), (200.0, 100.0)]);
+        assert_eq!(c.cents_at(0.0), -200.0);
+        assert!((c.cents_at(50.0) - -100.0).abs() < 1e-3);
+        assert!((c.cents_at(150.0) - 50.0).abs() < 1e-3);
+        assert_eq!(c.cents_at(999.0), 100.0, "最後の点より後は保持");
+        let late = PitchCurve::from_points(&[(100.0, 50.0)]);
+        assert_eq!(late.cents_at(0.0), 50.0, "最初の点より前は保持");
+    }
+
+    #[test]
+    fn curve_changes_frequency_ratio() {
+        let mut e = PitchExpr::new(Articulation::Normal, 48_000.0);
+        assert!(!e.is_active());
+        e.set_curve(&PitchCurve::from_points(&[(0.0, -1200.0), (480.0, 0.0)]));
+        assert!(e.is_active());
+        let first = e.next_ratio(48_000.0);
+        assert!((first - 0.5).abs() < 0.01, "1 オクターブ下から: {first}");
+        for _ in 0..600 {
+            e.next_ratio(48_000.0);
+        }
+        let last = e.next_ratio(48_000.0);
+        assert!((last - 1.0).abs() < 1e-4, "書かれた音程へ到達: {last}");
     }
 }

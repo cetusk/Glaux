@@ -43,7 +43,8 @@ const FIXTURE: &str = r##"{
           "notes": [
             { "id": "nt_000001", "pos": 0,   "dur": 480, "pitch": 36, "vel": 100 },
             { "id": "nt_000002", "pos": 960, "dur": 480, "pitch": 36, "vel": 90,
-              "articulation": "palm_mute" }
+              "articulation": "palm_mute",
+              "pitch_curve": [ { "tick": 0, "cents": -200.0 }, { "tick": 240, "cents": 0.0 } ] }
           ],
           "loop": false
         }

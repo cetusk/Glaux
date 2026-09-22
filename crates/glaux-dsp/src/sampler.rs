@@ -54,7 +54,7 @@ pub struct SamplerVoice {
     released: bool,
     /// 波形を最後まで読み切った
     done: bool,
-    expr: PitchExpr,
+    pub(crate) expr: PitchExpr,
     sample_rate: f32,
 }
 

@@ -373,19 +373,17 @@ impl Renderer {
                         } else {
                             &mix.instrument
                         };
+                        let mut state =
+                            VoiceState::start(inst, e.freq, e.pitch, e.amp, e.articulation, sr);
+                        if !e.curve.is_empty() {
+                            state.set_curve(&e.curve);
+                        }
                         self.voices.push(Voice {
                             end: e.end,
                             track: e.track,
                             released: false,
                             wraps: 0,
-                            state: VoiceState::start(
-                                inst,
-                                e.freq,
-                                e.pitch,
-                                e.amp,
-                                e.articulation,
-                                sr,
-                            ),
+                            state,
                         });
                     }
                 }
@@ -605,6 +603,7 @@ mod tests {
         PlaybackData {
             events: vec![NoteEvent {
                 articulation: Default::default(),
+                curve: Default::default(),
                 start,
                 end,
                 freq: 440.0,
