@@ -27,6 +27,11 @@ interface Settings {
   metronomeOnRecord: boolean;
   /// チャットの AI モデル(`claude --model` に渡す)。空文字 = Claude Code の既定
   chatModel: string;
+  /// オーディオデバイス(空文字 = OS の既定)
+  outputDevice: string;
+  inputDevice: string;
+  /// 録音の音量を自動で整える(一番大きい所を -6dB に)
+  autoGain: boolean;
 }
 
 function load(): Settings {
@@ -41,6 +46,9 @@ function load(): Settings {
         countInBars: typeof v.countInBars === "number" ? v.countInBars : 1,
         metronomeOnRecord: v.metronomeOnRecord !== false,
         chatModel: typeof v.chatModel === "string" ? v.chatModel : "",
+        outputDevice: typeof v.outputDevice === "string" ? v.outputDevice : "",
+        inputDevice: typeof v.inputDevice === "string" ? v.inputDevice : "",
+        autoGain: v.autoGain !== false,
       };
     }
   } catch {
@@ -53,6 +61,9 @@ function load(): Settings {
     countInBars: 1,
     metronomeOnRecord: true,
     chatModel: "",
+    outputDevice: "",
+    inputDevice: "",
+    autoGain: true,
   };
 }
 

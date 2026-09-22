@@ -26,6 +26,9 @@ pub struct Ring {
     tail: AtomicUsize,
     /// 溢れて捨てたサンプル数
     dropped: AtomicU64,
+    /// 直近のピーク(絶対値、f32 のビット列)。正の f32 はビット列の大小と値の大小が
+    /// 一致するので fetch_max で最大を取れる
+    peak_bits: AtomicU32,
 }
 
 impl Ring {
@@ -35,7 +38,20 @@ impl Ring {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             dropped: AtomicU64::new(0),
+            peak_bits: AtomicU32::new(0),
         }
+    }
+
+    /// ピークを記録する(オーディオスレッド)。
+    pub fn note_peak(&self, v: f32) {
+        self.peak_bits
+            .fetch_max(v.abs().to_bits(), Ordering::Relaxed);
+    }
+
+    /// ピーク(dBFS)を読み出してリセットする。
+    pub fn take_peak_db(&self) -> f32 {
+        let p = f32::from_bits(self.peak_bits.swap(0, Ordering::AcqRel));
+        20.0 * p.max(1e-6).log10()
     }
 
     /// producer(オーディオスレッド)。満杯なら捨てて false。
@@ -80,15 +96,21 @@ pub struct RecordResult {
     pub dropped: u64,
 }
 
-/// 進行中の録音。`stop` で確定する。
+/// 進行中の録音(または入力テスト)。`stop` で確定する。
 pub struct Recording {
     stop: Arc<AtomicBool>,
     done: mpsc::Receiver<Result<RecordResult, EngineError>>,
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
     pub sample_rate: u32,
+    ring: Arc<Ring>,
 }
 
 impl Recording {
+    /// 入力レベルのピーク(dBFS)を読み出してリセットする。
+    pub fn take_peak_db(&self) -> f32 {
+        self.ring.take_peak_db()
+    }
+
     /// 録音を止めて WAV を確定する。
     pub fn stop(self) -> Result<RecordResult, EngineError> {
         self.stop.store(true, Ordering::Release);
@@ -98,18 +120,41 @@ impl Recording {
     }
 }
 
-/// 既定の入力デバイスで録音を開始する。ファイルは `path`(モノラル 16bit WAV)。
-pub fn start_recording(path: PathBuf) -> Result<Recording, EngineError> {
+fn device_name(d: &cpal::Device) -> String {
+    d.description()
+        .map(|d| d.name().to_owned())
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+/// 名前で入力デバイスを探す。
+pub fn find_input_device(name: &str) -> Option<cpal::Device> {
+    cpal::default_host()
+        .input_devices()
+        .ok()?
+        .find(|d| device_name(d) == name)
+}
+
+/// OS 既定の入力デバイス名。
+pub fn default_input_name() -> Option<String> {
+    cpal::default_host()
+        .default_input_device()
+        .map(|d| device_name(&d))
+}
+
+/// 入力を開始する。`path` があればモノラル 16bit WAV に録音し、None なら
+/// レベル測定だけ(入力テスト)。`device` は入力デバイス名(None で OS 既定)。
+pub fn start_input(path: Option<PathBuf>, device: Option<&str>) -> Result<Recording, EngineError> {
     let stop = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = mpsc::channel();
-    let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, EngineError>>();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(u32, Arc<Ring>), EngineError>>();
     let stop_flag = stop.clone();
     let out_path = path.clone();
+    let device = device.map(str::to_owned);
 
     std::thread::Builder::new()
         .name("glaux-record".into())
         .spawn(move || {
-            let (stream, sample_rate, ring) = match open_input() {
+            let (stream, sample_rate, ring) = match open_input(device.as_deref()) {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -120,15 +165,18 @@ pub fn start_recording(path: PathBuf) -> Result<Recording, EngineError> {
                 let _ = ready_tx.send(Err(EngineError::Stream(e.to_string())));
                 return;
             }
-            let _ = ready_tx.send(Ok(sample_rate));
+            let _ = ready_tx.send(Ok((sample_rate, ring.clone())));
 
-            let result = write_loop(&out_path, sample_rate, &ring, &stop_flag);
+            let result = match &out_path {
+                Some(p) => write_loop(p, sample_rate, &ring, &stop_flag),
+                None => discard_loop(sample_rate, &ring, &stop_flag),
+            };
             drop(stream);
             let _ = done_tx.send(result);
         })
         .map_err(|e| EngineError::Stream(e.to_string()))?;
 
-    let sample_rate = ready_rx
+    let (sample_rate, ring) = ready_rx
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| EngineError::Stream("入力デバイスの初期化がタイムアウト".into()))??;
     Ok(Recording {
@@ -136,12 +184,38 @@ pub fn start_recording(path: PathBuf) -> Result<Recording, EngineError> {
         done: done_rx,
         path,
         sample_rate,
+        ring,
     })
 }
 
-fn open_input() -> Result<(cpal::Stream, u32, Arc<Ring>), EngineError> {
+/// 入力テスト用: リングを空け続けるだけ(ピークはコールバック側で記録済み)。
+fn discard_loop(
+    sample_rate: u32,
+    ring: &Ring,
+    stop: &AtomicBool,
+) -> Result<RecordResult, EngineError> {
+    let mut chunk = Vec::with_capacity(8192);
+    while !stop.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(20));
+        ring.drain_into(&mut chunk);
+        chunk.clear();
+    }
+    Ok(RecordResult {
+        path: PathBuf::new(),
+        frames: 0,
+        sample_rate,
+        clipped: 0,
+        dropped: ring.dropped(),
+    })
+}
+
+fn open_input(name: Option<&str>) -> Result<(cpal::Stream, u32, Arc<Ring>), EngineError> {
     let host = cpal::default_host();
-    let device = host.default_input_device().ok_or(EngineError::NoDevice)?;
+    let device = match name {
+        Some(n) => find_input_device(n)
+            .ok_or_else(|| EngineError::Stream(format!("入力デバイスが見つかりません: {n}")))?,
+        None => host.default_input_device().ok_or(EngineError::NoDevice)?,
+    };
     let config = device
         .default_input_config()
         .map_err(|e| EngineError::Stream(e.to_string()))?;
@@ -172,20 +246,21 @@ fn open_input() -> Result<(cpal::Stream, u32, Arc<Ring>), EngineError> {
         other => return Err(EngineError::UnsupportedFormat(other.to_string())),
     }
     .map_err(|e| EngineError::Stream(e.to_string()))?;
-    let name = device
-        .description()
-        .map(|d| d.name().to_owned())
-        .unwrap_or_else(|_| "unknown".into());
+    let name = device_name(&device);
     tracing::info!("録音入力: {name} / {sample_rate} Hz / {channels} ch");
     Ok((stream, sample_rate, ring))
 }
 
 /// 入力フレームをモノラル化してリングへ(オーディオスレッド。アロケーションなし)。
 fn push_mono<T: Copy>(ring: &Ring, data: &[T], channels: usize, conv: impl Fn(T) -> f32) {
+    let mut peak = 0.0f32;
     for frame in data.chunks(channels) {
         let sum: f32 = frame.iter().map(|v| conv(*v)).sum();
-        ring.push(sum / channels as f32);
+        let v = sum / channels as f32;
+        peak = peak.max(v.abs());
+        ring.push(v);
     }
+    ring.note_peak(peak);
 }
 
 /// 停止要求まで 20ms ごとにリングを WAV へ書き出す(書き込みスレッド)。
@@ -296,6 +371,16 @@ mod tests {
         let reader = hound::WavReader::open(&path).unwrap();
         assert_eq!(reader.spec().sample_rate, 48_000);
         assert_eq!(reader.duration(), 300);
+    }
+
+    #[test]
+    fn peak_is_tracked_and_reset() {
+        let ring = Ring::new(64);
+        push_mono(&ring, &[0.1f32, -0.5, 0.25], 1, |v| v);
+        let db = ring.take_peak_db();
+        assert!((db - 20.0 * 0.5f32.log10()).abs() < 0.01, "{db}");
+        // 読み出すとリセットされる
+        assert!(ring.take_peak_db() < -100.0);
     }
 
     #[test]

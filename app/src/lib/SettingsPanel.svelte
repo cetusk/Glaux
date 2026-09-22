@@ -7,7 +7,147 @@
     settings,
   } from "./settings.svelte";
 
+  import { onMount } from "svelte";
+  import * as api from "./api";
+
   let { onClose }: { onClose: () => void } = $props();
+
+  // ---- オーディオデバイス ----
+  let devices = $state<api.AudioDevices | null>(null);
+  let deviceMsg = $state<string | null>(null);
+
+  async function loadDevices() {
+    try {
+      devices = await api.audioDevices();
+    } catch (e) {
+      deviceMsg = String(e);
+    }
+  }
+
+  async function pickOutput(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    deviceMsg = "切り替え中…";
+    try {
+      await api.setOutputDevice(v || null);
+      settings.outputDevice = v;
+      saveSettings();
+      deviceMsg = null;
+    } catch (err) {
+      deviceMsg = `切り替えられませんでした(既定に戻しました): ${err}`;
+      settings.outputDevice = "";
+      saveSettings();
+    }
+    await loadDevices();
+  }
+
+  async function pickInput(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    try {
+      await api.setInputDevice(v || null);
+      settings.inputDevice = v;
+      saveSettings();
+      deviceMsg = null;
+    } catch (err) {
+      deviceMsg = String(err);
+    }
+    await loadDevices();
+  }
+
+  // ---- 入力テスト(レベルメーター) ----
+  let monitoring = $state(false);
+  let levelDb = $state(-90);
+  let levelPeakHold = $state(-90);
+  let meterTimer: ReturnType<typeof setInterval> | undefined;
+
+  async function toggleMonitor() {
+    try {
+      await api.inputMonitor(!monitoring);
+      monitoring = !monitoring;
+    } catch (e) {
+      deviceMsg = String(e);
+    }
+  }
+
+  $effect(() => {
+    if (!monitoring) return;
+    meterTimer = setInterval(async () => {
+      try {
+        const t = await api.transportState();
+        const db = t.input_peak_db ?? -90;
+        // 表示は上がるときは即座に、下がるときはゆっくり
+        levelDb = Math.max(db, levelDb - 3);
+        levelPeakHold = Math.max(db, levelPeakHold - 0.5);
+      } catch {
+        // 次の周期で回復
+      }
+    }, 80);
+    return () => clearInterval(meterTimer);
+  });
+
+  function meterPct(db: number): number {
+    return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+  }
+
+  const levelAdvice = $derived(
+    levelPeakHold > -1
+      ? "大きすぎます(音割れ)。マイクの音量を下げてください"
+      : levelPeakHold > -12
+        ? "ちょうど良い音量です"
+        : levelPeakHold > -30
+          ? "少し小さめです。もう少し上げると判定が安定します"
+          : "かなり小さいです。Windows のマイク音量を上げてください",
+  );
+
+  // ---- 遅延の自動測定 ----
+  let calib = $state<"idle" | "countin" | "tapping" | "analyzing">("idle");
+  let calibMsg = $state<string | null>(null);
+  let tapCount = $state(0);
+
+  async function startCalibration() {
+    if (monitoring) await toggleMonitor();
+    calibMsg = null;
+    try {
+      const r = await api.calibrateStart();
+      calib = "countin";
+      const beatSecs = (r.total_secs - 0.4 - r.count_in_secs) / r.beats;
+      setTimeout(() => {
+        calib = "tapping";
+        tapCount = 1;
+        const iv = setInterval(() => {
+          tapCount += 1;
+          if (tapCount >= r.beats) clearInterval(iv);
+        }, beatSecs * 1000);
+      }, r.count_in_secs * 1000);
+      setTimeout(finishCalibration, r.total_secs * 1000);
+    } catch (e) {
+      calib = "idle";
+      calibMsg = String(e);
+    }
+  }
+
+  async function finishCalibration() {
+    calib = "analyzing";
+    try {
+      const r = await api.calibrateStop();
+      settings.recordLatencyMs = Math.round(r.latency_ms / 5) * 5;
+      saveSettings();
+      calibMsg =
+        `遅延 ${Math.round(r.latency_ms)}ms(${r.detected}/${r.beats} 拍を検出、ばらつき ±${Math.round(r.spread_ms)}ms)。` +
+        (r.spread_ms > 40
+          ? "ばらつきが大きいので、もう一度測ると精度が上がります。"
+          : "レイテンシ補正に設定しました。");
+    } catch (e) {
+      calibMsg = String(e);
+    }
+    calib = "idle";
+  }
+
+  onMount(() => {
+    loadDevices();
+    return () => {
+      if (monitoring) api.inputMonitor(false).catch(() => {});
+    };
+  });
 
   function pickAccent(name: string) {
     settings.accent = name;
@@ -61,6 +201,57 @@
   </div>
 
   <div class="section">
+    <div class="section-title">
+      オーディオデバイス
+      <button class="mini" onclick={loadDevices} title="一覧を更新(USB 機器を抜き差しした後など)">🔄</button>
+    </div>
+    {#if devices}
+      <label class="row col">
+        <span>🔈 出力(再生)</span>
+        <select value={settings.outputDevice} onchange={pickOutput}>
+          <option value="">OS の既定({devices.default_output ?? "なし"})</option>
+          {#each devices.outputs as d (d)}
+            <option value={d}>{d}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="row col">
+        <span>🎤 入力(録音)</span>
+        <select value={settings.inputDevice} onchange={pickInput}>
+          <option value="">OS の既定({devices.default_input ?? "なし"})</option>
+          {#each devices.inputs as d (d)}
+            <option value={d}>{d}</option>
+          {/each}
+        </select>
+      </label>
+      <div class="hint">
+        使用中: 🔈 {devices.current_output ?? "なし"}{devices.sample_rate
+          ? `(${(devices.sample_rate / 1000).toFixed(1)} kHz)`
+          : ""} / 🎤 {devices.current_input ?? "なし"}
+      </div>
+    {:else}
+      <div class="hint">読み込み中…</div>
+    {/if}
+    {#if deviceMsg}
+      <div class="hint warn">{deviceMsg}</div>
+    {/if}
+
+    <div class="row">
+      <button class="mini" class:on={monitoring} onclick={toggleMonitor}>
+        {monitoring ? "■ 入力テストを止める" : "🎤 入力テスト"}
+      </button>
+    </div>
+    {#if monitoring}
+      <div class="meter" title={`直近のピーク ${levelPeakHold.toFixed(1)} dBFS`}>
+        <div class="meter-fill" style="width:{meterPct(levelDb)}%"></div>
+        <div class="meter-hold" style="left:{meterPct(levelPeakHold)}%"></div>
+        <div class="meter-zone" style="left:{meterPct(-12)}%;width:{meterPct(-6) - meterPct(-12)}%"></div>
+      </div>
+      <div class="hint">{levelPeakHold.toFixed(0)} dB — {levelAdvice}(目安: 声の一番大きい所が -12〜-6dB の帯に入る)</div>
+    {/if}
+  </div>
+
+  <div class="section">
     <div class="section-title">録音</div>
     <label class="row">
       カウントイン
@@ -104,8 +295,35 @@
       ms
     </label>
     <div class="hint">
-      録音が拍より遅れて置かれるなら値を増やし、早すぎるなら減らします(目安: 出力デバイスの遅延 20〜100ms)。
+      録音が拍より遅れて置かれるなら値を増やし、早すぎるなら減らします。下の自動測定で決められます。
     </div>
+    <div class="row">
+      <button class="mini" onclick={startCalibration} disabled={calib !== "idle"}>🎯 遅延を自動測定</button>
+    </div>
+    {#if calib === "countin"}
+      <div class="hint strong">カウントイン中… 次の 1 小節から、クリックに合わせて手を叩くか「タッ」と言ってください</div>
+    {:else if calib === "tapping"}
+      <div class="hint strong">👏 クリックに合わせて! {tapCount} / 8</div>
+    {:else if calib === "analyzing"}
+      <div class="hint">解析中…</div>
+    {:else if calibMsg}
+      <div class="hint">{calibMsg}</div>
+    {:else}
+      <div class="hint">
+        メトロノームだけが鳴ります(曲は鳴りません)。スピーカーで聴いている場合は、クリック音がマイクに入るので叩かなくても測れます。
+      </div>
+    {/if}
+    <label class="row">
+      <input
+        type="checkbox"
+        checked={settings.autoGain}
+        onchange={(e) => {
+          settings.autoGain = (e.currentTarget as HTMLInputElement).checked;
+          saveSettings();
+        }}
+      />
+      録音の音量を自動で整える(一番大きい所を -6dB に。元の録音は変えません)
+    </label>
   </div>
 
   <div class="note">設定はこの PC に保存されます(プロジェクトには含まれません)。</div>
@@ -131,12 +349,79 @@
     background: rgba(0, 0, 0, 0.45);
   }
 
+  .col {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+  }
+
+  .col select {
+    width: 100%;
+  }
+
+  .col > span {
+    text-align: left;
+    align-self: flex-start;
+  }
+
+  .mini {
+    font-size: 11px;
+    padding: 2px 8px;
+  }
+
+  .mini.on {
+    border-color: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .warn {
+    color: #e8a07c;
+  }
+
+  .strong {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .meter {
+    position: relative;
+    height: 10px;
+    border-radius: 3px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .meter-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: linear-gradient(90deg, #3aa876 0%, #3aa876 70%, #e0c050 85%, #e05555 100%);
+  }
+
+  .meter-hold {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #fff;
+  }
+
+  .meter-zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed rgba(255, 255, 255, 0.5);
+    border-right: 1px dashed rgba(255, 255, 255, 0.5);
+  }
+
   .panel {
     position: fixed;
     z-index: 30;
     top: 60px;
     right: 16px;
-    width: 340px;
+    width: 360px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 10px;

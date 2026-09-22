@@ -159,16 +159,68 @@ export function transportSetMetronome(on: boolean): Promise<void> {
   return invoke("transport_set_metronome", { on });
 }
 
-/** 録音を止めて音声クリップとして配置する。trackId 省略で最初の音声トラック(無ければ新設)。 */
-export function recordStop(trackId: string | null = null): Promise<{
+/** 録音を止めて音声クリップとして配置する。trackId 省略で最初の音声トラック(無ければ新設)。
+ *  autoGain で一番大きい所が -6dB になるようクリップの音量を上げる。 */
+export function recordStop(
+  trackId: string | null = null,
+  autoGain = true,
+): Promise<{
   clip_id: string;
   track_id: string;
   seconds: number;
   clipped: number;
   dropped: number;
+  gain_db: number;
   project_version: number;
 }> {
-  return invoke("record_stop", { trackId });
+  return invoke("record_stop", { trackId, autoGain });
+}
+
+// ---- オーディオデバイス ----
+
+export interface AudioDevices {
+  outputs: string[];
+  inputs: string[];
+  default_output: string | null;
+  default_input: string | null;
+  current_output: string | null;
+  current_input: string | null;
+  sample_rate: number;
+}
+
+export function audioDevices(): Promise<AudioDevices> {
+  return invoke("audio_devices");
+}
+
+/** 出力デバイスを切り替える(null = OS の既定)。 */
+export function setOutputDevice(
+  name: string | null,
+): Promise<{ current_output: string; sample_rate: number }> {
+  return invoke("set_output_device", { name: name || null });
+}
+
+/** 録音に使う入力デバイス(null = OS の既定)。 */
+export function setInputDevice(name: string | null): Promise<{ current_input: string | null }> {
+  return invoke("set_input_device", { name: name || null });
+}
+
+/** 入力テスト(録音せずに入力レベルだけ測る)。 */
+export function inputMonitor(on: boolean): Promise<void> {
+  return invoke("input_monitor", { on });
+}
+
+/** 遅延の較正: メトロノームだけ鳴らして 1 小節のカウントイン後の 8 拍を録る。 */
+export function calibrateStart(): Promise<{ total_secs: number; count_in_secs: number; beats: number }> {
+  return invoke("calibrate_start");
+}
+
+export function calibrateStop(): Promise<{
+  latency_ms: number;
+  spread_ms: number;
+  detected: number;
+  beats: number;
+}> {
+  return invoke("calibrate_stop");
 }
 
 // ---- SoundFont ----

@@ -139,10 +139,33 @@
     }, 80);
   }
 
+  // 使用中のオーディオデバイス(フッター表示用)
+  let audioDev = $state<{ output: string | null; input: string | null; rate: number } | null>(null);
+  async function refreshAudioDev() {
+    try {
+      const d = await api.audioDevices();
+      audioDev = { output: d.current_output, input: d.current_input, rate: d.sample_rate };
+    } catch {
+      // オーディオが使えない環境
+    }
+  }
+
   onMount(() => {
     applyTheme();
     api.appInfo().then((i) => (info = i));
     refresh();
+    // 前回選んだオーディオデバイスに戻す(抜かれていたら既定のまま)
+    (async () => {
+      if (settings.outputDevice) {
+        await api.setOutputDevice(settings.outputDevice).catch(() => {
+          error = `前回の出力デバイス「${settings.outputDevice}」が見つからないため、既定のデバイスを使います`;
+        });
+      }
+      if (settings.inputDevice) {
+        await api.setInputDevice(settings.inputDevice).catch(() => {});
+      }
+      refreshAudioDev();
+    })();
 
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     const unlistenChanged = api.onProjectChanged(scheduleRefresh).catch((e) => {
@@ -297,17 +320,29 @@
   });
   const dspWarn = $derived(dspCounts.overruns + dspCounts.late > 0 || dspMax > 80);
 
+  // 録音中の入力レベル(上がるときは即座に、下がるときはゆっくり)
+  let recLevel = $state(-90);
+  $effect(() => {
+    const db = transport.input_peak_db;
+    if (!transport.recording) {
+      recLevel = -90;
+      return;
+    }
+    recLevel = Math.max(db ?? -90, recLevel - 6);
+  });
+
   let recordNotice = $state<string | null>(null);
   /// 直前に録音したクリップ(「♪ MIDI 化」ボタンの対象)
   let lastRecorded = $state<{ clipId: string; trackId: string } | null>(null);
   let recordNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 
   async function finishRecording() {
-    const r = await api.recordStop(null);
+    const r = await api.recordStop(null, settings.autoGain);
     transport = await api.transportState();
     const warn =
       r.clipped > 0 ? `(${r.clipped} サンプルがクリップしました。入力レベルを下げてください)` : "";
-    recordNotice = `録音を配置しました: ${r.seconds.toFixed(1)} 秒${warn}`;
+    const gain = r.gain_db > 0.5 ? `、音量 +${r.gain_db.toFixed(0)}dB` : "";
+    recordNotice = `録音を配置しました: ${r.seconds.toFixed(1)} 秒${gain}${warn}`;
     lastRecorded = { clipId: r.clip_id, trackId: r.track_id };
     clearTimeout(recordNoticeTimer);
     recordNoticeTimer = setTimeout(() => {
@@ -674,6 +709,14 @@
             ⚠{dspCounts.overruns}/{dspCounts.late}{/if}
         </span>
       {/if}
+      {#if transport.recording}
+        <span
+          class="rec-meter"
+          title={`入力レベル ${(recLevel).toFixed(0)} dBFS(目安: -12〜-6dB)`}
+        >
+          <span class="rec-meter-fill" class:hot={recLevel > -3} style="width:{Math.max(0, Math.min(100, ((recLevel + 60) / 60) * 100))}%"></span>
+        </span>
+      {/if}
       {#if recordNotice}
         <span class="rec-notice" title={recordNotice}>{recordNotice}</span>
       {/if}
@@ -842,7 +885,12 @@
   </main>
 
   {#if showSettings}
-    <SettingsPanel onClose={() => (showSettings = false)} />
+    <SettingsPanel
+      onClose={() => {
+        showSettings = false;
+        refreshAudioDev();
+      }}
+    />
   {/if}
 
   <footer>
@@ -850,6 +898,18 @@
       <code class="export-msg">{exportMsg}</code>
     {:else if info}
       <code title="プロジェクトフォルダ">{info.project_dir}</code>
+    {/if}
+    {#if audioDev}
+      <button
+        class="audio-dev"
+        onclick={() => {
+          showSettings = true;
+        }}
+        title="使用中のオーディオデバイス(クリックで設定を開いて変更)"
+      >
+        🔈 {audioDev.output ?? "なし"}{audioDev.rate ? ` ${(audioDev.rate / 1000).toFixed(1)}kHz` : ""} · 🎤
+        {audioDev.input ?? "なし"}
+      </button>
     {/if}
   </footer>
 </div>
@@ -861,6 +921,8 @@
     height: 100%;
   }
 
+  /* ヘッダーは常に 1 行(ボタンが増えても縦に伸ばさない)。
+     幅が足りないときは折り返さずに横スクロールする */
   header {
     display: flex;
     align-items: center;
@@ -868,6 +930,15 @@
     padding: 8px 14px;
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  header button:not(.mcp-url) {
+    white-space: nowrap;
     flex-shrink: 0;
   }
 
@@ -887,6 +958,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-shrink: 0;
   }
 
   .play {
@@ -1075,9 +1147,12 @@
     }
   }
 
+  /* 幅が足りないときは MCP の URL 表示から縮める(操作ボタンを優先) */
   .mcp {
     margin-left: auto;
-    min-width: 0;
+    min-width: 60px;
+    flex: 0 1 auto;
+    overflow: hidden;
   }
 
   .mcp-url {
@@ -1088,6 +1163,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 360px;
+    width: 100%;
+    flex-shrink: 1;
   }
 
   main {
@@ -1158,6 +1235,49 @@
     border-top: 1px solid var(--border);
     color: var(--text-dim);
     flex-shrink: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .audio-dev {
+    border: none;
+    background: none;
+    padding: 0;
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 55%;
+    cursor: pointer;
+  }
+
+  .audio-dev:hover {
+    color: var(--accent);
+  }
+
+  .rec-meter {
+    display: inline-block;
+    position: relative;
+    width: 60px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .rec-meter-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: #3aa876;
+  }
+
+  .rec-meter-fill.hot {
+    background: #e05555;
   }
 
   .export-msg {

@@ -179,6 +179,10 @@ export interface TransportState {
   recording?: boolean;
   /** メトロノーム ON */
   metronome?: boolean;
+  /** 入力レベルのピーク(dBFS。前回の取得から)。録音も入力テストもしていなければ null */
+  input_peak_db?: number | null;
+  /** 入力テスト中 */
+  input_monitor?: boolean;
   /** オーディオ処理の負荷(直近の平均・最大 % と起動からの累計回数) */
   dsp?: { avg_pct: number; max_pct: number; overruns: number; late: number; swaps: number };
   tick: number;

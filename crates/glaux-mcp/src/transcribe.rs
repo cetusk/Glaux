@@ -127,11 +127,13 @@ pub fn clip_peaks(
     let glaux_core::ClipContent::Audio {
         asset,
         offset_samples,
+        gain_db,
         ..
     } = &clip.content
     else {
         return Err(format!("{clip_id} は音声クリップではありません"));
     };
+    let gain = 10f32.powf(gain_db / 20.0);
     let meta = project
         .assets
         .get(asset)
@@ -141,5 +143,9 @@ pub fn clip_peaks(
         - project.tempo_map.tick_to_seconds(clip.start);
     let from = (*offset_samples as usize).min(data.frames.len());
     let to = (from + (secs * data.sample_rate as f64) as usize).min(data.frames.len());
-    Ok(glaux_engine::wave_peaks(&data.frames[from..to], buckets))
+    // 表示はクリップの音量(自動音量調整を含む)を掛けた後の大きさにする
+    Ok(glaux_engine::wave_peaks(&data.frames[from..to], buckets)
+        .into_iter()
+        .map(|(lo, hi)| ((lo * gain).max(-1.0), (hi * gain).min(1.0)))
+        .collect())
 }

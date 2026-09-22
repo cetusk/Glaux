@@ -7,8 +7,8 @@ use crate::data::{build_playback_data, PlaybackData, SampleBank};
 use crate::render::{Renderer, Shared, NO_SEEK};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use glaux_core::{Project, TempoMap, Tick};
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -24,7 +24,16 @@ pub enum EngineError {
 #[derive(Clone)]
 pub struct EngineHandle {
     shared: Arc<Shared>,
-    sample_rate: f64,
+    /// 出力のサンプルレート(f64 のビット列)。出力デバイスを切り替えると変わりうる
+    sample_rate: Arc<AtomicU64>,
+    /// オーディオスレッドへの制御要求(出力デバイスの切り替え)
+    ctl: mpsc::Sender<Ctl>,
+    /// 使用中の出力デバイス名
+    output_name: Arc<Mutex<String>>,
+    /// 録音・入力テストに使う入力デバイス(None = OS の既定)
+    input_device: Arc<Mutex<Option<String>>>,
+    /// 入力テスト(録音せずレベルだけ見る)
+    monitor: Arc<Mutex<Option<crate::record::Recording>>>,
     /// 再生ヘッドの tick 変換・シーク用に最新のテンポマップを持つ
     tempo: Arc<Mutex<TempoMap>>,
     /// ループ区間(tick)。テンポが変わったらサンプル位置を焼き直すために保持
@@ -62,7 +71,7 @@ pub struct RecordOutcome {
 
 impl EngineHandle {
     pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
+        f64::from_bits(self.sample_rate.load(Ordering::Acquire))
     }
 
     /// プロジェクトから再生データを構築して差し替える(UI スレッドで呼ぶ)。
@@ -71,7 +80,7 @@ impl EngineHandle {
         let data = {
             let mut bank = self.bank.lock().expect("bank lock");
             bank.sync(project, project_dir);
-            Arc::new(build_playback_data(project, self.sample_rate, &bank))
+            Arc::new(build_playback_data(project, self.sample_rate(), &bank))
         };
         let old = self.shared.data.swap(data);
         *self.tempo.lock().expect("tempo lock") = project.tempo_map.clone();
@@ -106,7 +115,7 @@ impl EngineHandle {
 
     pub fn seek_tick(&self, tick: Tick) {
         let seconds = self.tempo.lock().expect("tempo lock").tick_to_seconds(tick);
-        let sample = (seconds * self.sample_rate) as u64;
+        let sample = (seconds * self.sample_rate()) as u64;
         debug_assert_ne!(sample, NO_SEEK);
         self.shared.seek.store(sample, Ordering::Release);
         self.shared.pos.store(sample, Ordering::Release);
@@ -141,8 +150,8 @@ impl EngineHandle {
 
     fn write_loop_samples(&self, start: Tick, end: Tick) {
         let tempo = self.tempo.lock().expect("tempo lock");
-        let s = (tempo.tick_to_seconds(start) * self.sample_rate) as u64;
-        let e = (tempo.tick_to_seconds(end) * self.sample_rate) as u64;
+        let s = (tempo.tick_to_seconds(start) * self.sample_rate()) as u64;
+        let e = (tempo.tick_to_seconds(end) * self.sample_rate()) as u64;
         drop(tempo);
         if e <= s {
             self.shared.loop_end.store(0, Ordering::Release);
@@ -191,7 +200,12 @@ impl EngineHandle {
             let tempo = self.tempo.lock().expect("tempo lock");
             tempo.tick_to_seconds(clip_start) - tempo.tick_to_seconds(now)
         };
-        let rec = crate::record::start_recording(path)?;
+        // 入力テスト中なら止める(同じデバイスを二重に開かない)
+        if let Some(m) = self.monitor.lock().expect("monitor lock").take() {
+            let _ = m.stop();
+        }
+        let device = self.input_device.lock().expect("input lock").clone();
+        let rec = crate::record::start_input(Some(path), device.as_deref())?;
         let metronome_auto = metronome_on && !self.shared.metronome.load(Ordering::Acquire);
         if metronome_on {
             self.shared.metronome.store(true, Ordering::Release);
@@ -247,6 +261,92 @@ impl EngineHandle {
         self.shared.stats.take()
     }
 
+    // ---- オーディオデバイス ----
+
+    /// 使用中の出力デバイス名。
+    pub fn output_device(&self) -> String {
+        self.output_name.lock().expect("output lock").clone()
+    }
+
+    /// 出力デバイスを切り替える(None = OS の既定)。再生位置は保つ。
+    /// サンプルレートが変わりうるので、呼び出し側は続けて [`set_project`](Self::set_project)
+    /// で再生データを作り直すこと。
+    pub fn set_output_device(&self, name: Option<String>) -> Result<(), EngineError> {
+        let (reply, rx) = mpsc::channel();
+        self.ctl
+            .send(Ctl::SwitchOutput { name, reply })
+            .map_err(|_| EngineError::Stream("オーディオスレッドが停止しています".into()))?;
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| EngineError::Stream("出力デバイスの切り替えが応答しません".into()))?
+    }
+
+    /// 録音・入力テストに使う入力デバイス(None = OS の既定)。
+    pub fn set_input_device(&self, name: Option<String>) -> Result<(), EngineError> {
+        if let Some(n) = &name {
+            if crate::record::find_input_device(n).is_none() {
+                return Err(EngineError::Stream(format!(
+                    "入力デバイスが見つかりません: {n}"
+                )));
+            }
+        }
+        *self.input_device.lock().expect("input lock") = name;
+        // 入力テスト中なら新しいデバイスで開き直す
+        let was = self.monitor.lock().expect("monitor lock").take();
+        if let Some(m) = was {
+            let _ = m.stop();
+            self.set_input_monitor(true)?;
+        }
+        Ok(())
+    }
+
+    /// 選択中(未選択なら OS 既定)の入力デバイス名。
+    pub fn input_device(&self) -> Option<String> {
+        self.input_device
+            .lock()
+            .expect("input lock")
+            .clone()
+            .or_else(crate::record::default_input_name)
+    }
+
+    /// 入力テスト(録音せずに入力レベルだけ測る)の開始・停止。録音中は何もしない。
+    pub fn set_input_monitor(&self, on: bool) -> Result<(), EngineError> {
+        let mut slot = self.monitor.lock().expect("monitor lock");
+        if !on {
+            if let Some(m) = slot.take() {
+                let _ = m.stop();
+            }
+            return Ok(());
+        }
+        if slot.is_some() || self.is_recording() {
+            return Ok(());
+        }
+        let device = self.input_device.lock().expect("input lock").clone();
+        *slot = Some(crate::record::start_input(None, device.as_deref())?);
+        Ok(())
+    }
+
+    pub fn input_monitoring(&self) -> bool {
+        self.monitor.lock().expect("monitor lock").is_some()
+    }
+
+    /// 入力レベルのピーク(dBFS)を読み出してリセットする。録音も入力テストも
+    /// していなければ None。
+    pub fn take_input_peak_db(&self) -> Option<f32> {
+        if let Some(s) = self.recording.lock().expect("recording lock").as_ref() {
+            return Some(s.rec.take_peak_db());
+        }
+        self.monitor
+            .lock()
+            .expect("monitor lock")
+            .as_ref()
+            .map(|m| m.take_peak_db())
+    }
+
+    /// 較正用: 楽曲を鳴らさずメトロノームだけにする。
+    pub fn set_click_only(&self, on: bool) {
+        self.shared.click_only.store(on, Ordering::Release);
+    }
+
     pub fn set_metronome(&self, on: bool) {
         self.shared.metronome.store(on, Ordering::Release);
     }
@@ -258,7 +358,7 @@ impl EngineHandle {
     /// 再生ヘッド位置(tick)。
     pub fn playhead_tick(&self) -> Tick {
         let pos = self.shared.pos.load(Ordering::Acquire);
-        let seconds = pos as f64 / self.sample_rate;
+        let seconds = pos as f64 / self.sample_rate();
         self.tempo
             .lock()
             .expect("tempo lock")
@@ -266,29 +366,110 @@ impl EngineHandle {
     }
 }
 
+/// オーディオスレッドへの制御要求。
+enum Ctl {
+    SwitchOutput {
+        name: Option<String>,
+        reply: mpsc::Sender<Result<(), EngineError>>,
+    },
+}
+
+/// 利用できるオーディオデバイスの一覧。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DeviceList {
+    pub outputs: Vec<String>,
+    pub inputs: Vec<String>,
+    pub default_output: Option<String>,
+    pub default_input: Option<String>,
+}
+
+fn device_name(d: &cpal::Device) -> String {
+    d.description()
+        .map(|d| d.name().to_owned())
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+/// OS が認識しているオーディオデバイスを列挙する。
+pub fn list_devices() -> DeviceList {
+    let host = cpal::default_host();
+    let outputs = host
+        .output_devices()
+        .map(|it| it.map(|d| device_name(&d)).collect())
+        .unwrap_or_default();
+    let inputs = host
+        .input_devices()
+        .map(|it| it.map(|d| device_name(&d)).collect())
+        .unwrap_or_default();
+    DeviceList {
+        outputs,
+        inputs,
+        default_output: host.default_output_device().map(|d| device_name(&d)),
+        default_input: host.default_input_device().map(|d| device_name(&d)),
+    }
+}
+
 /// オーディオスレッドを起動してハンドルを返す。
 /// デバイスが無い環境ではエラーを返す(アプリ側は再生なしで動作を続ける)。
 pub fn start_engine() -> Result<EngineHandle, EngineError> {
-    let (tx, rx) = std::sync::mpsc::channel::<Result<EngineHandle, EngineError>>();
+    let (tx, rx) = mpsc::channel::<Result<EngineHandle, EngineError>>();
 
     std::thread::Builder::new()
         .name("glaux-audio".into())
         .spawn(move || {
-            let result = open_stream();
-            match result {
-                Ok((stream, handle)) => {
-                    let _ = tx.send(Ok(handle));
-                    // ストリームを生かしたままスレッドを維持する
-                    if let Err(e) = stream.play() {
-                        tracing::error!("ストリーム開始に失敗: {e}");
-                        return;
-                    }
-                    loop {
-                        std::thread::park();
-                    }
-                }
+            let shared = Arc::new(Shared::new(PlaybackData {
+                sample_rate: 48_000.0,
+                ..PlaybackData::default()
+            }));
+            let (stream, sample_rate, name) = match open_stream(None, &shared) {
+                Ok(v) => v,
                 Err(e) => {
                     let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+            let (ctl, ctl_rx) = mpsc::channel();
+            let handle = EngineHandle {
+                shared: shared.clone(),
+                sample_rate: Arc::new(AtomicU64::new(sample_rate.to_bits())),
+                ctl,
+                output_name: Arc::new(Mutex::new(name)),
+                input_device: Arc::new(Mutex::new(None)),
+                monitor: Arc::new(Mutex::new(None)),
+                tempo: Arc::new(Mutex::new(TempoMap::default())),
+                loop_ticks: Arc::new(Mutex::new(None)),
+                graveyard: Arc::new(Mutex::new(Vec::new())),
+                bank: Arc::new(Mutex::new(SampleBank::default())),
+                recording: Arc::new(Mutex::new(None)),
+            };
+            let _ = tx.send(Ok(handle.clone()));
+            // ストリームはこのスレッドが持ち続ける(cpal::Stream は Send でない)
+            let mut stream = Some(stream);
+            while let Ok(req) = ctl_rx.recv() {
+                match req {
+                    Ctl::SwitchOutput { name, reply } => {
+                        // 再生位置を保つため、新しいレンダラに現在位置へのシークを渡す
+                        let pos = shared.pos.load(Ordering::Acquire);
+                        drop(stream.take());
+                        shared.seek.store(pos, Ordering::Release);
+                        let result = match open_stream(name.as_deref(), &shared) {
+                            Ok((s, sr, n)) => {
+                                stream = Some(s);
+                                handle.sample_rate.store(sr.to_bits(), Ordering::Release);
+                                *handle.output_name.lock().expect("output lock") = n;
+                                Ok(())
+                            }
+                            Err(e) => {
+                                // 失敗したら既定デバイスに戻す
+                                if let Ok((s, sr, n)) = open_stream(None, &shared) {
+                                    stream = Some(s);
+                                    handle.sample_rate.store(sr.to_bits(), Ordering::Release);
+                                    *handle.output_name.lock().expect("output lock") = n;
+                                }
+                                Err(e)
+                            }
+                        };
+                        let _ = reply.send(result);
+                    }
                 }
             }
         })
@@ -297,9 +478,20 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
     rx.recv().unwrap_or(Err(EngineError::NoDevice))
 }
 
-fn open_stream() -> Result<(cpal::Stream, EngineHandle), EngineError> {
+/// 出力ストリームを開いて再生を始める。戻り値は (ストリーム, サンプルレート, デバイス名)。
+fn open_stream(
+    name: Option<&str>,
+    shared: &Arc<Shared>,
+) -> Result<(cpal::Stream, f64, String), EngineError> {
     let host = cpal::default_host();
-    let device = host.default_output_device().ok_or(EngineError::NoDevice)?;
+    let device = match name {
+        Some(n) => host
+            .output_devices()
+            .map_err(|e| EngineError::Stream(e.to_string()))?
+            .find(|d| device_name(d) == n)
+            .ok_or_else(|| EngineError::Stream(format!("出力デバイスが見つかりません: {n}")))?,
+        None => host.default_output_device().ok_or(EngineError::NoDevice)?,
+    };
     let config = device
         .default_output_config()
         .map_err(|e| EngineError::Stream(e.to_string()))?;
@@ -310,17 +502,8 @@ fn open_stream() -> Result<(cpal::Stream, EngineHandle), EngineError> {
     }
     let sample_rate = config.sample_rate() as f64;
     let channels = config.channels() as usize;
-    let device_name = device
-        .description()
-        .map(|d| d.name().to_owned())
-        .unwrap_or_else(|_| "unknown".into());
-    tracing::info!("オーディオ出力: {device_name} / {sample_rate} Hz / {channels} ch");
-
-    let shared = Arc::new(Shared::new(PlaybackData {
-        sample_rate,
-        ..PlaybackData::default()
-    }));
-    let mut renderer = Renderer::new(shared.clone());
+    let dev_name = device_name(&device);
+    tracing::info!("オーディオ出力: {dev_name} / {sample_rate} Hz / {channels} ch");
 
     // バッファは大きめ(1024 フレーム ≒ 21ms @48k)を要求してスパイク耐性を稼ぐ。
     // ドライバが拒否したらデフォルトにフォールバック
@@ -330,8 +513,7 @@ fn open_stream() -> Result<(cpal::Stream, EngineHandle), EngineError> {
     let stream = match device.build_output_stream(
         stream_config,
         {
-            let shared = shared.clone();
-            let mut r = Renderer::new(shared);
+            let mut r = Renderer::new(shared.clone());
             move |out: &mut [f32], _| r.process(out, channels)
         },
         err_fn,
@@ -340,25 +522,19 @@ fn open_stream() -> Result<(cpal::Stream, EngineHandle), EngineError> {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("バッファ 1024 での起動に失敗({e})。既定バッファで再試行");
+            let mut r = Renderer::new(shared.clone());
             device
                 .build_output_stream(
                     config.config(),
-                    move |out: &mut [f32], _| renderer.process(out, channels),
+                    move |out: &mut [f32], _| r.process(out, channels),
                     err_fn,
                     None,
                 )
                 .map_err(|e| EngineError::Stream(e.to_string()))?
         }
     };
-
-    let handle = EngineHandle {
-        shared,
-        sample_rate,
-        tempo: Arc::new(Mutex::new(TempoMap::default())),
-        loop_ticks: Arc::new(Mutex::new(None)),
-        graveyard: Arc::new(Mutex::new(Vec::new())),
-        bank: Arc::new(Mutex::new(SampleBank::default())),
-        recording: Arc::new(Mutex::new(None)),
-    };
-    Ok((stream, handle))
+    stream
+        .play()
+        .map_err(|e| EngineError::Stream(e.to_string()))?;
+    Ok((stream, sample_rate, dev_name))
 }

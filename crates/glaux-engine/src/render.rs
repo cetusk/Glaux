@@ -48,6 +48,8 @@ pub struct Shared {
     pub metronome: AtomicBool,
     /// 録音中(曲末の自動停止を抑止する)
     pub recording: AtomicBool,
+    /// メトロノームだけ鳴らす(遅延の較正中。ノート・音声クリップを発音しない)
+    pub click_only: AtomicBool,
     pub data: ArcSwap<PlaybackData>,
     /// 負荷の統計(オーディオスレッドが書き、UI が読む)。[`DspStats`] 参照
     pub stats: StatsCounters,
@@ -127,6 +129,7 @@ impl Shared {
             loop_end: AtomicU64::new(0),
             metronome: AtomicBool::new(false),
             recording: AtomicBool::new(false),
+            click_only: AtomicBool::new(false),
             data: ArcSwap::from_pointee(data),
             stats: StatsCounters::default(),
         }
@@ -440,6 +443,7 @@ impl Renderer {
 
         // メトロノーム: このブロックで最初に来る拍を求める(resync 後も自然に追従)
         let metronome = self.shared.metronome.load(Ordering::Acquire);
+        let click_only = self.shared.click_only.load(Ordering::Acquire);
         if metronome && playing {
             if self.next_beat.map_or(true, |b| b.sample < self.pos) {
                 self.next_beat = data.next_beat(self.pos);
@@ -501,6 +505,7 @@ impl Renderer {
 
             // このサンプル位置で始まる音声クリップを開始
             while playing
+                && !click_only
                 && self.next_audio < data.audio_events.len()
                 && data.audio_events[self.next_audio].start <= self.pos
             {
@@ -521,6 +526,7 @@ impl Renderer {
 
             // このサンプル位置で始まるノートを発音(容量超過分は捨てる)
             while playing
+                && !click_only
                 && self.next_event < data.events.len()
                 && data.events[self.next_event].start <= self.pos
             {

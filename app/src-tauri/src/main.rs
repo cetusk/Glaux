@@ -40,6 +40,8 @@ struct AppState {
     chat: Arc<ChatManager>,
     /// オーディオデバイスが無い環境では None(再生なしで動作を続ける)
     engine: Option<EngineHandle>,
+    /// 遅延の較正中の状態(元の再生位置と、録音先頭からの各拍の時刻)
+    calib: std::sync::Mutex<Option<(Tick, Vec<f64>)>>,
 }
 
 impl AppState {
@@ -318,6 +320,7 @@ async fn record_start(
 async fn record_stop(
     state: State<'_, AppState>,
     track_id: Option<String>,
+    auto_gain: Option<bool>,
 ) -> Result<Value, String> {
     let engine = state.engine()?.clone();
     engine.pause();
@@ -372,6 +375,28 @@ async fn record_stop(
         &name,
         offset,
     )?);
+    // 自動音量調整: 使う範囲のピークが -6dBFS になるようクリップの音量で持ち上げる
+    // (元の波形は変えない。下げはしない)
+    let mut gain_db = 0.0f32;
+    if auto_gain.unwrap_or(true) {
+        let wav = std::path::Path::new(&dir).join(&imported.asset.path);
+        if let Ok(data) = glaux_engine::load_wav_mono(&wav) {
+            let from = (offset as usize).min(data.frames.len());
+            let peak = data.frames[from..]
+                .iter()
+                .fold(0.0f32, |m, v| m.max(v.abs()));
+            if peak > 1e-4 {
+                gain_db = (-6.0 - 20.0 * peak.log10()).clamp(0.0, 30.0);
+            }
+        }
+        for c in &mut cmds {
+            if let Command::AddClip { clip, .. } = c {
+                if let glaux_core::ClipContent::Audio { gain_db: g, .. } = &mut clip.content {
+                    *g = gain_db;
+                }
+            }
+        }
+    }
     let label = format!("{name}(録音)を配置");
     let (_, m) = state
         .handle
@@ -384,8 +409,152 @@ async fn record_stop(
         "seconds": (result.frames - offset) as f64 / result.sample_rate as f64,
         "clipped": result.clipped,
         "dropped": result.dropped,
+        "gain_db": gain_db,
         "project_version": m.project_version,
     }))
+}
+
+// ---- オーディオデバイス ----------------------------------------------------
+
+/// 認識しているデバイスの一覧と、使用中の出力・入力。
+#[tauri::command]
+fn audio_devices(state: State<'_, AppState>) -> Value {
+    let list = glaux_engine::list_devices();
+    let (output, input, sample_rate) = match &state.engine {
+        Some(e) => (Some(e.output_device()), e.input_device(), e.sample_rate()),
+        None => (None, list.default_input.clone(), 0.0),
+    };
+    json!({
+        "outputs": list.outputs,
+        "inputs": list.inputs,
+        "default_output": list.default_output,
+        "default_input": list.default_input,
+        "current_output": output,
+        "current_input": input,
+        "sample_rate": sample_rate,
+    })
+}
+
+/// 出力デバイスを切り替える(name 省略 = OS 既定)。サンプルレートが変わりうるので
+/// 再生データを作り直す。
+#[tauri::command]
+async fn set_output_device(
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> Result<Value, String> {
+    let engine = state.engine()?.clone();
+    let name = name.filter(|n| !n.is_empty());
+    let result = {
+        let engine = engine.clone();
+        tokio::task::spawn_blocking(move || engine.set_output_device(name))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    {
+        let engine = engine.clone();
+        tokio::task::spawn_blocking(move || {
+            engine.set_project(&project, std::path::Path::new(&dir))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    result.map_err(|e| e.to_string())?;
+    Ok(json!({ "current_output": engine.output_device(), "sample_rate": engine.sample_rate() }))
+}
+
+/// 録音に使う入力デバイス(name 省略 = OS 既定)。
+#[tauri::command]
+fn set_input_device(state: State<'_, AppState>, name: Option<String>) -> Result<Value, String> {
+    let engine = state.engine()?;
+    engine
+        .set_input_device(name.filter(|n| !n.is_empty()))
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "current_input": engine.input_device() }))
+}
+
+/// 入力テスト(録音せずに入力レベルだけ測る)の開始・停止。
+#[tauri::command]
+fn input_monitor(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    state
+        .engine()?
+        .set_input_monitor(on)
+        .map_err(|e| e.to_string())
+}
+
+/// 遅延の較正を開始する: 曲頭からメトロノームだけを鳴らし、1 小節のカウントイン後の
+/// 8 拍を録音する。戻り値の秒数が経ったら calibrate_stop を呼ぶ。
+#[tauri::command]
+async fn calibrate_start(state: State<'_, AppState>) -> Result<Value, String> {
+    let engine = state.engine()?.clone();
+    if engine.is_recording() {
+        return Err("録音中は較正できません".to_owned());
+    }
+    let (project, _) = state.handle.get_project().await?;
+    let saved = engine.playhead_tick();
+    engine.pause();
+    engine.seek_tick(Tick(0));
+    engine.set_click_only(true);
+    let sig = project.time_sig_map.first();
+    let (num, den) = sig
+        .map(|e| (e.num as u64, e.den.max(1) as u64))
+        .unwrap_or((4, 4));
+    let beat_ticks = 3840 / den;
+    let count_in = Tick(beat_ticks * num);
+    let path = std::env::temp_dir().join(format!(
+        "glaux_calib_{}.wav",
+        chrono::Local::now().format("%H%M%S")
+    ));
+    let clip_start = match engine.start_recording(path, count_in, 0.0, true) {
+        Ok(t) => t,
+        Err(e) => {
+            engine.set_click_only(false);
+            engine.seek_tick(saved);
+            return Err(e.to_string());
+        }
+    };
+    const BEATS: u64 = 8;
+    let tempo = &project.tempo_map;
+    let base = tempo.tick_to_seconds(clip_start);
+    let beats: Vec<f64> = (0..BEATS)
+        .map(|k| tempo.tick_to_seconds(clip_start + Tick(k * beat_ticks)) - base)
+        .collect();
+    let total = tempo.tick_to_seconds(clip_start + Tick(BEATS * beat_ticks)) + 0.4;
+    *state.calib.lock().expect("calib lock") = Some((saved, beats));
+    engine.play();
+    engine.mark_play_started();
+    Ok(json!({
+        "total_secs": total,
+        "count_in_secs": tempo.tick_to_seconds(count_in),
+        "beats": BEATS,
+    }))
+}
+
+/// 較正を終えて遅延を推定する(失敗しても再生状態は元に戻す)。
+#[tauri::command]
+async fn calibrate_stop(state: State<'_, AppState>) -> Result<Value, String> {
+    let engine = state.engine()?.clone();
+    engine.pause();
+    let taken = state.calib.lock().expect("calib lock").take();
+    let outcome = engine.stop_recording();
+    engine.set_click_only(false);
+    let Some((saved, beats)) = taken else {
+        return Err("較正を開始していません".to_owned());
+    };
+    engine.seek_tick(saved);
+    let outcome = outcome.map_err(|e| e.to_string())?;
+    let path = outcome.result.path.clone();
+    let est = tokio::task::spawn_blocking(move || {
+        let mut data = glaux_engine::load_wav_mono(&path)?;
+        let from = (outcome.offset_samples as usize).min(data.frames.len());
+        data.frames.drain(..from);
+        let _ = std::fs::remove_file(&path);
+        glaux_engine::calibrate::estimate_latency(&data, &beats)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(json!(est))
 }
 
 /// 音作りビュー用: トラックの音源・エフェクトの spec + 現在値 + path。
@@ -765,6 +934,8 @@ fn transport_state(state: State<'_, AppState>) -> Value {
             "playing": e.is_playing(),
             "recording": e.is_recording(),
             "metronome": e.metronome(),
+            "input_peak_db": e.take_input_peak_db(),
+            "input_monitor": e.input_monitoring(),
             "dsp": e.take_stats(),
             "tick": e.playhead_tick(),
             "loop": e.loop_region().map(|(s, gl_end)| json!([s, gl_end])),
@@ -1024,6 +1195,7 @@ fn main() -> Result<()> {
         mcp_url: mcp_url.clone(),
         chat: Arc::new(ChatManager::new(mcp_url, project_dir.clone())),
         engine: engine.clone(),
+        calib: std::sync::Mutex::new(None),
     };
 
     tauri::Builder::default()
@@ -1144,6 +1316,12 @@ fn main() -> Result<()> {
             transcribe_clip,
             record_start,
             record_stop,
+            audio_devices,
+            set_output_device,
+            set_input_device,
+            input_monitor,
+            calibrate_start,
+            calibrate_stop,
             transport_set_metronome,
             send_chat,
             cancel_chat,
