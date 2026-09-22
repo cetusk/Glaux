@@ -194,7 +194,7 @@ impl ChatManager {
         }
     }
 
-    fn build_command(&self, prompt: &str) -> Command {
+    fn build_command(&self) -> Command {
         // Windows: ネイティブ版は claude.exe、npm 版は claude.cmd。
         // Rust の Command は .cmd を安全に(引数をエスケープして)起動できる。
         #[cfg(windows)]
@@ -202,23 +202,24 @@ impl ChatManager {
         #[cfg(not(windows))]
         let program = "claude";
         let mut cmd = Command::new(program);
-        self.configure(&mut cmd, prompt);
+        self.configure(&mut cmd);
         cmd
     }
 
     #[cfg(windows)]
-    fn build_command_fallback(&self, prompt: &str) -> Command {
+    fn build_command_fallback(&self) -> Command {
         let mut cmd = Command::new("claude");
-        self.configure(&mut cmd, prompt);
+        self.configure(&mut cmd);
         cmd
     }
 
-    fn configure(&self, cmd: &mut Command, prompt: &str) {
+    fn configure(&self, cmd: &mut Command) {
         let mcp_config = json!({
             "mcpServers": { "glaux": { "type": "http", "url": self.mcp_url } }
         });
+        // 指示本文は引数ではなく stdin で渡す。「-」で始まる指示がオプション扱い
+        // されるのを防ぎ、Windows のコマンドライン長制限も回避できる
         cmd.arg("-p")
-            .arg(prompt)
             .args(["--output-format", "stream-json", "--verbose"])
             .arg("--mcp-config")
             .arg(mcp_config.to_string())
@@ -227,7 +228,7 @@ impl ChatManager {
             .arg("--append-system-prompt")
             .arg(SYSTEM_PROMPT)
             .current_dir(self.project_dir())
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         if let Some(sid) = self.session_id.lock().expect("session_id lock").as_ref() {
@@ -240,12 +241,12 @@ impl ChatManager {
         }
     }
 
-    fn spawn(&self, prompt: &str) -> std::io::Result<Child> {
-        match self.build_command(prompt).spawn() {
+    fn spawn(&self) -> std::io::Result<Child> {
+        match self.build_command().spawn() {
             Ok(child) => Ok(child),
             #[cfg(windows)]
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.build_command_fallback(prompt).spawn()
+                self.build_command_fallback().spawn()
             }
             Err(e) => Err(e),
         }
@@ -336,7 +337,7 @@ async fn run_turn_inner(
     prompt: &str,
     saw_init: &mut bool,
 ) -> Result<(), String> {
-    let mut child = mgr.spawn(prompt).map_err(|e| {
+    let mut child = mgr.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             "claude コマンドが見つかりません。Claude Code をインストールして PATH を通してください"
                 .to_owned()
@@ -344,6 +345,19 @@ async fn run_turn_inner(
             format!("claude を起動できません: {e}")
         }
     })?;
+
+    // 指示本文を stdin で渡す(書き終えたら閉じて EOF を伝える)
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|e| format!("指示の送信に失敗: {e}"))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("指示の送信に失敗: {e}"))?;
+    }
 
     let stdout = child.stdout.take().ok_or("stdout を取得できません")?;
     let mut stderr = child.stderr.take().ok_or("stderr を取得できません")?;
