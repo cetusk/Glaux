@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
+  import { barAtTick, buildBars, nextBarHead, prevBarHead } from "./lib/barMap";
   import type { AppInfo, EntrySummary, Project, TransportState } from "./lib/types";
   import Timeline from "./lib/Timeline.svelte";
   import HistoryPanel from "./lib/HistoryPanel.svelte";
@@ -267,24 +268,31 @@
     }
   }
 
-  // ---- 小節ナビゲーション ----
+  // ---- 小節ナビゲーション(拍子イベントを考慮した小節マップ準拠) ----
 
-  const ticksPerBar = $derived.by(() => {
-    if (!project) return 3840;
-    const sig = project.time_sig_map[0] ?? { num: 4, den: 4 };
-    return (project.ppq * 4 * sig.num) / sig.den;
-  });
-
-  /** コンテンツ終端を小節単位に切り上げた tick */
-  const contentEndTick = $derived.by(() => {
-    if (!project) return 0;
+  const navBars = $derived.by(() => {
+    if (!project) return [];
     let end = 0;
     for (const t of project.tracks) {
       for (const c of t.clips) {
         end = Math.max(end, c.start + c.length);
       }
     }
-    return Math.ceil(end / ticksPerBar) * ticksPerBar;
+    return buildBars(project, end, 1, 1);
+  });
+
+  /** コンテンツ終端を小節単位に切り上げた tick */
+  const contentEndTick = $derived.by(() => {
+    if (!project || navBars.length === 0) return 0;
+    let end = 0;
+    for (const t of project.tracks) {
+      for (const c of t.clips) {
+        end = Math.max(end, c.start + c.length);
+      }
+    }
+    if (end === 0) return 0;
+    const bar = barAtTick(navBars, end - 1);
+    return bar.tick + bar.len;
   });
 
   function seekStart() {
@@ -297,14 +305,13 @@
 
   /** 小節の途中なら小節頭へ、頭にいるなら前の小節頭へ */
   function prevBar() {
-    const cur = Math.floor(transport.tick / ticksPerBar);
-    const head = cur * ticksPerBar;
-    seek(transport.tick - head > ticksPerBar * 0.1 ? head : Math.max(0, head - ticksPerBar));
+    if (navBars.length === 0) return;
+    seek(prevBarHead(navBars, transport.tick));
   }
 
   function nextBar() {
-    const cur = Math.floor(transport.tick / ticksPerBar);
-    seek((cur + 1) * ticksPerBar);
+    if (navBars.length === 0) return;
+    seek(nextBarHead(navBars, transport.tick));
   }
 
   let exporting = $state(false);
@@ -359,6 +366,52 @@
     }
   }
 
+  // ---- 拍子の編集(先頭イベントの書き換え。途中の変更イベントは保持) ----
+
+  let editingSig = $state(false);
+  let sigNumInput = $state(4);
+  let sigDenInput = $state(4);
+
+  function startSigEdit() {
+    if (!project) return;
+    const first = project.time_sig_map[0] ?? { tick: 0, num: 4, den: 4 };
+    sigNumInput = first.num;
+    sigDenInput = first.den;
+    editingSig = true;
+  }
+
+  async function commitSig() {
+    editingSig = false;
+    if (!project) return;
+    const num = Math.min(32, Math.max(1, Math.round(Number(sigNumInput)) || 0));
+    const den = Number(sigDenInput);
+    if (num < 1 || ![1, 2, 4, 8, 16, 32].includes(den)) return;
+    const cur = project.time_sig_map;
+    const first = cur[0] ?? { tick: 0, num: 4, den: 4 };
+    if (first.num === num && first.den === den) return;
+    const events =
+      cur.length > 0
+        ? cur.map((e, i) => (i === 0 ? { ...e, num, den } : e))
+        : [{ tick: 0, num, den }];
+    try {
+      await api.applyEdit(
+        [{ op: "set_time_sig", events }],
+        `拍子を ${num}/${den} に変更`,
+      );
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function onSigKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitSig();
+    } else if (e.key === "Escape") {
+      editingSig = false;
+    }
+  }
+
   async function setMasterVolume(e: Event) {
     const v = Number((e.currentTarget as HTMLInputElement).value);
     try {
@@ -400,6 +453,7 @@
   const timeSig = $derived(
     project ? `${project.time_sig_map[0]?.num ?? 4}/${project.time_sig_map[0]?.den ?? 4}` : "4/4",
   );
+  const hasSigChanges = $derived((project?.time_sig_map.length ?? 0) > 1);
 </script>
 
 <div class="layout">
@@ -444,7 +498,47 @@
           {bpm} BPM
         </button>
       {/if}
-      <span class="stat">{timeSig}</span>
+      {#if editingSig}
+        <span class="sig-edit">
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            class="sig-input"
+            type="number"
+            min="1"
+            max="32"
+            autofocus
+            bind:value={sigNumInput}
+            onkeydown={onSigKeydown}
+            onblur={(e) => {
+              // 分母セレクトへの移動では確定しない
+              const to = e.relatedTarget as HTMLElement | null;
+              if (!to || !to.classList.contains("sig-den")) commitSig();
+            }}
+          />
+          /
+          <select
+            class="sig-den"
+            bind:value={sigDenInput}
+            onkeydown={onSigKeydown}
+            onchange={commitSig}
+            onblur={commitSig}
+          >
+            {#each [2, 4, 8, 16] as d (d)}
+              <option value={d}>{d}</option>
+            {/each}
+          </select>
+        </span>
+      {:else}
+        <button
+          class="stat bpm-btn"
+          onclick={startSigEdit}
+          title={hasSigChanges
+            ? "クリックで先頭の拍子を編集(曲中に拍子変更あり。変更はルーラーに表示)"
+            : "クリックで拍子を編集(曲中での変更は AI に「◯小節目から 7/8 にして」と頼めます)"}
+        >
+          {timeSig}{#if hasSigChanges}*{/if}
+        </button>
+      {/if}
       <span class="stat" title="適用済み履歴エントリ数">v{projectVersion}</span>
       <button onclick={doUndo} title="直前の編集を取り消す">↶ Undo</button>
       <button onclick={doRedo} title="やり直す">↷ Redo</button>
@@ -588,6 +682,32 @@
     border: 1px solid var(--accent-dim);
     border-radius: 4px;
     padding: 2px 6px;
+    font-size: 13px;
+  }
+
+  .sig-edit {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--text-dim);
+  }
+
+  .sig-input {
+    width: 44px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--accent-dim);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 13px;
+  }
+
+  .sig-den {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--accent-dim);
+    border-radius: 4px;
+    padding: 2px 4px;
     font-size: 13px;
   }
 

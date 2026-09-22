@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from "./api";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
+  import { barAtTick, barsEndTick, buildBars } from "./barMap";
   import ClipPreview from "./ClipPreview.svelte";
   import { newTrackId } from "./ids";
   import { pianoRollStore, selectionStore } from "./selection.svelte";
@@ -18,14 +19,9 @@
     onSeek?: (tick: number) => void;
   } = $props();
 
-  // 1 小節 = ppq * 4 * num / den tick(先頭の拍子で近似。拍子変更対応は後回し)
-  const ticksPerBar = $derived.by(() => {
-    const sig = project.time_sig_map[0] ?? { num: 4, den: 4 };
-    return (project.ppq * 4 * sig.num) / sig.den;
-  });
-
-  const PX_PER_BAR = 96;
-  const pxPerTick = $derived(PX_PER_BAR / ticksPerBar);
+  // 4/4 の 1 小節 = 96px となる密度。小節の実幅は拍子に応じて変わる(7/8 は狭い)
+  const PX_PER_WHOLE = 96;
+  const pxPerTick = $derived(PX_PER_WHOLE / (project.ppq * 4));
 
   const endTick = $derived.by(() => {
     let end = 0;
@@ -37,8 +33,9 @@
     return end;
   });
 
-  const bars = $derived(Math.max(16, Math.ceil(endTick / ticksPerBar) + 2));
-  const totalPx = $derived(bars * PX_PER_BAR);
+  // 拍子イベントを考慮した小節列(グリッド・ルーラー・範囲選択の共通ソース)
+  const barList = $derived(buildBars(project, endTick));
+  const totalPx = $derived(barsEndTick(barList) * pxPerTick);
 
   function clipStyle(clip: Clip): string {
     const left = clip.start * pxPerTick;
@@ -86,17 +83,19 @@
   function barAt(e: PointerEvent): number {
     const lane = e.currentTarget as HTMLElement;
     const x = e.clientX - lane.getBoundingClientRect().left;
-    return Math.max(0, Math.floor(x / PX_PER_BAR));
+    return barAtTick(barList, Math.max(0, x / pxPerTick)).index;
   }
 
   function setRange(a: number, b: number) {
     const startBar = Math.min(a, b);
     const endBar = Math.max(a, b);
+    const s = barList[Math.min(startBar, barList.length - 1)];
+    const e = barList[Math.min(endBar, barList.length - 1)];
     selectionStore.range = {
       startBar,
       endBar,
-      startTick: startBar * ticksPerBar,
-      endTick: (endBar + 1) * ticksPerBar,
+      startTick: s.tick,
+      endTick: e.tick + e.len,
     };
   }
 
@@ -251,10 +250,9 @@
   {#if selection}
     <div
       class="selection-overlay"
-      style="left:{HEAD_W + selection.startBar * PX_PER_BAR}px;width:{(selection.endBar -
-        selection.startBar +
-        1) *
-        PX_PER_BAR}px"
+      style="left:{HEAD_W + selection.startTick * pxPerTick}px;width:{(selection.endTick -
+        selection.startTick) *
+        pxPerTick}px"
     ></div>
   {/if}
 
@@ -269,8 +267,10 @@
       onpointermove={onRulerMove}
       onpointerup={onRulerUp}
     >
-      {#each Array(bars) as _, i}
-        <div class="bar-mark" style="left:{i * PX_PER_BAR}px">{i + 1}</div>
+      {#each barList as bar (bar.index)}
+        <div class="bar-mark" style="left:{bar.tick * pxPerTick}px">
+          {bar.index + 1}{#if bar.sigChange}<span class="sig-chip">{bar.num}/{bar.den}</span>{/if}
+        </div>
       {/each}
     </div>
   </div>
@@ -329,8 +329,8 @@
         </div>
       </div>
       <div class="lane" style="width:{totalPx}px">
-        {#each Array(bars) as _, i}
-          <div class="grid-line" style="left:{i * PX_PER_BAR}px"></div>
+        {#each barList as bar (bar.index)}
+          <div class="grid-line" style="left:{bar.tick * pxPerTick}px"></div>
         {/each}
         {#each track.clips as clip (clip.id)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -506,6 +506,16 @@
     font-size: 11px;
     color: var(--text-dim);
     line-height: 24px;
+    white-space: nowrap;
+  }
+
+  .sig-chip {
+    margin-left: 4px;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-size: 9px;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent);
   }
 
   .track-row {

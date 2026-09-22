@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick as sveltick } from "svelte";
   import * as api from "./api";
+  import { buildBars } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
   import { drumName } from "./drumMap";
   import { newNoteId } from "./ids";
@@ -57,6 +58,15 @@
   const clip = $derived(found?.clip ?? null);
   const contentW = $derived(clip ? Math.max(clip.length * pxPerTick, 200) : 200);
   const contentH = $derived(128 * rowH);
+
+  // 曲の絶対小節列(拍子イベント考慮)のうち、このクリップに重なる部分
+  const songBars = $derived.by(() => {
+    if (!clip) return [];
+    const end = clip.start + clip.length;
+    return buildBars(project, end, 1, 0).filter(
+      (b) => b.tick + b.len > clip.start && b.tick < end,
+    );
+  });
 
   const isDrum = $derived(found?.track.device?.name === "drum");
   /// 挿入カーソル(クリックで固定。ドラム打ち込み先。←/→ でスナップ移動)
@@ -150,12 +160,21 @@
       g.fillRect(0, (127 - drumHighlight) * rowH, contentW, rowH);
     }
 
-    // 拍・小節線
-    for (let t = 0; t <= currentClip.length; t += 960) {
-      const x = t * pxPerTick;
-      const isBar = t % 3840 === 0;
-      g.fillStyle = isBar ? "#4a4568" : "#332f4c";
-      g.fillRect(x, 0, 1, contentH);
+    // 拍・小節線(拍子イベントを考慮した曲の絶対グリッド。クリップ相対に変換)
+    const clipStart = currentClip.start;
+    const clipEnd = clipStart + currentClip.length;
+    for (const bar of songBars) {
+      if (bar.tick >= clipStart) {
+        g.fillStyle = "#4a4568";
+        g.fillRect((bar.tick - clipStart) * pxPerTick, 0, 1, contentH);
+      }
+      // 拍線(分母の音価 = 1 拍)
+      const beatLen = (project.ppq * 4) / bar.den;
+      g.fillStyle = "#332f4c";
+      for (let t = bar.tick + beatLen; t < bar.tick + bar.len; t += beatLen) {
+        if (t <= clipStart || t >= clipEnd) continue;
+        g.fillRect((t - clipStart) * pxPerTick, 0, 1, contentH);
+      }
     }
     // スナップグリッド(拍より細かいときだけ)
     if (snapTicks < 960) {
@@ -261,6 +280,7 @@
   // 静的層: 内容・選択・ズーム・スナップが変わったときだけ
   $effect(() => {
     void clip;
+    void songBars;
     void selected;
     void snapTicks;
     void drumHighlight;
@@ -648,6 +668,11 @@
     onSeek(currentClip.start + e.offsetX / pxPerTick);
   }
 
+  // ルーラーに出す小節(小節頭がクリップ内にあるもの。番号は曲の絶対小節)
+  const rulerBars = $derived(
+    clip ? songBars.filter((b) => b.tick >= clip.start) : [],
+  );
+
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!pianoRollStore.focus) return;
@@ -700,8 +725,6 @@
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
-
-  const bars = $derived(clip ? Math.ceil(clip.length / 3840) : 0);
 </script>
 
 {#if found}
@@ -749,8 +772,10 @@
           style="width:{contentW}px;height:{RULER_H}px"
           onclick={onRulerClick}
         >
-          {#each Array(bars) as _, i}
-            <span class="bar-no" style="left:{i * 3840 * pxPerTick}px">{i + 1}</span>
+          {#each rulerBars as bar (bar.index)}
+            <span class="bar-no" style="left:{(bar.tick - (clip?.start ?? 0)) * pxPerTick}px">
+              {bar.index + 1}{#if bar.sigChange}<span class="sig-chip">{bar.num}/{bar.den}</span>{/if}
+            </span>
           {/each}
         </div>
         <div class="keys" style="width:{KEY_W}px;height:{contentH}px">
@@ -898,6 +923,16 @@
     height: 100%;
     line-height: 22px;
     pointer-events: none;
+    white-space: nowrap;
+  }
+
+  .sig-chip {
+    margin-left: 3px;
+    padding: 0 3px;
+    border-radius: 3px;
+    font-size: 9px;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent);
   }
 
   .keys {
