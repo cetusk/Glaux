@@ -796,8 +796,11 @@
           </div>
           <div class="stack" style="width:{contentW}px;height:{contentH}px">
             <canvas bind:this={canvasEl} style="width:{contentW}px;height:{contentH}px"></canvas>
+            <!-- クラス名を .overlay(パネルのルート)と絶対に被せないこと:
+                 被るとルート用の z-index:5 + 不透明背景がこの canvas に当たり、
+                 グリッド・ノート・鍵盤が全部この canvas の下に隠れる(過去の実バグ) -->
             <canvas
-              class="overlay"
+              class="note-layer"
               bind:this={overlayEl}
               style="width:{contentW}px;height:{contentH}px"
               onpointerdown={onPointerDown}
@@ -989,7 +992,7 @@
     touch-action: none;
   }
 
-  canvas.overlay {
+  canvas.note-layer {
     position: absolute;
     inset: 0;
   }
