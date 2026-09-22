@@ -194,6 +194,11 @@ impl SubtractiveVoice {
             EnvStage::Decay => {
                 let coef = 1.0 - 1.0 / ((p.decay * self.art.decay_mul).max(0.005) * sr);
                 self.env = sustain + (self.env - sustain) * coef;
+                // サスティン 0(プラック・パームミュート等)で減衰しきったら
+                // リリース扱いにして finished でボイスを解放できるようにする
+                if self.env < 1e-4 {
+                    self.stage = EnvStage::Release;
+                }
             }
             EnvStage::Release => {
                 let coef = 1.0 - 1.0 / ((p.release * self.art.release_mul).max(0.005) * sr);

@@ -295,9 +295,10 @@ impl Renderer {
                     v.state.note_off();
                     v.released = true;
                 }
-                if (v.released && v.state.finished(&mix.instrument))
-                    || self.pos >= v.end + hard_limit
-                {
+                // 鳴り終わったボイスはノート終了を待たずに解放する
+                // (減衰しきったピアノ・読み切ったワンショット等が
+                //  スロットと CPU を占有し続けないように)
+                if v.state.finished(&mix.instrument) || self.pos >= v.end + hard_limit {
                     self.voices.swap_remove(i);
                     continue;
                 }
@@ -582,6 +583,35 @@ mod tests {
             }
         }
         assert!(stopped, "ループ解除後は曲末で自動停止するはず");
+    }
+
+    #[test]
+    fn finished_voices_are_released_before_note_end() {
+        // ワンショット(ドラム)が鳴り終わったら、ノートが長くても
+        // スロットを占有し続けない(SF2 ピアノ等の CPU 漸増対策の回帰テスト)
+        let mut data = data_with_note(0, 480_000, true); // 10 秒のノート
+        data.tracks[0].instrument = InstrumentParams::Drum(glaux_dsp::DrumParams {
+            gain: 1.0,
+            decay: 1.0,
+            tone: 0.5,
+            tune: 0.0,
+        });
+        data.events[0].pitch = 42; // クローズドハット(短い)
+        let shared = Arc::new(Shared::new(data));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+
+        let _ = render_block(&mut r, 512);
+        assert_eq!(r.voices.len(), 1, "発音直後はボイスがあるはず");
+        // 2 秒後(ハットは鳴り終わっている。ノートはまだ 8 秒残っている)
+        for _ in 0..20 {
+            let _ = render_block(&mut r, 4800);
+        }
+        assert_eq!(
+            r.voices.len(),
+            0,
+            "鳴り終わったボイスはノート終了前に解放されるはず"
+        );
     }
 
     #[test]

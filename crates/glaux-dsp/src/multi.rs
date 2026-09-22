@@ -208,6 +208,11 @@ impl MultiVoice {
                 STAGE_DECAY => {
                     let coef = 1.0 - 1.0 / (z.env.decay.max(0.005) * sr);
                     pl.env = z.env.sustain + (pl.env - z.env.sustain) * coef;
+                    // サスティンほぼ 0 のゾーン(ピアノ等)は減衰しきったら解放
+                    if pl.env < 1e-4 {
+                        pl.active = false;
+                        continue;
+                    }
                 }
                 _ => {
                     let coef = 1.0 - 1.0 / (z.env.release.max(0.005) * sr);

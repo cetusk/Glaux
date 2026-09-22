@@ -148,6 +148,10 @@ impl PluckVoice {
 
         let out = new * self.amp * self.release_env * p.gain;
         self.env = out.abs().max(self.env * 0.999);
+        // 弦が鳴り止んだら(パームミュート等)ノート終了を待たず解放できるようにする
+        if self.env < 1e-4 {
+            self.released = true;
+        }
         out
     }
 }
