@@ -64,6 +64,14 @@ export function setProjectsDir(path: string): Promise<{ default_dir: string }> {
   return invoke("set_projects_dir", { path });
 }
 
+/** 現在のプロジェクトを移動 / 名前変更する(省略した方は現状維持)。 */
+export function moveProject(
+  destParent: string | null,
+  newName: string | null,
+): Promise<{ path: string; title?: string; project_version?: number; moved: boolean }> {
+  return invoke("move_project", { destParent, newName });
+}
+
 /** プロジェクトを開く(インプロセス切り替え。MCP・チャット・エンジンは追従する)。 */
 export function openProject(
   path: string,

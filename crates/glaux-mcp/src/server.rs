@@ -346,6 +346,7 @@ impl GlauxServer {
         専用ツール(transpose_notes / shift_notes / quantize_notes / scale_velocity)の方が速くて確実。\
         代表例: add_track {track,index?} / add_clip {track,clip} / add_notes {clip,notes} / update_notes {clip,changes} / \
         set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?} / \
+        set_title {title}(曲名の変更)/ \
         ノートには articulation を付けられる: \"palm_mute\"(ブリッジミュート。減衰が速いこもった刻み)/ \
         \"staccato\"(音価半分で切る)/ \"accent\"(強く明るく)。省略で通常。update_notes でも変更可。\
         メタルの「ズクズク」した刻みは distortion + 低音 + palm_mute ノートの組み合わせで作る。\

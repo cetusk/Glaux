@@ -157,6 +157,94 @@ async fn open_project(
     Ok(json!({ "title": title, "project_version": version, "path": path }))
 }
 
+/// 現在のプロジェクトを移動 / 名前変更する。
+/// `dest_parent` 省略で場所は今のまま、`new_name` 省略で名前は今のまま。
+/// 名前を変えた場合はタイトル(meta.title)も追従させる(SetTitle コマンド、author: system)。
+#[tauri::command]
+async fn move_project(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    dest_parent: Option<String>,
+    new_name: Option<String>,
+) -> Result<Value, String> {
+    if state.chat.is_running() {
+        return Err("AI が作業中は移動できません。完了を待つか停止してください".to_owned());
+    }
+    let current = state.project_dir();
+    let cur = std::path::PathBuf::from(&current);
+    let cur_stem = cur
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cur_stem = cur_stem
+        .strip_suffix(".glaux")
+        .unwrap_or(&cur_stem)
+        .to_owned();
+
+    let parent = match dest_parent
+        .map(|s| s.trim().trim_end_matches(['/', '\\']).to_owned())
+        .filter(|s| !s.is_empty())
+    {
+        Some(p) => std::path::PathBuf::from(p),
+        None => cur
+            .parent()
+            .map(|p| p.to_path_buf())
+            .ok_or_else(|| "現在のプロジェクトの親フォルダが分かりません".to_owned())?,
+    };
+    let name = match new_name
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+    {
+        Some(n) => {
+            if n.contains(['/', '\\', ':']) {
+                return Err("プロジェクト名に使えない文字が含まれています".to_owned());
+            }
+            n
+        }
+        None => cur_stem.clone(),
+    };
+    let dest = parent.join(format!("{name}.glaux"));
+    let dest_str = dest.to_string_lossy().into_owned();
+    if dest == cur {
+        return Ok(json!({ "path": current, "moved": false }));
+    }
+
+    if let Some(engine) = &state.engine {
+        engine.stop();
+    }
+    let (mut title, mut version) = state.handle.move_project(dest_str.clone()).await?;
+
+    // フォルダ名を変えたらタイトルも合わせる(履歴に載るので undo 可)
+    if name != cur_stem && title != name {
+        let cmd = glaux_core::Command::SetTitle {
+            title: name.clone(),
+        };
+        match state
+            .handle
+            .apply(
+                cmd,
+                glaux_core::Author::System,
+                format!("プロジェクト名を「{name}」に変更"),
+            )
+            .await
+        {
+            Ok(Ok((_, m))) => {
+                title = name.clone();
+                version = m.project_version;
+            }
+            Ok(Err(e)) => tracing::warn!("タイトル変更に失敗: {e}"),
+            Err(e) => tracing::warn!("タイトル変更に失敗: {e}"),
+        }
+    }
+
+    state.chat.switch_project(dest_str.clone());
+    *state.project_dir.lock().expect("project_dir lock") = dest_str.clone();
+    projects::remove_recent(&current);
+    projects::push_recent(&dest_str, &title);
+    set_window_title(&app, &title);
+    Ok(json!({ "path": dest_str, "title": title, "project_version": version, "moved": true }))
+}
+
 /// 新規プロジェクトを作成して開く。`parent_dir/name.glaux` に作られる。
 #[tauri::command]
 async fn create_project(
@@ -585,6 +673,7 @@ fn main() -> Result<()> {
             list_recent_projects,
             set_projects_dir,
             open_project,
+            move_project,
             create_project,
             export_project_wav,
             apply_edit,

@@ -62,6 +62,7 @@ pub enum Change {
     TimeSigChanged,
     MasterChanged,
     AssetsChanged,
+    MetaChanged,
 }
 
 impl Project {
@@ -624,6 +625,13 @@ impl Project {
                 Ok(Applied {
                     inverse: SetTempo { events: old.into() },
                     changes: vec![Change::TempoChanged],
+                })
+            }
+            SetTitle { title } => {
+                let old = std::mem::replace(&mut self.meta.title, title.clone());
+                Ok(Applied {
+                    inverse: SetTitle { title: old },
+                    changes: vec![Change::MetaChanged],
                 })
             }
             SetTimeSig { events } => {

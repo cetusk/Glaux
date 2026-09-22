@@ -15,18 +15,64 @@
   let busy = $state(false);
   let menuError = $state<string | null>(null);
 
+  // 現在のプロジェクトの移動 / 名前変更
+  let curParent = $state("");
+  let curStem = $state("");
+  let moveName = $state("");
+  let moveParent = $state("");
+
+  function splitProjectPath(path: string) {
+    const parts = path.split(/[\\/]/).filter((p) => p.length > 0);
+    const folder = parts.pop() ?? "";
+    const sep = path.includes("\\") ? "\\" : "/";
+    const parent = path.slice(0, path.length - folder.length).replace(/[\\/]+$/, "") || sep;
+    return { parent, stem: folder.replace(/\.glaux$/i, "") };
+  }
+
   async function toggle() {
     openMenu = !openMenu;
     menuError = null;
     if (openMenu) {
       try {
-        const r = await api.listRecentProjects();
+        const [r, info] = await Promise.all([api.listRecentProjects(), api.appInfo()]);
         recent = r.recent;
         defaultDir = r.default_dir;
         if (!parentDir) parentDir = r.default_dir;
+        const cur = splitProjectPath(info.project_dir);
+        curParent = cur.parent;
+        curStem = cur.stem;
+        moveName = cur.stem;
+        moveParent = cur.parent;
       } catch (e) {
         menuError = String(e);
       }
+    }
+  }
+
+  async function browseMoveParent() {
+    const dir = await pickFolder({ directory: true, title: "プロジェクトの移動先フォルダ" });
+    if (typeof dir === "string") moveParent = dir;
+  }
+
+  const moveDirty = $derived(
+    (moveName.trim() !== "" && moveName.trim() !== curStem) || moveParent !== curParent,
+  );
+
+  async function applyMove() {
+    if (busy || !moveDirty) return;
+    busy = true;
+    menuError = null;
+    try {
+      await api.moveProject(
+        moveParent !== curParent ? moveParent : null,
+        moveName.trim() !== curStem ? moveName.trim() : null,
+      );
+      // 会話・履歴はフォルダごと移動するので継続。メニューを閉じるだけでよい
+      openMenu = false;
+    } catch (e) {
+      menuError = String(e);
+    } finally {
+      busy = false;
     }
   }
 
@@ -127,6 +173,26 @@
         <button class="wide" onclick={browseAndOpen} disabled={busy}>
           フォルダを選択して開く…
         </button>
+      </div>
+
+      <div class="section">
+        <div class="section-title">現在のプロジェクトの移動 / 名前変更</div>
+        <div class="new-row">
+          <input
+            type="text"
+            placeholder="フォルダ名"
+            bind:value={moveName}
+            disabled={busy}
+            title="プロジェクトのフォルダ名(タイトルも追従します)"
+          />
+          <button onclick={applyMove} disabled={busy || !moveDirty}>適用</button>
+        </div>
+        <button class="loc" onclick={browseMoveParent} title="クリックで移動先フォルダを選択">
+          移動先: {moveParent}
+        </button>
+        <div class="move-note">
+          履歴・AI との会話ごとフォルダを移動します(元に戻すには再度移動)。
+        </div>
       </div>
 
       {#if recent.length > 0}
@@ -286,6 +352,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .move-note {
+    font-size: 10px;
+    color: var(--text-dim);
   }
 
   .menu-error {

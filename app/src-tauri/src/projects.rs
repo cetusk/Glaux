@@ -40,6 +40,18 @@ pub fn load_recent() -> Vec<RecentProject> {
         .unwrap_or_default()
 }
 
+/// 記録からパスを取り除く(プロジェクト移動後の旧パス掃除に使う)。
+pub fn remove_recent(path: &str) {
+    let mut list = load_recent();
+    let before = list.len();
+    list.retain(|r| r.path != path);
+    if list.len() != before {
+        if let Ok(json) = serde_json::to_string_pretty(&list) {
+            let _ = std::fs::write(recent_file(), json);
+        }
+    }
+}
+
 /// プロジェクトを開いた記録を残す(先頭に移動、上限 15 件)。
 pub fn push_recent(path: &str, title: &str) {
     let mut list = load_recent();

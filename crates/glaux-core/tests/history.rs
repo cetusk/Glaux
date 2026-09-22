@@ -94,9 +94,9 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
 
     loop {
         let choice = if depth == 0 {
-            rng.gen_range(0..17)
-        } else {
             rng.gen_range(0..18)
+        } else {
+            rng.gen_range(0..19)
         };
         match choice {
             0 => {
@@ -358,6 +358,11 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
             16 => {
                 return Command::SetMasterVolume {
                     volume_db: rng.gen_range(-12.0..0.0),
+                }
+            }
+            17 => {
+                return Command::SetTitle {
+                    title: format!("title{}", rng.gen_range(0..100)),
                 }
             }
             _ => {

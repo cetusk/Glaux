@@ -105,6 +105,13 @@ pub enum Request {
         dir: String,
         reply: oneshot::Sender<Result<(String, usize), String>>,
     },
+    /// 現在のプロジェクトフォルダを別の場所へ移動して開き直す。
+    /// フォルダ移動をアクター内で行うことで、進行中の保存と直列化される
+    /// (移動中に古い場所へ書き込まれる競合が起きない)。成功時は (タイトル, バージョン)。
+    MoveProject {
+        dest: String,
+        reply: oneshot::Sender<Result<(String, usize), String>>,
+    },
 }
 
 #[derive(Clone)]
@@ -251,6 +258,37 @@ impl SessionHandle {
         self.request(|reply| Request::SwitchProject { dir, reply })
             .await?
     }
+
+    /// 現在のプロジェクトフォルダを `dest` へ移動して開き直す。
+    pub async fn move_project(&self, dest: String) -> Result<(String, usize), String> {
+        self.request(|reply| Request::MoveProject { dest, reply })
+            .await?
+    }
+}
+
+/// フォルダを移動する。同一ボリュームなら rename、失敗したらコピー + 削除。
+fn move_dir(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    // 別ドライブなどで rename できない場合のフォールバック
+    copy_dir_recursive(from, to).map_err(|e| format!("コピーに失敗しました: {e}"))?;
+    std::fs::remove_dir_all(from)
+        .map_err(|e| format!("移動元の削除に失敗しました(コピーは完了): {e}"))
+}
+
+fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
 }
 
 fn actor_loop(
@@ -353,6 +391,43 @@ fn handle(
                 }
                 Err(e) => Err(format!("{e:#}")),
             };
+            let _ = reply.send(result);
+        }
+        Request::MoveProject { dest, reply } => {
+            let from = store.dir().to_path_buf();
+            let to = std::path::PathBuf::from(&dest);
+            let result = (|| {
+                if to.exists() {
+                    return Err(format!("移動先が既に存在します: {dest}"));
+                }
+                if let Some(parent) = to.parent() {
+                    if !parent.is_dir() {
+                        return Err(format!(
+                            "移動先のフォルダがありません: {}",
+                            parent.display()
+                        ));
+                    }
+                }
+                move_dir(&from, &to)?;
+                match Store::open_or_create(&dest) {
+                    Ok((new_store, new_session)) => {
+                        *store = new_store;
+                        *session = new_session;
+                        let version = version(session);
+                        let _ = events.send(ProjectChanged {
+                            project_version: version,
+                            changes: vec![],
+                        });
+                        tracing::info!("プロジェクトを移動しました: {} → {dest}", from.display());
+                        Ok((session.project().meta.title.clone(), version))
+                    }
+                    Err(e) => {
+                        // 開き直しに失敗したら元の場所へ戻して被害を抑える
+                        let _ = move_dir(&to, &from);
+                        Err(format!("移動先で開けません(元に戻しました): {e:#}"))
+                    }
+                }
+            })();
             let _ = reply.send(result);
         }
     }

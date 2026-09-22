@@ -111,6 +111,8 @@
       projectVersion = p.project_version;
       entries = h.entries;
       error = null;
+      // プロジェクトの移動・切り替えでパスが変わることがあるのでフッターも更新
+      api.appInfo().then((i) => (info = i)).catch(() => {});
     } catch (e) {
       error = String(e);
     }

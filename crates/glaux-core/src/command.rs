@@ -189,6 +189,10 @@ pub enum Command {
     SetMasterVolume {
         volume_db: f32,
     },
+    /// プロジェクトのタイトル(meta.title)を変更する
+    SetTitle {
+        title: String,
+    },
     AddAsset {
         id: AssetId,
         asset: Asset,
@@ -217,6 +221,7 @@ pub enum Target {
     Tempo,
     TimeSig,
     Master,
+    Meta,
 }
 
 impl Command {
@@ -307,6 +312,9 @@ impl Command {
             }
             SetMasterVolume { .. } => {
                 out.insert(T::Master);
+            }
+            SetTitle { .. } => {
+                out.insert(T::Meta);
             }
             AddAsset { id, .. } | RemoveAsset { id } => {
                 out.insert(T::Asset(id.clone()));
