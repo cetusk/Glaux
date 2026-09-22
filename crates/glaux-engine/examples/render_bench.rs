@@ -132,19 +132,26 @@ fn bench(label: &str, p: &Project, bank: &SampleBank, metronome: bool) {
     let mut r = Renderer::new(shared);
     let mut buf = vec![0.0f32; BLOCK * 2];
     let budget = BLOCK as f64 / SR;
-    let (mut sum, mut worst, mut n) = (0.0f64, 0.0f64, 0usize);
+    let (mut sum, mut worst, mut n, mut worst_at) = (0.0f64, 0.0f64, 0usize, 0usize);
+    let mut spikes = 0usize;
     let mut rendered = 0;
     while rendered < total {
         let t = Instant::now();
         r.process(&mut buf, 2);
         let dt = t.elapsed().as_secs_f64();
         sum += dt;
-        worst = worst.max(dt);
+        if dt > worst {
+            worst = dt;
+            worst_at = n;
+        }
+        if dt > budget * 0.5 {
+            spikes += 1;
+        }
         n += 1;
         rendered += BLOCK;
     }
     println!(
-        "{label:<28} 平均 {:>5.1}%  最悪 {:>6.1}%  ({} ブロック)",
+        "{label:<28} 平均 {:>5.1}%  最悪 {:>6.1}%(#{worst_at})  50% 超 {spikes} 回  ({} ブロック)",
         sum / n as f64 / budget * 100.0,
         worst / budget * 100.0,
         n
@@ -152,13 +159,46 @@ fn bench(label: &str, p: &Project, bank: &SampleBank, metronome: bool) {
 }
 
 fn main() {
-    let dir = std::env::args()
+    let arg = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "SoundFonts".into());
+    // 実プロジェクト(.glaux フォルダ)を渡したら全体とトラック別に測る
+    if arg.ends_with(".glaux") || arg.ends_with(".glaux/") {
+        let sf2_dir = std::env::args()
+            .nth(2)
+            .unwrap_or_else(|| "SoundFonts".into());
+        let dir = std::path::Path::new(&arg);
+        let json = std::fs::read_to_string(dir.join("project.json")).expect("project.json");
+        let p = Project::from_json(&json).expect("parse");
+        let mut bank = SampleBank::default().with_sf2_dir(&sf2_dir);
+        bank.sync(&p, dir);
+        println!("{} トラック", p.tracks.len());
+        bench("(全体)", &p, &bank, false);
+        for i in 0..p.tracks.len() {
+            let mut solo = p.clone();
+            let t = solo.tracks[i].clone();
+            solo.tracks = vec![t];
+            let name = format!(
+                "{} [{}] fx{}",
+                solo.tracks[0].name,
+                solo.tracks[0]
+                    .device
+                    .as_ref()
+                    .map(|d| match &d.source {
+                        PluginSource::Builtin { name } => name.clone(),
+                        PluginSource::Sf2 { preset, bank, .. } => format!("sf2 {bank}:{preset}"),
+                        _ => "other".into(),
+                    })
+                    .unwrap_or_else(|| "subtractive*".into()),
+                solo.tracks[0].effects.len()
+            );
+            bench(&name, &solo, &bank, false);
+        }
+        return;
+    }
     for which in ["synth", "sf2", "all"] {
         let p = project(which);
-        let bank = SampleBank::default().with_sf2_dir(&dir);
-        let mut bank = bank;
+        let mut bank = SampleBank::default().with_sf2_dir(&arg);
         bank.sync(&p, std::path::Path::new("."));
         bench(which, &p, &bank, false);
         if which == "all" {

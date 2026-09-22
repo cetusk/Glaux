@@ -271,6 +271,32 @@
     }
   }
 
+  // ---- オーディオ負荷の表示(音切れの原因切り分け用) ----
+  // 平均はポーリングごとの値、最大は直近 3 秒、回数は再生開始からの差分
+  let dspAvg = $state(0);
+  let dspMaxWindow: number[] = [];
+  let dspMax = $state(0);
+  let dspBase: { overruns: number; late: number; swaps: number } | null = null;
+  let dspCounts = $state({ overruns: 0, late: 0, swaps: 0 });
+  $effect(() => {
+    const d = transport.dsp;
+    if (!d) return;
+    if (!transport.playing) {
+      dspBase = null;
+      return;
+    }
+    if (!dspBase) dspBase = { overruns: d.overruns, late: d.late, swaps: d.swaps };
+    dspAvg = d.avg_pct;
+    dspMaxWindow = [...dspMaxWindow.slice(-29), d.max_pct];
+    dspMax = Math.max(...dspMaxWindow);
+    dspCounts = {
+      overruns: d.overruns - dspBase.overruns,
+      late: d.late - dspBase.late,
+      swaps: d.swaps - dspBase.swaps,
+    };
+  });
+  const dspWarn = $derived(dspCounts.overruns + dspCounts.late > 0 || dspMax > 80);
+
   let recordNotice = $state<string | null>(null);
   /// 直前に録音したクリップ(「♪ MIDI 化」ボタンの対象)
   let lastRecorded = $state<{ clipId: string; trackId: string } | null>(null);
@@ -638,6 +664,16 @@
       >
         ⏺
       </button>
+      {#if transport.playing || dspWarn}
+        <span
+          class="dsp"
+          class:dsp-warn={dspWarn}
+          title={`オーディオ処理の負荷(この再生の開始から)\n平均 ${dspAvg.toFixed(0)}% / 直近 3 秒の最大 ${dspMax.toFixed(0)}%\n処理落ち(Glaux の計算が間に合わない): ${dspCounts.overruns} 回\n呼び出し遅延(他の処理に CPU を奪われた): ${dspCounts.late} 回\n再生データの差し替え(編集で音が切り直される): ${dspCounts.swaps} 回`}
+        >
+          DSP {dspAvg.toFixed(0)}%{#if dspCounts.overruns + dspCounts.late > 0}
+            ⚠{dspCounts.overruns}/{dspCounts.late}{/if}
+        </span>
+      {/if}
       {#if recordNotice}
         <span class="rec-notice" title={recordNotice}>{recordNotice}</span>
       {/if}
@@ -908,6 +944,17 @@
     text-overflow: ellipsis;
     max-width: 16em;
     min-width: 0;
+  }
+
+  .dsp {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dsp-warn {
+    color: #e8a07c;
   }
 
   .rec-midi {

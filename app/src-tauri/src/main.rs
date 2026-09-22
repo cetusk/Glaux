@@ -765,6 +765,7 @@ fn transport_state(state: State<'_, AppState>) -> Value {
             "playing": e.is_playing(),
             "recording": e.is_recording(),
             "metronome": e.metronome(),
+            "dsp": e.take_stats(),
             "tick": e.playhead_tick(),
             "loop": e.loop_region().map(|(s, gl_end)| json!([s, gl_end])),
         }),

@@ -771,6 +771,15 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     UI のファイル選択・MCP import_sample / import_audio_clip が対応。
     手動確認用 `cargo run -p glaux-mcp --example import_check -- <file>`
   - 残り: ピッチカーブの手描き UI
+- **オーディオ負荷の計測(2026-09-23)**: 「再生中に音がプツプツ途切れる」報告への切り分け用。
+  `Renderer::process` がブロックごとに処理時間を測り、`Shared::stats`(アトミック)に
+  平均・最大負荷と累計回数(処理落ち = 計算が予算超過 / 呼び出し遅延 = 前回から
+  ブロック長の 1.8 倍以上空いた = 他プロセスに CPU を奪われた / 再生中のデータ差し替え)を
+  記録。`transport_state` の `dsp` で UI に渡し、トランスポート横に「DSP n%」
+  (処理落ち・遅延があれば ⚠ と回数)を表示。あわせてオーディオスレッドで FTZ/DAZ
+  (デノーマル丸め)を有効化。ベンチ(`render_bench`、実プロジェクト .glaux も可)では
+  CyberNeon 7 トラックで平均 5%。サンドボックス VM はホストと CPU を共有するため、
+  サンドボックスでビルド中はホストの再生が途切れうる点に注意
 - **チャットの AI モデル選択(2026-09-22)**: チャットパネルのヘッダーで 既定 / Opus / Sonnet /
   Haiku / 任意のモデル名 を選ぶと、次の指示から `claude -p ... --model <名前>` で起動する
   (`ChatManager::set_model`、`send_chat` の `model` 引数)。`--resume` と併用できるので

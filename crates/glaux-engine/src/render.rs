@@ -49,6 +49,71 @@ pub struct Shared {
     /// 録音中(曲末の自動停止を抑止する)
     pub recording: AtomicBool,
     pub data: ArcSwap<PlaybackData>,
+    /// 負荷の統計(オーディオスレッドが書き、UI が読む)。[`DspStats`] 参照
+    pub stats: StatsCounters,
+}
+
+/// オーディオ処理の負荷統計(アトミック。オーディオスレッドからロックなしで更新)。
+#[derive(Default)]
+pub struct StatsCounters {
+    /// 直近の集計区間の処理時間・予算の合計(ns)と、ブロック負荷の最大(0.1% 単位)
+    busy_ns: AtomicU64,
+    budget_ns: AtomicU64,
+    max_permille: AtomicU64,
+    /// 起動からの累計: 処理が予算(ブロック長)を超えた回数
+    pub overruns: AtomicU64,
+    /// 起動からの累計: 再生中、前回のコールバックからブロック長の 1.8 倍以上
+    /// 空いて呼ばれた回数(OS / 他プロセスに CPU を奪われた)
+    pub late: AtomicU64,
+    /// 起動からの累計: 再生中の再生データ差し替え(発音中の音が切り直される)
+    pub swaps: AtomicU64,
+}
+
+/// UI に渡す負荷の要約。
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct DspStats {
+    /// 直近区間の平均負荷(%、処理時間 / ブロック長)
+    pub avg_pct: f32,
+    /// 直近区間で最も重かったブロックの負荷(%)
+    pub max_pct: f32,
+    pub overruns: u64,
+    pub late: u64,
+    pub swaps: u64,
+}
+
+impl StatsCounters {
+    /// 直近区間の平均・最大を読み出してリセットする(累計カウンタはそのまま)。
+    pub fn take(&self) -> DspStats {
+        let busy = self.busy_ns.swap(0, Ordering::AcqRel);
+        let budget = self.budget_ns.swap(0, Ordering::AcqRel);
+        let max = self.max_permille.swap(0, Ordering::AcqRel);
+        DspStats {
+            avg_pct: if budget > 0 {
+                busy as f32 / budget as f32 * 100.0
+            } else {
+                0.0
+            },
+            max_pct: max as f32 / 10.0,
+            overruns: self.overruns.load(Ordering::Acquire),
+            late: self.late.load(Ordering::Acquire),
+            swaps: self.swaps.load(Ordering::Acquire),
+        }
+    }
+}
+
+/// この(オーディオ)スレッドでデノーマル数を 0 に丸める(FTZ / DAZ)。
+/// 残響やフィルタが減衰しきる直前の極小値は x86 で桁違いに遅い演算になり、
+/// 音の消え際で処理落ちを起こすことがある。DAW では標準的な対策。
+#[inline]
+pub fn flush_denormals() {
+    #[cfg(target_arch = "x86_64")]
+    #[allow(deprecated)]
+    // SAFETY: MXCSR の FTZ(bit 15)と DAZ(bit 6)を立てるだけ。このスレッドの
+    // 浮動小数演算の丸め方が変わるが、オーディオ処理では望ましい挙動
+    unsafe {
+        use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+        _mm_setcsr(_mm_getcsr() | 0x8040);
+    }
 }
 
 impl Shared {
@@ -63,6 +128,7 @@ impl Shared {
             metronome: AtomicBool::new(false),
             recording: AtomicBool::new(false),
             data: ArcSwap::from_pointee(data),
+            stats: StatsCounters::default(),
         }
     }
 }
@@ -157,6 +223,8 @@ pub struct Renderer {
     /// `pos` に対応する音楽的位置(tick)。データ差し替え(テンポ変更)時に
     /// この tick を保ったままサンプル位置を換算し直す
     last_tick: f64,
+    /// 前回のコールバック時刻(呼び出し遅延の検出用)
+    last_call: Option<std::time::Instant>,
 }
 
 /// オートメーション点列を区分補間で評価する(core の `AutomationLane::value_at` と同義)。
@@ -204,6 +272,7 @@ impl Renderer {
             next_beat: None,
             click: Click::default(),
             last_tick: 0.0,
+            last_call: None,
         }
     }
 
@@ -233,6 +302,35 @@ impl Renderer {
 
     /// `out` はインターリーブされた出力バッファ。
     pub fn process(&mut self, out: &mut [f32], channels: usize) {
+        flush_denormals();
+        let t0 = std::time::Instant::now();
+        let was_playing = self.was_playing;
+        self.process_inner(out, channels);
+
+        // 負荷統計(ロック・アロケーションなし)
+        let sr = self.shared.data.load().sample_rate.max(1.0);
+        let frames = out.len() / channels.max(1);
+        let budget = (frames as f64 / sr * 1e9) as u64;
+        let busy = t0.elapsed().as_nanos() as u64;
+        let st = &self.shared.stats;
+        st.busy_ns.fetch_add(busy, Ordering::Relaxed);
+        st.budget_ns.fetch_add(budget, Ordering::Relaxed);
+        if let Some(permille) = (busy * 1000).checked_div(budget) {
+            st.max_permille.fetch_max(permille, Ordering::Relaxed);
+        }
+        if busy > budget {
+            st.overruns.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(prev) = self.last_call {
+            let gap = t0.duration_since(prev).as_nanos() as u64;
+            if was_playing && self.was_playing && gap > budget * 18 / 10 {
+                st.late.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.last_call = Some(t0);
+    }
+
+    fn process_inner(&mut self, out: &mut [f32], channels: usize) {
         out.fill(0.0);
         if channels == 0 {
             return;
@@ -251,6 +349,9 @@ impl Renderer {
             resync = true;
         }
         let seek = self.shared.seek.swap(NO_SEEK, Ordering::AcqRel);
+        if swapped && self.was_playing {
+            self.shared.stats.swaps.fetch_add(1, Ordering::Relaxed);
+        }
         if seek != NO_SEEK {
             self.pos = seek;
             resync = true;

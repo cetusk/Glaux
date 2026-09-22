@@ -242,6 +242,11 @@ impl EngineHandle {
         self.recording.lock().expect("recording lock").is_some()
     }
 
+    /// オーディオ処理の負荷統計(直近区間の平均・最大はリセットされる)。
+    pub fn take_stats(&self) -> crate::render::DspStats {
+        self.shared.stats.take()
+    }
+
     pub fn set_metronome(&self, on: bool) {
         self.shared.metronome.store(on, Ordering::Release);
     }
