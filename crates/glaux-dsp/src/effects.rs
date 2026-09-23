@@ -451,6 +451,24 @@ const RNG_SEED: u32 = 0x9E37_79B9;
 impl Default for EffectState {
     fn default() -> Self {
         EffectState {
+            dly: [vec![0.0; DLY_LEN], vec![0.0; DLY_LEN]],
+            ..Self::light()
+        }
+    }
+}
+
+impl EffectState {
+    /// ディレイ系(delay / chorus / tape)のバッファを持たない軽い状態(オフラインで reverb 等を
+    /// 何度も掛ける用。1 回あたり 512KB の確保を省く)。ディレイ系を渡すと素通しになる。
+    pub fn without_delay_buffers() -> Self {
+        EffectState {
+            dly: [Vec::new(), Vec::new()],
+            ..Self::light()
+        }
+    }
+
+    fn light() -> Self {
+        EffectState {
             kind: EffectKind::None,
             eq: Default::default(),
             envelope: 0.0,
@@ -460,16 +478,14 @@ impl Default for EffectState {
             tone_lp: [0.0; 2],
             amp: Default::default(),
             reverb: [ReverbChannel::new(0), ReverbChannel::new(STEREO_SPREAD)],
-            dly: [vec![0.0; DLY_LEN], vec![0.0; DLY_LEN]],
+            dly: [Vec::new(), Vec::new()],
             dly_idx: 0,
             dly_lp: [0.0; 2],
             lfo: [0.0; 2],
             rng: RNG_SEED,
         }
     }
-}
 
-impl EffectState {
     fn kind_of(p: &EffectParams) -> EffectKind {
         match p {
             EffectParams::Eq(_) => EffectKind::Eq,
@@ -516,6 +532,14 @@ impl EffectState {
     /// ステレオ 1 サンプル処理。`key` はサイドチェインの検出信号
     /// (通常はソーストラックのモノ合算。サイドチェイン以外は無視する)。
     pub fn process(&mut self, p: &EffectParams, l: f32, r: f32, key: f32) -> (f32, f32) {
+        if self.dly[0].is_empty()
+            && matches!(
+                p,
+                EffectParams::Delay(_) | EffectParams::Chorus(_) | EffectParams::Tape(_)
+            )
+        {
+            return (l, r);
+        }
         match p {
             EffectParams::External => (l, r),
             EffectParams::Eq(eq) => {
@@ -2049,5 +2073,20 @@ mod tests {
         for (l, _) in run(&p, ramp, 4800) {
             assert!(((l * 8.0).round() - l * 8.0).abs() < 1e-4, "{l}");
         }
+    }
+
+    #[test]
+    fn light_state_passes_delay_through_and_still_reverbs() {
+        let mut st = EffectState::without_delay_buffers();
+        let d = bake(&effect("delay", &[("mix", 1.0)])).unwrap();
+        st.ensure_kind(&d);
+        assert_eq!(st.process(&d, 0.3, -0.2, 0.0), (0.3, -0.2));
+        let rv = bake(&effect("reverb", &[("mix", 0.5)])).unwrap();
+        st.ensure_kind(&rv);
+        st.process(&rv, 1.0, 1.0, 0.0);
+        let tail = (0..48_000)
+            .map(|_| st.process(&rv, 0.0, 0.0, 0.0).0.abs())
+            .fold(0.0f32, f32::max);
+        assert!(tail > 0.01);
     }
 }

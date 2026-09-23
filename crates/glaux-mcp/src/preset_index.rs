@@ -364,6 +364,53 @@ pub fn find_similar(
     Ok(out)
 }
 
+/// 索引を作り足してから近いプリセットを探し、MCP / UI に返す形(JSON)にまとめる。
+/// `progress` は索引作りの途中経過(UI の進捗表示用)。
+#[allow(clippy::too_many_arguments)]
+pub fn similar_json(
+    project: &glaux_core::Project,
+    dir: &std::path::Path,
+    source: &crate::sound::SoundSource,
+    track_id: &glaux_core::TrackId,
+    category: Option<&str>,
+    limit: usize,
+    index_budget: std::time::Duration,
+    progress: &mut dyn FnMut(IndexProgress),
+) -> Result<serde_json::Value, String> {
+    use serde_json::json;
+    let (_, _, plugin_id, _) = crate::clap_presets::clap_track(project, track_id)?;
+    let plugin_id = plugin_id.to_owned();
+    let target = crate::sound::load(project, dir, source)?;
+    let category = category.filter(|c| !c.is_empty());
+    let done = build_index(&plugin_id, category, index_budget, progress)?;
+    let results = find_similar(&plugin_id, &target, category, limit.clamp(1, 20), 12)?;
+    let r3 = |v: f32| (v as f64 * 1000.0).round() / 1000.0;
+    let mut v = json!({
+        "target": target.label,
+        "index": done,
+        "results": results.iter().map(|c| json!({
+            "id": c.id,
+            "name": c.name,
+            "category": c.category,
+            "distance": r3(c.distance),
+            "verdict": crate::sound::verdict(c.distance),
+            "spectral": r3(c.spectral),
+            "envelope": r3(c.envelope),
+            "clap_similarity": c.clap_similarity.map(r3),
+        })).collect::<Vec<_>>(),
+    });
+    if done.indexed < done.total {
+        v["note"] = json!(format!(
+            "索引は {} / {} 個。残りのプリセットはまだ探していません。もう一度呼ぶと続きを作ります",
+            done.indexed, done.total
+        ));
+    }
+    if !glaux_ml::clap::available() {
+        v["clap_note"] = json!(crate::sound::clap_missing_note());
+    }
+    Ok(v)
+}
+
 /// CLAP 音源のつまみを目標の音に合わせた結果。
 pub struct Refined {
     /// `set_param`(device/clap:<id>)のまとめ

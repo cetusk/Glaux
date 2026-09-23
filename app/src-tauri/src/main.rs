@@ -252,6 +252,90 @@ async fn match_clip_sound(state: State<'_, AppState>, clip_id: String) -> Result
     Ok(v)
 }
 
+/// 音声クリップの音に近い CLAP 音源のプリセットを探す(track_id の CLAP 音源のプリセットから)。
+/// 索引(プリセットを 1 音ずつ鳴らした記録)は index_seconds(既定 90 秒)まで作り足し、
+/// 途中経過は `preset-index` イベント({total, indexed, added})で届く。
+#[tauri::command]
+async fn find_similar_clap_presets(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    clip_id: String,
+    track_id: String,
+    category: Option<String>,
+    index_seconds: Option<u64>,
+) -> Result<Value, String> {
+    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    tokio::task::spawn_blocking(move || {
+        glaux_mcp::preset_index::similar_json(
+            &project,
+            std::path::Path::new(&dir),
+            &glaux_mcp::sound::SoundSource::Clip(cid),
+            &tid,
+            category.as_deref(),
+            8,
+            std::time::Duration::from_secs(index_seconds.unwrap_or(90).min(600)),
+            &mut |p| {
+                let _ = app.emit("preset-index", &p);
+            },
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// CLAP 音源のつまみを音声クリップの音に自動で合わせる(今の音色から出発。履歴 1 件)。
+#[tauri::command]
+async fn refine_clap_params(
+    state: State<'_, AppState>,
+    clip_id: String,
+    track_id: String,
+    max_seconds: Option<f32>,
+) -> Result<Value, String> {
+    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let refined = tokio::task::spawn_blocking(move || {
+        let target = glaux_mcp::sound::load(
+            &project,
+            std::path::Path::new(&dir),
+            &glaux_mcp::sound::SoundSource::Clip(cid),
+        )?;
+        glaux_mcp::preset_index::refine_params(
+            &project,
+            &tid,
+            &target,
+            &[],
+            max_seconds.unwrap_or(20.0).clamp(5.0, 120.0),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let mut v = refined.json;
+    if refined.commands.is_empty() {
+        return Ok(v);
+    }
+    let label = format!(
+        "「{}」の CLAP のつまみを音声クリップの音に合わせる({} 個)",
+        v["track"].as_str().unwrap_or(""),
+        refined.commands.len()
+    );
+    let (_, applied) = state
+        .handle
+        .apply(
+            Command::batch(label.clone(), refined.commands),
+            Author::Human,
+            label,
+        )
+        .await?
+        .map_err(|e| e.to_string())?;
+    v["project_version"] = json!(applied.project_version);
+    Ok(v)
+}
+
 /// 追加モデル(CLAP の音声側)の状態。
 #[tauri::command]
 fn model_status() -> Value {
@@ -1939,6 +2023,8 @@ fn main() -> Result<()> {
             detect_clip_tempo,
             model_status,
             match_clip_sound,
+            find_similar_clap_presets,
+            refine_clap_params,
             download_clap_model,
             record_start,
             record_stop,

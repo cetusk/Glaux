@@ -464,7 +464,11 @@ impl Renderer {
             clock: 0,
             plugin_auto_last: vec![[f32::NAN; MAX_PLUGIN_LANES]; MAX_TRACKS],
             next_note_id: 1,
-            effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
+            // clone で複製すると 0 のバッファを実際に書き写してしまう(64 × 512KB)。1 つずつ確保すれば
+            // ディレイ系を使うまでページは実体化しない
+            effect_states: (0..MAX_EFFECT_SLOTS)
+                .map(|_| EffectState::default())
+                .collect(),
             slot_is_fx: [false; MAX_PLUGINS],
             slot_done: [false; MAX_PLUGINS],
             blk_mono: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),

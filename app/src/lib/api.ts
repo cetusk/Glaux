@@ -150,6 +150,58 @@ export function matchClipSound(clipId: string): Promise<{
   return invoke("match_clip_sound", { clipId });
 }
 
+/** 似た音のプリセット探しの候補。distance: 0.15 未満 ほぼ同じ … 0.7 以上 かなり違う */
+export interface SimilarPreset {
+  id: string;
+  name: string;
+  category: string;
+  distance: number;
+  verdict: string;
+  clap_similarity: number | null;
+}
+
+/** 索引作りの進み具合(対象のプリセット数・索引済み・今回鳴らした数)。 */
+export interface PresetIndexProgress {
+  total: number;
+  indexed: number;
+  added: number;
+}
+
+/** 音声クリップの音に近い CLAP 音源のプリセットを探す(track_id の CLAP 音源から)。進捗は onPresetIndex。 */
+export function findSimilarClapPresets(
+  clipId: string,
+  trackId: string,
+  category: string | null,
+  indexSeconds = 90,
+): Promise<{
+  target: string;
+  index: PresetIndexProgress;
+  results: SimilarPreset[];
+  note?: string;
+  clap_note?: string;
+}> {
+  return invoke("find_similar_clap_presets", { clipId, trackId, category, indexSeconds });
+}
+
+export function onPresetIndex(cb: (p: PresetIndexProgress) => void): Promise<UnlistenFn> {
+  return listen<PresetIndexProgress>("preset-index", (e) => cb(e.payload));
+}
+
+/** CLAP 音源のつまみを音声クリップの音に自動で合わせる(今の音色から出発。履歴 1 件)。 */
+export function refineClapParams(
+  clipId: string,
+  trackId: string,
+  maxSeconds = 20,
+): Promise<{
+  track: string;
+  changed: { name: string; path: string; before: number; after: number }[];
+  initial_distance: number;
+  distance: number;
+  verdict: string;
+}> {
+  return invoke("refine_clap_params", { clipId, trackId, maxSeconds });
+}
+
 /** 追加モデルの状態(clap = 音色を言葉で捉えるモデル)。 */
 export interface ModelStatus {
   available: boolean;

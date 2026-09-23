@@ -1653,40 +1653,17 @@ impl GlauxServer {
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
         let (project, _) = self.handle.get_project().await?;
         let dir = self.handle.project_dir().await?;
-        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
-            let (_, _, plugin_id, _) = crate::clap_presets::clap_track(&project, &track_id)?;
-            let plugin_id = plugin_id.to_owned();
-            let target = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
-            let category = p.category.as_deref();
-            let budget = std::time::Duration::from_secs(p.index_seconds.unwrap_or(60).min(600));
-            let progress = crate::preset_index::build_index(&plugin_id, category, budget, &mut |_| {})?;
-            let limit = p.limit.unwrap_or(5).clamp(1, 20);
-            let results =
-                crate::preset_index::find_similar(&plugin_id, &target, category, limit, 12)?;
-            let r3 = |v: f32| (v as f64 * 1000.0).round() / 1000.0;
-            let mut v = json!({
-                "target": target.label,
-                "index": progress,
-                "results": results.iter().map(|c| json!({
-                    "id": c.id,
-                    "name": c.name,
-                    "category": c.category,
-                    "distance": r3(c.distance),
-                    "spectral": r3(c.spectral),
-                    "envelope": r3(c.envelope),
-                    "clap_similarity": c.clap_similarity.map(r3),
-                })).collect::<Vec<_>>(),
-            });
-            if progress.indexed < progress.total {
-                v["note"] = json!(format!(
-                    "索引は {} / {} 個。残りのプリセットはまだ探していません。もう一度呼ぶと続きを作ります",
-                    progress.indexed, progress.total
-                ));
-            }
-            if !glaux_ml::clap::available() {
-                v["clap_note"] = json!(crate::sound::clap_missing_note());
-            }
-            Ok(v)
+        let v = tokio::task::spawn_blocking(move || {
+            crate::preset_index::similar_json(
+                &project,
+                std::path::Path::new(&dir),
+                &source,
+                &track_id,
+                p.category.as_deref(),
+                p.limit.unwrap_or(5),
+                std::time::Duration::from_secs(p.index_seconds.unwrap_or(60).min(600)),
+                &mut |_| {},
+            )
         })
         .await
         .map_err(|e| e.to_string())??;

@@ -474,7 +474,7 @@ pub fn apply_reverb(x: &mut [f32], mix: f32, size: f32, sr: f32) {
     let Some(p) = glaux_dsp::bake_effect(&e, sr, &|_| None) else {
         return;
     };
-    let mut st = glaux_dsp::EffectState::default();
+    let mut st = glaux_dsp::EffectState::without_delay_buffers();
     st.ensure_kind(&p);
     for v in x.iter_mut() {
         let (l, r) = st.process(&p, *v, *v, 0.0);

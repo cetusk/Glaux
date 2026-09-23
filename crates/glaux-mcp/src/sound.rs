@@ -296,7 +296,7 @@ pub fn clap_missing_note() -> String {
 // ---- 比べる・似せる ----
 
 /// 距離を言葉にする。
-fn verdict(total: f32) -> &'static str {
+pub fn verdict(total: f32) -> &'static str {
     if total < 0.15 {
         "ほぼ同じ音"
     } else if total < 0.35 {

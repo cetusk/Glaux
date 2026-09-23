@@ -5,6 +5,7 @@
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
+  import SimilarPresetDialog from "./SimilarPresetDialog.svelte";
   import { newClipId, newFxId, newNoteId, newTrackId } from "./ids";
   import {
     MASTER_FOCUS_ID,
@@ -613,6 +614,9 @@
     api.applyEdit(cmds, label).catch(() => {});
   }
 
+  /// 似た音の CLAP プリセットを探すダイアログの対象クリップ
+  let similarFor = $state<Clip | null>(null);
+
   /// 音声クリップの音に似せた内蔵シンセのトラックを作る(時間がかかるのでクリップに「音色を合わせています…」を出す)
   let matching = $state<string | null>(null);
   async function matchSound(clip: Clip) {
@@ -776,7 +780,8 @@
       | "follow-off"
       | "sep-builtin"
       | "sep-demucs"
-      | "match",
+      | "match"
+      | "similar",
   ) {
     const m = clipMenu;
     clipMenu = null;
@@ -827,6 +832,9 @@
         break;
       case "match":
         matchSound(m.clip);
+        break;
+      case "similar":
+        similarFor = m.clip;
         break;
     }
   }
@@ -1422,6 +1430,10 @@
     </div>
   {/if}
 
+  {#if similarFor}
+    <SimilarPresetDialog {project} clip={similarFor} onClose={() => (similarFor = null)} />
+  {/if}
+
   {#if clipMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="menu-backdrop" onclick={() => (clipMenu = null)} oncontextmenu={(e) => { e.preventDefault(); clipMenu = null; }}></div>
@@ -1458,6 +1470,9 @@
         </button>
         <button onclick={() => menuAction("match")} disabled={matching !== null}>
           🎛 この音に似せた内蔵シンセのトラックを作る(subtractive / fm とリバーブを自動で探す・約 30 秒。単音のサンプル向け)
+        </button>
+        <button onclick={() => menuAction("similar")}>
+          🔎 この音に近い CLAP 音源のプリセットを探す(Surge XT など。読み込んでつまみも自動で詰められる)
         </button>
         <div class="menu-sep"></div>
       {/if}

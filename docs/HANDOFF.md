@@ -906,6 +906,12 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     set_device 1 回。トラックのエフェクトも通した `verified_distance` も返す)、`find_similar_presets`(計 34 ツール)。
     UI は音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」(Tauri `match_clip_sound`:
     直後に MIDI トラックを足し、同じ位置に目標の高さ・長さの 1 音。履歴 1 件)
+- **似た音の道具の UI(2026-09-24)**: 音声クリップのメニュー「この音に近い CLAP 音源のプリセットを探す」→
+  `SimilarPresetDialog.svelte`。CLAP 音源のトラックとカテゴリ(`clap_presets` の categories)を選んで探す → 候補(名前・
+  カテゴリ・近さの言葉。距離はツールチップ)を「読み込む」(`clap_load_preset`)→「つまみを自動で合わせる」。
+  Tauri `find_similar_clap_presets`(索引は 1 回 90 秒まで作り足し、途中経過は `preset-index` イベント)と
+  `refine_clap_params`(自動選択のつまみ・20 秒、Author::Human の履歴 1 件)。探す処理は MCP と共通の
+  `preset_index::similar_json` に切り出した(結果に verdict を追加)。人間の操作なので AI インジケータは点けない
 - **内蔵ウェーブテーブル `wavetable`(2026-09-24)**: `glaux-dsp/src/wavetable.rs`。テーブル 5 種(analog = 正弦→三角→
   ノコギリ→矩形 / pulse = 幅 50%→5% / vocal = 母音あえいおう(フォルマント周波数を補間、基音 110Hz 想定)/
   sync = ハードシンク比 1→8 / organ = ドローバー式に倍音を足す)× 16 フレーム × 11 段のミップマップ(段 ℓ は倍音 1023>>ℓ まで)
