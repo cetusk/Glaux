@@ -328,6 +328,25 @@ pub struct FindSimilarPresetsParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct RefinePluginParamsParams {
+    /// 目標の音: 音声クリップ ID(`clp_xxxxxx`)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// 目標の音: 音声ファイルのパス。
+    #[serde(default)]
+    pub file: Option<String>,
+    /// CLAP 音源(例 Surge XT)のトラック ID。今の音色(プリセット + 上書き値)から出発する。
+    pub track_id: String,
+    /// 動かすつまみの名前の部分一致の並び(例 ["cutoff", "resonance", "amp eg release"])。
+    /// 省略でフィルターのカットオフ・レゾナンス・エンベロープ量、アンプの ADSR、フィルターのディケイ、デチューンを自動で選ぶ。
+    #[serde(default)]
+    pub params: Option<Vec<String>>,
+    /// 探す時間の上限(秒。既定 20)。
+    #[serde(default)]
+    pub max_seconds: Option<f32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct AnalyzeBeatsParams {
     /// 音声クリップ ID(`clp_xxxxxx`、kind: "audio")。クリップが参照している範囲を使う。
     #[serde(default)]
@@ -1672,6 +1691,71 @@ impl GlauxServer {
         .await
         .map_err(|e| e.to_string())??;
         Ok(Json(v))
+    }
+
+    #[tool(
+        description = "CLAP 音源(例 Surge XT)のつまみを目標の音(音声クリップ・音声ファイル)に自動で合わせる(CMA-ES、既定 20 秒)。\
+        今の音色(読み込んだプリセットと上書き値)から出発して、params(名前の部分一致)か自動で選んだ主要なつまみ\
+        (フィルターのカットオフ・レゾナンス・エンベロープ量、アンプの ADSR 等)を動かし、変わったつまみを set_param の\
+        まとめ 1 回として書く(undo で戻せる)。返り値: changed(つまみごとの before / after)、initial_distance → distance、\
+        verdict。使い方: find_similar_presets で近いプリセットを探して load_plugin_preset → これで詰める。\
+        LFO のテンポ同期・モジュレーションの割り当てなど、つまみとして公開されていない部分は変えられない。"
+    )]
+    async fn refine_plugin_params(
+        &self,
+        params: Parameters<RefinePluginParamsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("refine_plugin_params");
+        let p = params.0;
+        let source = match (&p.clip_id, &p.file) {
+            (Some(c), None) => crate::sound::SoundSource::Clip(
+                glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?,
+            ),
+            (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
+            _ => {
+                return Err(
+                    "目標の音は clip_id / file のどちらか 1 つを指定してください".to_owned(),
+                )
+            }
+        };
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let wanted = p.params.unwrap_or_default();
+        let max_seconds = p.max_seconds.unwrap_or(20.0);
+        let refined = tokio::task::spawn_blocking({
+            let track_id = track_id.clone();
+            move || -> Result<_, String> {
+                let target = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
+                crate::preset_index::refine_params(
+                    &project,
+                    &track_id,
+                    &target,
+                    &wanted,
+                    max_seconds,
+                )
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let mut v = refined.json;
+        if refined.commands.is_empty() {
+            v["note"] = json!("今の値のままが最も近かったため、つまみは変えませんでした");
+            return Ok(Json(v));
+        }
+        let label = format!(
+            "「{}」の CLAP のつまみを目標の音に合わせる({} 個)",
+            v["track"].as_str().unwrap_or(""),
+            refined.commands.len()
+        );
+        let author = self.author(&ctx);
+        let command = glaux_core::Command::batch(label.clone(), refined.commands);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut out = mutated_json(&m);
+        out["entry_id"] = json!(entry_id);
+        out["refine"] = v;
+        Ok(Json(out))
     }
 
     #[tool(

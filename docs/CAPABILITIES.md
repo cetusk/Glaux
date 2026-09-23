@@ -9,7 +9,7 @@ Glaux の AI が何を知覚し・何を操作し・どう表現できるか、�
 
 ## 1. AI ができること
 
-AI(チャットのヘッドレス Claude、または外部の MCP クライアント)は MCP ツール 35 個で Glaux を操作する。
+AI(チャットのヘッドレス Claude、または外部の MCP クライアント)は MCP ツール 36 個で Glaux を操作する。
 すべての編集は人間と同じ履歴に残り、取り消せる。
 
 ### 1.1 感覚(何を知覚できるか)
@@ -35,7 +35,7 @@ AI(チャットのヘッドレス Claude、または外部の MCP クライア�
 | **ノートの一括編集** | transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity | 移調、時間移動、クオンタイズ、スウィング(ハネ・シャッフル)、強弱の一括調整 |
 | **音作り(内蔵)** | apply_commands(set_device / set_param / add_effect) | 音源 6 種の選択とつまみ、エフェクトの追加・つまみ・バイパス |
 | **音作り(外部プラグイン)** | list_plugins / list_plugin_presets / load_plugin_preset / list_params | CLAP 音源(Surge XT 等)の選択、プリセット選び、公開されたつまみの操作。CLAP エフェクト(Surge XT Effects・Dragonfly Reverb・LSP 等)をトラック・マスターに挿してつまみ・オートメーションで動かす |
-| **似た音を作る** | match_sound / find_similar_presets | サンプルに合わせて内蔵シンセ(subtractive / fm を自動で選ぶ、リバーブ込みも)のつまみを自動で探す(約 30 秒)。CLAP プラグインのプリセットから近いものを探す(初回は索引作りに数分)。UI からは音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」 |
+| **似た音を作る** | match_sound / find_similar_presets / refine_plugin_params | サンプルに合わせて内蔵シンセ(subtractive / fm を自動で選ぶ、リバーブ込みも)のつまみを自動で探す(約 30 秒)。CLAP プラグインのプリセットから近いものを探し(初回は索引作りに数分)、主要なつまみを自動で詰める。UI からは音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」 |
 | **音色の道具箱** | list_presets / save_preset / load_preset / delete_preset、list_soundfonts / set_soundfont_instrument | 自作プリセット(全プロジェクト共通)、SoundFont の GM 楽器一式 |
 | **ミックス** | apply_commands | 音量・パン・ミュート・ソロ、EQ・コンプ・サイドチェイン、マスターのエフェクト、バス(リターン)とセンドで共有のリバーブ・ディレイ |
 | **時間変化** | apply_commands(set_automation_points / set_master_automation_points) | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターを曲線で動かす(フェード、ビルドアップ、フィルタスイープ) |
@@ -124,5 +124,6 @@ CLAP の列: ビブラート・ベンドは内蔵音源と同じ形の音程変�
 
 ## 5. 伸ばすと効果が大きいもの(優先順)
 
-1. **似た音を作る力の強化**: 内蔵の音源の種類を増やす(FM・ウェーブテーブル)、エフェクト込みの自動合わせ、
-   Surge のつまみの自動合わせ。これまでの調査と結果は [`AUDIO_ANALYSIS_RESEARCH.md`](AUDIO_ANALYSIS_RESEARCH.md)
+1. **似た音を作る力のさらなる強化**: ウェーブテーブル音源、歪み・コーラス込みの自動合わせ、自動選択時の探索時間の配分の改善。
+   これまでの調査と結果は [`AUDIO_ANALYSIS_RESEARCH.md`](AUDIO_ANALYSIS_RESEARCH.md)
+2. **プラグインの遅延補正(PDC)**: 遅延の大きい CLAP エフェクトを挿したトラックのずれをなくす

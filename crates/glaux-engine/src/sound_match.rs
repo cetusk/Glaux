@@ -648,6 +648,201 @@ pub fn fit_subtractive(
     fit_instrument(target, sr, pitch, hold, d, FitInstrument::Subtractive, opts)
 }
 
+// ---- CLAP 音源のつまみの自動合わせ ----
+
+/// 自動合わせで動かすプラグインのつまみ。
+#[derive(Clone, Debug)]
+pub struct PluginFitParam {
+    pub id: u32,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    /// 探索の出発点(今の値)
+    pub start: f64,
+    pub stepped: bool,
+}
+
+/// 動かすつまみを名前で選ぶ(`module/name` を小文字にして判定)。`wanted` が空なら一般的なシンセの主要なつまみ
+/// (フィルター 1 のカットオフ・レゾナンス・エンベロープ量、アンプエンベロープの ADSR、フィルターエンベロープの
+/// ディケイ、ユニゾンのデチューン)を 1 つずつ。`wanted` は部分一致の語の並び(例 "cutoff"、"amp eg attack")。
+pub fn choose_plugin_params(
+    params: &[(glaux_clap::ParamInfo, f64)],
+    wanted: &[String],
+    limit: usize,
+) -> Vec<PluginFitParam> {
+    let full = |p: &glaux_clap::ParamInfo| format!("{}/{}", p.module, p.name).to_lowercase();
+    let excluded = ["shape", "lfo", "mute", "solo", "route", "link"];
+    let usable = |p: &glaux_clap::ParamInfo| {
+        let n = full(p);
+        !excluded.iter().any(|x| n.contains(x)) && p.max > p.min
+    };
+    // 語の並びの候補(先頭ほど優先)。どれか 1 つが当たれば採る
+    let default_groups: Vec<Vec<&str>> = vec![
+        vec!["filter 1 cutoff", "cutoff"],
+        vec!["filter 1 resonance", "resonance"],
+        vec![
+            "filter 1 feg mod amount",
+            "env amount",
+            "eg amount",
+            "env mod",
+        ],
+        vec!["amp eg attack", "amp attack", "attack"],
+        vec!["amp eg decay", "amp decay", "decay"],
+        vec!["amp eg sustain", "amp sustain", "sustain"],
+        vec!["amp eg release", "amp release", "release"],
+        vec!["filter eg decay", "filter decay"],
+        vec!["unison detune", "detune"],
+    ];
+    let groups: Vec<Vec<String>> = if wanted.is_empty() {
+        default_groups
+            .iter()
+            .map(|g| g.iter().map(|s| s.to_string()).collect())
+            .collect()
+    } else {
+        wanted.iter().map(|w| vec![w.to_lowercase()]).collect()
+    };
+    let mut out: Vec<PluginFitParam> = Vec::new();
+    for g in groups {
+        let found = g.iter().find_map(|word| {
+            params.iter().find(|(p, _)| {
+                usable(p) && full(p).contains(word.as_str()) && !out.iter().any(|o| o.id == p.id)
+            })
+        });
+        if let Some((p, v)) = found {
+            out.push(PluginFitParam {
+                id: p.id,
+                name: {
+                    let m = p.module.trim_matches('/');
+                    if m.is_empty() {
+                        p.name.clone()
+                    } else {
+                        format!("{m} / {}", p.name)
+                    }
+                },
+                min: p.min,
+                max: p.max,
+                start: v.clamp(p.min, p.max),
+                stepped: p.stepped,
+            });
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+/// CLAP 音源のつまみの自動合わせの結果。
+#[derive(Clone, Debug)]
+pub struct PluginFit {
+    /// つまみの ID と合わせた値(プラグインの単位)
+    pub values: Vec<(u32, f64)>,
+    pub distance: Distance,
+    pub initial_distance: Distance,
+    pub evaluations: usize,
+    pub seconds: f32,
+}
+
+/// 目標の音に、プラグインのつまみ `params` を合わせる(CMA-ES、プラグインは 1 つを持ち回って逐次評価)。
+/// `renderer` には合わせる元の状態(プリセット等)を読み込んでおくこと。
+#[allow(clippy::too_many_arguments)]
+pub fn fit_plugin(
+    renderer: &mut crate::plugins::PluginRenderer,
+    target: &[f32],
+    sr: f32,
+    pitch: u8,
+    hold: f32,
+    params: &[PluginFitParam],
+    max_seconds: f32,
+    seed: u64,
+) -> Result<PluginFit, String> {
+    use cmaes::{CMAESOptions, DVector};
+    let started = std::time::Instant::now();
+    let target = trim_onset(target, sr);
+    let len = target.len().max(1);
+    let f_max = (sr / 2.0 * 0.9).min(16_000.0);
+    let tf = features(target, sr, f_max);
+    let spec = crate::plugins::PresetRenderSpec {
+        pitch,
+        velocity: 0.8,
+        hold: hold as f64,
+        total: len as f64 / sr as f64,
+        sample_rate: sr as f64,
+    };
+    let to_values = |x: &[f64]| -> Vec<(u32, f64)> {
+        params
+            .iter()
+            .zip(x)
+            .map(|(p, v)| {
+                let mut val = p.min + v.clamp(0.0, 1.0) * (p.max - p.min);
+                if p.stepped {
+                    val = val.round();
+                }
+                (p.id, val)
+            })
+            .collect()
+    };
+    let mut evaluations = 0usize;
+    let mut eval = |x: &[f64]| -> Distance {
+        evaluations += 1;
+        match renderer.render(&to_values(x), spec) {
+            Ok(y) => distance(&tf, &features(trim_onset(&y, sr), sr, f_max)),
+            Err(_) => Distance {
+                total: 10.0,
+                spectral: 10.0,
+                envelope: 0.0,
+            },
+        }
+    };
+    let init: Vec<f64> = params
+        .iter()
+        .map(|p| ((p.start - p.min) / (p.max - p.min)).clamp(0.0, 1.0))
+        .collect();
+    let initial_distance = eval(&init);
+    if params.is_empty() {
+        return Ok(PluginFit {
+            values: vec![],
+            distance: initial_distance,
+            initial_distance,
+            evaluations,
+            seconds: started.elapsed().as_secs_f32(),
+        });
+    }
+    let penalty = |x: &[f64]| -> f64 {
+        x.iter()
+            .map(|v| (v - v.clamp(0.0, 1.0)).powi(2))
+            .sum::<f64>()
+            * 10.0
+    };
+    let mut best = (initial_distance.total as f64, init.clone());
+    {
+        let objective = |x: &DVector<f64>| -> f64 {
+            let d = eval(x.as_slice()).total as f64 + penalty(x.as_slice());
+            if d < best.0 {
+                best = (d, x.as_slice().to_vec());
+            }
+            d
+        };
+        let mut cma = CMAESOptions::new(init.clone(), 0.15)
+            .population_size(10)
+            .max_generations(200)
+            .max_time(std::time::Duration::from_secs_f32(max_seconds.max(1.0)))
+            .seed(seed)
+            .build(objective)
+            .map_err(|e| format!("{e:?}"))?;
+        cma.run();
+    }
+    let values = to_values(&best.1);
+    let distance = eval(&best.1);
+    Ok(PluginFit {
+        values,
+        distance,
+        initial_distance,
+        evaluations,
+        seconds: started.elapsed().as_secs_f32(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

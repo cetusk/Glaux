@@ -187,8 +187,9 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     words(CLAP というモデルで「聴いた」印象: 楽器らしさ・明るさ・質感・雰囲気の言葉)が返ります。\
     words は目安なので、数値(明るさ・包絡・倍音)と食い違うときは数値を優先してください。\
     「このサンプルに似た音を作って」と頼まれたら: まず analyze_sound で目標を把握し、\
-    (1) シンセらしい単音なら match_sound(内蔵 subtractive のつまみを自動で合わせる。20 秒ほど)、\
-    (2) 複雑な音・生楽器寄りなら、CLAP プラグインのトラックで find_similar_presets(近いプリセットを探す)→ load_plugin_preset、\
+    (1) シンセらしい単音なら match_sound(内蔵 subtractive / fm を自動で選んでつまみを合わせる。reverb: true でリバーブも。30 秒ほど)、\
+    (2) 複雑な音・生楽器寄りなら、CLAP プラグインのトラックで find_similar_presets(近いプリセットを探す)→ load_plugin_preset\
+    → refine_plugin_params(主要なつまみを自動で詰める)、\
     の順に試し、仕上げは compare_sounds(a = 目標、b = トラックの音)の differences を見てつまみ・エフェクトで詰めます。\
     distance が 0.35 未満なら「よく似ている」、0.7 以上は別物です。結果は数値で報告し、最後は人間の耳で確かめてもらってください。\
     ミックスバランス: analyze_audio の per_track: true で各トラックのラウドネスと帯域の一覧が取れます。\

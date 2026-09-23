@@ -2018,3 +2018,81 @@ async fn match_sound_picks_fm_for_a_bell_and_adds_reverb() {
     let (project, _) = fx.handle.get_project().await.unwrap();
     assert!(project.tracks[0].effects.is_empty());
 }
+
+/// CLAP 音源のつまみを目標の音に合わせる(`GLAUX_TEST_CLAP`)。
+#[tokio::test]
+async fn refine_plugin_params_fits_and_undoes() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP").map(std::path::PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+        return;
+    };
+    std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+    let plugin = glaux_engine::plugins::rescan()
+        .into_iter()
+        .find(|p| p.is_instrument())
+        .unwrap();
+    // 目標: 初期の音色のアンプのサスティンを 0 にしたプラック
+    let target = {
+        let mut r = glaux_engine::plugins::PluginRenderer::new(&plugin.id, 44_100.0).unwrap();
+        let params = r.params();
+        let sus = params
+            .iter()
+            .find(|(p, _)| p.name.to_lowercase().contains("amp eg sustain"))
+            .unwrap()
+            .0
+            .clone();
+        r.render(
+            &[(sus.id, sus.min)],
+            glaux_engine::plugins::PresetRenderSpec {
+                pitch: 60,
+                velocity: 0.8,
+                hold: 0.8,
+                total: 1.2,
+                sample_rate: 44_100.0,
+            },
+        )
+        .unwrap()
+    };
+    let fx = setup().await;
+    let wav = fx.dir.join("pluck.wav");
+    write_mono_wav(&wav, &target, 44_100);
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_ref001", "Synth")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "CLAP 音源", "commands": [{ "op": "set_device", "track": "trk_ref001",
+                    "device": { "type": "clap", "plugin_id": plugin.id } }] }),
+        )
+        .await,
+    );
+    let r = call(
+        &fx,
+        "refine_plugin_params",
+        json!({ "file": wav.to_string_lossy(), "track_id": "trk_ref001",
+                "params": ["amp eg sustain", "amp eg decay", "amp eg release"], "max_seconds": 8 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    eprintln!("{}", v["refine"]);
+    let rf = &v["refine"];
+    assert!(rf["distance"].as_f64().unwrap() < rf["initial_distance"].as_f64().unwrap() * 0.5);
+    let changed = rf["changed"].as_array().unwrap();
+    assert!(changed.iter().any(|c| c["name"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("sustain")));
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let dev = project.tracks[0].device.as_ref().unwrap();
+    assert!(dev.params.keys().any(|k| k.starts_with("clap:")));
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(!project.tracks[0]
+        .device
+        .as_ref()
+        .unwrap()
+        .params
+        .keys()
+        .any(|k| k.starts_with("clap:")));
+}

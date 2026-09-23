@@ -906,6 +906,14 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     set_device 1 回。トラックのエフェクトも通した `verified_distance` も返す)、`find_similar_presets`(計 34 ツール)。
     UI は音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」(Tauri `match_clip_sound`:
     直後に MIDI トラックを足し、同じ位置に目標の高さ・長さの 1 音。履歴 1 件)
+- **CLAP 音源のつまみの自動合わせ(2026-09-24)**: `plugins::PluginRenderer`(プラグイン 1 つを持ち回り、状態の読み込み →
+  つまみを Param イベントで送る → 無音で反映・余韻消去 → 1 音鳴らす。プリセット検索の `render_presets` もこれに乗せ替え)。
+  `sound_match::choose_plugin_params`(`module/name` の小文字で判定。既定はフィルター 1 のカットオフ・レゾナンス・FEG 量、
+  アンプ EG の ADSR、フィルター EG のディケイ、ユニゾンのデチューン。shape / lfo / mute / solo / route / link は除く)と
+  `fit_plugin`(CMA-ES を逐次評価。プラグインは Send でないので並列にしない。個体 10、既定 20 秒)。
+  MCP `refine_plugin_params`(今の状態 + 上書き値から出発し、変わったつまみを set_param のまとめ 1 回で書く。計 36 ツール)。
+  Surge XT は同じつまみで鳴らしても毎回少し違う(距離 0.008〜0.04 程度)ので、微妙な差は揺らぎに埋もれる。
+  テスト: 初期音色を「サスティン 0 のプラック」にした目標から、サスティンを 1.0 → 0.0 と当て、距離 0.88 → 0.10
 - **自動合わせの強化(2026-09-24)**: `sound_match::fit_instrument(…, FitInstrument, FitOptions{reverb})`。
   音源ごとの定義(`FitInstrument`: 次元・0〜1 → つまみの写像・記述子からの初期値・候補)を持つ。subtractive は波形 4 種、
   fm は周波数比の出発点(1 / 2 / 3.5 / 1.41。非調和・音程なしの音は非整数比から)を候補にし、初期値での距離で上位 2 つを探す。

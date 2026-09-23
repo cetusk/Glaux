@@ -908,46 +908,107 @@ pub struct PresetRenderSpec {
     pub sample_rate: f64,
 }
 
-/// 同じプラグイン 1 つでプリセットを順に読み込み、1 音ずつ鳴らす(モノラル)。
-/// 呼んだスレッドでプラグインを作る(再生中のプラグインには触らない。別スレッドで呼ぶこと)。
-/// `each(何番目か, 結果)` が false を返したらそこでやめる。
-pub fn render_presets(
-    plugin_id: &str,
-    presets: &[glaux_clap::PresetEntry],
-    spec: PresetRenderSpec,
-    mut each: impl FnMut(usize, Result<Vec<f32>, String>) -> bool,
-) -> Result<(), String> {
-    use glaux_clap::NoteMsg;
-    const BLOCK: usize = 512;
-    let info =
-        find(plugin_id).ok_or_else(|| format!("CLAP プラグインが見つかりません: {plugin_id}"))?;
-    glaux_clap::mark_main_thread();
-    glaux_clap::mark_audio_thread();
-    // 起動中のプラグインに直接プリセットを読ませると音が出なくなるプラグインがある(Surge XT)ため、
-    // アプリと同じく、止まっている読み込み用のインスタンスでプリセットを読み、状態を移す
-    let mut loader = ClapPlugin::new(&info.path, &info.id).map_err(|e| e.to_string())?;
-    let mut plugin = ClapPlugin::new(&info.path, &info.id).map_err(|e| e.to_string())?;
-    let mut proc = plugin
-        .activate(spec.sample_rate)
-        .map_err(|e| e.to_string())?;
-    let sr = spec.sample_rate;
-    // 無音を流す(読み込んだプリセットの反映・前の音の余韻の消去)。出力が十分小さくなるまで、最大 `max` 秒
-    let flush = |proc: &mut ClapProcessor, max: f64| {
-        let blocks = ((max * sr) as usize).div_ceil(BLOCK);
+/// プラグイン 1 つを持ち回り、状態やつまみを変えながら 1 音ずつ鳴らす(プリセット検索・つまみの自動合わせ用)。
+/// 呼んだスレッドでプラグインを作るので、そのスレッドから動かさないこと(`Send` ではない)。
+/// 再生中のプラグインには触らない。
+pub struct PluginRenderer {
+    /// プリセットの読み込み用(止まったまま使う。起動中のインスタンスに直接読ませると鳴らなくなる
+    /// プラグインがある: Surge XT)
+    loader: ClapPlugin,
+    plugin: ClapPlugin,
+    proc: Option<ClapProcessor>,
+    sample_rate: f64,
+}
+
+const RENDER_BLOCK: usize = 512;
+
+impl PluginRenderer {
+    pub fn new(plugin_id: &str, sample_rate: f64) -> Result<Self, String> {
+        let info = find(plugin_id)
+            .ok_or_else(|| format!("CLAP プラグインが見つかりません: {plugin_id}"))?;
+        glaux_clap::mark_main_thread();
+        glaux_clap::mark_audio_thread();
+        let loader = ClapPlugin::new(&info.path, &info.id).map_err(|e| e.to_string())?;
+        let mut plugin = ClapPlugin::new(&info.path, &info.id).map_err(|e| e.to_string())?;
+        let proc = plugin.activate(sample_rate).map_err(|e| e.to_string())?;
+        Ok(PluginRenderer {
+            loader,
+            plugin,
+            proc: Some(proc),
+            sample_rate,
+        })
+    }
+
+    /// 状態(`save_state` のバイト列)を読み込む。
+    pub fn load_state(&mut self, state: &[u8]) -> Result<(), String> {
+        self.plugin.load_state(state).map_err(|e| e.to_string())?;
+        self.plugin.poll();
+        Ok(())
+    }
+
+    /// プリセットを読み込む(読み込み用のインスタンスで読んで状態を移す)。読み込んだ状態を返す。
+    pub fn load_preset(&mut self, preset: &glaux_clap::PresetEntry) -> Result<Vec<u8>, String> {
+        self.loader
+            .load_preset(&preset.location, preset.load_key.as_deref())
+            .map_err(|e| e.to_string())?;
+        let state = self.loader.save_state().map_err(|e| e.to_string())?;
+        self.load_state(&state)?;
+        Ok(state)
+    }
+
+    /// つまみの情報と今の値(公開されているもの)。
+    pub fn params(&mut self) -> Vec<(ParamInfo, f64)> {
+        let infos: Vec<ParamInfo> = self
+            .plugin
+            .param_infos()
+            .into_iter()
+            .filter(is_public_param)
+            .collect();
+        let ids: Vec<u32> = infos.iter().map(|p| p.id).collect();
+        let values: HashMap<u32, f64> = self
+            .plugin
+            .param_values(&ids)
+            .into_iter()
+            .map(|(id, v, _)| (id, v))
+            .collect();
+        infos
+            .into_iter()
+            .map(|p| {
+                let v = values.get(&p.id).copied().unwrap_or(p.default);
+                (p, v)
+            })
+            .collect()
+    }
+
+    /// つまみ `params`(プラグインの単位)を送ってから 1 音鳴らす(モノラル)。前の音の余韻は消してから鳴らす。
+    pub fn render(
+        &mut self,
+        params: &[(u32, f64)],
+        spec: PresetRenderSpec,
+    ) -> Result<Vec<f32>, String> {
+        use glaux_clap::NoteMsg;
+        let proc = self.proc.as_mut().ok_or("プラグインが止まっています")?;
+        let sr = self.sample_rate;
+        // 無音を流す(状態・つまみの反映と、前の音の余韻の消去)。最初のブロックでつまみを送る
+        let blocks = ((3.0 * sr) as usize).div_ceil(RENDER_BLOCK);
         let mut quiet = 0;
         for i in 0..blocks {
-            let msgs = if i == 0 {
-                vec![NoteMsg::AllOff { time: 0 }]
-            } else {
-                Vec::new()
-            };
-            proc.process(BLOCK, &msgs);
+            let mut msgs = Vec::new();
+            if i == 0 {
+                msgs.push(NoteMsg::AllOff { time: 0 });
+                msgs.extend(params.iter().map(|&(id, value)| NoteMsg::Param {
+                    time: 0,
+                    id,
+                    value,
+                }));
+            }
+            proc.process(RENDER_BLOCK, &msgs);
             let peak = proc
                 .output()
                 .map(|(l, r)| {
-                    l[..BLOCK]
+                    l[..RENDER_BLOCK]
                         .iter()
-                        .chain(&r[..BLOCK])
+                        .chain(&r[..RENDER_BLOCK])
                         .fold(0.0f32, |m, v| m.max(v.abs()))
                 })
                 .unwrap_or(0.0);
@@ -957,56 +1018,66 @@ pub fn render_presets(
                 break;
             }
         }
-    };
-    let hold = (spec.hold * sr) as usize;
-    let total = ((spec.total * sr) as usize).max(hold + BLOCK);
+        let hold = (spec.hold * sr) as usize;
+        let total = ((spec.total * sr) as usize).max(hold + RENDER_BLOCK);
+        let mut out = Vec::with_capacity(total);
+        let mut pos = 0;
+        while pos < total {
+            let n = RENDER_BLOCK.min(total - pos);
+            let mut msgs = Vec::new();
+            if pos == 0 {
+                msgs.push(NoteMsg::On {
+                    time: 0,
+                    key: spec.pitch,
+                    velocity: spec.velocity,
+                    note_id: None,
+                });
+            }
+            if hold >= pos && hold < pos + n {
+                msgs.push(NoteMsg::Off {
+                    time: (hold - pos) as u32,
+                    key: spec.pitch,
+                });
+            }
+            proc.process(n, &msgs);
+            match proc.output() {
+                Some((l, r)) => out.extend(l[..n].iter().zip(&r[..n]).map(|(a, b)| (a + b) * 0.5)),
+                None => out.extend(std::iter::repeat_n(0.0, n)),
+            }
+            pos += n;
+        }
+        if proc.has_failed() {
+            return Err("プラグインの処理に失敗しました".into());
+        }
+        Ok(out)
+    }
+}
+
+impl Drop for PluginRenderer {
+    fn drop(&mut self) {
+        if let Some(mut proc) = self.proc.take() {
+            proc.stop();
+            self.plugin.deactivate(proc);
+        }
+    }
+}
+
+/// 同じプラグイン 1 つでプリセットを順に読み込み、1 音ずつ鳴らす(モノラル)。
+/// 呼んだスレッドでプラグインを作る(再生中のプラグインには触らない。別スレッドで呼ぶこと)。
+/// `each(何番目か, 結果)` が false を返したらそこでやめる。
+pub fn render_presets(
+    plugin_id: &str,
+    presets: &[glaux_clap::PresetEntry],
+    spec: PresetRenderSpec,
+    mut each: impl FnMut(usize, Result<Vec<f32>, String>) -> bool,
+) -> Result<(), String> {
+    let mut r = PluginRenderer::new(plugin_id, spec.sample_rate)?;
     for (i, preset) in presets.iter().enumerate() {
-        let result = (|| -> Result<Vec<f32>, String> {
-            loader
-                .load_preset(&preset.location, preset.load_key.as_deref())
-                .map_err(|e| e.to_string())?;
-            let state = loader.save_state().map_err(|e| e.to_string())?;
-            plugin.load_state(&state).map_err(|e| e.to_string())?;
-            plugin.poll();
-            flush(&mut proc, 3.0);
-            let mut out = Vec::with_capacity(total);
-            let mut pos = 0;
-            while pos < total {
-                let n = BLOCK.min(total - pos);
-                let mut msgs = Vec::new();
-                if pos == 0 {
-                    msgs.push(NoteMsg::On {
-                        time: 0,
-                        key: spec.pitch,
-                        velocity: spec.velocity,
-                        note_id: None,
-                    });
-                }
-                if hold >= pos && hold < pos + n {
-                    msgs.push(NoteMsg::Off {
-                        time: (hold - pos) as u32,
-                        key: spec.pitch,
-                    });
-                }
-                proc.process(n, &msgs);
-                if let Some((l, r)) = proc.output() {
-                    out.extend(l[..n].iter().zip(&r[..n]).map(|(a, b)| (a + b) * 0.5));
-                } else {
-                    out.extend(std::iter::repeat_n(0.0, n));
-                }
-                pos += n;
-            }
-            if proc.has_failed() {
-                return Err("プラグインの処理に失敗しました".into());
-            }
-            Ok(out)
-        })();
+        let result = r.load_preset(preset).and_then(|_| r.render(&[], spec));
         if !each(i, result) {
             break;
         }
     }
-    proc.stop();
-    plugin.deactivate(proc);
     Ok(())
 }
 
@@ -1393,35 +1464,42 @@ mod tests {
             }
             crate::export::render_project(&project, 48_000.0, &SampleBank::default()).unwrap()
         };
-        let sec = |x: &[f32], a: f64, b: f64| {
-            x[(a * 96_000.0) as usize..(b * 96_000.0) as usize].to_vec()
+        // 音程は YIN で測る(零交差は発振器の位相で短い区間がぶれる)
+        let track = |x: &[f32]| {
+            let mono: Vec<f32> = x.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
+            crate::timbre::pitch_track(&mono, 48_000.0)
+        };
+        let median_f0 = |tr: &[crate::timbre::PitchFrame], a: f32, b: f32| {
+            let mut v: Vec<f32> = tr
+                .iter()
+                .filter(|p| p.time >= a && p.time < b && p.f0 > 0.0)
+                .map(|p| p.f0)
+                .collect();
+            v.sort_by(f32::total_cmp);
+            v.get(v.len() / 2).copied().unwrap_or(0.0)
         };
         // ベンド: 出だし(全音下から)は後半より低い
-        let bend = render(glaux_core::Articulation::Bend);
-        let (early, late) = (
-            freq_of(&sec(&bend, 0.0, 0.08), 48_000.0),
-            freq_of(&sec(&bend, 1.0, 1.5), 48_000.0),
-        );
+        let bend = track(&render(glaux_core::Articulation::Bend));
+        let (early, late) = (median_f0(&bend, 0.04, 0.1), median_f0(&bend, 1.0, 1.5));
         eprintln!("ベンド: 出だし {early} Hz / 後半 {late} Hz");
         assert!(early < late * 0.97, "全音下から上がる: {early} → {late}");
-        // ビブラート: 後半の 50ms ごとの音程が揺れる(通常の音より大きくばらつく)
-        let spread = |x: &[f32]| {
-            let fs: Vec<f32> = (0..16)
-                .map(|k| {
-                    let a = 1.0 + k as f64 * 0.05;
-                    freq_of(&sec(x, a, a + 0.05), 48_000.0)
-                })
+        // ビブラート: 後半の音程の揺れ幅(セント)が通常の音より大きい
+        let spread = |tr: &[crate::timbre::PitchFrame]| {
+            let fs: Vec<f32> = tr
+                .iter()
+                .filter(|p| p.time >= 1.0 && p.time < 1.8 && p.f0 > 0.0)
+                .map(|p| p.f0)
                 .collect();
             let max = fs.iter().cloned().fold(0.0f32, f32::max);
             let min = fs.iter().cloned().fold(f32::MAX, f32::min);
             1200.0 * (max / min).log2()
         };
         let (vib, normal) = (
-            spread(&render(glaux_core::Articulation::Vibrato)),
-            spread(&render(glaux_core::Articulation::Normal)),
+            spread(&track(&render(glaux_core::Articulation::Vibrato))),
+            spread(&track(&render(glaux_core::Articulation::Normal))),
         );
         eprintln!("音程の揺れ幅: ビブラート {vib:.0} セント / 通常 {normal:.0} セント");
-        assert!(vib > normal + 20.0, "ビブラートで揺れる: {vib} vs {normal}");
+        assert!(vib > normal + 30.0, "ビブラートで揺れる: {vib} vs {normal}");
     }
 
     #[test]
@@ -1710,5 +1788,67 @@ mod tests {
             48_000,
             "バイパス中のエフェクトも処理される"
         );
+    }
+
+    /// プリセットのつまみを変えた音を目標にし、元のつまみから合わせると近づく(`GLAUX_TEST_CLAP`)。
+    #[test]
+    fn plugin_params_fit_moves_toward_the_target() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        let sr = 44_100.0f32;
+        let mut r = PluginRenderer::new(&id, sr as f64).unwrap();
+        let params = r.params();
+        let chosen = crate::sound_match::choose_plugin_params(&params, &[], 9);
+        eprintln!(
+            "選んだつまみ: {:?}",
+            chosen.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+        assert!(chosen
+            .iter()
+            .any(|p| p.name.to_lowercase().contains("cutoff")));
+        let find = |w: &str| {
+            chosen
+                .iter()
+                .find(|p| p.name.to_lowercase().contains(w))
+                .unwrap()
+                .clone()
+        };
+        let (sustain, decay) = (find("amp eg sustain"), find("amp eg decay"));
+        // 目標: 伸びる音をプラック(サスティン 0・短いディケイ)にした音
+        let spec = PresetRenderSpec {
+            pitch: 57,
+            velocity: 0.8,
+            hold: 0.8,
+            total: 1.2,
+            sample_rate: sr as f64,
+        };
+        let target_vals = [
+            (sustain.id, sustain.min),
+            (decay.id, decay.min + (decay.max - decay.min) * 0.3),
+        ];
+        let target = r.render(&target_vals, spec).unwrap();
+        let start: Vec<(u32, f64)> = chosen.iter().map(|p| (p.id, p.start)).collect();
+        let a = r.render(&start, spec).unwrap();
+        let b = r.render(&start, spec).unwrap();
+        eprintln!(
+            "同じ値で 2 回: {:.3} / 目標との差: {:.3}",
+            crate::sound_match::compare(&a, sr, &b, sr).total,
+            crate::sound_match::compare(&a, sr, &target, sr).total
+        );
+        let fit =
+            crate::sound_match::fit_plugin(&mut r, &target, sr, 57, 0.8, &chosen, 12.0, 1).unwrap();
+        let got = fit.values.iter().find(|(i, _)| *i == sustain.id).unwrap().1;
+        eprintln!(
+            "{:.3} → {:.3}、{} 回、サスティン {:.3} → {got:.3}(目標 {:.3})",
+            fit.initial_distance.total,
+            fit.distance.total,
+            fit.evaluations,
+            sustain.start,
+            sustain.min
+        );
+        assert!(fit.distance.total < fit.initial_distance.total * 0.5);
+        assert!((got - sustain.min).abs() < (sustain.start - sustain.min).abs() * 0.5);
     }
 }

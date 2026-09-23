@@ -363,3 +363,116 @@ pub fn find_similar(
     out.truncate(limit);
     Ok(out)
 }
+
+/// CLAP 音源のつまみを目標の音に合わせた結果。
+pub struct Refined {
+    /// `set_param`(device/clap:<id>)のまとめ
+    pub commands: Vec<glaux_core::Command>,
+    pub json: serde_json::Value,
+}
+
+/// トラックの CLAP 音源(今の状態 + 上書き値)から出発して、主要なつまみ(`wanted` が空なら自動で選ぶ)を
+/// 目標の音に合わせる。
+pub fn refine_params(
+    project: &glaux_core::Project,
+    track_id: &glaux_core::TrackId,
+    target: &crate::sound::LoadedSound,
+    wanted: &[String],
+    max_seconds: f32,
+) -> Result<Refined, String> {
+    use glaux_engine::plugins::{decode_state, param_key, parse_param_key, PluginRenderer};
+    let (track, device, plugin_id, state) = crate::clap_presets::clap_track(project, track_id)?;
+    let d = crate::sound::describe(target);
+    let pitch = crate::sound::target_pitch(target, &d);
+    let hold = crate::sound::estimate_hold(&d);
+    let mut r = PluginRenderer::new(plugin_id, target.sample_rate as f64)?;
+    if let Some(bytes) = state.and_then(decode_state) {
+        r.load_state(&bytes)?;
+    }
+    // プロジェクトの上書き値を今の値として反映
+    let overrides: std::collections::HashMap<u32, f64> = device
+        .params
+        .iter()
+        .filter_map(|(k, v)| Some((parse_param_key(k)?, v.as_f64()?)))
+        .collect();
+    let params: Vec<(glaux_clap::ParamInfo, f64)> = r
+        .params()
+        .into_iter()
+        .map(|(p, v)| {
+            let cur = overrides.get(&p.id).copied().unwrap_or(v);
+            (p, cur)
+        })
+        .collect();
+    let chosen = sound_match::choose_plugin_params(&params, wanted, 12);
+    if chosen.is_empty() {
+        return Err("合わせるつまみが見つかりません(params で名前を指定してください)".to_owned());
+    }
+    // 上書き値を送っておく(探索の出発点を今の音にする)
+    let base: Vec<(u32, f64)> = overrides.iter().map(|(k, v)| (*k, *v)).collect();
+    r.render(
+        &base,
+        glaux_engine::plugins::PresetRenderSpec {
+            pitch,
+            velocity: 0.8,
+            hold: 0.1,
+            total: 0.2,
+            sample_rate: target.sample_rate as f64,
+        },
+    )?;
+    let fit = sound_match::fit_plugin(
+        &mut r,
+        &target.frames,
+        target.sample_rate,
+        pitch,
+        hold,
+        &chosen,
+        max_seconds.clamp(2.0, 120.0),
+        1,
+    )?;
+    let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+    let mut commands = Vec::new();
+    let mut changed = Vec::new();
+    for p in &chosen {
+        let Some((_, v)) = fit.values.iter().find(|(id, _)| *id == p.id) else {
+            continue;
+        };
+        if (v - p.start).abs() <= (p.max - p.min) * 0.005 {
+            continue;
+        }
+        commands.push(glaux_core::Command::SetParam {
+            track: track_id.clone(),
+            path: glaux_core::ParamPath::device(param_key(p.id)),
+            value: glaux_core::ParamValue::Float(*v),
+        });
+        changed.push(serde_json::json!({
+            "name": p.name,
+            "path": format!("device/{}", param_key(p.id)),
+            "before": r3(p.start),
+            "after": r3(*v),
+        }));
+    }
+    let verdict = |t: f32| {
+        if t < 0.15 {
+            "ほぼ同じ音"
+        } else if t < 0.35 {
+            "よく似ている"
+        } else if t < 0.7 {
+            "似ている部分がある"
+        } else {
+            "かなり違う"
+        }
+    };
+    let json = serde_json::json!({
+        "track": track.name,
+        "target": target.label,
+        "pitch": pitch,
+        "params_tried": chosen.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+        "changed": changed,
+        "initial_distance": r3(fit.initial_distance.total as f64),
+        "distance": r3(fit.distance.total as f64),
+        "verdict": verdict(fit.distance.total),
+        "evaluations": fit.evaluations,
+        "seconds": (fit.seconds as f64 * 10.0).round() / 10.0,
+    });
+    Ok(Refined { commands, json })
+}
