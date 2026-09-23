@@ -2471,11 +2471,13 @@ impl ServerHandler for GlauxServer {
                  バランス破綻がないか。問題があればその場で直してから報告し、\
                  報告には確認結果(キー・LUFS 等)を一言添える。\
                  ミックス調整は 編集 → analyze_audio → 微調整 のループで行う。\
-                 エフェクト(eq / compressor / reverb / distortion / sidechain)は add_effect で追加し、\
+                 エフェクト(eq / compressor / reverb / distortion / amp / sidechain / delay / chorus / tape)は add_effect で追加し、\
                  set_param(fx/<id>/<名前>)で調整する。マスターにも掛けられる。\
                  インストール済みの CLAP エフェクト(list_plugins の effect: true)も同じように挿せる(effect に type: \"clap\", plugin_id)。\
                  EDM のポンピングは sidechain(source にキックのトラック ID)、\
                  supersaw は subtractive の unison + detune、歪みは distortion。\
+                 やまびこは delay(time_ms をテンポに合わせる)、厚みと広がりは chorus、\
+                 Lo-fi・ヴィンテージ感は tape(wow / flutter / hiss / bits)。\
                  メタルのブリッジミュートはノートの articulation: \"palm_mute\"(+ distortion)。\
                  音色プリセット: 良い音ができたら save_preset で保存し(全プロジェクト共通)、\
                  音作りの依頼ではまず list_presets で使える音がないか確認 → load_preset で適用 → 微調整。\

@@ -1,4 +1,5 @@
-//! 内蔵エフェクト: `eq` / `compressor` / `reverb`。
+//! 内蔵エフェクト: `eq` / `compressor` / `reverb` / `distortion` / `amp` / `sidechain` /
+//! `delay` / `chorus` / `tape`。
 //!
 //! - パラメータはデータ構築時(UI スレッド)に**係数まで焼き込む**([`bake_effect`])。
 //!   オーディオスレッドは焼き込み済みの [`EffectParams`] を読むだけ
@@ -307,6 +308,84 @@ pub struct SidechainParams {
     pub release_samples: f32,
 }
 
+// ============================ Delay ====================================
+
+/// ディレイ系(delay / chorus / tape)が共有するバッファ長(1ch 分、2 のべき乗)。
+/// 48kHz で約 1.36 秒。delay の最大 1000ms はここに収まる(高いサンプルレートでは頭打ち)。
+const DLY_LEN: usize = 1 << 16;
+const DLY_MASK: usize = DLY_LEN - 1;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DelayParams {
+    /// 遅延(サンプル)
+    pub time: f32,
+    /// フィードバック 0..=0.95
+    pub feedback: f32,
+    /// ウェット比率 0..=1
+    pub mix: f32,
+    /// やまびこ用 1 次 LP の係数(exp(-2πfc/sr)。1 に近いほど暗い)
+    pub tone_coef: f32,
+    /// 左右交互に跳ねる
+    pub ping_pong: bool,
+}
+
+// ============================ Chorus ===================================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChorusParams {
+    /// LFO の 1 サンプルあたりの位相増分(周期 = 1)
+    pub rate_inc: f32,
+    /// 揺らす幅(サンプル)
+    pub depth: f32,
+    /// 中心の遅延(サンプル)
+    pub base: f32,
+    pub mix: f32,
+}
+
+// ============================= Tape ====================================
+
+/// テープ/ローファイ。ワウ(ゆっくりした回転むら)・フラッター(速い回転むら)で音程を
+/// 揺らし、テープの飽和・高域の減衰・ヒスノイズ・ビット落としで古びた質感を作る。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TapeParams {
+    /// 中心の遅延(サンプル。揺れの幅より大きく取る)
+    pub base: f32,
+    pub wow_depth: f32,
+    pub wow_inc: f32,
+    pub flutter_depth: f32,
+    pub flutter_inc: f32,
+    /// 飽和の入力ゲイン(1 = ほぼ素通し)
+    pub drive: f32,
+    pub tone_coef: f32,
+    /// ヒスノイズの振幅
+    pub hiss: f32,
+    /// ビット落としの量子化段数(0 = 落とさない)
+    pub quant: f32,
+}
+
+const WOW_HZ: f32 = 0.55;
+const FLUTTER_HZ: f32 = 6.5;
+/// wow = 1 のときの揺れ幅(ms)。0.55Hz で約 ±0.8%(±14 セント)の音程の揺れ
+const WOW_MAX_MS: f32 = 2.4;
+/// flutter = 1 のときの揺れ幅(ms)。6.5Hz で約 ±0.5%
+const FLUTTER_MAX_MS: f32 = 0.12;
+
+impl TapeParams {
+    fn base_for(sample_rate: f32) -> f32 {
+        (WOW_MAX_MS + FLUTTER_MAX_MS + 1.0) * 0.001 * sample_rate
+    }
+}
+
+/// 小数遅延の読み出し(線形補間)。`idx` は次に書く位置。
+fn read_frac(buf: &[f32], idx: usize, delay: f32) -> f32 {
+    let delay = delay.clamp(1.0, (DLY_LEN - 2) as f32);
+    let d0 = delay.floor();
+    let frac = delay - d0;
+    let i0 = idx.wrapping_sub(d0 as usize) & DLY_MASK;
+    let i1 = i0.wrapping_sub(1) & DLY_MASK;
+    buf[i0] * (1.0 - frac) + buf[i1] * frac
+}
+
 // ======================= 統合(定義と状態) =============================
 
 /// 焼き込み済みのエフェクト定義(オーディオスレッドは読むだけ)。
@@ -318,6 +397,9 @@ pub enum EffectParams {
     Distortion(DistortionParams),
     Amp(AmpParams),
     Sidechain(SidechainParams),
+    Delay(DelayParams),
+    Chorus(ChorusParams),
+    Tape(TapeParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -331,6 +413,9 @@ enum EffectKind {
     Distortion,
     Amp,
     Sidechain,
+    Delay,
+    Chorus,
+    Tape,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -351,7 +436,17 @@ pub struct EffectState {
     amp: [AmpChState; 2],
     // Reverb
     reverb: [ReverbChannel; 2],
+    // Delay / Chorus / Tape の共有ディレイバッファ(2ch)
+    dly: [Vec<f32>; 2],
+    dly_idx: usize,
+    dly_lp: [f32; 2],
+    // Chorus / Tape の LFO 位相(0..1)
+    lfo: [f32; 2],
+    // Tape のヒスノイズ用乱数(xorshift32)
+    rng: u32,
 }
+
+const RNG_SEED: u32 = 0x9E37_79B9;
 
 impl Default for EffectState {
     fn default() -> Self {
@@ -365,6 +460,11 @@ impl Default for EffectState {
             tone_lp: [0.0; 2],
             amp: Default::default(),
             reverb: [ReverbChannel::new(0), ReverbChannel::new(STEREO_SPREAD)],
+            dly: [vec![0.0; DLY_LEN], vec![0.0; DLY_LEN]],
+            dly_idx: 0,
+            dly_lp: [0.0; 2],
+            lfo: [0.0; 2],
+            rng: RNG_SEED,
         }
     }
 }
@@ -378,6 +478,9 @@ impl EffectState {
             EffectParams::Distortion(_) => EffectKind::Distortion,
             EffectParams::Amp(_) => EffectKind::Amp,
             EffectParams::Sidechain(_) => EffectKind::Sidechain,
+            EffectParams::Delay(_) => EffectKind::Delay,
+            EffectParams::Chorus(_) => EffectKind::Chorus,
+            EffectParams::Tape(_) => EffectKind::Tape,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -396,6 +499,17 @@ impl EffectState {
             self.amp = Default::default();
             self.reverb[0].reset();
             self.reverb[1].reset();
+            if matches!(
+                kind,
+                EffectKind::Delay | EffectKind::Chorus | EffectKind::Tape
+            ) {
+                self.dly[0].fill(0.0);
+                self.dly[1].fill(0.0);
+            }
+            self.dly_idx = 0;
+            self.dly_lp = [0.0; 2];
+            self.lfo = [0.0; 2];
+            self.rng = RNG_SEED;
         }
     }
 
@@ -520,6 +634,78 @@ impl EffectState {
                     1.0
                 };
                 (l * gain, r * gain)
+            }
+            EffectParams::Delay(d) => {
+                let idx = self.dly_idx;
+                // やまびこは毎回トーンの LP を通る(回を重ねるほど暗くなる)
+                for ch in 0..2 {
+                    let y = read_frac(&self.dly[ch], idx, d.time);
+                    self.dly_lp[ch] += (y - self.dly_lp[ch]) * (1.0 - d.tone_coef);
+                }
+                let [el, er] = self.dly_lp;
+                let (wl, wr) = if d.ping_pong {
+                    // 入力は左へ、左のやまびこは右へ、右は左へ
+                    ((l + r) * 0.5 + er * d.feedback, el * d.feedback)
+                } else {
+                    (l + el * d.feedback, r + er * d.feedback)
+                };
+                self.dly[0][idx] = wl;
+                self.dly[1][idx] = wr;
+                self.dly_idx = (idx + 1) & DLY_MASK;
+                (
+                    l * (1.0 - d.mix) + el * d.mix,
+                    r * (1.0 - d.mix) + er * d.mix,
+                )
+            }
+            EffectParams::Chorus(c) => {
+                let idx = self.dly_idx;
+                self.dly[0][idx] = l;
+                self.dly[1][idx] = r;
+                let tau = std::f32::consts::TAU;
+                let ph = self.lfo[0];
+                // 左右で LFO を 90° ずらして広がりを出す
+                let ml = (tau * ph).sin();
+                let mr = (tau * (ph + 0.25)).sin();
+                let yl = read_frac(&self.dly[0], idx, c.base + c.depth * ml);
+                let yr = read_frac(&self.dly[1], idx, c.base + c.depth * mr);
+                self.lfo[0] = (ph + c.rate_inc).fract();
+                self.dly_idx = (idx + 1) & DLY_MASK;
+                (
+                    l * (1.0 - c.mix) + yl * c.mix,
+                    r * (1.0 - c.mix) + yr * c.mix,
+                )
+            }
+            EffectParams::Tape(t) => {
+                let idx = self.dly_idx;
+                self.dly[0][idx] = l;
+                self.dly[1][idx] = r;
+                let tau = std::f32::consts::TAU;
+                // 回転むらは左右共通(テープ全体が揺れる)
+                let delay = t.base
+                    + t.wow_depth * (tau * self.lfo[0]).sin()
+                    + t.flutter_depth * (tau * self.lfo[1]).sin();
+                self.lfo[0] = (self.lfo[0] + t.wow_inc).fract();
+                self.lfo[1] = (self.lfo[1] + t.flutter_inc).fract();
+                self.dly_idx = (idx + 1) & DLY_MASK;
+                let mut out = [0.0f32; 2];
+                for (ch, o) in out.iter_mut().enumerate() {
+                    let x = read_frac(&self.dly[ch], idx, delay);
+                    // 飽和(小さい音はほぼ素通し、大きい音ほど丸く潰れる)
+                    let mut y = (x * t.drive).tanh() / t.drive;
+                    self.tone_lp[ch] += (y - self.tone_lp[ch]) * (1.0 - t.tone_coef);
+                    y = self.tone_lp[ch];
+                    if t.hiss > 0.0 {
+                        self.rng ^= self.rng << 13;
+                        self.rng ^= self.rng >> 17;
+                        self.rng ^= self.rng << 5;
+                        y += (self.rng as f32 / u32::MAX as f32 - 0.5) * 2.0 * t.hiss;
+                    }
+                    if t.quant > 0.0 {
+                        y = (y * t.quant).round() / t.quant;
+                    }
+                    *o = y;
+                }
+                (out[0], out[1])
             }
         }
     }
@@ -903,6 +1089,197 @@ pub static SIDECHAIN_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static DELAY_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "time_ms",
+        display_name: "タイム",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 10.0,
+            max: 1000.0,
+            default: 375.0,
+            skew: Some(0.5),
+        },
+        description: "やまびこの間隔。テンポに合わせるのが基本: 4 分音符 = 60000/BPM ms、\
+            付点 8 分 = 45000/BPM ms(例 120BPM なら 500 / 375)。30〜80ms はダブリング・スラップバック。",
+    },
+    ParamSpec {
+        name: "feedback",
+        display_name: "フィードバック",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 0.95,
+            default: 0.35,
+            skew: None,
+        },
+        description: "やまびこの繰り返しの多さ。0.2 で 2〜3 回、0.5 で長く続き、0.8 以上はほぼ鳴りやまない。",
+    },
+    ParamSpec {
+        name: "mix",
+        display_name: "ミックス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.3,
+            skew: None,
+        },
+        description: "やまびこの混ぜ具合。0.15〜0.3 でさりげなく、0.5 前後で主張する。",
+    },
+    ParamSpec {
+        name: "tone",
+        display_name: "トーン",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 1000.0,
+            max: 16000.0,
+            default: 6000.0,
+            skew: Some(0.4),
+        },
+        description: "やまびこの明るさ(ローパス)。下げると回を重ねるほど暗くなるアナログ/テープ風、\
+            上げるとくっきりしたデジタルディレイ。",
+    },
+    ParamSpec {
+        name: "ping_pong",
+        display_name: "ピンポン",
+        unit: None,
+        range: ParamRange::Bool { default: false },
+        description: "やまびこを左右交互に跳ねさせる。広がりが大きく出る。",
+    },
+];
+
+pub static CHORUS_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "rate_hz",
+        display_name: "レート",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 0.05,
+            max: 5.0,
+            default: 0.8,
+            skew: Some(0.5),
+        },
+        description: "揺れの速さ。0.3〜1 でゆったり広がり、3 以上はビブラート風に揺れる。",
+    },
+    ParamSpec {
+        name: "depth_ms",
+        display_name: "デプス",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 8.0,
+            default: 2.5,
+            skew: None,
+        },
+        description: "揺れの深さ。1〜3 で自然な厚み、5 以上で揺れがはっきり分かる(80 年代風)。",
+    },
+    ParamSpec {
+        name: "delay_ms",
+        display_name: "ディレイ",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 3.0,
+            max: 30.0,
+            default: 12.0,
+            skew: None,
+        },
+        description: "原音からのずれ。短い(3〜6)とフランジャー寄りの金属感、長い(15〜25)と\
+            2 人で弾いているようなダブリング感。",
+    },
+    ParamSpec {
+        name: "mix",
+        display_name: "ミックス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            skew: None,
+        },
+        description: "揺らした音の混ぜ具合。0.5 で最も濃いコーラス。",
+    },
+];
+
+pub static TAPE_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "wow",
+        display_name: "ワウ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.3,
+            skew: None,
+        },
+        description: "ゆっくりした回転むら(約 0.5Hz)による音程のうねり。0.2〜0.4 で懐かしい揺れ、\
+            0.8 以上で伸びたカセットのように酔う。",
+    },
+    ParamSpec {
+        name: "flutter",
+        display_name: "フラッター",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.2,
+            skew: None,
+        },
+        description: "速い回転むら(約 6.5Hz)による細かい震え。上げるとヨレた質感になる。",
+    },
+    ParamSpec {
+        name: "saturation",
+        display_name: "サチュレーション",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.3,
+            skew: None,
+        },
+        description:
+            "テープの飽和。大きい音ほど丸く潰れて温かく太くなる。上げると音量のピークも下がる。",
+    },
+    ParamSpec {
+        name: "tone",
+        display_name: "トーン",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 1500.0,
+            max: 18000.0,
+            default: 9000.0,
+            skew: Some(0.4),
+        },
+        description:
+            "高域の減衰(ローパス)。下げるほどこもった古い録音、3000 以下でラジオ・電話風。",
+    },
+    ParamSpec {
+        name: "hiss",
+        display_name: "ヒス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.15,
+            skew: None,
+        },
+        description: "テープのサーッというノイズ。0.1〜0.3 で空気感、上げるとローファイ感が増す。",
+    },
+    ParamSpec {
+        name: "bits",
+        display_name: "ビット深度",
+        unit: Some("bit"),
+        range: ParamRange::Float {
+            min: 4.0,
+            max: 16.0,
+            default: 16.0,
+            skew: None,
+        },
+        description:
+            "量子化の粗さ。16 で無効、8〜12 でざらついたサンプラー風、4〜6 で激しく荒れる。",
+    },
+];
+
 pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
     match name {
         "eq" => Some(EQ_SPECS),
@@ -911,6 +1288,9 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "distortion" => Some(DISTORTION_SPECS),
         "amp" => Some(AMP_SPECS),
         "sidechain" => Some(SIDECHAIN_SPECS),
+        "delay" => Some(DELAY_SPECS),
+        "chorus" => Some(CHORUS_SPECS),
+        "tape" => Some(TAPE_SPECS),
         _ => None,
     }
 }
@@ -962,6 +1342,29 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
                 このトラックを沈み込ませる。EDM のポンピング/ビートダウンの要。\
                 ベースやパッドに挿し、source にキックのトラック ID を設定して使う。",
             params: SIDECHAIN_SPECS,
+            articulations: &[],
+        },
+        crate::params::InstrumentInfo {
+            name: "delay",
+            description: "ディレイ(やまびこ)。テンポに合わせた繰り返しでリードやボーカルに\
+                奥行きと余韻を足す。ping_pong で左右に広がる。tone を下げるとアナログ風。\
+                センド用バスに挿して複数トラックで共有するのも定番。",
+            params: DELAY_SPECS,
+            articulations: &[],
+        },
+        crate::params::InstrumentInfo {
+            name: "chorus",
+            description: "コーラス。少し遅らせて揺らした音を重ね、厚みと左右の広がりを出す。\
+                クリーンギター・エレピ・パッド・シンセストリングスの定番。低音には控えめに。",
+            params: CHORUS_SPECS,
+            articulations: &[],
+        },
+        crate::params::InstrumentInfo {
+            name: "tape",
+            description: "テープ/ローファイ。回転むら(wow・flutter)の音程の揺れ、テープの飽和、\
+                高域の減衰、ヒスノイズ、ビット落としで古びた質感を作る。Lo-fi Hip Hop、\
+                シティポップ、ヴィンテージ感を出したいエレピやドラムバス・マスターに。",
+            params: TAPE_SPECS,
             articulations: &[],
         },
     ]
@@ -1039,9 +1442,56 @@ impl EffectParams {
                 "release_ms" => p.release_samples = v.clamp(20.0, 1000.0) * 0.001 * sample_rate,
                 _ => return false,
             },
+            EffectParams::Delay(p) => match name {
+                "time_ms" => p.time = delay_samples(v, sample_rate),
+                "feedback" => p.feedback = v.clamp(0.0, 0.95),
+                "mix" => p.mix = v.clamp(0.0, 1.0),
+                "tone" => p.tone_coef = (-tau * v.clamp(1000.0, 16000.0) / sample_rate).exp(),
+                _ => return false,
+            },
+            EffectParams::Chorus(p) => match name {
+                "rate_hz" => p.rate_inc = v.clamp(0.05, 5.0) / sample_rate,
+                "depth_ms" => p.depth = v.clamp(0.0, 8.0) * 0.001 * sample_rate,
+                "delay_ms" => p.base = v.clamp(3.0, 30.0) * 0.001 * sample_rate,
+                "mix" => p.mix = v.clamp(0.0, 1.0),
+                _ => return false,
+            },
+            EffectParams::Tape(p) => match name {
+                "wow" => p.wow_depth = v.clamp(0.0, 1.0) * WOW_MAX_MS * 0.001 * sample_rate,
+                "flutter" => {
+                    p.flutter_depth = v.clamp(0.0, 1.0) * FLUTTER_MAX_MS * 0.001 * sample_rate
+                }
+                "saturation" => p.drive = tape_drive(v),
+                "tone" => p.tone_coef = (-tau * v.clamp(1500.0, 18000.0) / sample_rate).exp(),
+                "hiss" => p.hiss = tape_hiss(v),
+                "bits" => p.quant = tape_quant(v),
+                _ => return false,
+            },
             EffectParams::External => return false,
         }
         true
+    }
+}
+
+fn delay_samples(ms: f32, sample_rate: f32) -> f32 {
+    (ms.clamp(10.0, 1000.0) * 0.001 * sample_rate).min((DLY_LEN - 2) as f32)
+}
+
+fn tape_drive(sat: f32) -> f32 {
+    1.0 + sat.clamp(0.0, 1.0) * 5.0
+}
+
+fn tape_hiss(h: f32) -> f32 {
+    // 1.0 で約 -34dBFS
+    h.clamp(0.0, 1.0) * 0.02
+}
+
+fn tape_quant(bits: f32) -> f32 {
+    let b = bits.clamp(4.0, 16.0).round();
+    if b >= 16.0 {
+        0.0
+    } else {
+        2.0_f32.powf(b - 1.0)
     }
 }
 
@@ -1143,6 +1593,45 @@ pub fn bake_effect(
                     * sample_rate,
             }))
         }
+        "delay" => {
+            let s = DELAY_SPECS;
+            let ping_pong = matches!(map.get("ping_pong"), Some(ParamValue::Bool(true)));
+            Some(EffectParams::Delay(DelayParams {
+                time: delay_samples(get(map, s, "time_ms"), sample_rate),
+                feedback: get(map, s, "feedback").clamp(0.0, 0.95),
+                mix: get(map, s, "mix").clamp(0.0, 1.0),
+                tone_coef: (-std::f32::consts::TAU * get(map, s, "tone").clamp(1000.0, 16000.0)
+                    / sample_rate)
+                    .exp(),
+                ping_pong,
+            }))
+        }
+        "chorus" => {
+            let s = CHORUS_SPECS;
+            Some(EffectParams::Chorus(ChorusParams {
+                rate_inc: get(map, s, "rate_hz").clamp(0.05, 5.0) / sample_rate,
+                depth: get(map, s, "depth_ms").clamp(0.0, 8.0) * 0.001 * sample_rate,
+                base: get(map, s, "delay_ms").clamp(3.0, 30.0) * 0.001 * sample_rate,
+                mix: get(map, s, "mix").clamp(0.0, 1.0),
+            }))
+        }
+        "tape" => {
+            let s = TAPE_SPECS;
+            let ms = 0.001 * sample_rate;
+            Some(EffectParams::Tape(TapeParams {
+                base: TapeParams::base_for(sample_rate),
+                wow_depth: get(map, s, "wow").clamp(0.0, 1.0) * WOW_MAX_MS * ms,
+                wow_inc: WOW_HZ / sample_rate,
+                flutter_depth: get(map, s, "flutter").clamp(0.0, 1.0) * FLUTTER_MAX_MS * ms,
+                flutter_inc: FLUTTER_HZ / sample_rate,
+                drive: tape_drive(get(map, s, "saturation")),
+                tone_coef: (-std::f32::consts::TAU * get(map, s, "tone").clamp(1500.0, 18000.0)
+                    / sample_rate)
+                    .exp(),
+                hiss: tape_hiss(get(map, s, "hiss")),
+                quant: tape_quant(get(map, s, "bits")),
+            }))
+        }
         _ => None,
     }
 }
@@ -1164,6 +1653,11 @@ mod tests {
             ("distortion", "drive_db", 30.0),
             ("amp", "tone", 0.2),
             ("sidechain", "duck_db", 12.0),
+            ("delay", "time_ms", 250.0),
+            ("delay", "tone", 3000.0),
+            ("chorus", "depth_ms", 5.0),
+            ("tape", "wow", 0.8),
+            ("tape", "bits", 8.0),
         ];
         let none = |_: &str| None;
         for (fx, name, v) in cases {
@@ -1401,5 +1895,159 @@ mod tests {
             tail = tail.max(l.abs());
         }
         assert!(tail < 1e-6, "リセット後は残響が残らないはず: {tail}");
+    }
+
+    fn run(p: &EffectParams, input: impl Fn(usize) -> (f32, f32), n: usize) -> Vec<(f32, f32)> {
+        let mut st = EffectState::default();
+        st.ensure_kind(p);
+        (0..n)
+            .map(|i| {
+                let (l, r) = input(i);
+                st.process(p, l, r, 0.0)
+            })
+            .collect()
+    }
+
+    fn impulse(i: usize) -> (f32, f32) {
+        if i == 0 {
+            (1.0, 1.0)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    #[test]
+    fn delay_echoes_at_the_given_time_and_decays() {
+        let p = bake(&effect(
+            "delay",
+            &[
+                ("time_ms", 100.0),
+                ("feedback", 0.5),
+                ("mix", 1.0),
+                ("tone", 16000.0),
+            ],
+        ))
+        .unwrap();
+        let out = run(&p, impulse, 48_000);
+        let peak_near = |center: usize| {
+            out[center - 50..center + 50]
+                .iter()
+                .map(|o| o.0.abs())
+                .fold(0.0f32, f32::max)
+        };
+        let e1 = peak_near(4800);
+        let e2 = peak_near(9600);
+        assert!(e1 > 0.3, "1 回目のやまびこ: {e1}");
+        assert!(
+            e2 < e1 * 0.7 && e2 > e1 * 0.2,
+            "2 回目はフィードバック分小さい: {e1} {e2}"
+        );
+        // やまびこの間は静か
+        assert!(peak_near(7200) < 0.01);
+    }
+
+    #[test]
+    fn ping_pong_alternates_sides() {
+        let p = bake(&effect(
+            "delay",
+            &[("time_ms", 100.0), ("feedback", 0.6), ("mix", 1.0)],
+        ))
+        .unwrap();
+        let mut e = effect(
+            "delay",
+            &[("time_ms", 100.0), ("feedback", 0.6), ("mix", 1.0)],
+        );
+        e.params
+            .insert("ping_pong".to_owned(), glaux_core::ParamValue::Bool(true));
+        let pp = bake(&e).unwrap();
+        assert_ne!(p, pp);
+        let out = run(&pp, impulse, 20_000);
+        let side = |center: usize| {
+            let w = &out[center - 100..center + 100];
+            (
+                w.iter().map(|o| o.0.abs()).fold(0.0f32, f32::max),
+                w.iter().map(|o| o.1.abs()).fold(0.0f32, f32::max),
+            )
+        };
+        let (l1, r1) = side(4800);
+        let (l2, r2) = side(9600);
+        assert!(l1 > 0.1 && r1 < 0.01, "1 回目は左: {l1} {r1}");
+        assert!(r2 > 0.05 && l2 < 0.01, "2 回目は右: {l2} {r2}");
+    }
+
+    #[test]
+    fn chorus_makes_mono_input_wide_and_keeps_level() {
+        let p = bake(&effect("chorus", &[("depth_ms", 4.0), ("rate_hz", 1.0)])).unwrap();
+        let sine = |i: usize| {
+            let x = (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5;
+            (x, x)
+        };
+        let out = run(&p, sine, 48_000);
+        let tail = &out[4800..];
+        let diff: f32 = tail.iter().map(|o| (o.0 - o.1).powi(2)).sum::<f32>() / tail.len() as f32;
+        let pow: f32 = tail.iter().map(|o| o.0 * o.0).sum::<f32>() / tail.len() as f32;
+        assert!(diff.sqrt() > 0.05, "左右が違う(広がる): {}", diff.sqrt());
+        assert!(
+            pow.sqrt() > 0.15 && pow.sqrt() < 0.5,
+            "音量はおおむね保つ: {}",
+            pow.sqrt()
+        );
+    }
+
+    /// 零交差の間隔から、区間ごとの周波数を測る
+    fn zc_freq(x: &[f32]) -> f32 {
+        let c: Vec<usize> = (1..x.len())
+            .filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0)
+            .collect();
+        if c.len() < 2 {
+            return 0.0;
+        }
+        (c.len() - 1) as f32 * 48_000.0 / (c[c.len() - 1] - c[0]) as f32
+    }
+
+    #[test]
+    fn tape_wow_bends_pitch_and_off_keeps_it() {
+        let sine = |i: usize| {
+            let x = (i as f32 * 1000.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.3;
+            (x, x)
+        };
+        let spread = |wow: f64| {
+            let p = bake(&effect(
+                "tape",
+                &[
+                    ("wow", wow),
+                    ("flutter", 0.0),
+                    ("hiss", 0.0),
+                    ("tone", 18000.0),
+                ],
+            ))
+            .unwrap();
+            let out: Vec<f32> = run(&p, sine, 96_000).iter().map(|o| o.0).collect();
+            let fs: Vec<f32> = out[4800..].chunks(4800).map(zc_freq).collect();
+            let max = fs.iter().cloned().fold(f32::MIN, f32::max);
+            let min = fs.iter().cloned().fold(f32::MAX, f32::min);
+            max - min
+        };
+        let still = spread(0.0);
+        let wobbly = spread(1.0);
+        assert!(still < 1.0, "揺れなし: {still}Hz");
+        assert!(wobbly > 8.0, "ワウで音程が揺れる: {wobbly}Hz");
+    }
+
+    #[test]
+    fn tape_hiss_and_bits() {
+        let p = bake(&effect("tape", &[("hiss", 1.0)])).unwrap();
+        let out = run(&p, |_| (0.0, 0.0), 4800);
+        let noise = out.iter().map(|o| o.0.abs()).fold(0.0f32, f32::max);
+        assert!(noise > 0.005 && noise < 0.05, "無音にヒスが乗る: {noise}");
+        // 4bit: 出力は 1/8 刻み
+        let p = bake(&effect("tape", &[("hiss", 0.0), ("bits", 4.0)])).unwrap();
+        let ramp = |i: usize| {
+            let x = (i as f32 * 0.001).sin() * 0.8;
+            (x, x)
+        };
+        for (l, _) in run(&p, ramp, 4800) {
+            assert!(((l * 8.0).round() - l * 8.0).abs() < 1e-4, "{l}");
+        }
     }
 }

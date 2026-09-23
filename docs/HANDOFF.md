@@ -20,7 +20,7 @@
   位置保持)・録音(record.rs)・WAV エクスポート・音声解析(AI の耳)・
   SoundFont 読み込み(sf2.rs、フィルタ/LFO 込み)・サンプルキャッシュ(SampleBank)
 - `glaux-dsp`: 楽器 5 種(subtractive / drum / pluck / sampler / sf2)+
-  エフェクト 6 種(eq / compressor / reverb / distortion / amp / sidechain)+
+  エフェクト 9 種(eq / compressor / reverb / distortion / amp / sidechain / delay / chorus / tape)+
   奏法 5 種(楽器別カタログ)+ ピッチ表現(expr: 奏法 + 連続ピッチカーブ)
 - `app/`: タイムライン(セクション・拍子対応グリッド)・ピアノロール(奏法・3 連・
   フレット盤・ドラムキット)・音作りビュー・プリセット/SoundFont UI・ループ再生・
@@ -515,7 +515,7 @@ Glaux の AI が「何を知覚し、何を操作できるか」の一覧。新�
 | **記憶(短期)** | 会話セッション(--resume) | アプリ再起動をまたいで会話継続 |
 | **記憶(長期)** | get_history + project_version | 履歴はプロジェクト側に永続。author=human で「人間が何をしたか」をキャッチアップ(チャットは差分を自動注入) |
 | **手(作曲)** | apply_commands + 便利ツール | ノート/クリップ/トラック編集。transpose/shift/quantize/scale_velocity は相対編集の代行 |
-| **手(音作り)** | list_params + set_param + add_effect | 全つまみに聴感説明付き。音源 5 種(subtractive/drum/pluck/sampler/sf2)+ エフェクト 6 種(eq/comp/reverb/dist/amp/sidechain) |
+| **手(音作り)** | list_params + set_param + add_effect | 全つまみに聴感説明付き。音源 5 種(subtractive/drum/pluck/sampler/sf2)+ エフェクト 9 種(eq/comp/reverb/dist/amp/sidechain/delay/chorus/tape) |
 | **表現(奏法)** | Note.articulation | 楽器ごとに対応が異なる(下表)。カタログ(list_params)に楽器別の説明付きで載る |
 | **リズム感** | analyze_rhythm | スウィング比・グリッド(straight / triplet)・シンコペーション・ずれ・密度 |
 | **表現(時間変化)** | set_automation_points / set_master_automation_points | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターのカーブ |
