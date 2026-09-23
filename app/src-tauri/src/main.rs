@@ -224,6 +224,34 @@ async fn clip_peaks(
     Ok(json!({ "peaks": peaks }))
 }
 
+/// 音声クリップの音に似せた内蔵シンセ(subtractive)のトラックを作る(つまみは自動で探す。履歴 1 件)。
+#[tauri::command]
+async fn match_clip_sound(state: State<'_, AppState>, clip_id: String) -> Result<Value, String> {
+    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let m = tokio::task::spawn_blocking(move || {
+        glaux_mcp::sound::match_clip_commands(&project, std::path::Path::new(&dir), &cid, 20.0)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let label = format!("「{}」を作る(音色を自動で合わせる)", m.track_name);
+    let (_, applied) = state
+        .handle
+        .apply(
+            Command::batch(label.clone(), m.commands),
+            Author::Human,
+            label,
+        )
+        .await?
+        .map_err(|e| e.to_string())?;
+    let mut v = glaux_mcp::sound::match_json(&m.outcome);
+    v["track_id"] = json!(m.track_id.to_string());
+    v["track_name"] = json!(m.track_name);
+    v["project_version"] = json!(applied.project_version);
+    Ok(v)
+}
+
 /// 追加モデル(CLAP の音声側)の状態。
 #[tauri::command]
 fn model_status() -> Value {
@@ -1735,6 +1763,7 @@ fn main() -> Result<()> {
             transcribe_clip,
             detect_clip_tempo,
             model_status,
+            match_clip_sound,
             download_clap_model,
             record_start,
             record_stop,

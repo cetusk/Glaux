@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 /// device.params に残すプリセット名のキー
 pub const PRESET_NAME_KEY: &str = "preset";
 
-fn clap_track<'a>(
+pub(crate) fn clap_track<'a>(
     project: &'a Project,
     track_id: &TrackId,
 ) -> Result<

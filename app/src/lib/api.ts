@@ -134,6 +134,19 @@ export function clipPeaks(clipId: string, buckets: number): Promise<{ peaks: [nu
   return invoke("clip_peaks", { clipId, buckets });
 }
 
+/** 音声クリップの音に似せた内蔵シンセのトラックを作る(つまみは自動で探す。約 20 秒。履歴 1 件)。 */
+export function matchClipSound(clipId: string): Promise<{
+  track_id: string;
+  track_name: string;
+  distance: number;
+  initial_distance: number;
+  verdict: string;
+  pitch: number;
+  params: Record<string, number | string>;
+}> {
+  return invoke("match_clip_sound", { clipId });
+}
+
 /** 追加モデルの状態(clap = 音色を言葉で捉えるモデル)。 */
 export interface ModelStatus {
   available: boolean;

@@ -19,6 +19,7 @@ arc-swap.workspace = true
 hound.workspace = true
 rustysynth.workspace = true
 rustfft.workspace = true
+cmaes.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

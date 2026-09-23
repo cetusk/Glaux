@@ -292,3 +292,303 @@ pub fn clap_missing_note() -> String {
         glaux_ml::clap::MODEL_BYTES / 1_000_000
     )
 }
+
+// ---- 比べる・似せる ----
+
+/// 距離を言葉にする。
+fn verdict(total: f32) -> &'static str {
+    if total < 0.15 {
+        "ほぼ同じ音"
+    } else if total < 0.35 {
+        "よく似ている"
+    } else if total < 0.7 {
+        "似ている部分がある"
+    } else {
+        "かなり違う"
+    }
+}
+
+/// 2 音の違いを観点ごとに言葉にする(A を基準に B がどうか)。
+fn difference_hints(
+    a: &glaux_engine::timbre::SoundDescriptors,
+    b: &glaux_engine::timbre::SoundDescriptors,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let ratio = |x: f32, y: f32| y.max(1e-6) / x.max(1e-6);
+    let r = ratio(a.spectrum.centroid_hz, b.spectrum.centroid_hz);
+    if r > 1.25 {
+        out.push(format!(
+            "B の方が明るい(明るさの中心 {:.0} → {:.0} Hz)。B を A に寄せるならカットオフを下げる・高域を削る",
+            a.spectrum.centroid_hz, b.spectrum.centroid_hz
+        ));
+    } else if r < 0.8 {
+        out.push(format!(
+            "B の方が暗い(明るさの中心 {:.0} → {:.0} Hz)。B を A に寄せるならカットオフを上げる・高域を足す",
+            a.spectrum.centroid_hz, b.spectrum.centroid_hz
+        ));
+    }
+    let (ea, eb) = (&a.envelope, &b.envelope);
+    let att = eb.attack_ms - ea.attack_ms;
+    if att.abs() > 10.0_f32.max(ea.attack_ms * 0.5) {
+        out.push(format!(
+            "B の立ち上がりが{}(アタック {:.0} → {:.0} ms)",
+            if att > 0.0 { "遅い" } else { "速い" },
+            ea.attack_ms,
+            eb.attack_ms
+        ));
+    }
+    if ea.decays_continuously != eb.decays_continuously {
+        out.push(if eb.decays_continuously {
+            "B は減衰し続ける(A は伸びる)。B を A に寄せるならサスティンを上げる".to_owned()
+        } else {
+            "B は伸びる(A は減衰し続ける)。B を A に寄せるならサスティンを下げてディケイで減衰させる".to_owned()
+        });
+    } else if (eb.sustain_db - ea.sustain_db).abs() > 6.0 && !ea.decays_continuously {
+        out.push(format!(
+            "持続部の音量が違う(サスティン {:.0} → {:.0} dB)",
+            ea.sustain_db, eb.sustain_db
+        ));
+    }
+    let len = eb.active_ms - ea.active_ms;
+    if len.abs() > 150.0_f32.max(ea.active_ms * 0.3) {
+        out.push(format!(
+            "B の方が{}(鳴っている長さ {:.0} → {:.0} ms)",
+            if len > 0.0 { "長い" } else { "短い" },
+            ea.active_ms,
+            eb.active_ms
+        ));
+    }
+    let fl = b.spectrum.flatness - a.spectrum.flatness;
+    if fl.abs() > 0.1 {
+        out.push(format!(
+            "B の方がノイズっぽさが{}(平坦さ {:.2} → {:.2})",
+            if fl > 0.0 { "強い" } else { "弱い" },
+            a.spectrum.flatness,
+            b.spectrum.flatness
+        ));
+    }
+    if let (Some(ha), Some(hb)) = (&a.harmonics, &b.harmonics) {
+        if ha.waveform_guess != hb.waveform_guess {
+            out.push(format!(
+                "倍音の並びが違う(波形の推定 {} → {})",
+                ha.waveform_guess, hb.waveform_guess
+            ));
+        }
+        if (hb.odd_even_db - ha.odd_even_db).abs() > 6.0 {
+            out.push(format!(
+                "奇数倍音の多さが違う({:.0} → {:.0} dB。大きいほど矩形波・クラリネット寄り)",
+                ha.odd_even_db, hb.odd_even_db
+            ));
+        }
+    }
+    match (&a.pitch, &b.pitch) {
+        (Some(pa), Some(pb)) => {
+            let cents = 1200.0 * (pb.f0_hz / pa.f0_hz).log2();
+            if cents.abs() > 30.0 {
+                out.push(format!(
+                    "音の高さが違う({:.0} → {:.0} Hz、{:+.0} セント)",
+                    pa.f0_hz, pb.f0_hz, cents
+                ));
+            }
+            if (pb.vibrato_depth_cents - pa.vibrato_depth_cents).abs() > 15.0 {
+                out.push(format!(
+                    "ビブラートの深さが違う(± {:.0} → {:.0} セント)",
+                    pa.vibrato_depth_cents, pb.vibrato_depth_cents
+                ));
+            }
+        }
+        (Some(_), None) => {
+            out.push("A には音程があるが、B は音程が取れない(打楽器・ノイズ的)".to_owned())
+        }
+        (None, Some(_)) => {
+            out.push("B には音程があるが、A は音程が取れない(打楽器・ノイズ的)".to_owned())
+        }
+        _ => {}
+    }
+    out
+}
+
+/// 2 音を比べる: 距離(音色・音量の時間変化)、観点ごとの違い、CLAP での近さ。
+pub fn compare(a: &LoadedSound, b: &LoadedSound) -> Result<serde_json::Value, String> {
+    use glaux_engine::sound_match;
+    let d = sound_match::compare(&a.frames, a.sample_rate, &b.frames, b.sample_rate);
+    let (da, db) = (describe(a), describe(b));
+    let r3 = |v: f32| (v as f64 * 1000.0).round() / 1000.0;
+    let mut v = serde_json::json!({
+        "a": a.label,
+        "b": b.label,
+        "distance": {
+            "total": r3(d.total),
+            "spectral": r3(d.spectral),
+            "envelope": r3(d.envelope),
+        },
+        "verdict": verdict(d.total),
+        "differences": difference_hints(&da, &db),
+    });
+    if glaux_ml::clap::available() {
+        let (ea, eb) = (embedding(a)?, embedding(b)?);
+        v["clap_similarity"] = serde_json::json!(r3(glaux_ml::clap::similarity(&ea, &eb)));
+    }
+    Ok(v)
+}
+
+/// 目標の音に内蔵 subtractive を合わせた結果。
+pub struct MatchOutcome {
+    pub fit: glaux_engine::sound_match::FitResult,
+    /// 目標の音の高さ(MIDI)と、鍵盤を押しておく秒数
+    pub pitch: u8,
+    pub hold: f32,
+    pub descriptors: glaux_engine::timbre::SoundDescriptors,
+}
+
+/// 鍵盤を押していた秒数の推定: 鳴っている長さ − 余韻(最後の減衰)。
+/// 減衰し続ける音でも、鍵盤を離してから減り方が変わる所を余韻の始まりとみなせる。
+pub fn estimate_hold(d: &glaux_engine::timbre::SoundDescriptors) -> f32 {
+    let e = &d.envelope;
+    ((e.active_ms - e.release_ms) / 1000.0).clamp(0.05, 3.0)
+}
+
+/// 目標の音に内蔵 subtractive のつまみを合わせる(CMA-ES)。
+pub fn match_subtractive(target: &LoadedSound, max_seconds: f32) -> MatchOutcome {
+    use glaux_engine::sound_match::{fit_subtractive, FitOptions};
+    let d = describe(target);
+    let pitch = d.pitch.as_ref().map(|p| p.midi).unwrap_or(60);
+    let hold = estimate_hold(&d);
+    let fit = fit_subtractive(
+        &target.frames,
+        target.sample_rate,
+        pitch,
+        hold,
+        &d,
+        FitOptions {
+            max_seconds: max_seconds.clamp(2.0, 120.0),
+            ..Default::default()
+        },
+    );
+    MatchOutcome {
+        fit,
+        pitch,
+        hold,
+        descriptors: d,
+    }
+}
+
+/// 合わせた結果の subtractive の Device(今の gain_db があれば保つ)。
+pub fn matched_device(
+    outcome: &MatchOutcome,
+    current: Option<&glaux_core::Device>,
+) -> glaux_core::Device {
+    let mut device = glaux_core::Device::builtin("subtractive");
+    device.params = outcome.fit.params.clone();
+    let keep_gain = current.and_then(|d| match &d.source {
+        glaux_core::PluginSource::Builtin { name } if name == "subtractive" => {
+            d.params.get("gain_db").cloned()
+        }
+        _ => None,
+    });
+    if let Some(g) = keep_gain {
+        device.params.insert("gain_db".into(), g);
+    }
+    device
+}
+
+/// 合わせた結果を AI・UI 向けの JSON にする。
+pub fn match_json(o: &MatchOutcome) -> serde_json::Value {
+    let r3 = |v: f32| (v as f64 * 1000.0).round() / 1000.0;
+    let params: serde_json::Map<String, serde_json::Value> = o
+        .fit
+        .params
+        .iter()
+        .map(|(k, v)| {
+            let j = match v {
+                glaux_core::ParamValue::Float(f) => {
+                    serde_json::json!((f * 1000.0).round() / 1000.0)
+                }
+                other => serde_json::to_value(other).unwrap_or_default(),
+            };
+            (k.clone(), j)
+        })
+        .collect();
+    serde_json::json!({
+        "params": params,
+        "pitch": o.pitch,
+        "hold_seconds": r3(o.hold),
+        "distance": r3(o.fit.distance.total),
+        "distance_detail": {
+            "spectral": r3(o.fit.distance.spectral),
+            "envelope": r3(o.fit.distance.envelope),
+        },
+        "initial_distance": r3(o.fit.initial_distance.total),
+        "verdict": verdict(o.fit.distance.total),
+        "waveforms_tried": o.fit.tried.iter().map(|(w, d)| serde_json::json!({"waveform": w, "distance": r3(*d)})).collect::<Vec<_>>(),
+        "evaluations": o.fit.evaluations,
+        "seconds": (o.fit.seconds * 10.0).round() / 10.0,
+    })
+}
+
+/// 音声クリップに似せた内蔵シンセのトラックを作るコマンド(クリップのトラックの直後に置き、
+/// クリップと同じ位置に目標の高さ・長さの 1 音を置く)。
+pub struct MatchClip {
+    pub commands: Vec<glaux_core::Command>,
+    pub track_id: TrackId,
+    pub track_name: String,
+    pub outcome: MatchOutcome,
+}
+
+pub fn match_clip_commands(
+    project: &Project,
+    dir: &Path,
+    clip_id: &ClipId,
+    max_seconds: f32,
+) -> Result<MatchClip, String> {
+    use glaux_core::{Clip, Command, Note, NoteId, Tick, Track, TrackKind};
+    let (index, clip) = project
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(i, t)| t.clips.iter().find(|c| &c.id == clip_id).map(|c| (i, c)))
+        .ok_or_else(|| format!("クリップが見つかりません: {clip_id}"))?;
+    let target = load(project, dir, &SoundSource::Clip(clip_id.clone()))?;
+    let outcome = match_subtractive(&target, max_seconds);
+    let track_id = TrackId::new();
+    let track_name = format!("{} の再現", clip.name);
+    let mut track = Track::new(track_id.clone(), track_name.clone(), TrackKind::Midi);
+    track.device = Some(matched_device(&outcome, None));
+    let tm = &project.tempo_map;
+    let start_sec = tm.tick_to_seconds(clip.start);
+    let end = tm.seconds_to_tick(start_sec + outcome.hold as f64);
+    let dur = Tick(end.0.saturating_sub(clip.start.0).max(1));
+    let mut midi = Clip::new_midi(
+        glaux_core::ClipId::new(),
+        track_name.clone(),
+        clip.start,
+        Tick(dur.0 + glaux_core::time::PPQ),
+    );
+    if let ClipContent::Midi { notes, .. } = &mut midi.content {
+        notes.push(Note {
+            id: NoteId::new(),
+            pos: Tick::ZERO,
+            dur,
+            pitch: outcome.pitch,
+            vel: 100,
+            articulation: Default::default(),
+            pitch_curve: vec![],
+        });
+    }
+    let commands = vec![
+        Command::AddTrack {
+            track,
+            index: Some(index + 1),
+        },
+        Command::AddClip {
+            track: track_id.clone(),
+            clip: midi,
+        },
+    ];
+    Ok(MatchClip {
+        commands,
+        track_id,
+        track_name,
+        outcome,
+    })
+}

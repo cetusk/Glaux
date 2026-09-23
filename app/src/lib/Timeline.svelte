@@ -612,6 +612,24 @@
     api.applyEdit(cmds, label).catch(() => {});
   }
 
+  /// 音声クリップの音に似せた内蔵シンセのトラックを作る(時間がかかるのでクリップに「音色を合わせています…」を出す)
+  let matching = $state<string | null>(null);
+  async function matchSound(clip: Clip) {
+    if (matching || clip.kind !== "audio") return;
+    matching = clip.id;
+    try {
+      const r = await api.matchClipSound(clip.id);
+      alert(
+        `「${r.track_name}」を作りました(近さ: ${r.verdict}、距離 ${r.initial_distance.toFixed(2)} → ${r.distance.toFixed(2)})。\n` +
+          "音作りビューでつまみを微調整できます(Ctrl+Z で取り消し)。",
+      );
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      matching = null;
+    }
+  }
+
   function expandLoop(clip: Clip) {
     const cmd = expandLoopCommand(clip);
     if (!cmd) return;
@@ -756,7 +774,8 @@
       | "follow-detect"
       | "follow-off"
       | "sep-builtin"
-      | "sep-demucs",
+      | "sep-demucs"
+      | "match",
   ) {
     const m = clipMenu;
     clipMenu = null;
@@ -804,6 +823,9 @@
         break;
       case "sep-demucs":
         separate(m.clip, "demucs");
+        break;
+      case "match":
+        matchSound(m.clip);
         break;
     }
   }
@@ -1274,6 +1296,8 @@
               <div class="clip-busy">パートに分離中…</div>
             {:else if detectingTempo === clip.id}
               <div class="clip-busy">テンポを検出中…</div>
+            {:else if matching === clip.id}
+              <div class="clip-busy">音色を合わせています…</div>
             {/if}
             <div class="clip-resize"></div>
           </div>
@@ -1397,6 +1421,9 @@
         </button>
         <button onclick={() => menuAction("sep-demucs")} disabled={separating !== null}>
           🎚 パートに分ける: ボーカル / ドラム / ベース / その他(Demucs、要インストール・数分)
+        </button>
+        <button onclick={() => menuAction("match")} disabled={matching !== null}>
+          🎛 この音に似せた内蔵シンセのトラックを作る(つまみを自動で探す・約 20 秒。単音のサンプル向け)
         </button>
         <div class="menu-sep"></div>
       {/if}

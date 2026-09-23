@@ -877,6 +877,30 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     `data/clap_vocab.json` に同梱(言い回し 3 通りの平均、int8 + base64、92KB)。「どんな音にも近い語」が
     上位に来ないよう、合成音 36 個との類似度の平均・標準偏差も入れ、z 値で並べる
   - MCP `analyze_sound` の `words`(カテゴリごとに 3 語と z)。モデルが無ければ `words: null` と取得方法の案内
+- **音を分析する能力の強化 D: 似た音を作る(2026-09-23)**: `glaux-engine/src/sound_match.rs` ほか。
+  - 距離 `sound_match::compare`: 鳴り始めからそろえ(最大 3 秒)、いちばん大きい 5ms で音量をそろえ
+    (全体の RMS だと余韻の長さで変わる)、約 11 / 21 / 43ms の窓(秒で決めるのでサンプルレートが違っても比べられる。
+    振幅は窓の和で割る)の 48 帯域メルで「対数 L1 × 0.5 + スペクトル収束度」の平均 + 5ms ごとの dB 包絡の L1 / 20。
+    音色の項は重なっている時間だけ、長さの違いは包絡の項に出す。目安: 0.15 未満ほぼ同じ / 0.35 未満よく似ている /
+    0.7 未満似ている部分がある / それ以上かなり違う
+  - 自動合わせ `fit_subtractive`: `cmaes` クレート(MIT/Apache、描画なし、rayon で並列評価)。連続つまみ 11 個
+    (cutoff・attack・decay・release は対数、unison は 0〜1 を 1/3/5/7 に)を 0〜1 に写して探し、範囲外は罰則。
+    初期値は記述子から(立ち上がり・減衰・持続・余韻・明るさ×3 をカットオフ・明るさの推移でフィルターエンベロープ・
+    平坦さでノイズ)。波形は初期値での距離で上位 2 つだけ探す。候補の音は `render_subtractive`(ボイスを直接鳴らす。
+    エフェクト・トラック音量は通さない)。既定 20 秒・150 世代・16 個体。既知のパッチはほぼ復元(距離 0.05)。
+    FluidR3 の実楽器(ピアノ・ベース・フルート・リード・パッド)では 0.48〜0.75(subtractive で作れる範囲の限界)
+  - 押していた時間の推定は「鳴っている長さ − 余韻」(`sound::estimate_hold`)。「減衰し続ける」音でも同じ式
+    (鳴っている長さ全部にすると、ゆっくり立ち上がるパッドで大きくずれた)
+  - プリセット検索 `preset_index`: `plugins::render_presets` が 1 つのプラグインでプリセットを順に 1 音ずつ鳴らす
+    (起動中のインスタンスに直接 `load_preset` すると Surge XT は以後鳴らなくなるため、止まっている読み込み用の
+    インスタンスで読み込み → `save_state` → 起動中の方に `load_state`。1 プリセット約 33ms)。索引は C4・1 秒押し・
+    2 秒の要約(4 区間の対数メル 48 帯域 + 50ms ごとの包絡 40 点)と CLAP の埋め込み(int8)を
+    `<設定>/glaux/cache/presets/<プラグイン>.json` に保存。時間の上限まで作り足し、続きは次回。
+    検索は要約の距離と CLAP の近さの順位を融合(RRF)して 12 個に絞り、目標と同じ高さ・長さで鳴らし直して `compare` で並べる
+  - MCP: `compare_sounds`(a / b。距離・観点ごとの違いと寄せ方・CLAP の近さ)、`match_sound`(subtractive を合わせて
+    set_device 1 回。トラックのエフェクトも通した `verified_distance` も返す)、`find_similar_presets`(計 34 ツール)。
+    UI は音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」(Tauri `match_clip_sound`:
+    直後に MIDI トラックを足し、同じ位置に目標の高さ・長さの 1 音。履歴 1 件)
 - **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
   (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
   - 探索: `GLAUX_CLAP_PATH` → `CLAP_PATH` → OS 標準(Windows は `%COMMONPROGRAMFILES%\CLAP` と

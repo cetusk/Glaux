@@ -275,6 +275,53 @@ pub struct AnalyzeSoundParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct CompareSoundsParams {
+    /// 比べる音 A(基準。clip_id / file / track_id のどれか 1 つ。track_id なら pitch 等も)。
+    pub a: SoundSourceParams,
+    /// 比べる音 B。
+    pub b: SoundSourceParams,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct MatchSoundParams {
+    /// 目標の音: 音声クリップ ID(`clp_xxxxxx`)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// 目標の音: 音声ファイルのパス。
+    #[serde(default)]
+    pub file: Option<String>,
+    /// 音色を合わせる MIDI トラック ID。音源は内蔵 subtractive になる。
+    pub track_id: String,
+    /// 探す時間の上限(秒。既定 20、最大 120)。長いほど近づく。
+    #[serde(default)]
+    pub max_seconds: Option<f32>,
+    /// トラックの音源が subtractive 以外(CLAP・SoundFont 等)でも置き換える(既定 false = エラーにする)。
+    #[serde(default)]
+    pub replace_device: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct FindSimilarPresetsParams {
+    /// 目標の音: 音声クリップ ID(`clp_xxxxxx`)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// 目標の音: 音声ファイルのパス。
+    #[serde(default)]
+    pub file: Option<String>,
+    /// CLAP プラグイン(例 Surge XT)を音源にしたトラック ID。そのプラグインのプリセットから探す。
+    pub track_id: String,
+    /// カテゴリ(フォルダ名)の前方一致で絞る(例 "Pads"、"Leads"、"Basses")。絞ると索引作りも速い。
+    #[serde(default)]
+    pub category: Option<String>,
+    /// 何件返すか(既定 5)。
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// 索引(プリセットを 1 音ずつ鳴らした記録)を作り足す時間の上限(秒。既定 60、0 で作らない)。
+    #[serde(default)]
+    pub index_seconds: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct AnalyzeBeatsParams {
     /// 音声クリップ ID(`clp_xxxxxx`、kind: "audio")。クリップが参照している範囲を使う。
     #[serde(default)]
@@ -1247,6 +1294,204 @@ impl GlauxServer {
             } else {
                 v["words"] = Value::Null;
                 v["words_note"] = json!(crate::sound::clap_missing_note());
+            }
+            Ok(v)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(Json(v))
+    }
+
+    #[tool(
+        description = "2 つの音を比べる(A を基準に B がどう違うか)。distance(total / spectral=音色 / envelope=音量の時間変化。\
+        0.15 未満 ほぼ同じ、0.35 未満 よく似ている、0.7 未満 似ている部分がある、それ以上 かなり違う)、verdict、\
+        differences(明るさ・立ち上がり・減衰・長さ・ノイズっぽさ・倍音・音程・ビブラートの違いと、B を A に寄せる手がかり)、\
+        clap_similarity(CLAP で聴いた印象の近さ -1〜1。モデル取得済みのときだけ)。\
+        a / b はそれぞれ {clip_id} / {file} / {track_id, pitch, velocity, duration_ms} のどれか。\
+        使いどころ: サンプルに似せて音作りするとき、a = 目標のサンプル、b = 自分のトラックの音 にして、\
+        つまみを変えるたびに比べて distance が下がるか確かめる。"
+    )]
+    async fn compare_sounds(&self, params: Parameters<CompareSoundsParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("compare_sounds");
+        let p = params.0;
+        let (sa, sb) = (p.a.to_source()?, p.b.to_source()?);
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let dir = std::path::Path::new(&dir);
+            let a = crate::sound::load(&project, dir, &sa)?;
+            let b = crate::sound::load(&project, dir, &sb)?;
+            crate::sound::compare(&a, &b)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(Json(v))
+    }
+
+    #[tool(
+        description = "目標の音(音声クリップ・音声ファイル)に似せて、MIDI トラックの内蔵シンセ subtractive のつまみを自動で合わせる\
+        (CMA-ES という進化的な探索で、波形・カットオフ・レゾナンス・ADSR・フィルターエンベロープ・ユニゾン・デチューン・\
+        サブ・ノイズを数百〜数千通り試す。既定 20 秒以内)。結果は set_device 1 回として履歴に残る(undo で戻せる)。\
+        返り値: params(合わせたつまみ)、pitch(目標の音の高さ)、distance(0.15 未満 ほぼ同じ … 0.7 以上 かなり違う)、\
+        initial_distance(探索前)、verified_distance(トラックのエフェクトも通して鳴らした音と目標の距離)。\
+        subtractive で作れない音(生楽器・複雑な FM・サンプル特有の質感)は近づくが一致はしない。そのときは\
+        compare_sounds の differences を見てエフェクト(reverb・distortion 等)を足すか、CLAP プラグインのプリセットを探す。\
+        トラックの音源が subtractive 以外なら replace_device: true が必要。"
+    )]
+    async fn match_sound(
+        &self,
+        params: Parameters<MatchSoundParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("match_sound");
+        let p = params.0;
+        let source = match (&p.clip_id, &p.file) {
+            (Some(c), None) => crate::sound::SoundSource::Clip(
+                glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?,
+            ),
+            (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
+            _ => {
+                return Err(
+                    "目標の音は clip_id / file のどちらか 1 つを指定してください".to_owned(),
+                )
+            }
+        };
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err(format!("「{}」は MIDI トラックではありません", track.name));
+        }
+        let is_sub = match &track.device {
+            None => true,
+            Some(d) => {
+                matches!(&d.source, glaux_core::PluginSource::Builtin { name } if name == "subtractive")
+            }
+        };
+        if !is_sub && !p.replace_device.unwrap_or(false) {
+            return Err(format!(
+                "「{}」の音源は subtractive ではありません。置き換えてよければ replace_device: true を付けてください",
+                track.name
+            ));
+        }
+        let current = track.device.clone();
+        let track_name = track.name.clone();
+        let dir = self.handle.project_dir().await?;
+        let max_seconds = p.max_seconds.unwrap_or(20.0);
+        let (outcome, label) = tokio::task::spawn_blocking({
+            let project = project.clone();
+            let dir = dir.clone();
+            let source = source.clone();
+            move || -> Result<_, String> {
+                let target = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
+                let label = target.label.clone();
+                Ok((crate::sound::match_subtractive(&target, max_seconds), label))
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let device = crate::sound::matched_device(&outcome, current.as_ref());
+        let command = glaux_core::Command::SetDevice {
+            track: track_id.clone(),
+            device: Some(device),
+        };
+        let edit_label = format!("{label}に似せて「{track_name}」の音色を自動調整");
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, edit_label).await)?;
+        // トラックのエフェクトも通して鳴らし、目標とどれだけ近いか確かめる
+        let (project, _) = self.handle.get_project().await?;
+        let (pitch, hold) = (outcome.pitch, outcome.hold);
+        let verified = tokio::task::spawn_blocking(move || -> Result<f32, String> {
+            let dirp = std::path::Path::new(&dir);
+            let target = crate::sound::load(&project, dirp, &source)?;
+            let mut mine =
+                crate::sound::render_note(&project, dirp, &track_id, pitch, 100, hold as f64)?;
+            // 目標と同じ長さで比べる(試し鳴らしは余韻の分だけ長い)
+            let secs = target.frames.len() as f32 / target.sample_rate;
+            mine.frames.truncate((secs * mine.sample_rate) as usize);
+            Ok(glaux_engine::sound_match::compare(
+                &target.frames,
+                target.sample_rate,
+                &mine.frames,
+                mine.sample_rate,
+            )
+            .total)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["match"] = crate::sound::match_json(&outcome);
+        v["target"] = json!(label);
+        if let Ok(d) = verified {
+            v["verified_distance"] = json!((d as f64 * 1000.0).round() / 1000.0);
+        }
+        Ok(Json(v))
+    }
+
+    #[tool(
+        description = "目標の音(音声クリップ・音声ファイル)に近い CLAP プラグイン(例 Surge XT)のプリセットを探す。\
+        プリセットを 1 音ずつ鳴らした索引(設定フォルダにキャッシュ。初回は数千個で数分かかるので index_seconds で区切って\
+        作り足し、続きは次の呼び出しで)から、音色の要約と CLAP の印象の近さで候補を絞り、目標と同じ高さ・長さで鳴らし直して\
+        距離で並べる。返り値: results(id・name・category・distance(0.15 未満 ほぼ同じ … 0.7 以上 かなり違う)・\
+        clap_similarity)、index(total / indexed。indexed < total なら未索引のプリセットはまだ探していない)。\
+        category で絞ると速い。気に入った候補は load_plugin_preset(id)で読み込み、list_params のつまみや\
+        compare_sounds で詰める。内蔵シンセで作れる音なら match_sound の方が速い。"
+    )]
+    async fn find_similar_presets(
+        &self,
+        params: Parameters<FindSimilarPresetsParams>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("find_similar_presets");
+        let p = params.0;
+        let source = match (&p.clip_id, &p.file) {
+            (Some(c), None) => crate::sound::SoundSource::Clip(
+                glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?,
+            ),
+            (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
+            _ => {
+                return Err(
+                    "目標の音は clip_id / file のどちらか 1 つを指定してください".to_owned(),
+                )
+            }
+        };
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let (_, _, plugin_id, _) = crate::clap_presets::clap_track(&project, &track_id)?;
+            let plugin_id = plugin_id.to_owned();
+            let target = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
+            let category = p.category.as_deref();
+            let budget = std::time::Duration::from_secs(p.index_seconds.unwrap_or(60).min(600));
+            let progress = crate::preset_index::build_index(&plugin_id, category, budget, &mut |_| {})?;
+            let limit = p.limit.unwrap_or(5).clamp(1, 20);
+            let results =
+                crate::preset_index::find_similar(&plugin_id, &target, category, limit, 12)?;
+            let r3 = |v: f32| (v as f64 * 1000.0).round() / 1000.0;
+            let mut v = json!({
+                "target": target.label,
+                "index": progress,
+                "results": results.iter().map(|c| json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "category": c.category,
+                    "distance": r3(c.distance),
+                    "spectral": r3(c.spectral),
+                    "envelope": r3(c.envelope),
+                    "clap_similarity": c.clap_similarity.map(r3),
+                })).collect::<Vec<_>>(),
+            });
+            if progress.indexed < progress.total {
+                v["note"] = json!(format!(
+                    "索引は {} / {} 個。残りのプリセットはまだ探していません。もう一度呼ぶと続きを作ります",
+                    progress.indexed, progress.total
+                ));
+            }
+            if !glaux_ml::clap::available() {
+                v["clap_note"] = json!(crate::sound::clap_missing_note());
             }
             Ok(v)
         })

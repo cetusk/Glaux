@@ -850,6 +850,120 @@ impl PluginManager {
 
 // ---- オフライン(書き出し・解析)用 ----
 
+/// プリセットを 1 音ずつ鳴らす設定(プリセット検索の索引作り用)。
+#[derive(Clone, Copy, Debug)]
+pub struct PresetRenderSpec {
+    pub pitch: u8,
+    pub velocity: f32,
+    /// 鍵盤を押している秒数
+    pub hold: f64,
+    /// 1 プリセットあたりの長さ(秒。押している間 + 余韻)
+    pub total: f64,
+    pub sample_rate: f64,
+}
+
+/// 同じプラグイン 1 つでプリセットを順に読み込み、1 音ずつ鳴らす(モノラル)。
+/// 呼んだスレッドでプラグインを作る(再生中のプラグインには触らない。別スレッドで呼ぶこと)。
+/// `each(何番目か, 結果)` が false を返したらそこでやめる。
+pub fn render_presets(
+    plugin_id: &str,
+    presets: &[glaux_clap::PresetEntry],
+    spec: PresetRenderSpec,
+    mut each: impl FnMut(usize, Result<Vec<f32>, String>) -> bool,
+) -> Result<(), String> {
+    use glaux_clap::NoteMsg;
+    const BLOCK: usize = 512;
+    let info =
+        find(plugin_id).ok_or_else(|| format!("CLAP プラグインが見つかりません: {plugin_id}"))?;
+    glaux_clap::mark_main_thread();
+    glaux_clap::mark_audio_thread();
+    // 起動中のプラグインに直接プリセットを読ませると音が出なくなるプラグインがある(Surge XT)ため、
+    // アプリと同じく、止まっている読み込み用のインスタンスでプリセットを読み、状態を移す
+    let mut loader = ClapPlugin::new(&info.path, &info.id).map_err(|e| e.to_string())?;
+    let mut plugin = ClapPlugin::new(&info.path, &info.id).map_err(|e| e.to_string())?;
+    let mut proc = plugin
+        .activate(spec.sample_rate)
+        .map_err(|e| e.to_string())?;
+    let sr = spec.sample_rate;
+    // 無音を流す(読み込んだプリセットの反映・前の音の余韻の消去)。出力が十分小さくなるまで、最大 `max` 秒
+    let flush = |proc: &mut ClapProcessor, max: f64| {
+        let blocks = ((max * sr) as usize).div_ceil(BLOCK);
+        let mut quiet = 0;
+        for i in 0..blocks {
+            let msgs = if i == 0 {
+                vec![NoteMsg::AllOff { time: 0 }]
+            } else {
+                Vec::new()
+            };
+            proc.process(BLOCK, &msgs);
+            let peak = proc
+                .output()
+                .map(|(l, r)| {
+                    l[..BLOCK]
+                        .iter()
+                        .chain(&r[..BLOCK])
+                        .fold(0.0f32, |m, v| m.max(v.abs()))
+                })
+                .unwrap_or(0.0);
+            quiet = if peak < 1e-4 { quiet + 1 } else { 0 };
+            // 読み込み直後の数ブロックは必ず流す(プラグインが次の処理で音色を切り替えることがある)
+            if i >= 8 && quiet >= 4 {
+                break;
+            }
+        }
+    };
+    let hold = (spec.hold * sr) as usize;
+    let total = ((spec.total * sr) as usize).max(hold + BLOCK);
+    for (i, preset) in presets.iter().enumerate() {
+        let result = (|| -> Result<Vec<f32>, String> {
+            loader
+                .load_preset(&preset.location, preset.load_key.as_deref())
+                .map_err(|e| e.to_string())?;
+            let state = loader.save_state().map_err(|e| e.to_string())?;
+            plugin.load_state(&state).map_err(|e| e.to_string())?;
+            plugin.poll();
+            flush(&mut proc, 3.0);
+            let mut out = Vec::with_capacity(total);
+            let mut pos = 0;
+            while pos < total {
+                let n = BLOCK.min(total - pos);
+                let mut msgs = Vec::new();
+                if pos == 0 {
+                    msgs.push(NoteMsg::On {
+                        time: 0,
+                        key: spec.pitch,
+                        velocity: spec.velocity,
+                        note_id: None,
+                    });
+                }
+                if hold >= pos && hold < pos + n {
+                    msgs.push(NoteMsg::Off {
+                        time: (hold - pos) as u32,
+                        key: spec.pitch,
+                    });
+                }
+                proc.process(n, &msgs);
+                if let Some((l, r)) = proc.output() {
+                    out.extend(l[..n].iter().zip(&r[..n]).map(|(a, b)| (a + b) * 0.5));
+                } else {
+                    out.extend(std::iter::repeat_n(0.0, n));
+                }
+                pos += n;
+            }
+            if proc.has_failed() {
+                return Err("プラグインの処理に失敗しました".into());
+            }
+            Ok(out)
+        })();
+        if !each(i, result) {
+            break;
+        }
+    }
+    proc.stop();
+    plugin.deactivate(proc);
+    Ok(())
+}
+
 /// 書き出しなどのために、呼んだスレッドでプラグインを作って起動する。
 /// 戻り値のプラグインは、レンダリングが終わったら [`OfflinePlugins::finish`] で片付ける。
 pub struct OfflinePlugins {
@@ -1305,5 +1419,41 @@ mod tests {
         eprintln!("ペダル中 {held} / 離した後 {released}");
         assert!(held > 1e-3, "ペダル中は鳴り続ける: {held}");
         assert!(released < held * 0.1, "ペダルを離すと消える: {released}");
+    }
+
+    #[test]
+    fn renders_presets_one_note_each() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        let list = presets(&id, false).unwrap();
+        let pick: Vec<_> = list.iter().take(6).cloned().collect();
+        let spec = PresetRenderSpec {
+            pitch: 60,
+            velocity: 0.8,
+            hold: 1.0,
+            total: 2.0,
+            sample_rate: 48_000.0,
+        };
+        let t0 = std::time::Instant::now();
+        let mut got = Vec::new();
+        render_presets(&id, &pick, spec, |i, r| {
+            let x = r.unwrap();
+            let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            eprintln!(
+                "{} {}: {} samples, peak {peak:.3}",
+                i,
+                pick[i].name,
+                x.len()
+            );
+            got.push((x.len(), peak));
+            true
+        })
+        .unwrap();
+        eprintln!("{} プリセットを {:?}", pick.len(), t0.elapsed());
+        assert_eq!(got.len(), pick.len());
+        assert!(got.iter().all(|(n, _)| *n == 96_000));
+        assert!(got.iter().filter(|(_, p)| *p > 0.01).count() >= pick.len() - 1);
     }
 }

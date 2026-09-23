@@ -1399,3 +1399,273 @@ fn clap_model_downloads_and_verifies() {
     assert!(calls > 100);
     assert!(glaux_mcp::models::clap_status().available);
 }
+
+fn write_mono_wav(path: &std::path::Path, frames: &[f32], sr: u32) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: sr,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(path, spec).unwrap();
+    for v in frames {
+        w.write_sample((v.clamp(-1.0, 1.0) * 20000.0) as i16)
+            .unwrap();
+    }
+    w.finalize().unwrap();
+}
+
+#[tokio::test]
+async fn compare_sounds_reports_distance_and_differences() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_cmp001", "Lead")).await);
+    let note = json!({ "track_id": "trk_cmp001", "pitch": 57, "duration_ms": 600 });
+    let r = call(&fx, "compare_sounds", json!({ "a": note, "b": note })).await;
+    let v = ok_json(&r);
+    assert!(v["distance"]["total"].as_f64().unwrap() < 0.05, "{v}");
+    assert_eq!(v["verdict"], json!("ほぼ同じ音"));
+
+    // 暗くゆっくり立ち上がる矩形波と比べる
+    use glaux_core::ParamValue;
+    let mut p = glaux_core::ParamMap::new();
+    p.insert("waveform".into(), ParamValue::Enum("square".into()));
+    p.insert("cutoff".into(), ParamValue::Float(500.0));
+    p.insert("attack".into(), ParamValue::Float(0.4));
+    let y = glaux_engine::sound_match::render_subtractive(&p, 57, 0.6, 44_100, 44_100.0);
+    let path = fx.dir.join("slow_dark.wav");
+    write_mono_wav(&path, &y, 44_100);
+    let r = call(
+        &fx,
+        "compare_sounds",
+        json!({ "a": note, "b": { "file": path.to_string_lossy() } }),
+    )
+    .await;
+    let v = ok_json(&r);
+    eprintln!("{v}");
+    assert!(v["distance"]["total"].as_f64().unwrap() > 0.35, "{v}");
+    let diffs = v["differences"].as_array().unwrap();
+    let text = diffs
+        .iter()
+        .map(|d| d.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(" / ");
+    assert!(text.contains("暗い"), "{text}");
+    assert!(text.contains("立ち上がりが遅い"), "{text}");
+}
+
+#[tokio::test]
+async fn match_sound_fits_subtractive_and_can_be_undone() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_mat001", "Copy")).await);
+    // 目標: レゾナンスの効いた暗めのノコギリ波のプラック
+    use glaux_core::ParamValue;
+    let mut p = glaux_core::ParamMap::new();
+    p.insert("waveform".into(), ParamValue::Enum("saw".into()));
+    p.insert("cutoff".into(), ParamValue::Float(700.0));
+    p.insert("resonance".into(), ParamValue::Float(0.5));
+    p.insert("decay".into(), ParamValue::Float(0.25));
+    p.insert("sustain".into(), ParamValue::Float(0.0));
+    p.insert("filter_env".into(), ParamValue::Float(0.7));
+    let y = glaux_engine::sound_match::render_subtractive(&p, 48, 0.8, 48_000, 48_000.0);
+    let path = fx.dir.join("pluck.wav");
+    write_mono_wav(&path, &y, 48_000);
+    let r = call(
+        &fx,
+        "match_sound",
+        json!({ "file": path.to_string_lossy(), "track_id": "trk_mat001", "max_seconds": 8 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    eprintln!("{} verified {}", v["match"], v["verified_distance"]);
+    let m = &v["match"];
+    assert_eq!(m["pitch"], json!(48));
+    assert!(m["distance"].as_f64().unwrap() < m["initial_distance"].as_f64().unwrap());
+    assert!(m["distance"].as_f64().unwrap() < 0.35, "{m}");
+    assert!(v["verified_distance"].as_f64().unwrap() < 0.3, "{v}");
+    // トラックの音源に反映され、undo で戻る
+    let r = call(&fx, "get_project", json!({})).await;
+    let proj = ok_json(&r);
+    let dev = &proj["project"]["tracks"][0]["device"];
+    assert_eq!(dev["name"], json!("subtractive"), "{dev}");
+    assert!(dev["params"]["cutoff"].is_number());
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let r = call(&fx, "get_project", json!({})).await;
+    let proj = ok_json(&r);
+    assert!(proj["project"]["tracks"][0]["device"]["params"]["cutoff"].is_null());
+}
+
+#[tokio::test]
+async fn match_clip_commands_create_a_resembling_track() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音声トラック", "commands": [
+                { "op": "add_track", "track": { "id": "trk_aud001", "name": "Sample", "kind": "audio" } }
+            ] }),
+        )
+        .await,
+    );
+    use glaux_core::ParamValue;
+    let mut p = glaux_core::ParamMap::new();
+    p.insert("waveform".into(), ParamValue::Enum("square".into()));
+    p.insert("cutoff".into(), ParamValue::Float(1500.0));
+    p.insert("attack".into(), ParamValue::Float(0.1));
+    let y = glaux_engine::sound_match::render_subtractive(&p, 60, 0.7, 44_100, 44_100.0);
+    let path = fx.dir.join("lead.wav");
+    write_mono_wav(&path, &y, 44_100);
+    let r = call(
+        &fx,
+        "import_audio_clip",
+        json!({ "track_id": "trk_aud001", "path": path.to_string_lossy(), "start_tick": 1920 }),
+    )
+    .await;
+    let clip_id = ok_json(&r)["clip_id"].as_str().unwrap().to_owned();
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let cid = glaux_core::ClipId::parse(&clip_id).unwrap();
+    let m = glaux_mcp::sound::match_clip_commands(&project, &fx.dir, &cid, 4.0).unwrap();
+    assert_eq!(m.commands.len(), 2);
+    assert_eq!(m.outcome.pitch, 60);
+    assert!(
+        m.outcome.fit.distance.total < 0.35,
+        "{:?}",
+        m.outcome.fit.distance
+    );
+    // 適用すると元のトラックの直後に、同じ位置の 1 音つきで入る
+    let mut view = project.clone();
+    for c in &m.commands {
+        view.apply(c).unwrap();
+    }
+    assert_eq!(view.tracks[1].id, m.track_id);
+    assert_eq!(view.tracks[1].clips[0].start, glaux_core::Tick(1920));
+}
+
+/// 実プラグインで、あるプリセットの音を目標にして同じプリセットが見つかるか
+/// (`GLAUX_TEST_CLAP` 未設定、またはプリセットが 2 つ未満なら何もしない)。
+#[tokio::test]
+async fn find_similar_presets_finds_the_source_preset() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP").map(std::path::PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+        return;
+    };
+    std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+    // 索引のキャッシュを一時フォルダに
+    let cache = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", cache.path());
+    let plugin = glaux_engine::plugins::rescan()
+        .into_iter()
+        .find(|p| p.is_instrument())
+        .unwrap();
+    let list = glaux_engine::plugins::presets(&plugin.id, false).unwrap();
+    if list.len() < 2 {
+        eprintln!("プリセットが少ないため確認しない");
+        return;
+    }
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_clap05", "Synth")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({
+                "label": "CLAP 音源",
+                "commands": [{ "op": "set_device", "track": "trk_clap05",
+                               "device": { "type": "clap", "plugin_id": plugin.id } }]
+            }),
+        )
+        .await,
+    );
+    // 目標: 2 番目のプリセットを E4 で鳴らした音
+    let source = list[1].clone();
+    let mut target = None;
+    glaux_engine::plugins::render_presets(
+        &plugin.id,
+        std::slice::from_ref(&source),
+        glaux_engine::plugins::PresetRenderSpec {
+            pitch: 64,
+            velocity: 0.8,
+            hold: 0.8,
+            total: 1.5,
+            sample_rate: 44_100.0,
+        },
+        |_, r| {
+            target = r.ok();
+            true
+        },
+    )
+    .unwrap();
+    let target = target.unwrap();
+    let wav = fx.dir.join("target.wav");
+    write_mono_wav(&wav, &target, 44_100);
+    let r = call(
+        &fx,
+        "find_similar_presets",
+        json!({ "file": wav.to_string_lossy(), "track_id": "trk_clap05", "limit": 3 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    eprintln!("{v}");
+    assert_eq!(v["index"]["total"], v["index"]["indexed"]);
+    assert_eq!(v["results"][0]["id"], json!(source.id()), "{v}");
+    // サンプルレート(44.1k と 48k)と押していた長さの推定の違いがあるので 0 にはならないが、2 位とは大差
+    let d0 = v["results"][0]["distance"].as_f64().unwrap();
+    assert!(d0 < 0.5, "{v}");
+    if let Some(d1) = v["results"][1]["distance"].as_f64() {
+        assert!(d1 > d0 * 2.0, "{v}");
+    }
+    // 2 回目は索引を作らずに済む
+    let r = call(
+        &fx,
+        "find_similar_presets",
+        json!({ "file": wav.to_string_lossy(), "track_id": "trk_clap05", "index_seconds": 0 }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["index"]["added"], json!(0));
+}
+
+#[tokio::test]
+async fn dbg_real_instruments() {
+    let Some(sf) = std::env::var_os("DBG_SF2") else {
+        return;
+    };
+    let fx = setup().await;
+    for (i, (preset, name, pitch)) in [
+        (0u16, "piano", 60u8),
+        (33, "fingered bass", 40),
+        (73, "flute", 72),
+        (81, "saw lead", 64),
+        (89, "warm pad", 60),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let tid = format!("trk_sf{i:04}");
+        ok_json(&call(&fx, "apply_commands", add_track_args(&tid, name)).await);
+        ok_json(&call(&fx, "set_soundfont_instrument", json!({"track_id": tid, "soundfont": sf.to_string_lossy(), "bank": 0, "preset": preset})).await);
+        let (project, _) = fx.handle.get_project().await.unwrap();
+        let t = glaux_core::TrackId::parse(&tid).unwrap();
+        let target =
+            glaux_mcp::sound::render_note(&project, &fx.dir, &t, *pitch, 100, 1.0).unwrap();
+        let o = glaux_mcp::sound::match_subtractive(&target, 20.0);
+        let words = if glaux_ml::clap::available() {
+            let e = glaux_mcp::sound::embedding(&target).unwrap();
+            let w = glaux_ml::clap::describe(&e, 2);
+            w.iter()
+                .filter(|w| w.category == "instrument" || w.category == "tone")
+                .map(|w| w.ja.clone())
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "{name}: {:.3} → {:.3} ({}) {:.1}s {} | {words}",
+            o.fit.initial_distance.total,
+            o.fit.distance.total,
+            glaux_mcp::sound::match_json(&o)["verdict"],
+            o.fit.seconds,
+            glaux_mcp::sound::match_json(&o)["params"]
+        );
+    }
+}

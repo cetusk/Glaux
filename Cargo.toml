@@ -56,6 +56,8 @@ ebur128 = "0.1"
 midir = "0.11"
 # 追加モデル(CLAP の音声側など)の取得(glaux-mcp のみ。プロキシは環境変数に従う)
 ureq = "3"
+# 似た音を作る(内蔵シンセのつまみの自動合わせ)。描画機能は使わない
+cmaes = { version = "0.2", default-features = false }
 # 音声ファイルの取り込み(mp3 / flac / ogg / m4a を WAV に変換)
 symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "flac", "ogg", "vorbis", "wav", "pcm"] }
 
@@ -71,6 +73,10 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.glaux-ml]
+opt-level = 3
+[profile.dev.package.cmaes]
+opt-level = 3
+[profile.dev.package.nalgebra]
 opt-level = 3
 [profile.dev.package.tract-core]
 opt-level = 3
