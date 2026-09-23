@@ -290,12 +290,18 @@ pub struct MatchSoundParams {
     /// 目標の音: 音声ファイルのパス。
     #[serde(default)]
     pub file: Option<String>,
-    /// 音色を合わせる MIDI トラック ID。音源は内蔵 subtractive になる。
+    /// 音色を合わせる MIDI トラック ID。音源は内蔵 subtractive か fm になる。
     pub track_id: String,
-    /// 探す時間の上限(秒。既定 20、最大 120)。長いほど近づく。
+    /// 合わせる音源: "auto"(既定。subtractive と fm の両方を探して近い方)/ "subtractive" / "fm"。
+    #[serde(default)]
+    pub instrument: Option<String>,
+    /// リバーブの量と広さも一緒に探し、効きがあればトラックの最後にリバーブを足す(既定 false)。
+    #[serde(default)]
+    pub reverb: Option<bool>,
+    /// 探す時間の上限(秒。既定は instrument が auto なら 30、それ以外 20。最大 120)。長いほど近づく。
     #[serde(default)]
     pub max_seconds: Option<f32>,
-    /// トラックの音源が subtractive 以外(CLAP・SoundFont 等)でも置き換える(既定 false = エラーにする)。
+    /// トラックの音源が内蔵の subtractive / fm 以外(CLAP・SoundFont 等)でも置き換える(既定 false = エラーにする)。
     #[serde(default)]
     pub replace_device: Option<bool>,
 }
@@ -1468,14 +1474,17 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "目標の音(音声クリップ・音声ファイル)に似せて、MIDI トラックの内蔵シンセ subtractive のつまみを自動で合わせる\
-        (CMA-ES という進化的な探索で、波形・カットオフ・レゾナンス・ADSR・フィルターエンベロープ・ユニゾン・デチューン・\
-        サブ・ノイズを数百〜数千通り試す。既定 20 秒以内)。結果は set_device 1 回として履歴に残る(undo で戻せる)。\
-        返り値: params(合わせたつまみ)、pitch(目標の音の高さ)、distance(0.15 未満 ほぼ同じ … 0.7 以上 かなり違う)、\
-        initial_distance(探索前)、verified_distance(トラックのエフェクトも通して鳴らした音と目標の距離)。\
-        subtractive で作れない音(生楽器・複雑な FM・サンプル特有の質感)は近づくが一致はしない。そのときは\
-        compare_sounds の differences を見てエフェクト(reverb・distortion 等)を足すか、CLAP プラグインのプリセットを探す。\
-        トラックの音源が subtractive 以外なら replace_device: true が必要。"
+        description = "目標の音(音声クリップ・音声ファイル)に似せて、MIDI トラックの内蔵シンセのつまみを自動で合わせる\
+        (CMA-ES という進化的な探索で数百〜数千通り試す。既定 20 秒以内)。instrument: auto(既定)は subtractive(減算式:\
+        波形・カットオフ・レゾナンス・ADSR・フィルターエンベロープ・ユニゾン等)と fm(FM: 周波数比・変調の深さとその減衰・\
+        フィードバック・ADSR。エレピ・ベル・金属的な音)の両方を探して近い方を採る。reverb: true でリバーブの量と広さも探し、\
+        効きがあればトラックにリバーブを足す。結果は 1 回の履歴として残る(undo で戻せる)。\
+        返り値: instrument(採った音源)、params(合わせたつまみ)、reverb(mix / size)、pitch(目標の音の高さ)、\
+        distance(0.15 未満 ほぼ同じ … 0.7 以上 かなり違う)、initial_distance(探索前)、variants_tried(試した候補と距離)、\
+        verified_distance(トラックのエフェクトも通して鳴らした音と目標の距離)。\
+        内蔵シンセで作れない音(生楽器・サンプル特有の質感)は近づくが一致はしない。そのときは\
+        compare_sounds の differences を見てエフェクトを足すか、CLAP プラグインで find_similar_presets → refine_plugin_params。\
+        トラックの音源が内蔵の subtractive / fm 以外なら replace_device: true が必要。"
     )]
     async fn match_sound(
         &self,
@@ -1503,22 +1512,33 @@ impl GlauxServer {
         if track.kind != glaux_core::TrackKind::Midi {
             return Err(format!("「{}」は MIDI トラックではありません", track.name));
         }
-        let is_sub = match &track.device {
+        let is_synth = match &track.device {
             None => true,
-            Some(d) => {
-                matches!(&d.source, glaux_core::PluginSource::Builtin { name } if name == "subtractive")
-            }
+            Some(d) => matches!(
+                &d.source,
+                glaux_core::PluginSource::Builtin { name } if name == "subtractive" || name == "fm"
+            ),
         };
-        if !is_sub && !p.replace_device.unwrap_or(false) {
+        if !is_synth && !p.replace_device.unwrap_or(false) {
             return Err(format!(
-                "「{}」の音源は subtractive ではありません。置き換えてよければ replace_device: true を付けてください",
+                "「{}」の音源は内蔵の subtractive / fm ではありません。置き換えてよければ replace_device: true を付けてください",
                 track.name
             ));
         }
+        let instrument = match p.instrument.as_deref().unwrap_or("auto") {
+            "auto" => None,
+            other => Some(
+                glaux_engine::sound_match::FitInstrument::parse(other)
+                    .ok_or_else(|| format!("instrument は auto / subtractive / fm: {other}"))?,
+            ),
+        };
+        let reverb = p.reverb.unwrap_or(false);
         let current = track.device.clone();
         let track_name = track.name.clone();
         let dir = self.handle.project_dir().await?;
-        let max_seconds = p.max_seconds.unwrap_or(20.0);
+        let max_seconds = p
+            .max_seconds
+            .unwrap_or(if instrument.is_none() { 30.0 } else { 20.0 });
         let (outcome, label) = tokio::task::spawn_blocking({
             let project = project.clone();
             let dir = dir.clone();
@@ -1526,17 +1546,32 @@ impl GlauxServer {
             move || -> Result<_, String> {
                 let target = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
                 let label = target.label.clone();
-                Ok((crate::sound::match_subtractive(&target, max_seconds), label))
+                Ok((
+                    crate::sound::match_sound(&target, instrument, reverb, max_seconds),
+                    label,
+                ))
             }
         })
         .await
         .map_err(|e| e.to_string())??;
         let device = crate::sound::matched_device(&outcome, current.as_ref());
-        let command = glaux_core::Command::SetDevice {
+        let mut cmds = vec![glaux_core::Command::SetDevice {
             track: track_id.clone(),
             device: Some(device),
-        };
+        }];
+        if let Some(rv) = crate::sound::matched_reverb(&outcome) {
+            cmds.push(glaux_core::Command::AddEffect {
+                track: track_id.clone(),
+                effect: rv,
+                index: None,
+            });
+        }
         let edit_label = format!("{label}に似せて「{track_name}」の音色を自動調整");
+        let command = if cmds.len() == 1 {
+            cmds.remove(0)
+        } else {
+            glaux_core::Command::batch(edit_label.clone(), cmds)
+        };
         let author = self.author(&ctx);
         let (entry_id, m) = flatten(self.handle.apply(command, author, edit_label).await)?;
         // トラックのエフェクトも通して鳴らし、目標とどれだけ近いか確かめる

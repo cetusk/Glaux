@@ -1629,9 +1629,12 @@ async fn find_similar_presets_finds_the_source_preset() {
     assert_eq!(ok_json(&r)["index"]["added"], json!(0));
 }
 
+/// 実楽器(SoundFont)の 1 音に内蔵シンセを合わせたときの近さと CLAP の語を表示する評価用
+/// (`GLAUX_TEST_SF2` に FluidR3_GM.sf2 などを指定したときだけ。約 2 分)。
 #[tokio::test]
-async fn dbg_real_instruments() {
-    let Some(sf) = std::env::var_os("DBG_SF2") else {
+async fn real_instruments_fit_report() {
+    let Some(sf) = std::env::var_os("GLAUX_TEST_SF2") else {
+        eprintln!("GLAUX_TEST_SF2 が未設定のためスキップ");
         return;
     };
     let fx = setup().await;
@@ -1652,7 +1655,7 @@ async fn dbg_real_instruments() {
         let t = glaux_core::TrackId::parse(&tid).unwrap();
         let target =
             glaux_mcp::sound::render_note(&project, &fx.dir, &t, *pitch, 100, 1.0).unwrap();
-        let o = glaux_mcp::sound::match_subtractive(&target, 20.0);
+        let o = glaux_mcp::sound::match_sound(&target, None, true, 20.0);
         let words = if glaux_ml::clap::available() {
             let e = glaux_mcp::sound::embedding(&target).unwrap();
             let w = glaux_ml::clap::describe(&e, 2);
@@ -1664,13 +1667,14 @@ async fn dbg_real_instruments() {
         } else {
             String::new()
         };
+        let j = glaux_mcp::sound::match_json(&o);
         eprintln!(
-            "{name}: {:.3} → {:.3} ({}) {:.1}s {} | {words}",
+            "{name}: {:.3} → {:.3} ({}) {} + リバーブ {} | {words}",
             o.fit.initial_distance.total,
             o.fit.distance.total,
-            glaux_mcp::sound::match_json(&o)["verdict"],
-            o.fit.seconds,
-            glaux_mcp::sound::match_json(&o)["params"]
+            j["verdict"],
+            j["instrument"],
+            j["reverb"]
         );
     }
 }
@@ -1968,4 +1972,49 @@ async fn swing_notes_moves_offbeats_and_matches_analysis() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn match_sound_picks_fm_for_a_bell_and_adds_reverb() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_bel001", "Bell")).await);
+    use glaux_core::ParamValue;
+    let mut p = glaux_core::ParamMap::new();
+    for (k, v) in [
+        ("ratio", 3.5),
+        ("index", 5.0),
+        ("index_decay", 0.6),
+        ("index_sustain", 0.1),
+        ("decay", 1.5),
+        ("sustain", 0.0),
+        ("release", 1.0),
+    ] {
+        p.insert(k.into(), ParamValue::Float(v));
+    }
+    let mut y = glaux_engine::sound_match::render_instrument("fm", &p, 72, 1.0, 72_000, 48_000.0);
+    glaux_engine::sound_match::apply_reverb(&mut y, 0.4, 0.7, 48_000.0);
+    let path = fx.dir.join("bell.wav");
+    write_mono_wav(&path, &y, 48_000);
+    let r = call(
+        &fx,
+        "match_sound",
+        json!({ "file": path.to_string_lossy(), "track_id": "trk_bel001", "max_seconds": 16, "reverb": true }),
+    )
+    .await;
+    let v = ok_json(&r);
+    eprintln!("{}", v["match"]);
+    assert_eq!(v["match"]["instrument"], json!("fm"), "{}", v["match"]);
+    assert!(v["match"]["distance"].as_f64().unwrap() < 0.35);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let t = &project.tracks[0];
+    assert!(
+        matches!(&t.device.as_ref().unwrap().source, glaux_core::PluginSource::Builtin { name } if name == "fm")
+    );
+    assert!(t.effects.iter().any(
+        |e| matches!(&e.source, glaux_core::PluginSource::Builtin { name } if name == "reverb")
+    ));
+    // 1 回の undo で音源もリバーブも戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(project.tracks[0].effects.is_empty());
 }

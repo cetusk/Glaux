@@ -138,6 +138,9 @@ export function clipPeaks(clipId: string, buckets: number): Promise<{ peaks: [nu
 export function matchClipSound(clipId: string): Promise<{
   track_id: string;
   track_name: string;
+  /** 採った音源(subtractive / fm) */
+  instrument: string;
+  reverb: { mix: number; size: number } | null;
   distance: number;
   initial_distance: number;
   verdict: string;

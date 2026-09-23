@@ -441,6 +441,15 @@ pub struct MatchOutcome {
     pub descriptors: glaux_engine::timbre::SoundDescriptors,
 }
 
+/// 目標の音の高さ(MIDI)。音程が取れない非調和な音(ベル等)はスペクトルの主要な成分から、それも無ければ 60。
+pub fn target_pitch(sound: &LoadedSound, d: &glaux_engine::timbre::SoundDescriptors) -> u8 {
+    d.pitch
+        .as_ref()
+        .map(|p| p.midi)
+        .or_else(|| glaux_engine::timbre::dominant_pitch(&sound.frames, sound.sample_rate))
+        .unwrap_or(60)
+}
+
 /// 鍵盤を押していた秒数の推定: 鳴っている長さ − 余韻(最後の減衰)。
 /// 減衰し続ける音でも、鍵盤を離してから減り方が変わる所を余韻の始まりとみなせる。
 pub fn estimate_hold(d: &glaux_engine::timbre::SoundDescriptors) -> f32 {
@@ -450,21 +459,60 @@ pub fn estimate_hold(d: &glaux_engine::timbre::SoundDescriptors) -> f32 {
 
 /// 目標の音に内蔵 subtractive のつまみを合わせる(CMA-ES)。
 pub fn match_subtractive(target: &LoadedSound, max_seconds: f32) -> MatchOutcome {
-    use glaux_engine::sound_match::{fit_subtractive, FitOptions};
+    match_sound(
+        target,
+        Some(glaux_engine::sound_match::FitInstrument::Subtractive),
+        false,
+        max_seconds,
+    )
+}
+
+/// 目標の音に内蔵音源のつまみを合わせる(CMA-ES)。`instrument` が None なら subtractive と fm の
+/// 両方を半分ずつの時間で探して近い方、`reverb` ならリバーブ(mix / size)も一緒に探す。
+pub fn match_sound(
+    target: &LoadedSound,
+    instrument: Option<glaux_engine::sound_match::FitInstrument>,
+    reverb: bool,
+    max_seconds: f32,
+) -> MatchOutcome {
+    use glaux_engine::sound_match::{fit_instrument, FitInstrument, FitOptions};
     let d = describe(target);
-    let pitch = d.pitch.as_ref().map(|p| p.midi).unwrap_or(60);
+    let pitch = target_pitch(target, &d);
     let hold = estimate_hold(&d);
-    let fit = fit_subtractive(
-        &target.frames,
-        target.sample_rate,
-        pitch,
-        hold,
-        &d,
-        FitOptions {
-            max_seconds: max_seconds.clamp(2.0, 120.0),
-            ..Default::default()
-        },
-    );
+    let secs = max_seconds.clamp(2.0, 120.0);
+    let candidates: Vec<FitInstrument> = match instrument {
+        Some(i) => vec![i],
+        None => vec![FitInstrument::Subtractive, FitInstrument::Fm],
+    };
+    let opts = FitOptions {
+        max_seconds: secs / candidates.len() as f32,
+        reverb,
+        ..Default::default()
+    };
+    let mut results: Vec<glaux_engine::sound_match::FitResult> = candidates
+        .iter()
+        .map(|i| {
+            fit_instrument(
+                &target.frames,
+                target.sample_rate,
+                pitch,
+                hold,
+                &d,
+                *i,
+                opts,
+            )
+        })
+        .collect();
+    results.sort_by(|a, b| a.distance.total.total_cmp(&b.distance.total));
+    let mut fit = results.remove(0);
+    // 自動選択のとき: 比べた音源ごとの距離も残す
+    for other in &results {
+        fit.tried.push((
+            format!("{}(不採用)", other.instrument.name()),
+            other.distance.total,
+        ));
+        fit.evaluations += other.evaluations;
+    }
     MatchOutcome {
         fit,
         pitch,
@@ -473,15 +521,16 @@ pub fn match_subtractive(target: &LoadedSound, max_seconds: f32) -> MatchOutcome
     }
 }
 
-/// 合わせた結果の subtractive の Device(今の gain_db があれば保つ)。
+/// 合わせた結果の内蔵音源の Device(同じ音源の今の gain_db があれば保つ)。
 pub fn matched_device(
     outcome: &MatchOutcome,
     current: Option<&glaux_core::Device>,
 ) -> glaux_core::Device {
-    let mut device = glaux_core::Device::builtin("subtractive");
+    let name = outcome.fit.instrument.name();
+    let mut device = glaux_core::Device::builtin(name);
     device.params = outcome.fit.params.clone();
     let keep_gain = current.and_then(|d| match &d.source {
-        glaux_core::PluginSource::Builtin { name } if name == "subtractive" => {
+        glaux_core::PluginSource::Builtin { name: n } if n == name => {
             d.params.get("gain_db").cloned()
         }
         _ => None,
@@ -490,6 +539,24 @@ pub fn matched_device(
         device.params.insert("gain_db".into(), g);
     }
     device
+}
+
+/// 合わせたリバーブを挿すエフェクト(リバーブも探して、効きがあるときだけ)。
+pub fn matched_reverb(outcome: &MatchOutcome) -> Option<glaux_core::Effect> {
+    let (mix, size) = outcome.fit.reverb?;
+    if mix < 0.03 {
+        return None;
+    }
+    let mut e = glaux_core::Effect::builtin(glaux_core::FxId::new(), "reverb");
+    e.params.insert(
+        "mix".into(),
+        glaux_core::ParamValue::Float((mix as f64 * 1000.0).round() / 1000.0),
+    );
+    e.params.insert(
+        "size".into(),
+        glaux_core::ParamValue::Float((size as f64 * 1000.0).round() / 1000.0),
+    );
+    Some(e)
 }
 
 /// 合わせた結果を AI・UI 向けの JSON にする。
@@ -510,7 +577,9 @@ pub fn match_json(o: &MatchOutcome) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({
+        "instrument": o.fit.instrument.name(),
         "params": params,
+        "reverb": o.fit.reverb.map(|(mix, size)| serde_json::json!({ "mix": r3(mix), "size": r3(size) })),
         "pitch": o.pitch,
         "hold_seconds": r3(o.hold),
         "distance": r3(o.fit.distance.total),
@@ -520,7 +589,7 @@ pub fn match_json(o: &MatchOutcome) -> serde_json::Value {
         },
         "initial_distance": r3(o.fit.initial_distance.total),
         "verdict": verdict(o.fit.distance.total),
-        "waveforms_tried": o.fit.tried.iter().map(|(w, d)| serde_json::json!({"waveform": w, "distance": r3(*d)})).collect::<Vec<_>>(),
+        "variants_tried": o.fit.tried.iter().map(|(w, d)| serde_json::json!({"variant": w, "distance": r3(*d)})).collect::<Vec<_>>(),
         "evaluations": o.fit.evaluations,
         "seconds": (o.fit.seconds * 10.0).round() / 10.0,
     })
@@ -549,11 +618,14 @@ pub fn match_clip_commands(
         .find_map(|(i, t)| t.clips.iter().find(|c| &c.id == clip_id).map(|c| (i, c)))
         .ok_or_else(|| format!("クリップが見つかりません: {clip_id}"))?;
     let target = load(project, dir, &SoundSource::Clip(clip_id.clone()))?;
-    let outcome = match_subtractive(&target, max_seconds);
+    let outcome = match_sound(&target, None, true, max_seconds);
     let track_id = TrackId::new();
     let track_name = format!("{} の再現", clip.name);
     let mut track = Track::new(track_id.clone(), track_name.clone(), TrackKind::Midi);
     track.device = Some(matched_device(&outcome, None));
+    if let Some(rv) = matched_reverb(&outcome) {
+        track.effects.push(rv);
+    }
     let tm = &project.tempo_map;
     let start_sec = tm.tick_to_seconds(clip.start);
     let end = tm.seconds_to_tick(start_sec + outcome.hold as f64);

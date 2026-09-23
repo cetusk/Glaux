@@ -258,7 +258,12 @@ pub fn find_similar(
     let index = load_index(plugin_id);
     let list = glaux_engine::plugins::presets(plugin_id, false)?;
     let d = crate::sound::describe(target);
-    let pitch = d.pitch.as_ref().map(|p| p.midi).unwrap_or(INDEX_PITCH);
+    let pitch = d
+        .pitch
+        .as_ref()
+        .map(|p| p.midi)
+        .or_else(|| glaux_engine::timbre::dominant_pitch(&target.frames, target.sample_rate))
+        .unwrap_or(INDEX_PITCH);
     let hold = crate::sound::estimate_hold(&d) as f64;
     let target_summary = sound_match::summary(&target.frames, target.sample_rate);
     let target_clap = if glaux_ml::clap::available() {

@@ -221,6 +221,32 @@ pub fn resample_pitch(track: &[PitchFrame], duration: f32) -> Vec<PitchFrame> {
         .collect()
 }
 
+/// 音程が取れない音(ベル・鐘など非調和な音)の代わりの音の高さ: 鳴り始め 0.5 秒のスペクトルで、
+/// いちばん強い成分の 30% 以上ある最も低いピーク(40〜4000Hz)を MIDI ノート番号にする。
+pub fn dominant_pitch(frames: &[f32], sr: f32) -> Option<u8> {
+    const N: usize = 8192;
+    let start = frames.iter().position(|v| v.abs() > 1e-3)?;
+    let seg: Vec<f32> = frames[start..].iter().take(N).copied().collect();
+    if seg.len() < 1024 {
+        return None;
+    }
+    let fft = rustfft::FftPlanner::<f32>::new().plan_fft_forward(N);
+    let window = hann(N);
+    let mag = magnitude(&seg, N, &fft, &window);
+    let bin_hz = sr / N as f32;
+    let lo = (40.0 / bin_hz) as usize;
+    let hi = ((4000.0 / bin_hz) as usize).min(mag.len() - 2);
+    let max = mag[lo..hi].iter().cloned().fold(0.0f32, f32::max);
+    if max <= 0.0 {
+        return None;
+    }
+    let k = (lo.max(1)..hi)
+        .find(|&k| mag[k] >= max * 0.3 && mag[k] >= mag[k - 1] && mag[k] >= mag[k + 1])?;
+    let f = k as f32 * bin_hz;
+    let midi = 69.0 + 12.0 * (f / 440.0).log2();
+    Some(midi.round().clamp(0.0, 127.0) as u8)
+}
+
 /// 単音を解析する。`pitch` を渡せばそれを使い、無ければ内蔵の YIN で求める。
 pub fn describe(frames: &[f32], sr: f32, pitch: Option<&[PitchFrame]>) -> SoundDescriptors {
     let n = frames.len().min((MAX_SECONDS * sr) as usize);
@@ -976,6 +1002,21 @@ mod tests {
             p.vibrato_depth_cents
         );
         assert!(p.glide_cents < -30.0, "{}", p.glide_cents);
+    }
+
+    #[test]
+    fn dominant_pitch_finds_the_lowest_strong_partial() {
+        let sr = 48_000.0;
+        // 523Hz(C5)と、その 3.5 倍・4.7 倍の非調和な成分
+        let x: Vec<f32> = (0..24_000)
+            .map(|i| {
+                let t = i as f32 / sr;
+                (std::f32::consts::TAU * 523.25 * t).sin()
+                    + 0.6 * (std::f32::consts::TAU * 523.25 * 3.5 * t).sin()
+                    + 0.4 * (std::f32::consts::TAU * 523.25 * 4.7 * t).sin()
+            })
+            .collect();
+        assert_eq!(dominant_pitch(&x, sr), Some(72));
     }
 
     #[test]

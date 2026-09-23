@@ -5,8 +5,8 @@
 //! スペクトル収束度)と「音量の包絡(5ms ごとの dB)の差」の和。
 //! 窓の長さは秒で決めるので、サンプルレートの違う音どうしも比べられる。
 //!
-//! 自動合わせ(`fit_subtractive`)は Instrumental(2026)の構成に倣い、CMA-ES(微分を使わない進化的な
-//! 最適化)で subtractive の連続つまみ 11 個を探す。初期値は音の記述子(立ち上がり・減衰・明るさ・
+//! 自動合わせ(`fit_instrument`。subtractive / fm、リバーブ込みも)は Instrumental(2026)の構成に倣い、
+//! CMA-ES(微分を使わない進化的な最適化)で音源の連続つまみを探す。初期値は音の記述子(立ち上がり・減衰・明るさ・
 //! ノイズっぽさ・波形の推定)から決め、波形(4 種)は有望な 2 つだけを探す。候補の音はボイスを直接
 //! 鳴らして作る(エフェクト・トラック音量は通さない)ので 1 回数 ms で済み、CMA-ES の 1 世代を並列に評価する。
 
@@ -258,86 +258,187 @@ pub fn summary_distance(a: &[f32], b: &[f32]) -> f32 {
     0.5 * s + e
 }
 
-// ---- subtractive の自動合わせ ----
+// ---- 内蔵音源の自動合わせ ----
 
 const WAVEFORMS: [&str; 4] = ["saw", "square", "triangle", "sine"];
 const UNISON: [i64; 4] = [1, 3, 5, 7];
-/// 探す連続つまみの数(cutoff, resonance, attack, decay, sustain, release, filter_env, detune, sub, noise, unison)
-const DIM: usize = 11;
+/// fm の周波数比の出発点(整数比 = 楽器らしい、非整数 = 金属的)
+const FM_RATIOS: [&str; 4] = ["1", "2", "3.5", "1.41"];
 
-/// 0〜1 の探索空間 ↔ つまみの値。
-fn to_params(x: &[f64], waveform: &str) -> ParamMap {
-    let c = |i: usize| x[i].clamp(0.0, 1.0);
-    let log = |v: f64, lo: f64, hi: f64| lo * (hi / lo).powf(v);
-    let mut m = ParamMap::new();
-    m.insert("waveform".into(), ParamValue::Enum(waveform.to_owned()));
-    m.insert(
-        "cutoff".into(),
-        ParamValue::Float(log(c(0), 40.0, 12_000.0)),
-    );
-    m.insert("resonance".into(), ParamValue::Float(c(1) * 0.9));
-    m.insert("attack".into(), ParamValue::Float(log(c(2), 0.001, 2.0)));
-    m.insert("decay".into(), ParamValue::Float(log(c(3), 0.01, 3.0)));
-    m.insert("sustain".into(), ParamValue::Float(c(4)));
-    m.insert("release".into(), ParamValue::Float(log(c(5), 0.01, 4.0)));
-    m.insert("filter_env".into(), ParamValue::Float(c(6)));
-    m.insert("detune".into(), ParamValue::Float(c(7) * 60.0));
-    m.insert("sub".into(), ParamValue::Float(c(8)));
-    m.insert("noise".into(), ParamValue::Float(c(9)));
-    let u = ((c(10) * 4.0) as usize).min(3);
-    m.insert("unison".into(), ParamValue::Int(UNISON[u]));
-    m
+/// 自動合わせの対象の内蔵音源。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FitInstrument {
+    Subtractive,
+    Fm,
 }
 
-/// 記述子から探索の初期値を決める。
-fn initial_guess(d: &SoundDescriptors) -> [f64; DIM] {
-    let inv_log =
-        |v: f64, lo: f64, hi: f64| ((v.clamp(lo, hi) / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0);
+fn log_map(v: f64, lo: f64, hi: f64) -> f64 {
+    lo * (hi / lo).powf(v.clamp(0.0, 1.0))
+}
+
+fn inv_log(v: f64, lo: f64, hi: f64) -> f64 {
+    ((v.clamp(lo, hi) / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0)
+}
+
+/// 記述子から包絡の初期値(attack, decay, sustain, release を 0〜1 で)。上限は音源ごと。
+fn envelope_guess(d: &SoundDescriptors, decay_max: f64, release_max: f64) -> [f64; 4] {
     let e = &d.envelope;
-    let s = &d.spectrum;
-    let attack = inv_log(e.attack_ms as f64 / 1000.0, 0.001, 2.0);
-    let decay = inv_log((e.decay_ms as f64 / 1000.0).max(0.01), 0.01, 3.0);
     let sustain = if e.decays_continuously {
         0.0
     } else {
         10f64.powf(e.sustain_db as f64 / 20.0).clamp(0.0, 1.0)
     };
-    let release = inv_log((e.release_ms as f64 / 1000.0).max(0.01), 0.01, 4.0);
-    // 明るさの中心の 3 倍あたりにカットオフ。鳴り始めの方が明るければフィルタエンベロープ
-    let cutoff = inv_log((s.centroid_hz as f64 * 3.0).max(80.0), 40.0, 12_000.0);
-    let filter_env = if s.centroid_start_hz > s.centroid_end_hz * 1.4 {
-        0.5
-    } else {
-        0.15
-    };
-    let noise = if s.flatness > 0.3 { 0.6 } else { 0.05 };
     [
-        cutoff, 0.15, attack, decay, sustain, release, filter_env, 0.2, 0.0, noise, 0.0,
+        inv_log(e.attack_ms as f64 / 1000.0, 0.001, 2.0),
+        inv_log((e.decay_ms as f64 / 1000.0).max(0.01), 0.01, decay_max),
+        sustain,
+        inv_log((e.release_ms as f64 / 1000.0).max(0.01), 0.01, release_max),
     ]
 }
 
-/// 記述子の波形の推定から、探す波形の順番を決める(先頭ほど有望)。
-fn waveform_order(d: &SoundDescriptors) -> Vec<&'static str> {
-    let first = match d.harmonics.as_ref().map(|h| h.waveform_guess.as_str()) {
-        Some("sine") => "sine",
-        Some("square") => "square",
-        Some("triangle") => "triangle",
-        _ => "saw",
-    };
-    let mut v = vec![first];
-    v.extend(WAVEFORMS.iter().copied().filter(|w| *w != first));
-    v
+impl FitInstrument {
+    pub fn name(self) -> &'static str {
+        match self {
+            FitInstrument::Subtractive => "subtractive",
+            FitInstrument::Fm => "fm",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "subtractive" => Some(FitInstrument::Subtractive),
+            "fm" => Some(FitInstrument::Fm),
+            _ => None,
+        }
+    }
+
+    /// 探す連続つまみの数
+    fn dim(self) -> usize {
+        match self {
+            // cutoff, resonance, attack, decay, sustain, release, filter_env, detune, sub, noise, unison
+            FitInstrument::Subtractive => 11,
+            // ratio, index, index_decay, index_sustain, feedback, attack, decay, sustain, release
+            FitInstrument::Fm => 9,
+        }
+    }
+
+    /// 0〜1 の探索空間 → つまみの値。`variant` は subtractive なら波形、fm なら比の出発点(値は x で決まる)。
+    fn to_params(self, x: &[f64], variant: &str) -> ParamMap {
+        let c = |i: usize| x[i].clamp(0.0, 1.0);
+        let mut m = ParamMap::new();
+        let f = |m: &mut ParamMap, k: &str, v: f64| {
+            m.insert(k.into(), ParamValue::Float(v));
+        };
+        match self {
+            FitInstrument::Subtractive => {
+                m.insert("waveform".into(), ParamValue::Enum(variant.to_owned()));
+                f(&mut m, "cutoff", log_map(c(0), 40.0, 12_000.0));
+                f(&mut m, "resonance", c(1) * 0.9);
+                f(&mut m, "attack", log_map(c(2), 0.001, 2.0));
+                f(&mut m, "decay", log_map(c(3), 0.01, 3.0));
+                f(&mut m, "sustain", c(4));
+                f(&mut m, "release", log_map(c(5), 0.01, 4.0));
+                f(&mut m, "filter_env", c(6));
+                f(&mut m, "detune", c(7) * 60.0);
+                f(&mut m, "sub", c(8));
+                f(&mut m, "noise", c(9));
+                let u = ((c(10) * 4.0) as usize).min(3);
+                m.insert("unison".into(), ParamValue::Int(UNISON[u]));
+            }
+            FitInstrument::Fm => {
+                f(&mut m, "ratio", log_map(c(0), 0.5, 16.0));
+                f(&mut m, "index", c(1) * 12.0);
+                f(&mut m, "index_decay", log_map(c(2), 0.005, 4.0));
+                f(&mut m, "index_sustain", c(3));
+                f(&mut m, "feedback", c(4));
+                f(&mut m, "attack", log_map(c(5), 0.001, 2.0));
+                f(&mut m, "decay", log_map(c(6), 0.01, 6.0));
+                f(&mut m, "sustain", c(7));
+                f(&mut m, "release", log_map(c(8), 0.01, 6.0));
+            }
+        }
+        m
+    }
+
+    /// 記述子から探索の初期値を決める。
+    fn initial_guess(self, d: &SoundDescriptors, variant: &str) -> Vec<f64> {
+        let s = &d.spectrum;
+        let opening = s.centroid_start_hz > s.centroid_end_hz * 1.4;
+        match self {
+            FitInstrument::Subtractive => {
+                let [a, dcy, sus, rel] = envelope_guess(d, 3.0, 4.0);
+                // 明るさの中心の 3 倍あたりにカットオフ。鳴り始めの方が明るければフィルタエンベロープ
+                let cutoff = inv_log((s.centroid_hz as f64 * 3.0).max(80.0), 40.0, 12_000.0);
+                let filter_env = if opening { 0.5 } else { 0.15 };
+                let noise = if s.flatness > 0.3 { 0.6 } else { 0.05 };
+                vec![
+                    cutoff, 0.15, a, dcy, sus, rel, filter_env, 0.2, 0.0, noise, 0.0,
+                ]
+            }
+            FitInstrument::Fm => {
+                let [a, dcy, sus, rel] = envelope_guess(d, 6.0, 6.0);
+                let ratio: f64 = variant.parse().unwrap_or(1.0);
+                // 明るい音ほど変調を深く。鳴り始めだけ明るければ深さを減衰させる
+                let index = if s.centroid_hz > 1500.0 { 0.45 } else { 0.25 };
+                let (idx_decay, idx_sus) = if opening {
+                    (inv_log(0.3, 0.005, 4.0), 0.2)
+                } else {
+                    (inv_log(1.0, 0.005, 4.0), 0.8)
+                };
+                let feedback = if s.flatness > 0.2 { 0.3 } else { 0.0 };
+                vec![
+                    inv_log(ratio, 0.5, 16.0),
+                    index,
+                    idx_decay,
+                    idx_sus,
+                    feedback,
+                    a,
+                    dcy,
+                    sus,
+                    rel,
+                ]
+            }
+        }
+    }
+
+    /// 候補(先頭ほど有望)。
+    fn variants(self, d: &SoundDescriptors) -> Vec<&'static str> {
+        match self {
+            FitInstrument::Subtractive => {
+                let first = match d.harmonics.as_ref().map(|h| h.waveform_guess.as_str()) {
+                    Some("sine") => "sine",
+                    Some("square") => "square",
+                    Some("triangle") => "triangle",
+                    _ => "saw",
+                };
+                let mut v = vec![first];
+                v.extend(WAVEFORMS.iter().copied().filter(|w| *w != first));
+                v
+            }
+            FitInstrument::Fm => {
+                // 非調和な音なら非整数比から
+                let inharmonic = d.harmonics.as_ref().is_some_and(|h| h.inharmonicity > 0.02)
+                    || d.pitch.is_none();
+                if inharmonic {
+                    vec!["3.5", "1.41", "1", "2"]
+                } else {
+                    FM_RATIOS.to_vec()
+                }
+            }
+        }
+    }
 }
 
 /// 候補のつまみで 1 音鳴らす(ボイスを直接使う。`hold` 秒で離し、全体で `len` サンプル)。
-pub fn render_subtractive(
+pub fn render_instrument(
+    instrument: &str,
     params: &ParamMap,
     pitch: u8,
     hold: f32,
     len: usize,
     sr: f32,
 ) -> Vec<f32> {
-    let mut device = Device::builtin("subtractive");
+    let mut device = Device::builtin(instrument);
     device.params = params.clone();
     let (_, ip) = bake_instrument(Some(&device));
     let freq = 440.0 * 2f32.powf((pitch as f32 - 69.0) / 12.0);
@@ -353,16 +454,46 @@ pub fn render_subtractive(
         .collect()
 }
 
+/// subtractive で 1 音鳴らす([`render_instrument`] の短縮形)。
+pub fn render_subtractive(
+    params: &ParamMap,
+    pitch: u8,
+    hold: f32,
+    len: usize,
+    sr: f32,
+) -> Vec<f32> {
+    render_instrument("subtractive", params, pitch, hold, len, sr)
+}
+
+/// 内蔵リバーブ(mix / size)を通す(モノラル → 左右の平均)。
+pub fn apply_reverb(x: &mut [f32], mix: f32, size: f32, sr: f32) {
+    let mut e = glaux_core::Effect::builtin(glaux_core::FxId::new(), "reverb");
+    e.params.insert("mix".into(), ParamValue::Float(mix as f64));
+    e.params
+        .insert("size".into(), ParamValue::Float(size as f64));
+    let Some(p) = glaux_dsp::bake_effect(&e, sr, &|_| None) else {
+        return;
+    };
+    let mut st = glaux_dsp::EffectState::default();
+    st.ensure_kind(&p);
+    for v in x.iter_mut() {
+        let (l, r) = st.process(&p, *v, *v, 0.0);
+        *v = (l + r) * 0.5;
+    }
+}
+
 /// 自動合わせの設定。
 #[derive(Clone, Copy, Debug)]
 pub struct FitOptions {
-    /// 波形 1 つあたりの世代数の上限
+    /// 候補 1 つあたりの世代数の上限
     pub generations: usize,
     /// 1 世代の候補数
     pub population: usize,
     /// 全体の時間の上限(秒)
     pub max_seconds: f32,
     pub seed: u64,
+    /// リバーブ(mix / size)も一緒に探す
+    pub reverb: bool,
 }
 
 impl Default for FitOptions {
@@ -372,6 +503,7 @@ impl Default for FitOptions {
             population: 16,
             max_seconds: 20.0,
             seed: 1,
+            reverb: false,
         }
     }
 }
@@ -379,25 +511,29 @@ impl Default for FitOptions {
 /// 自動合わせの結果。
 #[derive(Clone, Debug)]
 pub struct FitResult {
-    /// subtractive のつまみ(gain_db は含まない。今の値を保つ)
+    pub instrument: FitInstrument,
+    /// 音源のつまみ(gain_db は含まない。今の値を保つ)
     pub params: ParamMap,
+    /// リバーブも探したとき: (mix, size)
+    pub reverb: Option<(f32, f32)>,
     pub distance: Distance,
     /// 初期値(記述子からの推定)での距離
     pub initial_distance: Distance,
-    /// 試した波形ごとの最良の距離
+    /// 試した候補(波形 / 比の出発点)ごとの最良の距離
     pub tried: Vec<(String, f32)>,
     pub evaluations: usize,
     pub seconds: f32,
 }
 
-/// 目標の音(モノラル、`sr`)に subtractive のつまみを合わせる。`pitch` は目標の音の高さ、
+/// 目標の音(モノラル、`sr`)に内蔵音源のつまみを合わせる。`pitch` は目標の音の高さ、
 /// `hold` は鍵盤を押している秒数、`d` は目標の記述子(初期値に使う)。
-pub fn fit_subtractive(
+pub fn fit_instrument(
     target: &[f32],
     sr: f32,
     pitch: u8,
     hold: f32,
     d: &SoundDescriptors,
+    instrument: FitInstrument,
     opts: FitOptions,
 ) -> FitResult {
     use cmaes::{CMAESOptions, DVector};
@@ -406,8 +542,28 @@ pub fn fit_subtractive(
     let len = target.len().max(1);
     let f_max = (sr / 2.0 * 0.9).min(16_000.0);
     let tf = features(target, sr, f_max);
-    let eval = |x: &[f64], wf: &str| -> Distance {
-        let y = render_subtractive(&to_params(x, wf), pitch, hold, len, sr);
+    let dim = instrument.dim();
+    // リバーブの 2 次元(mix, size)は音源のつまみの後ろ
+    let reverb_of = |x: &[f64]| -> Option<(f32, f32)> {
+        opts.reverb.then(|| {
+            (
+                x[dim].clamp(0.0, 1.0) as f32,
+                x[dim + 1].clamp(0.0, 1.0) as f32,
+            )
+        })
+    };
+    let eval = |x: &[f64], variant: &str| -> Distance {
+        let mut y = render_instrument(
+            instrument.name(),
+            &instrument.to_params(x, variant),
+            pitch,
+            hold,
+            len,
+            sr,
+        );
+        if let Some((mix, size)) = reverb_of(x) {
+            apply_reverb(&mut y, mix, size, sr);
+        }
         distance(&tf, &features(trim_onset(&y, sr), sr, f_max))
     };
     // 範囲外に出た分は罰則(CMA-ES は制約なしなので、0〜1 に引き戻す)
@@ -417,25 +573,40 @@ pub fn fit_subtractive(
             .sum::<f64>()
             * 10.0
     };
-    let init = initial_guess(d);
-    let order = waveform_order(d);
-    let initial_distance = eval(&init, order[0]);
-    // 波形ごとに初期値で評価し、有望な 2 つを探す
-    let mut first: Vec<(&str, f32)> = order.iter().map(|w| (*w, eval(&init, w).total)).collect();
+    let variants = instrument.variants(d);
+    let init_for = |variant: &str| -> Vec<f64> {
+        let mut v = instrument.initial_guess(d, variant);
+        if opts.reverb {
+            // 余韻が長い音はリバーブ多めから
+            let wet = if d.envelope.release_ms > 600.0 {
+                0.3
+            } else {
+                0.1
+            };
+            v.extend([wet, 0.5]);
+        }
+        v
+    };
+    let initial_distance = eval(&init_for(variants[0]), variants[0]);
+    // 候補ごとに初期値で評価し、有望な 2 つを探す
+    let mut first: Vec<(&str, f32)> = variants
+        .iter()
+        .map(|w| (*w, eval(&init_for(w), w).total))
+        .collect();
     first.sort_by(|a, b| a.1.total_cmp(&b.1));
-    let mut evaluations = WAVEFORMS.len() + 1;
-    let mut best: (f64, Vec<f64>, &str) = (f64::MAX, init.to_vec(), first[0].0);
+    let mut evaluations = variants.len() + 1;
+    let mut best: (f64, Vec<f64>, &str) = (f64::MAX, init_for(first[0].0), first[0].0);
     let mut tried = Vec::new();
-    let per_waveform = opts.max_seconds / 2.0;
-    for (wf, _) in first.iter().take(2) {
-        let t0 = std::time::Instant::now();
+    let per_variant = opts.max_seconds / 2.0;
+    for (variant, _) in first.iter().take(2) {
+        let init = init_for(variant);
         let objective = |x: &DVector<f64>| -> f64 {
-            eval(x.as_slice(), wf).total as f64 + penalty(x.as_slice())
+            eval(x.as_slice(), variant).total as f64 + penalty(x.as_slice())
         };
-        let mut cma = match CMAESOptions::new(init.to_vec(), 0.2)
+        let mut cma = match CMAESOptions::new(init.clone(), 0.2)
             .population_size(opts.population)
             .max_generations(opts.generations)
-            .max_time(std::time::Duration::from_secs_f32(per_waveform))
+            .max_time(std::time::Duration::from_secs_f32(per_variant))
             .seed(opts.seed)
             .build(objective)
         {
@@ -445,23 +616,36 @@ pub fn fit_subtractive(
         let r = cma.run_parallel();
         evaluations += cma.function_evals();
         if let Some(b) = r.overall_best {
-            tried.push((wf.to_string(), b.value as f32));
+            tried.push((variant.to_string(), b.value as f32));
             if b.value < best.0 {
-                best = (b.value, b.point.as_slice().to_vec(), wf);
+                best = (b.value, b.point.as_slice().to_vec(), variant);
             }
         }
-        let _ = t0;
     }
-    let params = to_params(&best.1, best.2);
+    let params = instrument.to_params(&best.1, best.2);
     let distance = eval(&best.1, best.2);
     FitResult {
+        instrument,
         params,
+        reverb: reverb_of(&best.1),
         distance,
         initial_distance,
         tried,
         evaluations,
         seconds: started.elapsed().as_secs_f32(),
     }
+}
+
+/// subtractive に合わせる([`fit_instrument`] の短縮形)。
+pub fn fit_subtractive(
+    target: &[f32],
+    sr: f32,
+    pitch: u8,
+    hold: f32,
+    d: &SoundDescriptors,
+    opts: FitOptions,
+) -> FitResult {
+    fit_instrument(target, sr, pitch, hold, d, FitInstrument::Subtractive, opts)
 }
 
 #[cfg(test)]
@@ -523,6 +707,78 @@ mod tests {
         assert_eq!(a.len(), SUMMARY_LEN);
         assert!(summary_distance(&a, &a) < 1e-6);
         assert!(summary_distance(&a, &near) < summary_distance(&a, &far));
+    }
+
+    #[test]
+    fn fm_fits_a_bell_better_than_subtractive() {
+        // 目標: 非整数比の FM ベル(減衰し続ける)
+        let sr = 32_000.0;
+        let bell = param(&[
+            ("ratio", ParamValue::Float(3.5)),
+            ("index", ParamValue::Float(5.0)),
+            ("index_decay", ParamValue::Float(0.6)),
+            ("index_sustain", ParamValue::Float(0.1)),
+            ("attack", ParamValue::Float(0.002)),
+            ("decay", ParamValue::Float(1.5)),
+            ("sustain", ParamValue::Float(0.0)),
+            ("release", ParamValue::Float(1.0)),
+        ]);
+        let target = render_instrument("fm", &bell, 69, 1.2, (sr * 1.2) as usize, sr);
+        let d = crate::timbre::describe(&target, sr, None);
+        let opts = FitOptions {
+            max_seconds: 16.0,
+            ..Default::default()
+        };
+        let fm = fit_instrument(&target, sr, 69, 1.2, &d, FitInstrument::Fm, opts);
+        let sub = fit_instrument(&target, sr, 69, 1.2, &d, FitInstrument::Subtractive, opts);
+        eprintln!(
+            "fm {:?} ({:?}) / subtractive {:?}",
+            fm.distance,
+            fm.params.get("ratio"),
+            sub.distance
+        );
+        assert!(
+            fm.distance.total < sub.distance.total,
+            "ベルは fm の方が近い"
+        );
+        assert!(fm.distance.total < 0.3, "{:?}", fm.distance);
+    }
+
+    #[test]
+    fn reverb_is_found_when_the_target_has_it() {
+        let sr = 32_000.0;
+        let dry = param(&[
+            ("waveform", ParamValue::Enum("saw".into())),
+            ("cutoff", ParamValue::Float(2000.0)),
+            ("decay", ParamValue::Float(0.2)),
+            ("sustain", ParamValue::Float(0.0)),
+            ("release", ParamValue::Float(0.1)),
+        ]);
+        let mut target = render_subtractive(&dry, 57, 0.3, (sr * 1.5) as usize, sr);
+        apply_reverb(&mut target, 0.5, 0.8, sr);
+        let d = crate::timbre::describe(&target, sr, None);
+        let opts = FitOptions {
+            max_seconds: 10.0,
+            ..Default::default()
+        };
+        let without = fit_subtractive(&target, sr, 57, 0.3, &d, opts);
+        let with = fit_subtractive(
+            &target,
+            sr,
+            57,
+            0.3,
+            &d,
+            FitOptions {
+                reverb: true,
+                ..opts
+            },
+        );
+        eprintln!(
+            "リバーブなし {:?} / あり {:?} {:?}",
+            without.distance, with.distance, with.reverb
+        );
+        assert!(with.distance.total < without.distance.total);
+        assert!(with.reverb.is_some_and(|(mix, _)| mix > 0.15));
     }
 
     #[test]

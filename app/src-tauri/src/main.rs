@@ -231,7 +231,7 @@ async fn match_clip_sound(state: State<'_, AppState>, clip_id: String) -> Result
     let (project, _) = state.handle.get_project().await?;
     let dir = state.project_dir();
     let m = tokio::task::spawn_blocking(move || {
-        glaux_mcp::sound::match_clip_commands(&project, std::path::Path::new(&dir), &cid, 20.0)
+        glaux_mcp::sound::match_clip_commands(&project, std::path::Path::new(&dir), &cid, 30.0)
     })
     .await
     .map_err(|e| e.to_string())??;

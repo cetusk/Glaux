@@ -906,6 +906,16 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     set_device 1 回。トラックのエフェクトも通した `verified_distance` も返す)、`find_similar_presets`(計 34 ツール)。
     UI は音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」(Tauri `match_clip_sound`:
     直後に MIDI トラックを足し、同じ位置に目標の高さ・長さの 1 音。履歴 1 件)
+- **自動合わせの強化(2026-09-24)**: `sound_match::fit_instrument(…, FitInstrument, FitOptions{reverb})`。
+  音源ごとの定義(`FitInstrument`: 次元・0〜1 → つまみの写像・記述子からの初期値・候補)を持つ。subtractive は波形 4 種、
+  fm は周波数比の出発点(1 / 2 / 3.5 / 1.41。非調和・音程なしの音は非整数比から)を候補にし、初期値での距離で上位 2 つを探す。
+  `reverb: true` で次元の後ろにリバーブの mix / size を足し、候補の音に内蔵リバーブ(`apply_reverb`)を通して比べる。
+  MCP `match_sound` の instrument(auto 既定 = subtractive と fm を時間を半分ずつで探して近い方)と reverb、
+  UI の「この音に似せた内蔵シンセのトラックを作る」は auto + リバーブ(約 30 秒)。
+  音程が取れない非調和な音(ベル)は `timbre::dominant_pitch`(最も低い強いピーク)を音の高さにする(以前は 60 固定で大きく外れた)。
+  既知の音: FM ベル(比 3.5)は比 3.49998 まで復元、リバーブ mix 0.5 / size 0.8 も復元。
+  FluidR3 の実楽器(20 秒): ピアノ 0.50(fm)、ベース 0.63、フルート 0.54(fm)、リード 0.89、パッド 0.52(fm)。
+  以前(subtractive のみ 20 秒)より fm 向きの音は良く、subtractive 向きの音は時間が半分になった分やや悪い
 - **内蔵 FM シンセ `fm`(2026-09-24)**: `glaux-dsp/src/fm.rs`。2 オペレーター(モジュレーター → キャリア)+ モジュレーターの
   自己フィードバック(直前 2 サンプルの平均で発振を抑える)。つまみ: ratio(0.5〜16、非整数で非調和 = 金属的)、index(0〜12)、
   index_decay / index_sustain(変調の深さの包絡。エレピ・ベルの「鳴り始めだけ硬い」)、feedback、ADSR(decay / release は

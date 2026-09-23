@@ -621,7 +621,7 @@
     try {
       const r = await api.matchClipSound(clip.id);
       alert(
-        `「${r.track_name}」を作りました(近さ: ${r.verdict}、距離 ${r.initial_distance.toFixed(2)} → ${r.distance.toFixed(2)})。\n` +
+        `「${r.track_name}」を作りました(音源: ${r.instrument}${r.reverb ? " + リバーブ" : ""}、近さ: ${r.verdict}、距離 ${r.initial_distance.toFixed(2)} → ${r.distance.toFixed(2)})。\n` +
           "音作りビューでつまみを微調整できます(Ctrl+Z で取り消し)。",
       );
     } catch (e) {
@@ -1456,7 +1456,7 @@
           🎚 パートに分ける: ボーカル / ドラム / ベース / その他(Demucs、要インストール・数分)
         </button>
         <button onclick={() => menuAction("match")} disabled={matching !== null}>
-          🎛 この音に似せた内蔵シンセのトラックを作る(つまみを自動で探す・約 20 秒。単音のサンプル向け)
+          🎛 この音に似せた内蔵シンセのトラックを作る(subtractive / fm とリバーブを自動で探す・約 30 秒。単音のサンプル向け)
         </button>
         <div class="menu-sep"></div>
       {/if}
