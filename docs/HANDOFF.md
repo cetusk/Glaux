@@ -2,7 +2,7 @@
 
 作成日: 2026-09-21(最終更新: 2026-09-23)
 
-関連文書: 作れる曲のジャンルと足りない機能の整理は [`GENRES.md`](GENRES.md)。
+関連文書: AI ができること(感覚・操作・奏法)と作れる曲のジャンルの整理は [`CAPABILITIES.md`](CAPABILITIES.md)。
 状態(2026-09-22 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
 - `glaux-core`: モデル(セクション・奏法込み)/ Command(約 25 種)/ 履歴 /
   和声分析(harmony)/ リズム分析(rhythm)
@@ -500,7 +500,8 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
 
 ## 7.5 AI の感覚マップ(2026-09-22 整理)
 
-Glaux の AI が「何を知覚し、何を操作できるか」の一覧。新しい能力を足すときはここを更新する。
+Glaux の AI が「何を知覚し、何を操作できるか」の一覧。新しい能力を足すときはここと
+[`CAPABILITIES.md`](CAPABILITIES.md)(利用者向けの整理。ジャンル別の向き・不向き込み)を更新する。
 
 | 感覚 | 実体 | 内容 |
 |---|---|---|
@@ -513,7 +514,10 @@ Glaux の AI が「何を知覚し、何を操作できるか」の一覧。新�
 | **手(作曲)** | apply_commands + 便利ツール | ノート/クリップ/トラック編集。transpose/shift/quantize/scale_velocity は相対編集の代行 |
 | **手(音作り)** | list_params + set_param + add_effect | 全つまみに聴感説明付き。音源 5 種(subtractive/drum/pluck/sampler/sf2)+ エフェクト 6 種(eq/comp/reverb/dist/amp/sidechain) |
 | **表現(奏法)** | Note.articulation | 楽器ごとに対応が異なる(下表)。カタログ(list_params)に楽器別の説明付きで載る |
-| **表現(時間変化)** | set_automation_points | 音量・パンのカーブ(フェード・ビルドアップ) |
+| **リズム感** | analyze_rhythm | スウィング比・グリッド(straight / triplet)・シンコペーション・ずれ・密度 |
+| **表現(時間変化)** | set_automation_points / set_master_automation_points | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターのカーブ |
+| **表現(ピッチ)** | Note.pitch_curve | 1 音ごとの自由な音程カーブ(内蔵音源と CLAP のノート表現の両方に届く) |
+| **外部音源** | list_plugins / list_plugin_presets / load_plugin_preset / list_params | CLAP 音源の選択・プリセット・公開つまみ |
 | **道具箱** | presets / soundfonts | save_preset / load_preset(全プロジェクト共通)、list_soundfonts / set_soundfont_instrument(GM 楽器一式)、import_sample(実録 WAV) |
 | **安全網** | checkpoint / revert_to / undo | 試行錯誤の足場。Batch = 1 undo |
 | **場の把握** | UI からの文脈注入 | 範囲選択・開いているクリップ・音作り中のトラックが指示に自動で付く |
@@ -534,8 +538,8 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
 
 **まだ持っていない感覚**: 生波形の知覚(analyze_audio は要約統計のみ)、
 人間の演奏は録音・MIDI 入力で取り込めるが、AI がリアルタイムに聴くことはできない、
-曲全体の構成メタデータ(セクション名はクリップ名で代用)、
-リズム・グルーヴの明示的認識(オンセットのみ。スウィング検出等は未実装)。
+プラグインが公開していない設定(Surge XT の LFO のテンポ同期・モジュレーションの割り当て等)。
+(曲の構成は sections、リズム・グルーヴは analyze_rhythm で把握済み)
 
 ## 8. 課題整理・ロードマップ(2026-09-21 整理)
 

@@ -45,7 +45,7 @@ app/            Tauri + Svelte 5 のデスクトップアプリ(アプリ内 MCP
 
 - 時間は整数 Tick(PPQ=960)。オーディオスレッドはアロケーション・ロックなし
 - 設計判断とその理由は [`docs/HANDOFF.md`](docs/HANDOFF.md) に、開発規約は [`CLAUDE.md`](CLAUDE.md) にすべて記録しています
-- 今の機能で作れる曲のジャンルは [`docs/GENRES.md`](docs/GENRES.md) にまとめています
+- AI ができること(感覚・操作・奏法)と、今の機能で作れる曲のジャンルは [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) にまとめています
 
 ## 動かす(Windows)
 
