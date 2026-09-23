@@ -7,7 +7,7 @@
 
 use clack_extensions::audio_ports::{AudioPortRescanFlags, HostAudioPortsImpl, PluginAudioPorts};
 use clack_extensions::gui::{GuiSize, HostGuiImpl, PluginGui};
-use clack_extensions::latency::HostLatencyImpl;
+use clack_extensions::latency::{HostLatencyImpl, PluginLatency};
 use clack_extensions::log::{HostLogImpl, LogSeverity};
 use clack_extensions::note_ports::{
     HostNotePortsImpl, NoteDialects, NotePortRescanFlags, PluginNotePorts,
@@ -72,6 +72,7 @@ pub struct HostShared {
     pub gui: OnceLock<Option<PluginGui>>,
     pub params: OnceLock<Option<PluginParams>>,
     pub preset_load: OnceLock<Option<PluginPresetLoad>>,
+    pub latency: OnceLock<Option<PluginLatency>>,
     /// プラグインが頼んだ画面の大きさ(幅 << 32 | 高さ。0 = なし)
     pub requested_size: AtomicU64,
     /// プラグインが自分の(浮動)ウィンドウを閉じた
@@ -86,6 +87,7 @@ impl<'a> SharedHandler<'a> for HostShared {
         let _ = self.gui.set(instance.get_extension());
         let _ = self.params.set(instance.get_extension());
         let _ = self.preset_load.set(instance.get_extension());
+        let _ = self.latency.set(instance.get_extension());
     }
 
     fn request_restart(&self) {

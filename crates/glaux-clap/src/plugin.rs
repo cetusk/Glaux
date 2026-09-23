@@ -183,7 +183,14 @@ impl ClapPlugin {
                 .collect()
         };
         let total = |layout: &[u32]| layout.iter().sum::<u32>() as usize;
+        // 処理の遅延(サンプル)。起動後に問い合わせる(CLAP の決まり)
+        let latency = self
+            .instance
+            .access_shared_handler(|h| h.latency.get().copied().flatten())
+            .map(|ext| ext.get(&self.instance.plugin_handle()))
+            .unwrap_or(0);
         Ok(ClapProcessor {
+            latency,
             processor: Some(processor.into()),
             in_ports: AudioPorts::with_capacity(total(&inputs), inputs.len()),
             out_ports: AudioPorts::with_capacity(total(&outputs), outputs.len()),
@@ -626,6 +633,8 @@ pub struct ClapProcessor {
     midi_ok: bool,
     events: EventBuffer,
     steady: u64,
+    /// プラグインが申告した処理の遅延(サンプル)
+    latency: u32,
     /// 処理に失敗した(以後は無音を返す)
     failed: bool,
 }
@@ -812,6 +821,17 @@ impl ClapProcessor {
         let port = self.in_bufs.get_mut(self.main_in?)?;
         let (first, rest) = port.split_first_mut()?;
         Some((&mut first[..], rest.first_mut().map(|v| &mut v[..])))
+    }
+
+    /// プラグインが申告した処理の遅延(サンプル。起動時に取得)。
+    pub fn latency(&self) -> u32 {
+        self.latency
+    }
+
+    /// テスト用: 遅延の申告を差し替える。
+    #[doc(hidden)]
+    pub fn set_latency_for_test(&mut self, samples: u32) {
+        self.latency = samples;
     }
 
     /// これまでに処理したフレーム数(プラグインへ渡している時刻)。

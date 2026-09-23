@@ -287,6 +287,29 @@ pub const MAX_PLUGIN_LANES: usize = 32;
 /// プラグインのパラメータ・ピッチカーブを送る間隔(サンプル)
 const PLUGIN_CTRL_STEP: usize = 64;
 
+/// プラグインの遅延補正で遅らせられる上限(サンプル)。48kHz で約 0.17 秒
+const MAX_PDC: usize = 8192;
+
+/// 遅延線で左右をまとめて `delay` サンプル遅らせる(その場で書き換える)。
+fn delay_stereo(
+    l: &mut [f32],
+    r: &mut [f32],
+    line: &mut [Vec<f32>; 2],
+    pos: &mut usize,
+    delay: usize,
+) {
+    let n = line[0].len();
+    let delay = delay.min(n - 1);
+    for f in 0..l.len() {
+        line[0][*pos] = l[f];
+        line[1][*pos] = r[f];
+        let rd = (*pos + n - delay) % n;
+        l[f] = line[0][rd];
+        r[f] = line[1][rd];
+        *pos = (*pos + 1) % n;
+    }
+}
+
 /// 同時に鳴らしておけるプラグインのノート数
 const MAX_PENDING_OFFS: usize = 1024;
 
@@ -341,6 +364,14 @@ pub struct Renderer {
     /// バスの入力(センドの合算。トラック添字 × フレーム、左右)
     bus_l: Vec<Vec<f32>>,
     bus_r: Vec<Vec<f32>>,
+    /// プラグインの遅延補正(PDC): トラックごとに遅らせるサンプル数と、その遅延線(左右)・書き込み位置
+    pdc_delay: [u32; MAX_TRACKS],
+    pdc_lines: Vec<[Vec<f32>; 2]>,
+    pdc_pos: [usize; MAX_TRACKS],
+    /// バス経由の音と揃えるため、通常トラックの合算を遅らせる分と、その遅延線
+    pdc_main: u32,
+    pdc_main_line: [Vec<f32>; 2],
+    pdc_main_pos: usize,
     /// トラックごとの無音連続サンプル数(残響が消えたらエフェクト処理を省く)
     track_silence: [u32; MAX_TRACKS],
     /// オートメーション評価カーソル(vol, pan)。単調前進、resync でリセット
@@ -447,6 +478,14 @@ impl Renderer {
             mix_r: vec![0.0; MAX_FRAMES],
             bus_l: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
             bus_r: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
+            pdc_delay: [0; MAX_TRACKS],
+            pdc_lines: (0..MAX_TRACKS)
+                .map(|_| [vec![0.0; MAX_PDC], vec![0.0; MAX_PDC]])
+                .collect(),
+            pdc_pos: [0; MAX_TRACKS],
+            pdc_main: 0,
+            pdc_main_line: [vec![0.0; MAX_PDC], vec![0.0; MAX_PDC]],
+            pdc_main_pos: 0,
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
             master_cursor: 0,
@@ -1105,7 +1144,18 @@ impl Renderer {
                 bus_r[ti][..frames].fill(0.0);
             }
         }
+        self.compute_pdc(data, ntracks);
         for bus_pass in [false, true] {
+            // 通常トラックの合算を、バスの最大の遅延ぶん遅らせてバス経由の音と揃える
+            if bus_pass && self.pdc_main > 0 {
+                delay_stereo(
+                    &mut mix_l[..frames],
+                    &mut mix_r[..frames],
+                    &mut self.pdc_main_line,
+                    &mut self.pdc_main_pos,
+                    self.pdc_main as usize,
+                );
+            }
             for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
                 if mix.is_bus != bus_pass {
                     continue;
@@ -1188,6 +1238,17 @@ impl Renderer {
         }
         if !mix.effects.is_empty() {
             self.run_chain(&mix.effects, data, fl, fr, frames);
+        }
+        // プラグインの遅延補正: 遅延の少ないトラックを遅らせて揃える(センドもこの揃えた音から)
+        let d = self.pdc_delay[ti] as usize;
+        if d > 0 {
+            delay_stereo(
+                &mut fl[..frames],
+                &mut fr[..frames],
+                &mut self.pdc_lines[ti],
+                &mut self.pdc_pos[ti],
+                d,
+            );
         }
         // フェーダー前のセンド(チェーンの後、音量・パンの前)
         for snd in mix.sends.iter().filter(|s| s.pre_fader) {
@@ -1299,6 +1360,62 @@ impl Renderer {
                     .unwrap_or(0.0);
                 (fl[f], fr[f]) = state.process(&params, fl[f], fr[f], key);
             }
+        }
+    }
+
+    /// プラグインの遅延補正の量を決める。通常トラックは(音源 + エフェクトの遅延)の最大に揃え、
+    /// バスはバス同士の最大に揃える。通常トラックの合算はバスの最大の遅延ぶん遅らせる。
+    fn compute_pdc(&mut self, data: &PlaybackData, ntracks: usize) {
+        let lat_of = |slot: usize, gen: Option<u64>, plugins: &[Option<Box<Processor>>]| -> u32 {
+            plugins
+                .get(slot)
+                .and_then(|p| p.as_ref())
+                .filter(|p| gen.is_none_or(|g| p.gen == g))
+                .map(|p| p.clap.latency())
+                .unwrap_or(0)
+        };
+        let mut lat = [0u32; MAX_TRACKS];
+        for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
+            let mut l = self.track_plugin[ti]
+                .filter(|_| !mix.is_bus)
+                .map(|s| lat_of(s, None, &self.plugins))
+                .unwrap_or(0);
+            for fx in &mix.effects {
+                if let Some((s, g)) = fx.plugin {
+                    l += lat_of(s as usize, Some(g), &self.plugins);
+                }
+            }
+            lat[ti] = l;
+        }
+        let max_of = |bus: bool| {
+            data.tracks
+                .iter()
+                .take(ntracks)
+                .enumerate()
+                .filter(|(_, m)| m.is_bus == bus)
+                .map(|(ti, _)| lat[ti])
+                .max()
+                .unwrap_or(0)
+        };
+        let (max_track, max_bus) = (max_of(false), max_of(true));
+        for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
+            let target = if mix.is_bus { max_bus } else { max_track };
+            self.pdc_delay[ti] = (target - lat[ti]).min(MAX_PDC as u32 - 1);
+        }
+        self.pdc_main = max_bus.min(MAX_PDC as u32 - 1);
+    }
+
+    /// テスト用: トラックの遅延補正の量(サンプル)。
+    #[doc(hidden)]
+    pub fn pdc_delay(&self, track: usize) -> u32 {
+        self.pdc_delay.get(track).copied().unwrap_or(0)
+    }
+
+    /// テスト用: スロットのプラグインの遅延の申告を差し替える。
+    #[doc(hidden)]
+    pub fn set_plugin_latency_for_test(&mut self, slot: usize, samples: u32) {
+        if let Some(Some(p)) = self.plugins.get_mut(slot) {
+            p.clap.set_latency_for_test(samples);
         }
     }
 
@@ -1824,6 +1941,27 @@ impl Drop for Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delay_stereo_shifts_by_the_given_samples() {
+        let mut line = [vec![0.0f32; 16], vec![0.0f32; 16]];
+        let mut pos = 0;
+        let mut l: Vec<f32> = (1..=10).map(|v| v as f32).collect();
+        let mut r: Vec<f32> = (1..=10).map(|v| -(v as f32)).collect();
+        delay_stereo(&mut l, &mut r, &mut line, &mut pos, 3);
+        assert_eq!(&l[..5], &[0.0, 0.0, 0.0, 1.0, 2.0]);
+        assert_eq!(r[9], -7.0);
+        // ブロックをまたいでも続く
+        let mut l2 = vec![11.0f32, 12.0];
+        let mut r2 = vec![0.0f32; 2];
+        delay_stereo(&mut l2, &mut r2, &mut line, &mut pos, 3);
+        assert_eq!(l2, vec![8.0, 9.0]);
+        // 0 なら素通し
+        let mut l3 = vec![5.0f32];
+        let mut r3 = vec![5.0f32];
+        delay_stereo(&mut l3, &mut r3, &mut line, &mut pos, 0);
+        assert_eq!(l3, vec![5.0]);
+    }
     use crate::data::{NoteEvent, TrackMix};
     use glaux_dsp::{InstrumentParams, SubtractiveParams, Waveform};
 

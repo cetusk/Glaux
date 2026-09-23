@@ -1851,4 +1851,92 @@ mod tests {
         assert!(fit.distance.total < fit.initial_distance.total * 0.5);
         assert!((got - sustain.min).abs() < (sustain.start - sustain.min).abs() * 0.5);
     }
+
+    /// 遅延のあるエフェクトを挿したトラックに、ほかのトラックが揃う(`GLAUX_TEST_CLAP_FX`)。
+    #[test]
+    fn plugin_delay_compensation_aligns_other_tracks() {
+        use glaux_core::{Effect, FxId};
+        let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_FX").map(PathBuf::from) else {
+            eprintln!("GLAUX_TEST_CLAP_FX が未設定のためスキップ");
+            return;
+        };
+        std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+        let fx_plugin = rescan()
+            .into_iter()
+            .find(|p| p.is_effect() && !p.is_instrument())
+            .unwrap()
+            .id;
+        // 2 本とも同じ短い音。0 本目にだけ CLAP エフェクト。1 本目をソロで聴く
+        let mk = |name: &str| {
+            let mut t = Track::new(TrackId::new(), name, TrackKind::Midi);
+            let mut clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840));
+            if let ClipContent::Midi { notes, .. } = &mut clip.content {
+                notes.push(Note {
+                    id: NoteId::new(),
+                    pos: Tick(960),
+                    dur: Tick(480),
+                    pitch: 60,
+                    vel: 110,
+                    articulation: Default::default(),
+                    pitch_curve: vec![],
+                });
+            }
+            t.clips.push(clip);
+            t
+        };
+        let mut project = Project::new("t");
+        let mut a = mk("A");
+        a.effects.push(Effect {
+            id: FxId::new(),
+            source: PluginSource::Clap {
+                plugin_id: fx_plugin,
+                state: None,
+            },
+            bypass: false,
+            params: Default::default(),
+        });
+        let mut b = mk("B");
+        b.solo = true;
+        project.tracks = vec![a, b];
+        let shared = Arc::new(Shared::new(Default::default()));
+        let manager = PluginManager::start(shared.plugin_slots.clone());
+        let mut bank = SampleBank::default();
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        let slot = *bank.plugin_slots.values().next().unwrap();
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        let onset = |latency: u32| {
+            let mut r = Renderer::new(shared.clone());
+            let mut buf = vec![0.0f32; 480 * 2];
+            for _ in 0..300 {
+                r.process(&mut buf, 2);
+                if r.plugin_frames_processed(slot.0 as usize).is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            r.set_plugin_latency_for_test(slot.0 as usize, latency);
+            shared.seek.store(0, std::sync::atomic::Ordering::Release);
+            shared
+                .playing
+                .store(true, std::sync::atomic::Ordering::Release);
+            let mut out = Vec::new();
+            for _ in 0..200 {
+                r.process(&mut buf, 2);
+                out.extend(buf.chunks(2).map(|c| c[0]));
+            }
+            shared
+                .playing
+                .store(false, std::sync::atomic::Ordering::Release);
+            eprintln!("遅延補正: {}", r.pdc_delay(1));
+            let at = out.iter().position(|v| v.abs() > 1e-3).unwrap();
+            drop(r);
+            at
+        };
+        let base = onset(0);
+        let shifted = onset(480);
+        eprintln!("B の鳴り始め: 遅延なし {base} / A が 480 サンプル遅延 {shifted}");
+        assert_eq!(shifted - base, 480);
+    }
 }
