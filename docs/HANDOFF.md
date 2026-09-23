@@ -862,6 +862,21 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     (フレームが 20ms 刻みなので間隔の中央値だと 128BPM が 125/130 になる)。揺れは 16 拍区間の直線からのずれの中央値
   - MCP `analyze_beats`(clip_id / file)。UI はクリップメニュー「テンポに追従させる(素材の元のテンポを自動で検出)」
     → Tauri `detect_clip_tempo`(先頭 60 秒)→ `set_clip_stretch`
+- **音を分析する能力の強化 C: LAION-CLAP で音を言葉で捉える(2026-09-23)**: `glaux-ml/src/clap.rs`。
+  - **`laion/larger_clap_music` は使わない**: Hugging Face 版は言葉側が壊れている(どの文もコサイン 0.999 の
+    ほぼ同じ埋め込み、logit_scale ≈ 0.03。transformers 4.46 / 5.17 のどちらでも同じ = 重み自体の問題)。
+    `laion/larger_clap_music_and_speech`(Apache-2.0)は正常で、合成音のキック・ノイズ・サイン波を正しく言い当てる
+  - 音声側だけを tract で動かす(0.2 秒 / 10 秒の音)。モデル(約 280MB)は同梱せず、`clap::model_path()`
+    (`GLAUX_CLAP_MODEL` → 設定ディレクトリの `models/clap_audio.onnx`)から読む。取得元は Xenova の ONNX 変換
+    (リビジョン固定、SHA-256 を確認。自前で書き出したものと 1.4e-6 以内で一致)。取得は `glaux_mcp::models::download_clap`
+    (ureq、プロキシは環境変数)、UI は設定の「追加モデル」(進捗は `model-download` イベント)。開発用は `/models/`(ignore 済み)
+  - 前処理は ClapFeatureExtractor(rand_trunc / repeatpad)を移植: 48kHz、10 秒に満たなければ繰り返し、
+    STFT(1024 / 480、周期ハン窓、パワー)、Slaney メル 50〜14000Hz 64 帯域(面積正規化)、10·log10。
+    公式と 7.6e-6 以内で一致。10 秒を超える音は先頭・中央・末尾の平均(公式はランダムな切り出し)
+  - 言葉側は `scripts/clap_vocab.py` で事前計算した音色語 108 語(楽器・明るさ・質感・時間変化・動き・空間・雰囲気)を
+    `data/clap_vocab.json` に同梱(言い回し 3 通りの平均、int8 + base64、92KB)。「どんな音にも近い語」が
+    上位に来ないよう、合成音 36 個との類似度の平均・標準偏差も入れ、z 値で並べる
+  - MCP `analyze_sound` の `words`(カテゴリごとに 3 語と z)。モデルが無ければ `words: null` と取得方法の案内
 - **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
   (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
   - 探索: `GLAUX_CLAP_PATH` → `CLAP_PATH` → OS 標準(Windows は `%COMMONPROGRAMFILES%\CLAP` と

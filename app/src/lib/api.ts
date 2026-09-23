@@ -134,6 +134,25 @@ export function clipPeaks(clipId: string, buckets: number): Promise<{ peaks: [nu
   return invoke("clip_peaks", { clipId, buckets });
 }
 
+/** 追加モデルの状態(clap = 音色を言葉で捉えるモデル)。 */
+export interface ModelStatus {
+  available: boolean;
+  path: string;
+  bytes: number;
+}
+export function modelStatus(): Promise<{ clap: ModelStatus }> {
+  return invoke("model_status");
+}
+
+/** CLAP の音声側モデルを取得する(約 280MB)。進捗は onModelDownload で届く。 */
+export function downloadClapModel(): Promise<{ path: string }> {
+  return invoke("download_clap_model");
+}
+
+export function onModelDownload(cb: (p: { got: number; total: number }) => void): Promise<UnlistenFn> {
+  return listen<{ got: number; total: number }>("model-download", (e) => cb(e.payload));
+}
+
 /** 音声クリップの元のテンポ・拍子を検出する(先頭 60 秒。Beat This!)。 */
 export function detectClipTempo(clipId: string): Promise<{
   bpm: number | null;

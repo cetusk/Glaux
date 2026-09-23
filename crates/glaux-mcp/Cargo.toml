@@ -16,6 +16,7 @@ glaux-clap = { path = "../glaux-clap" }
 rmcp.workspace = true
 chrono.workspace = true
 sha2.workspace = true
+ureq.workspace = true
 hound.workspace = true
 symphonia.workspace = true
 tokio.workspace = true

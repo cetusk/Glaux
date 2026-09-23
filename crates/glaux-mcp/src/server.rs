@@ -1223,7 +1223,10 @@ impl GlauxServer {
         音程の無い音では null)/ spectrum(centroid=明るさ、flatness=ノイズっぽさ、rolloff、flux=変化の激しさ、\
         centroid_start/mid/end と centroid_curve_hz=明るさの推移 → フィルタの開閉)/ harmonics(16 次までの倍音の振幅、\
         odd_even_db=奇数倍音の多さ、slope_db_per_octave=倍音の減り方、inharmonicity=金属っぽさ、hnr_db=倍音とノイズの比、\
-        waveform_guess=sine/saw/square/triangle/noise/complex)/ labels(言葉での要約)。\
+        waveform_guess=sine/saw/square/triangle/noise/complex)/ labels(数値からの言葉の要約)/ \
+        words(音と言葉を結びつける学習済みモデル CLAP で「聴いた」印象。instrument=何の音らしいか、tone=明るさ・太さ、\
+        texture=質感、envelope=時間変化、movement=揺れ・動き、space=空間、mood=雰囲気。各 3 語、z は「その語としては\
+        珍しく当てはまる度合い」で 2 以上ならかなり、1 未満なら弱い。モデル未取得なら null)。\
         対象は clip_id(音声クリップ)/ file(音声ファイルのパス)/ track_id(+ pitch / velocity / duration_ms。\
         そのトラックの音源とエフェクトで 1 音鳴らす)のどれか 1 つ。\
         使いどころ: 取り込んだサンプルがどんな音かを把握する、自分が作った音色と比べる(数値の差を見てつまみを直す)。"
@@ -1238,6 +1241,13 @@ impl GlauxServer {
             let d = crate::sound::describe(&sound);
             let mut v = serde_json::to_value(&d).map_err(|e| e.to_string())?;
             v["source"] = json!(sound.label);
+            if glaux_ml::clap::available() {
+                let e = crate::sound::embedding(&sound)?;
+                v["words"] = crate::sound::words_json(&e);
+            } else {
+                v["words"] = Value::Null;
+                v["words_note"] = json!(crate::sound::clap_missing_note());
+            }
             Ok(v)
         })
         .await

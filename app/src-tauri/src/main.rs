@@ -224,6 +224,25 @@ async fn clip_peaks(
     Ok(json!({ "peaks": peaks }))
 }
 
+/// 追加モデル(CLAP の音声側)の状態。
+#[tauri::command]
+fn model_status() -> Value {
+    json!({ "clap": glaux_mcp::models::clap_status() })
+}
+
+/// CLAP の音声側モデル(約 280MB)を取得する。進捗は `model-download` イベント({got, total})で届く。
+#[tauri::command]
+async fn download_clap_model(app: tauri::AppHandle) -> Result<Value, String> {
+    let path = tokio::task::spawn_blocking(move || {
+        glaux_mcp::models::download_clap(&mut |got, total| {
+            let _ = app.emit("model-download", json!({ "got": got, "total": total }));
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(json!({ "path": path.to_string_lossy() }))
+}
+
 /// 音声クリップの元のテンポ・拍子を検出する(テンポ追従の original_bpm 用。速さのため先頭 60 秒)。
 #[tauri::command]
 async fn detect_clip_tempo(state: State<'_, AppState>, clip_id: String) -> Result<Value, String> {
@@ -1715,6 +1734,8 @@ fn main() -> Result<()> {
             clip_peaks,
             transcribe_clip,
             detect_clip_tempo,
+            model_status,
+            download_clap_model,
             record_start,
             record_stop,
             midi_inputs,

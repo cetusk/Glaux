@@ -10,6 +10,7 @@
 pub mod actor;
 pub mod assets;
 pub mod clap_presets;
+pub mod models;
 pub mod presets;
 pub mod server;
 pub mod sound;

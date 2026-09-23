@@ -13,6 +13,7 @@
 //! こちらはピアノ・ギターの和音や、伴奏入りの素材から音を拾う用途。
 
 pub mod beats;
+pub mod clap;
 pub mod pitch;
 
 use std::sync::OnceLock;

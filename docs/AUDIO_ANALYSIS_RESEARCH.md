@@ -97,6 +97,8 @@ Rust から使える(純 Rust クレート、または ONNX を tract で推論)
 進み具合: A 済(analyze_sound、analyze_audio の LRA・True Peak・ステレオ・マスキング)。
 B1 済(SwiftF0 を同梱し analyze_sound の音程に使う。モデルは 1.1MB)。
 B2 済(Beat This! small を同梱。rten ではなく tract で推論。analyze_beats と、テンポ追従の元テンポの自動検出)。
+C 済(LAION-CLAP。**音楽版 `larger_clap_music` の Hugging Face 版は言葉側が壊れていた**ため `larger_clap_music_and_speech` に変更。
+音声側 280MB は初回に取得、音色語 108 語は事前計算して同梱。analyze_sound の words)。
 
 A は依存がほぼ増えず、既存の analyze_audio を大きく強化できるので最初の候補。
 B・C はモデルの取得・同梱の方式(アプリのサイズ)を決めてから進める。

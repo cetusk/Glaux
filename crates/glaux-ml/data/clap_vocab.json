@@ -1,0 +1,980 @@
+{
+ "model": "laion/larger_clap_music_and_speech",
+ "dim": 512,
+ "note": "言葉側の埋め込み(言い回しの平均、正規化済み)。値 = q(int8) × scale。ref_mean / ref_std = いろいろな合成音とのコサイン類似度の平均と標準偏差",
+ "reference_sounds": 36,
+ "entries": [
+  {
+   "category": "instrument",
+   "en": "a synth pad",
+   "ja": "シンセパッド",
+   "ref_mean": 0.11892,
+   "ref_std": 0.0878,
+   "scale": 0.00108667,
+   "q": "wBeq6AYwGMjfzMrw2dDEDxe4BgbmB+f0VuMXMsv/B1kaSyPgIuwZ80UgCQAS/urO5Sz30wgPANgnldb04/YvHBPOMe7uBBv56zMLAiQA4YYY6P4O4QALBSIIuibv8/Qv7h7s+gESSRz/If86///yJt6fQPT40uH34wc7/sz6/AjY0+/sudXyAqv0Iv0y9h6uGAtU7ykUNcjrOPMYDB5N6kP5MQb56AX/7h/03gYcvPg4BMXcJ+W10Bz0A9wM1MnY99jzQJgBJSE3Ixo19MUJKt/cKP7W9jYOJQTaytcR/DTntdoEGBcJBSWhxUti6+3q/SLF7QMT69sR/1og+hTo/BX62S4QChno3uIOFxTe/wr3yyBl7hEblBIK4QHuCwpLKhP5AP3V/iYznQLjG4G37f0u7ewLw+6t0NTfKbmv5SW9CfE2tq+VJefHD6HpGfPOUd+xLhzsTOkHHi7c0+8SHvDUD9PI/vcF/Keh5ejzFOb44OL3L9LjCfw4+RUE4+gV+ermqdwl8vnMD/sn4v/G+yYIEe0aHgwHNCAHKSsT6RLhFUieOdHKCQLLEk/h+NoXDdnavgUeQRnHAejt5Czd6kW1DMP5/sgc/OpVJw7nG+EW+elHJtv0uOX4TU05By4LRrEe4BMU3hE61iUKFjG/CzAADswMzxIBrufU5+fYAkI="
+  },
+  {
+   "category": "instrument",
+   "en": "a synth lead",
+   "ja": "シンセリード",
+   "ref_mean": 0.26058,
+   "ref_std": 0.07204,
+   "scale": 0.00121739,
+   "q": "vx/E+gEWDfHa2w7ttr3bBerQBCbxzj3+VCA9FfnfGVwKDRf8CvMKAlIH+gEA/xXYzhsC0wD27so53P0U7AAZIQLlTgUI2AUZBSUjCALJ0ZwV6OgJGRUbGTIY6xXf6x807vjR7AgDDvr1AL83HgPc8gOpG/3y+gP1ExQaA9kA6v8PtNEUz9XsEfcWFf492gIC/N4/5AsU9bH7PR4YITBL5lrBPRoK3vX/Ch3izQ8m7Oge9OLgUs/KqjkNC9kGu/XgIPEAYrn2FgQ41BAOAuYvBtvqHRb76RccBvn8DeUU3vrq7BEFFxMn5D8JtRpX9dnw8xz8ACQA68MBDDzc3CTaFRJGHzXuHOHiAuYmCgrMK/we0gFI7w79v+n65gLqDu70KSQP/xQA7hw8vyfpELq+9ukQ9iASB92+7CjeYsHy+wLT0ckcz4GrHcn+DrUQC/XOJBXgGDnrKNsnFRbl2hP5/+QTFt7xF+4C/7e66BTLCwb4AAAFINPLKvAXIAAQ3yoL5u0OshYf7cXO9upC4wbqEAoRCTcG/xDlGAv3GBcRCgUABTe6DdG2UOnf6w33KN4bAb350Bk5CBf64xf4JAz3vxq/8Ojd5gsu/OJM7PYMEtT/9QJHE93q5t0cKzMBtysfYA8f/inv4QYx2wn36ie3DfUeCP3x3hYGv+8DvyvrNHM="
+  },
+  {
+   "category": "instrument",
+   "en": "a synth bass",
+   "ja": "シンセベース",
+   "ref_mean": 0.24774,
+   "ref_std": 0.07424,
+   "scale": 0.00121452,
+   "q": "xCHB5AEEFhPt2A8T0t7YGdr0/yLm4gkzNQ81U+fu9FoaDBjvEO0oC0j06OwYKPu4wv7vyADf79gXwe8HD/koFPP+Ju4L6vD69Tci9hfJ3ZP72fL/7xQQKwv/7RTE5QMx1O7N7PMQHRTyyt8I3fvG9wivPwTi++7V6u4+GAXp5fIdstfoze/Z994+Jv8y7vYb8wUy3hQd9s4EKS75GRdE6lXZMx7gzen4CQj85CDn1s39CNXcPtjvqUsBF+wFpe/eBP0TUbMIKudlBusABwEQHdX7ISji2g0BEgvuKuYb0yTX5PMECwEavCHg0wRN6bz7AwgL8D/m1+33/hjH4xfmFhw2EP7OO/gF//QrGSHqDiMWzutA3Bjvp/Tw2vP08foKDhcYAQz86BY2sC/bK8269t338wwDJ+y4/RD8GNjvAx69AL4LwpuBItYG9sHoEBjnDDTmMCPzId4lISMK7xkQDeHzGPLcBtD78aiyGNPMIvIW6vD4AuLGBdkv/xEd4w0U7eEQnO8x8b/5/hsfBvzrCx8T/jb5+vTbLPUPETgr+RMECEjHC+XDb97+4gb2HOMJAM0WuhAbH/sB5gUBCAfy1RjaDf3LvPIu/co82fT3B88b++5OKhz/7uYSHRAtzfUjWAI4+hgg1AYrBhzx+QylEgAnGQ7/6OH/vvsdrB/qLlw="
+  },
+  {
+   "category": "instrument",
+   "en": "a sub bass",
+   "ja": "サブベース",
+   "ref_mean": 0.15804,
+   "ref_std": 0.13394,
+   "scale": 0.00102739,
+   "q": "8jSr9+8A/Qja8Swi6gLfGAswAC7j7QteJPo1PvDzFjpE6xLiDPU3ACmm4ftFI8nz7d/TsgXS/OwyqvwZDP0cOtsaIhMXEt7vFUE9DDLdwZT64vb/7woAOhAUDBWt9Q0o4/upwvnuPxj84wzYuRfH+P68SuLIHfPSwxYyLAziDeLxu/Hb9cOl6ttHSOQj/QAn7SlFwvwk+a7+C1jqCQUj21D4Oi674dkNKPTp7im02McAFRv2L+sJm1zsG8v7qenm8RcURagpG9tWL9sKFjQiFeHvBkP3wwjBLCLpaOLw3TPZ/tHtLhLiqAvX7/xA5Kr9E/8m9EXH1QXxExq/8Ru8ISxL4svOP/kxBwn7Cy8kKD0OygkMxfW92xni3uzxuhEWG+r2/CkN8P0zq/ncAsOZ6gPoyigADg/I8O427NLyFhTg7u368pmjOrw32u3TDzkDzT7PJR3rLBc5JAv60Rn33Qsi+di1C6XU7rGzDcTRZuwu3doA5tzc+88c4xri5CAD/uH/i8wc84EP6TEEBf0BDCAa3lABCvuuYPsfMUIGFV4VGVjCI+nuZv3v1vPlUM4AJ+gyxhINH/n88kUSEirc+iIMABDAqOUv+dsq1dgHI7Ys+e0wMj4MDeI6IvpAAM8AdC0pAwFVxAbsHhUBAQmuESo+BQIM8ej80gRUq2XVKTQ="
+  },
+  {
+   "category": "instrument",
+   "en": "an 808 bass",
+   "ja": "808 ベース",
+   "ref_mean": 0.22394,
+   "ref_std": 0.11416,
+   "scale": 0.00111514,
+   "q": "3zboFOzb9SLg2iVRAw7K+QU+CDPl8v5JKSYmPfroFFxH8f0c/u0gAzusA/BBJ/cF38vZzgPh+d4jxuwZCOM/I8hS9i0B8QTz5Skx+w3Vz7MH7Afc6BH5LjkA8fekFAAt0v6lveMHOQQHuvrpxhPc6wHAKPXtHgLizxZBOxgCFNsTu+T89tzZ7fA0PtwZ9OtUCBEv4AIR9bn8BFPSGAYfESLmNCi0zOIAEPTwAy3E6uTqF/ICON4OlU3W6vEliPjY9x0qTdsWJ/1vFNUGHy4MKhcIHBIA5/7VJwDqWAMMzUL42fIO2uEQpekOAhQ45ZcaEhg+B0Pc0xcA8wGx8RrcBzYNAs7gOvYDFuoULEARQS8J8L8LwPXc2yHl1gHtmRgYIe0kEyIV2AQ7zziwMt+4BuLz3CEJMwnWBuww9NX5EP/h+NUX676HEwUhAOjKNvv8yzPuLAL3BvYVNDkg9hf++gQGFQndCc3fEuTI/6/WTRQaDNwfB8jc9cAvDBEk4xEQ9/gPqsQsBMUTDBMTEO6x+xEoACriAf/ZIu4bGTcv8z8FFXDmGSHHf/cByuTOWdcM7sIw2xAG5f3+zA8oCe4G8uruEB64tssu48YK5+AU+7sZ/vsvClz37d819+ke8OkYTRwgHeYy0+/9OCLoFfvLGNhAGzT6/dVC7fc3yTDbLjg="
+  },
+  {
+   "category": "instrument",
+   "en": "a synth pluck",
+   "ja": "シンセのプラック",
+   "ref_mean": 0.21523,
+   "ref_std": 0.11588,
+   "scale": 0.0011692,
+   "q": "yyL68foNBQbtwy4Kw+LZ9h735xf5EfkMPicNKeYN+F0sHzkJE94LAV4uDBQCDBPc7hQI+PISLdZesbj8D+UR9RT1N+Xx5SEA8ikxDAXd9bMN39X+7yL/9DX79Ru83hpF8+Hozgv/Je8Lwug/D/TWCcaIIhL76Pjl6xokF+X04/E6wf300cAC9yAfIPQy+u80ANlkEAsj7+X9+CvuFBAt4jybIRoc+c75FxP57P0jrrQrANj7TwPpuyz0AfdIrNvgM+FOVfHDEh1ECQ4jDeROIejqKizdwB0CGAfv6gERxSoPBN8d7xbYBCIN3w9s+MYfDRwiEFQDugvtzyDR9u71BEoT9hT07vXv/cgaJhn2FQkMtecl9R/wwfsGEO0S7v797yIu6Aj3yBcduR/dJL+tBMAAJQoO5wcG3yH+CeXz4BDW5PxH4rOB+RD38LnrOOnSExzuGgYoK8otDCUA/vcKRfLTPhXzHNnvzdnU7ufAExPx8AoJUt0DHgEiJhoS9Bj34e4BtwBGzen4AO9iwPvG+hkVNSnT/OvK7AgB9wpC4hXfFlb09/qWT+QK+P7iF9JVF4731C0XDRbj9Qr6HOgf5QblzPbf/BcgGtcgAOEJDN4M9w72ECDo+vIVK+39yTksO9r2//DxDhhsBxXq+A67Le0bRQ7r49suzdgC1+76V2o="
+  },
+  {
+   "category": "instrument",
+   "en": "an arpeggiated synth",
+   "ja": "アルペジオのシンセ",
+   "ref_mean": 0.02589,
+   "ref_std": 0.05468,
+   "scale": 0.00100784,
+   "q": "vQ2t6fwaNwb6oeXjCMr4LAOqywP/EO7uNRB19+IJtH//qjWtMTDxB3IKJfEpNyDR80kMDSjpPOf9j/n4H98E0jD7MfEBAwjIFCIK8fu52LrRvtfV0Asb8ToK0DfY/PhU1QTc5jPJNu3vA/U28hXgL+GNPPi22uDb8PYRIPcC2gUNvPi+xNDL9Cs4FOYLIDIMBM4lvjcRHcjqEeMd8upK5SrmMAcEywz7IQrzAfkvyr4hC6HmJfQBzwACL+Usw+HcFqHiTaPyRwMo/UYJ+I0JGOQsGka7Fi3+Eh7yBMEc9RL8p/YHSyL55y7LqONE5ui+8jXn5wq/0wPpJAUeEyn6IyP3DR0DCsoF5ujr/hDK8B7Pt+Vr9uoWkbkcE73Z8+Ux+CwH9iHgyjbwxvTBOc3GxBw2/Pck4e++yQDUCci84yCz9tAIwYSHGdUI15jrFTS1VgnuMT8dQPY0+gbdBzEfSAfcF9C9IOwp5o7u+QO49s745+qv/eTi9P876RIa5dsGBNkmlxoa9sXXGhI58gzmEEXvHFRC8QLQAT8NJRoh+e4R9w7Q+eOYS97MECrwCd/wGwPYtworTeTuD+790x3XEALB6eDo/tcrC+1uBdcNXwIL//5WNfoY1erNPE4l8hgFcNhI+EP55QM8+Br++husPRMLOREF5y3wrBbUsRPbCUk="
+  },
+  {
+   "category": "instrument",
+   "en": "a supersaw synth",
+   "ja": "スーパーソウ",
+   "ref_mean": 0.20698,
+   "ref_std": 0.08164,
+   "scale": 0.00106936,
+   "q": "kv/y7BD32BHp2CnY1eu/C9S/G/7u9QMvKSs8Ntbp7nQQAwgATOYp/TkhCBzj8OrEsSoLvSsoHqkozAH/z+VKF/DkY+L+xLcS9En38we90pwP1xAHBu/0RREW5xD3HuBS5ifXJuAoFhEBLa4XEhXj/hfUHN0G4v726Lst7fkG1fYE4cYr1Bn2CtUE2dpTyOfd50MM+y0rDgo6OQwBGBgk8Vmz+h7v5woE1/Dzsx7dzRf597bHHef12BDx6uYAyOncFvr0WJfs2B0zsv4N3+Xe+u76NfPr9BNV3AQQHN8xtQzh8uYN9Cgqzya+x0NK3cv3C/fO0Q/h+b4G/DT4yBYhEfz+DjXqK+3U5wBJFRkV8CQdydt6zTgCkwP/zhvc+B8SQ/8UFSXO9ugmzEexQK+L9cMp3en88brv6zTMEMTj1tbI0Jf4wriHIMDb9qIDFwr5Nzvc80ndNhDxAiXm2C0M+ewM5eUa3CLqEcu2FhDkA+jrBv/j8uLNDORbDNnz7AQb9vcLuRMv4+jgGQsK4PD9IfwY/QncNBjvFQEGPhA/DOr44EjjQOzSVvPMzTHyCe06ydnR2+1SN9rf0/EQ/QnXnwLQCd/vxdMbG8pXzOD3/b4e9+cgOPEB5QUBMywnwvYlMRoe5SUQzSNApQfu8VDf1cz66/ny6xcToPT83+scLH8="
+  },
+  {
+   "category": "instrument",
+   "en": "an acid bass TB-303",
+   "ja": "アシッドベース(303)",
+   "ref_mean": 0.09517,
+   "ref_std": 0.07452,
+   "scale": 0.00114901,
+   "q": "yQy/zQb/6Cj9qT0Xz+f08PDc1yoCHAYYMxxdG9L14X/pxg7ZFAg2SkL/DeYLExvYowEe8RPdDN3nxvn6JxAe0f4NFNv92vH27jAEzvqv7rYGuwfr/PxjBRTs9voBEf5TzgGiHPr/JA31A9EY5/nj+hXRVQjM29YFDxYr9vbt4PpWvsHNyu7dAP00IgtAGPD13/QMvTX/5PALFScEBeEd5R3UKyrTpgL+DPfu7hPSzcjnFMDXHe0Nrivn+PkYyt69Ke8NRaT4GCJO6dnfBs8CA9U1KTrMDBhB9BANQPISoin56SQsFgA/yzrs4eVH/fTP5TP99gLQo/ADD/zMDCEZ+hP+MQfoRdnZ7QojEhjzByQlzrlN1yMDq/n31efo+xD6HwkFAhzp2xnswR7WM/W22t0P5xowD9rL3Sa7KOcl6xyx26cT7cGrDtkN9r31GRvtHyfwLhnoDO8j/kYOChMkI/X8HQ3s/OYv96jeMP+o5v0QA/e/8wPKAMc3Dhk/898FDNRA9t0sG9m+9CDt/gHnEx4HAjroDvv7/hYAHy439usD2jjSBtG5bcXnzhQHGf/5I8vh1iASRwQg3d/j6AnX2/Ps6SHXw9MZINMu7uD4SdjuFuQ2BTEKxNj6FT4lz/YoPfP7CDsV3f0v4xQFGwibAN4jCzDkGRIEzRzd1QjY6Fo="
+  },
+  {
+   "category": "instrument",
+   "en": "an FM synth bell",
+   "ja": "FM のベル",
+   "ref_mean": 0.24207,
+   "ref_std": 0.122,
+   "scale": 0.00105354,
+   "q": "0CTn4QQrUQ/sKQQe7c0OByHg1gb+8OgGUigzDefT9lZhsA4MSPb8+EHc/hUdFe741DYv1uAQL9QehPssLuk6CWPiChvpQibmEfom6RTTzL7YBKPs4Pk14S0EGyDEAxAf6/gYxUPsEvLuA9geB+cFvsWTQ9Tr98jxzPwVF+j1KPz+qgIJ4L822CEJKgsg7u1OAOFkHR4TA8ztAC83BggQ80DgSQvs383XDT4WAfYY3rs8VtzBNNvY6Q7r8O0unbnhW9ksLRP9RB0NQiw1FcRtGeAC/gnpzCLQGe/o4CUkA17Y6LFCHh3mKPUj2Ucg8qoI/RdIJR8aqtr/HB3N7RvjJzcU/AQq5hfvN+b/FyT2MeT9v/IpBRIpnyISHbIizMj51Q8HDhUOxTMoBwTbRs6F++Yg6BYtAxAZzN0FJtjd1RTS6ONi1paBNQX+1psHBM/pOA0F8u4CE/4wDvHv9gHjdAuzOfbA9cAktbzZ79y4CAIM/cswfOUPH/EAJxY/xyHd3ALsywtDzzYD+OE6w/P68TYpJP746MT0BQi9CSol3BPXHDP+4A7gL+H7Zw/b8tgg+aH60CgBDQzgJQETCvseEw7OseEgAjIA+/EJV9X5+djeKQYlDxm7yv0gDCAjwQtAKNsK3qzkDgJgCDjQ/t7hNAb0ROoL++JCAuzh7fTc9TU="
+  },
+  {
+   "category": "instrument",
+   "en": "a bell",
+   "ja": "ベル",
+   "ref_mean": 0.15476,
+   "ref_std": 0.09049,
+   "scale": 0.00114703,
+   "q": "7h0B7OrwEAX48Qvo9gwKCPsv/Qr15Or/CyEJOw4DCS9//jz2Y+b04j8IJiYmIxTSBx774O4IRN1rkAQpJ+AuB/MDEgwBDwP4DhpUNBrs3LrL+cYj8fj+DCERHD+n4hQy4vH4qff7J88Y3/gX6he9M9PA+N4GDunUvv8dLwYKB+4pAfAH8dUk1RAqCPD+FM5xEhVGDBJK8+zsvFMQ8gbj61XALyPt/87iIRgI5wD+7MQoAh0IMAoEuiEfB9sUubr4AhApFQTuNP1SJxIuBARs4wn7IC8TpRvERgbbLf8HFiLROsYCAkG59x7u1Akh4MASFgg1/zUjyPkO4i293/D3KA/t6M7sAf0fLOj/GCb2HSELw/7iCxjY2BHIJNn5xCj30vk9ASUTyQkZwyXJKuWVD/fWIgIRJyUuAugx4PXR4+QD5fQQ9+ON+w0Ds8TVHgTUDTb3+BIFGOgv4gARBO74HAviBOroDrPO0hjcI8LuRgMH4+cRLtkvH/wjNxDT9iPi/ycQnAQxyNYpCfB38wIV8h70/DH22OqP9AIIByNI+yT9MCkvKzXuOAUYEe3k96ps+q4E6ScnAeu6EBsk/OQsGvwXw+zz4jceD+P8Hs0D3OgJEO/qCCMS9gsKHM4Nv/ITTbsSE+ASEAwqNArmKvAROuT1E/YEybM3ButOxBUFUWE="
+  },
+  {
+   "category": "instrument",
+   "en": "an electric piano",
+   "ja": "エレピ",
+   "ref_mean": 0.02894,
+   "ref_std": 0.08444,
+   "scale": 0.00119298,
+   "q": "+SEcDrr/H9IV2+j2EeITE+wm+Mzv8tsJNv7tPiMfED8gMirqRdYc5G1GHBEZAveBIPDp+ekFQuwasw3d8h8dCArXU9/15yfmFTQO0yO52L7i2OAW/OcSCgcC8BvH1QX74PIO4dgQFhUHy+UX8dq/79btPgXlHe/B4+8UGO0OFOgXG9EF+wcDx/8V8doIF/EQ2QkvHwTzBu8L7DjSFfHnFRnGEv/Y07G5BxQz5w7xodVYKen7Qu/U2SYWC+g3oZwb5AUxGugFPBIyKzEzINVFIfMOGxfA0vDVDRXL4c0BFDPaBMjx4iro5A+uqxgi/c42IPkZ/vv6sM1C+hjV4eD3AS8O9wn79SYSINMAM0X0Hf7wyPoDBi/Kyy3Q5OX/Fwc+8VUK+gfuDPEwzAD+QsbL+AXlH9n61R3xGQQlFvTk8x7p8xUU2MWp9jgdyaztA/W3IybmF84tP+4x3hEAGfBAT/C/C//6Cvzj0typFOHfOOQR1P3tGN8kDf5DBcIM/ik29gkKnucV3hAf4uIr4+0eEBsMKRTQ57vQGAv+7B8j5DPHCR3lH93INt4e+Arr9ZspA8c46gAEDNDo/uzx+xD87AP2Ben28Bct+QUOALPU0vVNBtQnJQXw9wHsDcM00yQfQskk0PD4+hw8ASwbCTDbC+woEDAMxdQQ5+kg7M8BLjQ="
+  },
+  {
+   "category": "instrument",
+   "en": "an acoustic piano",
+   "ja": "ピアノ",
+   "ref_mean": -0.02304,
+   "ref_std": 0.07991,
+   "scale": 0.00126785,
+   "q": "HxUb9s4JHtbzzgfd9BAoIP8oEtHT6wX5BfrrGQYlJjf6SDXNQuMC4VYr6+cnIvK4WcXqAeQYMvMk/wLQ9ibzAhX2EBbl+CbkJS0w9RP3+t/k5S74CPfQEQ8gMQnFr+raAez/9NzxG+j11hMm5wTjDuL1Lhm9NPvuxQX7CPrrEOHvNMX96+DjCAQoDcAQGBws3/4u8frY+Qr2B0W5ANnz/xvY2Obe14H7/x0R5xvO298vC/c9VCbt3+zlHOon0LwJ3hkx48/b9h0bKQoeJNwYAO0KIRnMxgnDCgTT5c7uAwQxHNfg2hq77RPOvyQZBNsrH+EW1t7s6tI38CP29PsNMEIO2BcI3gEZ9Kv08STxCRP22AURABrG3yPMFgXtGTAwFDnq69/6BO8x7fUZMdjryA3DMKzowh8M0uk7+vz3IP/i6C0D98/fuB07xe7sKvjbBRzlNuEpH9Ew30IT5OoWMhfi8vUU/xy93QPm6w/tPOoEqgDk9wMl9Bs7ENnMBysm5RQDwfsZ3udTAt0iy/UMJAX6Fx3F9+7QH/UI0O0P0xLQ/RwMD+bOGhYi6PXc2p9L+N8s8RP8EM/nDg/t9fb5/hP4+A7iAfQl5ysH1pnh7BI/CP70ISQGLwTyNcQ89/gZQ+0n2+r/5CUXKwwPABj6EOQNMUz4tfQQ6OYk7toSKTE="
+  },
+  {
+   "category": "instrument",
+   "en": "an organ",
+   "ja": "オルガン",
+   "ref_mean": 0.13816,
+   "ref_std": 0.09011,
+   "scale": 0.00135455,
+   "q": "2REA+esANPEV7dIK+/H6Kbz+8QH4A+cFJAYlMxwe8g9IOQ79PNwI40M2BOL4Lem6CA4R2PsMCcMhuA0ABPMu/fvkS+AFC/3lDERSERnT9+fn4uEp1/UGFif+5jLd2QoW2+kj+vIJGPMUxgEy8QfbG9z3FfYn8vbSz8JENicX7gga+NX22iv2DdoY3vz4BfQY+AlFDv0uEegX/hwJJf8iCWHlGfr3//r4HCEm5e4Rz/Qy9//uPuLA8DgGIdsA1eM19fPlIODjXdUvHxT+C/APHu4BNyT2xvbpHwXJ670cCRWz7N0K7hjuyxuu0ycWAcgFGQQK9w35DuIKDQ//1/ULI/T3Iffi/xH48OAeFQ3kADrq8O4ZAirzzvnlA97u8uk0+ywb3AwBCvYmzxjZTrnM7frbIdTnEQj9H/QU+QGx/Bb/A7ffvMOwAgLyAr/e7wrNNwPOC/oaGPsX5R/l+RwzGO/sFOb9GO7i1cq8M9rzLNMBzQn7FPPv/flA9tb28An3ERHhgQ4B0tHb9Qgi+A/7JBwGHTMa0f/KD+cZ9yUxDw3yHDDsM/r3MgAcEwji5sALCesZ5gIsNdbo8OLw1fgS+vbzENjg6hQdC+w2H+7R8BQcBNw1Sfz9///4B+su3w7tOshHxxYA5yAJEwb2DBDtAPvq9fkpuuX21O4U0PD9MDc="
+  },
+  {
+   "category": "instrument",
+   "en": "a string ensemble",
+   "ja": "ストリングス",
+   "ref_mean": 0.02542,
+   "ref_std": 0.07595,
+   "scale": 0.00124216,
+   "q": "DvPS5iMcIgsM3Ovh1+7cMOPrAdTsBOXtGvUWNP4Q/hkVQCkFR/YFwzc8Ic4YUMfPIxUP+hb8A7JA7fLq3tn30uvMLubxDuq99lYpLCjyEQX92zkSzRDaJxcw5SXBwykt7SIX+d7aOPbm5ioPDhTwP/vw7PQNAO/GwtodUCfv2RMJ+uD40vHIE/z4CesU/BAQ6/c5ABA3A+jwKP4TC/8Y40Tz1+kw6/MHJiDo6tYwzAQstgYhNens3C76DdjTKe8f+u/6DMWmGu4aBQzV3cr4E8gNNCTbwCevJf3t89smC8/wC/YB3z768hmezd8l3+zd+SX5zvbr9Qj74goFAQUUNO4I/BHf8/0r4c4d6wzk8yvg6AYJDivpu/XbJPLlCAY48Urj1+gB2xAnwCL5OrvCxhXeM7/Z+/b8MPcRE/gC7fHW5eXPyOHu2SMb8+D08vrcQ//NIhYkIcvz6yDK1yw7E/IFzAX9GiTbz+PgDvnsL9bdrQvPBwINCy8zAc7E9QQbPfsQmSfu4tn44eIy5Qf3IRPp7A0jESKjIfw2AwFcFP73Of32FPbcGebpDc7t7bxTFOnj0BsnEOrV2uXY0ioY++rx9dHZ2/QE+ts28t/UHBsk8f4jVtYbBNTpHMUSzf/RJuJ/4fAA1SghDAPv8grv/v7p++Mmo/LxzA706QQcGWE="
+  },
+  {
+   "category": "instrument",
+   "en": "a brass section",
+   "ja": "ブラス",
+   "ref_mean": 0.01688,
+   "ref_std": 0.07103,
+   "scale": 0.00111147,
+   "q": "Gu/g/fAJDPcEuRQZ4fHaLtcQ+tkF8t3d8zXVOAnpEhlINA0TS/se7C1dCMMhT6qz+vXk/RnZDKP+EQr6zRQY5tLgQ+703d3V0EYm/RDG0xrA0Dwu9ufMIBow+BPFxzEc1hMbNNX8Ie/Czhwn+PwFEhcQBM0qA/So9MQzQCzw9QAL9NcdvirGAvYlBfYq9gw59DAqAvgq3QEKLvAbKOb/zSbdy8kP7/wgMP/yAiDx0uZKAvITXOEMz0fz+ADQIOk53PwP/8iuJeIwAxAF/tDlMM8UOQTDtgmlBfXdAdtMBNoSFR7e5VDh0iCrtOoe3ND0MP40yPXGB8fZAA7f5vD2Hek1Kvnq4foQAOBbDi3jCh4JCe33FDAJs/nk/eTDDhdO6hXW/d0j3fIq5EsxTrvT6fHLMKXC9M8TMSAHTxQKAArMBNe+u9bfrh4i7OYN5BTYQ+jlRAsfBtMSAQjj8R8yIOMm/QoP5AHpztLoEg8CIeDHsRYAAQIF5xdfEOet+gkyMhEUhQrN3sDq+Oj37PcJNhjrCQkkEwuvNNgTHxJLFAAhJxP6Ee3daL6/67D77Lxj89QV0PUQ6c34p/YB9CH/49UYHNLEsxok4sYw7+nkCyU1+vv9R94DD9Th7LlSz/zcL/Z/0OsV208PGt3+zyn13PLfBhcq0BDK7QP87Rw/JEY="
+  },
+  {
+   "category": "instrument",
+   "en": "a choir",
+   "ja": "クワイア",
+   "ref_mean": 0.02364,
+   "ref_std": 0.06677,
+   "scale": 0.00127308,
+   "q": "xxnt9gQmLOr68Nzz4t75L/DkDPLm/tneJgINOzEN/vNePRT/Pc8P00snNOgSDO3PJAw47wT927ZauRr84d0gDuLRXuMFFv/mFh8ELgX9Gtse5uMOzgLeEAPzty7L6QEz8xcDzuvjPfwKDDkNGAnRLNfr8tstBfbHxsQgOUoh/O4U7PYZzwb19uQNuwnnBCjw/utFJ+4YEuD89OgIHvwEIjrbBfYAEOzmMxIW/Ok29ihG2wLgKN3Z2UI3H8Hx/f4M4/EFI+u8P9894Qb34OUKE/PnGCoMxg/qMyv1+scZMvjk49IY9U3v8RGMzj//9vMPGjP69u4ZFdPlDiQO9/34FdrFCwfxAxYa5/n2H+QeHyTt+B//Ai8T4/bhFgDgzOQtCCEP2yzs+v0stBXfO6W++kbZC/wPBPrrOuUeA/HR4/gI4PPj2fy8EyPyCOP11SDEIe7d+hIaPzD89ArJ+isXDf8F3ufXJejW5+rPGOgJNtL1z/AGGNwn/vAF99/P6fPkAwrrgQ3y69Lg9v0o2g32BCP58P1O3TqsMAFK5Sg7CzH2LD7WMwD2DxYhEfjs6tcO7ujf2g46IPz0C/K77C//6wkD78vt1Q/6FrsuHQQS2Qv5+9UzOO/p980O/dEH7QTVLbVE1wvx5isUFTDnACUGDAHx0NwGrfL91OQT7vEfJz0="
+  },
+  {
+   "category": "instrument",
+   "en": "a flute",
+   "ja": "フルート",
+   "ref_mean": 0.07835,
+   "ref_std": 0.0925,
+   "scale": 0.00111846,
+   "q": "DRLS9eLy/N7o+gXr8PvuCMVMEyYM7/foDfYlIfAAGR1FUgj4Gvoo2yNKBQoF8d7jKtjN0wHYIMVV9Qko49nnIPcBQt3vw+IQIiE4OCDn/LMC/cZPCg7wDUEpKmHKzzwe4wLw4u0qA/ItrQ0ZCvzHANDW5OskCemy5Qr0BvDk8uo5+MosA/vJwiMS/QNBvr8RFvVQHNRG6K/u9B/IDwQO4EaNP8j5OgkNHgIrzfEw7f9AwCETTwPXo1P1GPgRwcg+4w8XT+7HHO8CFQcgGAFM3+gMDCIYyyPLQurkRsccIuDqOfvKEGTd2ioJxxos0tXcBQwk6T8O3e7/5y7B7AfgCwANGcbs3xP3JsAt9gr/US7xCgLLBSHH3/zX8/feADkb6gYJ+C4xBMf/xwPa3sW24/jkI/f9xu8DLjRCJcnDCgst1/vG+5++AgMHxfMA5TTfF+jpCQjQKfkU292C4N0f/AYjAP0CNrLCFu6iLvP0ShTb/ELoDeMeHC0fCRjT9xLODO/lpCYJB6T/1do64isGAh4LDUgkCCStKyEZHjkKFTbwHhjyKwjjQ9kF6fcvObRxMdQT4DJL3h/46z3YEBvh99/94cPiBzcHC/IlBvgPwOog59XyCg8GKdYI+uYRzjref/Ma4+37Khrw9fPr+xT0EvXt+eD05PLyEekj+hkpfko="
+  },
+  {
+   "category": "instrument",
+   "en": "an acoustic guitar",
+   "ja": "アコースティックギター",
+   "ref_mean": -0.04561,
+   "ref_std": 0.06158,
+   "scale": 0.00109961,
+   "q": "+vUa8LkeIvbj2hvt8wUwEhcaCd75+BQeAejkYt1DNx/hLzT5LvjbvihQ/uBO7/mcYaX2J+MNPewoAcfn/RzQ8hzjCvEECRjiByIPABceOPjz2DQQEPy//w1AL+2dwQf2DtzC7NL/KPf10jsT5CfYI8YAESvVQQHlqy0VCvz+7fgKJ7jo0OPeDxQn97wiEBFN1MMb6iD41iHlCjjN8v/yDi7X1dzm0qT4Bx4p0hfH8d8i89BFNhri3/cUE/AU9Ln6+yMy7si7CSpBNcbeDPr2BO0WXgLDsiTmBPXV2NYIEf09TfXc2SbD4RjX9+f+9PYb8AEjmBoIy+0xuQ+zDOhJPDH2Exww3wk0DbHy708UHTUK0vHzBPfU8/wNGPwAGiw7NyfR29Dy98ktyeoLJd3d0BrYUroAtg/97/cg4O0d2UzU4jcAF+Ps5T44t/bSFfH/5PjoZwg4F8n+0yzqwcUxUjnY3TL0Fwi95vkS+fHmGArt0ALk9hAz5CtUBvyw+w0S+uQO9Pky7eJJ6dpWnwgV/QLrCD3GBBnaL/sw5dbguwzC4xYRBuSgCRZCvKQFq9p/HPoEvG34G/IE4D/7DwHh7hUK7jzo5/P+8jr727DV/wAoGhHgNgcCMiTiHL1OGwk0FvBF1P4YCx8dRAwoCwvhJ+MILTjLwvP82gEx6tT7PkA="
+  },
+  {
+   "category": "instrument",
+   "en": "a clean electric guitar",
+   "ja": "クリーンのエレキギター",
+   "ref_mean": 0.12867,
+   "ref_std": 0.0925,
+   "scale": 0.00106403,
+   "q": "zyctFq9FDQHb0+8S/Pv/6g4LDw7yBQ3+GfHhTOMdJC/dOyv8MfLx/VBhFBIhrjGRC+HpELwIPwFC5erjCkDRJTHjKuk4yzkGIi320xrHBbLr7rNEGfgd1holHf/UxioBNbIMwOkuFOTsrsweI+nS79vgBSv8GOznE3YL9LD44yNH9Mr88N/82PoX+eoxEcAP4btG8ebk4xbH9TDP8Tj4BxDHKf8H1MO6GAc0zvPfwLVOA8P8SODD2gwkCfg+upMU8QlKA/UCAyZAJC4jLfFTDOsAZg7Mwg0BIwjGrAMIAS8SG/zv6hisBFL50QYKJgk4FO8c2Sz0y+8u89iz98EjLiAIAhMf4AICNt309THoEBA8ygDyA/zv9QLz2uUMRwcUBD8iGPoFDdhOsgIQB6/y7wj5UgEBlysG7AX959jzxS7sBhwwFMq4DwoZ76j1Bcq15BTxQ+QfH8Qavg/0AcozOAO9GxLwE/4i1OXa5uqn/+8PHgT6Gr8EBelvFckD9hrv+QYP3NdB4gD75+JvnvUh6xQPRDSpEOTp7iXxAd4ErTm43x/hHaCB+9JC8wv42tQ+ScMg/VLx/wHg0RgEGfQCwh/dvRoI/QgPEE3p77305uMc/fPCAQLiCDTiPuYx8FJqE8zw8xwZFQhq/yUqCgvBBPxKEgHYBOD8wtQq5OLlXkw="
+  },
+  {
+   "category": "instrument",
+   "en": "a distorted electric guitar",
+   "ja": "歪んだエレキギター",
+   "ref_mean": 0.01467,
+   "ref_std": 0.0959,
+   "scale": 0.00123533,
+   "q": "sSca2ML+M+cU9RbN+cUj9N3t8tIN4AINOePjcgY0AS7xPQoGE90G1VRiDv0IzymB+fMYFOQDQdwzxQP+ACT4IxfHV7og2gv69x3I2QHsHtH5w/JDDOgZ9gwK7B/M+PgSBO3T5cwR8iT/3foNFvnJ9+YBAh4YGQHo7MsE8g4IBjUyILgH7S4Z4vkEvQER++0O2usRNBMa5g8O7RntCgbTFEG69wPw5MmiFhM5zvD/xeIyBcXhEeXM7BhON9sbx6nyBfAgBeHoQQ1Q6fzv+vMc/eALRxT3vxYLDfm30twM+fHWCPb//CwR7SDG1/cD+Bor+gQhvgUo4Lkw5P7K6/ExAPztRy0MEhAIEufwHEMKEwUy0yP6Dz//3gzZ8/X/JPMbFj4A3h7dDONEvPn7NNTPByXxIdci2xjlJ/TlJfEd0Eze6OH54ti4CUD3768P7Q7UIw3vB/kbKQv53QbYBfJWcPOfwjH6DhAKvf26OvTxAusFCBTcE+QRHgs4/cv0GvYN5usV+Ps73w4BCOY+wBkhDRj0HCrX6ODoAhHw7QIU4wvF2AUBJubAHucpD/sdsu5B+t78xyYnBvcRwQTq/AP+2RHw+er7yyAIIAkvAtri3gIkGssZK/f56w/s9+Mj0ShEDdggthfpGCk4AUYK4SH18McH+BXr49AC1gz66swVKDw="
+  },
+  {
+   "category": "instrument",
+   "en": "a bass guitar",
+   "ja": "ベースギター",
+   "ref_mean": 0.03182,
+   "ref_std": 0.08453,
+   "scale": 0.00107165,
+   "q": "7RIP9b/pDwPmzg0p7ekTEuVFH+3x8f9FFecAa/9JByAXIxjqE+0b6SYl6uRA7geBCbnRANXTK98k3f4BGh7uBfgEIuUe2Qzf7kwM3QfYFrvxwQsq8wL7GPoMAfCqyfwf79PDxtIcMxXqtxkRzxy3+dHcKBbYL/W/ugwxMBLw6Pwn98736unT0AJIGvUODulO3O4/+AUT0Pzo/lrJEQH8FjrA+Qa/36n1NvIo3x+kyscn+tgSN/f9vT81HuQ4ubrz6DRDIczkTft1QNvtDxMXFOkjTzvJnhK3HAG+/uYH/hwBItPc9x246BvK28MR+s46FPwwrS7jvfIcytiW3/39Gh8C89nzEwAsIc79G2cGEzwtvtXU/CPB9fji7er0+CpEED/t3/n06NpGlQf/HevK8O+3DuD3+CnwGAw92tUSFle+CAYEE9S4+xQt49fYBf3kzSveVf4fLNkK4SwBE/c9Lf/K9zb9Atbvv+XjCL67SRAIxP/e//YE5RdUFPDuABkX4+0Hw9Y91rc57Pw67/4QDiIHH1HE8/W6LwMr+SUW1lHYFQ8JFduuUvMqy9sF2clcKMxCwUPrF+H20SoZCBLb/QMLBhTMvxwxAvwP17bw9uYnBv8ZCjzjCQX0H6xA7vsxKOwt6gM7+yIlRRcPBwLIFPQ3NDUD1qH/s+1Xuw4YblQ="
+  },
+  {
+   "category": "instrument",
+   "en": "a marimba",
+   "ja": "マリンバ",
+   "ref_mean": 0.05282,
+   "ref_std": 0.09465,
+   "scale": 0.00116754,
+   "q": "F/sZAdAfHwoTDyvw6igQDiBUBiYFIe7/9SQgKBYe2ilE/iviYuUGATgMCf8RFxrxQxHyAxLiG+8T6ATfLSAMCyAt/vYB8AfwBQ93/Q7g0NnZ7d8hCyrV7CUKG2TA5SMJqZH95AYVG/MOsTIrA8rZyMbUFA3dONzx4RkCIPgFHNYZ2PPf7ejNAkMj/AcbNt9/7eY6K+obrf8G7CnZ7/3Z5wSeHyYIDfMLCfobC+wRxrNJEgAOVznx6xe2EOQynLM0GgY1RB7gHPweURn/OfhLBwEh7jLuuyu3IufmDfn6DQ7hN+H99jOg5xDu4R7+3oX2AxQ41ioQrQT+ucjb/fr1FCka49HwqPzmKcn1CfYRMgj20cH95QLy7e/x7OoR2R/43vz17fdU9Mn54O7NEPPuBNvyNSYA6AgdEQw02+zzGzEABSgFC+Wn5yX+s+7iAw3MAxgeF9X67MA90RHhKcUAPy/vJvrIDc7f4evuFPLEMuDi5icDBf4d9BkWEBn4ERTE6hERs/kq6NUhEhxAygPy9RoLEEr5COC78x004Roh/xDyGhw8ByCpCPNG5u4cArxyF8gzGDHa4ObqCBsbAwkKEAbrwBkA9xcxDQjjA9gjuDAl/QLcIjkt8Q3bFOpFzynsVMwS/8gBRDEaORHaLgncGwDiKArxydgY/OY5/+HbTC0="
+  },
+  {
+   "category": "instrument",
+   "en": "a harp",
+   "ja": "ハープ",
+   "ref_mean": 0.05799,
+   "ref_std": 0.0672,
+   "scale": 0.00131288,
+   "q": "Egwd2LYAGeT92R3r+voUChMu/t38Fuzq/QEFSu4dHT0kRETwOekk1h42/w8kAQvDQuQLAvHrG+JH1fjrAgTrGRvgMu385hHqHT0tGSbzAdvez/Ei6Qfj9hcaDjzPyfoa7d7qzuIFHewR0xIUCBfbGs3eE//pFPP0xg0VGPfj9+IaFNf84NfcChcn/eAfFehH5/E9Et8F6v7+1THQ+xcL/DjFAw/wE8TrEfgHuAj4xs4nEvkONhru3RYJJgEa0cEl7RVPH/HC/RUgKAcaENRN88wbJizrqxjHKgLJ8PQB8BMYKNLZ6jS67zjc5QQt6+UMHf0M3A0H2OYV7hnnBukVMif99PEE2yUvB8YQBSMRGC0D0+j5Cx200PLnHu3w3SAK8Cf18xEI6NoR1fPtLsPWzfnDTcz21hMP9xQzzQPm8RTq3wzfAdaw5TQbyNfWMRXFFQbyFQYfLeA6zSDj89wmNA/K//L5IALI3g3TGvfjOOX+wgXPHPAvBB5GD+7QEijWDQYLuPMd1uM1/eI51ggEChsEJC/lBAOvBAokCQQr1yjCCCQNIQm2Jf8bCv338b9/GNEV2z8F/Of5/iD34w77+hT03vLY/RoT+BoE+8/vBAIuAvPiBC4DBPwBG88d5AkGUMgW8+XyBS0wDhXoFQztFOoRIx352c8G3vQg69AITEc="
+  },
+  {
+   "category": "instrument",
+   "en": "a kick drum",
+   "ja": "キック",
+   "ref_mean": 0.15825,
+   "ref_std": 0.12431,
+   "scale": 0.00106198,
+   "q": "5hr06eQ31jjE3fsNAgbWEx5f+UIG2w8qxxsrWyH7RfkpEAYK2/UZ4RuJFyJIBznJ9Z/VIfYFNQYu8i7V2e0x/4EJ/0wZD+HtJT0nAybUse8G0vAX0ijlET8cOe7D/vsHFOfgwupNEvjYhwf680TU0g6+yuOiHg3WQS0NSjrJFSn0qDMIy+HD++g8B735+edIDQA31MTt8rnVuiny4gISF/bbI7L/ysfpRP/KHgK0M5z38+8NUPcbnUso+98Bs/8ozx9FCA4IA+gr0zv2EUMUGjD3LAj6rh/QPN/8agr22RX+JegE7uDJBBEZCen22+j+T+MMGWHV+x7xCC7u7PbVO/7/5bDmLurT6djpFjnka+by/q0b8QwOEuT38d0ay0EI9/42OyPn2Ag5DlDXCPzOBhfaAuTqHQz2HRBEAqjuMPS0JywRFNa9/fAX7BTs+Nno0E7oPtDTFA4mQfr5P9a789sILQoqAcr2CQHp68jfDA4V1PIW9dfqRtwYA/ILDixH8uQtvAgt3sz0J/orOvf67hcNwg3h8/fmIQD6LPcBAUtDIy3a6tSzWe7+rsTWUd46+wsxtjvm2PjnulZCLQUN5xQB7yLauMkY6wLz1/Ee4er23ycYDjHUy+kFUuwe1+EcbNcb/w0e2RIRLhH2FjE43M4cByS97ODv/+1BuDgoYDg="
+  },
+  {
+   "category": "instrument",
+   "en": "a snare drum",
+   "ja": "スネア",
+   "ref_mean": 0.13016,
+   "ref_std": 0.09768,
+   "scale": 0.0011102,
+   "q": "vTLvCeMkOivruQr6Cs/2/j4wrQkN5dP0Dk/jL+3T6vkgSgMJHvb4ynkoL/kW9CTSILcPDRDpRxAF6xS0+hfw+OoCMf0E2DH71Bb4ABHXsMr3w+AyFs3a7y8w+CrGCxn0A8UpCeYy9dziuuwYK5/VxxGsBuMUHQ3oTOHNMCPuJjNTxOgWux/f8DAs39D/6fQt+sYvUsIQ1eEp/9XbJwH05t+VLs0s1u3xQwAwHf39CtI9ROjvKdnevioYBA0Nn8o20dhBFgPl6h/5vjow2NJF7uPYKOsQ4PnvFern6RpmJNsN5Tfoxy/N2gwX2w8d89v2Q/FqFwUZ8cPo7xv77vL6NgwmLv/+8wLYEegfICEFYc/uAMb85wZFqB/I68z4Husa7gcLOOwZ6AE0HTUFQKXnAyf9Ed0NAg0dFxYSP8UN4A/R/RDw5LOo4BnqAP8YzuKvMu45Bu77Rt9GEuTYC+zWPdzvGAcJAeX52+zh5hTiB/PnEwz6Cck5OAER/t77Bv0W+x5E7R4n8ePlE+9Gp/QT4jYW2t7O2gz28SvOFOpE2P8h5yvlzOeBR8fzDtkGCuZV5dceyfgxwe4SsCQGPR41uAIA8uboBAod4fv17/8uyQ8YB9raYiHcBSny//AE02AZO/Ma4PD0E2hQAiXwwEAw09sCGw/eFvuwBOjIBgEaUhk="
+  },
+  {
+   "category": "instrument",
+   "en": "a hi-hat",
+   "ja": "ハイハット",
+   "ref_mean": 0.17555,
+   "ref_std": 0.04435,
+   "scale": 0.00115965,
+   "q": "5ysFDNLo+er75yQGIf7IAvM7wOgq2QPw6B82RCvrES4NRTkaJM8n+xhDGx7/FDWaCeIA6RIMNe0c1BAFIPYh/MjrCwMa0BoNMT8b/jS8vNzP3cs6Gu/a/Bg9/Q63BP869uHSq+EDJfojtNPl6wbUEzvc4OwADv3VCwrnLdEMDxAn9tgMuAvx1ScnxsPpxdMgAhoPGc7s6NMXwh7HDjQGCBn6LOEQ/9/xAe9Euv394cMDGfTzRM/ts1RQCi7hkp0c5P9TBwcJHOUu2jot5R5g0PneMu0O6xnt+A/NQf405P7mLfsH8gP2ujME084s0wToJeb56z0kqMoPBSbu5e4K+g72Pt8KFQgwKQIyBCAERyfcwsXnAhnu5hTB3uz8AgUN3ipDOQ/i7b/+ByPmStnJtOP0IcT2GQopKj438cn24voP1Lr2+tzQ/ygH2+Xb1BTPHhwYAQ/mT/VFAwgoHN4W7vS6/d0mCPueCA/jEJTb+PwR5STcAM43Ex1JE/bKEDL0Ey4N0BAsC84Y7M9F3wcMAfEK2TbcyzftAA/9IjkK5wPq7CLfCArtchj+8v/qNcd/+uYk1/kN3+oG3wE3+9oAt+4B8Am5+gkM4uoCw9QJ2Nscy+v+LhP72SoAJuT1zUAhYdAnDSf59yQ+JsT58gsGC7wP4v325esLCSI66QorThE="
+  },
+  {
+   "category": "instrument",
+   "en": "a cymbal",
+   "ja": "シンバル",
+   "ref_mean": 0.14654,
+   "ref_std": 0.03923,
+   "scale": 0.00124299,
+   "q": "0Q7o69veF+zO4Ske/QfLEsUzFfQN7vn73RMNWvjdMD4pMRhEJeMyBRkpIyQ19Qnh7e7y6gP6K8A+wO0wA+cWJ8TwOwv2+vz7HTr+QhP4v8HUAPBBDfnK7BUp+hPTIPch8u3F29wJMOor3eH91gbIDyf26OxDHATn384A/fsIO+8nAfA23wgU8vIh863+7M4rCRstGv4xGvYq/CLqCBsMB0CyGjPXAODQ+AkGwij8x+spDRbmFfoOvzMb/hTiycYD5BtJM+T6CPEkDOpF9Rc6yfTWDvUPlxP9Gh7RSCcpCBDxM/P41S0N5Cz06hE54/IIJg4RzFTv49bz7S6r49UWBPMFI9EhGQ8kCxAlL0QXRR4ErePc7CfqviTE8/Dz3wb2L9siEAwP4s8d8hvkNe/H0vLIFev7BAAIFkgOFfPz7PcRt8HsIeqsBirqvsPZ9yjdJRDtFQO5IfMkDPIPFvwAA/3V2u0BAsurHySl+N8KH/0M7/MN+uQiBAEwAfjF/xDlAA4YuAoH5ZEfDcU73wEc8+z24xfsBynGIwAhFzLx2iTqAxvtIRzpXxj05+ULDcZ//9Ds5hQM9OPhAjLu8PHcuA4qFNvZ4RISCsYQyegS5OY59dj8Fxzb5Pf6FtgKwjQTOOwGHg0B/SUo5Oj2Fv79Drr41x/41NsK3u8l4g8GPzY="
+  },
+  {
+   "category": "instrument",
+   "en": "a hand clap",
+   "ja": "クラップ",
+   "ref_mean": 0.12525,
+   "ref_std": 0.05648,
+   "scale": 0.00100099,
+   "q": "1jHtNs3qxx0LrwLSCf/oLwoGrfUD/erp7PPwMybz+g1ZXHbnCwn0y3MRSCz+IF677TkhLfYpYOJMngYH89s+1/LSKbf5vu7z8EgK7CW2//fNy6cz5e4X/R490hSe7C843xLNrOH0IN3ymPHsA/+wTAGh4+cC3fWiBhoUX07y6SZ1/OoAzSb7zgIKwrjaz/UUBQweJPcB5NDwhP/dMinl0ifKCQMQ9tHnPcwi++sc38oCA6LpL9X+llduzvAiodsU0O9i/yUAOAVPCyUW4st/GAYNTjHWFf7REQwOGNIt2hXSCe8b5SLcChLNy8E95yD7NN4dGycXs/UFIVVD27bnBB68HtH1HfMM8On16gn5N+zw1wLoJjoNDyrV/+MV+iQvru9e/SIBthn7vTHYJ8ao/0/n/N8aCCM/+g4e4f3X198B/u4F2COT7VAZ0gDH4BGpEw/62P9CYBcrGEcxM/H2KtvNyfD6LNjc2/IhEJD3Eu8a6OPk760fJgMyHATs6wsYRA0jwvtB/vbc3N5awiIF1xAg1vr9ygKj5kDQBy9cBi7axV/cFsrvbvQVzRLWHJg9BdbgxvBo+wsdvr8JH/w4+Nkv8cm/Dzca8tYa89397yP/+9UEJS4K6g7t/+r27ib5V7X9DzH9Hxs5AgTl+/ZGF8YdAO0J/+DoIiT/6wpVRS0="
+  },
+  {
+   "category": "instrument",
+   "en": "a tom drum",
+   "ja": "タム",
+   "ref_mean": 0.12085,
+   "ref_std": 0.12681,
+   "scale": 0.00112025,
+   "q": "7APZ6hMxCk7pASQW6iLhAiotCB3dzttG8T/fI+3yz+QgyAf8/PsU4zjr+gA3JeoWDszOCibRLQkJ9d2qEggAMPpRGyEECuzUzBtEFvvIxK/07SvyHQ3EBfkIMQXWHgUU97jX5QU6Lh/MqRgI1sHftfmDLSD1HTzoB/r1dz7vEuc4qSDq1P7D+jdfHQUTGPU2/fNNA90V1Nz+SR/jHPTl+wS/GRvw8t8WR+rvJ/zUC9MK9dkpJPsNtBr1C93upPsCAAQ1OfnQ39sB6ertFu7k9AjM4fkIxe/XKfwGIic1BPQe8g0C3hyny88K8Rrr54clLuF/1V3D8API0N7QAw3BMTtY5QHk//LtE9AKQkIhTOL+tdAo1Az9vyv7BuIjxw4mAPsBBPVA7PNC+hLMIOjsFfruBh3rFwkmAQQq7doFLjDW+QkBMsKfGg4N9AvS5PQA8u0rMNoFLtQdFPYP8SndGhoJACvx7bbCyt/b1QCxJwzp9eEO3PTt9/wRxgfd6iIUwRQN4QQYuKETLxIhDBMf4CUH6SnwG/zeIPMTJBX89yIkFRsXsRO4ZtstyLcWG/NS5c40xAj23dHf9is4IBgbtigO+Rvq7cIP9d8Apvsvt+0jAToNTGmw+OzyA/FH5dDpFT8wGPVQ908YKwsA5kgEH/oRHE0HzObr3gAcyzIJMCU="
+  },
+  {
+   "category": "instrument",
+   "en": "percussion",
+   "ja": "パーカッション",
+   "ref_mean": 0.12408,
+   "ref_std": 0.09021,
+   "scale": 0.0010419,
+   "q": "1xbE5TUzHSf9wOz0FMIAIBQVvCAWHx8N1hQvMMv1GQQ6DDj6CfkE6WEF/QgXI0DpBPzjLezoJvsb0BHAG/YQBAUGI+Uh2PHtIyQO6TbVytTPneMFzhmd9TgyAR63xfwmnpoI+uTSFtoAs/YfDM/D7fqGCPrwDhMEJAcqTv3cCDNV0gj/oerPDhEbJaLY8fVU4vV9MP4KtPblsyToRTFG2umWLR89MfkIVu4Q49YMDpXwCugPLQvr2lT+L+ILp+5a/f9jPwf3Fwc25kr9zA5F/N7TEln2uQMD8vL4HRwuxBf5OOXW8vjoHUjb98Yq3s/fCAX+/yIdngLgBAUX0AH/IxchFc704x8NC+TrSDPgA+3n2+wd7icBw9TsLOcm4Lrs1vA3H9Mp0jwJ0vG3LuHt9/jpJvowOB4cy0Io3ekPuwfB8OAEE+qO8Ssa2uTS0fihOjsQHjXTNKgkAyT+Uc3hDebS/tTiz+H1zewF5aj69tIAreHt6gYbBSU44gf5GlLq7gc26fBI9ezuO/l/6AUC80sZ1F/f3Ru87SsK6jEWBugL9QkM0O+/HtoV0+gfDtFoAN3q3fgj/wD4pygfKQAZ2ANJt93nChxC8fQU4lkW9/wMwxcDaEC++e3vItQBxhvyTdkrHgXC+PtSOPzq1BfgNcwFGQYEBOmFvvY04uTseSE="
+  },
+  {
+   "category": "instrument",
+   "en": "a drum loop",
+   "ja": "ドラムループ",
+   "ref_mean": 0.02128,
+   "ref_std": 0.101,
+   "scale": 0.00111806,
+   "q": "5ynR+C/2GAfjyun+AUbYMN9fKG7nxgT7LiInNAgi7k799x8nHO89+j/2GNNCHhj8MsjO18nWLxcgxzL4C9XZ48pR1Rz85B8BLSIwHRzOzNImvfUXw/PQFwobIy3C6/098uvg9BP6SOQjmQzj4fHG/+7dBe32LysE/BosGtb5FBMl/AYJF8fusRQjU8gABQMRJyxEBPxHDtbZCSnxQNkI8+a3TPTq7uLiGBLu8d3qDMI5s+EmKw3sgzT+QAwPhLo4yPgNOQQo6t4ixCYkDQwaEBn5Dzwh7gjSLy3wfxYsIvgI5xXdCiwS7isY2OsY0tzREQIgKD3J5Qm23ebNBkXfEPQwB7DnCAXfL7j7JjPOAzPdAA/o9vzt3ADoEejaDRky//sz9RTqHC0d3B/Z9sj7+RbeKuEGK/Pe8+MzBpToJSgbP//nC6Cu6xBJ4Qr7ESHa3BASMwrrK7MVUfHHEPj+DfEKGP0XJtIID+fYDP3gYwQJyCHm4c8T9Os91fXo1w8s9NRFr/kS/6byQB1AGyztESLmBGvX3B+0AwDz8Ssk3xMzERLrGPvMUw4a4wz+OtXrEO8b4RXb2+Xp+CMbSA/59eYW6f7AFeIV9O0D3SdKFPbwwAgoRC69BfYIMwMRz/vXc/9GIxoz4un2OR4M2BXlNLkIRP3z693K5R0f6kb3T/c="
+  },
+  {
+   "category": "instrument",
+   "en": "a noise riser",
+   "ja": "ノイズのライザー",
+   "ref_mean": 0.17737,
+   "ref_std": 0.08279,
+   "scale": 0.00107051,
+   "q": "ijvb2BoJQf3ErTvR8DvBGyv40gsX3wI1FAgfUt7k+XAI6DYVJfn6FCvYLStHBAHW2f0Q3CM8W4gEoefx5romG70g6BD/Eh8AChv45ewdqMr8qyHnFNOs/UtrEAi5JLwq80KsEvj4KPnrHOz64CEQDCbI7iQLBu0F5McFAib4SQHc6PImywXoEufmC4Ee9ukY7DgPEUQGAxABBerj9QQxykT2++r11wUW5ALn8R78HNXwAanx8tkF2uknD/YBps3lEddLNbMQwFJEDPoiwPnS/+gEWecf7OcNFRThOfMh3NED1h7s9Qpj3BIa2M9Sq9bz8+L37Bnh1drYBxgm9Ocs+c4INAwpIeLKySAlCyYoGxL9zvM62PoEsfgm0hjsBQQRSc0PMwvdvM/xGSjfZaTC5BwqDK4QFeLKxuT747UWtfDbx9Df5vnDAw8RxdoDEGTd+Ab1NwoHSBwDRfQQuyIIGQPPq8kSCyfAPcfX9vEE2NT2AAre2Ne97tZX0OW7FtsTFwg0Cwg7JPse1RAF1BTR4QMhwwziGU8WCD/VJv/07vLk4j/oAgzINea6zAsG5gJqygau3tZNAN8Mqg0eAyHcwhT3A/+yz6PxAuUMttX7IvU59v8EXxIWwBcDQRQq7/kpOj40JhAYvwoo4hTh6AEMB7ID6AvX+wfa4TLGB97eEio="
+  },
+  {
+   "category": "instrument",
+   "en": "a sound effect",
+   "ja": "効果音",
+   "ref_mean": 0.23059,
+   "ref_std": 0.04884,
+   "scale": 0.00104511,
+   "q": "0ju2wOIPDvsH9OzhGroKI7wXriQIxA0Q1f0wUebaUv1WNzAY+u4qjFIfOBUKBCC04QP3/cvoIPlezBzvA8EiFvm4cMQV3uP9NjsmAEPh7L7rqtA2zubNAy8hGDOmr+sm3+Xxw9L1Cu0m2/Dw5eiw7QnDEekR6OLP8b0BDRfnGRczCtkfvC/88t373+0OwK4dBiQoOPoewKzotBQJETseC2i0Hg4JLv2/RPD7uRwEF9sKBu/dKcXP1WFxMs7fusNQBhpMMen8DOY3HBAX6PR/9unyFysutPsKKPj6KiNB4wjAFMTkHg3/BSvl/eUSzuQFIOkj/i88zMr7HhT/19oKMe8eKszm9z0UIv8IODHlPgn11Bbp7ETtrOXqINkJ2dMB0Mk7HCUZ8fUoBQS3QtShBSLoEOk2KRoAACkg/uHNxAMB76f/uOyKIRwLsOXo2xq8EhPvEQnjS/4/BdTv++EF/9rBB+HwDMHC7uW9KZkNAe8lxOjW4uUAN/E13OToABbuCRcktPkyBBf7Dr5wFiQc5TEppzAS2wXQBxD7Gz8D5wrx1hv0IPoYNvkoFwkLBLZW+fPXsh4p9P0fyR0PL/pGzw8m373hBDoJ5eT4DyTqv/AF1voqSlAAyOI1+/EHye/xSOVMAPHOBe4jPSnJ4/gQE8UA59EHB5yo9wswzPohWzs="
+  },
+  {
+   "category": "instrument",
+   "en": "chiptune 8-bit video game music",
+   "ja": "チップチューン(8 ビット)",
+   "ref_mean": 0.13566,
+   "ref_std": 0.08758,
+   "scale": 0.00119762,
+   "q": "xOkRCdAiLAoA3RDK/t/4DB7k/zL93fTIExMgPSLW7Cgn3hj8TvkbDyg1Pvsa/wy5+eE3NAD9HfHT6Q77DTQT9CDTQun9AvMg+wQQvuif5MD1z+IBFeAWBBRVHCn6yycfEsUlCezO5dn//sURG/Dl5hz2Dv3y7778MhY+B+Ad2w3/954HxlH94/Hi0kROBOTb1QLmARYFxjwP8OP8/C7n5huL8+Xz/gPNAfX50SP22N8uKtvBOdLXwQD7ESz6xc4sALELGKYS9SQ47B8Z+egp9/cXKfrhGgcnBSQC/tP/+yDQ4xrjCx331U37xzJWHO72LOv85tHk98II8B4Q6ecUKg7yDvT07dijDBcpBenoGBoQEwYo2R5StuXf8unsCATrABkzJDgkGgnpKQQHIMLOLR5B+dnc6M//zR0FQubG+v7TF/H9t7DK6c0PsusnzTvWLBzSHvzHEudM0traFQkdK9sSCcwjAQMJ3dDzPiTV4YEQPCT17xfj6PEnOu4R6QosNx0txxcH8g/uJwZD793zACYiwCYXDwfC5ygXJ940/wD/3grpI7ajGtvxwv/x7bsZ3OgI+BUdCx02yczKBfrh9vQbtysI3AsgGxQo5LjoAyXT0QjoF/s2/wzyDigvzEnySM8n0APu2DUw2f7h1B/p0d0LGOfcHzD9ACUG6O3xHDQ="
+  },
+  {
+   "category": "instrument",
+   "en": "a human voice",
+   "ja": "人の声",
+   "ref_mean": 0.1392,
+   "ref_std": 0.06942,
+   "scale": 0.00128943,
+   "q": "7zDTyeb6E+MLFQDV6BT7JO8H6Qfr0+zyHfYdEy/1DAdkH0T6AwMD1h8TOg0iFhTsDhg22vwbEOlTxPkR9csEAvjsN/UU/hDzHBsU/xjbKP0E49Ud6vMLIv4CAUbAEuMX+heugRLnPOwR6f/Z6vzNA/zoDwUP/wXey+TwS0EgRNsg+9YW7w4Z8fQbt/vk4Pn2HykRIvAE8qb34AfPMysGAzQCICLqCejIPfIa3ecLBwoS2s3/M8rMvjdLEMfctNoF+u4sHwflFdITEPv+9eFpA/v7/xYk9/fxISn/HeMxJAzs9+sZACAL6wbQ2eb27/P2Ad0q6xkf09ACGyr1/ujjGxzmAPsPKRkGIe/sFfYCU/73vR3dDD369SriDukGsAEV+Q4r+yzn/Osr/fLTF8yn5UniEBtEBicI/eMt3+Ln6fdM39AC3BHaC0kb6APpABHw0vjo0fAtNkQJKe4O8SHvHxPvygrlV/C01QrnIrzaJO0AzOzo7soXFgcaEefd4BoLGwD3w/4b4dsO4whQtiT78hkkqSMk1SvKEiIbDC0fDynS2UKnHg4kPSQYCxHm9sM1Bdneyx4m0gUg7Qrj+wwo+QQT2+vYAB/qDdHpEeger+fqE/M6Iy/t+fIb1QIG8QDySfE5IAn77iYGNSrZ9gss+OQD4uP+7OgPBy0YzwI5/hI="
+  },
+  {
+   "category": "instrument",
+   "en": "whistling",
+   "ja": "口笛",
+   "ref_mean": 0.0922,
+   "ref_std": 0.0783,
+   "scale": 0.00105521,
+   "q": "/iD5/Mu8LLv3ORLjCgnh3gUT7wAg1BQaTRYLBTIJ+hFaGibpJAoKvB8wPiAIBwrISBA9zSsEJrlQ6e4i5tbiCfrWTwBOFR0zBdcOMfXlGxAY08QYHg4nHQg1CT3sFBVHAi6RgRsJF9slz+sM2D216+DOBvQo9iDF0AjjYCxYNOQQEcIVJA7qwy8RrzLlrubWVfMIJNoSEJEH3izwTx4D9CH5N/kNDujmQPg+6qgQMR1T5P8ONsqguyg0Jfv/ndIi5tgKMNEI89T27wzyCO9T1M0bDPklIQmuBxLwLrgzQtbcF/IPGzIX4hrmo/H7Ewzl/vM65xc929wd/zjZCirYFCASJA8KDCbvRe8UKSPubf3R0BnVKQ/YBADt/dji7RkyzRbQ9jEIHc4y7/n0DbOd0RErCSZMABAQGcpA/MfY7/97pPoJ2MPyCyEWFBzhnwD87vMK1eoqME8t8OL7wCL2KlsQ0+0GNtPR4wPITbPvQADgGxXa/dNMDRMGKPTj3B8FXPfztQ77FejjwepcsB8S9M8Es0Aw20TLPVL56yryPSLM7unUSxngNxckKQX/Dq9XId3N8D1MvQA77zTqFDUL9coO1MPwFxoDJMsXFeYnr/bNMv83OhQO+PoO9fIb7TKzXQcNEv74Fw3c/eod6gsy/tsD8MgE2gc5PTQh6BZCBgs="
+  },
+  {
+   "category": "tone",
+   "en": "bright",
+   "ja": "明るい",
+   "ref_mean": 0.17343,
+   "ref_std": 0.05924,
+   "scale": 0.00111619,
+   "q": "/CwJ2bby7vPx/AkBDxzoB+oK4DX08AoGCPg2J+r+CUxbJW4ULuoUyzoeLUEa9CPQDxf0+wMPOOpGp+kTC9cVB+z2OOkL1PPnLSIvBz297LnE7741D/D8MR8tISTD/xIp6gTKpPH+Gcgc3qD02gOkEwa++vMKAALN8y0oNOQJJ/o8490iBhPtuRXj5tI0vsMcChQREAsk+L34myi5/DL68EO4Qy/2L9fHJfIcvxMut+EN4tfxSPThnTckCQQVjIz3FfdHQwcZ//4wPBkjBvl23BAONhLuCBfeExYGKeUe7S7dGtrx5Awb4lAYz+FH+9EIFu4U5VjpsN0d8Evk9/EAER3yAuT3FRT9PPEtGx7mShrvtc0C/BzR5Ci/0uoE6CAP4ABGIykY2doRADHHJ6utCwMYNBQN8B4a9yQSCNCn0+cr1+4Y1Mif/hPysM+3/RnhEyTXDwT6N+oe8PgaCeoGEBzVAugaJObE9Bm7D7LbMe8nHAfZB7r/Cgo7NAcTwh0AGB3+tfUW5QMu6/Z17Qzr+v0o3Tr08/+17S0HKB4d2TG46h3YMQ/iQO4b2xPjJbJLG8EJx+oYyA8VAOgU9rz34gv+5/bfKDoS9evm2szy2Ocl5OsEAjAa7wEfECn3shgUf8gmEwf3EO05AwTvDgUBNNwVBtv5DOMF8AtBBesRYjk="
+  },
+  {
+   "category": "tone",
+   "en": "dark",
+   "ja": "暗い",
+   "ref_mean": 0.06867,
+   "ref_std": 0.05418,
+   "scale": 0.00103096,
+   "q": "3DPXwuDV+84M//zcDwb4DdIvBQj+t/sME+gbTegIJzM7Mhb1FO0nskIZBAhG6Pi8Gsrgzur9J9RArRweAeEnOtQdU+kT1dfRNzMa/EXc5oEIzQMe4721SfoqFzis3dssxxS8vcvrKiMRA93q6QG7BPDeKNgRIvvbuNcfAe8HLQEJENUx6BPvvfkG/r06zuP93Fs0JflC99rg4ijB9Q7w71jBFwexFcfE7Acru0b44PA33e/8Jc3rm0g5Nt/opLT35A86WNfqFvM7+A41yBw+D/UJLRYEyxH6QhPIXNcUARjp+bLJCTYT3DTizeAXw80IKtcG0B7muZ78CjLP197dDQ/Z684FHfwnMvAVSiEnOVnyuhz66y/LvvSk9Obj0g0AGwwnA0DS6bwaxPe+Q7qVEQ7iCc0g2wTmBSo4DNC3ACQX6dLwzb+Q/iMcmMnrGVrb9ibZ+g8AYBcWJM2++AIv9+PjuuEADdOhAfSaG8sKTcsKyf3s98T8BRZC4/bL6g8I5hIZsNdF4tg0ExcqFxwfFDwS+kz/CwC1LfsJQjIw7kb08Bz0SBHxPQHQyxsQGrdA6L0OqucG4NYB/T4hCQLH2SkIA9kAzSEf8vz80dsK7tROuOciICvp6wgkGfcGuewXfgJdAuUX3xkkDifp7C72M9UY7fL15ujZ5g9A0REcXEE="
+  },
+  {
+   "category": "tone",
+   "en": "warm",
+   "ja": "温かい",
+   "ref_mean": 0.10697,
+   "ref_std": 0.0676,
+   "scale": 0.00102306,
+   "q": "4ELY4bwN8dQB4MPhKBPbFPQmwhQD6f3389oUM8wIL0ZUMlzLJhbjqFtSDBc8+hjIQ/Lmx9vnMAcnzfzQA+YeL/4QL+cbwQr7Fx9I+1Te24nDyeEe/sW4IEcN+1WmzfUoudvZsc0YTdkJ0c8C2QS3MfbK8NsDCdm78zM8HtQkB+whC/AO3g3qzfgI+ckg3epCHgMl8NQnAbrSvxrC7SIc+jjGNRT3HQvrFwoRyBsY2+1N5c0OM/XauDYpGg32n68Qy/Q5SPMPI+M7OzdK9vxo+A0DQvvm9ALrQA3YKvAVETEI7cXEFkDD2jXj1+UMzNXaFeUStyIHyN4C6TIO6NX9KAToAMYWAv4uOOYaIiXeSGLRtNQV3QW6sd/49sDp2xM74f4oThAo+tkZ4wGyLse6+BoKXOUUuAjw4x4t69OB4AswEd78wtKKDBcRm+HQ/BrEDOjpQB8WQdozBBHo2bv89i7yHb/xMMLBJe65/qvuGu8F7PjX9pAHABZ57vvn1wPq+zgHkM8hB+QJEv16BBX19zIrAkcfBP/KFyAhSTUM40zj+C3nSO7YMvzt6D/2JKxRA9AA0fEW19rw40RGCfLx3QwEANf5IA4Q3C3h5vbo3ABCxvoENwc3EQ7zKg5E0wn/fcRS/AYf/vkfKfQ1ExreTu4FEuP68/PbvP0u6zAOYkM="
+  },
+  {
+   "category": "tone",
+   "en": "cold",
+   "ja": "冷たい",
+   "ref_mean": 0.19637,
+   "ref_std": 0.06843,
+   "scale": 0.00114967,
+   "q": "1iLd+t7x09sBCevDIg0C7sIUqw8exSIX2tsMI9ziQBcoPi/cHv3+xVREByL/7SDfAfPRt8cLRhIwzCH9A+8rMQIQOMBJte8GKSsrBD7h9K6xy9E+E7/1IDIiGErRyPMh3szr1r4LCO7096/w2PjODBju9uoQDPLDDxQM5fscGxs9AdIK7DntwOkI3eYWt9gO1jz+A90l7rjazCvb7zYFtlrMFAYLHwnjB/wWvBUN9+kp+NXkQOXsq0JRMPL2itQVAeYzM9k8/e4nJCoX/hRL9xX4UBb6+uIQKwHPJ9ojzfXXCt7cNSj+4yXozNMd4hvgHfEe1yUW49sRDycKuNf8GQP/H8zTCfMrMQI08yTnIz3j2Qro2wS8tPfO8MjOEyQP4RowIRsO+NIUxwfJE9y2CSHrL8sO8g4X7yAN/vSuzgU2+LLvxMaoCez6oOLm5y7gBgfx9ijtS/4199zw+PAg9Pfe5bAFHeS3GPHLGcr2G9oS8wbo58n5JAJb/ubZ2Qb8BSH4x+xCFusJB/FDIBIO5x429TH+B+/FGw7WJzYC8R0M1C4DTfAlIQ759EH7KKYf6egN4fhA9v8X5y45GuIQ5uga/twV5jQo4yoL39TV4fg2y/f2OgVLGjAOChMPvg/3f/g5Ag0SCRYhHukI7ez8H9EK9M0dCd7a+QIf9EMIZTU="
+  },
+  {
+   "category": "tone",
+   "en": "muffled",
+   "ja": "こもった",
+   "ref_mean": 0.10488,
+   "ref_std": 0.07843,
+   "scale": 0.0013329,
+   "q": "D0P78gfED9QOGBrl5hPc+CIettkIzegWDwIQBzT87wAoCS7Y+BQWESMmCioLQe/bFwkdzhARQfAf3/cVAfoQAfQY+fY9/CIK/P8W+PLpDQQL1/H+BwsTLPwS9iH1FOE62R6agQXnOw7w5vn0zf/xDA/bIiQC8CDS1Pb8VDESOAEi/d3+5i0J4SMc1frtzgT8Ij4HHN7z3Zv35S7PNyb72iUe8P3rCNEYHA4q+uvtEu0J9f8OHMbx2SFB8ADvtcoABPc5EPQQBskg6+QG/hI97PECCxQ3EN/A9SbNJskiCOjiGwccBRT92/7s5cAx8fUYDctB4AQwtvH5CyoX8BTL6jEKDwEUMtAGPPwIDfQMPCLzv/fMFCLd+RfAANQJzhEA0icVCBT9/tcT9u0JN9mq4gfr7AgtDCk0BtcrzfnlFxRHz9UC1xnz+Tga+jLh7xbs0AIG2eBLQycZHBYz/RgKERjgwd4EH9aw5AACGbLhIPT97QD29s0PBiMnG/zm+gUPJTrs8NYZ7ukfxxsn0R/99PISvjwM2iDxGzHt7y3sBBrc4BjXFA8TSxTwByrZCb8+/fMH5vY35fQn3gISBgAP7dQS+PHV7wsIDuDj4bT60QMTACE4HTQA4ggk7vQQ9grbQPoQLgsX10UBIfQI+BgZ/+QS6/pI0vIjJiUn2zMq6Ag="
+  },
+  {
+   "category": "tone",
+   "en": "crisp",
+   "ja": "歯切れのいい",
+   "ref_mean": 0.16444,
+   "ref_std": 0.05378,
+   "scale": 0.00123403,
+   "q": "8jgM2NjuC9wXAhHoDSHj8uMUnB4G7igP7flOOfYGDS0zG0MGG+UW7jMtLhgAFzOyHgQR3gMcNfAr5BLhG9YcBfAHFuQpxxAENyIe5SvJ8dnq0OocJ/vYOhkq/DTP6+kxzdytmdfVEeQd4sbr0v3N/yTu4woNCB3p/QkRKfQbHP4XEuEf7jMG3hn00NQKquAU+CMKGN0B7MX/pTHLFi767C/kHxUTG9/4DQga0gwD4ez51+4DNPDbyjw1IBn8gaAVABlbDvA25fwn+hEN6CFT8yEGQP76BQT98zHwNPAa1d7JEgEaASIs5z723rUa4e/Z4v8h0yIro+kiCSz+5v4SAP0QKegGDvsGSOI1/AvVKS/lsdQJ6w/ayw3X7Ovv5xUR4Bw9QBIC994BExXqQt3N6uQgKvkw8hAZChoL0tfZyvhIw7wIyvHN+xobyvDR6yHjDC/7ACgHM/UWBx8k8swVAA3VA+MmKO6Z/hrRHar6FucnCC7G69wZH/k9It7k9iYIDzwQ7u4sC/Qn/u5U6hDl++cN0yzy1xrv6hzqADMY9/T1zgHuIx8AMgse9kn4/r8//fP879sUy+EY1PVADLAWuezn8AzY/RsV3wPf1sPu0OgkzwcTNQsX3SsgLAf+zA0mcuYjBBDi7P4iOvHyABECG7L93eDv/8oRCwUz9ekSMhE="
+  },
+  {
+   "category": "tone",
+   "en": "airy",
+   "ja": "空気感のある",
+   "ref_mean": 0.13483,
+   "ref_std": 0.05533,
+   "scale": 0.00128748,
+   "q": "6zb89fHmBc/v+APe60Tk/AwhwwEm7PLzCd8oHfH9FBYtOCnkDuIY+TFMCT4BGA/uF/kYvfsMLPouyeoF6fcQJe8c+/o43AsYLAsX/xYKEdzp68UcK+jxLRAf/U3ODu8t4PnAouUAL+H57d/h6QXNFyz58g0BEwHLAR0AHBkbP/8y9ecb+BsN4PIH5dT5tegYGysJDeYE8b0My0nBPjz0zzDtLxP8L+X1ExM5xuIS8/sX+en9NuHewTJMDf7ggbsL+u0/IwIpBQMnAwwM7S5a4gjpKBoR9N3r+xDNPs8R+/bYCg/9ES4K2SPr2eMp8wzuCvYn3h5AvtoM8kYT4vbw4gvfCfwUKv4nNxIA/xr+Winqze3W5Qm53yfK7t/p6xsE7x0xGx4CAc0S3wLsJNKu9SPpKwU0+hIf8fcMzuTU6AJlvMnu5AbcECj63QDd2ybf7f7+6wYGPhUJARkuA+UF/TLq4scGOuixFhXuFb3sIOkQ9AXl9cMTBCRHH/jHzBnyDTXsAeEnC8wQ1AxSuC3m7/ol2ikH6jLkGyQIBynfCSPD0R7eQv4FJhMD5zrsDsJO+N0K1t405/cf9RcBAeoB3OAV8uT6+x8H/f7d0ND/xO0yB+sLMQ0dGyIa+Bkh3C3yZNwPHg/vAUMGAu0bHvX/F7zz3OwV5uUXA/wmByAnFQU="
+  },
+  {
+   "category": "tone",
+   "en": "thin",
+   "ja": "細い",
+   "ref_mean": 0.195,
+   "ref_std": 0.06055,
+   "scale": 0.00124794,
+   "q": "4i0DDNfh5+II9B3o9AnnE9kJtxYE1CsT7fsuJwLtFRUeLyHjB/cw3TMiBSEYDgDe//z22ej/L+ZIzBAFBOYYK/YDOdpFuvUFKisf3iHQ59Py5+s4HOTjLRs5/B7Gxe4t2fzXsuHkMfT62snwyPbUIC3cGv8NEQLR6AkmEv//JAgZ8NgZ3CLb0wP96NIxvNIc6zQjFfIi0sbqyjnbEUUP5lTnCQQKK97xFggdviEH3ekX2/vyNtnwrFA+FAYEqZEE/glJNMoMGu5GJgQM/xRZ8QsHRAsU8A7lHxW8KM8Z4+rNIePjEiwByifm6NUz3/T5Cuoi2SoJvd8OFiv30fbU/vn7GvzgEwESM/0U7AzoI0HvwervAPfl0QS+6vPr6gcC8g02GCEY9cUh3vbnKsqyBgwC+gUB7xMT/Q4iCcuw4REp67gKwcbTBgYZw+3b4ijt+wPxIBMFPvcb6/kC+f0Y9Qvr69MKH8qx6+baCLrUH9sP8ADq8dLsDQ9GCOna0wH+AysBqcgrCdkg8QJD+QcC//cP6joL5gnQJB4fEjb34hjt8x7cTO36P/8Q8zH9KZs2DNoG2PAp9PoP3A82CeID5PAO++PX5iIkzPkDzLTX5t0gy/cIIDAu+wJKGgcT3xMOf/46CQgR+xYYFuD29R/oH8Mk5dUW6vDw+PlI8jgPUT8="
+  },
+  {
+   "category": "tone",
+   "en": "thick and fat",
+   "ja": "太い",
+   "ref_mean": 0.11162,
+   "ref_std": 0.05172,
+   "scale": 0.00098551,
+   "q": "uivb6O0L6gUEyfTqGfLqEIEWzwO7mBUM2xosXNn/HBLuHebj+QxA1S5Ny/LwAPCH4uC71ufj/Qb9M//A1vgpQL0PPfQJnLIRJU8NsD3BA4kU4yIBCtKuIgkGEwGfp78m4eb4F+PvSkDvuusS/r/I8CztP90CB9DF7vAe2LkE+Qn7FMAe4CAE8d8b/AwyuuUA4EQVD9w6z/4E1gzt4R4iEizeAMj+DdYVJwXzhVy22BcLw8zuJr/51UsRKhT4tosu9D0qIrviGfZ21Cgq4w8mAkgNTdf0wRYcFAXcOy8Uv9/ry+DeKErk8A3Py9TCru75/9QP4vcGu8f1FgsSxev1Ev327+XpAxvgTvEqDFHF+lbz8uASxTzulgX1/hvi/vlA3AA7Jwv6EOsu+gS/RgemL+ANBdXyvsHT4zMWBMDhCRLZLIMTvtzH+/tFwdgr5j7U9v/hRCy3CcbuBgPrzOYc4vAjGy0/66O1FO2yEunO8AAV1AHl3PEN/PxOAuS39xzq3S4by8whCg7ZN9FIRwoyKSgL/h/8H/sNAdgdMDcqtewQ0hkjFNkIUsjlxEErIsQm0McZ2uvv9dTztvtcB58btQH+Bg/F7+763QkKlPvgptULox7uRjwl+Qz7R/BVxuNfMgA85v46CujdWO74AD/aP4wd+/3aD67kwvdI3g5wOH4="
+  },
+  {
+   "category": "tone",
+   "en": "hollow",
+   "ja": "うつろな(中が空いた)",
+   "ref_mean": 0.05625,
+   "ref_std": 0.07177,
+   "scale": 0.00114936,
+   "q": "7Ejf4AzbCssa/+3gAwbkGPYx0/8Kz+cEGAENKhIZCxlXJijVDwIdvU40GRwnFQnUKvoJx9X9OgFCvgf98+ANL+0VQ9Yq6Pz/Hw4tEB/TI7IK3tUG29jmJBAOBUXZ4+M/1Pu3mPDqPfoE8dT20QKpBurFHeUOD/jFu+0bOCMpQO0t9vQI8hL3ww8s4Qv82PAWAD4VQdcsCazd0EPlIR/r7h3PIwPaKMbIJww63gf98d1A6O4OEufUxE1PFeH5q8UI+dcqKuLuA+Uc9hIU4QNYAQwLGzYd3PPNBzK8V90qHQTn/sfrEDz27R3F3uAH8u74O9cy6QUrteHsFDHo7grd/xrq8vMKFfUdOP77UBk1S0btuwXe5CjKzAPUHdPms+8E5xIZ+kD57OMx7fjgN72BGBjsIfkz/g4a4/El5t28ECRVzuzqve+hDyogyxPb9ki47wcJ6PY8UkMgAPTv+fkoCBP73triKa635wy4LrvqSekWyengAbUg+RIv8unl4en3Cjv6tOEn8u4Q9xlX6CIJAR4a10Qw6//RKCQIHjwO5kny7yDiUBELMgMb9y3nCscoF8UDv+cp6dgX9zgMBhv26fQp7MgPAh75Ce3iE9P7zvcNDvU0PDsDFP0hFuwp0OnkW99G+fgR7DIaLxkP7xgXH80SCdYo4tME9go5yiwxOi8="
+  },
+  {
+   "category": "tone",
+   "en": "nasal",
+   "ja": "鼻にかかった",
+   "ref_mean": 0.14423,
+   "ref_std": 0.0733,
+   "scale": 0.00099421,
+   "q": "7Ca6qtjs3t4gMxfHCO772NYXqT380AfhGuM63xAdaB5OFxfY4M8NmEBFOCXTICj3ATo249z5EA9t6g3N2QHbWyUFX/A7vO77FCYw+wbdBArrzNUqAxQmQD/6DF3V6NEb99auxwUlHtkl/BbvAQO52ToU4xf7+Q3bRfjVJC34JvMs7eYJ/g3wIN8syQ8UxdgiNwX76/Lpr4QF9FsDVS/3v3LxSlEaLg/NO8Tr4sjuQAn3+MkDIfLmwHVlUJvUxBEqQPz2N/r49cYbGwnb5dBQ+BHMJign57M9BxgKLP4aDOzO8RXpTUn6uBv58MkF9iASDMYc+xoCIbLYNw4i7AjZNB4tNRb6WgklKO7r7B7bVin62woFsWWj4v0r6NDsxhITCPcs60Lo7PJW7efg6eXk2kazTjFLPwYI7QHZ8tDlzhBO34/T3MTNLBDj6/z04/b15gH57CY3L0MoAwU14jT9NQ73H8HeV+e35OHmRNnxMPUl3hjM1t3TJN4a5+jcyzT29Sbn/ggcEtvR7vt/3igRDgkeyWwg8y3qBxImLWPuMxD91EWgdRhABR9eCyYZ78pGAucDqChg8AY7vjz5ERks0ubc6+QA2zQF6uz+Hv8LwOsBOuZcNgojReAqpSc0z93hbCw39E7OzwTwKA8OAvQ88O/vwPgrAczxvwkb0E9CLyo="
+  },
+  {
+   "category": "tone",
+   "en": "harsh",
+   "ja": "耳に痛い",
+   "ref_mean": 0.23101,
+   "ref_std": 0.06688,
+   "scale": 0.00094917,
+   "q": "lVTAygPpDfIL6gvH/N769oEXrQYVxFAiFOpCbrwGRV79Jgk2BP0Ojk4AFvfs9zy97ub2yer7UNxG1i8RC8QgNM8BYc8oqdYRQUAfBCTl/J3vxRAYB76uVyhMEx6jAs4nyh2y8M0B+fT36rzsCf2oBi3q580kFA/t79QZCB0NLSY5A6IXxyjj/ewK3IsVmMYI4UgdSPxbBeUa0UPdDiYtC2C9NQHVC+bf9xgppDb1Dg/d5+XkDc7MnERGHvARiaL+HzUyFcMKC/1N1CYTwhtI1P7acwA55vwoE9zlTAE4xc6mFuQZ4Ro/2jAV+dflzObG9rzy5kEgu6P4BUrvte8eOOf5UeH3HRYGK+8eJxjzHk0V5fgM0BnNoQi7EOn1BvYWCwNeEz7k8Lo17herT+CMCgQVFMwsHhAA8gQGHLb7sOcav4HlwtGYH/L9uNfs6DL1Nh0N7ErVPi8TEgLz4Ogm+dPI2sQY99m5+hGxObEaDhg0CQjX3MT6D9QvBdHk9Qb0uxoi2wxWLvYOFN9PCSEEGyM6s0vS4A0B9wPjFy0e3uLqySwHQiQKPxQcBDQnB89H/erlhuJWBu0oxUROH8v6uOruDtP4yCwm1eQK4eXx1M5gxuEeWxwiAvhDHwwMp/JAYj09zQ7x7eYTLQvc3vseGqv13ujcIrTH0wsQ5hMwc0s="
+  },
+  {
+   "category": "tone",
+   "en": "soft",
+   "ja": "柔らかい",
+   "ref_mean": 0.13527,
+   "ref_std": 0.08472,
+   "scale": 0.00143909,
+   "q": "+j3w6ersAN78//T3BSjtASsX1grx6eoSIgcFDP33CSU9M1bb/AMJ5zEUERInFfHlKvwK1wEPDuYewPL6DfEWE+8X+vAZ4w7+Ggso8BHv7dPz4ekOA+HkPBf++yTM9OEw2wXAgff6RuIO5fDp0Q/e8v/eIQ3s+wPO2BwQQP0TJuMc7+v94fbx4AYIDeEX1v0SCQ8lBOrm66zk2yK6GhYd7iH7AxQCDc35B/cV9wL25O4g7eION97ipTEXB/j/qc3//PY9MAUV/fAtMvsnAfpaEOf3F/r4FfrXJR7mDdgcECwG/+P2Cxv71g3t2ecp8eYIFdgr7A32y+wB8yAS9ffQERAAA/YLKwEgQO8NCBD9LyvhxQfn/A/g5SLR5tr/zRwk5Q4XGA8B/OAi7/j0IbTO7xPlGvQa3xUQ4uw14tPE/B4w8OoV2ezN7iEY4QfRDQnl4vjmGfo8RgInMhsd8/bxFSrl+OfsPM3G8O/h+aHaLeIZ8vjqA739DxE5BwX22Q0YGyX9x80gB+kt5CBCzwTy+A0T4yoR/AjfIjAJBCoD7Di/7THKKwYBMRX7Ci7WLbg7EeUG0dgV5vgPAhEb9/nz9vYK6/z3CBsU5PLr4Nr94e0p8wspDCARCA0h8AEYABHeVeYsFAEg5SsNDvYMCAH7Jfcl9PEe6vv7BRY29hkZDQM="
+  },
+  {
+   "category": "tone",
+   "en": "mellow",
+   "ja": "まろやかな",
+   "ref_mean": 0.05552,
+   "ref_std": 0.09956,
+   "scale": 0.00103749,
+   "q": "6iHnGOPk/qzC7ecYCkLXDEVEJgntCtESDP70IuwREkNDPEXeGA8R3kw2Kxxk8fb7YNTouu7xJ/JGs9QG9Nr/KgIfDiMGCyQDFx1WKA0S2KD+Ae75COXKFxsH/CTY9PYu7Aexg+gQYdw+6wgSxjfaLsG9NBr2Ffi+rD83Jb0wKL/28fvq3sTp3fQcLvInCdApOhwe7e/+Nb3iBEXE/BBE9y7mFyTaH8wY4f490B32zO5U6gokMRThvBnz2QcUqsTx4QhAM9X1BgMuTflIHAxX/eUJFgHv2Ae4SizFK/QTPFkpC8m19y2+0yrn9ic7/8ILJfIizgv55AQKyinPAPfrEDfwyQpD8uYrL9PrJRocNlr2sQX0/r/H5xj09MjtqDU2GeX2HQL/H8Qf0/bf/6C84fbtJf38lycB2eRNztKbFig37CMK/rSsDwIQwPDAFQ/I2djOOegaLgBN+BUT1t0m+zr2E8XfNsK4JfTAy8b8RfYG9uUFFKwO5wli+Avw2PX3Bifxpr0I7KYd4gtz0Q/44ikAEkgeO/7KOjVLIgq47n/BGTzLPACtJCXr3iLTJcN1Osn16xQK/OjzFzjzBzaq9wkJ/OnvHNsW+uvs9+oH+9o8DgIH8B//FPwMN/ExJD/jc8opLPck5hMDEOYwKxPVMRISEhcNshMM8fw1zC3sJBo="
+  },
+  {
+   "category": "tone",
+   "en": "piercing",
+   "ja": "突き刺さる",
+   "ref_mean": 0.20652,
+   "ref_std": 0.07771,
+   "scale": 0.00104407,
+   "q": "2XrH0w7cDdZBEzrhKeX79rkcigUY+V4jAfBAG/boKjg29Rc05OcHxDREQiroByfb2jMZ79f/Z9dB/AkcDuHzIfHcVMxk0RouChv18wTP8v3Kw+0qP/TkMi4tBRXK+Bgc2QWvqefCzOENBMn04B3HDTrk8+dD5DLn7PEYJRAlXxYxDLX64jb64j7vzdn7rL4MACAVNQMiwcohoUj0HzAa5yvuFA0uJ9r3EfkMww8HGMP+7wr/LMnKzFA1NwUkwKE3RRs7IK0o/PU86yEJ+C5h3+z3SP0i8/303RXcMA8nxfOpNAj5/gYozVT6+rER6wXS/L0ZCy4pqMPuIw8U1/D2DP81ZNgD4P3ySxQrJv7KJyLv2PwM/hDl0P/Q9d0I+rzv1s8TLCUd4dwWDvHxPsanBPEhGCUwIyEGBgXqD/gIo/9MgpYCwunGLwwp7vQAyDjvIS0S3hwfOQIo7dIl4fIpG/fKv8P2Beu3v/y/QoEh7vsxHyHX3/MJ7vgVDOba/BzhAB0Mugs7RCEP8dtY6yLyDPkYsU3/3gYI9VLuDmr+I9bjyushORkJJRceABYS8qBKF9fT9b9J0PlHoSlCDOUbtNsU3sfy6TIx69cCEezo6NcQ7Q8jVxgSCOcrEAYQ3gYcWzwL/SLZBe8qINPqne5B/e0e29ArJgnQ9Q4s6AoaKBw="
+  },
+  {
+   "category": "tone",
+   "en": "rich",
+   "ja": "豊かな",
+   "ref_mean": 0.12207,
+   "ref_std": 0.06318,
+   "scale": 0.00127516,
+   "q": "5wX5ANYA1AHw3/rrHRDz6MRA7Tfw5gIvw/EWRtYBHB8jFP3yE/kiyCoLBhML1g/UCt+06/bjLPol0w3yD/MbF8YZNeMMsdHxNlcjBxLj3qD4AuIKGNvNMhkJExvJ2PIU5fb239UJMfkX4d/09fe1IfrqBfH9EdncAike9swG6wUX7s8Z5gXO7OYYEeQu37kJ6CML+NQ5/PcD0TjS6BMRA0OyKgDYKvXkCPD3wDblyBMa5w39DwYbrSsDDAL00b/19C8ZMeT8Geg0LQsoASc05j3oLPz20AgCRQv0RvX5+B35JcLH9jfm6Q346u0L1tfq9uoL0UPZ1gb35CnHz+gYFQ//8771BRYQIv4aByruH1cM+vH2zQC8zwjQ2gDm4Ugp//kkChgC7eTy1he/Aea9Ge4AIhD25REHAkgz7uPT/+f8GN72+sm4EOjqosXiBiTy/hraGSjUH9kS7fflB+sc6uMgD+kdArjBHvfOB9TjNAYfAwAC9tICC9g1Cvjp6QcC4CMxtdwCDccACP5VOOwq8jkx+UP2D+C4EQU3KwcRzzIV+xoVM/L7Ruz4xxQKLtQtHtkd8wsEBPbz+ScyDtjj8gIQCPjh5hQp+AgExunw6t4+vPzhECs29fsHDf4lv/81YOAjEAcdAPr5HeX/EhbwIgH9+e7V6snd3dJEwiABfzI="
+  },
+  {
+   "category": "texture",
+   "en": "clean",
+   "ja": "クリーン",
+   "ref_mean": 0.23559,
+   "ref_std": 0.06184,
+   "scale": 0.00102349,
+   "q": "9CfZ8OAU9vjr6OsAHBwBAJg15FDT9yMTxgwpWMX9Ox76FA3uID0sqiQ2Gg365A7IOeCU79/PGhY1FxjMD97sF+reP/oym+wWOjE4+iTK1qju+OAjQuOwRD8QQx3GrvAh9twVy8sOB9MQuar45+Oq/C4JDgAR+/He6hYZ3acG+hUSCbkO3gjQBgMK/e022JcQAi8nA78wvuv70i3V0zA2ITC5AOwNVvwEF/36pmbk/eIW5xD7Y+sI0g3/BSL1upc7/FNQL80u7bkdH0FYKfpc7xXxL+wBtg4MO9feHyoi7gXdOMvRFB7I5icZ/AEH3Lzi+cwKujEF6eoc7wLcztoDLvQn79nvujL3YNg68SajF2Lv+eje7+XZxPDe+sz5+Sb+29VQTPhTMdH8CvnTIOTxIdD6LQf6uyEY8i8h5eGI/OgbCrf+6OfEH9QZltvXAhnI5QDuSi/UDa4nxNntzrwQ3Pj6RNAuC7O4B+W3E7fd9g8FGA7u4O/qCd5fF+fe4xzG9B8foO8RL+MhCN5dWAdH7hcfAg77G+3L8AUqQg0G0vvt5vYuJdvnHO3yzT4ZBJFhDvYRCRH+AvHe3SNGIsIp1BsI9d7sNi8P2RrntuDeweQrkT/RATcv9P0BH/RC2AsiSv0uLeoVCerrJ8vxDAf2MsUL/NQLAbSs5dteCRERf1Y="
+  },
+  {
+   "category": "texture",
+   "en": "distorted",
+   "ja": "歪んだ",
+   "ref_mean": 0.14385,
+   "ref_std": 0.07608,
+   "scale": 0.00106388,
+   "q": "xVXZ1vPREfUiASmrAfL9A8gMuf7zzwYoF9kTO+YABjEtPB0KCPwRwXAwEw7+ERfK3foj3PvuTgAzzAkL//AZL+sVO7c0wucL4RYIyhraL6/+mhUdA8L8QAc79yfFFdIy5fuc08wGFhj70bXc4eK2DCf0BxA09x7m1dEdQkkJKkZOIaoL7FoL1vL9wt0O0uX6AVP7IQg+5dgL1jXDJhzo8EnnEyG49dziJg062Bnf/vsD89nYBL/kwzRiI+QJgbMB7u4/GME0GdlD0eYX1R5AyNr/VyxW+OsF8xrbLcsf0tauC/oZ/BIh0RrZALIL1P/sF74pyhUnw8oG+CkW1/j5FhAAPvLkQunZKQQBMQfwNTEQtgvp3ynoyyKgAuD/+wL0+QpPDVMLHN4izeDNUtqiASP25dg3Ei7q788Q9uTV+Bw6xZrdoNjDGDAs0fvv4y7vFRwC2goGSSgQCzUB//wrHv6/tdQYDMvX4A25UrwEK+kTEwDT2dD0AvpF7dLo+fsX/h8N/ttX8PAb+xE78i/r+hwvrDr9yAHt6SHfDiwz7vnxsxncKBIgVv4mBFMN7tQM7ub8ouJg7t01rQYMGNEj3+oXFffRx/8fMRMJ173Vu/ky6tBDREcN+P00ChwY1vsNWfYe1hMF6jgYJi300hIi6KEW1/UgA9bi8iAH1TkkGEA="
+  },
+  {
+   "category": "texture",
+   "en": "gritty",
+   "ja": "ざらついた",
+   "ref_mean": 0.08966,
+   "ref_std": 0.06066,
+   "scale": 0.00113631,
+   "q": "3TkG//bUB80I8CfAJhXQ/PIKnOkuxykU7vcwKPTvGx8FFhrtEvYr5CseFEAfERrMAwMF6vMXTeM13yoB/uk1Js8CIuFbvesKLTwT0gjQyPvV1/8tNde+QR1O+BDM7s0/vA3FytTUFvsD8tbkyAXZIk//9fUJGATK/u8PFgYNQg0VHtsW4Szj2AP73askwdEh5VoFFQQiw8j9sjfhJToTyS3g+BADKuPs9/UawwoC7eX8+PoNJub8skpFLR/Zj4EO+Q5KKcoqCOs1BRUTzRxE3Q7xWfz69xPgCRTNSs0kC/O4NQDrFCoYzCoC7sAcyPTY8sYd0QwRo8b4CDUFsf3h7P/3PvMBIfsjMCAYBRTXFTzdx+gM9P/X0/m659ns7RoG7gQ+LS3q+swC9/X8PfWn6gQCA+MT6f8fBhsaCdvWzQAz3qr0z93zESIcsuf0xjXiCjUGCirpPQIQAvUx/AEWAAnsyrkrC+io8QQHD60UGtf36BUH7eABBCNeEfjI1RIeBDIhz8ouGtsh8fpE4QYKIfUAylEE9A/jIzPuJSzv6gHo0ff2VfsGQALf5DMLEa9c+/v50cAI7vMoqSpYFOj339IT7efmzBAr1/jzyLrg6e4duwcORAwp7w8bCAQcuRAgdQsvFyTv2ioYHuMA+ywe87Icz+Ib8QTK//c+/TMjUBc="
+  },
+  {
+   "category": "texture",
+   "en": "fuzzy",
+   "ja": "ファズっぽい",
+   "ref_mean": 0.10806,
+   "ref_std": 0.0712,
+   "scale": 0.00125345,
+   "q": "3Sb2/fPcD9gK/BzDCAbUBewOtfgaxB0T++UaJPwH+SArASz4C/MZ9UdWHDASFSHfDQYOveoGU+0YwfQD7/IYH/YaFtNV0gsaDhQd3gjxEc/ax+UsLd7rJQ0u6DXRBQIoyeynwOr/LQru5cz12/XUHzLm+Rg3FRXh8vMjGRIbRSQgB8wC5D39x/f8y9cPuuIVAEPvKQki0s4VzivaJz72vjfgFR4AHffsA/hEuvD9/ucG5MP7GdnRzDRWIPwDgZ0IAeI7E887Gf1MBg32/Dk60hP/OBkwBvLr+CG4NccZ9eSzEBj6Bh0T0Trk2rIe6v8A698s2xI0wdsE/x8M4O8A+BcMNffsI9H8Lg0CCfbwIS/7yvn26AbY5xm/4ePz9gsC+RU0ER4RCrog5+33JdOs/DIJIAAo+ykhAeUH9OHS1ixO0L/m1d7HEDEI0PPR2j7oA/D88f0VNQog9QsvC/VCFADQwbkQGvC/6w3RJtD/FOYUCBPr1c7yARFXFO7L4v4JDjUA9Ocp/+kF9Atc5yz48Q8c2VL57gzvDyPw/S/oCBHswAniOQULMwQU5DYC/sxB9/QV3eoi4fE0tQYhBuP+1t0MAfPu2hogFfj93dv10fYn8OgmPgYf/x0gGhch4icBWvIZADH4/y/9JPYY6BgD+dQBze8o8PEA/A4b3yMHExw="
+  },
+  {
+   "category": "texture",
+   "en": "metallic",
+   "ja": "金属的な",
+   "ref_mean": 0.07802,
+   "ref_std": 0.08387,
+   "scale": 0.00110533,
+   "q": "9Tz5uv7mIrc4AwX3EwTkFeEFstwv5e3VHOJFK97y/z08FFIiMd0W7Rc+MjYLIx258ic3EOgtWfkyvBckIuATDuDrGdcR+xnPHCL+7Da4AQHT1uMuFNT9GNo0CS/XJPEbu/vRqs3R9enr/7DG2/rKByfvCO4p7CTx6e0WGCgTV/YvJvEJ5Dskwirx4MDv3fIX60kmQv4FAdcKpC7sKB/i4h4BHB30GrKlDekh2Owh0Lv+DvD5MeXKzytgGgrLx5PxFdU+DSMR8f8ACBYvyPFq88cEBv3k9Nkb4y3VGeU07zHEDfUI2vxC4i3m3NI1AA/gK+EO/wkxgaAmG0kB/Mv17w/hFvEkFgAvJwUcQRsEJvnlqt4XCzvavy20AcIA7NjnCyxFDhPox+QMCfYEXtvACvb1M9UvER8tASPr/Pzrtgo6wtUD4yTX6zYm5NvWBh/JQS0N2vANORYj3OctNd7yEOSVvvj1FRuxzibvJpnqFPIP2BbRAPYjASs6E/m82x4Q/hYP5/s14xw13QdCsyrzJenpwA281+fnAwDLAi4eAv+k2/PVIisUJxABCjTvwsVQ+Mv3l6cN5OAaBPvvxtcR2/Yh78QE+Cj579vG/L3I1vMlFu8wMA/a7TYP6RUZwggRV+8t+BW/yyxuDyzpBwgd/boX6OwdHfLuABYZDcwHDAA="
+  },
+  {
+   "category": "texture",
+   "en": "glassy",
+   "ja": "ガラスのような",
+   "ref_mean": 0.07104,
+   "ref_std": 0.06277,
+   "scale": 0.001082,
+   "q": "DUP55ODnF7o3BRDyOBP2AfAFnBAQ8A0T9OQoIwDfGUJoMVAWKO0qzDhSMScUACe17igJ79spSAU42BIqK+osD/AILL4T3wvSGhIAzDeh7ea45eZEGsv9GAcsDx7Q0AAp1POzuNvb5u8aBs3Nx/nGBhII7PAN4+jU7RUaCBEXX+5FN9gLGlgYtSDQ4+Ey0MMc+EbxG/gdxM/hij7YETnjyRzIIwj+L9HTHfEd7B88wNIbB+XMM/a4xVc9Gif8moH5GepnNu8v9gscJRMF5/ZsCA8GTxjy6Rzk/TLkHekX1wizGuzk5QpA4jnw27s/6AbfCMsf5gUViLkhBiQE3+/h/irpG9v76BQGRh05FhfzKwnpqt739zHexSK74tz18vkN2QlNICIItOT7DPPaStytC/0GGdc2Bysf8Av0CArKyBIuyL84rRzb+TIWq+zv1T7UF0bpDBQCIAIyz/MVGeQbNPbO2O4eHNu95QnlIKv7Kd0Z9ize/PgJ9B9kM/Hy/SAUHgMZ0PI1CS8v2+1H5AL4AQYu0zwB7eLQ9Te5DTEe2yTRwQ7yQQUiNPAS70H37bMzFdn+97wFz/4z5OkP99IsDt4X3w7u8y8a1O7pErXd4Qz95fsbLz4f4hAeBwAIqfwpf+dC9AHV7f5ULwrh6e4kC74gCcADJwDd+x04H/4OPio="
+  },
+  {
+   "category": "texture",
+   "en": "wooden",
+   "ja": "木のような",
+   "ref_mean": 0.0424,
+   "ref_std": 0.05891,
+   "scale": 0.00106457,
+   "q": "CEsJ69DjCehACezsMgX7HAgah/YD1uQgBfjtERQD9wB1KELjMOMAxGtLNysQECqpFhsBBdgXQwEp3xzw+d5HDeYSR6cwtOG06yMX20mw7N/Moe8lBsriNPIX+xiu4Po7uNrSs6kD+fz14OPY0fawBA7jDOEbCRC41/soPksTUQBYGOzv1l7xugwIxvEl5Pcr7zcJM+8Z1NDrgSvUFha+1fDW7xYJGsrJON4a7R0DxMtHC8T2O9zDxk0vBO75qawmFdtVMhEL8+4oDB79APdPLBkRLCnyBfDT/y/kEdg89RrCA/Tw+RH70hDa17IO8uQARdFR9vMRqboUICMN4LvXLij6J8/1+/cRMe8hRxYLGw/i0f4A7z7R0grP7sDs1Q4Uyvs5Gice6NwBCB8GX8PHNS31JOYzAh84CQUP8AKr2Cos7Oz7wgyj6U42yf/d+DO5CB0M8wBGPhYoBfoGKOURHuDj1fEUM8O9ygX2HJ77H/AE1P3h/t8JEydeGAAG5gtFJR4VovAm9hoY5xJD+xAFEwYN0zAF38TQASTNFiU41xbpxgfzMgYLP+Ak6A3RAKcG8+Ibzb0N5toozfc6//Yw6uMX+AP0AC0W2QLS/c3YzwIp+RIMQE8PBCcY5u0Z0uLpYdBU8hLx/UJESS/v2kM86Mc8B+I5/uTPBBND6/snThw="
+  },
+  {
+   "category": "texture",
+   "en": "breathy",
+   "ja": "息っぽい",
+   "ref_mean": 0.15625,
+   "ref_std": 0.04919,
+   "scale": 0.00109654,
+   "q": "4lTU0fXv577gJPzPBTbS7CNFswA05xP2ItglFefwVewnPCnk8tL2zTJHNDkl+AcTLf4or+YKEuFZv/P65McoGfUCGARB8ywOJSMrEx4nAO7ry+or/OgEJCEnCVHRH+4x7fqokdv+QeMRDf/d9yviEjrv+gcgD+zDAgHpBxEiPeYY+P4mxwEd+ef51+XuwtfrBhkZCt3x7IHv9T3IMyn+vDcHBDHzIwje6v38y8EKHP4q4/cVIvPOwUpWBNS+qO4XBuAtHO4T0ucMAuge9hdZ9vS4Dvwo3MQSPBTXT+ofKwgBCAQDLjEH6xro/O8lABnOFfMe7BZH2Mzx8zAc4trw//XpH+UxLhhJHg/4/gYBZy3uyhvR2zyn5fT+/sbc2zj/9w4fJxfsCr4S/vPiEtunu0XPL/lG9AElBf8i0Nvssh90vsDj/fPVHTPs3wHl1x/c3vMA0P0ufT0jW/wOwOP5+zH20a3cYgmQIx3c7LUhHur+4Qrq78M7JiY09RSqzSPwJy7j0/VDKML5vvhLsi715wA5tBoj51XnNB8OBjTNKDH270HfUhgNA0T2EifYJ8Zg8u/33CQx2iQq417wGEAFv+gK8soN/AH6+xXa8O8D4d8nAg8rPvgaCg0G4hj6+TDHXf0pKQrp40Ei/vwlIfUZ/e8But0g5fMFFBH77VYMB/s="
+  },
+  {
+   "category": "texture",
+   "en": "noisy",
+   "ja": "ノイジー",
+   "ref_mean": 0.17573,
+   "ref_std": 0.06312,
+   "scale": 0.00137226,
+   "q": "1jP02wDPGt0eBBTM9Qrd+9sErP0k1h0CAPYyJQMA+zERISf9CvoZ7i8oBBvyIRvF9hQjzvcdNv0S0g0BD/YVGP4RENM35QQOGAUW5QjhBdzt0OgXIgL0MyQs8SfmA+Ak0/SxwPbzHwDq2MPs2PTZECbyBRca/B7y9OQOKhoSOTIg/9AL5Uf+2gYOzcjnwfYDFDz8HuwO7s4M3TTUMigR7jP3JPn2C+j1Bhc/4Pj6C+/58On5IszYzDZLHvgGgbcGCPI8BuotHeUu8xUC4yYz6QH9NwQiFPIC8RbWOcQ15OG1DQAbDAsk2CXo6MIX5wjw7dkc3BgtvNoDEjEG1gz+AA4KKvT+Le34Pg0NDQfuKTDywe8E+QXs0yDG9dgF+PYF9xM3Cx0E/NMP5uzxRt7K+wUKFPY3FB4W9/MB8dzf5xJUy671tezZABj92gbc0Rv0FQ4N3QYGMB4YCBEjDPAJCAfE1sUOBt3O6vfkPLb8FOob+xDn6t31B/syCd/f7QIC/TAG+Owp/OwM9Qo65yT3+/0ezEf21gwHCh3l6yn+//LhyBLYLg0bPg0bC0kH7cMy+fb2ztk+5uIj4A4iCNIN1tL4AeDo3CQfA+j948v30f8q5fMvORUT5g4hCAoNzQ4CXAMd/SPt6SECFucJ8AcFA8Hm5ecc7+z2+xYZ7hMbEQo="
+  },
+  {
+   "category": "texture",
+   "en": "smooth",
+   "ja": "なめらか",
+   "ref_mean": 0.12982,
+   "ref_std": 0.09206,
+   "scale": 0.00106186,
+   "q": "7S/RHe0C18jBxdUmFyzY/wE+8DbTB9Ub/fAmFt78FSY0IUDx/vYU/GQcFRpE+Nb4Kvmy3fDNH9AfvO4E7tcQJ/s4BfQT0h/5Hy9PCA/zwZH60coQ+evFJU756jmz3hUs1vbjoeQeZ9sV2+MK0BviG9OxLxYHDfrAzj9OLawd8+EH7hvk4dPR2+sSUsEr+ckSEAZY+OcDCJvPAS3MDB4z5S3fHi3vMQ8V9OX+4hcA0sY84/4nMvQBrzHW7u0qsMAI6yIsX+0fJ+w1Rhc7LwBODwkPHATx6/PMQxXcBfoJHVQXEeenERTJzBTozRFS3LT3HgUoADTc4TP93vj27uLlAP0p6coeA/oZMtYGHC0QLVDp8N7t+ta+1AkEv9npzDFn9eYaN+87ENIjv/zIzJ3p6vrkFxzqye7y4ws4zK+v7yYxDfr58t6qCOoR1fbHIBOz2unMUwkdQtctE/QA7uIA8hLnOcbTPb7QK8Cz5ZTrQNsUCOv7CL3o/f1f2wMR1fbtBTHngbn9DrT5zApfAgzm7jMTF0kjFQvYNDtILjDa+nPZMzXVSPziMx362TLuNKNUQfECCwUCBefr9ywtDSLY5O7/DebpJPo71/703w78CO1A3QoXFRcK8PAkIvwIJi/ga9gcQPog/gobCeEqJAbFOxcr6Awf49/97uMwzSfwXRA="
+  },
+  {
+   "category": "texture",
+   "en": "buzzy",
+   "ja": "ビリビリした",
+   "ref_mean": 0.15537,
+   "ref_std": 0.07879,
+   "scale": 0.0011291,
+   "q": "5DT8BAfY+9sVATvd7hHRCtf+vQIu4zQe/fJPKAEkGBwz+hP0E9kfAzpRGTv5JRvo+iEZv/P6Wdcqsfwk3fUcGgL/Htpt2hA6ECI1CRju/OfU4dtKOP3+LQ8e9jrPFQwywOC2tuPeKP7y7r4NxBXeIFDz/ghNByHr59seBwUMOyIiB8UH00Mp2wMDstMEpuAh9F0IOw0jx8E8ulbtPD4CwmfxIy8XJOf6/AExmuHn+ef6B+4OPOrI5TpBI//3gaIFMekaFr5LJ99QAAX/BEo61gPzHDAq5fX95gyyQtsa2eGdGAYTDRcIzzXK4Nc2+/ft9/on1SdRvccPDi8I3vgJ6hYpRfjuJOfvMv78BADlJib6uOb74wnb8hLE/ubz4gL6DhAoByATA9Ac5e75Mtmi9voMFRY3DTktEvr6+uff4SJhq5rv18jGJfT39Na37yvlFwv/6f35JRA25BEXDeI4A/rQ4Lj+Iuuo4wDRK8UDCeEV+yXz1Nv0DxRFHfCx5RPvEzr13/UwAMUHBwpX0FAHC/UQ5kvj1RHoBg/4/kraI/L2wAP9RBkSOif/9Cz5/ME79eEu3vId/ucdxAUp+N0JuuEKAcro2yg2GuED79D0z+EpAtsqR/cHDycnKxMs5icQVf0ABDD46kPwHO4E/RUA5crd0Oo82vAY/RM43Afu/go="
+  },
+  {
+   "category": "texture",
+   "en": "digital",
+   "ja": "デジタルな",
+   "ref_mean": 0.13804,
+   "ref_std": 0.06652,
+   "scale": 0.00097355,
+   "q": "3i7e/dYQ6f0t0y0PGO25IOAJthn1AyUN+v81PefhJD04GDz6B+I58Uc/Qy8s7RbI4wHi/8ntSgAf4f3y+/c6IuL7L604rtUgJCkT206bvKe70ucmJte3NzM69BCdwhcgxsLnxKv0IuwQ4Kb1wgS+HDTkJeEb6eLvBRZG9sL3Jfop8r0HoUHqvfbh5thW3NQkwVMd3SQdzPjhhRTg40ci/Q2yDQYSDOnQ9vIIsFrqspEDCvL/Z9zUwjMFIBkFpo0uD/dPQ68zDdtZFSQ3JS9VJgjdPwPi2SYkACDmOfkUv0vNGO/i/wfnul7j3+VHyAEHK9EG6SnUkr4TChcQ47QGDfsBNafE7PP9JBo1IyXUD0Po1NUtzRQBrf/C1fQN6vf35cJPPj5BC+D++/rtO8q1Mv8dGfv6ywcK+FDtJQaH1SUM8b0luseHFuQmvcrPDDPQLwzPQ/vJO69S2+USILoL7OHmBNb2C8zJ48LQG57x6LkeAxP61OnOAv9/Eg7rvQ0cFSUlh90uCAMPGOtIF/z+FQz+1zz5AMrYBiseVEoR3QgGyQ31XtLmS9sNuhoMMpcaGsgD7df5/e4DtQtaAMb5pw4u5uzr3x1Azvfi0eTr7+kwqwbyRh4S8gUXNRE37hQiYNgt8SUQ/AUoGdz47UziGMM94+b/IAPG1QJl+PrzVyM="
+  },
+  {
+   "category": "texture",
+   "en": "analog",
+   "ja": "アナログな",
+   "ref_mean": 0.20198,
+   "ref_std": 0.06264,
+   "scale": 0.00106486,
+   "q": "xSq73ycZ7RoT0+fg9dn1NMf340nn4y8V6CU0UNP3A0Xq6xDdDAo46VIVAuoaHRjo1fbY27jE8RH70yPZLu0rF/8NJ90uytQhEB5B2yDBwYXtygLK9NXgQCsQBRPWreVOydLV/OQNHu/3zbYAzerZHyfDYQPv8db53/NbA830+xwjteG7kAnQAOlBLwEj/tv+6TEy7wEe9eXLAC8J3QQ/+SHoJhT13gMB5yAA0D/c9Kwj4eb9KsQYzzIDIfzfsc0PAhgbR68yHcxf9AwpHQ0iFPL4JRgBzf8UIQTGUgYnrgjq+NjwMQr5z0XY+vIe1trJ/+YK2xoB1e/xJPXW3wf5KudCAdHG+Pz+KwoMNyCw9VoC4hMn2NEDktnvDMX79+799tgnHAseIw4Rs+rERevZGfn2EQ4Z/OfD5w7+EfO5FR/sCpbvp7eBJdUtzeLh9jvXGxoGSxz0FL4uCQz8DN491+f+Mr7fApb2BpbBGLbX3tgk3e3m8OapAL9QxgUI7+X48h5RnNNFIL7dLhUZaxASGzD8E0YfANXvCfcDNED0yvEW/iX6HNMDU9f18zQYH8r5Jd//wg8NOM/h8idDF/bt1f/+9+Xq+ulj4gwf7A3wKfMbzhw6NUMV2e4eNQw92+P1Z/tIHw0d7OX+Pd0S6QeqJuwXAfoZ7uO34BE7pEjXRkQ="
+  },
+  {
+   "category": "texture",
+   "en": "lo-fi",
+   "ja": "ローファイ",
+   "ref_mean": 0.10462,
+   "ref_std": 0.12057,
+   "scale": 0.00104663,
+   "q": "3Dr9ERfdwtrr8RD0Dhm17TltuCTm1RUk/O4F6Db4/BQKEgny3dMuEEcxLl87JwYEEe3O2unwRRhT1g3ZEvEeQP89C/xO3RoFSBM7DejlxrcSD83yFhcEDjf62Djaz/9JzuG1jPf2SREGy+rrvvzGH/LYKhYDHga0CRYGL98WRO023hD7/iTzv///CO3m9NUgGVUk6gEJ5KXu23HpDwvx5R//JhMaLebwA+sVBMn7FN4b5R0TGOYpwy9NAgn8gbwP8OskNN09HMUyFfA9HjI89BC5I/wrvOy7PDqwWe0NLQzTLgvYIwTawA71C9tjyvEg7u0sCDUJvxzb7er42Betyzn46vzwTN0JQ+3YFffZLlPz0vzp/wTFEgDE5NAosw/z0f5YOxT5INoxzeLeB9fHIwb74CsDIUc9IOwu2P6XLh1T794ZBMLEFhvuzR+68gf40RQdKLj6VQRFKhNFHxUe+BTL3aLtOqzR7PPX9KbzLvUb+/Am/snn/ChU9Qn31/EP5FwAyKFCBcws7TBfIihHzR3i3z0c6/HsE0MSIzy1FE0DLvkHRAELSiQL5FK0Ra4R5OEMEej94toA9gZMCgQSy/cW9t/nCuY27cT84eYb6coltwtP+CHh39YiHgsH9RPpSQDyOEVa5S728ekoFA8BDdgY6gpbuMEK6O1OyW8KCfE="
+  },
+  {
+   "category": "texture",
+   "en": "vintage",
+   "ja": "ヴィンテージ",
+   "ref_mean": 0.15232,
+   "ref_std": 0.03968,
+   "scale": 0.00109136,
+   "q": "zxoO+tLw+c0Rz+fsOfDyCr8ivyv84QYM5h8rJuQCCjQY/A7yQwcgulVHFw//FCixHQHEBcn2HfgT0Rz6GegpAuMCQdY6nd4HCR9C5zW66Lbir9onEsa9MSwk+vusqwVBzcgR2r0IMfzxzbv5x/u9JC/aC/cGB/TM6y5JD8wr+xkhHNjpyyTVtQwP7t8j3tQuEyMQC/ou+OPeqhnY+w8UGznjGggPMQvpH9wlxSH18r1C8d4TSuUPxD0gJBbzsZIZ8hQhOeUwJM1aEEAvGwFK5REaPQnx+AAWGifNKO078ynhFc/ZF/7RySzy0MEH08X+A90exDnxwuIUBRbjzub3GPQYJNva9yAcSfM2JR28Cmj7BNwD+Oja0tTN6MDx+QUjx+Y3Mgw6HNEW3gblOdPhKuMBNAT98PwPNxww/eGY2xcZOL/3wdCaCuQmxtTM2/7a9/8JSQz3EM01ztz3ItIh4+ztM9wFFrn9B+TeI43YF/kMBxzh6s/4++V/FRTl8+oOBzgfj9AH/9r4Hed0PwoRAfj3+Efe4+Tf7g4PNDMK0PLh/fHwPAfpSusF9xMECZtFBuAPvvAE+dj3zBJJGMn01dP+6tLlExozzwnm3cLN6+E+yRnoKBM3BwAT/QUhyggIUNxaAwQSB+oZPtoW/QzVKsYo/d8W87fT7PVH7RgMeCw="
+  },
+  {
+   "category": "texture",
+   "en": "detuned",
+   "ja": "デチューンした",
+   "ref_mean": 0.1232,
+   "ref_std": 0.03713,
+   "scale": 0.00105545,
+   "q": "4Ef0utTBGtUi7v36Je7/B6pn0iQXzgYOJwEEXAQr6iwVGBb2KO8ntStmJvT7IQCBO9De/Nz5F/IdACPkKvL8Ic8CbcFB//kWHgYdACLe8MXoyvwp9vvBViYIHSif3Qos1vq9yKznASEDrAbvyTqqAvb1FwsWDQjRzdMwHto3AhH3I8b32kTguBM8xO796vYVGTYGKuQvAszy5UrF/Oz+HUHj/8PbD+DoC/5H+f7xBM4c3w8QRcXXwkEqORYDsZoq3CsxLcv8MbBV8jUUDT4k4/EJQecL5gn/HQy3FvcXFCe9Ns7TCy0Jkzjl09X71rUBFskOvCQZ4djw2ejX1fcC/uwdJeT3HQL/VuxASyMKHHoC+/LQKSW5/93U8eXpAPAlqBcqLQQeIJIN2xPzXeTpLOjqMc73F/wJNQ8kAOPyDC4hCLDgqdmu5/8cwQi+0jAE/hT8SfIvPiM5F9IOBvEmAeLWGPUF+rHR8AS4YJAbIhEhDRfd7tnt7/ZMIAT2CQYU9DMElPEaB+QaARI+UxTz+QLl618JvPYCFO4WECYa+v0DHNMbSSfbR+w19gboCJg+9wsV0fAn7tAyzjthEtHbzdELBPTy1iUQ69AW+NX75vo90QoTNxEqCvIO89w4yd7oT+RE0fYoFur8M+oTyALsK8r8EP0qxa7L4SlZ5wYuThc="
+  },
+  {
+   "category": "envelope",
+   "en": "plucked",
+   "ja": "はじいた",
+   "ref_mean": 0.20072,
+   "ref_std": 0.08378,
+   "scale": 0.00127085,
+   "q": "/DUK4/78+wkJ3Rfv9gvwDv4p4yHz8ez47B36NOsV5R86MTLoJd4P4VA1EiH8HC3YE/zu9c3yJv1PvesPNuIGAQgRJuwW5v/3CzBAGBzc+r/k7MMo8h71ARcIIjDOzxEr4Mn3yeH5D9MIrd0V8QfKGOq4EjAA/wXo3hotGuzz8/hd8fkB3vT+4R40E/MeCcdL9hhSH+8j4Nvvx0Tj/R394DWtCB8OJ9ThFAEJ7/IGypoM2AgVPP0GySkOC/MhtbP8GftSMQnk/ftAEB8rDvt/+/zxIyvxtwrgIwjjFAwV5izlONXhAR/G8kME8gIv/tYPIvAa+1EH2QPl5wLT89r5GSAO6OHx6PYOH9gcEwvyCCAZ0wnqGRvV3wDtG9YE7xrg0gZM8gYu4AIJ0BPiE9PiHurSRPgJ+hYo3i0k1fXa8h4GBO4C69mY8RUSxtfPJxTJ+y0GEf0eM8o29vkWGOgTB+nELvn4HL7h3gvaA8DaJfYL4QUAG9MaFv02FBz79SXp+xwFxv4z4uIgBfVy7xz9/hn1Fj7g69232Q727xgg0QnnBh0JHgXLJ9cxAAntF7lXIsQA5hsL6Pzj9xYPE9wl6wkR1fbqGiklEu/yAOnw9hQF7wPKAUoKCgcZGNvuzh//T8UFIvwHDA9PKfzq+v31LeEeNAIc2q777uw6zgQIY0c="
+  },
+  {
+   "category": "envelope",
+   "en": "percussive",
+   "ja": "打撃的",
+   "ref_mean": 0.12813,
+   "ref_std": 0.07306,
+   "scale": 0.001116,
+   "q": "vy687hEfEiIY2AIECcL8GfkdoRwFAePgHOs0Ou/sARI1H0UZC/vy72EDLv0JMUzX7QMkPPINTQUoxysLQ9gExugDKsPu8wzjFSP+BiHK8uvJrOEYyAXoBiz57CvL+AkinM781dvP0sUJteP5DeK76v6+7u8r9gT+EfgJQCnzDC9/yvjzthEG7RAQ8M3AEPEy1vZKO/L93dn9gQAGIwke+/erF/kz+NfiMuMUCtAX/KPnJPXtMObxvjU9I+wQvuZBF9RWEzHyJf4U4z4f+gNi/8TaFVL2x+8PHQIIFwA3xkuwKOL32fL9Bx7vCLEk9AfIEQv+VhsN0evY+P8w99T7LP4CKLz9B9QKBtzcMQbUHOu69tnlCTT74fe6HMMWzs7dzw1z/wj21hvh6v/MLAfiATbaBeY9Qzgi6z8GBQMAygvP9t8G6/uk3CUX6BbgDfKwNiwM2/XqJeVEFgMKbeXmDsCy4vTfF+H0uxAHAKD03fIe0AD76AMKIyD3/AEhBjURFQEs1TdO8hEPBQNs5B3g9FUEtCXqsd22vRbo8TIvHRT2AvMHwf/TJOQpAAveMsQg/vDhn9opDBQf6hf+A/Ew4PA07eEL9TkJAcb58jke7hwJ2f04Ni266xL96f3i0y/dRs8Z+DHC4y5cJzvw9fIPJL0I9vQUCcm19hYhE/wURP0="
+  },
+  {
+   "category": "envelope",
+   "en": "punchy",
+   "ja": "パンチのある",
+   "ref_mean": 0.17231,
+   "ref_std": 0.05972,
+   "scale": 0.0009466,
+   "q": "9yPmywL2qz/ZxvW0FyIIGuZsDjHTwO0mkszxbNe2DxNEJEgK+Cw/yhvbI0UpDwa33Pn/C9IKRwY4rfwa/NEFvpLvD9/2t6vgNl7o0BjSE+fkqeYww+rwTeoKCgmv49IiHg/srsL0GtH+y8/GxjSoDhb+3/Lcyujq9v0vLjzf51tG1OM7FBj4xr377dkXxc0k/XrX+ejy6sLuiQay9zX8+ie56+EQHMrLTdne3gLTDrrgwNHAEgIQijhb/v7oq8IexQlT/AI/6fJE4/UH/R5X8AvNKC4J9RbbMRATSjYvzxLwMNvVAxZFIjcA5qwx+Sf5f7oL+0HB8RLJ4kY87e0JUgcQ87vSQO/6Ew0aAyv9LRcpABPj/i/7ADbC8v8P4kovxMVYORTbzxIQHmnjGpzTBWLm59UNCwQU0yMO07Ta/9EFLsfezBWW5egtpRDhAg7dwlSu7Pr5ZxMCWv4OK+jp/c/20wlaIdTe5znuE+v8IeVN6828r7MSdvtLGtv/HhNsOwoh7u4X2Sw0FQta/yYF4Bs4nfHT+QuG2hXfPBFI3jfgpg/bCsQXJ94CyAuvUMc04yj3vNQ1xgv0reT0P/AWAQk9ye7O9fnL7RPvoOHlFgH+6AfbAj4M/vElC/76ycQIT8IxIP4pzxImCiXB7fZn+rwMG8wiKLSkCkYbyyRUVhg="
+  },
+  {
+   "category": "envelope",
+   "en": "sustained",
+   "ja": "伸びる(持続する)",
+   "ref_mean": 0.18655,
+   "ref_std": 0.08682,
+   "scale": 0.00095543,
+   "q": "uWDO6PDt+awq8QK98Rfe/pkpqBlYDScB5eNgOfMcG0UvIPrZOfoYzVxNEkfGFBmqHkIMkO0TTL08pxEj29ApNun5VtVV7wg6IiU4CiD1DdMB4LdmMfjrPCEb90yrL/9BtPazvfv3QAr48ff6wgmpFPjd99Un8fzf6dwKChU8PwoIG9vw7TcF+yIkrbburuELLT4wRtEr8agk+knJHxYk7VTzUeztKyoaCA9QyewOCO4n+O4MMd3L7FE5Gd72iIn6Dv0JNcgfQNEwAD0a9BFR2wX4JQU89AMR6+ieKM0oHu2QJdgoHULkzii01/7+yN2r9dPerEBjtN71OFEPzP4J1QgCGu8AAy/+R/QNGfT1RUjr3dkMDgnJ3PX7AuLu9to94woNETMe+bb8tNXKN7OM/wYaMx819QcCKvkMv8TLywpzw5LqsOuVVO3w7efyoS7vGgf9AQf+PV0r3u715LwE8xDgG7jnJLO3IOTDSIEX+P34Af/j8K4u8e1ADPu4+eqw9S/xnQEcHsLD6hNC3Dj5/xo68kX+zTcbLCgD+Tv3G9/R1C7JchIjIB0VAlYH7I5kFOny5PhVBNXc4T0aGhjy08cE4KDN6iQB+NkSGdP5tPkv8dUca9YwB+MXHBlHvCAIfvEZ5wD0AP/6HdIF7wcDAwS+57Yd2uAG4+A48+8kJxo="
+  },
+  {
+   "category": "envelope",
+   "en": "slowly swelling",
+   "ja": "ゆっくり立ち上がる",
+   "ref_mean": 0.20409,
+   "ref_std": 0.06445,
+   "scale": 0.0011667,
+   "q": "r1Pp7gj5JMQN8OrcBRHdMAEUueYL1+Ls+PoWVvQCDEcgAkIQJwYKyCoSTCwlGxLYJhke4+cXKaovwArw+84iGujtL+UoAxYDIy1F+wrc4Nf6vfMHA7q7EBlKACSjFeZY5T/ct9rNKfjiBf3oDxPjLRnQAxMZAujNtOFAMC0nO/3+Dd4AnxQBBfsJyM8BBuYT2BwwO/ko2/n24vHZ3CUY/WIN6wEDDOnq6Av1wBcO9M06AOz4G8Ph1BxKCArl2qcbGO9OE9jjBBc4HSY559899M8YN/gn8PD3Rx2+FO0bEx7MAeXz1CYL2RXb+esS1Mj1ItL75dckxMfhIg4z5b8cGt3NE/YO7Oom+AAKN+AQDlX90A0fDyHgvNbz7dzx1NkGAgAjMjnq7rcBAOzoY6+n9hwNKvDh1P8DCvMi19/TtQMI39nUwAWWLDk2v9fdBEe6DP75GPI0Likr+d737g0d/+vNzrb+NBWq99/eGKvqzNv79vkBCtTy6fRG+9bTAuLqBCgzmhUlHQsP3+s17yL96xMH1AggChTwGw0oJxUY0wi9ARYQEwDOHgP98iT05a5/2+rjt+s3KdH16gMVAz/rzfkQ4Nnk+w7v8t7pA8zXCQU/1woPLhQc9BMYIe0h4Q/3T/NYD/0N7P1SGhHc5wruHOAv7uj13OXz6CEf8+YLHFI="
+  },
+  {
+   "category": "envelope",
+   "en": "staccato",
+   "ja": "スタッカート",
+   "ref_mean": 0.0687,
+   "ref_std": 0.07125,
+   "scale": 0.00108607,
+   "q": "GCIJ6uPeAhky2hrtFAjhKOkOzQQA0dv6BSMZBBv/3B1rOEfpM94J4H9KHgwJGSPEARoI2vEIOOMcqvoo+e0cv84PHssYudzc7UAx+y613+us1cdHB+TxEhYXADe96jsg0urg0dEaF9QJs9oQ3A7FDRzjBPkS9QTD+OASQjTtDiF2/b0R5DLtuiIs1bD+5+orCA8cGA4R08MCriDQJBK1zjXNFBQJFtrMOdoL4fEGy7YT8N4QVOLvrlopGND4q8sO/tY+MRP0Ht839Cz8Aels/QcJMTvYA/y76RwBMLQ43fXmIRbt8y7e4DrxpLAz2/ADOfFO6UPm1cj8LSLv/OrwOCkcP8DWC+AOC+E+FQLtHRLl2fHpAkjt0DG9zM/pBR8a1vcv3B001QMc7EP5G8fF9CbJUeAHFQc6Gh0PEgbd4zoV7s311Nm01z8rzsvlASy9Gw714Qc3Rd85Cv8RISIcGPDj6PP9Qe7gy+PZIc7pWOLtwhnS8MwCGQtdGwPi8xxOOxYMsyL26MUC3ehO2S0YKgjm5E7n7AKczRLV/j1HDwb3wh3II/r4Z94Q6eP3FrA5D9Ma0dgq39n7ud4EC8s65+ALFuDV8y8wCe325N3s9R0jC94QQi8dGBb81/YEvgnvVOg2DzP0+UklI+314xgx/dED7QIs7NboDB0jyRUvXDc="
+  },
+  {
+   "category": "envelope",
+   "en": "long decaying",
+   "ja": "長く減衰する",
+   "ref_mean": 0.10957,
+   "ref_std": 0.06469,
+   "scale": 0.00113568,
+   "q": "wknp7QoC/LRUGv+28vLXKQQJp9we5gsO/g0LIhsE+EApETQCKAEOvlgWWRwgHg/oHTMj6cgwUdJNvyML79NEHvzsS8YwEQEXAwc8Cxzb4OIO3gL55NXOEBQsAxLECfwp1BDVrtPpNCfj9ubh6/TTEe6oJ/Qb+gLXwNstJzMdTO8DBwLisysC5j72z9oZ+AIlvS8sSf8k29Lu1gwM3BHk5iXc4f4A3+3MthIG7BUwxqloDtkPI93h+yww9fP+0ar8JsI9Ndjl9vwNEhQgHftCHdsbBAgT6RfvDQquMeMYCx65EMAM8g3v+BvB6f8FzevjMscVBeYhudH7LSMc4d/p/g7rHPv8ye8LBOn9R941HTfeqwUjDhP62MrnJcwS2dra7e//ATYR4dkR/+fHW9WBJBMcHtoM2h0RHOstBenH7Sww0gr5r+yQJEEpxvXjDkXDDP3/9rJRKihG9MXVFfUhHujixdnbK9Wu08/wFqz/7N723O8VH9AF/AsZ3NvsArUGBhE4iws8/iUKEgYxAh8L9QAS5Bf2DcfsOCnqBBwX5wLm8/oPNwHn/QoVCQniD6RBGcLNyOYQ+srpBToQD0Dr2OsX3sAk9Ajq6tHyE8fe/R4Z/RkpRxko4f00L+EOv+bgUt9A7N4BFCJdHi/z0jT7AuwqIOAM0QABDxAD6AQEB1Q="
+  },
+  {
+   "category": "envelope",
+   "en": "short and tight",
+   "ja": "短く締まった",
+   "ref_mean": 0.16244,
+   "ref_std": 0.07782,
+   "scale": 0.00137962,
+   "q": "ATX26N3j3vg58AH57ybkG+cj2/zy3AcVDP0eCRAF//gl9DvqEhQLGAcq+xwSOBDS+iMV5woIQ/c73fgE/vby1uIYAgM2yxH6ASoI2BjFBhL92+YjGQAXJwQUAjPS5wgR7d7QgQP4Jefju9ji3Prm+iMEDQMb7xbs4REAQif7HAE4DNn7HCAa2yMF3/Dn1wMYDUEo/+n47Kv2xSfsNCXr5hIaCBUV8M7rP/YF2uHb/9r5yPgQL9Ls0CNB9vPexbwP9RUxBfsuBsYt2f8AGBxeFPwIIQoQBfPR8yTiBgwXA+XbExg0FQYA6g8A168O+QHp/vEz4DEctPkdGCb+9vvlBRwHEe8IEvkHU9j36AnEHQjsxeHvEA7XAi3nEfMN4hon8R45IhAEFgAiDRodG+fb2RDg7h8vBhwlDvH6yuvT6Q5b7qwF7Q775ShHCfzZCPL96BQIBfs/KQTuDf4Z/tsDDAL8/iEdW+XgwxrnFcbEF/365f7WzNEMSBgyJOjdARwsGBH31OEk3N0Q6QNNwikLBdTg4h/l1Q3Q9wnZEDcFG/7s9PvGFAYXPAoCBSfDEL4lE+kW6usT6fwBy/8o+NVD5OsC6AnUB/kC7wvh3sflwdIR/BMYEgv68xgmBxALBg0hPREXMyYk9TD4OxIJFA4l+90H0gEgA9YkGSgk1h0m6ws="
+  },
+  {
+   "category": "movement",
+   "en": "with vibrato",
+   "ja": "ビブラートのかかった",
+   "ref_mean": 0.09531,
+   "ref_std": 0.06338,
+   "scale": 0.00110314,
+   "q": "AELwzPnHAs8cCjoC/Dfh/dwnyxMO4P4HEfIxNwgpDC5X/zj9+eIa5SFSOD/4DS3XICoL4woKSMM5ydYW+9oO+twQPeom3vkKIBBKLR3I/vDY2eImOA3sSxMTC0yvHxlB5wyEiMzmNfEQAOsByzu8ESP+7RM96h/mzdgaMS0MP+NLBcsT8z4M2SUWp/ATyswYAEAOKPUa18IisTnDIyfn43bVFDcRN87qHukbuOUF9uH+2vUaV/+ywS9DKvLlp7f/LOs4I9QMA8NGBef37iRG7gTrEB4V8P3lBS3jVN4c8/rOFAIO2igiyEDs2sk/A+sSGu8oxDUXtcL7Aj35BOv4AiEMJPD1HfMFFAoaN/wMNCcBs+zy6UG3+RK20/n0yhIK/w4WBDYN48QRDBX0PM2rAfb8Sw8nCBg0I/r58/Hd6BVbrNTm7v63FDEUy9yrC0LmBPPo/+4rMTIw7Qkn8AIuH/rw0uQYP+6B4RHHQrzvKAkU+TLX0tIEEQc/J/bP8RAGESfwyyb5BrUV2/hV1EoAFe8RylcQ8CrA7Q8bFU3xIwrhwxLwLTwBSxcZxOoB+L5T88kt1elA7usU0Q0dBuURweoT/PLg/iURJcXl8dn61fNWEP0mPSYL//0e+Pogz/z3VQQkFjIL5ynyHwrj9yUhCdL23/0W3t8WBUY/4d8ZKSU="
+  },
+  {
+   "category": "movement",
+   "en": "with tremolo",
+   "ja": "トレモロのかかった",
+   "ref_mean": -0.00214,
+   "ref_std": 0.06786,
+   "scale": 0.00106203,
+   "q": "BFb/3fm/TJ0bJCTyHP/L8/0amewYx98FKhEfDzoSFB1KDi0ND/YayklXPC0SJxGqKBcR7gQbRskI0wPyA9clGfv0Oc8xCSPhBvpFEAiq9Q/bv+wFLOXvLRYn7ifFEehY7iyJpdzOLB0gBxUZxC7REh7oBioc8QSkuroNTjcZWtUrJ9viylEC2hgtswr66totDi4IJOst374axSTyMRTjAl3t+QflCdbuMwUX8e8ACNQ5BwYiOevC2D48IwHqx74dKdItH8PwCNkzCgT08+Eg8PwDIxYk9QbG+j67NL43EATCDvQO7S8EqATXz8Es8NwaIOdQzO0Qys74FQMO8fftEBb7MwvvHegoIg0PKxIXHT4Gqgrx+0a25ODH39Pv0AgR1Bj460Lv47MbG+cXYN2d3g3XOuYbDwo3LdkV/Qnq8R5IydH5zxTNCTYs0/Pn5EXk9/L6/fhbLTpF7O8w/SMiLwL62dsTPtiB3vrfVa4NKu4Q4yTvBfzq1RBvI/jD/PYaNC0HnifrA9gUzuQ16S0OFOYCyVk/0AvzKzIJC1r8+RzozwEYQC72YwMqDBfazrBR+gIX3vA1BMkn1BMk+g0XurIK+gn62ygkALr2A6L36jMoEhRVRSMR+AsI6s0l3O/6RA5c9Svw11UVMAMA2yYm98gd7P49wNcdBjk82BEw/CA="
+  },
+  {
+   "category": "movement",
+   "en": "wobbling",
+   "ja": "ワブル(うねる)",
+   "ref_mean": 0.04801,
+   "ref_std": 0.10011,
+   "scale": 0.00106169,
+   "q": "CDrWud28I+8yNyABKPzt5wUKlCUHw7stKfoN6BLp2zBH7Q7b7Dcywx8F5xYWIeD0/jEg5dshKefy6/n2Dv4KGSsgTrEm/tvm/RAQ7QGc+//9vQAXDtYcLO/aEjn6EcxQ+Q+ivAv4JhcF/AIPqu2/tge/NP/q0uTb6cESLzQEUPkuysoLCE/r1RYQzQw17tAk/kT5Bu8wmqYG1Bf7ESv060LVEhTbFAfBRPwLCAvs5dMcQunL4dnSy0AUMv4IwagYGbMaU83m/9DqKfP0Ksc79gEpDDkuKSXE6hjrG/c/FCHIFezjLRQcw+QD+7sO6MIQJ5lQ1+vdwuDUItwmBCK8ASEKHu36M/TsOfQDQic7FTrqw9oV/0XTwd/1t90PudsWwesEDkP748ccN8zlPuiDABv41B007Awd4wQIENy68DcHAM4RwQDBIRv44SkIAEX62vD/7NgTIUs3EtQQB0wRShPj5PD4DLPhpLzmT8m9DNkL4+Tg6wrH6SxGEfdU3ucgNPYWzgEU/DIC2DAX9QwZIxcBuGsq3doFFzjyVzEI6SPau/kSUOcjWM8sJz3m5sYNBRzQytETCes6xO07+Cn3CeMj6tj+/yjSBLjyG70W9ULNEgdPM38K+N4Y3So9zL3OMDlJ6A4c/R/9ExTfxDsl9OwoJslMDvnu70oRAzdDASA="
+  },
+  {
+   "category": "movement",
+   "en": "pulsing",
+   "ja": "脈打つ",
+   "ref_mean": 0.14435,
+   "ref_std": 0.07121,
+   "scale": 0.00106226,
+   "q": "oUK+5fziGfAd4SsP+Q/iINgBzSsT9REjHeBUTPoN6Vow2C/dCOsy5kD7/BEmQQfS+R8G0PvfK8Qenf36Cc0IBukfO+ww5dkKJg8fCBnMzb/1suoMAPfRURkM5kCM+OpezPuupdfBNPPzAvTzri22HibOCesH4AXr2uY5ICgKFuwM39X+5yTx0hMT6dkO0AIh7jwe9wU18ML+xTLwDRIk62PhIyP4COn3JQIL1xUK6sTz9/HrOt7Yq0U3Wv75l7/wBtEZOKQ5JsB/AfT6+TIiEO76MSn97BXjGzHbaNcN9APH6+b4MRsluTPZ4Lg/0ND2CgLvxTXisdbSFhQS4gTh+vQWPODdOuUXDQv5NxUKFVjexN8T1g/XuNjV6/zo0+IiB/wYDTrg4vP+3gHeR7uW+hgU9BQoEuvo+g0L586x7Bsdy7XzxK+HPeT+ye/D/WvcEyP3JC33VjE4He8F+Q4qEQPu2bXoJc/d7LvNOKnbDNgk8A/Ixsbr/P475w/17v4IAwYGoPofHrz6BDQoDzX0DSUC2G4l2xrBEQUaKEz2IhoC8yflRwoHVgT61wnxK8cP+PT4r+I3EusJzg49DQ3TzPwW9cu+2gcXB7ox1uj3He1EzvtNZwUJ+eYoKhQw0/HxeRJD8ClGx/roHAHr1RrjOO37+eUP5+T3xTdD2hDxIyY="
+  },
+  {
+   "category": "movement",
+   "en": "evolving",
+   "ja": "変化していく",
+   "ref_mean": 0.00624,
+   "ref_std": 0.06928,
+   "scale": 0.00109139,
+   "q": "0znZ0wvbDOEf6PPVOwXQJ+dF3RgA2fUT5hYxPOz0808C1QbkICMKy0AMKRg+FRSuIwDr2/TkJu/0xgvX/c4k8vAPOOQN28PtHD00/Q+oqov+r/Li89y1QxYU8yi16uxhww7C4Nr5MxwL/PTsyAfCJP/JErLjBt3V4QA5F9sKDv/mBv396xO5zws09LUeC+kY5UkV5gw/Cdnx2/n94/P/AhrYKA3eBA319RcD9yz9+aow6fAa8PACyRwdKwTms6oS1g0YPsghEtQz8ion+QIaEQwbFwna/BfdKUPpdfImKQvkEtXfE0f02zbS7dQRprLTD+YDvBP0nOj4BgDi5w76/9ocAtEGCQobGgokTRT/DFnh2fg+5+rWosLq2NTh7yEtAObtRhvs+9ru9ebMN8CdCQI+Kuwaz9DRHEIo5Met+g4I/t/Mw8OBJP0tkt3t61HOGSYNMiYIQfcKG9vf/vZC//sB88X0EsfRGbq5Mq36GeEBy/vd8dP3/vZf1Ajo+PEpBxVRpOEXAN7+EBAsOAMtCDf272AbD+zeEDUiVzIF7yIcAv0LOAfpP8XOzSURFMhABSL6v94M/LzDwiZXBijB2/z49Ono9OUm++0U2dwAOQRBsAU1ThIMz+HnOPkyzePtYBBaDgAc9v37CPQP80bcKPYOB/ME2OjB5iAmtysAQyQ="
+  },
+  {
+   "category": "movement",
+   "en": "with a filter sweep",
+   "ja": "フィルタースイープ",
+   "ref_mean": 0.2321,
+   "ref_std": 0.06114,
+   "scale": 0.00131841,
+   "q": "szTY2Q0D+P/Z4ADrBg7WMeMG/xjl2vYy/w0gS9ba+TwF8yD2EAInCB//ECUF7u/W4wLjzBQMAMoCx90J3eIxFsoHG+v11t7/DRf37hnc34EOxvP1Bv3OGx4a8RTRENtL7RSz9tIaIBzu+Mvi6wH2DBbELAYN9QHvyvEr+AAMERr/x9YQyhLd5sMS7cAi5u7pAU4O9yb8Gd0DB/fQ/SwS+zrpDQHsD/bz9PILzSjr9eT78sfBBdDwzRz/+u73rs/q9wU9OMQT6vdM6/Un+QT29/f+Fvj4/wIbFicHJv4q0AwK+uHy9yA93SLf8hQ4ycL1Evfx3i/z2Oj4GCbj3BQP+fQUAAcdK/ni/Qw0LSMcESYG/QMd+fr10iYFviPk9QwkItkdRAkK9skO1S2+NJ+8DQEW5Qgc4MrZ7wXq+MjJ1Q7357z00NKLFAAcw9vgEzn2BBPRJxDmKA/mPvXy7wsf7vTU3Nv3AOPlL86r9evyBv0W/93s0MnV/stF4fcJAt8RBP4A5uQHAtgL7gYH+Av0/BEP5Bj3EiLqGg0SNCzc5/3g6TW8E/HmTeHSwygMFd0s7Q3kztFIDgz5wOsWEA7Kpy3yFufR8b/1FeghuvfoC9s14AwCMzcHx9kiDyUz8PgPPQQhLxMy8fAd6hn97RrYE9MW1fv++PXh0QwA3f70Nig="
+  },
+  {
+   "category": "movement",
+   "en": "with chorus",
+   "ja": "コーラスのかかった",
+   "ref_mean": 0.04229,
+   "ref_std": 0.07304,
+   "scale": 0.00124476,
+   "q": "5BXm+efYB9fyAAvw+hLxE8QtGS/44uv9BAUdMxUUGAxaEA7vJukG5lcsKCYW6BfWKAH51AjfIttSrwMi9NsRIN8OUwIG7eTuLQ8hPw35+rj39dYUDwjvGxoG/kfb/f056/mtt+cDJv0s+QAK3CilNuX67v0hFwLNwt8oISMcGfEzBuQo+xnox+8y1OgB5dgnKBQXDOwzFr742EDcEgrXAF65HCnNRd70MAYjzgAR9w8z2DL1LA3uvSczE9LzxOz75wYiLuUAH9M2/P8I9RM+3R/wCEMiw/bpHDbcVcIOGfbnG9PtClX01THZxgod8eITGSInxD4c/O7w/DfA+Pv6EQn7Du/3FOgbFQALHQoUOTIV2h/N/wPA7wDG9QLduxsFFO4X7DYk/+QPzRjSB9G5BBLnKxkl+wz4F/Ya9PDDAgRCvevfA+O1FAsHsOPT7jze8fHsARv0MC4N5Qf0+gQd9hIS6cj0GrG0HRDMKOsdThYOAfr99c8L++IkFAzW7gzs8ynosgfg64EI5+hN+CoR+gT39FEx9CGfCRAw8znjFjYD+x7mNhEGMxcfzfwF/9MmBuoI8iBQAujxByjjHwDx2QQeFebo8R8WItsJ++4U3QIwAugjDRcECuIW+usM2gbkbOIfECoH+BX5AQD7CRkGM9/h0gEQx9EJ7vVNuCkPWUE="
+  },
+  {
+   "category": "movement",
+   "en": "with a phaser",
+   "ja": "フェイザーのかかった",
+   "ref_mean": 0.19203,
+   "ref_std": 0.0558,
+   "scale": 0.0011468,
+   "q": "y0POwA/d8+AI9RfGDxb0De8A3wIG4DAg/+AcOOLbCzITGUb5Au002iko9Dj4+gnezyH/uwEAB9wm4PUF8cYGOAL4Rso/xe8bIxUI9xby7r3gwtINCf35LBULBlHUENZL5hKOwtDsNAz8/ujj5g/WIh3QLRwR2gbt6fgUBQEZHhcx+qYG3xrn4ucL0Nr/yO3u9j8GFBYV4sD63iG8JTEawloAGykAJgPkBe8VuOcYC+rf4tXiINHcwDc+KuDzgd8F/gxMP64FB8xa9f8N5AhFxPbqIxMA+P4gEyXbQOMry/vjBO3iHhdD2VDM1csuz/Tu69f5ww4ms9DqCDQi7A71DQAVKvoAMSIOGCYcJvUaGykSyCH77DPIwSDYzwr16QkS2wUXJhAD8MAJuOiuHLOy7izqJRJABeD06wcN2O7/s/owv67c3timIyQOut3d6E0BAv8M8ioNWzH+Ltwd6h8Z/Q3Gq7/zGfezB++uL730+tkd7eXBx8cD9Pxe6Ard+BUCFwD73dw7EOoH6/ss8hkU3i40tVEu+jn1MTUdB1XrBATluiX3NvkYSfIU0SAgFbs56v7T5upc6hgu1BQjCR7vwAgR59bU2wYWItAozAkS9Noz6QArNkId/s4L/BgDz//ZZREdOxAcBf4a5O733APsDswM3d0XBvfIzTkU3QwGLhY="
+  },
+  {
+   "category": "movement",
+   "en": "rising in pitch",
+   "ja": "音程が上がる",
+   "ref_mean": 0.1445,
+   "ref_std": 0.07877,
+   "scale": 0.00094806,
+   "q": "5la5zAvVLMAQIBLfCxbsHgYZmt0KxukgHQReA/z/+ilev1L3GhL70yElWVTzDxAKMkY+3Sc5dqYlwOUO+uAM8/X5FP8bJDHwGQNaFxq65/Lpt/jhJtfaRTU+CEWySA9e4kyVjuDOGOf/K60A4Ui7MwPE4gEy9iTQnuQnc0c9WPQZ89/ywBXx7DgOsc0Ap9Mi/R0XRQsM+I8Wry3s9C/m3lcH/ygaNdwMI+0Dys8lJssX/dgcOeTLzvxtFeHsmpb+V9MuI9sT7/kCChIU190r1sYjHgAhKfbQBDLzDtguKQ/nPfIF6hMqrRbzudND7JbYH9YG5SsWvNwQACJD5AUAEgoJIx0wEsgMKPI0UPAATjnKxdL9IQa73f3dy9rfs/Ma2NsHGDMF+Ln9OPbGYYOI2fkyPBI5EiswGbIA5tzdrOFYiMvOzf/PKzIavgmqDSnCHvj96QFHRjQ51+8G0DwKFiLexKYCKB2L8fDrN6D3ARkKFAPS9Mvt6Cw5Cuvz8wj1NS7krzTzGPMRrhBHvkzt7/AZrVUp8UfB5jgIPTnsLwjL7/nyBT3+MiPy/RHv5cF/9NHesNl84NJHqPoyBhL6wdTy/87ML/vp/9Da9MjR/voyDzBWRCoNwvwn9wEF6fXWfwg+KzYDzzglKBYA4xAoJNwP2+ws2Q0UDzQr3/AhGkM="
+  },
+  {
+   "category": "movement",
+   "en": "falling in pitch",
+   "ja": "音程が下がる",
+   "ref_mean": 0.14268,
+   "ref_std": 0.08541,
+   "scale": 0.00095008,
+   "q": "/lbF6/C6I9IILx3MDBP8CxwSkusdze0UI+Mw6gn77Btz6F/tEy8B7VMaLkPzEiwbEVY55Pw2VL0xwvM18v8WI/78C9ku9hUK8M5BERbJ7u3QsNsMJcb4QjFADB+9MCZX9SSSgcvoBt4aDMQGxlC0IR3B4PEZ5CO2tesyVl0yYwg5CtLm0B0EwS4EwOvwjuAxJxcSMfMX1pTmmjTbBzfMt1ny+SIQJtgGNeAKu9geFtY+Is4LQNjPtx9iEezrm6MAPcY8JvJJ+esfI/ccDd1XxNYwHSggNwOuDyHmE9w8AgPmHv79FQYKyAkJwcdXAdH9Q+4+6B0vzegSF0JI0wzJDQEOS+4IIscIOuodPhAKVCnp1PfIHRPC8A2/vtTb3PAsurQMHS4W5Nj5GvftQKel7CUQ/h9GHTRCCJgF+OPI0edam8r3wAXGBDUeyUDBDiPN8gAE0vhPOElJ8AAK6SDnJyrVuq3yNdOr8e4YOYkBFBkgFwHF/rvu8DEnGAsDDPj9RBjjuBkGI/gesCVNw07s6s0dtEIG4jHG8kDVH0jsEh6x1Qz6KR8aRjT7GCDt5qhZ8Mnhw8l64uZUqPksG/sF6bcP77nWNjX0A+/c7bHUFhgmOCVVNTo/6Qg/zPwX7fDBawoeCjIK9TscKAQT0uA/EMQYBdVP9vYLLx81+BssHkw="
+  },
+  {
+   "category": "movement",
+   "en": "gated",
+   "ja": "ゲートで刻まれた",
+   "ref_mean": 0.18664,
+   "ref_std": 0.05327,
+   "scale": 0.00109075,
+   "q": "xBri9d/Z8BP11S3P9RL4/8dM8koDyg8c/eQFVOn6DzAOAxUSCAQf41sXGB4H6hXC3d3O8eLZSfglyhslCwIQHtgAOcYXsdoTLDIo/ATL4Ybcx9MqGOf2OEMxFye+6Oo08u/V9uX2CwsF1r4D4hW1NBPuCw4D+PHa9gQz8un490ks3LgY1STaweYRA/A447EKAGD76PdU6u/y0z3X/BUI7HaXBt/SIe7yERcQwTrj6NEL6PnjP98KjBk0GQUXmMEZAw09LbAmGuRiAxouAh1G5RLkTicmygMJMfzuTd4c4BfLHuHTHDYLwjQL3ewv4O3+GNQY5UTW49zr4yHgyeP2KwwcMMbMJc7iGwgMDCzsJF44AQ3N5Pzj3gWl7+/wAzv16uROA0EE/dbftynPI8vHKyfu89kA9wDz8B0II9XJ/wT2Csnjt6WP/8MIh9z0DjXe+xDiCQjQQ/wyB/fxFfUpAMD39Lcq7rfaGOnRRu0KJv8tGAX72s3RFNNSGP7l3P4S5h0ixvQlHK8I//4+QhYE4Tgw3U8M7em39hIBJhEL4hEp7isPOdjeZuwCuwUCMb0XB+UT1wU+DQQcwRQmM+Xe0+0VCAfj0ChKEwETs8v6/PtEx/0DFB8c+fEaCA0WqB4Lf+sg9hwl8h0L9OrwzAP6Gsf2+PMf/N/S4AU8zTv+fDk="
+  },
+  {
+   "category": "movement",
+   "en": "static",
+   "ja": "変化の少ない",
+   "ref_mean": 0.13829,
+   "ref_std": 0.07352,
+   "scale": 0.00118249,
+   "q": "20b08w3c/9n+8TrG3zzR++sKphUw3yUU+NRFKvoP+RwjFiHlCvoMGz4wAS7sJxjuCBUbuP4dR+AWuOkG4/YDCPIm/d9I3BVCDQci6wkPHNz00uktOPXqLRo78D/HDwE75vSisf7hQfLe8tkDwv3wHTvd+P4k+BQE6PUVKCcFPkApCMYM2ksQ1w/6077qowYJFEP3LuoO3M0dxTe9QTL+tzvzKggOG+4fCAxAzPnvBPf//u31G93g1SxKGgoFgakGBvE3BchSFPdI6fr1+Dkz3RvkKCRDFPLV4RrFS78U0rDMCyAkCiMO7jLh7rc96Avv5/UqyBVCsfbwIjo85xQC7AgbJ9/sNdXjNw795Of3Hy/2zejm9vjs6hrB4e74CPUM+QQyGSsf/MIM2fIRPMSl/hgAAw0yBTMe89b/1Nvg7hZkuL72yevdAgwN4B/i0EUG7QME3BQWNigQDCQV8OkV9B/ZyrwAJtCy7/XqFMHoE9wTCyHe2c34/vM8GfDB8vTyHDfx/eQlDdIN4hwowTvcAf8syjXy3z39/Svi3yvkGAHkuhXfNgQaLhQE7k3w+cBB9PgK9NJA+vAZwgsdG9UMxN8Y7unXzxMcDfT6yL4H8RMt9N4GUf0rCg82Kh8m5hj/WA/lFSgU80HkF9wD4v32+8vh39Qa6/4WBRAL7iQGBQk="
+  },
+  {
+   "category": "space",
+   "en": "reverberant",
+   "ja": "残響の多い",
+   "ref_mean": 0.01029,
+   "ref_std": 0.07053,
+   "scale": 0.00117204,
+   "q": "/DHE1hr3Fr42CfDB/hLrHvAVyuEq9OQJ/vMbCvv3FC5QESf5NvoUwl8gSCQ+KewCIzc2z+0YTNBMqRsU7d8q/+UOGt0q6uPuIxUhAQ/wDvgL2foE1se9C/om/hzlKfk0wRW8sfPVL+wOFOLK3u7KEPXbFeQtDhTZzdUERSktVPUrG/gfAhAY0B7e7Ljb4ub94BouQRoc9rz04R7rHhDv5AnrCijeFue68gYb3use3OdS++cSBtvb0kEnG9jizbEL+dsxPfnu5wDqAw8N3/c/9MQP9i4j4AXsAUHZSs4pGQbhG93v4z8fGSDE0tbyy/3bFt8n3+gVudPnGTX89/kE+Qf2IecT/wA2HgAKTvcrQCe3pA4C/iTUxA/PDbMBv9v3BP/z6TUK4vIj7djcM7yB5icKGPElARkNDAwb3O3cyBdSotjW5wS7Gkwn3d7p+Tm1FgLzytggPB8Z/tni+xcRDiPpkNbPMP257P/UHbwbOs3pyur0Cccu4h0U2cfM7vQAJCIwv/ce5AIg7AkyziIbAhsNzCgD/Q2+IDUQCjAfBhva2eXgQhsi/gsDBBUD9c5RDNbGy8MX07/6Fy7OBTvn6ek22akA8wrwBNbtDODo8PgKEvE4UxPwAv4YA+sLxQG9U+pQ//3p6R5BBRfz6B4LCOMKzdcH5g7r+w306f4m/CA="
+  },
+  {
+   "category": "space",
+   "en": "dry",
+   "ja": "ドライ",
+   "ref_mean": 0.28894,
+   "ref_std": 0.07297,
+   "scale": 0.00103653,
+   "q": "wxHJ9eY6uRoC8gjy8SEAAtoG41IB60UErS0qTtbwSw0CBR7gIRlE2Bsh8vzy3wboDuuP1NQTCfMnJTG9Df4LJPf2Qf9AheVBRSQ5zDm+y8MaC+IqR76kGTMuIQ3VgQ0p4bgB2/41QuUHu8T0IbbUqikUKAX//d0FBhMO4KwQ/wQv8MUL1frfLA3+COoqubEM6BtBG5z+rhXmEAvfyDVN6DS/Ges0DQkt++QIpE7mFQUG5NnqbuYH3jD+AQXtvKda+kdfRNcZytFSEA46HxxTDwH6UtcU3fQ+H9K0HSwkxtLvEd/5KBK68AoM8fD4udTT7c/9uCsWwtwKJgbg0ADeIwAu4OncrE3kXP0b7/24ATj06wXx2vEQwuT2/PUK8Akt680OSfQvJegP+QLXGNrlG8gNKSvptP8i8B4Z6dzD2wEaIpQd1PfXKfco1dL94S706OT/XSXpCcAp89rd07byAfUgNfMeJ8HVArzP8e3Qz9oM7fnS1M/mGdlK/si8HReu/iE3vuMoLNDORfEdRABV3P5D/ib3IxnqHgUXNx0G2PDdwzYMC8YPJgbx3CEXFL1SCMYSDR4U+vjh5i9JOtotzfwE3+vrHhga0h350u/5vL0imj7aDy4x6v0gH/RL4wIoWBwpRM06A+/hOs7f3yLeCe4U873UMti/+Qc9//D4M2M="
+  },
+  {
+   "category": "space",
+   "en": "spacious",
+   "ja": "広がりのある",
+   "ref_mean": 0.06902,
+   "ref_std": 0.07267,
+   "scale": 0.00120782,
+   "q": "8wXq7+zfA8wO/PrYAD3a/PEb6SL44dMV/gQwHxoVBRlGJkLcMuka4UQiFhwlGv3SLvwR0RX/IddBn/gb/t0Y+tsQJOwd7PbdND4+DibcBMMa5c0HGfPvM+QO/z7zBPIxwPyukwvwWgAW8unc0gWzH/3uGA8FDv/UwxQdSP04FAAj+Oog/wfxxAUO4tMI4uAGHzoUHPsYCa710EDMKhjx81PxFDTPPMvZDv0wxff6zfkyzvP+K+jxnjMvCeL5jrv1API3JPb5HNEYDgoF2AVe+RMDFDn6BQPpI0rlSL4ZFirRGdH6Bz4A1x+8294D+Nbj/gIRwCgivPL5+Uzs+Pb78y3x//0XG/ceMN0XHvkUOkDkt/Lu/f3K8CjC8vXpriMOCS8r7DT+BeAK1//mHsO7+g4BKhc05goZ/P8fzcey7RRN1ebs9+HGFisbveHICzbQ9QPs3QESMBUNFRUK/PkdAxbw5c/7Odau7xTRKrjiR+gM5uv558wY/AcqBv7ixgsBBCkSyd735r8K5yBlvB0G8w0S5z8W5Re7Ixk0CyYfAjXx2RjLMP//OREV0jDiDcUqDeUP0f0J8t0DFADu//Lr3f0TCvPe7xIPIO/f2M7/xOUz5+o/ESYF3xsiEhUQ2xbzf89AJB399zYUGQb2GR8AON4L29UJweMKCBAwxgwOGQs="
+  },
+  {
+   "category": "space",
+   "en": "with echo and delay",
+   "ja": "エコー(ディレイ)のかかった",
+   "ref_mean": 0.00827,
+   "ref_std": 0.06799,
+   "scale": 0.00131032,
+   "q": "zjHZzPMSEwAT3fLM9Pr3IfcKyQIa59z/8wkUJAP66UUh3UPxGQYD0XEWRRQ+DAHUCB0O5fX/TtYqqQoPD+wb99QU/+L+BODrJQkBIQTv9rrzxuMb0efUEwr/5yO4GvlUxgC+sQkFV/n99fze4u7KAdy3BfgG+gPg7eUENQ8MGRZA9w38AQETvjEO/dH48AUEFN4YIPsM7cnd6ejfAfb3/xi8Hfj36wDG8/0i/fMa6M8428EMA8UCuDtJLOv7wL/64elCRwPkHgMn6AYZ+vVD7N35+BY15hf+JSTvK+osFhf+Dv7/+lP+F0Lsz98Csg37CPEr+hriyujh/BP89/z7D+7+MNMLLOQgHgzkQQopLDDUw/Tv+RkDygbeAtD559Qb7PsMBDEAzuMPxgPDQdSi8Uf6Ku8oDA3/Gg4I7MzU3jEM4gH24e+BHUANzufy8ii//wPcANIIRQkbFdntJRP5GgbezwXYKtHi9+3bA9cCIez/9uvuBbIOBfAm4Njt7OsFAxk51wUVAuP99RI89ycc3D0I6jf59QnJDicJCSAX5h7s8v/1BAHROu/7/g0VGNw8/d3Jwd4L58r3DBroFBfjzf4W2twL5w7t+9zb3AYqB/wk+e0oPPDz2/QJ9PQWtvLuR9M/C/QICBMy6xz+7Q7jPv0B3v/z8Pzk5AoW2xYiNB8="
+  },
+  {
+   "category": "space",
+   "en": "close and intimate",
+   "ja": "近い",
+   "ref_mean": 0.11486,
+   "ref_std": 0.0434,
+   "scale": 0.00117568,
+   "q": "G0D718rrRNgC5fHcDvP1G8FLDQ7Vx/rx8vz/KRP4JSdGNSHiQwsOuhIn8uI/F/GjJ+br7u7XGuxWDB3/DdwTJ+MGSxEfBAjlJh8WAQzm8tvZ6AEb9e7kMhsTOzHBsArp/ATkq9zsDe7+uQjouh+qIA76/fUlAdat3gr+JQkKMNn8JqgcGCLxyfojzOoF9Ok1Eg0b4uUc9sTl4iS16v0YEzsDFuDWBMDWQv7x4Avy7Q06yiIbVNwExTwUOOXUv7sL1SkpJdX0I8YuKf8tG/tKz/0iKejyzgK0PiXYN+8iHAoE/NXXEi300DPiuPP45e8ICecnryPO+twKEjfM1envIA7l68kHCiYrTOEzBxrOTT3+zvv4BAzS3gTVA/zn7hIc6QEXLAEb8fApDxHvPOXE5RXsDenu9wLoGws29Qi3F+0oBsPe0tLn2xUutQDp6Rrn9CboNAkPFvEp6dr9x/gPBRwoBPwJLN7KDvO6IMbmMu313CDlAuEs8P81FfTA+SkNCR4FgdsN2c44+PNqF/sl///t3jwU3fe3Kg8EKRoV4UHiIwz2O+jmQ+r9/iDp+5U65OYM+BgR1df70jMY3NYVDPsF8eLI7eQU6ygI8Lbgwfcu2t76KxlOCury9vNG6eg1cu9e+9cF5Oz8QOkHEAkpFvYAD+4et9nlBP86zzoyQ04="
+  },
+  {
+   "category": "space",
+   "en": "distant",
+   "ja": "遠い",
+   "ref_mean": 0.02299,
+   "ref_std": 0.06575,
+   "scale": 0.00141574,
+   "q": "AjUE5QDPKd8YBwjm7yrj/zUT1uEP6d4OHBcGECUJ4BIxCzTSIBYDACshDywjL/bNKAo40RAaKPEZwu4bCfkJ8fcL9+4oCgn89foRBv3pHvIZ19v7AAUJHvQF8CD3INtB3BWfgf/eRf359vLn3A/vD/feIB35/yLZzQz5UBwtKvwqDOYS/RQT1SYY3erf7xH9JDIJF+76/L/w6CPXRSP3/A8OBg7oAc71ExU9Aeb3+e0q4/QNE9Dk0Q83+gXnts7x8Os6GwT8EOAY5/UC7fpBBfAOBhsPDP3Q/zfmJccrIAL2DPQeCyvx8QjQ5NgM+fADBOw61/Auq+7/+Srz+RTp/CH0CwokJuoRQf4EGP0eNSP3u//PDAft+B/SDs0B1RUE8CsLBCD0/eUK5e8LONO26A/0EANJ+hYt8dclvt/gCxxXx/AJ6Brq+Tgh9Qvq8g3l2wMFzepMOCoGHRMaCAb+FCrmyfP1MdDQ4BP7GL7qOfLy5ef19sQlChotE//p5vcOKS/9+9EP798dyiU8pRL/+/cAzTUQ3B7kGS368RUF/RfgzArUHxL3MQz7BSji+dU/Cu7u3PIi2u4S/g36AAIC694O5v3p7hf5HNfg5LwS4vgFDgwlGiTu7BwW++0T8xLQMewiMQsI4kgSDv4OAhoLD9P+6+wiz/wcFxsn2BAc5vY="
+  },
+  {
+   "category": "mood",
+   "en": "dreamy",
+   "ja": "夢のような",
+   "ref_mean": 0.02023,
+   "ref_std": 0.08768,
+   "scale": 0.0011056,
+   "q": "9yHi59/tO6zqAN7yDynsGiw/CRjw/OcAKvcDH/sAEk5DGUbvJe0RrDUvNhtlE/zyY9v2y/77EP88ovT+C9zyGRMLKhYgDSXiRw4/Iibn9L3m+tEa69nlCRMUHEfU+PI28Py2kBfiSOIoA/Hp4Be/+urYIQDkIQi9wCcGNtocMtAPCvQIJs/7tBHvF/gICt0bEiUlDgkdEpfx4zjWCBgNEyHnTCPSH9fRFR9Zz/k34NBP1/4DK/DZyCYkHgIOgakS2ucwOOT9APITFxgxE/lj+9gHCSIc4xm2RkXFONMTXy7gEOHbBi383kfw8gcd/M0EJeIZ2gIH0NwG0CnlDQ/e/Czb5xkcBBwvWvv6PvsATUDZtQbo/vG97wzXD7Hxu/759SYRFD7xFso77sznIrW86iz6K/4X1R4A+u0w3sGcAS9Z2w373ba2LCUNsuS86TDR+PvkF+sbVh8sDeP07gUpHUTq7sfrVOje6R+pGMTpUMoS5uLvEcIf4ic+Cub5zB3pFB8BuOcT9dco9h5l2RgA3yUD7T0/AQa4LDEnHxnp6mrCDgHVRyPKCgsO/ynIJsBIHe0YuBH4zvoWNiTl7CbJ///7y+YIFBMH/vD3C9oY7eYb8Ow5DhfuEvMGLfoV6y/JctVZ/e4EFRIWBxsVCgTbS/QfAeQD0vX85y418Cj+BQk="
+  },
+  {
+   "category": "mood",
+   "en": "ethereal",
+   "ja": "幻想的",
+   "ref_mean": 0.01141,
+   "ref_std": 0.0627,
+   "scale": 0.00105801,
+   "q": "1yrPvwUNGrfuBdXjCzbaLCQeCfUCCc/zFtgnLsnyKD5tR075PeAR0CUePjFK9vsBPfEewg8jJvhMntD66b0mDu0CI/vxHQHEMx8uIj/2Gbj64uTw7Mq/FOAsDU65HPYv0hCfi+PnQ+skJv7U5SO9HdDGBN/3CPfLwxsXLysjRLwa/QgcB/YJyuzm78v+7eb9+h8uBAkPMcH6vR+3AxP89xfjKDjWLsbaEA08v981wOYi0OYHNBKxuyQqF9f2mML57cw6MOvr5A0DAQoY1Qtf8tT6ASr+7xLmIUfqQcsRIkMCA9ju3C0kBTjW2AEh+vHnLAT/4BQWvNcJ8l4MD+D09iWy4QAqEAlIAxQBTfonThW0pgcX8R23wxXe9vjypwkJEx3/B0za59gR7+XMKZmB1UoCLN0uyhX7+fQyyOjDxBlAsA/v/uSyK0ISt97EEFTYAwbP4vkCZT8NAPDj//4oC0Pms9PpYwmf+xmyBL0KPcYOze3g9Mgq5Csr/PXS3h8ECgkGve8n1u4o4BdJsEHw6x4L2DIzGC6gIyU8KCgICmO70B++LwvtDBb+4zDMIuJPCsfhrNQg4e38Hhu04yfB7SIa3Nr+9eviFOrpAwzn6eIiCNIiHRneBgMIIg0e1g7Sa9o17wTx5SwoCEfrFBIROPoM2OLj5RD58h0J5PMGCRU="
+  },
+  {
+   "category": "mood",
+   "en": "aggressive",
+   "ja": "攻撃的",
+   "ref_mean": 0.03101,
+   "ref_std": 0.05472,
+   "scale": 0.00103451,
+   "q": "wi7tz8fC+/Mb5RayMfcr5cRL9RQTrwIJ6/IJSO8GLwsiDRblIx0a2zwMDAM81zq9/OEb+vTFNP8j2CsO5gwgHuojZecsss7sE2sT5P7X+bIBrAAdJL/VQfAkDyC99NM8z+2mzsvaBBAVA/oH6ACoLxASAcQS/AXh+ekL/xEY/T4/Jpko/EDn0wIfsNYI1dMH8lD2DPpOzdgNqh/dDg3c8WK4EybMGczGH+wiqDK+/Cwn6QXqEej4qkVnN+fQkdcg1ycg/+0eN9BRvQgsyw1G0ygZNywS4foDPinfafkv+c/s+gTgFl7/2yXX47zb3/72N+00yv4Y1YPhEC7q1c8YMQb0TbYJJ+ceNAgNJSAMLDsk4hHuzgjM1PWBENTV6CcdBQowF1XUA9/y2w3kR/6uFyD99+0vAAz0D0UaAO/l7ekW7KHg58Os3Q41peoa9kfG8znx3TrxPSkgFRnZ/+oy8usPxeMd+uPA6BDfLNETL+cR6wzO0NwgIOE/6eeh+SIU1Dc87M9Q5b4WEg5l9SM7DSca41Pz8PWz0hn5NiU37CImxyAeLgwQSwLR4hw09dU328kmzfUq+e8qoDEjD+D75Agc8/PawSooCx/gqMgN3u5N0dcSJSIN+BAc9AkWzAMeUiA7BBcO3jPeLRTy9zU5CMXq0gkD/Oyw+hQswDJFX0Q="
+  },
+  {
+   "category": "mood",
+   "en": "dark and cinematic",
+   "ja": "ダークでシネマティック",
+   "ref_mean": -0.05464,
+   "ref_std": 0.05,
+   "scale": 0.00100576,
+   "q": "8zKysRviAtEjyNTNFQcCJcMUNtrj0+nwEucaTdQJC00tHC/wJQ0vsi4PF8tuG8/bLvH/0QfqPtAwtBYK6s8eGNw7ExP6AOe9KkwpAzTp46YVzkHvqrODR+UpEz6n8+Agvh/RwObiPRMAEBDxySTRE9LbNcQg/gvml8YiEvr+H/LuP+4SD/X4ugkKIKYb5yER1VFBGBkrD8wA9gbk8N8B7Dv07fu9Gbjf5Ab+zyj26skvudgvJvP6xB0bPtDd09Lsz/USPr3aBgMW4B4tt/EOIrMU+Rf/0iDZORLNUOEHFAoS2tfDBTki/D21t+77wQHXUr7v0+fO26rsBSEODPv0Ehra39MXDes4H9IBPhY2Ckm/tQ8tBhzCrP7PKubOzg8uOPvq7jWx6fgT1/TKPKyw1Sv0GpYY1waz4yEY+NbKHCoN3ObI2c6s7hA+z+L+T2fGGBHIAhEPWRUbG8ul3Rge7vUCr/bxLBOw7eSqF9snP6HjsPzF3eMXAzo3r9qp9Bcm/gsnlfA6zPg0Nh0lCzUzLTTTBDQEOgSqLQQGOSlnGzP3AQEIKyIICBe41xEFCMxA+M/1m8Lk167JEz7qySKy+CAPCLr62s8X0vwQzxsEDfM11u9FJPrV9xf+Pfwg78cAfwp3/N0VyBMcGjTZ7TUROvX4AwgB5BrJ2joTzPwqESQ="
+  },
+  {
+   "category": "mood",
+   "en": "happy",
+   "ja": "楽しい",
+   "ref_mean": 0.12655,
+   "ref_std": 0.04871,
+   "scale": 0.00124002,
+   "q": "BwsV9sX7K/HSEPrsKAAAD98sIDv6DQsL49skQO0GHjYaAU0ZIwgLqjMaIhs2+DnRGe7gIePdFB0k+/7rB+DgIBfCPwMR7QvnIiYrBhjR99qw3MQuFB4TGSQZICLm4vYVJODdwur388kpz9D43RKtAAjZ7TXmD+K9By0U+NoBCQES9NLxAQfjyuvv9z4r/rMuLgHu6Owl29XiryzP9SEhDU+8LRnqEvDFOeglyQwi2u4f9/nbOgfvzCr+HxsNrrwe+hw1IOYgEeIzUyA3P9xixBURCx3s1/3aRxb7EAr9FzjoBdzaBQHm6EUVDPkuJtYmD/odvzHe4fsRywjO9+YKNiML+/P18xsIOvr3ECi+ExUd0grx4vvj9vPj/dby3i4JwQY+KiMbDNQb7h/zCvL18gXtJxT01xgFDhwrCd2l+OsLDgEE1660JOPslcrmyw7e+TzoPOPND/Mt1NkKB+4cGxf2D94fB+j0BAXBGcDuKPE1Lv7W7wD29O1XJg8E1yzw/ggPrQIBBOIi989/HP4P2hgj6DcdB9XEDBsnEv/c2Ea8BfsKH+C8LOIh4iD357BHFAQJ7kIF8xIx9PvrA+n4+/L/2PzuBSQc9wMQ6sX95BIb4QX57B01I8na/Pcg0x8JdOgl9vnrCN4EDgfsFuzoFvIKHukF6tvx5fpU7wAAXi4="
+  },
+  {
+   "category": "mood",
+   "en": "sad",
+   "ja": "悲しい",
+   "ref_mean": 0.18684,
+   "ref_std": 0.06805,
+   "scale": 0.0012419,
+   "q": "7CLn8Mj+E9XoBt7e+uz+Dvw2Bg7s8P7yGdjqTvf/IhoiOyzmHBEVpiAUIfg29BbVUMri8NrJ/gdd6TP4F+v6Ww7aUwAS4yP/Dgw6IBTw8pPq4/4X6+nsHyMXJC/VxOsL/PnyqrzxB+8Ayu76/A3KGQrSEAEXEurFzRIVF/UQAvEEBsEAwe3b3O4jAzki7d4Z+RMrC8Yq/uPZ8i/R3AkxJFvYDfzqCNblCwEC1x/39hVJ5QwFP/DisRAuA+/05N4l6R8mB9P7Ct0tRfZgLe9N9d3/EfYMxvHmf/vOBOojLSUN7LLhBBbSzAzw5RQVDtgVG+QV4f35+9AT7iTV1MnmQwPt79798AwiMd3uAxPWMU836zvn+wDN6ODRHb/b2SMS9fogIxcGGtMb1wnnENXo/hXPDf30yCntAO5MJeW3F/UZFgXgybq5AAARvO7F8vfgAvv2LvUFNAda5PbHzdkJ8OL2/sLuB9LYC/XFD9b7KfoUDQvyFdAYFPks/gTg6QD7/hn+k+wlAbsmBfFNH/UP6g8Y3wchAdnDM/4aIAX05EndMiUBLPbIFBAFHCL3EaUtA88JyTxD/QcJD0wLCxzi+fv0AdQCDisg4A0Y+sUA4+k/5QD2+v8xHuQWBO4bBQ/saes+7ugU1ggVIw8ACfLqEw4WFewdzcr46e9J6C75SD0="
+  },
+  {
+   "category": "mood",
+   "en": "calm",
+   "ja": "落ち着いた",
+   "ref_mean": 0.10168,
+   "ref_std": 0.07467,
+   "scale": 0.00111431,
+   "q": "+kjzA/LcANjy3wr++lvWCyM93gn+BNEV/AsYGgHzAzc7GELdGf4V8Ec7GTdEC/TzN/j/xu7+NfAStdAV/eEYGfwl+O4Y7hIFERhKFhPy4r3t380QFvjdHzr+8TLMAPNL1QKogeQEYN0p3/P4synjI+7ZKRwDAATQzB8YINoiFuIc8ecB3/b32RElEM0I7dkpKC4S6N3+BaDo6z2pFSAj80TmGyjgEur98wMk2xUC0cxF5QsiOfH4xCn9/A7vmcXx5ABGUuMZJ90hLuwzGAJfBfr+Ggn65vzCPiHSO94lJz8QIOXgEEDP2CDr6wFE5tTvJu48xh/xvQD66CPw8+buBBwCAdokEd4kRvQLDBQaSF/uw+Lc6uDQ0SjU47rxtjIl+fYNJyYXB8b81/zqGry62RrXKgknxQ4d6QBAtd+aCSxZ4+v82962DxcduvnPExjW0/7eC+woPvk/FQkS8usP/yzxB8TpTrSvHOzHAqbxRNjy9Pb9+qcT/P1uCgjnyfj5KE4EoMoAB7Eauidd0Rf56Bsa8VYrExvRGkU4HyLk7kzd7zfWSwzZSh3u6DLdLKlrM90K8gsV7NrvAjsJ/w/f6+AH8PLn8v0i/+3g2cYH9fc/7AALHxYO+AkQ9+0f8CbcbN0lT/cV71AD+90cIBTvJO386wYesf0PBv9BzS7zMgM="
+  },
+  {
+   "category": "mood",
+   "en": "energetic",
+   "ja": "エネルギッシュ",
+   "ref_mean": 0.11331,
+   "ref_std": 0.07199,
+   "scale": 0.00115541,
+   "q": "vx7u+cQK8Rb42RG2HOgG97//8SwX8zDw4+g8J+H2NjEaGST6LvL6rDIbKRkJ40vG7BIKBf7vKi4t0SXfDOTwCdjVSPkevcP2RFEK6Trh/tzExMVJDPL7Myc49y+h8vwb8M7s9s3nJc4T5MXpBPeVB0cF6MHxC9LpUBXk8uX8BSgeAsYu/xn31v/uy9YKxNMaAwTp7ggl080LqwvG5yUICS3ERiYLBQrCP90PovAK+QHp9dDwOfbwvT9RVevak7ES2fsjAOo7JuRS6DYN4hRUxQ3nLhLo/QwfHBETNwf96g/bAP/mER7/+VjzzcMN6hHmAwPzyDjxwLr6+SwP3eksIufsMdjlLywGMSMBCSLBKQf/2OoIxRT/0QvN8ObYF/sU2/MvLxX7/AAE7xTXMuXOAioaLgASBhDuC0cOEd/pxtcA+b3r8Lm3Hv7ls8nvwxbYKz34GzWvTOoi/f4MAeYJ/vvy8dsUFAX3DgnlB8jlC+EcDguf1rotGfRRIAXP2DME+iY/7+Ui++faJ+1/9xoO+SgcyDrj+CDEyDAGOwQOAvntyQPMOeb2Ie4Q2B0iFcI27PXqxwMcxgccwP0cEbwNzw8FztTY9g4H7goR1f0H6+Eb0cjxQekXEe/iCysbtiIyXOMr5yL1/d/+EPwBCBP4F8Dx4NrbDuG4zxIy+Q4lRic="
+  },
+  {
+   "category": "mood",
+   "en": "retro 80s",
+   "ja": "80 年代風",
+   "ref_mean": 0.04106,
+   "ref_std": 0.0558,
+   "scale": 0.00118098,
+   "q": "1eP3AtL11+3duvgxMOv1FPT5Izoz5vzgEBEyFuzg8hMF0gnvVQcUSUNWD/co1/2898/2/wb1BdvgqOkX/QshAxThKAwF5PHdBEH950TL7on22skDAdwZ+w4V5CLc2BM4+Lbp+gwPIBv/89cS3/rsIu2/CtX5LfAV1ShJ574s3ycN1gjlxP3ovgMh//U47xIIDAwazgP3NAXF//zV8/4C0x3XJu3G5Cj7GeNBwxYM8c9IFbDSCAH0rB7tBhgLsOH83czrTsQfGf84xyYaFgMABi8LBim9AQAUBynnJQA+/TEY7uTjJEXv1izosw4KA8zj/kbgsywGzPz/L/2r3QISGSEQGwIV/+UCB/4iJScg/j7e5Nkr/cwb2NH66fS9BQo9/SMPMBf+BOTxsDrQ+cXV4gsd8xj1vdDnBEP9BcO5yg/SCdT6952BFdXzvMXw2zznAfbqEyzpH/YFC/vOMPBQ/vL7GdfyBcEfCuLE4hDmEQMREO3m4+XVHu9sDD/4E/f23/Dtu9v81KXRJvoY/QsHDj3sODYIEBvd+/QHRSLs6QceCAe+CsvFWvbJvPzJEuv5+AwRACvcIPb6zPEcFwOruhTh+QruCcYVDx0S+Oz8RuT55RH+GeC13hfbQyYo+RI3NuEPCkIiBBMzBwct6yC8QPwV9ffy9Sfw2fEPp/7mdgg="
+  },
+  {
+   "category": "mood",
+   "en": "futuristic",
+   "ja": "未来的",
+   "ref_mean": 0.13059,
+   "ref_std": 0.07358,
+   "scale": 0.00121854,
+   "q": "3BzOvPjvHcUhBvH8FxPjDwL7yRIW0vYOHf89F+7eAC86Ajj2IfAl7yQoCCweFAfO5h4Y1AkMM94MvfkFBOQpDAgKH8wj3vLqIRcS3Tus57/kwtwQF9LlKPMpEzDa+fEqwOmzt+L5KAoA9tPtxffW7RDaLPX+5fbj4P8cEg8iPgAk/MUQ2jj1xQH649AV0+kU5lkfAiUB4MDp0h7XFTcE3DoHIxn4IPHZE/4yvAAL6LwQC+L2KNW1vkYqIvHRibcI/9YsReYS+N0e+QMO6hRNANEHERP3GPgE8TLdL9hO4RTh/vH0BfxBz0ft0bon3eb4Ftch0xQegbMTIDf2+v/l7SIKKvsGIP0bLw4qUBsVHBzdtvo16yLeqgbJ1OcE1esJ/w0aIx7z6eMSBOTjQr278gcd//A8+/kE8hkP/+vNzTArzLkNz/a0Bhsa0ufjAj3oEf3z8PkBRggoC9sSAvMRDg3FydrqJO7B1dnXOK3VBNUUwgTQ0eXu/SpRAQbq9wgRGgoQ6e4e3QMU7wkz0yoOEQ/5tVnw7QLbKCPlRUgEAQ/KshTFLREfUPHy7Rj++NMv/ub4y8gT8+wT1f4d/A7z4wYV4+Dz8QAFAe7y5ufq7OgbAA86QC3j1xUSDSgh1f3wUg1RGCXt7xkeJAny7zsAGsoi4dUTGPfc+VIU7/EHCQk="
+  },
+  {
+   "category": "mood",
+   "en": "cute",
+   "ja": "かわいい",
+   "ref_mean": 0.15185,
+   "ref_std": 0.04873,
+   "scale": 0.00115798,
+   "q": "DgkAydP6FeP1KuvfJAcJ/+88HT7m3RoF7tMCLebzRD468FQTHQcYsQYcHSQr+EjC/+jTAOTjCx0iDwjhFQ3QRCTWRus26hPxNBMz7wy66MW0xbQjEREiFjAXNlDezesR/87crv390MsE2NIBBCOuygTi1jfk8+DdGEcBEdXhDvIdAuLwFRXlxP3961Ey/bYpKR3Z+OYFss7frSPXCjMf90TCRBsKPuC2PtUL4Q4KIsv/9urdPQvawRs8N/bymcwuByI+B+Ys8+YqLTgfIeZ63AP/CwT23eDhVfYLGQjwFw/cCu/EEe8Q9U8qCuguH+Ql+NcR0RPr8tsP2wMC8d0CTSED/PwM6AICSxD3DAvNG/sm6w/o/xqyBNP46sn48irs1xJYLUogF7cnBQ3y+OMfAyflPRwA+R328C0QAuu0/fgfEgHp0MyyCO8DmerY1gDX5zUGHQX4Fgw108oGLuYZ+A3qD7wkFxf+2ROvIenpAfk0NQfj2v3NF/dUKQUF7jwHBBEQ2gIVFxEk9d1/MAsJzTAszTIeF9LU9yL3IhHY7lvK5/YFF9rSE9E25Czt86dLAQQryxYHziQ7yQv+CwP95/jwvRgQAEAc/AXq8PULzgMO1wwB0hMv/dEF+woXuAwDbf8iGPbS9cskFhPzA8f/Hg4fD/YXHNXT2RhU7/zubhg="
+  },
+  {
+   "category": "mood",
+   "en": "eerie",
+   "ja": "不気味",
+   "ref_mean": 0.10896,
+   "ref_std": 0.06195,
+   "scale": 0.00105899,
+   "q": "t0/UufXcErUMEPXgGf74+wU/zCEV1g/0IeUQVvcPKjczHyr+CecwqjsrHCQ7/R+4KuPu2uLpE/JFsSIKGNcbSAYGc+ko8ynrNA84KCbO15H2ztsCD8jUQxQOB0nG89g4wgejmsq/BgQRFfPe4yGjHQjfFPETCxXS1/kuBvMuL+InFNcS5hLv1PgG9esQ4cwY+1UkIfUyBaznyFLkCwwODWjgLizUOdbYCxMwxhAYFeMu6QUDJdjIoThrK/TykMEL/QofQNMJGd08AQtJ7hBgCfHyIxMK5PUWSjCwRtQ5LDLB7djbGCYgnjrf9Pci9Nf+HOQM7gIZvpb/9z7r3PHbCRLnKuwSIAcpQRb4Tw4WPVYNzy388hevyuu2D8Xqsez7BxM3IzvOBtEX4OXbPcPFGCDvMe4o+gXvCAoTE+DB3iQ83r/izsyOFg8Op9jN8kvXCvkBAwcHYzlCGNT67+0oCuDf2ar9KsS38gK7UK8oKOsx6wrn+7wN/wlA7Ard4A/g3h3/vNssGMsUAB1hBy4O8CUV4VM62vvgLQ0OJ0jyAUPw6xn5VxzwMxr57SzyHrsv7+IGt/o06/cw/UQeBxPM0PAF6+AJ5zMj9N76BuUO7Nw45/9CJRz19Ogp+g0O3xLnf/5K9iD93B8UEhoR3wUAMOMT7+ce8NXQ3yk/3h4GGhM="
+  },
+  {
+   "category": "mood",
+   "en": "epic",
+   "ja": "壮大",
+   "ref_mean": 0.05822,
+   "ref_std": 0.0758,
+   "scale": 0.00119553,
+   "q": "7wrZ5gYPGvDs5NzIBQMSKq4pL+Dx1NHw7eb7WN4CHCJQGRftZgAKzFgMCOwbDu/LFA3q4vryIdEuwRMi2fkiC8v0LQ3v5crTGDkaGzj45rbY3xAQ3NO/JwspBzCr3/kK6hII5sv6Hv/a/A0BCg/ERer157oZC93Iyr0nEzsJ+R8R/tIW4xXux+EbAuAb5woe8jE1DvlLC/r52fns3O/a81/Q9vHxA8/wAxbuvCb13QJC7AfqRQL9vRojIM7j5tcC6QcBA+nvNPE36isgCekv7vb4AioFww/CT/ndLNsoBuAE+Nf19Fjj/yHLpxP44/P0Sw3/1P/gDMfoGEgK2NMJSQDZ7rzgAOY38uwjEx//Fzj5DyEE+BfdvvuxA/HA/xQ0/f0M+i722vkTzEXTRc208T3p/szo5wHcN/IjIPLP9tXmBOrA09uY6RUUq84GFDK+LhzUAx/yLhAO5vS78gIZ/ecBytQE8vfU8Pu3AfkIN+0A0f348NUpFgQe/e6j+/X97goEihsA3sgiAOUmHSwhJDf+AvIOHfqBBtwQFPk9+y0BIRkaGQLmEwLL+Oj888Ep288V0/ZDHtzI9A/u+wPhBQ8LEML+0QgN+QgU19zqARVf/9zyN+gYBvYAC9w2xf0DReNh0ecI3BwSFyTNAxIfLv7p6+8Lwejh2Owe3A8qWW0="
+  }
+ ]
+}

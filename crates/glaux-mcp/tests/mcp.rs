@@ -1195,6 +1195,15 @@ async fn analyze_sound_describes_track_note_and_file() {
     assert!(v["envelope"]["attack_ms"].is_number());
     assert!(v["harmonics"]["waveform_guess"].is_string());
     assert!(v["labels"].as_array().unwrap().len() >= 3);
+    // CLAP のモデルがあれば音色語(カテゴリごと)、無ければ取得方法の案内
+    if glaux_ml::clap::available() {
+        eprintln!("{}", serde_json::to_string(&v["words"]).unwrap());
+        assert_eq!(v["words"]["instrument"].as_array().unwrap().len(), 3);
+        assert!(v["words"]["mood"].is_array());
+    } else {
+        assert!(v["words"].is_null());
+        assert!(v["words_note"].as_str().unwrap().contains("CLAP"));
+    }
 
     // WAV ファイル(矩形波寄り: 奇数倍音だけ)
     let path = fx.dir.join("square.wav");
@@ -1373,4 +1382,20 @@ fn beats_match_reference_implementation() {
     );
     assert!(fb > 0.95, "{fb}");
     assert!(fd > 0.9, "{fd}");
+}
+
+/// 実際に CLAP のモデルを取得する(約 280MB。`GLAUX_TEST_DOWNLOAD_CLAP` に保存先のファイルを指定したときだけ)。
+#[test]
+fn clap_model_downloads_and_verifies() {
+    let Some(dest) = std::env::var_os("GLAUX_TEST_DOWNLOAD_CLAP") else {
+        eprintln!("GLAUX_TEST_DOWNLOAD_CLAP が未設定のためスキップ");
+        return;
+    };
+    std::env::set_var("GLAUX_CLAP_MODEL", &dest);
+    let _ = std::fs::remove_file(&dest);
+    let mut calls = 0;
+    let p = glaux_mcp::models::download_clap(&mut |_, _| calls += 1).unwrap();
+    assert!(p.is_file());
+    assert!(calls > 100);
+    assert!(glaux_mcp::models::clap_status().available);
 }

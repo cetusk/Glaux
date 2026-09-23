@@ -182,9 +182,42 @@
     calib = "idle";
   }
 
+  // ---- 追加モデル ----
+  let clapModel = $state<api.ModelStatus | null>(null);
+  let clapProgress = $state<{ got: number; total: number } | null>(null);
+  let clapMsg = $state<string | null>(null);
+
+  async function loadModels() {
+    try {
+      clapModel = (await api.modelStatus()).clap;
+    } catch (e) {
+      clapMsg = String(e);
+    }
+  }
+
+  async function downloadClap() {
+    if (clapProgress) return;
+    clapMsg = null;
+    clapProgress = { got: 0, total: clapModel?.bytes ?? 1 };
+    const un = await api.onModelDownload((p) => (clapProgress = p));
+    try {
+      await api.downloadClapModel();
+      clapMsg = "取得しました。AI が音を言葉でも捉えられるようになりました";
+      await loadModels();
+    } catch (e) {
+      clapMsg = String(e);
+    } finally {
+      un();
+      clapProgress = null;
+    }
+  }
+
+  const mb = (n: number) => `${Math.round(n / 1_000_000)} MB`;
+
   onMount(() => {
     loadDevices();
     loadMidi();
+    loadModels();
     return () => {
       if (monitoring) api.inputMonitor(false).catch(() => {});
     };
@@ -413,6 +446,32 @@
       />
       録音の音量を自動で整える(一番大きい所を -6dB に。元の録音は変えません)
     </label>
+  </div>
+
+  <div class="section">
+    <div class="section-title">追加モデル</div>
+    <div class="row">
+      音色を言葉で捉えるモデル(CLAP)
+      {#if clapModel?.available}
+        <span class="ok">✓ 取得済み</span>
+      {:else if clapProgress}
+        <span class="progress">取得中… {mb(clapProgress.got)} / {mb(clapProgress.total)}</span>
+      {:else}
+        <button class="mini" onclick={downloadClap} disabled={!clapModel}>
+          ⬇ 取得する({clapModel ? mb(clapModel.bytes) : "…"})
+        </button>
+      {/if}
+    </div>
+    {#if clapProgress}
+      <progress max={clapProgress.total} value={clapProgress.got}></progress>
+    {/if}
+    <div class="hint">
+      AI が音を「明るい」「金属的なベル」のような言葉で捉え、音色の近さを比べられるようになります
+      (LAION-CLAP、Apache-2.0。Hugging Face から取得し、この PC の設定フォルダに保存します)。
+    </div>
+    {#if clapMsg}
+      <div class="hint">{clapMsg}</div>
+    {/if}
   </div>
 
   <div class="note">設定はこの PC に保存されます(プロジェクトには含まれません)。</div>

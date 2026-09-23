@@ -247,3 +247,48 @@ pub fn beats(sound: &LoadedSound) -> Result<BeatReport, String> {
         summary,
     })
 }
+
+/// 音色語のカテゴリ(表示順)。
+pub const WORD_CATEGORIES: [&str; 7] = [
+    "instrument",
+    "tone",
+    "texture",
+    "envelope",
+    "movement",
+    "space",
+    "mood",
+];
+
+/// CLAP の埋め込み(モデルが無ければエラー)。
+pub fn embedding(sound: &LoadedSound) -> Result<Vec<f32>, String> {
+    glaux_ml::clap::embed(&sound.frames, sound.sample_rate).map_err(|e| e.to_string())
+}
+
+/// 埋め込みを音色語で表す: カテゴリごとに近い 3 語({ja, en, z})。
+pub fn words_json(embedding: &[f32]) -> serde_json::Value {
+    let words = glaux_ml::clap::describe(embedding, 3);
+    let mut obj = serde_json::Map::new();
+    for c in WORD_CATEGORIES {
+        let list: Vec<serde_json::Value> = words
+            .iter()
+            .filter(|w| w.category == c)
+            .map(|w| {
+                serde_json::json!({
+                    "ja": w.ja,
+                    "en": w.en,
+                    "z": (w.z as f64 * 10.0).round() / 10.0,
+                })
+            })
+            .collect();
+        obj.insert(c.to_owned(), serde_json::Value::Array(list));
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// CLAP のモデルが無いときに AI・人間に伝える文。
+pub fn clap_missing_note() -> String {
+    format!(
+        "音色を言葉で捉えるモデル(CLAP、約 {} MB)が未取得です。設定の「追加モデル」から取得できます",
+        glaux_ml::clap::MODEL_BYTES / 1_000_000
+    )
+}

@@ -54,6 +54,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 ebur128 = "0.1"
 # MIDI キーボード入力
 midir = "0.11"
+# 追加モデル(CLAP の音声側など)の取得(glaux-mcp のみ。プロキシは環境変数に従う)
+ureq = "3"
 # 音声ファイルの取り込み(mp3 / flac / ogg / m4a を WAV に変換)
 symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "flac", "ogg", "vorbis", "wav", "pcm"] }
 
