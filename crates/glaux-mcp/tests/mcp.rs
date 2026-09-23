@@ -1901,7 +1901,7 @@ async fn preset_loads_into_clap_effect_and_undoes() {
         glaux_core::PluginSource::Clap { state, .. } => assert!(state.is_some()),
         other => panic!("{other:?}"),
     }
-    assert!(e.params.get("clap:1").is_none(), "上書き値は消える");
+    assert!(!e.params.contains_key("clap:1"), "上書き値は消える");
     assert_eq!(
         e.params.get("preset"),
         Some(&glaux_core::ParamValue::Enum(
@@ -1912,7 +1912,7 @@ async fn preset_loads_into_clap_effect_and_undoes() {
     ok_json(&call(&fx, "undo", json!({})).await);
     let (project, _) = fx.handle.get_project().await.unwrap();
     let e = &project.tracks[0].effects[0];
-    assert!(e.params.get("clap:1").is_some());
+    assert!(e.params.contains_key("clap:1"));
     assert!(matches!(
         &e.source,
         glaux_core::PluginSource::Clap { state: None, .. }
