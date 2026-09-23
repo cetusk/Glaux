@@ -40,6 +40,10 @@ export interface AudioClip {
   length: number;
   kind: "audio";
   asset: string;
+  offset_samples?: number;
+  gain_db?: number;
+  /** テンポ追従(音程を保ったまま伸縮)。original_bpm = 素材を演奏したテンポ */
+  stretch?: { mode: "none" } | { mode: "follow"; original_bpm: number };
 }
 
 export type Clip = MidiClip | AudioClip;

@@ -8,7 +8,8 @@ use crate::command::{Command, NoteChange, TrackProp};
 use crate::error::{CoreError, Result};
 use crate::id::{ClipId, TrackId};
 use crate::model::{
-    sort_notes, AutomationLane, ClipContent, ParamMap, ParamPath, ParamValue, Project, TrackKind,
+    sort_notes, AutomationLane, ClipContent, ParamMap, ParamPath, ParamValue, Project, Stretch,
+    TrackKind,
 };
 use crate::time::{TempoMap, Tick};
 use serde::{Deserialize, Serialize};
@@ -302,6 +303,32 @@ impl Project {
                     changes: vec![Change::ClipsChanged { track }],
                 })
             }
+            SetClipStretch { id, stretch } => {
+                if let Stretch::Follow { original_bpm } = stretch {
+                    if !Stretch::BPM_RANGE.contains(original_bpm) {
+                        return Err(CoreError::OutOfRange(format!(
+                            "original_bpm must be within 20..=400: {original_bpm}"
+                        )));
+                    }
+                }
+                let (ti, ci) = self
+                    .clip_location(id)
+                    .ok_or_else(|| CoreError::ClipNotFound(id.clone()))?;
+                let track = self.tracks[ti].id.clone();
+                let ClipContent::Audio { stretch: cur, .. } =
+                    &mut self.tracks[ti].clips[ci].content
+                else {
+                    return Err(CoreError::NotAudioClip(id.clone()));
+                };
+                let old = std::mem::replace(cur, stretch.clone());
+                Ok(Applied {
+                    inverse: SetClipStretch {
+                        id: id.clone(),
+                        stretch: old,
+                    },
+                    changes: vec![Change::ClipsChanged { track }],
+                })
+            }
             SplitClip { id, at, new_id } => {
                 if self.clip_location(new_id).is_some() {
                     return Err(CoreError::DuplicateId(new_id.to_string()));
@@ -353,6 +380,7 @@ impl Project {
                             asset,
                             offset_samples,
                             fade_in_ms: rfi,
+                            stretch,
                             ..
                         },
                     ) => {
@@ -361,8 +389,13 @@ impl Project {
                             .get(asset)
                             .ok_or_else(|| CoreError::AssetNotFound(asset.clone()))?
                             .sample_rate;
-                        let secs = self.tempo_map.tick_to_seconds(*at)
-                            - self.tempo_map.tick_to_seconds(original.start);
+                        // テンポ追従中は素材の秒数が tick に比例する
+                        let secs = stretch
+                            .follow_seconds(left_len.0 as f64)
+                            .unwrap_or_else(|| {
+                                self.tempo_map.tick_to_seconds(*at)
+                                    - self.tempo_map.tick_to_seconds(original.start)
+                            });
                         *offset_samples += (secs * sr as f64).round() as u64;
                         *lfo = 0.0;
                         *rfi = 0.0;

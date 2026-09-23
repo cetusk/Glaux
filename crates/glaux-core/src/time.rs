@@ -149,6 +149,25 @@ impl TempoMap {
         secs
     }
 
+    /// [`seconds_to_tick`](Self::seconds_to_tick) の小数版(丸めない)。
+    pub fn seconds_to_tick_f64(&self, seconds: f64) -> f64 {
+        let mut remaining = seconds.max(0.0);
+        for (i, ev) in self.events.iter().enumerate() {
+            let spt = Self::seconds_per_tick(ev.bpm);
+            match self.events.get(i + 1) {
+                Some(next) => {
+                    let seg_secs = (next.tick.0 - ev.tick.0) as f64 * spt;
+                    if remaining < seg_secs {
+                        return ev.tick.0 as f64 + remaining / spt;
+                    }
+                    remaining -= seg_secs;
+                }
+                None => return ev.tick.0 as f64 + remaining / spt,
+            }
+        }
+        0.0
+    }
+
     pub fn seconds_to_tick(&self, seconds: f64) -> Tick {
         let mut remaining = seconds.max(0.0);
         for (i, ev) in self.events.iter().enumerate() {

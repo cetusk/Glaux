@@ -79,8 +79,26 @@ pub enum Stretch {
     /// ストレッチなし(元の速度で再生)
     #[default]
     None,
-    /// テンポに追従(将来実装)
+    /// テンポに追従する(音程は変えずに伸縮)。素材は `original_bpm` で演奏されたものとして
+    /// 扱い、1 tick = 60 / (original_bpm × PPQ) 秒ぶんの素材が常に 1 tick に対応する。
+    /// プロジェクトのテンポを変えても拍がずれない
     Follow { original_bpm: f64 },
+}
+
+impl Stretch {
+    /// 追従時に受け付ける元テンポの範囲
+    pub const BPM_RANGE: std::ops::RangeInclusive<f64> = 20.0..=400.0;
+
+    /// クリップ先頭から `ticks` 進んだ位置が、素材の何秒目(`offset` から)に当たるか。
+    /// 追従しないときは `None`(テンポマップで秒に直す)
+    pub fn follow_seconds(&self, ticks: f64) -> Option<f64> {
+        match self {
+            Stretch::None => None,
+            Stretch::Follow { original_bpm } => {
+                Some(ticks * 60.0 / (original_bpm * crate::time::PPQ as f64))
+            }
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]

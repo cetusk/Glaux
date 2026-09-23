@@ -94,11 +94,11 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
     let pick_track = |rng: &mut StdRng| tracks.choose(rng).unwrap().id.clone();
 
     loop {
-        // 0..=23 は単体コマンド、24 以上は Batch(入れ子は 1 段まで)
+        // 0..=24 は単体コマンド、25 以上は Batch(入れ子は 1 段まで)
         let choice = if depth == 0 {
-            rng.gen_range(0..25)
+            rng.gen_range(0..26)
         } else {
-            rng.gen_range(0..24)
+            rng.gen_range(0..25)
         };
         match choice {
             0 => {
@@ -415,6 +415,27 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 }
                 return Command::UnsetMasterParam {
                     path: ParamPath::effect(e.id.clone(), e.params.keys().next().unwrap().clone()),
+                };
+            }
+            24 => {
+                let audio: Vec<&Clip> = all_clips
+                    .iter()
+                    .map(|(_, c)| *c)
+                    .filter(|c| !c.is_midi())
+                    .collect();
+                let Some(c) = audio.choose(rng) else {
+                    continue;
+                };
+                let stretch = if rng.gen_bool(0.7) {
+                    Stretch::Follow {
+                        original_bpm: rng.gen_range(60.0..180.0),
+                    }
+                } else {
+                    Stretch::None
+                };
+                return Command::SetClipStretch {
+                    id: c.id.clone(),
+                    stretch,
                 };
             }
             23 => {

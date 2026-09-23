@@ -8,11 +8,14 @@
     start,
     length,
     widthPx,
+    variant = "",
   }: {
     clipId: string;
     start: number;
     length: number;
     widthPx: number;
+    /** 波形の見え方を変える設定(音量・テンポ追従)。変わったら取り直す */
+    variant?: string;
   } = $props();
 
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -34,7 +37,7 @@
     if (!c) return;
     const w = Math.max(1, Math.min(Math.round(widthPx), 4096));
     const buckets = Math.max(8, Math.min(w, 1024));
-    const key = `${clipId}:${start}:${length}:${buckets}`;
+    const key = `${clipId}:${start}:${length}:${buckets}:${variant}`;
     let cancelled = false;
     load(key, clipId, buckets)
       .then((peaks) => {

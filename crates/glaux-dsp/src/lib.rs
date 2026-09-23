@@ -23,6 +23,7 @@ mod multi;
 mod params;
 mod pluck;
 mod sampler;
+pub mod stretch;
 mod subtractive;
 mod voice;
 

@@ -10,7 +10,7 @@
 use crate::id::{AssetId, ClipId, FxId, NoteId, TrackId};
 use crate::model::{
     Articulation, Asset, AutomationPoint, Clip, Device, Effect, Note, ParamPath, ParamValue,
-    PitchPoint, SectionMarker, Track,
+    PitchPoint, SectionMarker, Stretch, Track,
 };
 use crate::time::{TempoEvent, Tick, TimeSigEvent};
 use serde::{Deserialize, Serialize};
@@ -136,6 +136,11 @@ pub enum Command {
         id: ClipId,
         #[serde(default)]
         loop_len: Option<Tick>,
+    },
+    /// 音声クリップのタイムストレッチ(テンポ追従)を設定する
+    SetClipStretch {
+        id: ClipId,
+        stretch: Stretch,
     },
     /// `at`(絶対 Tick)で分割。右側が `new_id` になる。
     /// MIDI: 分割点をまたぐノートは左側で切り詰める。
@@ -295,7 +300,10 @@ impl Command {
                 out.insert(T::Track(track.clone()));
                 out.insert(T::Clip(clip.id.clone()));
             }
-            RemoveClip { id } | ResizeClip { id, .. } | SetClipLoop { id, .. } => {
+            RemoveClip { id }
+            | ResizeClip { id, .. }
+            | SetClipLoop { id, .. }
+            | SetClipStretch { id, .. } => {
                 out.insert(T::Clip(id.clone()));
             }
             ReplaceClip { id, clip } => {

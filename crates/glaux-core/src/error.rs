@@ -30,6 +30,8 @@ pub enum CoreError {
     IdMismatch { expected: String, got: String },
     #[error("clip {0} is not a MIDI clip")]
     NotMidiClip(ClipId),
+    #[error("clip {0} is not an audio clip")]
+    NotAudioClip(ClipId),
     #[error("split point {at:?} is outside clip {clip}")]
     InvalidSplit { clip: ClipId, at: Tick },
     #[error("index {index} out of range (len {len})")]

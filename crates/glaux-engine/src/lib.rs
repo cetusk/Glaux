@@ -13,8 +13,8 @@
 //! - [`sf2`]: SoundFont の読み込みとゾーン構築
 //!
 //! 割り切り(将来課題):
-//! - ループクリップ(clip.loop フラグ)は 1 回だけ再生
-//! - 音声クリップのタイムストレッチ(Stretch::Follow)は未対応(元の速度で再生)
+//! - 音声クリップのテンポ追従(Stretch::Follow)は WSOLA でオフライン伸縮(`SampleBank` にキャッシュ)。
+//!   伸縮の品質は声・単音・リズム素材向け(和音の多い素材で大きく伸ばすと揺れが出る)
 
 pub mod analyze;
 pub mod calibrate;

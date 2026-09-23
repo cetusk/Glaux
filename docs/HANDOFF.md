@@ -139,7 +139,7 @@ MySong.glaux/
 
 - `"kind": "midi"` / `"kind": "audio"` の明示タグ(`notes` の有無で判別する案は却下: serde 的に脆く、AI にも不明瞭)
 - 音声は **非破壊編集**: 元音声は変えず `offset_samples` / `gain_db` / `fade_in_ms` / `fade_out_ms` / `stretch` を重ねる
-- `stretch` は今は `none` のみ。将来 `follow`(テンポ追従)を足す枠がある。MIDI 主軸の DAW で音声を入れたとき最初に欲しくなる機能
+- `stretch` は `none` / `follow {original_bpm}`(テンポ追従、2026-09-23 実装。MIDI 主軸の DAW で音声を入れたとき最初に欲しくなる機能)
 - オートメーションはトラック単位(クリップ単位は必要になったら追加)
 
 ### 楽器・エフェクト
@@ -222,6 +222,7 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 | `remove_effect {id}` | `add_effect` | |
 | `set_effect_bypass {id, bypass}` | 同 | |
 | `set_automation_points {track, target, points}` | 同 | 空配列でレーン削除。レーンは対象パスの文字列順に挿入(削除 → 逆で元の並びに戻るよう正規化) |
+| `set_clip_stretch {id, stretch}` | 同(旧値) | 音声クリップのテンポ追従(2026-09-23)。`{mode: follow, original_bpm}`(20〜400)/ `{mode: none}`。音声クリップ以外はエラー |
 | `set_master_automation_points {target, points}` | 同 | マスターのレーン(2026-09-23)。target は `track/volume_db` か `fx/<マスターのエフェクト ID>/<名前>`。`MasterBus.automation` に保存 |
 | `set_tempo {events}` | 同 | tick 0 から始まる昇順 |
 | `set_time_sig {events}` | 同 | |
@@ -300,7 +301,7 @@ MVP の割り切り(将来課題):
   データ差し替え時に tick を保ったまま換算し直すので、再生中のテンポ変更でずれない
   (2026-09-22)。tick⇔秒変換は `TempoMap` を使用
 - 音声クリップは再生対応(2026-09-22。固定プール 16、線形補間、フェード、途中再開)。
-  ループクリップは対応済み(2026-09-23)。タイムストレッチ(Stretch::Follow)は未対応
+  ループクリップは対応済み(2026-09-23)。テンポ追従(Stretch::Follow)も対応済み(2026-09-23)
 - オートメーションは track/volume_db・track/pan(サンプル単位で補間)と
   device/<パラメータ>(音色。ブロックレート ≈ 数 ms で評価、
   `InstrumentParams::set_continuous` に raw 値を流し込む)、
@@ -454,7 +455,7 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
 ### 将来
 
 - CLAP プラグインホスティング(`clack` クレート)
-- タイムストレッチ(`Stretch::Follow`)
+- ~~タイムストレッチ(`Stretch::Follow`)~~ → 実装済み(2026-09-23、WSOLA)。より高品質な伸縮(位相ボコーダ + 過渡保持)は将来
 - ノードグラフによる音作り
 - ブラウザ版(Rust コアを WASM 化、共有・軽作業用)
 - ローカル AI モデル(音声解析、GPU 利用)
@@ -810,6 +811,19 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   🎛(エフェクト数を表示)で、音作りビューを「マスター」モード(エフェクトの節だけ)で開く。
   エフェクト一覧の JSON は `server::effects_json` をトラック・マスターで共用。チャットには
   「音作り中: マスターバス」と添える
+- **音声クリップのテンポ追従(2026-09-23)**: `Stretch::Follow { original_bpm }` を実装。
+  素材は元テンポ一定で演奏されたものとして扱い、1 tick = 60/(original_bpm×PPQ) 秒ぶんの素材が
+  常に 1 tick に対応する(`Stretch::follow_seconds`)。
+  - 伸縮は `glaux-dsp/src/stretch.rs` の WSOLA(40ms フレーム・50% 重なり・±10ms 探索、
+    正規化相互相関を 4 サンプル間引きで粗探索 → 1 サンプルで詰める)。音程は変わらない。
+    3 分の素材で約 0.3 秒(glaux-dsp は dev ビルドでも opt-level 3)
+  - `SampleBank::sync` がクリップごとに条件(素材・offset・位置・長さ・元テンポ・テンポマップ)の
+    ハッシュ付きで伸縮済み波形をキャッシュし、変わったものだけ作り直す。クリップ全体で
+    テンポが元テンポと同じなら伸縮せず元素材を使う。再生・書き出し・解析のどれも同じ波形
+  - 分割(`split_clip`)の右側の offset、波形表示(`clip_peaks`)、譜起こしの範囲・tick 換算は
+    追従中なら元テンポ基準で計算する
+  - UI: 音声クリップの右クリック「⇔ テンポに追従させる」(元テンポ = クリップ先頭の今のテンポ)/
+    解除。追従中はクリップ名に「⇔120」のように表示
 - **マスターのオートメーション(2026-09-23)**: `MasterBus.automation`(空なら JSON に出ない)と
   コマンド `set_master_automation_points`。UI はタイムライン最下段の「マスター」行の 〜 で
   レーンを開く(`AutomationLaneRow` に擬似トラック `MASTER_FOCUS_ID` を渡す。音量 + マスターの
@@ -898,7 +912,7 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     UI は「+ 🎵 音声トラック」+ 空きレーンのダブルクリックで WAV 配置
   - 波形表示: `AudioClipPreview.svelte`(Tauri `clip_peaks` がクリップ参照範囲の
     min/max ピークを返す。クリップ ID + 範囲 + 幅でキャッシュ)
-  - 残り: タイムストレッチ(Stretch::Follow)(ループクリップは 2026-09-23 に対応)
+  - タイムストレッチ(Stretch::Follow)・ループクリップは 2026-09-23 に対応
 - **譜起こし(単旋律 → MIDI)実装済み(2026-09-22)**: `glaux-engine/src/transcribe.rs`。
   「鼻歌を録音して即 MIDI 化」が主用途。10ms フレームで YIN(CMND しきい値 0.15 +
   放物線補間)→ 音量(-40dB 以内)と明瞭度で有声判定 → 中央値フィルタ(窓 5)→

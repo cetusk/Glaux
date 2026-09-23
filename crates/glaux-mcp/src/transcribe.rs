@@ -33,6 +33,7 @@ pub fn transcribe_clip_commands(
     let glaux_core::ClipContent::Audio {
         asset,
         offset_samples,
+        stretch,
         ..
     } = &src_clip.content
     else {
@@ -43,20 +44,28 @@ pub fn transcribe_clip_commands(
         .get(asset)
         .ok_or_else(|| format!("アセットが見つかりません: {asset}"))?;
     let mut data = glaux_engine::load_wav_mono(&project_dir.join(&asset_meta.path))?;
+    // テンポ追従中の素材は元テンポ一定で tick に対応する(素材の秒 ⇔ tick が比例)
+    let tempo = match stretch {
+        glaux_core::Stretch::Follow { original_bpm } => {
+            glaux_core::TempoMap::new(vec![glaux_core::TempoEvent {
+                tick: glaux_core::Tick::ZERO,
+                bpm: *original_bpm,
+            }])
+            .map_err(|e| e.to_string())?
+        }
+        glaux_core::Stretch::None => project.tempo_map.clone(),
+    };
     // クリップが参照している範囲だけを解析する
-    let start_sec = project.tempo_map.tick_to_seconds(src_clip.start);
-    let end_sec = project
-        .tempo_map
-        .tick_to_seconds(src_clip.start + src_clip.length);
+    let secs = tempo.tick_to_seconds(src_clip.start + src_clip.length)
+        - tempo.tick_to_seconds(src_clip.start);
     let from = (*offset_samples as usize).min(data.frames.len());
-    let to =
-        (from + ((end_sec - start_sec) * data.sample_rate as f64) as usize).min(data.frames.len());
+    let to = (from + (secs * data.sample_rate as f64) as usize).min(data.frames.len());
     data.frames = data.frames[from..to].to_vec();
 
     let notes = transcribe_mono(&data, opts);
     let clip_notes = to_clip_notes(
         &notes,
-        &project.tempo_map,
+        &tempo,
         src_clip.start,
         src_clip.length,
         quantize_ticks,
@@ -128,6 +137,7 @@ pub fn clip_peaks(
         asset,
         offset_samples,
         gain_db,
+        stretch,
         ..
     } = &clip.content
     else {
@@ -139,8 +149,13 @@ pub fn clip_peaks(
         .get(asset)
         .ok_or_else(|| format!("アセットが見つかりません: {asset}"))?;
     let data = glaux_engine::load_wav_mono(&project_dir.join(&meta.path))?;
-    let secs = project.tempo_map.tick_to_seconds(clip.start + clip.length)
-        - project.tempo_map.tick_to_seconds(clip.start);
+    // テンポ追従中は素材の秒数が tick に比例する(タイムライン上の見た目と一致)
+    let secs = stretch
+        .follow_seconds(clip.length.0 as f64)
+        .unwrap_or_else(|| {
+            project.tempo_map.tick_to_seconds(clip.start + clip.length)
+                - project.tempo_map.tick_to_seconds(clip.start)
+        });
     let from = (*offset_samples as usize).min(data.frames.len());
     let to = (from + (secs * data.sample_rate as f64) as usize).min(data.frames.len());
     // 表示はクリップの音量(自動音量調整を含む)を掛けた後の大きさにする

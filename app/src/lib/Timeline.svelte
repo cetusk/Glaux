@@ -532,6 +532,35 @@
       .catch(() => {});
   }
 
+  /// `tick` の位置のテンポ(BPM)
+  function bpmAt(tick: number): number {
+    let bpm = project.tempo_map[0]?.bpm ?? 120;
+    for (const e of project.tempo_map) {
+      if (e.tick <= tick) bpm = e.bpm;
+    }
+    return bpm;
+  }
+
+  function followBpm(clip: Clip): number | null {
+    return clip.kind === "audio" && clip.stretch?.mode === "follow" ? clip.stretch.original_bpm : null;
+  }
+
+  /// 音声クリップのテンポ追従。ON のときは今のテンポ(クリップ先頭)で録った素材として扱う
+  function setFollow(targets: Clip[], on: boolean) {
+    const cmds = targets
+      .filter((c) => c.kind === "audio")
+      .map((c) => ({
+        op: "set_clip_stretch",
+        id: c.id,
+        stretch: on ? { mode: "follow", original_bpm: bpmAt(c.start) } : { mode: "none" },
+      }));
+    if (cmds.length === 0) return;
+    const label = on
+      ? `${cmds.length === 1 ? targets[0].name : `音声クリップ ${cmds.length} 個`} をテンポに追従させる`
+      : "テンポ追従を解除";
+    api.applyEdit(cmds, label).catch(() => {});
+  }
+
   function expandLoop(clip: Clip) {
     const cmd = expandLoopCommand(clip);
     if (!cmd) return;
@@ -662,7 +691,18 @@
   }
 
   function menuAction(
-    action: "split" | "split-head" | "dup" | "copy" | "cut" | "delete" | "loop-on" | "loop-off" | "expand",
+    action:
+      | "split"
+      | "split-head"
+      | "dup"
+      | "copy"
+      | "cut"
+      | "delete"
+      | "loop-on"
+      | "loop-off"
+      | "expand"
+      | "follow-on"
+      | "follow-off",
   ) {
     const m = clipMenu;
     clipMenu = null;
@@ -695,6 +735,12 @@
         break;
       case "expand":
         expandLoop(m.clip);
+        break;
+      case "follow-on":
+        setFollow(targets, true);
+        break;
+      case "follow-off":
+        setFollow(targets, false);
         break;
     }
   }
@@ -1060,7 +1106,11 @@
             onpointercancel={() => (clipDrag = null)}
           >
             <span class="clip-name"
-              >{clip.kind === "audio" ? "🎵 " : clip.loop && clip.loop_len ? "🔁 " : ""}{clip.name}</span
+              >{clip.kind === "audio" ? "🎵 " : clip.loop && clip.loop_len ? "🔁 " : ""}{clip.name}{followBpm(
+                clip,
+              ) !== null
+                ? ` ⇔${followBpm(clip)}`
+                : ""}</span
             >
             {#if clip.kind === "midi"}
               <ClipPreview {clip} widthPx={clip.length * pxPerTick} />
@@ -1070,6 +1120,7 @@
                 start={clip.start}
                 length={clip.length}
                 widthPx={clip.length * pxPerTick}
+                variant={`${clip.gain_db ?? 0}:${followBpm(clip) ?? ""}`}
               />
               <button
                 class="transcribe"
@@ -1187,6 +1238,17 @@
           <button onclick={() => menuAction("expand")}>🔁 繰り返しをノートに展開(個別に編集できるように)</button>
         {:else}
           <button onclick={() => menuAction("loop-on")}>🔁 ループにする(今の長さを繰り返す。右端を伸ばすと繰り返し)</button>
+        {/if}
+        <div class="menu-sep"></div>
+      {:else}
+        {#if followBpm(clipMenu.clip) !== null}
+          <button onclick={() => menuAction("follow-off")}>
+            ⇔ テンポ追従を解除(今は {followBpm(clipMenu.clip)} BPM の素材として伸縮中)
+          </button>
+        {:else}
+          <button onclick={() => menuAction("follow-on")}>
+            ⇔ テンポに追従させる({bpmAt(clipMenu.clip.start)} BPM で録った素材として、テンポを変えても拍がずれないよう伸縮)
+          </button>
         {/if}
         <div class="menu-sep"></div>
       {/if}

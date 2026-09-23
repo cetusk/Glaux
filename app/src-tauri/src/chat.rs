@@ -168,7 +168,9 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     曲全体のフェードアウトやマスターのエフェクトの時間変化は set_master_automation_points\
     (target: track/volume_db または fx/<マスターのエフェクト ID>/<パラメータ名>)で描けます。\
     音声素材: 人間が ⏺ で録音した演奏や音声ファイル(WAV / MP3 / FLAC / OGG / M4A)は音声トラック(kind: audio)のクリップとして置かれます。\
-    それらは get_project で見え、analyze_audio で聴けます。音声ファイルの配置を頼まれたら import_audio_clip を使います。\
+    それらは get_project で見え、analyze_audio で聴けます。\
+    テンポを変えるときは、音声クリップに set_clip_stretch(follow、original_bpm = 録音時のテンポ)を\
+    付けておくと拍がずれずに伸縮します(音程は変わりません)。音声ファイルの配置を頼まれたら import_audio_clip を使います。\
     鼻歌や歌の録音(単旋律)は transcribe_audio で MIDI クリップにできます。MIDI 化したら \
     analyze_harmony でキーを確認し、前後と 12 半音ずれた短い音(オクターブ誤検出)や外れた音を整えてから報告してください。\
     ミックスバランス: analyze_audio の per_track: true で各トラックのラウドネスと帯域の一覧が取れます。\

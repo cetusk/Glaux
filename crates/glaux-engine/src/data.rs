@@ -213,6 +213,9 @@ pub struct SampleBank {
     fonts: HashMap<String, Arc<rustysynth::SoundFont>>,
     /// 構築済みゾーン列((ファイル名, bank, preset) → zones)
     multis: HashMap<(String, u16, u16), Arc<Vec<glaux_dsp::Zone>>>,
+    /// テンポ追従クリップの伸縮済み波形(クリップ ID → (条件のハッシュ, 波形))。
+    /// 波形はクリップ先頭から末尾までで、素材のサンプルレートのまま
+    stretched: HashMap<glaux_core::ClipId, (u64, Arc<SampleData>)>,
 }
 
 impl Default for SampleBank {
@@ -222,6 +225,7 @@ impl Default for SampleBank {
             sf2_dir: crate::sf2::default_dir(),
             fonts: HashMap::new(),
             multis: HashMap::new(),
+            stretched: HashMap::new(),
         }
     }
 }
@@ -229,6 +233,19 @@ impl Default for SampleBank {
 impl SampleBank {
     pub fn get(&self, id: &AssetId) -> Option<&Arc<SampleData>> {
         self.map.get(id)
+    }
+
+    /// テンポ追従クリップの伸縮済み波形(条件が変わっていれば None)。
+    pub fn get_stretched(
+        &self,
+        project: &Project,
+        clip: &glaux_core::Clip,
+    ) -> Option<&Arc<SampleData>> {
+        let key = stretch_key(project, clip)?;
+        self.stretched
+            .get(&clip.id)
+            .filter(|(k, _)| *k == key)
+            .map(|(_, d)| d)
     }
 
     /// テスト・特殊環境用: SoundFont ライブラリフォルダを差し替える。
@@ -263,6 +280,34 @@ impl SampleBank {
                 }
             }
         }
+
+        // テンポ追従クリップ: 条件(テンポ・位置・長さ・元テンポ等)が変わったものだけ伸縮し直す
+        let mut used_clips = std::collections::HashSet::new();
+        for clip in project.tracks.iter().flat_map(|t| t.clips.iter()) {
+            let Some(key) = stretch_key(project, clip) else {
+                continue;
+            };
+            used_clips.insert(clip.id.clone());
+            if self.stretched.get(&clip.id).is_some_and(|(k, _)| *k == key) {
+                continue;
+            }
+            let ClipContent::Audio {
+                asset,
+                offset_samples,
+                stretch,
+                ..
+            } = &clip.content
+            else {
+                continue;
+            };
+            let Some(src) = self.map.get(asset) else {
+                continue;
+            };
+            let data = render_follow(project, clip, src, *offset_samples, stretch);
+            self.stretched
+                .insert(clip.id.clone(), (key, Arc::new(data)));
+        }
+        self.stretched.retain(|id, _| used_clips.contains(id));
 
         // SoundFont: プロジェクトが参照しているプリセットのゾーンを構築
         let mut used: std::collections::HashSet<(String, u16, u16)> =
@@ -318,6 +363,67 @@ impl SampleBank {
         let mut bank = SampleBank::default();
         bank.sync(project, project_dir);
         bank
+    }
+}
+
+/// テンポ追従クリップの伸縮条件のハッシュ。伸縮が要らない(追従しない、または
+/// クリップ全体でテンポが元テンポと同じ)なら None。
+fn stretch_key(project: &Project, clip: &glaux_core::Clip) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let ClipContent::Audio {
+        asset,
+        offset_samples,
+        stretch: glaux_core::Stretch::Follow { original_bpm },
+        ..
+    } = &clip.content
+    else {
+        return None;
+    };
+    let tm = &project.tempo_map;
+    let end = clip.start + clip.length;
+    let same_tempo = tm.bpm_at(clip.start) == *original_bpm
+        && tm
+            .events()
+            .iter()
+            .all(|e| e.tick <= clip.start || e.tick >= end || e.bpm == *original_bpm);
+    if same_tempo {
+        return None;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    asset.as_str().hash(&mut h);
+    offset_samples.hash(&mut h);
+    clip.start.0.hash(&mut h);
+    clip.length.0.hash(&mut h);
+    original_bpm.to_bits().hash(&mut h);
+    for e in tm.events() {
+        e.tick.0.hash(&mut h);
+        e.bpm.to_bits().hash(&mut h);
+    }
+    Some(h.finish())
+}
+
+/// テンポ追従クリップを伸縮する(WSOLA、音程は保つ)。戻り値はクリップ先頭から末尾までの
+/// 波形(素材のサンプルレート)。出力の各時刻 → テンポマップで tick → 元テンポで素材の位置。
+fn render_follow(
+    project: &Project,
+    clip: &glaux_core::Clip,
+    src: &SampleData,
+    offset_samples: u64,
+    stretch: &glaux_core::Stretch,
+) -> SampleData {
+    let tm = &project.tempo_map;
+    let sr = src.sample_rate as f64;
+    let start_sec = tm.tick_to_seconds(clip.start);
+    let end_sec = tm.tick_to_seconds(clip.start + clip.length);
+    let out_len = ((end_sec - start_sec) * sr).max(0.0) as usize;
+    let start_tick = clip.start.0 as f64;
+    let frames = glaux_dsp::stretch::wsola(&src.frames, src.sample_rate, out_len, |i| {
+        let rel = tm.seconds_to_tick_f64(start_sec + i as f64 / sr) - start_tick;
+        offset_samples as f64 + stretch.follow_seconds(rel).unwrap_or(0.0) * sr
+    });
+    SampleData {
+        frames,
+        sample_rate: src.sample_rate,
     }
 }
 
@@ -611,6 +717,11 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                         tracing::warn!("音声クリップの波形が未読込のため鳴らしません: {asset}");
                         continue;
                     };
+                    // テンポ追従: 伸縮済み波形をクリップ先頭から鳴らす
+                    let (data, offset) = match bank.get_stretched(project, clip) {
+                        Some(stretched) => (stretched, 0.0),
+                        None => (data, *offset_samples as f64),
+                    };
                     let start = to_sample(clip.start);
                     let end = to_sample(clip.start + clip.length).max(start + 1);
                     audio_events.push(AudioEvent {
@@ -618,7 +729,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                         end,
                         track: ti as u32,
                         data: data.clone(),
-                        offset: *offset_samples as f64,
+                        offset,
                         rate: data.sample_rate as f64 / sample_rate,
                         gain: db_to_amp(*gain_db),
                         fade_in: (*fade_in_ms as f64 * 0.001 * sample_rate) as u64,
@@ -1225,6 +1336,63 @@ mod tests {
         assert!(rms(0.0, 0.4) < 1e-4, "クリップ前は無音");
         assert!(rms(0.6, 1.4) > 0.2, "クリップ区間は鳴る");
         assert!(rms(1.6, 1.9) < 1e-4, "波形を読み切ったら止まる");
+    }
+
+    #[test]
+    fn follow_clip_stretches_with_tempo_and_keeps_pitch() {
+        use crate::export::render_project;
+        use glaux_core::{Stretch, TempoEvent, TempoMap};
+        let tmp = tempfile::tempdir().unwrap();
+        // 1 秒の 440Hz を 120BPM の素材(= 2 拍)として置き、プロジェクトを 60BPM にする
+        // → 2 拍 = 2 秒に伸びる(音程は 440Hz のまま)
+        let mut project = audio_clip_project(tmp.path(), 0, 1920);
+        let clip = &mut project.tracks[0].clips[0];
+        if let ClipContent::Audio { stretch, .. } = &mut clip.content {
+            *stretch = Stretch::Follow {
+                original_bpm: 120.0,
+            };
+        }
+        project.tempo_map = TempoMap::new(vec![TempoEvent {
+            tick: Tick(0),
+            bpm: 60.0,
+        }])
+        .unwrap();
+        let mut bank = SampleBank::load(&project, tmp.path());
+        let data = build_playback_data(&project, 48_000.0, &bank);
+        let ev = &data.audio_events[0];
+        assert_eq!(ev.end, 96_000, "クリップは 2 秒");
+        assert_eq!(ev.data.frames.len(), 96_000, "伸縮済み波形も 2 秒");
+        assert_eq!(ev.offset, 0.0);
+
+        let out = render_project(&project, 48_000.0, &bank).unwrap();
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        let body = &left[4_800..86_400];
+        let rms = (body.iter().map(|v| v * v).sum::<f32>() / body.len() as f32).sqrt();
+        assert!(rms > 0.2, "伸ばした区間ずっと鳴る: {rms}");
+        let crossings: Vec<usize> = (1..body.len())
+            .filter(|&i| body[i - 1] < 0.0 && body[i] >= 0.0)
+            .collect();
+        let freq = (crossings.len() - 1) as f32 * 48_000.0
+            / (crossings[crossings.len() - 1] - crossings[0]) as f32;
+        assert!((freq - 440.0).abs() < 3.0, "音程は変わらない: {freq}");
+
+        // 同じ条件なら作り直さない(Arc が同じ)/ テンポを元に戻すと伸縮しない
+        let before = ev.data.clone();
+        bank.sync(&project, tmp.path());
+        let again = build_playback_data(&project, 48_000.0, &bank);
+        assert!(Arc::ptr_eq(&before, &again.audio_events[0].data));
+        project.tempo_map = TempoMap::new(vec![TempoEvent {
+            tick: Tick(0),
+            bpm: 120.0,
+        }])
+        .unwrap();
+        bank.sync(&project, tmp.path());
+        let same = build_playback_data(&project, 48_000.0, &bank);
+        assert_eq!(
+            same.audio_events[0].data.frames.len(),
+            48_000,
+            "元の素材をそのまま使う"
+        );
     }
 
     #[test]
