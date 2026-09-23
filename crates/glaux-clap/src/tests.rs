@@ -143,3 +143,42 @@ fn params_are_listed_and_set_by_events() {
     assert!((after[0].1 - min).abs() < 1e-6, "イベントで値が変わる");
     plugin.deactivate(proc);
 }
+
+/// `GLAUX_TEST_CLAP_PRESET` にプリセットファイル(Surge XT なら .fxp)を指定したときだけ動く。
+#[test]
+fn preset_file_loads_and_changes_params() {
+    let (Some(path), Some(preset)) = (
+        test_plugin(),
+        std::env::var_os("GLAUX_TEST_CLAP_PRESET").map(PathBuf::from),
+    ) else {
+        eprintln!("GLAUX_TEST_CLAP / GLAUX_TEST_CLAP_PRESET が未設定のためスキップ");
+        return;
+    };
+    let info = describe(&path)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.is_instrument())
+        .unwrap();
+    let mut plugin = ClapPlugin::new(&path, &info.id).unwrap();
+    assert!(plugin.can_load_presets());
+    let ids: Vec<u32> = plugin
+        .param_infos()
+        .iter()
+        .filter(|p| p.automatable && !p.hidden)
+        .map(|p| p.id)
+        .collect();
+    let before = plugin.param_values(&ids);
+    let state_before = plugin.save_state().unwrap();
+    plugin
+        .load_preset_file(&preset, None)
+        .expect("プリセットを読み込める");
+    let after = plugin.param_values(&ids);
+    let changed = before
+        .iter()
+        .zip(&after)
+        .filter(|(a, b)| (a.1 - b.1).abs() > 1e-9)
+        .count();
+    eprintln!("プリセットで {changed} 個のつまみが変わった");
+    assert!(changed > 0);
+    assert_ne!(state_before, plugin.save_state().unwrap());
+}

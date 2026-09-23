@@ -146,6 +146,7 @@ impl ClapPlugin {
                 _shared: std::marker::PhantomData,
                 dirty: Cell::new(false),
                 ports_changed: Cell::new(false),
+                preset_result: Default::default(),
             },
             &entry,
             &c_id,
@@ -348,6 +349,51 @@ impl ClapPlugin {
             .map_err(|e| ClapError::State(e.to_string()))?;
         self.instance.access_handler(|h| h.dirty.set(false));
         Ok(())
+    }
+
+    /// プリセットを読み込めるプラグインか(CLAP の preset-load 拡張)。
+    pub fn can_load_presets(&self) -> bool {
+        self.instance
+            .access_shared_handler(|h| h.preset_load.get().copied().flatten())
+            .is_some()
+    }
+
+    /// プリセットのファイルを読み込む(`load_key` はプリセット一覧が返した値。無ければ None)。
+    pub fn load_preset_file(
+        &mut self,
+        path: &std::path::Path,
+        load_key: Option<&str>,
+    ) -> Result<(), ClapError> {
+        use clack_extensions::preset_discovery::preset_data::Location;
+        let ext = self
+            .instance
+            .access_shared_handler(|h| h.preset_load.get().copied().flatten())
+            .ok_or_else(|| {
+                ClapError::State("プリセットの読み込みに対応していないプラグインです".into())
+            })?;
+        let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
+            .map_err(|e| ClapError::State(e.to_string()))?;
+        let c_key = load_key
+            .filter(|k| !k.is_empty())
+            .map(std::ffi::CString::new)
+            .transpose()
+            .map_err(|e| ClapError::State(e.to_string()))?;
+        self.instance
+            .access_handler(|h| *h.preset_result.borrow_mut() = None);
+        ext.load_from_location(
+            &self.instance.plugin_handle(),
+            Location::File { path: &c_path },
+            c_key.as_deref(),
+        )
+        .map_err(|_| ClapError::State(format!("プリセットを読み込めません: {}", path.display())))?;
+        // プラグインが失敗を知らせてきていればエラー
+        match self
+            .instance
+            .access_handler(|h| h.preset_result.borrow_mut().take())
+        {
+            Some(Err(msg)) => Err(ClapError::State(msg)),
+            _ => Ok(()),
+        }
     }
 
     /// プラグインから「状態が変わった」と知らされていたら true(読むと戻る)。

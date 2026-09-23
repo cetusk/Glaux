@@ -15,6 +15,8 @@ use clack_extensions::note_ports::{
 use clack_extensions::params::{
     HostParamsImplMainThread, HostParamsImplShared, ParamClearFlags, ParamRescanFlags, PluginParams,
 };
+use clack_extensions::preset_discovery::preset_data::Location;
+use clack_extensions::preset_discovery::{HostPresetLoadImpl, PluginPresetLoad};
 use clack_extensions::state::{HostStateImpl, PluginState};
 use clack_extensions::thread_check::HostThreadCheckImpl;
 use clack_host::prelude::*;
@@ -53,7 +55,8 @@ impl HostHandlers for GlauxHost {
             .register::<clack_extensions::note_ports::HostNotePorts>()
             .register::<clack_extensions::params::HostParams>()
             .register::<clack_extensions::latency::HostLatency>()
-            .register::<clack_extensions::gui::HostGui>();
+            .register::<clack_extensions::gui::HostGui>()
+            .register::<clack_extensions::preset_discovery::HostPresetLoad>();
     }
 }
 
@@ -68,6 +71,7 @@ pub struct HostShared {
     pub note_ports: OnceLock<Option<PluginNotePorts>>,
     pub gui: OnceLock<Option<PluginGui>>,
     pub params: OnceLock<Option<PluginParams>>,
+    pub preset_load: OnceLock<Option<PluginPresetLoad>>,
     /// プラグインが頼んだ画面の大きさ(幅 << 32 | 高さ。0 = なし)
     pub requested_size: AtomicU64,
     /// プラグインが自分の(浮動)ウィンドウを閉じた
@@ -81,6 +85,7 @@ impl<'a> SharedHandler<'a> for HostShared {
         let _ = self.note_ports.set(instance.get_extension());
         let _ = self.gui.set(instance.get_extension());
         let _ = self.params.set(instance.get_extension());
+        let _ = self.preset_load.set(instance.get_extension());
     }
 
     fn request_restart(&self) {
@@ -153,6 +158,8 @@ pub struct HostMain<'a> {
     pub dirty: Cell<bool>,
     /// 音声ポート・ノートポートの構成が変わった(作り直しが必要)
     pub ports_changed: Cell<bool>,
+    /// プリセットの読み込み結果(読み込めた / 失敗の理由)
+    pub preset_result: std::cell::RefCell<Option<Result<(), String>>>,
 }
 
 impl<'a> MainThreadHandler<'a> for HostMain<'a> {
@@ -162,6 +169,25 @@ impl<'a> MainThreadHandler<'a> for HostMain<'a> {
 impl HostStateImpl for HostMain<'_> {
     fn mark_dirty(&self) {
         self.dirty.set(true);
+    }
+}
+
+impl HostPresetLoadImpl for HostMain<'_> {
+    fn on_error(
+        &self,
+        _location: Location,
+        _load_key: Option<&std::ffi::CStr>,
+        os_error: i32,
+        message: Option<&std::ffi::CStr>,
+    ) {
+        let msg = message
+            .map(|m| m.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("エラー {os_error}"));
+        *self.preset_result.borrow_mut() = Some(Err(msg));
+    }
+
+    fn loaded(&self, _location: Location, _load_key: Option<&std::ffi::CStr>) {
+        *self.preset_result.borrow_mut() = Some(Ok(()));
     }
 }
 

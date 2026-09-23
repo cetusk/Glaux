@@ -45,7 +45,7 @@ rustfft = "6"
 tract-onnx = "0.23"
 # CLAP プラグインのホスト(glaux-clap のみ)
 clack-host = "0.2"
-clack-extensions = { version = "0.2", features = ["clack-host", "audio-ports", "note-ports", "params", "state", "thread-check", "log", "latency", "gui"] }
+clack-extensions = { version = "0.2", features = ["clack-host", "audio-ports", "note-ports", "params", "state", "thread-check", "log", "latency", "gui", "preset-discovery"] }
 # CLAP プラグインの状態をプロジェクトに書く
 base64 = "0.22"
 # Windows でプラグインの画面を入れるウィンドウ(glaux-clap のみ)
