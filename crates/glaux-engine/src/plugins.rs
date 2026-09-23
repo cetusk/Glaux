@@ -1378,6 +1378,53 @@ mod tests {
     }
 
     #[test]
+    fn bend_and_vibrato_articulations_reach_plugin() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        let render = |art: glaux_core::Articulation| {
+            let mut project = project_with_plugin(&id);
+            if let ClipContent::Midi { notes, .. } = &mut project.tracks[0].clips[0].content {
+                notes[0].pos = Tick(0);
+                notes[0].dur = Tick(3840);
+                notes[0].pitch = 69;
+                notes[0].articulation = art;
+            }
+            crate::export::render_project(&project, 48_000.0, &SampleBank::default()).unwrap()
+        };
+        let sec = |x: &[f32], a: f64, b: f64| {
+            x[(a * 96_000.0) as usize..(b * 96_000.0) as usize].to_vec()
+        };
+        // ベンド: 出だし(全音下から)は後半より低い
+        let bend = render(glaux_core::Articulation::Bend);
+        let (early, late) = (
+            freq_of(&sec(&bend, 0.0, 0.08), 48_000.0),
+            freq_of(&sec(&bend, 1.0, 1.5), 48_000.0),
+        );
+        eprintln!("ベンド: 出だし {early} Hz / 後半 {late} Hz");
+        assert!(early < late * 0.97, "全音下から上がる: {early} → {late}");
+        // ビブラート: 後半の 50ms ごとの音程が揺れる(通常の音より大きくばらつく)
+        let spread = |x: &[f32]| {
+            let fs: Vec<f32> = (0..16)
+                .map(|k| {
+                    let a = 1.0 + k as f64 * 0.05;
+                    freq_of(&sec(x, a, a + 0.05), 48_000.0)
+                })
+                .collect();
+            let max = fs.iter().cloned().fold(0.0f32, f32::max);
+            let min = fs.iter().cloned().fold(f32::MAX, f32::min);
+            1200.0 * (max / min).log2()
+        };
+        let (vib, normal) = (
+            spread(&render(glaux_core::Articulation::Vibrato)),
+            spread(&render(glaux_core::Articulation::Normal)),
+        );
+        eprintln!("音程の揺れ幅: ビブラート {vib:.0} セント / 通常 {normal:.0} セント");
+        assert!(vib > normal + 20.0, "ビブラートで揺れる: {vib} vs {normal}");
+    }
+
+    #[test]
     fn live_pitch_bend_reaches_plugin() {
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");

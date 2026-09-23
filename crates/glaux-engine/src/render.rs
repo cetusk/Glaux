@@ -1528,6 +1528,7 @@ impl Renderer {
         loop_start: u64,
         loop_end: u64,
     ) {
+        let sr = data.sample_rate as f32;
         // 試聴(時計基準)の note off
         let block_end = self.clock + frames as u64;
         let mut i = 0;
@@ -1586,19 +1587,28 @@ impl Renderer {
                 if !data.tracks[ti].audible {
                     continue;
                 }
-                if e.curve.is_empty() {
-                    self.plugin_note_on(slot, e.pitch, e.amp, t, None);
-                    self.push_pending(PendingOff::simple(slot, e.pitch, e.end.max(pos + 1), true));
+                // 奏法をプラグインで近づける: アクセントは強く、パームミュートは短く弱く
+                // (ビブラート・ベンドは下で音程の変化として送る。スタッカートは長さに反映済み)
+                let (amp, end) = match e.articulation {
+                    glaux_core::Articulation::Accent => ((e.amp * 1.25).min(1.0), e.end),
+                    glaux_core::Articulation::PalmMute => {
+                        (e.amp * 0.85, e.start + (e.end - e.start).div_ceil(2))
+                    }
+                    _ => (e.amp, e.end),
+                };
+                if e.curve.is_empty() && !glaux_dsp::articulation_moves_pitch(e.articulation) {
+                    self.plugin_note_on(slot, e.pitch, amp, t, None);
+                    self.push_pending(PendingOff::simple(slot, e.pitch, end.max(pos + 1), true));
                 } else {
-                    // ピッチカーブ: ノート ID を付けて鳴らし、音程の変化を後から送る
+                    // ピッチカーブ・ビブラート・ベンド: ノート ID を付けて鳴らし、音程の変化を後から送る
                     curve_started = true;
                     let note_id = self.next_note_id;
                     self.next_note_id = self.next_note_id.wrapping_add(1).max(1);
-                    self.plugin_note_on(slot, e.pitch, e.amp, t, Some(note_id));
+                    self.plugin_note_on(slot, e.pitch, amp, t, Some(note_id));
                     self.push_pending(PendingOff {
                         slot: slot as u8,
                         key: e.pitch,
-                        end: e.end.max(pos + 1),
+                        end: end.max(pos + 1),
                         seq: true,
                         ev: (cursor - 1) as u32,
                         note_id,
@@ -1617,7 +1627,10 @@ impl Renderer {
                     let Some(e) = data.events.get(p.ev as usize) else {
                         continue;
                     };
-                    let semi = e.curve.cents_at(pos.saturating_sub(e.start) as f32) / 100.0;
+                    let age = pos.saturating_sub(e.start) as f32;
+                    let semi = (e.curve.cents_at(age)
+                        + glaux_dsp::articulation_cents(e.articulation, age, sr))
+                        / 100.0;
                     if p.last_semi.is_nan() || (semi - p.last_semi).abs() > 0.005 {
                         self.plugin_pending[i].last_semi = semi;
                         let notes = &mut self.plugin_notes[p.slot as usize];

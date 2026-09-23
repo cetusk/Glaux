@@ -51,6 +51,34 @@ impl PitchCurve {
     }
 }
 
+/// 奏法による音程の変化(セント)を、ノート先頭からの経過 `age`(サンプル)で求める。
+/// 内蔵音源の [`PitchExpr`] と同じ形(ビブラート: 5.5Hz・±30 セント、0.12 秒後から 0.25 秒で全深度 /
+/// ベンド: 全音下から約 0.22 秒で到達)。CLAP 音源へ 1 音ごとの音程変化として送るのに使う。
+/// ビブラートの位相はノート先頭で 0。効果の無い奏法は 0。
+pub fn articulation_cents(a: Articulation, age: f32, sample_rate: f32) -> f32 {
+    match a {
+        Articulation::Vibrato => {
+            let secs = age / sample_rate;
+            let onset = ((secs - 0.12) / 0.25).clamp(0.0, 1.0);
+            30.0 * onset * (std::f32::consts::TAU * 5.5 * secs).sin()
+        }
+        Articulation::Bend => {
+            let t = (age / (0.22 * sample_rate)).min(1.0);
+            let ease = t * (2.0 - t);
+            // 周波数比で線形に補間しているのと同じ形(内蔵音源と揃える)
+            let start = (2.0_f32).powf(-2.0 / 12.0);
+            let ratio = start + (1.0 - start) * ease;
+            1200.0 * ratio.log2()
+        }
+        _ => 0.0,
+    }
+}
+
+/// 奏法が音程を動かすか(CLAP 音源へ音程の変化を送る必要があるか)。
+pub fn articulation_moves_pitch(a: Articulation) -> bool {
+    matches!(a, Articulation::Vibrato | Articulation::Bend)
+}
+
 /// ピッチの時間変化。1 サンプルごとに `next_ratio` で周波数比を得る。
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PitchExpr {
@@ -153,6 +181,27 @@ mod tests {
         assert_eq!(c.cents_at(999.0), 100.0, "最後の点より後は保持");
         let late = PitchCurve::from_points(&[(100.0, 50.0)]);
         assert_eq!(late.cents_at(0.0), 50.0, "最初の点より前は保持");
+    }
+
+    #[test]
+    fn articulation_cents_matches_the_voice_expression() {
+        let sr = 48_000.0;
+        for a in [Articulation::Vibrato, Articulation::Bend] {
+            let mut e = PitchExpr::new(a, sr);
+            for i in 1..40_000u32 {
+                let r = e.next_ratio(sr);
+                if i % 997 == 0 {
+                    let c = articulation_cents(a, i as f32, sr);
+                    let from_ratio = 1200.0 * r.log2();
+                    assert!(
+                        (c - from_ratio).abs() < 1.0,
+                        "{a:?} {i}: {c} vs {from_ratio}"
+                    );
+                }
+            }
+        }
+        assert_eq!(articulation_cents(Articulation::Staccato, 1000.0, sr), 0.0);
+        assert!((articulation_cents(Articulation::Bend, 0.0, sr) + 200.0).abs() < 0.1);
     }
 
     #[test]

@@ -179,13 +179,23 @@
       { art: "vibrato", key: "V", label: "ビブラート" },
       { art: "bend", key: "B", label: "チョーキング" },
     ],
+    // CLAP 音源: ビブラート・ベンドは音程の変化として送り、ミュート・アクセントは長さと強さで近づける
+    clap: [
+      { art: "palm_mute", key: "M", label: "ミュート(短く弱く)" },
+      { art: "staccato", key: "S", label: "スタッカート" },
+      { art: "accent", key: "A", label: "アクセント" },
+      { art: "vibrato", key: "V", label: "ビブラート" },
+      { art: "bend", key: "B", label: "チョーキング" },
+    ],
   };
   const instrumentName = $derived(
     deviceRaw?.type === "sf2"
       ? isDrum
         ? "drum" // SF2 ドラムキットは奏法もドラム扱い(アクセントのみ)
         : "sf2"
-      : (found?.track.device?.name ?? "subtractive"),
+      : deviceRaw?.type === "clap"
+        ? "clap"
+        : (found?.track.device?.name ?? "subtractive"),
   );
   const availableArts = $derived(
     ARTS_BY_INSTRUMENT[instrumentName] ?? ARTS_BY_INSTRUMENT.subtractive,

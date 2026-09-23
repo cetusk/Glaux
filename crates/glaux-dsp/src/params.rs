@@ -406,6 +406,21 @@ pub static PLUCK_ARTS: &[ArticulationInfo] = &[
 ];
 pub static SAMPLER_ARTS: &[ArticulationInfo] = &[ART_STACCATO, ART_ACCENT, ART_VIBRATO, ART_BEND];
 pub static SF2_ARTS: &[ArticulationInfo] = &[ART_STACCATO, ART_ACCENT, ART_VIBRATO, ART_BEND];
+/// CLAP 音源: ビブラート・ベンドは 1 音ごとの音程変化として送る(CLAP のノート表現に対応したプラグインのみ。
+/// MIDI だけのプラグインには届かない)。アクセントは強く、パームミュートは短く弱く鳴らして近づける
+pub static CLAP_ARTS: &[ArticulationInfo] = &[
+    ArticulationInfo {
+        name: "palm_mute",
+        key: "M",
+        display_name: "ミュート(短く弱く)",
+        description:
+            "プラグインへは音価を半分・少し弱くして送る(音色をこもらせるのはプラグインのつまみで)。",
+    },
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+];
 
 /// 楽器名 → 対応する奏法の一覧。載っていない奏法を付けてもエラーにはならないが
 /// 音への効果はない(no-op)。
@@ -415,6 +430,7 @@ pub fn articulations_for(instrument: &str) -> &'static [ArticulationInfo] {
         "pluck" => PLUCK_ARTS,
         "sampler" => SAMPLER_ARTS,
         "sf2" => SF2_ARTS,
+        "clap" => CLAP_ARTS,
         _ => SUBTRACTIVE_ARTS,
     }
 }

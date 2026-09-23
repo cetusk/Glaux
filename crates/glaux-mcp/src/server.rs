@@ -694,7 +694,8 @@ pub fn track_params_json_filtered(
                 },
                 "params": params,
                 "params_total": total,
-                "articulations": [],
+                // ビブラート・ベンドは 1 音ごとの音程変化として送る(CLAP のノート表現に対応したプラグインのみ)
+                "articulations": glaux_dsp::articulations_for("clap"),
                 "effects": effects_json(&track.effects),
             }));
         }
