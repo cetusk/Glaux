@@ -814,6 +814,21 @@ impl ClapProcessor {
         Some((&mut first[..], rest.first_mut().map(|v| &mut v[..])))
     }
 
+    /// これまでに処理したフレーム数(プラグインへ渡している時刻)。
+    pub fn frames_processed(&self) -> u64 {
+        self.steady
+    }
+
+    /// メイン入力を無音にする(入力を使わないブロックで古い音を渡さないように)。
+    pub fn clear_input(&mut self, frames: usize) {
+        if let Some(port) = self.main_in.and_then(|i| self.in_bufs.get_mut(i)) {
+            for ch in port.iter_mut() {
+                let n = frames.min(ch.len());
+                ch[..n].fill(0.0);
+            }
+        }
+    }
+
     /// 音声の入力を受けるか(エフェクトか)。
     pub fn accepts_audio(&self) -> bool {
         self.main_in.is_some()

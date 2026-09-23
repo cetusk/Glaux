@@ -918,6 +918,9 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     レンダラはブロック頭に `slot_is_fx` を作り、音源の一括処理からエフェクトのスロットを外す
   - 入力: `ClapProcessor` はメイン入力ポートを覚え(`main_in`)、入力は `is_constant: false` で渡す。モノラル入力には左右の平均。
     プラグインの遅延補正(PDC)はしていない
+  - **CLAP エフェクトは毎ブロック必ず `process` を呼ぶ**(鳴っていないトラック・バイパス中も、無音を入れて。`keep_effects_alive`)。
+    呼ばないと Surge XT Effects が Windows で画面を開くときに音声処理側の応答を待って固まり、「プラグインが応答しません」になった
+    (「処理中」にしたまま process を呼ばないホストを想定していない)。音源・バイパス中のエフェクトには入力を無音にしてから渡す
   - つまみ: `fx/<id>/clap:<param id>`(上書き値は音源と同じく SetParams で送る)。オートメーションはブロック頭に
     `NoteMsg::Param` として積む(`push_plugin_param`)。MCP `list_params` の effects に name: "clap"・plugin_name・つまみ(最大 64 個)・
     missing(プラグインが見つからない)。track_id なしの list_params は master_effects も返す

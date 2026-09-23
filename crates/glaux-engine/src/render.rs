@@ -323,6 +323,8 @@ pub struct Renderer {
     effect_states: Vec<EffectState>,
     /// このブロックで CLAP エフェクトとして使うプラグインのスロット(音源と分けて処理する)
     slot_is_fx: [bool; MAX_PLUGINS],
+    /// このブロックで処理したエフェクトのスロット(処理しなかったものは最後に無音で処理する)
+    slot_done: [bool; MAX_PLUGINS],
     /// ブロック用バッファ(起動時に MAX_FRAMES で確保): トラックごとのエフェクト前の合算、
     /// エフェクトを通さずマスターへ行く分(左右)、クリック、各フレームの再生位置
     blk_mono: Vec<Vec<f32>>,
@@ -428,6 +430,7 @@ impl Renderer {
             next_note_id: 1,
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
             slot_is_fx: [false; MAX_PLUGINS],
+            slot_done: [false; MAX_PLUGINS],
             blk_mono: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
             blk_direct: [vec![0.0; MAX_FRAMES], vec![0.0; MAX_FRAMES]],
             blk_click: vec![0.0; MAX_FRAMES],
@@ -584,6 +587,7 @@ impl Renderer {
         }
         self.refresh_track_plugins(data);
         self.slot_is_fx = [false; MAX_PLUGINS];
+        self.slot_done = [false; MAX_PLUGINS];
         for fx in data
             .tracks
             .iter()
@@ -785,6 +789,8 @@ impl Renderer {
                 let Some(p) = self.plugins[slot].as_mut() else {
                     continue;
                 };
+                // 音源(やバイパス中のエフェクト)には音声を入れない
+                p.clap.clear_input(frames);
                 p.clap.process(frames, &self.plugin_notes[slot]);
                 let [ol, or] = &mut self.plugin_out[slot];
                 match p.clap.output() {
@@ -1031,6 +1037,9 @@ impl Renderer {
         self.process_track_chains(data, frames, ntracks, sr);
         // 3. マスターのエフェクト → マスター音量 → ソフトクリップ
         self.process_master(data, frames, sr, out, channels);
+        // 4. 鳴っていないトラックのエフェクトも毎ブロック無音で処理する(処理を呼ばれないと、
+        //    画面を開くときに音声処理側の応答を待って固まるプラグインがある: Surge XT Effects)
+        self.keep_effects_alive(frames);
 
         // 曲が終わって余韻も消えたら自動停止(ループ中・録音中は止めない)
         let tail = (TAIL_SECS * data.sample_rate) as u64;
@@ -1173,6 +1182,7 @@ impl Renderer {
                     }
                 }
                 p.clap.process(frames, notes);
+                self.slot_done[ps] = true;
                 if let Some((ol, or)) = p.clap.output() {
                     fl[..frames].copy_from_slice(&ol[..frames]);
                     fr[..frames].copy_from_slice(&or[..frames]);
@@ -1195,6 +1205,29 @@ impl Renderer {
                 (fl[f], fr[f]) = state.process(&params, fl[f], fr[f], key);
             }
         }
+    }
+
+    /// このブロックで処理しなかった CLAP エフェクトに無音を通す(出力は捨てる)。
+    fn keep_effects_alive(&mut self, frames: usize) {
+        for slot in 0..MAX_PLUGINS {
+            if !self.slot_is_fx[slot] || self.slot_done[slot] {
+                continue;
+            }
+            let notes = &self.plugin_notes[slot];
+            if let Some(p) = self.plugins[slot].as_mut() {
+                p.clap.clear_input(frames);
+                p.clap.process(frames, notes);
+            }
+        }
+    }
+
+    /// テスト用: スロットのプラグインがこれまでに処理したフレーム数。
+    #[doc(hidden)]
+    pub fn plugin_frames_processed(&self, slot: usize) -> Option<u64> {
+        self.plugins
+            .get(slot)?
+            .as_ref()
+            .map(|p| p.clap.frames_processed())
     }
 
     /// マスターのエフェクト → マスター音量 → ソフトクリップ → 出力。

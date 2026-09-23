@@ -1590,4 +1590,78 @@ mod tests {
         let diff: f32 = byp.iter().zip(&dry).map(|(a, b)| (a - b).abs()).sum();
         assert!(diff < 1e-3, "バイパスなら素通し: {diff}");
     }
+
+    /// 鳴っていない(停止中・無音)トラックの CLAP エフェクトも、バイパス中のものも、毎ブロック処理される
+    /// (処理を呼ばれないと画面を開くときに固まるプラグインがある)。
+    #[test]
+    fn silent_and_bypassed_clap_effects_keep_processing() {
+        use glaux_core::{Effect, FxId};
+        let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_FX").map(PathBuf::from) else {
+            eprintln!("GLAUX_TEST_CLAP_FX が未設定のためスキップ");
+            return;
+        };
+        std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+        let fx_plugin = rescan()
+            .into_iter()
+            .find(|p| p.is_effect() && !p.is_instrument())
+            .unwrap()
+            .id;
+        let clap_fx = |bypass: bool| Effect {
+            id: FxId::new(),
+            source: PluginSource::Clap {
+                plugin_id: fx_plugin.clone(),
+                state: None,
+            },
+            bypass,
+            params: Default::default(),
+        };
+        let mut project = Project::new("t");
+        let mut track = Track::new(TrackId::new(), "Lead", TrackKind::Midi);
+        let active = clap_fx(false);
+        let bypassed = clap_fx(true);
+        track.effects = vec![active.clone(), bypassed.clone()];
+        project.tracks.push(track);
+        let shared = Arc::new(Shared::new(Default::default()));
+        let manager = PluginManager::start(shared.plugin_slots.clone());
+        let mut bank = SampleBank::default();
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        let slot_of =
+            |fx: &Effect| bank.plugin_slots[&PluginOwner::Effect(fx.id.clone())].0 as usize;
+        let (sa, sb) = (slot_of(&active), slot_of(&bypassed));
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 480 * 2];
+        // 窓口が届くまで回す(停止中のまま)
+        for _ in 0..300 {
+            r.process(&mut buf, 2);
+            if r.plugin_frames_processed(sa).is_some() && r.plugin_frames_processed(sb).is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let before = (
+            r.plugin_frames_processed(sa).unwrap(),
+            r.plugin_frames_processed(sb).unwrap(),
+        );
+        for _ in 0..100 {
+            r.process(&mut buf, 2);
+        }
+        let after = (
+            r.plugin_frames_processed(sa).unwrap(),
+            r.plugin_frames_processed(sb).unwrap(),
+        );
+        eprintln!("処理したフレーム数: {before:?} → {after:?}");
+        assert_eq!(
+            after.0 - before.0,
+            48_000,
+            "無音のトラックのエフェクトも処理される"
+        );
+        assert_eq!(
+            after.1 - before.1,
+            48_000,
+            "バイパス中のエフェクトも処理される"
+        );
+    }
 }
