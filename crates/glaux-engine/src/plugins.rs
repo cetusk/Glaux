@@ -180,6 +180,23 @@ enum HostCmd {
         gen: u64,
         reply: mpsc::Sender<Result<Vec<u8>, String>>,
     },
+    OpenGui {
+        gen: u64,
+        title: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    CloseGui {
+        gen: u64,
+    },
+}
+
+/// プラグインのスレッドから UI への知らせ。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginEvent {
+    /// 画面での操作などで状態が変わった(プロジェクトへ保存するとよい)
+    Dirty,
+    /// 利用者が画面を閉じた
+    GuiClosed,
 }
 
 struct Live {
@@ -188,7 +205,11 @@ struct Live {
     dying: bool,
 }
 
-fn host_thread(rx: mpsc::Receiver<HostCmd>, slots: Arc<[PluginSlot; MAX_PLUGINS]>) {
+fn host_thread(
+    rx: mpsc::Receiver<HostCmd>,
+    slots: Arc<[PluginSlot; MAX_PLUGINS]>,
+    events: Arc<Mutex<Vec<(u64, PluginEvent)>>>,
+) {
     glaux_clap::mark_main_thread();
     let mut live: Vec<Live> = Vec::new();
     let retire = |live: &mut Vec<Live>, p: Box<Processor>| {
@@ -200,7 +221,11 @@ fn host_thread(rx: mpsc::Receiver<HostCmd>, slots: Arc<[PluginSlot; MAX_PLUGINS]
         }
     };
     loop {
-        match rx.recv_timeout(std::time::Duration::from_millis(30)) {
+        // 画面を開いている間はウィンドウのメッセージをこまめに処理する(固まらないように)
+        let any_gui = live.iter().any(|l| l.plugin.is_gui_open());
+        glaux_clap::pump_gui_events();
+        let wait = if any_gui { 8 } else { 30 };
+        match rx.recv_timeout(std::time::Duration::from_millis(wait)) {
             Ok(HostCmd::Create {
                 slot,
                 gen,
@@ -266,6 +291,18 @@ fn host_thread(rx: mpsc::Receiver<HostCmd>, slots: Arc<[PluginSlot; MAX_PLUGINS]
                 };
                 let _ = reply.send(r);
             }
+            Ok(HostCmd::OpenGui { gen, title, reply }) => {
+                let r = match live.iter_mut().find(|l| l.gen == gen) {
+                    Some(l) => l.plugin.open_gui(&title).map_err(|e| e.to_string()),
+                    None => Err("プラグインがまだ読み込まれていません".to_owned()),
+                };
+                let _ = reply.send(r);
+            }
+            Ok(HostCmd::CloseGui { gen }) => {
+                if let Some(l) = live.iter_mut().find(|l| l.gen == gen) {
+                    l.plugin.close_gui();
+                }
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -275,8 +312,18 @@ fn host_thread(rx: mpsc::Receiver<HostCmd>, slots: Arc<[PluginSlot; MAX_PLUGINS]
                 retire(&mut live, p);
             }
         }
+        let mut ev = Vec::new();
         for l in live.iter_mut() {
             l.plugin.poll();
+            if l.plugin.gui_tick() == glaux_clap::GuiEvent::Closed {
+                ev.push((l.gen, PluginEvent::GuiClosed));
+            }
+            if l.plugin.take_dirty() {
+                ev.push((l.gen, PluginEvent::Dirty));
+            }
+        }
+        if !ev.is_empty() {
+            events.lock().unwrap_or_else(|e| e.into_inner()).extend(ev);
         }
     }
 }
@@ -295,6 +342,7 @@ struct Assigned {
 /// どのトラックにどのプラグインを載せているかを管理する(UI スレッドから使う)。
 pub struct PluginManager {
     tx: mpsc::Sender<HostCmd>,
+    events: Arc<Mutex<Vec<(u64, PluginEvent)>>>,
     assigned: Mutex<HashMap<TrackId, Assigned>>,
     next_gen: AtomicU64,
 }
@@ -302,12 +350,15 @@ pub struct PluginManager {
 impl PluginManager {
     pub fn start(slots: Arc<[PluginSlot; MAX_PLUGINS]>) -> Self {
         let (tx, rx) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let ev = events.clone();
         std::thread::Builder::new()
             .name("glaux-plugins".into())
-            .spawn(move || host_thread(rx, slots))
+            .spawn(move || host_thread(rx, slots, ev))
             .expect("plugin thread spawn");
         PluginManager {
             tx,
+            events,
             assigned: Mutex::new(HashMap::new()),
             next_gen: AtomicU64::new(1),
         }
@@ -389,15 +440,58 @@ impl PluginManager {
             .collect()
     }
 
-    /// トラックに載っているプラグインの今の状態(base64)。
-    pub fn save_state(&self, track: &TrackId) -> Result<String, String> {
-        let gen = self
-            .assigned
+    fn gen_of(&self, track: &TrackId) -> Result<u64, String> {
+        self.assigned
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(track)
             .map(|a| a.gen)
-            .ok_or_else(|| "このトラックに CLAP プラグインは載っていません".to_owned())?;
+            .ok_or_else(|| "このトラックに CLAP プラグインは載っていません".to_owned())
+    }
+
+    /// プラグインの画面を開く(`title` はウィンドウのタイトル)。
+    pub fn open_gui(&self, track: &TrackId, title: &str) -> Result<(), String> {
+        let gen = self.gen_of(track)?;
+        let (reply, rx) = mpsc::channel();
+        self.tx
+            .send(HostCmd::OpenGui {
+                gen,
+                title: title.to_owned(),
+                reply,
+            })
+            .map_err(|_| "プラグインのスレッドが止まっています".to_owned())?;
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| "プラグインが応答しません".to_owned())?
+    }
+
+    pub fn close_gui(&self, track: &TrackId) {
+        if let Ok(gen) = self.gen_of(track) {
+            let _ = self.tx.send(HostCmd::CloseGui { gen });
+        }
+    }
+
+    /// プラグインのスレッドからの知らせを取り出す(トラックに直して、重複はまとめる)。
+    pub fn take_events(&self) -> Vec<(TrackId, PluginEvent)> {
+        let raw: Vec<(u64, PluginEvent)> =
+            std::mem::take(&mut *self.events.lock().unwrap_or_else(|e| e.into_inner()));
+        if raw.is_empty() {
+            return vec![];
+        }
+        let assigned = self.assigned.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<(TrackId, PluginEvent)> = Vec::new();
+        for (gen, ev) in raw {
+            if let Some((tid, _)) = assigned.iter().find(|(_, a)| a.gen == gen) {
+                if !out.iter().any(|(t, e)| t == tid && *e == ev) {
+                    out.push((tid.clone(), ev));
+                }
+            }
+        }
+        out
+    }
+
+    /// トラックに載っているプラグインの今の状態(base64)。
+    pub fn save_state(&self, track: &TrackId) -> Result<String, String> {
+        let gen = self.gen_of(track)?;
         let (reply, rx) = mpsc::channel();
         self.tx
             .send(HostCmd::SaveState { gen, reply })

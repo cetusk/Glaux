@@ -939,3 +939,60 @@ async fn analyze_harmony_detects_key_and_chords() {
     assert_eq!(v["chords"][3]["chord"], "C");
     assert_eq!(v["note_count"], 12);
 }
+
+#[tokio::test]
+async fn clap_state_is_elided_for_ai_and_restored_on_apply() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_clap01", "Synth")).await);
+    let state = "QUJD".repeat(200); // 800 文字の base64
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({
+                "label": "CLAP 音源",
+                "commands": [{
+                    "op": "set_device",
+                    "track": "trk_clap01",
+                    "device": { "type": "clap", "plugin_id": "org.example.synth", "state": state }
+                }]
+            }),
+        )
+        .await,
+    );
+    // AI には省略表示で見える
+    let r = call(&fx, "get_project", json!({})).await;
+    let shown = ok_json(&r)["project"]["tracks"][0]["device"]["state"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(shown.contains("省略") && shown.contains("800"), "{shown}");
+
+    // 省略表示のまま送り返しても(音量だけ変えたつもりの丸ごと置換など)状態は壊れない
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({
+                "label": "そのまま送り返す",
+                "commands": [{
+                    "op": "set_device",
+                    "track": "trk_clap01",
+                    "device": { "type": "clap", "plugin_id": "org.example.synth", "state": shown }
+                }]
+            }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    match &project.tracks[0].device.as_ref().unwrap().source {
+        glaux_core::PluginSource::Clap { state: s, .. } => {
+            assert_eq!(s.as_deref(), Some(state.as_str()))
+        }
+        other => panic!("CLAP のまま: {other:?}"),
+    }
+
+    // 一覧ツールは呼べる(プラグインが無い環境でも空で返る)
+    let r = call(&fx, "list_plugins", json!({})).await;
+    assert!(ok_json(&r)["plugins"].is_array());
+}

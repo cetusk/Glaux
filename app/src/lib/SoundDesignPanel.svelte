@@ -344,7 +344,7 @@
         <div class="sec-title">音源</div>
         <div class="row gap">
           <select
-            value={info?.device.name ?? track.device?.name ?? "subtractive"}
+            value={track.device?.type === "clap" ? "clap" : (info?.device.name ?? track.device?.name ?? "subtractive")}
             onchange={(e) => setDevice((e.currentTarget as HTMLSelectElement).value)}
             title="切り替えるとパラメータは初期値に戻ります(Ctrl+Z 可)"
           >
@@ -353,6 +353,7 @@
             <option value="pluck">pluck(撥弦: ギター/ベース)</option>
             <option value="sampler" disabled>sampler(下の読込ボタンから)</option>
             <option value="sf2" disabled>sf2(下の SoundFont から)</option>
+            <option value="clap" disabled>CLAP プラグイン(トラックの音源メニューから)</option>
           </select>
           <button onclick={importSample} title="WAV をプロジェクトに取り込み、この音源を sampler にする">
             🎼 WAV
@@ -424,8 +425,31 @@
       </div>
 
       {/if}
+      <!-- CLAP プラグイン: 音作りはプラグイン自身の画面で -->
+      {#if track?.device?.type === "clap"}
+        <div class="sec">
+          <div class="sec-title">🔌 CLAP プラグイン</div>
+          <div class="hint">{track.device.plugin_id}</div>
+          <div class="row gap">
+            <button onclick={() => api.clapOpenGui(track!.id).catch((e) => alert(String(e)))}>
+              🖥 プラグインの画面を開く
+            </button>
+            <button
+              onclick={() => api.clapSaveState(track!.id).catch((e) => alert(String(e)))}
+              title="プラグインの今の設定をプロジェクトに保存する(画面を閉じたときや操作の後にも自動で保存されます)"
+            >
+              💾 設定を保存
+            </button>
+          </div>
+          <div class="hint">
+            音色はプラグインの画面で作ります。画面での変更は自動でプロジェクトに保存され、Ctrl+Z で戻せます。
+            エフェクト・音量・パン・オートメーション(音量・パン・エフェクト)は Glaux 側でも使えます。
+          </div>
+        </div>
+      {/if}
+
       <!-- 音源パラメータ -->
-      {#if info && track}
+      {#if info && track && track.device?.type !== "clap"}
         <div class="sec">
           <div class="sec-title">
             パラメータ({info.device.name}{info.device.is_default_fallback ? " *未設定" : ""})

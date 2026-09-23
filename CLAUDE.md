@@ -24,7 +24,7 @@ crates/
                  ParamSpec レジストリ(聴感説明付き、MCP list_params の実体)
 glaux-ml/      [済] 学習済みモデルの推論(tract、pure Rust)。basic-pitch による和音の譜起こし。
                モデル(Apache-2.0)は models/ に同梱して埋め込む。MSRV は個別に 1.88
-glaux-clap/    [作業中] CLAP プラグインのホスト(clack-host)。探索・生成・起動・process・状態の保存。
+glaux-clap/    [済(第1段階: 音源)] CLAP プラグインのホスト(clack-host)。探索・生成・起動・process・状態の保存。
                エンジンの plugins.rs がプラグインのスレッドと処理窓口の受け渡しを持つ
 app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の表示、undo/redo、
                アプリ内 HTTP MCP サーバー(127.0.0.1:41920/mcp、UI と同じ Session を共有)、

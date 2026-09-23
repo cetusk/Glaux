@@ -296,6 +296,20 @@ impl EngineHandle {
         self.plugins.save_state(track)
     }
 
+    /// プラグインの画面を開く。
+    pub fn open_plugin_gui(&self, track: &TrackId, title: &str) -> Result<(), String> {
+        self.plugins.open_gui(track, title)
+    }
+
+    pub fn close_plugin_gui(&self, track: &TrackId) {
+        self.plugins.close_gui(track);
+    }
+
+    /// プラグインのスレッドからの知らせ(状態の変化・画面を閉じた)。
+    pub fn take_plugin_events(&self) -> Vec<(TrackId, crate::plugins::PluginEvent)> {
+        self.plugins.take_events()
+    }
+
     /// 保存した状態をプロジェクトに書いたことを知らせる(読み込み直しを防ぐ)。
     pub fn note_plugin_state_saved(&self, track: &TrackId, state: &str) {
         self.plugins.note_state_saved(track, state);

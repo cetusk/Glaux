@@ -14,10 +14,19 @@
 mod host;
 mod plugin;
 mod scan;
+#[cfg(windows)]
+mod window;
 
 pub use host::{mark_audio_thread, mark_main_thread};
-pub use plugin::{ClapPlugin, ClapProcessor, NoteMsg, MAX_EVENTS, MAX_FRAMES};
+pub use plugin::{ClapPlugin, ClapProcessor, GuiEvent, NoteMsg, MAX_EVENTS, MAX_FRAMES};
 pub use scan::{default_search_paths, describe, scan, PluginInfo};
+
+/// プラグインの画面のためのウィンドウメッセージを処理する(プラグインのメインスレッドで
+/// こまめに呼ぶ。Windows 以外では何もしない)。
+pub fn pump_gui_events() {
+    #[cfg(windows)]
+    window::pump_messages();
+}
 
 use clack_host::prelude::PluginEntry;
 use std::collections::HashMap;
@@ -32,6 +41,8 @@ pub enum ClapError {
     Activate(String),
     #[error("プラグインの状態を扱えません: {0}")]
     State(String),
+    #[error("プラグインの画面を開けません: {0}")]
+    Gui(String),
 }
 
 /// 読み込んだ `.clap`(DLL)をプロセス内で使い回す(同じファイルを何度も開かない)。

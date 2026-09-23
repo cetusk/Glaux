@@ -12,3 +12,6 @@ clack-host.workspace = true
 clack-extensions.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

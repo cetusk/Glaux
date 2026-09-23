@@ -5,11 +5,12 @@
 - `glaux-core`: モデル(セクション・奏法込み)/ Command(約 25 種)/ 履歴 /
   和声分析(harmony)/ リズム分析(rhythm)
 - `glaux-ml`: 学習済みモデルの推論(basic-pitch による和音の譜起こし、tract)
-- `glaux-mcp`: **26 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
+- `glaux-clap`: CLAP プラグインのホスト(探索・生成・process・状態・Windows の画面)
+- `glaux-mcp`: **27 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
   revert_to / revert / get_history / list_params / analyze_audio)+ 分析 2(analyze_harmony /
   analyze_rhythm)+ ノート便利 4(transpose / shift / quantize / scale_velocity)+
   プリセット 4(list / save / load / delete)+ 素材 6(import_sample / import_audio_clip /
-  transcribe_audio / separate_audio / list_soundfonts / set_soundfont_instrument)。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
+  transcribe_audio / separate_audio / list_soundfonts / set_soundfont_instrument)+ list_plugins。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
   ほかに presets / assets モジュール(アプリと共用)
 - `glaux-engine`: 再生(ループ・オートメーション・音声クリップ・自動停止・テンポ変更時の
   位置保持)・録音(record.rs)・WAV エクスポート・音声解析(AI の耳)・
@@ -61,7 +62,7 @@ AI の能力一覧は §7.5「感覚マップ」、今後の課題は §8 を参
 ### スコープ
 
 - **MIDI が主軸**。音声録音・インポートは後から追加するが、設計上は最初から対応可能にしておく
-- **外部音源(CLAP プラグイン)のインポート**はゆくゆく対応。`PluginSource::Clap` の枠は用意済み
+- **外部音源(CLAP プラグイン)**: 音源プラグインは 2026-09-23 に第 1 段階を実装(`glaux-clap`)。エフェクトプラグインと AI からのつまみ操作は第 2 段階
 - **デスクトップアプリ**(ブラウザ版は将来、Rust コアを WASM 化して「共有・軽作業用」として出す可能性あり)
 
 ---
@@ -145,7 +146,7 @@ MySong.glaux/
 
 ### 楽器・エフェクト
 
-- `PluginSource` で `builtin` / `clap` / `sampler` を切り替える。今は `builtin` のみ実装
+- `PluginSource` で `builtin` / `clap` / `sampler` / `sf2` を切り替える(clap は音源のみ実装済み)
 - CLAP の内部状態は `state`(base64、不透明)。ただし CLAP はパラメータを ID 付きで公開するので、主要なものは `params` に写して AI から触れるようにする
 - 将来: シンセ/エフェクトをノードグラフで表現する案あり(モジュラー的接続。AI がパッチを組める)。UI ではプリセット+主要つまみ数個から始め、上級者だけグラフを開く
 
@@ -320,7 +321,7 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
 実装済み(2026-09-21)。`fundsp` は使わず自前(依存ゼロで RT 安全を確実にするため):
 
 - **`subtractive`**: PolyBLEP オシレータ(saw/square/triangle/sine)→ SVF(TPT)ローパス → ADSR。
-  フィルタエンベロープ付き。device 未設定トラックの既定音源(未知の builtin 名や CLAP も当面これで代用)
+  フィルタエンベロープ付き。device 未設定トラックの既定音源(未知の builtin 名や、見つからない CLAP プラグインもこれで代用)
 - **`drum`**: GM 配置のドラムシンセ(36=キック, 38=スネア, 39=クラップ, 42/46=ハット,
   41〜50=タム, 49/51=シンバル)。全合成・サンプル不使用。ノイズは xorshift32
 - **ParamSpec レジストリ**(`params.rs`): 全パラメータに**聴感上の効果を書いた日本語説明**。
@@ -455,7 +456,7 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
 
 ### 将来
 
-- CLAP プラグインホスティング(`clack` クレート)
+- ~~CLAP プラグインホスティング~~ → 音源は実装済み(2026-09-23、`glaux-clap`)。エフェクト・パラメータ公開は第 2 段階
 - ~~タイムストレッチ(`Stretch::Follow`)~~ → 実装済み(2026-09-23、WSOLA)。より高品質な伸縮(位相ボコーダ + 過渡保持)は将来
 - ノードグラフによる音作り
 - ブラウザ版(Rust コアを WASM 化、共有・軽作業用)
@@ -812,6 +813,47 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   🎛(エフェクト数を表示)で、音作りビューを「マスター」モード(エフェクトの節だけ)で開く。
   エフェクト一覧の JSON は `server::effects_json` をトラック・マスターで共用。チャットには
   「音作り中: マスターバス」と添える
+- **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
+  (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
+  - 探索: `GLAUX_CLAP_PATH` → `CLAP_PATH` → OS 標準(Windows は `%COMMONPROGRAMFILES%\CLAP` と
+    `%LOCALAPPDATA%\Programs\Common\CLAP`、Linux は `~/.clap` と `/usr/lib/clap`)を再帰的に探し、
+    記述子(ID・名前・ベンダー・features)を一覧にする(初回だけ。`rescan` で探し直し)
+  - スレッド: プラグインのメインスレッド `glaux-plugins` が生成・起動(`activate`)・状態・画面・破棄を
+    すべて担う(`ClapPlugin` は Send でない)。処理窓口 `ClapProcessor` は `PluginSlot`
+    (`AtomicPtr` の受け取り口・返却口 + 世代番号、最大 16 スロット)でオーディオスレッドへ渡し、
+    使い終えたら返却口に戻してメインスレッドが止めて解放する(オーディオスレッドで解放しない)。
+    thread-check 拡張には「作ったスレッド = main」「process を呼ぶスレッド = audio」と答える
+  - `PluginManager::sync`(`set_project` のたび): CLAP 音源のトラックに (スロット, 世代) を割り当てて
+    生成を指示し、消えた・差し替わった・サンプルレートが変わったものは破棄。プロジェクト側の状態が
+    外から変わった(取り消し等)ときだけ読み込み直す(状態のハッシュで判定)。見つからない
+    プラグインは内蔵 subtractive で代用
+  - レンダラ: プラグインのトラックは内蔵ボイスを作らず、`collect_plugin_notes` がブロック内の
+    ノートを本処理と同じ規則(ループ折り返し含む)でなぞって CLAP の note on/off を時刻付きで積み、
+    ブロック単位で `process`(最大 4096 フレーム、長いブロックは分割)。note off 待ちは
+    `plugin_pending`(固定 1024)。停止・シーク・データ差し替えで曲のノートを離す。
+    出力はステレオのままトラックのエフェクト → 音量/パン(ステレオはバランスとして √2 倍)。
+    試聴・MIDI キーボードもプラグインへ送る。プラグインがあれば停止中も処理し続ける(余韻)。
+    出力デバイスの切り替えでレンダラが作り直されるときは `Drop` で窓口を受け取り口へ戻して引き継ぐ
+  - ノートの方式: ノートポートの優先方式が CLAP なら CLAP のノートイベント、そうでなければ MIDI。
+    宣言された全音声ポートにバッファを用意し、メイン出力(IS_MAIN)を使う
+  - 書き出し・解析: `OfflinePlugins` が呼んだスレッドで専用インスタンスを作る(状態を読み込んで起動)
+  - 状態: `PluginSource::Clap.state` に base64。プラグインが mark_dirty したとき・画面を閉じたときに、
+    アプリのバックグラウンドタスクが 1.5 秒ごとにまとめて `set_device` で保存(履歴 1 件、取り消し可)。
+    手動保存は `clap_save_state`
+  - 画面(Windows のみ): プラグインのスレッドで素のトップレベルウィンドウ(`glaux-clap/src/window.rs`、
+    windows-sys)を作って `set_parent` で埋め込む(JUCE 製などは埋め込みのみ対応のため)。埋め込み非対応で
+    浮動に対応するものは浮動で開く。メッセージはプラグインのスレッドで `PeekMessage` を回す
+    (画面を開いている間は 8ms 周期)。閉じるボタンは隠すだけにして、画面の破棄 → ウィンドウの破棄の順。
+    大きさの要求・利用者のリサイズを相互に伝える。Linux / macOS は未対応(X11 は posix-fd・timer 拡張が要る)
+  - Tauri: `clap_plugins` / `clap_open_gui` / `clap_close_gui` / `clap_save_state`。UI は音源メニューの
+    「🔌 CLAP プラグイン」欄(音源のみ)、トラック見出しの 🖥、音作りビューの CLAP 欄(つまみ欄は隠す)
+  - MCP: `list_plugins`(計 27 ツール)。`get_project` は CLAP の状態を「(省略: … N 文字)」と
+    省略表示し、その表示のまま `set_device` で送り返されたら今の状態に戻す
+  - テスト: `GLAUX_TEST_CLAP` に音源の `.clap` を指定したときだけ実プラグインで動く(glaux-clap の
+    発音と状態、エンジンの書き出しとリアルタイム経路の受け渡し・返却)。サンドボックスで Surge XT 1.3.4
+    (Linux 版)を使って確認済み。**画面(Windows)は実機未検証**(Windows 向けのコンパイルは確認済み)
+  - 第 2 段階の予定: エフェクトプラグイン(トラック・マスター)、プラグインのパラメータを
+    list_params / オートメーションに写す、サステインペダル・ピッチベンドの転送、Linux の画面
 - **和音の譜起こし(basic-pitch、2026-09-23)**: 新クレート `glaux-ml`。
   - モデル: spotify/basic-pitch の `nmp.onnx`(230KB、Apache-2.0)を `crates/glaux-ml/models/` に
     同梱し `include_bytes!`。推論は pure Rust の `tract-onnx` 0.23(ネイティブ DLL 不要。
@@ -977,4 +1019,4 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
 - ~~`history.jsonl` 肥大化対策~~ → **実装済み(2026-09-22)**: `Session::compact(keep)` +
   `Store::maybe_compact`(3000 件超で直近 1500 件に。起点を `history.base.json`、
   捨てた分を `history.archive.jsonl` に保存。再オープンは base + history で復元)
-- CLAP プラグイン対応、ブラウザ版(WASM)— 別プロジェクト級のため保留
+- ブラウザ版(WASM)— 別プロジェクト級のため保留(CLAP は 2026-09-23 に着手、下記)

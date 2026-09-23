@@ -378,6 +378,42 @@ async fn clap_plugins(rescan: Option<bool>) -> Result<Value, String> {
 #[tauri::command]
 async fn clap_save_state(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    save_clap_state(&state, tid).await
+}
+
+/// プラグインの画面を開く(開いていれば前面へ)。
+#[tauri::command]
+async fn clap_open_gui(state: State<'_, AppState>, track_id: String) -> Result<(), String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let engine = state.engine()?.clone();
+    let (project, _) = state.handle.get_project().await?;
+    let track = project
+        .track(&tid)
+        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let plugin_name = match track.device.as_ref().map(|d| &d.source) {
+        Some(glaux_core::PluginSource::Clap { plugin_id, .. }) => {
+            glaux_engine::plugins::find(plugin_id)
+                .map(|p| p.name)
+                .unwrap_or_else(|| plugin_id.clone())
+        }
+        _ => return Err("CLAP プラグインの音源ではありません".to_owned()),
+    };
+    let title = format!("{plugin_name} — {}", track.name);
+    tokio::task::spawn_blocking(move || engine.open_plugin_gui(&tid, &title))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn clap_close_gui(state: State<'_, AppState>, track_id: String) -> Result<(), String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    state.engine()?.close_plugin_gui(&tid);
+    Ok(())
+}
+
+/// プラグインの今の状態をプロジェクトの音源設定に書く(履歴 1 件。変化が無ければ何もしない)。
+async fn save_clap_state(state: &AppState, tid: glaux_core::TrackId) -> Result<Value, String> {
+    let track_id = tid.to_string();
     let engine = state.engine()?.clone();
     let saved = {
         let e = engine.clone();
@@ -1493,6 +1529,33 @@ fn main() -> Result<()> {
                 }
             });
 
+            // CLAP プラグインの画面での操作をプロジェクトに保存する(状態が変わった・画面を閉じた)。
+            // つまみを回している間に履歴が細かく増えすぎないよう、1.5 秒ごとにまとめて保存する
+            if engine.is_some() {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        use tauri::Manager;
+                        let st = app_handle.state::<AppState>();
+                        let Some(engine) = st.engine.clone() else {
+                            break;
+                        };
+                        let mut tracks: Vec<glaux_core::TrackId> = Vec::new();
+                        for (tid, _) in engine.take_plugin_events() {
+                            if !tracks.contains(&tid) {
+                                tracks.push(tid);
+                            }
+                        }
+                        for tid in tracks {
+                            if let Err(e) = save_clap_state(&st, tid).await {
+                                tracing::warn!("プラグインの状態を保存できません: {e}");
+                            }
+                        }
+                    }
+                });
+            }
+
             // プロジェクトの変更をエンジンの再生データに反映する。
             // AI の連続編集で毎回全再構築しないよう、短い静穏時間でイベントを合流させる
             if let Some(engine) = engine.clone() {
@@ -1584,6 +1647,8 @@ fn main() -> Result<()> {
             separate_clip,
             clap_plugins,
             clap_save_state,
+            clap_open_gui,
+            clap_close_gui,
             set_midi_input,
             set_live_target,
             midi_record_start,

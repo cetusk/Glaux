@@ -882,6 +882,10 @@
     }
   }
   const clapInstruments = $derived((clapList ?? []).filter((p) => p.instrument));
+  // CLAP 音源のトラックがあれば、見出しにプラグイン名を出すため一覧を読んでおく
+  $effect(() => {
+    if (!clapList && project.tracks.some((t) => t.device?.type === "clap")) loadClap();
+  });
 
   /// トラック見出しに出す音源名(CLAP はプラグイン名)
   function deviceLabel(t: Track): string {
@@ -1130,6 +1134,16 @@
           >
             {track.device?.type === "clap" ? "" : "🎹 "}{deviceLabel(track)} ▾
           </button>
+          {#if track.device?.type === "clap"}
+            <button
+              class="dev gui-btn"
+              title="プラグインの画面を開く"
+              onclick={(e) => {
+                e.stopPropagation();
+                api.clapOpenGui(track.id).catch((err) => alert(String(err)));
+              }}>🖥</button
+            >
+          {/if}
           <code>{track.id}</code>
         </div>
       </div>

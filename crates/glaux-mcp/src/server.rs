@@ -208,6 +208,13 @@ pub struct TranscribeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ListPluginsParams {
+    /// true でプラグインを探し直す(インストールした後など)。
+    #[serde(default)]
+    pub rescan: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SeparateAudioParams {
     /// 分離する音声クリップ ID(`clp_xxxxxx`、kind: "audio")。
     pub clip_id: String,
@@ -516,6 +523,9 @@ impl GlauxServer {
     }
 }
 
+/// get_project で CLAP プラグインの状態を省略したときの表示(apply_commands で元に戻す目印)
+const ELIDED_CLAP_STATE: &str = "(省略: CLAP プラグインの状態 ";
+
 #[tool_router]
 impl GlauxServer {
     #[tool(
@@ -542,6 +552,15 @@ impl GlauxServer {
         let include_automation = p.include_automation.unwrap_or(true);
         if let Some(tracks) = v.get_mut("tracks").and_then(Value::as_array_mut) {
             for track in tracks {
+                // CLAP プラグインの状態は巨大な不透明データなので省略して見せる
+                if let Some(state) = track
+                    .get_mut("device")
+                    .filter(|d| d.get("type").and_then(Value::as_str) == Some("clap"))
+                    .and_then(|d| d.get_mut("state"))
+                {
+                    let len = state.as_str().map_or(0, str::len);
+                    *state = json!(format!("{ELIDED_CLAP_STATE}{len} 文字)"));
+                }
                 if !include_automation {
                     if let Some(a) = track.get_mut("automation") {
                         *a = json!([]);
@@ -623,9 +642,40 @@ impl GlauxServer {
             return Err("commands が空です".to_owned());
         }
         let mut commands = Vec::with_capacity(p.commands.len());
+        let mut current: Option<glaux_core::Project> = None;
         for (i, value) in p.commands.into_iter().enumerate() {
-            let cmd: Command = serde_json::from_value(value)
+            let mut cmd: Command = serde_json::from_value(value)
                 .map_err(|e| format!("commands[{i}] を Command として解釈できません: {e}"))?;
+            // get_project で省略表示した CLAP の状態をそのまま送ってきたら、今の状態に戻す
+            if let Command::SetDevice {
+                track,
+                device:
+                    Some(glaux_core::Device {
+                        source: glaux_core::PluginSource::Clap { plugin_id, state },
+                        ..
+                    }),
+            } = &mut cmd
+            {
+                if state
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with(ELIDED_CLAP_STATE))
+                {
+                    if current.is_none() {
+                        current = Some(self.handle.get_project().await?.0);
+                    }
+                    *state = current
+                        .as_ref()
+                        .and_then(|p| p.track(track))
+                        .and_then(|t| t.device.as_ref())
+                        .and_then(|d| match &d.source {
+                            glaux_core::PluginSource::Clap {
+                                plugin_id: cur_id,
+                                state,
+                            } if cur_id == plugin_id => state.clone(),
+                            _ => None,
+                        });
+                }
+            }
             commands.push(cmd);
         }
         let command = if commands.len() == 1 {
@@ -913,6 +963,42 @@ impl GlauxServer {
         Ok(Json(
             json!({ "project_version": version, "entries": entries }),
         ))
+    }
+
+    #[tool(
+        description = "インストール済みの CLAP プラグイン(外部の音源・エフェクト)を一覧する。\
+        音源(instrument: true)は set_device {track, device: {type: \"clap\", plugin_id}} でトラックの音源にできる\
+        (Surge XT・Vital・TAL-NoiseMaker などの本格的なシンセ)。音色はプラグイン自身の画面で人間が作る\
+        (AI からプラグインのつまみを動かすのは未対応。音量・パン・Glaux のエフェクトとそのオートメーションは使える)。\
+        get_project では CLAP の状態(state)は省略表示になる。音源を差し替えるときは state を付けないこと。\
+        rescan: true でインストールし直したプラグインを探し直す。"
+    )]
+    async fn list_plugins(&self, params: Parameters<ListPluginsParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("list_plugins");
+        let rescan = params.0.rescan.unwrap_or(false);
+        let list = tokio::task::spawn_blocking(move || {
+            if rescan {
+                glaux_engine::plugins::rescan()
+            } else {
+                glaux_engine::plugins::catalog()
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(Json(json!({
+            "plugins": list.iter().map(|p| json!({
+                "id": p.id,
+                "name": p.name,
+                "vendor": p.vendor,
+                "instrument": p.is_instrument(),
+                "effect": p.is_effect(),
+                "features": p.features,
+            })).collect::<Vec<_>>(),
+            "search_dirs": glaux_engine::plugins::search_paths()
+                .iter()
+                .map(|d| d.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+        })))
     }
 
     #[tool(

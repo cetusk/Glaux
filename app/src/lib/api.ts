@@ -177,6 +177,15 @@ export function clapPlugins(rescan = false): Promise<{ plugins: ClapPluginInfo[]
   return invoke("clap_plugins", { rescan });
 }
 
+/** CLAP プラグイン自身の画面を開く(開いていれば前面へ)。今は Windows のみ */
+export function clapOpenGui(trackId: string): Promise<void> {
+  return invoke("clap_open_gui", { trackId });
+}
+
+export function clapCloseGui(trackId: string): Promise<void> {
+  return invoke("clap_close_gui", { trackId });
+}
+
 /** トラックの CLAP プラグインの今の設定をプロジェクトに保存する。 */
 export function clapSaveState(trackId: string): Promise<{ changed: boolean }> {
   return invoke("clap_save_state", { trackId });

@@ -64,6 +64,19 @@ fn host_info() -> Result<HostInfo, ClapError> {
 pub struct ClapPlugin {
     instance: PluginInstance<GlauxHost>,
     pub id: String,
+    /// 画面を開いているか(浮動ウィンドウならプラグイン自身のウィンドウ)
+    gui_open: bool,
+    /// 画面を入れているホスト側のウィンドウ(埋め込み方式のとき)
+    #[cfg(windows)]
+    window: Option<crate::window::HostWindow>,
+}
+
+/// 画面まわりで起きたこと([`ClapPlugin::gui_tick`] の戻り値)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuiEvent {
+    None,
+    /// 利用者が画面を閉じた
+    Closed,
 }
 
 impl ClapPlugin {
@@ -87,6 +100,9 @@ impl ClapPlugin {
         Ok(ClapPlugin {
             instance,
             id: id.to_owned(),
+            gui_open: false,
+            #[cfg(windows)]
+            window: None,
         })
     }
 
@@ -222,6 +238,175 @@ impl ClapPlugin {
         self.instance.access_handler(|h| h.dirty.replace(false))
     }
 
+    pub fn has_gui(&self) -> bool {
+        self.instance
+            .access_shared_handler(|h| h.gui.get().copied().flatten())
+            .is_some()
+    }
+
+    pub fn is_gui_open(&self) -> bool {
+        self.gui_open
+    }
+
+    /// プラグインの画面を開く(開いていれば前面に出す)。
+    pub fn open_gui(&mut self, title: &str) -> Result<(), ClapError> {
+        #[cfg(windows)]
+        if let Some(w) = &self.window {
+            w.show();
+            return Ok(());
+        }
+        if self.gui_open {
+            return Ok(());
+        }
+        let gui = self
+            .instance
+            .access_shared_handler(|h| h.gui.get().copied().flatten())
+            .ok_or_else(|| ClapError::Gui("このプラグインには画面がありません".into()))?;
+        self.instance
+            .access_shared_handler(|h| h.gui_closed.store(false, Ordering::Release));
+        self.open_gui_platform(gui, title)?;
+        self.gui_open = true;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn open_gui_platform(
+        &mut self,
+        gui: clack_extensions::gui::PluginGui,
+        title: &str,
+    ) -> Result<(), ClapError> {
+        use clack_extensions::gui::{GuiApiType, GuiConfiguration, Window};
+        let handle = self.instance.plugin_handle();
+        let embedded = GuiConfiguration {
+            api_type: GuiApiType::WIN32,
+            is_floating: false,
+        };
+        if gui.is_api_supported(&handle, embedded) {
+            gui.create(&handle, embedded)
+                .map_err(|e| ClapError::Gui(format!("{e:?}")))?;
+            let size = gui
+                .get_size(&handle)
+                .unwrap_or(clack_extensions::gui::GuiSize {
+                    width: 800,
+                    height: 500,
+                });
+            let resizable = gui.can_resize(&handle);
+            let window = crate::window::HostWindow::new(title, size.width, size.height, resizable)
+                .map_err(ClapError::Gui)?;
+            // SAFETY: ウィンドウは画面を破棄する(close_gui)まで生かしておく
+            let set = unsafe {
+                gui.set_parent(
+                    &handle,
+                    Window::from_generic_ptr(GuiApiType::WIN32, window.hwnd()),
+                )
+            };
+            if let Err(e) = set {
+                gui.destroy(&handle);
+                return Err(ClapError::Gui(format!("{e:?}")));
+            }
+            let _ = gui.show(&handle);
+            window.show();
+            self.window = Some(window);
+            return Ok(());
+        }
+        let floating = GuiConfiguration {
+            api_type: GuiApiType::WIN32,
+            is_floating: true,
+        };
+        if gui.is_api_supported(&handle, floating) {
+            gui.create(&handle, floating)
+                .map_err(|e| ClapError::Gui(format!("{e:?}")))?;
+            if let Ok(t) = std::ffi::CString::new(title) {
+                gui.suggest_title(&handle, &t);
+            }
+            gui.show(&handle)
+                .map_err(|e| ClapError::Gui(format!("{e:?}")))?;
+            return Ok(());
+        }
+        Err(ClapError::Gui(
+            "Windows の画面に対応していないプラグインです".into(),
+        ))
+    }
+
+    #[cfg(not(windows))]
+    fn open_gui_platform(
+        &mut self,
+        _gui: clack_extensions::gui::PluginGui,
+        _title: &str,
+    ) -> Result<(), ClapError> {
+        Err(ClapError::Gui(
+            "この OS ではまだプラグインの画面を開けません(Windows のみ対応)".into(),
+        ))
+    }
+
+    /// プラグインの画面を閉じる。
+    pub fn close_gui(&mut self) {
+        if !self.gui_open {
+            return;
+        }
+        if let Some(gui) = self
+            .instance
+            .access_shared_handler(|h| h.gui.get().copied().flatten())
+        {
+            gui.destroy(&self.instance.plugin_handle());
+        }
+        #[cfg(windows)]
+        {
+            self.window = None;
+        }
+        self.gui_open = false;
+    }
+
+    /// 画面まわりの定期処理(大きさの要求・閉じる操作)。メインスレッドでこまめに呼ぶ。
+    pub fn gui_tick(&mut self) -> GuiEvent {
+        if !self.gui_open {
+            return GuiEvent::None;
+        }
+        let closed_by_plugin = self
+            .instance
+            .access_shared_handler(|h| h.gui_closed.swap(false, Ordering::AcqRel));
+        #[cfg(windows)]
+        let closed_by_user = self
+            .window
+            .as_ref()
+            .is_some_and(|w| w.take_close_requested());
+        #[cfg(not(windows))]
+        let closed_by_user = false;
+        if closed_by_plugin || closed_by_user {
+            self.close_gui();
+            return GuiEvent::Closed;
+        }
+        let requested = self
+            .instance
+            .access_shared_handler(|h| h.requested_size.swap(0, Ordering::AcqRel));
+        #[cfg(windows)]
+        {
+            if requested != 0 {
+                if let Some(w) = &self.window {
+                    w.set_client_size((requested >> 32) as u32, (requested & 0xFFFF_FFFF) as u32);
+                }
+            }
+            // 利用者がウィンドウの大きさを変えたらプラグインに伝える
+            let resized = self.window.as_ref().and_then(|w| w.take_resized());
+            if let Some((width, height)) = resized {
+                if let Some(gui) = self
+                    .instance
+                    .access_shared_handler(|h| h.gui.get().copied().flatten())
+                {
+                    let handle = self.instance.plugin_handle();
+                    if gui.can_resize(&handle) {
+                        let size = clack_extensions::gui::GuiSize { width, height };
+                        let size = gui.adjust_size(&handle, size).unwrap_or(size);
+                        let _ = gui.set_size(&handle, size);
+                    }
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = requested;
+        GuiEvent::None
+    }
+
     /// メインスレッドでの定期処理(プラグインが頼んだコールバックを呼ぶ)。
     pub fn poll(&mut self) {
         let requested = self
@@ -230,6 +415,13 @@ impl ClapPlugin {
         if requested {
             self.instance.call_on_main_thread_callback();
         }
+    }
+}
+
+impl Drop for ClapPlugin {
+    fn drop(&mut self) {
+        // 画面はインスタンスより先に片付ける
+        self.close_gui();
     }
 }
 

@@ -6,6 +6,7 @@
 //! thread-check 拡張でプラグインに答える。
 
 use clack_extensions::audio_ports::{AudioPortRescanFlags, HostAudioPortsImpl, PluginAudioPorts};
+use clack_extensions::gui::{GuiSize, HostGuiImpl, PluginGui};
 use clack_extensions::latency::HostLatencyImpl;
 use clack_extensions::log::{HostLogImpl, LogSeverity};
 use clack_extensions::note_ports::{
@@ -18,7 +19,7 @@ use clack_extensions::state::{HostStateImpl, PluginState};
 use clack_extensions::thread_check::HostThreadCheckImpl;
 use clack_host::prelude::*;
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 thread_local! {
@@ -51,7 +52,8 @@ impl HostHandlers for GlauxHost {
             .register::<clack_extensions::audio_ports::HostAudioPorts>()
             .register::<clack_extensions::note_ports::HostNotePorts>()
             .register::<clack_extensions::params::HostParams>()
-            .register::<clack_extensions::latency::HostLatency>();
+            .register::<clack_extensions::latency::HostLatency>()
+            .register::<clack_extensions::gui::HostGui>();
     }
 }
 
@@ -64,6 +66,11 @@ pub struct HostShared {
     pub state: OnceLock<Option<PluginState>>,
     pub audio_ports: OnceLock<Option<PluginAudioPorts>>,
     pub note_ports: OnceLock<Option<PluginNotePorts>>,
+    pub gui: OnceLock<Option<PluginGui>>,
+    /// プラグインが頼んだ画面の大きさ(幅 << 32 | 高さ。0 = なし)
+    pub requested_size: AtomicU64,
+    /// プラグインが自分の(浮動)ウィンドウを閉じた
+    pub gui_closed: AtomicBool,
 }
 
 impl<'a> SharedHandler<'a> for HostShared {
@@ -71,6 +78,7 @@ impl<'a> SharedHandler<'a> for HostShared {
         let _ = self.state.set(instance.get_extension());
         let _ = self.audio_ports.set(instance.get_extension());
         let _ = self.note_ports.set(instance.get_extension());
+        let _ = self.gui.set(instance.get_extension());
     }
 
     fn request_restart(&self) {
@@ -105,6 +113,28 @@ impl HostThreadCheckImpl for HostShared {
 
     fn is_audio_thread(&self) -> bool {
         IS_AUDIO.with(|c| c.get())
+    }
+}
+
+impl HostGuiImpl for HostShared {
+    fn resize_hints_changed(&self) {}
+
+    fn request_resize(&self, new_size: GuiSize) -> Result<(), HostError> {
+        let packed = ((new_size.width as u64) << 32) | new_size.height as u64;
+        self.requested_size.store(packed.max(1), Ordering::Release);
+        Ok(())
+    }
+
+    fn request_show(&self) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    fn request_hide(&self) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    fn closed(&self, _was_destroyed: bool) {
+        self.gui_closed.store(true, Ordering::Release);
     }
 }
 
