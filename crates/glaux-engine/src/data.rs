@@ -121,6 +121,8 @@ pub struct TrackMix {
     pub is_bus: bool,
     /// センド(送り先のバスの添字・量(リニア)・フェーダー前か)
     pub sends: Vec<SendMix>,
+    /// ステレオの素材(音声クリップ)を含む: パンは左右バランスとして掛ける
+    pub stereo: bool,
 }
 
 /// 焼き込み済みのセンド。
@@ -296,7 +298,7 @@ impl SampleBank {
             if self.map.contains_key(id) {
                 continue;
             }
-            match load_wav_mono(&project_dir.join(&asset.path)) {
+            match load_wav(&project_dir.join(&asset.path)) {
                 Ok(data) => {
                     self.map.insert(id.clone(), Arc::new(data));
                 }
@@ -442,13 +444,22 @@ fn render_follow(
     let end_sec = tm.tick_to_seconds(clip.start + clip.length);
     let out_len = ((end_sec - start_sec) * sr).max(0.0) as usize;
     let start_tick = clip.start.0 as f64;
-    let frames = glaux_dsp::stretch::wsola(&src.frames, src.sample_rate, out_len, |i| {
+    let src_pos = |i: usize| {
         let rel = tm.seconds_to_tick_f64(start_sec + i as f64 / sr) - start_tick;
         offset_samples as f64 + stretch.follow_seconds(rel).unwrap_or(0.0) * sr
-    });
+    };
+    // ステレオは左右差成分も同じ位置で伸縮する(位置は M で決める)
+    let mut channels: Vec<&[f32]> = vec![&src.frames];
+    if let Some(side) = &src.side {
+        channels.push(side);
+    }
+    let mut out = glaux_dsp::stretch::wsola_channels(&channels, src.sample_rate, out_len, src_pos);
+    let side = (out.len() > 1).then(|| out.remove(1));
+    let frames = out.remove(0);
     SampleData {
         frames,
         sample_rate: src.sample_rate,
+        side,
     }
 }
 
@@ -471,6 +482,13 @@ pub fn wave_peaks(frames: &[f32], buckets: usize) -> Vec<(f32, f32)> {
 
 /// WAV をモノラル f32 に読み込む(ステレオは平均で合算)。
 pub fn load_wav_mono(path: &Path) -> Result<SampleData, String> {
+    let mut d = load_wav(path)?;
+    d.side = None;
+    Ok(d)
+}
+
+/// WAV を読む。ステレオ(2 ch)なら左右差成分(`side`)も持つ。3 ch 以上はモノラルに合算する。
+pub fn load_wav(path: &Path) -> Result<SampleData, String> {
     let mut reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
@@ -488,14 +506,21 @@ pub fn load_wav_mono(path: &Path) -> Result<SampleData, String> {
                 .map_err(|e| e.to_string())?
         }
     };
+    let sr = spec.sample_rate as f32;
+    if channels == 2 {
+        let (l, r): (Vec<f32>, Vec<f32>) =
+            raw.as_chunks::<2>().0.iter().map(|c| (c[0], c[1])).unzip();
+        // 実はモノラル(左右が同じ)なら side を持たない
+        if l.iter().zip(&r).all(|(a, b)| (a - b).abs() < 1e-6) {
+            return Ok(SampleData::mono(l, sr));
+        }
+        return Ok(SampleData::stereo(&l, &r, sr));
+    }
     let frames = raw
         .chunks_exact(channels)
         .map(|c| c.iter().sum::<f32>() / channels as f32)
         .collect();
-    Ok(SampleData {
-        frames,
-        sample_rate: spec.sample_rate as f32,
-    })
+    Ok(SampleData::mono(frames, sr))
 }
 
 /// トラックの音源を焼き込む(サンプラーは SampleBank から波形を解決)。
@@ -685,7 +710,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
     };
 
     let mut next_slot: u32 = 0;
-    let tracks: Vec<TrackMix> = project
+    let mut tracks: Vec<TrackMix> = project
         .tracks
         .iter()
         .map(|t| {
@@ -714,6 +739,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 instrument,
                 effects: chain.into_iter().map(|(_, b)| b).collect(),
                 is_bus: t.kind == glaux_core::TrackKind::Bus,
+                stereo: false,
                 sends: if t.kind == glaux_core::TrackKind::Bus {
                     vec![]
                 } else {
@@ -863,6 +889,13 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
     }
     events.sort_by_key(|e| e.start);
     audio_events.sort_by_key(|e| e.start);
+    for ev in &audio_events {
+        if ev.data.side.is_some() {
+            if let Some(t) = tracks.get_mut(ev.track as usize) {
+                t.stereo = true;
+            }
+        }
+    }
     let end_sample = events
         .iter()
         .map(|e| e.end)
@@ -1471,6 +1504,90 @@ mod tests {
         ));
         project.tracks.push(track);
         project
+    }
+
+    #[test]
+    fn stereo_audio_clip_keeps_left_and_right() {
+        use crate::export::render_project;
+        use glaux_core::{Asset, AssetId, TempoEvent, TempoMap, TrackKind};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        // 左だけ鳴るステレオの WAV(1 秒)
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(dir.join("audio/left.wav"), spec).unwrap();
+        for i in 0..48_000 {
+            let s = (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin();
+            w.write_sample((s * 20_000.0) as i16).unwrap();
+            w.write_sample(0i16).unwrap();
+        }
+        w.finalize().unwrap();
+        let loaded = load_wav(&dir.join("audio/left.wav")).unwrap();
+        assert!(loaded.side.is_some());
+        assert!(load_wav_mono(&dir.join("audio/left.wav"))
+            .unwrap()
+            .side
+            .is_none());
+
+        let mut project = Project::new("st");
+        let asset_id = AssetId::from_sha256_hex("abce").unwrap();
+        project.assets.insert(
+            asset_id.clone(),
+            Asset {
+                path: "audio/left.wav".into(),
+                sample_rate: 48_000,
+                channels: 2,
+                frames: 48_000,
+            },
+        );
+        let mut track = Track::new(TrackId::new(), "St", TrackKind::Audio);
+        track.clips.push(Clip::new_audio(
+            ClipId::new(),
+            "take",
+            Tick(0),
+            Tick(1920),
+            asset_id,
+        ));
+        project.tracks.push(track);
+        let lr = |p: &Project| -> (f32, f32) {
+            let bank = SampleBank::load(p, dir);
+            let out = render_project(p, 48_000.0, &bank).unwrap();
+            let e = |ch: usize| {
+                out.chunks(2)
+                    .take(40_000)
+                    .map(|c| c[ch] * c[ch])
+                    .sum::<f32>()
+            };
+            (e(0), e(1))
+        };
+        let (l, r) = lr(&project);
+        assert!(l > 100.0 * r.max(1e-6), "左だけ鳴る: {l} / {r}");
+        // パンは左右バランス: 中央で左の音量はモノラル素材と同じ(√2 補正)、右へ振ると左が下がる
+        let mut right = project.clone();
+        right.tracks[0].pan = 0.8;
+        let (l2, _) = lr(&right);
+        assert!(l2 < l * 0.5, "右へ振ると左が小さくなる: {l2} vs {l}");
+        // テンポ追従で伸縮しても左右は保たれる
+        let mut follow = project.clone();
+        follow.tempo_map = TempoMap::new(vec![TempoEvent {
+            tick: Tick(0),
+            bpm: 100.0,
+        }])
+        .unwrap();
+        if let glaux_core::ClipContent::Audio { stretch, .. } =
+            &mut follow.tracks[0].clips[0].content
+        {
+            *stretch = glaux_core::Stretch::Follow {
+                original_bpm: 120.0,
+            };
+        }
+        let (l3, r3) = lr(&follow);
+        assert!(l3 > 100.0 * r3.max(1e-6), "伸縮後も左だけ: {l3} / {r3}");
     }
 
     #[test]

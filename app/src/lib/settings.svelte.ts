@@ -32,6 +32,8 @@ interface Settings {
   inputDevice: string;
   /// 録音の音量を自動で整える(一番大きい所を -6dB に)
   autoGain: boolean;
+  /// ステレオで録音する(入力が 2 ch 以上のとき。1 本のマイクならモノラルでよい)
+  recordStereo: boolean;
   /// MIDI 入力ポート(空文字 = 使わない)
   midiInput: string;
   /// MIDI 録音の開始位置の丸め(tick、0 = 丸めない)
@@ -53,6 +55,7 @@ function load(): Settings {
         outputDevice: typeof v.outputDevice === "string" ? v.outputDevice : "",
         inputDevice: typeof v.inputDevice === "string" ? v.inputDevice : "",
         autoGain: v.autoGain !== false,
+        recordStereo: v.recordStereo === true,
         midiInput: typeof v.midiInput === "string" ? v.midiInput : "",
         midiQuantize: typeof v.midiQuantize === "number" ? v.midiQuantize : 0,
       };
@@ -70,6 +73,7 @@ function load(): Settings {
     outputDevice: "",
     inputDevice: "",
     autoGain: true,
+    recordStereo: false,
     midiInput: "",
     midiQuantize: 0,
   };

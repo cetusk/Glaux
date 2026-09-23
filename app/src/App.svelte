@@ -460,6 +460,7 @@
             countInBars: settings.countInBars,
             latencyMs: settings.recordLatencyMs,
             metronome: settings.metronomeOnRecord,
+            stereo: settings.recordStereo,
           });
         }
         transport = await api.transportState();

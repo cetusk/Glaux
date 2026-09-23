@@ -280,6 +280,8 @@ export function recordStart(opts: {
   countInBars: number;
   latencyMs: number;
   metronome: boolean;
+  /** 入力が 2 ch 以上ならステレオで録る */
+  stereo?: boolean;
 }): Promise<{ clip_start: number; count_in_ticks: number }> {
   return invoke("record_start", opts);
 }

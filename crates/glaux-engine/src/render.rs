@@ -328,6 +328,8 @@ pub struct Renderer {
     /// ブロック用バッファ(起動時に MAX_FRAMES で確保): トラックごとのエフェクト前の合算、
     /// エフェクトを通さずマスターへ行く分(左右)、クリック、各フレームの再生位置
     blk_mono: Vec<Vec<f32>>,
+    /// トラックごとのステレオ素材の左右差成分(エフェクト前)
+    blk_side: Vec<Vec<f32>>,
     blk_direct: [Vec<f32>; 2],
     blk_click: Vec<f32>,
     blk_pos: Vec<u64>,
@@ -435,6 +437,7 @@ impl Renderer {
             slot_is_fx: [false; MAX_PLUGINS],
             slot_done: [false; MAX_PLUGINS],
             blk_mono: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
+            blk_side: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
             blk_direct: [vec![0.0; MAX_FRAMES], vec![0.0; MAX_FRAMES]],
             blk_click: vec![0.0; MAX_FRAMES],
             blk_pos: vec![0; MAX_FRAMES],
@@ -907,6 +910,7 @@ impl Renderer {
 
             // トラックごとのモノ合算(エフェクト前)
             let mut track_mono = [0.0f32; MAX_TRACKS];
+            let mut track_side = [0.0f32; MAX_TRACKS];
             let mut direct_l = 0.0f32; // MAX_TRACKS 超のトラックはエフェクトなしで直行
             let mut direct_r = 0.0f32;
             let mut i = 0;
@@ -958,22 +962,31 @@ impl Renderer {
                     continue;
                 }
                 let frac = (v.pos - i0 as f64) as f32;
-                let mut sample = (frames[i0] + (frames[i0 + 1] - frames[i0]) * frac) * ev.gain;
+                let mut amp = ev.gain;
                 let since_start = self.pos - ev.start;
                 if ev.fade_in > 0 && since_start < ev.fade_in {
-                    sample *= since_start as f32 / ev.fade_in as f32;
+                    amp *= since_start as f32 / ev.fade_in as f32;
                 }
                 let until_end = ev.end - self.pos;
                 if ev.fade_out > 0 && until_end < ev.fade_out {
-                    sample *= until_end as f32 / ev.fade_out as f32;
+                    amp *= until_end as f32 / ev.fade_out as f32;
                 }
+                let sample = (frames[i0] + (frames[i0 + 1] - frames[i0]) * frac) * amp;
+                // ステレオ素材の左右差成分(L = M + S、R = M − S)
+                let side = match &ev.data.side {
+                    Some(sd) if i0 + 1 < sd.len() => (sd[i0] + (sd[i0 + 1] - sd[i0]) * frac) * amp,
+                    _ => 0.0,
+                };
                 v.pos += ev.rate;
                 match track_mono.get_mut(ev.track as usize) {
-                    Some(acc) => *acc += sample,
+                    Some(acc) => {
+                        *acc += sample;
+                        track_side[ev.track as usize] += side;
+                    }
                     None => {
                         if let Some(mix) = data.tracks.get(ev.track as usize) {
-                            direct_l += sample * mix.gain_l;
-                            direct_r += sample * mix.gain_r;
+                            direct_l += (sample + side) * mix.gain_l;
+                            direct_r += (sample - side) * mix.gain_r;
                         }
                     }
                 }
@@ -1027,6 +1040,7 @@ impl Renderer {
             // ブロック用のバッファへ(エフェクトはこの後ブロック単位で通す)
             for (ti, m) in track_mono.iter().enumerate().take(ntracks) {
                 self.blk_mono[ti][frame] = *m;
+                self.blk_side[ti][frame] = track_side[ti];
             }
             self.blk_direct[0][frame] = direct_l;
             self.blk_direct[1][frame] = direct_r;
@@ -1114,13 +1128,14 @@ impl Renderer {
                     let mut any = false;
                     for f in 0..frames {
                         let mono = self.blk_mono[ti][f];
+                        let side = self.blk_side[ti][f];
                         let (el, er) = match pslot {
                             Some(s) => (self.plugin_out[s][0][f], self.plugin_out[s][1][f]),
                             None => (0.0, 0.0),
                         };
-                        fl[f] = mono + el;
-                        fr[f] = mono + er;
-                        any |= mono != 0.0 || el != 0.0 || er != 0.0;
+                        fl[f] = mono + side + el;
+                        fr[f] = mono - side + er;
+                        any |= mono != 0.0 || side != 0.0 || el != 0.0 || er != 0.0;
                     }
                     any
                 };
@@ -1184,7 +1199,7 @@ impl Renderer {
         }
         // ステレオ出力のプラグインは、パンを左右バランスとして掛ける
         // (等パワーのパンは中央で -3dB になるので √2 倍して中央を 0dB に)
-        let boost = if pslot.is_some() || mix.is_bus {
+        let boost = if pslot.is_some() || mix.is_bus || mix.stereo {
             std::f32::consts::SQRT_2
         } else {
             1.0
@@ -1846,6 +1861,7 @@ mod tests {
                 plugin_auto: vec![],
                 is_bus: false,
                 sends: vec![],
+                stereo: false,
             }],
             audio_events: vec![],
             master_effects: vec![],

@@ -23,14 +23,32 @@ pub fn wsola(
     out_len: usize,
     src_pos: impl Fn(usize) -> f64,
 ) -> Vec<f32> {
+    wsola_channels(&[input], sample_rate, out_len, src_pos)
+        .pop()
+        .unwrap_or_default()
+}
+
+/// 複数チャンネルを同じ切り貼り位置で伸縮する(位置は最初のチャンネルで決める)。
+/// ステレオは M(左右の平均)と S(左右差)を渡すと、左右の定位が崩れない。
+pub fn wsola_channels(
+    channels: &[&[f32]],
+    sample_rate: f32,
+    out_len: usize,
+    src_pos: impl Fn(usize) -> f64,
+) -> Vec<Vec<f32>> {
+    let Some(input) = channels.first().copied() else {
+        return Vec::new();
+    };
     let n = ((FRAME_SECS * sample_rate) as usize).max(16) & !1;
     let hop = n / 2;
     let tol = ((TOLERANCE_SECS * sample_rate) as usize).max(1);
-    let mut out = vec![0.0f32; out_len + n];
+    let mut outs = vec![vec![0.0f32; out_len + n]; channels.len()];
     let mut wsum = vec![0.0f32; out_len + n];
     if input.len() < n || out_len == 0 {
-        out.truncate(out_len);
-        return out;
+        for o in outs.iter_mut() {
+            o.truncate(out_len);
+        }
+        return outs;
     }
     // 周期ハン窓(50% 重なりで和が 1)
     let window: Vec<f32> = (0..n)
@@ -65,20 +83,29 @@ pub fn wsola(
                 }
             }
         };
+        for (out, ch) in outs.iter_mut().zip(channels) {
+            if ch.len() < start + n {
+                continue;
+            }
+            for i in 0..n {
+                out[out_start + i] += ch[start + i] * window[i];
+            }
+        }
         for i in 0..n {
-            out[out_start + i] += input[start + i] * window[i];
             wsum[out_start + i] += window[i];
         }
         prev = Some(start);
         k += 1;
     }
-    for (o, w) in out.iter_mut().zip(&wsum) {
-        if *w > 1e-3 {
-            *o /= *w;
+    for out in outs.iter_mut() {
+        for (o, w) in out.iter_mut().zip(&wsum) {
+            if *w > 1e-3 {
+                *o /= *w;
+            }
         }
+        out.truncate(out_len);
     }
-    out.truncate(out_len);
-    out
+    outs
 }
 
 /// `target` の ±`tol` から、`natural` で始まる区間(長さ `len`)と最も似た開始位置を探す。

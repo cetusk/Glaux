@@ -455,6 +455,7 @@ mod tests {
         Arc::new(SampleData {
             frames,
             sample_rate: sr,
+            side: None,
         })
     }
 
@@ -580,6 +581,7 @@ mod tests {
         Arc::new(SampleData {
             frames,
             sample_rate: sr,
+            side: None,
         })
     }
 

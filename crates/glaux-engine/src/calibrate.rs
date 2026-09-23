@@ -116,6 +116,7 @@ mod tests {
         SampleData {
             frames,
             sample_rate: sr,
+            side: None,
         }
     }
 
@@ -152,6 +153,7 @@ mod tests {
         let data = SampleData {
             frames: vec![0.0; 48_000 * 5],
             sample_rate: 48_000.0,
+            side: None,
         };
         assert!(estimate_latency(&data, &beats).is_err());
     }

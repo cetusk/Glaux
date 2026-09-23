@@ -25,12 +25,27 @@ pub struct HpssResult {
 
 /// モノラル音声を打楽器 / 音程楽器に分ける。
 pub fn hpss(input: &[f32]) -> HpssResult {
-    let len = input.len();
+    hpss_channels(&[input]).pop().unwrap_or(HpssResult {
+        harmonic: vec![],
+        percussive: vec![],
+    })
+}
+
+/// 複数チャンネルを同じマスクで分ける(マスクは最初のチャンネルで決める)。
+/// ステレオは M(左右の平均)と S(左右差)を渡すと、分けた後も定位が保たれる。
+pub fn hpss_channels(channels: &[&[f32]]) -> Vec<HpssResult> {
+    let Some(first) = channels.first() else {
+        return Vec::new();
+    };
+    let len = first.len();
     if len == 0 {
-        return HpssResult {
-            harmonic: vec![],
-            percussive: vec![],
-        };
+        return channels
+            .iter()
+            .map(|_| HpssResult {
+                harmonic: vec![],
+                percussive: vec![],
+            })
+            .collect();
     }
     let window: Vec<f32> = (0..N_FFT)
         .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N_FFT as f32).cos())
@@ -38,27 +53,35 @@ pub fn hpss(input: &[f32]) -> HpssResult {
     let bins = N_FFT / 2 + 1;
     // 先頭・末尾に窓の半分の無音を足し、端も完全に再構成できるようにする
     let pad = N_FFT / 2;
-    let mut padded = vec![0.0f32; pad];
-    padded.extend_from_slice(input);
-    padded.resize(len + 2 * pad + N_FFT, 0.0);
+    let padded_len = len + 2 * pad + N_FFT;
     let n_frames = (len + 2 * pad) / HOP + 1;
 
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(N_FFT);
     let ifft = planner.plan_fft_inverse(N_FFT);
+    let mut buf = vec![Complex::new(0.0, 0.0); N_FFT];
 
     // STFT(片側スペクトル)
-    let mut spec: Vec<Vec<Complex<f32>>> = Vec::with_capacity(n_frames);
-    let mut buf = vec![Complex::new(0.0, 0.0); N_FFT];
-    for f in 0..n_frames {
-        let s = f * HOP;
-        for i in 0..N_FFT {
-            buf[i] = Complex::new(padded.get(s + i).copied().unwrap_or(0.0) * window[i], 0.0);
+    let mut stft = |x: &[f32]| -> Vec<Vec<Complex<f32>>> {
+        let mut spec = Vec::with_capacity(n_frames);
+        for f in 0..n_frames {
+            let s = f * HOP;
+            for i in 0..N_FFT {
+                // 先頭に pad の無音があるとみなす
+                let v = (s + i)
+                    .checked_sub(pad)
+                    .and_then(|k| x.get(k))
+                    .copied()
+                    .unwrap_or(0.0);
+                buf[i] = Complex::new(v * window[i], 0.0);
+            }
+            fft.process(&mut buf);
+            spec.push(buf[..bins].to_vec());
         }
-        fft.process(&mut buf);
-        spec.push(buf[..bins].to_vec());
-    }
-    let mag: Vec<Vec<f32>> = spec
+        spec
+    };
+    let specs: Vec<Vec<Vec<Complex<f32>>>> = channels.iter().map(|x| stft(x)).collect();
+    let mag: Vec<Vec<f32>> = specs[0]
         .iter()
         .map(|row| row.iter().map(|c| c.norm()).collect())
         .collect();
@@ -72,48 +95,26 @@ pub fn hpss(input: &[f32]) -> HpssResult {
         let mid = scratch.len() / 2;
         *scratch.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1
     };
-    let mut harm = vec![vec![0.0f32; bins]; n_frames];
-    let mut perc = vec![vec![0.0f32; bins]; n_frames];
+    // 持続成分のソフトマスク(打楽器側は 1 − これ)
+    let mut mask_h = vec![vec![0.5f32; bins]; n_frames];
     for f in 0..n_frames {
         let (t0, t1) = (f.saturating_sub(half), (f + half + 1).min(n_frames));
         for b in 0..bins {
-            harm[f][b] = median(&mut (t0..t1).map(|t| mag[t][b]));
+            let h = median(&mut (t0..t1).map(|t| mag[t][b]));
             let (b0, b1) = (b.saturating_sub(half), (b + half + 1).min(bins));
-            perc[f][b] = median(&mut mag[f][b0..b1].iter().copied());
+            let p = median(&mut mag[f][b0..b1].iter().copied());
+            let (h2, p2) = (h * h, p * p);
+            let total = h2 + p2;
+            if total > 1e-20 {
+                mask_h[f][b] = h2 / total;
+            }
         }
     }
 
     // ソフトマスクを掛けて逆変換(窓の 2 乗和で正規化する重ね合わせ)
-    let mut out_h = vec![0.0f32; padded.len()];
-    let mut out_p = vec![0.0f32; padded.len()];
-    let mut norm = vec![0.0f32; padded.len()];
+    let mut norm = vec![0.0f32; padded_len];
     for f in 0..n_frames {
         let s = f * HOP;
-        for (dest, harmonic_part) in [(&mut out_h, true), (&mut out_p, false)] {
-            for b in 0..bins {
-                let h2 = harm[f][b] * harm[f][b];
-                let p2 = perc[f][b] * perc[f][b];
-                let total = h2 + p2;
-                let m = if total > 1e-20 {
-                    if harmonic_part {
-                        h2 / total
-                    } else {
-                        p2 / total
-                    }
-                } else {
-                    0.5
-                };
-                buf[b] = spec[f][b] * m;
-            }
-            // 実信号なので負の周波数は共役で埋める
-            for b in bins..N_FFT {
-                buf[b] = buf[N_FFT - b].conj();
-            }
-            ifft.process(&mut buf);
-            for i in 0..N_FFT {
-                dest[s + i] += buf[i].re / N_FFT as f32 * window[i];
-            }
-        }
         for i in 0..N_FFT {
             norm[s + i] += window[i] * window[i];
         }
@@ -130,10 +131,38 @@ pub fn hpss(input: &[f32]) -> HpssResult {
             })
             .collect()
     };
-    HpssResult {
-        harmonic: finish(out_h),
-        percussive: finish(out_p),
-    }
+    specs
+        .iter()
+        .map(|spec| {
+            let mut out_h = vec![0.0f32; padded_len];
+            let mut out_p = vec![0.0f32; padded_len];
+            for f in 0..n_frames {
+                let s = f * HOP;
+                for (dest, harmonic_part) in [(&mut out_h, true), (&mut out_p, false)] {
+                    for b in 0..bins {
+                        let m = if harmonic_part {
+                            mask_h[f][b]
+                        } else {
+                            1.0 - mask_h[f][b]
+                        };
+                        buf[b] = spec[f][b] * m;
+                    }
+                    // 実信号なので負の周波数は共役で埋める
+                    for b in bins..N_FFT {
+                        buf[b] = buf[N_FFT - b].conj();
+                    }
+                    ifft.process(&mut buf);
+                    for i in 0..N_FFT {
+                        dest[s + i] += buf[i].re / N_FFT as f32 * window[i];
+                    }
+                }
+            }
+            HpssResult {
+                harmonic: finish(out_h),
+                percussive: finish(out_p),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

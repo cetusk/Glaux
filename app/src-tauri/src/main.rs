@@ -350,6 +350,7 @@ async fn record_start(
     count_in_bars: Option<u32>,
     latency_ms: Option<f64>,
     metronome: Option<bool>,
+    stereo: Option<bool>,
 ) -> Result<Value, String> {
     let engine = state.engine()?.clone();
     let dir = state.project_dir();
@@ -365,6 +366,7 @@ async fn record_start(
             count_in,
             latency_ms.unwrap_or(0.0).clamp(0.0, 1000.0) / 1000.0,
             metronome.unwrap_or(true),
+            stereo.unwrap_or(false),
         )
         .map_err(|e| e.to_string())?;
     engine.play();
@@ -894,10 +896,13 @@ async fn record_stop(
     let mut gain_db = 0.0f32;
     if auto_gain.unwrap_or(true) {
         let wav = std::path::Path::new(&dir).join(&imported.asset.path);
-        if let Ok(data) = glaux_engine::load_wav_mono(&wav) {
-            let from = (offset as usize).min(data.frames.len());
-            let peak = data.frames[from..]
+        if let Ok(data) = glaux_engine::load_wav(&wav) {
+            // ステレオは左右それぞれのピーク
+            let (l, r) = data.left_right();
+            let from = (offset as usize).min(l.len());
+            let peak = l[from..]
                 .iter()
+                .chain(&r[from..])
                 .fold(0.0f32, |m, v| m.max(v.abs()));
             if peak > 1e-4 {
                 gain_db = (-6.0 - 20.0 * peak.log10()).clamp(0.0, 30.0);
@@ -921,6 +926,7 @@ async fn record_stop(
         "clip_id": clip_id,
         "track_id": tid,
         "seconds": (result.frames - offset) as f64 / result.sample_rate as f64,
+        "channels": result.channels,
         "clipped": result.clipped,
         "dropped": result.dropped,
         "gain_db": gain_db,
@@ -1020,7 +1026,7 @@ async fn calibrate_start(state: State<'_, AppState>) -> Result<Value, String> {
         "glaux_calib_{}.wav",
         chrono::Local::now().format("%H%M%S")
     ));
-    let clip_start = match engine.start_recording(path, count_in, 0.0, true) {
+    let clip_start = match engine.start_recording(path, count_in, 0.0, true, false) {
         Ok(t) => t,
         Err(e) => {
             engine.set_click_only(false);

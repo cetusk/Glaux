@@ -15,8 +15,44 @@ use std::sync::Arc;
 /// 読み込み済みのサンプル波形(モノラルに合算済み)。
 #[derive(Debug)]
 pub struct SampleData {
+    /// モノラル成分(ステレオ素材なら左右の平均 M = (L + R) / 2)。解析・譜起こし・波形表示はこれを使う
     pub frames: Vec<f32>,
     pub sample_rate: f32,
+    /// ステレオ素材の左右差成分 S = (L − R) / 2(L = M + S、R = M − S)。モノラル素材は None
+    pub side: Option<Vec<f32>>,
+}
+
+impl SampleData {
+    /// モノラルの波形。
+    pub fn mono(frames: Vec<f32>, sample_rate: f32) -> Self {
+        SampleData {
+            frames,
+            sample_rate,
+            side: None,
+        }
+    }
+
+    /// 左右の波形から(同じ長さであること)。
+    pub fn stereo(left: &[f32], right: &[f32], sample_rate: f32) -> Self {
+        let frames = left.iter().zip(right).map(|(l, r)| (l + r) * 0.5).collect();
+        let side = left.iter().zip(right).map(|(l, r)| (l - r) * 0.5).collect();
+        SampleData {
+            frames,
+            sample_rate,
+            side: Some(side),
+        }
+    }
+
+    /// 左右の波形(モノラルなら同じもの)。
+    pub fn left_right(&self) -> (Vec<f32>, Vec<f32>) {
+        match &self.side {
+            Some(side) => (
+                self.frames.iter().zip(side).map(|(m, s)| m + s).collect(),
+                self.frames.iter().zip(side).map(|(m, s)| m - s).collect(),
+            ),
+            None => (self.frames.clone(), self.frames.clone()),
+        }
+    }
 }
 
 /// 焼き込み済みパラメータ(1 トラック分)。
@@ -141,6 +177,7 @@ mod tests {
         Arc::new(SampleData {
             frames,
             sample_rate: sr,
+            side: None,
         })
     }
 

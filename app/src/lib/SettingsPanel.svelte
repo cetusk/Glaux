@@ -446,6 +446,17 @@
       />
       録音の音量を自動で整える(一番大きい所を -6dB に。元の録音は変えません)
     </label>
+    <label class="row">
+      <input
+        type="checkbox"
+        checked={settings.recordStereo}
+        onchange={(e) => {
+          settings.recordStereo = (e.currentTarget as HTMLInputElement).checked;
+          saveSettings();
+        }}
+      />
+      ステレオで録音する(入力が 2 ch 以上のとき。マイク 1 本ならオフのままで)
+    </label>
   </div>
 
   <div class="section">

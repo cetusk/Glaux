@@ -211,7 +211,7 @@ impl EngineHandle {
         self.shared.preview.store(packed, Ordering::Release);
     }
 
-    /// 録音を開始する(既定の入力デバイス → `path` にモノラル WAV)。
+    /// 録音を開始する(既定の入力デバイス → `path` に WAV。`stereo` なら 2 ch 以上の入力をステレオで)。
     /// `count_in_ticks` ぶん先の位置にクリップを置き、その間はメトロノームで
     /// カウントインする(`metronome_on` なら録音中メトロノームを自動 ON)。
     /// `latency_secs` は出力レイテンシ補正(聴いて歌う分の遅れを前へ詰める)。
@@ -223,6 +223,7 @@ impl EngineHandle {
         count_in_ticks: Tick,
         latency_secs: f64,
         metronome_on: bool,
+        stereo: bool,
     ) -> Result<Tick, EngineError> {
         let mut slot = self.recording.lock().expect("recording lock");
         if slot.is_some() || self.is_midi_recording() {
@@ -239,7 +240,7 @@ impl EngineHandle {
             let _ = m.stop();
         }
         let device = self.input_device.lock().expect("input lock").clone();
-        let rec = crate::record::start_input(Some(path), device.as_deref())?;
+        let rec = crate::record::start_input(Some(path), device.as_deref(), stereo)?;
         let metronome_auto = metronome_on && !self.shared.metronome.load(Ordering::Acquire);
         if metronome_on {
             self.shared.metronome.store(true, Ordering::Release);
@@ -512,7 +513,7 @@ impl EngineHandle {
             return Ok(());
         }
         let device = self.input_device.lock().expect("input lock").clone();
-        *slot = Some(crate::record::start_input(None, device.as_deref())?);
+        *slot = Some(crate::record::start_input(None, device.as_deref(), false)?);
         Ok(())
     }
 

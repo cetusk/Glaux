@@ -93,7 +93,8 @@ pub fn separate_clip_commands(
         .assets
         .get(asset)
         .ok_or_else(|| format!("アセットが見つかりません: {asset}"))?;
-    let data = glaux_engine::load_wav_mono(&project_dir.join(&meta.path))?;
+    // ステレオの素材は左右のまま分ける(M と S に同じマスク)
+    let data = glaux_engine::load_wav(&project_dir.join(&meta.path))?;
     // クリップが参照している範囲だけを分ける
     let secs = stretch
         .follow_seconds(clip.length.0 as f64)
@@ -107,26 +108,38 @@ pub fn separate_clip_commands(
     if range.is_empty() {
         return Err("クリップの範囲に音声がありません".to_owned());
     }
+    let side_range = data.side.as_ref().map(|s| &s[from..to]);
 
     let work = project_dir.join("cache").join("stems");
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-    let stems: Vec<(String, Vec<f32>)> = match method {
+    // (名前, M, S)
+    let stems: Vec<Stem> = match method {
         SeparateMethod::Builtin => {
-            let r = glaux_engine::separate::hpss(range);
+            let mut chans: Vec<&[f32]> = vec![range];
+            if let Some(sr) = side_range {
+                chans.push(sr);
+            }
+            let mut r = glaux_engine::separate::hpss_channels(&chans);
+            let side = (r.len() > 1).then(|| r.remove(1));
+            let mid = r.remove(0);
+            let (sp, sh) = match side {
+                Some(s) => (Some(s.percussive), Some(s.harmonic)),
+                None => (None, None),
+            };
             vec![
-                ("打楽器".to_owned(), r.percussive),
-                ("音程楽器".to_owned(), r.harmonic),
+                ("打楽器".to_owned(), mid.percussive, sp),
+                ("音程楽器".to_owned(), mid.harmonic, sh),
             ]
         }
-        SeparateMethod::Demucs => run_demucs(range, data.sample_rate, &work)?,
+        SeparateMethod::Demucs => run_demucs(range, side_range, data.sample_rate, &work)?,
     };
 
     let mut commands = Vec::new();
     let mut tracks = Vec::new();
     let mut view = project.clone();
-    for (i, (label, samples)) in stems.into_iter().enumerate() {
+    for (i, (label, samples, side)) in stems.into_iter().enumerate() {
         let tmp = work.join(format!("{}_{i}.wav", clip.id));
-        write_wav(&tmp, &samples, data.sample_rate as u32)?;
+        write_wav_ms(&tmp, &samples, side.as_deref(), data.sample_rate as u32)?;
         let imported = crate::assets::import_wav(project_dir, &tmp);
         let _ = std::fs::remove_file(&tmp);
         let imported = imported?;
@@ -197,19 +210,47 @@ fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<(), Strin
     w.finalize().map_err(|e| e.to_string())
 }
 
-/// Demucs(htdemucs)で 4 パートに分ける。
+/// 分けた 1 パート: (名前, モノラル成分 M, 左右差成分 S(ステレオのとき))
+type Stem = (String, Vec<f32>, Option<Vec<f32>>);
+
+/// M(と S)を WAV に書く。S があればステレオ(L = M + S、R = M − S)。
+fn write_wav_ms(
+    path: &Path,
+    mid: &[f32],
+    side: Option<&[f32]>,
+    sample_rate: u32,
+) -> Result<(), String> {
+    let Some(side) = side else {
+        return write_wav(path, mid, sample_rate);
+    };
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(path, spec).map_err(|e| e.to_string())?;
+    for (m, s) in mid.iter().zip(side) {
+        w.write_sample(m + s).map_err(|e| e.to_string())?;
+        w.write_sample(m - s).map_err(|e| e.to_string())?;
+    }
+    w.finalize().map_err(|e| e.to_string())
+}
+
+/// Demucs(htdemucs)で 4 パートに分ける(ステレオの素材はステレオのまま渡して受け取る)。
 fn run_demucs(
     range: &[f32],
+    side: Option<&[f32]>,
     sample_rate: f32,
     work: &Path,
-) -> Result<Vec<(String, Vec<f32>)>, String> {
+) -> Result<Vec<Stem>, String> {
     let argv = find_demucs().ok_or_else(|| {
         "Demucs が見つかりません。Python 環境で `pip install demucs` を実行してから再度お試しください\
          (内蔵の分離(打楽器 / 音程楽器)は method: builtin で使えます)"
             .to_owned()
     })?;
     let input = work.join("demucs_input.wav");
-    write_wav(&input, range, sample_rate as u32)?;
+    write_wav_ms(&input, range, side, sample_rate as u32)?;
     let out_dir: PathBuf = work.join("demucs_out");
     let _ = std::fs::remove_dir_all(&out_dir);
     let output = command(&argv)
@@ -232,15 +273,23 @@ fn run_demucs(
         ("other", "その他"),
     ] {
         let path = out_dir.join("htdemucs").join(format!("{file}.wav"));
-        let data = glaux_engine::load_wav_mono(&path)
+        let data = glaux_engine::load_wav(&path)
             .map_err(|e| format!("Demucs の出力を読めません({file}): {e}"))?;
         // Demucs は 44.1kHz で書き出す。元のレートに合わせる
-        let frames = if (data.sample_rate - sample_rate).abs() > 0.5 {
-            glaux_ml::resample(&data.frames, data.sample_rate, sample_rate)
-        } else {
-            data.frames
+        let fit = |x: Vec<f32>| {
+            if (data.sample_rate - sample_rate).abs() > 0.5 {
+                glaux_ml::resample(&x, data.sample_rate, sample_rate)
+            } else {
+                x
+            }
         };
-        stems.push((label.to_owned(), frames));
+        // 元がモノラルなら左右差は捨てる(Demucs は常にステレオで書き出す)
+        let s = if side.is_some() {
+            data.side.clone().map(fit)
+        } else {
+            None
+        };
+        stems.push((label.to_owned(), fit(data.frames.clone()), s));
     }
     let _ = std::fs::remove_dir_all(&out_dir);
     Ok(stems)
@@ -250,6 +299,67 @@ fn run_demucs(
 mod tests {
     use super::*;
     use glaux_core::Tick;
+
+    #[test]
+    fn builtin_separation_keeps_stereo() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 左にクリック(打楽器)、右に持続音(音程楽器)
+        let sr = 22_050u32;
+        let wav = tmp.path().join("st.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: sr,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&wav, spec).unwrap();
+        for i in 0..sr {
+            let t = i as f32 / sr as f32;
+            let click = if i % (sr / 4) < 100 { 0.6 } else { 0.0 };
+            let tone = 0.3 * (std::f32::consts::TAU * 220.0 * t).sin();
+            w.write_sample((click * 20_000.0) as i16).unwrap();
+            w.write_sample((tone * 20_000.0) as i16).unwrap();
+        }
+        w.finalize().unwrap();
+        let imported = crate::assets::import_wav(tmp.path(), &wav).unwrap();
+        let mut project = Project::new("t");
+        let track = Track::new(TrackId::new(), "Mix", TrackKind::Audio);
+        let src_tid = track.id.clone();
+        project.tracks.push(track);
+        let clip_id = ClipId::new();
+        for c in crate::assets::audio_clip_commands(
+            &project,
+            &src_tid,
+            &imported,
+            clip_id.clone(),
+            Tick(0),
+            "mix",
+        )
+        .unwrap()
+        {
+            project.apply(&c).unwrap();
+        }
+        let s = separate_clip_commands(&project, tmp.path(), &clip_id, SeparateMethod::Builtin)
+            .unwrap();
+        project.apply(&Command::batch("sep", s.commands)).unwrap();
+        // 分けたパートの素材はステレオで、打楽器は左、音程楽器は右に寄っている
+        let energy_lr = |ti: usize| {
+            let glaux_core::ClipContent::Audio { asset, .. } = &project.tracks[ti].clips[0].content
+            else {
+                panic!()
+            };
+            let meta = &project.assets[asset];
+            assert_eq!(meta.channels, 2);
+            let d = glaux_engine::load_wav(&tmp.path().join(&meta.path)).unwrap();
+            let (l, r) = d.left_right();
+            let e = |x: &[f32]| x.iter().map(|v| v * v).sum::<f32>();
+            (e(&l), e(&r))
+        };
+        let (pl, pr) = energy_lr(1);
+        let (hl, hr) = energy_lr(2);
+        assert!(pl > pr * 3.0, "打楽器は左: {pl} / {pr}");
+        assert!(hr > hl * 3.0, "音程楽器は右: {hl} / {hr}");
+    }
 
     #[test]
     fn builtin_separation_adds_two_tracks_and_mutes_source() {

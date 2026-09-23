@@ -215,6 +215,7 @@ pub fn build_zones(font: &SoundFont, bank: u16, preset: u16) -> Option<Arc<Vec<Z
                 data: Arc::new(SampleData {
                     frames,
                     sample_rate,
+                    side: None,
                 }),
                 loop_range,
                 loop_until_release,

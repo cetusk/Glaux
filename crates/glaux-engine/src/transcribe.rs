@@ -759,6 +759,7 @@ mod tests {
         SampleData {
             frames,
             sample_rate: sr,
+            side: None,
         }
     }
 
@@ -834,6 +835,7 @@ mod tests {
         let data = SampleData {
             frames,
             sample_rate: sr,
+            side: None,
         };
         let notes = transcribe_mono(&data, &TranscribeOptions::default());
         assert_eq!(notes.len(), 1, "{notes:?}");
@@ -872,6 +874,7 @@ mod tests {
         SampleData {
             frames,
             sample_rate: sr,
+            side: None,
         }
     }
 
@@ -924,6 +927,7 @@ mod tests {
             &SampleData {
                 frames,
                 sample_rate: sr,
+                side: None,
             },
             &TranscribeOptions::default(),
         );
@@ -970,6 +974,7 @@ mod tests {
         let data = SampleData {
             frames,
             sample_rate: sr,
+            side: None,
         };
         let notes = transcribe_mono(&data, &TranscribeOptions::default());
         assert_eq!(notes.len(), 4, "{notes:?}");

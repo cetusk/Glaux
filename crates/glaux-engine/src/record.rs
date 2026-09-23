@@ -1,4 +1,4 @@
-//! 録音: オーディオ入力デバイス → モノラル WAV。
+//! 録音: オーディオ入力デバイス → WAV(モノラル。ステレオ指定で入力が 2 ch 以上なら最初の 2 ch をステレオで)。
 //!
 //! 入力コールバック(オーディオスレッド)はロックフリーのリングバッファに
 //! 書くだけで、ファイル書き込みは専用スレッドが行う(CLAUDE.md の RT 条件)。
@@ -68,6 +68,21 @@ impl Ring {
         true
     }
 
+    /// producer(オーディオスレッド)。左右の 2 サンプルを組で積む(片方だけ入って組がずれないように)。
+    pub fn push_pair(&self, a: f32, b: f32) -> bool {
+        let cap = self.buf.len();
+        let h = self.head.load(Ordering::Relaxed);
+        let t = self.tail.load(Ordering::Acquire);
+        if h - t + 2 > cap {
+            self.dropped.fetch_add(2, Ordering::Relaxed);
+            return false;
+        }
+        self.buf[h % cap].store(a.to_bits(), Ordering::Relaxed);
+        self.buf[(h + 1) % cap].store(b.to_bits(), Ordering::Relaxed);
+        self.head.store(h + 2, Ordering::Release);
+        true
+    }
+
     /// consumer(書き込みスレッド)。溜まっている分を全部 `out` に移す。
     pub fn drain_into(&self, out: &mut Vec<f32>) {
         let cap = self.buf.len();
@@ -90,6 +105,8 @@ pub struct RecordResult {
     pub path: PathBuf,
     pub frames: u64,
     pub sample_rate: u32,
+    /// 1 = モノラル、2 = ステレオ
+    pub channels: u16,
     /// 入力がフルスケールを超えた(WAV 上でクリップした)サンプル数
     pub clipped: u64,
     /// リングバッファ溢れで失ったサンプル数(0 が正常)
@@ -141,9 +158,14 @@ pub fn default_input_name() -> Option<String> {
         .map(|d| device_name(&d))
 }
 
-/// 入力を開始する。`path` があればモノラル 16bit WAV に録音し、None なら
+/// 入力を開始する。`path` があれば 16bit WAV に録音し、None なら
 /// レベル測定だけ(入力テスト)。`device` は入力デバイス名(None で OS 既定)。
-pub fn start_input(path: Option<PathBuf>, device: Option<&str>) -> Result<Recording, EngineError> {
+/// `stereo` なら入力が 2 ch 以上のとき最初の 2 ch をステレオで録る(1 ch の入力はモノラル)。
+pub fn start_input(
+    path: Option<PathBuf>,
+    device: Option<&str>,
+    stereo: bool,
+) -> Result<Recording, EngineError> {
     let stop = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(u32, Arc<Ring>), EngineError>>();
@@ -154,7 +176,7 @@ pub fn start_input(path: Option<PathBuf>, device: Option<&str>) -> Result<Record
     std::thread::Builder::new()
         .name("glaux-record".into())
         .spawn(move || {
-            let (stream, sample_rate, ring) = match open_input(device.as_deref()) {
+            let (stream, sample_rate, ring, out_ch) = match open_input(device.as_deref(), stereo) {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -168,7 +190,7 @@ pub fn start_input(path: Option<PathBuf>, device: Option<&str>) -> Result<Record
             let _ = ready_tx.send(Ok((sample_rate, ring.clone())));
 
             let result = match &out_path {
-                Some(p) => write_loop(p, sample_rate, &ring, &stop_flag),
+                Some(p) => write_loop(p, sample_rate, out_ch, &ring, &stop_flag),
                 None => discard_loop(sample_rate, &ring, &stop_flag),
             };
             drop(stream);
@@ -204,12 +226,15 @@ fn discard_loop(
         path: PathBuf::new(),
         frames: 0,
         sample_rate,
+        channels: 1,
         clipped: 0,
         dropped: ring.dropped(),
     })
 }
 
-fn open_input(name: Option<&str>) -> Result<(cpal::Stream, u32, Arc<Ring>), EngineError> {
+type Input = (cpal::Stream, u32, Arc<Ring>, u16);
+
+fn open_input(name: Option<&str>, stereo: bool) -> Result<Input, EngineError> {
     let host = cpal::default_host();
     let device = match name {
         Some(n) => find_input_device(n)
@@ -221,6 +246,7 @@ fn open_input(name: Option<&str>) -> Result<(cpal::Stream, u32, Arc<Ring>), Engi
         .map_err(|e| EngineError::Stream(e.to_string()))?;
     let sample_rate = config.sample_rate();
     let channels = config.channels().max(1) as usize;
+    let out_ch: u16 = if stereo && channels >= 2 { 2 } else { 1 };
     let ring = Arc::new(Ring::new(RING_CAP));
     let err_fn = |e| tracing::error!("録音ストリームエラー: {e}");
     let stream_config = config.config();
@@ -229,7 +255,7 @@ fn open_input(name: Option<&str>) -> Result<(cpal::Stream, u32, Arc<Ring>), Engi
             let ring = ring.clone();
             device.build_input_stream(
                 stream_config,
-                move |data: &[f32], _| push_mono(&ring, data, channels, |v| v),
+                move |data: &[f32], _| push_frames(&ring, data, channels, out_ch, |v| v),
                 err_fn,
                 None,
             )
@@ -238,7 +264,9 @@ fn open_input(name: Option<&str>) -> Result<(cpal::Stream, u32, Arc<Ring>), Engi
             let ring = ring.clone();
             device.build_input_stream(
                 stream_config,
-                move |data: &[i16], _| push_mono(&ring, data, channels, |v| v as f32 / 32768.0),
+                move |data: &[i16], _| {
+                    push_frames(&ring, data, channels, out_ch, |v| v as f32 / 32768.0)
+                },
                 err_fn,
                 None,
             )
@@ -247,8 +275,30 @@ fn open_input(name: Option<&str>) -> Result<(cpal::Stream, u32, Arc<Ring>), Engi
     }
     .map_err(|e| EngineError::Stream(e.to_string()))?;
     let name = device_name(&device);
-    tracing::info!("録音入力: {name} / {sample_rate} Hz / {channels} ch");
-    Ok((stream, sample_rate, ring))
+    tracing::info!("録音入力: {name} / {sample_rate} Hz / {channels} ch → {out_ch} ch");
+    Ok((stream, sample_rate, ring, out_ch))
+}
+
+/// 入力フレームを `out_ch`(1 = モノラルに合算、2 = 最初の 2 ch)にしてリングへ
+/// (オーディオスレッド。アロケーションなし)。
+fn push_frames<T: Copy>(
+    ring: &Ring,
+    data: &[T],
+    channels: usize,
+    out_ch: u16,
+    conv: impl Fn(T) -> f32,
+) {
+    if out_ch < 2 || channels < 2 {
+        push_mono(ring, data, channels, conv);
+        return;
+    }
+    let mut peak = 0.0f32;
+    for frame in data.chunks(channels) {
+        let (l, r) = (conv(frame[0]), conv(frame[1.min(frame.len() - 1)]));
+        peak = peak.max(l.abs()).max(r.abs());
+        ring.push_pair(l, r);
+    }
+    ring.note_peak(peak);
 }
 
 /// 入力フレームをモノラル化してリングへ(オーディオスレッド。アロケーションなし)。
@@ -267,6 +317,7 @@ fn push_mono<T: Copy>(ring: &Ring, data: &[T], channels: usize, conv: impl Fn(T)
 fn write_loop(
     path: &PathBuf,
     sample_rate: u32,
+    out_ch: u16,
     ring: &Ring,
     stop: &AtomicBool,
 ) -> Result<RecordResult, EngineError> {
@@ -274,7 +325,7 @@ fn write_loop(
         std::fs::create_dir_all(parent).map_err(|e| EngineError::Stream(e.to_string()))?;
     }
     let spec = hound::WavSpec {
-        channels: 1,
+        channels: out_ch,
         sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
@@ -282,7 +333,7 @@ fn write_loop(
     let mut writer =
         hound::WavWriter::create(path, spec).map_err(|e| EngineError::Stream(e.to_string()))?;
     let mut chunk: Vec<f32> = Vec::with_capacity(8192);
-    let mut frames = 0u64;
+    let mut samples = 0u64;
     let mut clipped = 0u64;
     {
         let mut flush = |chunk: &mut Vec<f32>| -> Result<(), EngineError> {
@@ -295,7 +346,7 @@ fn write_loop(
                     .write_sample(s)
                     .map_err(|e| EngineError::Stream(e.to_string()))?;
             }
-            frames += chunk.len() as u64;
+            samples += chunk.len() as u64;
             chunk.clear();
             Ok(())
         };
@@ -317,8 +368,9 @@ fn write_loop(
         .map_err(|e| EngineError::Stream(e.to_string()))?;
     Ok(RecordResult {
         path: path.clone(),
-        frames,
+        frames: samples / out_ch.max(1) as u64,
         sample_rate,
+        channels: out_ch,
         clipped,
         dropped: ring.dropped(),
     })
@@ -364,13 +416,38 @@ mod tests {
             ring.push(v);
         }
         stop.store(true, Ordering::Release);
-        let r = write_loop(&path, 48_000, &ring, &stop).unwrap();
+        let r = write_loop(&path, 48_000, 1, &ring, &stop).unwrap();
         assert_eq!(r.frames, 300);
         assert_eq!(r.clipped, 2);
         assert_eq!(r.dropped, 0);
         let reader = hound::WavReader::open(&path).unwrap();
         assert_eq!(reader.spec().sample_rate, 48_000);
         assert_eq!(reader.duration(), 300);
+    }
+
+    #[test]
+    fn stereo_frames_keep_pairs_and_write_two_channels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rec/st.wav");
+        let ring = Arc::new(Ring::new(1024));
+        let stop = Arc::new(AtomicBool::new(false));
+        // 4 ch の入力から最初の 2 ch を取る(左 0.5、右 -0.25)
+        let data: Vec<f32> = (0..100).flat_map(|_| [0.5f32, -0.25, 0.9, 0.9]).collect();
+        push_frames(&ring, &data, 4, 2, |v| v);
+        stop.store(true, Ordering::Release);
+        let r = write_loop(&path, 48_000, 2, &ring, &stop).unwrap();
+        assert_eq!((r.frames, r.channels), (100, 2));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.spec().channels, 2);
+        let s: Vec<i16> = reader.samples::<i16>().map(|v| v.unwrap()).collect();
+        assert!(s[0] > 16_000 && s[1] < -8_000, "{:?}", &s[..4]);
+        // 満杯のときは組ごと捨てる(片方だけ入らない)
+        let small = Ring::new(3);
+        assert!(small.push_pair(1.0, 2.0));
+        assert!(!small.push_pair(3.0, 4.0));
+        let mut out = Vec::new();
+        small.drain_into(&mut out);
+        assert_eq!(out, vec![1.0, 2.0]);
     }
 
     #[test]
