@@ -926,6 +926,10 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     省略表示のまま送られたら今の状態に戻す。プリセットは list_plugin_presets / load_plugin_preset に fx_id
   - テスト: `GLAUX_TEST_CLAP_FX`(例 Surge XT Effects。既定の効果は Delay)で、入力が通る・トラック / マスターで効く・
     バイパスで完全に素通し・つまみが一覧に出て動かせる
+  - UI(音作りビュー): 「エフェクトを追加…」に「CLAP プラグイン」のグループ(`clap_plugins` の effect: true)。
+    CLAP エフェクトの行は「CLAP」の目印 + プラグイン名、「画面」ボタン(`clap_open_gui {fxId}`)、つまみは current_text
+    (プラグイン自身の表示)を優先、64 個を超える分は案内だけ。見つからないプラグインは注意を出す。
+    エフェクトのプリセット選びは UI には未実装(AI からは load_plugin_preset {fx_id})
 - **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
   (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
   - 探索: `GLAUX_CLAP_PATH` → `CLAP_PATH` → OS 標準(Windows は `%COMMONPROGRAMFILES%\CLAP` と
