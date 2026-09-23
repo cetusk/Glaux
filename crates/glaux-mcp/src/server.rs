@@ -1655,6 +1655,8 @@ impl GlauxServer {
 
     #[tool(
         description = "CLAP プラグイン(例 Surge XT。音源なら track_id、エフェクトなら fx_id)のプリセット(作り込まれた音色)を一覧する。\
+        プリセットを公開していないプラグインもある(例 Surge XT Effects は 0 件)。そのときは人間にプラグインの画面の\
+        プリセットメニューから選んでもらうか、list_params のつまみで作る。\
         filter(名前・カテゴリ・作者の部分一致、例 \"pad\" / \"bass\")や category(フォルダ名、例 \"Pads\")で絞り込む。\
         返り値の categories でどんな系統があるか分かる。current_preset は今読み込まれているプリセット名。\
         プリセットにはつまみとして公開されていない設定(LFO のテンポ同期、モジュレーションの割り当て、\

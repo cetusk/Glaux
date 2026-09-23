@@ -636,7 +636,10 @@
           {#if clapPresetList === null}
             <div class="hint">プリセットを探しています…</div>
           {:else if clapPresetList.length === 0}
-            <div class="hint">このプラグインのプリセットは見つかりませんでした(一覧に対応していないプラグインもあります)。</div>
+            <div class="hint">
+              このプラグインはプリセットを Glaux に公開していません。プラグインの画面のプリセットメニューから選んでください
+              (選んだ設定は自動でプロジェクトに保存され、Ctrl+Z で戻せます)。
+            </div>
           {:else}
             <div class="row gap">
               <select bind:value={clapCategory} title="カテゴリ(フォルダ)">
@@ -755,7 +758,11 @@
                   {#if fxPresetList === null}
                     <div class="hint">プリセットを探しています…</div>
                   {:else if fxPresetList.length === 0}
-                    <div class="hint">このプラグインのプリセットは見つかりませんでした(一覧に対応していないプラグインもあります)。</div>
+                    <div class="hint">
+                      このプラグインはプリセットを Glaux に公開していません(例: Surge XT Effects)。
+                      「画面」を開き、プラグイン自身のプリセットメニューから選んでください。
+                      選んだ設定は自動でプロジェクトに保存され、Ctrl+Z で戻せます。
+                    </div>
                   {:else}
                     <select
                       class="grow"

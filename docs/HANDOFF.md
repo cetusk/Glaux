@@ -961,6 +961,8 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     CLAP エフェクトの行は「CLAP」の目印 + プラグイン名、「画面」ボタン(`clap_open_gui {fxId}`)、つまみは current_text
     (プラグイン自身の表示)を優先、64 個を超える分は案内だけ。見つからないプラグインは注意を出す。
     CLAP エフェクトの行の「プリセット」でプラグインのプリセットをカテゴリ別の一覧から選べる
+    (Surge XT Effects は preset-discovery も preset-load も持たない = Glaux からは 0 件。FX プリセットは
+    プラグインの画面の中だけで扱われる。画面で選べば状態として保存される。0 件のときはそう案内する)
     (Tauri `clap_presets` / `clap_load_preset` に fxId。読み込みは set_effect_state + 上書き値の削除 + preset 名のまとめ 1 件)
 - **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
   (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
