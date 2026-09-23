@@ -2,15 +2,18 @@
 name = "glaux-engine"
 version = "0.1.0"
 edition.workspace = true
-rust-version.workspace = true
+# glaux-clap(clack)が新しい Rust を要求するため個別指定
+rust-version = "1.88"
 license.workspace = true
 description = "Realtime audio engine for Glaux: cpal output, RT-safe renderer, playback data built from the project model"
 
 [dependencies]
 glaux-core = { path = "../glaux-core" }
 glaux-dsp = { path = "../glaux-dsp" }
+glaux-clap = { path = "../glaux-clap" }
 cpal.workspace = true
 midir.workspace = true
+base64.workspace = true
 arc-swap.workspace = true
 hound.workspace = true
 rustysynth.workspace = true

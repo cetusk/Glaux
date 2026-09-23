@@ -28,11 +28,33 @@ pub fn render_project(
     sample_rate: f64,
     bank: &crate::data::SampleBank,
 ) -> Result<Vec<f32>, ExportError> {
-    let data = build_playback_data(project, sample_rate, bank);
+    // CLAP プラグインのトラックは、このスレッドで書き出し専用のインスタンスを作って鳴らす
+    let slots = Arc::new(crate::plugins::new_slots());
+    let has_plugins = project.tracks.iter().any(|t| {
+        t.device
+            .as_ref()
+            .is_some_and(|d| matches!(d.source, glaux_core::PluginSource::Clap { .. }))
+    });
+    let (offline, data) = if has_plugins {
+        let (offline, map) = crate::plugins::OfflinePlugins::create(project, sample_rate, &slots);
+        let mut bank = bank.clone();
+        bank.plugin_slots = map;
+        (
+            Some(offline),
+            build_playback_data(project, sample_rate, &bank),
+        )
+    } else {
+        (None, build_playback_data(project, sample_rate, bank))
+    };
     if data.events.is_empty() && data.audio_events.is_empty() {
+        if let Some(o) = offline {
+            o.finish(slots.iter().filter_map(|s| s.take_incoming()).collect());
+        }
         return Err(ExportError::Empty);
     }
-    let shared = Arc::new(Shared::new(data));
+    let mut shared = Shared::new(data);
+    shared.plugin_slots = slots;
+    let shared = Arc::new(shared);
     shared.playing.store(true, Ordering::Release);
     let mut renderer = Renderer::new(shared.clone());
 
@@ -48,6 +70,9 @@ pub fn render_project(
     while shared.playing.load(Ordering::Acquire) && out.len() / 2 < cap {
         renderer.process(&mut buf, 2);
         out.extend_from_slice(&buf);
+    }
+    if let Some(o) = offline {
+        o.finish(renderer.take_plugins());
     }
 
     // 末尾の無音を切り詰める(+0.5 秒の余白を残す)
@@ -114,7 +139,7 @@ mod tests {
     fn renders_project_offline() {
         let samples = render_project(&test_project(), 48_000.0, &Default::default()).unwrap();
         // 0.5 秒のノート + 余韻。ステレオなので偶数長
-        assert!(samples.len() % 2 == 0);
+        assert!(samples.len().is_multiple_of(2));
         assert!(samples.len() as f64 / 2.0 / 48_000.0 > 0.5);
         let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
         assert!(rms > 0.01, "音が入っているはず");

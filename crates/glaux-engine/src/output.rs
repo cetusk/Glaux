@@ -55,6 +55,8 @@ pub struct EngineHandle {
     /// ライブ演奏の送り先トラックと、index 解決用の直近のトラック順
     live_target: Arc<Mutex<Option<TrackId>>>,
     track_order: Arc<Mutex<Vec<TrackId>>>,
+    /// CLAP プラグイン(トラックへの割り当てとプラグインのスレッド)
+    plugins: Arc<crate::plugins::PluginManager>,
 }
 
 /// 進行中の MIDI 録音の付帯情報。
@@ -107,6 +109,7 @@ impl EngineHandle {
         let data = {
             let mut bank = self.bank.lock().expect("bank lock");
             bank.sync(project, project_dir);
+            bank.plugin_slots = self.plugins.sync(project, self.sample_rate());
             Arc::new(build_playback_data(project, self.sample_rate(), &bank))
         };
         let old = self.shared.data.swap(data);
@@ -284,6 +287,18 @@ impl EngineHandle {
 
     pub fn is_recording(&self) -> bool {
         self.recording.lock().expect("recording lock").is_some()
+    }
+
+    // ---- CLAP プラグイン ----
+
+    /// トラックに載っている CLAP プラグインの今の状態(base64。プロジェクトへ保存する用)。
+    pub fn save_plugin_state(&self, track: &TrackId) -> Result<String, String> {
+        self.plugins.save_state(track)
+    }
+
+    /// 保存した状態をプロジェクトに書いたことを知らせる(読み込み直しを防ぐ)。
+    pub fn note_plugin_state_saved(&self, track: &TrackId, state: &str) {
+        self.plugins.note_state_saved(track, state);
     }
 
     // ---- MIDI キーボード ----
@@ -603,6 +618,9 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                 midi_seen: Arc::new(AtomicU64::new(0)),
                 live_target: Arc::new(Mutex::new(None)),
                 track_order: Arc::new(Mutex::new(Vec::new())),
+                plugins: Arc::new(crate::plugins::PluginManager::start(
+                    shared.plugin_slots.clone(),
+                )),
             };
             let _ = tx.send(Ok(handle.clone()));
             // ストリームはこのスレッドが持ち続ける(cpal::Stream は Send でない)

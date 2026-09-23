@@ -120,7 +120,9 @@ pub fn analyze_project(
 
     let frames = sliced.len() / 2;
     let mono: Vec<f32> = sliced
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| (c[0] + c[1]) * 0.5)
         .collect();
 

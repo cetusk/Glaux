@@ -12,7 +12,9 @@
 
 use crate::data::{db_to_amp, pan_gains, AutoPoint, PlaybackData, MAX_EFFECT_SLOTS, MAX_TRACKS};
 use crate::midi::{LiveEvent, LiveQueue, LIVE_NO_TRACK};
+use crate::plugins::{PluginSlot, Processor, MAX_PLUGINS};
 use arc_swap::ArcSwap;
+use glaux_clap::{NoteMsg, MAX_EVENTS, MAX_FRAMES};
 use glaux_core::Curve;
 use glaux_dsp::{EffectParams, EffectState, VoiceState};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -70,6 +72,8 @@ pub struct Shared {
     /// MIDI 録音で「いま聞こえている位置」をブロック内まで推定するのに使う
     pub block_frames: AtomicU32,
     pub pos_nanos: AtomicU64,
+    /// CLAP プラグインの処理窓口の受け渡し口([`crate::plugins`])
+    pub plugin_slots: Arc<[PluginSlot; MAX_PLUGINS]>,
 }
 
 /// オーディオ処理の負荷統計(アトミック。オーディオスレッドからロックなしで更新)。
@@ -154,6 +158,7 @@ impl Shared {
             epoch: std::time::Instant::now(),
             block_frames: AtomicU32::new(0),
             pos_nanos: AtomicU64::new(0),
+            plugin_slots: Arc::new(crate::plugins::new_slots()),
         }
     }
 
@@ -247,6 +252,20 @@ struct LiveVoice {
     state: VoiceState,
 }
 
+/// プラグインへ送ったノートの note off 待ち。
+#[derive(Clone, Copy)]
+struct PendingOff {
+    slot: u8,
+    key: u8,
+    /// この位置で離す。`seq` なら再生位置(サンプル)、そうでなければ `clock` 基準。
+    /// `u64::MAX` は鍵盤を離すまで(ライブ演奏)
+    end: u64,
+    seq: bool,
+}
+
+/// 同時に鳴らしておけるプラグインのノート数
+const MAX_PENDING_OFFS: usize = 1024;
+
 pub struct Renderer {
     shared: Arc<Shared>,
     voices: Vec<Voice>,
@@ -261,6 +280,17 @@ pub struct Renderer {
     sustain: bool,
     /// ライブ演奏の残響を停止中にも鳴らす残りサンプル数
     live_tail: u32,
+    /// CLAP プラグインの処理窓口(スロット別。受け取りは [`PluginSlot`] 経由)
+    plugins: Vec<Option<Box<Processor>>>,
+    /// このブロックでプラグインへ送るノート(スロット別、時刻順)
+    plugin_notes: Vec<Vec<NoteMsg>>,
+    /// プラグインの出力(スロット別の左右。このブロックの分)
+    plugin_out: Vec<[Vec<f32>; 2]>,
+    plugin_pending: Vec<PendingOff>,
+    /// このブロックでプラグインが鳴らすトラック → スロット
+    track_plugin: [Option<usize>; MAX_TRACKS],
+    /// 再生と無関係に進むサンプル時計(試聴・ライブ演奏の長さに使う)
+    clock: u64,
     /// エフェクト状態プール(リバーブのバッファ込みで起動時に確保)
     effect_states: Vec<EffectState>,
     /// トラックごとの無音連続サンプル数(残響が消えたらエフェクト処理を省く)
@@ -329,6 +359,16 @@ impl Renderer {
             live_voices: Vec::with_capacity(MAX_LIVE_VOICES),
             sustain: false,
             live_tail: 0,
+            plugins: (0..MAX_PLUGINS).map(|_| None).collect(),
+            plugin_notes: (0..MAX_PLUGINS)
+                .map(|_| Vec::with_capacity(MAX_EVENTS))
+                .collect(),
+            plugin_out: (0..MAX_PLUGINS)
+                .map(|_| [vec![0.0; MAX_FRAMES], vec![0.0; MAX_FRAMES]])
+                .collect(),
+            plugin_pending: Vec::with_capacity(MAX_PENDING_OFFS),
+            track_plugin: [None; MAX_TRACKS],
+            clock: 0,
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
@@ -375,7 +415,10 @@ impl Renderer {
         flush_denormals();
         let t0 = std::time::Instant::now();
         let was_playing = self.was_playing;
-        self.process_inner(out, channels);
+        // プラグインのバッファ長を超えないよう、長いブロックは分けて処理する
+        for chunk in out.chunks_mut(MAX_FRAMES * channels.max(1)) {
+            self.process_inner(chunk, channels);
+        }
 
         // 負荷統計(ロック・アロケーションなし)
         let sr = self.shared.data.load().sample_rate.max(1.0);
@@ -456,6 +499,16 @@ impl Renderer {
 
         let sr = data.sample_rate as f32;
 
+        // CLAP プラグイン: 窓口の受け取り・返却と、このブロックのノート列の準備
+        self.exchange_plugins();
+        for n in self.plugin_notes.iter_mut() {
+            n.clear();
+        }
+        self.refresh_track_plugins(data);
+        if resync {
+            self.plugins_all_off(true);
+        }
+
         // ノート試聴要求(カウンタ変化で 1 回だけ発音)
         let preview_req = self.shared.preview.load(Ordering::Acquire);
         if preview_req != self.last_preview && preview_req != 0 {
@@ -464,11 +517,23 @@ impl Renderer {
             let dur_ms = ((preview_req >> 16) & 0xFFFF) as u32;
             let pitch = ((preview_req >> 8) & 0xFF) as u8;
             let vel = (preview_req & 0xFF) as u8;
+            self.refresh_track_plugins(data);
+            let plugin_slot = self.track_plugin.get(track).copied().flatten();
+            if let Some(slot) = plugin_slot {
+                // プラグインのトラック: ノートを送り、長さぶん後に離す
+                self.plugin_note_on(slot, pitch, vel as f32 / 127.0, 0);
+                self.push_pending(PendingOff {
+                    slot: slot as u8,
+                    key: pitch,
+                    end: self.clock + (dur_ms as f64 / 1000.0 * data.sample_rate) as u64,
+                    seq: false,
+                });
+            }
             let (instrument, gain_l, gain_r) = match data.tracks.get(track) {
                 Some(mix) => (mix.instrument.clone(), mix.gain_l, mix.gain_r),
                 None => (glaux_dsp::InstrumentParams::default(), 0.8, 0.8),
             };
-            if self.preview_voices.len() < MAX_PREVIEW_VOICES {
+            if plugin_slot.is_none() && self.preview_voices.len() < MAX_PREVIEW_VOICES {
                 let freq = crate::data::pitch_to_freq(pitch);
                 let state = VoiceState::start(
                     &instrument,
@@ -496,13 +561,22 @@ impl Renderer {
         if playing && !self.was_playing && !resync {
             self.resync_audio(data);
         }
+        if !playing && self.was_playing {
+            // 止めたらプラグインで鳴っている曲のノートを離す
+            self.plugins_all_off(true);
+        }
         self.was_playing = playing;
+        let any_plugin = self.plugins.iter().any(Option::is_some);
         if !playing {
             self.voices.clear();
             self.audio_voices.clear();
-            if self.preview_voices.is_empty() && self.live_voices.is_empty() && self.live_tail == 0
+            if self.preview_voices.is_empty()
+                && self.live_voices.is_empty()
+                && self.live_tail == 0
+                && !any_plugin
             {
                 self.last_tick = data.sample_to_tick(self.pos);
+                self.clock += (out.len() / channels) as u64;
                 self.publish_pos(out.len() / channels);
                 return;
             }
@@ -526,7 +600,7 @@ impl Renderer {
         let metronome = self.shared.metronome.load(Ordering::Acquire);
         let click_only = self.shared.click_only.load(Ordering::Acquire);
         if metronome && playing {
-            if self.next_beat.map_or(true, |b| b.sample < self.pos) {
+            if self.next_beat.is_none_or(|b| b.sample < self.pos) {
                 self.next_beat = data.next_beat(self.pos);
             }
         } else {
@@ -578,6 +652,35 @@ impl Renderer {
                 cursor = cursor.saturating_sub(1);
                 let v = eval_auto(points, &mut cursor, self.pos);
                 self.inst_scratch[ti].set_continuous(name, v);
+            }
+        }
+
+        // CLAP プラグイン: このブロックのノートを集めて、先にブロック単位で処理しておく
+        if any_plugin {
+            self.collect_plugin_notes(
+                data,
+                frames,
+                playing && !click_only,
+                looping,
+                loop_start,
+                loop_end,
+            );
+            for slot in 0..MAX_PLUGINS {
+                let Some(p) = self.plugins[slot].as_mut() else {
+                    continue;
+                };
+                p.clap.process(frames, &self.plugin_notes[slot]);
+                let [ol, or] = &mut self.plugin_out[slot];
+                match p.clap.output() {
+                    Some((l, r)) => {
+                        ol[..frames].copy_from_slice(&l[..frames]);
+                        or[..frames].copy_from_slice(&r[..frames]);
+                    }
+                    None => {
+                        ol[..frames].fill(0.0);
+                        or[..frames].fill(0.0);
+                    }
+                }
             }
         }
 
@@ -647,7 +750,8 @@ impl Renderer {
                 let e = data.events[self.next_event];
                 self.next_event += 1;
                 let mix = data.tracks.get(e.track as usize);
-                if let Some(mix) = mix.filter(|m| m.audible) {
+                // プラグインのトラックは collect_plugin_notes で送る
+                if let Some(mix) = mix.filter(|m| m.audible && m.plugin.is_none()) {
                     if self.voices.len() < MAX_VOICES {
                         // 発音時パラメータ(pluck 等)にもスイープ中の値を反映する
                         let ti = e.track as usize;
@@ -793,7 +897,15 @@ impl Renderer {
             let tail_limit = (4.0 * sr) as u32;
             for (ti, mix) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
                 let mono = track_mono[ti];
-                if mono == 0.0 {
+                // CLAP プラグインの出力(ステレオ)
+                let (el, er) = match self.track_plugin[ti] {
+                    Some(slot) => (
+                        self.plugin_out[slot][0][frame],
+                        self.plugin_out[slot][1][frame],
+                    ),
+                    None => (0.0, 0.0),
+                };
+                if mono == 0.0 && el == 0.0 && er == 0.0 {
                     self.track_silence[ti] = self.track_silence[ti].saturating_add(1);
                 } else {
                     self.track_silence[ti] = 0;
@@ -816,17 +928,24 @@ impl Renderer {
                     let (pl, pr) = pan_gains(pan);
                     (amp * pl, amp * pr)
                 };
+                // ステレオ出力のプラグインは、パンを左右バランスとして掛ける
+                // (等パワーのパンは中央で -3dB になるので √2 倍して中央を 0dB に)
+                let (gl, gr) = if self.track_plugin[ti].is_some() {
+                    (gl * std::f32::consts::SQRT_2, gr * std::f32::consts::SQRT_2)
+                } else {
+                    (gl, gr)
+                };
 
                 if mix.effects.is_empty() {
-                    l += mono * gl;
-                    r += mono * gr;
+                    l += (mono + el) * gl;
+                    r += (mono + er) * gr;
                     continue;
                 }
                 // 長く無音のトラックはチェーンごとスキップ(CPU 節約)
                 if self.track_silence[ti] > tail_limit {
                     continue;
                 }
-                let (mut fl, mut fr) = (mono, mono);
+                let (mut fl, mut fr) = (mono + el, mono + er);
                 for fx in &mix.effects {
                     let params = self.fx_scratch[fx.slot as usize]
                         .as_ref()
@@ -901,7 +1020,203 @@ impl Renderer {
         }
 
         self.last_tick = data.sample_to_tick(self.pos);
+        self.clock += frames as u64;
         self.publish_pos(frames);
+    }
+
+    // ---- CLAP プラグイン ----
+
+    /// 窓口の受け取り(新しい世代)と返却(外すよう頼まれた・置き換えられた世代)。
+    fn exchange_plugins(&mut self) {
+        let slots = self.shared.plugin_slots.clone();
+        for (i, slot) in slots.iter().enumerate() {
+            let remove = slot.remove_requested();
+            if self.plugins[i].as_ref().is_some_and(|p| p.gen == remove) && slot.outgoing_free() {
+                if let Some(mut p) = self.plugins[i].take() {
+                    p.clap.stop();
+                    if let Err(back) = slot.put_outgoing(p) {
+                        self.plugins[i] = Some(back); // 返却口が空いたら次のブロックで
+                    }
+                }
+            }
+            // 置き換え: 今の窓口を返せるときだけ新しい窓口を受け取る
+            if self.plugins[i].is_none() || slot.outgoing_free() {
+                if let Some(new) = slot.take_incoming() {
+                    if let Some(mut old) = self.plugins[i].take() {
+                        old.clap.stop();
+                        let _ = slot.put_outgoing(old);
+                    }
+                    self.plugins[i] = Some(new);
+                }
+            }
+        }
+    }
+
+    /// 各トラックのプラグインが使える状態か(窓口が届いていて世代が合う)を調べる。
+    fn refresh_track_plugins(&mut self, data: &PlaybackData) {
+        self.track_plugin = [None; MAX_TRACKS];
+        for (ti, mix) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
+            if let Some((slot, gen)) = mix.plugin {
+                let slot = slot as usize;
+                if self
+                    .plugins
+                    .get(slot)
+                    .and_then(|p| p.as_ref())
+                    .is_some_and(|p| p.gen == gen)
+                {
+                    self.track_plugin[ti] = Some(slot);
+                }
+            }
+        }
+    }
+
+    fn plugin_note_on(&mut self, slot: usize, key: u8, velocity: f32, time: u32) {
+        let notes = &mut self.plugin_notes[slot];
+        if notes.len() < MAX_EVENTS {
+            notes.push(NoteMsg::On {
+                time,
+                key,
+                velocity: velocity.clamp(0.0, 1.0),
+            });
+        }
+    }
+
+    fn plugin_note_off(&mut self, slot: usize, key: u8, time: u32) {
+        let notes = &mut self.plugin_notes[slot];
+        if notes.len() < MAX_EVENTS {
+            notes.push(NoteMsg::Off { time, key });
+        }
+    }
+
+    fn push_pending(&mut self, p: PendingOff) {
+        if self.plugin_pending.len() < MAX_PENDING_OFFS {
+            self.plugin_pending.push(p);
+        }
+    }
+
+    /// プラグインの音を離す(`seq_only` なら曲のノートだけ、そうでなければライブ演奏も)。
+    fn plugins_all_off(&mut self, seq_only: bool) {
+        let mut i = 0;
+        while i < self.plugin_pending.len() {
+            let p = self.plugin_pending[i];
+            if !seq_only || p.seq {
+                self.plugin_note_off(p.slot as usize, p.key, 0);
+                self.plugin_pending.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// 鍵盤を離した(`key` が None なら全部)。
+    fn release_live_plugin_notes(&mut self, key: Option<u8>) {
+        let mut i = 0;
+        while i < self.plugin_pending.len() {
+            let p = self.plugin_pending[i];
+            if p.end == u64::MAX && key.is_none_or(|k| k == p.key) {
+                self.plugin_note_off(p.slot as usize, p.key, 0);
+                self.plugin_pending.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// このブロックでプラグインのトラックに送るノートを集める(本処理と同じ規則で
+    /// 位置・ループ折り返しをなぞる)。試聴の note off もここで出す。
+    fn collect_plugin_notes(
+        &mut self,
+        data: &PlaybackData,
+        frames: usize,
+        playing: bool,
+        looping: bool,
+        loop_start: u64,
+        loop_end: u64,
+    ) {
+        // 試聴(時計基準)の note off
+        let block_end = self.clock + frames as u64;
+        let mut i = 0;
+        while i < self.plugin_pending.len() {
+            let p = self.plugin_pending[i];
+            if !p.seq && p.end != u64::MAX && p.end < block_end {
+                let t = p.end.saturating_sub(self.clock) as u32;
+                self.plugin_note_off(p.slot as usize, p.key, t);
+                self.plugin_pending.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        if !playing || self.track_plugin.iter().all(Option::is_none) {
+            return;
+        }
+        let mut pos = self.pos;
+        let mut cursor = self.next_event;
+        for f in 0..frames {
+            let t = f as u32;
+            if looping && pos >= loop_end {
+                pos = loop_start;
+                cursor = data.events.partition_point(|e| e.start < pos);
+                let mut i = 0;
+                while i < self.plugin_pending.len() {
+                    let p = self.plugin_pending[i];
+                    if p.seq {
+                        self.plugin_note_off(p.slot as usize, p.key, t);
+                        self.plugin_pending.swap_remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            // 先に離してから鳴らす(同じ音の連打で新しい音を消さないように)
+            if !self.plugin_pending.is_empty() {
+                let mut i = 0;
+                while i < self.plugin_pending.len() {
+                    let p = self.plugin_pending[i];
+                    if p.seq && p.end <= pos {
+                        self.plugin_note_off(p.slot as usize, p.key, t);
+                        self.plugin_pending.swap_remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            while cursor < data.events.len() && data.events[cursor].start <= pos {
+                let e = data.events[cursor];
+                cursor += 1;
+                let ti = e.track as usize;
+                let Some(slot) = self.track_plugin.get(ti).copied().flatten() else {
+                    continue;
+                };
+                if !data.tracks[ti].audible {
+                    continue;
+                }
+                self.plugin_note_on(slot, e.pitch, e.amp, t);
+                self.push_pending(PendingOff {
+                    slot: slot as u8,
+                    key: e.pitch,
+                    end: e.end.max(pos + 1),
+                    seq: true,
+                });
+            }
+            pos += 1;
+        }
+    }
+
+    /// プラグインの窓口を 1 つでも持っているか。
+    pub fn has_plugins(&self) -> bool {
+        self.plugins.iter().any(Option::is_some)
+    }
+
+    /// オフライン用: 持っている窓口を止めて返す(呼び出し側がメインスレッドで片付ける)。
+    pub fn take_plugins(&mut self) -> Vec<Box<Processor>> {
+        let mut out = Vec::new();
+        for p in self.plugins.iter_mut() {
+            if let Some(mut p) = p.take() {
+                p.clap.stop();
+                out.push(p);
+            }
+        }
+        out
     }
 
     /// 再生位置を UI・MIDI 受信側へ公開する(書いた時刻とブロック長も添える)。
@@ -920,6 +1235,24 @@ impl Renderer {
                 break;
             };
             match ev {
+                LiveEvent::NoteOn { track, pitch, vel }
+                    if self
+                        .track_plugin
+                        .get(track as usize)
+                        .copied()
+                        .flatten()
+                        .is_some() =>
+                {
+                    // プラグインのトラック: ノートを送り、鍵盤を離すまで保持
+                    let slot = self.track_plugin[track as usize].unwrap_or(0);
+                    self.plugin_note_on(slot, pitch, vel as f32 / 127.0, 0);
+                    self.push_pending(PendingOff {
+                        slot: slot as u8,
+                        key: pitch,
+                        end: u64::MAX,
+                        seq: false,
+                    });
+                }
                 LiveEvent::NoteOn { track, pitch, vel } => {
                     // 同じ音高を打ち直したら前の音はリリースへ
                     for v in self.live_voices.iter_mut() {
@@ -960,6 +1293,7 @@ impl Renderer {
                     });
                 }
                 LiveEvent::NoteOff { pitch } => {
+                    self.release_live_plugin_notes(Some(pitch));
                     for v in self.live_voices.iter_mut() {
                         if v.pitch == pitch && !v.released {
                             if self.sustain {
@@ -984,6 +1318,7 @@ impl Renderer {
                     }
                 }
                 LiveEvent::AllOff => {
+                    self.release_live_plugin_notes(None);
                     self.sustain = false;
                     for v in self.live_voices.iter_mut() {
                         if !v.released {
@@ -994,6 +1329,32 @@ impl Renderer {
                     }
                 }
             }
+        }
+    }
+}
+
+/// 出力デバイスの切り替えでレンダラが作り直されるとき、プラグインの窓口を受け渡し口へ戻し、
+/// 新しいレンダラがそのまま引き継げるようにする(この時点で古いストリームは止まっている)。
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        let slots = self.shared.plugin_slots.clone();
+        for (i, p) in self.plugins.iter_mut().enumerate() {
+            let Some(mine) = p.take() else { continue };
+            let my_gen = mine.gen;
+            let Some(waiting) = slots[i].put_incoming(mine) else {
+                continue;
+            };
+            // 別の窓口が既に置かれていた: 新しい世代を残し、古い方は返却して片付けてもらう
+            let mut older = if waiting.gen > my_gen {
+                match slots[i].put_incoming(waiting) {
+                    Some(m) => m,
+                    None => continue,
+                }
+            } else {
+                waiting
+            };
+            older.clap.stop();
+            let _ = slots[i].put_outgoing(older);
         }
     }
 }
@@ -1047,6 +1408,7 @@ mod tests {
                 fx_auto: vec![],
                 instrument: test_instrument(),
                 effects: vec![],
+                plugin: None,
             }],
             audio_events: vec![],
             master_effects: vec![],

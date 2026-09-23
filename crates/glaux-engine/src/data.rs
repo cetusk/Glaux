@@ -109,6 +109,9 @@ pub struct TrackMix {
     pub instrument: InstrumentParams,
     /// エフェクトチェーン(bypass 除外・焼き込み済み)。楽器 → チェーン → 音量/パン の順
     pub effects: Vec<BakedEffect>,
+    /// CLAP プラグインで鳴らすトラック: (スロット, 世代)。内蔵楽器の代わりにプラグインへ
+    /// ノートを送り、その出力(ステレオ)をエフェクト → 音量/パンに通す
+    pub plugin: Option<(u32, u64)>,
 }
 
 /// テンポ区間(サンプル位置 ⇔ tick の相互変換用)。`sample` 昇順。
@@ -185,7 +188,7 @@ impl PlaybackData {
             if sample >= pos {
                 return Some(Beat {
                     sample,
-                    downbeat: (i as u64) % num.max(1) as u64 == 0,
+                    downbeat: (i as u64).is_multiple_of(num.max(1) as u64),
                 });
             }
         }
@@ -205,6 +208,7 @@ impl PlaybackData {
 /// 読み込み済みサンプルの置き場(サンプラー音源用)。
 /// UI(非オーディオ)スレッドで構築し、`Arc` で `PlaybackData` に焼き込む。
 /// 編集のたびに WAV をデコードし直さないよう、アセット ID ごとにキャッシュする。
+#[derive(Clone)]
 pub struct SampleBank {
     map: HashMap<AssetId, Arc<SampleData>>,
     /// SoundFont ライブラリフォルダ(既定は `sf2::default_dir()`)
@@ -216,6 +220,8 @@ pub struct SampleBank {
     /// テンポ追従クリップの伸縮済み波形(クリップ ID → (条件のハッシュ, 波形))。
     /// 波形はクリップ先頭から末尾までで、素材のサンプルレートのまま
     stretched: HashMap<glaux_core::ClipId, (u64, Arc<SampleData>)>,
+    /// CLAP プラグインを載せたトラック → (スロット, 世代)。[`crate::plugins`] が決める
+    pub plugin_slots: HashMap<glaux_core::TrackId, (u32, u64)>,
 }
 
 impl Default for SampleBank {
@@ -226,6 +232,7 @@ impl Default for SampleBank {
             fonts: HashMap::new(),
             multis: HashMap::new(),
             stretched: HashMap::new(),
+            plugin_slots: HashMap::new(),
         }
     }
 }
@@ -667,6 +674,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 fx_auto,
                 instrument,
                 effects: chain.into_iter().map(|(_, b)| b).collect(),
+                plugin: bank.plugin_slots.get(&t.id).copied(),
             }
         })
         .collect();

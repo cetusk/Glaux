@@ -8,6 +8,7 @@
 //! - [`render`]: RT セーフなレンダラ。アロケーション・ロックなし。
 //!   音源は `glaux-dsp` の内蔵楽器 5 種 + 音声クリップの直接再生
 //! - [`output`]: cpal ストリームを専用スレッドで保持し、[`EngineHandle`] を UI に渡す
+//! - [`plugins`]: CLAP プラグイン(外部の音源)の管理(プラグインのスレッド・窓口の受け渡し)
 //! - [`record`]: 入力デバイスからの録音(リングバッファ → WAV)
 //! - [`midi`]: MIDI キーボード入力(ライブ発音キュー・MIDI 録音)
 //! - [`separate`]: 内蔵の音源分離(HPSS。打楽器 / 音程楽器)
@@ -23,6 +24,7 @@ pub mod data;
 pub mod export;
 pub mod midi;
 pub mod output;
+pub mod plugins;
 pub mod record;
 pub mod render;
 pub mod separate;
