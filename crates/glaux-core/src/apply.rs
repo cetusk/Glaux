@@ -665,6 +665,61 @@ impl Project {
                 })
             }
 
+            SetSend {
+                track,
+                target,
+                level_db,
+                pre_fader,
+            } => {
+                let target_kind = self
+                    .track(target)
+                    .ok_or_else(|| CoreError::TrackNotFound(target.clone()))?
+                    .kind;
+                let t = self
+                    .track_mut(track)
+                    .ok_or_else(|| CoreError::TrackNotFound(track.clone()))?;
+                if let Some(db) = level_db {
+                    if t.kind == TrackKind::Bus || target_kind != TrackKind::Bus || track == target
+                    {
+                        return Err(CoreError::OutOfRange(
+                            "センドはバス以外のトラックからバスへだけ送れます".into(),
+                        ));
+                    }
+                    if !(-60.0..=12.0).contains(db) {
+                        return Err(CoreError::OutOfRange(format!(
+                            "level_db must be within -60..=12: {db}"
+                        )));
+                    }
+                }
+                let old = t
+                    .sends
+                    .iter()
+                    .position(|s| &s.target == target)
+                    .map(|i| t.sends.remove(i));
+                if let Some(db) = level_db {
+                    let at = t
+                        .sends
+                        .partition_point(|s| s.target.as_str() < target.as_str());
+                    t.sends.insert(
+                        at,
+                        crate::model::Send {
+                            target: target.clone(),
+                            level_db: *db,
+                            pre_fader: *pre_fader,
+                        },
+                    );
+                }
+                Ok(Applied {
+                    inverse: SetSend {
+                        track: track.clone(),
+                        target: target.clone(),
+                        level_db: old.as_ref().map(|s| s.level_db),
+                        pre_fader: old.is_some_and(|s| s.pre_fader),
+                    },
+                    changes: vec![Change::TrackPropChanged { id: track.clone() }],
+                })
+            }
+
             SetEffectState { id, state } => {
                 let (effect, change) = if let Some(ei) = self.master_effect_index(id) {
                     (&mut self.master.effects[ei], Change::MasterChanged)

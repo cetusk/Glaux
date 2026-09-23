@@ -59,10 +59,19 @@ export interface AutomationLane {
   points: AutomationPoint[];
 }
 
+/** センド: トラックの音を分けてバスへ送る */
+export interface TrackSend {
+  target: string;
+  level_db: number;
+  pre_fader?: boolean;
+}
+
 export interface Track {
   id: string;
   name: string;
-  kind: "midi" | "audio";
+  /** bus = バス(リターン)。クリップを持たず、他のトラックのセンドを受ける */
+  kind: "midi" | "audio" | "bus";
+  sends?: TrackSend[];
   color?: string;
   mute: boolean;
   solo: boolean;

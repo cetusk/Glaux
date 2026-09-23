@@ -336,6 +336,9 @@ pub struct Renderer {
     fx_r: Vec<f32>,
     mix_l: Vec<f32>,
     mix_r: Vec<f32>,
+    /// バスの入力(センドの合算。トラック添字 × フレーム、左右)
+    bus_l: Vec<Vec<f32>>,
+    bus_r: Vec<Vec<f32>>,
     /// トラックごとの無音連続サンプル数(残響が消えたらエフェクト処理を省く)
     track_silence: [u32; MAX_TRACKS],
     /// オートメーション評価カーソル(vol, pan)。単調前進、resync でリセット
@@ -439,6 +442,8 @@ impl Renderer {
             fx_r: vec![0.0; MAX_FRAMES],
             mix_l: vec![0.0; MAX_FRAMES],
             mix_r: vec![0.0; MAX_FRAMES],
+            bus_l: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
+            bus_r: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
             master_cursor: 0,
@@ -1064,6 +1069,7 @@ impl Renderer {
 
     /// トラックごとに 入力(楽器 + プラグイン出力)→ エフェクトチェーン → 音量/パン を通し、
     /// `mix_l/r`(マスター前の合算。MAX_TRACKS 超のトラックと試聴の直行分から始める)に足す。
+    /// 通常のトラックを先に処理してセンドをバスの入力に溜め、その後でバスを処理する。
     fn process_track_chains(
         &mut self,
         data: &PlaybackData,
@@ -1071,79 +1077,153 @@ impl Renderer {
         ntracks: usize,
         sr: f32,
     ) {
-        // 残響テールが確実に消えるまでの猶予(これを超えて無音ならチェーンごと省く)
-        let tail_limit = (4.0 * sr) as u32;
         let mut mix_l = std::mem::take(&mut self.mix_l);
         let mut mix_r = std::mem::take(&mut self.mix_r);
         let mut fl = std::mem::take(&mut self.fx_l);
         let mut fr = std::mem::take(&mut self.fx_r);
+        let mut bus_l = std::mem::take(&mut self.bus_l);
+        let mut bus_r = std::mem::take(&mut self.bus_r);
         mix_l[..frames].copy_from_slice(&self.blk_direct[0][..frames]);
         mix_r[..frames].copy_from_slice(&self.blk_direct[1][..frames]);
         for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
-            let pslot = self.track_plugin[ti];
-            let silent_before = self.track_silence[ti];
-            let mut any = false;
-            for f in 0..frames {
-                let mono = self.blk_mono[ti][f];
-                let (el, er) = match pslot {
-                    Some(s) => (self.plugin_out[s][0][f], self.plugin_out[s][1][f]),
-                    None => (0.0, 0.0),
-                };
-                fl[f] = mono + el;
-                fr[f] = mono + er;
-                if mono == 0.0 && el == 0.0 && er == 0.0 {
-                    self.track_silence[ti] = self.track_silence[ti].saturating_add(1);
-                } else {
-                    self.track_silence[ti] = 0;
-                    any = true;
+            if mix.is_bus {
+                bus_l[ti][..frames].fill(0.0);
+                bus_r[ti][..frames].fill(0.0);
+            }
+        }
+        for bus_pass in [false, true] {
+            for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
+                if mix.is_bus != bus_pass {
+                    continue;
                 }
-            }
-            if !any && (mix.effects.is_empty() || silent_before > tail_limit) {
-                // 鳴っていない(エフェクトの残響も消えた)トラックは省く(CPU 節約)
-                continue;
-            }
-            if !mix.effects.is_empty() {
-                self.run_chain(&mix.effects, data, &mut fl, &mut fr, frames);
-            }
-            // ステレオ出力のプラグインは、パンを左右バランスとして掛ける
-            // (等パワーのパンは中央で -3dB になるので √2 倍して中央を 0dB に)
-            let boost = if pslot.is_some() {
-                std::f32::consts::SQRT_2
-            } else {
-                1.0
-            };
-            for f in 0..frames {
-                let pos = self.blk_pos[f];
-                // ループで位置が戻ったらオートメーションのカーソルを戻す
-                if f > 0 && pos < self.blk_pos[f - 1] {
-                    self.auto_cursors[ti] = (0, 0);
+                // ミュートしたバス(バスには発音が無いので、ここで止める)
+                if bus_pass && !mix.audible {
+                    continue;
                 }
-                // 音量・パン: オートメーションレーンがあればフェーダーより優先
-                let (gl, gr) = if mix.vol_db_auto.is_empty() && mix.pan_auto.is_empty() {
-                    (mix.gain_l, mix.gain_r)
+                // 入力: 通常のトラックは楽器 + プラグイン出力、バスはセンドで受けた音
+                let pslot = if bus_pass {
+                    None
                 } else {
-                    let (vol_cur, pan_cur) = &mut self.auto_cursors[ti];
-                    let amp = if mix.vol_db_auto.is_empty() {
-                        mix.base_amp
-                    } else {
-                        db_to_amp(eval_auto(&mix.vol_db_auto, vol_cur, pos))
-                    };
-                    let pan = if mix.pan_auto.is_empty() {
-                        mix.base_pan
-                    } else {
-                        eval_auto(&mix.pan_auto, pan_cur, pos).clamp(-1.0, 1.0)
-                    };
-                    let (pl, pr) = pan_gains(pan);
-                    (amp * pl, amp * pr)
+                    self.track_plugin[ti]
                 };
-                mix_l[f] += fl[f] * gl * boost;
-                mix_r[f] += fr[f] * gr * boost;
+                let any = if bus_pass {
+                    fl[..frames].copy_from_slice(&bus_l[ti][..frames]);
+                    fr[..frames].copy_from_slice(&bus_r[ti][..frames]);
+                    fl[..frames].iter().chain(&fr[..frames]).any(|v| *v != 0.0)
+                } else {
+                    let mut any = false;
+                    for f in 0..frames {
+                        let mono = self.blk_mono[ti][f];
+                        let (el, er) = match pslot {
+                            Some(s) => (self.plugin_out[s][0][f], self.plugin_out[s][1][f]),
+                            None => (0.0, 0.0),
+                        };
+                        fl[f] = mono + el;
+                        fr[f] = mono + er;
+                        any |= mono != 0.0 || el != 0.0 || er != 0.0;
+                    }
+                    any
+                };
+                if !self.track_block(
+                    data, ti, mix, pslot, any, frames, sr, &mut fl, &mut fr, &mut mix_l,
+                    &mut mix_r, &mut bus_l, &mut bus_r,
+                ) {
+                    continue;
+                }
             }
         }
         self.mix_l = mix_l;
         self.mix_r = mix_r;
         self.fx_l = fl;
         self.fx_r = fr;
+        self.bus_l = bus_l;
+        self.bus_r = bus_r;
+    }
+
+    /// 1 トラック分: チェーン → 音量/パン → マスター前の合算とセンド先のバスへ。
+    /// 長く無音(残響も消えた)で省いたら false。
+    #[allow(clippy::too_many_arguments)]
+    fn track_block(
+        &mut self,
+        data: &PlaybackData,
+        ti: usize,
+        mix: &crate::data::TrackMix,
+        pslot: Option<usize>,
+        any: bool,
+        frames: usize,
+        sr: f32,
+        fl: &mut [f32],
+        fr: &mut [f32],
+        mix_l: &mut [f32],
+        mix_r: &mut [f32],
+        bus_l: &mut [Vec<f32>],
+        bus_r: &mut [Vec<f32>],
+    ) -> bool {
+        // 残響テールが確実に消えるまでの猶予(これを超えて無音ならチェーンごと省く)
+        let tail_limit = (4.0 * sr) as u32;
+        let silent_before = self.track_silence[ti];
+        self.track_silence[ti] = if any {
+            0
+        } else {
+            self.track_silence[ti].saturating_add(frames as u32)
+        };
+        if !any && (mix.effects.is_empty() || silent_before > tail_limit) {
+            // 鳴っていない(エフェクトの残響も消えた)トラックは省く(CPU 節約)
+            return false;
+        }
+        if !mix.effects.is_empty() {
+            self.run_chain(&mix.effects, data, fl, fr, frames);
+        }
+        // フェーダー前のセンド(チェーンの後、音量・パンの前)
+        for snd in mix.sends.iter().filter(|s| s.pre_fader) {
+            let t = snd.target as usize;
+            for f in 0..frames {
+                bus_l[t][f] += fl[f] * snd.amp;
+                bus_r[t][f] += fr[f] * snd.amp;
+            }
+        }
+        // ステレオ出力のプラグインは、パンを左右バランスとして掛ける
+        // (等パワーのパンは中央で -3dB になるので √2 倍して中央を 0dB に)
+        let boost = if pslot.is_some() || mix.is_bus {
+            std::f32::consts::SQRT_2
+        } else {
+            1.0
+        };
+        let post: &[crate::data::SendMix] = &mix.sends;
+        for f in 0..frames {
+            let pos = self.blk_pos[f];
+            // ループで位置が戻ったらオートメーションのカーソルを戻す
+            if f > 0 && pos < self.blk_pos[f - 1] {
+                self.auto_cursors[ti] = (0, 0);
+            }
+            // 音量・パン: オートメーションレーンがあればフェーダーより優先
+            let (gl, gr) = if mix.vol_db_auto.is_empty() && mix.pan_auto.is_empty() {
+                (mix.gain_l, mix.gain_r)
+            } else {
+                let (vol_cur, pan_cur) = &mut self.auto_cursors[ti];
+                let amp = if mix.vol_db_auto.is_empty() {
+                    mix.base_amp
+                } else {
+                    db_to_amp(eval_auto(&mix.vol_db_auto, vol_cur, pos))
+                };
+                let pan = if mix.pan_auto.is_empty() {
+                    mix.base_pan
+                } else {
+                    eval_auto(&mix.pan_auto, pan_cur, pos).clamp(-1.0, 1.0)
+                };
+                let (pl, pr) = pan_gains(pan);
+                (amp * pl, amp * pr)
+            };
+            let (ol, or) = (fl[f] * gl * boost, fr[f] * gr * boost);
+            mix_l[f] += ol;
+            mix_r[f] += or;
+            // フェーダー後のセンド(トラックの音量・パンに追従)
+            for snd in post.iter().filter(|s| !s.pre_fader) {
+                bus_l[snd.target as usize][f] += ol * snd.amp;
+                bus_r[snd.target as usize][f] += or * snd.amp;
+            }
+        }
+        true
     }
 
     /// エフェクトチェーンをブロック単位で通す。内蔵エフェクトはサンプルごと、CLAP エフェクトは
@@ -1764,6 +1844,8 @@ mod tests {
                 effects: vec![],
                 plugin: None,
                 plugin_auto: vec![],
+                is_bus: false,
+                sends: vec![],
             }],
             audio_events: vec![],
             master_effects: vec![],

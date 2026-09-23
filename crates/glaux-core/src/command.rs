@@ -206,6 +206,15 @@ pub enum Command {
         id: FxId,
         bypass: bool,
     },
+    /// センドを設定する(`level_db` 省略でそのセンドを外す)。送り元はバス以外、送り先はバス
+    SetSend {
+        track: TrackId,
+        target: TrackId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pre_fader: bool,
+    },
     /// CLAP プラグインのエフェクトの状態(プラグイン固有の不透明データ、base64)。
     /// トラック・マスターのどちらのエフェクトでもよい。内蔵エフェクトには使えない
     SetEffectState {
@@ -351,6 +360,10 @@ impl Command {
             AddEffect { track, effect, .. } => {
                 out.insert(T::Track(track.clone()));
                 out.insert(T::Effect(effect.id.clone()));
+            }
+            SetSend { track, target, .. } => {
+                out.insert(T::Track(track.clone()));
+                out.insert(T::Track(target.clone()));
             }
             RemoveEffect { id } | SetEffectBypass { id, .. } | SetEffectState { id, .. } => {
                 out.insert(T::Effect(id.clone()));

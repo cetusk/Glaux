@@ -69,6 +69,12 @@ fn seed_project() -> Project {
         clip: Clip::new_audio(ClipId::new(), "take", Tick(0), Tick(7680), asset_id),
     })
     .unwrap();
+    // センドの送り先になるバス
+    p.apply(&Command::AddTrack {
+        track: Track::new(TrackId::new(), "Reverb Bus", TrackKind::Bus),
+        index: None,
+    })
+    .unwrap();
     p
 }
 
@@ -102,6 +108,19 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
         };
         match choice {
             0 => {
+                // センド(バス以外 → バス。外す・量を変える)
+                let buses: Vec<&&Track> =
+                    tracks.iter().filter(|t| t.kind == TrackKind::Bus).collect();
+                if rng.gen_bool(0.4) && !buses.is_empty() {
+                    let src = *midi_tracks.choose(rng).unwrap();
+                    let bus = buses.choose(rng).unwrap();
+                    return Command::SetSend {
+                        track: src.id.clone(),
+                        target: bus.id.clone(),
+                        level_db: rng.gen_bool(0.8).then(|| rng.gen_range(-40.0..6.0)),
+                        pre_fader: rng.gen(),
+                    };
+                }
                 return Command::SetTrackProp {
                     id: pick_track(rng),
                     prop: match rng.gen_range(0..4) {
@@ -110,7 +129,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         2 => TrackProp::Name(format!("name{}", rng.gen_range(0..100))),
                         _ => TrackProp::Pan(rng.gen_range(-1.0..1.0)),
                     },
-                }
+                };
             }
             1 => {
                 return Command::MoveTrack {
@@ -855,4 +874,50 @@ fn split_midi_clip_moves_and_truncates_notes() {
     assert_eq!(p.clip(&cid).unwrap().1.notes().unwrap().len(), 3);
     assert!(p.clip(&new_id).is_none());
     assert_ne!(p, snapshot_after_split);
+}
+
+#[test]
+fn sends_go_only_to_buses_and_undo_restores() {
+    let mut p = Project::new("send");
+    let (a, bus, bus2) = (TrackId::new(), TrackId::new(), TrackId::new());
+    for (id, kind) in [
+        (&a, TrackKind::Midi),
+        (&bus, TrackKind::Bus),
+        (&bus2, TrackKind::Bus),
+    ] {
+        p.apply(&Command::AddTrack {
+            track: Track::new(id.clone(), "t", kind),
+            index: None,
+        })
+        .unwrap();
+    }
+    let send = |track: &TrackId, target: &TrackId, db: Option<f32>| Command::SetSend {
+        track: track.clone(),
+        target: target.clone(),
+        level_db: db,
+        pre_fader: false,
+    };
+    // バス以外 → バス はよい。量の変更・取り消しで前の値に戻る
+    p.apply(&send(&a, &bus, Some(-6.0))).unwrap();
+    let applied = p.apply(&send(&a, &bus, Some(-12.0))).unwrap();
+    assert_eq!(p.track(&a).unwrap().sends[0].level_db, -12.0);
+    p.apply(&applied.inverse).unwrap();
+    assert_eq!(p.track(&a).unwrap().sends[0].level_db, -6.0);
+    // 外す → 取り消しで戻る
+    let applied = p.apply(&send(&a, &bus, None)).unwrap();
+    assert!(p.track(&a).unwrap().sends.is_empty());
+    p.apply(&applied.inverse).unwrap();
+    assert_eq!(p.track(&a).unwrap().sends.len(), 1);
+    // バス → バス、バス以外への送り、範囲外は不可
+    assert!(p.apply(&send(&bus, &bus2, Some(0.0))).is_err());
+    assert!(p.apply(&send(&bus2, &a, Some(0.0))).is_err());
+    assert!(p.apply(&send(&a, &bus, Some(40.0))).is_err());
+    // バスにクリップは置けない
+    let clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(480));
+    assert!(p
+        .apply(&Command::AddClip {
+            track: bus.clone(),
+            clip
+        })
+        .is_err());
 }

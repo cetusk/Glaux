@@ -12,6 +12,20 @@ use serde::{Deserialize, Serialize};
 pub enum TrackKind {
     Midi,
     Audio,
+    /// バス(リターン)。クリップを持たず、他のトラックのセンドを受けてエフェクト → 音量/パン → マスターへ
+    Bus,
+}
+
+/// センド: トラックの音を分けてバスへ送る(共有のリバーブ・ディレイ等)。
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Send {
+    /// 送り先のバストラック
+    pub target: TrackId,
+    /// 送る量(dB)
+    pub level_db: f32,
+    /// true = フェーダー・パンの前から送る(既定は後 = トラックの音量に追従)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pre_fader: bool,
 }
 
 /// 楽器・エフェクトの実体がどこにあるか。
@@ -101,6 +115,9 @@ pub struct Track {
     pub clips: Vec<Clip>,
     #[serde(default)]
     pub automation: Vec<AutomationLane>,
+    /// センド(送り先の ID 順)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<Send>,
 }
 
 impl Track {
@@ -118,6 +135,7 @@ impl Track {
             effects: vec![],
             clips: vec![],
             automation: vec![],
+            sends: vec![],
         }
     }
 

@@ -5,7 +5,7 @@
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
-  import { newClipId, newNoteId, newTrackId } from "./ids";
+  import { newClipId, newFxId, newNoteId, newTrackId } from "./ids";
   import {
     MASTER_FOCUS_ID,
     midiArmStore,
@@ -303,6 +303,7 @@
     const x = e.clientX - lane.getBoundingClientRect().left;
     const tick = Math.max(0, x / pxPerTick);
     const bar = barAtTick(barList, tick);
+    if (track.kind === "bus") return; // バスにはクリップを置かない
     if (track.kind === "audio") {
       void importAudioAt(track, bar.tick);
       return;
@@ -1031,8 +1032,26 @@
     }
   }
 
-  function addTrack(kind: "midi" | "audio" = "midi") {
+  function addTrack(kind: "midi" | "audio" | "bus" = "midi") {
     const id = newTrackId();
+    if (kind === "bus") {
+      // バス: 共有リバーブとして使えるよう、リバーブ(ウェット 100%)を挿して作る
+      const n = project.tracks.filter((t) => t.kind === "bus").length + 1;
+      api
+        .applyEdit(
+          [
+            { op: "add_track", track: { id, name: `リバーブ バス ${n}`, kind } },
+            {
+              op: "add_effect",
+              track: id,
+              effect: { id: newFxId(), type: "builtin", name: "reverb", params: { mix: 1.0 } },
+            },
+          ],
+          "バスを追加",
+        )
+        .catch(() => {});
+      return;
+    }
     const name =
       kind === "audio"
         ? `音声 ${project.tracks.filter((t) => t.kind === "audio").length + 1}`
@@ -1043,6 +1062,11 @@
         kind === "audio" ? "音声トラックを追加" : "トラックを追加",
       )
       .catch(() => {});
+  }
+
+  /// このバスへ送っているトラックの数
+  function sendersOf(bus: Track): number {
+    return project.tracks.filter((t) => t.sends?.some((s) => s.target === bus.id)).length;
   }
 
   function toggleSolo(t: Track) {
@@ -1187,6 +1211,11 @@
         </div>
         <div class="track-meta">
           <span class="kind {track.kind}">{track.kind}</span>
+          {#if track.kind === "bus"}
+            <span class="bus-info" title="🎛 の音作りビューで、各トラックからこのバスへ送る量(センド)を決めます">
+              センド元 {sendersOf(track)}
+            </span>
+          {:else}
           <button
             class="dev"
             onclick={(e) => openDeviceMenu(e, track)}
@@ -1206,6 +1235,7 @@
               }}>画面</button
             >
           {/if}
+          {/if}
           <code>{track.id}</code>
         </div>
       </div>
@@ -1223,7 +1253,9 @@
             selectedClips = new Set();
           }
         }}
-        title={track.kind === "audio"
+        title={track.kind === "bus"
+          ? "バス: 他のトラックのセンドを受けて、エフェクト → 音量/パン → マスターへ(クリップは置けません)"
+          : track.kind === "audio"
           ? "ダブルクリックで音声ファイル(WAV / MP3 等)をその小節に配置(録音は ⏺ ボタン)"
           : track.clips.length === 0
             ? "ダブルクリックでクリップを作成してピアノロールを開く"
@@ -1550,6 +1582,9 @@
     <button class="add-track" onclick={() => addTrack("midi")} title="MIDI トラックを追加(音源は後から AI に頼むか自動で subtractive)">
       + トラックを追加
     </button>
+    <button class="add-track" onclick={() => addTrack("bus")} title="バス(リターン)を追加: 複数のトラックからセンドで送って、リバーブ・ディレイを共有する">
+      + 🔀 バス
+    </button>
     <button class="add-track" onclick={() => addTrack("audio")} title="音声トラックを追加(音声ファイルの配置・録音先。空きレーンをダブルクリックで WAV / MP3 等を配置)">
       + 🎵 音声トラック
     </button>
@@ -1867,6 +1902,16 @@
   .kind.audio {
     background: color-mix(in srgb, var(--clip-audio) 30%, transparent);
     color: var(--clip-audio);
+  }
+
+  .kind.bus {
+    background: color-mix(in srgb, #b48cf2 30%, transparent);
+    color: #b48cf2;
+  }
+
+  .bus-info {
+    font-size: 11px;
+    color: var(--text-dim);
   }
 
   .clip {

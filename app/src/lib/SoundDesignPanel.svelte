@@ -197,6 +197,35 @@
     );
   }
 
+  // ---- センド / バス ----
+
+  const buses = $derived(project.tracks.filter((t) => t.kind === "bus"));
+  /// バスを開いているとき: 送ってきているトラック
+  const busSenders = $derived.by(() => {
+    const t = track;
+    if (!t || t.kind !== "bus") return [];
+    return project.tracks.flatMap((src) =>
+      (src.sends ?? [])
+        .filter((s) => s.target === t.id)
+        .map((s) => ({ name: src.name, level_db: s.level_db, pre: s.pre_fader ?? false })),
+    );
+  });
+
+  function setSend(bus: Track, levelDb: number, preFader: boolean) {
+    const t = track;
+    if (!t) return;
+    applyEdit(
+      [{ op: "set_send", track: t.id, target: bus.id, level_db: levelDb, pre_fader: preFader }],
+      `${t.name} から ${bus.name} へのセンドを ${levelDb.toFixed(1)} dB に`,
+    );
+  }
+
+  function removeSend(bus: Track) {
+    const t = track;
+    if (!t) return;
+    applyEdit([{ op: "set_send", track: t.id, target: bus.id }], `${t.name} から ${bus.name} へのセンドを外す`);
+  }
+
   // ---- CLAP エフェクト ----
 
   /// インストール済みの CLAP エフェクト(音作りビューを開いたときに一度読む)
@@ -408,7 +437,23 @@
     {/if}
 
     <div class="sd-body">
-      {#if track}
+      {#if track && track.kind === "bus"}
+        <div class="sec">
+          <div class="sec-title">🔀 バス</div>
+          <div class="hint">
+            各トラックの音作りビューの「センド」で、このバスへ送る量を決めます。
+            ここに挿したエフェクト(リバーブ・ディレイ等)を複数のトラックで共有できます。
+          </div>
+          {#if busSenders.length > 0}
+            <div class="hint">
+              受けているトラック: {busSenders.map((s) => `${s.name}(${s.level_db.toFixed(1)} dB${s.pre ? "・フェーダー前" : ""})`).join("、")}
+            </div>
+          {:else}
+            <div class="hint">まだどのトラックからも送られていません。</div>
+          {/if}
+        </div>
+      {/if}
+      {#if track && track.kind !== "bus"}
       <!-- 試聴 -->
       <div class="sec">
         <div class="sec-title">試聴</div>
@@ -584,7 +629,7 @@
       {/if}
 
       <!-- 音源パラメータ -->
-      {#if info && track && track.device?.type !== "clap"}
+      {#if info && track && track.kind !== "bus" && track.device?.type !== "clap"}
         <div class="sec">
           <div class="sec-title">
             パラメータ({info.device.name}{info.device.is_default_fallback ? " *未設定" : ""})
@@ -720,6 +765,48 @@
               追加
             </button>
           </div>
+        </div>
+      {/if}
+
+      {#if track && track.kind !== "bus"}
+        <!-- センド(バスへ送る量) -->
+        <div class="sec">
+          <div class="sec-title">🔀 センド</div>
+          {#if buses.length === 0}
+            <div class="hint">
+              バスがありません。タイムライン下の「+ 🔀 バス」でリバーブ付きのバスを作ると、
+              複数のトラックで同じリバーブを共有できます。
+            </div>
+          {:else}
+            {#each buses as bus (bus.id)}
+              {@const snd = track.sends?.find((s) => s.target === bus.id)}
+              <div class="param" title="このトラックの音をバスへ送る量。フェーダー後はトラックの音量に追従します">
+                <span class="p-name">{bus.name}</span>
+                <input
+                  type="range"
+                  min="-60"
+                  max="6"
+                  step="0.5"
+                  value={snd?.level_db ?? -60}
+                  onchange={(e) => setSend(bus, Number((e.currentTarget as HTMLInputElement).value), snd?.pre_fader ?? false)}
+                />
+                <span class="p-val">{snd ? `${snd.level_db.toFixed(1)}dB` : "送らない"}</span>
+              </div>
+              {#if snd}
+                <div class="row gap send-opts">
+                  <label class="mini-label">
+                    <input
+                      type="checkbox"
+                      checked={snd.pre_fader ?? false}
+                      onchange={(e) => setSend(bus, snd.level_db, (e.currentTarget as HTMLInputElement).checked)}
+                    />
+                    フェーダー前
+                  </label>
+                  <button class="mini" onclick={() => removeSend(bus)}>送らない</button>
+                </div>
+              {/if}
+            {/each}
+          {/if}
         </div>
       {/if}
 
@@ -879,6 +966,19 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  .send-opts {
+    margin: -2px 0 6px 0;
+    padding-left: 4px;
+  }
+
+  .mini-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .hint.warn {

@@ -1786,3 +1786,71 @@ async fn real_clap_effect_params_are_listed_and_set() {
     let list = glaux_mcp::server::effects_json(&project.master.effects);
     assert_eq!(list[0]["params"][0]["current"], json!(0.7));
 }
+
+#[tokio::test]
+async fn bus_and_send_via_apply_commands() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_snd101", "Lead")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "リバーブのバス", "commands": [
+                { "op": "add_track", "track": { "id": "trk_bus101", "name": "Reverb", "kind": "bus" } },
+                { "op": "add_effect", "track": "trk_bus101",
+                  "effect": { "id": "fx_bus101", "type": "builtin", "name": "reverb", "params": { "mix": 1.0 } } },
+                { "op": "add_clip", "track": "trk_snd101", "clip": {
+                    "id": "clp_snd101", "name": "c", "start": 0, "length": 1920, "kind": "midi",
+                    "notes": [{ "id": "nt_snd101", "pos": 0, "dur": 240, "pitch": 72, "vel": 110 }] } }
+            ] }),
+        )
+        .await,
+    );
+    let r = call(&fx, "analyze_audio", json!({})).await;
+    let dry = ok_json(&r)["duration_seconds"].as_f64().unwrap();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "センド", "commands": [
+                { "op": "set_send", "track": "trk_snd101", "target": "trk_bus101", "level_db": -3.0 }
+            ] }),
+        )
+        .await,
+    );
+    let r = call(&fx, "get_project", json!({})).await;
+    let v = ok_json(&r);
+    assert_eq!(
+        v["project"]["tracks"][0]["sends"][0]["target"],
+        json!("trk_bus101")
+    );
+    assert_eq!(v["project"]["tracks"][1]["kind"], json!("bus"));
+    // リバーブの残響ぶん長く鳴る
+    let r = call(&fx, "analyze_audio", json!({})).await;
+    let wet = ok_json(&r)["duration_seconds"].as_f64().unwrap();
+    assert!(wet > dry, "{wet} vs {dry}");
+    // バスへのセンドは取り消せる
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(project.tracks[0].sends.is_empty());
+    // バスから送る・バスにクリップを置くのはエラー
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "label": "x", "commands": [
+            { "op": "set_send", "track": "trk_bus101", "target": "trk_bus101", "level_db": 0.0 }
+        ] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "label": "x", "commands": [
+            { "op": "add_clip", "track": "trk_bus101", "clip": {
+                "id": "clp_bus101", "name": "c", "start": 0, "length": 480, "kind": "midi", "notes": [] } }
+        ] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}

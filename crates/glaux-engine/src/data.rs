@@ -117,6 +117,19 @@ pub struct TrackMix {
     pub plugin: Option<(u32, u64)>,
     /// CLAP プラグインのパラメータのオートメーション(`device/clap:<id>`、プラグインの単位)
     pub plugin_auto: Vec<(u32, Vec<AutoPoint>)>,
+    /// バス(リターン)トラック: 自分の音は持たず、センドで受けた音をチェーン → 音量/パンに通す
+    pub is_bus: bool,
+    /// センド(送り先のバスの添字・量(リニア)・フェーダー前か)
+    pub sends: Vec<SendMix>,
+}
+
+/// 焼き込み済みのセンド。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SendMix {
+    /// `PlaybackData::tracks` への添字(バス)
+    pub target: u32,
+    pub amp: f32,
+    pub pre_fader: bool,
 }
 
 /// テンポ区間(サンプル位置 ⇔ tick の相互変換用)。`sample` 昇順。
@@ -690,7 +703,8 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
             TrackMix {
                 gain_l: gain * pl,
                 gain_r: gain * pr,
-                audible: !t.mute && (!any_solo || t.solo),
+                // バスはソロの影響を受けない(ソロにしたトラックのリバーブが消えないように)
+                audible: !t.mute && (!any_solo || t.solo || t.kind == glaux_core::TrackKind::Bus),
                 base_amp: gain,
                 base_pan: t.pan,
                 vol_db_auto: bake_lane(t, "volume_db"),
@@ -699,6 +713,24 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 fx_auto,
                 instrument,
                 effects: chain.into_iter().map(|(_, b)| b).collect(),
+                is_bus: t.kind == glaux_core::TrackKind::Bus,
+                sends: if t.kind == glaux_core::TrackKind::Bus {
+                    vec![]
+                } else {
+                    t.sends
+                        .iter()
+                        .filter_map(|snd| {
+                            let target = project.tracks.iter().position(|x| {
+                                x.id == snd.target && x.kind == glaux_core::TrackKind::Bus
+                            })?;
+                            (target < MAX_TRACKS).then_some(SendMix {
+                                target: target as u32,
+                                amp: db_to_amp(snd.level_db),
+                                pre_fader: snd.pre_fader,
+                            })
+                        })
+                        .collect()
+                },
                 plugin: bank
                     .plugin_slots
                     .get(&crate::plugins::PluginOwner::Track(t.id.clone()))
@@ -1014,6 +1046,73 @@ mod tests {
             "残響で音の長さが伸びるはず({} vs {})",
             wet.len(),
             dry.len()
+        );
+    }
+
+    #[test]
+    fn sends_feed_a_shared_reverb_bus() {
+        use crate::export::render_project;
+        use glaux_core::{Effect, FxId, Send, Track, TrackId, TrackKind};
+        // 短い音 + リバーブを挿したバス(リバーブ 100% wet)
+        let mut project = project_with_notes(vec![note(0, 240, 72, 110)]);
+        let bus_id = TrackId::new();
+        let mut bus = Track::new(bus_id.clone(), "Reverb", TrackKind::Bus);
+        let mut rv = Effect::builtin(FxId::new(), "reverb");
+        rv.params.insert("mix".into(), 1.0.into());
+        rv.params.insert("size".into(), 0.9.into());
+        bus.effects.push(rv);
+        project.tracks.push(bus);
+        let sr = 48_000.0;
+        // 音が消えた後(0.5〜1.5 秒)のエネルギー
+        let tail = |x: &[f32]| -> f32 {
+            x.chunks(2)
+                .skip((0.5 * sr) as usize)
+                .take(sr as usize)
+                .map(|c| c[0] * c[0] + c[1] * c[1])
+                .sum()
+        };
+        let render = |p: &Project| render_project(p, sr, &Default::default()).unwrap();
+        let dry = render(&project);
+        let with_send = |db: f32, pre: bool, vol: f32| {
+            let mut p = project.clone();
+            p.tracks[0].volume_db = vol;
+            p.tracks[0].sends.push(Send {
+                target: bus_id.clone(),
+                level_db: db,
+                pre_fader: pre,
+            });
+            p
+        };
+        let wet = render(&with_send(0.0, false, 0.0));
+        assert!(
+            tail(&wet) > tail(&dry) * 100.0 + 1e-3,
+            "{} vs {}",
+            tail(&wet),
+            tail(&dry)
+        );
+        // フェーダー後のセンドは元の音量に追従: 元を -60dB にするとほぼ消える
+        let post_quiet = render(&with_send(0.0, false, -60.0));
+        assert!(tail(&post_quiet) < tail(&wet) * 1e-2);
+        // フェーダー前なら元を絞ってもバスには同じだけ届く
+        let pre_quiet = render(&with_send(0.0, true, -60.0));
+        assert!(
+            tail(&pre_quiet) > tail(&wet) * 0.2,
+            "{} vs {}",
+            tail(&pre_quiet),
+            tail(&wet)
+        );
+        // 元のトラックをソロにしてもバスは鳴る(ソロの影響を受けない)
+        let mut solo = with_send(0.0, false, 0.0);
+        solo.tracks[0].solo = true;
+        assert!((tail(&render(&solo)) - tail(&wet)).abs() < tail(&wet) * 0.01);
+        // バスをミュートすれば消える
+        let mut muted = with_send(0.0, false, 0.0);
+        muted.tracks[1].mute = true;
+        let m = tail(&render(&muted));
+        assert!(
+            (m - tail(&dry)).abs() <= tail(&dry) * 0.01 + 1e-9,
+            "{m} vs {}",
+            tail(&dry)
         );
     }
 

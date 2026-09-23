@@ -910,6 +910,10 @@ impl GlauxServer {
         ただしノートの移調・時間移動・クオンタイズ・ベロシティ一括調整は\
         専用ツール(transpose_notes / shift_notes / quantize_notes / scale_velocity)の方が速くて確実。\
         代表例: add_track {track,index?} / add_clip {track,clip} / add_notes {clip,notes} / update_notes {clip,changes} / \
+        バス(リターン): add_track の kind: \"bus\" で作る(クリップは置けない。エフェクトを挿して共有リバーブ・ディレイにする。\
+        リバーブは mix: 1.0 = ウェットのみが基本)。set_send {track, target, level_db, pre_fader?} でトラックからバスへ送る\
+        (level_db -60〜12。省略でセンドを外す。pre_fader: true でフェーダー前 = トラック音量に追従しない)。\
+        送り元はバス以外、送り先はバスのみ。バスはソロの影響を受けない。ボーカル・スネア・パッドを同じ空間に置くのに使う / \
         set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?} / \
         set_title {title}(曲名の変更)/ \
         set_sections {sections: [{tick, name}]}(曲の構成マーカーを丸ごと置換。\
