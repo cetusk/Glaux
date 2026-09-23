@@ -381,6 +381,51 @@ async fn clap_save_state(state: State<'_, AppState>, track_id: String) -> Result
     save_clap_state(&state, tid).await
 }
 
+/// トラックの CLAP プラグインのプリセット一覧(UI 用に全件)。
+#[tauri::command]
+async fn clap_presets(
+    state: State<'_, AppState>,
+    track_id: String,
+    rescan: Option<bool>,
+) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    tokio::task::spawn_blocking(move || {
+        glaux_mcp::clap_presets::list(
+            &project,
+            &tid,
+            None,
+            None,
+            usize::MAX,
+            rescan.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// CLAP プラグインのトラックにプリセットを読み込む(履歴 1 件)。
+#[tauri::command]
+async fn clap_load_preset(
+    state: State<'_, AppState>,
+    track_id: String,
+    preset: String,
+) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let (command, label, name) = tokio::task::spawn_blocking(move || {
+        glaux_mcp::clap_presets::load_command(&project, &tid, &preset)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let (_, m) = state
+        .handle
+        .apply(command, Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "preset": name, "project_version": m.project_version }))
+}
+
 /// プラグインの画面を開く(開いていれば前面へ)。
 #[tauri::command]
 async fn clap_open_gui(state: State<'_, AppState>, track_id: String) -> Result<(), String> {
@@ -1660,6 +1705,8 @@ fn main() -> Result<()> {
             clap_save_state,
             clap_open_gui,
             clap_close_gui,
+            clap_presets,
+            clap_load_preset,
             set_midi_input,
             set_live_target,
             midi_record_start,

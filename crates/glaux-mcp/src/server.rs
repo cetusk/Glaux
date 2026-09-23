@@ -214,6 +214,32 @@ pub struct TranscribeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ListPluginPresetsParams {
+    /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。
+    pub track_id: String,
+    /// 名前・カテゴリ・作者・タグの部分一致(例 "pad"、"bass"、"pluck")。
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// カテゴリ(フォルダ名)の前方一致(例 "Pads"、"Leads")。一覧の categories から選ぶ。
+    #[serde(default)]
+    pub category: Option<String>,
+    /// 最大何件返すか(既定 50)。
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// true でプリセットを探し直す(プリセットを追加した後など)。
+    #[serde(default)]
+    pub rescan: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct LoadPluginPresetParams {
+    /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。
+    pub track_id: String,
+    /// list_plugin_presets が返したプリセットの id。
+    pub preset: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ListPluginsParams {
     /// true でプラグインを探し直す(インストールした後など)。
     #[serde(default)]
@@ -1108,6 +1134,61 @@ impl GlauxServer {
                 .map(|d| d.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
         })))
+    }
+
+    #[tool(
+        description = "CLAP プラグイン(例 Surge XT)のプリセット(作り込まれた音色)を一覧する。\
+        filter(名前・カテゴリ・作者の部分一致、例 \"pad\" / \"bass\")や category(フォルダ名、例 \"Pads\")で絞り込む。\
+        返り値の categories でどんな系統があるか分かる。current_preset は今読み込まれているプリセット名。\
+        プリセットにはつまみとして公開されていない設定(LFO のテンポ同期、モジュレーションの割り当て、\
+        内蔵エフェクト)も入っているので、ポンピングやゲートのような動きのある音は、まずそれらしい\
+        プリセットを探して load_plugin_preset で読み込み、list_params のつまみで微調整するのが近道。"
+    )]
+    async fn list_plugin_presets(&self, params: Parameters<ListPluginPresetsParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("list_plugin_presets");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let v = tokio::task::spawn_blocking(move || {
+            crate::clap_presets::list(
+                &project,
+                &track_id,
+                p.filter.as_deref(),
+                p.category.as_deref(),
+                p.limit.unwrap_or(50),
+                p.rescan.unwrap_or(false),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(Json(v))
+    }
+
+    #[tool(
+        description = "CLAP プラグインのトラックにプリセットを読み込む(音色が丸ごと入れ替わる。履歴 1 件、取り消し可)。\
+        preset は list_plugin_presets の id。set_param で上書きしていたつまみの値は消える(プリセットの値になる)。\
+        読み込み後は list_params で主なつまみ(cutoff・attack など)を確認し、必要なら微調整すること。"
+    )]
+    async fn load_plugin_preset(
+        &self,
+        params: Parameters<LoadPluginPresetParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("load_plugin_preset");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let (command, label, name) = tokio::task::spawn_blocking(move || {
+            crate::clap_presets::load_command(&project, &track_id, &p.preset)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["preset"] = json!(name);
+        Ok(Json(v))
     }
 
     #[tool(

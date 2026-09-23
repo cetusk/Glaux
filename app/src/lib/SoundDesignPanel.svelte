@@ -17,6 +17,62 @@
     return project.tracks.find((t) => t.id === focus.trackId) ?? null;
   });
 
+  // ---- CLAP プラグインのプリセット ----
+  let clapPresetList = $state<api.ClapPreset[] | null>(null);
+  let clapCategories = $state<{ name: string; count: number }[]>([]);
+  let clapPresetTrack = $state<string | null>(null);
+  let clapPresetBusy = $state(false);
+  let clapPresetMsg = $state<string | null>(null);
+  let clapCategory = $state("");
+  let clapSearch = $state("");
+  async function loadClapPresets(trackId: string, rescan = false) {
+    clapPresetBusy = true;
+    clapPresetMsg = null;
+    try {
+      const r = await api.clapPresets(trackId, rescan);
+      clapPresetList = r.presets;
+      clapCategories = r.categories;
+      clapPresetTrack = trackId;
+    } catch (e) {
+      clapPresetList = [];
+      clapPresetMsg = String(e);
+    } finally {
+      clapPresetBusy = false;
+    }
+  }
+  $effect(() => {
+    const t = track;
+    if (t?.device?.type === "clap" && clapPresetTrack !== t.id && !clapPresetBusy) {
+      clapCategory = "";
+      clapSearch = "";
+      loadClapPresets(t.id);
+    }
+  });
+  const shownClapPresets = $derived.by(() => {
+    const q = clapSearch.trim().toLowerCase();
+    return (clapPresetList ?? []).filter(
+      (p) =>
+        (!clapCategory || p.category === clapCategory) &&
+        (!q || p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q)),
+    );
+  });
+  const currentClapPreset = $derived(
+    typeof track?.device?.params?.preset === "string" ? (track.device.params.preset as string) : null,
+  );
+  async function applyClapPreset(p: api.ClapPreset) {
+    if (!track || clapPresetBusy) return;
+    clapPresetBusy = true;
+    clapPresetMsg = `「${p.name}」を読み込み中…`;
+    try {
+      await api.clapLoadPreset(track.id, p.id);
+      clapPresetMsg = null;
+    } catch (e) {
+      clapPresetMsg = String(e);
+    } finally {
+      clapPresetBusy = false;
+    }
+  }
+
   /// マスターバスを開いている(エフェクトチェーンだけを扱う)
   const isMaster = $derived(soundDesignStore.focus?.trackId === MASTER_FOCUS_ID);
   /// 履歴ラベル用の対象名
@@ -445,8 +501,51 @@
               💾 設定を保存
             </button>
           </div>
+          <div class="sec-title sub">
+            プリセット{currentClapPreset ? `(今: ${currentClapPreset})` : ""}
+            <button
+              class="mini"
+              disabled={clapPresetBusy}
+              title="プリセットを探し直す(追加した後など)"
+              onclick={() => track && loadClapPresets(track.id, true)}>🔄</button
+            >
+          </div>
+          {#if clapPresetList === null}
+            <div class="hint">プリセットを探しています…</div>
+          {:else if clapPresetList.length === 0}
+            <div class="hint">このプラグインのプリセットは見つかりませんでした(一覧に対応していないプラグインもあります)。</div>
+          {:else}
+            <div class="row gap">
+              <select bind:value={clapCategory} title="カテゴリ(フォルダ)">
+                <option value="">すべて({clapPresetList.length})</option>
+                {#each clapCategories as c (c.name)}
+                  <option value={c.name}>{c.name || "(未分類)"}({c.count})</option>
+                {/each}
+              </select>
+              <input class="grow" type="search" placeholder="名前で絞り込み" bind:value={clapSearch} />
+            </div>
+            <div class="preset-list">
+              {#each shownClapPresets.slice(0, 500) as p (p.id)}
+                <button
+                  class="preset-item"
+                  class:current={p.name === currentClapPreset}
+                  disabled={clapPresetBusy}
+                  title={`${p.collection}\n${p.category}${p.creators.length ? "\nby " + p.creators.join(", ") : ""}`}
+                  onclick={() => applyClapPreset(p)}
+                >
+                  <span class="pi-name">{p.name}</span>
+                  <span class="pi-cat">{p.category}</span>
+                </button>
+              {/each}
+              {#if shownClapPresets.length > 500}
+                <div class="hint">…ほか {shownClapPresets.length - 500} 件(絞り込んでください)</div>
+              {/if}
+            </div>
+          {/if}
+          {#if clapPresetMsg}<div class="hint">{clapPresetMsg}</div>{/if}
           <div class="hint">
-            音色はプラグインの画面で作ります。画面での変更は自動でプロジェクトに保存され、Ctrl+Z で戻せます。
+            プリセットを選ぶと音色が丸ごと入れ替わります(Ctrl+Z で戻せます)。
+            音色はプラグインの画面でも作れます。画面での変更は自動でプロジェクトに保存され、Ctrl+Z で戻せます。
             エフェクト・音量・パン・オートメーション(音量・パン・エフェクト)は Glaux 側でも使えます。
           </div>
         </div>
@@ -759,6 +858,49 @@
     font-size: 11px;
     padding: 5px 12px;
   }
+  .sec-title.sub {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .preset-list {
+    max-height: 220px;
+    overflow-y: auto;
+    margin-top: 4px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+
+  .preset-item {
+    display: flex;
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+    border: none;
+    border-radius: 0;
+    background: none;
+    padding: 3px 8px;
+    font-size: 11px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .preset-item:hover {
+    background: var(--bg-lane-alt);
+  }
+
+  .preset-item.current {
+    color: var(--accent);
+  }
+
+  .pi-cat {
+    color: var(--text-dim);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
   .hidden-hint {
     display: none;
   }

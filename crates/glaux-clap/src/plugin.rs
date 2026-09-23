@@ -364,6 +364,15 @@ impl ClapPlugin {
         path: &std::path::Path,
         load_key: Option<&str>,
     ) -> Result<(), ClapError> {
+        self.load_preset(&crate::PresetLocation::File(path.to_owned()), load_key)
+    }
+
+    /// プリセットを読み込む([`crate::list_presets`] が返した在りかと load_key)。
+    pub fn load_preset(
+        &mut self,
+        location: &crate::PresetLocation,
+        load_key: Option<&str>,
+    ) -> Result<(), ClapError> {
         use clack_extensions::preset_discovery::preset_data::Location;
         let ext = self
             .instance
@@ -371,8 +380,17 @@ impl ClapPlugin {
             .ok_or_else(|| {
                 ClapError::State("プリセットの読み込みに対応していないプラグインです".into())
             })?;
-        let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|e| ClapError::State(e.to_string()))?;
+        let c_path = match location {
+            crate::PresetLocation::File(p) => Some(
+                std::ffi::CString::new(p.to_string_lossy().as_bytes())
+                    .map_err(|e| ClapError::State(e.to_string()))?,
+            ),
+            crate::PresetLocation::Plugin => None,
+        };
+        let loc = match &c_path {
+            Some(c) => Location::File { path: c },
+            None => Location::Plugin,
+        };
         let c_key = load_key
             .filter(|k| !k.is_empty())
             .map(std::ffi::CString::new)
@@ -380,12 +398,8 @@ impl ClapPlugin {
             .map_err(|e| ClapError::State(e.to_string()))?;
         self.instance
             .access_handler(|h| *h.preset_result.borrow_mut() = None);
-        ext.load_from_location(
-            &self.instance.plugin_handle(),
-            Location::File { path: &c_path },
-            c_key.as_deref(),
-        )
-        .map_err(|_| ClapError::State(format!("プリセットを読み込めません: {}", path.display())))?;
+        ext.load_from_location(&self.instance.plugin_handle(), loc, c_key.as_deref())
+            .map_err(|_| ClapError::State(format!("プリセットを読み込めません: {location:?}")))?;
         // プラグインが失敗を知らせてきていればエラー
         match self
             .instance

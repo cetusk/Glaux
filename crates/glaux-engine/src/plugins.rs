@@ -195,6 +195,58 @@ pub fn find(id: &str) -> Option<PluginInfo> {
     catalog().into_iter().find(|p| p.id == id)
 }
 
+// ---- プリセット ----
+
+type PresetList = Arc<Vec<glaux_clap::PresetEntry>>;
+
+fn preset_cache() -> &'static Mutex<HashMap<String, PresetList>> {
+    static C: OnceLock<Mutex<HashMap<String, PresetList>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// プラグインのプリセット一覧(初回だけ探す。`rescan` で探し直す)。重いので UI スレッドで呼ばないこと。
+pub fn presets(plugin_id: &str, rescan: bool) -> Result<Arc<Vec<glaux_clap::PresetEntry>>, String> {
+    if !rescan {
+        if let Some(v) = preset_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(plugin_id)
+        {
+            return Ok(v.clone());
+        }
+    }
+    let info =
+        find(plugin_id).ok_or_else(|| format!("CLAP プラグインが見つかりません: {plugin_id}"))?;
+    let list = Arc::new(glaux_clap::list_presets(&info.path, &info.id).map_err(|e| e.to_string())?);
+    preset_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(plugin_id.to_owned(), list.clone());
+    Ok(list)
+}
+
+/// プロジェクトに書いてある状態(base64)にプリセットを読み込んだ後の状態(base64)を作る。
+/// 呼んだスレッドで一時的にプラグインを作る(再生中のプラグインには触らない。
+/// 結果をプロジェクトに書けば、再生中のプラグインは同期で読み込み直す)。
+pub fn state_with_preset(
+    plugin_id: &str,
+    state: Option<&str>,
+    preset_id: &str,
+) -> Result<String, String> {
+    let info =
+        find(plugin_id).ok_or_else(|| format!("CLAP プラグインが見つかりません: {plugin_id}"))?;
+    glaux_clap::mark_main_thread();
+    let mut p = ClapPlugin::new(&info.path, &info.id).map_err(|e| e.to_string())?;
+    if let Some(bytes) = state.and_then(decode_state) {
+        p.load_state(&bytes).map_err(|e| e.to_string())?;
+    }
+    let (loc, key) = glaux_clap::PresetEntry::parse_id(preset_id);
+    p.load_preset(&loc, key.as_deref())
+        .map_err(|e| e.to_string())?;
+    let bytes = p.save_state().map_err(|e| e.to_string())?;
+    Ok(encode_state(&bytes))
+}
+
 /// プロジェクトに保存する状態(base64)をバイト列に戻す。
 pub fn decode_state(s: &str) -> Option<Vec<u8>> {
     use base64::Engine;

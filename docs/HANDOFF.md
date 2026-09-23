@@ -6,11 +6,12 @@
   和声分析(harmony)/ リズム分析(rhythm)
 - `glaux-ml`: 学習済みモデルの推論(basic-pitch による和音の譜起こし、tract)
 - `glaux-clap`: CLAP プラグインのホスト(探索・生成・process・状態・Windows の画面)
-- `glaux-mcp`: **27 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
+- `glaux-mcp`: **29 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
   revert_to / revert / get_history / list_params / analyze_audio)+ 分析 2(analyze_harmony /
   analyze_rhythm)+ ノート便利 4(transpose / shift / quantize / scale_velocity)+
   プリセット 4(list / save / load / delete)+ 素材 6(import_sample / import_audio_clip /
-  transcribe_audio / separate_audio / list_soundfonts / set_soundfont_instrument)+ list_plugins。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
+  transcribe_audio / separate_audio / list_soundfonts / set_soundfont_instrument)+ list_plugins /
+  list_plugin_presets / load_plugin_preset。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
   ほかに presets / assets モジュール(アプリと共用)
 - `glaux-engine`: 再生(ループ・オートメーション・音声クリップ・自動停止・テンポ変更時の
   位置保持)・録音(record.rs)・WAV エクスポート・音声解析(AI の耳)・
@@ -887,8 +888,18 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     があれば工場出荷・サードパーティも宣言する(ソース `SurgeCLAPPresetDiscovery.cpp` で確認。
     Linux のプラグイン単体配布には無いので未宣言)。メタデータは名前・作者のみ(load_key は空、
     カテゴリはフォルダ名で代用が必要)。`ClapPlugin::load_preset_file` で読み込みを確認
-    (Bell Pad で 120 個のつまみ・エフェクト・テンポ同期値まで変わる)。一覧の取得(indexer / receiver)
-    と AI・UI への配線は未実装
+    (Bell Pad で 120 個のつまみ・エフェクト・テンポ同期値まで変わる)
+  - プリセットの一覧と読み込み(2026-09-23 実装): `glaux_clap::list_presets`(preset-discovery の
+    プロバイダを作り、宣言された置き場所を拡張子でたどってファイルごとにメタデータを受け取る。
+    カテゴリは置き場所からのフォルダ名。プラグイン ID で絞る)、`PresetEntry::id`(ファイルならパス、
+    本体内なら `plugin:<load_key>`)。エンジンの `plugins::presets` がプラグイン ID ごとにキャッシュ。
+    読み込みは `plugins::state_with_preset`: 呼んだスレッドで一時インスタンスを作り、プロジェクトの状態 →
+    プリセットを読み込んで状態を作る → `glaux_mcp::clap_presets::load_command` が `set_device` 1 件
+    (CLAP の上書き値 `clap:*` は消し、`params.preset` にプリセット名)。再生中のプラグインは同期の
+    Reload で読み込み直す。取り消しで元の音色へ
+  - MCP: `list_plugin_presets {track_id, filter, category, limit, rescan}`(categories・current_preset 付き)/
+    `load_plugin_preset {track_id, preset}`(計 29 ツール)。Tauri: `clap_presets` / `clap_load_preset`。
+    UI は音作りビューの CLAP 欄にプリセット一覧(カテゴリ選択・名前で絞り込み・今のプリセットを強調)
   - `list_params` の `current_text` は、上書き値がプラグインに届いた後(共有表の値と一致したとき)にも返す
     (2026-09-23 修正。以前は上書きしたつまみの表示文字列が返らなかった)
   - 実プラグイン(Surge XT)で確認: 上書き値(Global Volume 0 dB → -48 dB)、オートメーションでの音量変化、

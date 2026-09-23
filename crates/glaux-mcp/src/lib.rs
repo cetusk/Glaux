@@ -9,6 +9,7 @@
 
 pub mod actor;
 pub mod assets;
+pub mod clap_presets;
 pub mod presets;
 pub mod server;
 pub mod stems;

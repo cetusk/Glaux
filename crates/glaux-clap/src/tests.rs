@@ -182,3 +182,39 @@ fn preset_file_loads_and_changes_params() {
     assert!(changed > 0);
     assert_ne!(state_before, plugin.save_state().unwrap());
 }
+
+#[test]
+fn presets_are_listed_and_loaded_by_id() {
+    let Some(path) = test_plugin() else {
+        eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+        return;
+    };
+    let info = describe(&path)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.is_instrument())
+        .unwrap();
+    let list = list_presets(&path, &info.id).expect("一覧を作れる");
+    for p in &list {
+        eprintln!(
+            "[{}] {} / {} ({:?}) by {:?}",
+            p.collection,
+            p.category,
+            p.name,
+            p.id(),
+            p.creators
+        );
+    }
+    // 置いてあれば(サンドボックスではユーザーフォルダにテスト用のパッチを置いている)読み込める
+    let Some(first) = list.first() else {
+        eprintln!("プリセットが見つからないため読み込みは確認しない");
+        return;
+    };
+    assert!(!first.name.is_empty());
+    let (loc, key) = PresetEntry::parse_id(&first.id());
+    assert_eq!(loc, first.location);
+    let mut plugin = ClapPlugin::new(&path, &info.id).unwrap();
+    plugin
+        .load_preset(&loc, key.as_deref())
+        .expect("一覧の ID で読み込める");
+}

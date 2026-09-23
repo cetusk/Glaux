@@ -186,6 +186,35 @@ export function clapCloseGui(trackId: string): Promise<void> {
   return invoke("clap_close_gui", { trackId });
 }
 
+export interface ClapPreset {
+  id: string;
+  name: string;
+  category: string;
+  collection: string;
+  factory: boolean;
+  creators: string[];
+  description: string;
+  features: string[];
+}
+
+/** トラックの CLAP プラグインのプリセット一覧(rescan で探し直す)。 */
+export function clapPresets(
+  trackId: string,
+  rescan = false,
+): Promise<{
+  presets: ClapPreset[];
+  categories: { name: string; count: number }[];
+  current_preset: string | null;
+  total: number;
+}> {
+  return invoke("clap_presets", { trackId, rescan });
+}
+
+/** CLAP プラグインのトラックにプリセットを読み込む(履歴 1 件)。 */
+export function clapLoadPreset(trackId: string, preset: string): Promise<{ preset: string }> {
+  return invoke("clap_load_preset", { trackId, preset });
+}
+
 /** トラックの CLAP プラグインの今の設定をプロジェクトに保存する。 */
 export function clapSaveState(trackId: string): Promise<{ changed: boolean }> {
   return invoke("clap_save_state", { trackId });
