@@ -817,6 +817,22 @@
     }
   }
 
+  // ---- スウィング(選択中のノート、無ければクリップ全体) ----
+  let swingGrid = $state(480);
+  let swingMsg = $state<string | null>(null);
+  async function applySwing(value: string) {
+    if (!clip || !value) return;
+    const swing = Number(value);
+    const ids = selected.size > 0 ? [...selected] : null;
+    try {
+      const r = await api.swingClip(clip.id, ids, swingGrid, swing);
+      swingMsg = r.changed > 0 ? `${r.changed} ノートを動かしました(Ctrl+Z で戻せます)` : "動かすノート(裏拍の音)がありません";
+    } catch (e) {
+      swingMsg = String(e);
+    }
+    setTimeout(() => (swingMsg = null), 3000);
+  }
+
   function onPointerDown(e: PointerEvent) {
     if (e.button === 2) return; // 右クリックは contextmenu で処理
     const currentClip = clip;
@@ -1330,6 +1346,29 @@
         >
           ベロシティ
         </button>
+        <label class="snap" title="裏拍の音をハネさせる(選択中のノート、無ければクリップ全体)。表の音と長さは変えない。同じ設定なら何度掛けても同じ">
+          スウィング
+          <select bind:value={swingGrid}>
+            <option value={480}>8 分</option>
+            <option value={240}>16 分</option>
+          </select>
+          <select
+            value=""
+            onchange={(e) => {
+              const el = e.currentTarget as HTMLSelectElement;
+              applySwing(el.value);
+              el.value = "";
+            }}
+          >
+            <option value="">掛ける…</option>
+            <option value="0.5">ストレート(50%)</option>
+            <option value="0.58">軽め(58%)</option>
+            <option value="0.62">中くらい(62%)</option>
+            <option value="0.6667">3 連シャッフル(67%)</option>
+            <option value="0.75">付点(75%)</option>
+          </select>
+        </label>
+        {#if swingMsg}<span class="swing-msg">{swingMsg}</span>{/if}
         <label class="snap">
           スナップ
           <select bind:value={snapTicks}>
@@ -1501,6 +1540,12 @@
     align-items: center;
     gap: 12px;
     min-width: 0;
+    white-space: nowrap;
+  }
+
+  .swing-msg {
+    font-size: 11px;
+    color: var(--accent);
     white-space: nowrap;
   }
 

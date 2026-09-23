@@ -136,6 +136,7 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     24 前後でクランチ、40 以上でメタル。刻みはさらにノートに palm_mute。\
     出荷時プリセット(クリーンエレキ / クランチギター / メタルギター)の load_preset が早道です。\
     ジャンル表現の道具: EDM の supersaw は subtractive の unison=5〜7 + detune、\
+    ハネ・シャッフルは swing_notes(0.667 ≈ 3 連、0.58 で軽く。既存のノリに合わせるなら analyze_rhythm の swing_ratio / 2)。\
     複数のトラックに同じリバーブ・ディレイを掛けたいときは、バス(add_track kind: \"bus\" + リバーブ mix 1.0)を作り、\
     各トラックから set_send で送ります(トラックごとに reverb を挿すより空間がまとまり、軽い)。\
     太いベースは sub、EDM のポンピングは sidechain エフェクト(source にキックのトラック ID、\

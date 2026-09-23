@@ -178,6 +178,17 @@ export function detectClipTempo(clipId: string): Promise<{
   return invoke("detect_clip_tempo", { clipId });
 }
 
+/** MIDI クリップのノートにスウィングを掛ける(noteIds が空ならクリップ全体。履歴 1 件)。
+ *  swing: 0.5 = ストレート、0.667 ≈ 3 連、0.75 = 付点。grid: 480 = 8 分、240 = 16 分 */
+export function swingClip(
+  clipId: string,
+  noteIds: string[] | null,
+  grid: number,
+  swing: number,
+): Promise<{ changed: number }> {
+  return invoke("swing_clip", { clipId, noteIds, grid, swing });
+}
+
 /** 音声クリップ(単旋律)を譜起こしして MIDI クリップを作る(履歴 1 件)。 */
 export function transcribeClip(
   clipId: string,

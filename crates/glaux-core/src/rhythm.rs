@@ -136,6 +136,44 @@ pub fn analyze(
     }
 }
 
+/// スウィングを掛けたノートの新しい位置(クリップ先頭からの tick)。
+///
+/// `grid` は裏拍の単位(480 = 8 分、240 = 16 分)。拍の組(2 × grid)のうち「裏」
+/// (組の頭から grid/2 以上 3/2·grid 未満)にある音を、組の頭から `2·grid·swing` の位置へ
+/// `strength`(0〜1)だけ寄せる。`swing` は 0.5 = ストレート、0.667 ≈ 3 連、0.75 = 付点。
+/// 表の音は動かさない。寄せ先は絶対値なので、同じ設定で何度掛けても結果は同じ。
+/// 位置は曲頭からの拍で判定する(`clip_start` を足してから測る)。
+/// 戻り値は (ノート ID, 新しい位置)。位置が変わらない音は含めない。
+pub fn swing_positions(
+    notes: &[crate::Note],
+    clip_start: u64,
+    clip_len: u64,
+    grid: u64,
+    swing: f64,
+    strength: f64,
+) -> Vec<(crate::NoteId, u64)> {
+    let grid = grid.max(2);
+    let pair = grid * 2;
+    let swing = swing.clamp(0.5, 0.8);
+    let strength = strength.clamp(0.0, 1.0);
+    let target = (pair as f64 * swing).round() as i64;
+    notes
+        .iter()
+        .filter_map(|n| {
+            let abs = clip_start + n.pos.0;
+            let off = (abs % pair) as i64;
+            if off < (grid / 2) as i64 || off >= (grid * 3 / 2) as i64 {
+                return None; // 表の音
+            }
+            let moved = off + ((target - off) as f64 * strength).round() as i64;
+            let new_abs = abs as i64 + (moved - off);
+            let new_pos =
+                (new_abs - clip_start as i64).clamp(0, clip_len.saturating_sub(1) as i64) as u64;
+            (new_pos != n.pos.0).then(|| (n.id.clone(), new_pos))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +270,50 @@ mod tests {
             "ずれ量: {}",
             a.avg_deviation_ticks
         );
+    }
+
+    #[test]
+    fn swing_moves_offbeats_and_is_idempotent() {
+        use crate::{Note, NoteId, Tick};
+        let n = |pos: u64| Note {
+            id: NoteId::new(),
+            pos: Tick(pos),
+            dur: Tick(120),
+            pitch: 60,
+            vel: 100,
+            articulation: Default::default(),
+            pitch_curve: vec![],
+        };
+        // ストレートの 8 分(0, 480, 960, 1440)
+        let notes = vec![n(0), n(480), n(960), n(1440)];
+        let moved = super::swing_positions(&notes, 0, 3840, 480, 2.0 / 3.0, 1.0);
+        let pos: Vec<u64> = moved.iter().map(|(_, p)| *p).collect();
+        assert_eq!(pos, vec![640, 1600], "裏だけ 3 連の位置へ");
+        // 同じ設定で掛け直しても変わらない
+        let again: Vec<Note> = notes
+            .iter()
+            .map(|x| {
+                let mut y = x.clone();
+                if let Some((_, p)) = moved.iter().find(|(id, _)| *id == x.id) {
+                    y.pos = Tick(*p);
+                }
+                y
+            })
+            .collect();
+        assert!(super::swing_positions(&again, 0, 3840, 480, 2.0 / 3.0, 1.0).is_empty());
+        // ストレートに戻す・半分だけ寄せる・クリップの位置を考慮
+        let back = super::swing_positions(&again, 0, 3840, 480, 0.5, 1.0);
+        assert_eq!(
+            back.iter().map(|(_, p)| *p).collect::<Vec<_>>(),
+            vec![480, 1440]
+        );
+        let half = super::swing_positions(&notes, 0, 3840, 480, 0.75, 0.5);
+        assert_eq!(half[0].1, 480 + 120);
+        // クリップが 1 拍ずれた所(960)から始まっても、曲の拍で判定する
+        let shifted = super::swing_positions(&[n(480)], 960, 3840, 480, 2.0 / 3.0, 1.0);
+        assert_eq!(shifted[0].1, 640);
+        // 16 分
+        let s16 = super::swing_positions(&[n(0), n(240)], 0, 3840, 240, 2.0 / 3.0, 1.0);
+        assert_eq!(s16[0].1, 320);
     }
 }

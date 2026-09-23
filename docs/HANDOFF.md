@@ -903,6 +903,11 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     set_device 1 回。トラックのエフェクトも通した `verified_distance` も返す)、`find_similar_presets`(計 34 ツール)。
     UI は音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」(Tauri `match_clip_sound`:
     直後に MIDI トラックを足し、同じ位置に目標の高さ・長さの 1 音。履歴 1 件)
+- **スウィングの一括適用(2026-09-24)**: `glaux_core::rhythm::swing_positions`(純粋関数)。拍の組(2 × grid)の
+  裏(組の頭から grid/2〜3/2·grid)にある音を、組の頭から 2·grid·swing の位置へ strength だけ寄せる(絶対位置なので
+  同じ設定なら何度掛けても同じ、0.5 でストレートに戻る)。拍は曲頭から数える(clip.start を足して判定)。
+  analyze_rhythm の swing_ratio(裏 8 分の位置 / 480)は swing × 2。MCP `swing_notes`、Tauri `swing_clip`、
+  UI はピアノロールの見出しの「スウィング」(8 分 / 16 分と率。選択中のノート、無ければクリップ全体)
 - **ステレオ音声(2026-09-24)**: 取り込み・再生・テンポ追従・パート分離・録音でステレオを保つ。
   - `SampleData` に `side: Option<Vec<f32>>` を追加。`frames` はこれまでどおりモノラル成分 M = (L+R)/2、ステレオ素材だけ
     左右差成分 S = (L−R)/2 を持つ(L = M+S、R = M−S)。解析・譜起こし・波形表示・サンプラーは M だけを使うので変更不要、

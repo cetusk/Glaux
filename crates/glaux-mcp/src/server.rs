@@ -449,6 +449,23 @@ pub struct QuantizeNotesParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct SwingNotesParams {
+    /// 対象クリップ ID(`clp_xxxxxx`)。
+    pub clip_id: String,
+    /// 裏拍の単位(tick)。480 = 8 分(既定)、240 = 16 分。
+    #[serde(default)]
+    pub grid_ticks: Option<u64>,
+    /// スウィング率 0.5〜0.8。0.5 = ストレート、0.58 ≈ 軽め、0.667 ≈ 3 連(シャッフル)、0.75 = 付点(ハネ強め)。
+    pub swing: f64,
+    /// 掛かり具合 0.0〜1.0(省略時 1.0)。
+    #[serde(default)]
+    pub strength: Option<f64>,
+    /// 対象ノート ID の配列。省略でクリップ内の全ノート。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ScaleVelocityParams {
     /// 対象クリップ ID(`clp_xxxxxx`)。
     pub clip_id: String,
@@ -2170,6 +2187,48 @@ impl GlauxServer {
             .collect();
         let label = format!("{:+} tick 移動({} ノート)", p.delta_ticks, changes.len());
         self.apply_note_changes(clip, changes, clamped, label, version, &ctx)
+            .await
+    }
+
+    #[tool(
+        description = "ノートにスウィング(ハネ・シャッフル)を掛ける。裏拍(grid_ticks 480 = 8 分裏、240 = 16 分裏)の音だけを\
+        swing の位置へ寄せる(0.5 = ストレートに戻す、0.667 ≈ 3 連シャッフル、0.75 = 付点)。表の音と長さは変えない。\
+        拍は曲頭から数える。同じ設定なら何度掛けても同じ結果。analyze_rhythm の swing_ratio(裏 8 分の位置 / 480)は\
+        swing × 2 に相当する(swing_ratio 1.33 ≈ swing 0.667)。既存のノリに合わせるなら先に analyze_rhythm で測る。"
+    )]
+    async fn swing_notes(
+        &self,
+        params: Parameters<SwingNotesParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("swing_notes");
+        let p = params.0;
+        if !(0.5..=0.8).contains(&p.swing) {
+            return Err(format!("swing は 0.5〜0.8(got: {})", p.swing));
+        }
+        let grid = p.grid_ticks.unwrap_or(480);
+        if grid < 60 {
+            return Err("grid_ticks は 60 以上にすること".to_owned());
+        }
+        let strength = p.strength.unwrap_or(1.0);
+        if !(0.0..=1.0).contains(&strength) {
+            return Err(format!("strength は 0.0〜1.0(got: {strength})"));
+        }
+        let (clip, len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
+        let (project, _) = self.handle.get_project().await?;
+        let start = project.clip(&clip).map(|(_, c)| c.start.0).unwrap_or(0);
+        let changes: Vec<_> =
+            glaux_core::rhythm::swing_positions(&notes, start, len.0, grid, p.swing, strength)
+                .into_iter()
+                .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(glaux_core::Tick(pos)))
+                .collect();
+        let label = format!(
+            "スウィング {:.0}%(1/{}、{} ノート)",
+            p.swing * 100.0,
+            3840 / grid,
+            changes.len()
+        );
+        self.apply_note_changes(clip, changes, 0, label, version, &ctx)
             .await
     }
 

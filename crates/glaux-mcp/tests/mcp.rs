@@ -1918,3 +1918,54 @@ async fn preset_loads_into_clap_effect_and_undoes() {
         glaux_core::PluginSource::Clap { state: None, .. }
     ));
 }
+
+#[tokio::test]
+async fn swing_notes_moves_offbeats_and_matches_analysis() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_swg001", "Hat")).await);
+    let notes: Vec<Value> = (0..16)
+        .map(|i| json!({ "id": format!("nt_swg{i:03}"), "pos": i * 480, "dur": 120, "pitch": 42, "vel": 90 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "ハット", "commands": [
+                { "op": "add_clip", "track": "trk_swg001", "clip": {
+                    "id": "clp_swg001", "name": "c", "start": 0, "length": 7680, "kind": "midi", "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    let r = call(
+        &fx,
+        "swing_notes",
+        json!({ "clip_id": "clp_swg001", "swing": 0.6667 }),
+    )
+    .await;
+    ok_json(&r);
+    // 解析すると 3 連スウィング(swing_ratio ≈ 1.33)
+    let r = call(&fx, "analyze_rhythm", json!({})).await;
+    let v = ok_json(&r);
+    let ratio = v["swing_ratio"]
+        .as_f64()
+        .or_else(|| v["rhythm"]["swing_ratio"].as_f64());
+    eprintln!("{v}");
+    assert!((ratio.unwrap() - 1.333).abs() < 0.02, "{v}");
+    // 表は動かない、undo で戻る
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap();
+    assert_eq!(ns[0].pos.0, 0);
+    assert_eq!(ns[1].pos.0, 640);
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tracks[0].clips[0].notes().unwrap()[1].pos.0, 480);
+    // 範囲外はエラー
+    let r = call(
+        &fx,
+        "swing_notes",
+        json!({ "clip_id": "clp_swg001", "swing": 0.9 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}

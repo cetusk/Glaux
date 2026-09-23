@@ -288,6 +288,64 @@ async fn detect_clip_tempo(state: State<'_, AppState>, clip_id: String) -> Resul
     serde_json::to_value(r).map_err(|e| e.to_string())
 }
 
+/// MIDI クリップのノートにスウィングを掛ける(`note_ids` 省略で全ノート。履歴 1 件)。
+/// `swing` は 0.5(ストレート)〜0.8、`grid` は裏拍の単位(480 = 8 分、240 = 16 分)。
+#[tauri::command]
+async fn swing_clip(
+    state: State<'_, AppState>,
+    clip_id: String,
+    note_ids: Option<Vec<String>>,
+    grid: u64,
+    swing: f64,
+) -> Result<Value, String> {
+    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let (_, clip) = project
+        .clip(&cid)
+        .ok_or_else(|| format!("クリップが見つかりません: {clip_id}"))?;
+    let notes = clip
+        .notes()
+        .ok_or_else(|| "MIDI クリップではありません".to_owned())?;
+    let chosen: Vec<glaux_core::Note> = match &note_ids {
+        Some(ids) if !ids.is_empty() => notes
+            .iter()
+            .filter(|n| ids.iter().any(|i| i == n.id.as_str()))
+            .cloned()
+            .collect(),
+        _ => notes.to_vec(),
+    };
+    let changes: Vec<glaux_core::NoteChange> = glaux_core::rhythm::swing_positions(
+        &chosen,
+        clip.start.0,
+        clip.length.0,
+        grid.max(60),
+        swing,
+        1.0,
+    )
+    .into_iter()
+    .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(Tick(pos)))
+    .collect();
+    let n = changes.len();
+    if n == 0 {
+        return Ok(json!({ "changed": 0 }));
+    }
+    let label = format!(
+        "スウィング {:.0}%(1/{}、{n} ノート)",
+        swing * 100.0,
+        3840 / grid.max(60)
+    );
+    let (_, m) = state
+        .handle
+        .apply(
+            Command::UpdateNotes { clip: cid, changes },
+            Author::Human,
+            label,
+        )
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "changed": n, "project_version": m.project_version }))
+}
+
 /// 音声クリップ(単旋律)を譜起こしして MIDI クリップを作る(履歴 1 件)。
 #[tauri::command]
 async fn transcribe_clip(
@@ -1877,6 +1935,7 @@ fn main() -> Result<()> {
             import_audio_clip,
             clip_peaks,
             transcribe_clip,
+            swing_clip,
             detect_clip_tempo,
             model_status,
             match_clip_sound,
