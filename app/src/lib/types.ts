@@ -149,13 +149,23 @@ export interface ParamView {
   /** set_param に渡すパス(device/... or fx/<id>/...) */
   path: string;
   current: unknown;
+  /** CLAP プラグインのつまみ: プラグイン自身の表示(例 "-12.0 dB")。まだ分からなければ null */
+  current_text?: string | null;
 }
 
 export interface EffectView {
   id: string;
+  /** 内蔵エフェクト名。CLAP プラグインは "clap" */
   name: string;
   bypass: boolean;
   params: ParamView[];
+  /** CLAP エフェクトのとき */
+  plugin_id?: string;
+  plugin_name?: string | null;
+  /** プラグインが見つからない(この PC に入っていない。鳴らすときは素通し) */
+  missing?: boolean;
+  /** つまみの総数(一覧は最大 64 個) */
+  param_total?: number;
 }
 
 export interface EffectCatalogEntry {

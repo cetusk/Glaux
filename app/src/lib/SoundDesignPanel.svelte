@@ -7,7 +7,7 @@
   import { newClipId, newFxId } from "./ids";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
   import { MASTER_FOCUS_ID, soundDesignStore } from "./selection.svelte";
-  import type { ParamView, PresetInfo, Project, Track, TrackParams } from "./types";
+  import type { EffectView, ParamView, PresetInfo, Project, Track, TrackParams } from "./types";
 
   let { project }: { project: Project } = $props();
 
@@ -138,6 +138,8 @@
   }
 
   function fmtValue(p: ParamView): string {
+    // CLAP プラグインのつまみはプラグイン自身の表示を優先
+    if (p.current_text) return p.current_text;
     const v = p.current;
     if (typeof v === "number") {
       const digits = p.range.kind === "int" ? 0 : Math.abs(v) >= 100 ? 0 : 2;
@@ -180,14 +182,44 @@
     }
   }
 
+  /// `name` は内蔵エフェクト名か "clap:<plugin_id>"(CLAP プラグイン)
   function addEffect(name: string) {
     const t = track;
     if ((!t && !isMaster) || !name) return;
-    const effect = { id: newFxId(), type: "builtin", name };
+    const clapId = name.startsWith("clap:") ? name.slice(5) : null;
+    const effect = clapId
+      ? { id: newFxId(), type: "clap", plugin_id: clapId }
+      : { id: newFxId(), type: "builtin", name };
+    const label = clapId ? (clapEffects.find((p) => p.id === clapId)?.name ?? clapId) : name;
     applyEdit(
       [isMaster ? { op: "add_master_effect", effect } : { op: "add_effect", track: t!.id, effect }],
-      `${targetName} に ${name} を追加`,
+      `${targetName} に ${label} を追加`,
     );
+  }
+
+  // ---- CLAP エフェクト ----
+
+  /// インストール済みの CLAP エフェクト(音作りビューを開いたときに一度読む)
+  let clapEffects = $state<api.ClapPluginInfo[]>([]);
+  let clapEffectsLoaded = false;
+  $effect(() => {
+    if (soundDesignStore.focus && !clapEffectsLoaded) {
+      clapEffectsLoaded = true;
+      api
+        .clapPlugins()
+        .then((r) => (clapEffects = r.plugins.filter((p) => p.effect)))
+        .catch(() => {});
+    }
+  });
+
+  /// エフェクトの表示名(CLAP はプラグイン名)
+  function fxLabel(fx: EffectView): string {
+    if (fx.name !== "clap") return fx.name;
+    return fx.plugin_name ?? fx.plugin_id ?? "CLAP";
+  }
+
+  function openFxGui(fx: EffectView) {
+    api.clapOpenGui(null, fx.id).catch((e) => alert(String(e)));
   }
 
   function removeEffect(id: string, name: string) {
@@ -599,19 +631,31 @@
           {#each info.effects as fx (fx.id)}
             <div class="fx" class:bypassed={fx.bypass}>
               <div class="fx-head">
-                <span class="fx-name">{fx.name}</span>
+                <span class="fx-name" title={fx.plugin_id ?? ""}>
+                  {#if fx.name === "clap"}<span class="clap-chip">CLAP</span>{/if}{fxLabel(fx)}
+                </span>
+                {#if fx.name === "clap" && !fx.missing}
+                  <button class="mini" onclick={() => openFxGui(fx)} title="プラグインの画面を開く(変更は自動で保存され、Ctrl+Z で戻せます)">
+                    画面
+                  </button>
+                {/if}
                 <button
                   class="mini"
                   class:on={!fx.bypass}
-                  onclick={() => toggleBypass(fx.id, fx.name, fx.bypass)}
+                  onclick={() => toggleBypass(fx.id, fxLabel(fx), fx.bypass)}
                   title={fx.bypass ? "バイパス中(クリックで有効化)" : "有効(クリックでバイパス)"}
                 >
                   {fx.bypass ? "OFF" : "ON"}
                 </button>
-                <button class="mini danger" onclick={() => removeEffect(fx.id, fx.name)} title="削除(Ctrl+Z 可)">
+                <button class="mini danger" onclick={() => removeEffect(fx.id, fxLabel(fx))} title="削除(Ctrl+Z 可)">
                   ✕
                 </button>
               </div>
+              {#if fx.missing}
+                <div class="hint warn">
+                  このプラグインはこの PC に見つかりません(音は素通し)。インストールすると元の設定で鳴ります。
+                </div>
+              {/if}
               {#each fx.params as p (p.path)}
                 <div class="param" title={p.description}>
                   <span class="p-name">{p.display_name}</span>
@@ -645,14 +689,26 @@
                   {/if}
                 </div>
               {/each}
+              {#if fx.name === "clap" && (fx.param_total ?? 0) > fx.params.length}
+                <div class="hint">ほか {(fx.param_total ?? 0) - fx.params.length} 個のつまみはプラグインの画面か AI から操作できます。</div>
+              {/if}
             </div>
           {/each}
           <div class="row gap">
             <select bind:value={addFxName} class="grow">
               <option value="">エフェクトを追加…</option>
-              {#each info.available_effects as fx (fx.name)}
-                <option value={fx.name} title={fx.description}>{fx.name}</option>
-              {/each}
+              <optgroup label="内蔵">
+                {#each info.available_effects as fx (fx.name)}
+                  <option value={fx.name} title={fx.description}>{fx.name}</option>
+                {/each}
+              </optgroup>
+              {#if clapEffects.length > 0}
+                <optgroup label="CLAP プラグイン">
+                  {#each clapEffects as p (p.id)}
+                    <option value={`clap:${p.id}`} title={`${p.vendor} ${p.version}`}>{p.name}</option>
+                  {/each}
+                </optgroup>
+              {/if}
             </select>
             <button
               disabled={!addFxName}
@@ -823,6 +879,20 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  .hint.warn {
+    color: #e8a07c;
+  }
+
+  .clap-chip {
+    font-size: 9px;
+    padding: 0 4px;
+    margin-right: 4px;
+    border: 1px solid var(--accent-dim);
+    border-radius: 3px;
+    color: var(--accent);
+    vertical-align: 1px;
   }
 
   .fx-name {
