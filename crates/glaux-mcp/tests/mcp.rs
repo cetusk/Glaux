@@ -1854,3 +1854,67 @@ async fn bus_and_send_via_apply_commands() {
     .await;
     assert_eq!(r.is_error, Some(true));
 }
+
+/// エフェクト枠の CLAP プラグインにプリセットを読み込む(`GLAUX_TEST_CLAP` のプリセットを使う。
+/// 読み込みの仕組みはプラグインの種類によらないので、プリセットのある音源プラグインで確かめる)。
+#[tokio::test]
+async fn preset_loads_into_clap_effect_and_undoes() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP").map(std::path::PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+        return;
+    };
+    std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+    let plugin = glaux_engine::plugins::rescan()
+        .into_iter()
+        .find(|p| p.is_instrument())
+        .unwrap();
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_fxp001", "Lead")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "CLAP", "commands": [
+                { "op": "add_effect", "track": "trk_fxp001",
+                  "effect": { "id": "fx_fxp001", "type": "clap", "plugin_id": plugin.id,
+                              "params": { "clap:1": 0.5 } } }
+            ] }),
+        )
+        .await,
+    );
+    let r = call(&fx, "list_plugin_presets", json!({ "fx_id": "fx_fxp001" })).await;
+    let v = ok_json(&r).clone();
+    let Some(first) = v["presets"].as_array().and_then(|a| a.first()).cloned() else {
+        eprintln!("プリセットが無いため確認しない");
+        return;
+    };
+    let r = call(
+        &fx,
+        "load_plugin_preset",
+        json!({ "fx_id": "fx_fxp001", "preset": first["id"] }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["preset"], first["name"]);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let e = &project.tracks[0].effects[0];
+    match &e.source {
+        glaux_core::PluginSource::Clap { state, .. } => assert!(state.is_some()),
+        other => panic!("{other:?}"),
+    }
+    assert!(e.params.get("clap:1").is_none(), "上書き値は消える");
+    assert_eq!(
+        e.params.get("preset"),
+        Some(&glaux_core::ParamValue::Enum(
+            first["name"].as_str().unwrap().to_owned()
+        ))
+    );
+    // 1 回の undo で元に戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let e = &project.tracks[0].effects[0];
+    assert!(e.params.get("clap:1").is_some());
+    assert!(matches!(
+        &e.source,
+        glaux_core::PluginSource::Clap { state: None, .. }
+    ));
+}

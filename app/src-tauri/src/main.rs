@@ -465,19 +465,20 @@ async fn clap_save_state(
     save_clap_state(&state, plugin_owner(track_id, fx_id)?).await
 }
 
-/// トラックの CLAP プラグインのプリセット一覧(UI 用に全件)。
+/// CLAP プラグイン(音源は track_id、エフェクトは fx_id)のプリセット一覧(UI 用に全件)。
 #[tauri::command]
 async fn clap_presets(
     state: State<'_, AppState>,
-    track_id: String,
+    track_id: Option<String>,
+    fx_id: Option<String>,
     rescan: Option<bool>,
 ) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let owner = plugin_owner(track_id, fx_id)?;
     let (project, _) = state.handle.get_project().await?;
     tokio::task::spawn_blocking(move || {
         glaux_mcp::clap_presets::list(
             &project,
-            &glaux_engine::plugins::PluginOwner::Track(tid),
+            &owner,
             None,
             None,
             usize::MAX,
@@ -488,21 +489,18 @@ async fn clap_presets(
     .map_err(|e| e.to_string())?
 }
 
-/// CLAP プラグインのトラックにプリセットを読み込む(履歴 1 件)。
+/// CLAP プラグイン(音源は track_id、エフェクトは fx_id)にプリセットを読み込む(履歴 1 件)。
 #[tauri::command]
 async fn clap_load_preset(
     state: State<'_, AppState>,
-    track_id: String,
+    track_id: Option<String>,
+    fx_id: Option<String>,
     preset: String,
 ) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let owner = plugin_owner(track_id, fx_id)?;
     let (project, _) = state.handle.get_project().await?;
     let (command, label, name) = tokio::task::spawn_blocking(move || {
-        glaux_mcp::clap_presets::load_command(
-            &project,
-            &glaux_engine::plugins::PluginOwner::Track(tid),
-            &preset,
-        )
+        glaux_mcp::clap_presets::load_command(&project, &owner, &preset)
     })
     .await
     .map_err(|e| e.to_string())??;

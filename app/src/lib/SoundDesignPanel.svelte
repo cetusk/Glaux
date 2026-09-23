@@ -251,6 +251,52 @@
     api.clapOpenGui(null, fx.id).catch((e) => alert(String(e)));
   }
 
+  // CLAP エフェクトのプリセット(開いているエフェクト 1 つ分)
+  let fxPresetOpen = $state<string | null>(null);
+  let fxPresetList = $state<api.ClapPreset[] | null>(null);
+  let fxPresetMsg = $state<string | null>(null);
+  let fxPresetBusy = $state(false);
+  async function toggleFxPresets(fx: EffectView) {
+    if (fxPresetOpen === fx.id) {
+      fxPresetOpen = null;
+      return;
+    }
+    fxPresetOpen = fx.id;
+    fxPresetList = null;
+    fxPresetMsg = null;
+    try {
+      const r = await api.clapPresets(null, false, fx.id);
+      fxPresetList = r.presets;
+      fxPresetMsg = r.current_preset ? `今: ${r.current_preset}` : null;
+    } catch (e) {
+      fxPresetList = [];
+      fxPresetMsg = String(e);
+    }
+  }
+  /// カテゴリごとにまとめた一覧(select の optgroup 用)
+  const fxPresetGroups = $derived.by(() => {
+    const groups = new Map<string, api.ClapPreset[]>();
+    for (const p of (fxPresetList ?? []).slice(0, 1000)) {
+      const g = groups.get(p.category) ?? [];
+      g.push(p);
+      groups.set(p.category, g);
+    }
+    return [...groups.entries()];
+  });
+  async function loadFxPreset(fx: EffectView, presetId: string) {
+    if (!presetId || fxPresetBusy) return;
+    fxPresetBusy = true;
+    fxPresetMsg = "読み込み中…";
+    try {
+      const r = await api.clapLoadPreset(null, presetId, fx.id);
+      fxPresetMsg = `今: ${r.preset}(Ctrl+Z で戻せます)`;
+    } catch (e) {
+      fxPresetMsg = String(e);
+    } finally {
+      fxPresetBusy = false;
+    }
+  }
+
   function removeEffect(id: string, name: string) {
     applyEdit([{ op: "remove_effect", id }], `${targetName} の ${name} を削除`);
   }
@@ -680,6 +726,14 @@
                   {#if fx.name === "clap"}<span class="clap-chip">CLAP</span>{/if}{fxLabel(fx)}
                 </span>
                 {#if fx.name === "clap" && !fx.missing}
+                  <button
+                    class="mini"
+                    class:on={fxPresetOpen === fx.id}
+                    onclick={() => toggleFxPresets(fx)}
+                    title="プラグインのプリセットから選ぶ"
+                  >
+                    プリセット
+                  </button>
                   <button class="mini" onclick={() => openFxGui(fx)} title="プラグインの画面を開く(変更は自動で保存され、Ctrl+Z で戻せます)">
                     画面
                   </button>
@@ -696,6 +750,31 @@
                   ✕
                 </button>
               </div>
+              {#if fxPresetOpen === fx.id}
+                <div class="fx-presets">
+                  {#if fxPresetList === null}
+                    <div class="hint">プリセットを探しています…</div>
+                  {:else if fxPresetList.length === 0}
+                    <div class="hint">このプラグインのプリセットは見つかりませんでした(一覧に対応していないプラグインもあります)。</div>
+                  {:else}
+                    <select
+                      class="grow"
+                      disabled={fxPresetBusy}
+                      onchange={(e) => loadFxPreset(fx, (e.currentTarget as HTMLSelectElement).value)}
+                    >
+                      <option value="">プリセットを選ぶ…({fxPresetList.length})</option>
+                      {#each fxPresetGroups as [cat, list] (cat)}
+                        <optgroup label={cat || "(未分類)"}>
+                          {#each list as p (p.id)}
+                            <option value={p.id}>{p.name}</option>
+                          {/each}
+                        </optgroup>
+                      {/each}
+                    </select>
+                  {/if}
+                  {#if fxPresetMsg}<div class="hint">{fxPresetMsg}</div>{/if}
+                </div>
+              {/if}
               {#if fx.missing}
                 <div class="hint warn">
                   このプラグインはこの PC に見つかりません(音は素通し)。インストールすると元の設定で鳴ります。
@@ -966,6 +1045,14 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  .fx-presets {
+    margin: 4px 0 6px 0;
+  }
+
+  .fx-presets select {
+    width: 100%;
   }
 
   .send-opts {
