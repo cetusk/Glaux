@@ -414,13 +414,19 @@ fn clap_params_json(
         .take(limit)
         .map(|p| {
             let key = glaux_engine::plugins::param_key(p.id);
-            let (current, text) = match overrides.get(&key) {
-                Some(glaux_core::ParamValue::Float(v)) => (*v, None),
-                Some(glaux_core::ParamValue::Int(v)) => (*v as f64, None),
-                _ => match live.get(&p.id) {
-                    Some((v, t)) => (*v, Some(t.clone())),
-                    None => (p.default, None),
-                },
+            let over = match overrides.get(&key) {
+                Some(glaux_core::ParamValue::Float(v)) => Some(*v),
+                Some(glaux_core::ParamValue::Int(v)) => Some(*v as f64),
+                _ => None,
+            };
+            let (current, text) = match (over, live.get(&p.id)) {
+                // 上書き値がプラグインに届いていれば、プラグインの表示文字列も返す
+                (Some(v), Some((lv, t))) if (v - lv).abs() <= 1e-6 * (1.0 + v.abs()) => {
+                    (v, Some(t.clone()))
+                }
+                (Some(v), _) => (v, None),
+                (None, Some((lv, t))) => (*lv, Some(t.clone())),
+                (None, None) => (p.default, None),
             };
             let module = p.module.trim_matches('/');
             let display = if module.is_empty() {

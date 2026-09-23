@@ -286,6 +286,17 @@ pub fn live_values(track: &TrackId) -> Option<ParamValues> {
         .cloned()
 }
 
+/// テスト用: 共有表に「プラグインの今の値」を置く。
+#[doc(hidden)]
+pub fn set_live_values_for_test(track: &TrackId, id: u32, value: f64, text: &str) {
+    live_values_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(track.clone())
+        .or_default()
+        .insert(id, (value, text.to_owned()));
+}
+
 fn hash_str(s: Option<&str>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();

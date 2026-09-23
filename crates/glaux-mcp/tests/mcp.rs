@@ -1088,4 +1088,17 @@ async fn list_params_filters_real_clap_params() {
     )
     .await;
     assert_eq!(ok_json(&r)["params"][0]["current"], json!(0.25));
+
+    // プラグインに届いた後は、変更した値にも画面表示の文字列が付く
+    // (このテストはエンジンを動かさないので、共有表に「届いた」値を直接置いて確かめる)
+    let id: u32 = path.trim_start_matches("device/clap:").parse().unwrap();
+    let tid = glaux_core::TrackId::parse("trk_clap03").unwrap();
+    glaux_engine::plugins::set_live_values_for_test(&tid, id, 0.25, "123 Hz");
+    let r = call(
+        &fx,
+        "list_params",
+        json!({ "track_id": "trk_clap03", "filter": "cutoff", "limit": 5 }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["params"][0]["current_text"], json!("123 Hz"));
 }
