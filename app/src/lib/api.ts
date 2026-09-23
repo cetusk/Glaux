@@ -160,6 +160,28 @@ export function separateClip(
   return invoke("separate_clip", { clipId, method });
 }
 
+// ---- CLAP プラグイン ----
+
+export interface ClapPluginInfo {
+  id: string;
+  name: string;
+  vendor: string;
+  version: string;
+  path: string;
+  instrument: boolean;
+  effect: boolean;
+}
+
+/** インストール済みの CLAP プラグイン(rescan で探し直す)。dirs は探している場所 */
+export function clapPlugins(rescan = false): Promise<{ plugins: ClapPluginInfo[]; dirs: string[] }> {
+  return invoke("clap_plugins", { rescan });
+}
+
+/** トラックの CLAP プラグインの今の設定をプロジェクトに保存する。 */
+export function clapSaveState(trackId: string): Promise<{ changed: boolean }> {
+  return invoke("clap_save_state", { trackId });
+}
+
 // ---- 録音 ----
 
 /** 録音を開始する(再生も同時に始まる)。カウントイン後の位置にクリップが置かれる。 */

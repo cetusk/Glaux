@@ -68,7 +68,14 @@ export interface Track {
   solo: boolean;
   volume_db: number;
   pan: number;
-  device?: { type?: string; name?: string; params?: Record<string, unknown> } | null;
+  device?: {
+    type?: string;
+    name?: string;
+    /** type: "clap" のときのプラグイン ID と状態(base64) */
+    plugin_id?: string;
+    state?: string;
+    params?: Record<string, unknown>;
+  } | null;
   effects: unknown[];
   clips: Clip[];
   automation: AutomationLane[];

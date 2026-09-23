@@ -339,6 +339,84 @@ async fn separate_clip(
     Ok(json!({ "parts": names, "project_version": m.project_version }))
 }
 
+// ---- CLAP プラグイン ----
+
+/// インストール済みの CLAP プラグイン一覧(rescan で探し直す)と、探している場所。
+#[tauri::command]
+async fn clap_plugins(rescan: Option<bool>) -> Result<Value, String> {
+    let list = tokio::task::spawn_blocking(move || {
+        if rescan.unwrap_or(false) {
+            glaux_engine::plugins::rescan()
+        } else {
+            glaux_engine::plugins::catalog()
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let plugins: Vec<Value> = list
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.id,
+                "name": p.name,
+                "vendor": p.vendor,
+                "version": p.version,
+                "path": p.path.to_string_lossy(),
+                "instrument": p.is_instrument(),
+                "effect": p.is_effect(),
+            })
+        })
+        .collect();
+    let dirs: Vec<String> = glaux_engine::plugins::search_paths()
+        .iter()
+        .map(|d| d.to_string_lossy().into_owned())
+        .collect();
+    Ok(json!({ "plugins": plugins, "dirs": dirs }))
+}
+
+/// トラックの CLAP プラグインの今の状態をプロジェクトに保存する(変わっていなければ何もしない)。
+#[tauri::command]
+async fn clap_save_state(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let engine = state.engine()?.clone();
+    let saved = {
+        let e = engine.clone();
+        let t = tid.clone();
+        tokio::task::spawn_blocking(move || e.save_plugin_state(&t))
+            .await
+            .map_err(|e| e.to_string())??
+    };
+    let (project, _) = state.handle.get_project().await?;
+    let track = project
+        .track(&tid)
+        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let Some(mut device) = track.device.clone() else {
+        return Err("音源がありません".to_owned());
+    };
+    let glaux_core::PluginSource::Clap { state: cur, .. } = &mut device.source else {
+        return Err("CLAP プラグインの音源ではありません".to_owned());
+    };
+    if cur.as_deref() == Some(saved.as_str()) {
+        return Ok(json!({ "changed": false }));
+    }
+    *cur = Some(saved.clone());
+    engine.note_plugin_state_saved(&tid, &saved);
+    let label = format!("{} のプラグインの設定を保存", track.name);
+    let (_, m) = state
+        .handle
+        .apply(
+            Command::SetDevice {
+                track: tid,
+                device: Some(device),
+            },
+            Author::Human,
+            label,
+        )
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "changed": true, "project_version": m.project_version }))
+}
+
 /// `at` の位置の拍子での 1 小節の長さ(tick)。
 fn bar_ticks_at(project: &glaux_core::Project, at: Tick) -> u64 {
     project
@@ -1504,6 +1582,8 @@ fn main() -> Result<()> {
             record_stop,
             midi_inputs,
             separate_clip,
+            clap_plugins,
+            clap_save_state,
             set_midi_input,
             set_live_target,
             midi_record_start,

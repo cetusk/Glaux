@@ -229,3 +229,40 @@ fn sections_serialize_and_apply() {
     let back = Project::from_json(&p.to_json().unwrap()).unwrap();
     assert_eq!(p, back);
 }
+
+#[test]
+fn clap_device_command_applies_and_roundtrips() {
+    // UI が送る形(params・state 省略)で CLAP 音源を設定できる
+    let mut p = Project::from_json(FIXTURE).unwrap();
+    let cmd: Command = serde_json::from_value(serde_json::json!({
+        "op": "set_device",
+        "track": "trk_a1b2c3",
+        "device": { "type": "clap", "plugin_id": "org.surge-synth-team.surge-xt" }
+    }))
+    .unwrap();
+    p.apply(&cmd).unwrap();
+    let dev = p
+        .track(&"trk_a1b2c3".parse().unwrap())
+        .unwrap()
+        .device
+        .clone()
+        .unwrap();
+    assert_eq!(
+        dev.source,
+        PluginSource::Clap {
+            plugin_id: "org.surge-synth-team.surge-xt".into(),
+            state: None
+        }
+    );
+    // 状態(base64)付きでも保存・読み込みで変わらない
+    let cmd: Command = serde_json::from_value(serde_json::json!({
+        "op": "set_device",
+        "track": "trk_a1b2c3",
+        "device": { "type": "clap", "plugin_id": "org.surge-synth-team.surge-xt", "state": "AAEC" }
+    }))
+    .unwrap();
+    p.apply(&cmd).unwrap();
+    assert!(p.is_valid(), "{:?}", p.validate());
+    let back = Project::from_json(&p.to_json().unwrap()).unwrap();
+    assert_eq!(p, back);
+}

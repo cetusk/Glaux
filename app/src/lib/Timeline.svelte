@@ -863,6 +863,49 @@
   ];
 
   let deviceMenu = $state<{ track: Track; x: number; y: number } | null>(null);
+
+  // CLAP プラグイン(外部音源)。一覧は初回だけ探し、以後は使い回す
+  let clapList = $state<api.ClapPluginInfo[] | null>(null);
+  let clapDirs = $state<string[]>([]);
+  let clapLoading = $state(false);
+  async function loadClap(rescan = false) {
+    if (clapLoading || (clapList && !rescan)) return;
+    clapLoading = true;
+    try {
+      const r = await api.clapPlugins(rescan);
+      clapList = r.plugins;
+      clapDirs = r.dirs;
+    } catch {
+      clapList = [];
+    } finally {
+      clapLoading = false;
+    }
+  }
+  const clapInstruments = $derived((clapList ?? []).filter((p) => p.instrument));
+
+  /// トラック見出しに出す音源名(CLAP はプラグイン名)
+  function deviceLabel(t: Track): string {
+    const d = t.device;
+    if (!d) return "subtractive*";
+    if (d.type === "clap") {
+      const p = clapList?.find((c) => c.id === d.plugin_id);
+      return `🔌 ${p?.name ?? d.plugin_id?.split(".").pop() ?? "CLAP"}`;
+    }
+    return d.name ?? "subtractive*";
+  }
+
+  function setClapDevice(p: api.ClapPluginInfo) {
+    const menu = deviceMenu;
+    deviceMenu = null;
+    if (!menu) return;
+    if (menu.track.device?.type === "clap" && menu.track.device.plugin_id === p.id) return;
+    api
+      .applyEdit(
+        [{ op: "set_device", track: menu.track.id, device: { type: "clap", plugin_id: p.id } }],
+        `${menu.track.name} の音源を ${p.name}(CLAP)に変更`,
+      )
+      .catch((e) => alert(String(e)));
+  }
   let presets = $state<PresetInfo[]>([]);
   let presetName = $state("");
   let presetMsg = $state<string | null>(null);
@@ -872,6 +915,7 @@
     presetMsg = null;
     presetName = "";
     deviceMenu = { track, x: e.clientX, y: e.clientY };
+    loadClap();
     api
       .listPresets()
       .then((r) => (presets = r.presets))
@@ -1084,7 +1128,7 @@
               ? "クリックで音源を変更"
               : "音源未設定(既定の subtractive で発音)。クリックで選択"}
           >
-            🎹 {track.device?.name ?? "subtractive*"} ▾
+            {track.device?.type === "clap" ? "" : "🎹 "}{deviceLabel(track)} ▾
           </button>
           <code>{track.id}</code>
         </div>
@@ -1315,16 +1359,50 @@
     <div class="track-menu" style="left:{deviceMenu.x}px;top:{deviceMenu.y}px">
       {#each INSTRUMENTS as inst (inst.name)}
         <button
-          class:active-dev={(deviceMenu.track.device?.name ?? "subtractive") === inst.name}
+          class:active-dev={deviceMenu.track.device?.type !== "clap" &&
+            (deviceMenu.track.device?.name ?? "subtractive") === inst.name}
           onclick={() => setDevice(inst.name)}
         >
           <span class="dev-label">
-            {inst.label}{(deviceMenu.track.device?.name ?? "subtractive") === inst.name ? " ✓" : ""}
+            {inst.label}{deviceMenu.track.device?.type !== "clap" &&
+            (deviceMenu.track.device?.name ?? "subtractive") === inst.name
+              ? " ✓"
+              : ""}
           </span>
           <span class="dev-desc">{inst.desc}</span>
         </button>
       {/each}
       <div class="menu-note">切り替えると音源パラメータは初期値に戻ります(Ctrl+Z で取り消せます)。細かい音作りは AI に依頼してください。</div>
+
+      <div class="menu-sep"></div>
+      <div class="preset-title">
+        🔌 CLAP プラグイン(外部の音源)
+        <button
+          class="mini-rescan"
+          disabled={clapLoading}
+          title="プラグインを探し直す(インストールした後など)"
+          onclick={(e) => {
+            e.stopPropagation();
+            loadClap(true);
+          }}>🔄</button
+        >
+      </div>
+      {#if clapLoading}
+        <div class="menu-note">探しています…</div>
+      {:else if clapInstruments.length === 0}
+        <div class="menu-note" title={clapDirs.join("\n")}>
+          見つかりません。Surge XT などの CLAP 版をインストールしてから 🔄 を押してください
+          (探す場所: {clapDirs[0] ?? "OS 標準の CLAP フォルダ"} など)。
+        </div>
+      {:else}
+        {#each clapInstruments as p (p.id)}
+          {@const active = deviceMenu.track.device?.type === "clap" && deviceMenu.track.device.plugin_id === p.id}
+          <button class:active-dev={active} onclick={() => setClapDevice(p)} title={`${p.id}\n${p.path}`}>
+            <span class="dev-label">🔌 {p.name}{active ? " ✓" : ""}</span>
+            <span class="dev-desc">{p.vendor}{p.version ? ` ${p.version}` : ""}</span>
+          </button>
+        {/each}
+      {/if}
 
       <div class="menu-sep"></div>
       <div class="preset-title">プリセット(全プロジェクト共通)</div>
@@ -1783,6 +1861,13 @@
     width: 8px;
     cursor: ew-resize;
     z-index: 2;
+  }
+
+  .mini-rescan {
+    margin-left: 6px;
+    padding: 0 4px;
+    font-size: 10px;
+    line-height: 14px;
   }
 
   .clip-busy {
