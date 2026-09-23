@@ -45,6 +45,52 @@ pub struct Analysis {
     pub onset_count: usize,
     /// サンプルが振り切れている(歪んでいる可能性)
     pub clipped: bool,
+    /// ラウドネスレンジ(LU。EBU R128 の LRA)。曲中の音量の起伏の大きさ(小さい = 平板)
+    pub loudness_range_lu: f64,
+    /// True Peak(dBTP。サンプル間のピークも含む。配信の目安は -1 以下)
+    pub true_peak_dbtp: f64,
+    /// 短期ラウドネス(3 秒窓)の 1 秒ごとの推移(LUFS、最大 180 点)。展開・盛り上がりの把握用
+    pub short_term_lufs: Vec<f64>,
+    /// 短期ラウドネスの最大値(いちばん大きい所)
+    pub max_short_term_lufs: f64,
+    /// ステレオの広がり
+    pub stereo: StereoInfo,
+}
+
+/// ステレオの広がり・位相。
+#[derive(Clone, Debug, Serialize)]
+pub struct StereoInfo {
+    /// 左右の相関(1 = モノラル、0 = 無相関で広い、負 = 逆相でモノラル再生時に打ち消し合う)
+    pub correlation: f64,
+    /// 250Hz 以下の左右の相関(低域は 1 に近い = 中央に集まっているのが望ましい)
+    pub low_correlation: f64,
+    /// サイド(左右の差)とミッド(和)のエネルギー比(dB。-∞ に近い = モノラル、0 付近 = 非常に広い)
+    pub side_to_mid_db: f64,
+    /// 左右の音量差(dB。正 = 右が大きい)
+    pub balance_db: f64,
+}
+
+/// トラック間の周波数のかぶり(マスキング)。
+#[derive(Clone, Debug, Serialize)]
+pub struct MaskingIssue {
+    /// かぶって聞こえにくくなっている側
+    pub track: String,
+    /// かぶせている側
+    pub masked_by: String,
+    /// 帯域(聴覚の帯域幅に近い区切り、Hz)
+    pub band_hz: (u32, u32),
+    /// `track` がこの帯域で鳴っている時間のうち、`masked_by` が 6dB 以上大きい時間の割合
+    pub time_ratio: f64,
+    /// この帯域が `track` のエネルギーに占める割合(大きいほど、その音の主要な帯域)
+    pub band_share: f64,
+}
+
+/// トラックごとの要約と、トラック間のかぶり。
+#[derive(Clone, Debug, Serialize)]
+pub struct MixAnalysis {
+    pub tracks: Vec<TrackAnalysis>,
+    /// 深刻な順(最大 12 件)
+    pub masking: Vec<MaskingIssue>,
 }
 
 /// 1 トラックぶんの要約(ミックスバランスの比較用)。
@@ -61,28 +107,13 @@ pub struct TrackAnalysis {
 
 /// 各トラックをソロでレンダして要約を返す(音が出ないトラックは省く)。
 /// 「リードが埋もれている」のようなトラック間の相対バランスを判断する材料。
+/// かぶり(マスキング)も欲しければ [`analyze_mix`]。
 pub fn analyze_project_tracks(
     project: &Project,
     range: Option<(Tick, Tick)>,
     bank: &crate::data::SampleBank,
 ) -> Vec<TrackAnalysis> {
-    project
-        .tracks
-        .iter()
-        .filter_map(|t| {
-            let a =
-                analyze_project(project, Some(std::slice::from_ref(&t.id)), range, bank).ok()?;
-            Some(TrackAnalysis {
-                track_id: t.id.to_string(),
-                name: t.name.clone(),
-                loudness_lufs: a.loudness_lufs,
-                rms_db: a.rms_db,
-                peak_db: a.peak_db,
-                spectral_centroid_hz: a.spectral_centroid_hz,
-                band_energy: a.band_energy,
-            })
-        })
-        .collect()
+    analyze_mix(project, range, bank).tracks
 }
 
 /// プロジェクトを解析する。`track_ids` で対象トラックを、`range` で tick 範囲を絞れる。
@@ -134,6 +165,8 @@ pub fn analyze_project(
     let clipped = peak >= 0.999;
 
     let loudness_lufs = integrated_lufs(sliced);
+    let r128 = r128_stats(sliced);
+    let stereo = stereo_info(sliced);
 
     // ---- スペクトル系(Welch 平均) ----
     let (spectral_centroid_hz, band_energy) = spectrum_stats(&mono);
@@ -153,7 +186,234 @@ pub fn analyze_project(
         onsets_ticks: onsets_ticks.into_iter().take(200).collect(),
         onset_count,
         clipped,
+        loudness_range_lu: r128.0,
+        true_peak_dbtp: r128.1,
+        short_term_lufs: r128.2,
+        max_short_term_lufs: r128.3,
+        stereo,
     })
+}
+
+/// EBU R128: (LRA, True Peak dBTP, 短期ラウドネスの 1 秒ごとの推移, その最大)。
+fn r128_stats(stereo: &[f32]) -> (f64, f64, Vec<f64>, f64) {
+    use ebur128::{EbuR128, Mode};
+    let Ok(mut m) = EbuR128::new(2, SAMPLE_RATE as u32, Mode::LRA | Mode::TRUE_PEAK | Mode::S)
+    else {
+        return (0.0, -120.0, vec![], -70.0);
+    };
+    let sec = SAMPLE_RATE as usize * 2;
+    let mut timeline = Vec::new();
+    for chunk in stereo.chunks(sec) {
+        if m.add_frames_f32(chunk).is_err() {
+            break;
+        }
+        let st = m.loudness_shortterm().unwrap_or(f64::NEG_INFINITY);
+        timeline.push(if st.is_finite() {
+            (st * 10.0).round() / 10.0
+        } else {
+            -70.0
+        });
+    }
+    let lra = m.loudness_range().unwrap_or(0.0);
+    let tp = (0..2)
+        .filter_map(|c| m.true_peak(c).ok())
+        .fold(0.0f64, f64::max);
+    let max_st = timeline.iter().copied().fold(-70.0f64, f64::max);
+    // 長い曲は間引いて 180 点以内に
+    let step = timeline.len().div_ceil(180).max(1);
+    let timeline: Vec<f64> = timeline.iter().step_by(step).copied().collect();
+    (lra, amp_db(tp), timeline, max_st)
+}
+
+/// RBJ の 2 次ローパス(48kHz)。
+fn lowpass(fc: f64) -> Biquad {
+    let w0 = std::f64::consts::TAU * fc / SAMPLE_RATE;
+    let alpha = w0.sin() / (2.0 * std::f64::consts::FRAC_1_SQRT_2);
+    let cos = w0.cos();
+    let a0 = 1.0 + alpha;
+    Biquad::new(
+        [
+            (1.0 - cos) / 2.0 / a0,
+            (1.0 - cos) / a0,
+            (1.0 - cos) / 2.0 / a0,
+        ],
+        [-2.0 * cos / a0, (1.0 - alpha) / a0],
+    )
+}
+
+fn stereo_info(stereo: &[f32]) -> StereoInfo {
+    let (mut ll, mut rr, mut lr) = (0.0f64, 0.0f64, 0.0f64);
+    let (mut lo_ll, mut lo_rr, mut lo_lr) = (0.0f64, 0.0f64, 0.0f64);
+    let (mut mid, mut side) = (0.0f64, 0.0f64);
+    let (mut fl, mut fr) = (lowpass(250.0), lowpass(250.0));
+    for c in stereo.as_chunks::<2>().0 {
+        let (l, r) = (c[0] as f64, c[1] as f64);
+        ll += l * l;
+        rr += r * r;
+        lr += l * r;
+        mid += (l + r).powi(2);
+        side += (l - r).powi(2);
+        let (a, b) = (fl.next(l), fr.next(r));
+        lo_ll += a * a;
+        lo_rr += b * b;
+        lo_lr += a * b;
+    }
+    let corr = |xy: f64, xx: f64, yy: f64| {
+        let d = (xx * yy).sqrt();
+        if d > 1e-12 {
+            (xy / d).clamp(-1.0, 1.0)
+        } else {
+            1.0
+        }
+    };
+    let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+    StereoInfo {
+        correlation: r3(corr(lr, ll, rr)),
+        low_correlation: r3(corr(lo_lr, lo_ll, lo_rr)),
+        side_to_mid_db: (10.0 * (side.max(1e-12) / mid.max(1e-12)).log10()).max(-60.0),
+        balance_db: 10.0 * (rr.max(1e-12) / ll.max(1e-12)).log10(),
+    }
+}
+
+/// 聴覚の帯域に近い区切り(Zwicker の臨界帯域の境界、Hz)
+const BARK_EDGES: [f64; 25] = [
+    20.0, 100.0, 200.0, 300.0, 400.0, 510.0, 630.0, 770.0, 920.0, 1080.0, 1270.0, 1480.0, 1720.0,
+    2000.0, 2320.0, 2700.0, 3150.0, 3700.0, 4400.0, 5300.0, 6400.0, 7700.0, 9500.0, 12000.0,
+    15500.0,
+];
+
+/// モノラルを 100ms ごとの臨界帯域エネルギー(dB)の列にする。
+fn band_frames(mono: &[f32]) -> Vec<[f64; 24]> {
+    const N: usize = 4096;
+    let hop = (0.1 * SAMPLE_RATE) as usize;
+    let mut planner = FftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(N);
+    let hann: Vec<f64> = (0..N)
+        .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / N as f64).cos())
+        .collect();
+    let bin_hz = SAMPLE_RATE / N as f64;
+    let mut out = Vec::new();
+    let mut buf = vec![Complex::new(0.0, 0.0); N];
+    let mut pos = 0;
+    while pos + N <= mono.len() {
+        for i in 0..N {
+            buf[i] = Complex::new(mono[pos + i] as f64 * hann[i], 0.0);
+        }
+        fft.process(&mut buf);
+        let mut bands = [0.0f64; 24];
+        for (k, c) in buf[..N / 2].iter().enumerate() {
+            let f = k as f64 * bin_hz;
+            if let Some(b) = BARK_EDGES.windows(2).position(|w| f >= w[0] && f < w[1]) {
+                bands[b] += c.norm_sqr();
+            }
+        }
+        out.push(bands.map(|p| 10.0 * p.max(1e-12).log10()));
+        pos += hop;
+    }
+    out
+}
+
+/// トラックごとにソロでレンダし、要約とトラック間のかぶり(マスキング)を求める。
+///
+/// かぶりの判定(簡易な心理音響モデル): 臨界帯域ごとに、あるトラックが鳴っている
+/// (その帯域での自分の最大から -30dB 以内の)時間のうち、別のトラックが同じ帯域で
+/// 6dB 以上大きい時間の割合。その帯域が自分のエネルギーの 8% 以上を占めるものだけを数える。
+pub fn analyze_mix(
+    project: &Project,
+    range: Option<(Tick, Tick)>,
+    bank: &crate::data::SampleBank,
+) -> MixAnalysis {
+    let mut tracks = Vec::new();
+    let mut frames: Vec<(String, Vec<[f64; 24]>)> = Vec::new();
+    for t in &project.tracks {
+        let mut target = project.clone();
+        target.tracks.retain(|x| x.id == t.id);
+        for x in &mut target.tracks {
+            x.solo = false;
+        }
+        let Ok(stereo) = render_project(&target, SAMPLE_RATE, bank) else {
+            continue;
+        };
+        let sliced: &[f32] = match range {
+            Some((start, end)) => {
+                let s0 = project.tempo_map.tick_to_seconds(start);
+                let s1 = project.tempo_map.tick_to_seconds(end);
+                let i0 = ((s0 * SAMPLE_RATE) as usize * 2).min(stereo.len());
+                let i1 = ((s1 * SAMPLE_RATE) as usize * 2).min(stereo.len());
+                &stereo[i0..i1.max(i0)]
+            }
+            None => &stereo[..],
+        };
+        if sliced.len() < 8192 {
+            continue;
+        }
+        let mono: Vec<f32> = sliced
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| (c[0] + c[1]) * 0.5)
+            .collect();
+        let peak = sliced.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let mean_sq = sliced.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / sliced.len() as f64;
+        let (centroid, band_energy) = spectrum_stats(&mono);
+        tracks.push(TrackAnalysis {
+            track_id: t.id.to_string(),
+            name: t.name.clone(),
+            loudness_lufs: integrated_lufs(sliced),
+            rms_db: 10.0 * mean_sq.max(1e-12).log10(),
+            peak_db: amp_db(peak as f64),
+            spectral_centroid_hz: centroid,
+            band_energy,
+        });
+        frames.push((t.name.clone(), band_frames(&mono)));
+    }
+    let mut masking = Vec::new();
+    for (bi, (b_name, b)) in frames.iter().enumerate() {
+        // 帯域ごとのエネルギーの割合と、帯域ごとの最大
+        let mut share = [0.0f64; 24];
+        let mut maxes = [-120.0f64; 24];
+        for f in b {
+            for k in 0..24 {
+                share[k] += 10f64.powf(f[k] / 10.0);
+                maxes[k] = maxes[k].max(f[k]);
+            }
+        }
+        let total: f64 = share.iter().sum::<f64>().max(1e-12);
+        for (ai, (a_name, a)) in frames.iter().enumerate() {
+            if ai == bi {
+                continue;
+            }
+            for k in 0..24 {
+                let s = share[k] / total;
+                if s < 0.08 {
+                    continue;
+                }
+                let n = b.len().min(a.len());
+                let mut active = 0;
+                let mut masked = 0;
+                for t in 0..n {
+                    if b[t][k] > maxes[k] - 30.0 {
+                        active += 1;
+                        if a[t][k] >= b[t][k] + 6.0 {
+                            masked += 1;
+                        }
+                    }
+                }
+                if active >= 5 && masked as f64 / active as f64 >= 0.3 {
+                    masking.push(MaskingIssue {
+                        track: b_name.clone(),
+                        masked_by: a_name.clone(),
+                        band_hz: (BARK_EDGES[k] as u32, BARK_EDGES[k + 1] as u32),
+                        time_ratio: (masked as f64 / active as f64 * 100.0).round() / 100.0,
+                        band_share: (s * 100.0).round() / 100.0,
+                    });
+                }
+            }
+        }
+    }
+    masking.sort_by(|x, y| (y.time_ratio * y.band_share).total_cmp(&(x.time_ratio * x.band_share)));
+    masking.truncate(12);
+    MixAnalysis { tracks, masking }
 }
 
 fn amp_db(a: f64) -> f64 {
@@ -468,6 +728,51 @@ mod tests {
             lead.loudness_lufs
         );
         assert!(bass.band_energy.low > lead.band_energy.low);
+    }
+
+    #[test]
+    fn masking_and_stereo_and_loudness_are_reported() {
+        let mut project = Project::new("t");
+        // 同じ音域でずっと大きい Pad が、小さい Lead を覆う
+        let mut lead = midi_track("Lead", vec![(0, 7680, 69, 60)]);
+        lead.volume_db = -18.0;
+        lead.pan = -1.0;
+        let pad = midi_track("Pad", vec![(0, 7680, 69, 120)]);
+        project.tracks.push(lead);
+        project.tracks.push(pad);
+        let mix = analyze_mix(&project, None, &Default::default());
+        eprintln!("{:?}", mix.masking);
+        assert!(
+            mix.masking
+                .iter()
+                .any(|m| m.track == "Lead" && m.masked_by == "Pad"),
+            "Lead が Pad に覆われている: {:?}",
+            mix.masking
+        );
+        assert!(
+            !mix.masking
+                .iter()
+                .any(|m| m.track == "Pad" && m.masked_by == "Lead"),
+            "逆は起きていない"
+        );
+
+        let a = analyze_project(&project, None, None, &Default::default()).unwrap();
+        eprintln!(
+            "{:?} LRA {} TP {} ST {:?}",
+            a.stereo, a.loudness_range_lu, a.true_peak_dbtp, a.short_term_lufs
+        );
+        assert!(a.stereo.balance_db < 0.0 || a.stereo.correlation < 1.0);
+        assert!(a.true_peak_dbtp > -60.0 && a.true_peak_dbtp >= a.peak_db - 0.5);
+        assert!(!a.short_term_lufs.is_empty());
+        assert!(a.max_short_term_lufs > -70.0);
+
+        // 片側に寄せると左右の差が出る
+        let mut left = Project::new("l");
+        let mut t = midi_track("L", vec![(0, 3840, 60, 100)]);
+        t.pan = -1.0;
+        left.tracks.push(t);
+        let a = analyze_project(&left, None, None, &Default::default()).unwrap();
+        assert!(a.stereo.balance_db < -10.0, "{:?}", a.stereo);
     }
 
     #[test]

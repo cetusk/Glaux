@@ -12,6 +12,7 @@ pub mod assets;
 pub mod clap_presets;
 pub mod presets;
 pub mod server;
+pub mod sound;
 pub mod stems;
 pub mod store;
 pub mod transcribe;

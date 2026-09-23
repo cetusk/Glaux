@@ -59,7 +59,12 @@ const HOP_SEC: f32 = 0.010;
 const YIN_THRESHOLD: f32 = 0.15;
 
 /// YIN で 1 フレームの基本周波数を推定する。戻り値は (周波数, 明瞭度)。
-fn yin_pitch(buf: &[f32], sr: f32, tau_min: usize, tau_max: usize) -> Option<(f32, f32)> {
+pub(crate) fn yin_pitch(
+    buf: &[f32],
+    sr: f32,
+    tau_min: usize,
+    tau_max: usize,
+) -> Option<(f32, f32)> {
     let n = buf.len().saturating_sub(tau_max);
     if n < 64 || tau_max <= tau_min {
         return None;

@@ -821,6 +821,20 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   🎛(エフェクト数を表示)で、音作りビューを「マスター」モード(エフェクトの節だけ)で開く。
   エフェクト一覧の JSON は `server::effects_json` をトラック・マスターで共用。チャットには
   「音作り中: マスターバス」と添える
+- **音を分析する能力の強化 A: 細かな数値化(2026-09-23)**: 調査は `docs/AUDIO_ANALYSIS_RESEARCH.md`。
+  - `glaux-engine/src/timbre.rs`: 単音の音色記述子(Timbre Toolbox 準拠)。包絡(10→90% の立ち上がり、
+    減衰、持続レベル、余韻、20 点の曲線、`decays_continuously` = 傾きが ±6dB/秒 以内のフレームが 2 割未満)、
+    音程(YIN を 16kHz に間引いて 5ms 刻み。外から `PitchFrame` を渡せる。しゃくり = 最初の 3 有声フレーム、
+    ビブラート = 0.25 秒の移動平均を引いた揺れのゼロ交差と RMS)、スペクトル(重心・広がり・平坦さ・
+    ロールオフ・フラックス・重心の推移 8 点)、倍音(8192 点 FFT の持続部平均で 16 次まで、奇数/偶数比、
+    tristimulus、非調和性、HNR、減り方の回帰、波形の推定)、言葉のラベル
+  - `render_track_note`: トラックの音源とエフェクトで 1 音だけ鳴らす(120BPM 固定、他のクリップ・
+    オートメーション・音量・パン・マスターは使わない。CLAP も鳴る)
+  - `glaux_mcp::sound`: 対象(音声クリップ / ファイル / トラックの 1 音)の読み込み。MCP `analyze_sound`
+  - `analyze.rs`: `ebur128`(MIT)で LRA・True Peak・短期ラウドネスの 1 秒ごとの推移、ステレオ
+    (相関・250Hz 以下の相関・サイド/ミッド比・左右差)、`analyze_mix` でトラック間のかぶり(臨界帯域ごとに、
+    自分が鳴っている時間のうち相手が 6dB 以上大きい割合。自分のエネルギーの 8% 以上を占める帯域だけ)。
+    MCP の analyze_audio(per_track で masking)
 - **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
   (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
   - 探索: `GLAUX_CLAP_PATH` → `CLAP_PATH` → OS 標準(Windows は `%COMMONPROGRAMFILES%\CLAP` と

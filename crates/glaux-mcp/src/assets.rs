@@ -77,7 +77,7 @@ pub fn import_audio(project_dir: &Path, src: &Path) -> Result<ImportedSample, St
 }
 
 /// symphonia で音声をデコードする。戻り値は (インターリーブ f32, チャンネル数, サンプルレート)。
-fn decode_audio(bytes: Vec<u8>, ext: &str) -> Result<(Vec<f32>, u16, u32), String> {
+pub fn decode_audio(bytes: Vec<u8>, ext: &str) -> Result<(Vec<f32>, u16, u32), String> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
     use symphonia::core::errors::Error;

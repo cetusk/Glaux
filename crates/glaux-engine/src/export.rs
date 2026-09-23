@@ -85,6 +85,63 @@ pub fn render_project(
     Ok(out)
 }
 
+/// トラックの音源(とエフェクト)で 1 音だけ鳴らした音(モノラル)。音色の解析・比較用。
+/// トラックの他のクリップ・オートメーション・音量・パン、マスターのエフェクトは使わない。
+/// `seconds` は鍵盤を押している長さで、余韻の分だけ後ろに伸びる(最大 +2 秒程度)。
+pub fn render_track_note(
+    project: &Project,
+    track_id: &glaux_core::TrackId,
+    pitch: u8,
+    velocity: u8,
+    seconds: f64,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+) -> Result<Vec<f32>, ExportError> {
+    use glaux_core::{
+        Clip, ClipContent, ClipId, Note, NoteId, TempoEvent, TempoMap, Tick, TrackKind,
+    };
+    let track = project
+        .track(track_id)
+        .filter(|t| t.kind == TrackKind::Midi)
+        .ok_or(ExportError::Empty)?;
+    let mut p = project.clone();
+    // 120 BPM 固定(1 秒 = 1920 tick)
+    p.tempo_map = TempoMap::new(vec![TempoEvent {
+        tick: Tick::ZERO,
+        bpm: 120.0,
+    }])
+    .map_err(|_| ExportError::Empty)?;
+    p.master.effects.clear();
+    p.master.automation.clear();
+    p.master.volume_db = 0.0;
+    let mut t = track.clone();
+    t.automation.clear();
+    t.mute = false;
+    t.solo = false;
+    t.volume_db = 0.0;
+    t.pan = 0.0;
+    let dur = ((seconds.max(0.05) * 1920.0) as u64).max(1);
+    let mut clip = Clip::new_midi(ClipId::new(), "test", Tick::ZERO, Tick(dur + 1920));
+    if let ClipContent::Midi { notes, .. } = &mut clip.content {
+        notes.push(Note {
+            id: NoteId::new(),
+            pos: Tick::ZERO,
+            dur: Tick(dur),
+            pitch: pitch.min(127),
+            vel: velocity.clamp(1, 127),
+            articulation: Default::default(),
+            pitch_curve: vec![],
+        });
+    }
+    t.clips = vec![clip];
+    p.tracks = vec![t];
+    let stereo = render_project(&p, sample_rate, bank)?;
+    Ok(stereo
+        .chunks(2)
+        .map(|c| (c[0] + c.get(1).copied().unwrap_or(c[0])) * 0.5)
+        .collect())
+}
+
 /// プロジェクトを 16bit ステレオ WAV に書き出す。返り値は書き出した秒数。
 pub fn export_wav(
     project: &Project,

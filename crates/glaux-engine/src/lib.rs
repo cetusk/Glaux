@@ -29,11 +29,15 @@ pub mod record;
 pub mod render;
 pub mod separate;
 pub mod sf2;
+pub mod timbre;
 pub mod transcribe;
 
-pub use analyze::{analyze_project, analyze_project_tracks, Analysis, TrackAnalysis};
+pub use analyze::{
+    analyze_mix, analyze_project, analyze_project_tracks, Analysis, MaskingIssue, MixAnalysis,
+    TrackAnalysis,
+};
 pub use data::{build_playback_data, load_wav_mono, wave_peaks, PlaybackData, SampleBank};
-pub use export::{export_wav, render_project, ExportError};
+pub use export::{export_wav, render_project, render_track_note, ExportError};
 pub use midi::list_midi_inputs;
 pub use output::{
     list_devices, start_engine, DeviceList, EngineError, EngineHandle, MidiRecordOutcome,

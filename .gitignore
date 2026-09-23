@@ -19,3 +19,6 @@ claude_sandbox.bat
 *.tmp
 *.log
 /SoundFonts/
+
+# 学習済みモデル(開発用にダウンロードしたもの)
+/models/

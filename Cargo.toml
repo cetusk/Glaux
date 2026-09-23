@@ -50,6 +50,8 @@ clack-extensions = { version = "0.2", features = ["clack-host", "audio-ports", "
 base64 = "0.22"
 # Windows でプラグインの画面を入れるウィンドウ(glaux-clap のみ)
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+# ラウドネス(EBU R128: 短期・LRA・True Peak)
+ebur128 = "0.1"
 # MIDI キーボード入力
 midir = "0.11"
 # 音声ファイルの取り込み(mp3 / flac / ogg / m4a を WAV に変換)

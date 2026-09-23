@@ -1177,3 +1177,54 @@ async fn plugin_presets_list_load_and_undo() {
     let dev = project.tracks[0].device.clone().unwrap();
     assert!(!dev.params.contains_key("preset"));
 }
+
+#[tokio::test]
+async fn analyze_sound_describes_track_note_and_file() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_snd001", "Lead")).await);
+    // トラックの音源(既定の subtractive)で A4 を鳴らす
+    let r = call(
+        &fx,
+        "analyze_sound",
+        json!({ "track_id": "trk_snd001", "pitch": 69 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    eprintln!("{}", serde_json::to_string(&v["labels"]).unwrap());
+    assert_eq!(v["pitch"]["midi"], json!(69));
+    assert!(v["envelope"]["attack_ms"].is_number());
+    assert!(v["harmonics"]["waveform_guess"].is_string());
+    assert!(v["labels"].as_array().unwrap().len() >= 3);
+
+    // WAV ファイル(矩形波寄り: 奇数倍音だけ)
+    let path = fx.dir.join("square.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 44_100,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(&path, spec).unwrap();
+    for i in 0..44_100 {
+        let t = i as f32 / 44_100.0;
+        let mut x = 0.0;
+        for k in (1..30).step_by(2) {
+            x += (std::f32::consts::TAU * 220.0 * k as f32 * t).sin() / k as f32;
+        }
+        w.write_sample((x * 8000.0) as i16).unwrap();
+    }
+    w.finalize().unwrap();
+    let r = call(
+        &fx,
+        "analyze_sound",
+        json!({ "file": path.to_string_lossy() }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["harmonics"]["waveform_guess"], json!("square"));
+    assert_eq!(v["pitch"]["midi"], json!(57));
+
+    // 対象の指定が無い・複数ならエラー
+    let r = call(&fx, "analyze_sound", json!({})).await;
+    assert_eq!(r.is_error, Some(true));
+}

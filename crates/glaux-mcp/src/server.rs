@@ -213,6 +213,67 @@ pub struct TranscribeAudioParams {
     pub mode: Option<String>,
 }
 
+/// 解析・比較の対象の音(clip_id / file / track_id のどれか 1 つ)。
+#[derive(Deserialize, JsonSchema, Clone)]
+pub struct SoundSourceParams {
+    /// 音声クリップ ID(`clp_xxxxxx`、kind: "audio")。クリップが参照している範囲を使う。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// 音声ファイルのパス(WAV / MP3 / FLAC / OGG / M4A)。
+    #[serde(default)]
+    pub file: Option<String>,
+    /// MIDI トラック ID。そのトラックの音源とエフェクトで 1 音だけ鳴らした音を使う。
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// track_id のときの音の高さ(MIDI ノート番号。既定 60 = C4)。
+    #[serde(default)]
+    pub pitch: Option<u8>,
+    /// track_id のときのベロシティ(既定 100)。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    /// track_id のときの鍵盤を押している長さ(ms。既定 1000)。
+    #[serde(default)]
+    pub duration_ms: Option<u32>,
+}
+
+impl SoundSourceParams {
+    pub fn to_source(&self) -> Result<crate::sound::SoundSource, String> {
+        use crate::sound::SoundSource;
+        let n = [
+            self.clip_id.is_some(),
+            self.file.is_some(),
+            self.track_id.is_some(),
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count();
+        if n != 1 {
+            return Err("clip_id / file / track_id のどれか 1 つを指定してください".to_owned());
+        }
+        if let Some(c) = &self.clip_id {
+            return Ok(SoundSource::Clip(
+                glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?,
+            ));
+        }
+        if let Some(f) = &self.file {
+            return Ok(SoundSource::File(std::path::PathBuf::from(f)));
+        }
+        let t = self.track_id.as_deref().unwrap_or_default();
+        Ok(SoundSource::TrackNote {
+            track: glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?,
+            pitch: self.pitch.unwrap_or(60).min(127),
+            velocity: self.velocity.unwrap_or(100).clamp(1, 127),
+            seconds: self.duration_ms.unwrap_or(1000).clamp(50, 8000) as f64 / 1000.0,
+        })
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct AnalyzeSoundParams {
+    #[serde(flatten)]
+    pub source: SoundSourceParams,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct ListPluginPresetsParams {
     /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。
@@ -940,7 +1001,13 @@ impl GlauxServer {
         バランスの取れた曲はおおむね low 0.3-0.5 / mid 0.3-0.5 / high 0.05-0.25)、\
         spectral_centroid_hz=明るさの重心、onsets_ticks=発音タイミング(リズムの確認用)。\
         track_ids に 1 トラックだけ渡せば単体を聴ける。start/end_tick で範囲を絞れる(範囲指定の指示と併用推奨)。\
-        【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy 一覧が返る。\
+        loudness_range_lu=曲中の音量の起伏(小さいと平板)、true_peak_dbtp=サンプル間のピーク(配信は -1 以下が目安)、\
+        short_term_lufs=1 秒ごとの短期ラウドネスの推移(展開・盛り上がりの確認)、\
+        stereo(correlation=左右の相関。1=モノラル、負=逆相で危険 / low_correlation=250Hz 以下の相関。低域は 1 近くが望ましい /\
+        side_to_mid_db=広がり / balance_db=左右の偏り)。\
+        【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy 一覧と、\
+        masking(トラック間の周波数のかぶり: track が masked_by に band_hz の帯域で time_ratio の時間 6dB 以上負けている。\
+        band_share はその帯域が track の音に占める割合)が返る。かぶりは EQ で片方を削る・パンで分ける・sidechain で解消する。\
         目立たせたいトラック(リード/ボーカル的存在)は伴奏より 2〜4dB 上、\
         同じ帯域に重心が密集していたら EQ で住み分け(片方の被り帯域を削る)か\
         sidechain で空間を空ける。「あるトラックが埋もれる」相談ではまず per_track で全体像を見ること。"
@@ -978,7 +1045,7 @@ impl GlauxServer {
             let bank = glaux_engine::SampleBank::load(&project, std::path::Path::new(&project_dir));
             let a = glaux_engine::analyze_project(&project, track_ids.as_deref(), range, &bank);
             let t = if per_track {
-                Some(glaux_engine::analyze_project_tracks(&project, range, &bank))
+                Some(glaux_engine::analyze_mix(&project, range, &bank))
             } else {
                 None
             };
@@ -990,7 +1057,9 @@ impl GlauxServer {
 
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
-        if let Some(mut tracks) = track_summaries {
+        if let Some(mix) = track_summaries {
+            let mut tracks = mix.tracks;
+            v["masking"] = serde_json::to_value(&mix.masking).map_err(|e| e.to_string())?;
             // うるさい順に並べる(バランス診断で読みやすい)
             tracks.sort_by(|a, b| {
                 b.loudness_lufs
@@ -1134,6 +1203,36 @@ impl GlauxServer {
                 .map(|d| d.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
         })))
+    }
+
+    #[tool(
+        description = "あなたの「音色を聴き分ける耳」。1 つの音(単音のサンプル・音声クリップ・トラックの音源で鳴らした 1 音)を\
+        細かく数値化して返す。analyze_audio が曲全体の要約なのに対し、こちらは音色そのもの:\
+        envelope(attack_ms=立ち上がり 10→90%、decay_ms、sustain_db=持続レベル、release_ms、decays_continuously=減衰し続けるか、\
+        curve_db=音量の推移 20 点)/ pitch(f0・MIDI・ずれのセント・しゃくり glide_cents・ビブラートの速さと深さ・安定度。\
+        音程の無い音では null)/ spectrum(centroid=明るさ、flatness=ノイズっぽさ、rolloff、flux=変化の激しさ、\
+        centroid_start/mid/end と centroid_curve_hz=明るさの推移 → フィルタの開閉)/ harmonics(16 次までの倍音の振幅、\
+        odd_even_db=奇数倍音の多さ、slope_db_per_octave=倍音の減り方、inharmonicity=金属っぽさ、hnr_db=倍音とノイズの比、\
+        waveform_guess=sine/saw/square/triangle/noise/complex)/ labels(言葉での要約)。\
+        対象は clip_id(音声クリップ)/ file(音声ファイルのパス)/ track_id(+ pitch / velocity / duration_ms。\
+        そのトラックの音源とエフェクトで 1 音鳴らす)のどれか 1 つ。\
+        使いどころ: 取り込んだサンプルがどんな音かを把握する、自分が作った音色と比べる(数値の差を見てつまみを直す)。"
+    )]
+    async fn analyze_sound(&self, params: Parameters<AnalyzeSoundParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("analyze_sound");
+        let source = params.0.source.to_source()?;
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
+            let d = crate::sound::describe(&sound);
+            let mut v = serde_json::to_value(&d).map_err(|e| e.to_string())?;
+            v["source"] = json!(sound.label);
+            Ok(v)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(Json(v))
     }
 
     #[tool(
