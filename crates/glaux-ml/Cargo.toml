@@ -1,0 +1,12 @@
+[package]
+name = "glaux-ml"
+version = "0.1.0"
+edition.workspace = true
+# tract が新しい Rust を要求するため、workspace の 1.75 より新しい MSRV を個別指定
+rust-version = "1.88"
+license.workspace = true
+description = "Machine-learning inference for Glaux: polyphonic transcription (basic-pitch, ONNX via tract)"
+
+[dependencies]
+tract-onnx.workspace = true
+thiserror.workspace = true

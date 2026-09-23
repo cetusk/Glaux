@@ -198,9 +198,13 @@ pub struct TranscribeAudioParams {
     /// 開始位置と長さを丸めるグリッド(tick)。既定 240(1/16)。0 で丸めない。
     #[serde(default)]
     pub quantize_ticks: Option<u64>,
-    /// これより短いノートは捨てる(ms)。既定 80。
+    /// これより短いノートは捨てる(ms)。既定 80(poly は 128)。
     #[serde(default)]
     pub min_note_ms: Option<f32>,
+    /// 方式: "melody"(既定。鼻歌・歌・単音。音程の揺れやしゃくれに強い)/
+    /// "poly"(和音。ピアノ・ギターのコード、伴奏入りの素材。basic-pitch)。
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1102,8 +1106,10 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "音声クリップ(鼻歌・歌・単音のギター等の**単旋律**)を譜起こしして、\
-        同じ位置・長さの MIDI クリップを作る(履歴 1 件)。和音・複数楽器・ドラムは対象外。\
+        description = "音声クリップを譜起こしして、同じ位置・長さの MIDI クリップを作る(履歴 1 件)。\
+        mode: \"melody\"(既定)は鼻歌・歌・単音のギター等の**単旋律**向け、\
+        mode: \"poly\" はピアノ・ギターの**和音**や伴奏入りの素材向け(学習済みモデル basic-pitch。\
+        倍音を別の音と取り違えることがあるので、結果は analyze_harmony と照らして整える)。ドラムは対象外。\
         人間が ⏺ で鼻歌を録音したら、これで MIDI にしてから analyze_harmony でキーを確認し、\
         オクターブ誤検出(前後と 12 半音ずれた短い音)や外れた音を update_notes で整える、が定石。\
         結果には note_count と、新設した場合の track_id が入る。"
@@ -1133,6 +1139,7 @@ impl GlauxServer {
             dest.as_ref(),
             p.quantize_ticks.unwrap_or(240),
             &opts,
+            crate::transcribe::TranscribeMode::parse(p.mode.as_deref())?,
         )?;
         let label = format!("音声クリップを譜起こし({} ノート)", t.note_count);
         let command = Command::batch(label.clone(), t.commands);

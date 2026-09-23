@@ -811,6 +811,22 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   🎛(エフェクト数を表示)で、音作りビューを「マスター」モード(エフェクトの節だけ)で開く。
   エフェクト一覧の JSON は `server::effects_json` をトラック・マスターで共用。チャットには
   「音作り中: マスターバス」と添える
+- **和音の譜起こし(basic-pitch、2026-09-23)**: 新クレート `glaux-ml`。
+  - モデル: spotify/basic-pitch の `nmp.onnx`(230KB、Apache-2.0)を `crates/glaux-ml/models/` に
+    同梱し `include_bytes!`。推論は pure Rust の `tract-onnx` 0.23(ネイティブ DLL 不要。
+    Windows では tract-linalg のアセンブリを MSVC の `ml64.exe` で組む)。モデルは初回に
+    最適化して `OnceLock` に保持。dev ビルドでも tract 系は opt-level 3
+  - 前処理・後処理は公式(`inference.py` / `note_creation.py`)の移植: 22.05kHz に窓付き sinc で
+    リサンプル → 2 秒窓(重なり 30 フレーム、先頭に半分の無音)→ 窓の両端 15 フレームを捨てて連結 →
+    onset(note 活性の立ち上がりで補強)の時間方向の極大 ≥ 0.5 から note ≥ 0.3 が続く限り伸ばす
+    (途切れ許容 11 フレーム、最短 11 フレーム、隣接半音も消費)→ 残りのエネルギーから
+    melodia trick。フレーム → 秒は窓ごとの端数補正込み
+  - 検証: 同じ入力で onnxruntime との活性の差が 1e-6 以下、ノート列が公式の
+    `output_to_notes_polyphonic` と完全一致(スクラッチで確認。リポジトリのテストは合成和音)
+  - 配線: `glaux_mcp::transcribe::TranscribeMode { Melody, Poly }`、MCP `transcribe_audio` の
+    `mode: "poly"`、Tauri `transcribe_clip` の `mode`、UI は音声クリップの ♫ ボタン。
+    和音用の tick 変換 `to_clip_notes_poly`(同じ音高の重なりだけ詰める)。ベロシティ = 活性 × 127
+  - 未対応: ステム分離(Demucs 級のモデルは数十〜数百 MB・計算量も大きい。外部ツール連携で検討)
 - **音声クリップのテンポ追従(2026-09-23)**: `Stretch::Follow { original_bpm }` を実装。
   素材は元テンポ一定で演奏されたものとして扱い、1 tick = 60/(original_bpm×PPQ) 秒ぶんの素材が
   常に 1 tick に対応する(`Stretch::follow_seconds`)。
@@ -921,7 +937,7 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   配線: `glaux-mcp/src/transcribe.rs`(共通)、MCP `transcribe_audio`(計 25 ツール)、
   Tauri `transcribe_clip`、UI は音声クリップの ♪ ボタンと録音直後の「♪ MIDI 化」。
   合成した鼻歌信号(倍音 + ビブラート + ノイズ)でメロディ・再アタック・低い声・
-  tick 変換をテスト。**次段: basic-pitch(ONNX)で和音・ピアノ、その先でステム分離**
+  tick 変換をテスト。**和音は basic-pitch で対応済み(2026-09-23、`glaux-ml`)。残りはステム分離**
   - 実機フィードバック(細切れ・抜け・タイミングずれ)への対策(2026-09-22):
     明瞭度しきい値 0.5→0.35、音量フロア -40→-45dB、無声許容 20→60ms、
     半音変化の判定にヒステリシス(±0.7 半音)+ 40ms 安定、後処理で

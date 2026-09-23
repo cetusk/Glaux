@@ -665,6 +665,63 @@ pub fn to_clip_notes(
     out
 }
 
+/// 和音の譜起こし結果をクリップ相対の tick に換算する([`to_clip_notes`] の和音版)。
+/// 同じ音高の重なりだけを詰め、別の音高は重なったまま残す。
+pub fn to_clip_notes_poly(
+    notes: &[TranscribedNote],
+    tempo: &TempoMap,
+    clip_start: Tick,
+    clip_len: Tick,
+    quantize_ticks: u64,
+) -> Vec<Note> {
+    let base_sec = tempo.tick_to_seconds(clip_start);
+    let mut out: Vec<Note> = Vec::new();
+    for n in notes {
+        let abs_s = tempo.seconds_to_tick(base_sec + n.start_sec).0;
+        let abs_e = tempo.seconds_to_tick(base_sec + n.end_sec).0;
+        let mut pos = abs_s.saturating_sub(clip_start.0);
+        let mut end = abs_e.saturating_sub(clip_start.0);
+        if quantize_ticks > 0 {
+            let q = quantize_ticks;
+            pos = (pos as f64 / q as f64).round() as u64 * q;
+            end = ((end as f64 / q as f64).round() as u64 * q).max(pos + q);
+        }
+        if pos >= clip_len.0 {
+            continue;
+        }
+        let end = end.min(clip_len.0);
+        if end <= pos {
+            continue;
+        }
+        out.push(Note {
+            id: NoteId::new(),
+            pos: Tick(pos),
+            dur: Tick(end - pos),
+            pitch: n.pitch,
+            vel: n.vel.clamp(1, 127),
+            articulation: Articulation::Normal,
+            pitch_curve: vec![],
+        });
+    }
+    out.sort_by_key(|n| (n.pos, n.pitch));
+    // 同じ音高で重なったら前を詰める(同じ開始なら後を残す)
+    let mut kept: Vec<Note> = Vec::with_capacity(out.len());
+    for n in out {
+        if let Some(i) = kept
+            .iter()
+            .rposition(|p| p.pitch == n.pitch && p.pos.0 + p.dur.0 > n.pos.0)
+        {
+            if kept[i].pos == n.pos {
+                kept.remove(i);
+            } else {
+                kept[i].dur = Tick(n.pos.0 - kept[i].pos.0);
+            }
+        }
+        kept.push(n);
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

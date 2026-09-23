@@ -139,6 +139,8 @@ export function transcribeClip(
   clipId: string,
   destTrackId: string | null = null,
   quantizeTicks = 240,
+  /** "melody" = 単旋律(鼻歌・歌・単音)、"poly" = 和音(ピアノ・ギター等) */
+  mode: "melody" | "poly" = "melody",
 ): Promise<{
   clip_id: string;
   track_id: string;
@@ -146,7 +148,7 @@ export function transcribeClip(
   created_track: boolean;
   project_version: number;
 }> {
-  return invoke("transcribe_clip", { clipId, destTrackId, quantizeTicks });
+  return invoke("transcribe_clip", { clipId, destTrackId, quantizeTicks, mode });
 }
 
 // ---- 録音 ----

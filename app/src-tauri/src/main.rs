@@ -231,8 +231,10 @@ async fn transcribe_clip(
     clip_id: String,
     dest_track_id: Option<String>,
     quantize_ticks: Option<u64>,
+    mode: Option<String>,
 ) -> Result<Value, String> {
     let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let mode = glaux_mcp::transcribe::TranscribeMode::parse(mode.as_deref())?;
     let dest = match dest_track_id {
         Some(id) => Some(glaux_core::TrackId::parse(&id).map_err(|e| e.to_string())?),
         None => None,
@@ -248,6 +250,7 @@ async fn transcribe_clip(
             dest.as_ref(),
             q,
             &glaux_engine::transcribe::TranscribeOptions::default(),
+            mode,
         )
     })
     .await

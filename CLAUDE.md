@@ -22,6 +22,8 @@ crates/
   glaux-dsp/     [済] 内蔵楽器 subtractive(PolyBLEP+SVF+ADSR)/ drum(GM 配置ドラムシンセ)、
                  内蔵エフェクト eq / compressor / reverb(トラック・マスター両対応)、
                  ParamSpec レジストリ(聴感説明付き、MCP list_params の実体)
+glaux-ml/      [済] 学習済みモデルの推論(tract、pure Rust)。basic-pitch による和音の譜起こし。
+               モデル(Apache-2.0)は models/ に同梱して埋め込む。MSRV は個別に 1.88
 app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の表示、undo/redo、
                アプリ内 HTTP MCP サーバー(127.0.0.1:41920/mcp、UI と同じ Session を共有)、
                AI 作業インジケータ、チャットパネル(ヘッドレス claude を起動して指示)
@@ -45,7 +47,7 @@ app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の
 |---|---|
 | プロダクト名 | **Glaux**(表記は常に頭文字大文字。ギリシャ語 γλαύξ = フクロウ) |
 | リポジトリ | `Glaux` |
-| クレート | `glaux-core` / `glaux-mcp` / `glaux-engine` / `glaux-dsp`(Rust 識別子は `glaux_core` など) |
+| クレート | `glaux-core` / `glaux-mcp` / `glaux-engine` / `glaux-dsp` / `glaux-ml`(Rust 識別子は `glaux_core` など) |
 | Tauri アプリ | `app/`、バンドル識別子 `dev.glaux.app`(ドメイン取得状況で変更可) |
 | プロジェクトファイル | フォルダ形式 `MySong.glaux/`(中に `project.json`, `history.jsonl`, `audio/`, `cache/`) |
 | `project.json` の `format` | `"glaux"` |
@@ -58,7 +60,7 @@ app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の
 
 ## コーディング規約
 
-- Rust 2021、MSRV 1.75(`Cargo.toml` の `rust-version`)。例外: `glaux-mcp` は rmcp が 1.88 を要求するため個別に `rust-version = "1.88"`
+- Rust 2021、MSRV 1.75(`Cargo.toml` の `rust-version`)。例外: `glaux-mcp` は rmcp、`glaux-ml` は tract が 1.88 を要求するため個別に `rust-version = "1.88"`
 - エラーは `thiserror`、`unwrap()` はテストとロールバック(失敗しない前提の箇所)以外で使わない
 - ドキュメントコメントは日本語でよい。AI 向け説明文(`ParamSpec::description`)も日本語
 - 新しい依存を足すときは `[workspace.dependencies]` に置く

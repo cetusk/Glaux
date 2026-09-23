@@ -248,13 +248,14 @@
     };
   }
 
-  /// 音声クリップ(単旋律)を譜起こしして MIDI クリップにし、ピアノロールで開く
+  /// 音声クリップを譜起こしして MIDI クリップにし、ピアノロールで開く
+  /// (melody = 単旋律、poly = 和音)
   let transcribing = $state<string | null>(null);
-  async function transcribe(track: Track, clip: Clip) {
+  async function transcribe(track: Track, clip: Clip, mode: "melody" | "poly" = "melody") {
     if (transcribing) return;
     transcribing = clip.id;
     try {
-      const r = await api.transcribeClip(clip.id);
+      const r = await api.transcribeClip(clip.id, null, 240, mode);
       pianoRollStore.focus = {
         clipId: r.clip_id,
         clipName: `${clip.name} (MIDI)`,
@@ -1125,7 +1126,7 @@
               <button
                 class="transcribe"
                 disabled={transcribing !== null}
-                title="譜起こし: この音声(鼻歌・歌・単音)を MIDI クリップにする(単旋律のみ)"
+                title="譜起こし: この音声(鼻歌・歌・単音)を MIDI クリップにする(単旋律。和音は ♫)"
                 onpointerdown={(e) => e.stopPropagation()}
                 ondblclick={(e) => e.stopPropagation()}
                 onclick={(e) => {
@@ -1134,6 +1135,19 @@
                 }}
               >
                 {transcribing === clip.id ? "…" : "♪"}
+              </button>
+              <button
+                class="transcribe poly"
+                disabled={transcribing !== null}
+                title="和音の譜起こし: ピアノ・ギターのコードや伴奏入りの音声を MIDI クリップにする(学習済みモデル basic-pitch)"
+                onpointerdown={(e) => e.stopPropagation()}
+                ondblclick={(e) => e.stopPropagation()}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  transcribe(track, clip, "poly");
+                }}
+              >
+                ♫
               </button>
             {/if}
             <div class="clip-resize"></div>
@@ -1738,6 +1752,10 @@
     width: 8px;
     cursor: ew-resize;
     z-index: 2;
+  }
+
+  .transcribe.poly {
+    right: 38px;
   }
 
   .transcribe {

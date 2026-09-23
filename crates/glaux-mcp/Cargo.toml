@@ -11,6 +11,7 @@ description = "MCP server exposing the Glaux Session (project model + git-like h
 glaux-core = { path = "../glaux-core" }
 glaux-dsp = { path = "../glaux-dsp" }
 glaux-engine = { path = "../glaux-engine" }
+glaux-ml = { path = "../glaux-ml" }
 rmcp.workspace = true
 chrono.workspace = true
 sha2.workspace = true
