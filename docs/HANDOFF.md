@@ -835,6 +835,18 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     (相関・250Hz 以下の相関・サイド/ミッド比・左右差)、`analyze_mix` でトラック間のかぶり(臨界帯域ごとに、
     自分が鳴っている時間のうち相手が 6dB 以上大きい割合。自分のエネルギーの 8% 以上を占める帯域だけ)。
     MCP の analyze_audio(per_track で masking)
+- **音を分析する能力の強化 B1: SwiftF0 による音程推定(2026-09-23)**: `glaux-ml/src/pitch.rs`。
+  - モデルは lars76/swift-f0 の `model.onnx`(MIT)を onnxruntime の基本最適化で定数畳み込みしたもの
+    (元のままだと tract がフィルタバンク行列 `ScatterElements → Reshape → MatMul` の形を解析できない。
+    畳み込むと 135KB → 1.1MB。onnxruntime 独自の演算は入らない基本レベルなので標準の演算だけ)。
+    `pitch` 出力は float64 なので f32 に変換する
+  - 16kHz・256 サンプル(16ms)ごと。tract で一度だけ最適化するため固定長 [1, 11×256 + 32000 + 10×256]
+    で推論し、前 11 フレームを捨て 125 フレームずつつなぐ(有声フレームは一括推論と 1e-5Hz 以内で一致)。
+    fmin/fmax は 46.875 / 2093.75、区間のピークが 1e-3 未満なら確からしさ 0(公式と同じ)
+  - 確からしさ 0.5 以上を有声。純粋なサイン波は 0.5 前後(公式でも同じ)で、倍音のある音は 0.95 以上
+  - `timbre::resample_pitch` で 5ms 刻み(`ENV_HOP`)にそろえてから `describe` に渡す(ビブラートの計算が
+    刻み固定のため)。`glaux_mcp::sound::describe` が SwiftF0 → 失敗時は YIN
+  - 鼻歌の単旋律譜起こし(`transcribe_mono`)は実録音で調整済みの YIN のまま(置き換えは未評価)
 - **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
   (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
   - 探索: `GLAUX_CLAP_PATH` → `CLAP_PATH` → OS 標準(Windows は `%COMMONPROGRAMFILES%\CLAP` と

@@ -1224,6 +1224,32 @@ async fn analyze_sound_describes_track_note_and_file() {
     assert_eq!(v["harmonics"]["waveform_guess"], json!("square"));
     assert_eq!(v["pitch"]["midi"], json!(57));
 
+    // ビブラート(5.5Hz・±40 セント)付きの音。音程は SwiftF0 で測られる
+    let path = fx.dir.join("vibrato.wav");
+    let mut w = hound::WavWriter::create(&path, spec).unwrap();
+    let mut phase = 0.0f64;
+    for i in 0..(44_100 * 2) {
+        let t = i as f64 / 44_100.0;
+        let f = 330.0 * 2f64.powf(40.0 * (std::f64::consts::TAU * 5.5 * t).sin() / 1200.0);
+        phase += std::f64::consts::TAU * f / 44_100.0;
+        let x: f64 = (1..=5).map(|k| (phase * k as f64).sin() / k as f64).sum();
+        w.write_sample((x * 8000.0) as i16).unwrap();
+    }
+    w.finalize().unwrap();
+    let r = call(
+        &fx,
+        "analyze_sound",
+        json!({ "file": path.to_string_lossy() }),
+    )
+    .await;
+    let v = ok_json(&r);
+    let p = &v["pitch"];
+    assert_eq!(p["midi"], json!(64), "{p}");
+    let rate = p["vibrato_rate_hz"].as_f64().unwrap();
+    let depth = p["vibrato_depth_cents"].as_f64().unwrap();
+    assert!((4.5..6.5).contains(&rate), "{p}");
+    assert!((25.0..60.0).contains(&depth), "{p}");
+
     // 対象の指定が無い・複数ならエラー
     let r = call(&fx, "analyze_sound", json!({})).await;
     assert_eq!(r.is_error, Some(true));

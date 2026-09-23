@@ -153,7 +153,26 @@ pub fn load(project: &Project, dir: &Path, source: &SoundSource) -> Result<Loade
     Ok(s)
 }
 
-/// 音色記述子を求める(音程は内蔵の推定。学習済みモデルが使えればそちらを使う)。
+/// 音程を推定する。SwiftF0(学習済みモデル)を使い、失敗したら `None`(呼び出し側で内蔵の YIN に任せる)。
+pub fn pitch_track(sound: &LoadedSound) -> Option<Vec<glaux_engine::timbre::PitchFrame>> {
+    use glaux_engine::timbre::{resample_pitch, PitchFrame};
+    let est = glaux_ml::pitch::track(&sound.frames, sound.sample_rate).ok()?;
+    let frames: Vec<PitchFrame> = est
+        .iter()
+        .map(|e| PitchFrame {
+            time: e.time,
+            f0: if e.confidence >= 0.5 { e.f0 } else { 0.0 },
+            confidence: e.confidence,
+        })
+        .collect();
+    Some(resample_pitch(
+        &frames,
+        sound.frames.len() as f32 / sound.sample_rate,
+    ))
+}
+
+/// 音色記述子を求める(音程は SwiftF0。使えなければ内蔵の YIN)。
 pub fn describe(sound: &LoadedSound) -> glaux_engine::timbre::SoundDescriptors {
-    glaux_engine::timbre::describe(&sound.frames, sound.sample_rate, None)
+    let pitch = pitch_track(sound);
+    glaux_engine::timbre::describe(&sound.frames, sound.sample_rate, pitch.as_deref())
 }

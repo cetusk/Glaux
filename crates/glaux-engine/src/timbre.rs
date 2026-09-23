@@ -17,8 +17,8 @@ use serde::Serialize;
 
 /// 解析する最大の長さ(秒)。サンプル音源の単音を想定
 const MAX_SECONDS: f32 = 8.0;
-/// 包絡の刻み(秒)
-const ENV_HOP: f32 = 0.005;
+/// 包絡・音程の刻み(秒)。外から渡す音程もこの刻みにそろえる([`resample_pitch`])
+pub const ENV_HOP: f32 = 0.005;
 /// 倍音を数える数
 const N_HARMONICS: usize = 16;
 
@@ -179,6 +179,46 @@ pub fn pitch_track(frames: &[f32], sr: f32) -> Vec<PitchFrame> {
         i += hop;
     }
     out
+}
+
+/// 別の刻みで求めた音程(例: 学習済みモデルの 16ms ごとの推定)を [`ENV_HOP`] の刻みにそろえる。
+/// 隣り合う 2 フレームがともに有声なら線形補間、片方だけなら近い方、どちらも無声なら無声。
+pub fn resample_pitch(track: &[PitchFrame], duration: f32) -> Vec<PitchFrame> {
+    if track.is_empty() {
+        return Vec::new();
+    }
+    let n = (duration / ENV_HOP).ceil() as usize;
+    let mut j = 0;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 * ENV_HOP;
+            while j + 1 < track.len() && track[j + 1].time <= t {
+                j += 1;
+            }
+            let a = track[j];
+            let b = track.get(j + 1).copied().unwrap_or(a);
+            let (f0, confidence) = if a.f0 > 0.0 && b.f0 > 0.0 && b.time > a.time {
+                let r = ((t - a.time) / (b.time - a.time)).clamp(0.0, 1.0);
+                // 音程は対数で補間する
+                (
+                    a.f0 * (b.f0 / a.f0).powf(r),
+                    a.confidence + (b.confidence - a.confidence) * r,
+                )
+            } else {
+                let near = if (t - a.time).abs() <= (b.time - t).abs() {
+                    a
+                } else {
+                    b
+                };
+                (near.f0, near.confidence)
+            };
+            PitchFrame {
+                time: t,
+                f0,
+                confidence,
+            }
+        })
+        .collect()
 }
 
 /// 単音を解析する。`pitch` を渡せばそれを使い、無ければ内蔵の YIN で求める。
@@ -936,6 +976,27 @@ mod tests {
             p.vibrato_depth_cents
         );
         assert!(p.glide_cents < -30.0, "{}", p.glide_cents);
+    }
+
+    #[test]
+    fn resampled_pitch_interpolates_and_keeps_unvoiced() {
+        let f = |time, f0| PitchFrame {
+            time,
+            f0,
+            confidence: if f0 > 0.0 { 0.9 } else { 0.1 },
+        };
+        let track = [f(0.0, 0.0), f(0.016, 220.0), f(0.032, 440.0), f(0.048, 0.0)];
+        let r = resample_pitch(&track, 0.064);
+        assert_eq!(r.len(), 13);
+        assert_eq!(r[0].f0, 0.0);
+        // 0.016〜0.032 の中間(0.024 付近)は対数で補間されて約 311Hz
+        let mid = r.iter().find(|p| (p.time - 0.025).abs() < 1e-4).unwrap();
+        assert!(
+            (mid.f0 - 220.0 * 2f32.powf(0.5625)).abs() < 1.0,
+            "{}",
+            mid.f0
+        );
+        assert_eq!(r.last().unwrap().f0, 0.0);
     }
 
     #[test]
