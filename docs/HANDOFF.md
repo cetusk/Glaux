@@ -847,6 +847,21 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   - `timbre::resample_pitch` で 5ms 刻み(`ENV_HOP`)にそろえてから `describe` に渡す(ビブラートの計算が
     刻み固定のため)。`glaux_mcp::sound::describe` が SwiftF0 → 失敗時は YIN
   - 鼻歌の単旋律譜起こし(`transcribe_mono`)は実録音で調整済みの YIN のまま(置き換えは未評価)
+- **音を分析する能力の強化 B2: Beat This! によるビート・小節頭・テンポ(2026-09-23)**: `glaux-ml/src/beats.rs`。
+  - モデルは beat-this-rs が ONNX 化した small1(10.5MB、同梱)。tract はシンボル長の時間軸だと注意機構の
+    Reshape を解析できないので、窓の長さごとに具体的な長さで最適化する(1500 フレームの計画は使い回し、
+    短い窓はその都度 0.2〜0.4 秒で作る)。窓は公式と同じ(1500 フレーム、両端 6 フレーム、最後の窓は末尾合わせ、
+    後ろの窓から書いて前の窓で上書き)。窓ごとの推論はスレッドで並列(155 秒の曲で約 9 秒、dev ビルド)
+  - 前処理は torchaudio の MelSpectrogram を移植: n_fft 1024・hop 441・中心合わせの反射パディング・
+    周期ハン窓・`normalized="frame_length"` は √n_fft で割る(torch.stft の normalized=True)・
+    Slaney のメル尺度 30〜11000Hz 128 帯域(面積正規化なし)・log1p(1000x)。公式の ONNX 版と 1.5e-4 以内で一致
+  - 後処理は公式の minimal(ロジット > 0 かつ ±3 フレームの最大、隣り合う点は平均、小節頭は最も近いビートへ)。
+    実曲(beat-this-rs の test_files)で公式 Python の結果と ビート F=0.998・小節頭 F=1.000
+    (`GLAUX_TEST_BEAT_AUDIO` / `GLAUX_TEST_BEAT_GOLDEN` で有効になるテスト)
+  - テンポはビートの時刻を拍番号(直前のビートからの間隔で数え、抜けは 2 拍ぶん)への直線の傾きから求める
+    (フレームが 20ms 刻みなので間隔の中央値だと 128BPM が 125/130 になる)。揺れは 16 拍区間の直線からのずれの中央値
+  - MCP `analyze_beats`(clip_id / file)。UI はクリップメニュー「テンポに追従させる(素材の元のテンポを自動で検出)」
+    → Tauri `detect_clip_tempo`(先頭 60 秒)→ `set_clip_stretch`
 - **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
   (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
   - 探索: `GLAUX_CLAP_PATH` → `CLAP_PATH` → OS 標準(Windows は `%COMMONPROGRAMFILES%\CLAP` と

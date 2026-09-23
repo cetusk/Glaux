@@ -9,4 +9,5 @@ description = "Machine-learning inference for Glaux: polyphonic transcription (b
 
 [dependencies]
 tract-onnx.workspace = true
+rustfft.workspace = true
 thiserror.workspace = true

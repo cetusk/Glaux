@@ -275,6 +275,16 @@ pub struct AnalyzeSoundParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct AnalyzeBeatsParams {
+    /// 音声クリップ ID(`clp_xxxxxx`、kind: "audio")。クリップが参照している範囲を使う。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// 音声ファイルのパス(WAV / MP3 / FLAC / OGG / M4A)。
+    #[serde(default)]
+    pub file: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ListPluginPresetsParams {
     /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。
     pub track_id: String,
@@ -1229,6 +1239,38 @@ impl GlauxServer {
             let mut v = serde_json::to_value(&d).map_err(|e| e.to_string())?;
             v["source"] = json!(sound.label);
             Ok(v)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(Json(v))
+    }
+
+    #[tool(
+        description = "あなたの「拍を感じる耳」。音声(音声クリップ・音声ファイル)のビート・小節頭・テンポを\
+        学習済みモデル(Beat This!)で推定する。返り値: bpm(平均テンポ、小数 2 桁)、bpm_alternatives(半分・倍。\
+        ビートの取り方の解釈違い。曲調に合う方を選ぶ)、tempo_variation(0.015 未満 = 打ち込み・クリックに合わせた演奏)、\
+        beats_per_bar(1 小節の拍数)、first_downbeat_sec(最初の小節頭。素材の先頭からの秒)、beats / downbeats(秒)、summary。\
+        対象は clip_id か file のどちらか 1 つ。\
+        使いどころ: 取り込んだ音声を曲のテンポに合わせる(set_clip_stretch の original_bpm に bpm を入れる。\
+        曲のテンポを素材に合わせるなら set_tempo)、ループ素材の小節頭をクリップの先頭にそろえる\
+        (first_downbeat_sec から offset を決める)、録音のテンポの揺れを確かめる。"
+    )]
+    async fn analyze_beats(&self, params: Parameters<AnalyzeBeatsParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("analyze_beats");
+        let p = params.0;
+        let source = match (&p.clip_id, &p.file) {
+            (Some(c), None) => crate::sound::SoundSource::Clip(
+                glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?,
+            ),
+            (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
+            _ => return Err("clip_id / file のどちらか 1 つを指定してください".to_owned()),
+        };
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
+            let r = crate::sound::beats(&sound)?;
+            serde_json::to_value(&r).map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| e.to_string())??;

@@ -576,6 +576,42 @@
     api.applyEdit(cmds, label).catch(() => {});
   }
 
+  /// 素材の元のテンポを自動で検出してテンポ追従にする(時間がかかるのでクリップに「検出中…」を出す)
+  let detectingTempo = $state<string | null>(null);
+  async function setFollowDetected(targets: Clip[]) {
+    if (detectingTempo) return;
+    const audio = targets.filter((c) => c.kind === "audio");
+    const cmds: Record<string, unknown>[] = [];
+    const found: string[] = [];
+    const failed: string[] = [];
+    try {
+      for (const c of audio) {
+        detectingTempo = c.id;
+        const r = await api.detectClipTempo(c.id);
+        if (r.bpm === null) {
+          failed.push(c.name);
+          continue;
+        }
+        cmds.push({ op: "set_clip_stretch", id: c.id, stretch: { mode: "follow", original_bpm: r.bpm } });
+        found.push(`${c.name}: ${r.bpm} BPM`);
+      }
+    } catch (e) {
+      alert(String(e));
+      return;
+    } finally {
+      detectingTempo = null;
+    }
+    if (failed.length > 0) {
+      alert(`テンポを検出できませんでした(拍のはっきりしない音か、短すぎます): ${failed.join("、")}`);
+    }
+    if (cmds.length === 0) return;
+    const label =
+      cmds.length === 1
+        ? `${found[0]} の素材としてテンポに追従させる`
+        : `音声クリップ ${cmds.length} 個をテンポに追従させる(元のテンポを検出)`;
+    api.applyEdit(cmds, label).catch(() => {});
+  }
+
   function expandLoop(clip: Clip) {
     const cmd = expandLoopCommand(clip);
     if (!cmd) return;
@@ -717,6 +753,7 @@
       | "loop-off"
       | "expand"
       | "follow-on"
+      | "follow-detect"
       | "follow-off"
       | "sep-builtin"
       | "sep-demucs",
@@ -755,6 +792,9 @@
         break;
       case "follow-on":
         setFollow(targets, true);
+        break;
+      case "follow-detect":
+        setFollowDetected(targets);
         break;
       case "follow-off":
         setFollow(targets, false);
@@ -1232,6 +1272,8 @@
             {/if}
             {#if separating === clip.id}
               <div class="clip-busy">パートに分離中…</div>
+            {:else if detectingTempo === clip.id}
+              <div class="clip-busy">テンポを検出中…</div>
             {/if}
             <div class="clip-resize"></div>
           </div>
@@ -1345,6 +1387,9 @@
         {:else}
           <button onclick={() => menuAction("follow-on")}>
             ⇔ テンポに追従させる({bpmAt(clipMenu.clip.start)} BPM で録った素材として、テンポを変えても拍がずれないよう伸縮)
+          </button>
+          <button onclick={() => menuAction("follow-detect")} disabled={detectingTempo !== null}>
+            ⇔ テンポに追従させる(素材の元のテンポを自動で検出。取り込んだ曲・ループ素材向け)
           </button>
         {/if}
         <button onclick={() => menuAction("sep-builtin")} disabled={separating !== null}>

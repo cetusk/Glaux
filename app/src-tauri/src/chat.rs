@@ -174,7 +174,8 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     取り込んだ曲はパートに分けられます(separate_audio。builtin = 打楽器 / 音程楽器、demucs = ボーカル / ドラム / ベース / その他)。\
     ベースだけ譜起こししたいときは、分離 → transcribe_audio の順に。\
     テンポを変えるときは、音声クリップに set_clip_stretch(follow、original_bpm = 録音時のテンポ)を\
-    付けておくと拍がずれずに伸縮します(音程は変わりません)。音声ファイルの配置を頼まれたら import_audio_clip を使います。\
+    付けておくと拍がずれずに伸縮します(音程は変わりません)。取り込んだ曲・ループ素材の元のテンポが分からなければ \
+    analyze_beats で測れます(bpm、拍子、最初の小節頭)。音声ファイルの配置を頼まれたら import_audio_clip を使います。\
     鼻歌や歌の録音(単旋律)は transcribe_audio で MIDI クリップにできます(ピアノ・ギターの和音や伴奏入りの素材は mode: \"poly\")。MIDI 化したら \
     analyze_harmony でキーを確認し、前後と 12 半音ずれた短い音(オクターブ誤検出)や外れた音を整えてから報告してください。\
     ミックスバランス: analyze_audio の per_track: true で各トラックのラウドネスと帯域の一覧が取れます。\

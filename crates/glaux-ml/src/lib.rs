@@ -12,6 +12,7 @@
 //! 単旋律の鼻歌は glaux-engine の YIN(`transcribe`)の方が細かく調整してある。
 //! こちらはピアノ・ギターの和音や、伴奏入りの素材から音を拾う用途。
 
+pub mod beats;
 pub mod pitch;
 
 use std::sync::OnceLock;

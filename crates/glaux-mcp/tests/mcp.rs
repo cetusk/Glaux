@@ -1254,3 +1254,123 @@ async fn analyze_sound_describes_track_note_and_file() {
     let r = call(&fx, "analyze_sound", json!({})).await;
     assert_eq!(r.is_error, Some(true));
 }
+
+/// 簡単なドラムのループ(キック・スネア・ハイハット)を WAV に書く。
+fn write_drum_wav(path: &std::path::Path, bpm: f64, bars: usize, sr: u32) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: sr,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let beat = 60.0 / bpm;
+    let n = (bars as f64 * 4.0 * beat * sr as f64) as usize;
+    let mut x = vec![0.0f64; n];
+    let mut seed = 7u32;
+    let mut noise = move || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 8) as f64 / (1u32 << 24) as f64 * 2.0 - 1.0
+    };
+    for k in 0..bars * 8 {
+        let s = (k as f64 * beat / 2.0 * sr as f64) as usize;
+        let pos = (k / 2) % 4;
+        for i in 0..(0.25 * sr as f64) as usize {
+            if s + i >= n {
+                break;
+            }
+            let t = i as f64 / sr as f64;
+            let mut v = 0.15 * noise() * (-t * 60.0).exp();
+            if k % 2 == 0 && pos % 2 == 0 {
+                v += 0.9
+                    * (std::f64::consts::TAU * (50.0 + 100.0 * (-t * 30.0).exp()) * t).sin()
+                    * (-t * 12.0).exp();
+            }
+            if k % 2 == 0 && pos % 2 == 1 {
+                v += 0.5 * noise() * (-t * 20.0).exp();
+            }
+            x[s + i] += v;
+        }
+    }
+    let mut w = hound::WavWriter::create(path, spec).unwrap();
+    for v in x {
+        w.write_sample((v.clamp(-1.0, 1.0) * 20000.0) as i16)
+            .unwrap();
+    }
+    w.finalize().unwrap();
+}
+
+#[tokio::test]
+async fn analyze_beats_detects_tempo_of_file() {
+    let fx = setup().await;
+    let path = fx.dir.join("drums.wav");
+    write_drum_wav(&path, 96.0, 8, 44_100);
+    let r = call(
+        &fx,
+        "analyze_beats",
+        json!({ "file": path.to_string_lossy() }),
+    )
+    .await;
+    let v = ok_json(&r);
+    eprintln!("{v}");
+    let bpm = v["bpm"].as_f64().unwrap();
+    assert!((bpm - 96.0).abs() < 0.5, "{v}");
+    assert!(v["summary"].as_str().unwrap().contains("BPM"));
+    assert!(!v["bpm_alternatives"].as_array().unwrap().is_empty());
+
+    let r = call(&fx, "analyze_beats", json!({})).await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+/// 実際の曲で公式実装(Python)の結果と比べる(`GLAUX_TEST_BEAT_AUDIO` と `GLAUX_TEST_BEAT_GOLDEN`
+/// 未設定なら何もしない)。beat-this-rs の test_files と tests/fixtures/golden_small.json を使う想定。
+#[test]
+fn beats_match_reference_implementation() {
+    let (Some(audio), Some(golden)) = (
+        std::env::var_os("GLAUX_TEST_BEAT_AUDIO"),
+        std::env::var_os("GLAUX_TEST_BEAT_GOLDEN"),
+    ) else {
+        eprintln!("GLAUX_TEST_BEAT_AUDIO / GLAUX_TEST_BEAT_GOLDEN が未設定のためスキップ");
+        return;
+    };
+    let sound = glaux_mcp::sound::load_file(std::path::Path::new(&audio)).unwrap();
+    let t0 = std::time::Instant::now();
+    let r = glaux_ml::beats::track(&sound.frames, sound.sample_rate).unwrap();
+    let g: Value = serde_json::from_slice(&std::fs::read(golden).unwrap()).unwrap();
+    // MIR の F 値(±70ms)
+    let f_measure = |est: &[f32], refs: &Value| {
+        let refs: Vec<f64> = refs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let mut used = vec![false; refs.len()];
+        let mut hit = 0;
+        for &e in est {
+            if let Some(i) =
+                (0..refs.len()).find(|&i| !used[i] && (refs[i] - e as f64).abs() <= 0.07)
+            {
+                used[i] = true;
+                hit += 1;
+            }
+        }
+        let p = hit as f64 / est.len().max(1) as f64;
+        let rc = hit as f64 / refs.len().max(1) as f64;
+        if p + rc == 0.0 {
+            0.0
+        } else {
+            2.0 * p * rc / (p + rc)
+        }
+    };
+    let fb = f_measure(&r.beats, &g["beats"]);
+    let fd = f_measure(&r.downbeats, &g["downbeats"]);
+    eprintln!(
+        "{:.1} 秒の曲を {:?} で解析。ビート F={fb:.3}、小節頭 F={fd:.3}、{:?} BPM、{:?} 拍子",
+        sound.frames.len() as f32 / sound.sample_rate,
+        t0.elapsed(),
+        r.bpm(),
+        r.beats_per_bar()
+    );
+    assert!(fb > 0.95, "{fb}");
+    assert!(fd > 0.9, "{fd}");
+}

@@ -134,6 +134,18 @@ export function clipPeaks(clipId: string, buckets: number): Promise<{ peaks: [nu
   return invoke("clip_peaks", { clipId, buckets });
 }
 
+/** 音声クリップの元のテンポ・拍子を検出する(先頭 60 秒。Beat This!)。 */
+export function detectClipTempo(clipId: string): Promise<{
+  bpm: number | null;
+  bpm_alternatives: number[];
+  beats_per_bar: number | null;
+  first_downbeat_sec: number | null;
+  tempo_variation: number | null;
+  summary: string;
+}> {
+  return invoke("detect_clip_tempo", { clipId });
+}
+
 /** 音声クリップ(単旋律)を譜起こしして MIDI クリップを作る(履歴 1 件)。 */
 export function transcribeClip(
   clipId: string,

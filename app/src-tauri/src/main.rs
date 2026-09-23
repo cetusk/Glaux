@@ -224,6 +224,23 @@ async fn clip_peaks(
     Ok(json!({ "peaks": peaks }))
 }
 
+/// 音声クリップの元のテンポ・拍子を検出する(テンポ追従の original_bpm 用。速さのため先頭 60 秒)。
+#[tauri::command]
+async fn detect_clip_tempo(state: State<'_, AppState>, clip_id: String) -> Result<Value, String> {
+    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let r = tokio::task::spawn_blocking(move || {
+        let mut sound = glaux_mcp::sound::load_clip(&project, std::path::Path::new(&dir), &cid)?;
+        let max = (60.0 * sound.sample_rate) as usize;
+        sound.frames.truncate(max);
+        glaux_mcp::sound::beats(&sound)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    serde_json::to_value(r).map_err(|e| e.to_string())
+}
+
 /// 音声クリップ(単旋律)を譜起こしして MIDI クリップを作る(履歴 1 件)。
 #[tauri::command]
 async fn transcribe_clip(
@@ -1697,6 +1714,7 @@ fn main() -> Result<()> {
             import_audio_clip,
             clip_peaks,
             transcribe_clip,
+            detect_clip_tempo,
             record_start,
             record_stop,
             midi_inputs,
