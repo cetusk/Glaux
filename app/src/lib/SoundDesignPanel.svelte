@@ -531,6 +531,7 @@
             <option value="drum">drum(ドラム)</option>
             <option value="pluck">pluck(撥弦: ギター/ベース)</option>
             <option value="fm">fm(FM: エレピ/ベル/マレット)</option>
+            <option value="wavetable">wavetable(ウェーブテーブル: うねり/母音)</option>
             <option value="sampler" disabled>sampler(下の読込ボタンから)</option>
             <option value="sf2" disabled>sf2(下の SoundFont から)</option>
             <option value="clap" disabled>CLAP プラグイン(トラックの音源メニューから)</option>

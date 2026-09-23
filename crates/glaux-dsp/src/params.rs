@@ -7,6 +7,7 @@ use crate::fm::FmParams;
 use crate::pluck::PluckParams;
 use crate::subtractive::{SubtractiveParams, Waveform};
 use crate::voice::{InstrumentKind, InstrumentParams};
+use crate::wavetable::WavetableParams;
 use glaux_core::{Device, ParamMap, ParamRange, ParamSpec, ParamValue, PluginSource};
 
 pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
@@ -407,6 +408,192 @@ pub static FM_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static WAVETABLE_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "table",
+        display_name: "テーブル",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: crate::wavetable::TABLE_NAMES,
+            default: "analog",
+        },
+        description: "波形の並び(position で行き来する)。analog = 正弦→三角→ノコギリ→矩形、\
+            pulse = パルス幅 50%→5%(細く鼻にかかる)、vocal = 母音 あ→え→い→お→う(しゃべるような音)、\
+            sync = ハードシンク(ギラついた金属的な変化。EDM のリード・ベース)、\
+            organ = 倍音を 1 本ずつ足すドローバー(丸い→きらびやか)。",
+    },
+    ParamSpec {
+        name: "position",
+        display_name: "ポジション",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.3,
+            skew: None,
+        },
+        description: "テーブルのどの波形を鳴らすか(0〜1)。オートメーションで動かすと音色そのものがうねる\
+            (ウォブルベース・変化するパッド)。",
+    },
+    ParamSpec {
+        name: "pos_env",
+        display_name: "ポジションのエンベロープ",
+        unit: None,
+        range: ParamRange::Float {
+            min: -1.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "鳴り始めに position をずらす量。減衰しながら position に戻る。\
+            正でアタックだけ明るい・硬いプラック、負で後から開く音。",
+    },
+    ParamSpec {
+        name: "pos_decay",
+        display_name: "エンベロープの戻り",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.005,
+            max: 4.0,
+            default: 0.3,
+            skew: Some(0.3),
+        },
+        description: "pos_env のずれが戻る時間。短いとパチッとしたアタック、長いとゆっくり音色が変わる。",
+    },
+    ParamSpec {
+        name: "lfo_rate",
+        display_name: "LFO 速さ",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 0.05,
+            max: 16.0,
+            default: 2.0,
+            skew: Some(0.4),
+        },
+        description: "position を周期的に揺らす速さ。ウォブルはテンポに合わせる(8 分 = BPM/30 Hz、例 140BPM で 4.67)。",
+    },
+    ParamSpec {
+        name: "lfo_depth",
+        display_name: "LFO 深さ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "position を揺らす幅。0 で揺らさない。0.3〜0.6 でウォブルベース・うねるパッド。",
+    },
+    ParamSpec {
+        name: "unison",
+        display_name: "ユニゾン",
+        unit: None,
+        range: ParamRange::Int {
+            min: 1,
+            max: 7,
+            default: 1,
+        },
+        description: "同じ音をピッチを少しずらして重ねる本数。3〜7 + detune で分厚く広がる。",
+    },
+    ParamSpec {
+        name: "detune",
+        display_name: "デチューン",
+        unit: Some("cents"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 60.0,
+            default: 12.0,
+            skew: None,
+        },
+        description: "ユニゾンの広がり(半音=100)。15〜30 が目安。",
+    },
+    ParamSpec {
+        name: "cutoff",
+        display_name: "カットオフ",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 40.0,
+            max: 20000.0,
+            default: 16000.0,
+            skew: Some(0.3),
+        },
+        description: "ローパスフィルタ。音色は主にテーブルと position で作るので普段は開けたまま、\
+            こもらせたいときだけ下げる。",
+    },
+    ParamSpec {
+        name: "resonance",
+        display_name: "レゾナンス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 0.95,
+            default: 0.1,
+            skew: None,
+        },
+        description: "カットオフ付近の強調。",
+    },
+    ParamSpec {
+        name: "attack",
+        display_name: "アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 4.0,
+            default: 0.005,
+            skew: Some(0.3),
+        },
+        description: "音の立ち上がりの速さ。パッドは 0.3 以上でふわっと。",
+    },
+    ParamSpec {
+        name: "decay",
+        display_name: "ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 6.0,
+            default: 0.4,
+            skew: Some(0.3),
+        },
+        description: "サスティンまで下がる時間。",
+    },
+    ParamSpec {
+        name: "sustain",
+        display_name: "サスティン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.8,
+            skew: None,
+        },
+        description: "押している間の音量。0 でプラック。",
+    },
+    ParamSpec {
+        name: "release",
+        display_name: "リリース",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 8.0,
+            default: 0.2,
+            skew: Some(0.3),
+        },
+        description: "離してから消えるまで。パッドは 1 以上。",
+    },
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 6.0,
+            default: -8.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。",
+    },
+];
+
 pub static SAMPLER_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "root",
@@ -542,6 +729,23 @@ pub static FM_ARTS: &[ArticulationInfo] = &[
     ART_VIBRATO,
     ART_BEND,
 ];
+pub static WAVETABLE_ARTS: &[ArticulationInfo] = &[
+    ArticulationInfo {
+        name: "palm_mute",
+        key: "M",
+        display_name: "ミュート",
+        description: "こもらせて速く減衰させた短い音。",
+    },
+    ART_STACCATO,
+    ArticulationInfo {
+        name: "accent",
+        key: "A",
+        display_name: "アクセント",
+        description: "強く、position を少し先へ進めて明るく鳴らす。",
+    },
+    ART_VIBRATO,
+    ART_BEND,
+];
 /// CLAP 音源: ビブラート・ベンドは 1 音ごとの音程変化として送る(CLAP のノート表現に対応したプラグインのみ。
 /// MIDI だけのプラグインには届かない)。アクセントは強く、パームミュートは短く弱く鳴らして近づける
 pub static CLAP_ARTS: &[ArticulationInfo] = &[
@@ -567,6 +771,7 @@ pub fn articulations_for(instrument: &str) -> &'static [ArticulationInfo] {
         "sampler" => SAMPLER_ARTS,
         "sf2" => SF2_ARTS,
         "fm" => FM_ARTS,
+        "wavetable" => WAVETABLE_ARTS,
         "clap" => CLAP_ARTS,
         _ => SUBTRACTIVE_ARTS,
     }
@@ -639,6 +844,16 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
             params: FM_SPECS,
             articulations: FM_ARTS,
         },
+        InstrumentInfo {
+            name: "wavetable",
+            description: "ウェーブテーブルシンセ。波形の並び(table)を position で行き来して\
+                音色そのものを変える。position をオートメーションや LFO(lfo_depth)で動かすと\
+                ウォブルベース・グロウル・うねるパッド、pos_env で硬いアタックのプラック。\
+                vocal テーブルでしゃべるような音、sync で EDM のギラついたリード、\
+                unison + detune で分厚いパッド。",
+            params: WAVETABLE_SPECS,
+            articulations: WAVETABLE_ARTS,
+        },
     ]
 }
 
@@ -651,6 +866,7 @@ pub fn instrument_params(name: &str) -> Option<&'static [ParamSpec]> {
         "sampler" => Some(SAMPLER_SPECS),
         "sf2" => Some(SF2_SPECS),
         "fm" => Some(FM_SPECS),
+        "wavetable" => Some(WAVETABLE_SPECS),
         _ => None,
     }
 }
@@ -768,6 +984,22 @@ impl crate::InstrumentParams {
                 "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
                 _ => return false,
             },
+            I::Wavetable(p) => match name {
+                "position" => p.position = value.clamp(0.0, 1.0),
+                "pos_env" => p.pos_env = value.clamp(-1.0, 1.0),
+                "pos_decay" => p.pos_decay = value.clamp(0.005, 4.0),
+                "lfo_rate" => p.lfo_rate = value.clamp(0.05, 16.0),
+                "lfo_depth" => p.lfo_depth = value.clamp(0.0, 1.0),
+                "detune" => p.detune_cents = value.clamp(0.0, 60.0),
+                "cutoff" => p.cutoff = value.clamp(40.0, 20000.0),
+                "resonance" => p.resonance = value.clamp(0.0, 0.95),
+                "attack" => p.attack = value.clamp(0.001, 4.0),
+                "decay" => p.decay = value.clamp(0.01, 6.0),
+                "sustain" => p.sustain = value.clamp(0.0, 1.0),
+                "release" => p.release = value.clamp(0.01, 8.0),
+                "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
+                _ => return false,
+            },
         }
         true
     }
@@ -811,6 +1043,33 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
             };
             (InstrumentKind::Fm, InstrumentParams::Fm(p))
+        }
+        "wavetable" => {
+            // テーブルは初回だけここ(UI スレッド)で作る
+            crate::wavetable::ensure_tables();
+            let s = WAVETABLE_SPECS;
+            let table = get_enum(map, s, "table");
+            let p = WavetableParams {
+                table: crate::wavetable::TABLE_NAMES
+                    .iter()
+                    .position(|n| *n == table)
+                    .unwrap_or(0) as u8,
+                position: get_f32(map, s, "position").clamp(0.0, 1.0),
+                pos_env: get_f32(map, s, "pos_env").clamp(-1.0, 1.0),
+                pos_decay: get_f32(map, s, "pos_decay").clamp(0.005, 4.0),
+                lfo_rate: get_f32(map, s, "lfo_rate").clamp(0.05, 16.0),
+                lfo_depth: get_f32(map, s, "lfo_depth").clamp(0.0, 1.0),
+                unison: get_f32(map, s, "unison").round().clamp(1.0, 7.0) as u8,
+                detune_cents: get_f32(map, s, "detune").clamp(0.0, 60.0),
+                cutoff: get_f32(map, s, "cutoff").clamp(40.0, 20000.0),
+                resonance: get_f32(map, s, "resonance").clamp(0.0, 0.95),
+                attack: get_f32(map, s, "attack").clamp(0.001, 4.0),
+                decay: get_f32(map, s, "decay").clamp(0.01, 6.0),
+                sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
+                release: get_f32(map, s, "release").clamp(0.01, 8.0),
+                gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+            };
+            (InstrumentKind::Wavetable, InstrumentParams::Wavetable(p))
         }
         "drum" => {
             let s = DRUM_SPECS;

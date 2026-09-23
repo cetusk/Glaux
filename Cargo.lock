@@ -1615,6 +1615,7 @@ name = "glaux-dsp"
 version = "0.1.0"
 dependencies = [
  "glaux-core",
+ "rustfft",
  "serde",
 ]
 

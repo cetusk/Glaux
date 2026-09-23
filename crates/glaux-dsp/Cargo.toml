@@ -9,3 +9,4 @@ description = "Built-in instruments for Glaux (subtractive synth, drum synth) wi
 [dependencies]
 glaux-core = { path = "../glaux-core" }
 serde.workspace = true
+rustfft.workspace = true

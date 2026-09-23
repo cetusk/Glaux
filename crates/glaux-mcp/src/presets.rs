@@ -192,6 +192,14 @@ fn factory_presets() -> Vec<Preset> {
         }
         d
     };
+    let wavetable = |table: &str, params: &[(&str, f64)]| {
+        let mut d = device("wavetable", params);
+        d.params.insert(
+            "table".to_owned(),
+            glaux_core::ParamValue::Enum(table.to_owned()),
+        );
+        d
+    };
     let fx = |name: &str, params: &[(&str, f64)]| PresetEffect {
         source: PluginSource::Builtin {
             name: name.to_owned(),
@@ -263,12 +271,110 @@ fn factory_presets() -> Vec<Preset> {
                 ],
             )],
         ),
+        preset(
+            "ウォブルベース",
+            "wavetable(sync)の position を LFO で揺らすダブステップ/ベースミュージックのうねり。\
+             lfo_rate をテンポに合わせる(8 分 = BPM/30 Hz)",
+            wavetable(
+                "sync",
+                &[
+                    ("position", 0.35),
+                    ("lfo_rate", 4.0),
+                    ("lfo_depth", 0.6),
+                    ("unison", 3.0),
+                    ("detune", 10.0),
+                    ("cutoff", 6000.0),
+                    ("attack", 0.003),
+                    ("sustain", 1.0),
+                    ("release", 0.08),
+                    ("gain_db", -10.0),
+                ],
+            ),
+            vec![fx(
+                "distortion",
+                &[("drive_db", 10.0), ("mix", 0.5), ("level_db", -4.0)],
+            )],
+        ),
+        preset(
+            "母音パッド",
+            "wavetable(vocal)を LFO でゆっくり動かす、しゃべるように変化するパッド",
+            wavetable(
+                "vocal",
+                &[
+                    ("position", 0.4),
+                    ("lfo_rate", 0.15),
+                    ("lfo_depth", 0.5),
+                    ("unison", 5.0),
+                    ("detune", 18.0),
+                    ("attack", 0.6),
+                    ("sustain", 0.9),
+                    ("release", 1.5),
+                    ("gain_db", -12.0),
+                ],
+            ),
+            vec![
+                fx("chorus", &[("mix", 0.4)]),
+                fx("reverb", &[("mix", 0.35), ("size", 0.8)]),
+            ],
+        ),
+        preset(
+            "シンクリード",
+            "wavetable(sync)+ pos_env で鳴り始めがギラッと鋭い EDM のリード",
+            wavetable(
+                "sync",
+                &[
+                    ("position", 0.2),
+                    ("pos_env", 0.5),
+                    ("pos_decay", 0.25),
+                    ("unison", 5.0),
+                    ("detune", 20.0),
+                    ("sustain", 0.8),
+                    ("release", 0.2),
+                    ("gain_db", -12.0),
+                ],
+            ),
+            vec![fx(
+                "delay",
+                &[("time_ms", 375.0), ("feedback", 0.35), ("mix", 0.25)],
+            )],
+        ),
+        preset(
+            "Lo-fi エレピ",
+            "fm のエレピ + chorus + tape。チルホップ/ Lo-fi Hip Hop の揺れてくすんだ鍵盤",
+            device(
+                "fm",
+                &[
+                    ("ratio", 1.0),
+                    ("index", 2.5),
+                    ("index_decay", 0.3),
+                    ("decay", 2.0),
+                    ("sustain", 0.2),
+                    ("release", 0.4),
+                ],
+            ),
+            vec![
+                fx(
+                    "chorus",
+                    &[("rate_hz", 0.6), ("depth_ms", 2.0), ("mix", 0.35)],
+                ),
+                fx(
+                    "tape",
+                    &[
+                        ("wow", 0.4),
+                        ("flutter", 0.25),
+                        ("saturation", 0.4),
+                        ("tone", 5000.0),
+                        ("hiss", 0.25),
+                    ],
+                ),
+            ],
+        ),
     ]
 }
 
 /// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
 /// (ユーザーが独自に作った別名のプリセットには触れない)。
-const FACTORY_VERSION: &str = "v2";
+const FACTORY_VERSION: &str = "v3";
 
 /// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
 /// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)

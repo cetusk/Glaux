@@ -19,7 +19,7 @@
 - `glaux-engine`: 再生(ループ・オートメーション・音声クリップ・自動停止・テンポ変更時の
   位置保持)・録音(record.rs)・WAV エクスポート・音声解析(AI の耳)・
   SoundFont 読み込み(sf2.rs、フィルタ/LFO 込み)・サンプルキャッシュ(SampleBank)
-- `glaux-dsp`: 楽器 5 種(subtractive / drum / pluck / sampler / sf2)+
+- `glaux-dsp`: 楽器 7 種(subtractive / drum / pluck / sampler / sf2 / fm / wavetable)+
   エフェクト 9 種(eq / compressor / reverb / distortion / amp / sidechain / delay / chorus / tape)+
   奏法 5 種(楽器別カタログ)+ ピッチ表現(expr: 奏法 + 連続ピッチカーブ)
 - `app/`: タイムライン(セクション・拍子対応グリッド)・ピアノロール(奏法・3 連・
@@ -515,7 +515,7 @@ Glaux の AI が「何を知覚し、何を操作できるか」の一覧。新�
 | **記憶(短期)** | 会話セッション(--resume) | アプリ再起動をまたいで会話継続 |
 | **記憶(長期)** | get_history + project_version | 履歴はプロジェクト側に永続。author=human で「人間が何をしたか」をキャッチアップ(チャットは差分を自動注入) |
 | **手(作曲)** | apply_commands + 便利ツール | ノート/クリップ/トラック編集。transpose/shift/quantize/scale_velocity は相対編集の代行 |
-| **手(音作り)** | list_params + set_param + add_effect | 全つまみに聴感説明付き。音源 5 種(subtractive/drum/pluck/sampler/sf2)+ エフェクト 9 種(eq/comp/reverb/dist/amp/sidechain/delay/chorus/tape) |
+| **手(音作り)** | list_params + set_param + add_effect | 全つまみに聴感説明付き。音源 7 種(subtractive/drum/pluck/sampler/sf2/fm/wavetable)+ エフェクト 9 種(eq/comp/reverb/dist/amp/sidechain/delay/chorus/tape) |
 | **表現(奏法)** | Note.articulation | 楽器ごとに対応が異なる(下表)。カタログ(list_params)に楽器別の説明付きで載る |
 | **リズム感** | analyze_rhythm | スウィング比・グリッド(straight / triplet)・シンコペーション・ずれ・密度 |
 | **表現(時間変化)** | set_automation_points / set_master_automation_points | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターのカーブ |
@@ -527,7 +527,7 @@ Glaux の AI が「何を知覚し、何を操作できるか」の一覧。新�
 
 ### 奏法 × 楽器の対応表(glaux-dsp `articulations_for` が正)
 
-| 奏法 | subtractive | drum | pluck | sampler / sf2 | fm | clap | 効果 |
+| 奏法 | subtractive | drum | pluck | sampler / sf2 | fm / wavetable | clap | 効果 |
 |---|---|---|---|---|---|---|---|
 | palm_mute (M) | ○(こもった刻み) | − | ◎(ブリッジミュート。本命) | − | ○(減衰 4 倍速) | △(長さ半分・ベロシティ 0.85 倍) | 減衰を速く・暗く |
 | staccato (S) | ○ | − | ○ | ○ | ○ | ○ | 音価半分 + 短リリース |
@@ -906,6 +906,21 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     set_device 1 回。トラックのエフェクトも通した `verified_distance` も返す)、`find_similar_presets`(計 34 ツール)。
     UI は音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」(Tauri `match_clip_sound`:
     直後に MIDI トラックを足し、同じ位置に目標の高さ・長さの 1 音。履歴 1 件)
+- **内蔵ウェーブテーブル `wavetable`(2026-09-24)**: `glaux-dsp/src/wavetable.rs`。テーブル 5 種(analog = 正弦→三角→
+  ノコギリ→矩形 / pulse = 幅 50%→5% / vocal = 母音あえいおう(フォルマント周波数を補間、基音 110Hz 想定)/
+  sync = ハードシンク比 1→8 / organ = ドローバー式に倍音を足す)× 16 フレーム × 11 段のミップマップ(段 ℓ は倍音 1023>>ℓ まで)
+  × 2048 サンプル(約 7MB)。倍音の設計図から逆 FFT(rustfft を glaux-dsp の依存に追加)で作り、段 0 のピークで
+  フレームごとに正規化。`OnceLock` に初回の `bake_instrument`(UI スレッド)で 1 度だけ作り、ボイスは `get()` で読むだけ
+  (未作成なら無音)。段はいちばん高い声部の周波数で「倍音 ≤ 0.45·sr/f」になる最も豊かなものを選ぶ。
+  つまみ: table・position・pos_env / pos_decay(鳴り始めのずれと戻り)・lfo_rate / lfo_depth(position を揺らす)・
+  unison / detune・cutoff / resonance(SVF)・ADSR(-60dB 基準)・gain_db。奏法 5 種(accent は position を +0.15)。
+  出荷時プリセット(v3)に「ウォブルベース」「母音パッド」「シンクリード」、新エフェクトを使う「Lo-fi エレピ」を追加
+- **質感系エフェクト delay / chorus / tape(2026-09-24)**: `glaux-dsp/src/effects.rs`。3 種はスロットごとの共有
+  ディレイバッファ(2ch × 65536、`EffectState::default` で確保。64 スロットで約 32MB)を使う。
+  delay: やまびこは毎回トーンの 1 次 LP を通る(回を重ねるほど暗い)、ping_pong は入力を左へ・左の返りを右へ。
+  chorus: 線形補間の小数遅延、左右で LFO を 90° ずらす。tape: wow 0.55Hz(最大 ±2.4ms)・flutter 6.5Hz(±0.12ms)で
+  左右共通に遅延を揺らし、tanh(x·drive)/drive の飽和 → 1 次 LP → ヒス(xorshift、種はリセットで固定)→ ビット落とし。
+  tape は約 3.5ms の遅れを生む(PDC の対象外。気になる量ではない)
 - **プラグインの遅延補正 PDC(2026-09-24)**: `ClapProcessor::latency`(起動時に latency 拡張で取得)。
   レンダラの `compute_pdc` がブロックごとに、トラックの遅延(CLAP 音源 + CLAP エフェクトの合計)を求め、通常トラックは
   その最大に、バスはバス同士の最大に揃うよう `pdc_delay` を決める。遅延はチェーンの後・センドと音量パンの前に

@@ -1118,6 +1118,42 @@ mod tests {
     }
 
     #[test]
+    fn wavetable_position_changes_brightness_and_lfo_moves_it() {
+        use crate::export::render_project;
+        let render = |position: f64, lfo_depth: f64| {
+            let mut p = project_with_notes(vec![note(0, 3840, 48, 110)]);
+            let mut d = glaux_core::Device::builtin("wavetable");
+            d.params.insert("position".into(), position.into());
+            d.params.insert("lfo_depth".into(), lfo_depth.into());
+            d.params.insert("lfo_rate".into(), 2.0.into());
+            p.tracks[0].device = Some(d);
+            let st = render_project(&p, 48_000.0, &Default::default()).unwrap();
+            let mono: Vec<f32> = st.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
+            crate::timbre::describe(&mono[..96_000], 48_000.0, None)
+        };
+        let dark = render(0.0, 0.0);
+        let bright = render(1.0, 0.0);
+        eprintln!(
+            "重心: {} → {}",
+            dark.spectrum.centroid_hz, bright.spectrum.centroid_hz
+        );
+        assert!(bright.spectrum.centroid_hz > dark.spectrum.centroid_hz * 2.0);
+        // LFO で揺らすと明るさが時間とともに上下する
+        let spread = |d: &crate::timbre::SoundDescriptors| {
+            let c = &d.spectrum.centroid_curve_hz;
+            c.iter().cloned().fold(f32::MIN, f32::max) - c.iter().cloned().fold(f32::MAX, f32::min)
+        };
+        let still = render(0.5, 0.0);
+        let wobble = render(0.5, 0.8);
+        assert!(
+            spread(&wobble) > spread(&still) * 2.0 + 50.0,
+            "{} vs {}",
+            spread(&wobble),
+            spread(&still)
+        );
+    }
+
+    #[test]
     fn sends_feed_a_shared_reverb_bus() {
         use crate::export::render_project;
         use glaux_core::{Effect, FxId, Send, Track, TrackId, TrackKind};

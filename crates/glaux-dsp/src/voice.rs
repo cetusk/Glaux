@@ -9,6 +9,7 @@ use crate::multi::{MultiSamplerParams, MultiVoice};
 use crate::pluck::{PluckParams, PluckVoice};
 use crate::sampler::{SamplerParams, SamplerVoice};
 use crate::subtractive::{SubtractiveParams, SubtractiveVoice};
+use crate::wavetable::{WavetableParams, WavetableVoice};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InstrumentKind {
@@ -18,6 +19,7 @@ pub enum InstrumentKind {
     Sampler,
     Sf2,
     Fm,
+    Wavetable,
 }
 
 /// トラックごとに焼き込まれたパラメータ。
@@ -31,6 +33,7 @@ pub enum InstrumentParams {
     Sampler(SamplerParams),
     Sf2(MultiSamplerParams),
     Fm(FmParams),
+    Wavetable(WavetableParams),
 }
 
 impl Default for InstrumentParams {
@@ -50,6 +53,7 @@ pub enum VoiceState {
     Drum(DrumVoice),
     Pluck(PluckVoice),
     Fm(FmVoice),
+    Wavetable(WavetableVoice),
     Sampler(SamplerVoice),
     Sf2(MultiVoice),
 }
@@ -86,6 +90,13 @@ impl VoiceState {
             InstrumentParams::Fm(p) => {
                 VoiceState::Fm(FmVoice::start(p, freq, vel, articulation, sample_rate))
             }
+            InstrumentParams::Wavetable(p) => VoiceState::Wavetable(WavetableVoice::start(
+                p,
+                freq,
+                vel,
+                articulation,
+                sample_rate,
+            )),
             InstrumentParams::Sampler(p) => VoiceState::Sampler(SamplerVoice::start(
                 p,
                 pitch,
@@ -105,6 +116,7 @@ impl VoiceState {
             VoiceState::Subtractive(v) => v.expr.set_curve(curve),
             VoiceState::Pluck(v) => v.expr.set_curve(curve),
             VoiceState::Fm(v) => v.expr.set_curve(curve),
+            VoiceState::Wavetable(v) => v.expr.set_curve(curve),
             VoiceState::Sampler(v) => v.expr.set_curve(curve),
             VoiceState::Sf2(v) => v.expr.set_curve(curve),
             VoiceState::Drum(_) => {}
@@ -119,6 +131,7 @@ impl VoiceState {
             (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.next(p),
             (VoiceState::Pluck(v), InstrumentParams::Pluck(p)) => v.next(p),
             (VoiceState::Fm(v), InstrumentParams::Fm(p)) => v.next(p),
+            (VoiceState::Wavetable(v), InstrumentParams::Wavetable(p)) => v.next(p),
             (VoiceState::Sampler(v), InstrumentParams::Sampler(p)) => v.next(p),
             (VoiceState::Sf2(v), InstrumentParams::Sf2(p)) => v.next(p),
             _ => 0.0,
@@ -131,6 +144,7 @@ impl VoiceState {
             VoiceState::Drum(v) => v.note_off(),
             VoiceState::Pluck(v) => v.note_off(),
             VoiceState::Fm(v) => v.note_off(),
+            VoiceState::Wavetable(v) => v.note_off(),
             VoiceState::Sampler(v) => v.note_off(),
             VoiceState::Sf2(v) => v.note_off(),
         }
@@ -143,6 +157,7 @@ impl VoiceState {
             (VoiceState::Drum(_), _) => true,
             (VoiceState::Pluck(v), _) => v.finished(),
             (VoiceState::Fm(v), _) => v.finished(),
+            (VoiceState::Wavetable(v), _) => v.finished(),
             (VoiceState::Sampler(v), _) => v.finished(),
             (VoiceState::Sf2(v), _) => v.finished(),
         }

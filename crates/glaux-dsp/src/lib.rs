@@ -15,6 +15,8 @@
 //! - `pluck`: 撥弦の物理モデル(Karplus-Strong。ギター/ベース/ハープ)
 //! - `sampler`: 単一サンプル再生(ワンショット。実録の質感)
 //! - `sf2`: マルチサンプラー(SoundFont のゾーンを再生。GM 音源一式が鳴る)
+//! - `fm`: FM シンセ(2 オペレーター + フィードバック。エレピ・ベル)
+//! - `wavetable`: ウェーブテーブルシンセ(波形の並びを行き来して音色を動かす)
 
 mod drum;
 mod effects;
@@ -27,6 +29,7 @@ mod sampler;
 pub mod stretch;
 mod subtractive;
 mod voice;
+mod wavetable;
 
 pub use drum::DrumParams;
 pub use effects::{bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState};
@@ -41,6 +44,7 @@ pub use pluck::PluckParams;
 pub use sampler::{SampleData, SamplerParams, SamplerVoice};
 pub use subtractive::{SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
+pub use wavetable::{WavetableParams, WavetableVoice};
 
 /// device 未設定トラックに使う既定の楽器名。
 pub const DEFAULT_INSTRUMENT: &str = "subtractive";
