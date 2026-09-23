@@ -18,7 +18,7 @@ mod scan;
 mod window;
 
 pub use host::{mark_audio_thread, mark_main_thread};
-pub use plugin::{ClapPlugin, ClapProcessor, GuiEvent, NoteMsg, MAX_EVENTS, MAX_FRAMES};
+pub use plugin::{ClapPlugin, ClapProcessor, GuiEvent, NoteMsg, ParamInfo, MAX_EVENTS, MAX_FRAMES};
 pub use scan::{default_search_paths, describe, scan, PluginInfo};
 
 /// プラグインの画面のためのウィンドウメッセージを処理する(プラグインのメインスレッドで

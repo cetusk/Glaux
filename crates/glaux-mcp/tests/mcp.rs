@@ -1023,3 +1023,69 @@ async fn list_params_on_clap_track_returns_effects_without_error() {
     assert_eq!(v["params"].as_array().unwrap().len(), 0);
     assert_eq!(v["effects"].as_array().unwrap().len(), 1, "{v}");
 }
+
+/// 実プラグインを使う(`GLAUX_TEST_CLAP` 未設定なら何もしない)。
+#[tokio::test]
+async fn list_params_filters_real_clap_params() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP").map(std::path::PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+        return;
+    };
+    std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+    let plugin = glaux_engine::plugins::rescan()
+        .into_iter()
+        .find(|p| p.is_instrument())
+        .unwrap();
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_clap03", "Synth")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({
+                "label": "CLAP 音源",
+                "commands": [{ "op": "set_device", "track": "trk_clap03",
+                               "device": { "type": "clap", "plugin_id": plugin.id } }]
+            }),
+        )
+        .await,
+    );
+    let r = call(
+        &fx,
+        "list_params",
+        json!({ "track_id": "trk_clap03", "filter": "cutoff", "limit": 5 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    let params = v["params"].as_array().unwrap();
+    eprintln!(
+        "cutoff: {} 件中 {:?}",
+        v["params_total"],
+        params
+            .iter()
+            .map(|p| p["display_name"].clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(!params.is_empty() && params.len() <= 5);
+    assert!(params[0]["path"]
+        .as_str()
+        .unwrap()
+        .starts_with("device/clap:"));
+    // そのまま set_param できる
+    let path = params[0]["path"].as_str().unwrap().to_owned();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "cutoff", "commands": [{ "op": "set_param", "track": "trk_clap03", "path": path, "value": 0.25 }] }),
+        )
+        .await,
+    );
+    let r = call(
+        &fx,
+        "list_params",
+        json!({ "track_id": "trk_clap03", "filter": "cutoff", "limit": 5 }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["params"][0]["current"], json!(0.25));
+}

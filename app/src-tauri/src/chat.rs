@@ -170,7 +170,7 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     音声素材: 人間が ⏺ で録音した演奏や音声ファイル(WAV / MP3 / FLAC / OGG / M4A)は音声トラック(kind: audio)のクリップとして置かれます。\
     それらは get_project で見え、analyze_audio で聴けます。\
     外部の CLAP プラグイン(Surge XT などのシンセ)は list_plugins で一覧でき、set_device {type: \"clap\", plugin_id} で音源にできます。\
-    音色はプラグイン自身の画面で人間が作ります(AI からプラグインのつまみは動かせません)。\
+    音色の大枠はプラグイン自身の画面で人間が作ります。つまみは list_params(filter で絞り込み。例 \"cutoff\")で探し、set_param {path: \"device/clap:<id>\"} や set_automation_points で動かせます(値はプラグインの単位、current_text が画面の表示)。ピアノロールのピッチカーブもプラグインに届きます。\
     取り込んだ曲はパートに分けられます(separate_audio。builtin = 打楽器 / 音程楽器、demucs = ボーカル / ドラム / ベース / その他)。\
     ベースだけ譜起こししたいときは、分離 → transcribe_audio の順に。\
     テンポを変えるときは、音声クリップに set_clip_stretch(follow、original_bpm = 録音時のテンポ)を\

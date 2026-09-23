@@ -51,6 +51,7 @@ fn instrument_plays_notes_and_restores_state() {
                 time: 0,
                 key: 60,
                 velocity: 0.9,
+                note_id: None,
             }],
         );
         let mut loud = 0.0f32;
@@ -72,4 +73,73 @@ fn instrument_plays_notes_and_restores_state() {
     plugin.load_state(&state).expect("状態を戻せる");
     let again = plugin.save_state().unwrap();
     assert!(!again.is_empty());
+}
+
+#[test]
+fn params_are_listed_and_set_by_events() {
+    let Some(path) = test_plugin() else {
+        eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+        return;
+    };
+    let info = describe(&path)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.is_instrument())
+        .unwrap();
+    let mut plugin = ClapPlugin::new(&path, &info.id).unwrap();
+    let params = plugin.param_infos();
+    let visible: Vec<&ParamInfo> = params
+        .iter()
+        .filter(|p| p.automatable && !p.hidden && !p.readonly)
+        .collect();
+    eprintln!(
+        "パラメータ {} 個(操作できるもの {} 個)",
+        params.len(),
+        visible.len()
+    );
+    assert!(!visible.is_empty());
+    for p in visible.iter().take(8) {
+        eprintln!(
+            "  {} / {} [{}..{}] 既定 {} stepped={}",
+            p.module, p.name, p.min, p.max, p.default, p.stepped
+        );
+    }
+    // 連続値のパラメータを 1 つ選び、今と違う端の値にする
+    let target = visible
+        .iter()
+        .find(|p| !p.stepped && p.max > p.min)
+        .expect("連続値のパラメータがある");
+    eprintln!(
+        "対象: {} / {} [{}..{}] 既定 {}",
+        target.module, target.name, target.min, target.max, target.default
+    );
+    let before = plugin.param_values(&[target.id]);
+    assert_eq!(before.len(), 1);
+    eprintln!("変更前: {:?}", before[0]);
+
+    let mut proc = plugin.activate(48_000.0).unwrap();
+    let min = if (before[0].1 - target.min).abs() < 1e-6 {
+        target.max
+    } else {
+        target.min
+    };
+    let id = target.id;
+    let proc = std::thread::spawn(move || {
+        proc.process(
+            256,
+            &[NoteMsg::Param {
+                time: 0,
+                id,
+                value: min,
+            }],
+        );
+        proc.process(256, &[]);
+        proc
+    })
+    .join()
+    .unwrap();
+    let after = plugin.param_values(&[target.id]);
+    eprintln!("変更後: {:?}", after[0]);
+    assert!((after[0].1 - min).abs() < 1e-6, "イベントで値が変わる");
+    plugin.deactivate(proc);
 }

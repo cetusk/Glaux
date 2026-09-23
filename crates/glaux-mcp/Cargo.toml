@@ -12,6 +12,7 @@ glaux-core = { path = "../glaux-core" }
 glaux-dsp = { path = "../glaux-dsp" }
 glaux-engine = { path = "../glaux-engine" }
 glaux-ml = { path = "../glaux-ml" }
+glaux-clap = { path = "../glaux-clap" }
 rmcp.workspace = true
 chrono.workspace = true
 sha2.workspace = true

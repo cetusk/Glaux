@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 送り先トラックなし(内蔵の既定音色でエフェクトなしに鳴らす)
-pub const LIVE_NO_TRACK: u32 = 0x3FFF;
+pub const LIVE_NO_TRACK: u32 = 0x1FFF;
 /// キュー容量(2 のべき)。1 ブロック(~20ms)でこれを超える入力は捨てる
 const QUEUE_CAP: usize = 256;
 
@@ -35,31 +35,35 @@ pub enum LiveEvent {
     Sustain(bool),
     /// 全ボイスを離す(CC120/123、送り先の切り替え時)
     AllOff,
+    /// ピッチベンド(0..=16383、中央 8192)。CLAP プラグインのトラックにだけ効く
+    PitchBend(u16),
 }
 
 impl LiveEvent {
-    /// bits: [31:30]=種類 [29:16]=トラック [15:8]=pitch/値 [7:0]=vel
+    /// bits: [31:29]=種類 [28:16]=トラック [15:8]=pitch/値の上位 [7:0]=vel/値の下位
     fn pack(self) -> u32 {
         match self {
             LiveEvent::NoteOn { track, pitch, vel } => {
-                (1 << 30) | ((track & 0x3FFF) << 16) | ((pitch as u32) << 8) | vel as u32
+                (1 << 29) | ((track & 0x1FFF) << 16) | ((pitch as u32) << 8) | vel as u32
             }
             LiveEvent::NoteOff { pitch } => (pitch as u32) << 8,
-            LiveEvent::Sustain(on) => (2 << 30) | ((on as u32) << 8),
-            LiveEvent::AllOff => 3 << 30,
+            LiveEvent::Sustain(on) => (2 << 29) | ((on as u32) << 8),
+            LiveEvent::AllOff => 3 << 29,
+            LiveEvent::PitchBend(v) => (4 << 29) | (v as u32 & 0x3FFF),
         }
     }
 
     fn unpack(v: u32) -> Self {
         let pitch = ((v >> 8) & 0xFF) as u8;
-        match v >> 30 {
+        match v >> 29 {
             0 => LiveEvent::NoteOff { pitch },
             1 => LiveEvent::NoteOn {
-                track: (v >> 16) & 0x3FFF,
+                track: (v >> 16) & 0x1FFF,
                 pitch,
                 vel: (v & 0xFF) as u8,
             },
             2 => LiveEvent::Sustain(pitch != 0),
+            4 => LiveEvent::PitchBend((v & 0x3FFF) as u16),
             _ => LiveEvent::AllOff,
         }
     }
@@ -116,10 +120,17 @@ impl LiveQueue {
 /// 受信した MIDI メッセージ(チャンネルは無視)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MidiMsg {
-    On { pitch: u8, vel: u8 },
-    Off { pitch: u8 },
+    On {
+        pitch: u8,
+        vel: u8,
+    },
+    Off {
+        pitch: u8,
+    },
     Sustain(bool),
     AllOff,
+    /// ピッチベンド(0..=16383、中央 8192)
+    PitchBend(u16),
 }
 
 /// MIDI バイト列を解釈する。対象外のメッセージは None。
@@ -130,6 +141,7 @@ pub fn parse_midi(bytes: &[u8]) -> Option<MidiMsg> {
     match status & 0xF0 {
         0x90 if d2 > 0 => Some(MidiMsg::On { pitch: d1, vel: d2 }),
         0x90 | 0x80 => Some(MidiMsg::Off { pitch: d1 }),
+        0xE0 => Some(MidiMsg::PitchBend(((d2 as u16) << 7) | d1 as u16)),
         0xB0 => match d1 {
             64 => Some(MidiMsg::Sustain(d2 >= 64)),
             120 | 123 => Some(MidiMsg::AllOff),
@@ -208,6 +220,8 @@ pub fn pair_notes(events: &[TakeEvent], stop: f64) -> Vec<RecordedNote> {
                 }
                 pedal = on;
             }
+            // ピッチベンドは録音しない(ノートのピッチカーブへの変換は将来)
+            MidiMsg::PitchBend(_) => {}
             MidiMsg::AllOff => {
                 held = [false; 128];
                 for p in 0..128 {
@@ -311,6 +325,7 @@ impl MidiSink {
             MidiMsg::Off { pitch } => LiveEvent::NoteOff { pitch },
             MidiMsg::Sustain(on) => LiveEvent::Sustain(on),
             MidiMsg::AllOff => LiveEvent::AllOff,
+            MidiMsg::PitchBend(v) => LiveEvent::PitchBend(v),
         };
         sh.live.push(ev);
 
@@ -381,6 +396,9 @@ mod tests {
             LiveEvent::Sustain(true),
             LiveEvent::Sustain(false),
             LiveEvent::AllOff,
+            LiveEvent::PitchBend(0),
+            LiveEvent::PitchBend(8192),
+            LiveEvent::PitchBend(16383),
         ] {
             assert_eq!(LiveEvent::unpack(ev.pack()), ev);
         }
@@ -431,6 +449,11 @@ mod tests {
         assert_eq!(parse_midi(&[0xB0, 64, 0]), Some(MidiMsg::Sustain(false)));
         assert_eq!(parse_midi(&[0xB0, 123, 0]), Some(MidiMsg::AllOff));
         assert_eq!(parse_midi(&[0xB0, 1, 30]), None); // モジュレーションは未対応
+        assert_eq!(parse_midi(&[0xE3, 0, 64]), Some(MidiMsg::PitchBend(8192)));
+        assert_eq!(
+            parse_midi(&[0xE0, 0x7F, 0x7F]),
+            Some(MidiMsg::PitchBend(16383))
+        );
         assert_eq!(parse_midi(&[0xF8]), None); // クロック
         assert_eq!(parse_midi(&[]), None);
     }

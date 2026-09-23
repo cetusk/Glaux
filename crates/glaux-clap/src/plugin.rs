@@ -11,7 +11,9 @@ use crate::host::{GlauxHost, HostMain, HostShared};
 use crate::ClapError;
 use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfoBuffer};
 use clack_extensions::note_ports::{NoteDialect, NotePortInfoBuffer};
-use clack_host::events::event_types::{MidiEvent, NoteOffEvent, NoteOnEvent};
+use clack_host::events::event_types::{
+    MidiEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent, ParamValueEvent,
+};
 use clack_host::events::Match;
 use clack_host::prelude::*;
 use std::cell::Cell;
@@ -22,13 +24,15 @@ pub const MAX_FRAMES: usize = 4096;
 /// 1 ブロックに積めるノートイベント数(超えた分は捨てる)
 pub const MAX_EVENTS: usize = 512;
 
-/// プラグインへ送るノートのイベント。`time` はブロック先頭からのフレーム位置。
+/// プラグインへ送るイベント。`time` はブロック先頭からのフレーム位置。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NoteMsg {
+    /// `note_id` を付けると、その音だけに効く表現(ピッチ等)を後から送れる
     On {
         time: u32,
         key: u8,
         velocity: f32,
+        note_id: Option<u32>,
     },
     Off {
         time: u32,
@@ -38,14 +42,65 @@ pub enum NoteMsg {
     AllOff {
         time: u32,
     },
+    /// パラメータの値(プラグイン固有の単位)
+    Param {
+        time: u32,
+        id: u32,
+        value: f64,
+    },
+    /// MIDI メッセージ(サステインペダル・ピッチベンド等)。MIDI を受けないプラグインには送らない
+    Midi {
+        time: u32,
+        data: [u8; 3],
+    },
+    /// 1 音だけの音程の変化(半音単位、ノートの ID で指す)
+    Tuning {
+        time: u32,
+        key: u8,
+        note_id: u32,
+        semitones: f64,
+    },
 }
 
 impl NoteMsg {
-    fn time(&self) -> u32 {
+    pub fn time(&self) -> u32 {
         match *self {
-            NoteMsg::On { time, .. } | NoteMsg::Off { time, .. } | NoteMsg::AllOff { time } => time,
+            NoteMsg::On { time, .. }
+            | NoteMsg::Off { time, .. }
+            | NoteMsg::AllOff { time }
+            | NoteMsg::Param { time, .. }
+            | NoteMsg::Midi { time, .. }
+            | NoteMsg::Tuning { time, .. } => time,
         }
     }
+
+    /// 同じ時刻のイベントの並び順(離す → パラメータ → 鳴らす → 表現)
+    pub fn order(&self) -> u8 {
+        match self {
+            NoteMsg::Off { .. } | NoteMsg::AllOff { .. } => 0,
+            NoteMsg::Param { .. } | NoteMsg::Midi { .. } => 1,
+            NoteMsg::On { .. } => 2,
+            NoteMsg::Tuning { .. } => 3,
+        }
+    }
+}
+
+/// プラグインのパラメータの情報。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamInfo {
+    pub id: u32,
+    pub name: String,
+    /// 所属(例 `A/Filter 1`)。無ければ空
+    pub module: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    /// 整数値だけを取る(選択肢・スイッチ)
+    pub stepped: bool,
+    pub automatable: bool,
+    /// 画面にも出ない内部用 / 読み取り専用
+    pub hidden: bool,
+    pub readonly: bool,
 }
 
 const HOST_NAME: &str = "Glaux";
@@ -110,7 +165,7 @@ impl ClapPlugin {
     pub fn activate(&mut self, sample_rate: f64) -> Result<ClapProcessor, ClapError> {
         // 音声ポート(入出力とも、宣言された全ポートにバッファを用意する必要がある)
         let (inputs, outputs, main_out) = self.audio_port_layout();
-        let dialect = self.note_dialect();
+        let (dialect, midi_ok) = self.note_dialect();
         let config = PluginAudioConfiguration {
             sample_rate,
             min_frames_count: 1,
@@ -135,6 +190,7 @@ impl ClapPlugin {
             out_bufs: alloc(&outputs),
             main_out,
             dialect,
+            midi_ok,
             events: EventBuffer::with_capacity(MAX_EVENTS),
             steady: 0,
             failed: false,
@@ -185,26 +241,87 @@ impl ClapPlugin {
         )
     }
 
-    /// ノートを送る方式(ノート入力が無ければ None)。
-    fn note_dialect(&mut self) -> Option<NoteDialect> {
-        let ext = self
+    /// ノートを送る方式(ノート入力が無ければ None)と、MIDI メッセージを受けるか。
+    fn note_dialect(&mut self) -> (Option<NoteDialect>, bool) {
+        use clack_extensions::note_ports::NoteDialects;
+        let Some(ext) = self
             .instance
-            .access_shared_handler(|h| h.note_ports.get().copied().flatten())?;
+            .access_shared_handler(|h| h.note_ports.get().copied().flatten())
+        else {
+            return (None, false);
+        };
         let handle = self.instance.plugin_handle();
         if ext.count(&handle, true) == 0 {
-            return None;
+            return (None, false);
         }
         let mut buf = NotePortInfoBuffer::new();
-        let info = ext.get(&handle, 0, true, &mut buf)?;
+        let Some(info) = ext.get(&handle, 0, true, &mut buf) else {
+            return (None, false);
+        };
+        let midi_ok = info.supported_dialects.contains(NoteDialects::MIDI);
         if info.preferred_dialect == Some(NoteDialect::Clap)
-            || info
-                .supported_dialects
-                .contains(clack_extensions::note_ports::NoteDialects::CLAP)
+            || info.supported_dialects.contains(NoteDialects::CLAP)
         {
-            Some(NoteDialect::Clap)
+            (Some(NoteDialect::Clap), midi_ok)
         } else {
-            Some(NoteDialect::Midi)
+            (Some(NoteDialect::Midi), midi_ok)
         }
+    }
+
+    fn params_ext(&self) -> Option<clack_extensions::params::PluginParams> {
+        self.instance
+            .access_shared_handler(|h| h.params.get().copied().flatten())
+    }
+
+    /// パラメータの一覧(公開されている全部)。
+    pub fn param_infos(&mut self) -> Vec<ParamInfo> {
+        use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags};
+        let Some(ext) = self.params_ext() else {
+            return vec![];
+        };
+        let handle = self.instance.plugin_handle();
+        let mut buf = ParamInfoBuffer::new();
+        let text = |b: &[u8]| {
+            let end = b.iter().position(|c| *c == 0).unwrap_or(b.len());
+            String::from_utf8_lossy(&b[..end]).trim().to_owned()
+        };
+        (0..ext.count(&handle))
+            .filter_map(|i| {
+                let info = ext.get_info(&handle, i, &mut buf)?;
+                Some(ParamInfo {
+                    id: info.id.get(),
+                    name: text(info.name),
+                    module: text(info.module),
+                    min: info.min_value,
+                    max: info.max_value,
+                    default: info.default_value,
+                    stepped: info.flags.contains(ParamInfoFlags::IS_STEPPED),
+                    automatable: info.flags.contains(ParamInfoFlags::IS_AUTOMATABLE),
+                    hidden: info.flags.contains(ParamInfoFlags::IS_HIDDEN),
+                    readonly: info.flags.contains(ParamInfoFlags::IS_READONLY),
+                })
+            })
+            .collect()
+    }
+
+    /// パラメータの今の値と表示用の文字列(例 `1200 Hz`)。読めないものは飛ばす。
+    pub fn param_values(&mut self, ids: &[u32]) -> Vec<(u32, f64, String)> {
+        let Some(ext) = self.params_ext() else {
+            return vec![];
+        };
+        let handle = self.instance.plugin_handle();
+        let mut buf = [0u8; 128];
+        ids.iter()
+            .filter_map(|&id| {
+                let cid = ClapId::from_raw(id)?;
+                let v = ext.get_value(&handle, cid)?;
+                let text = ext
+                    .value_to_text(&handle, cid, v, &mut buf)
+                    .map(|b| String::from_utf8_lossy(b).trim().to_owned())
+                    .unwrap_or_default();
+                Some((id, v, text))
+            })
+            .collect()
     }
 
     /// プラグインの状態を保存する(不透明なバイト列)。
@@ -435,6 +552,8 @@ pub struct ClapProcessor {
     out_bufs: Vec<Vec<Vec<f32>>>,
     main_out: usize,
     dialect: Option<NoteDialect>,
+    /// MIDI メッセージを受けるか(ペダル・ピッチベンド)
+    midi_ok: bool,
     events: EventBuffer,
     steady: u64,
     /// 処理に失敗した(以後は無音を返す)
@@ -466,18 +585,39 @@ impl ClapProcessor {
     }
 
     fn push_note(&mut self, msg: NoteMsg, base: u32) {
+        let t = msg.time().saturating_sub(base);
+        // パラメータはノート入力の無いプラグイン(エフェクト)にも送る
+        if let NoteMsg::Param { id, value, .. } = msg {
+            if let Some(cid) = ClapId::from_raw(id) {
+                self.events
+                    .push(&ParamValueEvent::new(t, cid, Pckn::match_all(), value));
+            }
+            return;
+        }
+        if let NoteMsg::Midi { data, .. } = msg {
+            if self.midi_ok {
+                self.events.push(&MidiEvent::new(t, 0, data));
+            }
+            return;
+        }
         let Some(dialect) = self.dialect else {
             return;
         };
-        let t = msg.time().saturating_sub(base);
+        let nid = |id: Option<u32>| -> Match<u32> { id.map_or(Match::All, Match::Specific) };
         match (dialect, msg) {
-            (NoteDialect::Clap, NoteMsg::On { key, velocity, .. }) => {
-                self.events.push(&NoteOnEvent::new(
-                    t,
-                    Pckn::new(0u16, 0u16, key as u16, Match::All),
-                    velocity as f64,
-                ))
-            }
+            (
+                NoteDialect::Clap,
+                NoteMsg::On {
+                    key,
+                    velocity,
+                    note_id,
+                    ..
+                },
+            ) => self.events.push(&NoteOnEvent::new(
+                t,
+                Pckn::new(0u16, 0u16, key as u16, nid(note_id)),
+                velocity as f64,
+            )),
             (NoteDialect::Clap, NoteMsg::Off { key, .. }) => self.events.push(&NoteOffEvent::new(
                 t,
                 Pckn::new(0u16, 0u16, key as u16, Match::All),
@@ -487,6 +627,20 @@ impl ClapProcessor {
                 t,
                 Pckn::new(0u16, Match::All, Match::All, Match::All),
                 0.0,
+            )),
+            (
+                NoteDialect::Clap,
+                NoteMsg::Tuning {
+                    key,
+                    note_id,
+                    semitones,
+                    ..
+                },
+            ) => self.events.push(&NoteExpressionEvent::new(
+                t,
+                Pckn::new(0u16, 0u16, key as u16, note_id),
+                NoteExpressionType::Tuning,
+                semitones,
             )),
             (_, NoteMsg::On { key, velocity, .. }) => {
                 let v = (velocity * 127.0).round().clamp(1.0, 127.0) as u8;
@@ -498,6 +652,8 @@ impl ClapProcessor {
                     .push(&MidiEvent::new(t, 0, [0x80, key & 0x7F, 0]))
             }
             (_, NoteMsg::AllOff { .. }) => self.events.push(&MidiEvent::new(t, 0, [0xB0, 123, 0])),
+            // MIDI だけのプラグインには 1 音ごとの音程は送れない
+            _ => {}
         }
     }
 

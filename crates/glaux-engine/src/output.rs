@@ -292,7 +292,8 @@ impl EngineHandle {
     // ---- CLAP プラグイン ----
 
     /// トラックに載っている CLAP プラグインの今の状態(base64。プロジェクトへ保存する用)。
-    pub fn save_plugin_state(&self, track: &TrackId) -> Result<String, String> {
+    /// 状態(base64)と、上書きしているパラメータの今の値を返す。
+    pub fn save_plugin_state(&self, track: &TrackId) -> Result<(String, Vec<(u32, f64)>), String> {
         self.plugins.save_state(track)
     }
 
@@ -311,8 +312,8 @@ impl EngineHandle {
     }
 
     /// 保存した状態をプロジェクトに書いたことを知らせる(読み込み直しを防ぐ)。
-    pub fn note_plugin_state_saved(&self, track: &TrackId, state: &str) {
-        self.plugins.note_state_saved(track, state);
+    pub fn note_plugin_state_saved(&self, track: &TrackId, state: &str, params: &[(u32, f64)]) {
+        self.plugins.note_state_saved(track, state, params);
     }
 
     // ---- MIDI キーボード ----

@@ -112,6 +112,8 @@ pub struct TrackMix {
     /// CLAP プラグインで鳴らすトラック: (スロット, 世代)。内蔵楽器の代わりにプラグインへ
     /// ノートを送り、その出力(ステレオ)をエフェクト → 音量/パンに通す
     pub plugin: Option<(u32, u64)>,
+    /// CLAP プラグインのパラメータのオートメーション(`device/clap:<id>`、プラグインの単位)
+    pub plugin_auto: Vec<(u32, Vec<AutoPoint>)>,
 }
 
 /// テンポ区間(サンプル位置 ⇔ tick の相互変換用)。`sample` 昇順。
@@ -599,7 +601,8 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 let ParamPath::Device { name } = &lane.target else {
                     return None;
                 };
-                if lane.points.is_empty() {
+                // CLAP プラグインのパラメータは別に扱う(plugin_auto)
+                if lane.points.is_empty() || name.starts_with("clap:") {
                     return None;
                 }
                 let mut points: Vec<AutoPoint> = lane
@@ -675,6 +678,28 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 instrument,
                 effects: chain.into_iter().map(|(_, b)| b).collect(),
                 plugin: bank.plugin_slots.get(&t.id).copied(),
+                plugin_auto: t
+                    .automation
+                    .iter()
+                    .filter_map(|lane| {
+                        let ParamPath::Device { name } = &lane.target else {
+                            return None;
+                        };
+                        let id = crate::plugins::parse_param_key(name)?;
+                        let mut points: Vec<AutoPoint> = lane
+                            .points
+                            .iter()
+                            .map(|p| AutoPoint {
+                                sample: to_sample(p.tick),
+                                value: p.value as f32,
+                                curve: p.curve,
+                            })
+                            .collect();
+                        points.sort_by_key(|p| p.sample);
+                        (!points.is_empty()).then_some((id, points))
+                    })
+                    .take(crate::render::MAX_PLUGIN_LANES)
+                    .collect(),
             }
         })
         .collect();

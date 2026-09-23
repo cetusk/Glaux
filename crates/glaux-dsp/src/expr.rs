@@ -30,7 +30,7 @@ impl PitchCurve {
     }
 
     /// `age`(サンプル)でのセント値。区分線形、両端は保持。
-    fn cents_at(&self, age: f32) -> f32 {
+    pub fn cents_at(&self, age: f32) -> f32 {
         let n = self.len as usize;
         if n == 0 {
             return 0.0;

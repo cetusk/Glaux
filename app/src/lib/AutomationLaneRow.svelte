@@ -82,6 +82,13 @@
   });
 
   const allTargets = $derived([...BUILTIN, ...paramTargets]);
+  /// つまみが多い(CLAP プラグインは数百)ときの絞り込み
+  let paramFilter = $state("");
+  const shownTargets = $derived(
+    paramFilter.trim()
+      ? paramTargets.filter((t) => t.label.toLowerCase().includes(paramFilter.trim().toLowerCase()))
+      : paramTargets,
+  );
   const cur = $derived(
     allTargets.find((t) => t.path === target) ?? {
       path: target,
@@ -341,10 +348,21 @@
         title="音色・エフェクトのつまみを時間で動かす(● はレーンが描かれているもの)"
       >
         <option value="">{isMaster ? "マスターのエフェクトのつまみ…" : "音色・エフェクトのつまみ…"}</option>
-        {#each paramTargets as t (t.path)}
+        {#each shownTargets.slice(0, 300) as t (t.path)}
           <option value={t.path}>{lanePaths.has(t.path) ? "● " : ""}{t.label}</option>
         {/each}
+        {#if shownTargets.length > 300}
+          <option value="" disabled>…ほか {shownTargets.length - 300} 個(下の欄で絞り込み)</option>
+        {/if}
       </select>
+      {#if paramTargets.length > 40}
+        <input
+          class="param-filter"
+          type="search"
+          placeholder={`つまみを絞り込み(${paramTargets.length} 個)`}
+          bind:value={paramFilter}
+        />
+      {/if}
     {/if}
     <div class="hint">
       {#if points.length === 0}
@@ -372,6 +390,13 @@
 </div>
 
 <style>
+  .param-filter {
+    width: 100%;
+    margin-top: 3px;
+    font-size: 10px;
+    padding: 1px 4px;
+  }
+
   .auto-row {
     display: flex;
     border-bottom: 1px solid var(--border);

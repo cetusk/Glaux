@@ -11,11 +11,11 @@
 //! オーディオスレッドは受け取った窓口を使い終えたら `outgoing` に戻し、メインスレッドが
 //! 止めて破棄する(オーディオスレッドでは解放しない)。
 
-use glaux_clap::{ClapPlugin, ClapProcessor, PluginInfo};
+use glaux_clap::{ClapPlugin, ClapProcessor, ParamInfo, PluginInfo};
 use glaux_core::{PluginSource, Project, TrackId};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -28,6 +28,59 @@ pub struct Processor {
     pub clap: ClapProcessor,
 }
 
+/// パラメータ変更の受け渡し(プラグインのスレッド → オーディオスレッド)。
+/// 積むのはプラグインのスレッドだけ、取り出すのはオーディオスレッドだけ(SPSC、ロックなし)。
+pub struct ParamQueue {
+    ids: Box<[AtomicU32]>,
+    values: Box<[AtomicU64]>,
+    head: AtomicUsize,
+    tail: AtomicUsize,
+}
+
+const PARAM_QUEUE_CAP: usize = 512;
+
+impl Default for ParamQueue {
+    fn default() -> Self {
+        ParamQueue {
+            ids: (0..PARAM_QUEUE_CAP).map(|_| AtomicU32::new(0)).collect(),
+            values: (0..PARAM_QUEUE_CAP).map(|_| AtomicU64::new(0)).collect(),
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ParamQueue {
+    /// 積む(満杯なら false)。
+    pub fn push(&self, id: u32, value: f64) -> bool {
+        let h = self.head.load(Ordering::Relaxed);
+        let t = self.tail.load(Ordering::Acquire);
+        if h.wrapping_sub(t) >= PARAM_QUEUE_CAP {
+            return false;
+        }
+        let i = h % PARAM_QUEUE_CAP;
+        self.ids[i].store(id, Ordering::Relaxed);
+        self.values[i].store(value.to_bits(), Ordering::Relaxed);
+        self.head.store(h.wrapping_add(1), Ordering::Release);
+        true
+    }
+
+    /// 取り出す(オーディオスレッド)。
+    pub fn pop(&self) -> Option<(u32, f64)> {
+        let t = self.tail.load(Ordering::Relaxed);
+        if t == self.head.load(Ordering::Acquire) {
+            return None;
+        }
+        let i = t % PARAM_QUEUE_CAP;
+        let v = (
+            self.ids[i].load(Ordering::Relaxed),
+            f64::from_bits(self.values[i].load(Ordering::Relaxed)),
+        );
+        self.tail.store(t.wrapping_add(1), Ordering::Release);
+        Some(v)
+    }
+}
+
 /// 処理窓口の受け渡し口(スロットごとに 1 つ)。
 #[derive(Default)]
 pub struct PluginSlot {
@@ -35,6 +88,8 @@ pub struct PluginSlot {
     outgoing: AtomicPtr<Processor>,
     /// この世代の窓口を返してほしい(0 = 要求なし)
     remove_gen: AtomicU64,
+    /// AI・画面以外(プロジェクト)からのパラメータ変更
+    pub params: ParamQueue,
 }
 
 impl PluginSlot {
@@ -151,6 +206,86 @@ pub fn encode_state(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+// ---- パラメータの情報と今の値(AI・UI 向け) ----
+
+/// プロジェクトに書くパラメータのキー(`device/clap:<id>` の `clap:<id>` 部分)。
+pub fn param_key(id: u32) -> String {
+    format!("clap:{id}")
+}
+
+/// `clap:<id>` → id。
+pub fn parse_param_key(key: &str) -> Option<u32> {
+    key.strip_prefix("clap:")?.parse().ok()
+}
+
+/// デバイスの params から CLAP パラメータの上書き値を取り出す。
+fn overrides(params: &glaux_core::ParamMap) -> HashMap<u32, f64> {
+    params
+        .iter()
+        .filter_map(|(k, v)| {
+            let id = parse_param_key(k)?;
+            let v = match v {
+                glaux_core::ParamValue::Float(f) => *f,
+                glaux_core::ParamValue::Int(i) => *i as f64,
+                glaux_core::ParamValue::Bool(b) => *b as i64 as f64,
+                _ => return None,
+            };
+            Some((id, v))
+        })
+        .collect()
+}
+
+fn param_info_cache() -> &'static Mutex<HashMap<String, Arc<Vec<ParamInfo>>>> {
+    static C: OnceLock<Mutex<HashMap<String, Arc<Vec<ParamInfo>>>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// プラグインのパラメータの一覧。まだ誰も読み込んでいなければ、呼んだスレッドで一時的に
+/// インスタンスを作って調べる(以後はキャッシュ)。
+pub fn param_infos(plugin_id: &str) -> Option<Arc<Vec<ParamInfo>>> {
+    if let Some(v) = param_info_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(plugin_id)
+    {
+        return Some(v.clone());
+    }
+    let info = find(plugin_id)?;
+    glaux_clap::mark_main_thread();
+    let mut p = ClapPlugin::new(&info.path, &info.id).ok()?;
+    let list = Arc::new(p.param_infos());
+    param_info_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(plugin_id.to_owned(), list.clone());
+    Some(list)
+}
+
+/// AI に見せる・動かせるパラメータか(自動化でき、隠し・読み取り専用でない)
+pub fn is_public_param(p: &ParamInfo) -> bool {
+    p.automatable && !p.hidden && !p.readonly
+}
+
+/// パラメータ ID → (今の値, 表示用の文字列)
+pub type ParamValues = HashMap<u32, (f64, String)>;
+/// 状態の保存結果: (状態のバイト列, 上書きしているパラメータの今の値)
+type SavedState = (Vec<u8>, Vec<(u32, f64)>);
+
+fn live_values_cell() -> &'static Mutex<HashMap<TrackId, ParamValues>> {
+    static C: OnceLock<Mutex<HashMap<TrackId, ParamValues>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// トラックのプラグインの今の値(と表示用の文字列)。読み込み・変更のたびにプラグインの
+/// スレッドが更新する。まだ無ければ None
+pub fn live_values(track: &TrackId) -> Option<ParamValues> {
+    live_values_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(track)
+        .cloned()
+}
+
 fn hash_str(s: Option<&str>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -164,21 +299,31 @@ enum HostCmd {
     Create {
         slot: usize,
         gen: u64,
+        track: TrackId,
         info: PluginInfo,
         state: Option<Vec<u8>>,
+        params: Vec<(u32, f64)>,
         sample_rate: f64,
+    },
+    /// 状態を読み込み直してから上書き値を送る(取り消しで上書きが消えたときなど)
+    Reload {
+        gen: u64,
+        state: Option<Vec<u8>>,
+        params: Vec<(u32, f64)>,
+    },
+    SetParams {
+        gen: u64,
+        params: Vec<(u32, f64)>,
     },
     Destroy {
         slot: usize,
         gen: u64,
     },
-    LoadState {
-        gen: u64,
-        bytes: Vec<u8>,
-    },
+    /// 状態と、指定したパラメータの今の値
     SaveState {
         gen: u64,
-        reply: mpsc::Sender<Result<Vec<u8>, String>>,
+        ids: Vec<u32>,
+        reply: mpsc::Sender<Result<SavedState, String>>,
     },
     OpenGui {
         gen: u64,
@@ -201,8 +346,57 @@ pub enum PluginEvent {
 
 struct Live {
     gen: u64,
+    slot: usize,
+    track: TrackId,
     plugin: ClapPlugin,
     dying: bool,
+    /// この時刻を過ぎたら今の値を読み直す(変更がオーディオスレッドで反映されてから)
+    refresh_at: Option<std::time::Instant>,
+}
+
+impl Live {
+    /// パラメータの変更をオーディオスレッドへ送る。
+    fn send_params(&mut self, slots: &[PluginSlot; MAX_PLUGINS], params: &[(u32, f64)]) {
+        for &(id, v) in params {
+            if !slots[self.slot].params.push(id, v) {
+                tracing::warn!("パラメータ変更が多すぎるため一部を捨てました");
+                break;
+            }
+        }
+        self.schedule_refresh();
+    }
+
+    fn schedule_refresh(&mut self) {
+        self.refresh_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(120));
+    }
+
+    /// 今の値を読み直して共有の表に書く(AI・UI が読む)。
+    fn refresh_values(&mut self) {
+        self.refresh_at = None;
+        let Some(infos) = param_info_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&self.plugin.id)
+            .cloned()
+        else {
+            return;
+        };
+        let ids: Vec<u32> = infos
+            .iter()
+            .filter(|p| is_public_param(p))
+            .map(|p| p.id)
+            .collect();
+        let values: HashMap<u32, (f64, String)> = self
+            .plugin
+            .param_values(&ids)
+            .into_iter()
+            .map(|(id, v, t)| (id, (v, t)))
+            .collect();
+        live_values_cell()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.track.clone(), values);
+    }
 }
 
 fn host_thread(
@@ -229,8 +423,10 @@ fn host_thread(
             Ok(HostCmd::Create {
                 slot,
                 gen,
+                track,
                 info,
                 state,
+                params,
                 sample_rate,
             }) => {
                 let made = (|| -> Result<(ClapPlugin, ClapProcessor), glaux_clap::ClapError> {
@@ -244,12 +440,24 @@ fn host_thread(
                     Ok((plugin, proc))
                 })();
                 match made {
-                    Ok((plugin, proc)) => {
-                        live.push(Live {
+                    Ok((mut plugin, proc)) => {
+                        param_info_cache()
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .entry(info.id.clone())
+                            .or_insert_with(|| Arc::new(plugin.param_infos()));
+                        let mut l = Live {
                             gen,
+                            slot,
+                            track,
                             plugin,
                             dying: false,
-                        });
+                            refresh_at: None,
+                        };
+                        // 上書き値は窓口と一緒に届くよう、窓口を置く前に積む
+                        l.send_params(&slots, &params);
+                        l.schedule_refresh();
+                        live.push(l);
                         if let Some(old) =
                             slots[slot].put_incoming(Box::new(Processor { gen, clap: proc }))
                         {
@@ -259,6 +467,21 @@ fn host_thread(
                         tracing::info!("CLAP を読み込みました: {} (slot {slot})", info.name);
                     }
                     Err(e) => tracing::warn!("CLAP を読み込めません: {e}"),
+                }
+            }
+            Ok(HostCmd::Reload { gen, state, params }) => {
+                if let Some(l) = live.iter_mut().find(|l| l.gen == gen) {
+                    if let Some(bytes) = &state {
+                        if let Err(e) = l.plugin.load_state(bytes) {
+                            tracing::warn!("CLAP の状態を戻せません: {e}");
+                        }
+                    }
+                    l.send_params(&slots, &params);
+                }
+            }
+            Ok(HostCmd::SetParams { gen, params }) => {
+                if let Some(l) = live.iter_mut().find(|l| l.gen == gen) {
+                    l.send_params(&slots, &params);
                 }
             }
             Ok(HostCmd::Destroy { slot, gen }) => {
@@ -277,16 +500,21 @@ fn host_thread(
                 // 一度も起動していない(窓口を渡していない)ものはそのまま消す
                 live.retain(|l| !(l.dying && !l.plugin.is_active()));
             }
-            Ok(HostCmd::LoadState { gen, bytes }) => {
-                if let Some(l) = live.iter_mut().find(|l| l.gen == gen) {
-                    if let Err(e) = l.plugin.load_state(&bytes) {
-                        tracing::warn!("CLAP の状態を戻せません: {e}");
-                    }
-                }
-            }
-            Ok(HostCmd::SaveState { gen, reply }) => {
+            Ok(HostCmd::SaveState { gen, ids, reply }) => {
                 let r = match live.iter_mut().find(|l| l.gen == gen) {
-                    Some(l) => l.plugin.save_state().map_err(|e| e.to_string()),
+                    Some(l) => l
+                        .plugin
+                        .save_state()
+                        .map(|bytes| {
+                            let values = l
+                                .plugin
+                                .param_values(&ids)
+                                .into_iter()
+                                .map(|(id, v, _)| (id, v))
+                                .collect();
+                            (bytes, values)
+                        })
+                        .map_err(|e| e.to_string()),
                     None => Err("プラグインが見つかりません".to_owned()),
                 };
                 let _ = reply.send(r);
@@ -320,6 +548,10 @@ fn host_thread(
             }
             if l.plugin.take_dirty() {
                 ev.push((l.gen, PluginEvent::Dirty));
+                l.schedule_refresh();
+            }
+            if l.refresh_at.is_some_and(|t| std::time::Instant::now() >= t) {
+                l.refresh_values();
             }
         }
         if !ev.is_empty() {
@@ -337,6 +569,8 @@ struct Assigned {
     plugin_id: String,
     state_sig: u64,
     sample_rate: f64,
+    /// 送ってあるパラメータの上書き値
+    params: HashMap<u32, f64>,
 }
 
 /// どのトラックにどのプラグインを載せているかを管理する(UI スレッドから使う)。
@@ -368,7 +602,9 @@ impl PluginManager {
     /// トラック → (スロット, 世代) の対応を返す(再生データの構築に使う)。
     pub fn sync(&self, project: &Project, sample_rate: f64) -> HashMap<TrackId, (u32, u64)> {
         let mut assigned = self.assigned.lock().unwrap_or_else(|e| e.into_inner());
-        let mut wanted: HashMap<TrackId, (PluginInfo, Option<&str>)> = HashMap::new();
+        // トラック → (プラグイン, 状態, 上書き値)
+        type Wanted<'a> = (PluginInfo, Option<&'a str>, HashMap<u32, f64>);
+        let mut wanted: HashMap<TrackId, Wanted> = HashMap::new();
         for t in &project.tracks {
             let Some(d) = &t.device else { continue };
             let PluginSource::Clap { plugin_id, state } = &d.source else {
@@ -376,7 +612,7 @@ impl PluginManager {
             };
             match find(plugin_id) {
                 Some(info) => {
-                    wanted.insert(t.id.clone(), (info, state.as_deref()));
+                    wanted.insert(t.id.clone(), (info, state.as_deref(), overrides(&d.params)));
                 }
                 None => tracing::warn!("CLAP プラグインが見つかりません: {plugin_id}"),
             }
@@ -386,7 +622,7 @@ impl PluginManager {
             .iter()
             .filter(|(tid, a)| match wanted.get(*tid) {
                 None => true,
-                Some((info, _)) => info.id != a.plugin_id || a.sample_rate != sample_rate,
+                Some((info, _, _)) => info.id != a.plugin_id || a.sample_rate != sample_rate,
             })
             .map(|(tid, _)| tid.clone())
             .collect();
@@ -398,16 +634,38 @@ impl PluginManager {
                 });
             }
         }
-        for (tid, (info, state)) in wanted {
+        let as_vec = |m: &HashMap<u32, f64>| -> Vec<(u32, f64)> {
+            let mut v: Vec<(u32, f64)> = m.iter().map(|(k, v)| (*k, *v)).collect();
+            v.sort_by_key(|(k, _)| *k);
+            v
+        };
+        for (tid, (info, state, params)) in wanted {
             let sig = hash_str(state);
             if let Some(a) = assigned.get_mut(&tid) {
-                // 状態が外から変わった(取り消し・AI の操作など)なら読み込み直す
-                if a.state_sig != sig {
+                let removed = a.params.keys().any(|k| !params.contains_key(k));
+                if a.state_sig != sig || removed {
+                    // 状態が外から変わった(取り消し・AI の操作)か、上書きが消えた:
+                    // 状態を読み込み直してから残りの上書き値を送る
                     a.state_sig = sig;
-                    if let Some(bytes) = state.and_then(decode_state) {
-                        let _ = self.tx.send(HostCmd::LoadState { gen: a.gen, bytes });
+                    let _ = self.tx.send(HostCmd::Reload {
+                        gen: a.gen,
+                        state: state.and_then(decode_state),
+                        params: as_vec(&params),
+                    });
+                } else {
+                    let changed: Vec<(u32, f64)> = params
+                        .iter()
+                        .filter(|(k, v)| a.params.get(k) != Some(v))
+                        .map(|(k, v)| (*k, *v))
+                        .collect();
+                    if !changed.is_empty() {
+                        let _ = self.tx.send(HostCmd::SetParams {
+                            gen: a.gen,
+                            params: changed,
+                        });
                     }
                 }
+                a.params = params;
                 continue;
             }
             let used: Vec<usize> = assigned.values().map(|a| a.slot).collect();
@@ -419,8 +677,10 @@ impl PluginManager {
             let _ = self.tx.send(HostCmd::Create {
                 slot,
                 gen,
+                track: tid.clone(),
                 info: info.clone(),
                 state: state.and_then(decode_state),
+                params: as_vec(&params),
                 sample_rate,
             });
             assigned.insert(
@@ -431,6 +691,7 @@ impl PluginManager {
                     plugin_id: info.id.clone(),
                     state_sig: sig,
                     sample_rate,
+                    params,
                 },
             );
         }
@@ -489,21 +750,27 @@ impl PluginManager {
         out
     }
 
-    /// トラックに載っているプラグインの今の状態(base64)。
-    pub fn save_state(&self, track: &TrackId) -> Result<String, String> {
-        let gen = self.gen_of(track)?;
+    /// トラックに載っているプラグインの今の状態(base64)と、上書きしているパラメータの今の値。
+    pub fn save_state(&self, track: &TrackId) -> Result<(String, Vec<(u32, f64)>), String> {
+        let (gen, ids) = {
+            let assigned = self.assigned.lock().unwrap_or_else(|e| e.into_inner());
+            let a = assigned
+                .get(track)
+                .ok_or_else(|| "このトラックに CLAP プラグインは載っていません".to_owned())?;
+            (a.gen, a.params.keys().copied().collect::<Vec<u32>>())
+        };
         let (reply, rx) = mpsc::channel();
         self.tx
-            .send(HostCmd::SaveState { gen, reply })
+            .send(HostCmd::SaveState { gen, ids, reply })
             .map_err(|_| "プラグインのスレッドが止まっています".to_owned())?;
-        let bytes = rx
+        let (bytes, values) = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .map_err(|_| "プラグインが応答しません".to_owned())??;
-        Ok(encode_state(&bytes))
+        Ok((encode_state(&bytes), values))
     }
 
-    /// 保存した状態をプロジェクトに書いた後に呼ぶ(同じ状態を読み込み直さないように)。
-    pub fn note_state_saved(&self, track: &TrackId, state: &str) {
+    /// 保存した状態(と上書き値)をプロジェクトに書く前に呼ぶ(同じものを送り直さないように)。
+    pub fn note_state_saved(&self, track: &TrackId, state: &str, params: &[(u32, f64)]) {
         if let Some(a) = self
             .assigned
             .lock()
@@ -511,6 +778,9 @@ impl PluginManager {
             .get_mut(track)
         {
             a.state_sig = hash_str(Some(state));
+            for (id, v) in params {
+                a.params.insert(*id, *v);
+            }
         }
     }
 }
@@ -557,6 +827,10 @@ impl OfflinePlugins {
                 Ok((p, proc)) => {
                     let slot = plugins.len();
                     let gen = slot as u64 + 1;
+                    // プロジェクトの上書き値も最初のブロックで送る
+                    for (id, v) in overrides(&d.params) {
+                        slots[slot].params.push(id, v);
+                    }
                     let _ = slots[slot].put_incoming(Box::new(Processor { gen, clap: proc }));
                     map.insert(t.id.clone(), (slot as u32, gen));
                     plugins.push((gen, p));
@@ -692,7 +966,7 @@ mod tests {
 
         // 状態を保存できる
         let state = manager.save_state(&tid).expect("状態を保存できる");
-        assert!(!state.is_empty());
+        assert!(!state.0.is_empty());
 
         // 音源を外すと窓口が返却される
         project.tracks[0].device = None;
@@ -709,5 +983,264 @@ mod tests {
 
     fn r_has_plugin(r: &mut Renderer) -> bool {
         r.has_plugins()
+    }
+
+    /// ゼロ交差から周波数を推定(ステレオ interleaved の左)
+    fn freq_of(stereo: &[f32], sr: f32) -> f32 {
+        let l: Vec<f32> = stereo.iter().step_by(2).copied().collect();
+        let c: Vec<usize> = (1..l.len())
+            .filter(|&i| l[i - 1] < 0.0 && l[i] >= 0.0)
+            .collect();
+        if c.len() < 2 {
+            return 0.0;
+        }
+        (c.len() - 1) as f32 * sr / (c[c.len() - 1] - c[0]) as f32
+    }
+
+    /// 名前に `needle` を含む、操作できる連続値のパラメータ
+    fn find_param(plugin_id: &str, needle: &str) -> Option<ParamInfo> {
+        param_infos(plugin_id)?
+            .iter()
+            .find(|p| is_public_param(p) && !p.stepped && p.name.to_lowercase().contains(needle))
+            .cloned()
+    }
+
+    #[test]
+    fn project_param_override_reaches_plugin_and_live_values() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        let target = find_param(&id, "volume").expect("音量のパラメータがある");
+        eprintln!(
+            "対象: {} / {} [{}..{}]",
+            target.module, target.name, target.min, target.max
+        );
+        let mut project = project_with_plugin(&id);
+        let tid = project.tracks[0].id.clone();
+        let shared = Arc::new(Shared::new(Default::default()));
+        let manager = PluginManager::start(shared.plugin_slots.clone());
+        let mut bank = SampleBank::default();
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 480 * 2];
+        let mut run = |r: &mut Renderer, ms: u64| {
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < until {
+                r.process(&mut buf, 2);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        run(&mut r, 600);
+        let before = live_values(&tid).and_then(|m| m.get(&target.id).cloned());
+        eprintln!("変更前: {before:?}");
+        assert!(before.is_some(), "読み込み後に今の値が共有される");
+
+        // AI の set_param 相当: 上書き値を書いて同期 → オーディオスレッド経由でプラグインへ
+        let want = target.min;
+        project.tracks[0]
+            .device
+            .as_mut()
+            .unwrap()
+            .params
+            .insert(param_key(target.id), glaux_core::ParamValue::Float(want));
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        run(&mut r, 600);
+        let after = live_values(&tid)
+            .and_then(|m| m.get(&target.id).cloned())
+            .unwrap();
+        eprintln!("変更後: {after:?}");
+        assert!((after.0 - want).abs() < 1e-6, "上書き値がプラグインに届く");
+
+        // 保存すると上書き値の今の値も返る
+        let (_, values) = manager.save_state(&tid).unwrap();
+        assert_eq!(values.len(), 1);
+        assert!((values[0].1 - want).abs() < 1e-6);
+    }
+
+    #[test]
+    fn automation_lane_moves_plugin_param_in_export() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        let target = find_param(&id, "volume").expect("音量のパラメータがある");
+        let mut project = project_with_plugin(&id);
+        // 1 小節まるごと鳴らし、音量を 最大 → 最小 に下げていく
+        if let ClipContent::Midi { notes, .. } = &mut project.tracks[0].clips[0].content {
+            notes[0].pos = Tick(0);
+            notes[0].dur = Tick(3840);
+        }
+        project.tracks[0]
+            .automation
+            .push(glaux_core::AutomationLane {
+                target: glaux_core::ParamPath::device(param_key(target.id)),
+                points: vec![
+                    glaux_core::AutomationPoint {
+                        tick: Tick(0),
+                        value: target.max,
+                        curve: glaux_core::Curve::Linear,
+                    },
+                    glaux_core::AutomationPoint {
+                        tick: Tick(3840),
+                        value: target.min,
+                        curve: glaux_core::Curve::Linear,
+                    },
+                ],
+            });
+        let out =
+            crate::export::render_project(&project, 48_000.0, &SampleBank::default()).unwrap();
+        let sec = |a: f64, b: f64| &out[(a * 96_000.0) as usize..(b * 96_000.0) as usize];
+        let (head, tail) = (rms(sec(0.2, 0.5)), rms(sec(1.5, 1.9)));
+        eprintln!("head {head} tail {tail}");
+        assert!(
+            head > tail * 3.0,
+            "オートメーションで音量が下がる: {head} {tail}"
+        );
+    }
+
+    #[test]
+    fn pitch_curve_bends_plugin_note() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        // A4 を 1 小節。後半はピッチカーブで +12 半音(1 オクターブ上)
+        let mut project = project_with_plugin(&id);
+        if let ClipContent::Midi { notes, .. } = &mut project.tracks[0].clips[0].content {
+            notes[0].pos = Tick(0);
+            notes[0].dur = Tick(3840);
+            notes[0].pitch = 69;
+            notes[0].pitch_curve = vec![
+                glaux_core::PitchPoint {
+                    tick: Tick(0),
+                    cents: 0.0,
+                },
+                glaux_core::PitchPoint {
+                    tick: Tick(1800),
+                    cents: 0.0,
+                },
+                glaux_core::PitchPoint {
+                    tick: Tick(1920),
+                    cents: 1200.0,
+                },
+            ];
+        }
+        let out =
+            crate::export::render_project(&project, 48_000.0, &SampleBank::default()).unwrap();
+        let sec = |a: f64, b: f64| &out[(a * 96_000.0) as usize..(b * 96_000.0) as usize];
+        let (f1, f2) = (
+            freq_of(sec(0.3, 0.8), 48_000.0),
+            freq_of(sec(1.3, 1.8), 48_000.0),
+        );
+        eprintln!("前半 {f1} Hz / 後半 {f2} Hz");
+        assert!(
+            f2 > f1 * 1.8,
+            "ピッチカーブで 1 オクターブ上がる: {f1} → {f2}"
+        );
+    }
+
+    #[test]
+    fn live_pitch_bend_reaches_plugin() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        let project = project_with_plugin(&id);
+        let shared = Arc::new(Shared::new(Default::default()));
+        let manager = PluginManager::start(shared.plugin_slots.clone());
+        let mut bank = SampleBank::default();
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        shared
+            .live_track
+            .store(0, std::sync::atomic::Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 960 * 2];
+        for _ in 0..300 {
+            r.process(&mut buf, 2);
+            if r.has_plugins() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(r.has_plugins());
+        let mut listen = |r: &mut Renderer| {
+            let mut all = Vec::new();
+            for _ in 0..25 {
+                r.process(&mut buf, 2);
+                all.extend_from_slice(&buf);
+            }
+            freq_of(&all[all.len() / 2..], 48_000.0)
+        };
+        shared.live.push(crate::midi::LiveEvent::NoteOn {
+            track: 0,
+            pitch: 69,
+            vel: 110,
+        });
+        let f1 = listen(&mut r);
+        shared.live.push(crate::midi::LiveEvent::PitchBend(16383));
+        let f2 = listen(&mut r);
+        eprintln!("ベンド前 {f1} Hz / 最大ベンド {f2} Hz");
+        assert!(f2 > f1 * 1.05, "ピッチベンドで音が上がる: {f1} → {f2}");
+    }
+
+    #[test]
+    fn live_sustain_pedal_holds_plugin_notes() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        let project = project_with_plugin(&id);
+        let shared = Arc::new(Shared::new(Default::default()));
+        let manager = PluginManager::start(shared.plugin_slots.clone());
+        let mut bank = SampleBank::default();
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        shared
+            .live_track
+            .store(0, std::sync::atomic::Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 960 * 2];
+        for _ in 0..300 {
+            r.process(&mut buf, 2);
+            if r.has_plugins() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut level = |r: &mut Renderer| {
+            let mut m = 0.0f32;
+            for _ in 0..40 {
+                r.process(&mut buf, 2);
+                m = rms(&buf);
+            }
+            m
+        };
+        use crate::midi::LiveEvent;
+        shared.live.push(LiveEvent::Sustain(true));
+        shared.live.push(LiveEvent::NoteOn {
+            track: 0,
+            pitch: 60,
+            vel: 110,
+        });
+        let _ = level(&mut r);
+        shared.live.push(LiveEvent::NoteOff { pitch: 60 });
+        let held = level(&mut r);
+        shared.live.push(LiveEvent::Sustain(false));
+        let released = level(&mut r);
+        eprintln!("ペダル中 {held} / 離した後 {released}");
+        assert!(held > 1e-3, "ペダル中は鳴り続ける: {held}");
+        assert!(released < held * 0.1, "ペダルを離すと消える: {released}");
     }
 }

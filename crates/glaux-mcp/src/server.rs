@@ -81,6 +81,12 @@ pub struct ListParamsParams {
     /// (利用できる楽器名と全パラメータ仕様)を返す。
     #[serde(default)]
     pub track_id: Option<String>,
+    /// CLAP プラグインのトラックで、つまみを名前・所属の部分一致で絞り込む(例 "cutoff"、"filter"、"reverb")。
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// CLAP プラグインのつまみを最大何個返すか(既定 80)。
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -376,23 +382,96 @@ pub fn effects_json(effects: &[glaux_core::Effect]) -> Vec<Value> {
 }
 
 pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
-    // CLAP プラグイン: 音色はプラグイン自身の画面で作る(つまみは未公開)。エフェクトは Glaux 側
-    if let Some(glaux_core::PluginSource::Clap { plugin_id, .. }) =
-        track.device.as_ref().map(|d| &d.source)
-    {
-        return Ok(json!({
-            "track_id": track.id,
-            "device": {
-                "name": "clap",
-                "plugin_id": plugin_id,
-                "is_default_fallback": false,
-                "note": "CLAP プラグインのつまみは AI からは操作できません(音色は人間がプラグインの画面で作る)。\
-                         エフェクト・音量・パンとそのオートメーションは使えます",
-            },
-            "params": [],
-            "articulations": [],
-            "effects": effects_json(&track.effects),
-        }));
+    track_params_json_filtered(track, None, usize::MAX)
+}
+
+/// CLAP プラグインのパラメータ一覧。`filter` は名前・所属の部分一致(大文字小文字を区別しない)。
+/// 値は「プロジェクトの上書き値 → プラグインの今の値 → 既定値」の順に採る
+fn clap_params_json(
+    track: &glaux_core::Track,
+    plugin_id: &str,
+    overrides: &glaux_core::ParamMap,
+    filter: Option<&str>,
+    limit: usize,
+) -> (Vec<Value>, usize) {
+    let Some(infos) = glaux_engine::plugins::param_infos(plugin_id) else {
+        return (vec![], 0);
+    };
+    let live = glaux_engine::plugins::live_values(&track.id).unwrap_or_default();
+    let needle = filter.map(str::to_lowercase);
+    let matched: Vec<&glaux_clap::ParamInfo> = infos
+        .iter()
+        .filter(|p| glaux_engine::plugins::is_public_param(p))
+        .filter(|p| {
+            needle.as_ref().is_none_or(|n| {
+                p.name.to_lowercase().contains(n) || p.module.to_lowercase().contains(n)
+            })
+        })
+        .collect();
+    let total = matched.len();
+    let list = matched
+        .into_iter()
+        .take(limit)
+        .map(|p| {
+            let key = glaux_engine::plugins::param_key(p.id);
+            let (current, text) = match overrides.get(&key) {
+                Some(glaux_core::ParamValue::Float(v)) => (*v, None),
+                Some(glaux_core::ParamValue::Int(v)) => (*v as f64, None),
+                _ => match live.get(&p.id) {
+                    Some((v, t)) => (*v, Some(t.clone())),
+                    None => (p.default, None),
+                },
+            };
+            let module = p.module.trim_matches('/');
+            let display = if module.is_empty() {
+                p.name.clone()
+            } else {
+                format!("{module} / {}", p.name)
+            };
+            json!({
+                "name": key,
+                "path": format!("device/{key}"),
+                "display_name": display,
+                "unit": "",
+                "range": {
+                    "kind": if p.stepped { "int" } else { "float" },
+                    "min": p.min,
+                    "max": p.max,
+                    "default": p.default,
+                },
+                "current": current,
+                "current_text": text,
+                "description": "CLAP プラグインのパラメータ(値はプラグイン固有の単位。current_text が画面上の表示)",
+            })
+        })
+        .collect();
+    (list, total)
+}
+
+/// [`track_params_json`] の、CLAP プラグインのつまみを絞り込める版。
+pub fn track_params_json_filtered(
+    track: &glaux_core::Track,
+    filter: Option<&str>,
+    limit: usize,
+) -> Result<Value, String> {
+    // CLAP プラグイン: つまみはプラグインが公開するパラメータ。エフェクトは Glaux 側
+    if let Some(d) = &track.device {
+        if let glaux_core::PluginSource::Clap { plugin_id, .. } = &d.source {
+            let (params, total) = clap_params_json(track, plugin_id, &d.params, filter, limit);
+            return Ok(json!({
+                "device": {
+                    "name": "clap",
+                    "plugin_id": plugin_id,
+                    "is_default_fallback": false,
+                    "note": "CLAP プラグインのつまみは set_param {track, path: \"device/clap:<id>\", value}(プラグインの単位)で動かせ、\
+                             set_automation_points の target にも使える。数が多いので filter で絞り込むこと",
+                },
+                "params": params,
+                "params_total": total,
+                "articulations": [],
+                "effects": effects_json(&track.effects),
+            }));
+        }
     }
     let (device_name, device_params, is_default) = match &track.device {
         Some(d) => match &d.source {
@@ -783,6 +862,8 @@ impl GlauxServer {
         音源の設定は set_device(例: {\"op\":\"set_device\",\"track\":\"trk_x\",\"device\":{\"type\":\"builtin\",\"name\":\"drum\"}})、\
         エフェクト追加は add_effect(例: {\"op\":\"add_effect\",\"track\":\"trk_x\",\"effect\":{\"id\":\"fx_a1b2c3\",\"type\":\"builtin\",\"name\":\"reverb\"}})。\
         つまみは set_param で、path は楽器 \"device/<名前>\"、エフェクト \"fx/<fx_id>/<名前>\"。\
+        CLAP プラグインのトラックではプラグインのつまみ(path \"device/clap:<id>\"、値はプラグインの単位)が返る。\
+        数百個あるので filter(例 \"cutoff\"、\"filter\"、\"attack\")で絞り込み、current_text で画面上の表示を確認すること。\
         ドラムトラックには必ず drum を設定すること(未設定は subtractive で鳴る)。"
     )]
     async fn list_params(&self, params: Parameters<ListParamsParams>) -> ToolResult {
@@ -804,7 +885,14 @@ impl GlauxServer {
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
 
-        let mut v = track_params_json(track)?;
+        let track = track.clone();
+        let (filter, limit) = (params.0.filter, params.0.limit.unwrap_or(80));
+        // CLAP のつまみ一覧は初回にプラグインを読み込むことがあるので別スレッドで
+        let mut v = tokio::task::spawn_blocking(move || {
+            track_params_json_filtered(&track, filter.as_deref(), limit)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         v["project_version"] = json!(version);
         v["track_id"] = json!(track_id);
         Ok(Json(v))
@@ -982,8 +1070,9 @@ impl GlauxServer {
     #[tool(
         description = "インストール済みの CLAP プラグイン(外部の音源・エフェクト)を一覧する。\
         音源(instrument: true)は set_device {track, device: {type: \"clap\", plugin_id}} でトラックの音源にできる\
-        (Surge XT・Vital・TAL-NoiseMaker などの本格的なシンセ)。音色はプラグイン自身の画面で人間が作る\
-        (AI からプラグインのつまみを動かすのは未対応。音量・パン・Glaux のエフェクトとそのオートメーションは使える)。\
+        (Surge XT・Vital・TAL-NoiseMaker などの本格的なシンセ)。音色の大枠はプラグイン自身の画面で人間が作るが、\
+        つまみは list_params {track_id, filter} で探して set_param {path: \"device/clap:<id>\"} で動かせ、\
+        set_automation_points の target にもできる(フィルタスイープ等)。\
         get_project では CLAP の状態(state)は省略表示になる。音源を差し替えるときは state を付けないこと。\
         rescan: true でインストールし直したプラグインを探し直す。"
     )]

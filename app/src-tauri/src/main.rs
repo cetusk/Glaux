@@ -415,7 +415,7 @@ fn clap_close_gui(state: State<'_, AppState>, track_id: String) -> Result<(), St
 async fn save_clap_state(state: &AppState, tid: glaux_core::TrackId) -> Result<Value, String> {
     let track_id = tid.to_string();
     let engine = state.engine()?.clone();
-    let saved = {
+    let (saved, values) = {
         let e = engine.clone();
         let t = tid.clone();
         tokio::task::spawn_blocking(move || e.save_plugin_state(&t))
@@ -432,11 +432,22 @@ async fn save_clap_state(state: &AppState, tid: glaux_core::TrackId) -> Result<V
     let glaux_core::PluginSource::Clap { state: cur, .. } = &mut device.source else {
         return Err("CLAP プラグインの音源ではありません".to_owned());
     };
-    if cur.as_deref() == Some(saved.as_str()) {
+    let state_changed = cur.as_deref() != Some(saved.as_str());
+    *cur = Some(saved.clone());
+    // 上書きしているパラメータは今の値に揃える(画面で動かした値を上書きで戻さないように)
+    let mut params_changed = false;
+    for (id, v) in &values {
+        let key = glaux_engine::plugins::param_key(*id);
+        let new = glaux_core::ParamValue::Float(*v);
+        if device.params.get(&key) != Some(&new) {
+            device.params.insert(key, new);
+            params_changed = true;
+        }
+    }
+    if !state_changed && !params_changed {
         return Ok(json!({ "changed": false }));
     }
-    *cur = Some(saved.clone());
-    engine.note_plugin_state_saved(&tid, &saved);
+    engine.note_plugin_state_saved(&tid, &saved, &values);
     let label = format!("{} のプラグインの設定を保存", track.name);
     let (_, m) = state
         .handle

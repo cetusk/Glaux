@@ -852,8 +852,35 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   - テスト: `GLAUX_TEST_CLAP` に音源の `.clap` を指定したときだけ実プラグインで動く(glaux-clap の
     発音と状態、エンジンの書き出しとリアルタイム経路の受け渡し・返却)。サンドボックスで Surge XT 1.3.4
     (Linux 版)を使って確認済み。**画面(Windows)は実機未検証**(Windows 向けのコンパイルは確認済み)
-  - 第 2 段階の予定: エフェクトプラグイン(トラック・マスター)、プラグインのパラメータを
-    list_params / オートメーションに写す、サステインペダル・ピッチベンドの転送、Linux の画面
+  - 第 2 段階の予定: エフェクトプラグイン(トラック・マスター)、Linux の画面
+- **CLAP 第 2 段階: つまみ・ペダル・ピッチベンド(2026-09-23)**:
+  - パラメータ: `ClapPlugin::param_infos`(params 拡張: id・名前・所属・範囲・既定・stepped /
+    automatable / hidden / readonly)と `param_values`(今の値と `value_to_text` の表示文字列)。
+    AI・UI に見せるのは automatable かつ hidden / readonly でないもの(Surge XT で 774 個)
+  - プロジェクト上の表現: `device.params` に `clap:<id>` キーの「上書き値」(プラグインの単位)。
+    パスは `device/clap:<id>`(`set_param` / `unset_param` / オートメーションの target)。
+    `PluginManager::sync` が上書き値の差分を `SetParams` で、状態が変わった・上書きが消えた
+    (取り消し)ときは `Reload`(状態を読み込み直してから残りの上書きを送る)でプラグインのスレッドへ。
+    プラグインのスレッドはスロットの `ParamQueue`(SPSC、512)に積み、レンダラがブロック頭で
+    CLAP の param value イベントにして送る。生成時の上書きも窓口を置く前に積む(書き出しも同様)
+  - 状態の保存(画面を閉じた・mark_dirty)では、上書きしているパラメータを今の値に揃えて同じ
+    `set_device` に含める(画面で動かした値を古い上書きで戻さないため)
+  - 今の値の共有: プラグインのスレッドが読み込み後・変更後(120ms 後)・dirty 時に全公開パラメータを
+    読み、`plugins::live_values(track)` に置く。`param_infos(plugin_id)` はキャッシュ(未読み込みなら
+    呼んだスレッドで一時インスタンスを作って調べる)
+  - オートメーション: `TrackMix::plugin_auto`(`device/clap:<id>` のレーン、最大 32)。レンダラが
+    64 サンプルごとに評価し、変わったときだけ param value イベントを送る
+  - ピッチカーブ: カーブのあるノートは note_id を付けて鳴らし、CLAP のノート表現(TUNING、半音)を
+    発音時と 64 サンプルごとに送る(`PitchCurve::cents_at` を公開)。奏法(vibrato / bend 等)は未転送
+  - MIDI キーボード: サステイン(CC64)とピッチベンド(`LiveEvent::PitchBend`、パックを 3 ビットの
+    種類に変更、`LIVE_NO_TRACK` は 0x1FFF)を送り先がプラグインのトラックなら MIDI イベントで送る
+    (MIDI を受けないプラグインには送らない)。ピッチベンドの MIDI 録音は未対応
+  - イベントの並び: ブロック内で (時刻, 種類) 順に `sort_unstable`(離す → パラメータ/MIDI → 鳴らす → 表現)
+  - MCP `list_params` に `filter` / `limit`(CLAP は既定 80 件、`params_total` 付き)。各つまみに
+    `current_text`。UI のオートメーションレーンはつまみが 40 個を超えると絞り込み欄を出す
+  - 実プラグイン(Surge XT)で確認: 上書き値(Global Volume 0 dB → -48 dB)、オートメーションでの音量変化、
+    ピッチカーブで 440 → 880 Hz、ピッチベンド最大で 440 → 493.8 Hz、ペダル中の保持と解放、
+    `list_params` の絞り込み("cutoff" → 4 件)と set_param
 - **和音の譜起こし(basic-pitch、2026-09-23)**: 新クレート `glaux-ml`。
   - モデル: spotify/basic-pitch の `nmp.onnx`(230KB、Apache-2.0)を `crates/glaux-ml/models/` に
     同梱し `include_bytes!`。推論は pure Rust の `tract-onnx` 0.23(ネイティブ DLL 不要。
