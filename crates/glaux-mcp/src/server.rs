@@ -376,6 +376,24 @@ pub fn effects_json(effects: &[glaux_core::Effect]) -> Vec<Value> {
 }
 
 pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
+    // CLAP プラグイン: 音色はプラグイン自身の画面で作る(つまみは未公開)。エフェクトは Glaux 側
+    if let Some(glaux_core::PluginSource::Clap { plugin_id, .. }) =
+        track.device.as_ref().map(|d| &d.source)
+    {
+        return Ok(json!({
+            "track_id": track.id,
+            "device": {
+                "name": "clap",
+                "plugin_id": plugin_id,
+                "is_default_fallback": false,
+                "note": "CLAP プラグインのつまみは AI からは操作できません(音色は人間がプラグインの画面で作る)。\
+                         エフェクト・音量・パンとそのオートメーションは使えます",
+            },
+            "params": [],
+            "articulations": [],
+            "effects": effects_json(&track.effects),
+        }));
+    }
     let (device_name, device_params, is_default) = match &track.device {
         Some(d) => match &d.source {
             glaux_core::PluginSource::Builtin { name } => (name.clone(), d.params.clone(), false),
@@ -383,11 +401,7 @@ pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
                 ("sampler".to_owned(), d.params.clone(), false)
             }
             glaux_core::PluginSource::Sf2 { .. } => ("sf2".to_owned(), d.params.clone(), false),
-            other => {
-                return Err(format!(
-                    "このトラックのデバイスは対応外です({other:?})。builtin / sampler のみ対応"
-                ))
-            }
+            other => return Err(format!("このトラックのデバイスは対応外です({other:?})")),
         },
         None => (
             glaux_dsp::DEFAULT_INSTRUMENT.to_owned(),

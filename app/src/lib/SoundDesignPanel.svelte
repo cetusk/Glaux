@@ -366,6 +366,7 @@
           </select>
           <button disabled={!selectedPreset} onclick={() => applyPreset(selectedPreset)}>適用</button>
         </div>
+        {#if track.device?.type !== "clap"}
         <div class="row gap">
           <input
             class="grow"
@@ -381,10 +382,12 @@
           />
           <button disabled={!presetName.trim()} onclick={savePreset}>保存</button>
         </div>
+        {/if}
         {#if presetMsg}<div class="hint">{presetMsg}</div>{/if}
       </div>
 
       <!-- SoundFont -->
+      {#if track.device?.type !== "clap"}
       <div class="sec">
         <div class="sec-title">SoundFont(本物っぽい楽器一式)</div>
         <div class="row gap">
@@ -423,6 +426,7 @@
           </div>
         {/if}
       </div>
+      {/if}
 
       {/if}
       <!-- CLAP プラグイン: 音作りはプラグイン自身の画面で -->
@@ -564,7 +568,7 @@
         </div>
       {/if}
 
-      <div class="hint">
+      <div class="hint" class:hidden-hint={track?.device?.type === "clap"}>
         つまみで大枠を作り、細かい狙いは AI へ(「もっと太く」「刺さる高域を抑えて」)。
         良い音ができたらプリセット保存を。すべて Ctrl+Z で戻せます。
       </div>
@@ -754,5 +758,8 @@
     color: #ffb4c0;
     font-size: 11px;
     padding: 5px 12px;
+  }
+  .hidden-hint {
+    display: none;
   }
 </style>

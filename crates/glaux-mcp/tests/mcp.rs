@@ -996,3 +996,30 @@ async fn clap_state_is_elided_for_ai_and_restored_on_apply() {
     let r = call(&fx, "list_plugins", json!({})).await;
     assert!(ok_json(&r)["plugins"].is_array());
 }
+
+#[tokio::test]
+async fn list_params_on_clap_track_returns_effects_without_error() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_clap02", "Synth")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({
+                "label": "CLAP 音源",
+                "commands": [
+                    { "op": "set_device", "track": "trk_clap02",
+                      "device": { "type": "clap", "plugin_id": "org.example.synth" } },
+                    { "op": "add_effect", "track": "trk_clap02",
+                      "effect": { "id": "fx_rev001", "type": "builtin", "name": "reverb" } }
+                ]
+            }),
+        )
+        .await,
+    );
+    let r = call(&fx, "list_params", json!({ "track_id": "trk_clap02" })).await;
+    let v = ok_json(&r);
+    assert_eq!(v["device"]["name"], "clap");
+    assert_eq!(v["params"].as_array().unwrap().len(), 0);
+    assert_eq!(v["effects"].as_array().unwrap().len(), 1, "{v}");
+}

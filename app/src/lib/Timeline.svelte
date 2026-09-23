@@ -1136,12 +1136,12 @@
           </button>
           {#if track.device?.type === "clap"}
             <button
-              class="dev gui-btn"
-              title="プラグインの画面を開く"
+              class="gui-btn"
+              title="プラグインの画面を開く(音色づくり)"
               onclick={(e) => {
                 e.stopPropagation();
                 api.clapOpenGui(track.id).catch((err) => alert(String(err)));
-              }}>🖥</button
+              }}>画面</button
             >
           {/if}
           <code>{track.id}</code>
@@ -1875,6 +1875,22 @@
     width: 8px;
     cursor: ew-resize;
     z-index: 2;
+  }
+
+  .gui-btn {
+    flex-shrink: 0;
+    padding: 0 5px;
+    font-size: 10px;
+    line-height: 14px;
+    border-radius: 3px;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    cursor: pointer;
+  }
+
+  .gui-btn:hover {
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
   }
 
   .mini-rescan {
