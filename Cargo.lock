@@ -1646,6 +1646,7 @@ dependencies = [
 name = "glaux-ml"
 version = "0.1.0"
 dependencies = [
+ "rustfft",
  "thiserror 1.0.69",
  "tract-onnx",
 ]
