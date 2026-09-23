@@ -3,7 +3,10 @@
   // (device/<名前>)・エフェクトのつまみ(fx/<id>/<名前>)。
   // ダブルクリックで点追加、ドラッグで移動、右クリックで削除。
   // すべて set_automation_points(レーン全置換)として Command API に流す。
+  // マスター(track.id が MASTER_FOCUS_ID の擬似トラック)では音量とマスターのエフェクトが対象で、
+  // set_master_automation_points を使う。
   import * as api from "./api";
+  import { MASTER_FOCUS_ID } from "./selection.svelte";
   import type { AutomationPoint, Track } from "./types";
 
   let {
@@ -40,9 +43,13 @@
     log: boolean;
   }
 
+  const isMaster = $derived(track.id === MASTER_FOCUS_ID);
+
   const BUILTIN: Target[] = $derived([
     { path: "track/volume_db", label: "音量", min: -60, max: 6, unit: " dB", current: track.volume_db, int: false, log: false },
-    { path: "track/pan", label: "パン", min: -1, max: 1, unit: "", current: track.pan, int: false, log: false },
+    ...(isMaster
+      ? []
+      : [{ path: "track/pan", label: "パン", min: -1, max: 1, unit: "", current: track.pan, int: false, log: false }]),
   ]);
 
   let paramTargets = $state<Target[]>([]);
@@ -50,8 +57,7 @@
     // 音源・エフェクトの構成が変わったら一覧を取り直す
     void track.device;
     void track.effects;
-    api
-      .getTrackParams(track.id)
+    (isMaster ? api.getMasterParams() : api.getTrackParams(track.id))
       .then((info) => {
         const out: Target[] = [];
         const add = (prefix: string, p: import("./types").ParamView) => {
@@ -221,12 +227,14 @@
     api
       .applyEdit(
         [
-          {
-            op: "set_automation_points",
-            track: track.id,
-            target,
-            points: sorted,
-          },
+          isMaster
+            ? { op: "set_master_automation_points", target, points: sorted }
+            : {
+                op: "set_automation_points",
+                track: track.id,
+                target,
+                points: sorted,
+              },
         ],
         label,
       )
@@ -315,9 +323,11 @@
       <button class:active={target === "track/volume_db"} onclick={() => onTarget("track/volume_db")}>
         音量{lanePaths.has("track/volume_db") ? "●" : ""}
       </button>
-      <button class:active={target === "track/pan"} onclick={() => onTarget("track/pan")}>
-        パン{lanePaths.has("track/pan") ? "●" : ""}
-      </button>
+      {#if !isMaster}
+        <button class:active={target === "track/pan"} onclick={() => onTarget("track/pan")}>
+          パン{lanePaths.has("track/pan") ? "●" : ""}
+        </button>
+      {/if}
       <button class="close" onclick={onClose} title="レーンを閉じる">✕</button>
     </div>
     {#if paramTargets.length > 0}
@@ -330,7 +340,7 @@
         }}
         title="音色・エフェクトのつまみを時間で動かす(● はレーンが描かれているもの)"
       >
-        <option value="">音色・エフェクトのつまみ…</option>
+        <option value="">{isMaster ? "マスターのエフェクトのつまみ…" : "音色・エフェクトのつまみ…"}</option>
         {#each paramTargets as t (t.path)}
           <option value={t.path}>{lanePaths.has(t.path) ? "● " : ""}{t.label}</option>
         {/each}

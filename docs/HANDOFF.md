@@ -221,7 +221,8 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 | `add_effect {track, effect, index?}` | `remove_effect` | |
 | `remove_effect {id}` | `add_effect` | |
 | `set_effect_bypass {id, bypass}` | 同 | |
-| `set_automation_points {track, target, points}` | 同 | 空配列でレーン削除 |
+| `set_automation_points {track, target, points}` | 同 | 空配列でレーン削除。レーンは対象パスの文字列順に挿入(削除 → 逆で元の並びに戻るよう正規化) |
+| `set_master_automation_points {target, points}` | 同 | マスターのレーン(2026-09-23)。target は `track/volume_db` か `fx/<マスターのエフェクト ID>/<名前>`。`MasterBus.automation` に保存 |
 | `set_tempo {events}` | 同 | tick 0 から始まる昇順 |
 | `set_time_sig {events}` | 同 | |
 | `set_master_volume {volume_db}` | 同 | |
@@ -305,7 +306,8 @@ MVP の割り切り(将来課題):
   `InstrumentParams::set_continuous` に raw 値を流し込む)、
   fx/<id>/<パラメータ>(2026-09-23。`EffectParams::set_continuous` がブロック頭で係数を計算し直し、
   レンダラのスロット別作業コピー `fx_scratch` に適用。EQ は生の値 `EqRaw` を保持して帯域の係数を
-  再計算。バイパス中のエフェクトのレーンは鳴らさない。マスターのエフェクトはレーン対象外)に対応
+  再計算。バイパス中のエフェクトのレーンは鳴らさない)に対応。
+  マスターも音量(`master_vol_auto`、サンプル単位)とエフェクト(`master_fx_auto`、同じ `fx_scratch`)に対応(2026-09-23)
 - 発音中のデータ差し替えはボイスを切り直す(クリックノイズが出うる)
 
 今後: `ParamChanged` の軽量差し替え(MIDI 入力は `midir` で実装済み、`midi.rs`)、
@@ -808,6 +810,11 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   🎛(エフェクト数を表示)で、音作りビューを「マスター」モード(エフェクトの節だけ)で開く。
   エフェクト一覧の JSON は `server::effects_json` をトラック・マスターで共用。チャットには
   「音作り中: マスターバス」と添える
+- **マスターのオートメーション(2026-09-23)**: `MasterBus.automation`(空なら JSON に出ない)と
+  コマンド `set_master_automation_points`。UI はタイムライン最下段の「マスター」行の 〜 で
+  レーンを開く(`AutomationLaneRow` に擬似トラック `MASTER_FOCUS_ID` を渡す。音量 + マスターの
+  エフェクトのつまみ)。ついでに `tests/history.rs` の `random_command` が深さ 0 で Batch を
+  生成していなかった(範囲の取り違え)のを修正
 - **MIDI キーボード入力(2026-09-23)**: `glaux-engine/src/midi.rs`(依存 `midir` 0.11。
   cpal 0.18 と alsa 0.11 を共有できる版)。
   - ライブ演奏: midir の受信コールバック → `LiveQueue`(固定 256 の AtomicU32 リング。

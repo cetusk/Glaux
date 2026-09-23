@@ -57,6 +57,14 @@ impl Project {
         let mut clip_ids = HashSet::new();
         let mut fx_ids = HashSet::new();
 
+        for lane in &self.master.automation {
+            if !lane.points.windows(2).all(|w| w[0].tick <= w[1].tick) {
+                issues.push(Issue::error(format!(
+                    "master: automation {} not sorted",
+                    lane.target
+                )));
+            }
+        }
         for e in &self.master.effects {
             if !fx_ids.insert(&e.id) {
                 issues.push(Issue::error(format!("duplicate effect id {}", e.id)));

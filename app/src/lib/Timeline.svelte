@@ -6,7 +6,13 @@
   import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
   import { newClipId, newNoteId, newTrackId } from "./ids";
-  import { midiArmStore, pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
+  import {
+    MASTER_FOCUS_ID,
+    midiArmStore,
+    pianoRollStore,
+    selectionStore,
+    soundDesignStore,
+  } from "./selection.svelte";
   import type { Clip, PresetInfo, Project, Track } from "./types";
 
   let {
@@ -711,11 +717,32 @@
       autoLanes = next;
     } else {
       // 描かれているレーンがあればそれを、無ければ音量を開く
-      const t = project.tracks.find((t) => t.id === trackId);
-      const existing = t?.automation.find((l) => l.points.length > 0)?.target;
+      const lanes =
+        trackId === MASTER_FOCUS_ID
+          ? (project.master.automation ?? [])
+          : (project.tracks.find((t) => t.id === trackId)?.automation ?? []);
+      const existing = lanes.find((l) => l.points.length > 0)?.target;
       autoLanes = { ...autoLanes, [trackId]: existing ?? "track/volume_db" };
     }
   }
+
+  /// マスターのオートメーションレーン用の擬似トラック(AutomationLaneRow に渡す)
+  const masterTrack = $derived<Track>({
+    id: MASTER_FOCUS_ID,
+    name: "マスター",
+    kind: "audio",
+    mute: false,
+    solo: false,
+    volume_db: project.master.volume_db,
+    pan: 0,
+    device: null,
+    effects: project.master.effects,
+    clips: [],
+    automation: project.master.automation ?? [],
+  });
+  const masterLaneCount = $derived(
+    (project.master.automation ?? []).filter((l) => l.points.length > 0).length,
+  );
 
   function hasVolumeLane(t: Track): boolean {
     return t.automation.some(
@@ -1075,6 +1102,34 @@
     {/if}
   {/each}
 
+  <!-- マスター: 曲全体の音量・マスターのエフェクトのオートメーション -->
+  <div class="track-row master-row">
+    <div class="track-head">
+      <div class="head-row">
+        <div class="track-name">マスター</div>
+        <button
+          class="ms"
+          class:auto-on={autoLanes[MASTER_FOCUS_ID] !== undefined}
+          onclick={() => toggleAutoLane(MASTER_FOCUS_ID)}
+          title="マスターのオートメーション(曲全体のフェードアウト、マスターのエフェクトの時間変化)"
+        >
+          〜{masterLaneCount > 0 ? ` ${masterLaneCount}` : ""}
+        </button>
+      </div>
+    </div>
+    <div class="lane" style="width:{totalPx}px"></div>
+  </div>
+  {#if autoLanes[MASTER_FOCUS_ID]}
+    <AutomationLaneRow
+      track={masterTrack}
+      target={autoLanes[MASTER_FOCUS_ID]}
+      {pxPerTick}
+      {totalPx}
+      onTarget={(t) => (autoLanes = { ...autoLanes, [MASTER_FOCUS_ID]: t })}
+      onClose={() => toggleAutoLane(MASTER_FOCUS_ID)}
+    />
+  {/if}
+
   {#if sigMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="menu-backdrop" onclick={() => (sigMenu = null)} oncontextmenu={(e) => { e.preventDefault(); sigMenu = null; }}></div>
@@ -1405,6 +1460,19 @@
   .track-row .lane {
     position: relative;
     background: var(--bg-lane);
+  }
+
+  .track-row.master-row {
+    height: 30px;
+    border-top: 2px solid var(--border);
+  }
+
+  .master-row .track-head {
+    padding: 5px 10px;
+  }
+
+  .master-row .track-name {
+    color: var(--text-dim);
   }
 
   .track-row.alt .lane {

@@ -145,4 +145,8 @@ pub struct MasterBus {
     pub volume_db: f32,
     #[serde(default)]
     pub effects: Vec<Effect>,
+    /// マスターのオートメーション。対象は `track/volume_db`(マスター音量)と
+    /// `fx/<マスターのエフェクト ID>/<パラメータ>`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automation: Vec<AutomationLane>,
 }

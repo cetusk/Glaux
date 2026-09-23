@@ -267,6 +267,8 @@ pub struct Renderer {
     track_silence: [u32; MAX_TRACKS],
     /// オートメーション評価カーソル(vol, pan)。単調前進、resync でリセット
     auto_cursors: [(usize, usize); MAX_TRACKS],
+    /// マスター音量オートメーションの評価カーソル
+    master_cursor: usize,
     /// device オートメーション適用済みの楽器パラメータ(トラック別スクラッチ)。
     /// レーンのあるトラックだけブロック頭でベースからコピーして値を上書きする。
     /// 起動時に確保し、以後アロケーションしない(clone は Arc 参照カウントのみ)
@@ -330,6 +332,7 @@ impl Renderer {
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
+            master_cursor: 0,
             inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
             fx_scratch: vec![None; MAX_EFFECT_SLOTS],
             next_event: 0,
@@ -430,6 +433,7 @@ impl Renderer {
             self.voices.clear();
             self.next_beat = None; // シークで戻ったら拍を取り直す
             self.auto_cursors = [(0, 0); MAX_TRACKS];
+            self.master_cursor = 0;
             self.next_event = data.events.partition_point(|e| e.start < self.pos);
             self.resync_audio(data);
             // 旧データの Arc(サンプル波形等)を掴んだままにしないようスクラッチを戻す
@@ -550,6 +554,20 @@ impl Renderer {
                 self.fx_scratch[s] = Some(p);
             }
         }
+        for (slot, name, points) in &data.master_fx_auto {
+            let Some(fx) = data.master_effects.iter().find(|f| f.slot == *slot) else {
+                continue;
+            };
+            let s = *slot as usize;
+            if s >= self.fx_scratch.len() {
+                continue;
+            }
+            let mut p = self.fx_scratch[s].unwrap_or(fx.params);
+            let cursor = points.partition_point(|pt| pt.sample <= self.pos);
+            let v = eval_auto(points, &mut cursor.saturating_sub(1), self.pos);
+            p.set_continuous(name, v, sr);
+            self.fx_scratch[s] = Some(p);
+        }
         for (ti, mix) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
             if mix.device_auto.is_empty() {
                 continue;
@@ -579,6 +597,7 @@ impl Renderer {
                     v.wraps < 2
                 });
                 self.auto_cursors = [(0, 0); MAX_TRACKS];
+                self.master_cursor = 0;
                 self.next_event = data.events.partition_point(|e| e.start < self.pos);
                 self.resync_audio(data);
                 if metronome {
@@ -841,16 +860,28 @@ impl Renderer {
 
             // マスターバスのエフェクト → マスター音量 → ソフトクリップ
             for fx in &data.master_effects {
-                let key = sidechain_key(&fx.params);
+                let params = self.fx_scratch[fx.slot as usize]
+                    .as_ref()
+                    .unwrap_or(&fx.params);
+                let key = sidechain_key(params);
                 let state = &mut self.effect_states[fx.slot as usize];
-                (l, r) = state.process(&fx.params, l, r, key);
+                (l, r) = state.process(params, l, r, key);
             }
+            let master_amp = if data.master_vol_auto.is_empty() {
+                data.master_amp
+            } else {
+                db_to_amp(eval_auto(
+                    &data.master_vol_auto,
+                    &mut self.master_cursor,
+                    self.pos,
+                ))
+            };
             // クリックはマスターエフェクト・マスター音量を通さず直接足す
             let click = self.click.next(sr);
             let base = frame * channels;
-            out[base] = (l * data.master_amp + click).tanh();
+            out[base] = (l * master_amp + click).tanh();
             if channels >= 2 {
-                out[base + 1] = (r * data.master_amp + click).tanh();
+                out[base + 1] = (r * master_amp + click).tanh();
             }
             if playing {
                 self.pos += 1;
@@ -1020,6 +1051,8 @@ mod tests {
             audio_events: vec![],
             master_effects: vec![],
             master_amp: 1.0,
+            master_vol_auto: vec![],
+            master_fx_auto: vec![],
             end_sample: end,
             sample_rate: 48_000.0,
             tempo: vec![],

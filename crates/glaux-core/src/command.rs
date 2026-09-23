@@ -209,6 +209,12 @@ pub enum Command {
         target: ParamPath,
         points: Vec<AutomationPoint>,
     },
+    /// マスターのオートメーションレーンを差し替える。`points` が空ならレーンを削除。
+    /// `target` は `track/volume_db` か `fx/<マスターのエフェクト ID>/<パラメータ>`
+    SetMasterAutomationPoints {
+        target: ParamPath,
+        points: Vec<AutomationPoint>,
+    },
 
     // ---- global ----
     SetTempo {
@@ -341,6 +347,12 @@ impl Command {
             SetMasterParam { path, .. } | UnsetMasterParam { path } => {
                 out.insert(T::Master);
                 if let ParamPath::Effect { id, .. } = path {
+                    out.insert(T::Effect(id.clone()));
+                }
+            }
+            SetMasterAutomationPoints { target, .. } => {
+                out.insert(T::Master);
+                if let ParamPath::Effect { id, .. } = target {
                     out.insert(T::Effect(id.clone()));
                 }
             }

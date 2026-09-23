@@ -80,7 +80,13 @@ const FIXTURE: &str = r##"{
       ]
     }
   ],
-  "master": { "volume_db": 0.0, "effects": [] },
+  "master": {
+    "volume_db": 0.0,
+    "effects": [],
+    "automation": [
+      { "target": "track/volume_db", "points": [ { "tick": 0, "value": -6.0, "curve": "linear" }, { "tick": 3840, "value": 0.0 } ] }
+    ]
+  },
   "assets": {
     "sha256:ab12cd34": { "path": "audio/vocal_take1.wav", "sample_rate": 48000, "channels": 1, "frames": 480000 }
   }

@@ -165,6 +165,8 @@ const SYSTEM_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作
     音色の時間変化(フィルタスイープ、EDM のビルドアップで cutoff を開いていく等)も\
     target: device/<パラメータ名>(例 device/cutoff)で同様に描けます。\
     エフェクトのつまみも target: fx/<エフェクト ID>/<パラメータ名> で時間変化させられます(リバーブの mix、EQ の high_gain_db 等)。\
+    曲全体のフェードアウトやマスターのエフェクトの時間変化は set_master_automation_points\
+    (target: track/volume_db または fx/<マスターのエフェクト ID>/<パラメータ名>)で描けます。\
     音声素材: 人間が ⏺ で録音した演奏や音声ファイル(WAV / MP3 / FLAC / OGG / M4A)は音声トラック(kind: audio)のクリップとして置かれます。\
     それらは get_project で見え、analyze_audio で聴けます。音声ファイルの配置を頼まれたら import_audio_clip を使います。\
     鼻歌や歌の録音(単旋律)は transcribe_audio で MIDI クリップにできます。MIDI 化したら \

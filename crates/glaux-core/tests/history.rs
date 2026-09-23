@@ -94,8 +94,9 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
     let pick_track = |rng: &mut StdRng| tracks.choose(rng).unwrap().id.clone();
 
     loop {
+        // 0..=23 は単体コマンド、24 以上は Batch(入れ子は 1 段まで)
         let choice = if depth == 0 {
-            rng.gen_range(0..23)
+            rng.gen_range(0..25)
         } else {
             rng.gen_range(0..24)
         };
@@ -415,6 +416,21 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 return Command::UnsetMasterParam {
                     path: ParamPath::effect(e.id.clone(), e.params.keys().next().unwrap().clone()),
                 };
+            }
+            23 => {
+                // マスター音量か、マスターのエフェクトのパラメータのレーン
+                let target = match p.master.effects.choose(rng) {
+                    Some(e) if rng.gen_bool(0.5) => ParamPath::effect(e.id.clone(), "mix"),
+                    _ => ParamPath::track("volume_db"),
+                };
+                let points = (0..rng.gen_range(0..4))
+                    .map(|i| AutomationPoint {
+                        tick: Tick(i * 960),
+                        value: rng.gen_range(-12.0..0.0),
+                        curve: Curve::Linear,
+                    })
+                    .collect();
+                return Command::SetMasterAutomationPoints { target, points };
             }
             19 => {
                 let Some(c) = midi_clips.choose(rng) else {

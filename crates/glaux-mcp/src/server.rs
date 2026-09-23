@@ -588,7 +588,10 @@ impl GlauxServer {
         例 リバーブの mix をサビで上げる、EQ の high_gain_db を開いていく)、points は [{tick,value,curve?}] で curve は \
         linear/hold/exponential。フェードイン・ビルドアップの音量カーブ・左右の揺れ・\
         フィルタスイープなど時間変化する表現に使う。\
-        レーンがあるとフェーダー/つまみの値より優先。空配列でレーン削除)。\
+        レーンがあるとフェーダー/つまみの値より優先。空配列でレーン削除)/ \
+        set_master_automation_points {target,points}(マスターのレーン。target は \"track/volume_db\"\
+        (曲全体のフェードアウト等)か \"fx/<マスターのエフェクト ID>/<パラメータ名>\"。\
+        レーンは get_project の master.automation で見える)。\
         失敗時はどのコマンドで失敗したかがエラーメッセージに入る(batch failed at command #N)。"
     )]
     async fn apply_commands(

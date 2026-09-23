@@ -130,6 +130,10 @@ pub struct PlaybackData {
     /// マスターバスのエフェクトチェーン
     pub master_effects: Vec<BakedEffect>,
     pub master_amp: f32,
+    /// マスター音量のオートメーション(dB)。空ならフェーダー値(`master_amp`)
+    pub master_vol_auto: Vec<AutoPoint>,
+    /// マスターのエフェクトのオートメーション(スロット, パラメータ名, 点列)
+    pub master_fx_auto: Vec<(u32, String, Vec<AutoPoint>)>,
     /// 最後のノートが終わるサンプル位置(自動停止に使う)
     pub end_sample: u64,
     pub sample_rate: f64,
@@ -412,19 +416,7 @@ pub fn pan_gains(pan: f32) -> (f32, f32) {
 }
 
 /// エフェクトチェーンを焼き込み、状態プールのスロットを割り当てる。
-fn bake_chain(
-    effects: &[Effect],
-    sample_rate: f32,
-    next_slot: &mut u32,
-    resolve_track: &dyn Fn(&str) -> Option<u32>,
-) -> Vec<BakedEffect> {
-    bake_chain_with_ids(effects, sample_rate, next_slot, resolve_track)
-        .into_iter()
-        .map(|(_, b)| b)
-        .collect()
-}
-
-/// `bake_chain` と同じだが、各エフェクトの ID も返す(オートメーションのスロット解決用)。
+/// 各エフェクトの ID も返す(オートメーションのスロット解決用)。
 fn bake_chain_with_ids(
     effects: &[Effect],
     sample_rate: f32,
@@ -512,6 +504,36 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
             .collect()
     };
 
+    // fx/<id>/<param> のレーンを、焼いたエフェクトのスロットに解決する
+    // (バイパス中・未知のエフェクトのレーンは鳴らさない)
+    let bake_fx_lanes = |lanes: &[glaux_core::AutomationLane],
+                         chain: &[(glaux_core::FxId, BakedEffect)]|
+     -> Vec<(u32, String, Vec<AutoPoint>)> {
+        lanes
+            .iter()
+            .filter_map(|lane| {
+                let ParamPath::Effect { id, name } = &lane.target else {
+                    return None;
+                };
+                let (_, baked) = chain.iter().find(|(fid, _)| fid == id)?;
+                if lane.points.is_empty() {
+                    return None;
+                }
+                let mut points: Vec<AutoPoint> = lane
+                    .points
+                    .iter()
+                    .map(|p| AutoPoint {
+                        sample: to_sample(p.tick),
+                        value: p.value as f32,
+                        curve: p.curve,
+                    })
+                    .collect();
+                points.sort_by_key(|p| p.sample);
+                Some((baked.slot, name.clone(), points))
+            })
+            .collect()
+    };
+
     let mut next_slot: u32 = 0;
     let tracks: Vec<TrackMix> = project
         .tracks
@@ -526,32 +548,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 &mut next_slot,
                 &resolve_track,
             );
-            // fx/<id>/<param> のレーンを、焼いたエフェクトのスロットに解決する
-            // (バイパス中・未知のエフェクトのレーンは鳴らさない)
-            let fx_auto = t
-                .automation
-                .iter()
-                .filter_map(|lane| {
-                    let ParamPath::Effect { id, name } = &lane.target else {
-                        return None;
-                    };
-                    let (_, baked) = chain.iter().find(|(fid, _)| fid == id)?;
-                    if lane.points.is_empty() {
-                        return None;
-                    }
-                    let mut points: Vec<AutoPoint> = lane
-                        .points
-                        .iter()
-                        .map(|p| AutoPoint {
-                            sample: to_sample(p.tick),
-                            value: p.value as f32,
-                            curve: p.curve,
-                        })
-                        .collect();
-                    points.sort_by_key(|p| p.sample);
-                    Some((baked.slot, name.clone(), points))
-                })
-                .collect();
+            let fx_auto = bake_fx_lanes(&t.automation, &chain);
             TrackMix {
                 gain_l: gain * pl,
                 gain_r: gain * pr,
@@ -567,12 +564,34 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
             }
         })
         .collect();
-    let master_effects = bake_chain(
+    let master_chain = bake_chain_with_ids(
         &project.master.effects,
         sample_rate as f32,
         &mut next_slot,
         &resolve_track,
     );
+    let master_fx_auto = bake_fx_lanes(&project.master.automation, &master_chain);
+    let master_vol_auto: Vec<AutoPoint> = {
+        let mut points: Vec<AutoPoint> = project
+            .master
+            .automation
+            .iter()
+            .find(|l| matches!(&l.target, ParamPath::Track { name } if name == "volume_db"))
+            .map(|l| {
+                l.points
+                    .iter()
+                    .map(|p| AutoPoint {
+                        sample: to_sample(p.tick),
+                        value: p.value as f32,
+                        curve: p.curve,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        points.sort_by_key(|p| p.sample);
+        points
+    };
+    let master_effects: Vec<BakedEffect> = master_chain.into_iter().map(|(_, b)| b).collect();
 
     let mut events = Vec::new();
     let mut audio_events = Vec::new();
@@ -672,6 +691,8 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         tracks,
         master_effects,
         master_amp: db_to_amp(project.master.volume_db),
+        master_vol_auto,
+        master_fx_auto,
         end_sample,
         sample_rate,
         tempo,
@@ -976,6 +997,52 @@ mod tests {
         project.tracks[0].effects[0].bypass = true;
         let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         assert!(data.tracks[0].fx_auto.is_empty());
+    }
+
+    #[test]
+    fn master_automation_fades_volume_and_moves_effect_param() {
+        use crate::export::render_project;
+        use glaux_core::{AutomationLane, AutomationPoint, Curve, Effect, FxId, ParamPath};
+        let lin = |tick: u64, value: f64| AutomationPoint {
+            tick: Tick(tick),
+            value,
+            curve: Curve::Linear,
+        };
+        // マスター音量: -60 → 0dB のフェードイン
+        let mut project = project_with_notes(vec![note(0, 3840, 69, 127)]);
+        project.master.automation.push(AutomationLane {
+            target: ParamPath::track("volume_db"),
+            points: vec![lin(0, -60.0), lin(1920, 0.0)],
+        });
+        let out = render_project(&project, 48_000.0, &Default::default()).unwrap();
+        let rms = |out: &[f32], a: f64, b: f64| {
+            let sl = &out[(a * 96_000.0) as usize..(b * 96_000.0) as usize];
+            (sl.iter().map(|s| s * s).sum::<f32>() / sl.len() as f32).sqrt()
+        };
+        let (head, tail) = (rms(&out, 0.0, 0.4), rms(&out, 1.2, 1.8));
+        assert!(
+            tail > head * 4.0,
+            "マスターでフェードインするはず: {head} {tail}"
+        );
+
+        // マスターのエフェクトのパラメータ: 歪みの出力を -24 → +6dB
+        let mut project = project_with_notes(vec![note(0, 3840, 57, 110)]);
+        let fx_id = FxId::new();
+        let mut dist = Effect::builtin(fx_id.clone(), "distortion");
+        dist.params.insert("level_db".into(), (-24.0).into());
+        project.master.effects.push(dist);
+        project.master.automation.push(AutomationLane {
+            target: ParamPath::effect(fx_id, "level_db"),
+            points: vec![lin(0, -24.0), lin(3840, 6.0)],
+        });
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        assert_eq!(data.master_fx_auto.len(), 1);
+        let out = render_project(&project, 48_000.0, &Default::default()).unwrap();
+        let (head, tail) = (rms(&out, 0.1, 0.4), rms(&out, 1.5, 1.9));
+        assert!(
+            tail > head * 5.0,
+            "マスターの歪みが大きくなるはず: {head} {tail}"
+        );
     }
 
     #[test]

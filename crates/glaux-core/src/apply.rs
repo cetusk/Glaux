@@ -691,10 +691,7 @@ impl Project {
                     (Some(i), false) => std::mem::replace(&mut t.automation[i].points, pts),
                     (None, true) => vec![],
                     (None, false) => {
-                        t.automation.push(AutomationLane {
-                            target: target.clone(),
-                            points: pts,
-                        });
+                        insert_lane(&mut t.automation, target, pts);
                         vec![]
                     }
                 };
@@ -707,6 +704,41 @@ impl Project {
                     changes: vec![Change::AutomationChanged {
                         track: track.clone(),
                     }],
+                })
+            }
+
+            SetMasterAutomationPoints { target, points } => {
+                match target {
+                    ParamPath::Track { name } if name == "volume_db" => {}
+                    ParamPath::Effect { id, .. } if self.master_effect_index(id).is_some() => {}
+                    ParamPath::Effect { id, .. } => {
+                        return Err(CoreError::EffectNotFound(id.clone()));
+                    }
+                    _ => {
+                        return Err(CoreError::OutOfRange(format!(
+                            "master automation target must be track/volume_db or fx/<master fx>/<param>: {target}"
+                        )));
+                    }
+                }
+                let lanes = &mut self.master.automation;
+                let mut pts = points.clone();
+                pts.sort_by_key(|p| p.tick);
+                let pos = lanes.iter().position(|l| &l.target == target);
+                let old_points = match (pos, pts.is_empty()) {
+                    (Some(i), true) => lanes.remove(i).points,
+                    (Some(i), false) => std::mem::replace(&mut lanes[i].points, pts),
+                    (None, true) => vec![],
+                    (None, false) => {
+                        insert_lane(lanes, target, pts);
+                        vec![]
+                    }
+                };
+                Ok(Applied {
+                    inverse: SetMasterAutomationPoints {
+                        target: target.clone(),
+                        points: old_points,
+                    },
+                    changes: vec![Change::MasterChanged],
                 })
             }
 
@@ -898,4 +930,22 @@ fn check_index(index: usize, len: usize) -> Result<()> {
     } else {
         Err(CoreError::IndexOutOfRange { index, len })
     }
+}
+
+/// レーンを対象パスの文字列順の位置に挿入する(削除 → 逆コマンドで再追加したときに
+/// 元の並びへ戻るよう、並びを正規形に保つ)。
+fn insert_lane(
+    lanes: &mut Vec<AutomationLane>,
+    target: &ParamPath,
+    points: Vec<crate::model::AutomationPoint>,
+) {
+    let key = target.to_string();
+    let at = lanes.partition_point(|l| l.target.to_string() < key);
+    lanes.insert(
+        at,
+        AutomationLane {
+            target: target.clone(),
+            points,
+        },
+    );
 }

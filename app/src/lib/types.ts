@@ -78,7 +78,7 @@ export interface Project {
   tempo_map: { tick: number; bpm: number }[];
   time_sig_map: { tick: number; num: number; den: number }[];
   tracks: Track[];
-  master: { volume_db: number; effects: unknown[] };
+  master: { volume_db: number; effects: unknown[]; automation?: AutomationLane[] };
   assets: Record<string, unknown>;
   /** 曲の構成マーカー(tick 昇順)。省略 = なし */
   sections?: { tick: number; name: string }[];
