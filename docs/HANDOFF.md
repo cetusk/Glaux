@@ -3,6 +3,7 @@
 作成日: 2026-09-21(最終更新: 2026-09-23)
 
 関連文書: AI ができること(感覚・操作・奏法)と作れる曲のジャンルの整理は [`CAPABILITIES.md`](CAPABILITIES.md)。
+音を分析する能力の強化に向けた研究・ツールの調査は [`AUDIO_ANALYSIS_RESEARCH.md`](AUDIO_ANALYSIS_RESEARCH.md)。
 状態(2026-09-22 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
 - `glaux-core`: モデル(セクション・奏法込み)/ Command(約 25 種)/ 履歴 /
   和声分析(harmony)/ リズム分析(rhythm)
