@@ -923,6 +923,7 @@
     { name: "subtractive", label: "🎹 subtractive", desc: "シンセ全般(リード・ベース・パッド)" },
     { name: "drum", label: "🥁 drum", desc: "ドラムシンセ(GM 配置、キット UI 対応)" },
     { name: "pluck", label: "🎸 pluck", desc: "撥弦モデル(ギター・ベース・ハープ)" },
+    { name: "fm", label: "🔔 fm", desc: "FM シンセ(エレピ・ベル・マレット・FM ベース)" },
   ];
 
   let deviceMenu = $state<{ track: Track; x: number; y: number } | null>(null);

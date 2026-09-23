@@ -1083,6 +1083,41 @@ mod tests {
     }
 
     #[test]
+    fn fm_instrument_renders_and_inharmonic_ratio_sounds_metallic() {
+        use crate::export::render_project;
+        let render = |ratio: f64| {
+            let mut p = project_with_notes(vec![note(0, 1920, 60, 110)]);
+            let mut d = glaux_core::Device::builtin("fm");
+            d.params.insert("ratio".into(), ratio.into());
+            d.params.insert("index".into(), 4.0.into());
+            d.params.insert("index_sustain".into(), 1.0.into());
+            d.params.insert("sustain".into(), 1.0.into());
+            p.tracks[0].device = Some(d);
+            let st = render_project(&p, 48_000.0, &Default::default()).unwrap();
+            let mono: Vec<f32> = st.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
+            mono
+        };
+        let harmonic = render(1.0);
+        let metallic = render(3.5);
+        let peak = harmonic.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak > 0.02, "鳴る: {peak}");
+        let dh = crate::timbre::describe(&harmonic[..48_000], 48_000.0, None);
+        let dm = crate::timbre::describe(&metallic[..48_000], 48_000.0, None);
+        let (ih, im) = (
+            dh.harmonics
+                .as_ref()
+                .map(|h| h.inharmonicity)
+                .unwrap_or(0.0),
+            dm.harmonics
+                .as_ref()
+                .map(|h| h.inharmonicity)
+                .unwrap_or(1.0),
+        );
+        eprintln!("非調和性: 比 1 = {ih:.3} / 比 3.5 = {im:.3}");
+        assert!(im > ih, "非整数比の方が非調和: {im} vs {ih}");
+    }
+
+    #[test]
     fn sends_feed_a_shared_reverb_bus() {
         use crate::export::render_project;
         use glaux_core::{Effect, FxId, Send, Track, TrackId, TrackKind};

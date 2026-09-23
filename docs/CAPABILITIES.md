@@ -33,7 +33,7 @@ AI(チャットのヘッドレス Claude、または外部の MCP クライア�
 |---|---|---|
 | **作曲** | apply_commands | トラック・クリップ・ノートの追加・変更・削除、クリップの分割・ループ化、テンポ・拍子(途中変更も)、曲名、構成マーカー(Aメロ・サビ等) |
 | **ノートの一括編集** | transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity | 移調、時間移動、クオンタイズ、スウィング(ハネ・シャッフル)、強弱の一括調整 |
-| **音作り(内蔵)** | apply_commands(set_device / set_param / add_effect) | 音源 5 種の選択とつまみ、エフェクトの追加・つまみ・バイパス |
+| **音作り(内蔵)** | apply_commands(set_device / set_param / add_effect) | 音源 6 種の選択とつまみ、エフェクトの追加・つまみ・バイパス |
 | **音作り(外部プラグイン)** | list_plugins / list_plugin_presets / load_plugin_preset / list_params | CLAP 音源(Surge XT 等)の選択、プリセット選び、公開されたつまみの操作。CLAP エフェクト(Surge XT Effects・Dragonfly Reverb・LSP 等)をトラック・マスターに挿してつまみ・オートメーションで動かす |
 | **似た音を作る** | match_sound / find_similar_presets | サンプルに合わせて内蔵シンセのつまみを自動で探す(約 20 秒)。CLAP プラグインのプリセットから近いものを探す(初回は索引作りに数分)。UI からは音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」 |
 | **音色の道具箱** | list_presets / save_preset / load_preset / delete_preset、list_soundfonts / set_soundfont_instrument | 自作プリセット(全プロジェクト共通)、SoundFont の GM 楽器一式 |
@@ -46,7 +46,7 @@ AI(チャットのヘッドレス Claude、または外部の MCP クライア�
 
 **奏法(ノートごとに付ける)** — 楽器によって効くものが違う(効かない組み合わせは無視される)
 
-| 奏法 | subtractive | drum | pluck | sampler / sf2 | CLAP | 効果 |
+| 奏法 | subtractive / fm | drum | pluck | sampler / sf2 | CLAP | 効果 |
 |---|---|---|---|---|---|---|
 | パームミュート | ○(こもった刻み) | − | ◎(本命) | − | △(短く弱く) | 減衰を速く・暗く |
 | スタッカート | ○ | − | ○ | ○ | ○ | 音価を半分に |
@@ -85,7 +85,7 @@ CLAP の列: ビブラート・ベンドは内蔵音源と同じ形の音程変�
 
 | 分類 | 内容 |
 |---|---|
-| 音源 | subtractive(シンセ全般。unison でスーパーソウ)、drum(ドラムシンセ、GM 配置)、pluck(ギター・ベース・ハープの撥弦モデル)、sampler(WAV のワンショット)、SoundFont(FluidR3 で GM 128 音色: ピアノ・ストリングス・ブラス等)、CLAP プラグイン(Surge XT はプリセット 2,944 個) |
+| 音源 | subtractive(シンセ全般。unison でスーパーソウ)、fm(FM シンセ: エレピ・ベル・マレット・FM ベース)、drum(ドラムシンセ、GM 配置)、pluck(ギター・ベース・ハープの撥弦モデル)、sampler(WAV のワンショット)、SoundFont(FluidR3 で GM 128 音色: ピアノ・ストリングス・ブラス等)、CLAP プラグイン(Surge XT はプリセット 2,944 個) |
 | エフェクト | eq(3 バンド)、compressor、reverb、distortion、amp(ギターアンプ)、sidechain(ポンピング)。トラックにもマスターにも挿せる。CLAP エフェクト(Surge XT Effects 等)も同じチェーンに挿せる |
 | 音声 | 録音(鼻歌・楽器。ステレオ録音も可)、WAV / MP3 等の取り込み(ステレオのまま)、テンポ追従(タイムストレッチ。元のテンポは自動検出できる)、パート分離(内蔵: 打楽器 / 音程楽器、Demucs: 4 パート)、譜起こし(単旋律・和音) |
 | 入力 | MIDI キーボード(サステインペダル・ピッチベンド込み)、MIDI 録音 |

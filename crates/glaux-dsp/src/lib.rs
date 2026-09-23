@@ -19,6 +19,7 @@
 mod drum;
 mod effects;
 mod expr;
+mod fm;
 mod multi;
 mod params;
 mod pluck;
@@ -30,6 +31,7 @@ mod voice;
 pub use drum::DrumParams;
 pub use effects::{bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState};
 pub use expr::{articulation_cents, articulation_moves_pitch, PitchCurve};
+pub use fm::{FmParams, FmVoice};
 pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, ZoneMod, MAX_LAYERS};
 pub use params::{
     articulations_for, bake_instrument, bake_sampler, bake_sf2, instrument_catalog,

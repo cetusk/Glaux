@@ -1135,7 +1135,7 @@ impl GlauxServer {
 
     #[tool(
         description = "楽器・エフェクトのパラメータ仕様と現在値を返す。つまみを理解する唯一の情報源。\
-        track_id を省略するとカタログ: 内蔵楽器(subtractive / drum)と内蔵エフェクト(eq / compressor / reverb)の\
+        track_id を省略するとカタログ: 内蔵楽器(subtractive / drum / pluck / fm 等)と内蔵エフェクト(eq / compressor / reverb)の\
         全パラメータ仕様(範囲と聴感上の効果)と、今のマスターのエフェクトチェーン(master_effects)を返す。\
         track_id を指定するとそのトラックの現在のデバイスとエフェクトチェーン(spec + current)を返す。\
         音源の設定は set_device(例: {\"op\":\"set_device\",\"track\":\"trk_x\",\"device\":{\"type\":\"builtin\",\"name\":\"drum\"}})、\
@@ -2332,7 +2332,7 @@ impl ServerHandler for GlauxServer {
                  まず get_project(include_notes: false)で構造を把握 → apply_commands で編集、が基本の流れ。\
                  ノートの移調・時間移動・クオンタイズ・ベロシティ調整は専用ツール\
                  (transpose_notes / shift_notes / quantize_notes / scale_velocity)が使える。\
-                 音源: トラックには set_device で内蔵楽器(subtractive / drum / pluck)を設定でき、\
+                 音源: トラックには set_device で内蔵楽器(subtractive / drum / pluck / fm)を設定でき、\
                  本物っぽい楽器一式(ピアノ・ストリングス・ブラス等)は SoundFont: \
                  list_soundfonts で確認 → set_soundfont_instrument で設定(無ければユーザーに導入を提案)。\
                  ギター・ベース・ハープなど「弾く弦」の音は pluck(撥弦の物理モデル)を使う。\

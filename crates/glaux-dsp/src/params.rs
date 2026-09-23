@@ -3,6 +3,7 @@
 //! description は AI が読む唯一の「つまみの説明書」。聴感上の効果を書くこと。
 
 use crate::drum::DrumParams;
+use crate::fm::FmParams;
 use crate::pluck::PluckParams;
 use crate::subtractive::{SubtractiveParams, Waveform};
 use crate::voice::{InstrumentKind, InstrumentParams};
@@ -283,6 +284,129 @@ pub static PLUCK_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static FM_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "ratio",
+        display_name: "周波数比",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.5,
+            max: 16.0,
+            default: 1.0,
+            skew: Some(0.5),
+        },
+        description: "モジュレーターの周波数(キャリアの何倍か)。整数(1・2・3)は楽器らしい倍音、1 = ノコギリ寄り・2 = 矩形寄り。非整数(3.5・1.41 など)は金属的・鐘のような響き(ベル・ゴング)。",
+    },
+    ParamSpec {
+        name: "index",
+        display_name: "変調の深さ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 12.0,
+            default: 3.0,
+            skew: Some(0.5),
+        },
+        description: "倍音の多さ(明るさ・硬さ)。0 で正弦波、2〜4 でエレピ・木琴、6 以上でブラス・ベルの鋭さ。強く弾くほど深くなる。",
+    },
+    ParamSpec {
+        name: "index_decay",
+        display_name: "深さの減衰",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.005,
+            max: 4.0,
+            default: 0.4,
+            skew: Some(0.3),
+        },
+        description: "変調の深さが落ち着くまでの時間。短いと鳴り始めだけキラッと硬く、すぐ丸くなる(エレピ・マレット)。長いと明るさが続く。",
+    },
+    ParamSpec {
+        name: "index_sustain",
+        display_name: "残る深さ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.25,
+            skew: None,
+        },
+        description: "落ち着いた後に残る変調の深さ(割合)。0 で後半はほぼ正弦波(ベルの余韻)、1 で明るさが変わらない(オルガン・ブラス)。",
+    },
+    ParamSpec {
+        name: "feedback",
+        display_name: "フィードバック",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "モジュレーターの自己変調。上げるとざらついたノコギリ波寄りの音になる(FM ベース・リード)。",
+    },
+    ParamSpec {
+        name: "attack",
+        display_name: "アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 2.0,
+            default: 0.002,
+            skew: Some(0.3),
+        },
+        description: "音の立ち上がりの速さ。",
+    },
+    ParamSpec {
+        name: "decay",
+        display_name: "ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 6.0,
+            default: 1.2,
+            skew: Some(0.3),
+        },
+        description: "サスティンまで下がる時間。ベル・エレピは長め、マレットは短め。",
+    },
+    ParamSpec {
+        name: "sustain",
+        display_name: "サスティン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.3,
+            skew: None,
+        },
+        description: "鍵盤を押している間の音量。0 で減衰し続ける打鍵楽器になる。",
+    },
+    ParamSpec {
+        name: "release",
+        display_name: "リリース",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 6.0,
+            default: 0.4,
+            skew: Some(0.3),
+        },
+        description: "鍵盤を離した後の余韻。ベルは長め。",
+    },
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 6.0,
+            default: -8.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。",
+    },
+];
+
 pub static SAMPLER_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "root",
@@ -406,6 +530,18 @@ pub static PLUCK_ARTS: &[ArticulationInfo] = &[
 ];
 pub static SAMPLER_ARTS: &[ArticulationInfo] = &[ART_STACCATO, ART_ACCENT, ART_VIBRATO, ART_BEND];
 pub static SF2_ARTS: &[ArticulationInfo] = &[ART_STACCATO, ART_ACCENT, ART_VIBRATO, ART_BEND];
+pub static FM_ARTS: &[ArticulationInfo] = &[
+    ArticulationInfo {
+        name: "palm_mute",
+        key: "M",
+        display_name: "ミュート",
+        description: "減衰を 4 倍速くした短い音(ミュートしたエレピ・マレット)。",
+    },
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+];
 /// CLAP 音源: ビブラート・ベンドは 1 音ごとの音程変化として送る(CLAP のノート表現に対応したプラグインのみ。
 /// MIDI だけのプラグインには届かない)。アクセントは強く、パームミュートは短く弱く鳴らして近づける
 pub static CLAP_ARTS: &[ArticulationInfo] = &[
@@ -430,6 +566,7 @@ pub fn articulations_for(instrument: &str) -> &'static [ArticulationInfo] {
         "pluck" => PLUCK_ARTS,
         "sampler" => SAMPLER_ARTS,
         "sf2" => SF2_ARTS,
+        "fm" => FM_ARTS,
         "clap" => CLAP_ARTS,
         _ => SUBTRACTIVE_ARTS,
     }
@@ -493,6 +630,15 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
             params: PLUCK_SPECS,
             articulations: PLUCK_ARTS,
         },
+        InstrumentInfo {
+            name: "fm",
+            description: "FM シンセ(2 オペレーター + フィードバック)。エレピ(ratio 1、index 3、\
+                index_decay 0.3)、ベル・鐘(ratio 3.5 など非整数、sustain 0、長い release)、\
+                マレット・木琴(短い decay)、FM ベース(ratio 1、feedback 0.5)など、\
+                減算式(subtractive)では出ない金属的・打鍵的な音色に使う。",
+            params: FM_SPECS,
+            articulations: FM_ARTS,
+        },
     ]
 }
 
@@ -504,6 +650,7 @@ pub fn instrument_params(name: &str) -> Option<&'static [ParamSpec]> {
         "pluck" => Some(PLUCK_SPECS),
         "sampler" => Some(SAMPLER_SPECS),
         "sf2" => Some(SF2_SPECS),
+        "fm" => Some(FM_SPECS),
         _ => None,
     }
 }
@@ -608,6 +755,19 @@ impl crate::InstrumentParams {
                 "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 12.0)),
                 _ => return false,
             },
+            I::Fm(p) => match name {
+                "ratio" => p.ratio = value.clamp(0.5, 16.0),
+                "index" => p.index = value.clamp(0.0, 12.0),
+                "index_decay" => p.index_decay = value.clamp(0.005, 4.0),
+                "index_sustain" => p.index_sustain = value.clamp(0.0, 1.0),
+                "feedback" => p.feedback = value.clamp(0.0, 1.0),
+                "attack" => p.attack = value.clamp(0.001, 2.0),
+                "decay" => p.decay = value.clamp(0.01, 6.0),
+                "sustain" => p.sustain = value.clamp(0.0, 1.0),
+                "release" => p.release = value.clamp(0.01, 6.0),
+                "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
+                _ => return false,
+            },
         }
         true
     }
@@ -635,6 +795,22 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
             };
             (InstrumentKind::Pluck, InstrumentParams::Pluck(p))
+        }
+        "fm" => {
+            let s = FM_SPECS;
+            let p = FmParams {
+                ratio: get_f32(map, s, "ratio").clamp(0.5, 16.0),
+                index: get_f32(map, s, "index").clamp(0.0, 12.0),
+                index_decay: get_f32(map, s, "index_decay").clamp(0.005, 4.0),
+                index_sustain: get_f32(map, s, "index_sustain").clamp(0.0, 1.0),
+                feedback: get_f32(map, s, "feedback").clamp(0.0, 1.0),
+                attack: get_f32(map, s, "attack").clamp(0.001, 2.0),
+                decay: get_f32(map, s, "decay").clamp(0.01, 6.0),
+                sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
+                release: get_f32(map, s, "release").clamp(0.01, 6.0),
+                gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+            };
+            (InstrumentKind::Fm, InstrumentParams::Fm(p))
         }
         "drum" => {
             let s = DRUM_SPECS;
