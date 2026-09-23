@@ -165,7 +165,7 @@ impl ClapPlugin {
     /// 音声処理を始められる状態にし、オーディオスレッドへ渡す処理窓口を返す。
     pub fn activate(&mut self, sample_rate: f64) -> Result<ClapProcessor, ClapError> {
         // 音声ポート(入出力とも、宣言された全ポートにバッファを用意する必要がある)
-        let (inputs, outputs, main_out) = self.audio_port_layout();
+        let (inputs, outputs, main_in, main_out) = self.audio_port_layout();
         let (dialect, midi_ok) = self.note_dialect();
         let config = PluginAudioConfiguration {
             sample_rate,
@@ -189,6 +189,7 @@ impl ClapPlugin {
             out_ports: AudioPorts::with_capacity(total(&outputs), outputs.len()),
             in_bufs: alloc(&inputs),
             out_bufs: alloc(&outputs),
+            main_in,
             main_out,
             dialect,
             midi_ok,
@@ -210,13 +211,14 @@ impl ClapPlugin {
     }
 
     /// (入力ポートごとのチャンネル数, 出力ポートごとのチャンネル数, メイン出力の添字)
-    fn audio_port_layout(&mut self) -> (Vec<u32>, Vec<u32>, usize) {
+    /// (入力ポートのチャンネル数, 出力ポートのチャンネル数, メイン入力, メイン出力)
+    fn audio_port_layout(&mut self) -> (Vec<u32>, Vec<u32>, Option<usize>, usize) {
         let ext = self
             .instance
             .access_shared_handler(|h| h.audio_ports.get().copied().flatten());
         let Some(ext) = ext else {
             // 拡張が無いプラグインはステレオ出力 1 本とみなす
-            return (vec![], vec![2], 0);
+            return (vec![], vec![2], None, 0);
         };
         let handle = self.instance.plugin_handle();
         let mut buf = AudioPortInfoBuffer::new();
@@ -235,9 +237,15 @@ impl ClapPlugin {
         let ins = list(true);
         let outs = list(false);
         let main_out = outs.iter().position(|(_, main)| *main).unwrap_or(0);
+        let main_in = if ins.is_empty() {
+            None
+        } else {
+            Some(ins.iter().position(|(_, main)| *main).unwrap_or(0))
+        };
         (
             ins.iter().map(|(c, _)| *c).collect(),
             outs.iter().map(|(c, _)| *c).collect(),
+            main_in,
             main_out,
         )
     }
@@ -610,6 +618,8 @@ pub struct ClapProcessor {
     /// [ポート][チャンネル][フレーム](起動時に確保)
     in_bufs: Vec<Vec<Vec<f32>>>,
     out_bufs: Vec<Vec<Vec<f32>>>,
+    /// メイン入力のポート(エフェクト)。入力の無いプラグイン(音源)は None
+    main_in: Option<usize>,
     main_out: usize,
     dialect: Option<NoteDialect>,
     /// MIDI メッセージを受けるか(ペダル・ピッチベンド)
@@ -737,14 +747,14 @@ impl ClapProcessor {
         };
         let inputs = self
             .in_ports
-            .with_input_buffers(self.in_bufs.iter_mut().map(|port| {
-                AudioPortBuffer {
-                    latency: 0,
-                    channels: AudioPortBufferType::f32_input_only(
-                        port.iter_mut()
-                            .map(|ch| InputChannel::constant(&mut ch[..n])),
-                    ),
-                }
+            .with_input_buffers(self.in_bufs.iter_mut().map(|port| AudioPortBuffer {
+                latency: 0,
+                channels: AudioPortBufferType::f32_input_only(port.iter_mut().map(|ch| {
+                    InputChannel {
+                        buffer: &mut ch[..n],
+                        is_constant: false,
+                    }
+                })),
             }));
         let mut outputs = self
             .out_ports
@@ -794,6 +804,19 @@ impl ClapProcessor {
                 let _ = p.stop_processing();
             }
         }
+    }
+
+    /// メイン入力の左右(エフェクトに通す音をここに書いてから [`process`](Self::process) を呼ぶ)。
+    /// 長さは `MAX_FRAMES`。モノラル入力のプラグインは左右に同じバッファを返せないので、右は None
+    pub fn input_mut(&mut self) -> Option<(&mut [f32], Option<&mut [f32]>)> {
+        let port = self.in_bufs.get_mut(self.main_in?)?;
+        let (first, rest) = port.split_first_mut()?;
+        Some((&mut first[..], rest.first_mut().map(|v| &mut v[..])))
+    }
+
+    /// 音声の入力を受けるか(エフェクトか)。
+    pub fn accepts_audio(&self) -> bool {
+        self.main_in.is_some()
     }
 
     /// ノートを受け付けるか(音源か)。

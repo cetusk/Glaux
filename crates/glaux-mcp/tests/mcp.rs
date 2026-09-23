@@ -1093,7 +1093,12 @@ async fn list_params_filters_real_clap_params() {
     // (このテストはエンジンを動かさないので、共有表に「届いた」値を直接置いて確かめる)
     let id: u32 = path.trim_start_matches("device/clap:").parse().unwrap();
     let tid = glaux_core::TrackId::parse("trk_clap03").unwrap();
-    glaux_engine::plugins::set_live_values_for_test(&tid, id, 0.25, "123 Hz");
+    glaux_engine::plugins::set_live_values_for_test(
+        &glaux_engine::plugins::PluginOwner::Track(tid.clone()),
+        id,
+        0.25,
+        "123 Hz",
+    );
     let r = call(
         &fx,
         "list_params",
@@ -1668,4 +1673,116 @@ async fn dbg_real_instruments() {
             glaux_mcp::sound::match_json(&o)["params"]
         );
     }
+}
+
+#[tokio::test]
+async fn clap_effect_can_be_added_listed_and_state_elided() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_cfx001", "Lead")).await);
+    // 見つからないプラグインでも挿せる(鳴らすときは素通し)
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "label": "CLAP エフェクト", "commands": [
+            { "op": "add_effect", "track": "trk_cfx001",
+              "effect": { "id": "fx_cfx001", "type": "clap", "plugin_id": "com.example.missing" } },
+            { "op": "set_effect_state", "id": "fx_cfx001", "state": "c3RhdGUtZGF0YQ==" },
+            { "op": "set_param", "track": "trk_cfx001", "path": "fx/fx_cfx001/clap:7", "value": 0.5 }
+        ] }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "list_params", json!({ "track_id": "trk_cfx001" })).await;
+    let v = ok_json(&r);
+    let e = &v["effects"][0];
+    assert_eq!(e["name"], json!("clap"), "{v}");
+    assert_eq!(e["missing"], json!(true));
+    // 状態は get_project で省略表示され、そのまま送り返しても今の状態が保たれる
+    let r = call(&fx, "get_project", json!({})).await;
+    let state = ok_json(&r)["project"]["tracks"][0]["effects"][0]["state"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(state.starts_with("(省略"), "{state}");
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "そのまま", "commands": [
+                { "op": "set_effect_state", "id": "fx_cfx001", "state": state }
+            ] }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    match &project.tracks[0].effects[0].source {
+        glaux_core::PluginSource::Clap { state, .. } => {
+            assert_eq!(state.as_deref(), Some("c3RhdGUtZGF0YQ=="))
+        }
+        other => panic!("{other:?}"),
+    }
+    // 鳴らしても落ちない(素通し)
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_clip", "track": "trk_cfx001", "clip": {
+                    "id": "clp_cfx001", "name": "c", "start": 0, "length": 1920, "kind": "midi",
+                    "notes": [{ "id": "nt_cfx001", "pos": 0, "dur": 480, "pitch": 60, "vel": 100 }] } }
+            ] }),
+        )
+        .await,
+    );
+    let r = call(&fx, "analyze_audio", json!({})).await;
+    assert!(ok_json(&r)["loudness_lufs"].as_f64().unwrap() < 0.0);
+}
+
+/// 実プラグイン(`GLAUX_TEST_CLAP_FX`)のエフェクトを挿し、つまみが一覧に出て動かせる。
+#[tokio::test]
+async fn real_clap_effect_params_are_listed_and_set() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_FX").map(std::path::PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP_FX が未設定のためスキップ");
+        return;
+    };
+    std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+    let plugin = glaux_engine::plugins::rescan()
+        .into_iter()
+        .find(|p| p.is_effect() && !p.is_instrument())
+        .unwrap();
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_cfx002", "Lead")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "CLAP エフェクト", "commands": [
+                { "op": "add_master_effect",
+                  "effect": { "id": "fx_cfx002", "type": "clap", "plugin_id": plugin.id } }
+            ] }),
+        )
+        .await,
+    );
+    // マスターのエフェクトのつまみは list_params(track_id なし)の master_effects に出る
+    let r = call(&fx, "list_params", json!({})).await;
+    let e = ok_json(&r)["master_effects"][0].clone();
+    eprintln!("{} のつまみ {} 個", e["plugin_name"], e["param_total"]);
+    assert_eq!(e["missing"], json!(false));
+    let params = e["params"].as_array().unwrap();
+    assert!(!params.is_empty());
+    let path = params[0]["path"].as_str().unwrap().to_owned();
+    assert!(path.starts_with("fx/fx_cfx002/clap:"), "{path}");
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "つまみ", "commands": [
+                { "op": "set_master_param", "path": path, "value": 0.7 }
+            ] }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let list = glaux_mcp::server::effects_json(&project.master.effects);
+    assert_eq!(list[0]["params"][0]["current"], json!(0.7));
 }

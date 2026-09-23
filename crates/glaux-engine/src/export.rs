@@ -28,13 +28,9 @@ pub fn render_project(
     sample_rate: f64,
     bank: &crate::data::SampleBank,
 ) -> Result<Vec<f32>, ExportError> {
-    // CLAP プラグインのトラックは、このスレッドで書き出し専用のインスタンスを作って鳴らす
     let slots = Arc::new(crate::plugins::new_slots());
-    let has_plugins = project.tracks.iter().any(|t| {
-        t.device
-            .as_ref()
-            .is_some_and(|d| matches!(d.source, glaux_core::PluginSource::Clap { .. }))
-    });
+    // CLAP の音源・エフェクトがあれば、このスレッドで書き出し専用のインスタンスを作る
+    let has_plugins = !crate::plugins::project_plugins(project).is_empty();
     let (offline, data) = if has_plugins {
         let (offline, map) = crate::plugins::OfflinePlugins::create(project, sample_rate, &slots);
         let mut bank = bank.clone();

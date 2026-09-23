@@ -318,6 +318,8 @@ pub enum EffectParams {
     Distortion(DistortionParams),
     Amp(AmpParams),
     Sidechain(SidechainParams),
+    /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
+    External,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -376,6 +378,7 @@ impl EffectState {
             EffectParams::Distortion(_) => EffectKind::Distortion,
             EffectParams::Amp(_) => EffectKind::Amp,
             EffectParams::Sidechain(_) => EffectKind::Sidechain,
+            EffectParams::External => EffectKind::None,
         }
     }
 
@@ -400,6 +403,7 @@ impl EffectState {
     /// (通常はソーストラックのモノ合算。サイドチェイン以外は無視する)。
     pub fn process(&mut self, p: &EffectParams, l: f32, r: f32, key: f32) -> (f32, f32) {
         match p {
+            EffectParams::External => (l, r),
             EffectParams::Eq(eq) => {
                 let ch = |s: f32, st: &mut [BiquadState; 3]| {
                     let s = st[0].next(&eq.low, s);
@@ -1035,6 +1039,7 @@ impl EffectParams {
                 "release_ms" => p.release_samples = v.clamp(20.0, 1000.0) * 0.001 * sample_rate,
                 _ => return false,
             },
+            EffectParams::External => return false,
         }
         true
     }

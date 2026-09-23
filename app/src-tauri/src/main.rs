@@ -438,11 +438,31 @@ async fn clap_plugins(rescan: Option<bool>) -> Result<Value, String> {
     Ok(json!({ "plugins": plugins, "dirs": dirs }))
 }
 
-/// トラックの CLAP プラグインの今の状態をプロジェクトに保存する(変わっていなければ何もしない)。
+/// CLAP プラグインの持ち主(トラックの音源なら track_id、エフェクトなら fx_id)。
+fn plugin_owner(
+    track_id: Option<String>,
+    fx_id: Option<String>,
+) -> Result<glaux_engine::plugins::PluginOwner, String> {
+    use glaux_engine::plugins::PluginOwner;
+    match (fx_id, track_id) {
+        (Some(f), _) => Ok(PluginOwner::Effect(
+            glaux_core::FxId::parse(&f).map_err(|e| e.to_string())?,
+        )),
+        (None, Some(t)) => Ok(PluginOwner::Track(
+            glaux_core::TrackId::parse(&t).map_err(|e| e.to_string())?,
+        )),
+        (None, None) => Err("track_id か fx_id を指定してください".to_owned()),
+    }
+}
+
+/// CLAP プラグイン(音源・エフェクト)の今の状態をプロジェクトに保存する(変わっていなければ何もしない)。
 #[tauri::command]
-async fn clap_save_state(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    save_clap_state(&state, tid).await
+async fn clap_save_state(
+    state: State<'_, AppState>,
+    track_id: Option<String>,
+    fx_id: Option<String>,
+) -> Result<Value, String> {
+    save_clap_state(&state, plugin_owner(track_id, fx_id)?).await
 }
 
 /// トラックの CLAP プラグインのプリセット一覧(UI 用に全件)。
@@ -457,7 +477,7 @@ async fn clap_presets(
     tokio::task::spawn_blocking(move || {
         glaux_mcp::clap_presets::list(
             &project,
-            &tid,
+            &glaux_engine::plugins::PluginOwner::Track(tid),
             None,
             None,
             usize::MAX,
@@ -478,7 +498,11 @@ async fn clap_load_preset(
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
     let (project, _) = state.handle.get_project().await?;
     let (command, label, name) = tokio::task::spawn_blocking(move || {
-        glaux_mcp::clap_presets::load_command(&project, &tid, &preset)
+        glaux_mcp::clap_presets::load_command(
+            &project,
+            &glaux_engine::plugins::PluginOwner::Track(tid),
+            &preset,
+        )
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -490,84 +514,172 @@ async fn clap_load_preset(
     Ok(json!({ "preset": name, "project_version": m.project_version }))
 }
 
-/// プラグインの画面を開く(開いていれば前面へ)。
+/// プラグインの画面を開く(開いていれば前面へ)。音源なら track_id、エフェクトなら fx_id。
 #[tauri::command]
-async fn clap_open_gui(state: State<'_, AppState>, track_id: String) -> Result<(), String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+async fn clap_open_gui(
+    state: State<'_, AppState>,
+    track_id: Option<String>,
+    fx_id: Option<String>,
+) -> Result<(), String> {
+    use glaux_engine::plugins::PluginOwner;
+    let owner = plugin_owner(track_id, fx_id)?;
     let engine = state.engine()?.clone();
     let (project, _) = state.handle.get_project().await?;
-    let track = project
-        .track(&tid)
-        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
-    let plugin_name = match track.device.as_ref().map(|d| &d.source) {
-        Some(glaux_core::PluginSource::Clap { plugin_id, .. }) => {
-            glaux_engine::plugins::find(plugin_id)
-                .map(|p| p.name)
-                .unwrap_or_else(|| plugin_id.clone())
+    let (source, place) = match &owner {
+        PluginOwner::Track(tid) => {
+            let track = project
+                .track(tid)
+                .ok_or_else(|| format!("トラックが見つかりません: {tid}"))?;
+            (
+                track.device.as_ref().map(|d| d.source.clone()),
+                track.name.clone(),
+            )
         }
-        _ => return Err("CLAP プラグインの音源ではありません".to_owned()),
+        PluginOwner::Effect(fx) => {
+            let (effect, place) = find_effect(&project, fx)?;
+            (Some(effect.source.clone()), place)
+        }
     };
-    let title = format!("{plugin_name} — {}", track.name);
-    tokio::task::spawn_blocking(move || engine.open_plugin_gui(&tid, &title))
+    let plugin_name = match source {
+        Some(glaux_core::PluginSource::Clap { plugin_id, .. }) => {
+            glaux_engine::plugins::find(&plugin_id)
+                .map(|p| p.name)
+                .unwrap_or(plugin_id)
+        }
+        _ => return Err("CLAP プラグインではありません".to_owned()),
+    };
+    let title = format!("{plugin_name} — {place}");
+    tokio::task::spawn_blocking(move || engine.open_plugin_gui(&owner, &title))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn clap_close_gui(state: State<'_, AppState>, track_id: String) -> Result<(), String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    state.engine()?.close_plugin_gui(&tid);
+fn clap_close_gui(
+    state: State<'_, AppState>,
+    track_id: Option<String>,
+    fx_id: Option<String>,
+) -> Result<(), String> {
+    state
+        .engine()?
+        .close_plugin_gui(&plugin_owner(track_id, fx_id)?);
     Ok(())
 }
 
-/// プラグインの今の状態をプロジェクトの音源設定に書く(履歴 1 件。変化が無ければ何もしない)。
-async fn save_clap_state(state: &AppState, tid: glaux_core::TrackId) -> Result<Value, String> {
-    let track_id = tid.to_string();
+/// エフェクトと、その場所の名前(トラック名 / マスター)。
+fn find_effect<'a>(
+    project: &'a glaux_core::Project,
+    fx: &glaux_core::FxId,
+) -> Result<(&'a glaux_core::Effect, String), String> {
+    if let Some(e) = project.master.effects.iter().find(|e| &e.id == fx) {
+        return Ok((e, "マスター".to_owned()));
+    }
+    project
+        .tracks
+        .iter()
+        .find_map(|t| {
+            t.effects
+                .iter()
+                .find(|e| &e.id == fx)
+                .map(|e| (e, t.name.clone()))
+        })
+        .ok_or_else(|| format!("エフェクトが見つかりません: {fx}"))
+}
+
+/// プラグインの今の状態をプロジェクトに書く(履歴 1 件。変化が無ければ何もしない)。
+/// 音源は set_device、エフェクトは set_effect_state + 上書きしているつまみの値。
+async fn save_clap_state(
+    state: &AppState,
+    owner: glaux_engine::plugins::PluginOwner,
+) -> Result<Value, String> {
+    use glaux_engine::plugins::PluginOwner;
     let engine = state.engine()?.clone();
     let (saved, values) = {
         let e = engine.clone();
-        let t = tid.clone();
-        tokio::task::spawn_blocking(move || e.save_plugin_state(&t))
+        let o = owner.clone();
+        tokio::task::spawn_blocking(move || e.save_plugin_state(&o))
             .await
             .map_err(|e| e.to_string())??
     };
     let (project, _) = state.handle.get_project().await?;
-    let track = project
-        .track(&tid)
-        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
-    let Some(mut device) = track.device.clone() else {
-        return Err("音源がありません".to_owned());
-    };
-    let glaux_core::PluginSource::Clap { state: cur, .. } = &mut device.source else {
-        return Err("CLAP プラグインの音源ではありません".to_owned());
-    };
-    let state_changed = cur.as_deref() != Some(saved.as_str());
-    *cur = Some(saved.clone());
     // 上書きしているパラメータは今の値に揃える(画面で動かした値を上書きで戻さないように)
-    let mut params_changed = false;
-    for (id, v) in &values {
-        let key = glaux_engine::plugins::param_key(*id);
-        let new = glaux_core::ParamValue::Float(*v);
-        if device.params.get(&key) != Some(&new) {
-            device.params.insert(key, new);
-            params_changed = true;
+    let changed_params = |params: &glaux_core::ParamMap| -> Vec<(String, glaux_core::ParamValue)> {
+        values
+            .iter()
+            .map(|(id, v)| {
+                (
+                    glaux_engine::plugins::param_key(*id),
+                    glaux_core::ParamValue::Float(*v),
+                )
+            })
+            .filter(|(k, v)| params.get(k) != Some(v))
+            .collect()
+    };
+    let (command, label) = match &owner {
+        PluginOwner::Track(tid) => {
+            let track = project
+                .track(tid)
+                .ok_or_else(|| format!("トラックが見つかりません: {tid}"))?;
+            let Some(mut device) = track.device.clone() else {
+                return Err("音源がありません".to_owned());
+            };
+            let glaux_core::PluginSource::Clap { state: cur, .. } = &mut device.source else {
+                return Err("CLAP プラグインの音源ではありません".to_owned());
+            };
+            let state_changed = cur.as_deref() != Some(saved.as_str());
+            *cur = Some(saved.clone());
+            let params = changed_params(&device.params);
+            if !state_changed && params.is_empty() {
+                return Ok(json!({ "changed": false }));
+            }
+            device.params.extend(params);
+            (
+                Command::SetDevice {
+                    track: tid.clone(),
+                    device: Some(device),
+                },
+                format!("{} のプラグインの設定を保存", track.name),
+            )
         }
-    }
-    if !state_changed && !params_changed {
-        return Ok(json!({ "changed": false }));
-    }
-    engine.note_plugin_state_saved(&tid, &saved, &values);
-    let label = format!("{} のプラグインの設定を保存", track.name);
+        PluginOwner::Effect(fx) => {
+            let (effect, place) = find_effect(&project, fx)?;
+            let glaux_core::PluginSource::Clap { state: cur, .. } = &effect.source else {
+                return Err("CLAP プラグインのエフェクトではありません".to_owned());
+            };
+            let state_changed = cur.as_deref() != Some(saved.as_str());
+            let params = changed_params(&effect.params);
+            if !state_changed && params.is_empty() {
+                return Ok(json!({ "changed": false }));
+            }
+            let on_master = project.master.effects.iter().any(|e| &e.id == fx);
+            let track_of = project
+                .tracks
+                .iter()
+                .find(|t| t.effects.iter().any(|e| &e.id == fx))
+                .map(|t| t.id.clone());
+            let mut cmds = vec![Command::SetEffectState {
+                id: fx.clone(),
+                state: Some(saved.clone()),
+            }];
+            for (k, v) in params {
+                let path = glaux_core::ParamPath::effect(fx.clone(), k);
+                cmds.push(match (&track_of, on_master) {
+                    (Some(t), false) => Command::SetParam {
+                        track: t.clone(),
+                        path,
+                        value: v,
+                    },
+                    _ => Command::SetMasterParam { path, value: v },
+                });
+            }
+            let label = format!("{place} のエフェクトの設定を保存");
+            (Command::batch(label.clone(), cmds), label)
+        }
+    };
+    engine.note_plugin_state_saved(&owner, &saved, &values);
     let (_, m) = state
         .handle
-        .apply(
-            Command::SetDevice {
-                track: tid,
-                device: Some(device),
-            },
-            Author::Human,
-            label,
-        )
+        .apply(command, Author::Human, label)
         .await?
         .map_err(|e| e.to_string())?;
     Ok(json!({ "changed": true, "project_version": m.project_version }))
@@ -1661,14 +1773,14 @@ fn main() -> Result<()> {
                         let Some(engine) = st.engine.clone() else {
                             break;
                         };
-                        let mut tracks: Vec<glaux_core::TrackId> = Vec::new();
-                        for (tid, _) in engine.take_plugin_events() {
-                            if !tracks.contains(&tid) {
-                                tracks.push(tid);
+                        let mut owners: Vec<glaux_engine::plugins::PluginOwner> = Vec::new();
+                        for (owner, _) in engine.take_plugin_events() {
+                            if !owners.contains(&owner) {
+                                owners.push(owner);
                             }
                         }
-                        for tid in tracks {
-                            if let Err(e) = save_clap_state(&st, tid).await {
+                        for owner in owners {
+                            if let Err(e) = save_clap_state(&st, owner).await {
                                 tracing::warn!("プラグインの状態を保存できません: {e}");
                             }
                         }

@@ -12,12 +12,62 @@
 //! 止めて破棄する(オーディオスレッドでは解放しない)。
 
 use glaux_clap::{ClapPlugin, ClapProcessor, ParamInfo, PluginInfo};
-use glaux_core::{PluginSource, Project, TrackId};
+use glaux_core::{FxId, ParamMap, PluginSource, Project, TrackId};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
+
+/// プラグインを載せている所(トラックの音源、またはエフェクト)。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PluginOwner {
+    Track(TrackId),
+    Effect(FxId),
+}
+
+impl std::fmt::Display for PluginOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginOwner::Track(t) => write!(f, "{t}"),
+            PluginOwner::Effect(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// プロジェクトに載っている CLAP プラグイン(トラックの音源と、トラック・マスターのエフェクト。
+/// バイパス中のエフェクトも含む = 切り替えで作り直さない)。(持ち主, プラグイン ID, 状態, パラメータ)
+pub fn project_plugins(project: &Project) -> Vec<(PluginOwner, &str, Option<&str>, &ParamMap)> {
+    let mut out = Vec::new();
+    for t in &project.tracks {
+        if let Some(d) = &t.device {
+            if let PluginSource::Clap { plugin_id, state } = &d.source {
+                out.push((
+                    PluginOwner::Track(t.id.clone()),
+                    plugin_id.as_str(),
+                    state.as_deref(),
+                    &d.params,
+                ));
+            }
+        }
+    }
+    let effects = project
+        .tracks
+        .iter()
+        .flat_map(|t| t.effects.iter())
+        .chain(project.master.effects.iter());
+    for e in effects {
+        if let PluginSource::Clap { plugin_id, state } = &e.source {
+            out.push((
+                PluginOwner::Effect(e.id.clone()),
+                plugin_id.as_str(),
+                state.as_deref(),
+                &e.params,
+            ));
+        }
+    }
+    out
+}
 
 /// 同時に載せられるプラグイン数
 pub const MAX_PLUGINS: usize = 16;
@@ -323,28 +373,28 @@ pub type ParamValues = HashMap<u32, (f64, String)>;
 /// 状態の保存結果: (状態のバイト列, 上書きしているパラメータの今の値)
 type SavedState = (Vec<u8>, Vec<(u32, f64)>);
 
-fn live_values_cell() -> &'static Mutex<HashMap<TrackId, ParamValues>> {
-    static C: OnceLock<Mutex<HashMap<TrackId, ParamValues>>> = OnceLock::new();
+fn live_values_cell() -> &'static Mutex<HashMap<PluginOwner, ParamValues>> {
+    static C: OnceLock<Mutex<HashMap<PluginOwner, ParamValues>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// トラックのプラグインの今の値(と表示用の文字列)。読み込み・変更のたびにプラグインの
 /// スレッドが更新する。まだ無ければ None
-pub fn live_values(track: &TrackId) -> Option<ParamValues> {
+pub fn live_values(owner: &PluginOwner) -> Option<ParamValues> {
     live_values_cell()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(track)
+        .get(owner)
         .cloned()
 }
 
 /// テスト用: 共有表に「プラグインの今の値」を置く。
 #[doc(hidden)]
-pub fn set_live_values_for_test(track: &TrackId, id: u32, value: f64, text: &str) {
+pub fn set_live_values_for_test(owner: &PluginOwner, id: u32, value: f64, text: &str) {
     live_values_cell()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .entry(track.clone())
+        .entry(owner.clone())
         .or_default()
         .insert(id, (value, text.to_owned()));
 }
@@ -362,7 +412,7 @@ enum HostCmd {
     Create {
         slot: usize,
         gen: u64,
-        track: TrackId,
+        owner: PluginOwner,
         info: PluginInfo,
         state: Option<Vec<u8>>,
         params: Vec<(u32, f64)>,
@@ -410,7 +460,7 @@ pub enum PluginEvent {
 struct Live {
     gen: u64,
     slot: usize,
-    track: TrackId,
+    owner: PluginOwner,
     plugin: ClapPlugin,
     dying: bool,
     /// この時刻を過ぎたら今の値を読み直す(変更がオーディオスレッドで反映されてから)
@@ -458,7 +508,7 @@ impl Live {
         live_values_cell()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(self.track.clone(), values);
+            .insert(self.owner.clone(), values);
     }
 }
 
@@ -486,7 +536,7 @@ fn host_thread(
             Ok(HostCmd::Create {
                 slot,
                 gen,
-                track,
+                owner,
                 info,
                 state,
                 params,
@@ -512,7 +562,7 @@ fn host_thread(
                         let mut l = Live {
                             gen,
                             slot,
-                            track,
+                            owner,
                             plugin,
                             dying: false,
                             refresh_at: None,
@@ -640,7 +690,7 @@ struct Assigned {
 pub struct PluginManager {
     tx: mpsc::Sender<HostCmd>,
     events: Arc<Mutex<Vec<(u64, PluginEvent)>>>,
-    assigned: Mutex<HashMap<TrackId, Assigned>>,
+    assigned: Mutex<HashMap<PluginOwner, Assigned>>,
     next_gen: AtomicU64,
 }
 
@@ -663,25 +713,21 @@ impl PluginManager {
 
     /// プロジェクトの CLAP トラックに合わせてプラグインを用意・破棄し、
     /// トラック → (スロット, 世代) の対応を返す(再生データの構築に使う)。
-    pub fn sync(&self, project: &Project, sample_rate: f64) -> HashMap<TrackId, (u32, u64)> {
+    pub fn sync(&self, project: &Project, sample_rate: f64) -> HashMap<PluginOwner, (u32, u64)> {
         let mut assigned = self.assigned.lock().unwrap_or_else(|e| e.into_inner());
-        // トラック → (プラグイン, 状態, 上書き値)
+        // 持ち主 → (プラグイン, 状態, 上書き値)
         type Wanted<'a> = (PluginInfo, Option<&'a str>, HashMap<u32, f64>);
-        let mut wanted: HashMap<TrackId, Wanted> = HashMap::new();
-        for t in &project.tracks {
-            let Some(d) = &t.device else { continue };
-            let PluginSource::Clap { plugin_id, state } = &d.source else {
-                continue;
-            };
+        let mut wanted: HashMap<PluginOwner, Wanted> = HashMap::new();
+        for (owner, plugin_id, state, params) in project_plugins(project) {
             match find(plugin_id) {
                 Some(info) => {
-                    wanted.insert(t.id.clone(), (info, state.as_deref(), overrides(&d.params)));
+                    wanted.insert(owner, (info, state, overrides(params)));
                 }
                 None => tracing::warn!("CLAP プラグインが見つかりません: {plugin_id}"),
             }
         }
         // 要らなくなった・中身が変わったものを片付ける
-        let stale: Vec<TrackId> = assigned
+        let stale: Vec<PluginOwner> = assigned
             .iter()
             .filter(|(tid, a)| match wanted.get(*tid) {
                 None => true,
@@ -740,7 +786,7 @@ impl PluginManager {
             let _ = self.tx.send(HostCmd::Create {
                 slot,
                 gen,
-                track: tid.clone(),
+                owner: tid.clone(),
                 info: info.clone(),
                 state: state.and_then(decode_state),
                 params: as_vec(&params),
@@ -764,18 +810,18 @@ impl PluginManager {
             .collect()
     }
 
-    fn gen_of(&self, track: &TrackId) -> Result<u64, String> {
+    fn gen_of(&self, owner: &PluginOwner) -> Result<u64, String> {
         self.assigned
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(track)
+            .get(owner)
             .map(|a| a.gen)
-            .ok_or_else(|| "このトラックに CLAP プラグインは載っていません".to_owned())
+            .ok_or_else(|| "CLAP プラグインが載っていません".to_owned())
     }
 
     /// プラグインの画面を開く(`title` はウィンドウのタイトル)。
-    pub fn open_gui(&self, track: &TrackId, title: &str) -> Result<(), String> {
-        let gen = self.gen_of(track)?;
+    pub fn open_gui(&self, owner: &PluginOwner, title: &str) -> Result<(), String> {
+        let gen = self.gen_of(owner)?;
         let (reply, rx) = mpsc::channel();
         self.tx
             .send(HostCmd::OpenGui {
@@ -788,21 +834,21 @@ impl PluginManager {
             .map_err(|_| "プラグインが応答しません".to_owned())?
     }
 
-    pub fn close_gui(&self, track: &TrackId) {
-        if let Ok(gen) = self.gen_of(track) {
+    pub fn close_gui(&self, owner: &PluginOwner) {
+        if let Ok(gen) = self.gen_of(owner) {
             let _ = self.tx.send(HostCmd::CloseGui { gen });
         }
     }
 
-    /// プラグインのスレッドからの知らせを取り出す(トラックに直して、重複はまとめる)。
-    pub fn take_events(&self) -> Vec<(TrackId, PluginEvent)> {
+    /// プラグインのスレッドからの知らせを取り出す(持ち主に直して、重複はまとめる)。
+    pub fn take_events(&self) -> Vec<(PluginOwner, PluginEvent)> {
         let raw: Vec<(u64, PluginEvent)> =
             std::mem::take(&mut *self.events.lock().unwrap_or_else(|e| e.into_inner()));
         if raw.is_empty() {
             return vec![];
         }
         let assigned = self.assigned.lock().unwrap_or_else(|e| e.into_inner());
-        let mut out: Vec<(TrackId, PluginEvent)> = Vec::new();
+        let mut out: Vec<(PluginOwner, PluginEvent)> = Vec::new();
         for (gen, ev) in raw {
             if let Some((tid, _)) = assigned.iter().find(|(_, a)| a.gen == gen) {
                 if !out.iter().any(|(t, e)| t == tid && *e == ev) {
@@ -813,13 +859,13 @@ impl PluginManager {
         out
     }
 
-    /// トラックに載っているプラグインの今の状態(base64)と、上書きしているパラメータの今の値。
-    pub fn save_state(&self, track: &TrackId) -> Result<(String, Vec<(u32, f64)>), String> {
+    /// 載っているプラグインの今の状態(base64)と、上書きしているパラメータの今の値。
+    pub fn save_state(&self, owner: &PluginOwner) -> Result<(String, Vec<(u32, f64)>), String> {
         let (gen, ids) = {
             let assigned = self.assigned.lock().unwrap_or_else(|e| e.into_inner());
             let a = assigned
-                .get(track)
-                .ok_or_else(|| "このトラックに CLAP プラグインは載っていません".to_owned())?;
+                .get(owner)
+                .ok_or_else(|| "CLAP プラグインが載っていません".to_owned())?;
             (a.gen, a.params.keys().copied().collect::<Vec<u32>>())
         };
         let (reply, rx) = mpsc::channel();
@@ -833,12 +879,12 @@ impl PluginManager {
     }
 
     /// 保存した状態(と上書き値)をプロジェクトに書く前に呼ぶ(同じものを送り直さないように)。
-    pub fn note_state_saved(&self, track: &TrackId, state: &str, params: &[(u32, f64)]) {
+    pub fn note_state_saved(&self, owner: &PluginOwner, state: &str, params: &[(u32, f64)]) {
         if let Some(a) = self
             .assigned
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get_mut(track)
+            .get_mut(owner)
         {
             a.state_sig = hash_str(Some(state));
             for (id, v) in params {
@@ -976,25 +1022,21 @@ impl OfflinePlugins {
         project: &Project,
         sample_rate: f64,
         slots: &[PluginSlot; MAX_PLUGINS],
-    ) -> (Self, HashMap<TrackId, (u32, u64)>) {
+    ) -> (Self, HashMap<PluginOwner, (u32, u64)>) {
         glaux_clap::mark_main_thread();
         glaux_clap::mark_audio_thread();
         let mut plugins = Vec::new();
         let mut map = HashMap::new();
-        for t in &project.tracks {
+        for (owner, plugin_id, state, params) in project_plugins(project) {
             if plugins.len() >= MAX_PLUGINS {
                 break;
             }
-            let Some(d) = &t.device else { continue };
-            let PluginSource::Clap { plugin_id, state } = &d.source else {
-                continue;
-            };
             let Some(info) = find(plugin_id) else {
                 continue;
             };
             let made = (|| -> Result<(ClapPlugin, ClapProcessor), glaux_clap::ClapError> {
                 let mut p = ClapPlugin::new(&info.path, &info.id)?;
-                if let Some(bytes) = state.as_deref().and_then(decode_state) {
+                if let Some(bytes) = state.and_then(decode_state) {
                     p.load_state(&bytes)?;
                 }
                 let proc = p.activate(sample_rate)?;
@@ -1005,11 +1047,11 @@ impl OfflinePlugins {
                     let slot = plugins.len();
                     let gen = slot as u64 + 1;
                     // プロジェクトの上書き値も最初のブロックで送る
-                    for (id, v) in overrides(&d.params) {
+                    for (id, v) in overrides(params) {
                         slots[slot].params.push(id, v);
                     }
                     let _ = slots[slot].put_incoming(Box::new(Processor { gen, clap: proc }));
-                    map.insert(t.id.clone(), (slot as u32, gen));
+                    map.insert(owner, (slot as u32, gen));
                     plugins.push((gen, p));
                 }
                 Err(e) => tracing::warn!("書き出し用に CLAP を用意できません: {e}"),
@@ -1115,7 +1157,9 @@ mod tests {
         let manager = PluginManager::start(shared.plugin_slots.clone());
         let mut bank = SampleBank::default();
         bank.plugin_slots = manager.sync(&project, 48_000.0);
-        assert!(bank.plugin_slots.contains_key(&tid));
+        assert!(bank
+            .plugin_slots
+            .contains_key(&PluginOwner::Track(tid.clone())));
         shared
             .data
             .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
@@ -1142,7 +1186,9 @@ mod tests {
         assert!(loud > 1e-3, "再生で鳴る: {loud}");
 
         // 状態を保存できる
-        let state = manager.save_state(&tid).expect("状態を保存できる");
+        let state = manager
+            .save_state(&PluginOwner::Track(tid.clone()))
+            .expect("状態を保存できる");
         assert!(!state.0.is_empty());
 
         // 音源を外すと窓口が返却される
@@ -1152,8 +1198,13 @@ mod tests {
         shared
             .data
             .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
-        for _ in 0..20 {
+        // 外す指示はプラグインのスレッドを経由して届くので、少し待ちながら回す
+        for _ in 0..100 {
             r.process(&mut buf, 2);
+            if !r_has_plugin(&mut r) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!r_has_plugin(&mut r), "外したら窓口を手放す");
     }
@@ -1212,7 +1263,8 @@ mod tests {
             .data
             .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
         run(&mut r, 600);
-        let before = live_values(&tid).and_then(|m| m.get(&target.id).cloned());
+        let before =
+            live_values(&PluginOwner::Track(tid.clone())).and_then(|m| m.get(&target.id).cloned());
         eprintln!("変更前: {before:?}");
         assert!(before.is_some(), "読み込み後に今の値が共有される");
 
@@ -1229,14 +1281,16 @@ mod tests {
             .data
             .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
         run(&mut r, 600);
-        let after = live_values(&tid)
+        let after = live_values(&PluginOwner::Track(tid.clone()))
             .and_then(|m| m.get(&target.id).cloned())
             .unwrap();
         eprintln!("変更後: {after:?}");
         assert!((after.0 - want).abs() < 1e-6, "上書き値がプラグインに届く");
 
         // 保存すると上書き値の今の値も返る
-        let (_, values) = manager.save_state(&tid).unwrap();
+        let (_, values) = manager
+            .save_state(&PluginOwner::Track(tid.clone()))
+            .unwrap();
         assert_eq!(values.len(), 1);
         assert!((values[0].1 - want).abs() < 1e-6);
     }
@@ -1455,5 +1509,85 @@ mod tests {
         assert_eq!(got.len(), pick.len());
         assert!(got.iter().all(|(n, _)| *n == 96_000));
         assert!(got.iter().filter(|(_, p)| *p > 0.01).count() >= pick.len() - 1);
+    }
+
+    /// エフェクトプラグイン(`GLAUX_TEST_CLAP_FX`、例: Surge XT Effects。既定は Delay)を
+    /// トラック・マスターに挿して書き出すと、短い音の後ろにこだまが残る。
+    #[test]
+    fn clap_effect_on_track_and_master_is_rendered() {
+        use glaux_core::{Effect, FxId};
+        let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_FX").map(PathBuf::from) else {
+            eprintln!("GLAUX_TEST_CLAP_FX が未設定のためスキップ");
+            return;
+        };
+        std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+        let fx_id = rescan()
+            .into_iter()
+            .find(|p| p.is_effect() && !p.is_instrument())
+            .map(|p| p.id)
+            .expect("エフェクトがある");
+        // 内蔵 subtractive の短い音 1 つ
+        let mut project = Project::new("t");
+        let mut track = Track::new(TrackId::new(), "Lead", TrackKind::Midi);
+        let mut clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840));
+        if let ClipContent::Midi { notes, .. } = &mut clip.content {
+            notes.push(Note {
+                id: NoteId::new(),
+                pos: Tick(0),
+                dur: Tick(120),
+                pitch: 60,
+                vel: 110,
+                articulation: Default::default(),
+                pitch_curve: vec![],
+            });
+        }
+        track.clips.push(clip);
+        project.tracks.push(track);
+        let bank = SampleBank::default();
+        let sr = 48_000.0;
+        // 1〜2 秒(音が消えた後)のエネルギー
+        let tail = |x: &[f32]| -> f32 {
+            x.chunks(2)
+                .skip(sr as usize)
+                .take(sr as usize)
+                .map(|c| c[0] * c[0] + c[1] * c[1])
+                .sum::<f32>()
+        };
+        let dry = crate::export::render_project(&project, sr, &bank).unwrap();
+        let clap_fx = |id: FxId| Effect {
+            id,
+            source: PluginSource::Clap {
+                plugin_id: fx_id.clone(),
+                state: None,
+            },
+            bypass: false,
+            params: Default::default(),
+        };
+        let mut on_track = project.clone();
+        on_track.tracks[0].effects.push(clap_fx(FxId::new()));
+        let wet = crate::export::render_project(&on_track, sr, &bank).unwrap();
+        let mut on_master = project.clone();
+        on_master.master.effects.push(clap_fx(FxId::new()));
+        let wet_master = crate::export::render_project(&on_master, sr, &bank).unwrap();
+        let mut bypassed = on_track.clone();
+        bypassed.tracks[0].effects[0].bypass = true;
+        let byp = crate::export::render_project(&bypassed, sr, &bank).unwrap();
+        eprintln!(
+            "余韻のエネルギー: なし {:.5} / トラック {:.5} / マスター {:.5} / バイパス {:.5}",
+            tail(&dry),
+            tail(&wet),
+            tail(&wet_master),
+            tail(&byp)
+        );
+        // 既定のディレイは控えめだが、余韻がはっきり増える
+        assert!(tail(&wet) > tail(&dry) * 1.4, "トラックのディレイが鳴る");
+        assert!(
+            tail(&wet_master) > tail(&dry) * 1.4,
+            "マスターのディレイが鳴る"
+        );
+        // 音量・パンが中央なのでトラックとマスターで同じ効き方
+        assert!((tail(&wet) - tail(&wet_master)).abs() < tail(&wet) * 0.05);
+        let diff: f32 = byp.iter().zip(&dry).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff < 1e-3, "バイパスなら素通し: {diff}");
     }
 }

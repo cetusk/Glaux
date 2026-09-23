@@ -333,8 +333,12 @@ pub struct AnalyzeBeatsParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListPluginPresetsParams {
-    /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。
-    pub track_id: String,
+    /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。エフェクトなら fx_id を使う。
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// CLAP プラグインのエフェクト ID(`fx_xxxxxx`。トラック・マスターどちらでも)。
+    #[serde(default)]
+    pub fx_id: Option<String>,
     /// 名前・カテゴリ・作者・タグの部分一致(例 "pad"、"bass"、"pluck")。
     #[serde(default)]
     pub filter: Option<String>,
@@ -351,8 +355,12 @@ pub struct ListPluginPresetsParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct LoadPluginPresetParams {
-    /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。
-    pub track_id: String,
+    /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。エフェクトなら fx_id を使う。
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// CLAP プラグインのエフェクト ID(`fx_xxxxxx`)。
+    #[serde(default)]
+    pub fx_id: Option<String>,
     /// list_plugin_presets が返したプリセットの id。
     pub preset: String,
 }
@@ -459,6 +467,23 @@ pub struct ScaleVelocityParams {
 
 type ToolResult = Result<Json<Value>, String>;
 
+/// CLAP プラグインの持ち主(音源のトラック ID か、エフェクト ID のどちらか)。
+fn plugin_owner(
+    track_id: Option<&str>,
+    fx_id: Option<&str>,
+) -> Result<glaux_engine::plugins::PluginOwner, String> {
+    use glaux_engine::plugins::PluginOwner;
+    match (fx_id, track_id) {
+        (Some(f), _) => Ok(PluginOwner::Effect(
+            glaux_core::FxId::parse(f).map_err(|e| e.to_string())?,
+        )),
+        (None, Some(t)) => Ok(PluginOwner::Track(
+            glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?,
+        )),
+        (None, None) => Err("track_id か fx_id を指定してください".to_owned()),
+    }
+}
+
 fn mutated_json(m: &Mutated) -> Value {
     let mut v = json!({
         "changes": m.changes,
@@ -487,12 +512,37 @@ fn range_default(range: &glaux_core::ParamRange) -> Value {
 }
 
 /// トラックの音源・エフェクトの「spec + 現在値 + path」ビュー。
+/// CLAP エフェクトのつまみを一覧に載せる数の上限(多いものは list_params の filter で探す)
+const CLAP_EFFECT_PARAM_LIMIT: usize = 64;
+
 /// MCP の `list_params`(track_id 指定)とアプリの音作りビューが共用する。
 /// エフェクトチェーンの spec + 現在値 + path(トラック・マスター共用)。
 pub fn effects_json(effects: &[glaux_core::Effect]) -> Vec<Value> {
     effects
         .iter()
         .map(|e| {
+            // CLAP エフェクト: プラグインが公開しているつまみ(fx/<id>/clap:<param id>)
+            if let glaux_core::PluginSource::Clap { plugin_id, .. } = &e.source {
+                let (params, total) = clap_params_json(
+                    &glaux_engine::plugins::PluginOwner::Effect(e.id.clone()),
+                    plugin_id,
+                    &e.params,
+                    None,
+                    CLAP_EFFECT_PARAM_LIMIT,
+                    &format!("fx/{}/", e.id),
+                );
+                let info = glaux_engine::plugins::find(plugin_id);
+                return json!({
+                    "id": e.id,
+                    "name": "clap",
+                    "plugin_id": plugin_id,
+                    "plugin_name": info.as_ref().map(|i| i.name.clone()),
+                    "missing": info.is_none(),
+                    "bypass": e.bypass,
+                    "params": params,
+                    "param_total": total,
+                });
+            }
             let name = match &e.source {
                 glaux_core::PluginSource::Builtin { name } => name.clone(),
                 other => format!("{other:?}"),
@@ -531,17 +581,19 @@ pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
 
 /// CLAP プラグインのパラメータ一覧。`filter` は名前・所属の部分一致(大文字小文字を区別しない)。
 /// 値は「プロジェクトの上書き値 → プラグインの今の値 → 既定値」の順に採る
+/// `path_prefix` はパスの頭(音源なら `device/`、エフェクトなら `fx/<id>/`)。
 fn clap_params_json(
-    track: &glaux_core::Track,
+    owner: &glaux_engine::plugins::PluginOwner,
     plugin_id: &str,
     overrides: &glaux_core::ParamMap,
     filter: Option<&str>,
     limit: usize,
+    path_prefix: &str,
 ) -> (Vec<Value>, usize) {
     let Some(infos) = glaux_engine::plugins::param_infos(plugin_id) else {
         return (vec![], 0);
     };
-    let live = glaux_engine::plugins::live_values(&track.id).unwrap_or_default();
+    let live = glaux_engine::plugins::live_values(owner).unwrap_or_default();
     let needle = filter.map(str::to_lowercase);
     let matched: Vec<&glaux_clap::ParamInfo> = infos
         .iter()
@@ -580,7 +632,7 @@ fn clap_params_json(
             };
             json!({
                 "name": key,
-                "path": format!("device/{key}"),
+                "path": format!("{path_prefix}{key}"),
                 "display_name": display,
                 "unit": "",
                 "range": {
@@ -607,7 +659,14 @@ pub fn track_params_json_filtered(
     // CLAP プラグイン: つまみはプラグインが公開するパラメータ。エフェクトは Glaux 側
     if let Some(d) = &track.device {
         if let glaux_core::PluginSource::Clap { plugin_id, .. } = &d.source {
-            let (params, total) = clap_params_json(track, plugin_id, &d.params, filter, limit);
+            let (params, total) = clap_params_json(
+                &glaux_engine::plugins::PluginOwner::Track(track.id.clone()),
+                plugin_id,
+                &d.params,
+                filter,
+                limit,
+                "device/",
+            );
             return Ok(json!({
                 "device": {
                     "name": "clap",
@@ -793,16 +852,30 @@ impl GlauxServer {
         }
         let include_notes = p.include_notes.unwrap_or(true);
         let include_automation = p.include_automation.unwrap_or(true);
+        // CLAP プラグインの状態は巨大な不透明データなので省略して見せる
+        let elide = |d: &mut Value| {
+            if d.get("type").and_then(Value::as_str) != Some("clap") {
+                return;
+            }
+            if let Some(state) = d.get_mut("state") {
+                let len = state.as_str().map_or(0, str::len);
+                *state = json!(format!("{ELIDED_CLAP_STATE}{len} 文字)"));
+            }
+        };
+        if let Some(fx) = v
+            .get_mut("master")
+            .and_then(|m| m.get_mut("effects"))
+            .and_then(Value::as_array_mut)
+        {
+            fx.iter_mut().for_each(elide);
+        }
         if let Some(tracks) = v.get_mut("tracks").and_then(Value::as_array_mut) {
             for track in tracks {
-                // CLAP プラグインの状態は巨大な不透明データなので省略して見せる
-                if let Some(state) = track
-                    .get_mut("device")
-                    .filter(|d| d.get("type").and_then(Value::as_str) == Some("clap"))
-                    .and_then(|d| d.get_mut("state"))
-                {
-                    let len = state.as_str().map_or(0, str::len);
-                    *state = json!(format!("{ELIDED_CLAP_STATE}{len} 文字)"));
+                if let Some(d) = track.get_mut("device") {
+                    elide(d);
+                }
+                if let Some(fx) = track.get_mut("effects").and_then(Value::as_array_mut) {
+                    fx.iter_mut().for_each(elide);
                 }
                 if !include_automation {
                     if let Some(a) = track.get_mut("automation") {
@@ -919,6 +992,40 @@ impl GlauxServer {
                         });
                 }
             }
+            // エフェクトの状態も同様(同じ ID のエフェクトの今の状態。無ければ既定の状態)
+            let fx_state = match &mut cmd {
+                Command::AddEffect { effect, .. } | Command::AddMasterEffect { effect, .. } => {
+                    match &mut effect.source {
+                        glaux_core::PluginSource::Clap { state, .. } => {
+                            Some((effect.id.clone(), state))
+                        }
+                        _ => None,
+                    }
+                }
+                Command::SetEffectState { id, state } => Some((id.clone(), state)),
+                _ => None,
+            };
+            if let Some((id, state)) = fx_state {
+                if state
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with(ELIDED_CLAP_STATE))
+                {
+                    if current.is_none() {
+                        current = Some(self.handle.get_project().await?.0);
+                    }
+                    *state = current.as_ref().and_then(|p| {
+                        p.tracks
+                            .iter()
+                            .flat_map(|t| t.effects.iter())
+                            .chain(p.master.effects.iter())
+                            .find(|e| e.id == id)
+                            .and_then(|e| match &e.source {
+                                glaux_core::PluginSource::Clap { state, .. } => state.clone(),
+                                _ => None,
+                            })
+                    });
+                }
+            }
             commands.push(cmd);
         }
         let command = if commands.len() == 1 {
@@ -1007,12 +1114,13 @@ impl GlauxServer {
     #[tool(
         description = "楽器・エフェクトのパラメータ仕様と現在値を返す。つまみを理解する唯一の情報源。\
         track_id を省略するとカタログ: 内蔵楽器(subtractive / drum)と内蔵エフェクト(eq / compressor / reverb)の\
-        全パラメータ仕様(範囲と聴感上の効果)を返す。\
+        全パラメータ仕様(範囲と聴感上の効果)と、今のマスターのエフェクトチェーン(master_effects)を返す。\
         track_id を指定するとそのトラックの現在のデバイスとエフェクトチェーン(spec + current)を返す。\
         音源の設定は set_device(例: {\"op\":\"set_device\",\"track\":\"trk_x\",\"device\":{\"type\":\"builtin\",\"name\":\"drum\"}})、\
         エフェクト追加は add_effect(例: {\"op\":\"add_effect\",\"track\":\"trk_x\",\"effect\":{\"id\":\"fx_a1b2c3\",\"type\":\"builtin\",\"name\":\"reverb\"}})。\
         つまみは set_param で、path は楽器 \"device/<名前>\"、エフェクト \"fx/<fx_id>/<名前>\"。\
         CLAP プラグインのトラックではプラグインのつまみ(path \"device/clap:<id>\"、値はプラグインの単位)が返る。\
+        CLAP エフェクトは effects の中に name: \"clap\"、plugin_name、つまみ(path \"fx/<fx_id>/clap:<id>\"、最大 64 個)で返る。\
         数百個あるので filter(例 \"cutoff\"、\"filter\"、\"attack\")で絞り込み、current_text で画面上の表示を確認すること。\
         ドラムトラックには必ず drum を設定すること(未設定は subtractive で鳴る)。"
     )]
@@ -1021,12 +1129,17 @@ impl GlauxServer {
         let (project, version) = self.handle.get_project().await?;
 
         let Some(track_id) = params.0.track_id else {
-            // カタログモード
+            // カタログモード(+ 今のマスターのエフェクトチェーン)
+            let master = project.master.effects.clone();
+            let master_effects = tokio::task::spawn_blocking(move || effects_json(&master))
+                .await
+                .map_err(|e| e.to_string())?;
             return Ok(Json(json!({
                 "project_version": version,
                 "instruments": glaux_dsp::instrument_catalog(),
                 "effects": glaux_dsp::effect_catalog(),
                 "default_instrument": glaux_dsp::DEFAULT_INSTRUMENT,
+                "master_effects": master_effects,
             })));
         };
 
@@ -1231,6 +1344,10 @@ impl GlauxServer {
         (Surge XT・Vital・TAL-NoiseMaker などの本格的なシンセ)。音色の大枠はプラグイン自身の画面で人間が作るが、\
         つまみは list_params {track_id, filter} で探して set_param {path: \"device/clap:<id>\"} で動かせ、\
         set_automation_points の target にもできる(フィルタスイープ等)。\
+        エフェクト(effect: true。リバーブ・ディレイ・コーラス・マスタリング系など)は add_effect / add_master_effect の\
+        effect に {id, type: \"clap\", plugin_id} を渡してトラック・マスターのチェーンに挿せる(内蔵エフェクトと混ぜてよい。\
+        チェーンの順に通る)。つまみは list_params {track_id} の effects(path \"fx/<fx_id>/clap:<id>\")で見て set_param /\
+        set_master_param / set_automation_points で動かす。プリセットは list_plugin_presets / load_plugin_preset に fx_id。\
         get_project では CLAP の状態(state)は省略表示になる。音源を差し替えるときは state を付けないこと。\
         rescan: true でインストールし直したプラグインを探し直す。"
     )]
@@ -1533,7 +1650,7 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "CLAP プラグイン(例 Surge XT)のプリセット(作り込まれた音色)を一覧する。\
+        description = "CLAP プラグイン(例 Surge XT。音源なら track_id、エフェクトなら fx_id)のプリセット(作り込まれた音色)を一覧する。\
         filter(名前・カテゴリ・作者の部分一致、例 \"pad\" / \"bass\")や category(フォルダ名、例 \"Pads\")で絞り込む。\
         返り値の categories でどんな系統があるか分かる。current_preset は今読み込まれているプリセット名。\
         プリセットにはつまみとして公開されていない設定(LFO のテンポ同期、モジュレーションの割り当て、\
@@ -1543,7 +1660,7 @@ impl GlauxServer {
     async fn list_plugin_presets(&self, params: Parameters<ListPluginPresetsParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("list_plugin_presets");
         let p = params.0;
-        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let track_id = plugin_owner(p.track_id.as_deref(), p.fx_id.as_deref())?;
         let (project, _) = self.handle.get_project().await?;
         let v = tokio::task::spawn_blocking(move || {
             crate::clap_presets::list(
@@ -1561,7 +1678,7 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "CLAP プラグインのトラックにプリセットを読み込む(音色が丸ごと入れ替わる。履歴 1 件、取り消し可)。\
+        description = "CLAP プラグイン(音源なら track_id、エフェクトなら fx_id)にプリセットを読み込む(音色が丸ごと入れ替わる。履歴 1 件、取り消し可)。\
         preset は list_plugin_presets の id。set_param で上書きしていたつまみの値は消える(プリセットの値になる)。\
         読み込み後は list_params で主なつまみ(cutoff・attack など)を確認し、必要なら微調整すること。"
     )]
@@ -1572,7 +1689,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("load_plugin_preset");
         let p = params.0;
-        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let track_id = plugin_owner(p.track_id.as_deref(), p.fx_id.as_deref())?;
         let (project, _) = self.handle.get_project().await?;
         let (command, label, name) = tokio::task::spawn_blocking(move || {
             crate::clap_presets::load_command(&project, &track_id, &p.preset)
@@ -2171,6 +2288,7 @@ impl ServerHandler for GlauxServer {
                  ミックス調整は 編集 → analyze_audio → 微調整 のループで行う。\
                  エフェクト(eq / compressor / reverb / distortion / sidechain)は add_effect で追加し、\
                  set_param(fx/<id>/<名前>)で調整する。マスターにも掛けられる。\
+                 インストール済みの CLAP エフェクト(list_plugins の effect: true)も同じように挿せる(effect に type: \"clap\", plugin_id)。\
                  EDM のポンピングは sidechain(source にキックのトラック ID)、\
                  supersaw は subtractive の unison + detune、歪みは distortion。\
                  メタルのブリッジミュートはノートの articulation: \"palm_mute\"(+ distortion)。\

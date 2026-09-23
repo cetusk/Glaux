@@ -5,6 +5,7 @@
 
 use crate::data::{build_playback_data, PlaybackData, SampleBank};
 use crate::midi::{MidiConnection, MidiSink, MidiTake, RecordedNote, LIVE_NO_TRACK};
+use crate::plugins::PluginOwner;
 use crate::render::{Renderer, Shared, NO_SEEK};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use glaux_core::{Project, TempoMap, Tick, TrackId};
@@ -291,29 +292,32 @@ impl EngineHandle {
 
     // ---- CLAP プラグイン ----
 
-    /// トラックに載っている CLAP プラグインの今の状態(base64。プロジェクトへ保存する用)。
-    /// 状態(base64)と、上書きしているパラメータの今の値を返す。
-    pub fn save_plugin_state(&self, track: &TrackId) -> Result<(String, Vec<(u32, f64)>), String> {
-        self.plugins.save_state(track)
+    /// 載っている CLAP プラグイン(トラックの音源・エフェクト)の今の状態(base64。プロジェクトへ保存する用)と、
+    /// 上書きしているパラメータの今の値を返す。
+    pub fn save_plugin_state(
+        &self,
+        owner: &PluginOwner,
+    ) -> Result<(String, Vec<(u32, f64)>), String> {
+        self.plugins.save_state(owner)
     }
 
     /// プラグインの画面を開く。
-    pub fn open_plugin_gui(&self, track: &TrackId, title: &str) -> Result<(), String> {
-        self.plugins.open_gui(track, title)
+    pub fn open_plugin_gui(&self, owner: &PluginOwner, title: &str) -> Result<(), String> {
+        self.plugins.open_gui(owner, title)
     }
 
-    pub fn close_plugin_gui(&self, track: &TrackId) {
-        self.plugins.close_gui(track);
+    pub fn close_plugin_gui(&self, owner: &PluginOwner) {
+        self.plugins.close_gui(owner);
     }
 
     /// プラグインのスレッドからの知らせ(状態の変化・画面を閉じた)。
-    pub fn take_plugin_events(&self) -> Vec<(TrackId, crate::plugins::PluginEvent)> {
+    pub fn take_plugin_events(&self) -> Vec<(PluginOwner, crate::plugins::PluginEvent)> {
         self.plugins.take_events()
     }
 
     /// 保存した状態をプロジェクトに書いたことを知らせる(読み込み直しを防ぐ)。
-    pub fn note_plugin_state_saved(&self, track: &TrackId, state: &str, params: &[(u32, f64)]) {
-        self.plugins.note_state_saved(track, state, params);
+    pub fn note_plugin_state_saved(&self, owner: &PluginOwner, state: &str, params: &[(u32, f64)]) {
+        self.plugins.note_state_saved(owner, state, params);
     }
 
     // ---- MIDI キーボード ----

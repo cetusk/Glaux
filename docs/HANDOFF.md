@@ -227,6 +227,7 @@ AI にとってのもう一つの利点: 履歴がプロジェクト側にある
 | `add_effect {track, effect, index?}` | `remove_effect` | |
 | `remove_effect {id}` | `add_effect` | |
 | `set_effect_bypass {id, bypass}` | 同 | |
+| `set_effect_state {id, state?}` | 同(前の状態) | CLAP エフェクトの状態(base64)。トラック・マスター両方。内蔵エフェクトにはエラー(2026-09-24) |
 | `set_automation_points {track, target, points}` | 同 | 空配列でレーン削除。レーンは対象パスの文字列順に挿入(削除 → 逆で元の並びに戻るよう正規化) |
 | `set_clip_stretch {id, stretch}` | 同(旧値) | 音声クリップのテンポ追従(2026-09-23)。`{mode: follow, original_bpm}`(20〜400)/ `{mode: none}`。音声クリップ以外はエラー |
 | `set_master_automation_points {target, points}` | 同 | マスターのレーン(2026-09-23)。target は `track/volume_db` か `fx/<マスターのエフェクト ID>/<名前>`。`MasterBus.automation` に保存 |
@@ -901,6 +902,30 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
     set_device 1 回。トラックのエフェクトも通した `verified_distance` も返す)、`find_similar_presets`(計 34 ツール)。
     UI は音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」(Tauri `match_clip_sound`:
     直後に MIDI トラックを足し、同じ位置に目標の高さ・長さの 1 音。履歴 1 件)
+- **CLAP エフェクト(2026-09-24)**: トラック・マスターのエフェクトチェーンに CLAP プラグインを挿せる
+  (`Effect.source = Clap { plugin_id, state }`。スキーマは変更なし、内蔵エフェクトと混在可)。
+  - レンダラをブロック単位のチェーン処理に組み替えた: (1) フレームごとに発音・音声クリップ・ライブ演奏を回し、
+    トラックごとのエフェクト前の合算を `blk_mono`、エフェクトを通さない分(MAX_TRACKS 超・試聴)を `blk_direct`、
+    クリックと各フレームの再生位置を溜める → (2) `process_track_chains`: トラックごとに 入力(楽器 + プラグイン出力)
+    → `run_chain` → 音量/パン。内蔵エフェクトはバッファ上をサンプルごと、CLAP エフェクトは入力口(`input_mut`)に書いて
+    ブロックごと `process` → (3) `process_master`: マスターのチェーン → 音量 → ソフトクリップ。
+    ループの折り返しでオートメーションのカーソルは `blk_pos` の逆戻りを見て戻す。バッファは起動時に MAX_FRAMES で確保
+    (アロケーションなし)。負荷はベンチで変更前と同等(all: 平均 5.9% → 5.7%)
+  - CLAP エフェクトのスロットは音源と同じプール。`PluginOwner`(`Track(TrackId)` / `Effect(FxId)`)で持ち主を表し、
+    `PluginManager::sync` / `OfflinePlugins::create` / `live_values` / 画面 / 状態保存はすべて持ち主単位。
+    `project_plugins` がプロジェクトの全 CLAP(バイパス中のエフェクトも。切り替えで作り直さない)を列挙する。
+    焼き込みでは `BakedEffect { params: EffectParams::External, plugin: Some((slot, gen)) }`。用意できないプラグインは焼かない(素通し)。
+    レンダラはブロック頭に `slot_is_fx` を作り、音源の一括処理からエフェクトのスロットを外す
+  - 入力: `ClapProcessor` はメイン入力ポートを覚え(`main_in`)、入力は `is_constant: false` で渡す。モノラル入力には左右の平均。
+    プラグインの遅延補正(PDC)はしていない
+  - つまみ: `fx/<id>/clap:<param id>`(上書き値は音源と同じく SetParams で送る)。オートメーションはブロック頭に
+    `NoteMsg::Param` として積む(`push_plugin_param`)。MCP `list_params` の effects に name: "clap"・plugin_name・つまみ(最大 64 個)・
+    missing(プラグインが見つからない)。track_id なしの list_params は master_effects も返す
+  - 状態: 新コマンド `set_effect_state`。アプリは画面での変更を `set_effect_state` + 上書き値の `set_param` / `set_master_param`
+    のまとめ 1 件で保存。get_project はエフェクトの状態も省略表示し、add_effect / add_master_effect / set_effect_state で
+    省略表示のまま送られたら今の状態に戻す。プリセットは list_plugin_presets / load_plugin_preset に fx_id
+  - テスト: `GLAUX_TEST_CLAP_FX`(例 Surge XT Effects。既定の効果は Delay)で、入力が通る・トラック / マスターで効く・
+    バイパスで完全に素通し・つまみが一覧に出て動かせる
 - **CLAP プラグイン(外部の音源)第 1 段階(2026-09-23)**: 新クレート `glaux-clap`
   (`clack-host` / `clack-extensions` 0.2、MIT OR Apache-2.0)+ `glaux-engine/src/plugins.rs`。
   - 探索: `GLAUX_CLAP_PATH` → `CLAP_PATH` → OS 標準(Windows は `%COMMONPROGRAMFILES%\CLAP` と

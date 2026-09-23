@@ -218,3 +218,62 @@ fn presets_are_listed_and_loaded_by_id() {
         .load_preset(&loc, key.as_deref())
         .expect("一覧の ID で読み込める");
 }
+
+/// エフェクトプラグイン(`GLAUX_TEST_CLAP_FX`、例: Surge XT Effects)に音を通す。
+#[test]
+fn effect_processes_input_audio() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_FX").map(PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP_FX が未設定のためスキップ");
+        return;
+    };
+    let list = describe(&path).expect("記述子を読める");
+    for p in &list {
+        eprintln!("{} ({}) {:?}", p.name, p.id, p.features);
+    }
+    let info = list
+        .iter()
+        .find(|p| p.is_effect())
+        .expect("エフェクトが入っている");
+    match list_presets(&path, &info.id) {
+        Ok(ps) => eprintln!(
+            "プリセット {} 個: {:?}",
+            ps.len(),
+            ps.iter()
+                .take(8)
+                .map(|p| (&p.category, &p.name))
+                .collect::<Vec<_>>()
+        ),
+        Err(e) => eprintln!("プリセットなし: {e}"),
+    }
+    mark_main_thread();
+    let mut plugin = ClapPlugin::new(&path, &info.id).expect("生成できる");
+    let infos = plugin.param_infos();
+    let ids: Vec<u32> = infos.iter().map(|p| p.id).collect();
+    for (p, (_, v, t)) in infos.iter().zip(plugin.param_values(&ids)) {
+        eprintln!("  {} {} [{}..{}] = {v} ({t})", p.id, p.name, p.min, p.max);
+    }
+    let mut proc = plugin.activate(48_000.0).expect("起動できる");
+    assert!(proc.accepts_audio());
+    let n = 512;
+    let mut out_rms = 0.0;
+    let mut in_rms = 0.0;
+    for b in 0..40 {
+        let (l, r) = proc.input_mut().expect("入力がある");
+        for (i, v) in l[..n].iter_mut().enumerate() {
+            let t = (b * n + i) as f32 / 48_000.0;
+            *v = (std::f32::consts::TAU * 440.0 * t).sin() * 0.3;
+        }
+        let copy: Vec<f32> = l[..n].to_vec();
+        if let Some(r) = r {
+            r[..n].copy_from_slice(&copy);
+        }
+        in_rms = rms(&copy);
+        proc.process(n, &[]);
+        let (ol, _) = proc.output().unwrap();
+        out_rms = rms(&ol[..n]);
+    }
+    eprintln!("入力 RMS {in_rms:.4} → 出力 RMS {out_rms:.4}");
+    assert!(out_rms > 0.001, "エフェクトを通った音が出る");
+    proc.stop();
+    plugin.deactivate(proc);
+}

@@ -1,11 +1,13 @@
 //! CLAP プラグインのプリセット(音色の保存データ)の一覧と読み込み。UI(Tauri)と MCP が共用する。
 //!
 //! 読み込みは「プロジェクトの状態 → プリセット」を一時的なプラグインで適用して新しい状態を作り、
-//! `set_device` 1 件で書く(取り消しで元の音色に戻る)。再生中のプラグインは同期で状態を読み込み直す。
-//! プリセットは音色一式なので、AI・オートメーション以外で書いた CLAP パラメータの上書き値
-//! (`device/clap:<id>`)は消す。読み込んだプリセット名は `device.params.preset` に残す。
+//! 音源は `set_device` 1 件、エフェクトは `set_effect_state` と上書き値の削除のまとめ 1 件で書く
+//! (取り消しで元の音色に戻る)。再生中のプラグインは同期で状態を読み込み直す。
+//! プリセットは音色一式なので、CLAP パラメータの上書き値(`device/clap:<id>` / `fx/<id>/clap:<id>`)は消す。
+//! 読み込んだプリセット名は `params.preset` に残す。
 
-use glaux_core::{Command, ParamValue, PluginSource, Project, TrackId};
+use glaux_core::{Command, ParamPath, ParamValue, PluginSource, Project, TrackId};
+use glaux_engine::plugins::PluginOwner;
 use serde_json::{json, Value};
 
 /// device.params に残すプリセット名のキー
@@ -39,6 +41,62 @@ pub(crate) fn clap_track<'a>(
     Ok((track, device, plugin_id, state.as_deref()))
 }
 
+/// CLAP プラグインの載っている所の情報。
+pub(crate) struct ClapSite<'a> {
+    pub plugin_id: &'a str,
+    pub state: Option<&'a str>,
+    pub params: &'a glaux_core::ParamMap,
+    /// 表示用の場所(トラック名 / 「マスター」)
+    pub place: String,
+    /// エフェクトならそのトラック(マスターのエフェクトは None)
+    pub fx_track: Option<TrackId>,
+}
+
+/// 音源(トラック)またはエフェクトの CLAP プラグインを引く。
+pub(crate) fn clap_site<'a>(
+    project: &'a Project,
+    owner: &PluginOwner,
+) -> Result<ClapSite<'a>, String> {
+    match owner {
+        PluginOwner::Track(tid) => {
+            let (track, device, plugin_id, state) = clap_track(project, tid)?;
+            Ok(ClapSite {
+                plugin_id,
+                state,
+                params: &device.params,
+                place: track.name.clone(),
+                fx_track: None,
+            })
+        }
+        PluginOwner::Effect(fx) => {
+            let (effect, place, fx_track) =
+                match project.master.effects.iter().find(|e| &e.id == fx) {
+                    Some(e) => (e, "マスター".to_owned(), None),
+                    None => project
+                        .tracks
+                        .iter()
+                        .find_map(|t| {
+                            t.effects
+                                .iter()
+                                .find(|e| &e.id == fx)
+                                .map(|e| (e, t.name.clone(), Some(t.id.clone())))
+                        })
+                        .ok_or_else(|| format!("エフェクトが見つかりません: {fx}"))?,
+                };
+            let PluginSource::Clap { plugin_id, state } = &effect.source else {
+                return Err(format!("{fx} は CLAP プラグインのエフェクトではありません"));
+            };
+            Ok(ClapSite {
+                plugin_id,
+                state: state.as_deref(),
+                params: &effect.params,
+                place,
+                fx_track,
+            })
+        }
+    }
+}
+
 fn preset_json(p: &glaux_clap::PresetEntry) -> Value {
     json!({
         "id": p.id(),
@@ -56,13 +114,14 @@ fn preset_json(p: &glaux_clap::PresetEntry) -> Value {
 /// `category` はカテゴリの前方一致(大文字小文字を区別しない)。
 pub fn list(
     project: &Project,
-    track_id: &TrackId,
+    owner: &PluginOwner,
     filter: Option<&str>,
     category: Option<&str>,
     limit: usize,
     rescan: bool,
 ) -> Result<Value, String> {
-    let (_, device, plugin_id, _) = clap_track(project, track_id)?;
+    let site = clap_site(project, owner)?;
+    let plugin_id = site.plugin_id;
     let all = glaux_engine::plugins::presets(plugin_id, rescan)?;
     let needle = filter.map(str::to_lowercase).filter(|s| !s.is_empty());
     let cat = category.map(str::to_lowercase).filter(|s| !s.is_empty());
@@ -96,7 +155,7 @@ pub fn list(
     categories.sort();
     Ok(json!({
         "plugin_id": plugin_id,
-        "current_preset": device.params.get(PRESET_NAME_KEY).and_then(|v| match v {
+        "current_preset": site.params.get(PRESET_NAME_KEY).and_then(|v| match v {
             ParamValue::Enum(s) => Some(s.clone()),
             _ => None,
         }),
@@ -110,14 +169,15 @@ pub fn list(
     }))
 }
 
-/// プリセットを読み込むコマンド(`set_device` 1 件)と、履歴のラベル・プリセット名。
+/// プリセットを読み込むコマンドと、履歴のラベル・プリセット名。
 /// 一時的にプラグインを作るので、呼んだスレッドをしばらく占有する(別スレッドで呼ぶこと)。
 pub fn load_command(
     project: &Project,
-    track_id: &TrackId,
+    owner: &PluginOwner,
     preset_id: &str,
 ) -> Result<(Command, String, String), String> {
-    let (track, device, plugin_id, state) = clap_track(project, track_id)?;
+    let site = clap_site(project, owner)?;
+    let plugin_id = site.plugin_id;
     let name = glaux_engine::plugins::presets(plugin_id, false)
         .ok()
         .and_then(|l| {
@@ -131,26 +191,61 @@ pub fn load_command(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| preset_id.to_owned())
         });
-    let new_state = glaux_engine::plugins::state_with_preset(plugin_id, state, preset_id)?;
-    let mut device = device.clone();
-    device.source = PluginSource::Clap {
-        plugin_id: plugin_id.to_owned(),
-        state: Some(new_state),
+    let new_state = glaux_engine::plugins::state_with_preset(plugin_id, site.state, preset_id)?;
+    let label = format!("{} の音色をプリセット「{name}」に", site.place);
+    let command = match owner {
+        PluginOwner::Track(tid) => {
+            let (_, device, _, _) = clap_track(project, tid)?;
+            let mut device = device.clone();
+            device.source = PluginSource::Clap {
+                plugin_id: plugin_id.to_owned(),
+                state: Some(new_state),
+            };
+            // プリセットは音色一式: つまみの上書き値は消し、読み込んだ名前を残す
+            device
+                .params
+                .retain(|k, _| glaux_engine::plugins::parse_param_key(k).is_none());
+            device
+                .params
+                .insert(PRESET_NAME_KEY.to_owned(), ParamValue::Enum(name.clone()));
+            Command::SetDevice {
+                track: tid.clone(),
+                device: Some(device),
+            }
+        }
+        PluginOwner::Effect(fx) => {
+            let mut cmds = vec![Command::SetEffectState {
+                id: fx.clone(),
+                state: Some(new_state),
+            }];
+            let path = |k: &str| ParamPath::effect(fx.clone(), k);
+            for k in site
+                .params
+                .keys()
+                .filter(|k| glaux_engine::plugins::parse_param_key(k).is_some())
+            {
+                cmds.push(match &site.fx_track {
+                    Some(t) => Command::UnsetParam {
+                        track: t.clone(),
+                        path: path(k),
+                    },
+                    None => Command::UnsetMasterParam { path: path(k) },
+                });
+            }
+            let value = ParamValue::Enum(name.clone());
+            cmds.push(match &site.fx_track {
+                Some(t) => Command::SetParam {
+                    track: t.clone(),
+                    path: path(PRESET_NAME_KEY),
+                    value,
+                },
+                None => Command::SetMasterParam {
+                    path: path(PRESET_NAME_KEY),
+                    value,
+                },
+            });
+            Command::batch(label.clone(), cmds)
+        }
     };
-    // プリセットは音色一式: つまみの上書き値は消し、読み込んだ名前を残す
-    device
-        .params
-        .retain(|k, _| glaux_engine::plugins::parse_param_key(k).is_none());
-    device
-        .params
-        .insert(PRESET_NAME_KEY.to_owned(), ParamValue::Enum(name.clone()));
-    let label = format!("{} の音色をプリセット「{name}」に", track.name);
-    Ok((
-        Command::SetDevice {
-            track: track_id.clone(),
-            device: Some(device),
-        },
-        label,
-        name,
-    ))
+    Ok((command, label, name))
 }

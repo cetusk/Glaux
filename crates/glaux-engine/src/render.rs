@@ -321,6 +321,19 @@ pub struct Renderer {
     next_note_id: u32,
     /// エフェクト状態プール(リバーブのバッファ込みで起動時に確保)
     effect_states: Vec<EffectState>,
+    /// このブロックで CLAP エフェクトとして使うプラグインのスロット(音源と分けて処理する)
+    slot_is_fx: [bool; MAX_PLUGINS],
+    /// ブロック用バッファ(起動時に MAX_FRAMES で確保): トラックごとのエフェクト前の合算、
+    /// エフェクトを通さずマスターへ行く分(左右)、クリック、各フレームの再生位置
+    blk_mono: Vec<Vec<f32>>,
+    blk_direct: [Vec<f32>; 2],
+    blk_click: Vec<f32>,
+    blk_pos: Vec<u64>,
+    /// エフェクトチェーンの作業用(左右)と、マスター前の合算(左右)
+    fx_l: Vec<f32>,
+    fx_r: Vec<f32>,
+    mix_l: Vec<f32>,
+    mix_r: Vec<f32>,
     /// トラックごとの無音連続サンプル数(残響が消えたらエフェクト処理を省く)
     track_silence: [u32; MAX_TRACKS],
     /// オートメーション評価カーソル(vol, pan)。単調前進、resync でリセット
@@ -375,6 +388,20 @@ fn eval_auto(points: &[AutoPoint], cursor: &mut usize, pos: u64) -> f32 {
     }
 }
 
+/// オートメーションの値を CLAP エフェクトのパラメータ(`clap:<id>`)として積む(ブロック頭の 1 回)。
+fn push_plugin_param(notes: &mut Vec<NoteMsg>, name: &str, value: f32) {
+    let Some(id) = crate::plugins::parse_param_key(name) else {
+        return;
+    };
+    if notes.len() < MAX_EVENTS {
+        notes.push(NoteMsg::Param {
+            time: 0,
+            id,
+            value: value as f64,
+        });
+    }
+}
+
 impl Renderer {
     pub fn new(shared: Arc<Shared>) -> Self {
         Renderer {
@@ -400,6 +427,15 @@ impl Renderer {
             plugin_auto_last: vec![[f32::NAN; MAX_PLUGIN_LANES]; MAX_TRACKS],
             next_note_id: 1,
             effect_states: vec![EffectState::default(); MAX_EFFECT_SLOTS],
+            slot_is_fx: [false; MAX_PLUGINS],
+            blk_mono: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
+            blk_direct: [vec![0.0; MAX_FRAMES], vec![0.0; MAX_FRAMES]],
+            blk_click: vec![0.0; MAX_FRAMES],
+            blk_pos: vec![0; MAX_FRAMES],
+            fx_l: vec![0.0; MAX_FRAMES],
+            fx_r: vec![0.0; MAX_FRAMES],
+            mix_l: vec![0.0; MAX_FRAMES],
+            mix_r: vec![0.0; MAX_FRAMES],
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
             master_cursor: 0,
@@ -547,6 +583,19 @@ impl Renderer {
             }
         }
         self.refresh_track_plugins(data);
+        self.slot_is_fx = [false; MAX_PLUGINS];
+        for fx in data
+            .tracks
+            .iter()
+            .flat_map(|t| t.effects.iter())
+            .chain(data.master_effects.iter())
+        {
+            if let Some((ps, _)) = fx.plugin {
+                if let Some(f) = self.slot_is_fx.get_mut(ps as usize) {
+                    *f = true;
+                }
+            }
+        }
         if resync {
             self.plugins_all_off(true);
             for l in self.plugin_auto_last.iter_mut() {
@@ -661,6 +710,13 @@ impl Renderer {
                 let Some(fx) = mix.effects.iter().find(|f| f.slot == *slot) else {
                     continue;
                 };
+                if let Some((ps, _)) = fx.plugin {
+                    // CLAP エフェクトのつまみ(clap:<id>)はプラグインへ送る
+                    let cursor = points.partition_point(|pt| pt.sample <= self.pos);
+                    let v = eval_auto(points, &mut cursor.saturating_sub(1), self.pos);
+                    push_plugin_param(&mut self.plugin_notes[ps as usize], name, v);
+                    continue;
+                }
                 let s = *slot as usize;
                 if s >= self.fx_scratch.len() {
                     continue;
@@ -677,6 +733,12 @@ impl Renderer {
             let Some(fx) = data.master_effects.iter().find(|f| f.slot == *slot) else {
                 continue;
             };
+            if let Some((ps, _)) = fx.plugin {
+                let cursor = points.partition_point(|pt| pt.sample <= self.pos);
+                let v = eval_auto(points, &mut cursor.saturating_sub(1), self.pos);
+                push_plugin_param(&mut self.plugin_notes[ps as usize], name, v);
+                continue;
+            }
             let s = *slot as usize;
             if s >= self.fx_scratch.len() {
                 continue;
@@ -716,6 +778,10 @@ impl Renderer {
                 notes.sort_unstable_by_key(|n| (n.time(), n.order()));
             }
             for slot in 0..MAX_PLUGINS {
+                // エフェクトはトラックの音が揃ってから通す(process_track_chains)
+                if self.slot_is_fx[slot] {
+                    continue;
+                }
                 let Some(p) = self.plugins[slot].as_mut() else {
                     continue;
                 };
@@ -734,6 +800,8 @@ impl Renderer {
             }
         }
 
+        // 1. フレームごとに発音し、トラックごとの合算(エフェクト前)をブロック用のバッファに溜める
+        let ntracks = data.tracks.len().min(MAX_TRACKS);
         for frame in 0..frames {
             // ループ終端に達したら区間頭へ。発音中の音は note_off でリリースに回し
             // (ぶつ切りのクリックを避ける)、イベント・オートメーションのカーソルを再同期。
@@ -926,89 +994,7 @@ impl Renderer {
                 i += 1;
             }
 
-            // サイドチェインの検出信号: ソーストラックの生ミックス(エフェクト前)。
-            // track_mono はこの時点で全トラック分確定しているので、処理順に依存しない
-            let sidechain_key = |p: &EffectParams| -> f32 {
-                if let EffectParams::Sidechain(sc) = p {
-                    track_mono
-                        .get(sc.source_track as usize)
-                        .copied()
-                        .unwrap_or(0.0)
-                } else {
-                    0.0
-                }
-            };
-
-            // トラックごとに 楽器合算 → エフェクトチェーン → 音量/パン → マスター
-            // (エフェクトの残響はボイスが消えた後も続くので、毎フレーム全トラックを回す)
-            let mut l = direct_l;
-            let mut r = direct_r;
-            // 残響テールが確実に消えるまでの猶予(これを超えて無音ならエフェクトを省く)
-            let tail_limit = (4.0 * sr) as u32;
-            for (ti, mix) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
-                let mono = track_mono[ti];
-                // CLAP プラグインの出力(ステレオ)
-                let (el, er) = match self.track_plugin[ti] {
-                    Some(slot) => (
-                        self.plugin_out[slot][0][frame],
-                        self.plugin_out[slot][1][frame],
-                    ),
-                    None => (0.0, 0.0),
-                };
-                if mono == 0.0 && el == 0.0 && er == 0.0 {
-                    self.track_silence[ti] = self.track_silence[ti].saturating_add(1);
-                } else {
-                    self.track_silence[ti] = 0;
-                }
-                // 音量・パン: オートメーションレーンがあればフェーダーより優先
-                let (gl, gr) = if mix.vol_db_auto.is_empty() && mix.pan_auto.is_empty() {
-                    (mix.gain_l, mix.gain_r)
-                } else {
-                    let (vol_cur, pan_cur) = &mut self.auto_cursors[ti];
-                    let amp = if mix.vol_db_auto.is_empty() {
-                        mix.base_amp
-                    } else {
-                        db_to_amp(eval_auto(&mix.vol_db_auto, vol_cur, self.pos))
-                    };
-                    let pan = if mix.pan_auto.is_empty() {
-                        mix.base_pan
-                    } else {
-                        eval_auto(&mix.pan_auto, pan_cur, self.pos).clamp(-1.0, 1.0)
-                    };
-                    let (pl, pr) = pan_gains(pan);
-                    (amp * pl, amp * pr)
-                };
-                // ステレオ出力のプラグインは、パンを左右バランスとして掛ける
-                // (等パワーのパンは中央で -3dB になるので √2 倍して中央を 0dB に)
-                let (gl, gr) = if self.track_plugin[ti].is_some() {
-                    (gl * std::f32::consts::SQRT_2, gr * std::f32::consts::SQRT_2)
-                } else {
-                    (gl, gr)
-                };
-
-                if mix.effects.is_empty() {
-                    l += (mono + el) * gl;
-                    r += (mono + er) * gr;
-                    continue;
-                }
-                // 長く無音のトラックはチェーンごとスキップ(CPU 節約)
-                if self.track_silence[ti] > tail_limit {
-                    continue;
-                }
-                let (mut fl, mut fr) = (mono + el, mono + er);
-                for fx in &mix.effects {
-                    let params = self.fx_scratch[fx.slot as usize]
-                        .as_ref()
-                        .unwrap_or(&fx.params);
-                    let key = sidechain_key(params);
-                    let state = &mut self.effect_states[fx.slot as usize];
-                    (fl, fr) = state.process(params, fl, fr, key);
-                }
-                l += fl * gl;
-                r += fr * gr;
-            }
-
-            // 試聴ボイス(停止中でも鳴る。トラックエフェクトはバイパス)
+            // 試聴ボイス(停止中でも鳴る。トラックエフェクトはバイパスしてマスターへ)
             let mut i = 0;
             while i < self.preview_voices.len() {
                 let v = &mut self.preview_voices[i];
@@ -1022,40 +1008,29 @@ impl Renderer {
                 }
                 v.remaining = v.remaining.saturating_sub(1);
                 let sample = v.state.next(&v.instrument);
-                l += sample * v.gain_l;
-                r += sample * v.gain_r;
+                direct_l += sample * v.gain_l;
+                direct_r += sample * v.gain_r;
                 i += 1;
             }
 
-            // マスターバスのエフェクト → マスター音量 → ソフトクリップ
-            for fx in &data.master_effects {
-                let params = self.fx_scratch[fx.slot as usize]
-                    .as_ref()
-                    .unwrap_or(&fx.params);
-                let key = sidechain_key(params);
-                let state = &mut self.effect_states[fx.slot as usize];
-                (l, r) = state.process(params, l, r, key);
+            // ブロック用のバッファへ(エフェクトはこの後ブロック単位で通す)
+            for (ti, m) in track_mono.iter().enumerate().take(ntracks) {
+                self.blk_mono[ti][frame] = *m;
             }
-            let master_amp = if data.master_vol_auto.is_empty() {
-                data.master_amp
-            } else {
-                db_to_amp(eval_auto(
-                    &data.master_vol_auto,
-                    &mut self.master_cursor,
-                    self.pos,
-                ))
-            };
+            self.blk_direct[0][frame] = direct_l;
+            self.blk_direct[1][frame] = direct_r;
             // クリックはマスターエフェクト・マスター音量を通さず直接足す
-            let click = self.click.next(sr);
-            let base = frame * channels;
-            out[base] = (l * master_amp + click).tanh();
-            if channels >= 2 {
-                out[base + 1] = (r * master_amp + click).tanh();
-            }
+            self.blk_click[frame] = self.click.next(sr);
+            self.blk_pos[frame] = self.pos;
             if playing {
                 self.pos += 1;
             }
         }
+
+        // 2. トラックごとに エフェクトチェーン → 音量/パン(ブロック単位。CLAP エフェクトもここで通す)
+        self.process_track_chains(data, frames, ntracks, sr);
+        // 3. マスターのエフェクト → マスター音量 → ソフトクリップ
+        self.process_master(data, frames, sr, out, channels);
 
         // 曲が終わって余韻も消えたら自動停止(ループ中・録音中は止めない)
         let tail = (TAIL_SECS * data.sample_rate) as u64;
@@ -1075,6 +1050,191 @@ impl Renderer {
     }
 
     // ---- CLAP プラグイン ----
+
+    // ---- エフェクトチェーン(ブロック単位) ----
+
+    /// トラックごとに 入力(楽器 + プラグイン出力)→ エフェクトチェーン → 音量/パン を通し、
+    /// `mix_l/r`(マスター前の合算。MAX_TRACKS 超のトラックと試聴の直行分から始める)に足す。
+    fn process_track_chains(
+        &mut self,
+        data: &PlaybackData,
+        frames: usize,
+        ntracks: usize,
+        sr: f32,
+    ) {
+        // 残響テールが確実に消えるまでの猶予(これを超えて無音ならチェーンごと省く)
+        let tail_limit = (4.0 * sr) as u32;
+        let mut mix_l = std::mem::take(&mut self.mix_l);
+        let mut mix_r = std::mem::take(&mut self.mix_r);
+        let mut fl = std::mem::take(&mut self.fx_l);
+        let mut fr = std::mem::take(&mut self.fx_r);
+        mix_l[..frames].copy_from_slice(&self.blk_direct[0][..frames]);
+        mix_r[..frames].copy_from_slice(&self.blk_direct[1][..frames]);
+        for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
+            let pslot = self.track_plugin[ti];
+            let silent_before = self.track_silence[ti];
+            let mut any = false;
+            for f in 0..frames {
+                let mono = self.blk_mono[ti][f];
+                let (el, er) = match pslot {
+                    Some(s) => (self.plugin_out[s][0][f], self.plugin_out[s][1][f]),
+                    None => (0.0, 0.0),
+                };
+                fl[f] = mono + el;
+                fr[f] = mono + er;
+                if mono == 0.0 && el == 0.0 && er == 0.0 {
+                    self.track_silence[ti] = self.track_silence[ti].saturating_add(1);
+                } else {
+                    self.track_silence[ti] = 0;
+                    any = true;
+                }
+            }
+            if !any && (mix.effects.is_empty() || silent_before > tail_limit) {
+                // 鳴っていない(エフェクトの残響も消えた)トラックは省く(CPU 節約)
+                continue;
+            }
+            if !mix.effects.is_empty() {
+                self.run_chain(&mix.effects, data, &mut fl, &mut fr, frames);
+            }
+            // ステレオ出力のプラグインは、パンを左右バランスとして掛ける
+            // (等パワーのパンは中央で -3dB になるので √2 倍して中央を 0dB に)
+            let boost = if pslot.is_some() {
+                std::f32::consts::SQRT_2
+            } else {
+                1.0
+            };
+            for f in 0..frames {
+                let pos = self.blk_pos[f];
+                // ループで位置が戻ったらオートメーションのカーソルを戻す
+                if f > 0 && pos < self.blk_pos[f - 1] {
+                    self.auto_cursors[ti] = (0, 0);
+                }
+                // 音量・パン: オートメーションレーンがあればフェーダーより優先
+                let (gl, gr) = if mix.vol_db_auto.is_empty() && mix.pan_auto.is_empty() {
+                    (mix.gain_l, mix.gain_r)
+                } else {
+                    let (vol_cur, pan_cur) = &mut self.auto_cursors[ti];
+                    let amp = if mix.vol_db_auto.is_empty() {
+                        mix.base_amp
+                    } else {
+                        db_to_amp(eval_auto(&mix.vol_db_auto, vol_cur, pos))
+                    };
+                    let pan = if mix.pan_auto.is_empty() {
+                        mix.base_pan
+                    } else {
+                        eval_auto(&mix.pan_auto, pan_cur, pos).clamp(-1.0, 1.0)
+                    };
+                    let (pl, pr) = pan_gains(pan);
+                    (amp * pl, amp * pr)
+                };
+                mix_l[f] += fl[f] * gl * boost;
+                mix_r[f] += fr[f] * gr * boost;
+            }
+        }
+        self.mix_l = mix_l;
+        self.mix_r = mix_r;
+        self.fx_l = fl;
+        self.fx_r = fr;
+    }
+
+    /// エフェクトチェーンをブロック単位で通す。内蔵エフェクトはサンプルごと、CLAP エフェクトは
+    /// 入力口に書いてブロックごと処理する(まだ届いていないプラグインは素通し)。
+    fn run_chain(
+        &mut self,
+        chain: &[crate::data::BakedEffect],
+        data: &PlaybackData,
+        fl: &mut [f32],
+        fr: &mut [f32],
+        frames: usize,
+    ) {
+        for fx in chain {
+            if let Some((ps, gen)) = fx.plugin {
+                let ps = ps as usize;
+                let notes = &self.plugin_notes[ps];
+                let Some(p) = self
+                    .plugins
+                    .get_mut(ps)
+                    .and_then(|p| p.as_mut())
+                    .filter(|p| p.gen == gen)
+                else {
+                    continue;
+                };
+                if let Some((il, ir)) = p.clap.input_mut() {
+                    match ir {
+                        Some(ir) => {
+                            il[..frames].copy_from_slice(&fl[..frames]);
+                            ir[..frames].copy_from_slice(&fr[..frames]);
+                        }
+                        None => {
+                            for f in 0..frames {
+                                il[f] = (fl[f] + fr[f]) * 0.5;
+                            }
+                        }
+                    }
+                }
+                p.clap.process(frames, notes);
+                if let Some((ol, or)) = p.clap.output() {
+                    fl[..frames].copy_from_slice(&ol[..frames]);
+                    fr[..frames].copy_from_slice(&or[..frames]);
+                }
+                continue;
+            }
+            let slot = fx.slot as usize;
+            let params = self.fx_scratch[slot].unwrap_or(fx.params);
+            // サイドチェインの検出信号: ソーストラックの生ミックス(エフェクト前)
+            let key_track = match &params {
+                EffectParams::Sidechain(sc) => Some(sc.source_track as usize),
+                _ => None,
+            };
+            let state = &mut self.effect_states[slot];
+            for f in 0..frames {
+                let key = key_track
+                    .filter(|t| *t < data.tracks.len().min(MAX_TRACKS))
+                    .map(|t| self.blk_mono[t][f])
+                    .unwrap_or(0.0);
+                (fl[f], fr[f]) = state.process(&params, fl[f], fr[f], key);
+            }
+        }
+    }
+
+    /// マスターのエフェクト → マスター音量 → ソフトクリップ → 出力。
+    fn process_master(
+        &mut self,
+        data: &PlaybackData,
+        frames: usize,
+        _sr: f32,
+        out: &mut [f32],
+        channels: usize,
+    ) {
+        let mut l = std::mem::take(&mut self.mix_l);
+        let mut r = std::mem::take(&mut self.mix_r);
+        if !data.master_effects.is_empty() {
+            self.run_chain(&data.master_effects, data, &mut l, &mut r, frames);
+        }
+        for f in 0..frames {
+            let pos = self.blk_pos[f];
+            if f > 0 && pos < self.blk_pos[f - 1] {
+                self.master_cursor = 0;
+            }
+            let master_amp = if data.master_vol_auto.is_empty() {
+                data.master_amp
+            } else {
+                db_to_amp(eval_auto(
+                    &data.master_vol_auto,
+                    &mut self.master_cursor,
+                    pos,
+                ))
+            };
+            let click = self.blk_click[f];
+            let base = f * channels;
+            out[base] = (l[f] * master_amp + click).tanh();
+            if channels >= 2 {
+                out[base + 1] = (r[f] * master_amp + click).tanh();
+            }
+        }
+        self.mix_l = l;
+        self.mix_r = r;
+    }
 
     /// 窓口の受け取り(新しい世代)と返却(外すよう頼まれた・置き換えられた世代)。
     fn exchange_plugins(&mut self) {

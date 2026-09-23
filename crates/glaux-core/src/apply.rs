@@ -665,6 +665,34 @@ impl Project {
                 })
             }
 
+            SetEffectState { id, state } => {
+                let (effect, change) = if let Some(ei) = self.master_effect_index(id) {
+                    (&mut self.master.effects[ei], Change::MasterChanged)
+                } else {
+                    let (ti, ei) = self
+                        .effect_location(id)
+                        .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
+                    let track = self.tracks[ti].id.clone();
+                    (
+                        &mut self.tracks[ti].effects[ei],
+                        Change::EffectsChanged { track },
+                    )
+                };
+                let crate::PluginSource::Clap { state: slot, .. } = &mut effect.source else {
+                    return Err(CoreError::OutOfRange(format!(
+                        "{id} は CLAP プラグインのエフェクトではありません"
+                    )));
+                };
+                let old = std::mem::replace(slot, state.clone());
+                Ok(Applied {
+                    inverse: SetEffectState {
+                        id: id.clone(),
+                        state: old,
+                    },
+                    changes: vec![change],
+                })
+            }
+
             AddMasterEffect { effect, index } => {
                 if self.effect_location(&effect.id).is_some()
                     || self.master_effect_index(&effect.id).is_some()

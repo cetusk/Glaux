@@ -23,8 +23,11 @@ pub const MAX_TRACKS: usize = 64;
 /// 焼き込み済みエフェクト + 状態プールのスロット番号。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BakedEffect {
+    /// CLAP エフェクトは `EffectParams::External`
     pub params: EffectParams,
     pub slot: u32,
+    /// CLAP エフェクト: プラグインの (スロット, 世代)。ブロック単位で処理する
+    pub plugin: Option<(u32, u64)>,
 }
 
 /// サンプル位置に焼き込んだオートメーション点。
@@ -222,8 +225,8 @@ pub struct SampleBank {
     /// テンポ追従クリップの伸縮済み波形(クリップ ID → (条件のハッシュ, 波形))。
     /// 波形はクリップ先頭から末尾までで、素材のサンプルレートのまま
     stretched: HashMap<glaux_core::ClipId, (u64, Arc<SampleData>)>,
-    /// CLAP プラグインを載せたトラック → (スロット, 世代)。[`crate::plugins`] が決める
-    pub plugin_slots: HashMap<glaux_core::TrackId, (u32, u64)>,
+    /// CLAP プラグインの持ち主(トラック・エフェクト)→ (スロット, 世代)。[`crate::plugins`] が決める
+    pub plugin_slots: HashMap<crate::plugins::PluginOwner, (u32, u64)>,
 }
 
 impl Default for SampleBank {
@@ -537,12 +540,23 @@ fn bake_chain_with_ids(
     sample_rate: f32,
     next_slot: &mut u32,
     resolve_track: &dyn Fn(&str) -> Option<u32>,
+    plugin_slots: &HashMap<crate::plugins::PluginOwner, (u32, u64)>,
 ) -> Vec<(glaux_core::FxId, BakedEffect)> {
     effects
         .iter()
         .filter(|e| !e.bypass)
         .filter_map(|e| {
-            let params = glaux_dsp::bake_effect(e, sample_rate, resolve_track)?;
+            // CLAP エフェクトは用意できたものだけ(見つからないプラグインは素通し = 焼かない)
+            let plugin = match &e.source {
+                glaux_core::PluginSource::Clap { .. } => {
+                    Some(*plugin_slots.get(&crate::plugins::PluginOwner::Effect(e.id.clone()))?)
+                }
+                _ => None,
+            };
+            let params = match plugin {
+                Some(_) => EffectParams::External,
+                None => glaux_dsp::bake_effect(e, sample_rate, resolve_track)?,
+            };
             if *next_slot as usize >= MAX_EFFECT_SLOTS {
                 tracing::warn!(
                     "エフェクトが多すぎます({MAX_EFFECT_SLOTS} 超)。{} を無視",
@@ -552,7 +566,14 @@ fn bake_chain_with_ids(
             }
             let slot = *next_slot;
             *next_slot += 1;
-            Some((e.id.clone(), BakedEffect { params, slot }))
+            Some((
+                e.id.clone(),
+                BakedEffect {
+                    params,
+                    slot,
+                    plugin,
+                },
+            ))
         })
         .collect()
 }
@@ -663,6 +684,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 sample_rate as f32,
                 &mut next_slot,
                 &resolve_track,
+                &bank.plugin_slots,
             );
             let fx_auto = bake_fx_lanes(&t.automation, &chain);
             TrackMix {
@@ -677,7 +699,10 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 fx_auto,
                 instrument,
                 effects: chain.into_iter().map(|(_, b)| b).collect(),
-                plugin: bank.plugin_slots.get(&t.id).copied(),
+                plugin: bank
+                    .plugin_slots
+                    .get(&crate::plugins::PluginOwner::Track(t.id.clone()))
+                    .copied(),
                 plugin_auto: t
                     .automation
                     .iter()
@@ -708,6 +733,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         sample_rate as f32,
         &mut next_slot,
         &resolve_track,
+        &bank.plugin_slots,
     );
     let master_fx_auto = bake_fx_lanes(&project.master.automation, &master_chain);
     let master_vol_auto: Vec<AutoPoint> = {

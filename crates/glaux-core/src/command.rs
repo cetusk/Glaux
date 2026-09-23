@@ -206,6 +206,13 @@ pub enum Command {
         id: FxId,
         bypass: bool,
     },
+    /// CLAP プラグインのエフェクトの状態(プラグイン固有の不透明データ、base64)。
+    /// トラック・マスターのどちらのエフェクトでもよい。内蔵エフェクトには使えない
+    SetEffectState {
+        id: FxId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<String>,
+    },
 
     // ---- automation ----
     /// レーン全体を差し替える。`points` が空ならレーンを削除。
@@ -345,7 +352,7 @@ impl Command {
                 out.insert(T::Track(track.clone()));
                 out.insert(T::Effect(effect.id.clone()));
             }
-            RemoveEffect { id } | SetEffectBypass { id, .. } => {
+            RemoveEffect { id } | SetEffectBypass { id, .. } | SetEffectState { id, .. } => {
                 out.insert(T::Effect(id.clone()));
             }
             AddMasterEffect { effect, .. } => {

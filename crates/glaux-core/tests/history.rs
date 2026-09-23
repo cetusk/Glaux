@@ -336,6 +336,15 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 let Some(e) = effects.choose(rng) else {
                     continue;
                 };
+                // CLAP エフェクトなら状態の差し替えも試す
+                if matches!(e.source, PluginSource::Clap { .. }) && rng.gen_bool(0.5) {
+                    return Command::SetEffectState {
+                        id: e.id.clone(),
+                        state: rng
+                            .gen_bool(0.7)
+                            .then(|| format!("c3RhdGU{}", rng.gen_range(0..100))),
+                    };
+                }
                 return Command::SetEffectBypass {
                     id: e.id.clone(),
                     bypass: rng.gen(),
@@ -343,9 +352,22 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
             }
             13 => {
                 let t = pick_track(rng);
+                let effect = if rng.gen_bool(0.3) {
+                    Effect {
+                        id: FxId::new(),
+                        source: PluginSource::Clap {
+                            plugin_id: "com.example.fx".into(),
+                            state: None,
+                        },
+                        bypass: false,
+                        params: Default::default(),
+                    }
+                } else {
+                    Effect::builtin(FxId::new(), "eq")
+                };
                 return Command::AddEffect {
                     track: t,
-                    effect: Effect::builtin(FxId::new(), "eq"),
+                    effect,
                     index: None,
                 };
             }
