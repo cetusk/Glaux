@@ -208,6 +208,17 @@ pub struct TranscribeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct SeparateAudioParams {
+    /// 分離する音声クリップ ID(`clp_xxxxxx`、kind: "audio")。
+    pub clip_id: String,
+    /// 方式: "builtin"(既定。内蔵の信号処理で「打楽器」「音程楽器」の 2 パート。速い)/
+    /// "demucs"(外部の Demucs がインストールされていれば「ボーカル」「ドラム」「ベース」「その他」の
+    /// 4 パート。高品質だが数十秒〜数分かかる)。
+    #[serde(default)]
+    pub method: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SavePresetParams {
     /// 保存元のトラック ID(`trk_xxxxxx`)。そのトラックの音源 + エフェクトチェーンを保存する。
     pub track_id: String,
@@ -1151,6 +1162,50 @@ impl GlauxServer {
         v["track_id"] = json!(t.track_id);
         v["created_track"] = json!(t.created_track);
         v["note_count"] = json!(t.note_count);
+        Ok(Json(v))
+    }
+
+    #[tool(
+        description = "音声クリップをパート(ステム)に分離し、パートごとの音声トラック(元トラックの直後)に \
+        同じ位置・長さで置く。元のトラックはミュートする(履歴 1 件、取り消しで全部戻る)。\
+        method: \"builtin\"(既定)= 打楽器 / 音程楽器 の 2 つ、\"demucs\" = ボーカル / ドラム / ベース / その他 \
+        の 4 つ(外部ツール Demucs が必要。無ければエラーで案内が返る)。\
+        使いどころ: 取り込んだ曲のベースだけ聴いて譜起こしする(分離 → transcribe_audio)、\
+        ドラムだけ差し替える、ボーカルを抜いてオケにする、など。結果には作ったトラックの一覧が入る。"
+    )]
+    async fn separate_audio(
+        &self,
+        params: Parameters<SeparateAudioParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("separate_audio");
+        let p = params.0;
+        let clip_id = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
+        let method = crate::stems::SeparateMethod::parse(p.method.as_deref())?;
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let s = tokio::task::spawn_blocking(move || {
+            crate::stems::separate_clip_commands(
+                &project,
+                std::path::Path::new(&dir),
+                &clip_id,
+                method,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let names: Vec<&str> = s.tracks.iter().map(|(n, _)| n.as_str()).collect();
+        let label = format!("音声クリップをパートに分離({})", names.join(" / "));
+        let command = Command::batch(label.clone(), s.commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["tracks"] = json!(s
+            .tracks
+            .iter()
+            .map(|(name, id)| json!({ "part": name, "track_id": id }))
+            .collect::<Vec<_>>());
         Ok(Json(v))
     }
 

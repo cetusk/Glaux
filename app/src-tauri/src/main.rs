@@ -308,6 +308,37 @@ async fn record_start(
     Ok(json!({ "clip_start": clip_start, "count_in_ticks": count_in }))
 }
 
+/// 音声クリップをパートに分離し、パートごとの音声トラックに置く(履歴 1 件)。
+/// method: "builtin"(打楽器 / 音程楽器)/ "demucs"(ボーカル / ドラム / ベース / その他、要インストール)。
+#[tauri::command]
+async fn separate_clip(
+    state: State<'_, AppState>,
+    clip_id: String,
+    method: Option<String>,
+) -> Result<Value, String> {
+    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+    let method = glaux_mcp::stems::SeparateMethod::parse(method.as_deref())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let s = tokio::task::spawn_blocking(move || {
+        glaux_mcp::stems::separate_clip_commands(&project, std::path::Path::new(&dir), &cid, method)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let names: Vec<String> = s.tracks.iter().map(|(n, _)| n.clone()).collect();
+    let label = format!("音声クリップをパートに分離({})", names.join(" / "));
+    let (_, m) = state
+        .handle
+        .apply(
+            Command::batch(label.clone(), s.commands),
+            Author::Human,
+            label,
+        )
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "parts": names, "project_version": m.project_version }))
+}
+
 /// `at` の位置の拍子での 1 小節の長さ(tick)。
 fn bar_ticks_at(project: &glaux_core::Project, at: Tick) -> u64 {
     project
@@ -1472,6 +1503,7 @@ fn main() -> Result<()> {
             record_start,
             record_stop,
             midi_inputs,
+            separate_clip,
             set_midi_input,
             set_live_target,
             midi_record_start,

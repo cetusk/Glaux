@@ -10,6 +10,7 @@
 //! - [`output`]: cpal ストリームを専用スレッドで保持し、[`EngineHandle`] を UI に渡す
 //! - [`record`]: 入力デバイスからの録音(リングバッファ → WAV)
 //! - [`midi`]: MIDI キーボード入力(ライブ発音キュー・MIDI 録音)
+//! - [`separate`]: 内蔵の音源分離(HPSS。打楽器 / 音程楽器)
 //! - [`sf2`]: SoundFont の読み込みとゾーン構築
 //!
 //! 割り切り(将来課題):
@@ -24,6 +25,7 @@ pub mod midi;
 pub mod output;
 pub mod record;
 pub mod render;
+pub mod separate;
 pub mod sf2;
 pub mod transcribe;
 

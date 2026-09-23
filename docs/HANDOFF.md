@@ -4,11 +4,12 @@
 状態(2026-09-22 時点): 主要 4 クレート + アプリがすべて動作し、Windows 実機で確認済み。
 - `glaux-core`: モデル(セクション・奏法込み)/ Command(約 25 種)/ 履歴 /
   和声分析(harmony)/ リズム分析(rhythm)
-- `glaux-mcp`: **25 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
+- `glaux-ml`: 学習済みモデルの推論(basic-pitch による和音の譜起こし、tract)
+- `glaux-mcp`: **26 ツール** = 基本 10(get_project / apply_commands / undo / redo / checkpoint /
   revert_to / revert / get_history / list_params / analyze_audio)+ 分析 2(analyze_harmony /
   analyze_rhythm)+ ノート便利 4(transpose / shift / quantize / scale_velocity)+
-  プリセット 4(list / save / load / delete)+ 素材 5(import_sample / import_audio_clip /
-  transcribe_audio / list_soundfonts / set_soundfont_instrument)。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
+  プリセット 4(list / save / load / delete)+ 素材 6(import_sample / import_audio_clip /
+  transcribe_audio / separate_audio / list_soundfonts / set_soundfont_instrument)。履歴は 3000 件超で自動 compactionstdio 単体 + アプリ内 HTTP の両対応。
   ほかに presets / assets モジュール(アプリと共用)
 - `glaux-engine`: 再生(ループ・オートメーション・音声クリップ・自動停止・テンポ変更時の
   位置保持)・録音(record.rs)・WAV エクスポート・音声解析(AI の耳)・
@@ -826,7 +827,18 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   - 配線: `glaux_mcp::transcribe::TranscribeMode { Melody, Poly }`、MCP `transcribe_audio` の
     `mode: "poly"`、Tauri `transcribe_clip` の `mode`、UI は音声クリップの ♫ ボタン。
     和音用の tick 変換 `to_clip_notes_poly`(同じ音高の重なりだけ詰める)。ベロシティ = 活性 × 127
-  - 未対応: ステム分離(Demucs 級のモデルは数十〜数百 MB・計算量も大きい。外部ツール連携で検討)
+- **ステム分離(2026-09-23)**: `glaux_mcp::stems`(UI と MCP で共用)。
+  - 内蔵 `builtin`: `glaux-engine/src/separate.rs` の HPSS(STFT 2048/512、時間・周波数方向の
+    17 点メディアン、ウィーナー型ソフトマスク)。打楽器 / 音程楽器 の 2 本、足すと元に戻る
+  - 外部 `demucs`: Demucs(htdemucs)を `demucs` → `python -m demucs` → `py -m demucs` の順に探して
+    起動(Windows はコンソールを出さない)。クリップの参照範囲を `cache/stems/` に書き出して渡し、
+    ボーカル / ドラム / ベース / その他 を読み戻す(44.1kHz なら元のレートにリサンプル)。
+    未インストールならインストール方法を案内するエラー。サンドボックスで CPU 版 torch + demucs を
+    入れて通し確認済み(6 秒の合成音で 38 秒、モデルの初回ダウンロード込み)
+  - 分けた音は元トラックの直後に「<トラック名> <パート>」の音声トラックを作り、元クリップと
+    同じ位置・長さ・音量・フェード・テンポ追従で置く。元トラックはミュート。全体で 1 件の履歴
+  - MCP `separate_audio {clip_id, method}`、Tauri `separate_clip`、UI は音声クリップの右クリック
+    「🎚 パートに分ける」(内蔵 / Demucs)。処理中はクリップに「パートに分離中…」
 - **音声クリップのテンポ追従(2026-09-23)**: `Stretch::Follow { original_bpm }` を実装。
   素材は元テンポ一定で演奏されたものとして扱い、1 tick = 60/(original_bpm×PPQ) 秒ぶんの素材が
   常に 1 tick に対応する(`Stretch::follow_seconds`)。
@@ -934,10 +946,10 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   放物線補間)→ 音量(-40dB 以内)と明瞭度で有声判定 → 中央値フィルタ(窓 5)→
   「半音変化が 3 フレーム安定 / 8dB の立ち上がり / 無声 2 フレーム」で区切り →
   80ms 未満は捨てる → テンポマップで tick 化(既定 1/16 クオンタイズ)。
-  配線: `glaux-mcp/src/transcribe.rs`(共通)、MCP `transcribe_audio`(計 25 ツール)、
+  配線: `glaux-mcp/src/transcribe.rs`(共通)、MCP `transcribe_audio`、
   Tauri `transcribe_clip`、UI は音声クリップの ♪ ボタンと録音直後の「♪ MIDI 化」。
   合成した鼻歌信号(倍音 + ビブラート + ノイズ)でメロディ・再アタック・低い声・
-  tick 変換をテスト。**和音は basic-pitch で対応済み(2026-09-23、`glaux-ml`)。残りはステム分離**
+  tick 変換をテスト。**和音は basic-pitch(`glaux-ml`)、ステム分離は HPSS / Demucs で対応済み(2026-09-23)**
   - 実機フィードバック(細切れ・抜け・タイミングずれ)への対策(2026-09-22):
     明瞭度しきい値 0.5→0.35、音量フロア -40→-45dB、無声許容 20→60ms、
     半音変化の判定にヒステリシス(±0.7 半音)+ 40ms 安定、後処理で

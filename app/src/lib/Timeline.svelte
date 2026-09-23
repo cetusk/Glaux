@@ -270,6 +270,20 @@
     }
   }
 
+  /// 音声クリップをパートに分離する(時間がかかるのでクリップに「分離中…」を出す)
+  let separating = $state<string | null>(null);
+  async function separate(clip: Clip, method: "builtin" | "demucs") {
+    if (separating || clip.kind !== "audio") return;
+    separating = clip.id;
+    try {
+      await api.separateClip(clip.id, method);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      separating = null;
+    }
+  }
+
   /// 音声トラックの空きレーン: 音声ファイルを選んでその小節に音声クリップとして置く
   async function importAudioAt(track: Track, startTick: number) {
     const file = await pickFile({
@@ -703,7 +717,9 @@
       | "loop-off"
       | "expand"
       | "follow-on"
-      | "follow-off",
+      | "follow-off"
+      | "sep-builtin"
+      | "sep-demucs",
   ) {
     const m = clipMenu;
     clipMenu = null;
@@ -742,6 +758,12 @@
         break;
       case "follow-off":
         setFollow(targets, false);
+        break;
+      case "sep-builtin":
+        separate(m.clip, "builtin");
+        break;
+      case "sep-demucs":
+        separate(m.clip, "demucs");
         break;
     }
   }
@@ -1150,6 +1172,9 @@
                 ♫
               </button>
             {/if}
+            {#if separating === clip.id}
+              <div class="clip-busy">パートに分離中…</div>
+            {/if}
             <div class="clip-resize"></div>
           </div>
         {/each}
@@ -1264,6 +1289,12 @@
             ⇔ テンポに追従させる({bpmAt(clipMenu.clip.start)} BPM で録った素材として、テンポを変えても拍がずれないよう伸縮)
           </button>
         {/if}
+        <button onclick={() => menuAction("sep-builtin")} disabled={separating !== null}>
+          🎚 パートに分ける: 打楽器 / 音程楽器(内蔵、すぐ終わる)
+        </button>
+        <button onclick={() => menuAction("sep-demucs")} disabled={separating !== null}>
+          🎚 パートに分ける: ボーカル / ドラム / ベース / その他(Demucs、要インストール・数分)
+        </button>
         <div class="menu-sep"></div>
       {/if}
       <button onclick={() => menuAction("split")}>✂ ここで分割({barLabel(clipMenu.at)})</button>
@@ -1752,6 +1783,19 @@
     width: 8px;
     cursor: ew-resize;
     z-index: 2;
+  }
+
+  .clip-busy {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 4;
+    pointer-events: none;
   }
 
   .transcribe.poly {

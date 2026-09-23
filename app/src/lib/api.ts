@@ -151,6 +151,15 @@ export function transcribeClip(
   return invoke("transcribe_clip", { clipId, destTrackId, quantizeTicks, mode });
 }
 
+/** 音声クリップをパートに分離して音声トラックに置く(元トラックはミュート)。
+ *  builtin = 打楽器 / 音程楽器、demucs = ボーカル / ドラム / ベース / その他(要インストール) */
+export function separateClip(
+  clipId: string,
+  method: "builtin" | "demucs",
+): Promise<{ parts: string[]; project_version: number }> {
+  return invoke("separate_clip", { clipId, method });
+}
+
 // ---- 録音 ----
 
 /** 録音を開始する(再生も同時に始まる)。カウントイン後の位置にクリップが置かれる。 */
