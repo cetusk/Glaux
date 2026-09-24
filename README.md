@@ -6,10 +6,14 @@
 
 > Your wise co-writer — Music, within reach.
 
+> [!NOTE]
+> 個人で開発している実験的なプロジェクトです。主に **Windows 11** で開発・確認しています(Linux はコア・エンジンのビルドとテストのみ、macOS は未確認)。
+> 仕様やプロジェクトファイルの形式は予告なく変わることがあります。
+
 ## なにができるか
 
 - **AI との共同作曲**: アプリ内チャットで「4 小節のベースラインを作って」「サビだけ盛り上げて」と頼むと、AI がプロジェクトを直接編集します。編集はタイムラインにリアルタイムで反映されます
-- **AI の感覚**: AI は編集結果を `analyze_audio` で「聴き」(LUFS・帯域バランス・クリップ検出)、`analyze_harmony` でキーとコード進行を、`analyze_rhythm` でスウィングやグルーヴを把握します。まとまった編集の後は自分でセルフレビューしてから報告します
+- **AI の感覚**: AI は編集結果を `analyze_audio` で「聴き」(LUFS・帯域バランス・クリップ検出)、`analyze_harmony` でキーとコード進行を、`analyze_rhythm` でスウィングやグルーヴを、`analyze_sound` で音色を言葉(「明るい」「金属的」など)で把握します。まとまった編集の後は自分でセルフレビューしてから報告します
 - **音源 7 種**: subtractive(シンセ)/ fm(FM: エレピ・ベル)/ wavetable(ウェーブテーブル)/ drum(ドラムシンセ)/ pluck(撥弦の物理モデル。+amp でエレキ)/ sampler(WAV ワンショット)/ **sf2(SoundFont)** — FluidR3_GM などのフリー SoundFont を 1 ファイル置けば GM 全 128 楽器が鳴ります
 - **エフェクト 9 種**: eq / compressor / reverb / distortion / **amp(ギターアンプシミュ)** / sidechain(EDM のポンピング)/ delay / chorus / tape(Lo-fi)。音量・パン・音色パラメータ(フィルタスイープ等)のオートメーション、途中のテンポ・拍子変更にも対応
 - **人間の編集**: ピアノロール(複数選択・コピペ・3 連符・奏法 M/S/A/V/B・**2 ペイン分割**)、ドラムキット図・**ギター/ベースのフレット盤**からの打ち込み、クリップのドラッグ移動/リサイズ、音作りビュー(つまみ・エフェクトチェーン・プリセット)、ループ再生、小節範囲を指定した AI への指示(マスク)
@@ -22,6 +26,7 @@
 - **音色の資産化**: 良い音はプリセットとして全プロジェクト共通のライブラリに保存(SoundLab テンプレートで音作り専用セッションも 1 クリック)
 - **双方向のキャッチアップ**: 人間の編集も AI の編集も同じ履歴に author 付きで記録され、AI は次のターンで人間の変更を自動で把握します。Undo/Redo・チェックポイント・履歴パネルからの個別取り消し(`git revert` 相当)にも対応。履歴は長くなると自動で圧縮されます
 - **再生と書き出し**: RT セーフな内蔵エンジンで再生し、WAV に書き出せます
+- **ゲームで鳴らす(Godot 4)**: Glaux の曲をゲームの中でそのまま鳴らし、敵の動きや入力判定を拍・マーカー・特定の音に同期できます。効果音を BGM のコードに合わせた音程で鳴らすこともできます([`docs/GODOT.md`](docs/GODOT.md))
 
 ## なぜ AI と相性が良いのか
 
@@ -36,11 +41,14 @@
 ```
 crates/
   glaux-core    プロジェクトモデル・Command・Git ライクな履歴・和声/リズム分析(依存最小の純データ層)
-  glaux-mcp     MCP サーバー(25 ツール)+ Session アクター + プリセット/アセット管理・履歴 compaction
-  glaux-ml      学習済みモデルの推論(basic-pitch による和音の譜起こし、tract)
+  glaux-mcp     MCP サーバー(36 ツール)+ Session アクター + プリセット/アセット管理・履歴 compaction
+  glaux-ml      学習済みモデルの推論(譜起こし・音程・拍・音色語。tract による pure Rust 推論)
   glaux-engine  リアルタイムオーディオ(cpal)・音声クリップ・録音・MIDI 入力(midir)・WAV 書き出し・音声解析・SoundFont 読み込み
   glaux-dsp     内蔵楽器 7 種 + エフェクト 9 種 + 奏法(すべて RT セーフ・聴感説明付き)
+  glaux-clap    CLAP プラグインのホスト(clack-host)
+  glaux-godot   Godot 4.3+ の拡張(gdext)。GlauxPlayer ノード
 app/            Tauri + Svelte 5 のデスクトップアプリ(アプリ内 MCP・チャット同梱)
+godot/          Godot のデモプロジェクトと、ゲームへ配るアドオン一式を作るスクリプト
 ```
 
 - 時間は整数 Tick(PPQ=960)。オーディオスレッドはアロケーション・ロックなし
@@ -94,7 +102,23 @@ claude mcp add --transport http glaux http://127.0.0.1:41920/mcp
 claude mcp add glaux -- cmd /c "<repo>\scripts\glaux-mcp.bat" "C:\path\to\MySong.glaux"
 ```
 
-公開ツール: `get_project` / `apply_commands` / `undo` / `redo` / `checkpoint` / `revert_to` / `get_history` / `list_params` / `analyze_audio`
+公開ツール(36):
+
+| 分類 | ツール |
+|---|---|
+| 基本 | `get_project` / `apply_commands` / `undo` / `redo` / `checkpoint` / `revert_to` / `revert` / `get_history` / `list_params` |
+| 分析 | `analyze_audio` / `analyze_harmony` / `analyze_rhythm` / `analyze_beats` / `analyze_sound` / `compare_sounds` / `match_sound` |
+| ノート | `transpose_notes` / `shift_notes` / `swing_notes` / `quantize_notes` / `scale_velocity` |
+| 音色 | `list_presets` / `save_preset` / `load_preset` / `delete_preset` / `find_similar_presets` / `list_soundfonts` / `set_soundfont_instrument` |
+| CLAP | `list_plugins` / `list_plugin_presets` / `load_plugin_preset` / `refine_plugin_params` |
+| 素材 | `import_sample` / `import_audio_clip` / `transcribe_audio` / `separate_audio` |
+
+## ゲームエンジン(Godot 4)で使う
+
+`crates/glaux-godot` は Godot 4.3 以降の拡張です。`GlauxPlayer` ノードで `.glaux` の曲を鳴らし、「いま聞こえている位置」で
+拍・マーカー・ノートをシグナルとして受け取れます。ビルドと配布物の作り方は [`docs/GODOT.md`](docs/GODOT.md)、
+ゲーム側での使い方はアドオンに同梱の [`README`](godot/demo/addons/glaux/README.md) /
+[`AI_GUIDE`](godot/demo/addons/glaux/AI_GUIDE.md)(ゲーム側の AI 向け)を見てください。
 
 ## ブランド
 
@@ -110,9 +134,23 @@ cargo clippy --workspace --all-targets
 
 Linux でもコア・エンジンのビルドとテストは可能です(ALSA ヘッダが必要。アプリのビルドには webkit2gtk 等)。
 
+ドキュメント・コメント・コミットメッセージは日本語です。AI(Claude Code)と共同で開発しており、AI 向けの開発規約を
+[`CLAUDE.md`](CLAUDE.md) に置いています。
+
 ## ステータス
 
 活発に開発中の実験プロジェクトです。ロードマップと既知の課題は [`docs/HANDOFF.md`](docs/HANDOFF.md) の §8 を参照してください。
+
+## 同梱しているもの・別途入手するもの
+
+| もの | 扱い | ライセンス |
+|---|---|---|
+| 学習済みモデル(basic-pitch / SwiftF0 / Beat This!) | `crates/glaux-ml/models/` に同梱し、実行ファイルに埋め込む。出典は同フォルダの [`README.md`](crates/glaux-ml/models/README.md) | Apache-2.0 / MIT / MIT |
+| 音色語の辞書 `crates/glaux-ml/data/clap_vocab.json` | [LAION-CLAP](https://huggingface.co/laion/larger_clap_music_and_speech) の言葉側の埋め込みから作ったもの(`scripts/clap_vocab.py`) | Apache-2.0(元のモデル) |
+| LAION-CLAP の音声側モデル | 同梱しない。音色の分析を初めて使うときに Hugging Face から取得 | Apache-2.0 |
+| SoundFont(FluidR3_GM など) | 同梱しない。各自で入手して置く | 各 SoundFont による |
+| CLAP プラグイン(Surge XT など) | 同梱しない。各自でインストールしたものを公開の CLAP API で読み込む | 各プラグインによる |
+| Demucs(パート分離) | 同梱しない。使う場合は各自で `pip install demucs` | MIT |
 
 ## ライセンス
 

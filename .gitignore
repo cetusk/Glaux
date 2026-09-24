@@ -1,30 +1,34 @@
-# ビルド成果物
-/target
+# ---- ビルド成果物 ----
+target/
 **/*.rs.bk
-node_modules
-dist
-app/src-tauri/gen/
-
-# ローカル環境・個人設定(コミットしない)
-.claude/settings.local.json
-claude_sandbox.bat
-.DS_Store
-
-# ローカルの作業データ(テスト用プロジェクト・デバッグ用スクショ。
-# チャットのセッション ID 等を含むため公開しない)
-/tests
-/debugs
-
+node_modules/
+/app/dist/
+/app/src-tauri/gen/
 # アプリのリリースビルド(scripts/build-release.bat が作る)
 /release/
-
-# Godot 拡張の配布物(godot/build_windows.bat が作る)
+# Godot 拡張の配布物(godot/build_windows.bat が作る)。デモ側の .godot/ と bin/ は godot/demo/.gitignore
 /godot/dist/
 
-# 一時ファイル
+# ---- 手元にだけ置くデータ(公開しない) ----
+# テスト用プロジェクト・デバッグ用スクショ(チャットのセッション ID 等を含む)
+/tests/
+/debugs/
+# SoundFont と、開発用にダウンロードした学習済みモデル(同梱するモデルは crates/glaux-ml/models/)
+/SoundFonts/
+/models/
+
+# ---- 個人設定・エディタ・OS ----
+.claude/settings.local.json
+claude_sandbox.bat
+.env
+.env.*
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 一時ファイル ----
 *.tmp
 *.log
-/SoundFonts/
-
-# 学習済みモデル(開発用にダウンロードしたもの)
-/models/
