@@ -503,6 +503,28 @@ MSI(WiX)は VBScript に依存し新しい Windows で失敗しやすいので�
 `%APPDATA%\glaux\`、学習済みモデルは exe に埋め込み、外部コマンドは CREATE_NO_WINDOW で起動)。
 tauri.conf.json は CLI 同梱のスキーマで検証済み。Windows 実機のビルドは未確認
 
+### Godot 拡張: 効果音と和声(2026-09-25)
+
+ゲーム側(RHYTHRASH)の要望: 効果音を WAV にせず、音程を BGM のキー・コードに合わせて鳴らしたい(入力の瞬間と、拍に合わせる
+音の両方)。
+
+- glaux-core `harmony`: `chord_pitch_classes`(コード名 → 構成音のピッチクラス。分析が出す品質のみ)、
+  `scale_pitch_classes`、`snap_to_pitch_classes`(同じ近さなら上)、`nth_pitch_from`(base 以上で下から数える)
+- glaux-engine: 時刻指定のノート `midi::TimedNote` と `NoteQueue`(2 つの 64 bit 枠に詰めた SPSC リング。取り出しは
+  ロックフリー)。`Shared::notes`。レンダラはブロック頭で受け取り(`timed`、容量 256)、フレームごとに時計
+  (`Renderer::clock()`、再生・停止に関係なく進む)が来たものをライブのボイスとして鳴らし(`LiveVoice::off_at` で
+  長さの後に離す)、トラックのエフェクトを通す。止まっている間の早道は `timed` が空のときだけ。CLAP のトラックは鳴らさない
+- glaux-godot: 読み込み時に `harmony::analyze`(キーと小節ごとのコード)。`get_key` / `get_chords` / `get_chord_at` /
+  `get_chord_tones` / `get_scale_pitch_classes` / `snap_to_scale` / `snap_to_chord` / `get_chord_note` / `get_scale_note`。
+  `play_note`(すぐ = at 0)/ `play_note_at`(time に聞こえるように)/ `release_notes`、`sync_to`(時刻の基準の
+  GlauxPlayer)。`MixClock::mix_clock` に直前のミックスの頭のレンダラの時計を置き、
+  at = mix_clock + (経過 + d − 出力の遅れ)·sr(d = time − 基準の曲の聞こえている位置。手動補正は除く)。
+  基準の曲の位置も同じ「経過 − 出力の遅れ」から出すので打ち消し合い、同じミックスの時計どうしでサンプル単位にそろう
+- 確認: エンジンの単体テスト(止まっていても指定サンプルちょうど・長さの後に消える・過ぎた時刻はすぐ)、
+  core の単体テスト、Godot のデモ(`--check` で BGM と効果音を別のバスに録り、4 拍への予約がすべて 0.1ms 以内)、
+  説明書のコード例を Godot で実行。デモ曲に Pad(Am F C G)を足し、効果音用の `songs/sfx.glaux`(Bell / Blip)を追加。
+  デモでは Z キーで次の拍にコードの構成音のベル
+
 ### 将来
 
 - ~~CLAP プラグインホスティング~~ → 音源は実装済み(2026-09-23、`glaux-clap`)。エフェクト・パラメータ公開は第 2 段階

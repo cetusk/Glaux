@@ -29,6 +29,8 @@ pub const MAX_PREVIEW_VOICES: usize = 8;
 pub const MAX_LIVE_VOICES: usize = 32;
 /// 1 ブロックで取り出すライブイベントの上限(暴走した入力で処理が伸びないように)
 const MAX_LIVE_EVENTS_PER_BLOCK: usize = 256;
+/// 鳴らし始めを待っている時刻指定のノートの上限(超えた分は捨てる)
+const MAX_TIMED_NOTES: usize = 256;
 /// ライブ演奏の後、停止中でもエフェクトの残響を鳴らし切る時間(秒)
 const LIVE_TAIL_SECS: f32 = 4.0;
 /// シーク要求なしを表す番兵値
@@ -64,6 +66,8 @@ pub struct Shared {
     pub stats: StatsCounters,
     /// MIDI キーボードのライブ演奏イベント(MIDI 受信スレッドが積み、レンダラが取り出す)
     pub live: LiveQueue,
+    /// 時刻指定のノート(ゲームの効果音など。積む側は任意のスレッド、取り出しはレンダラ)
+    pub notes: crate::midi::NoteQueue,
     /// ライブ演奏の送り先トラック index(`LIVE_NO_TRACK` なら既定音色)
     pub live_track: AtomicU32,
     /// 時刻の基準(`pos_nanos` や MIDI 受信時刻の起点)
@@ -154,6 +158,7 @@ impl Shared {
             data: ArcSwap::from_pointee(data),
             stats: StatsCounters::default(),
             live: LiveQueue::default(),
+            notes: Default::default(),
             live_track: AtomicU32::new(LIVE_NO_TRACK),
             epoch: std::time::Instant::now(),
             block_frames: AtomicU32::new(0),
@@ -250,6 +255,8 @@ struct LiveVoice {
     track: u32,
     pitch: u8,
     released: bool,
+    /// 時刻指定のノート: この時計の位置で離す(MIDI キーボードの音は u64::MAX = 鍵盤を離すまで)
+    off_at: u64,
     /// ペダルで保持中(ペダルを離したらリリース)
     sustained: bool,
     instrument: glaux_dsp::InstrumentParams,
@@ -346,6 +353,8 @@ pub struct Renderer {
     plugin_auto_last: Vec<[f32; MAX_PLUGIN_LANES]>,
     /// ピッチカーブ付きのノートに振るノート ID
     next_note_id: u32,
+    /// 時刻指定のノートで、まだ鳴らし始めていないもの(容量は起動時に確保)
+    timed: Vec<crate::midi::TimedNote>,
     /// 曲のノートで最近離した鍵盤(スロット, 鍵盤)。レガート・ポルタメントでその余韻を切る(choke)のに使う
     plugin_released: Vec<(u8, u8)>,
     /// スロットごとの「この位置で余韻を切る」(u64::MAX = 予定なし)
@@ -472,6 +481,7 @@ impl Renderer {
             clock: 0,
             plugin_auto_last: vec![[f32::NAN; MAX_PLUGIN_LANES]; MAX_TRACKS],
             next_note_id: 1,
+            timed: Vec::with_capacity(MAX_TIMED_NOTES),
             plugin_released: Vec::with_capacity(MAX_PENDING_OFFS),
             plugin_choke_at: [u64::MAX; MAX_PLUGINS],
             // clone で複製すると 0 のバッファを実際に書き写してしまう(64 × 512KB)。1 つずつ確保すれば
@@ -715,6 +725,13 @@ impl Renderer {
 
         // MIDI キーボードのライブ演奏(ブロック頭でまとめて反映。遅れは最大 1 ブロック)
         self.consume_live(data, sr);
+        // 時刻指定のノートを受け取る(鳴らし始めはフレーム単位で正確に)
+        while self.timed.len() < MAX_TIMED_NOTES {
+            let Some(n) = self.shared.notes.pop() else {
+                break;
+            };
+            self.timed.push(n);
+        }
 
         let playing = self.shared.playing.load(Ordering::Acquire);
         if playing && !self.was_playing && !resync {
@@ -731,6 +748,7 @@ impl Renderer {
             self.audio_voices.clear();
             if self.preview_voices.is_empty()
                 && self.live_voices.is_empty()
+                && self.timed.is_empty()
                 && self.live_tail == 0
                 && !any_plugin
             {
@@ -1076,10 +1094,28 @@ impl Renderer {
                 i += 1;
             }
 
-            // MIDI キーボードのライブ発音(送り先トラックのエフェクトを通す)
+            // 時刻指定のノート: 時計が来たものを鳴らし始める
+            let now = self.clock + frame as u64;
+            if !self.timed.is_empty() {
+                let mut k = 0;
+                while k < self.timed.len() {
+                    if self.timed[k].at <= now {
+                        let n = self.timed.swap_remove(k);
+                        self.start_timed(n, now, data, sr);
+                    } else {
+                        k += 1;
+                    }
+                }
+            }
+
+            // MIDI キーボードのライブ発音・時刻指定のノート(送り先トラックのエフェクトを通す)
             let mut i = 0;
             while i < self.live_voices.len() {
                 let v = &mut self.live_voices[i];
+                if !v.released && now >= v.off_at {
+                    v.state.note_off();
+                    v.released = true;
+                }
                 if v.released && v.state.finished(&v.instrument) {
                     self.live_voices.swap_remove(i);
                     continue;
@@ -1877,6 +1913,49 @@ impl Renderer {
     }
 
     /// ライブ演奏キューを取り出して発音・消音する(アロケーションなし)。
+    /// レンダラの時計(再生・停止に関係なく、処理したサンプル数だけ進む)。
+    /// 時刻指定のノート([`crate::midi::TimedNote::at`])はこの時計で指す
+    pub fn clock(&self) -> u64 {
+        self.clock
+    }
+
+    /// 時刻指定のノートを鳴らし始める(送り先トラックの音源で。CLAP のトラックは鳴らさない)。
+    fn start_timed(&mut self, n: crate::midi::TimedNote, now: u64, data: &PlaybackData, sr: f32) {
+        let Some(mix) = data.tracks.get(n.track as usize) else {
+            return;
+        };
+        if mix.plugin.is_some() {
+            return;
+        }
+        if self.live_voices.len() >= MAX_LIVE_VOICES {
+            // 満杯なら離した音を優先して(無ければ先頭を)捨てる
+            let victim = self
+                .live_voices
+                .iter()
+                .position(|v| v.released)
+                .unwrap_or(0);
+            self.live_voices.swap_remove(victim);
+        }
+        let instrument = mix.instrument.clone();
+        let state = VoiceState::start(
+            &instrument,
+            crate::data::pitch_to_freq(n.pitch),
+            n.pitch,
+            n.vel.min(127) as f32 / 127.0,
+            glaux_core::Articulation::Normal,
+            sr,
+        );
+        self.live_voices.push(LiveVoice {
+            track: n.track as u32,
+            pitch: n.pitch,
+            released: false,
+            off_at: now + n.dur.max(1) as u64,
+            sustained: false,
+            instrument,
+            state,
+        });
+    }
+
     fn consume_live(&mut self, data: &PlaybackData, sr: f32) {
         for _ in 0..MAX_LIVE_EVENTS_PER_BLOCK {
             let Some(ev) = self.shared.live.pop() else {
@@ -1930,6 +2009,7 @@ impl Renderer {
                         track,
                         pitch,
                         released: false,
+                        off_at: u64::MAX,
                         sustained: false,
                         instrument,
                         state,
@@ -2116,6 +2196,46 @@ mod tests {
 
     fn rms(buf: &[f32]) -> f32 {
         (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn timed_notes_start_on_the_exact_sample_while_stopped() {
+        // 曲は止めたまま(ゲームの効果音用)。時計 5000 から 2400 サンプル押す
+        let shared = Arc::new(Shared::new(data_with_note(10_000_000, 10_000_001, true)));
+        let mut r = Renderer::new(shared.clone());
+        assert!(shared.notes.push(crate::midi::TimedNote {
+            at: 5000,
+            track: 0,
+            pitch: 69,
+            vel: 100,
+            dur: 2400,
+        }));
+        let mut out = Vec::new();
+        let mut buf = vec![0.0f32; 1024 * 2];
+        for _ in 0..16 {
+            r.process(&mut buf, 2);
+            out.extend(buf.chunks(2).map(|c| c[0]));
+        }
+        assert_eq!(r.clock(), 16 * 1024);
+        let first = out.iter().position(|v| v.abs() > 1e-6).expect("鳴る");
+        // 指定したサンプルちょうどで鳴り始める(ブロックの途中でも)。発振器は位相 0(sin 0 = 0)から
+        // 始まるので、0 でない最初の値は 1〜2 サンプル後になる
+        assert!((5000..=5002).contains(&first), "{first}");
+        assert!(out[..5000].iter().all(|v| *v == 0.0), "それより前は無音");
+        assert!(rms(&out[5200..7000]) > 0.01, "押している間は鳴る");
+        // 離した後はリリースで消えていく(十分後にはほぼ無音)
+        assert!(rms(&out[14_000..16_000]) < rms(&out[5200..7000]) * 0.05);
+        // 過ぎた時刻を指定したら次のブロックの頭ですぐ鳴る
+        assert!(shared.notes.push(crate::midi::TimedNote {
+            at: 0,
+            track: 0,
+            pitch: 72,
+            vel: 100,
+            dur: 480,
+        }));
+        r.process(&mut buf, 2);
+        let head: Vec<f32> = buf[..800].chunks(2).map(|c| c[0]).collect();
+        assert!(rms(&head) > 0.01, "過ぎた時刻なら次のブロックの頭で鳴る");
     }
 
     fn render_block(r: &mut Renderer, frames: usize) -> Vec<f32> {

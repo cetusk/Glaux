@@ -325,6 +325,74 @@ pub fn analyze(
     }
 }
 
+/// コード名(例 "Am" / "G7" / "C#maj7" / "Bdim")の構成音のピッチクラス(C=0..B=11)。ルートが先頭で、
+/// あとは 3 度・5 度・7 度の順。分析が出す名前(`CHORD_TEMPLATES` の品質)に対応。"N.C." や読めない名前は None。
+pub fn chord_pitch_classes(name: &str) -> Option<Vec<u8>> {
+    // ルート: 2 文字の名前(C# 等)を先に試す
+    let (root, rest) = NOTE_NAMES
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| name.starts_with(*n))
+        .max_by_key(|(_, n)| n.len())
+        .map(|(i, n)| (i as u8, &name[n.len()..]))?;
+    let (_, tones) = CHORD_TEMPLATES.iter().find(|(q, _)| *q == rest)?;
+    Some(
+        tones
+            .iter()
+            .map(|(iv, _)| (root + *iv as u8) % 12)
+            .collect(),
+    )
+}
+
+/// キー(トニックのピッチクラスと "major" / "minor")のスケールのピッチクラス(トニックから昇順の 7 音。
+/// 短調はナチュラルマイナー)。
+pub fn scale_pitch_classes(tonic: u8, mode: &str) -> Vec<u8> {
+    let steps: &[u8] = if mode == "major" {
+        &[0, 2, 4, 5, 7, 9, 11]
+    } else {
+        &[0, 2, 3, 5, 7, 8, 10]
+    };
+    steps.iter().map(|s| (tonic % 12 + s) % 12).collect()
+}
+
+/// `pitch`(MIDI 番号)にいちばん近い、`pcs` のどれかのピッチクラスの音。同じ近さなら上の音。
+/// `pcs` が空なら `pitch` のまま。
+pub fn snap_to_pitch_classes(pitch: i32, pcs: &[u8]) -> i32 {
+    if pcs.is_empty() {
+        return pitch;
+    }
+    for d in 0..12 {
+        for cand in [pitch + d, pitch - d] {
+            if pcs.contains(&(cand.rem_euclid(12) as u8)) {
+                return cand;
+            }
+        }
+    }
+    pitch
+}
+
+/// `pcs`(ルート・基準音が先頭の構成音)の `index` 番目の音を、`base` 以上で下から数えて返す
+/// (構成音を使い切ったら 1 オクターブ上へ)。例: Am(A C E)、base = 57(A3)なら 0 → A3、1 → C4、2 → E4、3 → A4。
+/// 負の `index` は下へ数える。`pcs` が空なら `base`。
+pub fn nth_pitch_from(pcs: &[u8], base: i32, index: i32) -> i32 {
+    if pcs.is_empty() {
+        return base;
+    }
+    // base 以上で始まる、構成音の昇順の並び(1 オクターブ分)
+    let mut row: Vec<i32> = pcs
+        .iter()
+        .map(|&pc| {
+            let d = (pc as i32 - base).rem_euclid(12);
+            base + d
+        })
+        .collect();
+    row.sort_unstable();
+    row.dedup();
+    let n = row.len() as i32;
+    let oct = index.div_euclid(n);
+    row[index.rem_euclid(n) as usize] + 12 * oct
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,5 +481,33 @@ mod tests {
         let a = analyze(&empty, None, None);
         assert!(a.key.is_none());
         assert_eq!(a.note_count, 0);
+    }
+
+    #[test]
+    fn chord_and_scale_pitch_classes() {
+        assert_eq!(chord_pitch_classes("Am"), Some(vec![9, 0, 4]));
+        assert_eq!(chord_pitch_classes("G7"), Some(vec![7, 11, 2, 5]));
+        assert_eq!(chord_pitch_classes("C#maj7"), Some(vec![1, 5, 8, 0]));
+        assert_eq!(chord_pitch_classes("Bdim"), Some(vec![11, 2, 5]));
+        assert_eq!(chord_pitch_classes("N.C."), None);
+        assert_eq!(chord_pitch_classes("Xm"), None);
+        assert_eq!(scale_pitch_classes(9, "minor"), vec![9, 11, 0, 2, 4, 5, 7]);
+        assert_eq!(scale_pitch_classes(0, "major"), vec![0, 2, 4, 5, 7, 9, 11]);
+    }
+
+    #[test]
+    fn snapping_and_counting_pitches() {
+        let am = [9u8, 0, 4];
+        // D4(62)に近い Am の音は C4(60)と E4(64)で同じ距離 → 上の E4
+        assert_eq!(snap_to_pitch_classes(62, &am), 64);
+        assert_eq!(snap_to_pitch_classes(61, &am), 60);
+        assert_eq!(snap_to_pitch_classes(57, &am), 57);
+        assert_eq!(snap_to_pitch_classes(50, &[]), 50);
+        // A3(57)から Am の構成音を数える
+        let seq: Vec<i32> = (-1..5).map(|i| nth_pitch_from(&am, 57, i)).collect();
+        assert_eq!(seq, vec![52, 57, 60, 64, 69, 72]);
+        // base がルートでなくても base 以上から数える(C4 から: C4 E4 A4 C5)
+        let seq: Vec<i32> = (0..4).map(|i| nth_pitch_from(&am, 60, i)).collect();
+        assert_eq!(seq, vec![60, 64, 69, 72]);
     }
 }

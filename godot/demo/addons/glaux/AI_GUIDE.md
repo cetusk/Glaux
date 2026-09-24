@@ -68,6 +68,18 @@ signal song_finished()                               # 曲が余韻まで鳴り�
 | `get_notes(track: String, from: float, to: float)` | `Array` | `[from, to)` に始まる音。要素は `{time, duration, pitch, velocity}` の Dictionary |
 | `get_beats(from: float, to: float)` | `Array` | `[from, to)` の拍。要素は `{time, bar, beat, beats_in_bar}` |
 | `get_sections()` | `Array` | マーカー全部。要素は `{time, name}` |
+| `get_key()` | `Dictionary` | キー `{name, tonic(C=0..B=11), mode("major"/"minor"), confidence}`。ノートが無ければ空 |
+| `get_chords()` | `Array` | 小節ごとのコード `{time, bar, chord}`(chord は "Am" / "G7" / "N.C." など。1 小節に 1 つの推定) |
+| `get_chord_at(time: float)` | `String` | `time` 秒のコード名 |
+| `get_chord_tones(time: float)` | `PackedInt32Array` | `time` 秒のコードの構成音のピッチクラス(C=0..B=11、ルートが先頭。N.C. は空) |
+| `get_scale_pitch_classes()` | `PackedInt32Array` | キーのスケールの 7 音のピッチクラス(短調はナチュラルマイナー) |
+| `snap_to_scale(pitch: int)` | `int` | MIDI 番号をスケールのいちばん近い音へ(同じ近さなら上) |
+| `snap_to_chord(pitch: int, time: float)` | `int` | MIDI 番号を `time` 秒のコードの構成音のいちばん近い音へ(N.C. ならスケールへ) |
+| `get_chord_note(time: float, index: int, base: int = 60)` | `int` | `time` 秒のコードの構成音を `base` 以上で下から数えた `index` 番目(使い切ったら +12、負なら下へ) |
+| `get_scale_note(index: int, base: int = 60)` | `int` | スケールの音を `base` 以上で下から数えた `index` 番目 |
+| `play_note(track: String, pitch: int, velocity: int = 100, duration: float = 0.2)` | `bool` | トラックの音源とエフェクトで 1 音をすぐ鳴らす(曲を再生していなくても鳴る)。鳴らせなければ false |
+| `play_note_at(track: String, pitch: int, time: float, velocity: int = 100, duration: float = 0.2)` | `bool` | `time`(`sync_to` の曲の時刻。未設定なら自分の曲)に**聞こえるように**鳴らす。過ぎていればすぐ |
+| `release_notes()` | − | 鳴らした音をすべて離す |
 
 ### プロパティ
 
@@ -76,6 +88,7 @@ signal song_finished()                               # 曲が余韻まで鳴り�
 | `bus` | `StringName` | 出力バス(既定 `Master`)。**`load_song` の前に**設定する |
 | `volume_db` | `float` | 音量(いつ変えても反映) |
 | `latency_offset_ms` | `float` | 手動の遅れ補正。正で位置・シグナルが遅れる。プレイヤーが調整できる設定項目にする |
+| `sync_to` | `GlauxPlayer` | `play_note_at` の `time` の基準にする BGM の `GlauxPlayer`(効果音用のプレイヤーに設定する) |
 
 ## 3. 実装パターン
 
@@ -188,6 +201,41 @@ func _on_section(name: String, time: float) -> void:
 
 マーカー名は曲側(Glaux)で決まる。`get_sections()` で実際の名前を確認してから書く。
 
+### 3-8. 効果音を曲のコードに合わせ、拍にぴったり鳴らす(WAV 不要)
+
+効果音は、効果音用の曲(例 `SEKit.glaux`。トラックごとに音色を作ってある)を読み込んだ**別の** `GlauxPlayer` で、
+1 音ずつ鳴らす。音程は BGM の `GlauxPlayer` に問い合わせて決める。
+
+```gdscript
+@onready var music: GlauxPlayer = $Music   # BGM
+@onready var sfx: GlauxPlayer = $Sfx       # 効果音(play は呼ばない)
+
+func _ready() -> void:
+	music.bus = "BGM"
+	sfx.bus = "SFX"                            # bus は load_song の前に
+	music.load_song("res://songs/Stage1.glaux")
+	sfx.load_song("res://songs/SEKit.glaux")
+	sfx.sync_to = music                        # play_note_at の time = BGM の時刻
+	await get_tree().process_frame
+	music.play()
+
+# ゲーム側が拍に合わせて鳴らす音(敵の攻撃など): 次の拍に、その時のコードの構成音で
+func enemy_attack() -> void:
+	var t := music.get_next_beat_time()
+	sfx.play_note_at("Hit", music.get_chord_note(t, 0, 48), t)
+
+# プレイヤーの入力で鳴らす音: すぐ鳴らす。いまのコードの構成音を、コンボに応じて上っていく
+func on_player_hit(combo: int) -> void:
+	var now := music.get_song_time()
+	sfx.play_note("Blip", music.get_chord_note(now, combo, 72), 110, 0.15)
+```
+
+- 音程は `get_chord_note`(コードの構成音を数える)、`snap_to_chord`(決めた音をコードに寄せる)、
+  `snap_to_scale` / `get_scale_note`(キーだけで決める)から選ぶ。**時刻には鳴らす時刻**を渡す
+  (予約するなら予約した時刻のコード、すぐ鳴らすなら `get_song_time()`)
+- `play_note_at` は BGM とサンプル単位でそろう。入力に反応する音は `play_note`(すぐ)でよい
+- トラック名は効果音用の曲の `get_track_names()` で確認してから書く
+
 ## 4. 守ること・落とし穴
 
 - `play()` を `_ready()` で直接呼ばず、`await get_tree().process_frame` の後に呼ぶ
@@ -200,8 +248,12 @@ func _on_section(name: String, time: float) -> void:
 - シーンを切り替えるときは `stop()` してから(`GlauxPlayer` をツリーから外すと音も止まる)
 - 曲を切り替えるときは同じ `GlauxPlayer` で `load_song()` し直してよい(前の曲は解放される)
 - 1 つの `GlauxPlayer` で鳴る曲は 1 つ。同時に別の曲・ジングルを鳴らすなら `GlauxPlayer` をもう 1 つ置く
-- 効果音(ヒット音など)を拍に合わせて鳴らすのはこのアドオンの対象外(今は曲の再生と同期のみ)。
-  効果音は Godot の `AudioStreamPlayer` で鳴らし、鳴らす時刻を `get_next_beat_time()` などで決める
+- 効果音は WAV の `pitch_scale` で音程を変えず、`play_note` / `play_note_at` で鳴らす(音色が崩れない)。
+  効果音用の `GlauxPlayer` には `sync_to` に BGM の `GlauxPlayer` を設定する。効果音用のプレイヤーでは `play()` を呼ばない
+- `play_note` で鳴らせるのは内蔵音源・SoundFont・サンプラーのトラックだけ(CLAP のトラックは false が返る。
+  `get_warnings()` に出る)。効果音用の曲でミュート・ソロにしたトラックは鳴らない
+- 1 つの `GlauxPlayer` で同時に鳴る音は 32 まで(超えると古い音から止まる)、予約は一度に 512 まで
+- コードは 1 小節に 1 つの推定。キーの `confidence` が低い(0.3 未満など)曲では、キーよりコードに合わせる方が安全
 - 終了時の「ObjectDB instances leaked at exit」、初回の「Native class "GlauxPlayer" not found」は無害
 
 ## 5. 動作確認のしかた

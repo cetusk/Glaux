@@ -22,6 +22,8 @@ pub struct MixClock {
     pub mix_start: AtomicU64,
     /// ミックスした回数(音声スレッドが動いているかの確認用)
     pub mixes: AtomicU64,
+    /// 直前のミックスの頭のレンダラの時計(サンプル)。時刻指定のノートの位置合わせに使う
+    pub mix_clock: AtomicU64,
 }
 
 /// Glaux の曲を鳴らすストリーム。[`GlauxPlayer`](crate::player::GlauxPlayer) が作って
@@ -97,6 +99,9 @@ impl IAudioStreamPlayback for GlauxPlayback {
         self.clock
             .mix_start
             .store(self.shared.pos.load(Ordering::Acquire), Ordering::Release);
+        self.clock
+            .mix_clock
+            .store(self.renderer.clock(), Ordering::Release);
         self.clock.mixes.fetch_add(1, Ordering::Relaxed);
         let mut done = 0;
         while done < n {

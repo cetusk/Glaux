@@ -172,6 +172,124 @@
         }
       ],
       "automation": []
+    },
+    {
+      "id": "trk_pad001",
+      "name": "Pad",
+      "kind": "midi",
+      "mute": false,
+      "solo": false,
+      "volume_db": -12.0,
+      "pan": 0.0,
+      "device": {
+        "type": "builtin",
+        "name": "subtractive",
+        "params": {
+          "waveform": "saw",
+          "cutoff": 1400.0,
+          "attack": 0.25,
+          "release": 0.4,
+          "unison": 3,
+          "detune": 12.0
+        }
+      },
+      "effects": [],
+      "clips": [
+        {
+          "id": "clp_pad001",
+          "name": "pad",
+          "start": 0,
+          "length": 15360,
+          "kind": "midi",
+          "notes": [
+            {
+              "id": "nt_p00000",
+              "pos": 0,
+              "dur": 3700,
+              "pitch": 57,
+              "vel": 70
+            },
+            {
+              "id": "nt_p00001",
+              "pos": 0,
+              "dur": 3700,
+              "pitch": 60,
+              "vel": 70
+            },
+            {
+              "id": "nt_p00002",
+              "pos": 0,
+              "dur": 3700,
+              "pitch": 64,
+              "vel": 70
+            },
+            {
+              "id": "nt_p10000",
+              "pos": 3840,
+              "dur": 3700,
+              "pitch": 53,
+              "vel": 70
+            },
+            {
+              "id": "nt_p10001",
+              "pos": 3840,
+              "dur": 3700,
+              "pitch": 57,
+              "vel": 70
+            },
+            {
+              "id": "nt_p10002",
+              "pos": 3840,
+              "dur": 3700,
+              "pitch": 60,
+              "vel": 70
+            },
+            {
+              "id": "nt_p20000",
+              "pos": 7680,
+              "dur": 3700,
+              "pitch": 55,
+              "vel": 70
+            },
+            {
+              "id": "nt_p20001",
+              "pos": 7680,
+              "dur": 3700,
+              "pitch": 60,
+              "vel": 70
+            },
+            {
+              "id": "nt_p20002",
+              "pos": 7680,
+              "dur": 3700,
+              "pitch": 64,
+              "vel": 70
+            },
+            {
+              "id": "nt_p30000",
+              "pos": 11520,
+              "dur": 3700,
+              "pitch": 55,
+              "vel": 70
+            },
+            {
+              "id": "nt_p30001",
+              "pos": 11520,
+              "dur": 3700,
+              "pitch": 59,
+              "vel": 70
+            },
+            {
+              "id": "nt_p30002",
+              "pos": 11520,
+              "dur": 3700,
+              "pitch": 62,
+              "vel": 70
+            }
+          ]
+        }
+      ],
+      "automation": []
     }
   ],
   "master": {

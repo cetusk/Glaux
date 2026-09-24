@@ -34,6 +34,21 @@ struct Loaded {
     clock: Arc<MixClock>,
     sample_rate: f64,
     warnings: Vec<String>,
+    /// 推定したキー(ノートが無い曲は None)
+    key: Option<glaux_core::harmony::KeyEstimate>,
+    /// キーのスケールのピッチクラス(キーが無ければ空)
+    scale: Vec<u8>,
+    /// 小節ごとのコード(時刻順)
+    chords: Vec<ChordAt>,
+}
+
+/// 小節ごとのコード。
+struct ChordAt {
+    sec: f64,
+    bar: i64,
+    name: String,
+    /// 構成音のピッチクラス(ルートが先頭。"N.C." は空)
+    pcs: Vec<u8>,
 }
 
 #[derive(GodotClass)]
@@ -51,6 +66,10 @@ pub struct GlauxPlayer {
     /// (音より画面が早いと感じたら増やす。Bluetooth のヘッドホンなど)
     #[export]
     latency_offset_ms: f64,
+    /// `play_note_at` の時刻の基準にする曲(BGM)の GlauxPlayer。効果音用の GlauxPlayer に BGM の
+    /// GlauxPlayer を設定すると、BGM の時刻(`get_next_beat_time()` など)をそのまま渡せる。未設定なら自分の曲の時刻
+    #[var]
+    sync_to: Option<Gd<GlauxPlayer>>,
     song: Option<Loaded>,
     audio: Option<Gd<AudioStreamPlayer>>,
     watched: Vec<String>,
@@ -148,12 +167,32 @@ impl GlauxPlayer {
                     a.set_volume_db(self.volume_db);
                     a.play();
                 }
+                let scale = s
+                    .harmony
+                    .key
+                    .as_ref()
+                    .map(|k| glaux_core::harmony::scale_pitch_classes(k.tonic, k.mode))
+                    .unwrap_or_default();
+                let chords = s
+                    .harmony
+                    .chords
+                    .iter()
+                    .map(|c| ChordAt {
+                        sec: s.timeline.tick_to_sec(c.tick as f64),
+                        bar: c.bar as i64,
+                        name: c.chord.clone(),
+                        pcs: glaux_core::harmony::chord_pitch_classes(&c.chord).unwrap_or_default(),
+                    })
+                    .collect();
                 self.song = Some(Loaded {
                     timeline: s.timeline,
                     shared,
                     clock,
                     sample_rate,
                     warnings: s.warnings,
+                    key: s.harmony.key,
+                    scale,
+                    chords,
                 });
                 self.playing = false;
                 self.finished_sent = false;
@@ -445,6 +484,162 @@ impl GlauxPlayer {
             .map_or(-1.0, |b| b.sec)
     }
 
+    // ---- 和声(効果音の音程を曲に合わせる) ----
+
+    /// 曲のキー(ノートからの推定)。{name: "A minor", tonic: 9(C=0 のピッチクラス), mode: "minor", confidence}。
+    /// ノートが無い曲は空の辞書
+    #[func]
+    fn get_key(&self) -> VarDictionary {
+        match self.song.as_ref().and_then(|s| s.key.as_ref()) {
+            Some(k) => dict_of(&[
+                ("name", k.name.as_str().to_variant()),
+                ("tonic", (k.tonic as i64).to_variant()),
+                ("mode", k.mode.to_variant()),
+                ("confidence", k.confidence.to_variant()),
+            ]),
+            None => VarDictionary::new(),
+        }
+    }
+
+    /// 小節ごとのコードの一覧。各要素は {time, bar, chord}(chord は "Am" / "G7" / "N.C." など)
+    #[func]
+    fn get_chords(&self) -> VarArray {
+        let mut out = VarArray::new();
+        if let Some(s) = self.song.as_ref() {
+            for c in &s.chords {
+                out.push(
+                    &dict_of(&[
+                        ("time", c.sec.to_variant()),
+                        ("bar", c.bar.to_variant()),
+                        ("chord", c.name.as_str().to_variant()),
+                    ])
+                    .to_variant(),
+                );
+            }
+        }
+        out
+    }
+
+    /// `time` 秒(曲の時刻。ふつうは `get_song_time()`)に鳴っているコードの名前。無ければ空
+    #[func]
+    fn get_chord_at(&self, time: f64) -> GString {
+        self.chord_at(time)
+            .map_or_else(GString::new, |c| c.name.as_str().into())
+    }
+
+    /// `time` 秒のコードの構成音のピッチクラス(C=0..B=11。ルートが先頭)。"N.C." なら空
+    #[func]
+    fn get_chord_tones(&self, time: f64) -> PackedInt32Array {
+        self.chord_at(time)
+            .map(|c| c.pcs.iter().map(|&p| p as i32).collect())
+            .unwrap_or_default()
+    }
+
+    /// キーのスケールのピッチクラス(トニックから 7 音。短調はナチュラルマイナー)
+    #[func]
+    fn get_scale_pitch_classes(&self) -> PackedInt32Array {
+        self.song
+            .as_ref()
+            .map(|s| s.scale.iter().map(|&p| p as i32).collect())
+            .unwrap_or_default()
+    }
+
+    /// `pitch`(MIDI 番号)を、キーのスケールでいちばん近い音に寄せる(同じ近さなら上)
+    #[func]
+    fn snap_to_scale(&self, pitch: i64) -> i64 {
+        let scale = self
+            .song
+            .as_ref()
+            .map(|s| s.scale.as_slice())
+            .unwrap_or(&[]);
+        glaux_core::harmony::snap_to_pitch_classes(pitch as i32, scale) as i64
+    }
+
+    /// `pitch` を、`time` 秒のコードの構成音でいちばん近い音に寄せる(同じ近さなら上)。
+    /// コードが無い(N.C.)ときはキーのスケールに寄せる
+    #[func]
+    fn snap_to_chord(&self, pitch: i64, time: f64) -> i64 {
+        match self.chord_at(time).filter(|c| !c.pcs.is_empty()) {
+            Some(c) => glaux_core::harmony::snap_to_pitch_classes(pitch as i32, &c.pcs) as i64,
+            None => self.snap_to_scale(pitch),
+        }
+    }
+
+    /// `time` 秒のコードの構成音を、`base`(MIDI 番号。既定 60 = C4)以上で下から数えた `index` 番目の音
+    /// (使い切ったら 1 オクターブ上へ。負なら下へ)。コンボの段階で構成音を上っていく、などに使う。
+    /// コードが無いときはキーのスケールで数える
+    #[func]
+    fn get_chord_note(&self, time: f64, index: i64, #[opt(default = 60)] base: i64) -> i64 {
+        match self.chord_at(time).filter(|c| !c.pcs.is_empty()) {
+            Some(c) => {
+                glaux_core::harmony::nth_pitch_from(&c.pcs, base as i32, index as i32) as i64
+            }
+            None => self.get_scale_note(index, base),
+        }
+    }
+
+    /// キーのスケールの音を、`base`(既定 60)以上で下から数えた `index` 番目の音(負なら下へ)
+    #[func]
+    fn get_scale_note(&self, index: i64, #[opt(default = 60)] base: i64) -> i64 {
+        let scale = self
+            .song
+            .as_ref()
+            .map(|s| s.scale.as_slice())
+            .unwrap_or(&[]);
+        glaux_core::harmony::nth_pitch_from(scale, base as i32, index as i32) as i64
+    }
+
+    // ---- 1 音ずつ鳴らす(効果音) ----
+
+    /// トラック(名前か ID)の音源とエフェクトで 1 音をすぐ鳴らす。曲を再生していなくても鳴る。
+    /// `velocity` は 1〜127、`duration` は鍵盤を押している秒数(その後はリリースで消える)。
+    /// 鳴らせないとき(トラックが無い、CLAP の音源)は false
+    #[func]
+    fn play_note(
+        &mut self,
+        track: GString,
+        pitch: i64,
+        #[opt(default = 100)] velocity: i64,
+        #[opt(default = 0.2)] duration: f64,
+    ) -> bool {
+        self.schedule_note(&track.to_string(), pitch, velocity, duration, None)
+    }
+
+    /// `play_note` を時刻指定で鳴らす。`time` は `sync_to` の曲(未設定なら自分の曲)の時刻(秒)で、
+    /// その時刻に**聞こえる**ように出力の遅れを見込んで鳴らす(例: `bgm.get_next_beat_time()`)。
+    /// 過ぎた時刻ならすぐ鳴らす
+    #[func]
+    fn play_note_at(
+        &mut self,
+        track: GString,
+        pitch: i64,
+        time: f64,
+        #[opt(default = 100)] velocity: i64,
+        #[opt(default = 0.2)] duration: f64,
+    ) -> bool {
+        // 基準の曲の「いま聞こえている位置」(手動の遅れ補正を除いた本当の位置)
+        let me = self.base().instance_id();
+        let now = match self.sync_to.clone() {
+            Some(mut other) if other.instance_id() != me => other.bind_mut().audible_time(),
+            _ => self.audible_time(),
+        };
+        self.schedule_note(
+            &track.to_string(),
+            pitch,
+            velocity,
+            duration,
+            Some(time - now),
+        )
+    }
+
+    /// `play_note` / `play_note_at` で鳴らした音(と MIDI キーボードの音)をすべて離す
+    #[func]
+    fn release_notes(&mut self) {
+        if let Some(s) = self.song.as_ref() {
+            s.shared.live.push(glaux_engine::midi::LiveEvent::AllOff);
+        }
+    }
+
     /// 音声スレッドが動いているか(デバッグ用。ミックスした回数)
     #[func]
     fn get_mix_count(&self) -> i64 {
@@ -483,6 +678,67 @@ impl GlauxPlayer {
         self.emitted_to = sec - 1e-6;
         self.last_time = f64::NEG_INFINITY;
         self.held_time = sec;
+    }
+
+    /// `time` 秒に鳴っているコード
+    fn chord_at(&self, time: f64) -> Option<&ChordAt> {
+        let s = self.song.as_ref()?;
+        let i = s.chords.partition_point(|c| c.sec <= time);
+        i.checked_sub(1).map(|i| &s.chords[i])
+    }
+
+    /// 手動の遅れ補正を除いた「いま聞こえている位置」(秒)。時刻指定の音の位置合わせに使う
+    fn audible_time(&mut self) -> f64 {
+        self.song_time() + self.latency_offset_ms / 1000.0
+    }
+
+    /// 1 音を鳴らす予約を積む。`delay` は「いまから何秒後に聞こえるか」(None ならすぐ)
+    fn schedule_note(
+        &mut self,
+        track: &str,
+        pitch: i64,
+        velocity: i64,
+        duration: f64,
+        delay: Option<f64>,
+    ) -> bool {
+        let Some(s) = self.song.as_ref() else {
+            godot_warn!("Glaux: 曲を読み込んでから鳴らしてください");
+            return false;
+        };
+        let tracks = s.timeline.tracks();
+        let Some(index) = tracks
+            .iter()
+            .position(|t| t.name == track)
+            .or_else(|| tracks.iter().position(|t| t.id == track))
+        else {
+            godot_warn!("Glaux: トラック「{track}」が見つかりません");
+            return false;
+        };
+        let at = match delay {
+            None => 0,
+            Some(d) => {
+                // 時計 s のサンプルは、直前のミックスの頭(mix_clock)から (s - mix_clock)/sr 後に作られ、
+                // 出力の遅れの後に聞こえる。いまから d 秒後に聞こえるサンプルを求める
+                let server = AudioServer::singleton();
+                let mix_clock = s.clock.mix_clock.load(Ordering::Acquire) as f64;
+                let x = mix_clock
+                    + (server.get_time_since_last_mix() + d - server.get_output_latency())
+                        * s.sample_rate;
+                x.max(0.0) as u64
+            }
+        };
+        let note = glaux_engine::midi::TimedNote {
+            at,
+            track: index as u16,
+            pitch: pitch.clamp(0, 127) as u8,
+            vel: velocity.clamp(1, 127) as u8,
+            dur: (duration.max(0.001) * s.sample_rate).min(u32::MAX as f64) as u32,
+        };
+        if !s.shared.notes.push(note) {
+            godot_warn!("Glaux: 鳴らす予約が多すぎます(一度に 512 まで)");
+            return false;
+        }
+        true
     }
 
     /// いま聞こえている位置(秒)

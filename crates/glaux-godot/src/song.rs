@@ -9,6 +9,8 @@ use godot::classes::FileAccess;
 pub struct LoadedSong {
     pub timeline: Timeline,
     pub data: PlaybackData,
+    /// キーと小節ごとのコード(ノートからの推定。効果音の音程を曲に合わせるのに使う)
+    pub harmony: glaux_core::harmony::HarmonyAnalysis,
     /// 読み込みで気づいた注意(CLAP の音源など)
     pub warnings: Vec<String>,
 }
@@ -57,6 +59,7 @@ pub fn load(dir: &str, sample_rate: f64) -> Result<LoadedSong, String> {
     let data = build_playback_data(&project, sample_rate, &bank);
     Ok(LoadedSong {
         timeline: Timeline::from_project(&project),
+        harmony: glaux_core::harmony::analyze(&project, None, None),
         data,
         warnings,
     })

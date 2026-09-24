@@ -111,6 +111,57 @@ func _on_section(name: String, time: float) -> void:
 | `get_track_names()` / `get_length()` | トラック名の一覧 / 曲の長さ(秒) |
 | `get_warnings()` | 読み込みで気づいた注意(CLAP の音源など) |
 
+### 和声(効果音の音程を曲に合わせる)
+
+曲のノートから推定したキーと、小節ごとのコードを問い合わせられます(推定なので、コードは 1 小節に 1 つ)。
+
+| メソッド | 返り値 |
+|---|---|
+| `get_key()` | キー `{name: "A minor", tonic: 9, mode: "minor", confidence}`(`tonic` は C=0〜B=11)。ノートが無い曲は空 |
+| `get_chords()` | 小節ごとのコードの一覧 `{time, bar, chord}`(`chord` は "Am" / "G7" / "N.C." など) |
+| `get_chord_at(time)` | `time` 秒のコード名 |
+| `get_chord_tones(time)` | `time` 秒のコードの構成音(C=0〜B=11 の番号。ルートが先頭) |
+| `get_scale_pitch_classes()` | キーのスケールの 7 音(同じく番号) |
+| `snap_to_scale(pitch)` | 音(MIDI 番号)をキーのスケールでいちばん近い音に寄せる |
+| `snap_to_chord(pitch, time)` | 音を `time` 秒のコードの構成音でいちばん近い音に寄せる |
+| `get_chord_note(time, index, base = 60)` | `time` 秒のコードの構成音を、`base`(MIDI 番号、60 = C4)以上で下から数えた `index` 番目の音(使い切ったら 1 オクターブ上へ) |
+| `get_scale_note(index, base = 60)` | キーのスケールの音を、`base` 以上で下から数えた `index` 番目の音 |
+
+### 効果音を 1 音ずつ鳴らす(WAV 不要)
+
+曲の中のトラック(の音源とエフェクト)で、1 音を好きな音程で鳴らせます。曲を再生していなくても鳴ります。
+
+| メソッド・プロパティ | 説明 |
+|---|---|
+| `play_note(track, pitch, velocity = 100, duration = 0.2)` | すぐ鳴らす(`duration` は押している秒数。その後は音源のリリースで消える) |
+| `play_note_at(track, pitch, time, velocity = 100, duration = 0.2)` | `time` 秒に**聞こえるように**鳴らす(出力の遅れを見込む。過ぎた時刻ならすぐ) |
+| `sync_to` | `play_note_at` の `time` の基準にする BGM の `GlauxPlayer`。未設定なら自分の曲の時刻 |
+| `release_notes()` | 鳴らした音をすべて離す |
+
+```gdscript
+@onready var music: GlauxPlayer = $Music   # BGM
+@onready var sfx: GlauxPlayer = $Sfx       # 効果音(曲は再生せず、1 音ずつ鳴らすだけ)
+
+func _ready() -> void:
+	music.load_song("res://songs/Stage1.glaux")
+	sfx.load_song("res://songs/SEKit.glaux")   # 効果音用の曲(トラックごとに音色を作っておく)
+	sfx.sync_to = music                        # play_note_at の時刻 = BGM の時刻
+
+# 敵の攻撃: BGM の次の拍に、その時のコードの構成音で鳴らす(拍にぴったり合う)
+func enemy_attack() -> void:
+	var t := music.get_next_beat_time()
+	sfx.play_note_at("Hit", music.get_chord_note(t, 0, 48), t)
+
+# プレイヤーの入力: すぐ鳴らす。コンボが上がるほどコードの構成音を上っていく
+func on_player_hit(combo: int) -> void:
+	var now := music.get_song_time()
+	sfx.play_note("Blip", music.get_chord_note(now, combo, 72), 110, 0.15)
+```
+
+- 音程を変えても、その音程で音源が鳴るので音色・長さが崩れません(`pitch_scale` で WAV を上げ下げするのと違う)
+- Glaux で効果音の曲の音色を直せば、書き出し直さずにそのまま反映されます
+- `play_note_at` で BGM の拍に合わせた音は、BGM とサンプル単位でそろいます(同じミックスの時計で位置を決めるため)
+
 ### プロパティ
 
 | プロパティ | 説明 |
@@ -183,6 +234,16 @@ func _process(_delta: float) -> void:
   2. 実際に使う機器で聴きながら、光るのが音より早ければ `latency_offset_ms` を増やす(20〜40 ずつ)
   3. ぴったり合ったら、その値をゲームの設定として保存する(プレイヤーが自分で合わせられる設定項目にするのが一般的)
   - 正の値でシグナル・位置が遅れます。負の値にすると早まります
+
+### 効果音(`play_note`)
+
+- 鳴らせるのは内蔵音源・SoundFont・サンプラーのトラックです。CLAP プラグイン(Surge XT 等)のトラックは鳴りません
+- 効果音用の曲でトラックを**ミュート・ソロ**にしたまま保存すると、`play_note` の音もその状態になります
+  (ミュートしたトラックは鳴らない)。Glaux で試聴した後はミュート・ソロを外して保存してください
+- 1 つの `GlauxPlayer` で同時に鳴らせる音は 32 まで(超えると古い音から止まる)、予約は一度に 512 まで
+- 押してから音が出るまでの遅れは、Godot の普通の効果音と同じくらい(出力の遅れのぶん)
+- コードは小節ごとの推定です。小節の途中でコードが変わる曲では、その小節でいちばん合うコードになります
+- 重い音や、いつも同じでよい音は、今までどおり WAV にしてもかまいません(併用できます)
 
 ### 処理の重さ
 

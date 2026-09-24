@@ -10,7 +10,7 @@
 //! 決め、トラック index を `Shared::live_track` に書いておく。
 
 use glaux_core::{Articulation, Note, NoteId, TempoMap, Tick};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 送り先トラックなし(内蔵の既定音色でエフェクトなしに鳴らす)
@@ -114,6 +114,82 @@ impl LiveQueue {
         let v = self.buf[t & (QUEUE_CAP - 1)].load(Ordering::Relaxed);
         self.tail.store(t.wrapping_add(1), Ordering::Release);
         Some(LiveEvent::unpack(v))
+    }
+}
+
+/// 時刻を指定して鳴らすノート(ゲームの効果音など)。時刻はレンダラの時計
+/// ([`Renderer::clock`](crate::render::Renderer::clock)、再生・停止に関係なく進むサンプル数)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimedNote {
+    /// 鳴らし始める時計の位置(サンプル)。過ぎていれば次のブロックの頭ですぐ鳴らす
+    pub at: u64,
+    /// 鳴らすトラックの index(そのトラックの音源とエフェクトで鳴る)
+    pub track: u16,
+    pub pitch: u8,
+    pub vel: u8,
+    /// 鍵盤を押している長さ(サンプル)。その後はリリースで消える
+    pub dur: u32,
+}
+
+const NOTE_QUEUE_CAP: usize = 512;
+
+/// [`TimedNote`] の固定容量のリングバッファ。取り出し(オーディオスレッド)はロックフリー・
+/// アロケーションなし。積む側は短いロックで直列化する([`LiveQueue`] と同じ作り。1 つのノートは
+/// 2 つの 64 bit の枠に入れる)。
+pub struct NoteQueue {
+    buf: Box<[AtomicU64]>,
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    push_lock: Mutex<()>,
+}
+
+impl Default for NoteQueue {
+    fn default() -> Self {
+        NoteQueue {
+            buf: (0..NOTE_QUEUE_CAP * 2).map(|_| AtomicU64::new(0)).collect(),
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            push_lock: Mutex::new(()),
+        }
+    }
+}
+
+impl NoteQueue {
+    /// 積む。満杯なら false(そのノートは捨てる)。
+    pub fn push(&self, n: TimedNote) -> bool {
+        let _guard = self.push_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let h = self.head.load(Ordering::Relaxed);
+        let t = self.tail.load(Ordering::Acquire);
+        if h.wrapping_sub(t) >= NOTE_QUEUE_CAP {
+            return false;
+        }
+        let i = (h & (NOTE_QUEUE_CAP - 1)) * 2;
+        let packed =
+            (n.track as u64) << 48 | (n.pitch as u64) << 40 | (n.vel as u64) << 32 | n.dur as u64;
+        self.buf[i].store(n.at, Ordering::Relaxed);
+        self.buf[i + 1].store(packed, Ordering::Relaxed);
+        self.head.store(h.wrapping_add(1), Ordering::Release);
+        true
+    }
+
+    /// 取り出す(オーディオスレッド専用。単一の消費者から呼ぶこと)。
+    pub fn pop(&self) -> Option<TimedNote> {
+        let t = self.tail.load(Ordering::Relaxed);
+        let h = self.head.load(Ordering::Acquire);
+        if t == h {
+            return None;
+        }
+        let i = (t & (NOTE_QUEUE_CAP - 1)) * 2;
+        let at = self.buf[i].load(Ordering::Relaxed);
+        let p = self.buf[i + 1].load(Ordering::Relaxed);
+        self.tail.store(t.wrapping_add(1), Ordering::Release);
+        Some(TimedNote {
+            at,
+            track: (p >> 48) as u16,
+            pitch: (p >> 40) as u8,
+            vel: (p >> 32) as u8,
+            dur: p as u32,
+        })
     }
 }
 
