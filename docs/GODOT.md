@@ -10,7 +10,8 @@ Glaux で作った曲(`.glaux` フォルダ)を Godot 4 のゲームの中でそ
 |---|---|---|
 | [`godot/demo/addons/glaux/README.md`](../godot/demo/addons/glaux/README.md) | 人間 | 導入・GDScript の例・API の一覧・注意事項 |
 | [`godot/demo/addons/glaux/AI_GUIDE.md`](../godot/demo/addons/glaux/AI_GUIDE.md) | AI | ゲーム側の AI 向けの手引き(正確な API 仕様・実装パターン・落とし穴) |
-| [`godot/demo/addons/glaux/PROMPT.md`](../godot/demo/addons/glaux/PROMPT.md) | 人間 → AI | ゲーム側の AI に渡すプロンプトの例(導入・敵の同期・判定・調整) |
+| [`godot/demo/addons/glaux/PROMPT.md`](../godot/demo/addons/glaux/PROMPT.md) | 人間 → AI | ゲーム側の AI に渡すプロンプトの例(導入・敵の同期・判定・調整・効果音) |
+| [`godot/demo/addons/glaux/CHANGELOG.md`](../godot/demo/addons/glaux/CHANGELOG.md) | 両方 | 改訂ノート(版ごとの変更。更新したら必ず書き足す) |
 
 対応: Godot 4.3 以降、Windows(64bit)。Linux でも動作確認済み(macOS は未確認)。
 
@@ -29,7 +30,7 @@ godot\build_windows.bat
 1. `cargo build -p glaux-godot --release` で拡張(`glaux_godot.dll`)をビルド(初回は数分)
 2. デモのアドオン `godot\demo\addons\glaux\bin\` に DLL を置く
 3. 配布物を作る:
-   - `godot\dist\addons\glaux\`(`glaux.gdextension`・`bin\glaux_godot.dll`・`README.md`・`AI_GUIDE.md`・`PROMPT.md`)
+   - `godot\dist\addons\glaux\`(`glaux.gdextension`・`bin\glaux_godot.dll`・`README.md`・`AI_GUIDE.md`・`PROMPT.md`・`CHANGELOG.md`)
    - `godot\dist\glaux-godot-addon.zip`(上のフォルダを zip にしたもの。`addons\glaux\` の形で入っている)
 
 ## 2. 別のプロジェクト(ゲーム)へ入れる

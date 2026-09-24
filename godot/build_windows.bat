@@ -16,6 +16,7 @@ copy /Y godot\demo\addons\glaux\glaux.gdextension godot\dist\addons\glaux\ >nul 
 copy /Y godot\demo\addons\glaux\README.md godot\dist\addons\glaux\ >nul || exit /b 1
 copy /Y godot\demo\addons\glaux\AI_GUIDE.md godot\dist\addons\glaux\ >nul || exit /b 1
 copy /Y godot\demo\addons\glaux\PROMPT.md godot\dist\addons\glaux\ >nul || exit /b 1
+copy /Y godot\demo\addons\glaux\CHANGELOG.md godot\dist\addons\glaux\ >nul || exit /b 1
 copy /Y "%T%\release\glaux_godot.dll" godot\dist\addons\glaux\bin\ >nul || exit /b 1
 powershell -NoProfile -Command "Compress-Archive -Path 'godot\dist\addons' -DestinationPath 'godot\dist\glaux-godot-addon.zip' -Force" || exit /b 1
 echo Made godot\dist\addons\glaux and godot\dist\glaux-godot-addon.zip
