@@ -1817,6 +1817,34 @@ fn resolve_project_dir() -> String {
     format!("{home}/Music/GlauxDemo.glaux")
 }
 
+/// タスクバーのアイコン(大きさ = 24px × 表示倍率)。`scripts/make_icons.py` が作る RGBA の生データ。
+/// Tauri の既定ではウィンドウのアイコンに ICO の 1 枚だけが使われ、Windows がタスクバーの大きさへ
+/// 拡大・縮小してぼやけるので、表示倍率に合う大きさの画像をウィンドウに設定する。
+const TASKBAR_ICONS: [(u32, &[u8]); 7] = [
+    (24, include_bytes!("../icons/taskbar/taskbar-24.rgba")),
+    (30, include_bytes!("../icons/taskbar/taskbar-30.rgba")),
+    (36, include_bytes!("../icons/taskbar/taskbar-36.rgba")),
+    (48, include_bytes!("../icons/taskbar/taskbar-48.rgba")),
+    (60, include_bytes!("../icons/taskbar/taskbar-60.rgba")),
+    (72, include_bytes!("../icons/taskbar/taskbar-72.rgba")),
+    (96, include_bytes!("../icons/taskbar/taskbar-96.rgba")),
+];
+
+/// 表示倍率 `scale`(1.0 = 100%)のタスクバーに合う大きさ(24px × 倍率以上で最小のもの)。
+fn taskbar_icon_size(scale: f64) -> (u32, &'static [u8]) {
+    let want = (24.0 * scale).round() as u32;
+    TASKBAR_ICONS
+        .iter()
+        .find(|(s, _)| *s >= want)
+        .copied()
+        .unwrap_or(TASKBAR_ICONS[TASKBAR_ICONS.len() - 1])
+}
+
+fn taskbar_icon(scale: f64) -> tauri::image::Image<'static> {
+    let (size, rgba) = taskbar_icon_size(scale);
+    tauri::image::Image::new(rgba, size, size)
+}
+
 fn mcp_port() -> u16 {
     std::env::var("GLAUX_MCP_PORT")
         .ok()
@@ -1888,6 +1916,12 @@ fn main() -> Result<()> {
         .manage(state)
         .setup(move |app| {
             set_window_title(app.handle(), &project_title);
+            // タスクバーのアイコンを表示倍率に合う大きさに(ぼやけないように)
+            if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+                if let Ok(scale) = w.scale_factor() {
+                    let _ = w.set_icon(taskbar_icon(scale));
+                }
+            }
 
             // アプリ内 MCP サーバー
             let mcp_handle = handle.clone();
@@ -2068,7 +2102,37 @@ fn main() -> Result<()> {
             transport_seek,
             preview_note
         ])
+        .on_window_event(|window, event| {
+            // 表示倍率の違うモニターへ移ったら、タスクバーのアイコンをその倍率の大きさに替える
+            if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                let _ = window.set_icon(taskbar_icon(*scale_factor));
+            }
+        })
         .run(tauri::generate_context!())
         .context("Tauri の起動に失敗")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod taskbar_icon_tests {
+    use super::*;
+
+    #[test]
+    fn taskbar_icons_match_their_sizes_and_follow_the_display_scale() {
+        for (size, rgba) in TASKBAR_ICONS {
+            assert_eq!(
+                rgba.len(),
+                (size * size * 4) as usize,
+                "{size}px の生データの長さ"
+            );
+        }
+        // 100% / 125% / 150% / 200% / 300% はちょうどの大きさ、半端な倍率は一つ大きいもの
+        assert_eq!(taskbar_icon_size(1.0).0, 24);
+        assert_eq!(taskbar_icon_size(1.25).0, 30);
+        assert_eq!(taskbar_icon_size(1.5).0, 36);
+        assert_eq!(taskbar_icon_size(1.75).0, 48);
+        assert_eq!(taskbar_icon_size(2.0).0, 48);
+        assert_eq!(taskbar_icon_size(3.0).0, 72);
+        assert_eq!(taskbar_icon_size(8.0).0, 96, "大きすぎる倍率は最大のもの");
+    }
 }

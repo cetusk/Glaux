@@ -5,7 +5,10 @@
 - 40px 以下は顔のみ版(assets/icons/favicon.png)。小さくても目元が分かるよう、余白を図形の 1/16 に詰め、
   2 段階で縮めてから小さい半径で鮮明化する(1 回で縮めるとぼやける)
 - 48px 以上は白フチの全身版(assets/icons/glaux-app-icon.png)。余白は図形の 1/8(ブランドガイドの推奨)
-- ICO には Windows が表示倍率ごとに使うサイズをすべて入れる(足りないと拡大・縮小されてぼやける)
+- ICO には Windows が表示倍率ごとに使うサイズをすべて入れる(足りないと拡大・縮小されてぼやける)。
+  並びは大きい順(Tauri はウィンドウのアイコンに ICO の最初の 1 枚を使うので、小さいものが先だと拡大されてぼやける)
+- タスクバー用: 表示倍率ごとのタスクバーの大きさ(24px × 倍率)の画像を RGBA の生データで書き出す。
+  アプリが起動時に表示倍率に合うものをウィンドウに設定する(app/src-tauri/src/main.rs の taskbar_icon)
 """
 
 from pathlib import Path
@@ -18,6 +21,8 @@ FULL = ROOT / "assets/icons/glaux-app-icon.png"
 
 # 100% / 125% / 150% / 200% などで Windows が使うサイズ
 ICO_SIZES = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256]
+# タスクバーのアイコンの大きさ(24px × 表示倍率 100 / 125 / 150 / 200 / 250 / 300 / 400%)
+TASKBAR_SIZES = [24, 30, 36, 48, 60, 72, 96]
 SMALL_MAX = 40
 
 
@@ -56,10 +61,33 @@ def icon(size: int) -> Image.Image:
     return shrink(squared(FULL, 1 / 8), size, 60 if size <= 96 else 0)
 
 
+def write_ico(path: Path, sizes: list[int]) -> None:
+    """ICO を大きい順に書く(各画像は PNG で格納。Windows Vista 以降・Tauri の ico クレートとも読める)。"""
+    import io
+    import struct
+
+    entries = []
+    for s in sorted(sizes, reverse=True):
+        buf = io.BytesIO()
+        icon(s).save(buf, format="PNG")
+        entries.append((s, buf.getvalue()))
+    header = struct.pack("<HHH", 0, 1, len(entries))
+    offset = 6 + 16 * len(entries)
+    dirs = b""
+    for s, data in entries:
+        dim = 0 if s >= 256 else s
+        dirs += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(data), offset)
+        offset += len(data)
+    path.write_bytes(header + dirs + b"".join(d for _, d in entries))
+
+
 def main() -> None:
-    images = [icon(s) for s in ICO_SIZES]
-    ico = ROOT / "app/src-tauri/icons/icon.ico"
-    images[-1].save(ico, format="ICO", sizes=[(s, s) for s in ICO_SIZES], append_images=images[:-1])
+    write_ico(ROOT / "app/src-tauri/icons/icon.ico", ICO_SIZES)
+    # タスクバー用(RGBA の生データ。幅 = 高さ = サイズ)
+    taskbar = ROOT / "app/src-tauri/icons/taskbar"
+    taskbar.mkdir(exist_ok=True)
+    for s in TASKBAR_SIZES:
+        (taskbar / f"taskbar-{s}.rgba").write_bytes(icon(s).tobytes())
     icon(512).save(ROOT / "app/src-tauri/icons/icon.png")
     # アプリのヘッダー(白フチの全身版を 28px で表示。3 倍の解像度)
     shrink(squared(FULL, 1 / 16), 84, 40).save(ROOT / "app/public/glaux-icon.png")
