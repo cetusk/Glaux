@@ -25,8 +25,12 @@ interface Settings {
   countInBars: number;
   /// 録音中はメトロノームを自動で鳴らす
   metronomeOnRecord: boolean;
+  /// チャットの相手。"claude" = Claude Code、"codex" = Codex CLI(GPT)
+  chatProvider: "claude" | "codex";
   /// チャットの AI モデル(`claude --model` に渡す)。空文字 = Claude Code の既定
   chatModel: string;
+  /// GPT のモデル(`codex -m` に渡す)。空文字 = Codex の既定
+  chatCodexModel: string;
   /// オーディオデバイス(空文字 = OS の既定)
   outputDevice: string;
   inputDevice: string;
@@ -51,7 +55,9 @@ function load(): Settings {
         recordLatencyMs: typeof v.recordLatencyMs === "number" ? v.recordLatencyMs : 60,
         countInBars: typeof v.countInBars === "number" ? v.countInBars : 1,
         metronomeOnRecord: v.metronomeOnRecord !== false,
+        chatProvider: v.chatProvider === "codex" ? "codex" : "claude",
         chatModel: typeof v.chatModel === "string" ? v.chatModel : "",
+        chatCodexModel: typeof v.chatCodexModel === "string" ? v.chatCodexModel : "",
         outputDevice: typeof v.outputDevice === "string" ? v.outputDevice : "",
         inputDevice: typeof v.inputDevice === "string" ? v.inputDevice : "",
         autoGain: v.autoGain !== false,
@@ -69,7 +75,9 @@ function load(): Settings {
     recordLatencyMs: 60,
     countInBars: 1,
     metronomeOnRecord: true,
+    chatProvider: "claude",
     chatModel: "",
+    chatCodexModel: "",
     outputDevice: "",
     inputDevice: "",
     autoGain: true,

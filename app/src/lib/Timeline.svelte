@@ -1153,7 +1153,7 @@
 
   {#if project.tracks.length === 0}
     <div class="empty">
-      トラックがありません。Claude に「トラックを追加して」と頼んでみてください。
+      トラックがありません。AI に「トラックを追加して」と頼んでみてください。
     </div>
   {/if}
 

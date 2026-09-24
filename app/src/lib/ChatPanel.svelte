@@ -4,26 +4,55 @@
   import { chatStatus } from "./aiStatus.svelte";
   import { playDoneChime, playErrorChime, saveSettings, settings } from "./settings.svelte";
 
-  // モデルの選択肢(値は claude --model に渡すエイリアス。"" は Claude Code の既定)
-  const MODELS = [
-    { value: "", label: "既定" },
-    { value: "opus", label: "Opus" },
-    { value: "sonnet", label: "Sonnet" },
-    { value: "haiku", label: "Haiku" },
-  ];
-  const isCustomModel = $derived(!MODELS.some((m) => m.value === settings.chatModel));
+  // チャットの相手。Claude = Claude Code(claude)、GPT = Codex CLI(codex)。どちらもホストでログイン済みのものを使う
+  const PROVIDERS = [
+    { value: "claude", label: "Claude" },
+    { value: "codex", label: "GPT" },
+  ] as const;
+
+  // モデルの選択肢("" は各 CLI の既定)。Claude は claude --model のエイリアス、GPT は codex -m のモデル名
+  const MODELS = {
+    claude: [
+      { value: "", label: "既定" },
+      { value: "opus", label: "Opus" },
+      { value: "sonnet", label: "Sonnet" },
+      { value: "haiku", label: "Haiku" },
+    ],
+    codex: [
+      { value: "", label: "既定" },
+      { value: "gpt-6-astra", label: "GPT-6 Astra" },
+    ],
+  };
+  const MODEL_EXAMPLES = {
+    claude: "例: claude-opus-5-5、claude-sonnet-5",
+    codex: "例: gpt-6-astra",
+  };
+  const provider = $derived(settings.chatProvider);
+  const currentModel = $derived(provider === "codex" ? settings.chatCodexModel : settings.chatModel);
+  const isCustomModel = $derived(!MODELS[provider].some((m) => m.value === currentModel));
+
+  function setModel(v: string) {
+    if (provider === "codex") settings.chatCodexModel = v;
+    else settings.chatModel = v;
+  }
+
+  function pickProvider(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    settings.chatProvider = v === "codex" ? "codex" : "claude";
+    saveSettings();
+  }
 
   function pickModel(e: Event) {
     const v = (e.currentTarget as HTMLSelectElement).value;
     if (v === "__custom") {
-      const name = window.prompt("モデル名(例: claude-opus-5-5、claude-sonnet-5)", settings.chatModel);
+      const name = window.prompt(`モデル名(${MODEL_EXAMPLES[provider]})`, currentModel);
       if (name === null) {
-        (e.currentTarget as HTMLSelectElement).value = settings.chatModel;
+        (e.currentTarget as HTMLSelectElement).value = isCustomModel ? "__current" : currentModel;
         return;
       }
-      settings.chatModel = name.trim();
+      setModel(name.trim());
     } else {
-      settings.chatModel = v;
+      setModel(v);
     }
     saveSettings();
   }
@@ -37,6 +66,8 @@
   const toolLabels: Record<string, string> = {
     get_project: "プロジェクトを確認",
     get_history: "履歴を確認",
+    command_execution: "コマンドを実行",
+    web_search: "Web を検索",
     apply_commands: "編集を適用",
     undo: "取り消し",
     redo: "やり直し",
@@ -124,7 +155,7 @@
     input = "";
     chatStatus.running = true;
     try {
-      await api.sendChat(fullPrompt, settings.chatModel);
+      await api.sendChat(fullPrompt, currentModel, provider);
     } catch (e) {
       push({ role: "error", text: String(e) });
       chatStatus.running = false;
@@ -191,17 +222,28 @@
     <h2>AI に指示</h2>
     <div class="head-right">
       <select
+        class="provider"
+        value={provider}
+        onchange={pickProvider}
+        disabled={chatStatus.running}
+        title="チャットの相手(Claude = Claude Code、GPT = Codex CLI。どちらもインストールしてログインしておく)。切り替えると新しい会話になります"
+      >
+        {#each PROVIDERS as p (p.value)}
+          <option value={p.value}>{p.label}</option>
+        {/each}
+      </select>
+      <select
         class="model"
-        value={isCustomModel ? "__current" : settings.chatModel}
+        value={isCustomModel ? "__current" : currentModel}
         onchange={pickModel}
         disabled={chatStatus.running}
         title="AI のモデル(次の指示から反映。会話の文脈はそのまま引き継がれます)"
       >
-        {#each MODELS as m (m.value)}
+        {#each MODELS[provider] as m (m.value)}
           <option value={m.value}>{m.label}</option>
         {/each}
         {#if isCustomModel}
-          <option value="__current">{settings.chatModel}</option>
+          <option value="__current">{currentModel}</option>
         {/if}
         <option value="__custom">その他(モデル名を入力)…</option>
       </select>
@@ -293,9 +335,10 @@
     align-items: center;
   }
 
-  .model {
+  .model,
+  .provider {
     font-size: 11px;
-    max-width: 150px;
+    max-width: 130px;
   }
 
   h2 {

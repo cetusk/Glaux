@@ -537,8 +537,13 @@ export function previewNote(trackId: string, pitch: number): Promise<void> {
 // ---- チャット(UI → AI 指示) ----
 
 /** 指示を送る。進捗は onChatEvent で届く。 */
-export function sendChat(prompt: string, model: string | null = null): Promise<void> {
-  return invoke("send_chat", { prompt, model: model || null });
+/** 指示を送る。provider は "claude"(Claude Code)か "codex"(Codex CLI = GPT)。 */
+export function sendChat(
+  prompt: string,
+  model: string | null = null,
+  provider: "claude" | "codex" = "claude",
+): Promise<void> {
+  return invoke("send_chat", { prompt, model: model || null, provider });
 }
 
 export function cancelChat(): Promise<void> {

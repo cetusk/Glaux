@@ -14,7 +14,7 @@
 
 ## なにができるか
 
-- **AI との共同作曲**: アプリ内チャットで「4 小節のベースラインを作って」「サビだけ盛り上げて」と頼むと、AI がプロジェクトを直接編集します。編集はタイムラインにリアルタイムで反映されます
+- **AI との共同作曲**: アプリ内チャットで「4 小節のベースラインを作って」「サビだけ盛り上げて」と頼むと、AI がプロジェクトを直接編集します。編集はタイムラインにリアルタイムで反映されます。相手は **Claude**(Claude Code)と **GPT**(Codex CLI)から選べます
 - **AI の感覚**: AI は編集結果を `analyze_audio` で「聴き」(LUFS・帯域バランス・クリップ検出)、`analyze_harmony` でキーとコード進行を、`analyze_rhythm` でスウィングやグルーヴを、`analyze_sound` で音色を言葉(「明るい」「金属的」など)で把握します。まとまった編集の後は自分でセルフレビューしてから報告します
 - **音源 7 種**: subtractive(シンセ)/ fm(FM: エレピ・ベル)/ wavetable(ウェーブテーブル)/ drum(ドラムシンセ)/ pluck(撥弦の物理モデル。+amp でエレキ)/ sampler(WAV ワンショット)/ **sf2(SoundFont)** — FluidR3_GM などのフリー SoundFont を 1 ファイル置けば GM 全 128 楽器が鳴ります
 - **エフェクト 9 種**: eq / compressor / reverb / distortion / **amp(ギターアンプシミュ)** / sidechain(EDM のポンピング)/ delay / chorus / tape(Lo-fi)。音量・パン・音色パラメータ(フィルタスイープ等)のオートメーション、途中のテンポ・拍子変更にも対応
@@ -66,7 +66,16 @@ scripts\glaux-app.bat [C:\path\to\MySong.glaux]
 
 初回はビルドに数分かかります。プロジェクトフォルダは無ければ自動作成されます。
 
-チャット機能はホストにインストール済みの [Claude Code](https://claude.com/claude-code) を利用します(アプリが `claude` CLI を起動します)。
+チャット機能は、ホストにインストールしてログイン済みの CLI を使います。チャットパネルの左上で相手を切り替えます。
+
+| 相手 | 使う CLI | 準備 |
+|---|---|---|
+| Claude | [Claude Code](https://claude.com/claude-code)(`claude`) | インストールしてログイン |
+| GPT | [Codex CLI](https://github.com/openai/codex)(`codex`) | `npm i -g @openai/codex` の後、`codex login` |
+
+- どちらも、アプリ内の MCP サーバーの Glaux のツールだけを使います(ファイルの読み書きやコマンドの実行はさせません)
+- 相手を切り替えると新しい会話になります。モデルは相手ごとに選べます(GPT は既定・GPT-6 Astra・任意のモデル名)
+- GPT のときは `~/.codex/config.toml` を読みません(ほかの MCP サーバーや承認の設定が混ざらないように)。ログインの情報は使います
 
 ### リリースビルド(どこでも起動できる exe)
 
@@ -85,7 +94,7 @@ scripts\build-release.bat
 - 引数なしで起動すると `<ホーム>\Music\GlauxDemo.glaux` を開きます(無ければ作成)。別の曲は画面のプロジェクトメニューから開くか、
   `Glaux.exe C:\path\to\MySong.glaux` のように引数で渡します
 - 設定・プリセット・SoundFont・追加モデルは `%APPDATA%\glaux\` にあり、開発版(`glaux-app.bat`)と共有されます
-- チャット機能を使うには、開発版と同じく `claude` CLI にパスが通っている必要があります
+- チャット機能を使うには、開発版と同じく `claude`(GPT なら `codex`)にパスが通っている必要があります
 - 開発版とリリース版を同時に起動すると、2 つ目はアプリ内 MCP サーバーのポート(41920)を使えません。
   片方ずつ使うか、`GLAUX_MCP_PORT` で別のポートにしてください
 
@@ -95,6 +104,13 @@ scripts\build-release.bat
 
 ```bat
 claude mcp add --transport http glaux http://127.0.0.1:41920/mcp
+```
+
+Codex CLI(GPT)なら `~/.codex/config.toml` に次を書きます:
+
+```toml
+[mcp_servers.glaux]
+url = "http://127.0.0.1:41920/mcp"
 ```
 
 アプリなしで単体検証する場合は stdio 版もあります:

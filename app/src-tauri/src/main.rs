@@ -1771,8 +1771,9 @@ async fn send_chat(
     state: State<'_, AppState>,
     prompt: String,
     model: Option<String>,
+    provider: Option<String>,
 ) -> Result<(), String> {
-    state.chat.set_model(model)?;
+    let provider = chat::Provider::parse(provider.as_deref())?;
     let prompt = prompt.trim().to_owned();
     if prompt.is_empty() {
         return Err("指示が空です".to_owned());
@@ -1780,6 +1781,8 @@ async fn send_chat(
     if state.chat.is_running() {
         return Err("前の指示がまだ実行中です".to_owned());
     }
+    state.chat.set_model(model)?;
+    state.chat.set_provider(provider);
     let full_prompt = match build_chat_context(&state).await {
         Some(ctx) => format!("{ctx}\n{prompt}"),
         None => prompt,
