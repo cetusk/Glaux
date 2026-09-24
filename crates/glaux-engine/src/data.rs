@@ -86,7 +86,7 @@ impl Default for LegatoSettings {
 pub const LEGATO_XFADE_SEC: f64 = 0.03;
 /// レガートでつなぐ直前の音を探す範囲(前の音の終わりから、この秒数までの隙間なら「つながっている」)
 pub const LEGATO_GAP_SEC: f64 = 0.3;
-/// ポルタメントで滑る時間の既定(秒。音が短ければその半分まで)
+/// ポルタメントで滑る時間の既定(秒。音がそれより短ければ音の終わりまでかけて滑る)
 pub const PORTAMENTO_SEC: f64 = 0.15;
 
 /// レガート・ポルタメントのノートを同じトラックの直前の音とつなぐ(`events` は開始順)。
@@ -159,9 +159,7 @@ pub fn link_legato(
                 } else {
                     set.glide
                 };
-                let glide = ((secs * sample_rate) as u64)
-                    .min((e.end - e.start) / 2)
-                    .max(1) as f32;
+                let glide = ((secs * sample_rate) as u64).min(e.end - e.start).max(1) as f32;
                 let cents = (from_pitch as f32 - e.pitch as f32) * 100.0;
                 // 減速しながら到達する形(前半で 7 割進む)
                 events[i].curve = glaux_dsp::PitchCurve::from_points(&[
@@ -1302,6 +1300,43 @@ mod tests {
         // ノート個別の 400ms が優先
         assert!(e[2].curve.cents_at(3840.0) < 0.0);
         assert_eq!(e[2].curve.cents_at(19_200.0), 0.0);
+    }
+
+    /// 8 分音符(0.25 秒)の上行ポルタメントで、つなぎ目から `at` 秒後の高さ(Hz)
+    fn porta_freq_at(glide_ms: f32, at: f64) -> f32 {
+        use crate::export::render_project;
+        use glaux_core::Articulation as A;
+        let mut p = project_with_notes(vec![
+            note(0, 480, 60, 100),
+            with_art(note(480, 480, 72, 100), A::Portamento),
+        ]);
+        p.tracks[0].glide_ms = Some(glide_ms);
+        let mut d = glaux_core::Device::builtin("subtractive");
+        d.params.insert(
+            "waveform".into(),
+            glaux_core::ParamValue::Enum("sine".into()),
+        );
+        d.params.insert("sustain".into(), 1.0.into());
+        p.tracks[0].device = Some(d);
+        let st = render_project(&p, 48_000.0, &Default::default()).unwrap();
+        let x: Vec<f32> = st.chunks(2).map(|c| c[0] + c[1]).collect();
+        let s = 12_000 + (at * 48_000.0) as usize;
+        let w = &x[s..s + 960];
+        let c: Vec<usize> = (1..w.len())
+            .filter(|&i| w[i - 1] < 0.0 && w[i] >= 0.0)
+            .collect();
+        (c.len() - 1) as f32 * 48_000.0 / (c[c.len() - 1] - c[0]) as f32
+    }
+
+    #[test]
+    fn glide_time_is_audible_on_short_notes() {
+        // 8 分音符でも 80ms と 400ms で滑り方がはっきり違う(以前は音の長さの半分で頭打ちだった)
+        let fast = porta_freq_at(80.0, 0.12);
+        let slow = porta_freq_at(400.0, 0.12);
+        eprintln!("0.12 秒後: 80ms → {fast:.0}Hz / 400ms → {slow:.0}Hz(C5 = 523Hz)");
+        assert!((fast - 523.3).abs() < 15.0, "{fast}");
+        // 400ms は音の終わり(0.25 秒)までかけて滑るので、まだ 2 半音以上低い
+        assert!(slow < 466.0, "{slow}");
     }
 
     #[test]
