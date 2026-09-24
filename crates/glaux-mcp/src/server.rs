@@ -2454,7 +2454,7 @@ impl ServerHandler for GlauxServer {
                  EDM のポンピングは sidechain(source にキックのトラック ID)、\
                  supersaw は subtractive の unison + detune、歪みは distortion。\
                  やまびこは delay(time_ms をテンポに合わせる)、厚みと広がりは chorus、\
-                 Lo-fi・ヴィンテージ感は tape(wow / flutter / hiss / bits)。\
+                 Lo-fi・ヴィンテージ感は tape(wow / flutter / hiss / crackle / bits)。\
                  メタルのブリッジミュートはノートの articulation: \"palm_mute\"(+ distortion)。\
                  音色プリセット: 良い音ができたら save_preset で保存し(全プロジェクト共通)、\
                  音作りの依頼ではまず list_presets で使える音がないか確認 → load_preset で適用 → 微調整。\

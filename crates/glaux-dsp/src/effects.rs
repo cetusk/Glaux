@@ -359,6 +359,10 @@ pub struct TapeParams {
     pub tone_coef: f32,
     /// ヒスノイズの振幅
     pub hiss: f32,
+    /// レコードのパチパチが 1 サンプルあたりに起きる確率(0 = 無し)
+    pub crackle_rate: f32,
+    /// パチパチの大きさ(最大)
+    pub crackle_amp: f32,
     /// ビット落としの量子化段数(0 = 落とさない)
     pub quant: f32,
 }
@@ -444,6 +448,8 @@ pub struct EffectState {
     lfo: [f32; 2],
     // Tape のヒスノイズ用乱数(xorshift32)
     rng: u32,
+    // Tape のパチパチ(左右それぞれの減衰中の振幅。符号込み)
+    crackle: [f32; 2],
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -483,7 +489,16 @@ impl EffectState {
             dly_lp: [0.0; 2],
             lfo: [0.0; 2],
             rng: RNG_SEED,
+            crackle: [0.0; 2],
         }
+    }
+
+    /// 0..1 の一様乱数(xorshift32)
+    fn next_rand(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        self.rng as f32 / u32::MAX as f32
     }
 
     fn kind_of(p: &EffectParams) -> EffectKind {
@@ -526,6 +541,7 @@ impl EffectState {
             self.dly_lp = [0.0; 2];
             self.lfo = [0.0; 2];
             self.rng = RNG_SEED;
+            self.crackle = [0.0; 2];
         }
     }
 
@@ -711,6 +727,22 @@ impl EffectState {
                 self.lfo[0] = (self.lfo[0] + t.wow_inc).fract();
                 self.lfo[1] = (self.lfo[1] + t.flutter_inc).fract();
                 self.dly_idx = (idx + 1) & DLY_MASK;
+                // レコードのパチパチ: まれに起きる、ごく短く減衰する鋭い音(左右どちらか・両方)
+                if t.crackle_rate > 0.0 {
+                    let u = self.next_rand();
+                    if u < t.crackle_rate {
+                        let amp = t.crackle_amp * (0.15 + 0.85 * self.next_rand().powi(3));
+                        let sign = if self.next_rand() < 0.5 { -1.0 } else { 1.0 };
+                        let side = self.next_rand();
+                        // 両方 60%・左だけ 20%・右だけ 20%
+                        if side < 0.8 {
+                            self.crackle[0] = amp * sign;
+                        }
+                        if side < 0.6 || side >= 0.8 {
+                            self.crackle[1] = amp * sign;
+                        }
+                    }
+                }
                 let mut out = [0.0f32; 2];
                 for (ch, o) in out.iter_mut().enumerate() {
                     let x = read_frac(&self.dly[ch], idx, delay);
@@ -719,10 +751,15 @@ impl EffectState {
                     self.tone_lp[ch] += (y - self.tone_lp[ch]) * (1.0 - t.tone_coef);
                     y = self.tone_lp[ch];
                     if t.hiss > 0.0 {
-                        self.rng ^= self.rng << 13;
-                        self.rng ^= self.rng >> 17;
-                        self.rng ^= self.rng << 5;
-                        y += (self.rng as f32 / u32::MAX as f32 - 0.5) * 2.0 * t.hiss;
+                        y += (self.next_rand() - 0.5) * 2.0 * t.hiss;
+                    }
+                    if self.crackle[ch] != 0.0 {
+                        y += self.crackle[ch];
+                        // 約 0.1ms で消える(次のサンプルでは符号も反転させて「プチッ」とした形に)
+                        self.crackle[ch] *= -0.45;
+                        if self.crackle[ch].abs() < 1e-5 {
+                            self.crackle[ch] = 0.0;
+                        }
                     }
                     if t.quant > 0.0 {
                         y = (y * t.quant).round() / t.quant;
@@ -1290,6 +1327,19 @@ pub static TAPE_SPECS: &[ParamSpec] = &[
         description: "テープのサーッというノイズ。0.1〜0.3 で空気感、上げるとローファイ感が増す。",
     },
     ParamSpec {
+        name: "crackle",
+        display_name: "クラックル",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "レコードのプチプチ・パチパチというノイズ。0.2〜0.4 で古いレコードらしさ(Lo-fi Hip Hop の定番)、\
+            上げるほど頻繁に大きく鳴る。回転むら(wow)を切ってヒスとこれだけ使えばレコード風になる。",
+    },
+    ParamSpec {
         name: "bits",
         display_name: "ビット深度",
         unit: Some("bit"),
@@ -1488,6 +1538,9 @@ impl EffectParams {
                 "saturation" => p.drive = tape_drive(v),
                 "tone" => p.tone_coef = (-tau * v.clamp(1500.0, 18000.0) / sample_rate).exp(),
                 "hiss" => p.hiss = tape_hiss(v),
+                "crackle" => {
+                    (p.crackle_rate, p.crackle_amp) = tape_crackle(v, sample_rate);
+                }
                 "bits" => p.quant = tape_quant(v),
                 _ => return false,
             },
@@ -1503,6 +1556,18 @@ fn delay_samples(ms: f32, sample_rate: f32) -> f32 {
 
 fn tape_drive(sat: f32) -> f32 {
     1.0 + sat.clamp(0.0, 1.0) * 5.0
+}
+
+/// クラックル量 → (1 サンプルあたりの発生確率, 最大振幅)。1.0 で毎秒約 30 回・最大 0.25
+fn tape_crackle(c: f32, sample_rate: f32) -> (f32, f32) {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.0 {
+        return (0.0, 0.0);
+    }
+    (
+        c * c * 30.0 / sample_rate + c * 2.0 / sample_rate,
+        0.05 + 0.2 * c,
+    )
 }
 
 fn tape_hiss(h: f32) -> f32 {
@@ -1653,6 +1718,8 @@ pub fn bake_effect(
                     / sample_rate)
                     .exp(),
                 hiss: tape_hiss(get(map, s, "hiss")),
+                crackle_rate: tape_crackle(get(map, s, "crackle"), sample_rate).0,
+                crackle_amp: tape_crackle(get(map, s, "crackle"), sample_rate).1,
                 quant: tape_quant(get(map, s, "bits")),
             }))
         }
@@ -1682,6 +1749,7 @@ mod tests {
             ("chorus", "depth_ms", 5.0),
             ("tape", "wow", 0.8),
             ("tape", "bits", 8.0),
+            ("tape", "crackle", 0.4),
         ];
         let none = |_: &str| None;
         for (fx, name, v) in cases {
@@ -2088,5 +2156,32 @@ mod tests {
             .map(|_| st.process(&rv, 0.0, 0.0, 0.0).0.abs())
             .fold(0.0f32, f32::max);
         assert!(tail > 0.01);
+    }
+
+    #[test]
+    fn tape_crackle_adds_sparse_clicks() {
+        let p = bake(&effect("tape", &[("hiss", 0.0), ("crackle", 0.5)])).unwrap();
+        let out = run(&p, |_| (0.0, 0.0), 48_000 * 4);
+        // クリックの立ち上がり(0 から大きく跳ねた点)を数える
+        let clicks = |ch: usize| {
+            out.windows(2)
+                .filter(|w| {
+                    let (a, b) = if ch == 0 {
+                        (w[0].0, w[1].0)
+                    } else {
+                        (w[0].1, w[1].1)
+                    };
+                    a.abs() < 1e-4 && b.abs() > 0.01
+                })
+                .count()
+        };
+        let (l, r) = (clicks(0), clicks(1));
+        // 0.5 で毎秒約 8.5 回 → 4 秒で 20〜60 回程度(片側だけのものもある)
+        assert!((15..80).contains(&l) && (15..80).contains(&r), "{l} {r}");
+        let peak = out.iter().map(|o| o.0.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.03 && peak < 0.3, "{peak}");
+        // 0 なら無音のまま
+        let off = bake(&effect("tape", &[("hiss", 0.0)])).unwrap();
+        assert!(run(&off, |_| (0.0, 0.0), 48_000).iter().all(|o| o.0 == 0.0));
     }
 }

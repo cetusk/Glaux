@@ -340,7 +340,7 @@ fn factory_presets() -> Vec<Preset> {
         ),
         preset(
             "Lo-fi エレピ",
-            "fm のエレピ + chorus + tape。チルホップ/ Lo-fi Hip Hop の揺れてくすんだ鍵盤",
+            "fm のエレピ + chorus + tape(レコードのパチパチ込み)。チルホップ/ Lo-fi Hip Hop の揺れてくすんだ鍵盤",
             device(
                 "fm",
                 &[
@@ -365,6 +365,7 @@ fn factory_presets() -> Vec<Preset> {
                         ("saturation", 0.4),
                         ("tone", 5000.0),
                         ("hiss", 0.25),
+                        ("crackle", 0.25),
                     ],
                 ),
             ],
@@ -374,7 +375,7 @@ fn factory_presets() -> Vec<Preset> {
 
 /// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
 /// (ユーザーが独自に作った別名のプリセットには触れない)。
-const FACTORY_VERSION: &str = "v3";
+const FACTORY_VERSION: &str = "v4";
 
 /// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
 /// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)
