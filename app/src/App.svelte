@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
+  import { shouldYieldKey } from "./lib/keys";
   import { barAtTick, buildBars, nextBarHead, prevBarHead } from "./lib/barMap";
-  import type { AppInfo, EntrySummary, Project, TransportState } from "./lib/types";
+  import type { AppInfo, EntrySummary, Project } from "./lib/types";
+  import { pollTransport, startTransportPolling, transportStore } from "./lib/transport.svelte";
   import Timeline from "./lib/Timeline.svelte";
   import HistoryPanel from "./lib/HistoryPanel.svelte";
   import ChatPanel from "./lib/ChatPanel.svelte";
@@ -26,7 +28,11 @@
   let info = $state<AppInfo | null>(null);
   let error = $state<string | null>(null);
   let mcpCopied = $state(false);
-  let transport = $state<TransportState>({ available: false, playing: false, tick: 0 });
+  /** 保存に失敗したときのエラー(次の保存が成功すると消える) */
+  let saveError = $state<string | null>(null);
+
+  // 再生状態は共有ストア(問い合わせは startTransportPolling の 1 か所だけ)
+  const transport = $derived(transportStore.state);
   let showSettings = $state(false);
   let editingBpm = $state(false);
   let bpmInput = $state("");
@@ -213,7 +219,11 @@
     })();
 
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
-    const unlistenChanged = api.onProjectChanged(scheduleRefresh).catch((e) => {
+    const unlistenChanged = api.onProjectChanged((ev) => {
+      // 保存の失敗は、次に保存が成功するまで出し続ける(再取得で消える error とは分ける)
+      saveError = ev?.save_error ?? null;
+      scheduleRefresh();
+    }).catch((e) => {
       error = `変更イベントの購読に失敗: ${e}`;
       return undefined;
     });
@@ -238,24 +248,12 @@
     window.addEventListener("focus", onFocus);
 
     // 再生ヘッドのポーリング(再生中 100ms / 停止中は 400ms に間引く)
-    let pollTick = 0;
-    const transportTimer = setInterval(async () => {
-      pollTick += 1;
-      if (!transport.playing && pollTick % 4 !== 0) return;
-      try {
-        transport = await api.transportState();
-      } catch {
-        // 起動直後など。次のポーリングで回復する
-      }
-    }, 100);
+    const stopTransportPolling = startTransportPolling();
 
     // キーボード操作(入力欄にフォーカスがあるときは除く)
     // Space: 再生/一時停止, ←/→: 前/次の小節頭, Home/End: 先頭/終端
     const onKeydown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const typing =
-        target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT");
-      if (typing) return;
+      if (shouldYieldKey(e)) return;
       if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") {
         e.preventDefault();
         if (e.shiftKey) doRedo();
@@ -306,7 +304,7 @@
       unlistenActivity.then((f) => f && f());
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("keydown", onKeydown);
-      clearInterval(transportTimer);
+      stopTransportPolling();
       if (idleTimer) clearTimeout(idleTimer);
     };
   });
@@ -319,7 +317,7 @@
       } else {
         await api.transportPlay();
       }
-      transport = await api.transportState();
+      await pollTransport();
     } catch (e) {
       error = String(e);
     }
@@ -333,7 +331,7 @@
         return;
       }
       await api.transportStop();
-      transport = await api.transportState();
+      await pollTransport();
     } catch (e) {
       error = String(e);
     }
@@ -383,7 +381,7 @@
 
   async function finishMidiRecording() {
     const r = await api.midiRecordStop(midiArmStore.trackId, settings.midiQuantize);
-    transport = await api.transportState();
+    await pollTransport();
     recordNotice = `MIDI 録音を配置しました: ${r.notes} ノート`;
     clearTimeout(recordNoticeTimer);
     recordNoticeTimer = setTimeout(() => (recordNotice = null), 8000);
@@ -391,7 +389,7 @@
 
   async function finishRecording() {
     const r = await api.recordStop(null, settings.autoGain);
-    transport = await api.transportState();
+    await pollTransport();
     const warn =
       r.clipped > 0 ? `(${r.clipped} サンプルがクリップしました。入力レベルを下げてください)` : "";
     const gain = r.gain_db > 0.5 ? `、音量 +${r.gain_db.toFixed(0)}dB` : "";
@@ -429,7 +427,7 @@
     if (!transport.available) return;
     try {
       await api.transportSetMetronome(!transport.metronome);
-      transport = await api.transportState();
+      await pollTransport();
     } catch (e) {
       error = String(e);
     }
@@ -463,7 +461,7 @@
             stereo: settings.recordStereo,
           });
         }
-        transport = await api.transportState();
+        await pollTransport();
         if (settings.countInBars > 0) {
           recordNotice = `カウントイン ${settings.countInBars} 小節のあと録音位置になります`;
           clearTimeout(recordNoticeTimer);
@@ -479,7 +477,7 @@
     if (!transport.available) return;
     try {
       await api.transportSeek(tick);
-      transport = await api.transportState();
+      await pollTransport();
     } catch (e) {
       error = String(e);
     }
@@ -857,7 +855,7 @@
           {timeSig}{#if hasSigChanges}*{/if}
         </button>
       {/if}
-      <span class="stat" title="適用済み履歴エントリ数">v{projectVersion}</span>
+      <span class="stat" title="版数(編集・取り消し・やり直しのたびに増える)">v{projectVersion}</span>
       <button onclick={doUndo} title="直前の編集を取り消す">↶ Undo</button>
       <button onclick={doRedo} title="やり直す">↷ Redo</button>
       <div class="master" title="マスター音量">
@@ -910,6 +908,13 @@
 
   {#if error}
     <div class="error">{error}</div>
+  {/if}
+  {#if saveError}
+    <div class="error save-error" role="alert">
+      保存できませんでした。編集は画面上には残っていますが、このまま閉じると失われます。
+      ほかのアプリがファイルを使っていないか(OneDrive の同期など)確かめてください。次の編集で保存し直します。
+      <br /><small>{saveError}</small>
+    </div>
   {/if}
 
   <main>
@@ -1392,6 +1397,10 @@
     background: #5c2b33;
     color: #ffb4c0;
     padding: 6px 14px;
+  }
+
+  .save-error {
+    font-weight: 600;
   }
 
   .loading {

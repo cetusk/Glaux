@@ -98,4 +98,4 @@ returns: { asset_id }   // cache/ に書いた WAV。analyze_audio に渡せる
   `claude mcp add glaux -- ./target/debug/glaux-mcp <MySong.glaux>` で Claude Code / Claude Desktop から叩けるようにする
 - `Session` はアクター(専用スレッド + mpsc)で持ち、MCP と将来の Tauri UI が同じキューに入れる
 - ツール description は AI が読む最重要ドキュメント。「いつ使うか」「注意点」を丁寧に書く
-- 各ツールの結果には `project_version`(適用済み履歴エントリ数)を含め、AI が自分の理解が古いか判断できるようにする
+- 各ツールの結果には `project_version`(版数。編集・undo・redo のたびに増え、戻らない)を含め、AI が自分の理解が古いか判断できるようにする

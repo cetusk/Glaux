@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick as sveltick } from "svelte";
   import * as api from "./api";
+  import { shouldYieldKey } from "./keys";
   import { buildBars } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
   import Fretboard from "./Fretboard.svelte";
@@ -1259,8 +1260,7 @@
     const onKey = (e: KeyboardEvent) => {
       // 分割時はアクティブなペイン(最後にクリックした方)だけがキーを受ける
       if (!myFocus || pianoRollStore.active !== pane) return;
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT")) return;
+      if (shouldYieldKey(e)) return;
       if ((e.ctrlKey || e.metaKey) && e.code === "KeyC") {
         e.preventDefault();
         copySelection(false);

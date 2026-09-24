@@ -4,7 +4,7 @@
 //! いつ使うか・注意点を書く(`docs/mcp-spec-draft.md` の方針)。
 //!
 //! すべての編集は `glaux_core::Command` に変換して Session アクターに送る。
-//! 各レスポンスには `project_version`(適用済み履歴エントリ数)を含め、
+//! 各レスポンスには `project_version`(版数。編集・undo・redo のたびに増え、戻らない)を含め、
 //! AI が自分の把握が古くなっていないか判断できるようにする。
 
 use crate::actor::{Mutated, SessionHandle};
@@ -876,7 +876,7 @@ impl GlauxServer {
     #[tool(
         description = "プロジェクト全体(トラック・クリップ・パラメータ・テンポ)を JSON で取得する。\
         ノートが多いと巨大になるので、まず include_notes: false で構造を把握し、必要な部分だけ改めて取得するとよい。\
-        返り値の project_version は適用済み履歴エントリ数。編集後に増えていれば自分の把握は古い。"
+        返り値の project_version は版数(編集・undo・redo のたびに増え、戻らない)。自分が最後に見た値より大きければ、その間に誰かが変更している。"
     )]
     async fn get_project(&self, params: Parameters<GetProjectParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("get_project");

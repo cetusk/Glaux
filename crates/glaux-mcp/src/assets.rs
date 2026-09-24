@@ -141,6 +141,21 @@ pub fn decode_audio(bytes: Vec<u8>, ext: &str) -> Result<(Vec<f32>, u16, u32), S
     Ok((out, channels, rate))
 }
 
+/// 一時ファイルに書いて確定させてから rename する(途中で落ちても最終名に壊れたファイルを残さない)。
+fn write_file_atomic(dest: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let tmp = dest.with_extension(format!("tmp{}", std::process::id()));
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    if let Err(e) = written.and_then(|_| std::fs::rename(&tmp, dest)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("書き込めません({}): {e}", dest.display()));
+    }
+    Ok(())
+}
+
 /// WAV ファイルをプロジェクトへ取り込む。
 pub fn import_wav(project_dir: &Path, src: &Path) -> Result<ImportedSample, String> {
     let bytes =
@@ -161,10 +176,12 @@ pub fn import_wav(project_dir: &Path, src: &Path) -> Result<ImportedSample, Stri
     let rel_path = format!("audio/{hex}.wav");
     let dest = project_dir.join(&rel_path);
 
-    let already_present = dest.exists();
+    // 名前は中身のハッシュなので、同じ大きさのファイルがあれば同じもの。
+    // 大きさが違うのは、以前の書き込みが途中で止まった壊れたファイル
+    let already_present = std::fs::metadata(&dest).is_ok_and(|m| m.len() == bytes.len() as u64);
     if !already_present {
         std::fs::create_dir_all(project_dir.join("audio")).map_err(|e| e.to_string())?;
-        std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+        write_file_atomic(&dest, &bytes)?;
     }
 
     Ok(ImportedSample {

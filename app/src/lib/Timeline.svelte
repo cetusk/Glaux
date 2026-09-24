@@ -1,6 +1,7 @@
 <script lang="ts">
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
+  import { shouldYieldKey } from "./keys";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
@@ -716,8 +717,7 @@
   // キー操作(ピアノロール表示中・入力中はピアノロール / 入力欄に譲る)
   $effect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT")) return;
+      if (shouldYieldKey(e)) return;
       if (pianoRollStore.focus) return;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.code === "KeyA") {

@@ -3,7 +3,7 @@ name = "glaux-app"
 version = "0.1.0"
 edition.workspace = true
 # rmcp / tauri の要求に合わせる(workspace の 1.75 より新しい)
-rust-version = "1.88"
+rust-version = "1.89"
 license.workspace = true
 description = "Glaux desktop app (Tauri): UI + in-process MCP server sharing one Session"
 

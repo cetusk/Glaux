@@ -17,6 +17,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 pub struct ProjectChanged {
     pub project_version: usize,
     pub changes: Vec<Change>,
+    /// 保存に失敗したときのエラー(状態はメモリ上では反映済み)。UI が警告を出すのに使う
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_error: Option<String>,
 }
 
 /// AI(MCP クライアント)のツール呼び出し状況。UI の「AI 作業中」表示に使う。
@@ -56,7 +59,7 @@ impl From<&HistoryEntry> for EntrySummary {
 #[derive(Clone, Debug)]
 pub struct Mutated {
     pub changes: Vec<Change>,
-    /// 適用済み履歴エントリ数。AI が自分の把握が古いか判断するための版数。
+    /// 版数(編集・undo・redo のたびに増え、undo でも戻らない)。AI が自分の把握が古いか判断するのに使う。
     pub project_version: usize,
     /// 保存に失敗したときのエラーメッセージ(状態はメモリ上では反映済み)
     pub save_error: Option<String>,
@@ -69,6 +72,9 @@ pub enum Request {
     GetProject {
         reply: oneshot::Sender<(Project, usize)>,
     },
+    /// テスト用: 処理中に panic させる(アクターが止まらずに復帰することの確認)
+    #[cfg(test)]
+    Panic { reply: oneshot::Sender<()> },
     Apply {
         /// `Command` は最大バリアントが大きいので Box で持つ(clippy::large_enum_variant)
         command: Box<Command>,
@@ -153,8 +159,9 @@ impl Drop for ActivityGuard {
     }
 }
 
-/// アクタースレッドが落ちた(通常は起こらない)ときのエラー文言。
-const ACTOR_GONE: &str = "session actor is gone";
+/// アクターが要求に応答しなかった(内部エラーで処理を打ち切った、またはスレッドが無い)ときのエラー文言。
+const ACTOR_GONE: &str =
+    "セッションが要求を処理できませんでした(内部エラー。直前の保存済みの状態に戻しました)";
 
 impl SessionHandle {
     /// アクタースレッドを起動してハンドルを返す。
@@ -325,13 +332,38 @@ fn actor_loop(
     events: broadcast::Sender<ProjectChanged>,
 ) {
     while let Some(req) = rx.blocking_recv() {
-        handle(&mut session, &mut store, &events, req);
+        // 1 件の要求の panic(コマンドの不具合など)でアクターごと止まると、以後は再起動まで
+        // 編集も保存もできなくなる。受け止めて、保存済みの状態から読み直して動き続ける
+        // (適用の途中で止まったセッションは信用できないため)。要求の応答は届かず、
+        // 呼び出し側には ACTOR_GONE のエラーが返る
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle(&mut session, &mut store, &events, req)
+        }));
+        if result.is_err() {
+            tracing::error!("要求の処理中に panic しました。保存済みの状態から読み直します");
+            let previous = version(&session, &store);
+            match Store::open_or_create(store.dir()) {
+                Ok((new_store, new_session)) => {
+                    new_store.continue_revision_after(previous);
+                    store = new_store;
+                    session = new_session;
+                    let _ = events.send(ProjectChanged {
+                        project_version: version(&session, &store),
+                        changes: vec![],
+                        save_error: None,
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("読み直しに失敗しました(メモリ上の状態で続けます): {e:#}")
+                }
+            }
+        }
     }
     tracing::info!("session actor: 全ハンドルが閉じたので終了します");
 }
 
-fn version(session: &Session) -> usize {
-    session.history().len()
+fn version(session: &Session, store: &Store) -> usize {
+    store.revision(session)
 }
 
 /// 変更後の保存・購読者への通知・レスポンス部品の組み立て。
@@ -341,18 +373,20 @@ fn mutated(
     events: &broadcast::Sender<ProjectChanged>,
     changes: Vec<Change>,
 ) -> Mutated {
+    store.bump_revision(session);
     let save_error = store.save_after_change(session).err().map(|e| {
         tracing::error!("保存に失敗しました: {e:#}");
         format!("{e:#}")
     });
     // 購読者ゼロは正常(MCP 単体起動時)なのでエラーは無視
     let _ = events.send(ProjectChanged {
-        project_version: version(session),
+        project_version: version(session, store),
         changes: changes.clone(),
+        save_error: save_error.clone(),
     });
     Mutated {
         changes,
-        project_version: version(session),
+        project_version: version(session, store),
         save_error,
     }
 }
@@ -365,7 +399,21 @@ fn handle(
 ) {
     match req {
         Request::GetProject { reply } => {
-            let _ = reply.send((session.project().clone(), version(session)));
+            let _ = reply.send((session.project().clone(), version(session, store)));
+        }
+        #[cfg(test)]
+        Request::Panic { reply } => {
+            // 途中まで壊したセッションを模す(読み直しで元に戻ることを確かめる)
+            // (保存せずにメモリ上だけ変える)
+            let _ = session.apply(
+                Command::SetTitle {
+                    title: "壊れた状態".into(),
+                },
+                Author::Human,
+                "保存されない編集".to_owned(),
+            );
+            drop(reply);
+            panic!("テスト用の panic");
         }
         Request::Apply {
             command,
@@ -411,18 +459,19 @@ fn handle(
             limit,
             reply,
         } => {
-            let _ = reply.send(history_view(session, author_kind, since, limit));
+            let _ = reply.send(history_view(session, store, author_kind, since, limit));
         }
         Request::SwitchProject { dir, reply } => {
             let result = match Store::open_or_create(&dir) {
                 Ok((new_store, new_session)) => {
                     *store = new_store;
                     *session = new_session;
-                    let version = version(session);
+                    let version = version(session, store);
                     // 購読者(UI 再取得・エンジン再構築)に全体更新を促す
                     let _ = events.send(ProjectChanged {
                         project_version: version,
                         changes: vec![],
+                        save_error: None,
                     });
                     tracing::info!("プロジェクトを切り替えました: {dir}");
                     Ok((session.project().meta.title.clone(), version))
@@ -449,22 +498,32 @@ fn handle(
                         ));
                     }
                 }
-                move_dir(&from, &to)?;
+                let previous = version(session, store);
+                // 開いているロックファイルを含むフォルダは Windows では動かせない
+                crate::store::release_lock(&from);
+                if let Err(e) = move_dir(&from, &to) {
+                    let _ = crate::store::acquire_lock(&from);
+                    return Err(e);
+                }
                 match Store::open_or_create(&dest) {
                     Ok((new_store, new_session)) => {
+                        new_store.continue_revision_after(previous);
                         *store = new_store;
                         *session = new_session;
-                        let version = version(session);
+                        let version = version(session, store);
                         let _ = events.send(ProjectChanged {
                             project_version: version,
                             changes: vec![],
+                            save_error: None,
                         });
                         tracing::info!("プロジェクトを移動しました: {} → {dest}", from.display());
                         Ok((session.project().meta.title.clone(), version))
                     }
                     Err(e) => {
                         // 開き直しに失敗したら元の場所へ戻して被害を抑える
+                        crate::store::release_lock(&to);
                         let _ = move_dir(&to, &from);
+                        let _ = crate::store::acquire_lock(&from);
                         Err(format!("移動先で開けません(元に戻しました): {e:#}"))
                     }
                 }
@@ -498,7 +557,7 @@ fn undo_redo(
     } else {
         Mutated {
             changes: vec![],
-            project_version: version(session),
+            project_version: version(session, store),
             save_error: None,
         }
     };
@@ -507,6 +566,7 @@ fn undo_redo(
 
 fn history_view(
     session: &Session,
+    store: &Store,
     author_kind: Option<String>,
     since: Option<EntryId>,
     limit: Option<usize>,
@@ -542,5 +602,51 @@ fn history_view(
             list.drain(..list.len() - limit);
         }
     }
-    Ok((list, version(session)))
+    Ok((list, version(session, store)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glaux_core::{Track, TrackId, TrackKind};
+
+    #[tokio::test]
+    async fn actor_survives_a_panic_and_reloads_the_saved_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("Song.glaux");
+        let (store, session) = Store::open_or_create(dir.to_str().unwrap()).unwrap();
+        let handle = SessionHandle::spawn(session, store);
+
+        let tid = TrackId::new();
+        let (_, applied) = handle
+            .apply(
+                Command::AddTrack {
+                    track: Track::new(tid.clone(), "Bass", TrackKind::Midi),
+                    index: None,
+                },
+                Author::Human,
+                "トラック追加".into(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let before = applied.project_version;
+
+        let err = handle
+            .request(|reply| Request::Panic { reply })
+            .await
+            .unwrap_err();
+        assert_eq!(err, ACTOR_GONE);
+
+        // アクターは動き続け、保存済みの状態(トラックあり・壊す前の題名)に戻っている
+        let (project, version) = handle.get_project().await.unwrap();
+        assert!(project.track(&tid).is_some());
+        assert_eq!(project.meta.title, "Song");
+        // 版数は読み直しても戻らない
+        assert!(version > before, "{version} > {before}");
+        // 以後の編集もできる
+        handle.undo(1).await.unwrap().unwrap();
+        let (project, _) = handle.get_project().await.unwrap();
+        assert!(project.track(&tid).is_none());
+    }
 }

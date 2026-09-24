@@ -20,7 +20,12 @@ use glaux_dsp::{EffectParams, EffectState, VoiceState};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-pub const MAX_VOICES: usize = 64;
+/// 同時発音数(全トラック合計)。超えると古い音を短いフェードで奪う(ボイススティール)
+pub const MAX_VOICES: usize = 256;
+/// 奪われてフェードアウト中のボイスのための予備枠(この分も起動時に確保しておく)
+const STEAL_RESERVE: usize = 32;
+/// 奪うときのフェードの長さ(秒)。短すぎるとクリック、長すぎると予備枠を食う
+const STEAL_FADE_SECS: f32 = 0.003;
 /// 同時に再生する音声クリップ数
 pub const MAX_AUDIO_VOICES: usize = 16;
 /// 同時プレビュー(試聴)ボイス数
@@ -197,7 +202,20 @@ struct Voice {
     fade_in: u32,
     fade_out: u32,
     age: u32,
+    /// 同時発音数の上限で奪われ、フェードアウト中
+    stolen: bool,
     state: VoiceState,
+}
+
+/// 同時発音数の上限に達したとき、奪うボイスを選ぶ(奪われ中のものは除く)。
+/// リリース中(鍵盤を離した余韻)の音を優先し、その中で最も古いもの。無ければ最も古いもの
+fn steal_victim(voices: &[Voice]) -> Option<usize> {
+    voices
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| !v.stolen)
+        .max_by_key(|(_, v)| (v.released, v.age))
+        .map(|(i, _)| i)
 }
 
 /// 再生中の音声クリップ。波形は `data.audio_events[idx]` を参照する
@@ -461,7 +479,7 @@ impl Renderer {
     pub fn new(shared: Arc<Shared>) -> Self {
         Renderer {
             shared,
-            voices: Vec::with_capacity(MAX_VOICES),
+            voices: Vec::with_capacity(MAX_VOICES + STEAL_RESERVE),
             audio_voices: Vec::with_capacity(MAX_AUDIO_VOICES),
             next_audio: 0,
             preview_voices: Vec::with_capacity(MAX_PREVIEW_VOICES),
@@ -895,6 +913,10 @@ impl Renderer {
             if playing && looping && self.pos >= loop_end {
                 self.pos = loop_start;
                 self.voices.retain_mut(|v| {
+                    // 奪われてフェード中の音は、折り返しを機に消す
+                    if v.stolen {
+                        return false;
+                    }
                     if !v.released {
                         v.state.note_off();
                         v.released = true;
@@ -944,7 +966,7 @@ impl Renderer {
                 }
             }
 
-            // このサンプル位置で始まるノートを発音(容量超過分は捨てる)
+            // このサンプル位置で始まるノートを発音(上限を超えたら古い音を奪う)
             while playing
                 && !click_only
                 && self.next_event < data.events.len()
@@ -955,7 +977,17 @@ impl Renderer {
                 let mix = data.tracks.get(e.track as usize);
                 // プラグインのトラックは collect_plugin_notes で送る
                 if let Some(mix) = mix.filter(|m| m.audible && m.plugin.is_none()) {
-                    if self.voices.len() < MAX_VOICES {
+                    let live = self.voices.iter().filter(|v| !v.stolen).count();
+                    if live >= MAX_VOICES {
+                        if let Some(i) = steal_victim(&self.voices) {
+                            let v = &mut self.voices[i];
+                            v.stolen = true;
+                            v.released = false;
+                            v.end = self.pos;
+                            v.fade_out = ((sr * STEAL_FADE_SECS) as u32).max(1);
+                        }
+                    }
+                    if self.voices.len() < MAX_VOICES + STEAL_RESERVE {
                         // 発音時パラメータ(pluck 等)にもスイープ中の値を反映する
                         let ti = e.track as usize;
                         let inst = if !mix.device_auto.is_empty() && ti < MAX_TRACKS {
@@ -990,6 +1022,7 @@ impl Renderer {
                             fade_in: e.fade_in,
                             fade_out: e.fade_out,
                             age: 0,
+                            stolen: false,
                             state,
                         });
                     }
@@ -2341,6 +2374,42 @@ mod tests {
             }
         }
         assert!(stopped, "ループ解除後は曲末で自動停止するはず");
+    }
+
+    #[test]
+    fn voices_over_the_limit_steal_the_oldest_instead_of_dropping_new_notes() {
+        // 以前は 64 声で頭打ちになり、超えたノートは黙って捨てられていた
+        // (20 トラック × 4 声で後ろの 4 トラックが無音)
+        let mut data = data_with_note(0, 96_000, true);
+        let base = data.events[0];
+        data.events = (0..300u64)
+            .map(|i| NoteEvent {
+                start: i * 10,
+                pitch: 40 + (i % 40) as u8,
+                ..base
+            })
+            .collect();
+        let shared = Arc::new(Shared::new(data));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let capacity = r.voices.capacity();
+
+        // 300 音すべてが鳴り始めた直後: 生きている声は上限ちょうど、奪った音はフェード中
+        let _ = render_block(&mut r, 3000);
+        let live = r.voices.iter().filter(|v| !v.stolen).count();
+        assert_eq!(live, MAX_VOICES, "新しいノートが捨てられていないこと");
+        assert!(r.voices.len() <= MAX_VOICES + STEAL_RESERVE);
+        // 奪われたのは古い音(最後に始まった音は残っている)
+        assert!(r.voices.iter().any(|v| !v.stolen && v.age < 20));
+
+        // フェード(3ms)が終われば、奪った音は解放される
+        let _ = render_block(&mut r, 480);
+        assert_eq!(r.voices.len(), MAX_VOICES);
+        assert_eq!(
+            r.voices.capacity(),
+            capacity,
+            "オーディオスレッドで再確保しない"
+        );
     }
 
     #[test]

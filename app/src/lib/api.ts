@@ -38,9 +38,15 @@ export function appInfo(): Promise<AppInfo> {
   return invoke("app_info");
 }
 
+/** 変更通知の中身。save_error は保存に失敗したとき(編集はメモリ上では反映済み)。 */
+export interface ProjectChangedEvent {
+  project_version: number;
+  save_error?: string;
+}
+
 /** MCP / UI どちらの編集でも発火する。受けたら全体を取得し直す。 */
-export function onProjectChanged(cb: () => void): Promise<UnlistenFn> {
-  return listen("project-changed", cb);
+export function onProjectChanged(cb: (ev: ProjectChangedEvent) => void): Promise<UnlistenFn> {
+  return listen<ProjectChangedEvent>("project-changed", (e) => cb(e.payload));
 }
 
 /** AI(MCP クライアント)のツール呼び出しの開始/終了。 */

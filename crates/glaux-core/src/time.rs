@@ -10,6 +10,11 @@ use std::ops::{Add, Sub};
 /// 四分音符あたりの Tick 数。
 pub const PPQ: u64 = 960;
 
+/// コマンドで受け付ける位置・長さの上限(4/4 で 10 万小節。120 BPM で約 55 時間)。
+/// これを超える値は [`crate::Project::apply`] が拒否する(桁あふれや、終端が遠すぎて
+/// オフラインレンダがメモリを使い果たすのを防ぐ)
+pub const MAX_TICK: Tick = Tick(PPQ * 4 * 100_000);
+
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
 )]
@@ -36,17 +41,19 @@ impl Tick {
     }
 }
 
+// 足し算・引き算は飽和させる(不正な入力で panic してセッションを止めないため。
+// 通常の値は MAX_TICK で検査済みなので、飽和するのは壊れた入力のときだけ)
 impl Add for Tick {
     type Output = Tick;
     fn add(self, rhs: Tick) -> Tick {
-        Tick(self.0 + rhs.0)
+        Tick(self.0.saturating_add(rhs.0))
     }
 }
 
 impl Sub for Tick {
     type Output = Tick;
     fn sub(self, rhs: Tick) -> Tick {
-        Tick(self.0 - rhs.0)
+        Tick(self.0.saturating_sub(rhs.0))
     }
 }
 

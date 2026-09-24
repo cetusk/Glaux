@@ -28,4 +28,4 @@ pub use error::CoreError;
 pub use history::{Author, History, HistoryEntry, RevertResult, Session};
 pub use id::{AssetId, ClipId, EntryId, FxId, NoteId, TrackId};
 pub use model::*;
-pub use time::{TempoEvent, TempoMap, Tick, TimeSigEvent, PPQ};
+pub use time::{TempoEvent, TempoMap, Tick, TimeSigEvent, MAX_TICK, PPQ};

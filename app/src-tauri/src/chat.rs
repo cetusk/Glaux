@@ -514,6 +514,16 @@ impl ChatManager {
     pub fn cancel(&self) {
         let child = self.child.lock().expect("child lock").take();
         if let Some(mut child) = child {
+            // Windows の npm 版(claude.cmd / codex.cmd)は cmd.exe の子として node.exe が動くので、
+            // cmd.exe だけを止めると AI が残って編集を続けてしまう。プロセスツリーごと止める
+            #[cfg(windows)]
+            if let Some(pid) = child.id() {
+                use std::os::windows::process::CommandExt;
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/T", "/F", "/PID", &pid.to_string()])
+                    .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                    .status();
+            }
             // kill は非同期だが、start_kill で即シグナルだけ送れば十分
             let _ = child.start_kill();
         }

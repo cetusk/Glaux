@@ -127,8 +127,9 @@ async fn full_editing_flow() {
     assert_eq!(entries[0]["author"]["kind"], "ai");
 
     // 5. checkpoint → さらに編集 → revert_to で戻る
+    // project_version は操作のたびに 1 ずつ増え、undo・revert_to でも戻らない
     let r = call(&fx, "checkpoint", json!({ "label": "base" })).await;
-    assert_eq!(ok_json(&r)["project_version"], 1);
+    assert_eq!(ok_json(&r)["project_version"], 2);
 
     let r = call(
         &fx,
@@ -139,10 +140,10 @@ async fn full_editing_flow() {
         }),
     )
     .await;
-    assert_eq!(ok_json(&r)["project_version"], 2);
+    assert_eq!(ok_json(&r)["project_version"], 3);
 
     let r = call(&fx, "revert_to", json!({ "label": "base" })).await;
-    assert_eq!(ok_json(&r)["project_version"], 1);
+    assert_eq!(ok_json(&r)["project_version"], 4);
 
     // 6. since フィルタ: base 以降の履歴は無い(revert_to は undo なので履歴を増やさない)
     let r = call(&fx, "get_history", json!({ "since": entry_id })).await;
@@ -152,7 +153,7 @@ async fn full_editing_flow() {
     let r = call(&fx, "undo", json!({})).await;
     let v = ok_json(&r);
     assert_eq!(v["undone"], 1);
-    assert_eq!(v["project_version"], 0);
+    assert_eq!(v["project_version"], 5);
 
     let r = call(&fx, "get_project", json!({})).await;
     assert_eq!(ok_json(&r)["project"]["tracks"], json!([]));
@@ -161,7 +162,7 @@ async fn full_editing_flow() {
     let r = call(&fx, "redo", json!({})).await;
     let v = ok_json(&r);
     assert_eq!(v["redone"], 1);
-    assert_eq!(v["project_version"], 1);
+    assert_eq!(v["project_version"], 6);
 }
 
 #[tokio::test]

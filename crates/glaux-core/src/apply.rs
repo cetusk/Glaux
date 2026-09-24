@@ -8,10 +8,10 @@ use crate::command::{Command, NoteChange, TrackProp};
 use crate::error::{CoreError, Result};
 use crate::id::{ClipId, TrackId};
 use crate::model::{
-    sort_notes, AutomationLane, ClipContent, ParamMap, ParamPath, ParamValue, Project, Stretch,
-    TrackKind,
+    sort_notes, AutomationLane, Clip, ClipContent, Note, ParamMap, ParamPath, ParamValue,
+    PitchPoint, Project, Stretch, TrackKind,
 };
-use crate::time::{TempoMap, Tick};
+use crate::time::{TempoMap, Tick, MAX_TICK};
 use serde::{Deserialize, Serialize};
 
 /// 適用結果。
@@ -71,6 +71,7 @@ impl Project {
     /// コマンドを適用し、逆コマンドと変更通知を返す。
     /// 失敗した場合、プロジェクトは変更されない(`Batch` は途中まで適用した分を巻き戻す)。
     pub fn apply(&mut self, cmd: &Command) -> Result<Applied> {
+        check_ticks(cmd)?;
         use Command::*;
         match cmd {
             // ---------------------------------------------------------- track
@@ -1119,4 +1120,97 @@ fn check_note_extras(
         }
     }
     Ok(())
+}
+
+// ---- 位置・長さの上限 ---------------------------------------------------------
+
+fn tick_ok(what: &str, t: Tick) -> Result<()> {
+    if t > MAX_TICK {
+        return Err(CoreError::OutOfRange(format!(
+            "{what} {} は上限 {} を超えています(4/4 で 10 万小節まで)",
+            t.0, MAX_TICK.0
+        )));
+    }
+    Ok(())
+}
+
+fn notes_ok(notes: &[Note]) -> Result<()> {
+    for n in notes {
+        tick_ok("note pos", n.pos)?;
+        tick_ok("note dur", n.dur)?;
+        tick_ok("note end", n.pos + n.dur)?;
+        pitch_curve_ok(&n.pitch_curve)?;
+    }
+    Ok(())
+}
+
+fn pitch_curve_ok(points: &[PitchPoint]) -> Result<()> {
+    points
+        .iter()
+        .try_for_each(|p| tick_ok("pitch_curve tick", p.tick))
+}
+
+fn clip_ok(c: &Clip) -> Result<()> {
+    tick_ok("clip start", c.start)?;
+    tick_ok("clip length", c.length)?;
+    tick_ok("clip end", c.start + c.length)?;
+    if let ClipContent::Midi {
+        notes, loop_len, ..
+    } = &c.content
+    {
+        if let Some(l) = loop_len {
+            tick_ok("loop_len", *l)?;
+        }
+        notes_ok(notes)?;
+    }
+    Ok(())
+}
+
+fn lanes_ok(lanes: &[AutomationLane]) -> Result<()> {
+    lanes
+        .iter()
+        .flat_map(|l| &l.points)
+        .try_for_each(|p| tick_ok("automation tick", p.tick))
+}
+
+/// コマンドに含まれる位置・長さがすべて [`MAX_TICK`] 以内か(適用の前に検査する)。
+fn check_ticks(cmd: &Command) -> Result<()> {
+    use Command::*;
+    match cmd {
+        AddTrack { track, .. } => {
+            track.clips.iter().try_for_each(clip_ok)?;
+            lanes_ok(&track.automation)
+        }
+        AddClip { clip, .. } | ReplaceClip { clip, .. } => clip_ok(clip),
+        MoveClip { start, .. } => tick_ok("clip start", *start),
+        ResizeClip { length, .. } => tick_ok("clip length", *length),
+        SetClipLoop {
+            loop_len: Some(l), ..
+        } => tick_ok("loop_len", *l),
+        SplitClip { at, .. } => tick_ok("split at", *at),
+        AddNotes { notes, .. } => notes_ok(notes),
+        UpdateNotes { changes, .. } => changes.iter().try_for_each(|c| {
+            if let Some(p) = c.pos {
+                tick_ok("note pos", p)?;
+            }
+            if let Some(d) = c.dur {
+                tick_ok("note dur", d)?;
+            }
+            pitch_curve_ok(c.pitch_curve.as_deref().unwrap_or_default())
+        }),
+        SetAutomationPoints { points, .. } | SetMasterAutomationPoints { points, .. } => points
+            .iter()
+            .try_for_each(|p| tick_ok("automation tick", p.tick)),
+        SetTempo { events } => events
+            .iter()
+            .try_for_each(|e| tick_ok("tempo tick", e.tick)),
+        SetTimeSig { events } => events
+            .iter()
+            .try_for_each(|e| tick_ok("time_sig tick", e.tick)),
+        SetSections { sections } => sections
+            .iter()
+            .try_for_each(|m| tick_ok("section tick", m.tick)),
+        // Batch の中身は、それぞれを適用するときに検査される
+        _ => Ok(()),
+    }
 }

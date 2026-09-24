@@ -7,8 +7,9 @@
     settings,
   } from "./settings.svelte";
 
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import * as api from "./api";
+  import { requestFastPolling, transportStore } from "./transport.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -80,24 +81,20 @@
     await loadMidi();
   }
 
+  // MIDI の受信表示(問い合わせは App が行い、ここは共有ストアを読む)
   $effect(() => {
     if (!midi?.current) return;
-    const timer = setInterval(async () => {
-      try {
-        const t = await api.transportState();
-        midiActive = t.midi_idle_ms != null && t.midi_idle_ms < 300;
-      } catch {
-        // エンジン無しでも設定画面は動かす
-      }
-    }, 100);
-    return () => clearInterval(timer);
+    return requestFastPolling();
+  });
+  $effect(() => {
+    const idle = transportStore.state.midi_idle_ms;
+    midiActive = !!midi?.current && idle != null && idle < 300;
   });
 
   // ---- 入力テスト(レベルメーター) ----
   let monitoring = $state(false);
   let levelDb = $state(-90);
   let levelPeakHold = $state(-90);
-  let meterTimer: ReturnType<typeof setInterval> | undefined;
 
   async function toggleMonitor() {
     try {
@@ -110,18 +107,16 @@
 
   $effect(() => {
     if (!monitoring) return;
-    meterTimer = setInterval(async () => {
-      try {
-        const t = await api.transportState();
-        const db = t.input_peak_db ?? -90;
-        // 表示は上がるときは即座に、下がるときはゆっくり
-        levelDb = Math.max(db, levelDb - 3);
-        levelPeakHold = Math.max(db, levelPeakHold - 0.5);
-      } catch {
-        // 次の周期で回復
-      }
-    }, 80);
-    return () => clearInterval(meterTimer);
+    return requestFastPolling();
+  });
+  // 読み取りのたびに(seq が進むたびに)メーターを動かす
+  $effect(() => {
+    void transportStore.seq;
+    if (!monitoring) return;
+    const db = transportStore.state.input_peak_db ?? -90;
+    // 表示は上がるときは即座に、下がるときはゆっくり
+    levelDb = Math.max(db, untrack(() => levelDb) - 3);
+    levelPeakHold = Math.max(db, untrack(() => levelPeakHold) - 0.5);
   });
 
   function meterPct(db: number): number {
