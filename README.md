@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/images/glaux-logo.png" alt="Glaux" width="480"></p>
 
-<h1 align="center">Glaux: A Lightweight DAW for Making Music with AI</h1>
+# Glaux: A Lightweight DAW for Making Music with AI
 
 **AI と共同作業できる、シンプルで軽量なデスクトップ DAW**(Rust + Tauri + Svelte 5)
 
