@@ -158,6 +158,8 @@
       { art: "accent", key: "A", label: "アクセント" },
       { art: "vibrato", key: "V", label: "ビブラート" },
       { art: "bend", key: "B", label: "チョーキング" },
+      { art: "legato", key: "T", label: "レガート" },
+      { art: "portamento", key: "P", label: "ポルタメント" },
     ],
     drum: [{ art: "accent", key: "A", label: "アクセント" }],
     pluck: [
@@ -166,18 +168,24 @@
       { art: "accent", key: "A", label: "アクセント" },
       { art: "vibrato", key: "V", label: "ビブラート" },
       { art: "bend", key: "B", label: "チョーキング" },
+      { art: "legato", key: "T", label: "ハンマリング" },
+      { art: "portamento", key: "P", label: "スライド" },
     ],
     sampler: [
       { art: "staccato", key: "S", label: "スタッカート" },
       { art: "accent", key: "A", label: "アクセント" },
       { art: "vibrato", key: "V", label: "ビブラート" },
       { art: "bend", key: "B", label: "チョーキング" },
+      { art: "legato", key: "T", label: "レガート" },
+      { art: "portamento", key: "P", label: "ポルタメント" },
     ],
     sf2: [
       { art: "staccato", key: "S", label: "スタッカート" },
       { art: "accent", key: "A", label: "アクセント" },
       { art: "vibrato", key: "V", label: "ビブラート" },
       { art: "bend", key: "B", label: "チョーキング" },
+      { art: "legato", key: "T", label: "レガート" },
+      { art: "portamento", key: "P", label: "ポルタメント" },
     ],
     fm: [
       { art: "palm_mute", key: "M", label: "ミュート" },
@@ -185,6 +193,8 @@
       { art: "accent", key: "A", label: "アクセント" },
       { art: "vibrato", key: "V", label: "ビブラート" },
       { art: "bend", key: "B", label: "チョーキング" },
+      { art: "legato", key: "T", label: "レガート" },
+      { art: "portamento", key: "P", label: "ポルタメント" },
     ],
     wavetable: [
       { art: "palm_mute", key: "M", label: "ミュート" },
@@ -192,6 +202,8 @@
       { art: "accent", key: "A", label: "アクセント" },
       { art: "vibrato", key: "V", label: "ビブラート" },
       { art: "bend", key: "B", label: "チョーキング" },
+      { art: "legato", key: "T", label: "レガート" },
+      { art: "portamento", key: "P", label: "ポルタメント" },
     ],
     // CLAP 音源: ビブラート・ベンドは音程の変化として送り、ミュート・アクセントは長さと強さで近づける
     clap: [
@@ -200,6 +212,8 @@
       { art: "accent", key: "A", label: "アクセント" },
       { art: "vibrato", key: "V", label: "ビブラート" },
       { art: "bend", key: "B", label: "チョーキング" },
+      { art: "legato", key: "T", label: "レガート(重ねて送る)" },
+      { art: "portamento", key: "P", label: "ポルタメント" },
     ],
   };
   const instrumentName = $derived(
@@ -375,7 +389,7 @@
         g.lineWidth = 1.5;
         g.stroke();
       }
-      // 奏法マーカー(M=ブリッジミュート / S=スタッカート / >=アクセント)
+      // 奏法マーカー(M=ブリッジミュート / S=スタッカート / >=アクセント / ⌒=レガート / /=ポルタメント)
       const art = n.articulation;
       if (art && art !== "normal" && w >= 13 && rowH >= 9) {
         const label =
@@ -387,7 +401,11 @@
                 ? ">"
                 : art === "vibrato"
                   ? "~"
-                  : "↑";
+                  : art === "legato"
+                    ? "⌒"
+                    : art === "portamento"
+                      ? "/"
+                      : "↑";
         g.fillStyle = "rgba(12, 12, 12, 0.85)";
         g.font = `bold ${Math.min(rowH - 4, 10)}px sans-serif`;
         g.textBaseline = "middle";
@@ -1172,6 +1190,8 @@
     accent: "アクセント",
     vibrato: "ビブラート",
     bend: "チョーキング",
+    legato: "レガート",
+    portamento: "ポルタメント",
   };
 
   /// 選択ノートの奏法をトグルする(全部が同じ奏法なら通常に戻す)
@@ -1251,7 +1271,9 @@
           e.code === "KeyS" ||
           e.code === "KeyA" ||
           e.code === "KeyV" ||
-          e.code === "KeyB")
+          e.code === "KeyB" ||
+          e.code === "KeyT" ||
+          e.code === "KeyP")
       ) {
         // 奏法トグル(選択ノートに対して。この楽器で効くものだけ)
         if (selected.size === 0) return;

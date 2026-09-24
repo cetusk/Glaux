@@ -6,7 +6,9 @@ export type Articulation =
   | "staccato"
   | "accent"
   | "vibrato"
-  | "bend";
+  | "bend"
+  | "legato"
+  | "portamento";
 
 export interface Note {
   id: string;

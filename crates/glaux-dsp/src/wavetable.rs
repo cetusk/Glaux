@@ -296,6 +296,13 @@ impl WavetableVoice {
         self.stage = Stage::Release;
     }
 
+    /// レガート: 立ち上がり(と position の掃引)を飛ばして、鳴り続けている状態から始める
+    pub fn skip_attack(&mut self, p: &WavetableParams) {
+        self.env = (p.sustain * self.sustain_mul).clamp(0.35, 1.0);
+        self.stage = Stage::Decay;
+        self.pos_env = 0.0;
+    }
+
     pub fn finished(&self) -> bool {
         self.stage == Stage::Release && self.env < 1e-4
     }

@@ -55,6 +55,93 @@ pub struct NoteEvent {
     pub articulation: glaux_core::Articulation,
     /// 連続ピッチカーブ(ノート先頭からのサンプル数, セント)。空なら無し
     pub curve: glaux_dsp::PitchCurve,
+    /// レガートのつなぎ: 鳴り始めをこのサンプル数かけて立ち上げる(0 = そのまま)
+    pub fade_in: u32,
+    /// レガートのつなぎ: end で離さずにこのサンプル数かけて消す(0 = 通常のリリース)。
+    /// CLAP 音源へは end + fade_out で離す(次の音と重ねて送り、プラグインのレガートを効かせる)
+    pub fade_out: u32,
+}
+
+/// レガートのつなぎ目の長さ(秒)。前の音が消え、次の音が立ち上がる
+pub const LEGATO_XFADE_SEC: f64 = 0.03;
+/// レガートでつなぐ直前の音を探す範囲(前の音の終わりから、この秒数までの隙間なら「つながっている」)
+pub const LEGATO_GAP_SEC: f64 = 0.3;
+/// ポルタメントで滑る時間(秒。音が短ければその半分まで)
+pub const PORTAMENTO_SEC: f64 = 0.15;
+
+/// レガート・ポルタメントのノートを同じトラックの直前の音とつなぐ(`events` は開始順)。
+/// 直前の音 = そのノートより前に始まり、終わりが開始の手前 `LEGATO_GAP_SEC` 以内のもののうち
+/// 最も後に始まったもの(同時なら音程の近いもの)。前の音はつなぎ目で消え、次の音は立ち上がりを消す。
+/// ポルタメントはさらに前の音の高さから滑らせる(ノートに自前のピッチカーブがあればそちらを優先)。
+/// `skip(track)` が真のトラック(ドラム)はつながない。
+pub fn link_legato(events: &mut [NoteEvent], sample_rate: f64, skip: &dyn Fn(u32) -> bool) {
+    use glaux_core::Articulation as A;
+    if !events
+        .iter()
+        .any(|e| matches!(e.articulation, A::Legato | A::Portamento))
+    {
+        return;
+    }
+    let xf = (LEGATO_XFADE_SEC * sample_rate) as u64;
+    let gap = (LEGATO_GAP_SEC * sample_rate) as u64;
+    let mut by_track: std::collections::HashMap<u32, Vec<usize>> = Default::default();
+    for (i, e) in events.iter().enumerate() {
+        by_track.entry(e.track).or_default().push(i);
+    }
+    for (track, idx) in by_track {
+        if skip(track) {
+            continue;
+        }
+        for (k, &i) in idx.iter().enumerate() {
+            let e = events[i];
+            if !matches!(e.articulation, A::Legato | A::Portamento) {
+                continue;
+            }
+            let mut prev: Option<usize> = None;
+            for &j in idx[..k].iter().rev() {
+                let p = &events[j];
+                if p.start >= e.start || p.end + gap < e.start {
+                    continue;
+                }
+                prev = match prev {
+                    None => Some(j),
+                    Some(q) => {
+                        let pq = &events[q];
+                        let closer = (p.pitch as i32 - e.pitch as i32).abs()
+                            < (pq.pitch as i32 - e.pitch as i32).abs();
+                        if p.start > pq.start || (p.start == pq.start && closer) {
+                            Some(j)
+                        } else {
+                            Some(q)
+                        }
+                    }
+                };
+                // 開始順に並んでいるので、十分前(1 分以上)まで遡ったら打ち切る
+                if e.start.saturating_sub(p.start) > (60.0 * sample_rate) as u64 {
+                    break;
+                }
+            }
+            let Some(j) = prev else { continue };
+            let from_pitch = events[j].pitch;
+            // 前の音はつなぎ目から消え始め、次の音の立ち上がりと同じ長さで入れ替わる
+            // (CLAP 音源へは fade_out の分だけ離すのを遅らせ、重ねて送る)
+            events[j].end = e.start;
+            events[j].fade_out = xf as u32;
+            events[i].fade_in = xf as u32;
+            if e.articulation == A::Portamento && e.curve.is_empty() && from_pitch != e.pitch {
+                let glide = ((PORTAMENTO_SEC * sample_rate) as u64)
+                    .min((e.end - e.start) / 2)
+                    .max(1) as f32;
+                let cents = (from_pitch as f32 - e.pitch as f32) * 100.0;
+                // 減速しながら到達する形(前半で 7 割進む)
+                events[i].curve = glaux_dsp::PitchCurve::from_points(&[
+                    (0.0, cents),
+                    (glide * 0.4, cents * 0.3),
+                    (glide, 0.0),
+                ]);
+            }
+        }
+    }
 }
 
 /// 音声クリップ 1 つ分の再生イベント。サンプル位置は曲頭からの絶対値。
@@ -883,11 +970,18 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     track: ti as u32,
                     articulation: note.articulation,
                     curve: glaux_dsp::PitchCurve::from_points(&curve_pts),
+                    fade_in: 0,
+                    fade_out: 0,
                 });
             }
         }
     }
     events.sort_by_key(|e| e.start);
+    link_legato(&mut events, sample_rate, &|t| {
+        tracks
+            .get(t as usize)
+            .is_some_and(|m| matches!(m.instrument, glaux_dsp::InstrumentParams::Drum(_)))
+    });
     audio_events.sort_by_key(|e| e.start);
     for ev in &audio_events {
         if ev.data.side.is_some() {
@@ -1115,6 +1209,82 @@ mod tests {
         );
         eprintln!("非調和性: 比 1 = {ih:.3} / 比 3.5 = {im:.3}");
         assert!(im > ih, "非整数比の方が非調和: {im} vs {ih}");
+    }
+
+    fn with_art(mut n: glaux_core::Note, a: glaux_core::Articulation) -> glaux_core::Note {
+        n.articulation = a;
+        n
+    }
+
+    #[test]
+    fn legato_links_to_the_previous_note_on_the_same_track() {
+        use glaux_core::Articulation as A;
+        let project = project_with_notes(vec![
+            note(0, 1920, 60, 100),
+            with_art(note(1920, 960, 64, 100), A::Portamento),
+            // 0.3 秒より大きく空いた音はつながない
+            with_art(note(3840 - 480, 480, 67, 100), A::Legato),
+        ]);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let e = &data.events;
+        assert_eq!(e.len(), 3);
+        let xf = (LEGATO_XFADE_SEC * 48_000.0) as u64;
+        assert_eq!(e[0].end, e[1].start, "前の音はつなぎ目から消える");
+        assert_eq!(e[0].fade_out as u64, xf);
+        assert_eq!(e[1].fade_in as u64, xf);
+        // ポルタメント: 4 半音下(-400 セント)から滑る
+        assert_eq!(e[1].curve.cents_at(0.0), -400.0);
+        assert_eq!(e[1].curve.cents_at(48_000.0), 0.0);
+        // 2 つ目(1.5 秒で終わる)と 3 つ目(1.75 秒から)は 0.25 秒差なのでつながる
+        assert_eq!(e[2].fade_in as u64, xf);
+        assert!(e[2].curve.is_empty(), "レガートは音程を滑らせない");
+    }
+
+    #[test]
+    fn legato_removes_the_attack_and_portamento_glides() {
+        use crate::export::render_project;
+        use glaux_core::Articulation as A;
+        let render = |a: A| {
+            let mut p = project_with_notes(vec![
+                note(0, 1920, 60, 100),
+                with_art(note(1920, 1920, 64, 100), a),
+            ]);
+            let mut d = glaux_core::Device::builtin("subtractive");
+            d.params.insert("sustain".into(), 0.4.into());
+            d.params.insert("decay".into(), 0.2.into());
+            p.tracks[0].device = Some(d);
+            let st = render_project(&p, 48_000.0, &Default::default()).unwrap();
+            st.chunks(2).map(|c| c[0] + c[1]).collect::<Vec<f32>>()
+        };
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let joint = 48_000usize;
+        // つなぎ目直後の山(新しい音の立ち上がり)÷ 落ち着いた後の音量
+        let bump = |x: &[f32]| {
+            let peak = (0..30)
+                .map(|k| rms(&x[joint + k * 480..joint + (k + 1) * 480]))
+                .fold(0.0f32, f32::max);
+            peak / rms(&x[joint + 38_400..joint + 43_200])
+        };
+        let normal = render(A::Normal);
+        let legato = render(A::Legato);
+        let (bn, bl) = (bump(&normal), bump(&legato));
+        eprintln!("立ち上がりの山: 通常 {bn:.2} / レガート {bl:.2}");
+        assert!(bn > 1.5, "通常は弾き直しの山がある: {bn}");
+        assert!(bl < 1.2, "レガートは山がない: {bl}");
+        // ポルタメント: つなぎ目の直後は前の音(C4 = 261.6Hz)寄り、0.3 秒後には E4(329.6Hz)
+        let porta = render(A::Portamento);
+        let freq = |x: &[f32]| {
+            let c: Vec<usize> = (1..x.len())
+                .filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0)
+                .collect();
+            (c.len() - 1) as f32 * 48_000.0 / (c[c.len() - 1] - c[0]) as f32
+        };
+        // つなぎ目の入れ替わり(30ms)の後、滑っている途中(約 30〜60ms)
+        let early = freq(&porta[joint + 1500..joint + 2900]);
+        let late = freq(&porta[joint + 14_400..joint + 24_000]);
+        eprintln!("ポルタメント: {early:.1}Hz → {late:.1}Hz");
+        assert!(early > 262.0 && early < 315.0, "{early}");
+        assert!((late - 329.6).abs() < 4.0, "{late}");
     }
 
     #[test]

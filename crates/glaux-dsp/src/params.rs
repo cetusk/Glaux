@@ -684,6 +684,21 @@ const ART_BEND: ArticulationInfo = ArticulationInfo {
     display_name: "チョーキング",
     description: "全音下から書かれた音程へ滑り上がる。フレーズの決め音に。",
 };
+const ART_LEGATO: ArticulationInfo = ArticulationInfo {
+    name: "legato",
+    key: "T",
+    display_name: "レガート",
+    description: "同じトラックの直前の音から弾き直さずになめらかにつなぐ(立ち上がりを消し、前の音はつなぎ目で消える)。\
+        弦・管・歌のフレーズ、シンセリードのつながったメロディに。前の音との隙間は 0.3 秒まで。",
+};
+const ART_PORTAMENTO: ArticulationInfo = ArticulationInfo {
+    name: "portamento",
+    key: "P",
+    display_name: "ポルタメント",
+    description:
+        "レガートでつなぎ、直前の音の高さから約 0.15 秒で滑らせる。ストリングスのポルタメント、\
+        シンセリードのグライド、808 ベースの滑り。",
+};
 
 pub static SUBTRACTIVE_ARTS: &[ArticulationInfo] = &[
     ArticulationInfo {
@@ -696,6 +711,8 @@ pub static SUBTRACTIVE_ARTS: &[ArticulationInfo] = &[
     ART_ACCENT,
     ART_VIBRATO,
     ART_BEND,
+    ART_LEGATO,
+    ART_PORTAMENTO,
 ];
 pub static DRUM_ARTS: &[ArticulationInfo] = &[ArticulationInfo {
     name: "accent",
@@ -714,9 +731,37 @@ pub static PLUCK_ARTS: &[ArticulationInfo] = &[
     ART_ACCENT,
     ART_VIBRATO,
     ART_BEND,
+    ArticulationInfo {
+        name: "legato",
+        key: "T",
+        display_name: "ハンマリング / プリング",
+        description:
+            "弾き直さずに左手だけで音を変える(ピッキングの立ち上がりを消して直前の音からつなぐ)。\
+            速いフレーズ・ソロのなめらかさに。",
+    },
+    ArticulationInfo {
+        name: "portamento",
+        key: "P",
+        display_name: "スライド",
+        description: "直前の音から弦の上を滑らせて移る(グリッサンド)。",
+    },
 ];
-pub static SAMPLER_ARTS: &[ArticulationInfo] = &[ART_STACCATO, ART_ACCENT, ART_VIBRATO, ART_BEND];
-pub static SF2_ARTS: &[ArticulationInfo] = &[ART_STACCATO, ART_ACCENT, ART_VIBRATO, ART_BEND];
+pub static SAMPLER_ARTS: &[ArticulationInfo] = &[
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+    ART_LEGATO,
+    ART_PORTAMENTO,
+];
+pub static SF2_ARTS: &[ArticulationInfo] = &[
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+    ART_LEGATO,
+    ART_PORTAMENTO,
+];
 pub static FM_ARTS: &[ArticulationInfo] = &[
     ArticulationInfo {
         name: "palm_mute",
@@ -728,6 +773,8 @@ pub static FM_ARTS: &[ArticulationInfo] = &[
     ART_ACCENT,
     ART_VIBRATO,
     ART_BEND,
+    ART_LEGATO,
+    ART_PORTAMENTO,
 ];
 pub static WAVETABLE_ARTS: &[ArticulationInfo] = &[
     ArticulationInfo {
@@ -745,6 +792,8 @@ pub static WAVETABLE_ARTS: &[ArticulationInfo] = &[
     },
     ART_VIBRATO,
     ART_BEND,
+    ART_LEGATO,
+    ART_PORTAMENTO,
 ];
 /// CLAP 音源: ビブラート・ベンドは 1 音ごとの音程変化として送る(CLAP のノート表現に対応したプラグインのみ。
 /// MIDI だけのプラグインには届かない)。アクセントは強く、パームミュートは短く弱く鳴らして近づける
@@ -760,6 +809,20 @@ pub static CLAP_ARTS: &[ArticulationInfo] = &[
     ART_ACCENT,
     ART_VIBRATO,
     ART_BEND,
+    ArticulationInfo {
+        name: "legato",
+        key: "T",
+        display_name: "レガート(重ねて送る)",
+        description: "前の音をつなぎ目まで伸ばし、次の音と少し重ねて送る。プラグイン側がモノ / レガートモードなら\
+            弾き直さずにつながる(ポリのままだと普通に重なるだけ)。",
+    },
+    ArticulationInfo {
+        name: "portamento",
+        key: "P",
+        display_name: "ポルタメント",
+        description: "レガートで送り、直前の音の高さから滑らせる変化を 1 音ごとの音程の変化として送る\
+            (CLAP のノート表現に対応したプラグインのみ)。",
+    },
 ];
 
 /// 楽器名 → 対応する奏法の一覧。載っていない奏法を付けてもエラーにはならないが

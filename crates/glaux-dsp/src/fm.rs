@@ -91,6 +91,14 @@ impl FmVoice {
         self.stage = Stage::Release;
     }
 
+    /// レガート: 立ち上がりを飛ばして、鳴り続けている状態(サスティン。減衰しきる音は 0.35、
+    /// 変調の深さも落ち着いた値)から始める
+    pub fn skip_attack(&mut self, p: &FmParams) {
+        self.amp_env = p.sustain.clamp(0.35, 1.0);
+        self.mod_env = p.index_sustain;
+        self.stage = Stage::Decay;
+    }
+
     pub fn finished(&self) -> bool {
         self.stage == Stage::Release && self.amp_env < 1e-4
     }

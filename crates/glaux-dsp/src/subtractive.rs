@@ -75,7 +75,8 @@ impl ArtMod {
     fn from(a: glaux_core::Articulation) -> ArtMod {
         use glaux_core::Articulation as A;
         match a {
-            A::Normal | A::Staccato | A::Vibrato | A::Bend => ArtMod {
+            // レガート・ポルタメントはエンジン側(つなぎ目のフェードと音程の滑り)で表現する
+            A::Normal | A::Staccato | A::Vibrato | A::Bend | A::Legato | A::Portamento => ArtMod {
                 cutoff_mul: 1.0,
                 decay_mul: 1.0,
                 sustain_mul: 1.0,
@@ -172,6 +173,12 @@ impl SubtractiveVoice {
 
     pub fn note_off(&mut self) {
         self.stage = EnvStage::Release;
+    }
+
+    /// レガート: 立ち上がりを飛ばして、鳴り続けている状態(サスティン。減衰しきる音は 0.35)から始める
+    pub fn skip_attack(&mut self, p: &SubtractiveParams) {
+        self.env = (p.sustain * self.art.sustain_mul).clamp(0.35, 1.0);
+        self.stage = EnvStage::Decay;
     }
 
     pub fn finished(&self) -> bool {

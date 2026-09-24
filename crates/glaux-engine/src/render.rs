@@ -188,6 +188,10 @@ struct Voice {
     /// ループ折り返しを何回またいだか。リリースの長い音が周回ごとに世代累積して
     /// ボイスプールを食い潰さないよう、2 回またいだら強制解放する
     wraps: u8,
+    /// レガートのつなぎ(サンプル数。0 = なし)と鳴り始めからの経過
+    fade_in: u32,
+    fade_out: u32,
+    age: u32,
     state: VoiceState,
 }
 
@@ -940,11 +944,17 @@ impl Renderer {
                         if !e.curve.is_empty() {
                             state.set_curve(&e.curve);
                         }
+                        if e.fade_in > 0 {
+                            state.skip_attack(inst);
+                        }
                         self.voices.push(Voice {
                             end: e.end,
                             track: e.track,
                             released: false,
                             wraps: 0,
+                            fade_in: e.fade_in,
+                            fade_out: e.fade_out,
+                            age: 0,
                             state,
                         });
                     }
@@ -964,10 +974,23 @@ impl Renderer {
                     self.voices.swap_remove(i);
                     continue;
                 };
-                if self.pos >= v.end && !v.released {
+                // レガートでつながれた音は end で離さず、つなぎ目の長さで消す
+                let mut fade = 1.0f32;
+                if v.fade_out > 0 && self.pos >= v.end && !v.released {
+                    let k = self.pos - v.end;
+                    if k >= v.fade_out as u64 {
+                        self.voices.swap_remove(i);
+                        continue;
+                    }
+                    fade = 1.0 - k as f32 / v.fade_out as f32;
+                } else if self.pos >= v.end && !v.released {
                     v.state.note_off();
                     v.released = true;
                 }
+                if v.age < v.fade_in {
+                    fade *= v.age as f32 / v.fade_in as f32;
+                }
+                v.age = v.age.saturating_add(1);
                 // device オートメーションのあるトラックはスクラッチ(適用済み)を読む
                 let ti = v.track as usize;
                 let inst = if !mix.device_auto.is_empty() && ti < MAX_TRACKS {
@@ -982,7 +1005,7 @@ impl Renderer {
                     self.voices.swap_remove(i);
                     continue;
                 }
-                let sample = v.state.next(inst);
+                let sample = v.state.next(inst) * fade;
                 match track_mono.get_mut(v.track as usize) {
                     Some(acc) => *acc += sample,
                     None => {
@@ -1715,7 +1738,8 @@ impl Renderer {
                     glaux_core::Articulation::PalmMute => {
                         (e.amp * 0.85, e.start + (e.end - e.start).div_ceil(2))
                     }
-                    _ => (e.amp, e.end),
+                    // レガートでつながれた音は次の音と重ねて離す
+                    _ => (e.amp, e.end + e.fade_out as u64),
                 };
                 if e.curve.is_empty() && !glaux_dsp::articulation_moves_pitch(e.articulation) {
                     self.plugin_note_on(slot, e.pitch, amp, t, None);
@@ -1993,6 +2017,8 @@ mod tests {
             events: vec![NoteEvent {
                 articulation: Default::default(),
                 curve: Default::default(),
+                fade_in: 0,
+                fade_out: 0,
                 start,
                 end,
                 freq: 440.0,

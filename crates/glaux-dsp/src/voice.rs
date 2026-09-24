@@ -138,6 +138,17 @@ impl VoiceState {
         }
     }
 
+    /// レガートでつながれた音: 立ち上がりを飛ばす(エンベロープを持つシンセのみ。
+    /// サンプル・撥弦はエンジン側のフェードで立ち上がりを消す)。発音直後に呼ぶ。
+    pub fn skip_attack(&mut self, params: &InstrumentParams) {
+        match (self, params) {
+            (VoiceState::Subtractive(v), InstrumentParams::Subtractive(p)) => v.skip_attack(p),
+            (VoiceState::Fm(v), InstrumentParams::Fm(p)) => v.skip_attack(p),
+            (VoiceState::Wavetable(v), InstrumentParams::Wavetable(p)) => v.skip_attack(p),
+            _ => {}
+        }
+    }
+
     pub fn note_off(&mut self) {
         match self {
             VoiceState::Subtractive(v) => v.note_off(),
