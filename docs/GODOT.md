@@ -66,6 +66,5 @@ Godot_v4.3-stable_win64.exe --headless --path godot\demo -- --check
 
 - 実装: `crates/glaux-godot`(`GlauxPlayer` = `player.rs`、音声スレッド = `stream.rs`、読み込み = `song.rs`)、
   時間軸は `crates/glaux-engine/src/timeline.rs`
-- 設計と経緯は `docs/HANDOFF.md` の「`crates/glaux-godot`」の節
 - アドオンの説明書(`README.md` / `AI_GUIDE.md` / `PROMPT.md`)は `godot/demo/addons/glaux/` が正。
   API を変えたら 3 つとも更新し、`AI_GUIDE.md` のコード例は Godot で実際に動かして確かめる

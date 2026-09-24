@@ -1,4 +1,6 @@
-<h1 align="center"><img src="docs/images/glaux-logo.png" alt="Glaux" width="480"></h1>
+<p align="center"><img src="docs/images/glaux-logo.png" alt="Glaux" width="480"></p>
+
+<h1 align="center">Glaux: A Lightweight DAW for Making Music with AI</h1>
 
 **AI と共同作業できる、シンプルで軽量なデスクトップ DAW**(Rust + Tauri + Svelte 5)
 
@@ -52,7 +54,6 @@ godot/          Godot のデモプロジェクトと、ゲームへ配るアド�
 ```
 
 - 時間は整数 Tick(PPQ=960)。オーディオスレッドはアロケーション・ロックなし
-- 設計判断とその理由は [`docs/HANDOFF.md`](docs/HANDOFF.md) に、開発規約は [`CLAUDE.md`](CLAUDE.md) にすべて記録しています
 - AI ができること(感覚・操作・奏法)と、今の機能で作れる曲のジャンルは [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) にまとめています
 
 ## 動かす(Windows)
@@ -134,12 +135,11 @@ cargo clippy --workspace --all-targets
 
 Linux でもコア・エンジンのビルドとテストは可能です(ALSA ヘッダが必要。アプリのビルドには webkit2gtk 等)。
 
-ドキュメント・コメント・コミットメッセージは日本語です。AI(Claude Code)と共同で開発しており、AI 向けの開発規約を
-[`CLAUDE.md`](CLAUDE.md) に置いています。
+ドキュメント・コメント・コミットメッセージは日本語です。AI(Claude Code)と共同で開発しています。
 
 ## ステータス
 
-活発に開発中の実験プロジェクトです。ロードマップと既知の課題は [`docs/HANDOFF.md`](docs/HANDOFF.md) の §8 を参照してください。
+活発に開発中の実験プロジェクトです。
 
 ## 同梱しているもの・別途入手するもの
 
@@ -154,4 +154,10 @@ Linux でもコア・エンジンのビルドとテストは可能です(ALSA �
 
 ## ライセンス
 
-MIT または Apache-2.0 のデュアルライセンスです([LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE))。
+ソースコードとドキュメントは MIT または Apache-2.0 のデュアルライセンスです([LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE))。
+
+**ロゴ・アイコン(Glaux の名前のロゴ、フクロウの図柄、およびそれらから作った画像)はこのライセンスの対象外です。**
+対象は `assets/` の全ファイル、`docs/images/glaux-logo.png`、`app/public/` の画像、`app/src-tauri/icons/`、
+`godot/demo/icon.png`、`godot/demo/addons/glaux/glaux_player.png` です。Glaux そのものを指し示す目的(紹介記事・リンクなど)
+以外で使ったり、改変したり、自分の製品やフォークのロゴとして使ったりしないでください。
+フォークを配布するときは、別の名前とロゴに置き換えてください。
