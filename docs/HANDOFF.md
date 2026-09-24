@@ -525,6 +525,22 @@ tauri.conf.json は CLI 同梱のスキーマで検証済み。Windows 実機の
   説明書のコード例を Godot で実行。デモ曲に Pad(Am F C G)を足し、効果音用の `songs/sfx.glaux`(Bell / Blip)を追加。
   デモでは Z キーで次の拍にコードの構成音のベル
 
+### ブランドキットの組み込み(2026-09-25)
+
+`assets/`(ユーザー作成のブランドキット v1.0: `BRAND_GUIDE.md/.pdf`、`asset-manifest.json` の SHA-256、PNG 5 点)を
+ガイドどおりに組み込んだ。小さい表示の見え方を 16〜64px・明暗の背景で比べて決めた:
+
+- アプリのアイコン `app/src-tauri/icons/icon.ico`: 16 / 24 / 32px は顔のみ版(小さくても目元が分かる)、
+  48 / 64 / 128 / 256px は白フチの全身版(暗いタスクバーでも形が見える)。`icon.png` は白フチの全身版 512px。
+  どれも見える図形を基準に正方形へ切り、周囲に 1/8 の余白(ガイドの推奨)
+- アプリのヘッダー: 🦉 の絵文字を白フチの全身版 `app/public/glaux-icon.png`(84px を 28px で表示)に。
+  ガイドに従い光彩(drop-shadow)は外した。開発時の favicon は顔のみ版 `app/public/favicon.png`
+- README の先頭: 白背景の横組みロゴ(ガイドの「リポジトリー用」)
+- Godot: `glaux.gdextension` の `[icons]` で `GlauxPlayer` に顔のみ版 16px(`addons/glaux/glaux_player.png`)。
+  デモのプロジェクトのアイコンは白フチの全身版 128px。拡張の版を 0.2.1 に
+- 生成には Pillow(スクラッチの venv)を使った。元の PNG は変更していない
+- アプリの UI のアクセント(ターコイズ `#2dd4bf`)は、暗い背景での読みやすさのためブランド色 `#25BDB1` より明るいまま
+
 ### 将来
 
 - ~~CLAP プラグインホスティング~~ → 音源は実装済み(2026-09-23、`glaux-clap`)。エフェクト・パラメータ公開は第 2 段階

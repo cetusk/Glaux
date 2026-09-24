@@ -720,7 +720,7 @@
 <div class="layout">
   <header>
     <div class="brand">
-      <span class="owl">🦉</span>
+      <img class="owl" src="/glaux-icon.png" alt="Glaux" width="28" height="28" />
       <ProjectMenu title={project?.meta.title ?? "…"} />
     </div>
     <div class="transport">
@@ -1035,8 +1035,12 @@
     font-size: 15px;
   }
 
+  /* ブランドガイド: アプリ内では白フチの全身版を使い、影・発光は加えない */
   .owl {
-    filter: drop-shadow(0 0 4px var(--accent));
+    display: block;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
   }
 
   .transport {

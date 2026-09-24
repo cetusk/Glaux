@@ -13,6 +13,7 @@ rem --- distributable addon ---
 if exist godot\dist rmdir /S /Q godot\dist
 mkdir godot\dist\addons\glaux\bin
 copy /Y godot\demo\addons\glaux\glaux.gdextension godot\dist\addons\glaux\ >nul || exit /b 1
+copy /Y godot\demo\addons\glaux\glaux_player.png godot\dist\addons\glaux\ >nul || exit /b 1
 copy /Y godot\demo\addons\glaux\README.md godot\dist\addons\glaux\ >nul || exit /b 1
 copy /Y godot\demo\addons\glaux\AI_GUIDE.md godot\dist\addons\glaux\ >nul || exit /b 1
 copy /Y godot\demo\addons\glaux\PROMPT.md godot\dist\addons\glaux\ >nul || exit /b 1

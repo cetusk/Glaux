@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "glaux-godot"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "glaux-core",
  "glaux-engine",

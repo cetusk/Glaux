@@ -1,0 +1,62 @@
+{
+  "brand": "Glaux",
+  "version": "1.0",
+  "date": "2026-09-25",
+  "assets": [
+    {
+      "file": "logos/glaux-lockup-white.png",
+      "use": "リポジトリー・READMEなどに飾る基本ロゴ",
+      "width": 1774,
+      "height": 887,
+      "alpha_extrema": [
+        255,
+        255
+      ],
+      "sha256": "6c16f36ac4b43e659054426cab0ba067b48f25a6ac5280c4357abd73b5d08038"
+    },
+    {
+      "file": "logos/glaux-lockup-transparent.png",
+      "use": "基本ロゴ②の背景透過版",
+      "width": 1774,
+      "height": 887,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "sha256": "66c31538b6c0324cd1ff4dbca1c804a4d26eadf383b2cf56b96d2c4ebcc16be0"
+    },
+    {
+      "file": "icons/favicon.png",
+      "use": "favicon用の顔のみ版・高解像度PNG",
+      "width": 1254,
+      "height": 1254,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "sha256": "c794034467aa684043fca78c976aa9253d9deb8f97a410d812576681f692c4c0"
+    },
+    {
+      "file": "icons/glaux-app-icon.png",
+      "use": "アプリ内用・白フチ付き背景透過版",
+      "width": 1254,
+      "height": 1254,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "sha256": "bd45451bffd95350345ac148fdba9de5fab534781fec64531c638971b6223bb5"
+    },
+    {
+      "file": "icons/glaux-owl-full.png",
+      "use": "通常の全身版・背景透過",
+      "width": 1254,
+      "height": 1254,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "sha256": "84c0c538b275080c096ab0b151464af93aa22ea4fb3fc5703fae9bdae14c94dd"
+    }
+  ]
+}

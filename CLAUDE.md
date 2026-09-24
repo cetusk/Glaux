@@ -69,6 +69,9 @@ app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の
 
 `daw` という語は「DAW というジャンル」を指すときだけ使い、識別子には使わない。
 
+ロゴ・アイコン・配色は `assets/`(ブランドキット)が正。使うときは `assets/BRAND_GUIDE.md` の使い分けに従う
+(背景ごとの版、余白、反転・引き伸ばし・影や発光の追加をしない)。指定色は Dark `#142332` / Turquoise `#25BDB1` / White。
+
 ## コーディング規約
 
 - Rust 2021、MSRV 1.75(`Cargo.toml` の `rust-version`)。例外: `glaux-mcp`(rmcp)、`glaux-ml`(tract)、`glaux-clap` と `glaux-engine`(clack)は 1.88 を要求するため個別に `rust-version = "1.88"`。`glaux-godot`(gdext)は 1.94

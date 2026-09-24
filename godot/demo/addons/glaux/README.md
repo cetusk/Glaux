@@ -19,6 +19,7 @@
 | `AI_GUIDE.md` | ゲーム側で AI(Claude など)にこのアドオンを使わせるときの手引き |
 | `PROMPT.md` | AI に最初に渡すプロンプトの例 |
 | `CHANGELOG.md` | 改訂ノート(版ごとに何が変わったか) |
+| `glaux_player.png` | エディタで `GlauxPlayer` ノードに付くアイコン |
 
 ## 1. 導入
 

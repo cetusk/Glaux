@@ -10,3 +10,6 @@ linux.debug.x86_64 = "res://addons/glaux/bin/libglaux_godot.so"
 linux.release.x86_64 = "res://addons/glaux/bin/libglaux_godot.so"
 macos.debug = "res://addons/glaux/bin/libglaux_godot.dylib"
 macos.release = "res://addons/glaux/bin/libglaux_godot.dylib"
+
+[icons]
+GlauxPlayer = "res://addons/glaux/glaux_player.png"

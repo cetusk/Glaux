@@ -5,6 +5,14 @@
 
 ---
 
+## 0.2.1(2026-09-25)エディタのノードに Glaux のアイコン
+
+- Godot のエディタで `GlauxPlayer` ノードに Glaux のフクロウのアイコンが付くようになりました
+  (シーンツリーやノードの追加画面で見分けやすくなります)。アイコンの画像は `addons/glaux/glaux_player.png`
+- 機能・メソッドの変更はありません。更新のしかたは 0.2.0 と同じです(配布物で `addons/glaux/` を丸ごと置き換える)
+
+---
+
 ## 0.2.0(2026-09-25)効果音を WAV なしで鳴らし、音程を BGM のコードに合わせる
 
 ### 要点
@@ -84,7 +92,7 @@ func on_player_hit(combo: int) -> void:
 2. できた `godot\dist\glaux-godot-addon.zip` の中身で、ゲーム側の `addons\glaux\` を**丸ごと置き換える**
    (DLL と説明書が同じ版にそろいます)
 3. Godot のエディタを開き直す
-4. 更新できたかの確認: スクリプトで `music.has_method("play_note")` が true なら 0.2.0 です
+4. 更新できたかの確認: スクリプトで `music.has_method("play_note")` が true なら 0.2.0 以降です
 
 ---
 

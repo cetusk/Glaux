@@ -1,0 +1,11 @@
+制作方法: 内蔵画像生成ツールによる背景除去編集。
+対象: 採用した横組み②。
+その他の採用アセット4点は既存ファイルをそのままコピー。
+
+背景透過版の編集プロンプト:
+Use case: background-extraction.
+Edit target: the attached approved Glaux lockup, with the "Glaux" wordmark on LEFT and the standing owl on RIGHT.
+Remove ONLY the outer white background to genuine alpha transparency, INCLUDING background gaps enclosed inside the G/a/u and between the letters, and spaces around and between owl feet.
+CRITICAL: preserve ALL white plumage INSIDE the owl: its white face discs and curved eyebrows, white eye highlights, white chest blaze, and white feather patch within the turquoise folded wing must remain fully opaque white. Those white artwork regions are NOT background.
+Preserve absolutely all shapes, positions, relative sizes and spacing. Same canvas and same margins. Do not redraw or redesign any letter or owl feature. Keep precise curved original eyebrows, left-facing standing pose, beak, eyes, wing, tail, feet and Glaux Flow lettering, including its turquoise ascending x stroke. No new outline, no shift, no crop, no mirror, no rotation. Keep navy, turquoise and opaque white fills.
+Output a true transparent PNG. Do not paint a checkerboard or black background. Do not add any shadows, shading, glow, gradients, texture, text or decorations. This is background removal only.

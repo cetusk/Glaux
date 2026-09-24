@@ -1,4 +1,4 @@
-# 🦉 Glaux
+<h1 align="center"><img src="assets/logos/glaux-lockup-white.png" alt="Glaux" width="480"></h1>
 
 **AI と共同作業できる、シンプルで軽量なデスクトップ DAW**(Rust + Tauri + Svelte 5)
 
@@ -95,6 +95,11 @@ claude mcp add glaux -- cmd /c "<repo>\scripts\glaux-mcp.bat" "C:\path\to\MySong
 ```
 
 公開ツール: `get_project` / `apply_commands` / `undo` / `redo` / `checkpoint` / `revert_to` / `get_history` / `list_params` / `analyze_audio`
+
+## ブランド
+
+ロゴ・アイコン・配色は `assets/` にあります。使い分け(背景ごとの版、余白、してはいけない加工)は
+[`assets/BRAND_GUIDE.md`](assets/BRAND_GUIDE.md) を見てください。表記は **Glaux**(G のみ大文字)。
 
 ## 開発
 
