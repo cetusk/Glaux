@@ -15,6 +15,9 @@ claude_sandbox.bat
 /tests
 /debugs
 
+# アプリのリリースビルド(scripts/build-release.bat が作る)
+/release/
+
 # Godot 拡張の配布物(godot/build_windows.bat が作る)
 /godot/dist/
 

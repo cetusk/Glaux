@@ -493,6 +493,16 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
 - 未確認・次段階: ゲーム書き出し後の読み込み(.pck に project.json と WAV を入れる設定)、
   ゲーム中のトラック音量・ミュート(展開の切り替え)、CLAP トラックの音声への焼き込み
 
+### リリースビルド(2026-09-24)
+
+`scripts/build-release.bat` → `npm run tauri build`(Tauri CLI v2 が `tauri/custom-protocol` を自動で有効にし、
+フロントは exe に埋め込まれる)。`CARGO_TARGET_DIR=target\windows`(開発版と共有)。成果物を `release\` に集める:
+`Glaux.exe`(単体で動く。要 WebView2)と NSIS インストーラー(`installMode: currentUser`・日本語)。
+MSI(WiX)は VBScript に依存し新しい Windows で失敗しやすいので作らない(`bundle.targets = ["nsis"]`)。
+アプリは元からリポジトリの場所に依存しない(既定のプロジェクトは `<ホーム>/Music/GlauxDemo.glaux`、設定類は
+`%APPDATA%\glaux\`、学習済みモデルは exe に埋め込み、外部コマンドは CREATE_NO_WINDOW で起動)。
+tauri.conf.json は CLI 同梱のスキーマで検証済み。Windows 実機のビルドは未確認
+
 ### 将来
 
 - ~~CLAP プラグインホスティング~~ → 音源は実装済み(2026-09-23、`glaux-clap`)。エフェクト・パラメータ公開は第 2 段階

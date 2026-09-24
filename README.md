@@ -59,6 +59,27 @@ scripts\glaux-app.bat [C:\path\to\MySong.glaux]
 
 チャット機能はホストにインストール済みの [Claude Code](https://claude.com/claude-code) を利用します(アプリが `claude` CLI を起動します)。
 
+### リリースビルド(どこでも起動できる exe)
+
+```bat
+scripts\build-release.bat
+```
+
+リポジトリの `release\` に次ができます(初回は数分):
+
+| ファイル | 使い方 |
+|---|---|
+| `Glaux.exe` | そのまま動く単体の exe。好きな場所(デスクトップ・USB メモリ等)にコピーしてダブルクリック。リポジトリも Node.js も不要 |
+| `Glaux_<版>_x64-setup.exe` | インストーラー。ユーザー単位でインストール(管理者権限不要)し、スタートメニューから起動できるようにする。アンインストールは Windows の「アプリ」から |
+
+- 動かすのに必要なのは WebView2 ランタイムだけです(Windows 10 / 11 には入っています)
+- 引数なしで起動すると `<ホーム>\Music\GlauxDemo.glaux` を開きます(無ければ作成)。別の曲は画面のプロジェクトメニューから開くか、
+  `Glaux.exe C:\path\to\MySong.glaux` のように引数で渡します
+- 設定・プリセット・SoundFont・追加モデルは `%APPDATA%\glaux\` にあり、開発版(`glaux-app.bat`)と共有されます
+- チャット機能を使うには、開発版と同じく `claude` CLI にパスが通っている必要があります
+- 開発版とリリース版を同時に起動すると、2 つ目はアプリ内 MCP サーバーのポート(41920)を使えません。
+  片方ずつ使うか、`GLAUX_MCP_PORT` で別のポートにしてください
+
 ### MCP クライアントから直接つなぐ
 
 アプリ起動中は HTTP MCP サーバーが立っています:
