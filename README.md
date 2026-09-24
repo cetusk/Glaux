@@ -1,4 +1,4 @@
-<h1 align="center"><img src="assets/logos/glaux-lockup-white.png" alt="Glaux" width="480"></h1>
+<h1 align="center"><img src="docs/images/glaux-logo.png" alt="Glaux" width="480"></h1>
 
 **AI と共同作業できる、シンプルで軽量なデスクトップ DAW**(Rust + Tauri + Svelte 5)
 

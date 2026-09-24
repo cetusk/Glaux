@@ -1,10 +1,14 @@
-"""assets/ のブランドキットから、アプリと Godot アドオンのアイコンを作る。
+"""assets/ のブランドキットから、アプリと Godot アドオンのアイコンと README のロゴを作る。
 
 使い方(Pillow が要る):  python scripts/make_icons.py
 
-- 40px 以下は顔のみ版(assets/icons/favicon.png)。小さくても目元が分かるよう、余白を図形の 1/16 に詰め、
+- 余白はできるだけ削る(ユーザーの指示。ブランドガイドの推奨余白より優先): 見える図形の端で切り、
+  正方形にするのに要る分(図形の短い辺の側)だけ透明を足す
+- 40px 以下は顔のみ版(assets/icons/favicon.png)。小さくても目元が分かるよう、
   2 段階で縮めてから小さい半径で鮮明化する(1 回で縮めるとぼやける)
-- 48px 以上は白フチの全身版(assets/icons/glaux-app-icon.png)。余白は図形の 1/8(ブランドガイドの推奨)
+- 48px 以上は白フチの全身版(assets/icons/glaux-app-icon.png)
+- README のロゴ: 白背景の横組み(assets/logos/glaux-lockup-white.png)を、文字とフクロウの端で切って幅 960px に
+  (README の表示幅 480px の 2 倍)
 - ICO には Windows が表示倍率ごとに使うサイズをすべて入れる(足りないと拡大・縮小されてぼやける)。
   並びは大きい順(Tauri はウィンドウのアイコンに ICO の最初の 1 枚を使うので、小さいものが先だと拡大されてぼやける)
 - タスクバー用: 表示倍率ごとのタスクバーの大きさ(24px × 倍率)の画像を RGBA の生データで書き出す。
@@ -24,12 +28,18 @@ ICO_SIZES = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256]
 # タスクバーのアイコンの大きさ(24px × 表示倍率 100 / 125 / 150 / 200 / 250 / 300 / 400%)
 TASKBAR_SIZES = [24, 30, 36, 48, 60, 72, 96]
 SMALL_MAX = 40
+# これ以下の不透明度は「見えない」とみなす。元の PNG には背景を抜いたときのほぼ透明なもや(不透明度 1〜8)が
+# 広く残っていて、それを図形に含めると余白が大きく残る
+HAZE_ALPHA = 8
 
 
-def squared(path: Path, pad_ratio: float) -> Image.Image:
-    """見える図形を基準に正方形へ切り、周囲に図形の大きさ × pad_ratio の余白をつける。"""
+def squared(path: Path, pad_ratio: float = 0.0) -> Image.Image:
+    """見える図形を基準に正方形へ切る(周囲に図形の大きさ × pad_ratio の余白。既定は 0 = 余白なし)。"""
     im = Image.open(path).convert("RGBA")
-    x0, y0, x1, y1 = im.getchannel("A").getbbox()
+    # ほぼ透明なもやを消してから、見える図形の範囲を求める
+    alpha = im.getchannel("A").point(lambda a: a if a > HAZE_ALPHA else 0)
+    im.putalpha(alpha)
+    x0, y0, x1, y1 = alpha.getbbox()
     side = max(x1 - x0, y1 - y0)
     pad = int(side * pad_ratio)
     c = Image.new("RGBA", (side + 2 * pad, side + 2 * pad), (0, 0, 0, 0))
@@ -57,8 +67,20 @@ def shrink(src: Image.Image, size: int, amount: int) -> Image.Image:
 
 def icon(size: int) -> Image.Image:
     if size <= SMALL_MAX:
-        return shrink(squared(FACE, 1 / 16), size, 120)
-    return shrink(squared(FULL, 1 / 8), size, 60 if size <= 96 else 0)
+        return shrink(squared(FACE), size, 120)
+    return shrink(squared(FULL), size, 60 if size <= 96 else 0)
+
+
+def readme_logo() -> Image.Image:
+    """白背景の横組みロゴを、文字とフクロウの端(白でない画素の範囲)で切り、幅 960px にする。"""
+    im = Image.open(ROOT / "assets/logos/glaux-lockup-white.png").convert("RGB")
+    # 白(アンチエイリアスのわずかな色を含む)以外の画素の範囲
+    mask = im.convert("L").point(lambda v: 255 if v < 250 else 0)
+    box = mask.getbbox()
+    cropped = im.crop(box)
+    w = 960
+    h = round(cropped.height * w / cropped.width)
+    return cropped.resize((w, h), Image.LANCZOS)
 
 
 def write_ico(path: Path, sizes: list[int]) -> None:
@@ -90,7 +112,10 @@ def main() -> None:
         (taskbar / f"taskbar-{s}.rgba").write_bytes(icon(s).tobytes())
     icon(512).save(ROOT / "app/src-tauri/icons/icon.png")
     # アプリのヘッダー(白フチの全身版を 28px で表示。3 倍の解像度)
-    shrink(squared(FULL, 1 / 16), 84, 40).save(ROOT / "app/public/glaux-icon.png")
+    shrink(squared(FULL), 84, 40).save(ROOT / "app/public/glaux-icon.png")
+    # README のロゴ
+    (ROOT / "docs/images").mkdir(exist_ok=True)
+    readme_logo().save(ROOT / "docs/images/glaux-logo.png", optimize=True)
     # 開発時の favicon(ブラウザのタブ)
     icon(32).save(ROOT / "app/public/favicon.png")
     # Godot: エディタのノードのアイコン(16px)、デモのプロジェクトのアイコン
