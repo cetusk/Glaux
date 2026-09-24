@@ -49,6 +49,7 @@ fn seed_project() -> Project {
                     vel: 100,
                     articulation: Articulation::Normal,
                     pitch_curve: vec![],
+                    glide_ms: None,
                 });
             }
             p.apply(&Command::AddClip {
@@ -228,6 +229,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         .choose(rng)
                         .unwrap(),
                         pitch_curve: vec![],
+                        glide_ms: None,
                     })
                     .collect();
                 return Command::AddNotes {
@@ -307,6 +309,10 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                                 .collect();
                             ch = ch.pitch_curve(curve);
                         }
+                        if rng.gen_bool(0.3) {
+                            // 0 は個別指定の解除
+                            ch = ch.glide_ms(*[0.0, 40.0, 150.0, 800.0].choose(rng).unwrap());
+                        }
                         ch
                     })
                     .collect();
@@ -319,6 +325,26 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 let Some(t) = midi_tracks.choose(rng) else {
                     continue;
                 };
+                // トラックのつなぎの設定(レガート / ポルタメント)。未設定との行き来も試す
+                if rng.gen_bool(0.25) {
+                    let name = *["glide_ms", "legato_ms"].choose(rng).unwrap();
+                    if rng.gen_bool(0.3) {
+                        return Command::UnsetParam {
+                            track: t.id.clone(),
+                            path: ParamPath::track(name),
+                        };
+                    }
+                    let v = if name == "glide_ms" {
+                        rng.gen_range(10.0..2000.0)
+                    } else {
+                        rng.gen_range(5.0..200.0)
+                    };
+                    return Command::SetParam {
+                        track: t.id.clone(),
+                        path: ParamPath::track(name),
+                        value: v.into(),
+                    };
+                }
                 let name = ["filter.cutoff", "filter.resonance", "osc1.wave"]
                     .choose(rng)
                     .unwrap();
@@ -662,6 +688,7 @@ fn loop_clip_expands_notes_for_playback() {
         vel: 100,
         articulation: Articulation::Normal,
         pitch_curve: vec![],
+        glide_ms: None,
     };
     // 1 小節パターン: 頭と、ループ境界をまたぐ音と、ループ外の音
     *clip.notes_mut().unwrap() = vec![n(0, 480), n(3600, 480), n(5000, 480)];
@@ -830,6 +857,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             vel: 100,
             articulation: Articulation::Normal,
             pitch_curve: vec![],
+            glide_ms: None,
         }, // 左に残る
         Note {
             id: ids[1].clone(),
@@ -839,6 +867,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             vel: 100,
             articulation: Articulation::Normal,
             pitch_curve: vec![],
+            glide_ms: None,
         }, // 分割点(1920)をまたぐ → 切り詰め
         Note {
             id: ids[2].clone(),
@@ -848,6 +877,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             vel: 100,
             articulation: Articulation::Normal,
             pitch_curve: vec![],
+            glide_ms: None,
         }, // 右へ移動
     ]);
     p.apply(&Command::AddClip { track: tid, clip }).unwrap();
@@ -922,6 +952,84 @@ fn sends_go_only_to_buses_and_undo_restores() {
         .apply(&Command::AddClip {
             track: bus.clone(),
             clip
+        })
+        .is_err());
+}
+
+#[test]
+fn update_notes_changes_curve_and_glide_and_track_legato_settings() {
+    let mut p = seed_project();
+    let (tid, cid, nid) = {
+        let t = &p.tracks[0];
+        let c = &t.clips[0];
+        (t.id.clone(), c.id.clone(), c.notes().unwrap()[1].id.clone())
+    };
+    let before = p.clone();
+    let curve = vec![
+        PitchPoint {
+            tick: Tick(0),
+            cents: -300.0,
+        },
+        PitchPoint {
+            tick: Tick(240),
+            cents: 0.0,
+        },
+    ];
+    let applied = p
+        .apply(&Command::UpdateNotes {
+            clip: cid.clone(),
+            changes: vec![NoteChange::new(nid.clone())
+                .pitch_curve(curve.clone())
+                .glide_ms(400.0)],
+        })
+        .unwrap();
+    let n = p.clip(&cid).unwrap().1.notes().unwrap()[1].clone();
+    assert_eq!(n.pitch_curve, curve, "ピッチカーブが実際に変わる");
+    assert_eq!(n.glide_ms, Some(400.0));
+    p.apply(&applied.inverse).unwrap();
+    assert_eq!(p, before);
+
+    // 範囲外は拒否(カーブ ±2400 超・点が多すぎる・滑る時間)
+    let bad = |ch: NoteChange| Command::UpdateNotes {
+        clip: cid.clone(),
+        changes: vec![ch],
+    };
+    let too_far = vec![PitchPoint {
+        tick: Tick(0),
+        cents: 3000.0,
+    }];
+    assert!(p
+        .apply(&bad(NoteChange::new(nid.clone()).pitch_curve(too_far)))
+        .is_err());
+    let too_many = (0..9)
+        .map(|i| PitchPoint {
+            tick: Tick(i * 10),
+            cents: 0.0,
+        })
+        .collect();
+    assert!(p
+        .apply(&bad(NoteChange::new(nid.clone()).pitch_curve(too_many)))
+        .is_err());
+    assert!(p
+        .apply(&bad(NoteChange::new(nid.clone()).glide_ms(5000.0)))
+        .is_err());
+
+    // トラックのつなぎの設定: 設定 → 取り消しで未設定に戻る。範囲外は拒否
+    let set = p
+        .apply(&Command::SetParam {
+            track: tid.clone(),
+            path: ParamPath::track("glide_ms"),
+            value: 300.0.into(),
+        })
+        .unwrap();
+    assert_eq!(p.track(&tid).unwrap().glide_ms, Some(300.0));
+    p.apply(&set.inverse).unwrap();
+    assert_eq!(p.track(&tid).unwrap().glide_ms, None);
+    assert!(p
+        .apply(&Command::SetParam {
+            track: tid.clone(),
+            path: ParamPath::track("legato_ms"),
+            value: 500.0.into(),
         })
         .is_err());
 }

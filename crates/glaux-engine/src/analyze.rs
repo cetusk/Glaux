@@ -635,6 +635,7 @@ mod tests {
                     dur: Tick(dur),
                     pitch,
                     vel,
+                    glide_ms: None,
                 });
             }
         }

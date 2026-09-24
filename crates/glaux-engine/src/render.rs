@@ -2019,6 +2019,7 @@ mod tests {
                 curve: Default::default(),
                 fade_in: 0,
                 fade_out: 0,
+                glide: 0.0,
                 start,
                 end,
                 freq: 440.0,

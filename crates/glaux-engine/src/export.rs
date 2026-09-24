@@ -127,6 +127,7 @@ pub fn render_track_note(
             vel: velocity.clamp(1, 127),
             articulation: Default::default(),
             pitch_curve: vec![],
+            glide_ms: None,
         });
     }
     t.clips = vec![clip];
@@ -181,6 +182,7 @@ mod tests {
                 dur: Tick(960),
                 pitch: 60,
                 vel: 100,
+                glide_ms: None,
             });
         }
         track.clips.push(clip);

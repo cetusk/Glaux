@@ -60,21 +60,46 @@ pub struct NoteEvent {
     /// レガートのつなぎ: end で離さずにこのサンプル数かけて消す(0 = 通常のリリース)。
     /// CLAP 音源へは end + fade_out で離す(次の音と重ねて送り、プラグインのレガートを効かせる)
     pub fade_out: u32,
+    /// ノート個別のポルタメントの滑る時間(秒。0 ならトラックの設定)
+    pub glide: f32,
 }
 
-/// レガートのつなぎ目の長さ(秒)。前の音が消え、次の音が立ち上がる
+/// トラックごとのつなぎの設定(秒)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LegatoSettings {
+    /// つなぎ目の長さ
+    pub xfade: f64,
+    /// ポルタメントで滑る時間
+    pub glide: f64,
+}
+
+impl Default for LegatoSettings {
+    fn default() -> Self {
+        LegatoSettings {
+            xfade: LEGATO_XFADE_SEC,
+            glide: PORTAMENTO_SEC,
+        }
+    }
+}
+
+/// レガートのつなぎ目の長さの既定(秒)。前の音が消え、次の音が立ち上がる
 pub const LEGATO_XFADE_SEC: f64 = 0.03;
 /// レガートでつなぐ直前の音を探す範囲(前の音の終わりから、この秒数までの隙間なら「つながっている」)
 pub const LEGATO_GAP_SEC: f64 = 0.3;
-/// ポルタメントで滑る時間(秒。音が短ければその半分まで)
+/// ポルタメントで滑る時間の既定(秒。音が短ければその半分まで)
 pub const PORTAMENTO_SEC: f64 = 0.15;
 
 /// レガート・ポルタメントのノートを同じトラックの直前の音とつなぐ(`events` は開始順)。
 /// 直前の音 = そのノートより前に始まり、終わりが開始の手前 `LEGATO_GAP_SEC` 以内のもののうち
 /// 最も後に始まったもの(同時なら音程の近いもの)。前の音はつなぎ目で消え、次の音は立ち上がりを消す。
 /// ポルタメントはさらに前の音の高さから滑らせる(ノートに自前のピッチカーブがあればそちらを優先)。
-/// `skip(track)` が真のトラック(ドラム)はつながない。
-pub fn link_legato(events: &mut [NoteEvent], sample_rate: f64, skip: &dyn Fn(u32) -> bool) {
+/// `settings(track)` がそのトラックのつなぎの設定、None のトラック(ドラム)はつながない。
+/// 滑る時間はノート個別の `glide` があればそちらを使う。
+pub fn link_legato(
+    events: &mut [NoteEvent],
+    sample_rate: f64,
+    settings: &dyn Fn(u32) -> Option<LegatoSettings>,
+) {
     use glaux_core::Articulation as A;
     if !events
         .iter()
@@ -82,16 +107,16 @@ pub fn link_legato(events: &mut [NoteEvent], sample_rate: f64, skip: &dyn Fn(u32
     {
         return;
     }
-    let xf = (LEGATO_XFADE_SEC * sample_rate) as u64;
     let gap = (LEGATO_GAP_SEC * sample_rate) as u64;
     let mut by_track: std::collections::HashMap<u32, Vec<usize>> = Default::default();
     for (i, e) in events.iter().enumerate() {
         by_track.entry(e.track).or_default().push(i);
     }
     for (track, idx) in by_track {
-        if skip(track) {
+        let Some(set) = settings(track) else {
             continue;
-        }
+        };
+        let xf = ((set.xfade * sample_rate) as u64).max(1);
         for (k, &i) in idx.iter().enumerate() {
             let e = events[i];
             if !matches!(e.articulation, A::Legato | A::Portamento) {
@@ -129,7 +154,12 @@ pub fn link_legato(events: &mut [NoteEvent], sample_rate: f64, skip: &dyn Fn(u32
             events[j].fade_out = xf as u32;
             events[i].fade_in = xf as u32;
             if e.articulation == A::Portamento && e.curve.is_empty() && from_pitch != e.pitch {
-                let glide = ((PORTAMENTO_SEC * sample_rate) as u64)
+                let secs = if e.glide > 0.0 {
+                    e.glide as f64
+                } else {
+                    set.glide
+                };
+                let glide = ((secs * sample_rate) as u64)
                     .min((e.end - e.start) / 2)
                     .max(1) as f32;
                 let cents = (from_pitch as f32 - e.pitch as f32) * 100.0;
@@ -972,15 +1002,25 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     curve: glaux_dsp::PitchCurve::from_points(&curve_pts),
                     fade_in: 0,
                     fade_out: 0,
+                    glide: note.glide_ms.map_or(0.0, |ms| ms / 1000.0),
                 });
             }
         }
     }
     events.sort_by_key(|e| e.start);
     link_legato(&mut events, sample_rate, &|t| {
-        tracks
+        let drum = tracks
             .get(t as usize)
-            .is_some_and(|m| matches!(m.instrument, glaux_dsp::InstrumentParams::Drum(_)))
+            .is_some_and(|m| matches!(m.instrument, glaux_dsp::InstrumentParams::Drum(_)));
+        let track = project.tracks.get(t as usize)?;
+        (!drum).then(|| LegatoSettings {
+            xfade: track
+                .legato_ms
+                .map_or(LEGATO_XFADE_SEC, |ms| ms as f64 / 1000.0),
+            glide: track
+                .glide_ms
+                .map_or(PORTAMENTO_SEC, |ms| ms as f64 / 1000.0),
+        })
     });
     audio_events.sort_by_key(|e| e.start);
     for ev in &audio_events {
@@ -1043,6 +1083,7 @@ mod tests {
             dur: Tick(dur),
             pitch,
             vel,
+            glide_ms: None,
         }
     }
 
@@ -1238,6 +1279,29 @@ mod tests {
         // 2 つ目(1.5 秒で終わる)と 3 つ目(1.75 秒から)は 0.25 秒差なのでつながる
         assert_eq!(e[2].fade_in as u64, xf);
         assert!(e[2].curve.is_empty(), "レガートは音程を滑らせない");
+    }
+
+    #[test]
+    fn legato_settings_come_from_the_track_and_the_note() {
+        use glaux_core::Articulation as A;
+        let mut slow = with_art(note(1920, 960, 64, 100), A::Portamento);
+        slow.glide_ms = Some(400.0);
+        let mut project = project_with_notes(vec![
+            note(0, 960, 60, 100),
+            with_art(note(960, 960, 62, 100), A::Portamento),
+            slow,
+        ]);
+        project.tracks[0].glide_ms = Some(80.0);
+        project.tracks[0].legato_ms = Some(60.0);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let e = &data.events;
+        assert_eq!(e[1].fade_in, 2880, "つなぎ目 60ms");
+        // トラックの 80ms で到達(その手前ではまだ滑っている)
+        assert_eq!(e[1].curve.cents_at(3840.0), 0.0);
+        assert!(e[1].curve.cents_at(3000.0) < 0.0);
+        // ノート個別の 400ms が優先
+        assert!(e[2].curve.cents_at(3840.0) < 0.0);
+        assert_eq!(e[2].curve.cents_at(19_200.0), 0.0);
     }
 
     #[test]

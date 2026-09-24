@@ -110,6 +110,22 @@
       .catch((e) => (loadError = String(e)));
   });
 
+  function setLegato(name: "glide_ms" | "legato_ms", value: number) {
+    const t = track;
+    if (!t) return;
+    const what = name === "glide_ms" ? "ポルタメントの滑る時間" : "レガートのつなぎ目";
+    applyEdit([{ op: "set_param", track: t.id, path: `track/${name}`, value }], `${t.name} の${what}を ${value}ms に`);
+  }
+
+  function resetLegato() {
+    const t = track;
+    if (!t) return;
+    const cmds = (["glide_ms", "legato_ms"] as const)
+      .filter((n) => t[n] !== undefined)
+      .map((n) => ({ op: "unset_param", track: t.id, path: `track/${n}` }));
+    if (cmds.length > 0) applyEdit(cmds, `${t.name} のつなぎ方を既定に戻す`);
+  }
+
   async function applyEdit(commands: unknown[], label: string) {
     try {
       await api.applyEdit(commands, label);
@@ -857,6 +873,43 @@
       {/if}
 
       {#if track && track.kind !== "bus"}
+        {#if track.kind === "midi"}
+          <!-- レガート / ポルタメントのつなぎ方(奏法 T / P のノートに効く) -->
+          <div class="sec">
+            <div class="sec-title">⌒ つなぎ(レガート / ポルタメント)</div>
+            <div class="param" title="ポルタメント(P)のノートが直前の音から滑る時間。ゆったりした弦は 250〜400、速いリードは 50〜80">
+              <span class="p-name">滑る時間</span>
+              <input
+                type="range"
+                min="10"
+                max="1000"
+                step="10"
+                value={track.glide_ms ?? 150}
+                onchange={(e) => setLegato("glide_ms", Number((e.currentTarget as HTMLInputElement).value))}
+              />
+              <span class="p-val">{track.glide_ms ?? 150}ms{track.glide_ms === undefined ? "(既定)" : ""}</span>
+            </div>
+            <div class="param" title="レガート(T)・ポルタメント(P)で前の音と入れ替わる長さ。長いほどふんわり重なる">
+              <span class="p-name">つなぎ目</span>
+              <input
+                type="range"
+                min="5"
+                max="200"
+                step="5"
+                value={track.legato_ms ?? 30}
+                onchange={(e) => setLegato("legato_ms", Number((e.currentTarget as HTMLInputElement).value))}
+              />
+              <span class="p-val">{track.legato_ms ?? 30}ms{track.legato_ms === undefined ? "(既定)" : ""}</span>
+            </div>
+            {#if track.glide_ms !== undefined || track.legato_ms !== undefined}
+              <div class="row gap">
+                <button class="mini" onclick={resetLegato}>既定に戻す</button>
+              </div>
+            {/if}
+            <div class="hint">ピアノロールでノートに T(レガート)/ P(ポルタメント)を付けたときのつながり方です。1 音だけ滑る時間を変えるのはピアノロールで。</div>
+          </div>
+        {/if}
+
         <!-- センド(バスへ送る量) -->
         <div class="sec">
           <div class="sec-title">🔀 センド</div>

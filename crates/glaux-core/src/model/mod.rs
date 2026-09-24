@@ -9,7 +9,8 @@ mod track;
 pub use asset::Asset;
 pub use automation::{AutomationLane, AutomationPoint, Curve};
 pub use clip::{
-    Articulation, Clip, ClipContent, Note, PitchPoint, Stretch, MAX_PITCH_CENTS, MAX_PITCH_POINTS,
+    check_pitch_curve, Articulation, Clip, ClipContent, Note, PitchPoint, Stretch, GLIDE_MS_RANGE,
+    LEGATO_MS_RANGE, MAX_PITCH_CENTS, MAX_PITCH_POINTS,
 };
 pub use param::{ParamMap, ParamPath, ParamRange, ParamSpec, ParamValue};
 pub use track::{Device, Effect, MasterBus, PluginSource, Send, Track, TrackKind};

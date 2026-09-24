@@ -20,6 +20,8 @@ export interface Note {
   articulation?: Articulation;
   /** 連続ピッチカーブ(ノート先頭からの相対 tick, セント)。省略 = なし */
   pitch_curve?: { tick: number; cents: number }[];
+  /** ポルタメントで滑る時間(ms)。省略 = トラックの glide_ms */
+  glide_ms?: number;
 }
 
 export interface MidiClip {
@@ -74,6 +76,10 @@ export interface Track {
   /** bus = バス(リターン)。クリップを持たず、他のトラックのセンドを受ける */
   kind: "midi" | "audio" | "bus";
   sends?: TrackSend[];
+  /** ポルタメントで滑る時間(ms)。省略 = 150 */
+  glide_ms?: number;
+  /** レガートのつなぎ目の長さ(ms)。省略 = 30 */
+  legato_ms?: number;
   color?: string;
   mute: boolean;
   solo: boolean;

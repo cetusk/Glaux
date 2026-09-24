@@ -71,6 +71,31 @@ pub struct Note {
     /// 奏法(vibrato / bend)と併用できる(掛け合わせ)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pitch_curve: Vec<PitchPoint>,
+    /// ポルタメントで滑る時間(ms)。省略時はトラックの `glide_ms`(それも無ければ 150ms)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glide_ms: Option<f32>,
+}
+
+/// ポルタメントで滑る時間の範囲(ms)
+pub const GLIDE_MS_RANGE: std::ops::RangeInclusive<f32> = 10.0..=2000.0;
+/// レガートのつなぎ目の長さの範囲(ms)
+pub const LEGATO_MS_RANGE: std::ops::RangeInclusive<f32> = 5.0..=200.0;
+
+/// ピッチカーブの検証(最大 `MAX_PITCH_POINTS` 点・tick は昇順・±`MAX_PITCH_CENTS` 以内)。
+pub fn check_pitch_curve(curve: &[PitchPoint]) -> Result<(), String> {
+    if curve.len() > MAX_PITCH_POINTS {
+        return Err(format!("pitch_curve は最大 {MAX_PITCH_POINTS} 点"));
+    }
+    if curve.windows(2).any(|w| w[1].tick < w[0].tick) {
+        return Err("pitch_curve の tick は昇順に".to_owned());
+    }
+    if curve
+        .iter()
+        .any(|p| !p.cents.is_finite() || p.cents.abs() > MAX_PITCH_CENTS)
+    {
+        return Err(format!("pitch_curve の cents は ±{MAX_PITCH_CENTS} 以内"));
+    }
+    Ok(())
 }
 
 impl Note {

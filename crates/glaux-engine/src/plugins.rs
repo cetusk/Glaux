@@ -1182,6 +1182,7 @@ mod tests {
                 vel: 110,
                 articulation: Default::default(),
                 pitch_curve: vec![],
+                glide_ms: None,
             });
         }
         track.clips.push(clip);
@@ -1664,6 +1665,7 @@ mod tests {
                 vel: 110,
                 articulation: Default::default(),
                 pitch_curve: vec![],
+                glide_ms: None,
             });
         }
         track.clips.push(clip);
@@ -1879,6 +1881,7 @@ mod tests {
                     vel: 110,
                     articulation: Default::default(),
                     pitch_curve: vec![],
+                    glide_ms: None,
                 });
             }
             t.clips.push(clip);

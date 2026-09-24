@@ -358,6 +358,7 @@ mod tests {
                     vel: 100,
                     articulation: Articulation::Normal,
                     pitch_curve: vec![],
+                    glide_ms: None,
                 });
             }
         }

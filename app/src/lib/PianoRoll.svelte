@@ -859,6 +859,34 @@
     }
   }
 
+  // ---- ポルタメントの滑る時間(選択中のポルタメントのノートだけ) ----
+  const GLIDE_CHOICES = [40, 80, 150, 250, 400, 800];
+  const selectedPorta = $derived(
+    (clip?.notes ?? []).filter((n) => selected.has(n.id) && n.articulation === "portamento"),
+  );
+  // 選んだ音がみな同じなら、その値(個別指定なしは "0" = トラックの設定)。ばらばらなら ""
+  const glideValue = $derived.by(() => {
+    const vals = new Set(selectedPorta.map((n) => String(n.glide_ms ?? 0)));
+    return vals.size === 1 ? [...vals][0] : "";
+  });
+  function setNoteGlide(value: string) {
+    const currentClip = clip;
+    if (!currentClip || !value || selectedPorta.length === 0) return;
+    const ms = Number(value);
+    applyEdit(
+      [
+        {
+          op: "update_notes",
+          clip: currentClip.id,
+          changes: selectedPorta.map((n) => ({ id: n.id, glide_ms: ms })),
+        },
+      ],
+      ms > 0
+        ? `ポルタメントの滑る時間を ${ms}ms に(${selectedPorta.length} ノート)`
+        : `ポルタメントの滑る時間をトラックの設定に戻す(${selectedPorta.length} ノート)`,
+    );
+  }
+
   // ---- スウィング(選択中のノート、無ければクリップ全体) ----
   let swingGrid = $state(480);
   let swingMsg = $state<string | null>(null);
@@ -1415,6 +1443,21 @@
           </select>
         </label>
         {#if swingMsg}<span class="swing-msg">{swingMsg}</span>{/if}
+        {#if selectedPorta.length > 0}
+          <label class="snap" title="選んだポルタメント(P)のノートが直前の音から滑る時間。トラック全体の既定は音作りビューの「つなぎ」で">
+            滑る時間
+            <select value={glideValue} onchange={(e) => setNoteGlide((e.currentTarget as HTMLSelectElement).value)}>
+              {#if glideValue === ""}<option value="">(ばらばら)</option>{/if}
+              <option value="0">トラックの設定</option>
+              {#each GLIDE_CHOICES as ms (ms)}
+                <option value={String(ms)}>{ms}ms</option>
+              {/each}
+              {#if glideValue !== "" && glideValue !== "0" && !GLIDE_CHOICES.includes(Number(glideValue))}
+                <option value={glideValue}>{glideValue}ms</option>
+              {/if}
+            </select>
+          </label>
+        {/if}
         <label class="snap">
           スナップ
           <select bind:value={snapTicks}>

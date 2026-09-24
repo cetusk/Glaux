@@ -118,6 +118,12 @@ pub struct Track {
     /// センド(送り先の ID 順)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sends: Vec<Send>,
+    /// ポルタメントで滑る時間(ms)。省略時 150ms。`track/glide_ms` で設定
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glide_ms: Option<f32>,
+    /// レガートのつなぎ目の長さ(ms)。省略時 30ms。`track/legato_ms` で設定
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legato_ms: Option<f32>,
 }
 
 impl Track {
@@ -136,6 +142,8 @@ impl Track {
             clips: vec![],
             automation: vec![],
             sends: vec![],
+            glide_ms: None,
+            legato_ms: None,
         }
     }
 

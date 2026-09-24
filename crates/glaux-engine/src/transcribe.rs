@@ -665,6 +665,7 @@ pub fn to_clip_notes(
             vel: n.vel,
             articulation: Articulation::Normal,
             pitch_curve: vec![],
+            glide_ms: None,
         });
     }
     out
@@ -706,6 +707,7 @@ pub fn to_clip_notes_poly(
             vel: n.vel.clamp(1, 127),
             articulation: Articulation::Normal,
             pitch_curve: vec![],
+            glide_ms: None,
         });
     }
     out.sort_by_key(|n| (n.pos, n.pitch));

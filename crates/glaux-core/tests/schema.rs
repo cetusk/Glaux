@@ -18,6 +18,7 @@ const FIXTURE: &str = r##"{
       "color": "#4a90d9",
       "mute": false, "solo": false,
       "volume_db": -6.0, "pan": 0.0,
+      "glide_ms": 120.0, "legato_ms": 40.0,
       "device": {
         "type": "builtin",
         "name": "subtractive",
@@ -42,6 +43,8 @@ const FIXTURE: &str = r##"{
           "kind": "midi",
           "notes": [
             { "id": "nt_000001", "pos": 0,   "dur": 480, "pitch": 36, "vel": 100 },
+            { "id": "nt_000003", "pos": 480, "dur": 240, "pitch": 43, "vel": 100,
+              "articulation": "portamento", "glide_ms": 250.0 },
             { "id": "nt_000002", "pos": 960, "dur": 480, "pitch": 36, "vel": 90,
               "articulation": "palm_mute",
               "pitch_curve": [ { "tick": 0, "cents": -200.0 }, { "tick": 240, "cents": 0.0 } ] }

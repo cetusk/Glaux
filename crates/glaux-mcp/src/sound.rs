@@ -649,6 +649,7 @@ pub fn match_clip_commands(
             vel: 100,
             articulation: Default::default(),
             pitch_curve: vec![],
+            glide_ms: None,
         });
     }
     let commands = vec![

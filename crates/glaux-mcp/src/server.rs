@@ -971,6 +971,10 @@ impl GlauxServer {
         \"portamento\"(legato でつなぎ、直前の音の高さから約 0.15 秒で滑らせる。ストリングスのポルタメント・\
         シンセのグライド・ギターのスライド)。\
         省略で通常。update_notes でも変更可。\
+        滑る時間は、トラック全体なら set_param {track, path: \"track/glide_ms\", value}(10〜2000ms、既定 150)、\
+        1 音だけならノートの glide_ms(add_notes / update_notes。0 で解除してトラックの値へ)。\
+        レガートのつなぎ目の長さは track/legato_ms(5〜200ms、既定 30。長いほどふんわり重なる)。\
+        どちらも unset_param で既定に戻る。\
         連続ピッチカーブ: ノートの pitch_curve に [{tick, cents}](tick はノート先頭からの相対、\
         cents は書かれた音程からのずれ。100 = 半音、±2400 まで、最大 8 点、点の間は線形補間、\
         両端は保持)を書くと自由なベンド・ポルタメント・うねりが作れる\

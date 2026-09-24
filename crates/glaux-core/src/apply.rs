@@ -437,6 +437,7 @@ impl Project {
                             n.id
                         )));
                     }
+                    check_note_extras(&n.id, &n.pitch_curve, n.glide_ms)?;
                     if existing.iter().any(|e| e.id == n.id) {
                         return Err(CoreError::DuplicateId(n.id.to_string()));
                     }
@@ -501,6 +502,11 @@ impl Project {
                             ch.id
                         )));
                     }
+                    check_note_extras(
+                        &ch.id,
+                        ch.pitch_curve.as_deref().unwrap_or(&[]),
+                        ch.glide_ms.filter(|g| *g > 0.0),
+                    )?;
                 }
                 let mut inverse_changes = Vec::with_capacity(changes.len());
                 for ch in changes {
@@ -523,6 +529,13 @@ impl Project {
                     }
                     if let Some(v) = ch.articulation {
                         inv.articulation = Some(std::mem::replace(&mut n.articulation, v));
+                    }
+                    if let Some(v) = &ch.pitch_curve {
+                        inv.pitch_curve = Some(std::mem::replace(&mut n.pitch_curve, v.clone()));
+                    }
+                    if let Some(v) = ch.glide_ms {
+                        let new = (v > 0.0).then_some(v);
+                        inv.glide_ms = Some(std::mem::replace(&mut n.glide_ms, new).unwrap_or(0.0));
                     }
                     inverse_changes.push(inv);
                 }
@@ -976,6 +989,30 @@ impl Project {
             .track_mut(track)
             .ok_or_else(|| CoreError::TrackNotFound(track.clone()))?;
         match path {
+            ParamPath::Track { name } if name == "glide_ms" || name == "legato_ms" => {
+                let (field, range) = if name == "glide_ms" {
+                    (&mut t.glide_ms, crate::model::GLIDE_MS_RANGE)
+                } else {
+                    (&mut t.legato_ms, crate::model::LEGATO_MS_RANGE)
+                };
+                let new = match value {
+                    None => None,
+                    Some(v) => {
+                        let f = v.as_f64().ok_or_else(|| {
+                            CoreError::OutOfRange(format!("track/{name} must be numeric"))
+                        })? as f32;
+                        if !range.contains(&f) {
+                            return Err(CoreError::OutOfRange(format!(
+                                "track/{name} {f}({}〜{})",
+                                range.start(),
+                                range.end()
+                            )));
+                        }
+                        Some(f)
+                    }
+                };
+                Ok(std::mem::replace(field, new).map(|f| ParamValue::Float(f as f64)))
+            }
             ParamPath::Track { name } => {
                 let v = value.ok_or_else(|| {
                     CoreError::OutOfRange(format!("track/{name} cannot be unset"))
@@ -1064,4 +1101,22 @@ fn insert_lane(
             points,
         },
     );
+}
+
+/// ノートのピッチカーブと滑る時間の検証。
+fn check_note_extras(
+    id: &crate::NoteId,
+    curve: &[crate::model::PitchPoint],
+    glide_ms: Option<f32>,
+) -> Result<()> {
+    crate::model::check_pitch_curve(curve)
+        .map_err(|e| CoreError::OutOfRange(format!("note {id}: {e}")))?;
+    if let Some(g) = glide_ms {
+        if !crate::model::GLIDE_MS_RANGE.contains(&g) {
+            return Err(CoreError::OutOfRange(format!(
+                "note {id}: glide_ms {g}(10〜2000)"
+            )));
+        }
+    }
+    Ok(())
 }

@@ -919,6 +919,18 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   CLAP へは前の音を end + fade_out で離して重ねて送り、ポルタメントのカーブは既存の Tuning 表現で届く。
   テスト: つなぎの判定(隙間 0.25 秒はつなぐ)、立ち上がりの山(通常 2.62 → レガート 1.05)、ポルタメントの途中 296Hz → 329.6Hz。
   UI はピアノロールの奏法キー T / P(マーカー ⌒ と /)
+- **つなぎ方の調整(2026-09-24)**: `Track.glide_ms`(ポルタメントで滑る時間、10〜2000、省略 150)と `Track.legato_ms`
+  (つなぎ目の長さ、5〜200、省略 30)。どちらも `set_param track/glide_ms` 等で設定、`unset_param` で既定へ(Track パスで
+  unset できるのはこの 2 つだけ)。`Note.glide_ms`(ノート個別。トラックより優先)は add_notes / update_notes で、
+  update_notes では 0 以下で個別指定を消す。すべて追加のみ・省略時は書かないので FORMAT_VERSION は据え置き。
+  エンジンは `data::LegatoSettings`(トラックごと)と `NoteEvent.glide`(秒)を `link_legato` に渡す。
+  UI: 音作りビュー(MIDI トラック)の「⌒ つなぎ」に 2 本のスライダーと「既定に戻す」、ピアノロールの見出しに
+  ポルタメントのノートを選んでいるときだけ「滑る時間」(トラックの設定 / 40〜800ms)
+- **不具合修正: update_notes の pitch_curve が反映されていなかった(2026-09-24)**: 601ae63 の説明にある差し替えと
+  検証が apply.rs に入っておらず、ピアノロールで描いたカーブ・AI の update_notes のカーブが捨てられていた
+  (可逆性テストは「何も変わらない」ので通っていた)。update_notes で差し替え(逆コマンドは旧カーブ)、
+  add_notes / update_notes で検証(最大 8 点・tick 昇順・±2400 セント、`model::check_pitch_curve`)。
+  値が実際に変わることを確かめるテストを追加
 - **似た音の道具の UI(2026-09-24)**: 音声クリップのメニュー「この音に近い CLAP 音源のプリセットを探す」→
   `SimilarPresetDialog.svelte`。CLAP 音源のトラックとカテゴリ(`clap_presets` の categories)を選んで探す → 候補(名前・
   カテゴリ・近さの言葉。距離はツールチップ)を「読み込む」(`clap_load_preset`)→「つまみを自動で合わせる」。

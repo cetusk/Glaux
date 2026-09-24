@@ -45,6 +45,9 @@ pub struct NoteChange {
     /// ピッチカーブの差し替え。空配列でカーブ削除
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch_curve: Option<Vec<PitchPoint>>,
+    /// ポルタメントで滑る時間(ms)。0 以下でノート個別の指定を消す(トラックの値に戻る)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glide_ms: Option<f32>,
 }
 
 impl NoteChange {
@@ -57,6 +60,7 @@ impl NoteChange {
             vel: None,
             articulation: None,
             pitch_curve: None,
+            glide_ms: None,
         }
     }
     pub fn pos(mut self, v: Tick) -> Self {
@@ -81,6 +85,10 @@ impl NoteChange {
     }
     pub fn pitch_curve(mut self, v: Vec<PitchPoint>) -> Self {
         self.pitch_curve = Some(v);
+        self
+    }
+    pub fn glide_ms(mut self, v: f32) -> Self {
+        self.glide_ms = Some(v);
         self
     }
 }
