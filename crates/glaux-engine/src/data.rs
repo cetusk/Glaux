@@ -86,6 +86,8 @@ impl Default for LegatoSettings {
 pub const LEGATO_XFADE_SEC: f64 = 0.03;
 /// レガートでつなぐ直前の音を探す範囲(前の音の終わりから、この秒数までの隙間なら「つながっている」)
 pub const LEGATO_GAP_SEC: f64 = 0.3;
+/// 直前の音が無いポルタメント(フレーズの頭)は、この半音数だけ下から滑り込む
+pub const PORTAMENTO_SCOOP_SEMITONES: f32 = 2.0;
 /// ポルタメントで滑る時間の既定(秒。音がそれより短ければ音の終わりまでかけて滑る)
 pub const PORTAMENTO_SEC: f64 = 0.15;
 
@@ -93,6 +95,7 @@ pub const PORTAMENTO_SEC: f64 = 0.15;
 /// 直前の音 = そのノートより前に始まり、終わりが開始の手前 `LEGATO_GAP_SEC` 以内のもののうち
 /// 最も後に始まったもの(同時なら音程の近いもの)。前の音はつなぎ目で消え、次の音は立ち上がりを消す。
 /// ポルタメントはさらに前の音の高さから滑らせる(ノートに自前のピッチカーブがあればそちらを優先)。
+/// 直前の音が無いポルタメントは全音下から滑り込む(レガートは直前の音が無ければ普通に鳴る)。
 /// `settings(track)` がそのトラックのつなぎの設定、None のトラック(ドラム)はつながない。
 /// 滑る時間はノート個別の `glide` があればそちらを使う。
 pub fn link_legato(
@@ -146,21 +149,33 @@ pub fn link_legato(
                     break;
                 }
             }
-            let Some(j) = prev else { continue };
-            let from_pitch = events[j].pitch;
-            // 前の音はつなぎ目から消え始め、次の音の立ち上がりと同じ長さで入れ替わる
-            // (CLAP 音源へは fade_out の分だけ離すのを遅らせ、重ねて送る)
-            events[j].end = e.start;
-            events[j].fade_out = xf as u32;
-            events[i].fade_in = xf as u32;
-            if e.articulation == A::Portamento && e.curve.is_empty() && from_pitch != e.pitch {
+            // 滑り始めの高さ: 直前の音があればその音程、無ければ(フレーズの頭のポルタメント)全音下から
+            let from_pitch = match prev {
+                Some(j) => {
+                    // 前の音はつなぎ目から消え始め、次の音の立ち上がりと同じ長さで入れ替わる
+                    // (CLAP 音源へは fade_out の分だけ離すのを遅らせ、重ねて送る)
+                    events[j].end = e.start;
+                    events[j].fade_out = xf as u32;
+                    events[i].fade_in = xf as u32;
+                    Some(events[j].pitch as f32)
+                }
+                None if e.articulation == A::Portamento => {
+                    Some(e.pitch as f32 - PORTAMENTO_SCOOP_SEMITONES)
+                }
+                None => None,
+            };
+            let Some(from_pitch) = from_pitch else {
+                continue;
+            };
+            if e.articulation == A::Portamento && e.curve.is_empty() && from_pitch != e.pitch as f32
+            {
                 let secs = if e.glide > 0.0 {
                     e.glide as f64
                 } else {
                     set.glide
                 };
                 let glide = ((secs * sample_rate) as u64).min(e.end - e.start).max(1) as f32;
-                let cents = (from_pitch as f32 - e.pitch as f32) * 100.0;
+                let cents = (from_pitch - e.pitch as f32) * 100.0;
                 // 減速しながら到達する形(前半で 7 割進む)
                 events[i].curve = glaux_dsp::PitchCurve::from_points(&[
                     (0.0, cents),
@@ -1277,6 +1292,31 @@ mod tests {
         // 2 つ目(1.5 秒で終わる)と 3 つ目(1.75 秒から)は 0.25 秒差なのでつながる
         assert_eq!(e[2].fade_in as u64, xf);
         assert!(e[2].curve.is_empty(), "レガートは音程を滑らせない");
+    }
+
+    #[test]
+    fn portamento_without_a_previous_note_scoops_from_a_whole_step_below() {
+        use glaux_core::Articulation as A;
+        let project = project_with_notes(vec![
+            // フレーズの頭のポルタメント(直前の音なし)
+            with_art(note(0, 960, 64, 100), A::Portamento),
+            // 直前の音から 0.3 秒より離れたポルタメントも直前の音なし扱い
+            with_art(note(2880, 960, 67, 100), A::Portamento),
+            // 直前の音が無いレガートは普通に鳴る
+            // (1.0〜1.125 秒。前後とも 0.3 秒より離れている)
+            with_art(note(1920, 240, 60, 100), A::Legato),
+        ]);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let e = &data.events;
+        let head = e.iter().find(|x| x.pitch == 64).unwrap();
+        assert_eq!(head.curve.cents_at(0.0), -200.0, "全音下から");
+        assert_eq!(head.curve.cents_at(7200.0), 0.0, "既定 0.15 秒で到達");
+        assert_eq!(head.fade_in, 0, "フレーズの頭は普通に立ち上がる");
+        let late = e.iter().find(|x| x.pitch == 67).unwrap();
+        assert_eq!(late.curve.cents_at(0.0), -200.0);
+        let leg = e.iter().find(|x| x.pitch == 60).unwrap();
+        assert!(leg.curve.is_empty());
+        assert_eq!(leg.fade_in, 0);
     }
 
     #[test]

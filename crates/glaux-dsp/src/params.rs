@@ -696,8 +696,8 @@ const ART_PORTAMENTO: ArticulationInfo = ArticulationInfo {
     key: "P",
     display_name: "ポルタメント",
     description:
-        "レガートでつなぎ、直前の音の高さから約 0.15 秒で滑らせる。ストリングスのポルタメント、\
-        シンセリードのグライド、808 ベースの滑り。",
+        "レガートでつなぎ、直前の音の高さから約 0.15 秒で滑らせる(直前の音が無いフレーズの頭では\
+        全音下から滑り込む)。ストリングスのポルタメント、シンセリードのグライド、808 ベースの滑り。",
 };
 
 pub static SUBTRACTIVE_ARTS: &[ArticulationInfo] = &[
@@ -743,7 +743,8 @@ pub static PLUCK_ARTS: &[ArticulationInfo] = &[
         name: "portamento",
         key: "P",
         display_name: "スライド",
-        description: "直前の音から弦の上を滑らせて移る(グリッサンド)。",
+        description:
+            "直前の音から弦の上を滑らせて移る(グリッサンド)。直前の音が無ければ全音下から滑り込む。",
     },
 ];
 pub static SAMPLER_ARTS: &[ArticulationInfo] = &[
@@ -820,8 +821,8 @@ pub static CLAP_ARTS: &[ArticulationInfo] = &[
         name: "portamento",
         key: "P",
         display_name: "ポルタメント",
-        description: "レガートで送り、直前の音の高さから滑らせる変化を 1 音ごとの音程の変化として送る\
-            (CLAP のノート表現に対応したプラグインのみ)。",
+        description: "レガートで送り、直前の音の高さ(無ければ全音下)から滑らせる変化を 1 音ごとの\
+            音程の変化として送る(CLAP のノート表現に対応したプラグインのみ)。",
     },
 ];
 
