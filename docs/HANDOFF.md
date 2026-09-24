@@ -484,7 +484,13 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
 - 動作確認: `godot/demo`(4 小節のデモ曲、`--check` で 4.5 秒鳴らして結果を出して終了)を Godot 4.3 の Linux 版で
   ヘッドレス実行。拍 10・キック 10・マーカー 2 つが「聞こえている位置」から 0〜0.1 秒で届き、マスターに音が出る。
   終了時の ObjectDB リーク警告は Godot 標準の AudioStreamGenerator でも出る(再生中に終了した場合の Godot の都合)
-- 未確認・次段階: ゲーム書き出し後の読み込み(.pck に project.json と WAV を入れる設定)、Windows 実機、
+- 配布物(2026-09-24): アドオンのフォルダ `godot/demo/addons/glaux/` が正で、説明書 3 点を同梱する
+  (`README.md` = 人間向け、`AI_GUIDE.md` = ゲーム側の AI 向け・コード例は Godot で実行確認済み、
+  `PROMPT.md` = ゲーム側の AI に渡すプロンプト例)。`godot/build_windows.bat` が DLL をビルドし、
+  `godot/dist/addons/glaux/` と `godot/dist/glaux-godot-addon.zip` を作る(dist はコミットしない)。
+  `docs/GODOT.md` は Glaux 側の手順(ビルド・配布・デモ)だけにした
+- Windows 実機でデモの動作を確認済み(2026-09-24)
+- 未確認・次段階: ゲーム書き出し後の読み込み(.pck に project.json と WAV を入れる設定)、
   ゲーム中のトラック音量・ミュート(展開の切り替え)、CLAP トラックの音声への焼き込み
 
 ### 将来

@@ -1,9 +1,21 @@
 @echo off
-rem Build the Glaux Godot extension (release) and copy the DLL into the demo addon.
-rem Requires Rust 1.94 or later.
+rem Build the Glaux Godot extension (release), put the DLL into the demo addon,
+rem and make the distributable addon (godot\dist\addons\glaux and godot\dist\glaux-godot-addon.zip).
+rem Requires Rust 1.94 or later. Close the Godot editor first (it locks the DLL).
 cd /d "%~dp0.."
 cargo build -p glaux-godot --release || exit /b 1
 if defined CARGO_TARGET_DIR (set "T=%CARGO_TARGET_DIR%") else (set "T=target")
 if not exist godot\demo\addons\glaux\bin mkdir godot\demo\addons\glaux\bin
 copy /Y "%T%\release\glaux_godot.dll" godot\demo\addons\glaux\bin\ >nul || exit /b 1
 echo Copied to godot\demo\addons\glaux\bin\glaux_godot.dll
+
+rem --- distributable addon ---
+if exist godot\dist rmdir /S /Q godot\dist
+mkdir godot\dist\addons\glaux\bin
+copy /Y godot\demo\addons\glaux\glaux.gdextension godot\dist\addons\glaux\ >nul || exit /b 1
+copy /Y godot\demo\addons\glaux\README.md godot\dist\addons\glaux\ >nul || exit /b 1
+copy /Y godot\demo\addons\glaux\AI_GUIDE.md godot\dist\addons\glaux\ >nul || exit /b 1
+copy /Y godot\demo\addons\glaux\PROMPT.md godot\dist\addons\glaux\ >nul || exit /b 1
+copy /Y "%T%\release\glaux_godot.dll" godot\dist\addons\glaux\bin\ >nul || exit /b 1
+powershell -NoProfile -Command "Compress-Archive -Path 'godot\dist\addons' -DestinationPath 'godot\dist\glaux-godot-addon.zip' -Force" || exit /b 1
+echo Made godot\dist\addons\glaux and godot\dist\glaux-godot-addon.zip
