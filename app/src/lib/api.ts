@@ -89,6 +89,11 @@ export function openProject(
 }
 
 /** `parentDir/name.glaux` に新規プロジェクトを作成して開く。 */
+/** フォルダの中の Glaux の曲を探す(フォルダ自体が曲ならそれ 1 つ。2 段下まで)。 */
+export function findProjects(dir: string): Promise<{ projects: { path: string; title: string }[] }> {
+  return invoke("find_projects", { dir });
+}
+
 export function createProject(
   parentDir: string,
   name: string,

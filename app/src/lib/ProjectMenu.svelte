@@ -16,6 +16,11 @@
   let newName = $state("");
   let busy = $state(false);
   let menuError = $state<string | null>(null);
+  // 「フォルダを選択して開く」で曲をまとめたフォルダを選んだとき: 中の曲の一覧 / 曲が無いフォルダ
+  let candidates = $state<{ path: string; title: string }[] | null>(null);
+  let candidatesDir = $state("");
+  let emptyDir = $state<string | null>(null);
+  let nameInput: HTMLInputElement | undefined = $state();
 
   // 現在のプロジェクトの移動 / 名前変更
   let curParent = $state("");
@@ -43,6 +48,8 @@
     }
     openMenu = !openMenu;
     menuError = null;
+    candidates = null;
+    emptyDir = null;
     if (openMenu) {
       try {
         const [r, info] = await Promise.all([api.listRecentProjects(), api.appInfo()]);
@@ -109,9 +116,39 @@
     }
   }
 
+  /// 曲のフォルダ(○○.glaux)を選べばそれを開く。曲をまとめたフォルダ(ゲームの songs など)を選んだら、
+  /// 中の曲が 1 つならそれを開き、複数なら一覧から選ぶ。曲が無ければそこに新しい曲を作れるようにする
   async function browseAndOpen() {
-    const dir = await pickFolder({ directory: true, title: "Glaux プロジェクトフォルダを開く" });
-    if (typeof dir === "string") await openPath(dir);
+    const dir = await pickFolder({
+      directory: true,
+      title: "曲のフォルダ(○○.glaux)か、曲をまとめたフォルダを選ぶ",
+    });
+    if (typeof dir !== "string") return;
+    candidates = null;
+    emptyDir = null;
+    menuError = null;
+    try {
+      const r = await api.findProjects(dir);
+      if (r.projects.length === 1) {
+        await openPath(r.projects[0].path);
+      } else if (r.projects.length > 1) {
+        candidates = r.projects;
+        candidatesDir = dir;
+      } else {
+        emptyDir = dir;
+      }
+    } catch (e) {
+      menuError = String(e);
+    }
+  }
+
+  /// 曲の無いフォルダを、新しい曲の作成先にする(既定の作業フォルダは変えない)
+  function createHere() {
+    if (!emptyDir) return;
+    parentDir = emptyDir;
+    soundLab = false;
+    emptyDir = null;
+    nameInput?.focus();
   }
 
   async function browseParentDir() {
@@ -214,6 +251,7 @@
           <input
             type="text"
             placeholder="曲名"
+            bind:this={nameInput}
             bind:value={newName}
             onkeydown={onNameKeydown}
             disabled={busy}
@@ -233,6 +271,19 @@
         <button class="wide" onclick={browseAndOpen} disabled={busy}>
           フォルダを選択して開く…
         </button>
+        {#if candidates}
+          <div class="found-title">「{candidatesDir}」の中の曲({candidates.length})</div>
+          {#each candidates as c (c.path)}
+            <button class="recent-item" disabled={busy} onclick={() => openPath(c.path)} title={c.path}>
+              <span class="recent-title">{c.title}</span>
+              <span class="recent-path">{c.path}</span>
+            </button>
+          {/each}
+        {/if}
+        {#if emptyDir}
+          <div class="move-note">「{emptyDir}」には Glaux の曲がありません。</div>
+          <button class="wide" onclick={createHere} disabled={busy}>このフォルダに新しい曲を作る</button>
+        {/if}
       </div>
 
       <div class="section">
@@ -390,6 +441,12 @@
   .wide {
     width: 100%;
     text-align: center;
+  }
+
+  .found-title {
+    font-size: 11px;
+    color: var(--text-dim);
+    word-break: break-all;
   }
 
   .recent-item {

@@ -114,6 +114,12 @@ fn list_recent_projects(state: State<'_, AppState>) -> Value {
     json!({ "recent": list, "default_dir": projects::default_projects_dir() })
 }
 
+/// フォルダの中の Glaux の曲を探す(フォルダ自体が曲ならそれ 1 つ)。
+#[tauri::command]
+fn find_projects(dir: String) -> Value {
+    json!({ "projects": projects::find_projects(&dir) })
+}
+
 /// 既定の作業フォルダ(新規プロジェクトの作成先)を変更する。
 #[tauri::command]
 fn set_projects_dir(path: String) -> Result<Value, String> {
@@ -1372,7 +1378,8 @@ async fn open_project(
     let p = std::path::Path::new(&path);
     if !create && !p.join("project.json").exists() {
         return Err(format!(
-            "Glaux プロジェクトではありません(project.json が見つかりません): {path}"
+            "Glaux の曲のフォルダではありません(project.json が見つかりません): {path}\n\
+             曲のフォルダ(例 MySong.glaux)そのものを選んでください"
         ));
     }
 
@@ -2001,6 +2008,7 @@ fn main() -> Result<()> {
             redo,
             app_info,
             list_recent_projects,
+            find_projects,
             set_projects_dir,
             open_project,
             move_project,

@@ -127,3 +127,94 @@ pub fn default_projects_dir() -> String {
         .to_string_lossy()
         .into_owned()
 }
+
+/// フォルダの中で見つかった Glaux の曲。
+#[derive(Clone, Debug, Serialize)]
+pub struct FoundProject {
+    pub path: String,
+    pub title: String,
+}
+
+fn project_title(dir: &std::path::Path) -> Option<String> {
+    let json = std::fs::read_to_string(dir.join("project.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    Some(
+        v.pointer("/meta/title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("(無題)")
+            .to_owned(),
+    )
+}
+
+/// `dir` が Glaux の曲ならそれ 1 つ、そうでなければ中(2 段下まで)にある曲の一覧(パスの大小文字を区別しない順、最大 50)。
+/// 「曲をまとめたフォルダ」(ゲームの songs/ など)を選んだときに、どの曲を開くか選べるようにする。
+pub fn find_projects(dir: &str) -> Vec<FoundProject> {
+    let root = std::path::Path::new(dir);
+    if let Some(title) = project_title(root) {
+        return vec![FoundProject {
+            path: dir.to_owned(),
+            title,
+        }];
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0u8)];
+    while let Some((d, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            if let Some(title) = project_title(&p) {
+                out.push(FoundProject {
+                    path: p.to_string_lossy().into_owned(),
+                    title,
+                });
+            } else if depth < 1 {
+                stack.push((p, depth + 1));
+            }
+        }
+        if out.len() >= 50 {
+            break;
+        }
+    }
+    out.sort_by_key(|f| f.path.to_lowercase());
+    out.truncate(50);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_songs_inside_a_folder() {
+        let tmp = std::env::temp_dir().join(format!("glaux-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let song = |rel: &str, title: &str| {
+            let d = tmp.join(rel);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("project.json"),
+                format!(r#"{{"meta":{{"title":"{title}"}}}}"#),
+            )
+            .unwrap();
+        };
+        song("songs/Stage1.glaux", "Stage 1");
+        song("songs/boss/Boss.glaux", "Boss");
+        song("songs/a/b/TooDeep.glaux", "Deep");
+        std::fs::create_dir_all(tmp.join("songs/empty")).unwrap();
+        let songs = tmp.join("songs");
+        let found = find_projects(&songs.to_string_lossy());
+        let titles: Vec<&str> = found.iter().map(|f| f.title.as_str()).collect();
+        assert_eq!(titles, ["Boss", "Stage 1"], "2 段下まで・パス順");
+        // 曲そのものを選んだらそれだけ
+        let one = find_projects(&songs.join("Stage1.glaux").to_string_lossy());
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].title, "Stage 1");
+        assert!(find_projects(&tmp.join("songs/empty").to_string_lossy()).is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
