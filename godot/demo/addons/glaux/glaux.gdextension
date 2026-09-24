@@ -1,0 +1,12 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.3
+reloadable = true
+
+[libraries]
+windows.debug.x86_64 = "res://addons/glaux/bin/glaux_godot.dll"
+windows.release.x86_64 = "res://addons/glaux/bin/glaux_godot.dll"
+linux.debug.x86_64 = "res://addons/glaux/bin/libglaux_godot.so"
+linux.release.x86_64 = "res://addons/glaux/bin/libglaux_godot.so"
+macos.debug = "res://addons/glaux/bin/libglaux_godot.dylib"
+macos.release = "res://addons/glaux/bin/libglaux_godot.dylib"

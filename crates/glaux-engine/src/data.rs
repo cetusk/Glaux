@@ -432,12 +432,29 @@ impl SampleBank {
     /// プロジェクトの全アセットと SoundFont プリセットを読み込む
     /// (読み込み済みは再利用、使われなくなったものは破棄)。
     pub fn sync(&mut self, project: &Project, project_dir: &Path) {
+        let sf2_dir = self.sf2_dir.clone();
+        self.sync_with(
+            project,
+            &mut |rel| load_wav(&project_dir.join(rel)),
+            &mut |file| crate::sf2::load_font(&sf2_dir.join(file)),
+        );
+    }
+
+    /// [`sync`](Self::sync) の読み込み方を差し替えられる版。`wav` はプロジェクト内の相対パス
+    /// (`audio/xxx.wav`)、`font` は SoundFont のファイル名を受け取る。ゲームエンジンのパック内の
+    /// ファイルなど、OS のパスで開けない場所から読むときに使う。
+    pub fn sync_with(
+        &mut self,
+        project: &Project,
+        wav: &mut dyn FnMut(&str) -> Result<SampleData, String>,
+        font: &mut dyn FnMut(&str) -> Result<Arc<rustysynth::SoundFont>, String>,
+    ) {
         self.map.retain(|id, _| project.assets.contains_key(id));
         for (id, asset) in &project.assets {
             if self.map.contains_key(id) {
                 continue;
             }
-            match load_wav(&project_dir.join(&asset.path)) {
+            match wav(&asset.path) {
                 Ok(data) => {
                     self.map.insert(id.clone(), Arc::new(data));
                 }
@@ -500,7 +517,7 @@ impl SampleBank {
             }
             let font = match self.fonts.get(&file) {
                 Some(f) => f.clone(),
-                None => match crate::sf2::load_font(&self.sf2_dir.join(&file)) {
+                None => match font(&file) {
                     Ok(f) => {
                         self.fonts.insert(file.clone(), f.clone());
                         f
@@ -628,7 +645,15 @@ pub fn load_wav_mono(path: &Path) -> Result<SampleData, String> {
 
 /// WAV を読む。ステレオ(2 ch)なら左右差成分(`side`)も持つ。3 ch 以上はモノラルに合算する。
 pub fn load_wav(path: &Path) -> Result<SampleData, String> {
-    let mut reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
+    decode_wav(hound::WavReader::open(path).map_err(|e| e.to_string())?)
+}
+
+/// バイト列の WAV を読む([`load_wav`] と同じ規則。パスで開けない場所のファイル用)。
+pub fn load_wav_bytes(bytes: &[u8]) -> Result<SampleData, String> {
+    decode_wav(hound::WavReader::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?)
+}
+
+fn decode_wav<R: std::io::Read>(mut reader: hound::WavReader<R>) -> Result<SampleData, String> {
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
     let raw: Vec<f32> = match spec.sample_format {

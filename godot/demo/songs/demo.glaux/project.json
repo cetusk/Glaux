@@ -1,0 +1,182 @@
+{
+  "format": "glaux",
+  "version": 1,
+  "ppq": 960,
+  "meta": {
+    "title": "Demo",
+    "created": "2026-09-24T00:00:00Z"
+  },
+  "tempo_map": [
+    {
+      "tick": 0,
+      "bpm": 120.0
+    }
+  ],
+  "time_sig_map": [
+    {
+      "tick": 0,
+      "num": 4,
+      "den": 4
+    }
+  ],
+  "sections": [
+    {
+      "tick": 0,
+      "name": "intro"
+    },
+    {
+      "tick": 7680,
+      "name": "サビ"
+    }
+  ],
+  "tracks": [
+    {
+      "id": "trk_kick01",
+      "name": "Kick",
+      "kind": "midi",
+      "mute": false,
+      "solo": false,
+      "volume_db": -3.0,
+      "pan": 0.0,
+      "device": {
+        "type": "builtin",
+        "name": "drum",
+        "params": {}
+      },
+      "effects": [],
+      "clips": [
+        {
+          "id": "clp_kick01",
+          "name": "kick",
+          "start": 0,
+          "length": 15360,
+          "kind": "midi",
+          "notes": [
+            {
+              "id": "nt_k00000",
+              "pos": 0,
+              "dur": 240,
+              "pitch": 36,
+              "vel": 110
+            },
+            {
+              "id": "nt_k00001",
+              "pos": 960,
+              "dur": 240,
+              "pitch": 36,
+              "vel": 110
+            },
+            {
+              "id": "nt_k00002",
+              "pos": 1920,
+              "dur": 240,
+              "pitch": 36,
+              "vel": 110
+            },
+            {
+              "id": "nt_k00003",
+              "pos": 2880,
+              "dur": 240,
+              "pitch": 36,
+              "vel": 110
+            }
+          ],
+          "loop": true,
+          "loop_len": 3840
+        }
+      ],
+      "automation": []
+    },
+    {
+      "id": "trk_lead01",
+      "name": "Lead",
+      "kind": "midi",
+      "mute": false,
+      "solo": false,
+      "volume_db": -8.0,
+      "pan": 0.0,
+      "device": {
+        "type": "builtin",
+        "name": "wavetable",
+        "params": {
+          "table": "sync",
+          "position": 0.3
+        }
+      },
+      "effects": [],
+      "clips": [
+        {
+          "id": "clp_lead01",
+          "name": "lead",
+          "start": 0,
+          "length": 15360,
+          "kind": "midi",
+          "notes": [
+            {
+              "id": "nt_l00000",
+              "pos": 7680,
+              "dur": 900,
+              "pitch": 60,
+              "vel": 100
+            },
+            {
+              "id": "nt_l00001",
+              "pos": 8640,
+              "dur": 900,
+              "pitch": 62,
+              "vel": 100
+            },
+            {
+              "id": "nt_l00002",
+              "pos": 9600,
+              "dur": 900,
+              "pitch": 64,
+              "vel": 100
+            },
+            {
+              "id": "nt_l00003",
+              "pos": 10560,
+              "dur": 900,
+              "pitch": 67,
+              "vel": 100
+            },
+            {
+              "id": "nt_l00004",
+              "pos": 11520,
+              "dur": 900,
+              "pitch": 69,
+              "vel": 100
+            },
+            {
+              "id": "nt_l00005",
+              "pos": 12480,
+              "dur": 900,
+              "pitch": 67,
+              "vel": 100
+            },
+            {
+              "id": "nt_l00006",
+              "pos": 13440,
+              "dur": 900,
+              "pitch": 64,
+              "vel": 100
+            },
+            {
+              "id": "nt_l00007",
+              "pos": 14400,
+              "dur": 900,
+              "pitch": 62,
+              "vel": 100
+            }
+          ]
+        }
+      ],
+      "automation": []
+    }
+  ],
+  "master": {
+    "volume_db": 0.0,
+    "effects": []
+  },
+  "assets": {}
+}

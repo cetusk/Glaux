@@ -8,6 +8,7 @@ members = [
     "crates/glaux-ml",
     "crates/glaux-clap",
     "app/src-tauri",
+    "crates/glaux-godot",
 ]
 
 [workspace.package]
@@ -16,6 +17,11 @@ rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+# Godot 4 の拡張(glaux-godot)。4.3 以降の Godot で動くよう 4.3 の API に合わせる。
+# 音声スレッドから呼ばれる AudioStreamPlayback を実装するため experimental-threads が要る
+godot = { version = "0.5", features = ["api-4-3", "experimental-threads"] }
+# AudioStreamPlayback::_mix の引数の型(RawPtr)が godot から再公開されていないので直接使う(版は godot と揃える)
+godot-core = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "1"

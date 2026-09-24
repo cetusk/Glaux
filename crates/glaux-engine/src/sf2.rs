@@ -60,6 +60,14 @@ pub fn load_font(path: &Path) -> Result<Arc<SoundFont>, String> {
         .map_err(|e| format!("SoundFont として読めません({}): {e}", path.display()))
 }
 
+/// バイト列から SoundFont を読む(ゲームエンジンのパック内のファイルなど、パスで開けないとき)。
+pub fn load_font_bytes(bytes: &[u8]) -> Result<Arc<SoundFont>, String> {
+    let mut cur = std::io::Cursor::new(bytes);
+    SoundFont::new(&mut cur)
+        .map(Arc::new)
+        .map_err(|e| format!("SoundFont として読めません: {e}"))
+}
+
 /// フォント内のプリセット一覧(バンク・番号順)。
 pub fn list_presets(font: &SoundFont) -> Vec<PresetMeta> {
     let mut out: Vec<PresetMeta> = font

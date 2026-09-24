@@ -460,6 +460,33 @@ WAV 読み込みは `symphonia`、リサンプリングは `rubato`、書き出�
   段階的開示のデバイスパネル、チャットのターン境界と
   AI インジケータの連動はチャット経由のみ正確(外部 MCP クライアントは近似のまま)
 
+### `crates/glaux-godot`(Godot 拡張、第 1 段階 2026-09-24)
+
+目的: 別プロジェクトの Godot 4.3 の音ゲーで、曲と敵の動きを同期させる(曲 → 敵)。オフラインで書き出した
+音声では敵のアルゴリズムと拍の連動が作りにくいので、Glaux の再生エンジンをゲーム内で動かす。使い方は `docs/GODOT.md`。
+
+- gdext(`godot` 0.5、`api-4-3` + `experimental-threads`)。`crate-type = ["cdylib"]`。`RawPtr` が `godot` から
+  再公開されていないため `godot-core` も直接依存(版は揃う)
+- `GlauxStream`(AudioStream)/ `GlauxPlayback`(AudioStreamPlayback): Godot の音声スレッドの `_mix` で
+  `Renderer::process` を回す(1024 フレームずつ、バッファは事前確保)。ミックスの頭の `Shared::pos` を
+  `MixClock::mix_start` に置く
+- `GlauxPlayer`(Node): 子に AudioStreamPlayer を 1 つ持ち、常に流したまま `Shared::playing` / `seek` で制御。
+  聞こえている位置 = mix_start + `AudioServer.get_time_since_last_mix()` − `get_output_latency()` − 手動補正。
+  再生中は単調(逆戻りしない)、再生直後は負になりうる(音が届いてから最初の出来事を出す)。
+  `_process` で `(前回, 今]` の拍・マーカー・監視トラックのノートを時刻順にシグナル化(再生開始・シークの位置
+  ちょうどの出来事も出す)。曲の終わり(レンダラの自動停止)で `song_finished`
+- 時間軸は `glaux_engine::timeline::Timeline`(純粋な計算・単体テストあり): テンポ・拍子から拍の一覧(曲の終わりの
+  次の小節頭まで)、マーカー、トラックごとのノート(ループ展開済み)、秒 ↔ tick ↔ 拍位置
+- 読み込み(`song.rs`): Godot の `FileAccess` で `project.json` と WAV を読む(.pck 内でも読めるように)。
+  `SampleBank::sync_with`(読み方を差し替えられる版)と `load_wav_bytes` / `sf2::load_font_bytes` を追加。
+  SoundFont は曲フォルダの `soundfonts/` か `res://soundfonts/`。CLAP の音源のトラックは無音(既定のシンセで
+  鳴ってしまうため)にし、CLAP エフェクトは外して警告
+- 動作確認: `godot/demo`(4 小節のデモ曲、`--check` で 4.5 秒鳴らして結果を出して終了)を Godot 4.3 の Linux 版で
+  ヘッドレス実行。拍 10・キック 10・マーカー 2 つが「聞こえている位置」から 0〜0.1 秒で届き、マスターに音が出る。
+  終了時の ObjectDB リーク警告は Godot 標準の AudioStreamGenerator でも出る(再生中に終了した場合の Godot の都合)
+- 未確認・次段階: ゲーム書き出し後の読み込み(.pck に project.json と WAV を入れる設定)、Windows 実機、
+  ゲーム中のトラック音量・ミュート(展開の切り替え)、CLAP トラックの音声への焼き込み
+
 ### 将来
 
 - ~~CLAP プラグインホスティング~~ → 音源は実装済み(2026-09-23、`glaux-clap`)。エフェクト・パラメータ公開は第 2 段階

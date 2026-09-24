@@ -1,0 +1,17 @@
+[package]
+name = "glaux-godot"
+version = "0.1.0"
+edition.workspace = true
+# godot(gdext)が要求する
+rust-version = "1.94"
+license.workspace = true
+description = "Godot 4 extension: play Glaux songs in games and sync gameplay to beats, sections and notes"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+glaux-core = { path = "../glaux-core" }
+glaux-engine = { path = "../glaux-engine" }
+godot.workspace = true
+godot-core.workspace = true

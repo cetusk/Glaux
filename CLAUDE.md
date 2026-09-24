@@ -26,6 +26,9 @@ glaux-ml/      [済] 学習済みモデルの推論(tract、pure Rust)。basic-p
                モデル(Apache-2.0)は models/ に同梱して埋め込む。MSRV は個別に 1.88
 glaux-clap/    [済(第1段階: 音源)] CLAP プラグインのホスト(clack-host)。探索・生成・起動・process・状態の保存。
                エンジンの plugins.rs がプラグインのスレッドと処理窓口の受け渡しを持つ
+glaux-godot/   [着手(第1段階)] Godot 4.3+ の拡張(gdext、cdylib)。GlauxPlayer ノードで .glaux を鳴らし、
+               「聞こえている位置」で拍・マーカー・ノートをシグナル化。MSRV は個別に 1.94。使い方は docs/GODOT.md、
+               デモは godot/demo/(拡張の .dll / .so は各自ビルドして addons/glaux/bin/ へ。コミットしない)
 app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の表示、undo/redo、
                アプリ内 HTTP MCP サーバー(127.0.0.1:41920/mcp、UI と同じ Session を共有)、
                AI 作業インジケータ、チャットパネル(ヘッドレス claude を起動して指示)
@@ -49,7 +52,7 @@ app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の
 |---|---|
 | プロダクト名 | **Glaux**(表記は常に頭文字大文字。ギリシャ語 γλαύξ = フクロウ) |
 | リポジトリ | `Glaux` |
-| クレート | `glaux-core` / `glaux-mcp` / `glaux-engine` / `glaux-dsp` / `glaux-ml` / `glaux-clap`(Rust 識別子は `glaux_core` など) |
+| クレート | `glaux-core` / `glaux-mcp` / `glaux-engine` / `glaux-dsp` / `glaux-ml` / `glaux-clap` / `glaux-godot`(Rust 識別子は `glaux_core` など) |
 | Tauri アプリ | `app/`、バンドル識別子 `dev.glaux.app`(ドメイン取得状況で変更可) |
 | プロジェクトファイル | フォルダ形式 `MySong.glaux/`(中に `project.json`, `history.jsonl`, `audio/`, `cache/`) |
 | `project.json` の `format` | `"glaux"` |
@@ -62,7 +65,7 @@ app/           [済(第2段階)] Tauri + Svelte 5。タイムライン/履歴の
 
 ## コーディング規約
 
-- Rust 2021、MSRV 1.75(`Cargo.toml` の `rust-version`)。例外: `glaux-mcp`(rmcp)、`glaux-ml`(tract)、`glaux-clap` と `glaux-engine`(clack)は 1.88 を要求するため個別に `rust-version = "1.88"`
+- Rust 2021、MSRV 1.75(`Cargo.toml` の `rust-version`)。例外: `glaux-mcp`(rmcp)、`glaux-ml`(tract)、`glaux-clap` と `glaux-engine`(clack)は 1.88 を要求するため個別に `rust-version = "1.88"`。`glaux-godot`(gdext)は 1.94
 - エラーは `thiserror`、`unwrap()` はテストとロールバック(失敗しない前提の箇所)以外で使わない
 - ドキュメントコメントは日本語でよい。AI 向け説明文(`ParamSpec::description`)も日本語
 - 新しい依存を足すときは `[workspace.dependencies]` に置く
