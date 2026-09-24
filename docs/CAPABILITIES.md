@@ -35,7 +35,7 @@ AI(チャットのヘッドレス Claude、または外部の MCP クライア�
 | **ノートの一括編集** | transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity | 移調、時間移動、クオンタイズ、スウィング(ハネ・シャッフル)、強弱の一括調整 |
 | **音作り(内蔵)** | apply_commands(set_device / set_param / add_effect) | 音源 6 種の選択とつまみ、エフェクトの追加・つまみ・バイパス |
 | **音作り(外部プラグイン)** | list_plugins / list_plugin_presets / load_plugin_preset / list_params | CLAP 音源(Surge XT 等)の選択、プリセット選び、公開されたつまみの操作。CLAP エフェクト(Surge XT Effects・Dragonfly Reverb・LSP 等)をトラック・マスターに挿してつまみ・オートメーションで動かす |
-| **似た音を作る** | match_sound / find_similar_presets / refine_plugin_params | サンプルに合わせて内蔵シンセ(subtractive / fm を自動で選ぶ、リバーブ込みも)のつまみを自動で探す(約 30 秒)。CLAP プラグインのプリセットから近いものを探し(初回は索引作りに数分)、主要なつまみを自動で詰める。UI からは音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」「この音に近い CLAP 音源のプリセットを探す」(候補を読み込み → つまみを自動で詰める、まで画面で完結) |
+| **似た音を作る** | match_sound / find_similar_presets / refine_plugin_params | サンプルに合わせて内蔵シンセ(subtractive / fm / wavetable を自動で選ぶ、リバーブ込みも)のつまみを自動で探す(約 30 秒)。CLAP プラグインのプリセットから近いものを探し(初回は索引作りに数分)、主要なつまみを自動で詰める。UI からは音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」「この音に近い CLAP 音源のプリセットを探す」(候補を読み込み → つまみを自動で詰める、まで画面で完結) |
 | **音色の道具箱** | list_presets / save_preset / load_preset / delete_preset、list_soundfonts / set_soundfont_instrument | 自作プリセット(全プロジェクト共通)、SoundFont の GM 楽器一式 |
 | **ミックス** | apply_commands | 音量・パン・ミュート・ソロ、EQ・コンプ・サイドチェイン、マスターのエフェクト、バス(リターン)とセンドで共有のリバーブ・ディレイ |
 | **時間変化** | apply_commands(set_automation_points / set_master_automation_points) | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターを曲線で動かす(フェード、ビルドアップ、フィルタスイープ) |

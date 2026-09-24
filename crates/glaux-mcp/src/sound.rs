@@ -467,8 +467,8 @@ pub fn match_subtractive(target: &LoadedSound, max_seconds: f32) -> MatchOutcome
     )
 }
 
-/// 目標の音に内蔵音源のつまみを合わせる(CMA-ES)。`instrument` が None なら subtractive と fm の
-/// 両方を半分ずつの時間で探して近い方、`reverb` ならリバーブ(mix / size)も一緒に探す。
+/// 目標の音に内蔵音源のつまみを合わせる(CMA-ES)。`instrument` が None なら subtractive / fm / wavetable を
+/// 時間を等分して探して最も近いもの、`reverb` ならリバーブ(mix / size)も一緒に探す。
 pub fn match_sound(
     target: &LoadedSound,
     instrument: Option<glaux_engine::sound_match::FitInstrument>,
@@ -482,7 +482,11 @@ pub fn match_sound(
     let secs = max_seconds.clamp(2.0, 120.0);
     let candidates: Vec<FitInstrument> = match instrument {
         Some(i) => vec![i],
-        None => vec![FitInstrument::Subtractive, FitInstrument::Fm],
+        None => vec![
+            FitInstrument::Subtractive,
+            FitInstrument::Fm,
+            FitInstrument::Wavetable,
+        ],
     };
     let opts = FitOptions {
         max_seconds: secs / candidates.len() as f32,

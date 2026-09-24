@@ -1469,7 +1469,7 @@
           🎚 パートに分ける: ボーカル / ドラム / ベース / その他(Demucs、要インストール・数分)
         </button>
         <button onclick={() => menuAction("match")} disabled={matching !== null}>
-          🎛 この音に似せた内蔵シンセのトラックを作る(subtractive / fm とリバーブを自動で探す・約 30 秒。単音のサンプル向け)
+          🎛 この音に似せた内蔵シンセのトラックを作る(subtractive / fm / wavetable とリバーブを自動で探す・約 30 秒。単音のサンプル向け)
         </button>
         <button onclick={() => menuAction("similar")}>
           🔎 この音に近い CLAP 音源のプリセットを探す(Surge XT など。読み込んでつまみも自動で詰められる)

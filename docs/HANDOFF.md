@@ -954,6 +954,12 @@ UI のショートカットは楽器に応じて絞り込まれ、ヒント文�
   既知の音: FM ベル(比 3.5)は比 3.49998 まで復元、リバーブ mix 0.5 / size 0.8 も復元。
   FluidR3 の実楽器(20 秒): ピアノ 0.50(fm)、ベース 0.63、フルート 0.54(fm)、リード 0.89、パッド 0.52(fm)。
   以前(subtractive のみ 20 秒)より fm 向きの音は良く、subtractive 向きの音は時間が半分になった分やや悪い
+- **自動合わせに wavetable・評価回数での打ち切り(2026-09-24)**: `FitInstrument::Wavetable`(テーブル 5 種を候補に、
+  position・pos_env・pos_decay・cutoff・resonance・ADSR・detune・unison の 11 次元)。auto は 3 音源で時間を等分。
+  探索は時間ではなく評価回数で打ち切る: 上限 = (max_seconds/2) × 1200 ÷ 目標の秒数(`AUDIO_SECONDS_PER_SECOND`)と
+  世代数 × 候補数の小さい方。時間は安全のための上限(max_seconds の 4 倍)だけ。以前は時間で打ち切っていたため、
+  CPU が混むと評価回数が半分ほどになって結果が変わった(並列テストで 3 回に 1 回失敗)。今は同じ入力なら同じ結果。
+  テスト: vocal テーブル position 0.6 の音から table・position を復元(距離 0.001)、2 回やって同じ結果
 - **内蔵 FM シンセ `fm`(2026-09-24)**: `glaux-dsp/src/fm.rs`。2 オペレーター(モジュレーター → キャリア)+ モジュレーターの
   自己フィードバック(直前 2 サンプルの平均で発振を抑える)。つまみ: ratio(0.5〜16、非整数で非調和 = 金属的)、index(0〜12)、
   index_decay / index_sustain(変調の深さの包絡。エレピ・ベルの「鳴り始めだけ硬い」)、feedback、ADSR(decay / release は

@@ -292,7 +292,7 @@ pub struct MatchSoundParams {
     pub file: Option<String>,
     /// 音色を合わせる MIDI トラック ID。音源は内蔵 subtractive か fm になる。
     pub track_id: String,
-    /// 合わせる音源: "auto"(既定。subtractive と fm の両方を探して近い方)/ "subtractive" / "fm"。
+    /// 合わせる音源: "auto"(既定。subtractive / fm / wavetable を探して最も近いもの)/ "subtractive" / "fm" / "wavetable"。
     #[serde(default)]
     pub instrument: Option<String>,
     /// リバーブの量と広さも一緒に探し、効きがあればトラックの最後にリバーブを足す(既定 false)。
@@ -301,7 +301,7 @@ pub struct MatchSoundParams {
     /// 探す時間の上限(秒。既定は instrument が auto なら 30、それ以外 20。最大 120)。長いほど近づく。
     #[serde(default)]
     pub max_seconds: Option<f32>,
-    /// トラックの音源が内蔵の subtractive / fm 以外(CLAP・SoundFont 等)でも置き換える(既定 false = エラーにする)。
+    /// トラックの音源が内蔵の subtractive / fm / wavetable 以外(CLAP・SoundFont 等)でも置き換える(既定 false = エラーにする)。
     #[serde(default)]
     pub replace_device: Option<bool>,
 }
@@ -1496,14 +1496,15 @@ impl GlauxServer {
         description = "目標の音(音声クリップ・音声ファイル)に似せて、MIDI トラックの内蔵シンセのつまみを自動で合わせる\
         (CMA-ES という進化的な探索で数百〜数千通り試す。既定 20 秒以内)。instrument: auto(既定)は subtractive(減算式:\
         波形・カットオフ・レゾナンス・ADSR・フィルターエンベロープ・ユニゾン等)と fm(FM: 周波数比・変調の深さとその減衰・\
-        フィードバック・ADSR。エレピ・ベル・金属的な音)の両方を探して近い方を採る。reverb: true でリバーブの量と広さも探し、\
+        フィードバック・ADSR。エレピ・ベル・金属的な音)と wavetable(テーブル 5 種・position とその掃引・カットオフ・ADSR・\
+        ユニゾン。母音のような音・シンクのギラつき・パルス)を探して最も近いものを採る。reverb: true でリバーブの量と広さも探し、\
         効きがあればトラックにリバーブを足す。結果は 1 回の履歴として残る(undo で戻せる)。\
         返り値: instrument(採った音源)、params(合わせたつまみ)、reverb(mix / size)、pitch(目標の音の高さ)、\
         distance(0.15 未満 ほぼ同じ … 0.7 以上 かなり違う)、initial_distance(探索前)、variants_tried(試した候補と距離)、\
         verified_distance(トラックのエフェクトも通して鳴らした音と目標の距離)。\
         内蔵シンセで作れない音(生楽器・サンプル特有の質感)は近づくが一致はしない。そのときは\
         compare_sounds の differences を見てエフェクトを足すか、CLAP プラグインで find_similar_presets → refine_plugin_params。\
-        トラックの音源が内蔵の subtractive / fm 以外なら replace_device: true が必要。"
+        トラックの音源が内蔵の subtractive / fm / wavetable 以外なら replace_device: true が必要。"
     )]
     async fn match_sound(
         &self,
@@ -1535,20 +1536,22 @@ impl GlauxServer {
             None => true,
             Some(d) => matches!(
                 &d.source,
-                glaux_core::PluginSource::Builtin { name } if name == "subtractive" || name == "fm"
+                glaux_core::PluginSource::Builtin { name }
+                    if matches!(name.as_str(), "subtractive" | "fm" | "wavetable")
             ),
         };
         if !is_synth && !p.replace_device.unwrap_or(false) {
             return Err(format!(
-                "「{}」の音源は内蔵の subtractive / fm ではありません。置き換えてよければ replace_device: true を付けてください",
+                "「{}」の音源は内蔵の subtractive / fm / wavetable ではありません。置き換えてよければ replace_device: true を付けてください",
                 track.name
             ));
         }
         let instrument = match p.instrument.as_deref().unwrap_or("auto") {
             "auto" => None,
             other => Some(
-                glaux_engine::sound_match::FitInstrument::parse(other)
-                    .ok_or_else(|| format!("instrument は auto / subtractive / fm: {other}"))?,
+                glaux_engine::sound_match::FitInstrument::parse(other).ok_or_else(|| {
+                    format!("instrument は auto / subtractive / fm / wavetable: {other}")
+                })?,
             ),
         };
         let reverb = p.reverb.unwrap_or(false);

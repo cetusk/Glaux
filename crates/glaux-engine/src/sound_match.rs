@@ -262,6 +262,8 @@ pub fn summary_distance(a: &[f32], b: &[f32]) -> f32 {
 
 const WAVEFORMS: [&str; 4] = ["saw", "square", "triangle", "sine"];
 const UNISON: [i64; 4] = [1, 3, 5, 7];
+/// wavetable のテーブル(glaux_dsp の TABLE_NAMES と同じ)
+const WT_TABLES: [&str; 5] = ["analog", "pulse", "vocal", "sync", "organ"];
 /// fm の周波数比の出発点(整数比 = 楽器らしい、非整数 = 金属的)
 const FM_RATIOS: [&str; 4] = ["1", "2", "3.5", "1.41"];
 
@@ -270,6 +272,7 @@ const FM_RATIOS: [&str; 4] = ["1", "2", "3.5", "1.41"];
 pub enum FitInstrument {
     Subtractive,
     Fm,
+    Wavetable,
 }
 
 fn log_map(v: f64, lo: f64, hi: f64) -> f64 {
@@ -301,6 +304,7 @@ impl FitInstrument {
         match self {
             FitInstrument::Subtractive => "subtractive",
             FitInstrument::Fm => "fm",
+            FitInstrument::Wavetable => "wavetable",
         }
     }
 
@@ -308,6 +312,7 @@ impl FitInstrument {
         match s {
             "subtractive" => Some(FitInstrument::Subtractive),
             "fm" => Some(FitInstrument::Fm),
+            "wavetable" => Some(FitInstrument::Wavetable),
             _ => None,
         }
     }
@@ -319,6 +324,8 @@ impl FitInstrument {
             FitInstrument::Subtractive => 11,
             // ratio, index, index_decay, index_sustain, feedback, attack, decay, sustain, release
             FitInstrument::Fm => 9,
+            // position, pos_env, pos_decay, cutoff, resonance, attack, decay, sustain, release, detune, unison
+            FitInstrument::Wavetable => 11,
         }
     }
 
@@ -355,6 +362,21 @@ impl FitInstrument {
                 f(&mut m, "decay", log_map(c(6), 0.01, 6.0));
                 f(&mut m, "sustain", c(7));
                 f(&mut m, "release", log_map(c(8), 0.01, 6.0));
+            }
+            FitInstrument::Wavetable => {
+                m.insert("table".into(), ParamValue::Enum(variant.to_owned()));
+                f(&mut m, "position", c(0));
+                f(&mut m, "pos_env", c(1) * 2.0 - 1.0);
+                f(&mut m, "pos_decay", log_map(c(2), 0.005, 4.0));
+                f(&mut m, "cutoff", log_map(c(3), 40.0, 20_000.0));
+                f(&mut m, "resonance", c(4) * 0.9);
+                f(&mut m, "attack", log_map(c(5), 0.001, 4.0));
+                f(&mut m, "decay", log_map(c(6), 0.01, 6.0));
+                f(&mut m, "sustain", c(7));
+                f(&mut m, "release", log_map(c(8), 0.01, 8.0));
+                f(&mut m, "detune", c(9) * 60.0);
+                let u = ((c(10) * 4.0) as usize).min(3);
+                m.insert("unison".into(), ParamValue::Int(UNISON[u]));
             }
         }
         m
@@ -398,6 +420,26 @@ impl FitInstrument {
                     rel,
                 ]
             }
+            FitInstrument::Wavetable => {
+                let [a, dcy, sus, rel] = envelope_guess(d, 6.0, 8.0);
+                // 明るい音ほど position を先へ。鳴り始めだけ明るければ pos_env で掃く
+                let position = if s.centroid_hz > 1500.0 { 0.7 } else { 0.4 };
+                let pos_env = if opening { 0.75 } else { 0.5 };
+                let cutoff = inv_log((s.centroid_hz as f64 * 6.0).max(200.0), 40.0, 20_000.0);
+                vec![
+                    position,
+                    pos_env,
+                    inv_log(0.3, 0.005, 4.0),
+                    cutoff,
+                    0.1,
+                    a,
+                    dcy,
+                    sus,
+                    rel,
+                    0.2,
+                    0.0,
+                ]
+            }
         }
     }
 
@@ -425,6 +467,8 @@ impl FitInstrument {
                     FM_RATIOS.to_vec()
                 }
             }
+            // テーブルは全部を初期値で比べて、近い 2 つを探す
+            FitInstrument::Wavetable => WT_TABLES.to_vec(),
         }
     }
 }
@@ -482,6 +526,12 @@ pub fn apply_reverb(x: &mut [f32], mix: f32, size: f32, sr: f32) {
     }
 }
 
+/// 評価回数の目安: 1 秒あたりに鳴らせる目標の長さ(秒)。これと max_seconds・目標の長さから
+/// 評価回数の上限を決める(時間では打ち切らないので、同じ入力なら負荷に関係なく同じ結果になる)
+const AUDIO_SECONDS_PER_SECOND: f32 = 1200.0;
+/// 安全のための時間の上限(max_seconds の何倍まで待つか。遅い機械・高負荷時だけ効く)
+const TIME_CAP_FACTOR: f32 = 4.0;
+
 /// 自動合わせの設定。
 #[derive(Clone, Copy, Debug)]
 pub struct FitOptions {
@@ -489,7 +539,7 @@ pub struct FitOptions {
     pub generations: usize,
     /// 1 世代の候補数
     pub population: usize,
-    /// 全体の時間の上限(秒)
+    /// 時間の目安(秒)。評価回数の上限に換算する(実際の時間は機械の速さで前後する)
     pub max_seconds: f32,
     pub seed: u64,
     /// リバーブ(mix / size)も一緒に探す
@@ -598,6 +648,10 @@ pub fn fit_instrument(
     let mut best: (f64, Vec<f64>, &str) = (f64::MAX, init_for(first[0].0), first[0].0);
     let mut tried = Vec::new();
     let per_variant = opts.max_seconds / 2.0;
+    // 評価回数の上限(目標が長いほど 1 回が重いので減らす)。世代数の上限とどちらか小さい方で止まる
+    let target_seconds = (len as f32 / sr).max(0.05);
+    let max_evals = ((per_variant * AUDIO_SECONDS_PER_SECOND / target_seconds) as usize)
+        .max(opts.population * 5);
     for (variant, _) in first.iter().take(2) {
         let init = init_for(variant);
         let objective = |x: &DVector<f64>| -> f64 {
@@ -606,7 +660,10 @@ pub fn fit_instrument(
         let mut cma = match CMAESOptions::new(init.clone(), 0.2)
             .population_size(opts.population)
             .max_generations(opts.generations)
-            .max_time(std::time::Duration::from_secs_f32(per_variant))
+            .max_function_evals(max_evals)
+            .max_time(std::time::Duration::from_secs_f32(
+                per_variant * TIME_CAP_FACTOR,
+            ))
             .seed(opts.seed)
             .build(objective)
         {
@@ -1009,5 +1066,45 @@ mod tests {
         );
         assert!(r.distance.total < r.initial_distance.total * 0.6);
         assert!(r.distance.total < 0.25, "{:?}", r.distance);
+    }
+
+    #[test]
+    fn wavetable_fit_recovers_a_vocal_patch_and_is_deterministic() {
+        let sr = 32_000.0;
+        let target_params = param(&[
+            ("table", ParamValue::Enum("vocal".into())),
+            ("position", ParamValue::Float(0.6)),
+            ("attack", ParamValue::Float(0.02)),
+            ("decay", ParamValue::Float(0.5)),
+            ("sustain", ParamValue::Float(0.7)),
+            ("release", ParamValue::Float(0.3)),
+        ]);
+        let target = render_instrument(
+            "wavetable",
+            &target_params,
+            48,
+            0.6,
+            (sr * 1.0) as usize,
+            sr,
+        );
+        let d = crate::timbre::describe(&target, sr, None);
+        let opts = FitOptions {
+            max_seconds: 6.0,
+            ..Default::default()
+        };
+        let a = fit_instrument(&target, sr, 48, 0.6, &d, FitInstrument::Wavetable, opts);
+        eprintln!(
+            "{:?} → {:?}、{} 回、{:.1} 秒、{:?}\n{:?}",
+            a.initial_distance, a.distance, a.evaluations, a.seconds, a.tried, a.params
+        );
+        assert_eq!(
+            a.params.get("table"),
+            Some(&ParamValue::Enum("vocal".into()))
+        );
+        assert!(a.distance.total < 0.2, "{:?}", a.distance);
+        // 評価回数で区切るので、もう一度やっても同じ結果
+        let b = fit_instrument(&target, sr, 48, 0.6, &d, FitInstrument::Wavetable, opts);
+        assert_eq!(a.params, b.params);
+        assert_eq!(a.evaluations, b.evaluations);
     }
 }
