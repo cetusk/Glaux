@@ -12,7 +12,8 @@ use crate::ClapError;
 use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfoBuffer};
 use clack_extensions::note_ports::{NoteDialect, NotePortInfoBuffer};
 use clack_host::events::event_types::{
-    MidiEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent, ParamValueEvent,
+    MidiEvent, NoteChokeEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent,
+    ParamValueEvent,
 };
 use clack_host::events::Match;
 use clack_host::prelude::*;
@@ -53,6 +54,12 @@ pub enum NoteMsg {
         time: u32,
         data: [u8; 3],
     },
+    /// その鍵盤の音(リリース中の余韻も)をすぐ止める(レガート・ポルタメントで前の音の余韻を切る)。
+    /// CLAP のノートを受けるプラグインだけ。MIDI だけのプラグインには送らない
+    Choke {
+        time: u32,
+        key: u8,
+    },
     /// 1 音だけの音程の変化(半音単位、ノートの ID で指す)
     Tuning {
         time: u32,
@@ -67,6 +74,7 @@ impl NoteMsg {
         match *self {
             NoteMsg::On { time, .. }
             | NoteMsg::Off { time, .. }
+            | NoteMsg::Choke { time, .. }
             | NoteMsg::AllOff { time }
             | NoteMsg::Param { time, .. }
             | NoteMsg::Midi { time, .. }
@@ -77,7 +85,7 @@ impl NoteMsg {
     /// 同じ時刻のイベントの並び順(離す → パラメータ → 鳴らす → 表現)
     pub fn order(&self) -> u8 {
         match self {
-            NoteMsg::Off { .. } | NoteMsg::AllOff { .. } => 0,
+            NoteMsg::Off { .. } | NoteMsg::Choke { .. } | NoteMsg::AllOff { .. } => 0,
             NoteMsg::Param { .. } | NoteMsg::Midi { .. } => 1,
             NoteMsg::On { .. } => 2,
             NoteMsg::Tuning { .. } => 3,
@@ -702,6 +710,9 @@ impl ClapProcessor {
                 Pckn::new(0u16, 0u16, key as u16, Match::All),
                 0.0,
             )),
+            (NoteDialect::Clap, NoteMsg::Choke { key, .. }) => self.events.push(
+                &NoteChokeEvent::new(t, Pckn::new(0u16, 0u16, key as u16, Match::All)),
+            ),
             (NoteDialect::Clap, NoteMsg::AllOff { .. }) => self.events.push(&NoteOffEvent::new(
                 t,
                 Pckn::new(0u16, Match::All, Match::All, Match::All),

@@ -62,6 +62,9 @@ pub struct NoteEvent {
     pub fade_out: u32,
     /// ノート個別のポルタメントの滑る時間(秒。0 ならトラックの設定)
     pub glide: f32,
+    /// レガート・ポルタメント: 同じトラックで先に離された音の余韻を、このサンプル数で消す(0 = 消さない)。
+    /// 押さえたままの音(和音の伴奏など)には触れない
+    pub choke: u32,
 }
 
 /// トラックごとのつなぎの設定(秒)。
@@ -92,8 +95,9 @@ pub const PORTAMENTO_SCOOP_SEMITONES: f32 = 2.0;
 pub const PORTAMENTO_SEC: f64 = 0.15;
 
 /// レガート・ポルタメントのノートを同じトラックの直前の音とつなぐ(`events` は開始順)。
-/// 直前の音 = そのノートより前に始まり、終わりが開始の手前 `LEGATO_GAP_SEC` 以内のもののうち
-/// 最も後に始まったもの(同時なら音程の近いもの)。前の音はつなぎ目で消え、次の音は立ち上がりを消す。
+/// 直前の音 = そのノートより前に始まり、終わりが開始の手前 `LEGATO_GAP_SEC` 以内(または次の音の
+/// 前半に少し重なるまで)のもののうち、最も後に始まったもの(同時なら音程の近いもの)。
+/// 次の音より長く鳴り続ける音(押さえたままの伴奏)はつながない。前の音はつなぎ目で消え、次の音は立ち上がりを消す。
 /// ポルタメントはさらに前の音の高さから滑らせる(ノートに自前のピッチカーブがあればそちらを優先)。
 /// 直前の音が無いポルタメントは全音下から滑り込む(レガートは直前の音が無ければ普通に鳴る)。
 /// `settings(track)` がそのトラックのつなぎの設定、None のトラック(ドラム)はつながない。
@@ -128,7 +132,10 @@ pub fn link_legato(
             let mut prev: Option<usize> = None;
             for &j in idx[..k].iter().rev() {
                 let p = &events[j];
-                if p.start >= e.start || p.end + gap < e.start {
+                // 直前の音 = 開始の手前 gap 以内に終わる音か、少しだけ重なって終わる音(次の音の半分まで)。
+                // それより長く鳴り続ける音(押さえたままの伴奏など)はつながない
+                let overlap_limit = e.start + (e.end - e.start) / 2;
+                if p.start >= e.start || p.end + gap < e.start || p.end > overlap_limit {
                     continue;
                 }
                 prev = match prev {
@@ -167,6 +174,8 @@ pub fn link_legato(
             let Some(from_pitch) = from_pitch else {
                 continue;
             };
+            // 先に離された音の余韻(リリースの長いパッド・弦など)がつながった音に重ならないよう消す
+            events[i].choke = xf as u32;
             if e.articulation == A::Portamento && e.curve.is_empty() && from_pitch != e.pitch as f32
             {
                 let secs = if e.glide > 0.0 {
@@ -1016,6 +1025,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     fade_in: 0,
                     fade_out: 0,
                     glide: note.glide_ms.map_or(0.0, |ms| ms / 1000.0),
+                    choke: 0,
                 });
             }
         }
@@ -1317,6 +1327,56 @@ mod tests {
         let leg = e.iter().find(|x| x.pitch == 60).unwrap();
         assert!(leg.curve.is_empty());
         assert_eq!(leg.fade_in, 0);
+    }
+
+    #[test]
+    fn portamento_cuts_release_tails_but_keeps_held_notes() {
+        use crate::export::render_project;
+        use glaux_core::Articulation as A;
+        // リリース 2 秒のサイン波。C4 を 0.25 秒弾いて離し、1 秒から G4 をポルタメント(直前の音なし → 全音下から)。
+        // 伴奏の C3 は 0〜2 秒ずっと押さえたまま
+        let render = |a: A| {
+            let mut p = project_with_notes(vec![
+                note(0, 480, 60, 100),
+                note(0, 3840, 48, 100),
+                with_art(note(1920, 960, 67, 100), a),
+            ]);
+            let mut d = glaux_core::Device::builtin("subtractive");
+            d.params.insert(
+                "waveform".into(),
+                glaux_core::ParamValue::Enum("sine".into()),
+            );
+            d.params.insert("sustain".into(), 1.0.into());
+            d.params.insert("release".into(), 2.0.into());
+            p.tracks[0].device = Some(d);
+            let st = render_project(&p, 48_000.0, &Default::default()).unwrap();
+            st.chunks(2).map(|c| c[0] + c[1]).collect::<Vec<f32>>()
+        };
+        let bin = |x: &[f32], f: f32| {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (i, v) in x.iter().enumerate() {
+                let w = std::f64::consts::TAU * f as f64 * i as f64 / 48_000.0;
+                re += *v as f64 * w.cos();
+                im += *v as f64 * w.sin();
+            }
+            ((re * re + im * im).sqrt() * 2.0 / x.len() as f64) as f32
+        };
+        // 1.1〜1.3 秒(G4 が鳴っている間)
+        let win = |x: &[f32]| x[52_800..62_400].to_vec();
+        let normal = win(&render(A::Normal));
+        let porta = win(&render(A::Portamento));
+        let (tail_n, tail_p) = (bin(&normal, 261.6), bin(&porta, 261.6));
+        let (held_n, held_p) = (bin(&normal, 130.8), bin(&porta, 130.8));
+        eprintln!("C4 の余韻: 通常 {tail_n:.4} → ポルタメント {tail_p:.4} / 伴奏 C3: {held_n:.4} → {held_p:.4}");
+        assert!(tail_n > 0.05, "通常は余韻が残る: {tail_n}");
+        assert!(
+            tail_p < tail_n * 0.05,
+            "ポルタメントでは余韻が消える: {tail_p}"
+        );
+        assert!(
+            (held_p - held_n).abs() < held_n * 0.05,
+            "押さえたままの伴奏は変わらない"
+        );
     }
 
     #[test]

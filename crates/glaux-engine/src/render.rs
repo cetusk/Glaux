@@ -346,6 +346,10 @@ pub struct Renderer {
     plugin_auto_last: Vec<[f32; MAX_PLUGIN_LANES]>,
     /// ピッチカーブ付きのノートに振るノート ID
     next_note_id: u32,
+    /// 曲のノートで最近離した鍵盤(スロット, 鍵盤)。レガート・ポルタメントでその余韻を切る(choke)のに使う
+    plugin_released: Vec<(u8, u8)>,
+    /// スロットごとの「この位置で余韻を切る」(u64::MAX = 予定なし)
+    plugin_choke_at: [u64; MAX_PLUGINS],
     /// エフェクト状態プール(リバーブのバッファ込みで起動時に確保)
     effect_states: Vec<EffectState>,
     /// このブロックで CLAP エフェクトとして使うプラグインのスロット(音源と分けて処理する)
@@ -468,6 +472,8 @@ impl Renderer {
             clock: 0,
             plugin_auto_last: vec![[f32::NAN; MAX_PLUGIN_LANES]; MAX_TRACKS],
             next_note_id: 1,
+            plugin_released: Vec::with_capacity(MAX_PENDING_OFFS),
+            plugin_choke_at: [u64::MAX; MAX_PLUGINS],
             // clone で複製すると 0 のバッファを実際に書き写してしまう(64 × 512KB)。1 つずつ確保すれば
             // ディレイ系を使うまでページは実体化しない
             effect_states: (0..MAX_EFFECT_SLOTS)
@@ -946,6 +952,17 @@ impl Renderer {
                         }
                         if e.fade_in > 0 {
                             state.skip_attack(inst);
+                        }
+                        // レガート・ポルタメント: 同じトラックで先に離された音の余韻を
+                        // つなぎ目の長さで消す(押さえたままの音には触れない)
+                        if e.choke > 0 {
+                            for v in self.voices.iter_mut() {
+                                if v.track == e.track && v.released {
+                                    v.released = false;
+                                    v.end = self.pos;
+                                    v.fade_out = e.choke;
+                                }
+                            }
                         }
                         self.voices.push(Voice {
                             end: e.end,
@@ -1635,6 +1652,8 @@ impl Renderer {
 
     /// プラグインの音を離す(`seq_only` なら曲のノートだけ、そうでなければライブ演奏も)。
     fn plugins_all_off(&mut self, seq_only: bool) {
+        self.plugin_choke_at = [u64::MAX; MAX_PLUGINS];
+        self.plugin_released.clear();
         let mut i = 0;
         while i < self.plugin_pending.len() {
             let p = self.plugin_pending[i];
@@ -1697,6 +1716,8 @@ impl Renderer {
             if looping && pos >= loop_end {
                 pos = loop_start;
                 cursor = data.events.partition_point(|e| e.start < pos);
+                self.plugin_choke_at = [u64::MAX; MAX_PLUGINS];
+                self.plugin_released.clear();
                 let mut i = 0;
                 while i < self.plugin_pending.len() {
                     let p = self.plugin_pending[i];
@@ -1716,9 +1737,40 @@ impl Renderer {
                     if p.seq && p.end <= pos {
                         self.plugin_note_off(p.slot as usize, p.key, t);
                         self.plugin_pending.swap_remove(i);
+                        // 余韻を後で切れるよう覚えておく(一杯なら古いものから捨てる)
+                        if self.plugin_released.len() >= MAX_PENDING_OFFS {
+                            self.plugin_released.remove(0);
+                        }
+                        self.plugin_released.push((p.slot, p.key));
                     } else {
                         i += 1;
                     }
+                }
+            }
+            // レガート・ポルタメントの余韻切り: 予定の位置に来たスロットで、離した鍵盤(押さえ直していないもの)を止める
+            for slot in 0..MAX_PLUGINS {
+                if self.plugin_choke_at[slot] > pos {
+                    continue;
+                }
+                self.plugin_choke_at[slot] = u64::MAX;
+                let mut i = 0;
+                while i < self.plugin_released.len() {
+                    let (s, key) = self.plugin_released[i];
+                    if s as usize != slot {
+                        i += 1;
+                        continue;
+                    }
+                    let held = self
+                        .plugin_pending
+                        .iter()
+                        .any(|p| p.slot == s && p.key == key);
+                    if !held {
+                        let notes = &mut self.plugin_notes[slot];
+                        if notes.len() < MAX_EVENTS {
+                            notes.push(NoteMsg::Choke { time: t, key });
+                        }
+                    }
+                    self.plugin_released.swap_remove(i);
                 }
             }
             while cursor < data.events.len() && data.events[cursor].start <= pos {
@@ -1730,6 +1782,10 @@ impl Renderer {
                 };
                 if !data.tracks[ti].audible {
                     continue;
+                }
+                // レガート・ポルタメント: つなぎ目の後で、先に離した音の余韻を切る
+                if e.choke > 0 {
+                    self.plugin_choke_at[slot] = pos + e.choke as u64;
                 }
                 // 奏法をプラグインで近づける: アクセントは強く、パームミュートは短く弱く
                 // (ビブラート・ベンドは下で音程の変化として送る。スタッカートは長さに反映済み)
@@ -2020,6 +2076,7 @@ mod tests {
                 fade_in: 0,
                 fade_out: 0,
                 glide: 0.0,
+                choke: 0,
                 start,
                 end,
                 freq: 440.0,

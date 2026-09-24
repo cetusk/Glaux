@@ -1503,6 +1503,68 @@ mod tests {
         assert!(vib > normal + 30.0, "ビブラートで揺れる: {vib} vs {normal}");
     }
 
+    /// レガート・ポルタメントで、先に離した音のプラグイン側の余韻(長いリリース)が choke で切れる(`GLAUX_TEST_CLAP`)。
+    #[test]
+    fn portamento_chokes_plugin_release_tails() {
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        // アンプのリリースを最大(長い余韻)にする
+        let release = {
+            let mut r = PluginRenderer::new(&id, 48_000.0).unwrap();
+            let params = r.params();
+            params
+                .into_iter()
+                .find(|(p, _)| p.name.to_lowercase().contains("amp eg release"))
+                .map(|(p, _)| p)
+                .expect("Amp EG Release")
+        };
+        let render = |art: glaux_core::Articulation| {
+            let mut project = project_with_plugin(&id);
+            if let Some(d) = project.tracks[0].device.as_mut() {
+                d.params.insert(
+                    param_key(release.id),
+                    glaux_core::ParamValue::Float(release.max),
+                );
+            }
+            if let ClipContent::Midi { notes, .. } = &mut project.tracks[0].clips[0].content {
+                // C4 を 0〜0.25 秒弾いて離し、1 秒から G4(直前の音なし → 全音下から滑り込む)
+                notes[0].pos = Tick(0);
+                notes[0].dur = Tick(480);
+                notes[0].pitch = 60;
+                let mut g = notes[0].clone();
+                g.id = NoteId::new();
+                g.pos = Tick(1920);
+                g.dur = Tick(960);
+                g.pitch = 67;
+                g.articulation = art;
+                notes.push(g);
+            }
+            let st =
+                crate::export::render_project(&project, 48_000.0, &SampleBank::default()).unwrap();
+            st.chunks(2).map(|c| c[0] + c[1]).collect::<Vec<f32>>()
+        };
+        let bin = |x: &[f32], f: f32| {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (i, v) in x.iter().enumerate() {
+                let w = std::f64::consts::TAU * f as f64 * i as f64 / 48_000.0;
+                re += *v as f64 * w.cos();
+                im += *v as f64 * w.sin();
+            }
+            ((re * re + im * im).sqrt() * 2.0 / x.len() as f64) as f32
+        };
+        // 1.1〜1.3 秒の C4(261.6Hz)成分 = 前の音の余韻
+        let tail = |x: &[f32]| bin(&x[52_800..62_400], 261.6);
+        let (n, p) = (
+            tail(&render(glaux_core::Articulation::Normal)),
+            tail(&render(glaux_core::Articulation::Portamento)),
+        );
+        eprintln!("C4 の余韻(Surge): 通常 {n:.4} → ポルタメント {p:.4}");
+        assert!(n > 0.01, "リリースが長ければ通常は余韻が残る: {n}");
+        assert!(p < n * 0.2, "ポルタメントでは余韻が切れる: {p} vs {n}");
+    }
+
     #[test]
     fn live_pitch_bend_reaches_plugin() {
         let Some(id) = setup() else {
