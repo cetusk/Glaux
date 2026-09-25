@@ -15,9 +15,13 @@ export function getProject(): Promise<ProjectSnapshot> {
   return invoke("get_project");
 }
 
-export function getHistory(): Promise<HistorySnapshot> {
-  return invoke("get_history");
+/** 履歴の最新側から limit 件(総数は total)。全件は数千件になりうるので既定で絞る */
+export function getHistory(limit: number = HISTORY_LIMIT): Promise<HistorySnapshot> {
+  return invoke("get_history", { limit });
 }
+
+/** 画面で扱う履歴の件数(履歴パネルの表示件数と揃える) */
+export const HISTORY_LIMIT = 120;
 
 export function undo(): Promise<{ undone: number; project_version: number }> {
   return invoke("undo");

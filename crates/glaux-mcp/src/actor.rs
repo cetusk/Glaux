@@ -30,6 +30,15 @@ pub struct AiActivity {
     pub busy: bool,
 }
 
+/// 履歴の一覧の 1 ページ。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct HistoryPage {
+    pub project_version: usize,
+    /// 条件(作者・since)に合うエントリの総数(limit で切る前)
+    pub total: usize,
+    pub entries: Vec<EntrySummary>,
+}
+
 /// 履歴一覧用の軽量ビュー(forward/inverse は含めない)。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct EntrySummary {
@@ -112,7 +121,7 @@ pub enum Request {
         since: Option<EntryId>,
         /// 末尾(最新)から最大件数
         limit: Option<usize>,
-        reply: oneshot::Sender<Result<(Vec<EntrySummary>, usize), CoreError>>,
+        reply: oneshot::Sender<Result<HistoryPage, CoreError>>,
     },
     /// 別のプロジェクトフォルダに切り替える。アクターが Session + Store を
     /// 丸ごと差し替えるので、ハンドルを持つ全員(UI / MCP / エンジン)は
@@ -272,7 +281,7 @@ impl SessionHandle {
         author_kind: Option<String>,
         since: Option<EntryId>,
         limit: Option<usize>,
-    ) -> Result<Result<(Vec<EntrySummary>, usize), CoreError>, String> {
+    ) -> Result<Result<HistoryPage, CoreError>, String> {
         self.request(|reply| Request::GetHistory {
             author_kind,
             since,
@@ -570,7 +579,7 @@ fn history_view(
     author_kind: Option<String>,
     since: Option<EntryId>,
     limit: Option<usize>,
-) -> Result<(Vec<EntrySummary>, usize), CoreError> {
+) -> Result<HistoryPage, CoreError> {
     let applied = session.history().applied();
 
     let start = match &since {
@@ -584,25 +593,29 @@ fn history_view(
         None => 0,
     };
 
-    let mut list: Vec<EntrySummary> = applied[start..]
+    let matches = |e: &&HistoryEntry| match author_kind.as_deref() {
+        None => true,
+        Some("human") => matches!(e.author, Author::Human),
+        Some("ai") => matches!(e.author, Author::Ai { .. }),
+        Some("system") => matches!(e.author, Author::System),
+        Some(_) => false,
+    };
+    let total = applied[start..].iter().filter(matches).count();
+    // 最新側から limit 件だけ要約を作る(返却順は古い→新しい)。全件の要約を作ってから切ると、
+    // 履歴が長いときに毎回重い
+    let mut entries: Vec<EntrySummary> = applied[start..]
         .iter()
-        .filter(|e| match author_kind.as_deref() {
-            None => true,
-            Some("human") => matches!(e.author, Author::Human),
-            Some("ai") => matches!(e.author, Author::Ai { .. }),
-            Some("system") => matches!(e.author, Author::System),
-            Some(_) => false,
-        })
+        .rev()
+        .filter(matches)
+        .take(limit.unwrap_or(usize::MAX))
         .map(EntrySummary::from)
         .collect();
-
-    // 最新側を優先して limit 件(返却順は古い→新しいのまま)
-    if let Some(limit) = limit {
-        if list.len() > limit {
-            list.drain(..list.len() - limit);
-        }
-    }
-    Ok((list, version(session, store)))
+    entries.reverse();
+    Ok(HistoryPage {
+        project_version: version(session, store),
+        total,
+        entries,
+    })
 }
 
 #[cfg(test)]

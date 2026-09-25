@@ -83,8 +83,22 @@ pub fn list_presets(font: &SoundFont) -> Vec<PresetMeta> {
     out
 }
 
+/// フォント内の波形の切り出し(開始, 終了)→ f32 に変換した波形。
+/// 同じ波形を複数のゾーン・プリセットが使うので共有する(複製するとピアノ 1 つで 140MB → 16MB)
+pub type WaveCache = std::collections::HashMap<(usize, usize), Arc<SampleData>>;
+
 /// 指定プリセットのゾーン列を構築する。見つからなければ None。
 pub fn build_zones(font: &SoundFont, bank: u16, preset: u16) -> Option<Arc<Vec<Zone>>> {
+    build_zones_shared(font, bank, preset, &mut WaveCache::new())
+}
+
+/// [`build_zones`] の、波形を `cache` で共有する版(同じフォントの別プリセットと共有できる)。
+pub fn build_zones_shared(
+    font: &SoundFont,
+    bank: u16,
+    preset: u16,
+    cache: &mut WaveCache,
+) -> Option<Arc<Vec<Zone>>> {
     let target = font
         .get_presets()
         .iter()
@@ -116,15 +130,23 @@ pub fn build_zones(font: &SoundFont, bank: u16, preset: u16) -> Option<Arc<Vec<Z
             if end <= start || end > wave.len() {
                 continue;
             }
-            let frames: Vec<f32> = wave[start..end]
-                .iter()
-                .map(|&s| s as f32 / 32768.0)
-                .collect();
-
             let sample_rate = headers
                 .get(ir.get_sample_id())
                 .map(|h| h.get_sample_rate() as f32)
                 .unwrap_or(44_100.0);
+            let data = cache
+                .entry((start, end))
+                .or_insert_with(|| {
+                    Arc::new(SampleData {
+                        frames: wave[start..end]
+                            .iter()
+                            .map(|&s| s as f32 / 32768.0)
+                            .collect(),
+                        sample_rate,
+                        side: None,
+                    })
+                })
+                .clone();
 
             // ループ点(スライス内インデックスへ変換)
             let loop_range = match ir.get_sample_modes() {
@@ -220,11 +242,7 @@ pub fn build_zones(font: &SoundFont, bank: u16, preset: u16) -> Option<Arc<Vec<Z
                 key_hi: key_hi.clamp(0, 127) as u8,
                 vel_lo: vel_lo.clamp(0, 127) as u8,
                 vel_hi: vel_hi.clamp(0, 127) as u8,
-                data: Arc::new(SampleData {
-                    frames,
-                    sample_rate,
-                    side: None,
-                }),
+                data,
                 loop_range,
                 loop_until_release,
                 root,

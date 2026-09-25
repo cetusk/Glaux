@@ -376,12 +376,20 @@ pub struct SampleBank {
     fonts: HashMap<String, Arc<rustysynth::SoundFont>>,
     /// 構築済みゾーン列((ファイル名, bank, preset) → zones)
     multis: HashMap<(String, u16, u16), Arc<Vec<glaux_dsp::Zone>>>,
+    /// フォントごとの変換済み波形(ゾーン・プリセットの間で共有する)
+    waves: HashMap<String, crate::sf2::WaveCache>,
     /// テンポ追従クリップの伸縮済み波形(クリップ ID → (条件のハッシュ, 波形))。
     /// 波形はクリップ先頭から末尾までで、素材のサンプルレートのまま
     stretched: HashMap<glaux_core::ClipId, (u64, Arc<SampleData>)>,
     /// CLAP プラグインの持ち主(トラック・エフェクト)→ (スロット, 世代)。[`crate::plugins`] が決める
     pub plugin_slots: HashMap<crate::plugins::PluginOwner, (u32, u64)>,
 }
+
+/// 再生エンジンの bank([`SampleBank::for_offline`] 用。エンジンが終われば無効になる)
+static ENGINE_BANK: std::sync::Mutex<Option<std::sync::Weak<std::sync::Mutex<SampleBank>>>> =
+    std::sync::Mutex::new(None);
+/// エンジンが無いときの使い回しの bank(プロジェクトフォルダ, bank)
+static OFFLINE_BANK: std::sync::Mutex<Option<(PathBuf, SampleBank)>> = std::sync::Mutex::new(None);
 
 impl Default for SampleBank {
     fn default() -> Self {
@@ -390,6 +398,7 @@ impl Default for SampleBank {
             sf2_dir: crate::sf2::default_dir(),
             fonts: HashMap::new(),
             multis: HashMap::new(),
+            waves: HashMap::new(),
             stretched: HashMap::new(),
             plugin_slots: HashMap::new(),
         }
@@ -511,6 +520,11 @@ impl SampleBank {
         let used_fonts: std::collections::HashSet<&String> =
             used.iter().map(|(f, _, _)| f).collect();
         self.fonts.retain(|f, _| used_fonts.contains(f));
+        // 使われなくなったフォントの波形と、どのゾーンからも参照されなくなった波形を捨てる
+        self.waves.retain(|f, _| used_fonts.contains(f));
+        for cache in self.waves.values_mut() {
+            cache.retain(|_, d| Arc::strong_count(d) > 1);
+        }
         for (file, bank, preset) in used {
             if self.multis.contains_key(&(file.clone(), bank, preset)) {
                 continue;
@@ -528,7 +542,8 @@ impl SampleBank {
                     }
                 },
             };
-            match crate::sf2::build_zones(&font, bank, preset) {
+            let cache = self.waves.entry(file.clone()).or_default();
+            match crate::sf2::build_zones_shared(&font, bank, preset, cache) {
                 Some(zones) => {
                     self.multis.insert((file.clone(), bank, preset), zones);
                 }
@@ -541,7 +556,42 @@ impl SampleBank {
         }
     }
 
+    /// 再生エンジンが使っている bank を登録する([`Self::for_offline`] で使い回す)。
+    pub fn register_engine_bank(bank: &Arc<std::sync::Mutex<SampleBank>>) {
+        *ENGINE_BANK.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(bank));
+    }
+
+    /// 書き出し・解析・1 音のレンダに使う bank。毎回 WAV と SoundFont を読み直すと重い
+    /// (SoundFont のパースだけで約 0.3 秒、メモリも再生用と二重になる)ので使い回す:
+    /// 再生エンジンがあればその bank を、無ければ(stdio の MCP サーバー)プロジェクトごとの
+    /// 使い回しの bank を、差分だけ読み込んで([`Self::sync`])複製して返す(複製は Arc の参照だけ)。
+    pub fn for_offline(project: &Project, project_dir: &Path) -> SampleBank {
+        let engine = ENGINE_BANK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(bank) = engine {
+            let mut bank = bank.lock().unwrap_or_else(|e| e.into_inner());
+            bank.sync(project, project_dir);
+            return bank.clone();
+        }
+        let mut cache = OFFLINE_BANK.lock().unwrap_or_else(|e| e.into_inner());
+        match cache.as_mut() {
+            Some((dir, bank)) if dir == project_dir => {
+                bank.sync(project, project_dir);
+                bank.clone()
+            }
+            _ => {
+                let bank = SampleBank::load(project, project_dir);
+                *cache = Some((project_dir.to_path_buf(), bank.clone()));
+                bank
+            }
+        }
+    }
+
     /// 使い捨て(オフラインレンダ・解析用)に全アセットを読み込む。
+    /// 繰り返し使うなら [`Self::for_offline`]。
     pub fn load(project: &Project, project_dir: &Path) -> SampleBank {
         let mut bank = SampleBank::default();
         bank.sync(project, project_dir);

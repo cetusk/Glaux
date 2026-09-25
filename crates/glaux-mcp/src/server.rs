@@ -13,7 +13,7 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerConfig},
     service::RequestContext,
-    tool, tool_handler, tool_router, Json, RoleServer, ServerHandler,
+    tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -39,6 +39,20 @@ pub struct GetProjectParams {
     /// false にするとトラックの `automation` を省く。既定 true。
     #[serde(default)]
     pub include_automation: Option<bool>,
+    /// 指定したクリップ ID(`clp_xxxxxx`)だけを返す(それを含むトラックだけ残る)。
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
+    /// この tick 範囲 [start_tick, end_tick) に掛かるクリップだけを返し、MIDI クリップのノートも
+    /// 範囲に掛かるものだけにする(そのクリップには `notes_in_range: true` と全体の `note_count` が付く)。
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+    /// "compact" にするとノートを配列 `[id, pos, dur, pitch, vel]` で返す(量が約半分)。
+    /// 奏法・ピッチカーブ・glide_ms があるノートだけ 6 番目に `{articulation, pitch_curve, glide_ms}` が付く。
+    /// 既定 "full"(オブジェクト)。
+    #[serde(default)]
+    pub note_format: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -142,6 +156,7 @@ pub struct GetHistoryParams {
     #[serde(default)]
     pub since: Option<String>,
     /// 返す最大件数。最新側から数える(返却順は古い→新しい)。
+    /// 省略時は、since があれば全件、なければ最新 50 件(total に全件数が入る)。
     #[serde(default)]
     pub limit: Option<u32>,
 }
@@ -507,7 +522,52 @@ pub struct ScaleVelocityParams {
 
 // ---- ヘルパー -----------------------------------------------------------
 
-type ToolResult = Result<Json<Value>, String>;
+type ToolResult = Result<JsonText, String>;
+
+/// ノートを配列 `[id, pos, dur, pitch, vel]` にする(奏法などがあれば 6 番目にまとめる)
+fn compact_note(n: &Value) -> Value {
+    let mut a = vec![
+        n["id"].clone(),
+        n["pos"].clone(),
+        n["dur"].clone(),
+        n["pitch"].clone(),
+        n["vel"].clone(),
+    ];
+    let mut extra = serde_json::Map::new();
+    for key in ["articulation", "pitch_curve", "glide_ms"] {
+        match n.get(key) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(s)) if key == "articulation" && s == "normal" => {}
+            Some(Value::Array(x)) if x.is_empty() => {}
+            Some(x) => {
+                extra.insert(key.to_owned(), x.clone());
+            }
+        }
+    }
+    if !extra.is_empty() {
+        a.push(Value::Object(extra));
+    }
+    Value::Array(a)
+}
+
+/// get_history で limit も since も無いときに返す件数
+const DEFAULT_HISTORY_LIMIT: usize = 50;
+
+/// ツールの結果の JSON。text の内容だけで返す。
+/// rmcp の `Json` は同じ JSON を text と structuredContent の両方に入れるので、通信量と
+/// クライアント(AI)が受け取る量が 2 倍になる(ノート 1 万の get_project で 1.36MB)
+pub struct JsonText(pub Value);
+
+impl rmcp::handler::server::tool::IntoCallToolResult for JsonText {
+    fn into_call_tool_result(self) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        Ok(
+            rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                self.0.to_string(),
+            )])
+            .into(),
+        )
+    }
+}
 
 /// CLAP プラグインの持ち主(音源のトラック ID か、エフェクト ID のどちらか)。
 fn plugin_owner(
@@ -847,7 +907,7 @@ impl GlauxServer {
         ctx: &RequestContext<RoleServer>,
     ) -> ToolResult {
         if changes.is_empty() {
-            return Ok(Json(json!({
+            return Ok(JsonText(json!({
                 "project_version": version,
                 "changed": 0,
                 "note": "対象ノートはすべて変更不要でした",
@@ -864,7 +924,7 @@ impl GlauxServer {
             // 端に当たって値を丸めたことを AI に知らせる(意図とずれている可能性)
             v["clamped"] = json!(clamped);
         }
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 }
 
@@ -875,24 +935,75 @@ const ELIDED_CLAP_STATE: &str = "(省略: CLAP プラグインの状態 ";
 impl GlauxServer {
     #[tool(
         description = "プロジェクト全体(トラック・クリップ・パラメータ・テンポ)を JSON で取得する。\
-        ノートが多いと巨大になるので、まず include_notes: false で構造を把握し、必要な部分だけ改めて取得するとよい。\
+        ノートが多いと巨大になるので、まず include_notes: false で構造を把握し、必要なクリップ(clip_ids)や\
+        範囲(start_tick / end_tick)だけを note_format: \"compact\"(ノートを [id, pos, dur, pitch, vel] の配列にする。量が約半分)で取得するとよい。\
         返り値の project_version は版数(編集・undo・redo のたびに増え、戻らない)。自分が最後に見た値より大きければ、その間に誰かが変更している。"
     )]
     async fn get_project(&self, params: Parameters<GetProjectParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("get_project");
         let p = params.0;
-        let (project, version) = self.handle.get_project().await?;
-        let mut v = serde_json::to_value(&project).map_err(|e| e.to_string())?;
-
+        let (mut project, version) = self.handle.get_project().await?;
+        let compact = match p.note_format.as_deref() {
+            None | Some("full") => false,
+            Some("compact") => true,
+            Some(other) => return Err(format!("note_format は full / compact(got: {other})")),
+        };
+        let range = match (p.start_tick, p.end_tick) {
+            (None, None) => None,
+            (s, e) => {
+                let (s, e) = (s.unwrap_or(0), e.unwrap_or(u64::MAX));
+                if e <= s {
+                    return Err("end_tick は start_tick より大きくすること".to_owned());
+                }
+                Some((s, e))
+            }
+        };
+        // JSON にする前に、型のまま絞り込む(全体を JSON にしてから削ると、大きな曲で毎回重い)
         if let Some(ids) = &p.track_ids {
-            if let Some(tracks) = v.get_mut("tracks").and_then(Value::as_array_mut) {
-                tracks.retain(|t| {
-                    t.get("id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| ids.iter().any(|x| x == id))
+            project
+                .tracks
+                .retain(|t| ids.iter().any(|x| x == t.id.as_str()));
+        }
+        // 範囲で削ったクリップ(ID → 元のノート数)
+        let mut trimmed: std::collections::HashMap<String, usize> = Default::default();
+        if p.clip_ids.is_some() || range.is_some() {
+            for t in &mut project.tracks {
+                t.clips.retain(|c| {
+                    let by_id = p
+                        .clip_ids
+                        .as_ref()
+                        .is_none_or(|ids| ids.iter().any(|x| x == c.id.as_str()));
+                    let by_range =
+                        range.is_none_or(|(s, e)| c.start.0 < e && c.start.0 + c.length.0 > s);
+                    by_id && by_range
                 });
+                if let Some((s, e)) = range {
+                    for c in &mut t.clips {
+                        let start = c.start.0;
+                        let looped = c.loop_len().is_some();
+                        let id = c.id.to_string();
+                        if let Some(notes) = c.notes_mut() {
+                            // ループクリップは繰り返しの位置が分かりにくいので削らない
+                            if looped {
+                                continue;
+                            }
+                            let before = notes.len();
+                            notes.retain(|n| {
+                                let a = start + n.pos.0;
+                                a < e && a + n.dur.0 > s
+                            });
+                            if notes.len() != before {
+                                trimmed.insert(id, before);
+                            }
+                        }
+                    }
+                }
+            }
+            if p.clip_ids.is_some() {
+                project.tracks.retain(|t| !t.clips.is_empty());
             }
         }
+        let mut v = serde_json::to_value(&project).map_err(|e| e.to_string())?;
         let include_notes = p.include_notes.unwrap_or(true);
         let include_automation = p.include_automation.unwrap_or(true);
         // CLAP プラグインの状態は巨大な不透明データなので省略して見せる
@@ -925,6 +1036,23 @@ impl GlauxServer {
                         *a = json!([]);
                     }
                 }
+                if let Some(clips) = track.get_mut("clips").and_then(Value::as_array_mut) {
+                    for clip in clips.iter_mut() {
+                        let id = clip.get("id").and_then(Value::as_str).unwrap_or_default();
+                        if let Some(total) = trimmed.get(id) {
+                            clip["notes_in_range"] = json!(true);
+                            clip["note_count"] = json!(total);
+                        }
+                        if compact && include_notes {
+                            if let Some(notes) = clip.get_mut("notes").and_then(Value::as_array_mut)
+                            {
+                                for n in notes.iter_mut() {
+                                    *n = compact_note(n);
+                                }
+                            }
+                        }
+                    }
+                }
                 if !include_notes {
                     if let Some(clips) = track.get_mut("clips").and_then(Value::as_array_mut) {
                         for clip in clips {
@@ -942,7 +1070,11 @@ impl GlauxServer {
             }
         }
 
-        Ok(Json(json!({ "project_version": version, "project": v })))
+        let mut out = json!({ "project_version": version, "project": v });
+        if compact {
+            out["note_fields"] = json!(["id", "pos", "dur", "pitch", "vel", "extra?"]);
+        }
+        Ok(JsonText(out))
     }
 
     #[tool(
@@ -1094,7 +1226,7 @@ impl GlauxServer {
         let (entry_id, m) = flatten(self.handle.apply(command, author, p.label).await)?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1107,7 +1239,7 @@ impl GlauxServer {
         let (undone, m) = flatten(self.handle.undo(n).await)?;
         let mut v = mutated_json(&m);
         v["undone"] = json!(undone);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1119,7 +1251,7 @@ impl GlauxServer {
         let (redone, m) = flatten(self.handle.redo(n).await)?;
         let mut v = mutated_json(&m);
         v["redone"] = json!(redone);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(description = "現在の状態にチェックポイント名を付ける(git tag 相当)。\
@@ -1131,7 +1263,7 @@ impl GlauxServer {
         let m = self.handle.checkpoint(label.clone()).await?;
         let mut v = mutated_json(&m);
         v["label"] = json!(label);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1141,7 +1273,7 @@ impl GlauxServer {
     async fn revert_to(&self, params: Parameters<RevertToParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("revert_to");
         let m = flatten(self.handle.revert_to(params.0.label).await)?;
-        Ok(Json(mutated_json(&m)))
+        Ok(JsonText(mutated_json(&m)))
     }
 
     #[tool(
@@ -1164,7 +1296,7 @@ impl GlauxServer {
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry);
         v["conflicts"] = json!(conflicts);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1190,7 +1322,7 @@ impl GlauxServer {
             let master_effects = tokio::task::spawn_blocking(move || effects_json(&master))
                 .await
                 .map_err(|e| e.to_string())?;
-            return Ok(Json(json!({
+            return Ok(JsonText(json!({
                 "project_version": version,
                 "instruments": glaux_dsp::instrument_catalog(),
                 "effects": glaux_dsp::effect_catalog(),
@@ -1214,7 +1346,7 @@ impl GlauxServer {
         .map_err(|e| e.to_string())??;
         v["project_version"] = json!(version);
         v["track_id"] = json!(track_id);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1268,7 +1400,8 @@ impl GlauxServer {
         let project_dir = self.handle.project_dir().await?;
         let (analysis, track_summaries) = tokio::task::spawn_blocking(move || {
             // サンプラー音源の WAV を読み込む(オフライン解析なのでキャッシュなしでよい)
-            let bank = glaux_engine::SampleBank::load(&project, std::path::Path::new(&project_dir));
+            let bank =
+                glaux_engine::SampleBank::for_offline(&project, std::path::Path::new(&project_dir));
             let a = glaux_engine::analyze_project(&project, track_ids.as_deref(), range, &bank);
             let t = if per_track {
                 Some(glaux_engine::analyze_mix(&project, range, &bank))
@@ -1294,7 +1427,7 @@ impl GlauxServer {
             });
             v["tracks"] = serde_json::to_value(&tracks).map_err(|e| e.to_string())?;
         }
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1328,7 +1461,7 @@ impl GlauxServer {
         let analysis = glaux_core::harmony::analyze(&project, track_ids.as_deref(), range);
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1362,7 +1495,7 @@ impl GlauxServer {
         let analysis = glaux_core::rhythm::analyze(&project, track_ids.as_deref(), range);
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1384,13 +1517,15 @@ impl GlauxServer {
             Some(s) => Some(EntryId::parse(s).map_err(|e| e.to_string())?),
             None => None,
         };
-        let (entries, version) = flatten(
-            self.handle
-                .get_history(p.author, since, p.limit.map(|n| n as usize))
-                .await,
-        )?;
-        Ok(Json(
-            json!({ "project_version": version, "entries": entries }),
+        // 何も指定しないと数千件になりうるので、最新 50 件に絞る(total で全件数が分かる)
+        let limit = match (p.limit, &since) {
+            (Some(n), _) => Some(n as usize),
+            (None, Some(_)) => None,
+            (None, None) => Some(DEFAULT_HISTORY_LIMIT),
+        };
+        let page = flatten(self.handle.get_history(p.author, since, limit).await)?;
+        Ok(JsonText(
+            serde_json::to_value(page).map_err(|e| e.to_string())?,
         ))
     }
 
@@ -1419,7 +1554,7 @@ impl GlauxServer {
         })
         .await
         .map_err(|e| e.to_string())?;
-        Ok(Json(json!({
+        Ok(JsonText(json!({
             "plugins": list.iter().map(|p| json!({
                 "id": p.id,
                 "name": p.name,
@@ -1472,7 +1607,7 @@ impl GlauxServer {
         })
         .await
         .map_err(|e| e.to_string())??;
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1498,7 +1633,7 @@ impl GlauxServer {
         })
         .await
         .map_err(|e| e.to_string())??;
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1633,7 +1768,7 @@ impl GlauxServer {
         if let Ok(d) = verified {
             v["verified_distance"] = json!((d as f64 * 1000.0).round() / 1000.0);
         }
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1679,7 +1814,7 @@ impl GlauxServer {
         })
         .await
         .map_err(|e| e.to_string())??;
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1731,7 +1866,7 @@ impl GlauxServer {
         let mut v = refined.json;
         if refined.commands.is_empty() {
             v["note"] = json!("今の値のままが最も近かったため、つまみは変えませんでした");
-            return Ok(Json(v));
+            return Ok(JsonText(v));
         }
         let label = format!(
             "「{}」の CLAP のつまみを目標の音に合わせる({} 個)",
@@ -1744,7 +1879,7 @@ impl GlauxServer {
         let mut out = mutated_json(&m);
         out["entry_id"] = json!(entry_id);
         out["refine"] = v;
-        Ok(Json(out))
+        Ok(JsonText(out))
     }
 
     #[tool(
@@ -1776,7 +1911,7 @@ impl GlauxServer {
         })
         .await
         .map_err(|e| e.to_string())??;
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1806,7 +1941,7 @@ impl GlauxServer {
         })
         .await
         .map_err(|e| e.to_string())??;
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1833,7 +1968,7 @@ impl GlauxServer {
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["preset"] = json!(name);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1847,7 +1982,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("list_soundfonts");
         let dir = glaux_engine::sf2::default_dir();
         match params.0.file {
-            None => Ok(Json(json!({
+            None => Ok(JsonText(json!({
                 "dir": dir.to_string_lossy(),
                 "files": glaux_engine::sf2::list_files(&dir),
             }))),
@@ -1858,7 +1993,7 @@ impl GlauxServer {
                 })
                 .await
                 .map_err(|e| e.to_string())??;
-                Ok(Json(json!({
+                Ok(JsonText(json!({
                     "file": file,
                     "presets": glaux_engine::sf2::list_presets(&font),
                 })))
@@ -1920,7 +2055,7 @@ impl GlauxServer {
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["preset_name"] = json!(preset_name);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -1983,7 +2118,7 @@ impl GlauxServer {
         v["asset_id"] = json!(imported.id);
         v["sample_rate"] = json!(imported.asset.sample_rate);
         v["frames"] = json!(imported.asset.frames);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -2034,7 +2169,7 @@ impl GlauxServer {
         v["clip_id"] = json!(clip_id);
         v["asset_id"] = json!(imported.id);
         v["seconds"] = json!(imported.asset.frames as f64 / imported.asset.sample_rate as f64);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -2083,7 +2218,7 @@ impl GlauxServer {
         v["track_id"] = json!(t.track_id);
         v["created_track"] = json!(t.created_track);
         v["note_count"] = json!(t.note_count);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -2127,7 +2262,7 @@ impl GlauxServer {
             .iter()
             .map(|(name, id)| json!({ "part": name, "track_id": id }))
             .collect::<Vec<_>>());
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     // ---- 音色プリセット ----------------------------------------------------
@@ -2142,7 +2277,7 @@ impl GlauxServer {
     async fn list_presets(&self) -> ToolResult {
         let _activity = self.handle.begin_activity("list_presets");
         let (_, version) = self.handle.get_project().await?;
-        Ok(Json(json!({
+        Ok(JsonText(json!({
             "project_version": version,
             "presets": crate::presets::list(&crate::presets::default_dir()),
         })))
@@ -2169,7 +2304,7 @@ impl GlauxServer {
             p.description,
             p.overwrite.unwrap_or(false),
         )?;
-        Ok(Json(json!({
+        Ok(JsonText(json!({
             "project_version": version,
             "saved": preset.name,
             "instrument": match &preset.device.source {
@@ -2206,7 +2341,7 @@ impl GlauxServer {
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["applied"] = json!(preset.name);
-        Ok(Json(v))
+        Ok(JsonText(v))
     }
 
     #[tool(
@@ -2217,7 +2352,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("delete_preset");
         let name = params.0.name;
         crate::presets::remove(&crate::presets::default_dir(), &name)?;
-        Ok(Json(json!({ "deleted": name })))
+        Ok(JsonText(json!({ "deleted": name })))
     }
 
     // ---- ノート便利ツール ------------------------------------------------

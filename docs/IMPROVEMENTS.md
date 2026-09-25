@@ -45,13 +45,18 @@ UI・機能・性能について全体を調査し、改善項目を洗い出し
 
 | # | 内容 | 計測値 | 改善案 | 工数 | 状態 |
 |---|---|---|---|---|---|
-| 9 | ピアノロールの canvas がクリップ全体の大きさで、停止中も描き直し続ける(`PianoRoll.svelte:287-301`、`526-538`) | 64 小節で 15000×1750 が 2 枚(1 枚約 105MB)。開くまで 1.1 秒、停止中 CPU 39〜50%(8 小節なら 0.3%) | canvas を見えている大きさにして、見えている範囲だけ描く。動的層は再生ヘッド・カーソル・ドラッグが変わったときだけ描く | 当面 S / 本命 M | 未 |
-| 10 | 編集 1 回ごとにプロジェクトと履歴を全部取り直し、全クリップのプレビューを描き直す(`App.svelte:114-126`、`ClipPreview.svelte:13`) | 大規模で 1 回 96〜131ms(最大 907ms)、canvas 481 枚。受け渡し 2.3MB + 0.5MB | `get_history` に limit。`ProjectChanged.changes` で変わった部分だけ取り直す。`ClipPreview` は内容が同じなら描かない | M(limit は S) | 未 |
-| 11 | `analyze_audio` が範囲を指定しても曲全体をレンダ。per_track は直列、結果のキャッシュなし(`analyze.rs:128-146`、`329-345`) | ClassicTest の 1 小節で 20 秒、per_track 31.5 秒 | 範囲の少し前から終わり + 余韻だけレンダ。per_track を並列(コア数 − 2)。revision をキーにキャッシュ | M | 未 |
-| 12 | 開発版(dev プロファイル)で外部クレートが最適化されていない(`Cargo.toml`) | ebur128 が debug 5,138ms / release 77ms。basic-pitch 60 秒で 6.8 秒 | `[profile.dev.package."*"] opt-level = 2` と glaux-core の指定 | S | 未 |
-| 13 | SoundFont のゾーンが同じ波形を複製(`sf2.rs:119`)。書き出し・解析・render_note が毎回 WAV と SF2 を読み直す(`main.rs:1582`、`server.rs:1271`、`sound.rs:118`) | ClassicTest で波形 683MB(共有すれば 74MB)、RSS +797MB。読み直し 1 回 222ms、書き出し中の RSS 963MB | (フォント, sample_id, 範囲)→ `Arc` のキャッシュでプリセット間で共有。エンジンの bank を clone して渡す | S〜M | 未 |
-| 14 | `get_project` / `get_history` の応答が巨大で、同じ内容が text と structuredContent に 2 重に入る(`server.rs:884`、rmcp `CallToolResult::structured`) | ノート 1 万で 621K 文字・通信 1.36MB。get_history は limit なしで 3,000 件 884K 文字 | `clip_ids` と tick 範囲の指定、ノートの列形式。大きい応答は text のみ。get_history は既定の limit と `target_count` だけの要約 | M | 未 |
-| 15 | ノート編集の計算量がノート数の 2 乗(`apply.rs:441/463/472/475/493/515` の入れ子の線形探索) | 1 万ノートの update_notes 222ms(release)/ 621ms(debug)、remove_notes 270 / 932ms。その間アクターが止まる | `HashMap<NoteId, usize>` / `HashSet`。1 回の add_notes 内の重複 ID も検出 | S | 未 |
+| 9 | ピアノロールの canvas がクリップ全体の大きさで、停止中も描き直し続ける(`PianoRoll.svelte:287-301`、`526-538`) | 64 小節で 15000×1750 が 2 枚(1 枚約 105MB)。開くまで 1.1 秒、停止中 CPU 39〜50%(8 小節なら 0.3%) | canvas を見えている大きさにして、見えている範囲だけ描く。動的層は再生ヘッド・カーソル・ドラッグが変わったときだけ描く | 当面 S / 本命 M | 済(2: 体感性能) |
+| 10 | 編集 1 回ごとにプロジェクトと履歴を全部取り直し、全クリップのプレビューを描き直す(`App.svelte:114-126`、`ClipPreview.svelte:13`) | 大規模で 1 回 96〜131ms(最大 907ms)、canvas 481 枚。受け渡し 2.3MB + 0.5MB | `get_history` に limit。`ProjectChanged.changes` で変わった部分だけ取り直す。`ClipPreview` は内容が同じなら描かない | M(limit は S) | 一部済(履歴の件数を絞り、プレビューは中身が同じなら描かない。変わった部分だけの取得は未) |
+| 11 | `analyze_audio` が範囲を指定しても曲全体をレンダ。per_track は直列、結果のキャッシュなし(`analyze.rs:128-146`、`329-345`) | ClassicTest の 1 小節で 20 秒、per_track 31.5 秒 | 範囲の少し前から終わり + 余韻だけレンダ。per_track を並列(コア数 − 2)。revision をキーにキャッシュ | M | 済(結果のキャッシュは不要と判断) |
+| 12 | 開発版(dev プロファイル)で外部クレートが最適化されていない(`Cargo.toml`) | ebur128 が debug 5,138ms / release 77ms。basic-pitch 60 秒で 6.8 秒 | `[profile.dev.package."*"] opt-level = 2` と glaux-core の指定 | S | 済 |
+| 13 | SoundFont のゾーンが同じ波形を複製(`sf2.rs:119`)。書き出し・解析・render_note が毎回 WAV と SF2 を読み直す(`main.rs:1582`、`server.rs:1271`、`sound.rs:118`) | ClassicTest で波形 683MB(共有すれば 74MB)、RSS +797MB。読み直し 1 回 222ms、書き出し中の RSS 963MB | (フォント, sample_id, 範囲)→ `Arc` のキャッシュでプリセット間で共有。エンジンの bank を clone して渡す | S〜M | 済 |
+| 14 | `get_project` / `get_history` の応答が巨大で、同じ内容が text と structuredContent に 2 重に入る(`server.rs:884`、rmcp `CallToolResult::structured`) | ノート 1 万で 621K 文字・通信 1.36MB。get_history は limit なしで 3,000 件 884K 文字 | `clip_ids` と tick 範囲の指定、ノートの列形式。大きい応答は text のみ。get_history は既定の limit と `target_count` だけの要約 | M | 済 |
+| 15 | ノート編集の計算量がノート数の 2 乗(`apply.rs:441/463/472/475/493/515` の入れ子の線形探索) | 1 万ノートの update_notes 222ms(release)/ 621ms(debug)、remove_notes 270 / 932ms。その間アクターが止まる | `HashMap<NoteId, usize>` / `HashSet`。1 回の add_notes 内の重複 ID も検出 | S | 済 |
+
+2 の効果(同じ条件で再計測): ピアノロールの canvas 26.3MPx×2 → 1.8MPx、CPU 停止中 39〜50% → 0.1%・再生中 36〜44% → 13.5%、
+ズーム 278 → 95ms / 編集 1 回の再取得と再描画 96〜131 → 67ms(canvas の再描画 481 → 0 枚)/ ClassicTest の 1 小節の analyze_audio
+20.1 → 0.33 秒、per_track 31.5 → 0.48 秒 / SoundFont の曲の解析のピークメモリ約 290MB(以前は bank だけで 797MB)/
+get_project の応答 約 24.5 万字(2 重)→ 12.3 万字、compact で 7.1 万字 / 2 万ノートの一括編集 0.02 秒
 
 ## 3. 音の品質
 

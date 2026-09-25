@@ -10,11 +10,33 @@
 
   const H = 44; // クリップ内側の描画高さ(CSS 側と合わせる)
 
+  /// 前回描いた内容の署名。編集のたびにプロジェクト全体を取り直すので clip は毎回新しい
+  /// オブジェクトになるが、中身が同じなら描き直さない(大きな曲で 1 回の編集に数百枚を描き直していた)
+  let drawn = "";
+
+  /** 描く内容の署名(ノートの位置・長さ・音高と、クリップの長さ・ループ・幅) */
+  function signature(w: number): string {
+    let h = 0x811c9dc5;
+    const mix = (v: number) => {
+      h ^= v;
+      h = Math.imul(h, 0x01000193) >>> 0;
+    };
+    for (const n of clip.notes) {
+      mix(n.pos);
+      mix(n.dur);
+      mix(n.pitch);
+    }
+    return `${w}:${clip.length}:${clip.loop ? clip.loop_len : 0}:${clip.notes.length}:${h}`;
+  }
+
   $effect(() => {
     const c = canvas;
     if (!c) return;
     const notes = clip.notes;
     const w = Math.max(1, Math.min(Math.round(widthPx), 4096));
+    const sig = signature(w);
+    if (sig === drawn && c.width === w) return;
+    drawn = sig;
     if (c.width !== w || c.height !== H) {
       c.width = w;
       c.height = H;

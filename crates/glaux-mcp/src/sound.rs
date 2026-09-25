@@ -115,7 +115,7 @@ pub fn render_note(
     let t = project
         .track(track)
         .ok_or_else(|| format!("トラックが見つかりません: {track}"))?;
-    let bank = glaux_engine::SampleBank::load(project, dir);
+    let bank = glaux_engine::SampleBank::for_offline(project, dir);
     let frames = glaux_engine::render_track_note(
         project,
         track,

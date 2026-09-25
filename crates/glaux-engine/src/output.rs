@@ -630,7 +630,11 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                 tempo: Arc::new(Mutex::new(TempoMap::default())),
                 loop_ticks: Arc::new(Mutex::new(None)),
                 graveyard: Arc::new(Mutex::new(Vec::new())),
-                bank: Arc::new(Mutex::new(SampleBank::default())),
+                bank: {
+                    let bank = Arc::new(Mutex::new(SampleBank::default()));
+                    SampleBank::register_engine_bank(&bank);
+                    bank
+                },
                 recording: Arc::new(Mutex::new(None)),
                 midi: Arc::new(Mutex::new(None)),
                 midi_take: Arc::new(Mutex::new(None)),

@@ -36,3 +36,6 @@ desktop.ini
 # ---- 一時ファイル ----
 *.tmp
 *.log
+
+# 開いているプロジェクトの排他ロック(Glaux が作る)
+.glaux.lock

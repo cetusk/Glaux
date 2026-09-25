@@ -6,13 +6,14 @@
 
 use crate::command::{Command, NoteChange, TrackProp};
 use crate::error::{CoreError, Result};
-use crate::id::{ClipId, TrackId};
+use crate::id::{ClipId, NoteId, TrackId};
 use crate::model::{
     sort_notes, AutomationLane, Clip, ClipContent, Note, ParamMap, ParamPath, ParamValue,
     PitchPoint, Project, Stretch, TrackKind,
 };
 use crate::time::{TempoMap, Tick, MAX_TICK};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// 適用結果。
 #[derive(Clone, PartialEq, Debug)]
@@ -431,6 +432,8 @@ impl Project {
                 let existing = self.tracks[ti].clips[ci]
                     .notes_mut()
                     .ok_or_else(|| CoreError::NotMidiClip(clip.clone()))?;
+                // ID の重複はハッシュで調べる(ノート数の 2 乗にしない。1 回の追加の中の重複も弾く)
+                let mut ids: HashSet<&NoteId> = existing.iter().map(|e| &e.id).collect();
                 for n in notes {
                     if n.pitch > 127 || n.vel > 127 {
                         return Err(CoreError::OutOfRange(format!(
@@ -439,7 +442,7 @@ impl Project {
                         )));
                     }
                     check_note_extras(&n.id, &n.pitch_curve, n.glide_ms)?;
-                    if existing.iter().any(|e| e.id == n.id) {
+                    if !ids.insert(&n.id) {
                         return Err(CoreError::DuplicateId(n.id.to_string()));
                     }
                 }
@@ -460,20 +463,22 @@ impl Project {
                 let existing = self.tracks[ti].clips[ci]
                     .notes_mut()
                     .ok_or_else(|| CoreError::NotMidiClip(clip.clone()))?;
+                let present: HashSet<&NoteId> = existing.iter().map(|e| &e.id).collect();
                 for id in ids {
-                    if !existing.iter().any(|e| &e.id == id) {
+                    if !present.contains(id) {
                         return Err(CoreError::NoteNotFound {
                             clip: clip.clone(),
                             note: id.clone(),
                         });
                     }
                 }
+                let targets: HashSet<&NoteId> = ids.iter().collect();
                 let removed: Vec<_> = existing
                     .iter()
-                    .filter(|n| ids.contains(&n.id))
+                    .filter(|n| targets.contains(&n.id))
                     .cloned()
                     .collect();
-                existing.retain(|n| !ids.contains(&n.id));
+                existing.retain(|n| !targets.contains(&n.id));
                 Ok(Applied {
                     inverse: AddNotes {
                         clip: clip.clone(),
@@ -489,9 +494,15 @@ impl Project {
                 let existing = self.tracks[ti].clips[ci]
                     .notes_mut()
                     .ok_or_else(|| CoreError::NotMidiClip(clip.clone()))?;
+                // ID → 位置(並べ替えは最後なので、更新の間は位置が変わらない)
+                let index: HashMap<NoteId, usize> = existing
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (n.id.clone(), i))
+                    .collect();
                 // 事前検証(途中失敗で半端に変わらないように)
                 for ch in changes {
-                    if !existing.iter().any(|n| n.id == ch.id) {
+                    if !index.contains_key(&ch.id) {
                         return Err(CoreError::NoteNotFound {
                             clip: clip.clone(),
                             note: ch.id.clone(),
@@ -511,10 +522,7 @@ impl Project {
                 }
                 let mut inverse_changes = Vec::with_capacity(changes.len());
                 for ch in changes {
-                    let n = existing
-                        .iter_mut()
-                        .find(|n| n.id == ch.id)
-                        .expect("validated");
+                    let n = &mut existing[index[&ch.id]];
                     let mut inv = NoteChange::new(ch.id.clone());
                     if let Some(v) = ch.pos {
                         inv.pos = Some(std::mem::replace(&mut n.pos, v));

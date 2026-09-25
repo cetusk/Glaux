@@ -67,13 +67,13 @@ async fn get_project(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn get_history(state: State<'_, AppState>) -> Result<Value, String> {
-    let (entries, version) = state
+async fn get_history(state: State<'_, AppState>, limit: Option<usize>) -> Result<Value, String> {
+    let page = state
         .handle
-        .get_history(None, None, None)
+        .get_history(None, None, limit)
         .await?
         .map_err(|e| e.to_string())?;
-    Ok(json!({ "project_version": version, "entries": entries }))
+    serde_json::to_value(page).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1579,7 +1579,8 @@ async fn export_project_wav(state: State<'_, AppState>) -> Result<Value, String>
     let path_for_render = path.clone();
     let project_dir = state.project_dir();
     let seconds = tauri::async_runtime::spawn_blocking(move || {
-        let bank = glaux_engine::SampleBank::load(&project, std::path::Path::new(&project_dir));
+        let bank =
+            glaux_engine::SampleBank::for_offline(&project, std::path::Path::new(&project_dir));
         glaux_engine::export_wav(&project, &path_for_render, 48_000.0, &bank)
     })
     .await
@@ -1704,16 +1705,16 @@ async fn build_chat_context(state: &AppState) -> Option<String> {
 
     // 初回(記録なし)はコンテキスト不要。現在位置だけ記録する
     let Some(since) = since else {
-        if let Ok(Ok((entries, _))) = state.handle.get_history(None, None, Some(1)).await {
+        if let Ok(Ok(page)) = state.handle.get_history(None, None, Some(1)).await {
             state
                 .chat
-                .set_last_seen_entry(entries.last().map(|e| e.id.to_string()));
+                .set_last_seen_entry(page.entries.last().map(|e| e.id.to_string()));
         }
         return None;
     };
 
     let mut rolled_back = false;
-    let (entries, version) = match state.handle.get_history(None, Some(since), None).await {
+    let page = match state.handle.get_history(None, Some(since), None).await {
         Ok(Ok(r)) => r,
         // since のエントリが undo / revert_to で消えている
         Ok(Err(_)) => {
@@ -1725,6 +1726,7 @@ async fn build_chat_context(state: &AppState) -> Option<String> {
         }
         Err(_) => return None,
     };
+    let (entries, version) = (page.entries, page.project_version);
 
     match entries.last() {
         Some(last) => state.chat.set_last_seen_entry(Some(last.id.to_string())),

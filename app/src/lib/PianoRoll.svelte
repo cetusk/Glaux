@@ -287,17 +287,82 @@
   // (見た目は CSS サイズのまま。極端な場合だけ少しぼやける)
   const MAX_CANVAS_PX = 15000;
 
+  // ---- 描画する窓 ----
+  // canvas はクリップ全体ではなく「見えている範囲 + 余白」の大きさにして、その位置に置く
+  // (以前はクリップ全体の大きさで、64 小節で 15000×1750 が 2 枚・1 枚約 105MB。再生ヘッドが
+  // 動くたびに全面を描き直していた)。描画はコンテンツ座標のまま、変換行列で窓の位置へずらす。
+  // スクロールが窓の余白を越えたときだけ窓を動かして描き直す
+  const WIN_MARGIN = 256;
+  let win = $state({ x: 0, y: 0, w: 1, h: 1 });
+
+  function updateWindow() {
+    const el = scroller;
+    if (!el) return;
+    const viewW = Math.max(1, el.clientWidth - KEY_W);
+    const viewH = Math.max(1, el.clientHeight - RULER_H);
+    const w = Math.min(contentW, viewW + WIN_MARGIN * 2);
+    const h = Math.min(contentH, viewH + WIN_MARGIN * 2);
+    const visX = el.scrollLeft;
+    const visY = el.scrollTop;
+    const inside =
+      win.w === w &&
+      win.h === h &&
+      visX >= win.x &&
+      visX + viewW <= win.x + w &&
+      visY >= win.y &&
+      visY + viewH <= win.y + h;
+    if (inside) return;
+    win = {
+      x: Math.max(0, Math.min(visX - WIN_MARGIN, contentW - w)),
+      y: Math.max(0, Math.min(visY - WIN_MARGIN, contentH - h)),
+      w,
+      h,
+    };
+  }
+
+  $effect(() => {
+    const el = scroller;
+    if (!el) return;
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        updateWindow();
+      });
+    };
+    el.addEventListener("scroll", schedule, { passive: true });
+    const ro = new ResizeObserver(schedule);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", schedule);
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  });
+
+  // ズーム・クリップの長さが変わったら窓を合わせ直す
+  $effect(() => {
+    void contentW;
+    void contentH;
+    updateWindow();
+  });
+
+  /** ノート層のポインタ位置(コンテンツ座標)。canvas は窓の位置に置いているので、その分を足す */
+  const ex = (e: MouseEvent): number => e.offsetX + win.x;
+  const ey = (e: MouseEvent): number => e.offsetY + win.y;
+
   function ensureSize(c: HTMLCanvasElement): CanvasRenderingContext2D {
     const dpr = window.devicePixelRatio || 1;
-    const scale = Math.min(dpr, MAX_CANVAS_PX / contentW, MAX_CANVAS_PX / contentH);
-    const w = Math.max(1, Math.round(contentW * scale));
-    const h = Math.max(1, Math.round(contentH * scale));
+    const scale = Math.min(dpr, MAX_CANVAS_PX / win.w, MAX_CANVAS_PX / win.h);
+    const w = Math.max(1, Math.round(win.w * scale));
+    const h = Math.max(1, Math.round(win.h * scale));
     if (c.width !== w || c.height !== h) {
       c.width = w;
       c.height = h;
     }
     const g = c.getContext("2d")!;
-    g.setTransform(scale, 0, 0, scale, 0, 0);
+    g.setTransform(scale, 0, 0, scale, -win.x * scale, -win.y * scale);
     return g;
   }
 
@@ -520,6 +585,7 @@
     void drumHighlight;
     void pxPerBeat;
     void rowH;
+    void win;
     drawBase();
   });
 
@@ -534,6 +600,7 @@
     void pxPerBeat;
     void rowH;
     void playing;
+    void win;
     drawOverlay();
     followPlayhead();
   });
@@ -737,15 +804,15 @@
     const currentClip = clip;
     if (!c || !currentClip || !showVel) return;
     const dpr = window.devicePixelRatio || 1;
-    const scale = Math.min(dpr, MAX_CANVAS_PX / contentW);
-    const w = Math.max(1, Math.round(contentW * scale));
+    const scale = Math.min(dpr, MAX_CANVAS_PX / win.w);
+    const w = Math.max(1, Math.round(win.w * scale));
     const h = Math.round(VEL_H * scale);
     if (c.width !== w || c.height !== h) {
       c.width = w;
       c.height = h;
     }
     const g = c.getContext("2d")!;
-    g.setTransform(scale, 0, 0, scale, 0, 0);
+    g.setTransform(scale, 0, 0, scale, -win.x * scale, 0);
     g.clearRect(0, 0, contentW, VEL_H);
     g.fillStyle = "#1b1b1b";
     g.fillRect(0, 0, contentW, VEL_H);
@@ -780,6 +847,7 @@
     void pxPerBeat;
     void velDrag;
     void showVel;
+    void win;
     drawVel();
   });
 
@@ -804,7 +872,7 @@
   function onVelDown(e: PointerEvent) {
     if (e.button !== 0) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const n = velNoteAt(e.clientX - rect.left);
+    const n = velNoteAt(e.clientX - rect.left + win.x);
     if (!n) return;
     const currentClip = clip;
     if (!currentClip) return;
@@ -908,8 +976,8 @@
     if (e.button === 2) return; // 右クリックは contextmenu で処理
     const currentClip = clip;
     if (!currentClip) return;
-    const x = e.offsetX;
-    const y = e.offsetY;
+    const x = ex(e);
+    const y = ey(e);
     if (curveMode) {
       const n = curveTarget(x, y);
       if (!n) return;
@@ -967,25 +1035,25 @@
   function updateHover(e: PointerEvent) {
     if (!canvasEl) return;
     const rect = canvasEl.getBoundingClientRect();
-    hoverTick = Math.max(0, (e.clientX - rect.left) / pxPerTick);
+    hoverTick = Math.max(0, (e.clientX - rect.left + win.x) / pxPerTick);
   }
 
   function onPointerMove(e: PointerEvent) {
     if (curveDraw) {
       const n = clip?.notes.find((m) => m.id === curveDraw!.noteId);
-      if (n) curveDraw = { ...curveDraw, pts: [...curveDraw.pts, curveSample(n, e.offsetX, e.offsetY)] };
+      if (n) curveDraw = { ...curveDraw, pts: [...curveDraw.pts, curveSample(n, ex(e), ey(e))] };
       return;
     }
     updateHover(e);
     if (!drag) {
       // カーソル形状
-      const hit = noteAt(e.offsetX, e.offsetY);
+      const hit = noteAt(ex(e), ey(e));
       const el = e.currentTarget as HTMLElement;
-      el.style.cursor = hit ? (nearRightEdge(hit, e.offsetX) ? "ew-resize" : "move") : "default";
+      el.style.cursor = hit ? (nearRightEdge(hit, ex(e)) ? "ew-resize" : "move") : "default";
       return;
     }
-    const x = e.offsetX;
-    const y = e.offsetY;
+    const x = ex(e);
+    const y = ey(e);
     if (drag.mode === "move") {
       const rawDt = x / pxPerTick - drag.startTick;
       const dp = (127 - Math.floor(y / rowH)) - drag.startPitch;
@@ -1085,9 +1153,9 @@
     if (curveMode) return;
     const currentClip = clip;
     if (!currentClip) return;
-    if (noteAt(e.offsetX, e.offsetY)) return;
-    const pos = Math.max(0, Math.min(snapFloor(e.offsetX / pxPerTick), lenOf(currentClip) - 60));
-    const pitch = Math.max(0, Math.min(127, 127 - Math.floor(e.offsetY / rowH)));
+    if (noteAt(ex(e), ey(e))) return;
+    const pos = Math.max(0, Math.min(snapFloor(ex(e) / pxPerTick), lenOf(currentClip) - 60));
+    const pitch = Math.max(0, Math.min(127, 127 - Math.floor(ey(e) / rowH)));
     const dur = Math.min(snapTicks, lenOf(currentClip) - pos);
     const id = newNoteId();
     selected = new Set([id]);
@@ -1202,12 +1270,12 @@
     if (curveMode) {
       // カーブモードの右クリック: そのノートのカーブを消す
       e.preventDefault();
-      const n = curveTarget(e.offsetX, e.offsetY);
+      const n = curveTarget(ex(e), ey(e));
       if (n && n.pitch_curve && n.pitch_curve.length > 0) commitCurve(n.id, []);
       return;
     }
     e.preventDefault();
-    const hit = noteAt(e.offsetX, e.offsetY);
+    const hit = noteAt(ex(e), ey(e));
     if (!hit) return;
     deleteNotes(selected.has(hit.id) ? [...selected] : [hit.id]);
   }
@@ -1515,7 +1583,11 @@
             {/each}
           </div>
           <div class="stack" style="width:{contentW}px;height:{contentH}px">
-            <canvas bind:this={canvasEl} style="width:{contentW}px;height:{contentH}px"></canvas>
+            <canvas
+              class="win-layer"
+              bind:this={canvasEl}
+              style="left:{win.x}px;top:{win.y}px;width:{win.w}px;height:{win.h}px"
+            ></canvas>
             <!-- クラス名を .overlay(パネルのルート)と絶対に被せないこと:
                  被るとルート用の z-index:5 + 不透明背景がこの canvas に当たり、
                  グリッド・ノート・鍵盤が全部この canvas の下に隠れる(過去の実バグ) -->
@@ -1523,7 +1595,7 @@
               class="note-layer"
               class:curve-mode={curveMode}
               bind:this={overlayEl}
-              style="width:{contentW}px;height:{contentH}px"
+              style="left:{win.x}px;top:{win.y}px;width:{win.w}px;height:{win.h}px"
               onpointerdown={onPointerDown}
               onpointermove={onPointerMove}
               onpointerup={onPointerUp}
@@ -1535,10 +1607,11 @@
         {#if showVel}
           <div class="vel-row" style="height:{VEL_H}px">
             <div class="vel-corner" style="width:{KEY_W}px" title="ベロシティ(音の強さ 1〜127)">Vel</div>
+            <div class="vel-track" style="width:{contentW}px;height:{VEL_H}px">
             <canvas
               class="vel-layer"
               bind:this={velEl}
-              style="width:{contentW}px;height:{VEL_H}px"
+              style="left:{win.x}px;width:{win.w}px;height:{VEL_H}px"
               title={velDrag
                 ? `ベロシティ ${Math.max(1, Math.min(127, (velDrag.base.get(velDrag.anchor) ?? 0) + velDrag.delta))}`
                 : "縦棒を上下にドラッグで音の強さを変更(選択中のノートはまとめて変わる)"}
@@ -1547,6 +1620,7 @@
               onpointerup={onVelUp}
               onpointercancel={() => (velDrag = null)}
             ></canvas>
+            </div>
           </div>
         {/if}
       </div>
@@ -1813,8 +1887,15 @@
     touch-action: none;
   }
 
-  canvas.note-layer {
+  /* canvas は窓(見えている範囲 + 余白)の大きさで、その位置に置く */
+  canvas.note-layer,
+  canvas.win-layer,
+  canvas.vel-layer {
     position: absolute;
-    inset: 0;
+  }
+
+  .vel-track {
+    position: relative;
+    flex-shrink: 0;
   }
 </style>

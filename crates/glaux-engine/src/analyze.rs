@@ -132,19 +132,9 @@ pub fn analyze_project(
             t.solo = false;
         }
     }
-    let stereo = render_project(&target, SAMPLE_RATE, bank)?;
-
-    // tick 範囲 → サンプル範囲でスライス
-    let (offset_seconds, sliced): (f64, &[f32]) = match range {
-        Some((start, end)) => {
-            let s0 = project.tempo_map.tick_to_seconds(start);
-            let s1 = project.tempo_map.tick_to_seconds(end);
-            let i0 = ((s0 * SAMPLE_RATE) as usize * 2).min(stereo.len());
-            let i1 = ((s1 * SAMPLE_RATE) as usize * 2).min(stereo.len());
-            (s0, &stereo[i0..i1.max(i0)])
-        }
-        None => (0.0, &stereo[..]),
-    };
+    let stereo = render_for_analysis(&target, range, bank)?;
+    let offset_seconds = range.map_or(0.0, |(start, _)| project.tempo_map.tick_to_seconds(start));
+    let sliced: &[f32] = &stereo;
     if sliced.len() < 4096 {
         return Err(ExportError::Empty);
     }
@@ -323,27 +313,64 @@ pub fn analyze_mix(
     range: Option<(Tick, Tick)>,
     bank: &crate::data::SampleBank,
 ) -> MixAnalysis {
-    let mut tracks = Vec::new();
-    let mut frames: Vec<(String, Vec<[f64; 24]>)> = Vec::new();
-    for t in &project.tracks {
+    // トラックごとのソロのレンダは互いに独立なので並列にする(CLAP を含むものは、プラグインの
+    // インスタンスを作るので 1 つずつ)。再生スレッドと競合しないよう、コア数より少し少なくする
+    let solo = |t: &glaux_core::Track| {
         let mut target = project.clone();
         target.tracks.retain(|x| x.id == t.id);
         for x in &mut target.tracks {
             x.solo = false;
         }
-        let Ok(stereo) = render_project(&target, SAMPLE_RATE, bank) else {
+        target
+    };
+    let rendered: Vec<Option<Vec<f32>>> = {
+        let n = project.tracks.len();
+        let targets: Vec<Project> = project.tracks.iter().map(solo).collect();
+        let has_plugins: Vec<bool> = targets
+            .iter()
+            .map(|t| !crate::plugins::project_plugins(t).is_empty())
+            .collect();
+        let mut out: Vec<Option<Vec<f32>>> = vec![None; n];
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |p| p.get())
+            .saturating_sub(2)
+            .max(1);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let results = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..workers.min(n) {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    if has_plugins[i] {
+                        continue;
+                    }
+                    let r = render_for_analysis(&targets[i], range, bank).ok();
+                    results
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((i, r));
+                });
+            }
+        });
+        for (i, r) in results.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            out[i] = r;
+        }
+        for i in (0..n).filter(|&i| has_plugins[i]) {
+            out[i] = render_for_analysis(&targets[i], range, bank).ok();
+        }
+        out
+    };
+
+    let mut tracks = Vec::new();
+    let mut frames: Vec<(String, Vec<[f64; 24]>)> = Vec::new();
+    for (t, stereo) in project.tracks.iter().zip(rendered) {
+        let Some(stereo) = stereo else {
             continue;
         };
-        let sliced: &[f32] = match range {
-            Some((start, end)) => {
-                let s0 = project.tempo_map.tick_to_seconds(start);
-                let s1 = project.tempo_map.tick_to_seconds(end);
-                let i0 = ((s0 * SAMPLE_RATE) as usize * 2).min(stereo.len());
-                let i1 = ((s1 * SAMPLE_RATE) as usize * 2).min(stereo.len());
-                &stereo[i0..i1.max(i0)]
-            }
-            None => &stereo[..],
-        };
+        let sliced: &[f32] = &stereo;
         if sliced.len() < 8192 {
             continue;
         }
@@ -414,6 +441,22 @@ pub fn analyze_mix(
     masking.sort_by(|x, y| (y.time_ratio * y.band_share).total_cmp(&(x.time_ratio * x.band_share)));
     masking.truncate(12);
     MixAnalysis { tracks, masking }
+}
+
+/// 解析用に描き出す。範囲の指定があれば、その範囲だけ(曲全体を描き出してから切るより速い)
+fn render_for_analysis(
+    project: &Project,
+    range: Option<(Tick, Tick)>,
+    bank: &crate::data::SampleBank,
+) -> Result<Vec<f32>, ExportError> {
+    match range {
+        Some((start, end)) => {
+            let s0 = project.tempo_map.tick_to_seconds(start);
+            let s1 = project.tempo_map.tick_to_seconds(end);
+            crate::export::render_project_range(project, SAMPLE_RATE, bank, s0, s1)
+        }
+        None => render_project(project, SAMPLE_RATE, bank),
+    }
 }
 
 fn amp_db(a: f64) -> f64 {
@@ -707,6 +750,43 @@ mod tests {
         )
         .unwrap();
         assert!(a.duration_seconds < 2.5);
+    }
+
+    /// 範囲だけの描き出しが、曲全体を描き出して切り出したものと同じ音になること
+    /// (範囲の頭で鳴り続けている長い音・残響も含めて)
+    #[test]
+    fn range_render_matches_slice_of_full_render() {
+        let rms = |x: &[f32]| {
+            (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt()
+        };
+        for with_reverb in [false, true] {
+            let mut project = Project::new("t");
+            // 頭から 8 小節鳴り続けるパッド + 6 小節目の短い音(範囲は 6〜7 小節目 = 10〜12 秒)
+            let mut t = midi_track(
+                "Pad",
+                vec![(0, 3840 * 8, 60, 100), (3840 * 5, 480, 72, 110)],
+            );
+            t.clips[0].length = Tick(3840 * 8);
+            if with_reverb {
+                t.effects.push(glaux_core::Effect::builtin(
+                    glaux_core::FxId::new(),
+                    "reverb",
+                ));
+            }
+            project.tracks.push(t);
+            let bank = Default::default();
+            let full = render_project(&project, SAMPLE_RATE, &bank).unwrap();
+            let s0 = project.tempo_map.tick_to_seconds(Tick(3840 * 5));
+            let s1 = project.tempo_map.tick_to_seconds(Tick(3840 * 6));
+            let expected = &full[(s0 * SAMPLE_RATE) as usize * 2..(s1 * SAMPLE_RATE) as usize * 2];
+            let got =
+                crate::export::render_project_range(&project, SAMPLE_RATE, &bank, s0, s1).unwrap();
+            assert_eq!(got.len(), expected.len());
+            let diff: Vec<f32> = got.iter().zip(expected).map(|(a, b)| a - b).collect();
+            let ratio = rms(&diff) / rms(expected);
+            // 鳴り続けている音は頭から鳴らすので、同じ音(-60dB 以下の差)
+            assert!(ratio < 1e-3, "reverb={with_reverb}: 差 {ratio}");
+        }
     }
 
     #[test]

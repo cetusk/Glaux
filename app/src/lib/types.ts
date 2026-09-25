@@ -133,6 +133,8 @@ export interface ProjectSnapshot {
 
 export interface HistorySnapshot {
   project_version: number;
+  /** 履歴の総数(entries は最新側から limit 件) */
+  total: number;
   entries: EntrySummary[];
 }
 

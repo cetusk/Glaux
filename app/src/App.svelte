@@ -25,6 +25,7 @@
   let project = $state<Project | null>(null);
   let projectVersion = $state(0);
   let entries = $state<EntrySummary[]>([]);
+  let historyTotal = $state(0);
   let info = $state<AppInfo | null>(null);
   let error = $state<string | null>(null);
   let mcpCopied = $state(false);
@@ -123,6 +124,7 @@
       project = p.project;
       projectVersion = p.project_version;
       entries = h.entries;
+      historyTotal = h.total;
       error = null;
       // プロジェクトの移動・切り替えでパスが変わることがあるのでフッターも更新
       api.appInfo().then((i) => (info = i)).catch(() => {});
@@ -969,7 +971,7 @@
       </div>
       <div class="col-handle" onpointerdown={startColResize} title="ドラッグで幅を調整"></div>
       <div class="history-section">
-        <HistoryPanel {entries} />
+        <HistoryPanel {entries} total={historyTotal} />
       </div>
     </section>
   </main>

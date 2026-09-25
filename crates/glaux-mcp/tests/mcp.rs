@@ -54,18 +54,18 @@ async fn call(fx: &Fixture, tool: &'static str, args: Value) -> CallToolResult {
     fx.client.call_tool(params).await.unwrap()
 }
 
-/// 成功前提で structured_content を取り出す
-fn ok_json(result: &CallToolResult) -> &Value {
+/// 成功前提で結果の JSON(text の内容)を取り出す。
+/// 同じ JSON を structuredContent にも入れると量が 2 倍になるので、text だけで返している
+fn ok_json(result: &CallToolResult) -> Value {
     assert_ne!(
         result.is_error,
         Some(true),
         "tool failed: {:?}",
         result.content
     );
-    result
-        .structured_content
-        .as_ref()
-        .expect("structured_content")
+    assert!(result.structured_content.is_none(), "text だけで返す");
+    let text = result.content[0].as_text().expect("text").text.clone();
+    serde_json::from_str(&text).expect("JSON")
 }
 
 fn add_track_args(track_id: &str, name: &str) -> Value {
@@ -274,6 +274,86 @@ async fn include_notes_false_returns_note_counts() {
     let clip = &ok_json(&r)["project"]["tracks"][0]["clips"][0];
     assert_eq!(clip["notes"].as_array().unwrap().len(), 2);
     assert!(clip.get("note_count").is_none());
+}
+
+#[tokio::test]
+async fn get_project_filters_by_clip_and_range_and_compacts_notes() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_keys01", "Keys")).await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                {
+                    "op": "add_clip", "track": "trk_keys01",
+                    "clip": {
+                        "id": "clp_intro1", "name": "Intro", "start": 0, "length": 7680, "kind": "midi",
+                        "notes": [
+                            { "id": "nt_a00001", "pos": 0, "dur": 480, "pitch": 60, "vel": 100 },
+                            { "id": "nt_b00001", "pos": 3840, "dur": 480, "pitch": 64, "vel": 90,
+                              "articulation": "staccato" }
+                        ]
+                    }
+                },
+                {
+                    "op": "add_clip", "track": "trk_keys01",
+                    "clip": { "id": "clp_verse1", "name": "Verse", "start": 7680, "length": 3840, "kind": "midi",
+                              "notes": [ { "id": "nt_c00001", "pos": 0, "dur": 480, "pitch": 67, "vel": 100 } ] }
+                }
+            ],
+            "label": "2 つのクリップ",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+
+    // クリップ ID で絞る
+    let r = call(&fx, "get_project", json!({ "clip_ids": ["clp_verse1"] })).await;
+    let clips = ok_json(&r)["project"]["tracks"][0]["clips"].clone();
+    assert_eq!(clips.as_array().unwrap().len(), 1);
+    assert_eq!(clips[0]["id"], "clp_verse1");
+
+    // 範囲で絞る: 2 小節目だけ → Intro の 2 つ目のノートだけ(元は 2 個)。Verse は範囲外
+    let r = call(
+        &fx,
+        "get_project",
+        json!({ "start_tick": 3840, "end_tick": 7680 }),
+    )
+    .await;
+    let clips = ok_json(&r)["project"]["tracks"][0]["clips"].clone();
+    assert_eq!(clips.as_array().unwrap().len(), 1);
+    assert_eq!(clips[0]["notes"].as_array().unwrap().len(), 1);
+    assert_eq!(clips[0]["notes"][0]["id"], "nt_b00001");
+    assert_eq!(clips[0]["notes_in_range"], true);
+    assert_eq!(clips[0]["note_count"], 2);
+
+    // 配列形式: [id, pos, dur, pitch, vel]、奏法があるものは 6 番目
+    let r = call(
+        &fx,
+        "get_project",
+        json!({ "clip_ids": ["clp_intro1"], "note_format": "compact" }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["note_fields"][0], "id");
+    let notes = v["project"]["tracks"][0]["clips"][0]["notes"].clone();
+    assert_eq!(notes[0], json!(["nt_a00001", 0, 480, 60, 100]));
+    assert_eq!(
+        notes[1],
+        json!(["nt_b00001", 3840, 480, 64, 90, { "articulation": "staccato" }])
+    );
+
+    // 不正な指定はエラー
+    let r = call(&fx, "get_project", json!({ "note_format": "xml" })).await;
+    assert_eq!(r.is_error, Some(true));
+    let r = call(
+        &fx,
+        "get_project",
+        json!({ "start_tick": 10, "end_tick": 5 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
 }
 
 #[tokio::test]

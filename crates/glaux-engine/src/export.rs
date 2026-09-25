@@ -28,6 +28,36 @@ pub fn render_project(
     sample_rate: f64,
     bank: &crate::data::SampleBank,
 ) -> Result<Vec<f32>, ExportError> {
+    render_inner(project, sample_rate, bank, None)
+}
+
+/// 範囲の手前から描き出す長さ(残響・リリース・コンプの立ち上がりの分)
+const PREROLL_SECS: f64 = 3.0;
+/// 範囲の頭で鳴っている長い音のために遡る上限
+const MAX_PREROLL_SECS: f64 = 30.0;
+
+/// 秒の範囲 `[from, to)` だけを描き出す(解析用。曲全体を描き出すより速い)。
+/// 範囲の少し手前から描き出して、残響やリリースを含めた「範囲の頭で聞こえている音」にする。
+/// 範囲の頭で鳴っているノート・音声クリップは、その頭から鳴らす(最大 30 秒遡る)。
+/// 返すのは範囲の分だけ(ステレオ・インターリーブ)。末尾の無音は切り詰めない
+pub fn render_project_range(
+    project: &Project,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+    from_secs: f64,
+    to_secs: f64,
+) -> Result<Vec<f32>, ExportError> {
+    let from = (from_secs.max(0.0) * sample_rate) as u64;
+    let to = ((to_secs * sample_rate) as u64).max(from);
+    render_inner(project, sample_rate, bank, Some((from, to)))
+}
+
+fn render_inner(
+    project: &Project,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+    range: Option<(u64, u64)>,
+) -> Result<Vec<f32>, ExportError> {
     let slots = Arc::new(crate::plugins::new_slots());
     // CLAP の音源・エフェクトがあれば、このスレッドで書き出し専用のインスタンスを作る
     let has_plugins = !crate::plugins::project_plugins(project).is_empty();
@@ -48,17 +78,42 @@ pub fn render_project(
         }
         return Err(ExportError::Empty);
     }
+    // 範囲指定なら、描き出しの開始位置(範囲の頭で鳴っている音の頭まで遡る)
+    let start = range.map(|(from, _)| {
+        let preroll = (PREROLL_SECS * sample_rate) as u64;
+        let limit = from.saturating_sub((MAX_PREROLL_SECS * sample_rate) as u64);
+        let sounding = data
+            .events
+            .iter()
+            .filter(|e| e.start < from && e.end > from)
+            .map(|e| e.start)
+            .chain(
+                data.audio_events
+                    .iter()
+                    .filter(|a| a.start < from && a.end > from)
+                    .map(|a| a.start),
+            )
+            .min()
+            .unwrap_or(from);
+        sounding.min(from.saturating_sub(preroll)).max(limit)
+    });
     let mut shared = Shared::new(data);
     shared.plugin_slots = slots;
     let shared = Arc::new(shared);
     shared.playing.store(true, Ordering::Release);
+    if let Some(start) = start {
+        shared.seek.store(start, Ordering::Release);
+    }
     let mut renderer = Renderer::new(shared.clone());
 
     const BLOCK: usize = 4096;
-    // 安全上限: 曲の終端 + 10 秒(自動停止が先に来るのが通常)
-    let cap = {
-        let d = shared.data.load();
-        (d.end_sample + (10.0 * sample_rate) as u64) as usize
+    // 安全上限: 曲の終端 + 10 秒(自動停止が先に来るのが通常)。範囲指定なら範囲の終わりまで
+    let cap = match (range, start) {
+        (Some((_, to)), Some(start)) => (to - start) as usize,
+        _ => {
+            let d = shared.data.load();
+            (d.end_sample + (10.0 * sample_rate) as u64) as usize
+        }
     };
 
     let mut out: Vec<f32> = Vec::new();
@@ -69,6 +124,14 @@ pub fn render_project(
     }
     if let Some(o) = offline {
         o.finish(renderer.take_plugins());
+    }
+
+    if let (Some((from, to)), Some(start)) = (range, start) {
+        // 手前に描き出した分を捨て、範囲の分だけにする(自動停止で足りなければ無音で埋める)
+        let skip = ((from - start) as usize * 2).min(out.len());
+        out.drain(..skip);
+        out.resize((to - from) as usize * 2, 0.0);
+        return Ok(out);
     }
 
     // 末尾の無音を切り詰める(+0.5 秒の余白を残す)

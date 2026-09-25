@@ -2,13 +2,13 @@
   import * as api from "./api";
   import type { Author, EntrySummary } from "./types";
 
-  let { entries }: { entries: EntrySummary[] } = $props();
+  let { entries, total }: { entries: EntrySummary[]; total: number } = $props();
 
   // 新しい順に表示。件数が増えると全件再描画が重くなり(つまみ操作で履歴は
-  // どんどん増える)、再生中の音切れの一因になるため表示は直近だけに絞る
-  const MAX_SHOWN = 120;
-  const reversed = $derived([...entries].reverse().slice(0, MAX_SHOWN));
-  const hidden = $derived(Math.max(0, entries.length - MAX_SHOWN));
+  // どんどん増える)、再生中の音切れの一因になるため、取得も表示も直近だけに絞る
+  // (api.getHistory の HISTORY_LIMIT 件)
+  const reversed = $derived([...entries].reverse());
+  const hidden = $derived(Math.max(0, total - entries.length));
 
   /// 既に取り消し済みのエントリ ID(↩ ボタンを出さない)
   const revertedIds = $derived(
@@ -54,7 +54,7 @@
 </script>
 
 <div class="panel">
-  <h2>履歴 <span class="count">{entries.length}</span></h2>
+  <h2>履歴 <span class="count">{total}</span></h2>
   {#if entries.length === 0}
     <div class="empty">まだ編集はありません</div>
   {/if}

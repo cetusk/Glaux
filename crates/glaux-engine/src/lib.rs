@@ -41,7 +41,9 @@ pub use analyze::{
 pub use data::{
     build_playback_data, load_wav, load_wav_mono, wave_peaks, PlaybackData, SampleBank,
 };
-pub use export::{export_wav, render_project, render_track_note, ExportError};
+pub use export::{
+    export_wav, render_project, render_project_range, render_track_note, ExportError,
+};
 pub use midi::list_midi_inputs;
 pub use output::{
     list_devices, start_engine, DeviceList, EngineError, EngineHandle, MidiRecordOutcome,

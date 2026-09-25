@@ -69,6 +69,12 @@ symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "flac", "ogg"
 
 # tauri dev(デバッグビルド)でもオーディオ経路は最適化する。
 # レンダラ・DSP・FFT が debug のままだと CPU 余裕が減り、analyze/export も遅い。
+# 開発版(tauri dev / cargo test)でも外部クレートは最適化する。解析(ebur128 等)・推論・取り込み・保存が
+# 最適化なしでは数十倍遅い(ebur128 は 69 秒の音で 5.1 秒 → 0.08 秒)。個別に 3 を指定したものはそちらが優先
+[profile.dev.package."*"]
+opt-level = 2
+[profile.dev.package.glaux-core]
+opt-level = 2
 [profile.dev.package.glaux-dsp]
 opt-level = 3
 [profile.dev.package.glaux-engine]
