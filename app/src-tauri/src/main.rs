@@ -1559,6 +1559,59 @@ async fn revert_entry(state: State<'_, AppState>, entry_id: String) -> Result<Va
     }))
 }
 
+// ---- チャットの 1 ターン分の編集 ------------------------------------------
+
+/// `since`(ターンの開始前の最後の履歴エントリ。None なら先頭から)より後の、AI の編集
+async fn ai_entries_since(
+    state: &AppState,
+    since: Option<String>,
+) -> Result<Vec<glaux_core::HistoryEntry>, String> {
+    let since = match since {
+        Some(s) => Some(EntryId::parse(&s).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let entries = state
+        .handle
+        .get_entries(since, 1000)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| matches!(e.author, Author::Ai { .. }))
+        .collect())
+}
+
+/// チャットの 1 ターンで AI が行った編集の要約(件数・変わったクリップとノート)。
+/// 画面で「このターンを取り消す」を出し、変わった所を縁取りするのに使う
+#[tauri::command]
+async fn turn_changes(state: State<'_, AppState>, since: Option<String>) -> Result<Value, String> {
+    let entries = ai_entries_since(&state, since).await?;
+    let refs: Vec<&glaux_core::HistoryEntry> = entries.iter().collect();
+    let (project, _) = state.handle.get_project().await?;
+    let mut v = glaux_mcp::changes::summarize(&refs, &project);
+    v["entry_ids"] = json!(entries.iter().map(|e| e.id.to_string()).collect::<Vec<_>>());
+    Ok(v)
+}
+
+/// チャットの 1 ターンで AI が行った編集を、新しい順に取り消す(revert。途中の人間の編集は残る)。
+/// 取り消し自体も履歴に載るので undo できる
+#[tauri::command]
+async fn revert_turn(state: State<'_, AppState>, since: Option<String>) -> Result<Value, String> {
+    let entries = ai_entries_since(&state, since).await?;
+    let mut reverted = 0usize;
+    let mut conflicts: Vec<String> = Vec::new();
+    for e in entries.iter().rev() {
+        let (_, c, _) = state
+            .handle
+            .revert_entry(e.id.clone(), Author::Human)
+            .await?
+            .map_err(|err| format!("「{}」を取り消せませんでした: {err}", e.label))?;
+        conflicts.extend(c.into_iter().map(|x| x.to_string()));
+        reverted += 1;
+    }
+    Ok(json!({ "reverted": reverted, "conflicts": conflicts }))
+}
+
 // ---- エクスポート ----------------------------------------------------------
 
 /// プロジェクトを WAV に書き出す(`<プロジェクト>/export/` 配下、48kHz/16bit)。
@@ -1714,7 +1767,11 @@ async fn build_chat_context(state: &AppState) -> Option<String> {
     };
 
     let mut rolled_back = false;
-    let page = match state.handle.get_history(None, Some(since), None).await {
+    let page = match state
+        .handle
+        .get_history(None, Some(since.clone()), None)
+        .await
+    {
         Ok(Ok(r)) => r,
         // since のエントリが undo / revert_to で消えている
         Ok(Err(_)) => {
@@ -1739,6 +1796,25 @@ async fn build_chat_context(state: &AppState) -> Option<String> {
         .filter(|e| matches!(e.author, Author::Human))
         .map(|e| format!("- {}", e.label))
         .collect();
+    // 人間の編集の中身の要約(どのクリップのノートが何個増えた・変わった等)
+    let detail: Vec<String> = if rolled_back || human_labels.is_empty() {
+        vec![]
+    } else {
+        match (
+            state.handle.get_entries(Some(since.clone()), 1000).await,
+            state.handle.get_project().await,
+        ) {
+            (Ok(Ok(full)), Ok((project, _))) => {
+                let human: Vec<&glaux_core::HistoryEntry> = full
+                    .iter()
+                    .filter(|e| matches!(e.author, Author::Human))
+                    .collect();
+                let summary = glaux_mcp::changes::summarize(&human, &project);
+                glaux_mcp::changes::summary_lines(&summary, 8)
+            }
+            _ => vec![],
+        }
+    };
 
     if human_labels.is_empty() && !rolled_back {
         return None;
@@ -1757,6 +1833,13 @@ async fn build_chat_context(state: &AppState) -> Option<String> {
         }
         for label in &human_labels[skip..] {
             ctx.push_str(label);
+            ctx.push('\n');
+        }
+    }
+    if !detail.is_empty() {
+        ctx.push_str("変更の中身(詳しくは get_changes / get_project の clip_ids で):\n");
+        for line in &detail {
+            ctx.push_str(line);
             ctx.push('\n');
         }
     }
@@ -2063,6 +2146,8 @@ fn main() -> Result<()> {
             export_project_wav,
             apply_edit,
             revert_entry,
+            turn_changes,
+            revert_turn,
             import_audio_clip,
             clip_peaks,
             transcribe_clip,

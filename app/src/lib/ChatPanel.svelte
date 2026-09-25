@@ -3,6 +3,8 @@
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
   import { toolShort } from "./toolLabels";
+  import { clearAiHighlight, setAiHighlight } from "./aiHighlight.svelte";
+  import { showError, showToast } from "./toast.svelte";
   import { playDoneChime, playErrorChime, saveSettings, settings } from "./settings.svelte";
 
   // チャットの相手。Claude = Claude Code(claude)、GPT = Codex CLI(codex)。どちらもホストでログイン済みのものを使う
@@ -60,8 +62,43 @@
   import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
 
   interface Msg {
-    role: "user" | "assistant" | "tool" | "notice" | "error";
+    role: "user" | "assistant" | "tool" | "notice" | "error" | "turn";
     text: string;
+    /** role "turn": ターンの開始前の最後の履歴エントリ(取り消しの起点)と、取り消したか */
+    since?: string | null;
+    reverted?: boolean;
+  }
+
+  /// 実行中のターンの開始前の最後の履歴エントリ(null = 履歴が空)
+  let turnStart: string | null = null;
+
+  /// ターンが終わったら、AI の編集の件数を数えて「取り消す」を出し、変わった所を縁取る
+  async function finishTurn() {
+    try {
+      const ch = await api.turnChanges(turnStart);
+      if (ch.entry_ids.length === 0) return;
+      setAiHighlight(ch);
+      push({ role: "turn", text: `このターンの編集 ${ch.entry_ids.length} 件`, since: turnStart });
+    } catch {
+      // 数えられなくても会話には影響しない
+    }
+  }
+
+  async function revertTurnAt(m: Msg) {
+    if (m.reverted) return;
+    try {
+      const r = await api.revertTurn(m.since ?? null);
+      m.reverted = true;
+      clearAiHighlight();
+      showToast(
+        r.conflicts.length > 0 ? "warn" : "ok",
+        r.conflicts.length > 0
+          ? `${r.reverted} 件を取り消しました。後から同じ所を触った編集があります(履歴で確認してください)`
+          : `このターンの編集 ${r.reverted} 件を取り消しました(Ctrl+Z で取り消しを戻せます)`,
+      );
+    } catch (e) {
+      showError("このターンを取り消せませんでした", e);
+    }
   }
 
 
@@ -144,6 +181,13 @@
 
     input = "";
     chatStatus.running = true;
+    clearAiHighlight();
+    try {
+      const h = await api.getHistory(1);
+      turnStart = h.entries.length > 0 ? h.entries[h.entries.length - 1].id : null;
+    } catch {
+      turnStart = null;
+    }
     try {
       await api.sendChat(fullPrompt, currentModel, provider);
     } catch (e) {
@@ -189,6 +233,7 @@
             }
             if (ev.ok) playDoneChime();
             else playErrorChime();
+            finishTurn();
             break;
           case "notice":
             push({ role: "notice", text: ev.text });
@@ -252,6 +297,18 @@
     {#each messages as m}
       {#if m.role === "tool"}
         <div class="msg tool">⚙ {m.text}</div>
+      {:else if m.role === "turn"}
+        <div class="msg turn">
+          <span>{m.text}{m.reverted ? "(取り消し済み)" : ""}</span>
+          {#if !m.reverted}
+            <button
+              class="small"
+              onclick={() => revertTurnAt(m)}
+              title="このターンで AI が行った編集をまとめて取り消す(後から人間が行った編集は残す)"
+              >↩ 取り消す</button
+            >
+          {/if}
+        </div>
       {:else}
         <div class="msg {m.role}">{m.text}</div>
       {/if}
@@ -389,6 +446,16 @@
     color: var(--ai);
     background: color-mix(in srgb, var(--ai) 12%, transparent);
     padding: 3px 9px;
+  }
+
+  .msg.turn {
+    align-self: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+    padding: 2px 4px;
   }
 
   .msg.notice {

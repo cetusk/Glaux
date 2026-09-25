@@ -43,7 +43,7 @@
 ```
 crates/
   glaux-core    プロジェクトモデル・Command・Git ライクな履歴・和声/リズム分析(依存最小の純データ層)
-  glaux-mcp     MCP サーバー(36 ツール)+ Session アクター + プリセット/アセット管理・履歴 compaction
+  glaux-mcp     MCP サーバー(41 ツール)+ Session アクター + プリセット/アセット管理・履歴 compaction
   glaux-ml      学習済みモデルの推論(譜起こし・音程・拍・音色語。tract による pure Rust 推論)
   glaux-engine  リアルタイムオーディオ(cpal)・音声クリップ・録音・MIDI 入力(midir)・WAV 書き出し・音声解析・SoundFont 読み込み
   glaux-dsp     内蔵楽器 7 種 + エフェクト 9 種 + 奏法(すべて RT セーフ・聴感説明付き)
@@ -119,11 +119,12 @@ url = "http://127.0.0.1:41920/mcp"
 claude mcp add glaux -- cmd /c "<repo>\scripts\glaux-mcp.bat" "C:\path\to\MySong.glaux"
 ```
 
-公開ツール(36):
+公開ツール(41):
 
 | 分類 | ツール |
 |---|---|
-| 基本 | `get_project` / `apply_commands` / `undo` / `redo` / `checkpoint` / `revert_to` / `revert` / `get_history` / `list_params` |
+| 基本 | `get_project` / `apply_commands` / `undo` / `redo` / `checkpoint` / `revert_to` / `revert` / `get_history` / `get_changes` / `list_params` / `get_guide` |
+| 構成 | `duplicate_clips` / `insert_bars` / `delete_bars` |
 | 分析 | `analyze_audio` / `analyze_harmony` / `analyze_rhythm` / `analyze_beats` / `analyze_sound` / `compare_sounds` / `match_sound` |
 | ノート | `transpose_notes` / `shift_notes` / `swing_notes` / `quantize_notes` / `scale_velocity` |
 | 音色 | `list_presets` / `save_preset` / `load_preset` / `delete_preset` / `find_similar_presets` / `list_soundfonts` / `set_soundfont_instrument` |

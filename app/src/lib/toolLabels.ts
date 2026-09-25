@@ -1,5 +1,5 @@
 // AI(MCP)のツール名の日本語表示。ヘッダーの作業中表示とチャットの ⚙ 表示で共通。
-// 以前は 36 個のうち 7〜9 個にしか訳が無く、2 か所に別々に書かれていた。
+// 以前は 36 個のうち 7〜9 個にしか訳が無く(今は 41 個)、2 か所に別々に書かれていた。
 
 interface ToolLabel {
   /** チャットの ⚙ 表示(名詞) */
@@ -19,6 +19,12 @@ const LABELS: Record<string, ToolLabel> = {
   revert: { short: "編集を取り消し", doing: "編集を取り消しています" },
   get_history: { short: "履歴を確認", doing: "履歴を確認しています" },
   list_params: { short: "パラメータを確認", doing: "パラメータを確認しています" },
+  get_changes: { short: "変更を確認", doing: "変更を確認しています" },
+  get_guide: { short: "定石を確認", doing: "定石を読んでいます" },
+  // 構成
+  duplicate_clips: { short: "クリップを複製", doing: "クリップを複製しています" },
+  insert_bars: { short: "小節を挿入", doing: "小節を挿入しています" },
+  delete_bars: { short: "小節を削除", doing: "小節を削除しています" },
   // 分析
   analyze_audio: { short: "音を聴いて確認", doing: "音を聴いています" },
   analyze_harmony: { short: "キーとコードを確認", doing: "キーとコードを調べています" },

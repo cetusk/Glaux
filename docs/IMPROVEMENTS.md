@@ -86,10 +86,10 @@ get_project の応答 約 24.5 万字(2 重)→ 12.3 万字、compact で 7.1 �
 
 | # | 内容 | 根拠 | 改善案 | 工数 | 状態 |
 |---|---|---|---|---|---|
-| 30 | 指示文が 3 か所に重複し、毎ターン約 2 万トークン。内容の食い違いあり。Codex の引数の上限まで残り約 1,000 字 | `chat.rs` の SYSTEM_PROMPT(約 6,100 字)、`server.rs:2438` の instructions、`server.rs:948-1004` の apply_commands の説明。amp の gain の目安が `server.rs:2447` と `chat.rs:321` で違う、メタルの歪みの記述、import_sample の「WAV の絶対パス」 | 定石は `get_guide {topic}` か MCP の resource に移し、システムプロンプトは 1,500 字以内に。文字数を見張るテスト | M | 未 |
-| 31 | まとめて編集できるツールがない(クリップの複製・小節の挿入と削除)。ノート ID を AI が 1 個ずつ作る | `model/clip.rs:58` の `Note.id` が必須 | `duplicate_clips`、`insert_bars` / `delete_bars`(Batch 1 件)、add_notes の id を省略可能に(MCP 層で採番)、簡潔なノート記法 | M | 未 |
-| 32 | AI の 1 ターン分をまとめて取り消せない。AI が変えた箇所を画面で強調しない | `HistoryPanel.svelte:27-38` は 1 件ずつ。Timeline / PianoRoll に author の参照なし。作者名は接続元の名前(`server.rs:785-791`) | ターン ID を履歴に付け「このターンを取り消す」。直近ターンの変更を縁取り。作者名にモデル名 | M | 未 |
-| 33 | 差分の取得と、クリップ単位・範囲単位の取得がない(既知: HANDOFF §6) | `server.rs:30-42`。チャットの文脈はラベルの羅列で最大 10 件(`main.rs:1735-1765`) | `get_project` に clip_ids と tick 範囲、`get_changes {since_revision}` | M | 未 |
+| 30 | 指示文が 3 か所に重複し、毎ターン約 2 万トークン。内容の食い違いあり。Codex の引数の上限まで残り約 1,000 字 | `chat.rs` の SYSTEM_PROMPT(約 6,100 字)、`server.rs:2438` の instructions、`server.rs:948-1004` の apply_commands の説明。amp の gain の目安が `server.rs:2447` と `chat.rs:321` で違う、メタルの歪みの記述、import_sample の「WAV の絶対パス」 | 定石は `get_guide {topic}` か MCP の resource に移し、システムプロンプトは 1,500 字以内に。文字数を見張るテスト | M | 済(定石は get_guide へ。CORE 875 字・チャット約 1,400 字、長さをテストで見張る。apply_commands の説明の短縮は未) |
+| 31 | まとめて編集できるツールがない(クリップの複製・小節の挿入と削除)。ノート ID を AI が 1 個ずつ作る | `model/clip.rs:58` の `Note.id` が必須 | `duplicate_clips`、`insert_bars` / `delete_bars`(Batch 1 件)、add_notes の id を省略可能に(MCP 層で採番)、簡潔なノート記法 | M | 済(簡潔なノート記法は未) |
+| 32 | AI の 1 ターン分をまとめて取り消せない。AI が変えた箇所を画面で強調しない | `HistoryPanel.svelte:27-38` は 1 件ずつ。Timeline / PianoRoll に author の参照なし。作者名は接続元の名前(`server.rs:785-791`) | ターン ID を履歴に付け「このターンを取り消す」。直近ターンの変更を縁取り。作者名にモデル名 | M | 一部済(ターン単位の取り消しと縁取り。作者名にモデル名は未) |
+| 33 | 差分の取得と、クリップ単位・範囲単位の取得がない(既知: HANDOFF §6) | `server.rs:30-42`。チャットの文脈はラベルの羅列で最大 10 件(`main.rs:1735-1765`) | `get_project` に clip_ids と tick 範囲、`get_changes {since_revision}` | M | 済(get_changes。get_project の絞り込みは 14 で済) |
 | 34 | AI の変更をワンクリックで聴く手段がない | MCP に再生のツールなし | チャットの返答に「▶ 変更した範囲を聴く」。MCP に `preview`。画像を返す `render_view` | M | 未 |
 | 35 | Claude と GPT の品質を比べる評価シナリオがない | Codex は模擬サーバーとの結合テストだけ | 10 題ほどのシナリオをヘッドレスで両方に回し、呼び出し回数・失敗・時間・調性を記録 | L | 未 |
 

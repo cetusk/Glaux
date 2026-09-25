@@ -570,6 +570,19 @@ export function cancelChat(): Promise<void> {
   return invoke("cancel_chat");
 }
 
+/** チャットの 1 ターン(`since` より後)で AI が行った編集の要約。entry_ids が件数 */
+export function turnChanges(since: string | null): Promise<{
+  entry_ids: string[];
+  clips: { clip_id: string; added_ids?: string[]; changed_ids?: string[] }[];
+}> {
+  return invoke("turn_changes", { since });
+}
+
+/** チャットの 1 ターンで AI が行った編集を取り消す(新しい順に revert) */
+export function revertTurn(since: string | null): Promise<{ reverted: number; conflicts: string[] }> {
+  return invoke("revert_turn", { since });
+}
+
 /** 会話をリセットする(次の送信が新しいセッションになる)。 */
 export function resetChat(): Promise<void> {
   return invoke("reset_chat");

@@ -452,6 +452,48 @@ pub struct DeletePresetParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct GetGuideParams {
+    /// instruments / genres / expression / mix / audio / sound_match / clap。省略で一覧。
+    #[serde(default)]
+    pub topic: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct GetChangesParams {
+    /// この履歴エントリ ID(`hst_xxxxxx`。apply_commands の entry_id など)より後の変更をまとめる。
+    /// 省略で最新 20 件。
+    #[serde(default)]
+    pub since: Option<String>,
+    /// 作者で絞り込む: "human" | "ai" | "system"(人間が何を変えたかを知るなら "human")。
+    #[serde(default)]
+    pub author: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DuplicateClipsParams {
+    /// 複製するクリップ ID(`clp_xxxxxx`)の配列。
+    pub clip_ids: Vec<String>,
+    /// 置く位置(tick)。複数なら最初のクリップがここに来て、互いの間隔は保つ。
+    #[serde(default)]
+    pub to_tick: Option<u64>,
+    /// または、元の位置からのずらし量(tick。3840 = 4/4 の 1 小節)。to_tick と両方省略すると、
+    /// 選んだクリップの範囲の直後に続けて置く(「サビをもう 1 回」)。
+    #[serde(default)]
+    pub offset_ticks: Option<i64>,
+    /// 置くトラック ID。省略で元と同じトラック。
+    #[serde(default)]
+    pub track_id: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct BarsParams {
+    /// 小節番号(1 始まり)。insert_bars はこの小節の頭に挿入、delete_bars はこの小節から削除。
+    pub bar: u32,
+    /// 小節数。
+    pub count: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct TransposeNotesParams {
     /// 対象クリップ ID(`clp_xxxxxx`)。
     pub clip_id: String,
@@ -523,6 +565,84 @@ pub struct ScaleVelocityParams {
 // ---- ヘルパー -----------------------------------------------------------
 
 type ToolResult = Result<JsonText, String>;
+
+/// apply_commands の Command JSON のうち、省略された新規 ID を振る。
+/// 対象: ノート(add_notes / add_clip / add_track の中)・クリップ・トラック・エフェクト・split_clip の new_id。
+/// 振った ID は `assigned` に `{command, kind, id}` で積む(同じ呼び出しの中で後から参照するものは、
+/// 呼び出し側が自分で ID を付ける)
+fn assign_missing_ids(cmd: &mut Value, index: usize, assigned: &mut Vec<Value>) {
+    fn fill(obj: &mut Value, kind: &str, index: usize, assigned: &mut Vec<Value>) {
+        let Some(map) = obj.as_object_mut() else {
+            return;
+        };
+        if map.get("id").is_some_and(|v| !v.is_null()) {
+            return;
+        }
+        let id = match kind {
+            "note" => glaux_core::NoteId::new().to_string(),
+            "clip" => glaux_core::ClipId::new().to_string(),
+            "track" => glaux_core::TrackId::new().to_string(),
+            _ => glaux_core::FxId::new().to_string(),
+        };
+        map.insert("id".into(), json!(id));
+        // ノートは数が多いので返さない(get_project で見られる)
+        if kind != "note" {
+            assigned.push(json!({ "command": index, "kind": kind, "id": id }));
+        }
+    }
+    fn clip(c: &mut Value, index: usize, assigned: &mut Vec<Value>) {
+        fill(c, "clip", index, assigned);
+        if let Some(notes) = c.get_mut("notes").and_then(Value::as_array_mut) {
+            for n in notes {
+                fill(n, "note", index, assigned);
+            }
+        }
+    }
+    match cmd.get("op").and_then(Value::as_str) {
+        Some("add_notes") => {
+            if let Some(notes) = cmd.get_mut("notes").and_then(Value::as_array_mut) {
+                for n in notes {
+                    fill(n, "note", index, assigned);
+                }
+            }
+        }
+        Some("add_clip") => {
+            if let Some(c) = cmd.get_mut("clip") {
+                clip(c, index, assigned);
+            }
+        }
+        Some("add_track") => {
+            if let Some(t) = cmd.get_mut("track") {
+                fill(t, "track", index, assigned);
+                if let Some(clips) = t.get_mut("clips").and_then(Value::as_array_mut) {
+                    for c in clips {
+                        clip(c, index, assigned);
+                    }
+                }
+            }
+        }
+        Some("add_effect") | Some("add_master_effect") => {
+            if let Some(e) = cmd.get_mut("effect") {
+                fill(e, "effect", index, assigned);
+            }
+        }
+        Some("split_clip") => {
+            if cmd.get("new_id").is_none_or(Value::is_null) {
+                let id = glaux_core::ClipId::new().to_string();
+                cmd["new_id"] = json!(id);
+                assigned.push(json!({ "command": index, "kind": "clip", "id": id }));
+            }
+        }
+        Some("batch") => {
+            if let Some(cmds) = cmd.get_mut("commands").and_then(Value::as_array_mut) {
+                for c in cmds {
+                    assign_missing_ids(c, index, assigned);
+                }
+            }
+        }
+        _ => {}
+    }
+}
 
 /// ノートを配列 `[id, pos, dur, pitch, vel]` にする(奏法などがあれば 6 番目にまとめる)
 fn compact_note(n: &Value) -> Value {
@@ -1080,10 +1200,12 @@ impl GlauxServer {
     #[tool(
         description = "コマンドを適用してプロジェクトを編集する。唯一の編集手段。\
         commands には glaux の Command JSON({\"op\": ..., ...})を並べる。複数渡すと 1 つの Batch になり、1 回の undo でまとめて戻せる。\
-        新規 ID は呼び出し側が生成して渡す(トラック trk_、クリップ clp_、ノート nt_、エフェクト fx_ + 英数 6 桁。例 trk_a1b2c3)。\
+        新規 ID(トラック trk_、クリップ clp_、ノート nt_、エフェクト fx_ + 英数 6 桁。例 trk_a1b2c3)は省略するとサーバーが振り、\
+        ノート以外は返り値 assigned_ids で返す(同じ呼び出しの中で後から参照するトラック・クリップは自分で付ける)。\
         相対操作(「半音上げる」等)は不可。現在値を読んで絶対値を計算してから送ること。\
         ただしノートの移調・時間移動・クオンタイズ・ベロシティ一括調整は\
         専用ツール(transpose_notes / shift_notes / quantize_notes / scale_velocity)の方が速くて確実。\
+        クリップの複製・小節の挿入と削除は duplicate_clips / insert_bars / delete_bars。\
         代表例: add_track {track,index?} / add_clip {track,clip} / add_notes {clip,notes} / update_notes {clip,changes} / \
         バス(リターン): add_track の kind: \"bus\" で作る(クリップは置けない。エフェクトを挿して共有リバーブ・ディレイにする。\
         リバーブは mix: 1.0 = ウェットのみが基本)。set_send {track, target, level_db, pre_fader?} でトラックからバスへ送る\
@@ -1113,7 +1235,7 @@ impl GlauxServer {
         両端は保持)を書くと自由なベンド・ポルタメント・うねりが作れる\
         (例: ギターのチョーキングを 1 拍かけて上げる = [{tick:0,cents:-200},{tick:960,cents:0}]、\
         ダイブ = [{tick:0,cents:0},{tick:1920,cents:-1200}])。update_notes の pitch_curve で差し替え、[] で削除。\
-        メタルの「ズクズク」した刻みは distortion + 低音 + palm_mute ノートの組み合わせで作る。\
+        メタルの「ズクズク」した刻みは pluck + amp(gain_db 40 以上)+ 低音 + palm_mute ノートの組み合わせで作る。\
         マスターバスのエフェクトは add_master_effect {effect, index?} / set_master_param {path: \"fx/<id>/<名前>\", value} / \
         unset_master_param {path}、削除とバイパスはトラックと同じ remove_effect / set_effect_bypass \
         (マスターのチェーンは get_project の master.effects で見える。仕上げのコンプ・EQ・リミッター的な使い方に)/ \
@@ -1147,7 +1269,10 @@ impl GlauxServer {
         }
         let mut commands = Vec::with_capacity(p.commands.len());
         let mut current: Option<glaux_core::Project> = None;
-        for (i, value) in p.commands.into_iter().enumerate() {
+        let mut assigned: Vec<Value> = Vec::new();
+        for (i, mut value) in p.commands.into_iter().enumerate() {
+            // 省略された ID はここで振る(コマンドは決定的なので、apply ではなく作る側 = MCP 層で)
+            assign_missing_ids(&mut value, i, &mut assigned);
             let mut cmd: Command = serde_json::from_value(value)
                 .map_err(|e| format!("commands[{i}] を Command として解釈できません: {e}"))?;
             // get_project で省略表示した CLAP の状態をそのまま送ってきたら、今の状態に戻す
@@ -1226,6 +1351,9 @@ impl GlauxServer {
         let (entry_id, m) = flatten(self.handle.apply(command, author, p.label).await)?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
+        if !assigned.is_empty() {
+            v["assigned_ids"] = json!(assigned);
+        }
         Ok(JsonText(v))
     }
 
@@ -2355,6 +2483,187 @@ impl GlauxServer {
         Ok(JsonText(json!({ "deleted": name })))
     }
 
+    #[tool(
+        description = "音作り・ジャンル・奏法・ミックス・音声素材・似た音作り・CLAP の定石を読む。\
+        topic: instruments(音源の選び方・エレキギター・SoundFont)/ genres(EDM・メタル・Lo-fi・ループ・構成)/\
+        expression(奏法・レガート・ポルタメント・ピッチカーブ)/ mix(エフェクト・バス・バランス・オートメーション)/\
+        audio(音声素材・分離・譜起こし・テンポ追従)/ sound_match(似た音を作る)/ clap(プラグイン)。\
+        省略で一覧。その分野の作業を始める前に読むと、道具の選び方と値の目安が分かる。"
+    )]
+    async fn get_guide(&self, params: Parameters<GetGuideParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("get_guide");
+        match params.0.topic.as_deref() {
+            None => Ok(JsonText(json!({
+                "topics": crate::guide::TOPICS
+                    .iter()
+                    .map(|(name, title, _)| json!({ "topic": name, "title": title }))
+                    .collect::<Vec<_>>(),
+            }))),
+            Some(t) => crate::guide::guide(t)
+                .map(|text| JsonText(json!({ "topic": t, "guide": text })))
+                .ok_or_else(|| {
+                    let names: Vec<&str> =
+                        crate::guide::TOPICS.iter().map(|(n, _, _)| *n).collect();
+                    format!("topic は {} のいずれか(got: {t})", names.join(" / "))
+                }),
+        }
+    }
+
+    #[tool(
+        description = "前回見た位置からの変更を要約する(get_project を読み直して自分で比べずに済む)。\
+        since に最後に見た履歴エントリ ID(apply_commands の entry_id など)を渡す。author: \"human\" で人間の編集だけ。\
+        返り値 clips にクリップごとのノートの追加・削除・変更の数と ID(多いときは最新 30 個)、tracks / effects に\
+        操作の種類、global にテンポ・拍子・セクション・マスターの操作。詳しい中身は get_project(clip_ids)で読む。"
+    )]
+    async fn get_changes(&self, params: Parameters<GetChangesParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("get_changes");
+        let p = params.0;
+        if let Some(a) = p.author.as_deref() {
+            if !matches!(a, "human" | "ai" | "system") {
+                return Err(format!(
+                    "author は human / ai / system のいずれか(got: {a})"
+                ));
+            }
+        }
+        let since = match p.since.as_deref() {
+            Some(s) => Some(EntryId::parse(s).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let limit = if since.is_some() { 1000 } else { 20 };
+        let entries = flatten(self.handle.get_entries(since, limit).await)?;
+        let entries: Vec<&glaux_core::HistoryEntry> = entries
+            .iter()
+            .filter(|e| match p.author.as_deref() {
+                None => true,
+                Some("human") => matches!(e.author, Author::Human),
+                Some("ai") => matches!(e.author, Author::Ai { .. }),
+                Some(_) => matches!(e.author, Author::System),
+            })
+            .collect();
+        let (project, version) = self.handle.get_project().await?;
+        let mut v = crate::changes::summarize(&entries, &project);
+        v["project_version"] = json!(version);
+        Ok(JsonText(v))
+    }
+
+    // ---- 構成の編集 ------------------------------------------------------
+    // クリップ・ノートを 1 つずつ組み立てずに済むよう、サーバー側で絶対値のコマンド列を作る(Batch 1 件)。
+
+    #[tool(
+        description = "クリップを複製する(新しい ID。ノートの ID も振り直す)。1 回の undo で戻る。\
+        to_tick(最初のクリップの置き場所)か offset_ticks(元からのずらし量)で位置を指定。両方省略すると、\
+        選んだクリップの範囲の直後に続けて置く(「サビをもう 1 回」は、サビのクリップを全トラックぶん渡すだけ)。\
+        返り値 clips に新しいクリップ ID。"
+    )]
+    async fn duplicate_clips(
+        &self,
+        params: Parameters<DuplicateClipsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("duplicate_clips");
+        let p = params.0;
+        if p.clip_ids.is_empty() {
+            return Err("clip_ids が空です".to_owned());
+        }
+        let ids = p
+            .clip_ids
+            .iter()
+            .map(|s| glaux_core::ClipId::parse(s).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let track = match &p.track_id {
+            Some(t) => Some(glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let (project, _) = self.handle.get_project().await?;
+        let clips: Vec<_> = project
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| ids.contains(&c.id))
+            .collect();
+        if clips.len() != ids.len() {
+            return Err("見つからないクリップがあります(get_project で ID を確認)".to_owned());
+        }
+        let min_start = clips.iter().map(|c| c.start.0).min().unwrap_or(0);
+        let max_end = clips.iter().map(|c| c.end().0).max().unwrap_or(0);
+        let offset = match (p.to_tick, p.offset_ticks) {
+            (Some(to), _) => to as i64 - min_start as i64,
+            (None, Some(o)) => o,
+            (None, None) => (max_end - min_start) as i64,
+        };
+        let made = glaux_core::arrange::duplicate_clips(&project, &ids, offset, track.as_ref())?;
+        let new_ids: Vec<String> = made.iter().map(|(id, _)| id.to_string()).collect();
+        let label = format!("クリップ {} 個を複製", made.len());
+        let command = Command::batch(label.clone(), made.into_iter().map(|(_, c)| c).collect());
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["clips"] = json!(new_ids);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "小節を挿入する(bar 小節目の頭に count 小節の空白)。それより後ろのクリップ・テンポ・拍子・\
+        セクション・オートメーションをまとめて後ろへずらし、またいでいるクリップは分割する。1 回の undo で戻る。\
+        「間奏を 4 小節足して」はこれで空けてから中身を書く。小節は拍子の変化も考慮して数える。"
+    )]
+    async fn insert_bars(
+        &self,
+        params: Parameters<BarsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("insert_bars");
+        let p = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        let (at, len) = glaux_core::arrange::bar_range(&project, p.bar, p.count)
+            .ok_or("bar と count は 1 以上")?;
+        let cmds = glaux_core::arrange::insert_time(&project, at, len);
+        let label = format!("{} 小節目に {} 小節を挿入", p.bar, p.count);
+        self.apply_arrangement(cmds, label, at, len, &ctx).await
+    }
+
+    #[tool(
+        description = "小節を削除して後ろを詰める(bar 小節目から count 小節)。範囲内のクリップは消し、範囲にかかる\
+        クリップは外側だけ残す。範囲内のテンポ・拍子・セクション・オートメーションの点も消し、後ろを前へずらす。\
+        1 回の undo で戻る。"
+    )]
+    async fn delete_bars(
+        &self,
+        params: Parameters<BarsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("delete_bars");
+        let p = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        let (from, len) = glaux_core::arrange::bar_range(&project, p.bar, p.count)
+            .ok_or("bar と count は 1 以上")?;
+        let cmds = glaux_core::arrange::delete_time(&project, from, len);
+        let label = format!("{} 小節目から {} 小節を削除", p.bar, p.count);
+        self.apply_arrangement(cmds, label, from, len, &ctx).await
+    }
+
+    async fn apply_arrangement(
+        &self,
+        cmds: Vec<Command>,
+        label: String,
+        start: u64,
+        len: u64,
+        ctx: &RequestContext<RoleServer>,
+    ) -> ToolResult {
+        if cmds.is_empty() {
+            return Err("変更がありません(その位置より後ろに何もない)".to_owned());
+        }
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["start_tick"] = json!(start);
+        v["length_ticks"] = json!(len);
+        Ok(JsonText(v))
+    }
+
     // ---- ノート便利ツール ------------------------------------------------
     // 「現在値を読んで絶対値に変換」をサーバー側で肩代わりする相対編集。
     // 中身はすべて UpdateNotes 1 コマンド = 1 回の undo で戻せる。
@@ -2570,47 +2879,6 @@ impl GlauxServer {
 impl ServerHandler for GlauxServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(
-                "Glaux(AI と共同作業できる DAW)のプロジェクト編集サーバー。\
-                 まず get_project(include_notes: false)で構造を把握 → apply_commands で編集、が基本の流れ。\
-                 ノートの移調・時間移動・クオンタイズ・ベロシティ調整は専用ツール\
-                 (transpose_notes / shift_notes / quantize_notes / scale_velocity)が使える。\
-                 音源: トラックには set_device で内蔵楽器(subtractive / drum / pluck / fm / wavetable)を設定でき、\
-                 本物っぽい楽器一式(ピアノ・ストリングス・ブラス等)は SoundFont: \
-                 list_soundfonts で確認 → set_soundfont_instrument で設定(無ければユーザーに導入を提案)。\
-                 ギター・ベース・ハープなど「弾く弦」の音は pluck(撥弦の物理モデル)を使う。\
-                 エレキギターは pluck + amp(アンプシミュレータ。gain_db 30 前後から歪み、40 以上でメタル)。\
-                 メタルの刻みはさらに palm_mute ノート。出荷時プリセット(クリーンエレキ / クランチギター / \
-                 メタルギター)を load_preset するのが早い。\
-                 list_params でパラメータの意味と現在値を確認して set_param で調整する。\
-                 ドラムトラックには drum を設定すること。\
-                 analyze_audio が「耳」: 編集結果をレンダしてラウドネス・帯域バランス等を返す。\
-                 analyze_harmony が「音楽理論の目」: ノートからキーと小節ごとのコード進行を推定する。\
-                 メロディ・ハモリ・ベースを足す前に呼ぶと調性に合った音を選べる。\
-                 analyze_rhythm が「リズム感」: スウィング・グリッド・シンコペーションを測る。\
-                 既存曲にフレーズを足す前に呼び、同じノリで書くこと。\
-                 曲の構成は sections(set_sections)で管理し、「サビ」等の指示は tick 範囲に解決する。\
-                 【セルフレビューの習慣】まとまった編集を終えたら、完了報告の前に必ず自己確認する: \
-                 (1) analyze_harmony で調性が意図どおりか、(2) analyze_audio でクリップや\
-                 バランス破綻がないか。問題があればその場で直してから報告し、\
-                 報告には確認結果(キー・LUFS 等)を一言添える。\
-                 ミックス調整は 編集 → analyze_audio → 微調整 のループで行う。\
-                 エフェクト(eq / compressor / reverb / distortion / amp / sidechain / delay / chorus / tape)は add_effect で追加し、\
-                 set_param(fx/<id>/<名前>)で調整する。マスターにも掛けられる。\
-                 インストール済みの CLAP エフェクト(list_plugins の effect: true)も同じように挿せる(effect に type: \"clap\", plugin_id)。\
-                 EDM のポンピングは sidechain(source にキックのトラック ID)、\
-                 supersaw は subtractive の unison + detune、歪みは distortion。\
-                 やまびこは delay(time_ms をテンポに合わせる)、厚みと広がりは chorus、\
-                 Lo-fi・ヴィンテージ感は tape(wow / flutter / hiss / crackle / bits)。\
-                 メタルのブリッジミュートはノートの articulation: \"palm_mute\"(+ distortion)。\
-                 音色プリセット: 良い音ができたら save_preset で保存し(全プロジェクト共通)、\
-                 音作りの依頼ではまず list_presets で使える音がないか確認 → load_preset で適用 → 微調整。\
-                 大きな試行錯誤の前に checkpoint を打ち、気に入らなければ revert_to で戻る。\
-                 「さっきのあの編集だけ戻して」は revert {entry_id}(後続の編集は保持される)。\
-                 音声素材(録音・WAV)は音声トラック(kind: \"audio\")のクリップとして再生される。\
-                 音声ファイル(WAV / MP3 等)を置くときは import_audio_clip。人間の録音も同じ形で入ってくるので analyze_audio で聴ける。\
-                 鼻歌・単旋律の録音は transcribe_audio で MIDI クリップにできる(その後キー確認と整えを忘れずに)。\
-                 すべての編集は履歴に残り、get_history(author: \"ai\")で自分の過去の作業を確認できる。",
-            )
+            .with_instructions(crate::guide::CORE)
     }
 }

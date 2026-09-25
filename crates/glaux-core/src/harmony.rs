@@ -70,34 +70,7 @@ pub struct HarmonyAnalysis {
 
 /// (小節頭 tick, 小節長) の列を拍子マップから作る。
 fn bars(project: &Project, end_tick: u64) -> Vec<(u64, u64)> {
-    let ppq = crate::time::PPQ;
-    let mut sigs: Vec<_> = project.time_sig_map.clone();
-    sigs.sort_by_key(|s| s.tick);
-    if sigs.is_empty() {
-        sigs.push(crate::time::TimeSigEvent {
-            tick: Tick(0),
-            num: 4,
-            den: 4,
-        });
-    }
-    let mut out = Vec::new();
-    for (i, sig) in sigs.iter().enumerate() {
-        let seg_end = sigs.get(i + 1).map(|s| s.tick.0).unwrap_or(u64::MAX);
-        let bar_len = (ppq * 4 * sig.num as u64 / sig.den as u64).max(1);
-        let mut t = sig.tick.0;
-        while t < seg_end {
-            let len = bar_len.min(seg_end - t);
-            out.push((t, len));
-            t += len;
-            if seg_end == u64::MAX && t >= end_tick {
-                return out;
-            }
-            if out.len() > 100_000 {
-                return out; // 安全弁
-            }
-        }
-    }
-    out
+    crate::arrange::bar_grid(project, end_tick)
 }
 
 /// ピアソン相関。

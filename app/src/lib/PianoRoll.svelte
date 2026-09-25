@@ -3,6 +3,7 @@
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
   import { settings } from "./settings.svelte";
+  import { aiHighlight } from "./aiHighlight.svelte";
   import { buildBars } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
   import Fretboard from "./Fretboard.svelte";
@@ -369,6 +370,11 @@
 
   // ---- 描画 ----
 
+  /// AI の編集の色(CSS の --ai)
+  function aiColor(): string {
+    return getComputedStyle(document.documentElement).getPropertyValue("--ai").trim() || "#b07ce8";
+  }
+
   /// テーマのアクセント色("r, g, b")。選択・再生ヘッド・ホバーをタイムラインと同じ色で描く
   /// (以前は琥珀色の固定値で、テーマを変えてもピアノロールだけ色が変わらなかった)
   let accentCache = { css: "", rgb: "255, 194, 71" };
@@ -445,8 +451,10 @@
       g.beginPath();
       g.roundRect(x, y + 1.5, w, rowH - 3, 3);
       g.fill();
-      g.strokeStyle = isSel ? "#ffd98a" : "rgba(255,255,255,0.25)";
-      g.lineWidth = 1;
+      // 直前のチャットのターンで AI が足した・変えたノートは AI の色で縁取る
+      const byAi = aiHighlight.notes.has(n.id);
+      g.strokeStyle = isSel ? "#ffd98a" : byAi ? aiColor() : "rgba(255,255,255,0.25)";
+      g.lineWidth = byAi && !isSel ? 2 : 1;
       g.stroke();
       // ピッチカーブ(AI が描いたベンド等)。1 行 = 半音として折れ線で重ねる
       const curve = n.pitch_curve;
@@ -604,6 +612,7 @@
     void rowH;
     void win;
     void settings.accent;
+    void aiHighlight.notes;
     drawBase();
   });
 

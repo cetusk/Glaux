@@ -3,6 +3,7 @@
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
   import { keepInView } from "./menu";
+  import { aiHighlight } from "./aiHighlight.svelte";
   import { showError, showToast } from "./toast.svelte";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
@@ -1386,6 +1387,7 @@
             class:dragging={clipDrag?.moved &&
               (clipDrag.clip.id === clip.id || (clipDrag.mode === "move" && clipDrag.group.has(clip.id)))}
             class:selected={selectedClips.has(clip.id)}
+            class:ai-changed={aiHighlight.clips.has(clip.id)}
             style={clipStyle(clip)}
             title={`${clip.name} (${clip.id})${clip.kind === "midi" ? " — ダブルクリックでピアノロール" : ""} / クリックで選択(Ctrl・Shift で複数)/ ドラッグで移動(Alt でスナップ解除)/ 右端で長さ変更 / 右クリックで分割・複製・削除 / S: 再生ヘッドで分割、Delete: 削除、Ctrl+C/X/V/D`}
             ondblclick={(e) => openPianoRoll(track, clip, e)}
@@ -2094,6 +2096,13 @@
   .bus-info {
     font-size: 11px;
     color: var(--text-dim);
+  }
+
+  /* 直前のチャットのターンで AI が変えたクリップ */
+  .clip.ai-changed {
+    box-shadow:
+      0 0 0 2px var(--ai),
+      0 0 8px var(--ai);
   }
 
   .clip {

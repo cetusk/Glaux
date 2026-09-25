@@ -357,6 +357,81 @@ async fn get_project_filters_by_clip_and_range_and_compacts_notes() {
 }
 
 #[tokio::test]
+async fn arrangement_tools_and_changes() {
+    let fx = setup().await;
+    // ID を省いたクリップとノート → サーバーが振って返す
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_arr001", "name": "Keys", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_arr001",
+                  "clip": { "name": "A", "start": 0, "length": 3840, "kind": "midi",
+                            "notes": [ { "pos": 0, "dur": 480, "pitch": 60, "vel": 100 },
+                                       { "pos": 960, "dur": 480, "pitch": 64, "vel": 100 } ] } }
+            ],
+            "label": "ID なしで追加",
+        }),
+    )
+    .await;
+    let v = ok_json(&r);
+    let first_entry = v["entry_id"].as_str().unwrap().to_owned();
+    let assigned = v["assigned_ids"].as_array().unwrap();
+    assert_eq!(
+        assigned.len(),
+        1,
+        "クリップの ID だけ返る(ノートは数が多いので返さない): {assigned:?}"
+    );
+    let clip_id = assigned[0]["id"].as_str().unwrap().to_owned();
+    assert!(clip_id.starts_with("clp_"));
+
+    // 複製: 位置の指定なし → 直後(1 小節目の後ろ = 3840)
+    let r = call(&fx, "duplicate_clips", json!({ "clip_ids": [clip_id] })).await;
+    let copy = ok_json(&r)["clips"][0].as_str().unwrap().to_owned();
+    // 1 小節目の頭に 2 小節挿入 → 両方のクリップが 2 小節ずれる
+    let r = call(&fx, "insert_bars", json!({ "bar": 1, "count": 2 })).await;
+    assert_eq!(ok_json(&r)["length_ticks"], 7680);
+    let r = call(&fx, "get_project", json!({ "note_format": "compact" })).await;
+    let clips = ok_json(&r)["project"]["tracks"][0]["clips"].clone();
+    let starts: Vec<u64> = clips
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["start"].as_u64().unwrap())
+        .collect();
+    assert_eq!(starts, vec![7680, 11520]);
+    assert_eq!(clips[1]["id"], copy.as_str());
+
+    // 最初の追加より後の変更の要約
+    let r = call(&fx, "get_changes", json!({ "since": first_entry })).await;
+    let v = ok_json(&r);
+    assert_eq!(v["entries"].as_array().unwrap().len(), 2);
+    let copied = v["clips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["clip_id"] == copy.as_str())
+        .unwrap();
+    assert!(copied["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|o| o == "add_clip"));
+
+    // 小節の挿入は 1 回の undo で戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let r = call(&fx, "get_project", json!({})).await;
+    let starts: Vec<u64> = ok_json(&r)["project"]["tracks"][0]["clips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["start"].as_u64().unwrap())
+        .collect();
+    assert_eq!(starts, vec![0, 3840]);
+}
+
+#[tokio::test]
 async fn errors_are_reported_as_tool_errors() {
     let fx = setup().await;
 

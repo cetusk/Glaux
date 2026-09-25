@@ -116,6 +116,12 @@ pub enum Request {
         author: Author,
         reply: oneshot::Sender<Result<RevertOutcome, CoreError>>,
     },
+    /// 履歴エントリ本体(コマンド込み)。`since` より後、最新側から `limit` 件(古い → 新しい)
+    GetEntries {
+        since: Option<EntryId>,
+        limit: usize,
+        reply: oneshot::Sender<Result<Vec<HistoryEntry>, CoreError>>,
+    },
     GetHistory {
         /// `Author` の種別名("human" | "ai" | "system")。None なら全部。
         author_kind: Option<String>,
@@ -276,6 +282,20 @@ impl SessionHandle {
     ) -> Result<Result<RevertOutcome, CoreError>, String> {
         self.request(|reply| Request::RevertEntry { id, author, reply })
             .await
+    }
+
+    /// 履歴エントリ本体(コマンド込み)。`since` より後、最新側から `limit` 件
+    pub async fn get_entries(
+        &self,
+        since: Option<EntryId>,
+        limit: usize,
+    ) -> Result<Result<Vec<HistoryEntry>, CoreError>, String> {
+        self.request(|reply| Request::GetEntries {
+            since,
+            limit,
+            reply,
+        })
+        .await
     }
 
     pub async fn get_history(
@@ -461,6 +481,26 @@ fn handle(
             let result = session.revert(&id, author).map(|r| {
                 let m = mutated(session, store, events, r.changes);
                 (r.entry, r.conflicts, m)
+            });
+            let _ = reply.send(result);
+        }
+        Request::GetEntries {
+            since,
+            limit,
+            reply,
+        } => {
+            let applied = session.history().applied();
+            let result = match &since {
+                Some(id) => applied
+                    .iter()
+                    .position(|e| &e.id == id)
+                    .map(|i| i + 1)
+                    .ok_or_else(|| CoreError::EntryNotFound(id.clone())),
+                None => Ok(0),
+            }
+            .map(|start| {
+                let tail = &applied[start..];
+                tail[tail.len().saturating_sub(limit)..].to_vec()
             });
             let _ = reply.send(result);
         }

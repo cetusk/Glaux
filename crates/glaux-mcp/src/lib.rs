@@ -9,7 +9,9 @@
 
 pub mod actor;
 pub mod assets;
+pub mod changes;
 pub mod clap_presets;
+pub mod guide;
 pub mod models;
 pub mod preset_index;
 pub mod presets;

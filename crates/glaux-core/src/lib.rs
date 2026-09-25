@@ -12,6 +12,7 @@
 //! - ID は生成側が決める(コマンドは決定的)。
 
 pub mod apply;
+pub mod arrange;
 pub mod command;
 pub mod error;
 pub mod harmony;
