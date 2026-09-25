@@ -63,12 +63,12 @@ For Codex, add `[mcp_servers.glaux]` with `url = "http://127.0.0.1:41920/mcp"` t
 To use it without the app, run the stdio server: `scripts\glaux-mcp.bat <song folder>` (the same song can't be open in the app at the same time).
 
 <details>
-<summary>Tools (41)</summary>
+<summary>Tools (42)</summary>
 
 | Group | Tools |
 |---|---|
 | Basics | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
-| Arrangement | `duplicate_clips` `insert_bars` `delete_bars` |
+| Arrangement | `duplicate_clips` `insert_bars` `delete_bars` `bounce_track` |
 | Analysis | `analyze_audio` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` |
 | Notes | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` |
 | Sounds | `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |

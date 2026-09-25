@@ -570,6 +570,11 @@ export function cancelChat(): Promise<void> {
   return invoke("cancel_chat");
 }
 
+/** トラックを音声にする(フリーズ)。直後に音声トラックができ、元はミュートされる */
+export function bounceTrack(trackId: string): Promise<{ entry_id: string; new_track: string; seconds: number }> {
+  return invoke("bounce_track", { trackId });
+}
+
 /** チャットの 1 ターン(`since` より後)で AI が行った編集の要約。entry_ids が件数 */
 export function turnChanges(since: string | null): Promise<{
   entry_ids: string[];

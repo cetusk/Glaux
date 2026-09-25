@@ -63,12 +63,12 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 アプリなしで使う stdio 版は `scripts\glaux-mcp.bat <曲のフォルダ>` です(同じ曲をアプリと同時には開けません)。
 
 <details>
-<summary>ツールの一覧(41 個)</summary>
+<summary>ツールの一覧(42 個)</summary>
 
 | 分類 | ツール |
 |---|---|
 | 基本 | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
-| 構成 | `duplicate_clips` `insert_bars` `delete_bars` |
+| 構成 | `duplicate_clips` `insert_bars` `delete_bars` `bounce_track` |
 | 分析 | `analyze_audio` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` |
 | ノート | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` |
 | 音色 | `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |

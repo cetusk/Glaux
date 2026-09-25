@@ -99,6 +99,9 @@ pub struct Shared {
     pub recording: AtomicBool,
     /// メトロノームだけ鳴らす(遅延の較正中。ノート・音声クリップを発音しない)
     pub click_only: AtomicBool,
+    /// マスターの最後のクリップ防止(soft_clip)を通さない。トラックを音声にする(フリーズ)ときの
+    /// 描き出し用(後でミックスするので、大きい音でも潰さずにそのまま残す)
+    pub no_master_clip: AtomicBool,
     pub data: ArcSwap<PlaybackData>,
     /// 負荷の統計(オーディオスレッドが書き、UI が読む)。[`DspStats`] 参照
     pub stats: StatsCounters,
@@ -193,6 +196,7 @@ impl Shared {
             metronome: AtomicBool::new(false),
             recording: AtomicBool::new(false),
             click_only: AtomicBool::new(false),
+            no_master_clip: AtomicBool::new(false),
             data: ArcSwap::from_pointee(data),
             stats: StatsCounters::default(),
             live: LiveQueue::default(),
@@ -1689,6 +1693,7 @@ impl Renderer {
         out: &mut [f32],
         channels: usize,
     ) {
+        let clip = !self.shared.no_master_clip.load(Ordering::Relaxed);
         let mut l = std::mem::take(&mut self.mix_l);
         let mut r = std::mem::take(&mut self.mix_r);
         if !data.master_effects.is_empty() {
@@ -1710,9 +1715,17 @@ impl Renderer {
             };
             let click = self.blk_click[f];
             let base = f * channels;
-            out[base] = soft_clip(l[f] * master_amp + click);
-            if channels >= 2 {
-                out[base + 1] = soft_clip(r[f] * master_amp + click);
+            let (ol, or) = (l[f] * master_amp + click, r[f] * master_amp + click);
+            if clip {
+                out[base] = soft_clip(ol);
+                if channels >= 2 {
+                    out[base + 1] = soft_clip(or);
+                }
+            } else {
+                out[base] = ol;
+                if channels >= 2 {
+                    out[base + 1] = or;
+                }
             }
         }
         self.mix_l = l;

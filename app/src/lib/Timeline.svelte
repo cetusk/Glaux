@@ -1000,6 +1000,25 @@
       .catch(() => {});
   }
 
+  /// トラックを音声にする(描き出しに曲の長さの数分の 1 かかる)
+  let bouncing = $state<string | null>(null);
+  async function bounceTrack() {
+    const menu = trackMenu;
+    trackMenu = null;
+    if (!menu || bouncing) return;
+    const track = project.tracks[menu.index];
+    bouncing = menu.trackId;
+    showToast("ok", `「${track?.name ?? "トラック"}」を音声に描き出しています…`);
+    try {
+      const r = await api.bounceTrack(menu.trackId);
+      showToast("ok", `「${track?.name}」を音声にしました(${r.seconds.toFixed(1)} 秒。元のトラックはミュート、Ctrl+Z で戻せます)`);
+    } catch (e) {
+      showError("音声にできませんでした", e);
+    } finally {
+      bouncing = null;
+    }
+  }
+
   function deleteTrack() {
     const menu = trackMenu;
     trackMenu = null;
@@ -1698,6 +1717,12 @@
       <div class="menu-sep"></div>
       <button onclick={() => startRename(trackMenu!.trackId)}>✎ 名前を変更</button>
       <button onclick={duplicateTrack}>⧉ トラックを複製</button>
+      <button
+        onclick={bounceTrack}
+        disabled={!!bouncing || project.tracks[trackMenu.index]?.kind === "bus"}
+        title="エフェクト・音量・パン・センドの響きまで込みで音声に描き出し、直後に音声トラックとして置く(元はミュート)。CLAP の音源の曲をゲームで鳴らすとき・重いトラックを軽くするときに"
+        >🧊 音声にする(フリーズ)</button
+      >
       <div class="color-row" role="group" aria-label="トラックの色">
         {#each TRACK_COLORS as c (c)}
           <button

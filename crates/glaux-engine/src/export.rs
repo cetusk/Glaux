@@ -28,7 +28,17 @@ pub fn render_project(
     sample_rate: f64,
     bank: &crate::data::SampleBank,
 ) -> Result<Vec<f32>, ExportError> {
-    render_inner(project, sample_rate, bank, None)
+    render_inner(project, sample_rate, bank, None, true)
+}
+
+/// マスターのクリップ防止を通さずに描き出す(トラックを音声にする用。0dBFS を超える音もそのまま)。
+/// 呼び出し側で、対象のトラックだけを残してマスターのエフェクトを外したプロジェクトを渡す
+pub fn render_stem(
+    project: &Project,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+) -> Result<Vec<f32>, ExportError> {
+    render_inner(project, sample_rate, bank, None, false)
 }
 
 /// 範囲の手前から描き出す長さ(残響・リリース・コンプの立ち上がりの分)
@@ -49,7 +59,7 @@ pub fn render_project_range(
 ) -> Result<Vec<f32>, ExportError> {
     let from = (from_secs.max(0.0) * sample_rate) as u64;
     let to = ((to_secs * sample_rate) as u64).max(from);
-    render_inner(project, sample_rate, bank, Some((from, to)))
+    render_inner(project, sample_rate, bank, Some((from, to)), true)
 }
 
 fn render_inner(
@@ -57,6 +67,7 @@ fn render_inner(
     sample_rate: f64,
     bank: &crate::data::SampleBank,
     range: Option<(u64, u64)>,
+    master_clip: bool,
 ) -> Result<Vec<f32>, ExportError> {
     let slots = Arc::new(crate::plugins::new_slots());
     // CLAP の音源・エフェクトがあれば、このスレッドで書き出し専用のインスタンスを作る
@@ -101,6 +112,7 @@ fn render_inner(
     shared.plugin_slots = slots;
     let shared = Arc::new(shared);
     shared.playing.store(true, Ordering::Release);
+    shared.no_master_clip.store(!master_clip, Ordering::Release);
     if let Some(start) = start {
         shared.seek.store(start, Ordering::Release);
     }

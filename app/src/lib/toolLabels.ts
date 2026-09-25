@@ -25,6 +25,7 @@ const LABELS: Record<string, ToolLabel> = {
   duplicate_clips: { short: "クリップを複製", doing: "クリップを複製しています" },
   insert_bars: { short: "小節を挿入", doing: "小節を挿入しています" },
   delete_bars: { short: "小節を削除", doing: "小節を削除しています" },
+  bounce_track: { short: "トラックを音声にする", doing: "トラックを音声に描き出しています" },
   // 分析
   analyze_audio: { short: "音を聴いて確認", doing: "音を聴いています" },
   analyze_harmony: { short: "キーとコードを確認", doing: "キーとコードを調べています" },

@@ -30,7 +30,7 @@ godot\build_windows.bat
 1. `cargo build -p glaux-godot --release` で拡張(`glaux_godot.dll`)をビルド(初回は数分)
 2. デモのアドオン `godot\demo\addons\glaux\bin\` に DLL を置く
 3. 配布物を作る:
-   - `godot\dist\addons\glaux\`(`glaux.gdextension`・`bin\glaux_godot.dll`・`README.md`・`AI_GUIDE.md`・`PROMPT.md`・`CHANGELOG.md`)
+   - `godot\dist\addons\glaux\`(`glaux.gdextension`・`bin\glaux_godot.dll`・書き出しプラグイン `plugin.cfg` / `plugin.gd` / `export_plugin.gd`・`README.md`・`AI_GUIDE.md`・`PROMPT.md`・`CHANGELOG.md`)
    - `godot\dist\glaux-godot-addon.zip`(上のフォルダを zip にしたもの。`addons\glaux\` の形で入っている)
 
 ## 2. 別のプロジェクト(ゲーム)へ入れる
@@ -41,7 +41,7 @@ godot\build_windows.bat
    「フォルダを選択して開く…」で `songs` を選ぶと、中の曲の一覧か「このフォルダに新しい曲を作る」が出る)。
    コピーの手間がなく、Glaux で直せばそのままゲームに入る。別の場所の曲を使うなら、その曲のフォルダ
    (例 `Stage1.glaux`)をコピーする(必要なのは `project.json` と `audio\`)
-3. Godot のエディタを開き直す
+3. Godot のエディタを開き直し、「プロジェクト設定 → プラグイン」で「Glaux」を有効にする(書き出したゲームに曲を入れる)
 4. ゲーム側で AI を使うなら、`addons\glaux\PROMPT.md` の「1. 最初の導入」を AI に渡す
 
 拡張を更新したときは、1 章をやり直して、できた配布物でゲーム側の `addons\glaux\` を丸ごと置き換えます

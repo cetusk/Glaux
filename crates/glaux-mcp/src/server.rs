@@ -486,6 +486,12 @@ pub struct DuplicateClipsParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct BounceTrackParams {
+    /// 音声にするトラック ID(`trk_xxxxxx`)。MIDI・音声トラック(バスは不可)。
+    pub track_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct BarsParams {
     /// 小節番号(1 始まり)。insert_bars はこの小節の頭に挿入、delete_bars はこの小節から削除。
     pub bar: u32,
@@ -2641,6 +2647,38 @@ impl GlauxServer {
         let cmds = glaux_core::arrange::delete_time(&project, from, len);
         let label = format!("{} 小節目から {} 小節を削除", p.bar, p.count);
         self.apply_arrangement(cmds, label, from, len, &ctx).await
+    }
+
+    #[tool(
+        description = "トラックを音声にする(フリーズ)。自分のエフェクト・音量・パン・オートメーションと、センドしているバスの\
+        響きまで込みで描き出し(マスターのエフェクトは通さない)、新しい音声トラックとして直後に置き、元のトラックはミュートする。\
+        1 回の undo で戻る。CLAP プラグインの音源はゲーム(Godot)で鳴らないので、ゲームに使う曲はこれで音声にしておく。\
+        重いトラックを軽くしたいときにも使う。時間がかかる(曲の長さの数分の 1)。"
+    )]
+    async fn bounce_track(
+        &self,
+        params: Parameters<BounceTrackParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("bounce_track");
+        let track_id = glaux_core::TrackId::parse(&params.0.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let b = tokio::task::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+            crate::bounce::bounce_track(&project, dir, &track_id, &bank)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let command = Command::batch(b.label.clone(), b.commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, b.label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["new_track"] = json!(b.new_track);
+        v["seconds"] = json!((b.seconds * 100.0).round() / 100.0);
+        Ok(JsonText(v))
     }
 
     async fn apply_arrangement(

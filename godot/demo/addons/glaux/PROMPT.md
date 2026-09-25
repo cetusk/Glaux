@@ -16,7 +16,8 @@ Glaux は別アプリの DAW で作った曲を、ゲームの中で鳴らして
 project.json を手で書き換えない など)に従ってください。
 
 そのうえで次を確認してください:
-1. res://addons/glaux/ に glaux.gdextension と bin/glaux_godot.dll があるか
+1. res://addons/glaux/ に glaux.gdextension と bin/glaux_godot.dll があるか。project.godot の [editor_plugins] で
+   res://addons/glaux/plugin.cfg が有効か(無効ならゲームを書き出したときに曲が入らないので、人間に有効にしてもらう)
 2. 曲フォルダ [res://songs/Stage1.glaux] を GlauxPlayer で読み込めるか(load_song の結果と get_warnings)
 3. その曲のトラック名(get_track_names)とマーカー(get_sections)の一覧
 

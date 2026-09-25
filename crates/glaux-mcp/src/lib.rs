@@ -9,6 +9,7 @@
 
 pub mod actor;
 pub mod assets;
+pub mod bounce;
 pub mod changes;
 pub mod clap_presets;
 pub mod guide;

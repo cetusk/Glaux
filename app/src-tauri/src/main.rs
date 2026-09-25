@@ -1559,6 +1559,36 @@ async fn revert_entry(state: State<'_, AppState>, entry_id: String) -> Result<Va
     }))
 }
 
+/// トラックを音声にする(フリーズ)。描き出して直後に音声トラックとして置き、元はミュート(1 件の履歴)
+#[tauri::command]
+async fn bounce_track(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
+    let id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let b = tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::Path::new(&dir);
+        let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+        glaux_mcp::bounce::bounce_track(&project, dir, &id, &bank)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let (entry_id, m) = state
+        .handle
+        .apply(
+            Command::batch(b.label.clone(), b.commands),
+            Author::Human,
+            b.label,
+        )
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "entry_id": entry_id,
+        "new_track": b.new_track,
+        "seconds": b.seconds,
+        "project_version": m.project_version,
+    }))
+}
+
 // ---- チャットの 1 ターン分の編集 ------------------------------------------
 
 /// `since`(ターンの開始前の最後の履歴エントリ。None なら先頭から)より後の、AI の編集
@@ -2148,6 +2178,7 @@ fn main() -> Result<()> {
             revert_entry,
             turn_changes,
             revert_turn,
+            bounce_track,
             import_audio_clip,
             clip_peaks,
             transcribe_clip,
