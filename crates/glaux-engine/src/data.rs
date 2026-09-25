@@ -262,6 +262,12 @@ pub struct TrackMix {
     pub sends: Vec<SendMix>,
     /// ステレオの素材(音声クリップ)を含む: パンは左右バランスとして掛ける
     pub stereo: bool,
+    /// トラックの識別子(トラック ID と楽器の種類のハッシュ)。再生中にデータを差し替えたとき、
+    /// 並びが変わっても同じトラックを見つけるのに使う
+    pub ident: u64,
+    /// 発音内容(このトラックのノートイベントと楽器の種類)のハッシュ。差し替えの前後で同じなら、
+    /// 鳴っている音を切らずにそのまま鳴らし続ける
+    pub content: u64,
 }
 
 /// 焼き込み済みのセンド。
@@ -997,6 +1003,8 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     })
                     .take(crate::render::MAX_PLUGIN_LANES)
                     .collect(),
+                ident: 0,
+                content: 0,
             }
         })
         .collect();
@@ -1120,6 +1128,36 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 .map_or(PORTAMENTO_SEC, |ms| ms as f64 / 1000.0),
         })
     });
+    // トラックの識別子と発音内容のハッシュ(再生中の編集で、変わっていないトラックの音を切らないため)
+    {
+        use std::hash::{Hash, Hasher};
+        let mut content: Vec<std::collections::hash_map::DefaultHasher> =
+            tracks.iter().map(|_| Default::default()).collect();
+        for e in &events {
+            if let Some(h) = content.get_mut(e.track as usize) {
+                (e.start, e.end, e.pitch, e.freq.to_bits(), e.amp.to_bits()).hash(h);
+                (
+                    e.articulation as u8,
+                    e.fade_in,
+                    e.fade_out,
+                    e.glide.to_bits(),
+                    e.choke,
+                )
+                    .hash(h);
+                for (t, c) in &e.curve.pts[..e.curve.len as usize] {
+                    (t.to_bits(), c.to_bits()).hash(h);
+                }
+            }
+        }
+        for ((m, t), mut c) in tracks.iter_mut().zip(&project.tracks).zip(content) {
+            let kind = std::mem::discriminant(&m.instrument);
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (&t.id, kind).hash(&mut h);
+            m.ident = h.finish();
+            kind.hash(&mut c);
+            m.content = c.finish();
+        }
+    }
     audio_events.sort_by_key(|e| e.start);
     for ev in &audio_events {
         if ev.data.side.is_some() {
@@ -1408,7 +1446,7 @@ mod tests {
     fn portamento_cuts_release_tails_but_keeps_held_notes() {
         use crate::export::render_project;
         use glaux_core::Articulation as A;
-        // リリース 2 秒のサイン波。C4 を 0.25 秒弾いて離し、1 秒から G4 をポルタメント(直前の音なし → 全音下から)。
+        // リリース 4 秒(4 秒で -60dB)のサイン波。C4 を 0.25 秒弾いて離し、1 秒から G4 をポルタメント(直前の音なし → 全音下から)。
         // 伴奏の C3 は 0〜2 秒ずっと押さえたまま
         let render = |a: A| {
             let mut p = project_with_notes(vec![
@@ -1422,7 +1460,7 @@ mod tests {
                 glaux_core::ParamValue::Enum("sine".into()),
             );
             d.params.insert("sustain".into(), 1.0.into());
-            d.params.insert("release".into(), 2.0.into());
+            d.params.insert("release".into(), 4.0.into());
             p.tracks[0].device = Some(d);
             let st = render_project(&p, 48_000.0, &Default::default()).unwrap();
             st.chunks(2).map(|c| c[0] + c[1]).collect::<Vec<f32>>()
@@ -1859,6 +1897,67 @@ mod tests {
         assert!(
             tail > head * 5.0,
             "マスターの歪みが大きくなるはず: {head} {tail}"
+        );
+    }
+
+    /// 音色のオートメーションは細かく(約 2.7ms ごとに)評価され、書き出しで階段にならない
+    /// (以前は処理単位の頭で 1 回だけ評価し、書き出しでは 4096 フレーム = 85ms 刻みだった)
+    #[test]
+    fn device_automation_is_smooth_in_export() {
+        use crate::export::render_project;
+        use glaux_core::{AutomationLane, AutomationPoint, Curve, ParamPath};
+
+        // 440Hz の純粋なサイン波(うなりが出ないように、ユニゾン・サブ・ノイズ・フィルタを外す)
+        let mut project = project_with_notes(vec![note(0, 3840, 69, 110)]);
+        let mut d = glaux_core::Device::builtin("subtractive");
+        d.params.insert(
+            "waveform".into(),
+            glaux_core::ParamValue::Enum("sine".into()),
+        );
+        for (k, v) in [
+            ("sustain", 1.0),
+            ("unison", 1.0),
+            ("detune", 0.0),
+            ("sub", 0.0),
+            ("noise", 0.0),
+            ("filter_env", 0.0),
+            ("cutoff", 12000.0),
+        ] {
+            d.params.insert(k.into(), v.into());
+        }
+        project.tracks[0].device = Some(d);
+        project.tracks[0].automation.push(AutomationLane {
+            target: ParamPath::device("gain_db"),
+            points: vec![
+                AutomationPoint {
+                    tick: Tick(0),
+                    value: -24.0,
+                    curve: Curve::Linear,
+                },
+                AutomationPoint {
+                    tick: Tick(3840),
+                    value: 6.0,
+                    curve: Curve::Linear,
+                },
+            ],
+        });
+        let out = render_project(&project, 48_000.0, &Default::default()).unwrap();
+        // 25ms(440Hz のちょうど 11 周期)ごとの RMS(dB)を、0.2〜1.8 秒で見る
+        let db: Vec<f32> = out
+            .chunks(1200 * 2)
+            .map(|c| {
+                let e = c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32;
+                10.0 * e.max(1e-12).log10()
+            })
+            .collect();
+        let steps: Vec<f32> = db[8..72].windows(2).map(|w| w[1] - w[0]).collect();
+        let max = steps.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let min = steps.iter().fold(f32::MAX, |m, v| m.min(*v));
+        // 30dB / 2 秒 = 25ms で 0.375dB ずつ滑らかに上がる。85ms の階段だと、0dB の区間と 1.3dB の段差が交互に出る
+        eprintln!("25ms ごとの変化: 最小 {min:.3} / 最大 {max:.3}dB");
+        assert!(
+            max < 0.6 && min > 0.15,
+            "段差あり: 最小 {min:.3} / 最大 {max:.3}dB"
         );
     }
 

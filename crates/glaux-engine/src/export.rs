@@ -220,17 +220,65 @@ pub fn export_wav(
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(path, spec)?;
+    let mut dither = Tpdf::new();
     for s in &samples {
-        writer.write_sample((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
+        writer.write_sample(to_i16_dithered(*s, &mut dither))?;
     }
     writer.finalize()?;
     Ok(samples.len() as f64 / 2.0 / sample_rate)
+}
+
+/// TPDF ディザ(三角分布の雑音)。16bit に丸めるときの量子化の歪みを、耳につきにくい
+/// 一様な雑音に変える(フェードアウトや静かな余韻が「ジリジリ」しない)
+struct Tpdf(u32);
+
+impl Tpdf {
+    fn new() -> Self {
+        Tpdf(0x9E37_79B9)
+    }
+
+    /// -1..1 LSB の三角分布(一様乱数 2 つの差)
+    fn next(&mut self) -> f32 {
+        let mut u = || {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0 as f32 / u32::MAX as f32
+        };
+        u() - u()
+    }
+}
+
+/// f32(-1..1)を 16bit に。ディザを足してから丸める(以前は切り捨て)
+fn to_i16_dithered(s: f32, dither: &mut Tpdf) -> i16 {
+    let scaled = s.clamp(-1.0, 1.0) * i16::MAX as f32 + dither.next();
+    scaled.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use glaux_core::{Clip, ClipContent, ClipId, Note, NoteId, Tick, Track, TrackId, TrackKind};
+
+    #[test]
+    fn dither_turns_a_tiny_signal_into_noise_instead_of_silence_or_steps() {
+        // 0.3 LSB のサイン波: 切り捨てなら全部 0(消える)。ディザなら平均として形が残る
+        let mut d = Tpdf::new();
+        let n = 48_000;
+        let amp = 0.3 / i16::MAX as f32;
+        let mut acc = 0.0f64;
+        for i in 0..n {
+            let x = amp * (i as f32 * 0.01).sin();
+            let q = to_i16_dithered(x, &mut d) as f64;
+            acc += q * (i as f32 * 0.01).sin() as f64;
+        }
+        // 相関が正(信号の形が雑音の中に残っている)
+        assert!(acc / n as f64 > 0.05, "{}", acc / n as f64);
+        // 大きな音はほぼそのまま(±1 LSB)
+        let mut d = Tpdf::new();
+        assert!((to_i16_dithered(0.5, &mut d) as i32 - 16_383).abs() <= 1);
+        assert_eq!(to_i16_dithered(2.0, &mut d), i16::MAX);
+    }
 
     fn test_project() -> Project {
         let mut project = Project::new("Export");

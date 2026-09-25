@@ -208,8 +208,10 @@ impl SubtractiveVoice {
                 }
             }
             EnvStage::Release => {
-                let coef = 1.0 - 1.0 / ((p.release * self.art.release_mul).max(0.005) * sr);
-                self.env *= coef;
+                // release は fm / wavetable と同じ「その時間でほぼ消える(-60dB)」。
+                // 以前は時定数として扱っていて、既定 0.2 秒でも消えるまで約 1.8 秒かかっていた
+                let coef = (6.9 / ((p.release * self.art.release_mul).max(0.005) * sr)).min(1.0);
+                self.env -= self.env * coef;
             }
         }
 

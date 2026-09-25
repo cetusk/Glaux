@@ -71,8 +71,8 @@ pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
             default: 0.15,
             skew: Some(0.3),
         },
-        description: "立ち上がり後にサスティンレベルまで落ちる時間。\
-            短いとプラック(はじいた)感が出る。",
+        description: "立ち上がり後にサスティンレベルへ向かう速さ(時定数。サスティン 0 なら、\
+            この値の約 7 倍でほぼ消える)。短いとプラック(はじいた)感が出る。",
     },
     ParamSpec {
         name: "sustain",
@@ -93,11 +93,11 @@ pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
         unit: Some("s"),
         range: ParamRange::Float {
             min: 0.01,
-            max: 4.0,
+            max: 8.0,
             default: 0.2,
             skew: Some(0.3),
         },
-        description: "ノートを離した後の余韻の長さ。長いと残響感が出るが、\
+        description: "ノートを離してから消えるまでの長さ(この時間で -60dB)。長いと残響感が出るが、\
             速いフレーズでは音が濁る。",
     },
     ParamSpec {
@@ -1005,7 +1005,7 @@ impl crate::InstrumentParams {
                 "attack" => p.attack = value.clamp(0.001, 2.0),
                 "decay" => p.decay = value.clamp(0.01, 3.0),
                 "sustain" => p.sustain = value.clamp(0.0, 1.0),
-                "release" => p.release = value.clamp(0.01, 4.0),
+                "release" => p.release = value.clamp(0.01, 8.0),
                 "filter_env" => p.filter_env = value.clamp(0.0, 1.0),
                 "detune" => p.detune_cents = value.clamp(0.0, 60.0),
                 "sub" => p.sub = value.clamp(0.0, 1.0),

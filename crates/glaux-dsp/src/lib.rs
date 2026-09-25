@@ -41,7 +41,7 @@ pub use params::{
     instrument_params, ArticulationInfo, InstrumentInfo,
 };
 pub use pluck::PluckParams;
-pub use sampler::{SampleData, SamplerParams, SamplerVoice};
+pub use sampler::{hermite, SampleData, SamplerParams, SamplerVoice};
 pub use subtractive::{SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
 pub use wavetable::{WavetableParams, WavetableVoice};

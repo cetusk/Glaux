@@ -145,6 +145,13 @@ const STAGE_HOLD: u8 = 1;
 const STAGE_DECAY: u8 = 2;
 const STAGE_RELEASE: u8 = 3;
 
+/// SoundFont の減衰・リリースの時間は「100dB 変化するまでの時間」(SF2 仕様 8.1.2)。
+/// 1 サンプルあたりの振幅の係数にする。以前は時間を時定数(1/e になる時間)として扱っていたので、
+/// 余韻が仕様の約 11.5 倍長かった(ストリングスが離鍵後 15 秒鳴り続ける等)
+fn sf2_env_coef(seconds: f32, sample_rate: f32) -> f32 {
+    (-(1e5f32).ln() / (seconds * sample_rate)).exp()
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct ZonePlayer {
     active: bool,
@@ -155,6 +162,9 @@ struct ZonePlayer {
     env: f32,
     stage: u8,
     hold_left: f32,
+    /// 音量エンベロープの 1 サンプルあたりの係数(減衰・リリース。発音時に計算)
+    decay_coef: f32,
+    release_coef: f32,
     /// ---- 変調(制御レートで更新)----
     /// LFO / エンベロープ由来のピッチ倍率
     pitch_mul: f64,
@@ -304,6 +314,8 @@ impl MultiVoice {
                 env: 0.0,
                 stage: STAGE_ATTACK,
                 hold_left: z.env.hold * sample_rate,
+                decay_coef: sf2_env_coef(z.env.decay.max(0.005), sample_rate),
+                release_coef: sf2_env_coef(z.env.release.max(0.005), sample_rate),
                 pitch_mul: 1.0,
                 ..ZonePlayer::default()
             };
@@ -398,7 +410,7 @@ impl MultiVoice {
                 continue;
             }
             let frac = (pl.pos - i as f64) as f32;
-            let mut s = frames[i] + (frames[i + 1] - frames[i]) * frac;
+            let mut s = crate::sampler::hermite(frames, i, frac);
             pl.pos += pl.rate * ratio * pl.pitch_mul;
             if pl.filter_on {
                 s = pl.filter(s);
@@ -420,8 +432,7 @@ impl MultiVoice {
                     }
                 }
                 STAGE_DECAY => {
-                    let coef = 1.0 - 1.0 / (z.env.decay.max(0.005) * sr);
-                    pl.env = z.env.sustain + (pl.env - z.env.sustain) * coef;
+                    pl.env = z.env.sustain + (pl.env - z.env.sustain) * pl.decay_coef;
                     // サスティンほぼ 0 のゾーン(ピアノ等)は減衰しきったら解放
                     if pl.env < 1e-4 {
                         pl.active = false;
@@ -429,8 +440,7 @@ impl MultiVoice {
                     }
                 }
                 _ => {
-                    let coef = 1.0 - 1.0 / (z.env.release.max(0.005) * sr);
-                    pl.env *= coef;
+                    pl.env *= pl.release_coef;
                     if pl.env < 1e-4 {
                         pl.active = false;
                         continue;
@@ -487,6 +497,31 @@ mod tests {
 
     fn rms(v: &[f32]) -> f32 {
         (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt()
+    }
+
+    /// SF2 のリリース時間は「100dB 変化するまでの時間」。1 秒なら半分の 0.5 秒で約 -50dB、1 秒で解放
+    #[test]
+    fn release_time_follows_the_sf2_definition() {
+        let sr = 48_000.0;
+        let mut z = zone(0, 127, 69.0, sine_data(440.0, 10.0, sr));
+        z.env.release = 1.0;
+        let p = MultiSamplerParams {
+            zones: Arc::new(vec![z]),
+            gain: 1.0,
+        };
+        let mut v = MultiVoice::start(&p, 69, 1.0, Articulation::Normal, sr);
+        let held: Vec<f32> = (0..9_600).map(|_| v.next(&p)).collect();
+        let before = rms(&held[4_800..]);
+        v.note_off();
+        let _ = (0..(sr * 0.45) as usize).map(|_| v.next(&p)).count();
+        let mid: Vec<f32> = (0..(sr * 0.1) as usize).map(|_| v.next(&p)).collect();
+        let db = 20.0 * (rms(&mid) / before).log10();
+        assert!(
+            (-56.0..=-44.0).contains(&db),
+            "0.5 秒後 {db:.1}dB(-50dB 前後のはず)"
+        );
+        let _ = (0..(sr * 0.5) as usize).map(|_| v.next(&p)).count();
+        assert!(v.finished(), "1 秒で解放されるはず(以前は約 11.5 秒)");
     }
 
     #[test]

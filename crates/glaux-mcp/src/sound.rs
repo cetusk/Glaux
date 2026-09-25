@@ -172,9 +172,28 @@ pub fn pitch_track(sound: &LoadedSound) -> Option<Vec<glaux_engine::timbre::Pitc
 }
 
 /// 音色記述子を求める(音程は SwiftF0。使えなければ内蔵の YIN)。
+///
+/// SwiftF0 は歌や生楽器に強いが、フィルタを掛けた矩形波のような単純な合成音では倍音を拾って
+/// 音程の取れるフレームが減ることがある(例: C4 の矩形波を 5 倍音の E6 と判定し、有声率 49%)。
+/// SwiftF0 の有声率が低いときは YIN でも求め、明らかに安定して取れていればそちらを使う
 pub fn describe(sound: &LoadedSound) -> glaux_engine::timbre::SoundDescriptors {
     let pitch = pitch_track(sound);
-    glaux_engine::timbre::describe(&sound.frames, sound.sample_rate, pitch.as_deref())
+    let d = glaux_engine::timbre::describe(&sound.frames, sound.sample_rate, pitch.as_deref());
+    if pitch.is_none() {
+        return d;
+    }
+    let ml_ratio = d.pitch.as_ref().map_or(0.0, |p| p.voiced_ratio);
+    if ml_ratio < 0.6 {
+        let yin = glaux_engine::timbre::describe(&sound.frames, sound.sample_rate, None);
+        if yin
+            .pitch
+            .as_ref()
+            .is_some_and(|p| p.voiced_ratio >= ml_ratio + 0.25)
+        {
+            return yin;
+        }
+    }
+    d
 }
 
 /// 音声のビート・小節頭・テンポ(Beat This!)。

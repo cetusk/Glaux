@@ -160,6 +160,9 @@ pub struct ReverbParams {
     pub feedback: f32,
     /// 高域減衰 0..=1
     pub damping: f32,
+    /// ディレイ長の倍率(サンプルレート / 48kHz。バッファは 48kHz 分なので 1 が上限)。
+    /// これが無いと 44.1kHz で部屋が 9% 大きく聞こえる
+    pub len_scale: f32,
 }
 
 /// コムフィルタのディレイ長(48kHz 基準、Freeverb 由来の素数付近)。
@@ -204,8 +207,9 @@ impl ReverbChannel {
 
     fn next(&mut self, p: &ReverbParams, x: f32) -> f32 {
         let mut wet = 0.0;
+        let scaled = |base: usize| ((base as f32 * p.len_scale) as usize).max(1);
         for (i, base_len) in COMB_LENS.iter().enumerate() {
-            let len = base_len + self.spread;
+            let len = scaled(*base_len) + self.spread;
             let idx = self.comb_idx[i];
             let out = self.combs[i][idx];
             // フィードバック経路の一次ローパス(damping)
@@ -216,7 +220,7 @@ impl ReverbChannel {
         }
         wet *= 0.25;
         for (i, base_len) in ALLPASS_LENS.iter().enumerate() {
-            let len = base_len + self.spread;
+            let len = scaled(*base_len) + self.spread;
             let idx = self.ap_idx[i];
             let buf = self.allpasses[i][idx];
             let out = -wet + buf;
@@ -1629,6 +1633,7 @@ pub fn bake_effect(
                 mix: get(map, s, "mix").clamp(0.0, 1.0),
                 feedback: 0.7 + get(map, s, "size").clamp(0.0, 1.0) * 0.28,
                 damping: get(map, s, "damping").clamp(0.0, 1.0),
+                len_scale: (sample_rate / 48_000.0).clamp(0.1, 1.0),
             }))
         }
         "distortion" => {
@@ -1763,6 +1768,30 @@ mod tests {
         }
         let mut eq = bake_effect(&effect("eq", &[]), 48_000.0, &none).unwrap();
         assert!(!eq.set_continuous("no_such", 1.0, 48_000.0));
+    }
+
+    /// リバーブの最初の反響は、サンプルレートが違っても同じ秒数で返ってくる
+    #[test]
+    fn reverb_delay_follows_sample_rate() {
+        let none = |_: &str| None;
+        let first_echo_secs = |sr: f32| {
+            let p = bake_effect(&effect("reverb", &[("mix", 1.0)]), sr, &none).unwrap();
+            let mut st = EffectState::without_delay_buffers();
+            st.ensure_kind(&p);
+            let mut t = 0usize;
+            loop {
+                let x = if t == 0 { 1.0 } else { 0.0 };
+                let (l, _) = st.process(&p, x, x, 0.0);
+                if l.abs() > 1e-6 && t > 0 {
+                    return t as f32 / sr;
+                }
+                t += 1;
+                assert!(t < 10_000, "反響が返ってこない");
+            }
+        };
+        let a = first_echo_secs(48_000.0);
+        let b = first_echo_secs(44_100.0);
+        assert!((a - b).abs() < 0.0005, "48k {a:.4} 秒 / 44.1k {b:.4} 秒");
     }
 
     fn effect(name: &str, params: &[(&str, f64)]) -> Effect {

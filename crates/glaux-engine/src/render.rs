@@ -20,6 +20,39 @@ use glaux_dsp::{EffectParams, EffectState, VoiceState};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
+/// マスターの最後のクリップ防止。振幅 0.9(-0.9dBFS)までは素通しし、それを超えた分だけ
+/// 1.0 に向けてなめらかに抑える。以前は全体に tanh を掛けていて、普通の音量でも潰れと歪みが
+/// 付いていた(-6dBFS で -0.7dB)
+#[inline]
+pub(crate) fn soft_clip(x: f32) -> f32 {
+    const KNEE: f32 = 0.9;
+    let a = x.abs();
+    if a <= KNEE {
+        x
+    } else {
+        (KNEE + (1.0 - KNEE) * ((a - KNEE) / (1.0 - KNEE)).tanh()).copysign(x)
+    }
+}
+
+/// 再生中の編集・シークで、発音内容が変わったトラックの音を消すフェードと、鳴らし直す音のフェードイン(秒)
+const SWAP_FADE_SECS: f32 = 0.005;
+/// 差し替え・シークの位置をまたいでいるノートを探すとき、遡るイベント数の上限(オーディオスレッドで
+/// 使う時間を抑える)
+const MAX_REPLAY_SCAN: usize = 2048;
+
+/// 音色・エフェクトのオートメーションを評価する間隔(フレーム。48kHz で約 2.7ms)
+const AUTO_FRAMES: usize = 128;
+
+/// 処理単位の頭で評価するオートメーション(音色・エフェクト)があるか。
+/// 音量・パンはサンプルごとに評価するので含めない
+fn has_block_automation(data: &PlaybackData) -> bool {
+    !data.master_fx_auto.is_empty()
+        || data
+            .tracks
+            .iter()
+            .any(|t| !t.device_auto.is_empty() || !t.fx_auto.is_empty())
+}
+
 /// 同時発音数(全トラック合計)。超えると古い音を短いフェードで奪う(ボイススティール)
 pub const MAX_VOICES: usize = 256;
 /// 奪われてフェードアウト中のボイスのための予備枠(この分も起動時に確保しておく)
@@ -204,6 +237,10 @@ struct Voice {
     age: u32,
     /// 同時発音数の上限で奪われ、フェードアウト中
     stolen: bool,
+    /// 鳴らし始めたときのトラックの識別子・発音内容(`TrackMix::ident` / `content`)。
+    /// データを差し替えたとき、同じなら鳴らし続ける
+    ident: u64,
+    content: u64,
     state: VoiceState,
 }
 
@@ -423,6 +460,13 @@ pub struct Renderer {
     next_event: usize,
     /// 直前に見ていた `PlaybackData` のアドレス(差し替え検出用)
     last_data: usize,
+    /// 直前のデータのトラックごとの (識別子, 発音内容)(差し替えで何が変わったかを知る)
+    prev_tracks: [(u64, u64); MAX_TRACKS],
+    prev_len: usize,
+    /// 差し替え・シークで発音内容が変わった(= またいでいる音を鳴らし直す)トラック
+    retrig: [bool; MAX_TRACKS],
+    /// `data.events` のこの添字より前は「鳴らし直し」の範囲(差し替え・シークの位置をまたぐ音だけ鳴らす)
+    replay_until: usize,
     pos: u64,
     /// 直前ブロックで再生中だったか(再開時に音声クリップを途中から鳴らし直す)
     was_playing: bool,
@@ -476,6 +520,11 @@ fn push_plugin_param(notes: &mut Vec<NoteMsg>, name: &str, value: f32) {
 }
 
 impl Renderer {
+    /// 差し替え・シークで発音内容が変わったトラックか(MAX_TRACKS 超のトラックは常に鳴らし直す)
+    fn retrig_track(&self, track: u32) -> bool {
+        self.retrig.get(track as usize).copied().unwrap_or(true)
+    }
+
     pub fn new(shared: Arc<Shared>) -> Self {
         Renderer {
             shared,
@@ -535,6 +584,10 @@ impl Renderer {
             fx_scratch: vec![None; MAX_EFFECT_SLOTS],
             next_event: 0,
             last_data: 0,
+            prev_tracks: [(0, 0); MAX_TRACKS],
+            prev_len: 0,
+            retrig: [true; MAX_TRACKS],
+            replay_until: 0,
             pos: 0,
             was_playing: false,
             next_beat: None,
@@ -573,8 +626,15 @@ impl Renderer {
         flush_denormals();
         let t0 = std::time::Instant::now();
         let was_playing = self.was_playing;
-        // プラグインのバッファ長を超えないよう、長いブロックは分けて処理する
-        for chunk in out.chunks_mut(MAX_FRAMES * channels.max(1)) {
+        // プラグインのバッファ長を超えないよう、長いブロックは分けて処理する。
+        // 音色・エフェクトのオートメーションは処理単位の頭で評価するので、それがある曲では
+        // 細かく分ける(以前は書き出しで 85ms 刻みの階段になり、再生とも音が違っていた)
+        let step = if has_block_automation(&self.shared.data.load()) {
+            AUTO_FRAMES
+        } else {
+            MAX_FRAMES
+        };
+        for chunk in out.chunks_mut(step * channels.max(1)) {
             self.process_inner(chunk, channels);
         }
 
@@ -631,11 +691,61 @@ impl Renderer {
             self.pos = data.tick_to_sample(self.last_tick);
         }
         if resync {
-            self.voices.clear();
+            // 以前は鳴っている音を全部消していた(AI の編集やつまみの操作のたびに音が切れ、途中の音も戻らなかった)。
+            // 発音内容が変わっていないトラックの音は鳴らし続け、変わったトラック(シークなら全部)の音だけ
+            // 短いフェードで消して、位置をまたいでいる音を途中から鳴らし直す
+            let seeking = seek != NO_SEEK;
+            let fade = ((data.sample_rate as f32 * SWAP_FADE_SECS) as u32).max(1);
+            for (j, m) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
+                let same = !seeking
+                    && self.prev_tracks[..self.prev_len]
+                        .iter()
+                        .any(|&(i, c)| i == m.ident && c == m.content);
+                self.retrig[j] = !same;
+            }
+            for v in self.voices.iter_mut().filter(|v| !v.stolen) {
+                let kept = (!seeking)
+                    .then(|| {
+                        data.tracks
+                            .iter()
+                            .position(|m| m.ident == v.ident && m.content == v.content)
+                    })
+                    .flatten();
+                match kept {
+                    Some(j) => v.track = j as u32,
+                    None => {
+                        // 同じトラックがあればそこを通して消す(消えたトラックの音は次のサンプルで外す)
+                        v.track = data
+                            .tracks
+                            .iter()
+                            .position(|m| m.ident == v.ident)
+                            .map_or(u32::MAX, |j| j as u32);
+                        v.stolen = true;
+                        v.released = false;
+                        v.end = self.pos;
+                        v.fade_out = fade;
+                    }
+                }
+            }
+            self.prev_len = data.tracks.len().min(MAX_TRACKS);
+            for (j, m) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
+                self.prev_tracks[j] = (m.ident, m.content);
+            }
             self.next_beat = None; // シークで戻ったら拍を取り直す
             self.auto_cursors = [(0, 0); MAX_TRACKS];
             self.master_cursor = 0;
             self.next_event = data.events.partition_point(|e| e.start < self.pos);
+            // 位置をまたいでいる音(鳴らし直すトラックのもの)の最初の添字まで戻す
+            let lim = self.next_event.saturating_sub(MAX_REPLAY_SCAN);
+            let mut first = self.next_event;
+            for k in (lim..self.next_event).rev() {
+                let e = &data.events[k];
+                if e.end > self.pos && self.retrig_track(e.track) {
+                    first = k;
+                }
+            }
+            self.replay_until = self.next_event;
+            self.next_event = first;
             self.resync_audio(data);
             // 旧データの Arc(サンプル波形等)を掴んだままにしないようスクラッチを戻す
             for s in self.inst_scratch.iter_mut() {
@@ -927,6 +1037,7 @@ impl Renderer {
                 self.auto_cursors = [(0, 0); MAX_TRACKS];
                 self.master_cursor = 0;
                 self.next_event = data.events.partition_point(|e| e.start < self.pos);
+                self.replay_until = 0;
                 self.resync_audio(data);
                 if metronome {
                     self.next_beat = data.next_beat(self.pos);
@@ -972,8 +1083,14 @@ impl Renderer {
                 && self.next_event < data.events.len()
                 && data.events[self.next_event].start <= self.pos
             {
+                let idx = self.next_event;
                 let e = data.events[self.next_event];
                 self.next_event += 1;
+                // 鳴らし直しの範囲: 位置をまたいでいる、鳴らし直すトラックの音だけ
+                let replay = idx < self.replay_until;
+                if replay && !(e.end > self.pos && self.retrig_track(e.track)) {
+                    continue;
+                }
                 let mix = data.tracks.get(e.track as usize);
                 // プラグインのトラックは collect_plugin_notes で送る
                 if let Some(mix) = mix.filter(|m| m.audible && m.plugin.is_none()) {
@@ -1000,12 +1117,18 @@ impl Renderer {
                         if !e.curve.is_empty() {
                             state.set_curve(&e.curve);
                         }
-                        if e.fade_in > 0 {
+                        // 鳴らし直す音は途中からなので、立ち上がりを飛ばして短くフェードイン
+                        let fade_in = if replay {
+                            e.fade_in.max(((sr * SWAP_FADE_SECS) as u32).max(1))
+                        } else {
+                            e.fade_in
+                        };
+                        if fade_in > 0 {
                             state.skip_attack(inst);
                         }
                         // レガート・ポルタメント: 同じトラックで先に離された音の余韻を
                         // つなぎ目の長さで消す(押さえたままの音には触れない)
-                        if e.choke > 0 {
+                        if e.choke > 0 && !replay {
                             for v in self.voices.iter_mut() {
                                 if v.track == e.track && v.released {
                                     v.released = false;
@@ -1019,10 +1142,12 @@ impl Renderer {
                             track: e.track,
                             released: false,
                             wraps: 0,
-                            fade_in: e.fade_in,
+                            fade_in,
                             fade_out: e.fade_out,
                             age: 0,
                             stolen: false,
+                            ident: mix.ident,
+                            content: mix.content,
                             state,
                         });
                     }
@@ -1105,10 +1230,10 @@ impl Renderer {
                 if ev.fade_out > 0 && until_end < ev.fade_out {
                     amp *= until_end as f32 / ev.fade_out as f32;
                 }
-                let sample = (frames[i0] + (frames[i0 + 1] - frames[i0]) * frac) * amp;
+                let sample = glaux_dsp::hermite(frames, i0, frac) * amp;
                 // ステレオ素材の左右差成分(L = M + S、R = M − S)
                 let side = match &ev.data.side {
-                    Some(sd) if i0 + 1 < sd.len() => (sd[i0] + (sd[i0 + 1] - sd[i0]) * frac) * amp,
+                    Some(sd) if i0 + 1 < sd.len() => glaux_dsp::hermite(sd, i0, frac) * amp,
                     _ => 0.0,
                 };
                 v.pos += ev.rate;
@@ -1585,9 +1710,9 @@ impl Renderer {
             };
             let click = self.blk_click[f];
             let base = f * channels;
-            out[base] = (l[f] * master_amp + click).tanh();
+            out[base] = soft_clip(l[f] * master_amp + click);
             if channels >= 2 {
-                out[base + 1] = (r[f] * master_amp + click).tanh();
+                out[base + 1] = soft_clip(r[f] * master_amp + click);
             }
         }
         self.mix_l = l;
@@ -2214,6 +2339,9 @@ mod tests {
                 is_bus: false,
                 sends: vec![],
                 stereo: false,
+                ident: 1,
+                // 実際の構築(build_playback_data)と同じく、ノートが違えば発音内容も違う
+                content: start.wrapping_mul(31) ^ end,
             }],
             audio_events: vec![],
             master_effects: vec![],
@@ -2275,6 +2403,127 @@ mod tests {
         let mut buf = vec![0.0f32; frames * 2];
         r.process(&mut buf, 2);
         buf
+    }
+
+    // ---- 再生中の編集・シークで音を切らない ----------------------------------------
+
+    /// 2 トラック(どちらも 4 小節伸ばしっぱなしの音)の曲
+    fn two_pads() -> glaux_core::Project {
+        use glaux_core::{
+            Articulation, Clip, ClipContent, ClipId, Note, NoteId, Tick, Track, TrackId, TrackKind,
+        };
+        let mut p = glaux_core::Project::new("t");
+        for (name, pitch) in [("A", 57u8), ("B", 64u8)] {
+            let mut t = Track::new(TrackId::new(), name, TrackKind::Midi);
+            let mut c = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840 * 4));
+            if let ClipContent::Midi { notes, .. } = &mut c.content {
+                notes.push(Note {
+                    id: NoteId::new(),
+                    pos: Tick(0),
+                    dur: Tick(3840 * 4),
+                    pitch,
+                    vel: 100,
+                    articulation: Articulation::Normal,
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                });
+            }
+            let mut d = glaux_core::Device::builtin("subtractive");
+            d.params.insert("sustain".into(), 1.0.into());
+            t.device = Some(d);
+            t.clips.push(c);
+            p.tracks.push(t);
+        }
+        p
+    }
+
+    fn build(p: &glaux_core::Project) -> Arc<PlaybackData> {
+        Arc::new(crate::data::build_playback_data(
+            p,
+            48_000.0,
+            &Default::default(),
+        ))
+    }
+
+    /// 差し替えの直後 5ms の音量が、直前 5ms の何倍か(1 に近いほど途切れていない)
+    fn level_across_swap(before: &glaux_core::Project, after: &glaux_core::Project) -> f32 {
+        let shared = Arc::new(Shared::new((*build(before)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 48_000 / 2);
+        let pre = rms(&render_block(&mut r, 240));
+        shared.data.store(build(after));
+        let post = rms(&render_block(&mut r, 240));
+        post / pre
+    }
+
+    #[test]
+    fn knob_changes_keep_the_sounding_notes() {
+        // 以前はつまみを 1 回動かすたびに、鳴っている音がすべて切れていた
+        let before = two_pads();
+        let mut after = before.clone();
+        after.tracks[0].volume_db = -1.0;
+        if let Some(d) = &mut after.tracks[0].device {
+            d.params.insert("cutoff".into(), 3000.0.into());
+        }
+        let ratio = level_across_swap(&before, &after);
+        assert!(ratio > 0.7, "途切れた: {ratio:.3}");
+    }
+
+    #[test]
+    fn editing_another_track_keeps_this_track_sounding() {
+        let before = two_pads();
+        let mut after = before.clone();
+        // B の音を消す(A は変わらない)
+        if let glaux_core::ClipContent::Midi { notes, .. } = &mut after.tracks[1].clips[0].content {
+            notes.clear();
+        }
+        let mut only_a = before.clone();
+        only_a.tracks[1].mute = true;
+        // A だけを聴く: B をミュートした曲どうしで、B のノートだけ消した場合
+        let mut only_a_after = after.clone();
+        only_a_after.tracks[1].mute = true;
+        let ratio = level_across_swap(&only_a, &only_a_after);
+        assert!(ratio > 0.7, "A が途切れた: {ratio:.3}");
+    }
+
+    #[test]
+    fn seeking_into_a_long_note_plays_it() {
+        // 以前はシーク位置より前に始まった音は鳴らなかった(パッドの途中へシークすると無音)
+        let shared = Arc::new(Shared::new((*build(&two_pads())).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        shared.seek.store(48_000 * 3, Ordering::Release);
+        let _ = render_block(&mut r, 480); // フェードイン
+        let block = render_block(&mut r, 4800);
+        assert!(rms(&block) > 0.05, "シーク先で鳴るはず: {}", rms(&block));
+    }
+
+    #[test]
+    fn editing_the_same_track_replays_the_long_note() {
+        // 同じトラックに音を足すと発音内容が変わるので、鳴っている音はいったん短く消えて、
+        // 途中から鳴らし直される(鳴り続ける)
+        let before = two_pads();
+        let mut after = before.clone();
+        if let glaux_core::ClipContent::Midi { notes, .. } = &mut after.tracks[0].clips[0].content {
+            let mut n = notes[0].clone();
+            n.id = glaux_core::NoteId::new();
+            n.pos = glaux_core::Tick(3840 * 3);
+            n.dur = glaux_core::Tick(960);
+            n.pitch = 69;
+            notes.push(n);
+        }
+        let shared = Arc::new(Shared::new((*build(&before)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 48_000 / 2);
+        let pre = rms(&render_block(&mut r, 4800));
+        shared.data.store(build(&after));
+        let _ = render_block(&mut r, 480);
+        let post = rms(&render_block(&mut r, 4800));
+        assert!(post > pre * 0.7, "鳴り続けるはず: {pre:.3} → {post:.3}");
+        // 声が二重に積み上がっていない(トラックごとに 1 音ずつ)
+        assert_eq!(r.voices.iter().filter(|v| !v.stolen).count(), 2);
     }
 
     #[test]
@@ -2374,6 +2623,20 @@ mod tests {
             }
         }
         assert!(stopped, "ループ解除後は曲末で自動停止するはず");
+    }
+
+    #[test]
+    fn soft_clip_passes_normal_levels_and_limits_peaks() {
+        for x in [0.0f32, 0.1, -0.5, 0.9, -0.9] {
+            assert_eq!(soft_clip(x), x, "0.9 までは素通し");
+        }
+        let mut prev = 0.9f32;
+        for i in 1..200 {
+            let y = soft_clip(0.9 + i as f32 * 0.05);
+            assert!(y >= prev && y <= 1.0, "単調に 1.0 へ近づき、超えない");
+            prev = y;
+        }
+        assert_eq!(soft_clip(-3.0), -soft_clip(3.0));
     }
 
     #[test]
@@ -2530,6 +2793,8 @@ mod tests {
         shared
             .data
             .store(Arc::new(data_with_note(96_000, 100_000, true)));
+        // 変わったトラックの音は切らずに 5ms で消える
+        let _ = render_block(&mut r, 480);
         let block = render_block(&mut r, 4800);
         assert!(rms(&block) < 1e-6, "差し替え後、未来のノートはまだ鳴らない");
     }

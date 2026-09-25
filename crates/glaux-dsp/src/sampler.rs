@@ -142,7 +142,7 @@ impl SamplerVoice {
             return 0.0;
         }
         let frac = (self.pos - i as f64) as f32;
-        let s = frames[i] + (frames[i + 1] - frames[i]) * frac;
+        let s = hermite(frames, i, frac);
 
         // ピッチ表現(ビブラート / チョーキング)はレートに掛ける
         let ratio = if self.expr.is_active() {
@@ -165,9 +165,45 @@ impl SamplerVoice {
     }
 }
 
+/// 4 点 3 次 Hermite 補間(Catmull-Rom)。`frames[i]` と `frames[i + 1]` の間の `frac`(0..1)の位置の値。
+/// 呼び出し側が `i + 1 < frames.len()` を保証する。前後の点が範囲外なら端の値で代わりにする。
+/// 以前は線形補間で、素材とエンジンのサンプルレートが違う(44.1k の素材など)と、高い音域で
+/// 折り返し雑音が出て高域もこもった
+#[inline]
+pub fn hermite(frames: &[f32], i: usize, frac: f32) -> f32 {
+    let x0 = frames[i];
+    let x1 = frames[i + 1];
+    let xm1 = if i > 0 { frames[i - 1] } else { x0 };
+    let x2 = frames.get(i + 2).copied().unwrap_or(x1);
+    let c1 = 0.5 * (x1 - xm1);
+    let c2 = xm1 - 2.5 * x0 + 2.0 * x1 - 0.5 * x2;
+    let c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
+    ((c3 * frac + c2) * frac + c1) * frac + x0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hermite_hits_the_points_and_is_smoother_than_linear() {
+        let f = [0.0f32, 1.0, 0.0, -1.0, 0.0];
+        assert_eq!(hermite(&f, 1, 0.0), 1.0);
+        assert!((hermite(&f, 1, 1.0) - 0.0).abs() < 1e-6);
+        // サイン波の途中の値は線形補間より本来の値に近い
+        let sr = 48_000.0f32;
+        let w: Vec<f32> = (0..64)
+            .map(|k| (k as f32 * 5_000.0 * std::f32::consts::TAU / sr).sin())
+            .collect();
+        let (mut e_lin, mut e_her) = (0.0f32, 0.0f32);
+        for k in 2..60 {
+            let t = k as f32 + 0.5;
+            let truth = (t * 5_000.0 * std::f32::consts::TAU / sr).sin();
+            e_lin += (w[k] + (w[k + 1] - w[k]) * 0.5 - truth).abs();
+            e_her += (hermite(&w, k, 0.5) - truth).abs();
+        }
+        assert!(e_her < e_lin * 0.5, "Hermite {e_her} / 線形 {e_lin}");
+    }
 
     /// 440Hz サイン波 0.5 秒ぶんのサンプル
     fn test_sample(sr: f32) -> Arc<SampleData> {
