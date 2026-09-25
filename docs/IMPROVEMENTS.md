@@ -80,7 +80,7 @@ get_project の応答 約 24.5 万字(2 重)→ 12.3 万字、compact で 7.1 �
 | 26 | ツール名の日本語表示が 36 個中 9 個で、2 か所に別々の定義 | `App.svelte:104-112`、`ChatPanel.svelte:66-76` | `lib/toolLabels.ts` に全ツールをまとめる | S | 済 |
 | 27 | ピアノロールに Ctrl+A・↑↓(移調)がない。トラック名・色の変更と複製、クオンタイズのボタンがない | `PianoRoll.svelte:1258-1330`、`Timeline.svelte:1578-1595` | Ctrl+A / ↑↓ / Shift+↑↓ / Alt+←→ / Ctrl+D / Q。トラック名のダブルクリック編集、色、複製 | S | 一部済(キー操作・名前・色・複製。クオンタイズのボタンは未) |
 | 28 | チャット: 実行中に次の指示を書けない、再起動で表示が消える、最下部へ強制スクロール、素のテキスト表示 | `ChatPanel.svelte:307`、`:103-106` | 実行中も入力可、ログを `cache/` に保存して復元、下端付近だけ自動スクロール、Markdown | M | 未 |
-| 29 | ピアノロールの色がテーマに追従しない / 固定の色が散在 / 内部 ID を常に表示 / アクセシビリティ | `PianoRoll.svelte:326,361,365,446-482,508` の琥珀色固定。`Timeline.svelte:1249`、`HistoryPanel.svelte:82` の ID。絵文字ボタンに aria-label なし、フォーカス表示なし | CSS 変数を読んで描く、色トークン、ID はツールチップへ、aria-label と :focus-visible | 各 S | 一部済(色のトークン・ピアノロールの色・ID・aria-label・フォーカス表示。SVG アイコン化は未) |
+| 29 | ピアノロールの色がテーマに追従しない / 固定の色が散在 / 内部 ID を常に表示 / アクセシビリティ | `PianoRoll.svelte:326,361,365,446-482,508` の琥珀色固定。`Timeline.svelte:1249`、`HistoryPanel.svelte:82` の ID。絵文字ボタンに aria-label なし、フォーカス表示なし | CSS 変数を読んで描く、色トークン、ID はツールチップへ、aria-label と :focus-visible | 各 S | 一部済(色のトークン・ピアノロールの色・ID・aria-label・フォーカス表示。SVG アイコン化も 2026-09-25 に済。画面の整理とあわせて Lucide の線のアイコンに統一) |
 
 ## 5. AI 連携
 

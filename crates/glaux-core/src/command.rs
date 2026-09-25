@@ -196,6 +196,11 @@ pub enum Command {
     RemoveEffect {
         id: FxId,
     },
+    /// エフェクトの順番を変える(トラック・マスターのどちらでも。同じ列の中で `to_index` へ)
+    MoveEffect {
+        id: FxId,
+        to_index: usize,
+    },
     /// マスターバスにエフェクトを追加する(`index` 省略で末尾)
     AddMasterEffect {
         effect: Effect,
@@ -373,7 +378,10 @@ impl Command {
                 out.insert(T::Track(track.clone()));
                 out.insert(T::Track(target.clone()));
             }
-            RemoveEffect { id } | SetEffectBypass { id, .. } | SetEffectState { id, .. } => {
+            RemoveEffect { id }
+            | MoveEffect { id, .. }
+            | SetEffectBypass { id, .. }
+            | SetEffectState { id, .. } => {
                 out.insert(T::Effect(id.clone()));
             }
             AddMasterEffect { effect, .. } => {

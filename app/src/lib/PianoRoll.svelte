@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import { onMount, tick as sveltick } from "svelte";
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
@@ -232,12 +233,11 @@
   const availableArts = $derived(
     ARTS_BY_INSTRUMENT[instrumentName] ?? ARTS_BY_INSTRUMENT.subtractive,
   );
-  const artHint = $derived(
-    availableArts.map((a) => `${a.key}=${a.label}`).join(" "),
-  );
   /// 挿入カーソル(クリックで固定。キット/フレット打ち込み先。←/→ でスナップ移動)
   let insertTick = $state(0);
   let showKit = $state(true);
+  /// 操作のヘルプ(以前は 1 行のヒント文に詰め込んでいた)
+  let helpOpen = $state(false);
   let showFret = $state(true);
   let drumHighlight = $state<number | null>(null);
 
@@ -1476,94 +1476,98 @@
     class:inactive={pianoRollStore.second !== null && pianoRollStore.active !== pane}
     onpointerdowncapture={() => (pianoRollStore.active = pane)}
   >
+    <!-- ツールバー: 表示 / 道具 / スナップ / スウィング。操作の説明は ? のヘルプに -->
     <div class="head">
       <div class="head-left">
         {#if pianoRollStore.second}
           <span class="pane-tag">{pane === "main" ? "上" : "下"}</span>
         {/if}
-        <span class="clip-name">{found.clip.name}</span>
+        <span class="clip-name" title={found.clip.name}>{found.clip.name}</span>
         <span class="track-name">{found.track.name}</span>
         {#if found.clip.loop && found.clip.loop_len}
-          <span
-            class="loop-tag"
-            title="ループクリップ: ここで編集した範囲がクリップの長さまで繰り返し鳴ります"
-          >🔁 {(found.clip.loop_len / (project.ppq * 4)).toFixed(found.clip.loop_len % (project.ppq * 4) === 0 ? 0 : 2)} 小節ぶんを繰り返し</span
+          <span class="loop-tag" title="ループのクリップ: ここで編集した範囲がクリップの長さまで繰り返し鳴ります"
+            ><Icon name="infinity" size={14} />{(found.clip.loop_len / (project.ppq * 4)).toFixed(
+              found.clip.loop_len % (project.ppq * 4) === 0 ? 0 : 2,
+            )} 小節を繰り返し</span
           >
         {/if}
-        <code class="dim">{found.clip.id}</code>
       </div>
       <div class="head-right">
-        {#if pane === "main"}
-          <select
-            class="split"
-            value=""
-            onchange={(e) => {
-              const v = (e.currentTarget as HTMLSelectElement).value;
-              if (v) openSplit(v);
-              (e.currentTarget as HTMLSelectElement).value = "";
-            }}
-            title="別のクリップを下に開いて見比べ・コピペ(Ctrl+C → 下をクリック → Ctrl+V)"
+        <span class="glabel">表示</span>
+        <div class="seg">
+          <button class="btn sm" class:on={showVel} onclick={() => (showVel = !showVel)} title="ベロシティ(音の強さ)の帯。縦棒を上下にドラッグで変更、選択中のノートはまとめて変わる"
+            ><Icon name="chart-no-axes-column" />ベロシティ</button
           >
-            <option value="">⫶ 分割…</option>
-            {#each otherClips as o (o.clip.id)}
-              <option value={o.clip.id}>{o.track.name} / {o.clip.name}</option>
-            {/each}
-          </select>
-        {:else}
-          <button onclick={swapPanes} title="上下のクリップを入れ替える">⇅</button>
-        {/if}
-        {#if isDrum}
-          <button
-            class:kit-on={showKit}
-            onclick={() => (showKit = !showKit)}
-            title="ドラムキット図の表示/非表示"
-          >
-            🥁 キット
-          </button>
-        {/if}
-        {#if isFrettable}
+          {#if isDrum}
+            <button class="btn sm" class:on={showKit} onclick={() => (showKit = !showKit)} title="ドラムキットの図(押すと挿入カーソルの位置に打ち込む)"
+              ><Icon name="drum" />キット</button
+            >
+          {/if}
+          {#if isFrettable}
+            <button class="btn sm" class:on={showFret} onclick={() => (showFret = !showFret)} title="フレット盤(押すと挿入カーソルの位置に打ち込む)"
+              ><Icon name="guitar" />フレット</button
+            >
+          {/if}
+        </div>
+        {#if isFrettable && showFret}
           <select
             class="tuning"
             value={fretTuning}
-            onchange={(e) =>
-              (fretTuningOverride = (e.currentTarget as HTMLSelectElement).value as
-                | "guitar"
-                | "bass")}
+            onchange={(e) => (fretTuningOverride = (e.currentTarget as HTMLSelectElement).value as "guitar" | "bass")}
             title="フレット盤のチューニング"
           >
-            <option value="guitar">🎸 ギター(6 弦)</option>
-            <option value="bass">🎸 ベース(4 弦)</option>
+            <option value="guitar">ギター(6 弦)</option>
+            <option value="bass">ベース(4 弦)</option>
           </select>
-          <button
-            class:kit-on={showFret}
-            onclick={() => (showFret = !showFret)}
-            title="フレット盤の表示/非表示"
-          >
-            フレット
-          </button>
         {/if}
+        {#if pane === "main"}
+          <label class="sel-ic" title="別のクリップを下に開いて見比べ・コピペ(Ctrl+C → 下をクリック → Ctrl+V)">
+            <Icon name="rows-2" size={14} />
+            <select
+              class="split"
+              value=""
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                if (v) openSplit(v);
+                (e.currentTarget as HTMLSelectElement).value = "";
+              }}
+            >
+              <option value="">分割して開く…</option>
+              {#each otherClips as o (o.clip.id)}
+                <option value={o.clip.id}>{o.track.name} / {o.clip.name}</option>
+              {/each}
+            </select>
+          </label>
+        {:else}
+          <button class="btn sm" onclick={swapPanes} title="上下のクリップを入れ替える"><Icon name="arrow-up-down" />入れ替え</button>
+        {/if}
+        <span class="sep"></span>
+        <span class="glabel">道具</span>
         <button
-          class:kit-on={curveMode}
+          class="btn sm"
+          class:on={curveMode}
           onclick={() => (curveMode = !curveMode)}
           title="ピッチカーブを手で描く: ノートの上をなぞると、その高さのずれ(1 行 = 半音)がカーブになる。右クリックでカーブを消す"
+          ><Icon name="pencil-line" />カーブ</button
         >
-          〜 カーブ
-        </button>
-        <button
-          class:kit-on={showVel}
-          onclick={() => (showVel = !showVel)}
-          title="ベロシティ(音の強さ)の帯の表示/非表示。縦棒を上下にドラッグで変更、選択中のノートはまとめて変わる"
-        >
-          ベロシティ
-        </button>
+        <span class="sep"></span>
+        <label class="snap">
+          スナップ
+          <select bind:value={snapTicks}>
+            {#each snapOptions as o (o.ticks)}
+              <option value={o.ticks}>{o.label}</option>
+            {/each}
+          </select>
+        </label>
         <label class="snap" title="裏拍の音をハネさせる(選択中のノート、無ければクリップ全体)。表の音と長さは変えない。同じ設定なら何度掛けても同じ">
           スウィング
-          <select bind:value={swingGrid}>
-            <option value={480}>8 分</option>
-            <option value={240}>16 分</option>
+          <select bind:value={swingGrid} aria-label="スウィングの単位">
+            <option value={480}>1/8</option>
+            <option value={240}>1/16</option>
           </select>
           <select
             value=""
+            aria-label="スウィングを掛ける"
             onchange={(e) => {
               const el = e.currentTarget as HTMLSelectElement;
               applySwing(el.value);
@@ -1580,7 +1584,7 @@
         </label>
         {#if swingMsg}<span class="swing-msg">{swingMsg}</span>{/if}
         {#if selectedPorta.length > 0}
-          <label class="snap" title="選んだポルタメント(P)のノートが直前の音から滑る時間。トラック全体の既定は音作りビューの「つなぎ」で">
+          <label class="snap" title="選んだポルタメント(P)のノートが直前の音から滑る時間。トラック全体の既定はインスペクターの「つなぎ」で">
             滑る時間
             <select value={glideValue} onchange={(e) => setNoteGlide((e.currentTarget as HTMLSelectElement).value)}>
               {#if glideValue === ""}<option value="">(ばらばら)</option>{/if}
@@ -1594,22 +1598,41 @@
             </select>
           </label>
         {/if}
-        <label class="snap">
-          スナップ
-          <select bind:value={snapTicks}>
-            {#each snapOptions as o (o.ticks)}
-              <option value={o.ticks}>{o.label}</option>
-            {/each}
-          </select>
-        </label>
-        <span
-          class="hint"
-          title={`ドラッグ: 複数選択(まとめて移動・端で長さ変更)\nCtrl+C/X/V: コピペ(別クリップも可)\n奏法: ${artHint}\nダブルクリック: 追加 / 右クリック・Del: 削除\nCtrl・Shift+ホイール: ズーム\nベロシティ: 下の帯の縦棒を上下にドラッグ`}
-          >ドラッグ: 複数選択(まとめて移動・端で長さ変更) / Ctrl+C/X/V: コピペ(別クリップも可) / 奏法: {artHint} / ダブルクリック: 追加 / 右クリック・Del: 削除 / Ctrl・Shift+ホイール: ズーム</span
+        <span class="grow"></span>
+        <button class="btn sm icon ghost" class:on={helpOpen} onclick={() => (helpOpen = !helpOpen)} title="操作のヘルプ" aria-label="操作のヘルプ"
+          ><Icon name="circle-help" /></button
         >
-        <button onclick={close} title={pane === "main" ? "閉じる(Esc)" : "この分割ペインを閉じる(Esc)"}>✕</button>
+        <button class="btn sm icon ghost" onclick={close} title={pane === "main" ? "閉じる(Esc)" : "この分割ペインを閉じる(Esc)"} aria-label="閉じる"
+          ><Icon name="x" /></button
+        >
       </div>
     </div>
+    {#if helpOpen}
+      <div class="help-pop" role="dialog" aria-label="ピアノロールの操作">
+        <div class="help-h">
+          <b>ピアノロールの操作</b>
+          <button class="btn sm icon ghost" onclick={() => (helpOpen = false)} aria-label="閉じる"><Icon name="x" /></button>
+        </div>
+        <table>
+          <tbody>
+            <tr><td>追加</td><td>空きをダブルクリック(長さはスナップの幅)</td></tr>
+            <tr><td>選ぶ</td><td>クリック / <kbd>Shift</kbd>+クリックで追加 / 空きをドラッグで囲む / <kbd>Ctrl</kbd>+<kbd>A</kbd></td></tr>
+            <tr><td>動かす・長さ</td><td>ドラッグ / 右端をドラッグ / <kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd></td></tr>
+            <tr><td>音の高さ</td><td><kbd>↑</kbd><kbd>↓</kbd>(<kbd>Shift</kbd> でオクターブ)</td></tr>
+            <tr><td>消す</td><td><kbd>Delete</kbd> / 右クリック</td></tr>
+            <tr><td>コピー</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd>(マウスの位置へ。別のクリップにも)</td></tr>
+            <tr><td>挿入カーソル</td><td>空きをクリック / <kbd>←</kbd><kbd>→</kbd>(キット・フレットの打ち込み先)</td></tr>
+            <tr>
+              <td>奏法</td>
+              <td>{#each availableArts as a (a.key)}<span class="art"><kbd>{a.key}</kbd>{a.label}</span>{/each}(選択中のノートに。もう一度で外す)</td>
+            </tr>
+            <tr><td>強さ</td><td>下の帯の縦棒を上下にドラッグ</td></tr>
+            <tr><td>ズーム</td><td><kbd>Ctrl</kbd>+ホイール(横)/ <kbd>Shift</kbd>+ホイール(縦)</td></tr>
+            <tr><td>閉じる</td><td><kbd>Esc</kbd>(選択を外してから)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    {/if}
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     {#if isDrum && showKit}
@@ -1721,7 +1744,93 @@
 
   .split {
     font-size: 11px;
-    max-width: 160px;
+    max-width: 150px;
+  }
+
+  .sel-ic {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  .glabel {
+    font-size: 10px;
+    color: var(--text-faint);
+    flex-shrink: 0;
+  }
+
+  .seg {
+    display: inline-flex;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .sep {
+    width: 1px;
+    height: 18px;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+
+  .grow {
+    flex: 1;
+  }
+
+  .help-pop {
+    position: absolute;
+    right: 12px;
+    top: 44px;
+    z-index: 30;
+    width: 420px;
+    max-width: calc(100% - 24px);
+    background: var(--bg-panel);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-pop);
+    padding: 10px 14px 12px;
+    font-size: var(--fs-sm);
+  }
+
+  .help-h {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .help-pop table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+
+  .help-pop td {
+    padding: 3px 4px;
+    vertical-align: top;
+    line-height: 1.6;
+  }
+
+  .help-pop td:first-child {
+    color: var(--text-dim);
+    white-space: nowrap;
+    width: 96px;
+  }
+
+  .art {
+    margin-right: 8px;
+    white-space: nowrap;
+  }
+
+  kbd {
+    font-family: var(--mono);
+    font-size: 10px;
+    border: 1px solid var(--border-strong);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0 4px;
+    margin-right: 2px;
+    background: var(--bg-raised);
   }
 
   .head {
@@ -1729,7 +1838,8 @@
     justify-content: space-between;
     align-items: center;
     gap: 10px;
-    padding: 6px 12px;
+    height: 40px;
+    padding: 0 8px 0 12px;
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
@@ -1738,15 +1848,18 @@
   .head-left {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
+    max-width: 30%;
     white-space: nowrap;
-    flex-shrink: 0;
+    overflow: hidden;
   }
 
   .clip-name {
     font-weight: 600;
-    font-size: 14px;
+    font-size: var(--fs-md);
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .track-name {
@@ -1754,14 +1867,11 @@
     font-size: 12px;
   }
 
-  .dim {
-    color: var(--text-dim);
-    opacity: 0.6;
-    font-size: 10px;
-  }
-
   /* ヘッダーは 1 行に保つ(ボタン類は折り返さず、説明文だけ省略表示) */
   .loop-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     font-size: 11px;
     color: var(--accent);
   }
@@ -1769,8 +1879,9 @@
   .head-right {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     min-width: 0;
+    flex: 1;
     white-space: nowrap;
   }
 
@@ -1800,14 +1911,6 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 2px 4px;
-  }
-
-  .hint {
-    font-size: 11px;
-    color: var(--text-dim);
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .body {
@@ -1907,11 +2010,6 @@
     border-radius: 4px;
     padding: 2px 4px;
     font-size: 11px;
-  }
-
-  .kit-on {
-    border-color: var(--accent-dim);
-    color: var(--accent);
   }
 
   .stack {

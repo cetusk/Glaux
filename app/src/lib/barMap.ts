@@ -110,3 +110,34 @@ export function nextBarHead(bars: Bar[], tick: number): number {
   const bar = barAtTick(bars, tick);
   return bar.tick + bar.len;
 }
+
+/** 表示窓の位置「小節.拍.16 分」(どれも 1 始まり)。拍は拍子の分母の音符 */
+export function formatPosition(bars: Bar[], tick: number, ppq: number): string {
+  if (bars.length === 0) return "1.1.1";
+  const bar = barAtTick(bars, tick);
+  const beatLen = (ppq * 4) / bar.den;
+  const inBar = Math.max(0, tick - bar.tick);
+  const beat = Math.floor(inBar / beatLen);
+  const sixteenth = Math.floor((inBar - beat * beatLen) / (ppq / 4));
+  return `${bar.index + 1}.${beat + 1}.${sixteenth + 1}`;
+}
+
+/** tick を秒に(テンポの変化を考慮) */
+export function tickToSeconds(tempoMap: { tick: number; bpm: number }[], tick: number, ppq: number): number {
+  const events = tempoMap.length > 0 ? tempoMap : [{ tick: 0, bpm: 120 }];
+  let secs = 0;
+  for (let i = 0; i < events.length; i++) {
+    const start = events[i].tick;
+    if (tick <= start) break;
+    const end = Math.min(tick, events[i + 1]?.tick ?? Infinity);
+    secs += ((end - start) / ppq) * (60 / events[i].bpm);
+  }
+  return secs;
+}
+
+/** 秒を「分:秒.1/10」に */
+export function formatSeconds(secs: number): string {
+  const m = Math.floor(secs / 60);
+  const s = secs - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
+}

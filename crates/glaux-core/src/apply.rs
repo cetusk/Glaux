@@ -662,6 +662,36 @@ impl Project {
                     changes: vec![Change::EffectsChanged { track }],
                 })
             }
+            MoveEffect { id, to_index } => {
+                if let Some(from) = self.master_effect_index(id) {
+                    check_index(*to_index, self.master.effects.len())?;
+                    let e = self.master.effects.remove(from);
+                    self.master.effects.insert(*to_index, e);
+                    return Ok(Applied {
+                        inverse: MoveEffect {
+                            id: id.clone(),
+                            to_index: from,
+                        },
+                        changes: vec![Change::MasterChanged],
+                    });
+                }
+                let (ti, from) = self
+                    .effect_location(id)
+                    .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
+                let effects = &mut self.tracks[ti].effects;
+                check_index(*to_index, effects.len())?;
+                let e = effects.remove(from);
+                effects.insert(*to_index, e);
+                Ok(Applied {
+                    inverse: MoveEffect {
+                        id: id.clone(),
+                        to_index: from,
+                    },
+                    changes: vec![Change::EffectsChanged {
+                        track: self.tracks[ti].id.clone(),
+                    }],
+                })
+            }
             SetEffectBypass { id, bypass } => {
                 if let Some(ei) = self.master_effect_index(id) {
                     let old = std::mem::replace(&mut self.master.effects[ei].bypass, *bypass);

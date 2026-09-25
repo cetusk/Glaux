@@ -101,11 +101,11 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
     let pick_track = |rng: &mut StdRng| tracks.choose(rng).unwrap().id.clone();
 
     loop {
-        // 0..=24 は単体コマンド、25 以上は Batch(入れ子は 1 段まで)
+        // 0..=25 は単体コマンド、26 以上は Batch(入れ子は 1 段まで)
         let choice = if depth == 0 {
-            rng.gen_range(0..26)
+            rng.gen_range(0..27)
         } else {
-            rng.gen_range(0..25)
+            rng.gen_range(0..26)
         };
         match choice {
             0 => {
@@ -523,6 +523,22 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                     })
                     .collect();
                 return Command::SetMasterAutomationPoints { target, points };
+            }
+            25 => {
+                // エフェクトの並べ替え(トラックかマスター。同じ列の中で)
+                let lists: Vec<&Vec<Effect>> = tracks
+                    .iter()
+                    .map(|t| &t.effects)
+                    .chain(std::iter::once(&p.master.effects))
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                let Some(list) = lists.choose(rng) else {
+                    continue;
+                };
+                return Command::MoveEffect {
+                    id: list.choose(rng).unwrap().id.clone(),
+                    to_index: rng.gen_range(0..list.len()),
+                };
             }
             19 => {
                 let Some(c) = midi_clips.choose(rng) else {

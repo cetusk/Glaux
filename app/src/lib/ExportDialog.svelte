@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   // 書き出しの画面。以前は 48kHz / 16bit / 曲全体 / プロジェクトの export/ 固定で、選べるものが無かった。
   import { open as pickDir, save as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
@@ -104,8 +105,8 @@
 <div class="backdrop" role="presentation" onclick={onClose}></div>
 <div class="panel" role="dialog" aria-label="書き出し">
   <div class="head">
-    <h2>⬇ 書き出し</h2>
-    <button onclick={onClose} title="閉じる(Esc)" aria-label="閉じる">✕</button>
+    <h2><Icon name="download" />書き出し</h2>
+    <button class="btn sm icon ghost" onclick={onClose} title="閉じる(Esc)" aria-label="閉じる"><Icon name="x" /></button>
   </div>
 
   <div class="section">
@@ -170,7 +171,9 @@
     <div class="row">
       <code class="path" title={path ?? ""}>{path ?? "プロジェクトの export フォルダ(日時付きの名前)"}</code>
       <button onclick={choosePath}>選ぶ…</button>
-      {#if path}<button onclick={() => (path = null)} title="既定に戻す">✕</button>{/if}
+      {#if path}<button class="btn sm icon ghost" onclick={() => (path = null)} title="既定に戻す" aria-label="既定に戻す"
+          ><Icon name="x" /></button
+        >{/if}
     </div>
   </div>
 
@@ -212,8 +215,15 @@
   }
 
   h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin: 0;
-    font-size: 15px;
+    font-size: var(--fs-lg);
+  }
+
+  h2 :global(.icon) {
+    color: var(--accent);
   }
 
   .section {

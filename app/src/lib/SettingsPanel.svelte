@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import {
     ACCENT_PRESETS,
     applyTheme,
@@ -231,12 +232,11 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="backdrop" onclick={onClose}></div>
-<div class="panel">
+<div class="backdrop" role="presentation" onclick={onClose}></div>
+<div class="panel" role="dialog" aria-label="設定">
   <div class="head">
-    <h2>⚙ 設定</h2>
-    <button onclick={onClose} title="閉じる">✕</button>
+    <h2><Icon name="settings" />設定</h2>
+    <button class="btn sm icon ghost" onclick={onClose} title="閉じる(Esc)" aria-label="閉じる"><Icon name="x" /></button>
   </div>
 
   <div class="section">
@@ -272,11 +272,13 @@
   <div class="section">
     <div class="section-title">
       オーディオデバイス
-      <button class="mini" onclick={loadDevices} title="一覧を更新(USB 機器を抜き差しした後など)">🔄</button>
+      <button class="btn sm icon ghost" onclick={loadDevices} title="一覧を更新(USB 機器を抜き差しした後など)" aria-label="一覧を更新"
+        ><Icon name="refresh-cw" /></button
+      >
     </div>
     {#if devices}
       <label class="row col">
-        <span>🔈 出力(再生)</span>
+        <span class="lab"><Icon name="speaker" size={14} />出力(再生)</span>
         <select value={settings.outputDevice} onchange={pickOutput}>
           <option value="">OS の既定({devices.default_output ?? "なし"})</option>
           {#each devices.outputs as d (d)}
@@ -285,7 +287,7 @@
         </select>
       </label>
       <label class="row col">
-        <span>🎤 入力(録音)</span>
+        <span class="lab"><Icon name="mic" size={14} />入力(録音)</span>
         <select value={settings.inputDevice} onchange={pickInput}>
           <option value="">OS の既定({devices.default_input ?? "なし"})</option>
           {#each devices.inputs as d (d)}
@@ -294,9 +296,9 @@
         </select>
       </label>
       <div class="hint">
-        使用中: 🔈 {devices.current_output ?? "なし"}{devices.sample_rate
+        使用中: 出力 {devices.current_output ?? "なし"}{devices.sample_rate
           ? `(${(devices.sample_rate / 1000).toFixed(1)} kHz)`
-          : ""} / 🎤 {devices.current_input ?? "なし"}
+          : ""} / 入力 {devices.current_input ?? "なし"}
       </div>
     {:else}
       <div class="hint">読み込み中…</div>
@@ -306,8 +308,8 @@
     {/if}
 
     <div class="row">
-      <button class="mini" class:on={monitoring} onclick={toggleMonitor}>
-        {monitoring ? "■ 入力テストを止める" : "🎤 入力テスト"}
+      <button class="btn sm" class:on={monitoring} onclick={toggleMonitor}>
+        <Icon name={monitoring ? "square" : "mic"} />{monitoring ? "入力テストを止める" : "入力テスト"}
       </button>
     </div>
     {#if monitoring}
@@ -323,11 +325,15 @@
   <div class="section">
     <div class="section-title">
       MIDI キーボード
-      <button class="mini" onclick={loadMidi} title="一覧を更新(USB 機器を抜き差しした後など)">🔄</button>
+      <button class="btn sm icon ghost" onclick={loadMidi} title="一覧を更新(USB 機器を抜き差しした後など)" aria-label="一覧を更新"
+        ><Icon name="refresh-cw" /></button
+      >
     </div>
     {#if midi}
       <label class="row col">
-        <span>🎹 入力 <span class="lamp" class:lit={midiActive} title="受信ランプ(鍵盤を弾くと光る)"></span></span>
+        <span class="lab"
+          ><Icon name="keyboard-music" size={14} />入力 <span class="lamp" class:lit={midiActive} title="受信ランプ(鍵盤を弾くと光る)"></span></span
+        >
         <select value={settings.midiInput} onchange={pickMidi}>
           <option value="">使わない</option>
           {#each midi.inputs as d (d)}
@@ -339,11 +345,11 @@
         </select>
       </label>
       {#if midi.inputs.length === 0}
-        <div class="hint">MIDI 機器が見つかりません。接続してから 🔄 を押してください。</div>
+        <div class="hint">MIDI 機器が見つかりません。接続してから「一覧を更新」を押してください。</div>
       {/if}
       <div class="hint">
-        トラック見出しの 🎹 で鳴らすトラックを選びます(未選択なら既定の音色)。
-        🎹 のトラックがあるとき ⏺ は MIDI 録音になります。
+        トラック見出しの鍵盤のボタン(MIDI キーボードで弾く)で、鳴らすトラックを選びます(未選択なら既定の音色)。
+        そのボタンが ON のトラックがあるとき、録音は MIDI 録音になります。
       </div>
     {:else}
       <div class="hint">読み込み中…</div>
@@ -415,12 +421,12 @@
       録音が拍より遅れて置かれるなら値を増やし、早すぎるなら減らします。下の自動測定で決められます。
     </div>
     <div class="row">
-      <button class="mini" onclick={startCalibration} disabled={calib !== "idle"}>🎯 遅延を自動測定</button>
+      <button class="btn sm" onclick={startCalibration} disabled={calib !== "idle"}><Icon name="target" />遅延を自動測定</button>
     </div>
     {#if calib === "countin"}
       <div class="hint strong">カウントイン中… 次の 1 小節から、クリックに合わせて手を叩くか「タッ」と言ってください</div>
     {:else if calib === "tapping"}
-      <div class="hint strong">👏 クリックに合わせて! {tapCount} / 8</div>
+      <div class="hint strong">クリックに合わせて! {tapCount} / 8</div>
     {:else if calib === "analyzing"}
       <div class="hint">解析中…</div>
     {:else if calibMsg}
@@ -459,12 +465,12 @@
     <div class="row">
       音色を言葉で捉えるモデル(CLAP)
       {#if clapModel?.available}
-        <span class="ok">✓ 取得済み</span>
+        <span class="ok"><Icon name="check" size={14} />取得済み</span>
       {:else if clapProgress}
         <span class="progress">取得中… {mb(clapProgress.got)} / {mb(clapProgress.total)}</span>
       {:else}
-        <button class="mini" onclick={downloadClap} disabled={!clapModel}>
-          ⬇ 取得する({clapModel ? mb(clapModel.bytes) : "…"})
+        <button class="btn sm" onclick={downloadClap} disabled={!clapModel}>
+          <Icon name="download" />取得する({clapModel ? mb(clapModel.bytes) : "…"})
         </button>
       {/if}
     </div>
@@ -516,16 +522,6 @@
   .col > span {
     text-align: left;
     align-self: flex-start;
-  }
-
-  .mini {
-    font-size: 11px;
-    padding: 2px 8px;
-  }
-
-  .mini.on {
-    border-color: var(--accent-dim);
-    color: var(--accent);
   }
 
   .warn {
@@ -607,8 +603,27 @@
   }
 
   h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin: 0;
-    font-size: 15px;
+    font-size: var(--fs-lg);
+  }
+
+  h2 :global(.icon) {
+    color: var(--accent);
+  }
+
+  .lab {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .ok {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .section {
@@ -620,7 +635,6 @@
   .section-title {
     font-size: 11px;
     color: var(--text-dim);
-    text-transform: uppercase;
     letter-spacing: 0.05em;
   }
 

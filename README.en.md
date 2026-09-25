@@ -110,6 +110,7 @@ The source code and documentation are dual-licensed under **MIT or Apache-2.0** 
 | Models (basic-pitch / SwiftF0 / Beat This!) | Bundled ([sources](crates/glaux-ml/models/README.md)) | Apache-2.0 / MIT / MIT |
 | Timbre vocabulary (from LAION-CLAP text embeddings) | Bundled | Apache-2.0 |
 | LAION-CLAP audio model | Downloaded on first use | Apache-2.0 |
+| UI icons (Lucide) | Bundled ([full text](app/LICENSE-lucide.txt)) | ISC (partly MIT) |
 | SoundFonts, CLAP plugins, Demucs | Not bundled (get them yourself) | Their own licenses |
 | **Logos and icons** | `assets/` and others | **Not covered by the license above** |
 

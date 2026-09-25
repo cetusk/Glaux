@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import * as api from "./api";
   import type { Author, EntrySummary } from "./types";
 
@@ -61,7 +62,7 @@
 </script>
 
 <div class="panel">
-  <h2>履歴 <span class="count">{total}</span></h2>
+  <h2><Icon name="history" size={15} />履歴 <span class="count">{total}</span></h2>
   {#if entries.length === 0}
     <div class="empty">まだ編集はありません</div>
   {/if}
@@ -86,9 +87,10 @@
             <span class="time">{timeText(e.timestamp)}</span>
             {#if !revertedIds.has(e.id)}
               <button
-                class="revert-btn"
-                title="この編集だけ取り消す(後の編集は保持。取り消し自体も履歴に載り undo できます)"
-                onclick={() => revert(e)}>↩</button
+                class="btn sm icon ghost"
+                title="この編集だけ打ち消す(後の編集は残す。打ち消し自体も履歴に載り、Ctrl+Z で戻せます)"
+                aria-label="この編集だけ打ち消す"
+                onclick={() => revert(e)}><Icon name="rotate-ccw" /></button
               >
             {/if}
           </span>
@@ -97,7 +99,10 @@
         <div class="meta">
           <span>{e.targets.length} 対象</span>
           {#if e.reverts}
-            <span class="revert">↩ {e.reverts} の取り消し</span>
+            {@const target = entries.find((x) => x.id === e.reverts)}
+            <span class="revert"
+              ><Icon name="rotate-ccw" size={11} />{target ? `「${target.label}」の打ち消し` : "以前の編集の打ち消し"}</span
+            >
           {/if}
         </div>
       </li>
@@ -119,11 +124,12 @@
   }
 
   h2 {
-    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-md);
     margin: 0 0 8px;
     color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
   .count {
@@ -207,6 +213,9 @@
   }
 
   .revert {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     color: var(--warn);
   }
 
@@ -220,22 +229,6 @@
     display: flex;
     align-items: center;
     gap: 6px;
-  }
-
-  .revert-btn {
-    background: none;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text-dim);
-    font-size: 11px;
-    line-height: 1;
-    padding: 2px 5px;
-    cursor: pointer;
-  }
-
-  .revert-btn:hover {
-    color: var(--warn);
-    border-color: var(--warn);
   }
 
   .notice {

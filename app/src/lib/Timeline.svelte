@@ -13,13 +13,16 @@
   import SimilarPresetDialog from "./SimilarPresetDialog.svelte";
   import { newClipId, newFxId, newNoteId, newTrackId } from "./ids";
   import {
+    instrumentPickerStore,
     MASTER_FOCUS_ID,
     midiArmStore,
     pianoRollStore,
     selectionStore,
     soundDesignStore,
   } from "./selection.svelte";
-  import type { Clip, PresetInfo, Project, Track } from "./types";
+  import Icon from "./Icon.svelte";
+  import { deviceIcon, deviceName } from "./instruments";
+  import type { Clip, Project, Track } from "./types";
 
   let {
     project,
@@ -66,9 +69,10 @@
     return `left:${left}px;width:${width}px`;
   }
 
+  /** 見出しの音量(dB は title で。幅を取らないよう数字だけ) */
   function volumeText(t: Track): string {
     const v = t.volume_db;
-    return `${v > 0 ? "+" : ""}${v.toFixed(1)} dB`;
+    return `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
   }
 
   const HEAD_W = 200;
@@ -855,11 +859,11 @@
   $effect(() => {
     const onKey = (e: KeyboardEvent) => {
       // 開いているメニューは Esc で閉じる(メニュー内の入力欄にフォーカスがあっても)
-      if (e.key === "Escape" && (trackMenu || clipMenu || deviceMenu || sigMenu)) {
+      if (e.key === "Escape" && (trackMenu || clipMenu || addMenu || sigMenu)) {
         e.preventDefault();
         trackMenu = null;
         clipMenu = null;
-        deviceMenu = null;
+        addMenu = null;
         sigMenu = null;
         return;
       }
@@ -1165,16 +1169,6 @@
 
   // ---- 音源(デバイス)の選択メニュー ----
 
-  const INSTRUMENTS = [
-    { name: "subtractive", label: "🎹 subtractive", desc: "シンセ全般(リード・ベース・パッド)" },
-    { name: "drum", label: "🥁 drum", desc: "ドラムシンセ(GM 配置、キット UI 対応)" },
-    { name: "pluck", label: "🎸 pluck", desc: "撥弦モデル(ギター・ベース・ハープ)" },
-    { name: "fm", label: "🔔 fm", desc: "FM シンセ(エレピ・ベル・マレット・FM ベース)" },
-    { name: "wavetable", label: "🌊 wavetable", desc: "ウェーブテーブル(うねるベース・変化するパッド・母音)" },
-  ];
-
-  let deviceMenu = $state<{ track: Track; x: number; y: number } | null>(null);
-
   // CLAP プラグイン(外部音源)。一覧は初回だけ探し、以後は使い回す
   let clapList = $state<api.ClapPluginInfo[] | null>(null);
   let clapDirs = $state<string[]>([]);
@@ -1192,93 +1186,91 @@
       clapLoading = false;
     }
   }
-  const clapInstruments = $derived((clapList ?? []).filter((p) => p.instrument));
+  const clapNames = $derived(new Map((clapList ?? []).map((p) => [p.id, p.name])));
   // CLAP 音源のトラックがあれば、見出しにプラグイン名を出すため一覧を読んでおく
   $effect(() => {
     if (!clapList && project.tracks.some((t) => t.device?.type === "clap")) loadClap();
   });
 
-  /// トラック見出しに出す音源名(CLAP はプラグイン名)
-  function deviceLabel(t: Track): string {
-    const d = t.device;
-    if (!d) return "subtractive*";
-    if (d.type === "clap") {
-      const p = clapList?.find((c) => c.id === d.plugin_id);
-      return `🔌 ${p?.name ?? d.plugin_id?.split(".").pop() ?? "CLAP"}`;
-    }
-    return d.name ?? "subtractive*";
-  }
-
-  function setClapDevice(p: api.ClapPluginInfo) {
-    const menu = deviceMenu;
-    deviceMenu = null;
-    if (!menu) return;
-    if (menu.track.device?.type === "clap" && menu.track.device.plugin_id === p.id) return;
-    api
-      .applyEdit(
-        [{ op: "set_device", track: menu.track.id, device: { type: "clap", plugin_id: p.id } }],
-        `${menu.track.name} の音源を ${p.name}(CLAP)に変更`,
-      )
-      .catch(() => {});
-  }
-  let presets = $state<PresetInfo[]>([]);
-  let presetName = $state("");
-  let presetMsg = $state<string | null>(null);
-
-  function openDeviceMenu(e: MouseEvent, track: Track) {
+  /// 音源ピッカーを開く(見出しの音源名から。インスペクターの「変更」と同じもの)
+  function openPicker(e: MouseEvent, track: Track) {
     e.stopPropagation();
-    presetMsg = null;
-    presetName = "";
-    deviceMenu = { track, x: e.clientX, y: e.clientY };
-    loadClap();
-    api
-      .listPresets()
-      .then((r) => (presets = r.presets))
-      .catch(() => (presets = []));
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    instrumentPickerStore.open = { trackId: track.id, x: r.left, y: r.bottom + 4 };
   }
 
-  function setDevice(name: string) {
-    const menu = deviceMenu;
-    deviceMenu = null;
-    if (!menu) return;
-    if (menu.track.device?.name === name) return; // 変更なし
+  /// 見出しの ⋯ からトラックのメニューを開く(右クリックと同じもの)
+  function openTrackMenuAt(e: MouseEvent, track: Track, index: number) {
+    e.stopPropagation();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    trackMenu = { trackId: track.id, index, x: r.left, y: r.bottom + 4 };
+  }
+
+  function openClapGui(trackId: string) {
+    trackMenu = null;
+    api.clapOpenGui(trackId).catch((err) => showError("プラグインの画面を開けませんでした", err));
+  }
+
+  // ---- トラックの並べ替え(見出しのつまみをつかんで上下にドラッグ) ----
+  let trackDrag = $state<{ id: string; from: number; slot: number; lineY: number } | null>(null);
+
+  function onGripDown(e: PointerEvent, track: Track, ti: number) {
+    if (e.button !== 0 || !root) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rects = [...root.querySelectorAll<HTMLElement>(".track-row[data-ti]")].map((r) => r.getBoundingClientRect());
+    const top0 = root.getBoundingClientRect().top;
+    // 差し込む位置(0 = 先頭の前 … n = 末尾の後ろ)と、その位置に引く線の高さ
+    const slotAt = (y: number) => {
+      const k = rects.findIndex((r) => y < r.top + r.height / 2);
+      return k < 0 ? rects.length : k;
+    };
+    const lineAt = (k: number) => (k < rects.length ? rects[k].top : rects[rects.length - 1].bottom) - top0;
+    trackDrag = { id: track.id, from: ti, slot: ti, lineY: lineAt(ti) };
+    const move = (ev: PointerEvent) => {
+      if (!trackDrag) return;
+      const k = slotAt(ev.clientY);
+      trackDrag = { ...trackDrag, slot: k, lineY: lineAt(k) };
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      const d = trackDrag;
+      trackDrag = null;
+      if (!d) return;
+      const to = d.slot > d.from ? d.slot - 1 : d.slot;
+      if (to === d.from) return;
+      api
+        .applyEdit([{ op: "move_track", id: d.id, to_index: to }], `${track.name} を ${to + 1} 番目へ移動`)
+        .catch(() => {});
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  // ---- トラックの追加(1 つのボタンから種類を選ぶ) ----
+  let addMenu = $state<{ x: number; y: number } | null>(null);
+
+  function openAddMenu(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    addMenu = { x: r.left, y: r.bottom + 4 };
+  }
+
+  function addFromMenu(kind: "midi" | "audio" | "bus" | "midi-file") {
+    addMenu = null;
+    if (kind === "midi-file") importMidiFile();
+    else addTrack(kind);
+  }
+
+  function setMasterVolume(e: Event) {
+    const v = Number((e.currentTarget as HTMLInputElement).value);
     api
-      .applyEdit(
-        [
-          {
-            op: "set_device",
-            track: menu.track.id,
-            device: { type: "builtin", name },
-          },
-        ],
-        `${menu.track.name} の音源を ${name} に変更`,
-      )
+      .applyEdit([{ op: "set_master_volume", volume_db: v }], `マスター音量を ${v.toFixed(1)} dB に変更`)
       .catch(() => {});
   }
 
-  function applyPreset(name: string) {
-    const menu = deviceMenu;
-    deviceMenu = null;
-    if (!menu) return;
-    api.loadPreset(menu.track.id, name).catch((e) => {
-      console.error(e);
-    });
-  }
-
-  async function saveCurrentPreset() {
-    const menu = deviceMenu;
-    const name = presetName.trim();
-    if (!menu || !name) return;
-    try {
-      await api.savePreset(menu.track.id, name);
-      presetMsg = `保存しました: ${name}`;
-      presetName = "";
-      const r = await api.listPresets();
-      presets = r.presets;
-    } catch (e) {
-      presetMsg = String(e);
-    }
-  }
+  const KIND_ICON = { midi: "piano", audio: "audio-lines", bus: "merge" } as const;
+  const KIND_LABEL = { midi: "MIDI トラック", audio: "音声トラック", bus: "バス" } as const;
 
   function addTrack(kind: "midi" | "audio" | "bus" = "midi") {
     const id = newTrackId();
@@ -1423,16 +1415,27 @@
   {/if}
 
   {#each project.tracks as track, ti (track.id)}
-    <div class="track-row" class:alt={ti % 2 === 1}>
+    <div class="track-row" class:alt={ti % 2 === 1} class:lifted={trackDrag?.id === track.id} data-ti={ti}>
+      <!-- 見出し: 1 段目 = つかむ所・種類・名前・⋯ / 2 段目 = M・S・音量 / 3 段目 = 音源と固定の 3 つ
+           (アーム・オートメーション・インスペクター。無いものは空けて、どのトラックでも同じ位置に) -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="track-head" oncontextmenu={(e) => openTrackMenu(e, track, ti)}>
+      <div
+        class="track-head"
+        style={track.color ? `--tc:${track.color}` : ""}
+        oncontextmenu={(e) => openTrackMenu(e, track, ti)}
+      >
         <div class="head-row">
+          <span class="grip" role="button" tabindex="-1" aria-label="並べ替え" title="つかんで上下にドラッグで並べ替え" onpointerdown={(e) => onGripDown(e, track, ti)}
+            ><Icon name="grip-vertical" size={14} /></span
+          >
+          <span class="kind-ic" title={KIND_LABEL[track.kind]}><Icon name={KIND_ICON[track.kind]} size={14} /></span>
           {#if renaming === track.id}
             <input
               class="track-name-input"
               value={track.name}
               use:focusSelect
               onkeydown={(e) => {
+                if (e.isComposing) return;
                 if (e.key === "Enter") commitRename(track, e.currentTarget.value);
                 else if (e.key === "Escape") renaming = null;
               }}
@@ -1440,54 +1443,24 @@
             />
           {:else}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="track-name"
-              style={track.color ? `color:${track.color}` : ""}
-              title={`${track.name}(ダブルクリックで名前を変更)\n${track.id}`}
-              ondblclick={() => (renaming = track.id)}
-            >
+            <div class="track-name" title={`${track.name}(ダブルクリックで名前を変更)`} ondblclick={() => (renaming = track.id)}>
               {track.name}
             </div>
           {/if}
-          <button class="ms" class:mute-on={track.mute} onclick={() => toggleMute(track)} title="ミュート">
-            M
-          </button>
-          <button class="ms" class:solo-on={track.solo} onclick={() => toggleSolo(track)} title="ソロ">
-            S
-          </button>
-          {#if track.kind === "midi"}
-            <button
-              class="ms"
-              class:arm-on={midiArmStore.trackId === track.id}
-              onclick={() =>
-                (midiArmStore.trackId = midiArmStore.trackId === track.id ? null : track.id)}
-              title="MIDI キーボードでこのトラックを弾く(ON の間は ⏺ が MIDI 録音になります)"
-            >
-              🎹
-            </button>
-          {/if}
           <button
-            class="ms"
-            class:auto-on={autoLanes[track.id] !== undefined}
-            onclick={() => toggleAutoLane(track.id)}
-            title="オートメーションレーンを開閉"
+            class="btn sm icon ghost"
+            onclick={(e) => openTrackMenuAt(e, track, ti)}
+            title="トラックのメニュー(名前・色・並べ替え・複製・音声にする・削除)"
+            aria-label="トラックのメニュー"><Icon name="ellipsis" /></button
           >
-            〜
-          </button>
-          <button
-            class="ms"
-            class:auto-on={soundDesignStore.focus?.trackId === track.id}
-            onclick={() =>
-              (soundDesignStore.focus =
-                soundDesignStore.focus?.trackId === track.id
-                  ? null
-                  : { trackId: track.id, trackName: track.name })}
-            title="音作りビューを開閉(つまみ・エフェクト・プリセット)"
-          >
-            🎛
-          </button>
         </div>
         <div class="head-row">
+          <button class="btn letter" class:m-on={track.mute} onclick={() => toggleMute(track)} title="ミュート" aria-pressed={track.mute}
+            >M</button
+          >
+          <button class="btn letter" class:s-on={track.solo} onclick={() => toggleSolo(track)} title="ソロ" aria-pressed={track.solo}
+            >S</button
+          >
           <input
             class="vol"
             type="range"
@@ -1496,40 +1469,62 @@
             step="0.5"
             value={track.volume_db}
             disabled={hasVolumeLane(track)}
-            title={hasVolumeLane(track)
-              ? "音量オートメーション使用中(フェーダーより優先されます)"
-              : ""}
+            title={hasVolumeLane(track) ? "音量オートメーション使用中(フェーダーより優先されます)" : "音量"}
+            aria-label="音量"
             onchange={(e) => setVolume(track, e)}
           />
-          <span class="db">{volumeText(track)}</span>
+          <span class="db" title="音量(dB)">{volumeText(track)}</span>
         </div>
-        <div class="track-meta">
-          <span class="kind {track.kind}">{track.kind}</span>
+        <div class="head-row">
           {#if track.kind === "bus"}
-            <span class="bus-info" title="🎛 の音作りビューで、各トラックからこのバスへ送る量(センド)を決めます">
-              センド元 {sendersOf(track)}
-            </span>
-          {:else}
-          <button
-            class="dev"
-            onclick={(e) => openDeviceMenu(e, track)}
-            title={track.device?.name
-              ? "クリックで音源を変更"
-              : "音源未設定(既定の subtractive で発音)。クリックで選択"}
-          >
-            {track.device?.type === "clap" ? "" : "🎹 "}{deviceLabel(track)} ▾
-          </button>
-          {#if track.device?.type === "clap"}
-            <button
-              class="gui-btn"
-              title="プラグインの画面を開く(音色づくり)"
-              onclick={(e) => {
-                e.stopPropagation();
-                api.clapOpenGui(track.id).catch((err) => showError("プラグインの画面を開けませんでした", err));
-              }}>画面</button
+            <span class="dev plain" title="インスペクターの「送り」で、各トラックからこのバスへ送る量を決めます"
+              >受けている: {sendersOf(track)} 本</span
             >
+          {:else if track.kind === "audio"}
+            <span class="dev plain">音声</span>
+          {:else}
+            <button
+              class="dev"
+              onclick={(e) => openPicker(e, track)}
+              title={track.device ? "クリックで音源を変える" : "音源未設定(既定の subtractive で発音)。クリックで選ぶ"}
+            >
+              <Icon name={deviceIcon(track.device)} size={12} /><span>{deviceName(track.device, clapNames)}</span><Icon
+                name="chevron-down"
+                size={12}
+              />
+            </button>
           {/if}
+          {#if track.kind === "midi"}
+            <button
+              class="btn sm icon"
+              class:on={midiArmStore.trackId === track.id}
+              class:arm={midiArmStore.trackId === track.id}
+              onclick={() => (midiArmStore.trackId = midiArmStore.trackId === track.id ? null : track.id)}
+              title="MIDI キーボードでこのトラックを弾く(ON の間は録音が MIDI 録音になります)"
+              aria-label="MIDI キーボードで弾く"
+              aria-pressed={midiArmStore.trackId === track.id}><Icon name="keyboard-music" /></button
+            >
+          {:else}
+            <span class="slot"></span>
           {/if}
+          <button
+            class="btn sm icon"
+            class:on={autoLanes[track.id] !== undefined}
+            onclick={() => toggleAutoLane(track.id)}
+            title="オートメーション(音量・パン・つまみを時間で動かす)"
+            aria-label="オートメーション"
+            aria-pressed={autoLanes[track.id] !== undefined}><Icon name="spline" /></button
+          >
+          <button
+            class="btn sm icon"
+            class:on={soundDesignStore.focus?.trackId === track.id}
+            onclick={() =>
+              (soundDesignStore.focus =
+                soundDesignStore.focus?.trackId === track.id ? null : { trackId: track.id, trackName: track.name })}
+            title="インスペクター(音源・エフェクト・送り)"
+            aria-label="インスペクター"
+            aria-pressed={soundDesignStore.focus?.trackId === track.id}><Icon name="sliders-horizontal" /></button
+          >
         </div>
       </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1549,7 +1544,7 @@
         title={track.kind === "bus"
           ? "バス: 他のトラックのセンドを受けて、エフェクト → 音量/パン → マスターへ(クリップは置けません)"
           : track.kind === "audio"
-          ? "ダブルクリックで音声ファイル(WAV / MP3 等)をその小節に配置(録音は ⏺ ボタン)"
+          ? "ダブルクリックで音声ファイル(WAV / MP3 等)をその小節に配置(録音はヘッダーの録音ボタン)"
           : track.clips.length === 0
             ? "ダブルクリックでクリップを作成してピアノロールを開く"
             : ""}
@@ -1575,11 +1570,11 @@
             onpointercancel={() => (clipDrag = null)}
           >
             <span class="clip-name"
-              >{clip.kind === "audio" ? "🎵 " : clip.loop && clip.loop_len ? "🔁 " : ""}{clip.name}{followBpm(
-                clip,
-              ) !== null
-                ? ` ⇔${followBpm(clip)}`
-                : ""}</span
+              >{#if clip.kind === "audio"}<Icon name="audio-lines" size={12} />{:else if clip.loop && clip.loop_len}<span
+                  title="ループのクリップ"><Icon name="infinity" size={12} /></span
+                >{/if}{clip.name}{#if followBpm(clip) !== null}<span class="follow" title="テンポに追従中(元の素材の BPM)"
+                  ><Icon name="move-horizontal" size={12} />{followBpm(clip)}</span
+                >{/if}</span
             >
             {#if clip.kind === "midi"}
               <ClipPreview {clip} widthPx={clip.length * pxPerTick} />
@@ -1594,7 +1589,7 @@
               <button
                 class="transcribe"
                 disabled={transcribing !== null}
-                title="譜起こし: この音声(鼻歌・歌・単音)を MIDI クリップにする(単旋律。和音は ♫)"
+                title="譜起こし(単旋律): 鼻歌・歌・単音の音声を MIDI クリップにする"
                 onpointerdown={(e) => e.stopPropagation()}
                 ondblclick={(e) => e.stopPropagation()}
                 onclick={(e) => {
@@ -1602,12 +1597,12 @@
                   transcribe(track, clip);
                 }}
               >
-                {transcribing === clip.id ? "…" : "♪"}
+                {#if transcribing === clip.id}<Icon name="loader-circle" size={12} />{:else}<Icon name="music" size={12} />{/if}
               </button>
               <button
                 class="transcribe poly"
                 disabled={transcribing !== null}
-                title="和音の譜起こし: ピアノ・ギターのコードや伴奏入りの音声を MIDI クリップにする(学習済みモデル basic-pitch)"
+                title="譜起こし(和音): ピアノ・ギターのコードや伴奏入りの音声を MIDI クリップにする(学習済みモデル basic-pitch)"
                 onpointerdown={(e) => e.stopPropagation()}
                 ondblclick={(e) => e.stopPropagation()}
                 onclick={(e) => {
@@ -1615,7 +1610,7 @@
                   transcribe(track, clip, "poly");
                 }}
               >
-                ♫
+                <Icon name="list-music" size={12} />
               </button>
             {/if}
             {#if separating === clip.id}
@@ -1642,19 +1637,39 @@
     {/if}
   {/each}
 
-  <!-- マスター: 曲全体の音量・マスターのエフェクトのオートメーション -->
+  <!-- マスター: 曲全体の音量・オートメーション・エフェクト(以前はヘッダーに分かれていた) -->
   <div class="track-row master-row">
     <div class="track-head">
       <div class="head-row">
-        <div class="track-name">マスター</div>
+        <span class="track-name master-name">マスター</span>
+        <input
+          class="vol"
+          type="range"
+          min="-40"
+          max="6"
+          step="0.5"
+          value={project.master.volume_db}
+          title="マスター音量"
+          aria-label="マスター音量"
+          onchange={setMasterVolume}
+        />
+        <span class="db">{project.master.volume_db.toFixed(1)}</span>
         <button
-          class="ms"
-          class:auto-on={autoLanes[MASTER_FOCUS_ID] !== undefined}
+          class="btn sm icon"
+          class:on={autoLanes[MASTER_FOCUS_ID] !== undefined}
           onclick={() => toggleAutoLane(MASTER_FOCUS_ID)}
-          title="マスターのオートメーション(曲全体のフェードアウト、マスターのエフェクトの時間変化)"
+          title={`マスターのオートメーション(フェードアウト、マスターのエフェクトの時間変化)${masterLaneCount > 0 ? `。描いてあるレーン ${masterLaneCount} 本` : ""}`}
+          aria-label="マスターのオートメーション"><Icon name="spline" /></button
         >
-          〜{masterLaneCount > 0 ? ` ${masterLaneCount}` : ""}
-        </button>
+        <button
+          class="btn sm icon"
+          class:on={soundDesignStore.focus?.trackId === MASTER_FOCUS_ID}
+          onclick={() =>
+            (soundDesignStore.focus =
+              soundDesignStore.focus?.trackId === MASTER_FOCUS_ID ? null : { trackId: MASTER_FOCUS_ID, trackName: "マスター" })}
+          title={`マスターのエフェクト(曲全体に掛かるコンプ・EQ・リバーブなど)${project.master.effects.length > 0 ? `。${project.master.effects.length} 個` : ""}`}
+          aria-label="マスターのエフェクト"><Icon name="sliders-horizontal" /></button
+        >
       </div>
     </div>
     <div class="lane" style="width:{totalPx}px"></div>
@@ -1672,7 +1687,7 @@
 
   {#if sigMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="menu-backdrop" onclick={() => (sigMenu = null)} oncontextmenu={(e) => { e.preventDefault(); sigMenu = null; }}></div>
+    <div class="menu-backdrop" role="presentation" onclick={() => (sigMenu = null)} oncontextmenu={(e) => { e.preventDefault(); sigMenu = null; }}></div>
     <div class="track-menu sig-menu" use:keepInView style="left:{sigMenu.x}px;top:{sigMenu.y}px">
       <div class="preset-title">{sigMenu.barIndex + 1} 小節目から拍子を変更</div>
       <div class="sig-form">
@@ -1708,7 +1723,7 @@
       </div>
       {#if sigMenu.barIndex > 0 && project.time_sig_map.some((e) => e.tick === barList[sigMenu!.barIndex].tick)}
         <div class="menu-sep"></div>
-        <button class="danger" onclick={removeSig}>🗑 この拍子変更を削除(前の拍子に戻す)</button>
+        <button class="danger" onclick={removeSig}><Icon name="trash-2" />この拍子の変更を削除(前の拍子に戻す)</button>
       {/if}
       <div class="menu-note">ノートの位置は変わらず、この小節から先の小節線だけが変わります(Ctrl+Z で戻せます)</div>
       <div class="menu-sep"></div>
@@ -1732,7 +1747,7 @@
         {/each}
       </div>
       {#if markerHere}
-        <button class="danger" onclick={() => removeMarker(markerHere!.tick)}>🗑 このマーカーを削除</button>
+        <button class="danger" onclick={() => removeMarker(markerHere!.tick)}><Icon name="trash-2" />このマーカーを削除</button>
       {/if}
     </div>
   {/if}
@@ -1743,168 +1758,80 @@
 
   {#if clipMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="menu-backdrop" onclick={() => (clipMenu = null)} oncontextmenu={(e) => { e.preventDefault(); clipMenu = null; }}></div>
+    <div class="menu-backdrop" role="presentation" onclick={() => (clipMenu = null)} oncontextmenu={(e) => { e.preventDefault(); clipMenu = null; }}></div>
     <div class="track-menu clip-menu" use:keepInView style="left:{clipMenu.x}px;top:{clipMenu.y}px">
       {#if selectedClips.size > 1}
         <div class="menu-note">選択中のクリップ {selectedClips.size} 個が対象</div>
       {/if}
       {#if clipMenu.clip.kind === "midi"}
         {#if clipMenu.clip.loop && clipMenu.clip.loop_len}
-          <button onclick={() => menuAction("loop-off")}>🔁 ループを解除</button>
-          <button onclick={() => menuAction("expand")}>🔁 繰り返しをノートに展開(個別に編集できるように)</button>
+          <button onclick={() => menuAction("loop-off")}><Icon name="infinity" />ループを解除</button>
+          <button onclick={() => menuAction("expand")} title="繰り返しをノートに書き出して、1 回ずつ個別に編集できるようにする"
+            ><Icon name="infinity" />繰り返しをノートに展開</button
+          >
         {:else}
-          <button onclick={() => menuAction("loop-on")}>🔁 ループにする(今の長さを繰り返す。右端を伸ばすと繰り返し)</button>
+          <button onclick={() => menuAction("loop-on")} title="今の長さを繰り返す。右端を伸ばすと、その分だけ繰り返し鳴る"
+            ><Icon name="infinity" />ループにする</button
+          >
         {/if}
         <div class="menu-sep"></div>
       {:else}
         {#if followBpm(clipMenu.clip) !== null}
-          <button onclick={() => menuAction("follow-off")}>
-            ⇔ テンポ追従を解除(今は {followBpm(clipMenu.clip)} BPM の素材として伸縮中)
-          </button>
+          <button onclick={() => menuAction("follow-off")} title={`今は ${followBpm(clipMenu.clip)} BPM の素材として伸縮中`}
+            ><Icon name="move-horizontal" />テンポ追従を解除</button
+          >
         {:else}
-          <button onclick={() => menuAction("follow-on")}>
-            ⇔ テンポに追従させる({bpmAt(clipMenu.clip.start)} BPM で録った素材として、テンポを変えても拍がずれないよう伸縮)
-          </button>
-          <button onclick={() => menuAction("follow-detect")} disabled={detectingTempo !== null}>
-            ⇔ テンポに追従させる(素材の元のテンポを自動で検出。取り込んだ曲・ループ素材向け)
-          </button>
+          <button
+            class="rich"
+            onclick={() => menuAction("follow-on")}
+            title="テンポを変えても拍がずれないよう、音程を保ったまま伸縮する"
+            ><Icon name="move-horizontal" /><span
+              >テンポに追従させる<small>{bpmAt(clipMenu.clip.start)} BPM で録った素材として</small></span
+            ></button
+          >
+          <button class="rich" onclick={() => menuAction("follow-detect")} disabled={detectingTempo !== null}
+            ><Icon name="move-horizontal" /><span>テンポに追従させる<small>素材の元のテンポを自動で検出(取り込んだ曲・ループ素材)</small></span
+            ></button
+          >
         {/if}
-        <button onclick={() => menuAction("sep-builtin")} disabled={separating !== null}>
-          🎚 パートに分ける: 打楽器 / 音程楽器(内蔵、すぐ終わる)
-        </button>
-        <button onclick={() => menuAction("sep-demucs")} disabled={separating !== null}>
-          🎚 パートに分ける: ボーカル / ドラム / ベース / その他(Demucs、要インストール・数分)
-        </button>
-        <button onclick={() => menuAction("match")} disabled={matching !== null}>
-          🎛 この音に似せた内蔵シンセのトラックを作る(subtractive / fm / wavetable とリバーブを自動で探す・約 30 秒。単音のサンプル向け)
-        </button>
-        <button onclick={() => menuAction("similar")}>
-          🔎 この音に近い CLAP 音源のプリセットを探す(Surge XT など。読み込んでつまみも自動で詰められる)
-        </button>
+        <button class="rich" onclick={() => menuAction("sep-builtin")} disabled={separating !== null}
+          ><Icon name="layers" /><span>パートに分ける: 打楽器 / 音程楽器<small>内蔵。すぐ終わる</small></span></button
+        >
+        <button class="rich" onclick={() => menuAction("sep-demucs")} disabled={separating !== null}
+          ><Icon name="layers" /><span>パートに分ける: ボーカル / ドラム / ベース / その他<small>Demucs(要インストール)。数分かかる</small></span
+          ></button
+        >
+        <button class="rich" onclick={() => menuAction("match")} disabled={matching !== null}
+          ><Icon name="wand-sparkles" /><span
+            >この音に似せたシンセのトラックを作る<small>subtractive / fm / wavetable とリバーブを自動で探す。約 30 秒。単音のサンプル向け</small></span
+          ></button
+        >
+        <button class="rich" onclick={() => menuAction("similar")}
+          ><Icon name="search" /><span>この音に近い CLAP のプリセットを探す…<small>Surge XT など。読み込んでつまみも自動で詰められる</small></span
+          ></button
+        >
         <div class="menu-sep"></div>
       {/if}
-      <button onclick={() => menuAction("split")}>✂ ここで分割({barLabel(clipMenu.at)})</button>
-      <button onclick={() => menuAction("split-head")}>✂ 再生ヘッドで分割 <span class="key">S</span></button>
+      <button onclick={() => menuAction("split")}><Icon name="scissors" />ここで分割({barLabel(clipMenu.at)})</button>
+      <button onclick={() => menuAction("split-head")}><Icon name="scissors" />再生ヘッドで分割<span class="key">S</span></button>
       <div class="menu-sep"></div>
-      <button onclick={() => menuAction("dup")}>⧉ 複製(直後に並べる) <span class="key">Ctrl+D</span></button>
-      <button onclick={() => menuAction("copy")}>コピー <span class="key">Ctrl+C</span></button>
-      <button onclick={() => menuAction("cut")}>切り取り <span class="key">Ctrl+X</span></button>
+      <button onclick={() => menuAction("dup")}><Icon name="copy" />複製(直後に並べる)<span class="key">Ctrl+D</span></button>
+      <button onclick={() => menuAction("copy")}><span class="ic-space"></span>コピー<span class="key">Ctrl+C</span></button>
+      <button onclick={() => menuAction("cut")}><span class="ic-space"></span>切り取り<span class="key">Ctrl+X</span></button>
       <div class="menu-sep"></div>
-      <button class="danger" onclick={() => menuAction("delete")}>🗑 削除 <span class="key">Delete</span></button>
+      <button class="danger" onclick={() => menuAction("delete")}><Icon name="trash-2" />削除<span class="key">Delete</span></button>
       <div class="menu-note">貼り付け(Ctrl+V)は再生ヘッドの位置・元のトラックに置かれます</div>
     </div>
   {/if}
 
-  {#if deviceMenu}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="menu-backdrop" onclick={() => (deviceMenu = null)} oncontextmenu={(e) => { e.preventDefault(); deviceMenu = null; }}></div>
-    <div class="track-menu" use:keepInView style="left:{deviceMenu.x}px;top:{deviceMenu.y}px">
-      {#each INSTRUMENTS as inst (inst.name)}
-        <button
-          class:active-dev={deviceMenu.track.device?.type !== "clap" &&
-            (deviceMenu.track.device?.name ?? "subtractive") === inst.name}
-          onclick={() => setDevice(inst.name)}
-        >
-          <span class="dev-label">
-            {inst.label}{deviceMenu.track.device?.type !== "clap" &&
-            (deviceMenu.track.device?.name ?? "subtractive") === inst.name
-              ? " ✓"
-              : ""}
-          </span>
-          <span class="dev-desc">{inst.desc}</span>
-        </button>
-      {/each}
-      <div class="menu-note">切り替えると音源パラメータは初期値に戻ります(Ctrl+Z で取り消せます)。細かい音作りは AI に依頼してください。</div>
-
-      <div class="menu-sep"></div>
-      <div class="preset-title">
-        🔌 CLAP プラグイン(外部の音源)
-        <button
-          class="mini-rescan"
-          disabled={clapLoading}
-          title="プラグインを探し直す(インストールした後など)"
-          onclick={(e) => {
-            e.stopPropagation();
-            loadClap(true);
-          }}>🔄</button
-        >
-      </div>
-      {#if clapLoading}
-        <div class="menu-note">探しています…</div>
-      {:else if clapInstruments.length === 0}
-        <div class="menu-note" title={clapDirs.join("\n")}>
-          見つかりません。Surge XT などの CLAP 版をインストールしてから 🔄 を押してください
-          (探す場所: {clapDirs[0] ?? "OS 標準の CLAP フォルダ"} など)。
-        </div>
-      {:else}
-        {#each clapInstruments as p (p.id)}
-          {@const active = deviceMenu.track.device?.type === "clap" && deviceMenu.track.device.plugin_id === p.id}
-          <button class:active-dev={active} onclick={() => setClapDevice(p)} title={`${p.id}\n${p.path}`}>
-            <span class="dev-label">🔌 {p.name}{active ? " ✓" : ""}</span>
-            <span class="dev-desc">{p.vendor}{p.version ? ` ${p.version}` : ""}</span>
-          </button>
-        {/each}
-      {/if}
-
-      <div class="menu-sep"></div>
-      <div class="preset-title">プリセット(全プロジェクト共通)</div>
-      {#if presets.length === 0}
-        <div class="menu-note">まだありません。良い音ができたら下の欄で保存できます。</div>
-      {:else}
-        {#each presets as p (p.name)}
-          <button
-            onclick={() => applyPreset(p.name)}
-            title={`${p.description ?? ""}\n音源: ${p.instrument}${p.effects.length ? " / FX: " + p.effects.join(" → ") : ""}\n適用すると音源とエフェクトが置き換わります(Ctrl+Z 可)`}
-          >
-            <span class="dev-label">🎨 {p.name}</span>
-            <span class="dev-desc">{p.instrument}{p.effects.length ? ` + ${p.effects.join(", ")}` : ""}</span>
-          </button>
-        {/each}
-      {/if}
-      <div class="preset-save">
-        <input
-          type="text"
-          placeholder="今の音を保存(名前)"
-          bind:value={presetName}
-          onkeydown={(e) => {
-            if (e.key === "Enter" && !e.isComposing) {
-              e.preventDefault();
-              saveCurrentPreset();
-            }
-          }}
-          onclick={(e) => e.stopPropagation()}
-        />
-        <button class="save-btn" disabled={!presetName.trim()} onclick={saveCurrentPreset}>保存</button>
-      </div>
-      {#if presetMsg}
-        <div class="menu-note">{presetMsg}</div>
-      {/if}
-    </div>
-  {/if}
-
   {#if trackMenu}
+    {@const menuTrack = project.tracks[trackMenu.index]}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="menu-backdrop" onclick={() => (trackMenu = null)} oncontextmenu={(e) => { e.preventDefault(); trackMenu = null; }}></div>
+    <div class="menu-backdrop" role="presentation" onclick={() => (trackMenu = null)} oncontextmenu={(e) => { e.preventDefault(); trackMenu = null; }}></div>
     <div class="track-menu" use:keepInView style="left:{trackMenu.x}px;top:{trackMenu.y}px">
-      <button disabled={trackMenu.index === 0} onclick={() => moveTrack(trackMenu!.index - 1)}>
-        ↑ 上へ移動
-      </button>
-      <button
-        disabled={trackMenu.index >= project.tracks.length - 1}
-        onclick={() => moveTrack(trackMenu!.index + 1)}
-      >
-        ↓ 下へ移動
-      </button>
-      <div class="menu-sep"></div>
-      <button onclick={() => startRename(trackMenu!.trackId)}>✎ 名前を変更</button>
-      <button onclick={duplicateTrack}>⧉ トラックを複製</button>
-      <button
-        onclick={bounceTrack}
-        disabled={!!bouncing || project.tracks[trackMenu.index]?.kind === "bus"}
-        title="エフェクト・音量・パン・センドの響きまで込みで音声に描き出し、直後に音声トラックとして置く(元はミュート)。CLAP の音源の曲をゲームで鳴らすとき・重いトラックを軽くするときに"
-        >🧊 音声にする(フリーズ)</button
-      >
+      <button onclick={() => startRename(trackMenu!.trackId)}><Icon name="pencil" />名前を変更</button>
       <div class="color-row" role="group" aria-label="トラックの色">
+        <Icon name="palette" />
         {#each TRACK_COLORS as c (c)}
           <button
             class="color-chip"
@@ -1917,25 +1844,54 @@
         {/each}
       </div>
       <div class="menu-sep"></div>
-      <button class="danger" onclick={deleteTrack} title="Ctrl+Z で元に戻せます">
-        🗑 トラックを削除
-      </button>
+      <button disabled={trackMenu.index === 0} onclick={() => moveTrack(trackMenu!.index - 1)}><Icon name="arrow-up" />上へ移動</button>
+      <button disabled={trackMenu.index >= project.tracks.length - 1} onclick={() => moveTrack(trackMenu!.index + 1)}
+        ><Icon name="arrow-down" />下へ移動</button
+      >
+      <div class="menu-note">見出しの左端をつかんでドラッグしても並べ替えられます</div>
+      <button onclick={duplicateTrack}><Icon name="copy" />複製</button>
+      <button
+        onclick={bounceTrack}
+        disabled={!!bouncing || menuTrack?.kind === "bus"}
+        title="エフェクト・音量・パン・送りの響きまで込みで音声に描き出し、直後に音声トラックとして置く(元はミュート)。CLAP の音源の曲をゲームで鳴らすとき・重いトラックを軽くするときに"
+        ><Icon name="snowflake" />音声にする(フリーズ)</button
+      >
+      {#if menuTrack?.device?.type === "clap"}
+        <button onclick={() => openClapGui(trackMenu!.trackId)}><Icon name="app-window" />プラグインの画面を開く</button>
+      {/if}
+      <div class="menu-sep"></div>
+      <button class="danger" onclick={deleteTrack}><Icon name="trash-2" />削除<span class="key">Ctrl+Z で戻せます</span></button>
     </div>
   {/if}
 
+  {#if addMenu}
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="menu-backdrop" role="presentation" onclick={() => (addMenu = null)} oncontextmenu={(e) => { e.preventDefault(); addMenu = null; }}></div>
+    <div class="track-menu" use:keepInView style="left:{addMenu.x}px;top:{addMenu.y}px">
+      <button class="rich" onclick={() => addFromMenu("midi")}
+        ><Icon name="piano" /><span>MIDI トラック<small>ノートを打ち込む・AI に作らせる</small></span></button
+      >
+      <button class="rich" onclick={() => addFromMenu("audio")}
+        ><Icon name="audio-lines" /><span>音声トラック<small>録音・音声ファイルを置く(空きをダブルクリック)</small></span></button
+      >
+      <button class="rich" onclick={() => addFromMenu("bus")}
+        ><Icon name="merge" /><span>バス(リバーブ入り)<small>複数のトラックから送って響きを共有する</small></span></button
+      >
+      <div class="menu-sep"></div>
+      <button class="rich" onclick={() => addFromMenu("midi-file")}
+        ><Icon name="file-music" /><span>MIDI ファイルから…<small>パートごとにトラックを足す。空の曲ならテンポと拍子も</small></span></button
+      >
+    </div>
+  {/if}
+
+  {#if trackDrag}
+    <div class="drop-line" style="top:{trackDrag.lineY - 1}px"></div>
+  {/if}
+
   <div class="add-track-row">
-    <button class="add-track" onclick={() => addTrack("midi")} title="MIDI トラックを追加(音源は後から AI に頼むか自動で subtractive)">
-      + トラックを追加
-    </button>
-    <button class="add-track" onclick={() => addTrack("bus")} title="バス(リターン)を追加: 複数のトラックからセンドで送って、リバーブ・ディレイを共有する">
-      + 🔀 バス
-    </button>
-    <button class="add-track" onclick={() => addTrack("audio")} title="音声トラックを追加(音声ファイルの配置・録音先。空きレーンをダブルクリックで WAV / MP3 等を配置)">
-      + 🎵 音声トラック
-    </button>
-    <button class="add-track" onclick={importMidiFile} title="MIDI ファイル(.mid)を読み込む: パートごとにトラックを足す。空の曲ならテンポと拍子も移す">
-      + 🎹 MIDI ファイル
-    </button>
+    <button class="btn add-track" onclick={openAddMenu} title="トラックを追加(MIDI・音声・バス・MIDI ファイル)"
+      ><Icon name="plus" />トラックを追加<Icon name="chevron-down" size={14} /></button
+    >
   </div>
 </div>
 
@@ -2003,8 +1959,15 @@
 
   .color-row {
     display: flex;
-    gap: 4px;
+    align-items: center;
+    gap: 5px;
     padding: 4px 10px;
+    color: var(--text-dim);
+    --icon-size: 15px;
+  }
+
+  .color-row :global(.icon) {
+    margin-right: 5px;
   }
 
   .color-chip {
@@ -2022,7 +1985,7 @@
   .track-head {
     width: 200px;
     flex-shrink: 0;
-    padding: 6px 10px;
+    padding: 5px 6px 5px 10px;
     background: var(--bg-panel);
     border-right: 1px solid var(--border);
     position: sticky;
@@ -2033,38 +1996,96 @@
   .head-row {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
+    height: 20px;
   }
 
-  .ms {
-    padding: 0 6px;
+  /* 見出しの 3 段(72px の行に 20px × 3) */
+  .track-row:not(.master-row) > .track-head {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* トラックの色は左端の帯で(名前の文字色にはしない) */
+  .track-row > .track-head::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background: var(--tc, transparent);
+  }
+
+  .grip {
+    display: inline-flex;
+    margin-left: -4px;
+    color: var(--text-faint);
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .grip:hover {
+    color: var(--text);
+  }
+
+  .kind-ic {
+    display: inline-flex;
+    color: var(--text-dim);
+  }
+
+  .track-row.lifted > .track-head {
+    background: var(--bg-raised);
+  }
+
+  .drop-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--accent);
+    z-index: 6;
+    pointer-events: none;
+  }
+
+  .letter {
+    width: 20px;
+    height: 18px;
+    padding: 0;
     font-size: 10px;
     font-weight: 700;
-    line-height: 16px;
-    border-radius: 3px;
+    border-radius: var(--r-sm);
   }
 
-  .ms.mute-on {
-    background: #6b4030;
-    border-color: #8a5a44;
-    color: #ffab7a;
+  .letter.m-on {
+    background: var(--mute);
+    border-color: var(--mute);
+    color: #1a1a1a;
   }
 
-  .ms.solo-on {
-    background: #6b6130;
-    border-color: #8a7d44;
-    color: var(--accent);
+  .letter.s-on {
+    background: var(--solo);
+    border-color: var(--solo);
+    color: #1a1a1a;
   }
 
-  .ms.arm-on {
-    background: #6b3030;
-    border-color: #a04848;
+  .btn.arm.on {
+    background: color-mix(in srgb, var(--arm) 22%, var(--bg-panel));
+    border-color: var(--arm);
+    color: var(--danger-text);
   }
 
-  .ms.auto-on {
-    border-color: var(--accent-dim);
-    color: var(--accent);
+  .slot {
+    width: 22px;
+    flex-shrink: 0;
   }
+
+
+
+
+
 
   .vol {
     flex: 1;
@@ -2075,10 +2096,13 @@
 
   .db {
     font-size: 10px;
+    font-family: var(--mono);
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
-    width: 52px;
+    width: 30px;
     text-align: right;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .ruler-head {
@@ -2192,17 +2216,19 @@
   }
 
   .track-row.master-row {
-    height: 30px;
-    border-top: 2px solid var(--border);
+    height: 34px;
+    border-top: 2px solid var(--border-strong);
   }
 
   .master-row .track-head {
-    padding: 5px 10px;
+    padding: 7px 6px 7px 10px;
   }
 
-  .master-row .track-name {
-    color: var(--text-dim);
+  .track-name.master-name {
+    flex: 0 0 auto;
+    margin-right: 4px;
   }
+
 
   .track-row.alt .lane {
     background: var(--bg-lane-alt);
@@ -2225,53 +2251,51 @@
     text-overflow: ellipsis;
   }
 
-  .track-meta {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    font-size: 10px;
-    color: var(--text-dim);
-    margin-top: 2px;
-    opacity: 0.8;
-  }
 
+  /* 音源の名前(押すと音源ピッカー) */
   .dev {
+    flex: 1;
+    min-width: 0;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 5px;
+    border-radius: var(--r-sm);
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
     white-space: nowrap;
     overflow: hidden;
+  }
+
+  .dev span {
+    overflow: hidden;
     text-overflow: ellipsis;
-    border: none;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+  }
+
+  .dev:hover:not(.plain) {
+    color: var(--text);
+  }
+
+  .dev.plain {
     background: none;
-    padding: 0;
-    font-size: 10px;
-    color: var(--text-dim);
-    cursor: pointer;
+    border-color: transparent;
+    padding: 0 2px;
   }
 
-  .dev:hover {
-    color: var(--accent);
-  }
 
-  .dev-label {
-    display: block;
-    font-size: 12px;
-    font-weight: 600;
-  }
 
-  .dev-desc {
-    display: block;
-    font-size: 10px;
-    color: var(--text-dim);
-  }
-
-  .track-menu button.active-dev {
-    border: 1px solid var(--accent-dim);
-  }
 
   .menu-note {
-    font-size: 9px;
-    color: var(--text-dim);
-    padding: 4px 10px 2px;
-    max-width: 230px;
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    padding: 2px 10px 4px 35px;
+    max-width: 300px;
     line-height: 1.5;
   }
 
@@ -2279,63 +2303,17 @@
     font-size: 10px;
     color: var(--text-dim);
     padding: 2px 10px;
-    text-transform: uppercase;
     letter-spacing: 0.05em;
   }
 
-  .preset-save {
-    display: flex;
-    gap: 4px;
-    padding: 4px 8px 2px;
-  }
 
-  .preset-save input {
-    flex: 1;
-    min-width: 0;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 3px 6px;
-    font-size: 11px;
-  }
 
-  .preset-save input:focus {
-    outline: none;
-    border-color: var(--accent-dim);
-  }
 
-  .preset-save .save-btn {
-    font-size: 11px;
-    padding: 2px 8px;
-  }
 
-  .kind {
-    padding: 0 5px;
-    border-radius: 3px;
-    font-size: 10px;
-    text-transform: uppercase;
-  }
 
-  .kind.midi {
-    background: color-mix(in srgb, var(--clip-midi) 30%, transparent);
-    color: var(--clip-midi);
-  }
 
-  .kind.audio {
-    background: color-mix(in srgb, var(--clip-audio) 30%, transparent);
-    color: var(--clip-audio);
-  }
 
-  .kind.bus {
-    background: color-mix(in srgb, #b48cf2 30%, transparent);
-    color: #b48cf2;
-  }
 
-  .bus-info {
-    font-size: 11px;
-    color: var(--text-dim);
-  }
 
   /* 直前のチャットのターンで AI が変えたクリップ */
   .clip.ai-changed {
@@ -2360,13 +2338,6 @@
   .clip.selected {
     outline: 2px solid var(--accent);
     outline-offset: -1px;
-  }
-
-  .clip-menu .key {
-    float: right;
-    margin-left: 16px;
-    font-size: 10px;
-    color: var(--text-dim);
   }
 
   .clip-menu .danger,
@@ -2424,28 +2395,8 @@
     z-index: 2;
   }
 
-  .gui-btn {
-    flex-shrink: 0;
-    padding: 0 5px;
-    font-size: 10px;
-    line-height: 14px;
-    border-radius: 3px;
-    border: 1px solid var(--accent-dim);
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    cursor: pointer;
-  }
 
-  .gui-btn:hover {
-    background: color-mix(in srgb, var(--accent) 25%, transparent);
-  }
 
-  .mini-rescan {
-    margin-left: 6px;
-    padding: 0 4px;
-    font-size: 10px;
-    line-height: 14px;
-  }
 
   .clip-busy {
     position: absolute;
@@ -2461,7 +2412,7 @@
   }
 
   .transcribe.poly {
-    right: 38px;
+    right: 32px;
   }
 
   .transcribe {
@@ -2469,9 +2420,10 @@
     top: 2px;
     right: 10px;
     z-index: 3;
+    display: inline-flex;
     font-size: 11px;
     line-height: 1;
-    padding: 1px 5px;
+    padding: 2px 3px;
     border-radius: 4px;
     border: 1px solid rgba(255, 255, 255, 0.35);
     background: rgba(0, 0, 0, 0.35);
@@ -2493,10 +2445,20 @@
   }
 
   .clip-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-size: 11px;
     white-space: nowrap;
     position: relative;
     z-index: 1;
+  }
+
+  .follow {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0.85;
   }
 
   .empty {
@@ -2515,25 +2477,59 @@
     z-index: 20;
     /* 画面に収まらない分は中でスクロール(位置は keepInView が画面内へ寄せる) */
     max-height: calc(100vh - 16px);
-    max-width: min(420px, calc(100vw - 16px));
+    max-width: min(440px, calc(100vw - 16px));
     overflow-y: auto;
     background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    padding: 5px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-pop);
+    padding: 4px;
     display: flex;
     flex-direction: column;
-    gap: 3px;
-    min-width: 160px;
+    gap: 1px;
+    min-width: 200px;
+    font-size: var(--fs-md);
   }
 
+  /* メニューの項目: アイコン + 文字 + 右端にキー */
   .track-menu button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     text-align: left;
     border: none;
     background: none;
     padding: 6px 10px;
-    border-radius: 5px;
+    border-radius: var(--r-sm);
+    font-size: var(--fs-md);
+    --icon-size: 15px;
+  }
+
+  .track-menu button > :global(.icon) {
+    color: var(--text-dim);
+  }
+
+  .track-menu button.rich span {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .track-menu button small {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+  }
+
+  .ic-space {
+    width: 15px;
+    flex-shrink: 0;
+  }
+
+  .track-menu .key {
+    margin-left: auto;
+    padding-left: 24px;
+    font-size: var(--fs-xs);
+    font-family: var(--mono);
+    color: var(--text-faint);
   }
 
   .track-menu button:hover:not(:disabled) {
@@ -2552,7 +2548,7 @@
   }
 
   .add-track-row {
-    padding: 8px 10px;
+    padding: 8px;
     position: sticky;
     left: 0;
     width: 200px;
@@ -2560,11 +2556,10 @@
 
   .add-track {
     width: 100%;
-    color: var(--text-dim);
+    background: none;
     border-style: dashed;
+    color: var(--text-dim);
   }
 
-  .add-track:hover {
-    color: var(--accent);
-  }
+
 </style>

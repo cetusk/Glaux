@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import { dismissToast, toasts } from "./toast.svelte";
 </script>
 
@@ -6,7 +7,18 @@
   {#each toasts.list as t (t.id)}
     <div class="toast {t.kind}" role={t.kind === "error" ? "alert" : "status"}>
       <span class="text">{t.text}</span>
-      <button class="close" onclick={() => dismissToast(t.id)} aria-label="閉じる" title="閉じる">✕</button>
+      {#if t.action}
+        <button
+          class="btn sm"
+          onclick={() => {
+            t.action?.run();
+            dismissToast(t.id);
+          }}>{t.action.label}</button
+        >
+      {/if}
+      <button class="btn sm icon ghost" onclick={() => dismissToast(t.id)} aria-label="閉じる" title="閉じる"
+        ><Icon name="x" /></button
+      >
     </div>
   {/each}
 </div>
@@ -15,7 +27,8 @@
   .toasts {
     position: fixed;
     right: 16px;
-    bottom: 16px;
+    /* ステータスバー(高さ 26px)に重ならないように */
+    bottom: 36px;
     z-index: 100;
     display: flex;
     flex-direction: column;
@@ -27,16 +40,16 @@
   .toast {
     pointer-events: auto;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 8px;
     padding: 8px 10px 8px 12px;
-    border-radius: 6px;
-    font-size: 12px;
+    border-radius: var(--r-md);
+    font-size: var(--fs-sm);
     line-height: 1.5;
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
     border-left-width: 4px;
-    box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
+    box-shadow: var(--shadow-pop);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -55,13 +68,5 @@
 
   .text {
     flex: 1;
-  }
-
-  .close {
-    border: none;
-    background: none;
-    padding: 0 2px;
-    font-size: 11px;
-    color: var(--text-dim);
   }
 </style>

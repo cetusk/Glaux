@@ -3,10 +3,17 @@
 
 export type ToastKind = "error" | "warn" | "ok";
 
+/** トーストに付ける操作(例: 録音の直後の「MIDI にする」) */
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Toast {
   id: number;
   kind: ToastKind;
   text: string;
+  action?: ToastAction;
 }
 
 export const toasts = $state<{ list: Toast[] }>({ list: [] });
@@ -16,15 +23,16 @@ let nextId = 1;
 const DEDUP_MS = 1500;
 let last: { text: string; at: number } | null = null;
 
-/** 知らせを出す。error は 8 秒、それ以外は 4 秒で消える(× で先に消せる) */
-export function showToast(kind: ToastKind, text: string) {
+/** 知らせを出す。error は 8 秒、それ以外は 4 秒で消える(× で先に消せる)。
+ *  `action` を付けると操作ボタンが出る(押すと実行して閉じる)。`ms` で消えるまでの時間を変えられる */
+export function showToast(kind: ToastKind, text: string, opts: { action?: ToastAction; ms?: number } = {}) {
   const now = Date.now();
   if (last && last.text === text && now - last.at < DEDUP_MS) return;
   last = { text, at: now };
   const id = nextId++;
-  toasts.list.push({ id, kind, text });
+  toasts.list.push({ id, kind, text, action: opts.action });
   if (toasts.list.length > 4) toasts.list.shift();
-  setTimeout(() => dismissToast(id), kind === "error" ? 8000 : 4000);
+  setTimeout(() => dismissToast(id), opts.ms ?? (kind === "error" ? 8000 : 4000));
 }
 
 export function dismissToast(id: number) {

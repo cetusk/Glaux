@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import { onMount, tick } from "svelte";
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
@@ -169,12 +170,12 @@
       prefix +=
         "【音作り中: マスターバス(ユーザーがマスターのエフェクトを開いている)】" +
         "エフェクトに関する指示は、特に指定がなければマスター(add_master_effect / set_master_param)が対象です。\n";
-      shown = `〔🎛 マスター〕 ${shown}`;
+      shown = `〔音作り: マスター〕 ${shown}`;
     } else if (sd) {
       prefix +=
         `【音作り中のトラック(ユーザーが音作りビューで開いている)】「${sd.trackName}」(${sd.trackId})。` +
         `音色・エフェクトに関する指示は、特に指定がなければこのトラックが対象です。\n`;
-      shown = `〔🎛 ${sd.trackName}〕 ${shown}`;
+      shown = `〔音作り: ${sd.trackName}〕 ${shown}`;
     }
     const fullPrompt = prefix ? `${prefix}\n${prompt}` : prompt;
     push({ role: "user", text: shown });
@@ -254,7 +255,7 @@
 
 <div class="chat">
   <div class="chat-head">
-    <h2>AI に指示</h2>
+    <h2><Icon name="sparkles" size={15} />AI に指示</h2>
     <div class="head-right">
       <select
         class="provider"
@@ -282,9 +283,9 @@
         {/if}
         <option value="__custom">その他(モデル名を入力)…</option>
       </select>
-      <button class="small" onclick={newConversation} disabled={chatStatus.running} title="会話の文脈をリセットする">
-        新しい会話
-      </button>
+      <button class="btn sm" onclick={newConversation} disabled={chatStatus.running} title="会話の文脈をリセットする(表示中の会話も消えます)"
+        ><Icon name="message-square-plus" />新しい会話</button
+      >
     </div>
   </div>
 
@@ -296,16 +297,16 @@
     {/if}
     {#each messages as m}
       {#if m.role === "tool"}
-        <div class="msg tool">⚙ {m.text}</div>
+        <div class="msg tool"><Icon name="sparkles" size={12} />{m.text}</div>
       {:else if m.role === "turn"}
         <div class="msg turn">
           <span>{m.text}{m.reverted ? "(取り消し済み)" : ""}</span>
           {#if !m.reverted}
             <button
-              class="small"
+              class="btn sm"
               onclick={() => revertTurnAt(m)}
-              title="このターンで AI が行った編集をまとめて取り消す(後から人間が行った編集は残す)"
-              >↩ 取り消す</button
+              title="このターンで AI が行った編集をまとめて打ち消す(後から人間が行った編集は残す)"
+              ><Icon name="rotate-ccw" />このターンを取り消す</button
             >
           {/if}
         </div>
@@ -318,29 +319,43 @@
     {/if}
   </div>
 
-  {#if pianoRollStore.focus}
-    <div class="range-chip">
-      <span>対象クリップ: {pianoRollStore.focus.clipName}(ピアノロールで編集中)</span>
-    </div>
-  {/if}
-  {#if soundDesignStore.focus}
-    <div class="range-chip">
-      <span
-        >🎛 音作り中: {soundDesignStore.focus.trackName}{soundDesignStore.focus.trackId === MASTER_FOCUS_ID
-          ? "(エフェクトの指示はマスターへ)"
-          : "(音色の指示はこのトラックへ)"}</span
-      >
-    </div>
-  {/if}
-  {#if selectionStore.range}
-    <div class="range-chip">
-      <span>
-        対象: 小節 {selectionStore.range.startBar + 1}〜{selectionStore.range.endBar + 1}
-        (この範囲に限定して指示されます)
-      </span>
-      <button class="chip-clear" onclick={() => (selectionStore.range = null)} title="範囲指定を解除">
-        ✕
-      </button>
+  <!-- 指示の対象(ピアノロールのクリップ・インスペクターのトラック・選んだ小節)。✕ で外す -->
+  {#if pianoRollStore.focus || soundDesignStore.focus || selectionStore.range}
+    <div class="chips">
+      {#if pianoRollStore.focus}
+        <span class="chip" title="ピアノロールで開いているクリップが指示の対象になります"
+          ><Icon name="piano" size={12} />{pianoRollStore.focus.clipName}<button
+            class="chip-x"
+            onclick={() => (pianoRollStore.focus = null)}
+            title="ピアノロールを閉じる"
+            aria-label="ピアノロールを閉じる"><Icon name="x" size={11} /></button
+          ></span
+        >
+      {/if}
+      {#if soundDesignStore.focus}
+        <span
+          class="chip"
+          title={soundDesignStore.focus.trackId === MASTER_FOCUS_ID
+            ? "エフェクトの指示はマスターへ"
+            : "音色・エフェクトの指示はこのトラックへ"}
+          ><Icon name="sliders-horizontal" size={12} />{soundDesignStore.focus.trackName} の音作り<button
+            class="chip-x"
+            onclick={() => (soundDesignStore.focus = null)}
+            title="インスペクターを閉じる"
+            aria-label="インスペクターを閉じる"><Icon name="x" size={11} /></button
+          ></span
+        >
+      {/if}
+      {#if selectionStore.range}
+        <span class="chip" title="この範囲に限定して指示されます"
+          ><Icon name="ruler" size={12} />小節 {selectionStore.range.startBar + 1}〜{selectionStore.range.endBar + 1}<button
+            class="chip-x"
+            onclick={() => (selectionStore.range = null)}
+            title="範囲の指定を外す"
+            aria-label="範囲の指定を外す"><Icon name="x" size={11} /></button
+          ></span
+        >
+      {/if}
     </div>
   {/if}
 
@@ -384,21 +399,27 @@
 
   .model,
   .provider {
-    font-size: 11px;
+    height: 22px;
     max-width: 130px;
+    background: var(--bg-inset);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    font-size: var(--fs-sm);
+    padding: 0 4px;
   }
 
   h2 {
-    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-md);
     margin: 0;
     color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
-  button.small {
-    font-size: 11px;
-    padding: 2px 8px;
+  h2 :global(.icon) {
+    color: var(--ai);
   }
 
   .messages {
@@ -442,6 +463,9 @@
 
   .msg.tool {
     align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-size: 11px;
     color: var(--ai);
     background: color-mix(in srgb, var(--ai) 12%, transparent);
@@ -495,25 +519,42 @@
     }
   }
 
-  .range-chip {
+  .chips {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin: 0 10px;
-    padding: 4px 10px;
-    border-radius: 6px 6px 0 0;
-    background: color-mix(in srgb, var(--accent) 15%, transparent);
-    color: var(--accent);
-    font-size: 11px;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 10px 0;
   }
 
-  .chip-clear {
-    padding: 0 6px;
-    font-size: 11px;
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 3px 0 8px;
+    border-radius: 11px;
+    border: 1px solid var(--accent-dim);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    font-size: var(--fs-xs);
+    max-width: 100%;
+  }
+
+  .chip-x {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
     border: none;
+    border-radius: 50%;
     background: none;
     color: var(--accent);
+    opacity: 0.75;
+  }
+
+  .chip-x:hover:not(:disabled) {
+    opacity: 1;
+    border: none;
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
   }
 
   .input-row {

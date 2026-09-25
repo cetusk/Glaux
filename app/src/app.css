@@ -21,6 +21,30 @@
   --danger-text: #ffb4c0;
   --warn: #e8a07c;
   --ok: #3aa876;
+  /* ミュート・ソロ・アーム(トラックの見出し・インスペクター共通) */
+  --mute: #e8a07c;
+  --solo: #e8d27c;
+  --arm: #e05555;
+  /* 面の段階(パネルの上に乗る部品・入力欄の沈んだ面) */
+  --bg-raised: #242424;
+  --bg-inset: #0f0f0f;
+  --border-strong: #444444;
+  --text-faint: #5f5f5f;
+  /* 文字の大きさ(この 4 段だけ使う) */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --mono: Consolas, "Cascadia Mono", "Noto Sans Mono", monospace;
+  /* 余白・角丸・影 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --shadow-pop: 0 8px 28px rgba(0, 0, 0, 0.55);
   font-family: "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
   font-size: 14px;
   color-scheme: dark;
@@ -67,6 +91,75 @@ button:disabled {
 }
 
 code {
-  font-family: Consolas, "Cascadia Mono", monospace;
+  font-family: var(--mono);
   font-size: 12px;
+}
+
+/* ---- ボタンの種類(新しい部品はこれを使う) ----
+   .btn: 標準 / .icon: アイコンだけ(正方形)/ .sm: 小さい / .ghost: 枠なし / .primary: 主の操作 / .danger: 削除など
+   .on: トグルの ON(トグルは全部この見た目にそろえる) */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--bg-raised);
+  border-radius: var(--r-md);
+  font-size: var(--fs-md);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn.icon {
+  width: 28px;
+  padding: 0;
+}
+
+.btn.sm {
+  height: 22px;
+  padding: 0 7px;
+  gap: 4px;
+  font-size: var(--fs-sm);
+  --icon-size: 14px;
+}
+
+.btn.sm.icon {
+  width: 22px;
+  padding: 0;
+}
+
+.btn.ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: var(--bg-raised);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #081c1a;
+  font-weight: 600;
+}
+
+.btn.primary:hover:not(:disabled) {
+  color: #081c1a;
+  filter: brightness(1.1);
+}
+
+.btn.danger {
+  color: var(--danger-text);
+}
+
+.btn.on {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  border-color: var(--accent-dim);
+  color: var(--accent);
 }

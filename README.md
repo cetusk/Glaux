@@ -110,6 +110,7 @@ godot/          Godot のデモとアドオンのビルド
 | 学習済みモデル(basic-pitch / SwiftF0 / Beat This!) | 同梱([出典](crates/glaux-ml/models/README.md)) | Apache-2.0 / MIT / MIT |
 | 音色語の辞書(LAION-CLAP の言葉側から作成) | 同梱 | Apache-2.0 |
 | LAION-CLAP の音声側モデル | 初めて使うときに取得 | Apache-2.0 |
+| 画面のアイコン(Lucide) | 同梱([全文](app/LICENSE-lucide.txt)) | ISC(一部 MIT) |
 | SoundFont・CLAP プラグイン・Demucs | 同梱しない(各自で入手) | それぞれによる |
 | **ロゴ・アイコン** | `assets/` ほか | **上のライセンスの対象外** |
 

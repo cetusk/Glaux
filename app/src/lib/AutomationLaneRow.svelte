@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   // トラック下に開くオートメーションレーン。対象は音量・パン・音源のつまみ
   // (device/<名前>)・エフェクトのつまみ(fx/<id>/<名前>)。
   // ダブルクリックで点追加、ドラッグで移動、右クリックで削除。
@@ -328,14 +329,14 @@
   <div class="auto-head">
     <div class="tabs">
       <button class:active={target === "track/volume_db"} onclick={() => onTarget("track/volume_db")}>
-        音量{lanePaths.has("track/volume_db") ? "●" : ""}
+        音量{#if lanePaths.has("track/volume_db")}<span class="dot" title="描いてある"></span>{/if}
       </button>
       {#if !isMaster}
         <button class:active={target === "track/pan"} onclick={() => onTarget("track/pan")}>
-          パン{lanePaths.has("track/pan") ? "●" : ""}
+          パン{#if lanePaths.has("track/pan")}<span class="dot" title="描いてある"></span>{/if}
         </button>
       {/if}
-      <button class="close" onclick={onClose} title="レーンを閉じる">✕</button>
+      <button class="btn sm icon ghost close" onclick={onClose} title="レーンを閉じる" aria-label="レーンを閉じる"><Icon name="x" /></button>
     </div>
     {#if paramTargets.length > 0}
       <select
@@ -431,9 +432,16 @@
 
   .tabs .close {
     margin-left: auto;
-    border: none;
-    background: none;
-    color: var(--text-dim);
+  }
+
+  .dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-left: 3px;
+    border-radius: 50%;
+    background: currentColor;
+    vertical-align: 2px;
   }
 
   .param-pick {

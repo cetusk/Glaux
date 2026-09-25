@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   // 音声クリップの音に近い CLAP 音源のプリセットを探し、読み込んで、つまみを自動で詰める。
   // (MCP の find_similar_presets → load_plugin_preset → refine_plugin_params を人間が UI から行う版)
   import { onDestroy } from "svelte";
@@ -119,12 +120,13 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<svelte:window onkeydown={(e) => e.key === "Escape" && !busy && onClose()} />
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="backdrop" role="presentation" onclick={() => !busy && onClose()}></div>
 <div class="panel" role="dialog" aria-label="似た音のプリセットを探す">
   <div class="head">
-    <h2>🔎 似た音のプリセットを探す</h2>
-    <button onclick={onClose} disabled={busy} title="閉じる">✕</button>
+    <h2><Icon name="search" />似た音のプリセットを探す</h2>
+    <button class="btn sm icon ghost" onclick={onClose} disabled={busy} title="閉じる(Esc)" aria-label="閉じる"><Icon name="x" /></button>
   </div>
   <div class="hint">
     目標の音: <b>{clip.name}</b>。CLAP 音源(Surge XT など)のプリセットを 1 音ずつ鳴らして比べ、近い順に並べます。
@@ -204,7 +206,7 @@
         今の音色(読み込んだプリセット)から出発して、フィルターやエンベロープなどの主要なつまみを目標の音に近づけます(約 20 秒・Ctrl+Z で戻せます)。
       </div>
       <button onclick={refine} disabled={busy || !trackId}>
-        {refining ? "合わせています…" : "🎛 つまみを自動で合わせる"}
+        {#if !refining}<Icon name="wand-sparkles" />{/if}{refining ? "合わせています…" : "つまみを自動で合わせる"}
       </button>
       {#if refined}
         <div class="refined">
@@ -256,8 +258,15 @@
   }
 
   h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin: 0;
-    font-size: 15px;
+    font-size: var(--fs-lg);
+  }
+
+  h2 :global(.icon) {
+    color: var(--accent);
   }
 
   .row {

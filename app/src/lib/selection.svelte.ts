@@ -53,3 +53,28 @@ export const MASTER_FOCUS_ID = "__master__";
 /// アームしたトラックがあると ⏺ は MIDI 録音になる。
 /// 未アームなら、ピアノロールで開いているトラック → 最初の MIDI トラックの音で鳴らす
 export const midiArmStore = $state<{ trackId: string | null }>({ trackId: null });
+
+/// 音源ピッカーを開いているトラックと、出す位置(画面の座標)。トラックの見出しと
+/// インスペクターの「変更」から同じピッカーを開く(以前は選び方が 3 か所に分かれていた)
+export const instrumentPickerStore = $state<{
+  open: { trackId: string; x: number; y: number; tab?: "builtin" | "preset" | "sf2" | "clap" | "sample" } | null;
+}>({ open: null });
+
+/// インスペクター(音作りパネル)の幅。開いている間、タイムラインとピアノロールをこの幅だけ押し縮める
+function loadInspectorWidth(): number {
+  try {
+    const v = Number(localStorage.getItem("glaux.inspectorWidth"));
+    return Number.isFinite(v) && v >= 300 ? Math.min(v, 640) : 360;
+  } catch {
+    return 360;
+  }
+}
+export const inspectorStore = $state<{ width: number }>({ width: loadInspectorWidth() });
+
+export function saveInspectorWidth() {
+  try {
+    localStorage.setItem("glaux.inspectorWidth", String(inspectorStore.width));
+  } catch {
+    // 保存できなくても動作には関係しない
+  }
+}

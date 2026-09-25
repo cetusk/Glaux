@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
@@ -231,15 +232,17 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => e.key === "Escape" && openMenu && (openMenu = false)} />
+
 <div class="menu-root">
   <button class="title-btn" bind:this={titleBtn} onclick={toggle} title="プロジェクトを切り替える">
     <span class="title-text">{title}</span>
-    <span class="chev">▾</span>
+    <span class="chev"><Icon name="chevron-down" size={14} /></span>
   </button>
 
   {#if openMenu}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="backdrop" onclick={() => (openMenu = false)}></div>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="backdrop" role="presentation" onclick={() => (openMenu = false)}></div>
     <div class="dropdown" style="left:{menuPos.left}px;top:{menuPos.top}px">
       {#if menuError}
         <div class="menu-error">{menuError}</div>
@@ -260,7 +263,7 @@
         </div>
         <label class="lab-check" title="1 トラック + 試聴フレーズ + ループ ON + 音作りビューを開いた状態で作成(作業フォルダ内の SoundLab/ に置かれます)">
           <input type="checkbox" bind:checked={soundLab} disabled={busy} />
-          🎨 音作り用テンプレートで作成
+          音作り用テンプレートで作成
         </label>
         <button class="loc" onclick={browseParentDir} title="クリックで作業フォルダを変更(既定として保存されます)">
           {soundLab ? "場所" : "作業フォルダ"}: {soundLab ? soundLabDir() : parentDir || defaultDir}
@@ -385,7 +388,6 @@
   .section-title {
     font-size: 11px;
     color: var(--text-dim);
-    text-transform: uppercase;
     letter-spacing: 0.05em;
   }
 
