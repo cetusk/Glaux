@@ -1559,6 +1559,21 @@ async fn revert_entry(state: State<'_, AppState>, entry_id: String) -> Result<Va
     }))
 }
 
+/// キーと小節ごとのコード(ノートからの推定)と、キーのスケールの音(ピッチクラス)。画面の表示用
+#[tauri::command]
+async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
+    let (project, _) = state.handle.get_project().await?;
+    let a = glaux_core::harmony::analyze(&project, None, None);
+    let scale = a
+        .key
+        .as_ref()
+        .map(|k| glaux_core::harmony::scale_pitch_classes(k.tonic, k.mode))
+        .unwrap_or_default();
+    let mut v = serde_json::to_value(&a).map_err(|e| e.to_string())?;
+    v["scale"] = json!(scale);
+    Ok(v)
+}
+
 /// トラックを音声にする(フリーズ)。描き出して直後に音声トラックとして置き、元はミュート(1 件の履歴)
 #[tauri::command]
 async fn bounce_track(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
@@ -2179,6 +2194,7 @@ fn main() -> Result<()> {
             turn_changes,
             revert_turn,
             bounce_track,
+            harmony,
             import_audio_clip,
             clip_peaks,
             transcribe_clip,

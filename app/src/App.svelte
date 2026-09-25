@@ -4,6 +4,7 @@
   import { shouldYieldKey } from "./lib/keys";
   import { toolDoing } from "./lib/toolLabels";
   import Toasts from "./lib/Toasts.svelte";
+  import { harmonyStore, refreshHarmony } from "./lib/harmony.svelte";
   import { barAtTick, buildBars, nextBarHead, prevBarHead } from "./lib/barMap";
   import type { AppInfo, EntrySummary, Project } from "./lib/types";
   import { pollTransport, startTransportPolling, transportStore } from "./lib/transport.svelte";
@@ -135,6 +136,7 @@
       projectVersion = p.project_version;
       entries = h.entries;
       historyTotal = h.total;
+      refreshHarmony();
       redoable = h.redoable ?? [];
       error = null;
       // プロジェクトの移動・切り替えでパスが変わることがあるのでフッターも更新
@@ -834,6 +836,13 @@
           onblur={commitBpm}
         />
       {:else}
+        {#if harmonyStore.view?.key}
+          <span
+            class="stat key-stat"
+            title={`キー(ノートからの推定。確からしさ ${Math.round(harmonyStore.view.key.confidence * 100)}%)。ルーラーに小節ごとのコード`}
+            >{harmonyStore.view.key.name}</span
+          >
+        {/if}
         <button class="stat bpm-btn" onclick={startBpmEdit} title="クリックで BPM を編集">
           {bpm} BPM
         </button>
@@ -1330,7 +1339,8 @@
   /* 狭い画面(ノート PC の 150% 表示など)では、ヘッダーの文字を減らして右端の ⚙ まで収める */
   @media (max-width: 1320px) {
     .btn-label,
-    .ver-stat {
+    .ver-stat,
+    .key-stat {
       display: none;
     }
     .master input[type="range"] {

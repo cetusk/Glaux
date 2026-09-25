@@ -4,6 +4,7 @@
   import { shouldYieldKey } from "./keys";
   import { keepInView } from "./menu";
   import { aiHighlight } from "./aiHighlight.svelte";
+  import { harmonyStore } from "./harmony.svelte";
   import { showError, showToast } from "./toast.svelte";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
@@ -160,6 +161,124 @@
     null,
   );
   const DENS = [1, 2, 4, 8, 16, 32];
+
+  // ---- セクションマーカー(曲の構成)。以前は AI の set_sections でしか置けなかった ----
+
+  interface Marker {
+    tick: number;
+    name: string;
+  }
+
+  const MARKER_PRESETS = ["intro", "Aメロ", "Bメロ", "サビ", "間奏", "outro"];
+
+  /// 小節頭 tick → コード名(ノートからの推定。前の小節と同じ・ノートなしは出さない)
+  const chordAt = $derived.by(() => {
+    const m = new Map<number, string>();
+    let prev = "";
+    for (const c of harmonyStore.view?.chords ?? []) {
+      if (c.chord !== "N.C." && c.chord !== prev) m.set(c.tick, c.chord);
+      prev = c.chord;
+    }
+    return m;
+  });
+  let markerName = $state("");
+  /// ルーラーの右クリックメニューを開いた小節にあるマーカー
+  const markerHere = $derived(
+    sigMenu ? (project.sections ?? []).find((m) => m.tick === barList[sigMenu!.barIndex]?.tick) : undefined,
+  );
+
+  function commitSections(list: Marker[], label: string) {
+    const sorted = [...list].sort((a, b) => a.tick - b.tick);
+    api.applyEdit([{ op: "set_sections", sections: sorted }], label).catch(() => {});
+  }
+
+  function markers(): Marker[] {
+    return (project.sections ?? []).map((m) => ({ tick: m.tick, name: m.name }));
+  }
+
+  /// 小節の頭にマーカーを置く(既にあれば名前を変える)
+  function putMarker(barIndex: number, name: string) {
+    const n = name.trim();
+    if (!n) return;
+    const tick = barList[Math.min(barIndex, barList.length - 1)].tick;
+    const list = markers();
+    const hit = list.find((m) => m.tick === tick);
+    if (hit) hit.name = n;
+    else list.push({ tick, name: n });
+    sigMenu = null;
+    markerName = "";
+    commitSections(list, hit ? `マーカーの名前を「${n}」に変更` : `${barIndex + 1} 小節目にマーカー「${n}」を追加`);
+  }
+
+  function removeMarker(tick: number) {
+    const list = markers();
+    const hit = list.find((m) => m.tick === tick);
+    if (!hit) return;
+    sigMenu = null;
+    commitSections(
+      list.filter((m) => m.tick !== tick),
+      `マーカー「${hit.name}」を削除`,
+    );
+  }
+
+  /// 名前を変更中のマーカーの tick
+  let renamingMarker = $state<number | null>(null);
+
+  function renameMarker(tick: number, name: string) {
+    renamingMarker = null;
+    const list = markers();
+    const hit = list.find((m) => m.tick === tick);
+    const n = name.trim();
+    if (!hit || !n || n === hit.name) return;
+    const old = hit.name;
+    hit.name = n;
+    commitSections(list, `マーカーの名前を「${old}」から「${n}」に変更`);
+  }
+
+  /// マーカーのドラッグ(移動)。動かさずに離したら、その区間を範囲選択にする
+  let markerDrag = $state<{ tick: number; x0: number; to: number; moved: boolean } | null>(null);
+
+  function laneBar(e: PointerEvent): number {
+    const lane = (e.currentTarget as HTMLElement).parentElement!;
+    const x = e.clientX - lane.getBoundingClientRect().left;
+    return barAtTick(barList, Math.max(0, x / pxPerTick)).index;
+  }
+
+  function onMarkerDown(e: PointerEvent, m: Marker) {
+    if (e.button !== 0 || renamingMarker !== null) return;
+    e.stopPropagation();
+    markerDrag = { tick: m.tick, x0: e.clientX, to: m.tick, moved: false };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function onMarkerMove(e: PointerEvent) {
+    const d = markerDrag;
+    if (!d) return;
+    if (!d.moved && Math.abs(e.clientX - d.x0) < 4) return;
+    d.moved = true;
+    d.to = barList[laneBar(e)].tick;
+  }
+
+  function onMarkerUp(e: PointerEvent, m: Marker, next: number | undefined) {
+    const d = markerDrag;
+    markerDrag = null;
+    if (!d) return;
+    if (!d.moved) {
+      // クリック: この区間(次のマーカーの手前まで)を範囲選択 = AI への指示の対象
+      const a = barAtTick(barList, m.tick).index;
+      const endTick = next ?? project.tracks.reduce((mx, t) => Math.max(mx, ...t.clips.map((c) => c.start + c.length)), m.tick + 1);
+      const b = barAtTick(barList, Math.max(m.tick, endTick - 1)).index;
+      setRange(a, b);
+      return;
+    }
+    if (d.to === m.tick) return;
+    const list = markers();
+    if (list.some((x) => x.tick === d.to)) return; // 別のマーカーと重なる所には置かない
+    const hit = list.find((x) => x.tick === m.tick);
+    if (!hit) return;
+    hit.tick = d.to;
+    commitSections(list, `マーカー「${m.name}」を ${barAtTick(barList, d.to).index + 1} 小節目へ移動`);
+  }
 
   function openSigMenu(e: MouseEvent, barIndex: number) {
     e.preventDefault();
@@ -1217,14 +1336,41 @@
       <div class="lane" style="width:{totalPx}px">
         {#each project.sections as sec, i (sec.tick)}
           {@const next = project.sections?.[i + 1]?.tick}
+          {@const at = markerDrag?.tick === sec.tick ? markerDrag.to : sec.tick}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="section-band"
-            style="left:{sec.tick * pxPerTick}px;{next !== undefined
+            class:dragging={markerDrag?.tick === sec.tick && markerDrag.moved}
+            style="left:{at * pxPerTick}px;{next !== undefined && at === sec.tick
               ? `width:${(next - sec.tick) * pxPerTick}px`
-              : `right:0`}"
-            title={`${sec.name}(tick ${sec.tick}〜)`}
+              : at === sec.tick
+                ? `right:0`
+                : `width:120px`}"
+            title={`${sec.name}(${barAtTick(barList, sec.tick).index + 1} 小節目〜)\nクリックでこの区間を選択 / ドラッグで移動 / ダブルクリックで名前を変更 / 右クリックで削除`}
+            onpointerdown={(e) => onMarkerDown(e, sec)}
+            onpointermove={onMarkerMove}
+            onpointerup={(e) => onMarkerUp(e, sec, next)}
+            ondblclick={() => (renamingMarker = sec.tick)}
+            oncontextmenu={(e) => {
+              e.preventDefault();
+              removeMarker(sec.tick);
+            }}
           >
-            {sec.name}
+            {#if renamingMarker === sec.tick}
+              <input
+                class="marker-input"
+                value={sec.name}
+                use:focusSelect
+                onpointerdown={(e) => e.stopPropagation()}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") renameMarker(sec.tick, e.currentTarget.value);
+                  else if (e.key === "Escape") renamingMarker = null;
+                }}
+                onblur={(e) => renameMarker(sec.tick, e.currentTarget.value)}
+              />
+            {:else}
+              {sec.name}
+            {/if}
           </div>
         {/each}
       </div>
@@ -1246,7 +1392,7 @@
     >
       {#each barList as bar (bar.index)}
         <div class="bar-mark" style="left:{bar.tick * pxPerTick}px">
-          {bar.index + 1}{#if bar.sigChange}<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions --><span
+          {bar.index + 1}{#if chordAt.get(bar.tick)}<span class="chord-chip">{chordAt.get(bar.tick)}</span>{/if}{#if bar.sigChange}<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions --><span
               class="sig-chip"
               title="クリックで拍子を編集・削除"
               onpointerdown={(e) => e.stopPropagation()}
@@ -1553,6 +1699,29 @@
         <button class="danger" onclick={removeSig}>🗑 この拍子変更を削除(前の拍子に戻す)</button>
       {/if}
       <div class="menu-note">ノートの位置は変わらず、この小節から先の小節線だけが変わります(Ctrl+Z で戻せます)</div>
+      <div class="menu-sep"></div>
+      <div class="preset-title">
+        {markerHere ? `マーカー「${markerHere.name}」` : `${sigMenu.barIndex + 1} 小節目にマーカーを置く`}
+      </div>
+      <div class="sig-form">
+        <input
+          class="marker-name"
+          placeholder={markerHere ? "新しい名前" : "名前(例: サビ)"}
+          bind:value={markerName}
+          onkeydown={(e) => e.key === "Enter" && putMarker(sigMenu!.barIndex, markerName)}
+        />
+        <button class="sig-apply" onclick={() => putMarker(sigMenu!.barIndex, markerName)}>
+          {markerHere ? "名前を変更" : "追加"}
+        </button>
+      </div>
+      <div class="sig-presets">
+        {#each MARKER_PRESETS as name (name)}
+          <button class="sig-preset" onclick={() => putMarker(sigMenu!.barIndex, name)}>{name}</button>
+        {/each}
+      </div>
+      {#if markerHere}
+        <button class="danger" onclick={() => removeMarker(markerHere!.tick)}>🗑 このマーカーを削除</button>
+      {/if}
     </div>
   {/if}
 
@@ -1791,6 +1960,14 @@
     pointer-events: none;
   }
 
+  /* 小節のコード(推定)。小節番号の横に小さく */
+  .chord-chip {
+    margin-left: 5px;
+    font-size: 10px;
+    color: var(--human);
+    opacity: 0.9;
+  }
+
   .ruler-row,
   .track-row {
     display: flex;
@@ -1938,7 +2115,29 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    pointer-events: none;
+    cursor: grab;
+    user-select: none;
+  }
+
+  .section-band.dragging {
+    cursor: grabbing;
+    opacity: 0.8;
+    z-index: 1;
+  }
+
+  .marker-input {
+    width: 100%;
+    font: inherit;
+    font-size: 10px;
+    padding: 0 2px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--accent-dim);
+  }
+
+  .marker-name {
+    flex: 1;
+    min-width: 0;
   }
 
   .ruler-row .lane {

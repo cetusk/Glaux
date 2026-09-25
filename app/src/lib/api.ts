@@ -570,6 +570,11 @@ export function cancelChat(): Promise<void> {
   return invoke("cancel_chat");
 }
 
+/** キーと小節ごとのコード(ノートからの推定)とスケールの音 */
+export function harmony(): Promise<import("./harmony.svelte").HarmonyView> {
+  return invoke("harmony");
+}
+
 /** トラックを音声にする(フリーズ)。直後に音声トラックができ、元はミュートされる */
 export function bounceTrack(trackId: string): Promise<{ entry_id: string; new_track: string; seconds: number }> {
   return invoke("bounce_track", { trackId });

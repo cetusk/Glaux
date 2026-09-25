@@ -4,6 +4,7 @@
   import { shouldYieldKey } from "./keys";
   import { settings } from "./settings.svelte";
   import { aiHighlight } from "./aiHighlight.svelte";
+  import { harmonyStore } from "./harmony.svelte";
   import { buildBars } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
   import Fretboard from "./Fretboard.svelte";
@@ -398,11 +399,16 @@
     const g = ensureSize(c);
     g.clearRect(0, 0, contentW, contentH);
 
-    // 行の縞(黒鍵行を暗く)
+    // 行の縞(黒鍵行を暗く)。曲のキーのスケールに無い音の行はさらに少し暗く(ドラムは除く)
+    const scale = isDrum ? [] : (harmonyStore.view?.scale ?? []);
     for (let pitch = 0; pitch < 128; pitch++) {
       const y = (127 - pitch) * rowH;
       g.fillStyle = BLACK.has(pitch % 12) ? "#1b1b1b" : "#232323";
       g.fillRect(0, y, contentW, rowH);
+      if (scale.length > 0 && !scale.includes(pitch % 12)) {
+        g.fillStyle = "rgba(0, 0, 0, 0.28)";
+        g.fillRect(0, y, contentW, rowH);
+      }
       if (pitch % 12 === 0) {
         // C の行の下線を強調
         g.fillStyle = "#3a3a3a";
@@ -613,6 +619,7 @@
     void win;
     void settings.accent;
     void aiHighlight.notes;
+    void harmonyStore.view;
     drawBase();
   });
 
