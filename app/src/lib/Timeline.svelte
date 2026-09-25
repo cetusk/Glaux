@@ -21,6 +21,7 @@
     soundDesignStore,
   } from "./selection.svelte";
   import Icon from "./Icon.svelte";
+  import { flip } from "svelte/animate";
   import { deviceIcon, deviceName } from "./instruments";
   import type { Clip, Project, Track } from "./types";
 
@@ -1044,22 +1045,55 @@
 
   let trackMenu = $state<{ trackId: string; index: number; x: number; y: number } | null>(null);
 
-  function openTrackMenu(e: MouseEvent, track: Track, index: number) {
+  /// メニューに持たせる位置は、画面の並び(先に動かしている間はずれる)ではなく実際の並びで
+  function trackIndex(track: Track): number {
+    return project.tracks.findIndex((t) => t.id === track.id);
+  }
+
+  function openTrackMenu(e: MouseEvent, track: Track) {
     e.preventDefault();
-    trackMenu = { trackId: track.id, index, x: e.clientX, y: e.clientY };
+    trackMenu = { trackId: track.id, index: trackIndex(track), x: e.clientX, y: e.clientY };
   }
 
   function moveTrack(toIndex: number) {
     const menu = trackMenu;
     trackMenu = null;
     if (!menu || toIndex < 0 || toIndex >= project.tracks.length) return;
-    const track = project.tracks[menu.index];
+    reorderTrack(menu.trackId, toIndex);
+  }
+
+  // ---- 並べ替えを先に画面へ(保存の往復を待たずに動かし、animate:flip で滑らかに入れ替える) ----
+  /// 先に反映している並び(トラック ID)。実際の並びが追いついたら外す
+  let optimisticOrder = $state<string[] | null>(null);
+  let optimisticTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const shownTracks = $derived.by((): Track[] => {
+    const order = optimisticOrder;
+    if (!order) return project.tracks;
+    const byId = new Map(project.tracks.map((t) => [t.id, t]));
+    const list = order.map((id) => byId.get(id)).filter((t): t is Track => !!t);
+    // その間にトラックが足された・消されたときは実際の並びに戻す
+    return list.length === project.tracks.length ? list : project.tracks;
+  });
+
+  $effect(() => {
+    const order = optimisticOrder;
+    if (order && project.tracks.map((t) => t.id).join() === order.join()) optimisticOrder = null;
+  });
+
+  function reorderTrack(id: string, to: number) {
+    const ids = project.tracks.map((t) => t.id);
+    const from = ids.indexOf(id);
+    if (from < 0 || to === from) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, id);
+    optimisticOrder = ids;
+    clearTimeout(optimisticTimer);
+    optimisticTimer = setTimeout(() => (optimisticOrder = null), 3000);
+    const name = project.tracks[from]?.name ?? "トラック";
     api
-      .applyEdit(
-        [{ op: "move_track", id: menu.trackId, to_index: toIndex }],
-        `${track?.name ?? "トラック"} を${toIndex < menu.index ? "上" : "下"}へ移動`,
-      )
-      .catch(() => {});
+      .applyEdit([{ op: "move_track", id, to_index: to }], `${name} を ${to + 1} 番目へ移動`)
+      .catch(() => (optimisticOrder = null));
   }
 
   // ---- トラックの名前・色・複製 ----
@@ -1200,10 +1234,10 @@
   }
 
   /// 見出しの ⋯ からトラックのメニューを開く(右クリックと同じもの)
-  function openTrackMenuAt(e: MouseEvent, track: Track, index: number) {
+  function openTrackMenuAt(e: MouseEvent, track: Track) {
     e.stopPropagation();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    trackMenu = { trackId: track.id, index, x: r.left, y: r.bottom + 4 };
+    trackMenu = { trackId: track.id, index: trackIndex(track), x: r.left, y: r.bottom + 4 };
   }
 
   function openClapGui(trackId: string) {
@@ -1212,25 +1246,27 @@
   }
 
   // ---- トラックの並べ替え(見出しのつまみをつかんで上下にドラッグ) ----
-  let trackDrag = $state<{ id: string; from: number; slot: number; lineY: number } | null>(null);
+  // つかんだトラックはポインターについて動き、ほかのトラックはすき間を空けるように滑る。
+  // 離すと、並びを先に画面へ反映して(reorderTrack)、つかんだトラックは今の位置から収まる所へ滑り込む
+  let trackDrag = $state<{ id: string; from: number; to: number; dy: number; h: number } | null>(null);
 
   function onGripDown(e: PointerEvent, track: Track, ti: number) {
     if (e.button !== 0 || !root) return;
     e.preventDefault();
     e.stopPropagation();
-    const rects = [...root.querySelectorAll<HTMLElement>(".track-row[data-ti]")].map((r) => r.getBoundingClientRect());
-    const top0 = root.getBoundingClientRect().top;
-    // 差し込む位置(0 = 先頭の前 … n = 末尾の後ろ)と、その位置に引く線の高さ
-    const slotAt = (y: number) => {
-      const k = rects.findIndex((r) => y < r.top + r.height / 2);
-      return k < 0 ? rects.length : k;
-    };
-    const lineAt = (k: number) => (k < rects.length ? rects[k].top : rects[rects.length - 1].bottom) - top0;
-    trackDrag = { id: track.id, from: ti, slot: ti, lineY: lineAt(ti) };
+    const blocks = [...root.querySelectorAll<HTMLElement>(".track-block")];
+    const rects = blocks.map((b) => b.getBoundingClientRect());
+    const self = rects[ti];
+    if (!self) return;
+    const startY = e.clientY;
+    trackDrag = { id: track.id, from: ti, to: ti, dy: 0, h: self.height };
     const move = (ev: PointerEvent) => {
       if (!trackDrag) return;
-      const k = slotAt(ev.clientY);
-      trackDrag = { ...trackDrag, slot: k, lineY: lineAt(k) };
+      const dy = ev.clientY - startY;
+      // つかんだトラックの中心より上にある(ほかの)トラックの数 = 新しい位置
+      const center = self.top + self.height / 2 + dy;
+      const to = rects.filter((r, i) => i !== ti && r.top + r.height / 2 < center).length;
+      trackDrag = { ...trackDrag, dy, to };
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -1238,14 +1274,28 @@
       const d = trackDrag;
       trackDrag = null;
       if (!d) return;
-      const to = d.slot > d.from ? d.slot - 1 : d.slot;
-      if (to === d.from) return;
-      api
-        .applyEdit([{ op: "move_track", id: d.id, to_index: to }], `${track.name} を ${to + 1} 番目へ移動`)
-        .catch(() => {});
+      if (d.to !== d.from) {
+        reorderTrack(d.id, d.to);
+      } else if (d.dy !== 0) {
+        // 動かさなかったときは元の位置へ滑って戻る
+        blocks[ti]?.animate([{ transform: `translateY(${d.dy}px)` }, { transform: "none" }], {
+          duration: 160,
+          easing: "ease-out",
+        });
+      }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  }
+
+  /// ドラッグ中の各トラックのずれ(つかんだトラックはポインターの分、間のトラックはすき間の分)
+  function dragShift(ti: number): number {
+    const d = trackDrag;
+    if (!d) return 0;
+    if (ti === d.from) return d.dy;
+    if (d.from < d.to && ti > d.from && ti <= d.to) return -d.h;
+    if (d.to < d.from && ti >= d.to && ti < d.from) return d.h;
+    return 0;
   }
 
   // ---- トラックの追加(1 つのボタンから種類を選ぶ) ----
@@ -1414,15 +1464,23 @@
     </div>
   {/if}
 
-  {#each project.tracks as track, ti (track.id)}
-    <div class="track-row" class:alt={ti % 2 === 1} class:lifted={trackDrag?.id === track.id} data-ti={ti}>
+  {#each shownTracks as track, ti (track.id)}
+    <!-- 1 トラック分(行とオートメーション)をまとめて動かす -->
+    <div
+      class="track-block"
+      class:sliding={trackDrag !== null && trackDrag.id !== track.id}
+      class:lifted={trackDrag?.id === track.id}
+      style={trackDrag ? `transform:translateY(${dragShift(ti)}px)` : ""}
+      animate:flip={{ duration: 180 }}
+    >
+    <div class="track-row" class:alt={ti % 2 === 1}>
       <!-- 見出し: 1 段目 = つかむ所・種類・名前・⋯ / 2 段目 = M・S・音量 / 3 段目 = 音源と固定の 3 つ
            (アーム・オートメーション・インスペクター。無いものは空けて、どのトラックでも同じ位置に) -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="track-head"
         style={track.color ? `--tc:${track.color}` : ""}
-        oncontextmenu={(e) => openTrackMenu(e, track, ti)}
+        oncontextmenu={(e) => openTrackMenu(e, track)}
       >
         <div class="head-row">
           <span class="grip" role="button" tabindex="-1" aria-label="並べ替え" title="つかんで上下にドラッグで並べ替え" onpointerdown={(e) => onGripDown(e, track, ti)}
@@ -1449,7 +1507,7 @@
           {/if}
           <button
             class="btn sm icon ghost"
-            onclick={(e) => openTrackMenuAt(e, track, ti)}
+            onclick={(e) => openTrackMenuAt(e, track)}
             title="トラックのメニュー(名前・色・並べ替え・複製・音声にする・削除)"
             aria-label="トラックのメニュー"><Icon name="ellipsis" /></button
           >
@@ -1635,6 +1693,7 @@
         onClose={() => toggleAutoLane(track.id)}
       />
     {/if}
+    </div>
   {/each}
 
   <!-- マスター: 曲全体の音量・オートメーション・エフェクト(以前はヘッダーに分かれていた) -->
@@ -1884,9 +1943,6 @@
     </div>
   {/if}
 
-  {#if trackDrag}
-    <div class="drop-line" style="top:{trackDrag.lineY - 1}px"></div>
-  {/if}
 
   <div class="add-track-row">
     <button class="btn add-track" onclick={openAddMenu} title="トラックを追加(MIDI・音声・バス・MIDI ファイル)"
@@ -2036,18 +2092,23 @@
     color: var(--text-dim);
   }
 
-  .track-row.lifted > .track-head {
-    background: var(--bg-raised);
+  /* 並べ替え: つかんだトラックは浮かせてポインターに付ける。ほかはすき間を空けるように滑る */
+  .track-block {
+    position: relative;
   }
 
-  .drop-line {
-    position: absolute;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: var(--accent);
+  .track-block.sliding {
+    transition: transform 0.16s ease;
+  }
+
+  .track-block.lifted {
     z-index: 6;
-    pointer-events: none;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+    opacity: 0.96;
+  }
+
+  .track-block.lifted .track-head {
+    background: var(--bg-raised);
   }
 
   .letter {

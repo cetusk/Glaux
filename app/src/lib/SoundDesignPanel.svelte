@@ -6,6 +6,7 @@
   import { showError } from "./toast.svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import { flip } from "svelte/animate";
   import { newClipId, newFxId } from "./ids";
   import { deviceIcon, deviceKind, deviceName } from "./instruments";
   import { keepInView } from "./menu";
@@ -453,24 +454,44 @@
   }
 
   // ---- エフェクトの並べ替え(カードの左端をつかんで上下にドラッグ) ----
+  // つかんだカードはポインターについて動き、ほかはすき間を空けるように滑る。離すと並びを先に画面へ反映し
+  // (保存と再取得を待たない)、animate:flip で収まる所へ滑り込む
   let fxList = $state<HTMLElement | undefined>(undefined);
-  let fxDrag = $state<{ id: string; from: number; slot: number; lineY: number } | null>(null);
+  let fxDrag = $state<{ id: string; from: number; to: number; dy: number; h: number } | null>(null);
+  /// 先に反映している並び(エフェクト ID)。実際の並びが追いついたら外す
+  let fxOrder = $state<string[] | null>(null);
+  let fxOrderTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const shownEffects = $derived.by((): EffectView[] => {
+    const list = info?.effects ?? [];
+    const order = fxOrder;
+    if (!order) return list;
+    const byId = new Map(list.map((f) => [f.id, f]));
+    const out = order.map((id) => byId.get(id)).filter((f): f is EffectView => !!f);
+    return out.length === list.length ? out : list;
+  });
+
+  $effect(() => {
+    const order = fxOrder;
+    if (order && (info?.effects ?? []).map((f) => f.id).join() === order.join()) fxOrder = null;
+  });
 
   function onFxGripDown(e: PointerEvent, fx: EffectView, index: number) {
     if (e.button !== 0 || !fxList) return;
     e.preventDefault();
-    const rects = [...fxList.querySelectorAll<HTMLElement>(".fx")].map((c) => c.getBoundingClientRect());
-    const top0 = fxList.getBoundingClientRect().top;
-    const slotAt = (y: number) => {
-      const k = rects.findIndex((r) => y < r.top + r.height / 2);
-      return k < 0 ? rects.length : k;
-    };
-    const lineAt = (k: number) => (k < rects.length ? rects[k].top : rects[rects.length - 1].bottom + 3) - top0 - 3;
-    fxDrag = { id: fx.id, from: index, slot: index, lineY: lineAt(index) };
+    const cards = [...fxList.querySelectorAll<HTMLElement>(".fx")];
+    const rects = cards.map((c) => c.getBoundingClientRect());
+    const self = rects[index];
+    if (!self) return;
+    const startY = e.clientY;
+    const gap = rects.length > 1 ? rects[1].top - rects[0].bottom : 6;
+    fxDrag = { id: fx.id, from: index, to: index, dy: 0, h: self.height + gap };
     const move = (ev: PointerEvent) => {
       if (!fxDrag) return;
-      const k = slotAt(ev.clientY);
-      fxDrag = { ...fxDrag, slot: k, lineY: lineAt(k) };
+      const dy = ev.clientY - startY;
+      const center = self.top + self.height / 2 + dy;
+      const to = rects.filter((r, i) => i !== index && r.top + r.height / 2 < center).length;
+      fxDrag = { ...fxDrag, dy, to };
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -478,12 +499,39 @@
       const d = fxDrag;
       fxDrag = null;
       if (!d) return;
-      const to = d.slot > d.from ? d.slot - 1 : d.slot;
-      if (to === d.from) return;
-      applyEdit([{ op: "move_effect", id: d.id, to_index: to }], `${targetName} の ${fxLabel(fx)} を ${to + 1} 番目へ`);
+      if (d.to === d.from) {
+        if (d.dy !== 0)
+          cards[index]?.animate([{ transform: `translateY(${d.dy}px)` }, { transform: "none" }], {
+            duration: 160,
+            easing: "ease-out",
+          });
+        return;
+      }
+      const ids = shownEffects.map((f) => f.id);
+      ids.splice(d.from, 1);
+      ids.splice(d.to, 0, d.id);
+      fxOrder = ids;
+      clearTimeout(fxOrderTimer);
+      fxOrderTimer = setTimeout(() => (fxOrder = null), 3000);
+      api
+        .applyEdit([{ op: "move_effect", id: d.id, to_index: d.to }], `${targetName} の ${fxLabel(fx)} を ${d.to + 1} 番目へ`)
+        .catch((e) => {
+          fxOrder = null;
+          loadError = String(e);
+        });
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  }
+
+  /// ドラッグ中の各カードのずれ
+  function fxShift(i: number): number {
+    const d = fxDrag;
+    if (!d) return 0;
+    if (i === d.from) return d.dy;
+    if (d.from < d.to && i > d.from && i <= d.to) return -d.h;
+    if (d.to < d.from && i >= d.to && i < d.from) return d.h;
+    return 0;
   }
 
   // ---- 試聴フレーズ ----
@@ -728,12 +776,19 @@
       {#if info}
         <!-- エフェクト(トラック・マスター共通) -->
         <section class="sec">
-          {@render secHead("fx", "エフェクト", info.effects.length === 0 ? "なし" : info.effects.map((f) => fxLabel(f)).join(" → "))}
+          {@render secHead("fx", "エフェクト", shownEffects.length === 0 ? "なし" : shownEffects.map((f) => fxLabel(f)).join(" → "))}
           {#if !closed.fx}
             <div class="sec-b">
               <div class="fx-list" bind:this={fxList}>
-                {#each info.effects as fx, i (fx.id)}
-                  <div class="fx" class:off={fx.bypass} class:lifted={fxDrag?.id === fx.id}>
+                {#each shownEffects as fx, i (fx.id)}
+                  <div
+                    class="fx"
+                    class:off={fx.bypass}
+                    class:lifted={fxDrag?.id === fx.id}
+                    class:sliding={fxDrag !== null && fxDrag.id !== fx.id}
+                    style={fxDrag ? `transform:translateY(${fxShift(i)}px)` : ""}
+                    animate:flip={{ duration: 180 }}
+                  >
                     <div class="fx-h">
                       <span class="grip" role="button" tabindex="-1" aria-label="並べ替え" title="つかんで上下にドラッグで並べ替え" onpointerdown={(e) => onFxGripDown(e, fx, i)}
                         ><Icon name="grip-vertical" size={14} /></span
@@ -799,7 +854,6 @@
                     {/if}
                   </div>
                 {/each}
-                {#if fxDrag}<div class="fx-drop" style="top:{fxDrag.lineY}px"></div>{/if}
               </div>
               <button class="btn sm add-fx" onclick={(e) => (addMenu = menuAt(e))}><Icon name="plus" />エフェクトを追加<Icon name="chevron-down" /></button>
             </div>
@@ -1220,7 +1274,14 @@
   }
 
   .fx.lifted {
+    position: relative;
+    z-index: 2;
     border-color: var(--accent-dim);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+  }
+
+  .fx.sliding {
+    transition: transform 0.16s ease;
   }
 
   .fx-h {
@@ -1295,15 +1356,6 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-  }
-
-  .fx-drop {
-    position: absolute;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: var(--accent);
-    pointer-events: none;
   }
 
   .add-fx {
