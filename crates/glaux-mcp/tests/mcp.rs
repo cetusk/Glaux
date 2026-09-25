@@ -2254,3 +2254,65 @@ async fn refine_plugin_params_fits_and_undoes() {
         .keys()
         .any(|k| k.starts_with("clap:")));
 }
+
+#[tokio::test]
+async fn midi_file_round_trips_through_the_tools() {
+    let fx = setup().await;
+    // 別の曲(ドラム 1 本・ピアノ 1 本、テンポ 90)を .mid にしておく
+    let mut src = glaux_core::Project::new("src");
+    src.apply(&glaux_core::Command::SetTempo {
+        events: vec![glaux_core::TempoEvent {
+            tick: glaux_core::Tick(0),
+            bpm: 90.0,
+        }],
+    })
+    .unwrap();
+    for (name, dev, pitch) in [("Drums", "drum", 36u8), ("Keys", "fm", 60u8)] {
+        let mut t = glaux_core::Track::new(
+            glaux_core::TrackId::new(),
+            name,
+            glaux_core::TrackKind::Midi,
+        );
+        t.device = Some(glaux_core::Device::builtin(dev));
+        let mut c = glaux_core::Clip::new_midi(
+            glaux_core::ClipId::new(),
+            "c",
+            glaux_core::Tick(0),
+            glaux_core::Tick(3840),
+        );
+        c.notes_mut().unwrap().push(glaux_core::Note {
+            id: glaux_core::NoteId::new(),
+            pos: glaux_core::Tick(0),
+            dur: glaux_core::Tick(480),
+            pitch,
+            vel: 100,
+            articulation: Default::default(),
+            pitch_curve: vec![],
+            glide_ms: None,
+        });
+        t.clips.push(c);
+        src.tracks.push(t);
+    }
+    let mid = fx.dir.join("src.mid");
+    std::fs::write(&mid, glaux_mcp::midi::export_smf(&src).unwrap()).unwrap();
+
+    let r = ok_json(&call(&fx, "import_midi", json!({ "path": mid.to_string_lossy() })).await);
+    assert_eq!(r["tempo_set"], json!(true), "{r}");
+    assert_eq!(r["tracks"].as_array().unwrap().len(), 2);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tempo_map.bpm_at(glaux_core::Tick(0)), 90.0);
+    assert_eq!(project.tracks.len(), 2);
+    // 1 回の undo で全部戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(project.tracks.is_empty());
+    ok_json(&call(&fx, "redo", json!({})).await);
+
+    let r = ok_json(&call(&fx, "export_midi", json!({})).await);
+    let path = r["path"].as_str().unwrap();
+    assert!(path.ends_with(".mid") && path.contains("export"), "{path}");
+    assert_eq!(r["tracks"], json!(2));
+    let back = glaux_mcp::midi::parse(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(back.parts.len(), 2);
+    assert!(back.parts[0].is_drum());
+}

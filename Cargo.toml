@@ -64,6 +64,8 @@ midir = "0.11"
 ureq = "3"
 # 似た音を作る(内蔵シンセのつまみの自動合わせ)。描画機能は使わない
 cmaes = { version = "0.2", default-features = false }
+# MIDI ファイル(.mid)の読み書き(Unlicense)
+midly = { version = "0.5", default-features = false, features = ["alloc", "std"] }
 # 音声ファイルの取り込み(mp3 / flac / ogg / m4a を WAV に変換)
 symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "flac", "ogg", "vorbis", "wav", "pcm"] }
 

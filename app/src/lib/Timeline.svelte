@@ -420,6 +420,18 @@
     await api.importAudioClip(track.id, file, startTick).catch((e) => showError("取り込めませんでした", e));
   }
 
+  /// MIDI ファイル(.mid)を読み込む: パートごとに新しいトラックを足す(1 回の undo で戻る)
+  async function importMidiFile() {
+    const file = await pickFile({ title: "MIDI ファイルを読み込む", filters: [{ name: "MIDI", extensions: ["mid", "midi"] }] });
+    if (typeof file !== "string") return;
+    try {
+      const r = await api.importMidi({ path: file });
+      showToast("ok", `MIDI を読み込みました: トラック ${r.tracks} 本・ノート ${r.notes} 個${r.tempo_set ? "(テンポと拍子も)" : ""}`);
+    } catch (e) {
+      showError("MIDI ファイルを読み込めませんでした", e);
+    }
+  }
+
   /// 空きレーンのダブルクリック: その小節にクリップを作ってピアノロールを開く
   /// (音声トラックなら WAV を選んで配置)
   function onLaneDblClick(e: MouseEvent, track: Track) {
@@ -1920,6 +1932,9 @@
     </button>
     <button class="add-track" onclick={() => addTrack("audio")} title="音声トラックを追加(音声ファイルの配置・録音先。空きレーンをダブルクリックで WAV / MP3 等を配置)">
       + 🎵 音声トラック
+    </button>
+    <button class="add-track" onclick={importMidiFile} title="MIDI ファイル(.mid)を読み込む: パートごとにトラックを足す。空の曲ならテンポと拍子も移す">
+      + 🎹 MIDI ファイル
     </button>
   </div>
 </div>

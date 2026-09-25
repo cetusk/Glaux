@@ -40,6 +40,7 @@ AI(チャットのヘッドレス Claude、または外部の MCP クライア�
 | **ミックス** | apply_commands | 音量・パン・ミュート・ソロ、EQ・コンプ・サイドチェイン、マスターのエフェクト、バス(リターン)とセンドで共有のリバーブ・ディレイ |
 | **時間変化** | apply_commands(set_automation_points / set_master_automation_points) | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターを曲線で動かす(フェード、ビルドアップ、フィルタスイープ) |
 | **音声素材** | import_sample / import_audio_clip / transcribe_audio / separate_audio | 音声の取り込み、譜起こし(単旋律・和音)、パート分離。テンポ追従は set_clip_stretch |
+| **書き出し・MIDI ファイル** | export_audio / import_midi / export_midi / bounce_track | WAV の書き出し(44.1k / 48k、16 / 24 / 32f、範囲、ラウドネス目標とリミッタ、トラックごと)、MIDI ファイルの読み込み(パートごとにトラック、GM の音色から内蔵の楽器か SoundFont を選ぶ)と書き出し(SMF 1)、トラックの音声化(フリーズ) |
 | **安全網** | checkpoint / revert_to / revert / undo / redo | 試行錯誤の足場。複数コマンドを 1 回の取り消しにまとめられる |
 
 ### 1.3 表現(どんな演奏ができるか)

@@ -16,7 +16,7 @@
 - **AI と共同作曲** — 相手は Claude(Claude Code)か GPT(Codex CLI)。人間と AI の編集は同じ履歴に残り、AI の 1 ターン分をまとめて取り消せます
 - **AI の「耳」** — 音量・帯域・キーとコード・リズム・音色を AI 自身が測り、確かめてから報告します
 - **音源とエフェクト** — 内蔵シンセ 7 種(シンセ・FM・ウェーブテーブル・ドラム・撥弦・サンプラー・SoundFont)、エフェクト 9 種(EQ・コンプ・リバーブ・アンプなど)、CLAP プラグイン(Surge XT など)
-- **打ち込みと録音** — ピアノロール、ドラムキット、フレット盤、MIDI キーボード、録音、鼻歌の譜起こし、パート分離、テンポ追従
+- **打ち込みと録音** — ピアノロール、ドラムキット、フレット盤、MIDI キーボード、MIDI ファイルの読み書き、録音、鼻歌の譜起こし、パート分離、テンポ追従
 - **AI にやさしい設計** — プロジェクトは読める JSON。すべての編集が同じコマンドを通り、完全に undo できます。MCP サーバーを内蔵
 - **ゲームで鳴らす** — Godot 4 の拡張で、曲をゲームの中で鳴らし、敵の動きや判定を拍に同期できます
 
@@ -63,17 +63,17 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 アプリなしで使う stdio 版は `scripts\glaux-mcp.bat <曲のフォルダ>` です(同じ曲をアプリと同時には開けません)。
 
 <details>
-<summary>ツールの一覧(43 個)</summary>
+<summary>ツールの一覧(45 個)</summary>
 
 | 分類 | ツール |
 |---|---|
 | 基本 | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
-| 構成 | `duplicate_clips` `insert_bars` `delete_bars` `bounce_track` `export_audio` |
+| 構成 | `duplicate_clips` `insert_bars` `delete_bars` `bounce_track` `export_audio` `export_midi` |
 | 分析 | `analyze_audio` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` |
 | ノート | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` |
 | 音色 | `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | CLAP | `list_plugins` `list_plugin_presets` `load_plugin_preset` `refine_plugin_params` |
-| 素材 | `import_sample` `import_audio_clip` `transcribe_audio` `separate_audio` |
+| 素材 | `import_sample` `import_audio_clip` `import_midi` `transcribe_audio` `separate_audio` |
 
 </details>
 

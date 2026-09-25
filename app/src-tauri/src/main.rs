@@ -1576,6 +1576,47 @@ async fn export_audio(
     .map_err(|e| e.to_string())?
 }
 
+/// MIDI ファイルを読み込む(パートごとに新しいトラック。1 件の履歴)
+#[tauri::command]
+async fn import_midi(
+    state: State<'_, AppState>,
+    request: glaux_mcp::midi::ImportMidiRequest,
+) -> Result<Value, String> {
+    let (project, _) = state.handle.get_project().await?;
+    let imp = tauri::async_runtime::spawn_blocking(move || {
+        glaux_mcp::midi::import_file(&project, &request)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let (entry_id, m) = state
+        .handle
+        .apply(
+            Command::batch(imp.label.clone(), imp.commands),
+            Author::Human,
+            imp.label,
+        )
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "entry_id": entry_id,
+        "tracks": imp.tracks.len(),
+        "notes": imp.tracks.iter().map(|t| t.2).sum::<usize>(),
+        "tempo_set": imp.tempo_set,
+        "project_version": m.project_version,
+    }))
+}
+
+/// MIDI ファイルに書き出す(`path` 省略でプロジェクトの export/)
+#[tauri::command]
+async fn export_midi(state: State<'_, AppState>, path: Option<String>) -> Result<Value, String> {
+    let (project, _) = state.handle.get_project().await?;
+    glaux_mcp::midi::export_file(
+        &project,
+        std::path::Path::new(&state.project_dir()),
+        path.as_deref(),
+    )
+}
+
 /// キーと小節ごとのコード(ノートからの推定)と、キーのスケールの音(ピッチクラス)。画面の表示用
 #[tauri::command]
 async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
@@ -2161,6 +2202,8 @@ fn main() -> Result<()> {
             turn_changes,
             revert_turn,
             bounce_track,
+            import_midi,
+            export_midi,
             harmony,
             export_audio,
             import_audio_clip,

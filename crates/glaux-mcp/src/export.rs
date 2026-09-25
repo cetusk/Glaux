@@ -34,7 +34,7 @@ pub struct ExportRequest {
     pub stems: Option<bool>,
 }
 
-fn sanitize(name: &str) -> String {
+pub(crate) fn sanitize(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| {

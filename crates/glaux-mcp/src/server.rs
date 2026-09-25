@@ -492,6 +492,13 @@ pub struct BounceTrackParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ExportMidiParams {
+    /// 書き出す .mid ファイルの絶対パス。省略でプロジェクトの export/ に日時付きの名前
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct BarsParams {
     /// 小節番号(1 始まり)。insert_bars はこの小節の頭に挿入、delete_bars はこの小節から削除。
     pub bar: u32,
@@ -2699,6 +2706,54 @@ impl GlauxServer {
         })
         .await
         .map_err(|e| e.to_string())??;
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "MIDI ファイル(.mid)を読み込み、パート(元のトラック × チャンネル)ごとに新しいトラックを末尾に足す(1 回の undo で戻る)。\
+        ノート・最初の音色(GM)・音量・パン・マーカーを移す。10ch はドラム(内蔵 drum)、ほかは GM の分類で内蔵の楽器を選ぶ\
+        (soundfont を渡すとその SoundFont の GM プリセット)。テンポと拍子は、set_tempo を省略するとプロジェクトにクリップが無いときだけ使う。\
+        start_tick で置く位置をずらせる。読み込んだら get_project で中身と音源を確かめ、必要なら音色を整える。"
+    )]
+    async fn import_midi(
+        &self,
+        params: Parameters<crate::midi::ImportMidiRequest>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("import_midi");
+        let req = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        let imp = tokio::task::spawn_blocking(move || crate::midi::import_file(&project, &req))
+            .await
+            .map_err(|e| e.to_string())??;
+        let command = Command::batch(imp.label.clone(), imp.commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, imp.label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["tempo_set"] = json!(imp.tempo_set);
+        v["tracks"] = json!(imp
+            .tracks
+            .iter()
+            .map(|(id, name, notes)| json!({ "track_id": id, "name": name, "notes": notes }))
+            .collect::<Vec<_>>());
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "曲を MIDI ファイル(SMF 1)に書き出す。MIDI トラックごとに 1 トラック(ドラムは 10ch)、テンポ・拍子・マーカー・音量・パンも入れる。\
+        ループのクリップは展開する。ピッチカーブ・奏法・オートメーション・音色そのもの(GM の番号に近いものを選ぶだけ)は移らない。\
+        path 省略でプロジェクトの export/ に日時付きの名前。"
+    )]
+    async fn export_midi(&self, params: Parameters<ExportMidiParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("export_midi");
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = crate::midi::export_file(
+            &project,
+            std::path::Path::new(&dir),
+            params.0.path.as_deref(),
+        )?;
         Ok(JsonText(v))
     }
 

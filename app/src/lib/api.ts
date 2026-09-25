@@ -589,6 +589,21 @@ export function exportAudio(request: ExportRequest): Promise<{
   return invoke("export_audio", { request });
 }
 
+/** MIDI ファイルを読み込む(パートごとに新しいトラック。テンポはクリップが無い曲のときだけ移す) */
+export function importMidi(request: {
+  path: string;
+  start_tick?: number;
+  set_tempo?: boolean;
+  soundfont?: string;
+}): Promise<{ tracks: number; notes: number; tempo_set: boolean }> {
+  return invoke("import_midi", { request });
+}
+
+/** MIDI ファイルに書き出す(path 省略でプロジェクトの export/) */
+export function exportMidi(path?: string): Promise<{ path: string; tracks: number }> {
+  return invoke("export_midi", { path: path ?? null });
+}
+
 /** キーと小節ごとのコード(ノートからの推定)とスケールの音 */
 export function harmony(): Promise<import("./harmony.svelte").HarmonyView> {
   return invoke("harmony");

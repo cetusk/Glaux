@@ -14,7 +14,7 @@
     loop: [number, number] | null;
   } = $props();
 
-  let target = $state<"mix" | "stems">("mix");
+  let target = $state<"mix" | "stems" | "midi">("mix");
   let range = $state<"all" | "loop" | "selection">("all");
   let sampleRate = $state(48000);
   let bits = $state(16);
@@ -22,6 +22,13 @@
   let path = $state<string | null>(null);
   let busy = $state(false);
   let result = $state<string | null>(null);
+
+  // 対象を変えたら保存先は既定に戻す(WAV・フォルダ・.mid で選ぶものが違う)
+  $effect(() => {
+    void target;
+    path = null;
+    result = null;
+  });
 
   const LOUDNESS = [
     { value: "none", label: "そのまま" },
@@ -35,7 +42,9 @@
       const p =
         target === "stems"
           ? await pickDir({ directory: true, title: "トラックごとの WAV を書き出すフォルダ" })
-          : await pickFile({ title: "書き出す WAV ファイル", filters: [{ name: "WAV", extensions: ["wav"] }] });
+          : target === "midi"
+            ? await pickFile({ title: "書き出す MIDI ファイル", filters: [{ name: "MIDI", extensions: ["mid"] }] })
+            : await pickFile({ title: "書き出す WAV ファイル", filters: [{ name: "WAV", extensions: ["wav"] }] });
       if (typeof p === "string") path = p;
     } catch (e) {
       showError("保存先を選べませんでした", e);
@@ -44,6 +53,20 @@
 
   async function run() {
     if (busy) return;
+    if (target === "midi") {
+      busy = true;
+      result = null;
+      try {
+        const r = await api.exportMidi(path ?? undefined);
+        result = `MIDI に書き出しました(トラック ${r.tracks} 本): ${r.path}`;
+        showToast("ok", result);
+      } catch (e) {
+        showError("書き出せませんでした", e);
+      } finally {
+        busy = false;
+      }
+      return;
+    }
     const request: api.ExportRequest = {
       path: path ?? undefined,
       sample_rate: sampleRate,
@@ -91,36 +114,42 @@
     <label class="row"
       ><input type="radio" bind:group={target} value="stems" /> トラックごと(ステム。マスターのエフェクトは通さない)</label
     >
-  </div>
-
-  <div class="section">
-    <div class="section-title">範囲</div>
-    <label class="row"><input type="radio" bind:group={range} value="all" /> 曲全体</label>
-    <label class="row" class:off={!loop}
-      ><input type="radio" bind:group={range} value="loop" disabled={!loop} /> ループ区間</label
-    >
-    <label class="row" class:off={!selectionStore.range}
-      ><input type="radio" bind:group={range} value="selection" disabled={!selectionStore.range} />
-      選んだ小節{selectionStore.range
-        ? `(${selectionStore.range.startBar + 1}〜${selectionStore.range.endBar + 1} 小節)`
-        : "(ルーラーをドラッグして選ぶ)"}</label
+    <label class="row"
+      ><input type="radio" bind:group={target} value="midi" /> MIDI ファイル(ノート・テンポ・拍子・マーカー。ループは展開)</label
     >
   </div>
 
-  <div class="section">
-    <div class="section-title">形式</div>
-    <div class="row">
-      <select bind:value={sampleRate} aria-label="サンプルレート">
-        <option value={48000}>48 kHz</option>
-        <option value={44100}>44.1 kHz(CD・配信)</option>
-      </select>
-      <select bind:value={bits} aria-label="ビット数">
-        <option value={16}>16 bit</option>
-        <option value={24}>24 bit</option>
-        <option value={32}>32 bit 浮動小数</option>
-      </select>
+  {#if target !== "midi"}
+    <div class="section">
+      <div class="section-title">範囲</div>
+      <label class="row"><input type="radio" bind:group={range} value="all" /> 曲全体</label>
+      <label class="row" class:off={!loop}
+        ><input type="radio" bind:group={range} value="loop" disabled={!loop} /> ループ区間</label
+      >
+      <label class="row" class:off={!selectionStore.range}
+        ><input type="radio" bind:group={range} value="selection" disabled={!selectionStore.range} />
+        選んだ小節{selectionStore.range
+          ? `(${selectionStore.range.startBar + 1}〜${selectionStore.range.endBar + 1} 小節)`
+          : "(ルーラーをドラッグして選ぶ)"}</label
+      >
     </div>
-  </div>
+
+    <div class="section">
+      <div class="section-title">形式</div>
+      <div class="row">
+        <select bind:value={sampleRate} aria-label="サンプルレート">
+          <option value={48000}>48 kHz</option>
+          <option value={44100}>44.1 kHz(CD・配信)</option>
+        </select>
+        <select bind:value={bits} aria-label="ビット数">
+          <option value={16}>16 bit</option>
+          <option value={24}>24 bit</option>
+          <option value={32}>32 bit 浮動小数</option>
+        </select>
+      </div>
+    </div>
+
+  {/if}
 
   {#if target === "mix"}
     <div class="section">
