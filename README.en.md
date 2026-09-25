@@ -26,11 +26,22 @@ See [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) (Japanese) for what the AI ca
 
 ### Use the app
 
+Download one of these from [Releases](https://github.com/cetusk/Glaux/releases). The only runtime requirement is WebView2 (included in Windows 10 / 11).
+
+| File | What it is |
+|---|---|
+| `Glaux-<version>-windows-x64.exe` | Standalone executable (put it anywhere) |
+| `Glaux-<version>-windows-x64-setup.exe` | Installer (per-user, no admin rights, adds a Start menu entry) |
+
+The files are not code-signed, so Windows may show "Windows protected your PC" the first time. Click "More info" → "Run anyway".
+
+### Build it yourself
+
 ```bat
 scripts\build-release.bat
 ```
 
-This creates `Glaux.exe` (a standalone executable) and an installer in `release\`. The only runtime requirement is WebView2 (included in Windows 10 / 11).
+This creates the standalone executable and the installer in `release\`.
 
 ### Run from source
 
@@ -80,7 +91,9 @@ To use it without the app, run the stdio server: `scripts\glaux-mcp.bat <song fo
 ## Use it in Godot 4
 
 The `GlauxPlayer` node plays a `.glaux` song and emits beats, markers and notes as signals, timed to what the player actually hears.
-It can also play sound effects in the key and chord of the background music. See [`docs/GODOT.md`](docs/GODOT.md) for building the add-on
+It can also play sound effects in the key and chord of the background music. Unzip `glaux-godot-addon-<version>.zip` (Windows and Linux)
+from [Releases](https://github.com/cetusk/Glaux/releases) and put `addons/glaux` in your game project.
+See [`docs/GODOT.md`](docs/GODOT.md) for building the add-on yourself
 and the add-on's [`README`](godot/demo/addons/glaux/README.md) for using it in a game (both in Japanese).
 
 ## Structure

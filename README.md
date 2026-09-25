@@ -26,11 +26,22 @@ AI ができること・作れるジャンルの詳細は [`docs/CAPABILITIES.md
 
 ### アプリを使う
 
+[Releases](https://github.com/cetusk/Glaux/releases) から、次のどちらかをダウンロードします。必要なのは WebView2 だけです(Windows 10 / 11 に同梱)。
+
+| ファイル | 中身 |
+|---|---|
+| `Glaux-<版>-windows-x64.exe` | そのまま動く単体の exe(置き場所は自由) |
+| `Glaux-<版>-windows-x64-setup.exe` | インストーラー(ユーザーごと・管理者権限なし・スタートメニューに登録) |
+
+署名をしていないので、初めて開くと「Windows によって PC が保護されました」と出ることがあります。「詳細情報」→「実行」で開けます。
+
+### 自分でビルドする
+
 ```bat
 scripts\build-release.bat
 ```
 
-`release\` に `Glaux.exe`(そのまま動く単体の exe)とインストーラーができます。必要なのは WebView2 だけです(Windows 10 / 11 に同梱)。
+`release\` に単体の exe とインストーラーができます。
 
 ### ソースから動かす
 
@@ -80,7 +91,9 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 ## Godot 4 で使う
 
 `GlauxPlayer` ノードで `.glaux` の曲を鳴らし、「いま聞こえている位置」で拍・マーカー・ノートをシグナルとして受け取れます。
-効果音を BGM のコードに合わせて鳴らすこともできます。ビルドと配布物の作り方は [`docs/GODOT.md`](docs/GODOT.md)、
+効果音を BGM のコードに合わせて鳴らすこともできます。[Releases](https://github.com/cetusk/Glaux/releases) の
+`glaux-godot-addon-<版>.zip`(Windows・Linux 用)を展開し、`addons/glaux` をゲームのプロジェクトに置くだけで使えます。
+自分でビルドするときの手順は [`docs/GODOT.md`](docs/GODOT.md)、
 ゲーム側での使い方はアドオンの [`README`](godot/demo/addons/glaux/README.md) を見てください。
 
 ## 構成

@@ -7,7 +7,7 @@
 - 「いま聞こえている位置」(音声出力の遅れを補正済み)で、拍・マーカー・ノートをシグナルで知らせます
 - 先読み(次の拍の時刻、これから鳴るキックの一覧など)も問い合わせられます
 
-対応: Godot 4.3 以降、Windows(64bit)。
+対応: Godot 4.3 以降、Windows(64bit)・Linux(x86_64)。
 
 このフォルダの中身:
 
@@ -15,6 +15,7 @@
 |---|---|
 | `glaux.gdextension` | Godot に拡張を読み込ませる設定 |
 | `bin/glaux_godot.dll` | 拡張本体(Windows 用) |
+| `bin/libglaux_godot.so` | 拡張本体(Linux 用。リリースの zip に入っています) |
 | `README.md` | この説明書(人間向け) |
 | `AI_GUIDE.md` | ゲーム側で AI(Claude など)にこのアドオンを使わせるときの手引き |
 | `PROMPT.md` | AI に最初に渡すプロンプトの例 |
@@ -23,8 +24,10 @@
 
 ## 1. 導入
 
-1. この `addons/glaux/` フォルダ(`glaux.gdextension` と `bin/glaux_godot.dll`、この README など)を、
-   ゲームのプロジェクトの `addons/glaux/` にそのままコピーします
+1. この `addons/glaux/` フォルダ(`glaux.gdextension` と `bin/` の拡張本体、この README など)を、
+   ゲームのプロジェクトの `addons/glaux/` にそのままコピーします。
+   [Glaux のリリース](https://github.com/cetusk/Glaux/releases)の `glaux-godot-addon-<版>.zip` を展開すると、
+   このフォルダが `addons/glaux/` として出てきます
 2. Godot のエディタを開き直します(拡張はエディタ起動時に読み込まれます)
 3. **「プロジェクト → プロジェクト設定 → プラグイン」で「Glaux」を有効にします。** ゲームを書き出す(エクスポート)
    ときに、曲のファイル(`project.json`・`audio/` の WAV・SoundFont)をそのまま .pck に入れるためのものです。
