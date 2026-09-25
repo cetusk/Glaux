@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  import { onMount, tick as sveltick } from "svelte";
+  import { onMount, tick as sveltick, untrack } from "svelte";
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
   import { settings } from "./settings.svelte";
@@ -301,8 +301,10 @@
   function updateWindow() {
     const el = scroller;
     if (!el) return;
-    const viewW = Math.max(1, el.clientWidth - KEY_W);
-    const viewH = Math.max(1, el.clientHeight - RULER_H);
+    // 見えている幅はクリップより広くならない(短いクリップ・縮小したときに「見えている範囲が窓に
+    // 収まっている」が永遠に偽になり、窓を作り直し続けて固まっていた)
+    const viewW = Math.max(1, Math.min(el.clientWidth - KEY_W, contentW));
+    const viewH = Math.max(1, Math.min(el.clientHeight - RULER_H, contentH));
     const w = Math.min(contentW, viewW + WIN_MARGIN * 2);
     const h = Math.min(contentH, viewH + WIN_MARGIN * 2);
     const visX = el.scrollLeft;
@@ -315,12 +317,14 @@
       visY >= win.y &&
       visY + viewH <= win.y + h;
     if (inside) return;
-    win = {
+    const next = {
       x: Math.max(0, Math.min(visX - WIN_MARGIN, contentW - w)),
       y: Math.max(0, Math.min(visY - WIN_MARGIN, contentH - h)),
       w,
       h,
     };
+    if (next.x === win.x && next.y === win.y && next.w === win.w && next.h === win.h) return;
+    win = next;
   }
 
   $effect(() => {
@@ -344,11 +348,11 @@
     };
   });
 
-  // ズーム・クリップの長さが変わったら窓を合わせ直す
+  // ズーム・クリップの長さが変わったら窓を合わせ直す(窓そのものの変化には反応しない)
   $effect(() => {
     void contentW;
     void contentH;
-    updateWindow();
+    untrack(updateWindow);
   });
 
   /** ノート層のポインタ位置(コンテンツ座標)。canvas は窓の位置に置いているので、その分を足す */
@@ -674,6 +678,11 @@
         ? (Math.min(...pitches) + Math.max(...pitches)) / 2
         : 60;
       scroller.scrollTop = Math.max(0, (127 - center) * rowH - scroller.clientHeight / 2);
+      // 短いクリップ(半小節のループなど)は、画面の幅に合うまで横に拡大して開く(縮小はしない)
+      const viewW = scroller.clientWidth - KEY_W;
+      const beats = lenOf(currentClip) / 960;
+      const fit = Math.min(240, (viewW * 0.9) / Math.max(beats, 0.25));
+      if (fit > pxPerBeat) pxPerBeat = fit;
       const anchor = focus.anchorTick ?? 0;
       insertTick = Math.max(
         0,
