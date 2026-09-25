@@ -27,7 +27,7 @@
   import ExportDialog from "./lib/ExportDialog.svelte";
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import InstrumentPicker from "./lib/InstrumentPicker.svelte";
-  import { applyTheme, settings } from "./lib/settings.svelte";
+  import { applyTheme, openSettings, settings, settingsUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import {
     inspectorStore,
@@ -50,11 +50,11 @@
 
   // 再生状態は共有ストア(問い合わせは startTransportPolling の 1 か所だけ)
   const transport = $derived(transportStore.state);
-  let showSettings = $state(false);
+  // 設定画面の開閉(開くページも持つ。settings.svelte.ts の settingsUi)
   let showExport = $state(false);
 
   function closeSettings() {
-    showSettings = false;
+    settingsUi.open = false;
     refreshAudioDev();
   }
   let editingBpm = $state(false);
@@ -284,7 +284,7 @@
     // キーボード操作(入力欄にフォーカスがあるときは除く)
     // Space: 再生/一時停止, ←/→: 前/次の小節頭, Home/End: 先頭/終端
     const onKeydown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && showSettings) {
+      if (e.key === "Escape" && settingsUi.open) {
         e.preventDefault();
         closeSettings();
         return;
@@ -912,7 +912,7 @@
         title="書き出し(WAV・トラックごと・MIDI。形式・範囲・音量を選べる)"
         aria-label="書き出し"><Icon name="download" /><span class="export-label">書き出し</span></button
       >
-      <button class="btn icon" onclick={() => (showSettings = true)} title="設定" aria-label="設定"><Icon name="settings" /></button>
+      <button class="btn icon" onclick={() => openSettings()} title="設定" aria-label="設定"><Icon name="settings" /></button>
     </div>
   </header>
 
@@ -1007,7 +1007,7 @@
     </section>
   </main>
 
-  {#if showSettings}
+  {#if settingsUi.open}
     <SettingsPanel onClose={closeSettings} />
   {/if}
   {#if showExport}
@@ -1030,15 +1030,15 @@
         >
       {/if}
       {#if audioDev}
-        <button class="it" onclick={() => (showSettings = true)} title="出力デバイス(クリックで設定)"
+        <button class="it" onclick={() => openSettings("audio")} title="出力デバイス(クリックで設定)"
           ><Icon name="speaker" size={12} />{audioDev.output ?? "なし"}{audioDev.rate
             ? ` · ${(audioDev.rate / 1000).toFixed(1)} kHz`
             : ""}</button
         >
-        <button class="it" onclick={() => (showSettings = true)} title="入力デバイス(クリックで設定)"
+        <button class="it" onclick={() => openSettings("audio")} title="入力デバイス(クリックで設定)"
           ><Icon name="mic" size={12} />{audioDev.input ?? "なし"}</button
         >
-        <button class="it" onclick={() => (showSettings = true)} title="MIDI 入力(クリックで設定)"
+        <button class="it" onclick={() => openSettings("midi")} title="MIDI 入力(クリックで設定)"
           ><Icon name="keyboard-music" size={12} />{audioDev.midi ?? "なし"}</button
         >
       {/if}

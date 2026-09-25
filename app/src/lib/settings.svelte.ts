@@ -89,6 +89,52 @@ function load(): Settings {
 
 export const settings = $state<Settings>(load());
 
+/// 設定画面の開閉と、開くページ(ステータスバーのデバイスから開くとオーディオのページなど)
+export type SettingsTab = "display" | "audio" | "midi" | "record" | "ai";
+export const settingsUi = $state<{ open: boolean; tab: SettingsTab }>({ open: false, tab: "display" });
+
+export function openSettings(tab?: SettingsTab) {
+  if (tab) settingsUi.tab = tab;
+  settingsUi.open = true;
+}
+
+// ---- チャットの相手とモデル(チャットの見出しと設定の「AI」で共通) ----
+// Claude = Claude Code(claude)、GPT = Codex CLI(codex)。どちらもこの PC でログイン済みのものを使う
+export const CHAT_PROVIDERS = [
+  { value: "claude", label: "Claude", cli: "Claude Code" },
+  { value: "codex", label: "GPT", cli: "Codex CLI" },
+] as const;
+
+/// モデルの選択肢("" は各 CLI の既定)。Claude は claude --model のエイリアス、GPT は codex -m のモデル名
+export const CHAT_MODELS = {
+  claude: [
+    { value: "", label: "既定" },
+    { value: "opus", label: "Opus" },
+    { value: "sonnet", label: "Sonnet" },
+    { value: "haiku", label: "Haiku" },
+  ],
+  codex: [
+    { value: "", label: "既定" },
+    { value: "gpt-6-astra", label: "GPT-6 Astra" },
+  ],
+};
+
+export const CHAT_MODEL_EXAMPLES = {
+  claude: "例: claude-opus-5-5、claude-sonnet-5",
+  codex: "例: gpt-6-astra",
+};
+
+/** 今の相手のモデル名("" = 既定) */
+export function currentChatModel(): string {
+  return settings.chatProvider === "codex" ? settings.chatCodexModel : settings.chatModel;
+}
+
+export function setChatModel(v: string) {
+  if (settings.chatProvider === "codex") settings.chatCodexModel = v;
+  else settings.chatModel = v;
+  saveSettings();
+}
+
 export function saveSettings() {
   try {
     localStorage.setItem("glaux.settings", JSON.stringify({ ...settings }));

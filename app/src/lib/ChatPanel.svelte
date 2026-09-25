@@ -6,39 +6,22 @@
   import { toolShort } from "./toolLabels";
   import { clearAiHighlight, setAiHighlight } from "./aiHighlight.svelte";
   import { showError, showToast } from "./toast.svelte";
-  import { playDoneChime, playErrorChime, saveSettings, settings } from "./settings.svelte";
+  import {
+    CHAT_MODELS,
+    CHAT_PROVIDERS,
+    openSettings,
+    playDoneChime,
+    playErrorChime,
+    saveSettings,
+    setChatModel,
+    settings,
+  } from "./settings.svelte";
 
-  // チャットの相手。Claude = Claude Code(claude)、GPT = Codex CLI(codex)。どちらもホストでログイン済みのものを使う
-  const PROVIDERS = [
-    { value: "claude", label: "Claude" },
-    { value: "codex", label: "GPT" },
-  ] as const;
-
-  // モデルの選択肢("" は各 CLI の既定)。Claude は claude --model のエイリアス、GPT は codex -m のモデル名
-  const MODELS = {
-    claude: [
-      { value: "", label: "既定" },
-      { value: "opus", label: "Opus" },
-      { value: "sonnet", label: "Sonnet" },
-      { value: "haiku", label: "Haiku" },
-    ],
-    codex: [
-      { value: "", label: "既定" },
-      { value: "gpt-6-astra", label: "GPT-6 Astra" },
-    ],
-  };
-  const MODEL_EXAMPLES = {
-    claude: "例: claude-opus-5-5、claude-sonnet-5",
-    codex: "例: gpt-6-astra",
-  };
+  const PROVIDERS = CHAT_PROVIDERS;
+  const MODELS = CHAT_MODELS;
   const provider = $derived(settings.chatProvider);
   const currentModel = $derived(provider === "codex" ? settings.chatCodexModel : settings.chatModel);
   const isCustomModel = $derived(!MODELS[provider].some((m) => m.value === currentModel));
-
-  function setModel(v: string) {
-    if (provider === "codex") settings.chatCodexModel = v;
-    else settings.chatModel = v;
-  }
 
   function pickProvider(e: Event) {
     const v = (e.currentTarget as HTMLSelectElement).value;
@@ -47,18 +30,15 @@
   }
 
   function pickModel(e: Event) {
-    const v = (e.currentTarget as HTMLSelectElement).value;
+    const el = e.currentTarget as HTMLSelectElement;
+    const v = el.value;
     if (v === "__custom") {
-      const name = window.prompt(`モデル名(${MODEL_EXAMPLES[provider]})`, currentModel);
-      if (name === null) {
-        (e.currentTarget as HTMLSelectElement).value = isCustomModel ? "__current" : currentModel;
-        return;
-      }
-      setModel(name.trim());
-    } else {
-      setModel(v);
+      // 名前を入れるのは設定の「AI」のページで(以前は window.prompt だった)
+      el.value = isCustomModel ? "__current" : currentModel;
+      openSettings("ai");
+      return;
     }
-    saveSettings();
+    setChatModel(v);
   }
   import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
 

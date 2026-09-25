@@ -6,6 +6,7 @@
 //
 // 値は項目ごとに比べて変わったものだけ書き換える(毎回オブジェクトを差し替えると、値が同じでも
 // それに依存する描画がすべて走る)。
+import { untrack } from "svelte";
 import * as api from "./api";
 import type { TransportState } from "./types";
 
@@ -46,14 +47,16 @@ export async function pollTransport(): Promise<TransportState> {
   return transportStore.state;
 }
 
-/** 速い更新を依頼する。返り値を呼ぶと取り消す */
+/** 速い更新を依頼する。返り値を呼ぶと取り消す。
+ *  $effect の中から呼ばれるので、数を読まずに(untrack で)増減する。以前は `fast += 1` が数を読んでいたため、
+ *  呼んだ effect が数に依存し、取り消しと依頼を繰り返して effect_update_depth_exceeded になっていた(入力テスト) */
 export function requestFastPolling(): () => void {
-  transportStore.fast += 1;
+  untrack(() => (transportStore.fast += 1));
   let done = false;
   return () => {
     if (done) return;
     done = true;
-    transportStore.fast -= 1;
+    untrack(() => (transportStore.fast -= 1));
   };
 }
 
