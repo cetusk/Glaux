@@ -136,6 +136,8 @@ export interface HistorySnapshot {
   /** 履歴の総数(entries は最新側から limit 件) */
   total: number;
   entries: EntrySummary[];
+  /** やり直せる(取り消した)編集。次にやり直すものが先頭 */
+  redoable: EntrySummary[];
 }
 
 export interface AppInfo {

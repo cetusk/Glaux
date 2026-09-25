@@ -2,6 +2,8 @@
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
+  import { keepInView } from "./menu";
+  import { showError, showToast } from "./toast.svelte";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import { barAtTick, barsEndTick, buildBars } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
@@ -68,6 +70,8 @@
   }
 
   const HEAD_W = 200;
+  /// セクション行の高さ(18px + 下線 1px)。ルーラーはこの下に固定する
+  const SECTION_ROW_H = 19;
   const playheadPx = $derived(HEAD_W + playheadTick * pxPerTick);
 
   // ---- 再生中の自動スクロール(再生ヘッドが見える範囲を追いかける) ----
@@ -266,7 +270,7 @@
         anchorTick: 0,
       };
     } catch (e) {
-      alert(String(e));
+      showError("譜起こしできませんでした", e);
     } finally {
       transcribing = null;
     }
@@ -280,7 +284,7 @@
     try {
       await api.separateClip(clip.id, method);
     } catch (e) {
-      alert(String(e));
+      showError("パートに分けられませんでした", e);
     } finally {
       separating = null;
     }
@@ -293,7 +297,7 @@
       filters: [{ name: "音声(WAV / MP3 / FLAC / OGG / M4A)", extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
     });
     if (typeof file !== "string") return;
-    await api.importAudioClip(track.id, file, startTick).catch((e) => alert(`取り込めませんでした: ${e}`));
+    await api.importAudioClip(track.id, file, startTick).catch((e) => showError("取り込めませんでした", e));
   }
 
   /// 空きレーンのダブルクリック: その小節にクリップを作ってピアノロールを開く
@@ -599,13 +603,13 @@
         found.push(`${c.name}: ${r.bpm} BPM`);
       }
     } catch (e) {
-      alert(String(e));
+      showError("テンポを検出できませんでした", e);
       return;
     } finally {
       detectingTempo = null;
     }
     if (failed.length > 0) {
-      alert(`テンポを検出できませんでした(拍のはっきりしない音か、短すぎます): ${failed.join("、")}`);
+      showToast("warn", `テンポを検出できませんでした(拍のはっきりしない音か、短すぎます): ${failed.join("、")}`);
     }
     if (cmds.length === 0) return;
     const label =
@@ -625,12 +629,13 @@
     matching = clip.id;
     try {
       const r = await api.matchClipSound(clip.id);
-      alert(
+      showToast(
+        "ok",
         `「${r.track_name}」を作りました(音源: ${r.instrument}${r.reverb ? " + リバーブ" : ""}、近さ: ${r.verdict}、距離 ${r.initial_distance.toFixed(2)} → ${r.distance.toFixed(2)})。\n` +
           "音作りビューでつまみを微調整できます(Ctrl+Z で取り消し)。",
       );
     } catch (e) {
-      alert(String(e));
+      showError("似た音を作れませんでした", e);
     } finally {
       matching = null;
     }
@@ -717,6 +722,15 @@
   // キー操作(ピアノロール表示中・入力中はピアノロール / 入力欄に譲る)
   $effect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 開いているメニューは Esc で閉じる(メニュー内の入力欄にフォーカスがあっても)
+      if (e.key === "Escape" && (trackMenu || clipMenu || deviceMenu || sigMenu)) {
+        e.preventDefault();
+        trackMenu = null;
+        clipMenu = null;
+        deviceMenu = null;
+        sigMenu = null;
+        return;
+      }
       if (shouldYieldKey(e)) return;
       if (pianoRollStore.focus) return;
       const mod = e.ctrlKey || e.metaKey;
@@ -912,6 +926,79 @@
       .catch(() => {});
   }
 
+  // ---- トラックの名前・色・複製 ----
+
+  /// 名前を変更中のトラック ID
+  let renaming = $state<string | null>(null);
+
+  function startRename(trackId: string) {
+    trackMenu = null;
+    renaming = trackId;
+  }
+
+  function commitRename(track: Track, value: string) {
+    renaming = null;
+    const name = value.trim();
+    if (!name || name === track.name) return;
+    api
+      .applyEdit(
+        [{ op: "set_track_prop", id: track.id, prop: "name", value: name }],
+        `トラック名を「${track.name}」から「${name}」に変更`,
+      )
+      .catch(() => {});
+  }
+
+  /** 入力欄を開いたら全選択してフォーカス */
+  function focusSelect(el: HTMLInputElement) {
+    el.focus();
+    el.select();
+  }
+
+  const TRACK_COLORS = ["#25bdb1", "#5da2e8", "#b07ce8", "#e87ca8", "#e8a07c", "#e8d27c", "#7cc47c", null];
+
+  function setTrackColor(color: string | null) {
+    const menu = trackMenu;
+    trackMenu = null;
+    if (!menu) return;
+    const track = project.tracks[menu.index];
+    api
+      .applyEdit(
+        [{ op: "set_track_prop", id: menu.trackId, prop: "color", value: color }],
+        `${track?.name ?? "トラック"} の色を${color ? "変更" : "元に戻す"}`,
+      )
+      .catch(() => {});
+  }
+
+  /// トラックを複製して直後に置く(クリップ・ノート・エフェクトの ID は新しく振る)
+  function duplicateTrack() {
+    const menu = trackMenu;
+    trackMenu = null;
+    if (!menu) return;
+    const src = project.tracks[menu.index];
+    if (!src) return;
+    const copy: Track = JSON.parse(JSON.stringify(src));
+    copy.id = newTrackId();
+    copy.name = `${src.name} のコピー`;
+    copy.solo = false;
+    const fxIds = new Map<string, string>();
+    for (const fx of copy.effects as { id: string }[]) {
+      const id = newFxId();
+      fxIds.set(fx.id, id);
+      fx.id = id;
+    }
+    for (const lane of copy.automation) {
+      const m = lane.target.match(/^fx\/([^/]+)\/(.*)$/);
+      if (m && fxIds.has(m[1])) lane.target = `fx/${fxIds.get(m[1])}/${m[2]}`;
+    }
+    for (const c of copy.clips) {
+      c.id = newClipId();
+      if (c.kind === "midi") for (const n of c.notes) n.id = newNoteId();
+    }
+    api
+      .applyEdit([{ op: "add_track", track: copy, index: menu.index + 1 }], `${src.name} を複製`)
+      .catch(() => {});
+  }
+
   function deleteTrack() {
     const menu = trackMenu;
     trackMenu = null;
@@ -981,7 +1068,7 @@
         [{ op: "set_device", track: menu.track.id, device: { type: "clap", plugin_id: p.id } }],
         `${menu.track.name} の音源を ${p.name}(CLAP)に変更`,
       )
-      .catch((e) => alert(String(e)));
+      .catch(() => {});
   }
   let presets = $state<PresetInfo[]>([]);
   let presetName = $state("");
@@ -1125,7 +1212,7 @@
   {/if}
 
   <!-- 小節ルーラー(クリックでシーク、ドラッグで範囲選択) -->
-  <div class="ruler-row">
+  <div class="ruler-row" style="top:{project.sections && project.sections.length > 0 ? SECTION_ROW_H : 0}px">
     <div class="track-head ruler-head"></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -1162,9 +1249,28 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="track-head" oncontextmenu={(e) => openTrackMenu(e, track, ti)}>
         <div class="head-row">
-          <div class="track-name" style={track.color ? `color:${track.color}` : ""}>
-            {track.name}
-          </div>
+          {#if renaming === track.id}
+            <input
+              class="track-name-input"
+              value={track.name}
+              use:focusSelect
+              onkeydown={(e) => {
+                if (e.key === "Enter") commitRename(track, e.currentTarget.value);
+                else if (e.key === "Escape") renaming = null;
+              }}
+              onblur={(e) => commitRename(track, e.currentTarget.value)}
+            />
+          {:else}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="track-name"
+              style={track.color ? `color:${track.color}` : ""}
+              title={`${track.name}(ダブルクリックで名前を変更)\n${track.id}`}
+              ondblclick={() => (renaming = track.id)}
+            >
+              {track.name}
+            </div>
+          {/if}
           <button class="ms" class:mute-on={track.mute} onclick={() => toggleMute(track)} title="ミュート">
             M
           </button>
@@ -1241,12 +1347,11 @@
               title="プラグインの画面を開く(音色づくり)"
               onclick={(e) => {
                 e.stopPropagation();
-                api.clapOpenGui(track.id).catch((err) => alert(String(err)));
+                api.clapOpenGui(track.id).catch((err) => showError("プラグインの画面を開けませんでした", err));
               }}>画面</button
             >
           {/if}
           {/if}
-          <code>{track.id}</code>
         </div>
       </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1389,7 +1494,7 @@
   {#if sigMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="menu-backdrop" onclick={() => (sigMenu = null)} oncontextmenu={(e) => { e.preventDefault(); sigMenu = null; }}></div>
-    <div class="track-menu sig-menu" style="left:{sigMenu.x}px;top:{sigMenu.y}px">
+    <div class="track-menu sig-menu" use:keepInView style="left:{sigMenu.x}px;top:{sigMenu.y}px">
       <div class="preset-title">{sigMenu.barIndex + 1} 小節目から拍子を変更</div>
       <div class="sig-form">
         <input
@@ -1437,7 +1542,7 @@
   {#if clipMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="menu-backdrop" onclick={() => (clipMenu = null)} oncontextmenu={(e) => { e.preventDefault(); clipMenu = null; }}></div>
-    <div class="track-menu clip-menu" style="left:{clipMenu.x}px;top:{clipMenu.y}px">
+    <div class="track-menu clip-menu" use:keepInView style="left:{clipMenu.x}px;top:{clipMenu.y}px">
       {#if selectedClips.size > 1}
         <div class="menu-note">選択中のクリップ {selectedClips.size} 個が対象</div>
       {/if}
@@ -1491,7 +1596,7 @@
   {#if deviceMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="menu-backdrop" onclick={() => (deviceMenu = null)} oncontextmenu={(e) => { e.preventDefault(); deviceMenu = null; }}></div>
-    <div class="track-menu" style="left:{deviceMenu.x}px;top:{deviceMenu.y}px">
+    <div class="track-menu" use:keepInView style="left:{deviceMenu.x}px;top:{deviceMenu.y}px">
       {#each INSTRUMENTS as inst (inst.name)}
         <button
           class:active-dev={deviceMenu.track.device?.type !== "clap" &&
@@ -1578,7 +1683,7 @@
   {#if trackMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="menu-backdrop" onclick={() => (trackMenu = null)} oncontextmenu={(e) => { e.preventDefault(); trackMenu = null; }}></div>
-    <div class="track-menu" style="left:{trackMenu.x}px;top:{trackMenu.y}px">
+    <div class="track-menu" use:keepInView style="left:{trackMenu.x}px;top:{trackMenu.y}px">
       <button disabled={trackMenu.index === 0} onclick={() => moveTrack(trackMenu!.index - 1)}>
         ↑ 上へ移動
       </button>
@@ -1588,6 +1693,21 @@
       >
         ↓ 下へ移動
       </button>
+      <div class="menu-sep"></div>
+      <button onclick={() => startRename(trackMenu!.trackId)}>✎ 名前を変更</button>
+      <button onclick={duplicateTrack}>⧉ トラックを複製</button>
+      <div class="color-row" role="group" aria-label="トラックの色">
+        {#each TRACK_COLORS as c (c)}
+          <button
+            class="color-chip"
+            class:none={!c}
+            style={c ? `background:${c}` : ""}
+            title={c ? `色: ${c}` : "色を元に戻す"}
+            aria-label={c ? `色 ${c}` : "色を元に戻す"}
+            onclick={() => setTrackColor(c)}
+          ></button>
+        {/each}
+      </div>
       <div class="menu-sep"></div>
       <button class="danger" onclick={deleteTrack} title="Ctrl+Z で元に戻せます">
         🗑 トラックを削除
@@ -1648,6 +1768,36 @@
   .track-row {
     display: flex;
     border-bottom: 1px solid var(--border);
+  }
+
+  .track-name-input {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    font-weight: 600;
+    padding: 0 4px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--accent-dim);
+    border-radius: 3px;
+  }
+
+  .color-row {
+    display: flex;
+    gap: 4px;
+    padding: 4px 10px;
+  }
+
+  .color-chip {
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+  }
+
+  .color-chip.none {
+    background: repeating-linear-gradient(45deg, var(--bg), var(--bg) 3px, var(--border) 3px, var(--border) 5px);
   }
 
   .track-head {
@@ -1717,9 +1867,24 @@
     height: 24px;
   }
 
+  /* セクション行とルーラーは、縦にスクロールしても上端に残す(トラックが多いとシーク・範囲選択・
+     小節番号の確認ができなくなっていた)。ルーラーの top はセクション行の高さ(マークアップで指定) */
   .section-row {
     display: flex;
     border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 4;
+  }
+
+  .ruler-row {
+    position: sticky;
+    z-index: 4;
+  }
+
+  .section-row .track-head,
+  .ruler-row .track-head {
+    z-index: 5;
   }
 
   .section-head {
@@ -1958,7 +2123,7 @@
 
   .clip-menu .danger,
   .sig-menu .danger {
-    color: #e8a07c;
+    color: var(--warn);
   }
 
   /* 小節番号(.bar-mark)はクリックを素通しするが、拍子チップは押せるようにする */
@@ -2100,6 +2265,10 @@
   .track-menu {
     position: fixed;
     z-index: 20;
+    /* 画面に収まらない分は中でスクロール(位置は keepInView が画面内へ寄せる) */
+    max-height: calc(100vh - 16px);
+    max-width: min(420px, calc(100vw - 16px));
+    overflow-y: auto;
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -2124,8 +2293,8 @@
   }
 
   .track-menu button.danger:hover {
-    background: #5c2b33;
-    color: #ffb4c0;
+    background: var(--danger-bg);
+    color: var(--danger-text);
   }
 
   .menu-sep {

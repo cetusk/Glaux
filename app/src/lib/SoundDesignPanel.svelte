@@ -3,6 +3,7 @@
   // プリセットを操作するパネル(docs/HANDOFF.md §8-6 Phase 1)。
   // すべての編集は Command API(apply_edit)経由なので履歴に載り undo できる。
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
+  import { showError } from "./toast.svelte";
   import * as api from "./api";
   import { newClipId, newFxId } from "./ids";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
@@ -153,10 +154,10 @@
     );
   }
 
-  function fmtValue(p: ParamView): string {
-    // CLAP プラグインのつまみはプラグイン自身の表示を優先
-    if (p.current_text) return p.current_text;
-    const v = p.current;
+  function fmtValue(p: ParamView, dragging?: number): string {
+    // CLAP プラグインのつまみはプラグイン自身の表示を優先(ドラッグ中はその値)
+    if (dragging === undefined && p.current_text) return p.current_text;
+    const v = dragging ?? p.current;
     if (typeof v === "number") {
       const digits = p.range.kind === "int" ? 0 : Math.abs(v) >= 100 ? 0 : 2;
       return `${v.toFixed(digits)}${p.unit ?? ""}`;
@@ -164,10 +165,42 @@
     return `${v}`;
   }
 
-  function sliderStep(p: ParamView): number {
-    if (p.range.kind === "int") return 1;
-    if (p.range.kind !== "float") return 1;
-    return (p.range.max - p.range.min) / 200;
+  // ---- スライダー: 位置(0〜SLIDER_MAX)と値の変換 ----
+  // 周波数・時間のように広い範囲を持つパラメータは skew(< 1)で下側の分解能を上げる
+  // (以前は線形で、カットオフ 40〜12000Hz のうち 200〜800Hz がスライダーの 5% しかなかった)。
+  // 式は JUCE と同じ: 位置 = ((値 − 最小) / 幅)^skew
+  const SLIDER_MAX = 1000;
+
+  function toPos(p: ParamView, v: number): number {
+    if (p.range.kind !== "float" && p.range.kind !== "int") return 0;
+    const { min, max } = p.range;
+    const t = Math.min(1, Math.max(0, (v - min) / (max - min || 1)));
+    const skew = p.range.kind === "float" ? (p.range.skew ?? 1) : 1;
+    return Math.round(Math.pow(t, skew) * SLIDER_MAX);
+  }
+
+  function fromPos(p: ParamView, pos: number): number {
+    if (p.range.kind !== "float" && p.range.kind !== "int") return 0;
+    const { min, max } = p.range;
+    const skew = p.range.kind === "float" ? (p.range.skew ?? 1) : 1;
+    const v = min + (max - min) * Math.pow(pos / SLIDER_MAX, 1 / skew);
+    if (p.range.kind === "int") return Math.round(v);
+    // 表示の桁に合わせて丸める(履歴に 0.30000000004 のような値を残さない)
+    const digits = Math.abs(v) >= 100 ? 1 : 3;
+    return Number(v.toFixed(digits));
+  }
+
+  /// ドラッグ中の値(パラメータのパス → 値)。離すまで表示だけ変える
+  let dragValues = $state<Record<string, number>>({});
+
+  function onSliderInput(p: ParamView, e: Event) {
+    dragValues[p.path] = fromPos(p, Number((e.currentTarget as HTMLInputElement).value));
+  }
+
+  function onSliderChange(p: ParamView, e: Event) {
+    const v = fromPos(p, Number((e.currentTarget as HTMLInputElement).value));
+    delete dragValues[p.path];
+    commitParam(p, v);
   }
 
   // ---- 音源・エフェクト ----
@@ -264,7 +297,7 @@
   }
 
   function openFxGui(fx: EffectView) {
-    api.clapOpenGui(null, fx.id).catch((e) => alert(String(e)));
+    api.clapOpenGui(null, fx.id).catch((e) => showError("プラグインの画面を開けませんでした", e));
   }
 
   // CLAP エフェクトのプリセット(開いているエフェクト 1 つ分)
@@ -632,11 +665,11 @@
           <div class="sec-title">🔌 CLAP プラグイン</div>
           <div class="hint">{track.device.plugin_id}</div>
           <div class="row gap">
-            <button onclick={() => api.clapOpenGui(track!.id).catch((e) => alert(String(e)))}>
+            <button onclick={() => api.clapOpenGui(track!.id).catch((e) => showError("プラグインの画面を開けませんでした", e))}>
               🖥 プラグインの画面を開く
             </button>
             <button
-              onclick={() => api.clapSaveState(track!.id).catch((e) => alert(String(e)))}
+              onclick={() => api.clapSaveState(track!.id).catch((e) => showError("プラグインの状態を保存できませんでした", e))}
               title="プラグインの今の設定をプロジェクトに保存する(画面を閉じたときや操作の後にも自動で保存されます)"
             >
               💾 設定を保存
@@ -707,13 +740,15 @@
               {#if p.range.kind === "float" || p.range.kind === "int"}
                 <input
                   type="range"
-                  min={p.range.min}
-                  max={p.range.max}
-                  step={sliderStep(p)}
-                  value={Number(p.current)}
-                  onchange={(e) => commitParam(p, (e.currentTarget as HTMLInputElement).value)}
+                  min="0"
+                  max={SLIDER_MAX}
+                  step="1"
+                  value={toPos(p, Number(p.current))}
+                  oninput={(e) => onSliderInput(p, e)}
+                  onchange={(e) => onSliderChange(p, e)}
+                  aria-label={p.display_name}
                 />
-                <span class="p-val">{fmtValue(p)}</span>
+                <span class="p-val">{fmtValue(p, dragValues[p.path])}</span>
               {:else if p.range.kind === "bool"}
                 <input
                   type="checkbox"
@@ -811,13 +846,15 @@
                   {#if p.range.kind === "float" || p.range.kind === "int"}
                     <input
                       type="range"
-                      min={p.range.min}
-                      max={p.range.max}
-                      step={sliderStep(p)}
-                      value={Number(p.current)}
-                      onchange={(e) => commitParam(p, (e.currentTarget as HTMLInputElement).value)}
+                      min="0"
+                      max={SLIDER_MAX}
+                      step="1"
+                      value={toPos(p, Number(p.current))}
+                      oninput={(e) => onSliderInput(p, e)}
+                      onchange={(e) => onSliderChange(p, e)}
+                      aria-label={p.display_name}
                     />
-                    <span class="p-val">{fmtValue(p)}</span>
+                    <span class="p-val">{fmtValue(p, dragValues[p.path])}</span>
                   {:else if p.range.kind === "bool"}
                     <input
                       type="checkbox"
@@ -1131,7 +1168,7 @@
   }
 
   .hint.warn {
-    color: #e8a07c;
+    color: var(--warn);
   }
 
   .clap-chip {
@@ -1161,8 +1198,8 @@
   }
 
   .mini.danger:hover {
-    background: #5c2b33;
-    color: #ffb4c0;
+    background: var(--danger-bg);
+    color: var(--danger-text);
   }
 
   .hint {
@@ -1172,8 +1209,8 @@
   }
 
   .sd-error {
-    background: #5c2b33;
-    color: #ffb4c0;
+    background: var(--danger-bg);
+    color: var(--danger-text);
     font-size: 11px;
     padding: 5px 12px;
   }

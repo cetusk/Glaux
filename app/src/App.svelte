@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import { shouldYieldKey } from "./lib/keys";
+  import { toolDoing } from "./lib/toolLabels";
+  import Toasts from "./lib/Toasts.svelte";
   import { barAtTick, buildBars, nextBarHead, prevBarHead } from "./lib/barMap";
   import type { AppInfo, EntrySummary, Project } from "./lib/types";
   import { pollTransport, startTransportPolling, transportStore } from "./lib/transport.svelte";
@@ -26,6 +28,7 @@
   let projectVersion = $state(0);
   let entries = $state<EntrySummary[]>([]);
   let historyTotal = $state(0);
+  let redoable = $state<EntrySummary[]>([]);
   let info = $state<AppInfo | null>(null);
   let error = $state<string | null>(null);
   let mcpCopied = $state(false);
@@ -35,6 +38,11 @@
   // 再生状態は共有ストア(問い合わせは startTransportPolling の 1 か所だけ)
   const transport = $derived(transportStore.state);
   let showSettings = $state(false);
+
+  function closeSettings() {
+    showSettings = false;
+    refreshAudioDev();
+  }
   let editingBpm = $state(false);
   let bpmInput = $state("");
 
@@ -48,6 +56,17 @@
     }
   }
   let bottomHeight = $state(loadNum("glaux.bottomHeight", 280));
+  /// 下のパネル(チャット・履歴)を隠しているか(狭い画面でピアノロールを広く使う)
+  let bottomCollapsed = $state(loadNum("glaux.bottomCollapsed", 0) === 1);
+
+  function toggleBottom() {
+    bottomCollapsed = !bottomCollapsed;
+    try {
+      localStorage.setItem("glaux.bottomCollapsed", bottomCollapsed ? "1" : "0");
+    } catch {
+      // 保存できなくても動作には関係しない
+    }
+  }
   let chatFrac = $state(loadNum("glaux.chatFrac", 0.6));
 
   function saveLayout() {
@@ -108,15 +127,6 @@
         : "idle",
   );
 
-  const toolLabels: Record<string, string> = {
-    get_project: "プロジェクトを読んでいます",
-    get_history: "履歴を確認しています",
-    apply_commands: "編集しています",
-    undo: "取り消しています",
-    redo: "やり直しています",
-    checkpoint: "チェックポイントを作成しています",
-    revert_to: "巻き戻しています",
-  };
 
   async function refresh() {
     try {
@@ -125,6 +135,7 @@
       projectVersion = p.project_version;
       entries = h.entries;
       historyTotal = h.total;
+      redoable = h.redoable ?? [];
       error = null;
       // プロジェクトの移動・切り替えでパスが変わることがあるのでフッターも更新
       api.appInfo().then((i) => (info = i)).catch(() => {});
@@ -255,6 +266,11 @@
     // キーボード操作(入力欄にフォーカスがあるときは除く)
     // Space: 再生/一時停止, ←/→: 前/次の小節頭, Home/End: 先頭/終端
     const onKeydown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && showSettings) {
+        e.preventDefault();
+        closeSettings();
+        return;
+      }
       if (shouldYieldKey(e)) return;
       if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") {
         e.preventDefault();
@@ -724,10 +740,11 @@
       <ProjectMenu title={project?.meta.title ?? "…"} />
     </div>
     <div class="transport">
-      <button onclick={seekStart} disabled={!transport.available} title="先頭へ(Home)">⏮</button>
-      <button onclick={prevBar} disabled={!transport.available} title="前の小節頭へ(←)">⏪</button>
+      <button onclick={seekStart} disabled={!transport.available} title="先頭へ(Home)" aria-label="先頭へ">⏮</button>
+      <button onclick={prevBar} disabled={!transport.available} title="前の小節頭へ(←)" aria-label="前の小節頭へ">⏪</button>
       <button
         class="play"
+        aria-label={transport.playing ? "一時停止" : "再生"}
         onclick={togglePlay}
         disabled={!transport.available}
         title={transport.available
@@ -736,13 +753,15 @@
       >
         {transport.playing ? "⏸" : "▶"}
       </button>
-      <button onclick={stopPlayback} disabled={!transport.available} title="停止(先頭に戻る)">
+      <button onclick={stopPlayback} disabled={!transport.available} title="停止(先頭に戻る)" aria-label="停止">
         ⏹
       </button>
-      <button onclick={nextBar} disabled={!transport.available} title="次の小節頭へ(→)">⏩</button>
-      <button onclick={seekEnd} disabled={!transport.available} title="終端へ(End)">⏭</button>
+      <button onclick={nextBar} disabled={!transport.available} title="次の小節頭へ(→)" aria-label="次の小節頭へ">⏩</button>
+      <button onclick={seekEnd} disabled={!transport.available} title="終端へ(End)" aria-label="終端へ">⏭</button>
       <button
         class:loop-on={loopOn}
+        aria-label="ループ再生"
+        aria-pressed={loopOn}
         onclick={toggleLoop}
         disabled={!transport.available}
         title="ループ再生(L)。ルーラーで範囲選択するとその区間、なければ曲全体"
@@ -751,6 +770,8 @@
       </button>
       <button
         class:loop-on={transport.metronome}
+        aria-label="メトロノーム"
+        aria-pressed={!!transport.metronome}
         onclick={toggleMetronome}
         disabled={!transport.available}
         title="メトロノーム(拍ごとにクリック。小節頭は高い音)"
@@ -759,6 +780,7 @@
       </button>
       <button
         class="rec"
+        aria-label={transport.recording ? "録音を止める" : "録音"}
         class:rec-on={transport.recording}
         onclick={toggleRecord}
         disabled={!transport.available}
@@ -857,10 +879,24 @@
           {timeSig}{#if hasSigChanges}*{/if}
         </button>
       {/if}
-      <span class="stat" title="版数(編集・取り消し・やり直しのたびに増える)">v{projectVersion}</span>
-      <button onclick={doUndo} title="直前の編集を取り消す">↶ Undo</button>
-      <button onclick={doRedo} title="やり直す">↷ Redo</button>
-      <div class="master" title="マスター音量">
+      <span class="stat ver-stat" title="版数(編集・取り消し・やり直しのたびに増える)">v{projectVersion}</span>
+      <button
+        onclick={doUndo}
+        disabled={entries.length === 0}
+        title={entries.length > 0
+          ? `取り消す: ${entries[entries.length - 1].label}(Ctrl+Z)`
+          : "取り消せる編集はありません"}
+        aria-label="取り消し">↶<span class="btn-label"> 取り消し</span></button
+      >
+      <button
+        onclick={doRedo}
+        disabled={redoable.length === 0}
+        title={redoable.length > 0
+          ? `やり直す: ${redoable[0].label}(Ctrl+Shift+Z / Ctrl+Y)`
+          : "やり直せる編集はありません"}
+        aria-label="やり直し">↷<span class="btn-label"> やり直し</span></button
+      >
+      <div class="master" title={`マスター音量 ${(project?.master.volume_db ?? 0).toFixed(1)} dB`}>
         <span class="master-icon">🔊</span>
         <input
           type="range"
@@ -870,7 +906,7 @@
           value={project?.master.volume_db ?? 0}
           onchange={setMasterVolume}
         />
-        <span class="stat">{(project?.master.volume_db ?? 0).toFixed(1)} dB</span>
+        <span class="stat master-db">{(project?.master.volume_db ?? 0).toFixed(1)} dB</span>
         <button
           class="master-fx"
           class:on={soundDesignStore.focus?.trackId === MASTER_FOCUS_ID}
@@ -884,16 +920,21 @@
           🎛{#if (project?.master.effects.length ?? 0) > 0}<span class="fx-count">{project?.master.effects.length}</span>{/if}
         </button>
       </div>
-      <button onclick={doExport} disabled={exporting} title="WAV に書き出す(プロジェクト内 export フォルダ)">
-        {exporting ? "書き出し中…" : "⬇ WAV"}
+      <button
+        onclick={doExport}
+        disabled={exporting}
+        title="WAV に書き出す(プロジェクト内 export フォルダ)"
+        aria-label="WAV に書き出す"
+      >
+        {#if exporting}書き出し中…{:else}⬇<span class="export-label"> WAV</span>{/if}
       </button>
-      <button onclick={() => (showSettings = true)} title="設定">⚙</button>
+      <button onclick={() => (showSettings = true)} title="設定" aria-label="設定">⚙</button>
     </div>
     {#if indicator !== "idle"}
       <div class="ai-indicator" class:thinking={indicator === "session"}>
         <span class="pulse"></span>
         {#if indicator === "calling"}
-          AI が{toolLabels[aiTool] ?? aiTool}…
+          AI が{toolDoing(aiTool)}…
         {:else}
           AI が作業中です…
         {/if}
@@ -964,25 +1005,30 @@
         <div class="loading">読み込み中…</div>
       {/if}
     </section>
-    <div class="row-handle" onpointerdown={startRowResize} title="ドラッグで高さを調整"></div>
-    <section class="bottom-area" style="height:{bottomHeight}px">
+    <div class="row-handle" onpointerdown={startRowResize} title="ドラッグで高さを調整">
+      <button
+        class="collapse-btn"
+        onpointerdown={(e) => e.stopPropagation()}
+        onclick={toggleBottom}
+        title={bottomCollapsed ? "チャットと履歴を表示する" : "チャットと履歴を隠して、タイムライン・ピアノロールを広く使う"}
+        aria-label={bottomCollapsed ? "下のパネルを表示" : "下のパネルを隠す"}
+        aria-expanded={!bottomCollapsed}
+      >{bottomCollapsed ? "▴ チャット・履歴" : "▾"}</button>
+    </div>
+    <!-- 隠しても部品は残す(チャットの表示中の会話が消えないように) -->
+    <section class="bottom-area" class:collapsed={bottomCollapsed} style="height:{bottomHeight}px">
       <div class="chat-section" style="flex:0 0 {chatFrac * 100}%">
         <ChatPanel />
       </div>
       <div class="col-handle" onpointerdown={startColResize} title="ドラッグで幅を調整"></div>
       <div class="history-section">
-        <HistoryPanel {entries} total={historyTotal} />
+        <HistoryPanel {entries} total={historyTotal} {redoable} />
       </div>
     </section>
   </main>
 
   {#if showSettings}
-    <SettingsPanel
-      onClose={() => {
-        showSettings = false;
-        refreshAudioDev();
-      }}
-    />
+    <SettingsPanel onClose={closeSettings} />
   {/if}
 
   <footer>
@@ -1005,6 +1051,8 @@
     {/if}
   </footer>
 </div>
+
+<Toasts />
 
 <style>
   .layout {
@@ -1087,18 +1135,18 @@
   }
 
   .rec {
-    color: #e05555;
+    color: var(--danger);
   }
 
   .rec-on {
-    border-color: #e05555;
-    background: color-mix(in srgb, #e05555 25%, var(--bg-panel));
+    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 25%, var(--bg-panel));
     animation: rec-blink 1s ease-in-out infinite;
   }
 
   @keyframes rec-blink {
     50% {
-      background: color-mix(in srgb, #e05555 55%, var(--bg-panel));
+      background: color-mix(in srgb, var(--danger) 55%, var(--bg-panel));
     }
   }
 
@@ -1122,7 +1170,7 @@
   }
 
   .dsp-warn {
-    color: #e8a07c;
+    color: var(--warn);
   }
 
   .rec-midi {
@@ -1279,6 +1327,27 @@
     flex-direction: column;
   }
 
+  /* 狭い画面(ノート PC の 150% 表示など)では、ヘッダーの文字を減らして右端の ⚙ まで収める */
+  @media (max-width: 1320px) {
+    .btn-label,
+    .ver-stat {
+      display: none;
+    }
+    .master input[type="range"] {
+      width: 70px;
+    }
+  }
+
+  @media (max-width: 1120px) {
+    .master-db,
+    .export-label {
+      display: none;
+    }
+    .master input[type="range"] {
+      width: 56px;
+    }
+  }
+
   .timeline-scroll {
     flex: 1;
     min-height: 0;
@@ -1290,6 +1359,29 @@
     background: var(--bg-panel);
     display: flex;
     min-height: 0;
+    /* 低い画面でタイムラインが潰れないように(高さ 330px の画面で 0px になっていた) */
+    max-height: 45vh;
+  }
+
+  .bottom-area.collapsed {
+    display: none;
+  }
+
+  .row-handle {
+    position: relative;
+  }
+
+  .collapse-btn {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+    padding: 0 10px;
+    font-size: 10px;
+    line-height: 14px;
+    border-radius: 7px;
+    cursor: pointer;
   }
 
   .row-handle {
@@ -1384,11 +1476,11 @@
   .rec-meter-fill {
     position: absolute;
     inset: 0 auto 0 0;
-    background: #3aa876;
+    background: var(--ok);
   }
 
   .rec-meter-fill.hot {
-    background: #e05555;
+    background: var(--danger);
   }
 
   .export-msg {
@@ -1396,8 +1488,8 @@
   }
 
   .error {
-    background: #5c2b33;
-    color: #ffb4c0;
+    background: var(--danger-bg);
+    color: var(--danger-text);
     padding: 6px 14px;
   }
 

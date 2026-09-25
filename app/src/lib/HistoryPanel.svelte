@@ -2,7 +2,14 @@
   import * as api from "./api";
   import type { Author, EntrySummary } from "./types";
 
-  let { entries, total }: { entries: EntrySummary[]; total: number } = $props();
+  let {
+    entries,
+    total,
+    redoable = [],
+  }: { entries: EntrySummary[]; total: number; redoable?: EntrySummary[] } = $props();
+
+  /// やり直せる(取り消した)編集。上から「一番先にやり直すもの」が最後になるように並べる
+  const redoShown = $derived([...redoable].reverse());
 
   // 新しい順に表示。件数が増えると全件再描画が重くなり(つまみ操作で履歴は
   // どんどん増える)、再生中の音切れの一因になるため、取得も表示も直近だけに絞る
@@ -62,8 +69,17 @@
     <div class="notice">{notice}</div>
   {/if}
   <ul>
+    {#each redoShown as e (e.id)}
+      <li class="entry undone" title={`取り消し済み(やり直しで戻せます)\n${e.id}`}>
+        <div class="head">
+          <span class="badge {e.author.kind}">{authorLabel(e.author)}</span>
+          <span class="head-right"><span class="time">取り消し済み</span></span>
+        </div>
+        <div class="label">{e.label}</div>
+      </li>
+    {/each}
     {#each reversed as e (e.id)}
-      <li class="entry {e.author.kind}">
+      <li class="entry {e.author.kind}" title={e.id}>
         <div class="head">
           <span class="badge {e.author.kind}">{authorLabel(e.author)}</span>
           <span class="head-right">
@@ -79,7 +95,6 @@
         </div>
         <div class="label">{e.label}</div>
         <div class="meta">
-          <code>{e.id}</code>
           <span>{e.targets.length} 対象</span>
           {#if e.reverts}
             <span class="revert">↩ {e.reverts} の取り消し</span>
@@ -96,6 +111,11 @@
 <style>
   .panel {
     padding: 10px;
+  }
+
+  .entry.undone {
+    opacity: 0.45;
+    border-style: dashed;
   }
 
   h2 {
@@ -187,7 +207,7 @@
   }
 
   .revert {
-    color: #e8a07c;
+    color: var(--warn);
   }
 
   .empty {
@@ -214,15 +234,15 @@
   }
 
   .revert-btn:hover {
-    color: #e8a07c;
-    border-color: #e8a07c;
+    color: var(--warn);
+    border-color: var(--warn);
   }
 
   .notice {
-    background: color-mix(in srgb, #e8a07c 15%, transparent);
-    border: 1px solid #e8a07c;
+    background: color-mix(in srgb, var(--warn) 15%, transparent);
+    border: 1px solid var(--warn);
     border-radius: 6px;
-    color: #e8a07c;
+    color: var(--warn);
     font-size: 12px;
     padding: 6px 9px;
     margin-bottom: 8px;

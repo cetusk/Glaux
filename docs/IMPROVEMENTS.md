@@ -71,16 +71,16 @@ get_project の応答 約 24.5 万字(2 重)→ 12.3 万字、compact で 7.1 �
 
 | # | 内容 | 根拠 | 改善案 | 工数 | 状態 |
 |---|---|---|---|---|---|
-| 20 | タイムラインを縦スクロールするとルーラーとセクション行が消える | `Timeline.svelte:1647-1651`、`1720-1734` に sticky がない | `sticky; top` と z-index | S | 未 |
+| 20 | タイムラインを縦スクロールするとルーラーとセクション行が消える | `Timeline.svelte:1647-1651`、`1720-1734` に sticky がない | `sticky; top` と z-index | S | 済 |
 | 21 | タイムラインに横ズームがない | `Timeline.svelte:32` の `PX_PER_WHOLE = 96` 固定(200 小節で 19,200px) | Ctrl+ホイールでカーソル位置を保って拡大縮小、「全体表示」 | M | 未 |
-| 22 | 編集の失敗が黙って捨てられ、別の場所では `alert()` | `.catch(() => {})` が Timeline 22 か所・App 4 か所、`PianoRoll.svelte:854-860` は console.error だけ。`alert()` が Timeline に 8 か所 | 共通のトーストを作り、`api.applyEdit` を包む 1 か所で表示 | S〜M | 未 |
-| 23 | 音作りのスライダーはドラッグ中に音も数値も変わらない。周波数が線形目盛り | `SoundDesignPanel.svelte:709-716` が onchange だけ。`sliderStep`(:166-170)が `range.skew` を無視 | skew に対応し数値を即時表示。ドラッグ中は履歴に載せないプレビュー値を送り、離したら `set_param` 1 回 | S + M | 未 |
-| 24 | 何が取り消されるか・やり直せるかが見えない | `App.svelte:861-862` のボタンは常に押せる。`actor.rs:514` は適用済みしか返さない | `get_history` に redoable、ボタンにラベルのツールチップ、無いときは無効 | S〜M | 未 |
-| 25 | メニューが画面端ではみ出し Esc で閉じない。狭い画面でヘッダーの ⚙ が隠れる、下部パネルでピアノロールが狭い | `Timeline.svelte:2100-2112`。ヘッダーの必要幅 1306px | 共通の ContextMenu(画面内に収める・max-height・Esc)。ヘッダーの一部を「…」へ、下部パネルの折りたたみ | S〜M | 未 |
-| 26 | ツール名の日本語表示が 36 個中 9 個で、2 か所に別々の定義 | `App.svelte:104-112`、`ChatPanel.svelte:66-76` | `lib/toolLabels.ts` に全ツールをまとめる | S | 未 |
-| 27 | ピアノロールに Ctrl+A・↑↓(移調)がない。トラック名・色の変更と複製、クオンタイズのボタンがない | `PianoRoll.svelte:1258-1330`、`Timeline.svelte:1578-1595` | Ctrl+A / ↑↓ / Shift+↑↓ / Alt+←→ / Ctrl+D / Q。トラック名のダブルクリック編集、色、複製 | S | 未 |
+| 22 | 編集の失敗が黙って捨てられ、別の場所では `alert()` | `.catch(() => {})` が Timeline 22 か所・App 4 か所、`PianoRoll.svelte:854-860` は console.error だけ。`alert()` が Timeline に 8 か所 | 共通のトーストを作り、`api.applyEdit` を包む 1 か所で表示 | S〜M | 済 |
+| 23 | 音作りのスライダーはドラッグ中に音も数値も変わらない。周波数が線形目盛り | `SoundDesignPanel.svelte:709-716` が onchange だけ。`sliderStep`(:166-170)が `range.skew` を無視 | skew に対応し数値を即時表示。ドラッグ中は履歴に載せないプレビュー値を送り、離したら `set_param` 1 回 | S + M | 一部済(対数目盛りと即時表示。ドラッグ中に音へ反映する処理は未) |
+| 24 | 何が取り消されるか・やり直せるかが見えない | `App.svelte:861-862` のボタンは常に押せる。`actor.rs:514` は適用済みしか返さない | `get_history` に redoable、ボタンにラベルのツールチップ、無いときは無効 | S〜M | 済 |
+| 25 | メニューが画面端ではみ出し Esc で閉じない。狭い画面でヘッダーの ⚙ が隠れる、下部パネルでピアノロールが狭い | `Timeline.svelte:2100-2112`。ヘッダーの必要幅 1306px | 共通の ContextMenu(画面内に収める・max-height・Esc)。ヘッダーの一部を「…」へ、下部パネルの折りたたみ | S〜M | 済(下部パネルの折りたたみと高さの上限も) |
+| 26 | ツール名の日本語表示が 36 個中 9 個で、2 か所に別々の定義 | `App.svelte:104-112`、`ChatPanel.svelte:66-76` | `lib/toolLabels.ts` に全ツールをまとめる | S | 済 |
+| 27 | ピアノロールに Ctrl+A・↑↓(移調)がない。トラック名・色の変更と複製、クオンタイズのボタンがない | `PianoRoll.svelte:1258-1330`、`Timeline.svelte:1578-1595` | Ctrl+A / ↑↓ / Shift+↑↓ / Alt+←→ / Ctrl+D / Q。トラック名のダブルクリック編集、色、複製 | S | 一部済(キー操作・名前・色・複製。クオンタイズのボタンは未) |
 | 28 | チャット: 実行中に次の指示を書けない、再起動で表示が消える、最下部へ強制スクロール、素のテキスト表示 | `ChatPanel.svelte:307`、`:103-106` | 実行中も入力可、ログを `cache/` に保存して復元、下端付近だけ自動スクロール、Markdown | M | 未 |
-| 29 | ピアノロールの色がテーマに追従しない / 固定の色が散在 / 内部 ID を常に表示 / アクセシビリティ | `PianoRoll.svelte:326,361,365,446-482,508` の琥珀色固定。`Timeline.svelte:1249`、`HistoryPanel.svelte:82` の ID。絵文字ボタンに aria-label なし、フォーカス表示なし | CSS 変数を読んで描く、色トークン、ID はツールチップへ、aria-label と :focus-visible | 各 S | 未 |
+| 29 | ピアノロールの色がテーマに追従しない / 固定の色が散在 / 内部 ID を常に表示 / アクセシビリティ | `PianoRoll.svelte:326,361,365,446-482,508` の琥珀色固定。`Timeline.svelte:1249`、`HistoryPanel.svelte:82` の ID。絵文字ボタンに aria-label なし、フォーカス表示なし | CSS 変数を読んで描く、色トークン、ID はツールチップへ、aria-label と :focus-visible | 各 S | 一部済(色のトークン・ピアノロールの色・ID・aria-label・フォーカス表示。SVG アイコン化は未) |
 
 ## 5. AI 連携
 

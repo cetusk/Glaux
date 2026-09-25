@@ -488,8 +488,8 @@
   }
 
   .menu-error {
-    background: #46242c;
-    color: #ffb4c0;
+    background: var(--danger-bg);
+    color: var(--danger-text);
     font-size: 12px;
     padding: 6px 8px;
     border-radius: 6px;

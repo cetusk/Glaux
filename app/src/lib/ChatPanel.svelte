@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
+  import { toolShort } from "./toolLabels";
   import { playDoneChime, playErrorChime, saveSettings, settings } from "./settings.svelte";
 
   // チャットの相手。Claude = Claude Code(claude)、GPT = Codex CLI(codex)。どちらもホストでログイン済みのものを使う
@@ -63,17 +64,6 @@
     text: string;
   }
 
-  const toolLabels: Record<string, string> = {
-    get_project: "プロジェクトを確認",
-    get_history: "履歴を確認",
-    command_execution: "コマンドを実行",
-    web_search: "Web を検索",
-    apply_commands: "編集を適用",
-    undo: "取り消し",
-    redo: "やり直し",
-    checkpoint: "チェックポイント作成",
-    revert_to: "チェックポイントへ巻き戻し",
-  };
 
   let messages = $state<Msg[]>([]);
   let input = $state("");
@@ -189,7 +179,7 @@
             push({ role: "assistant", text: ev.text });
             break;
           case "tool_use":
-            push({ role: "tool", text: toolLabels[ev.name] ?? ev.name });
+            push({ role: "tool", text: toolShort(ev.name) });
             break;
           case "result":
             chatStatus.running = false;
@@ -411,8 +401,8 @@
 
   .msg.error {
     align-self: stretch;
-    background: #46242c;
-    color: #ffb4c0;
+    background: var(--danger-bg);
+    color: var(--danger-text);
     font-size: 12px;
   }
 
@@ -493,6 +483,6 @@
 
   .stop {
     border-color: #8a4a54;
-    color: #ffb4c0;
+    color: var(--danger-text);
   }
 </style>

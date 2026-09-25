@@ -2,6 +2,7 @@
   import { onMount, tick as sveltick } from "svelte";
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
+  import { settings } from "./settings.svelte";
   import { buildBars } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
   import Fretboard from "./Fretboard.svelte";
@@ -368,6 +369,22 @@
 
   // ---- 描画 ----
 
+  /// テーマのアクセント色("r, g, b")。選択・再生ヘッド・ホバーをタイムラインと同じ色で描く
+  /// (以前は琥珀色の固定値で、テーマを変えてもピアノロールだけ色が変わらなかった)
+  let accentCache = { css: "", rgb: "255, 194, 71" };
+  function accentRgb(): string {
+    const css = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+    if (css === accentCache.css) return accentCache.rgb;
+    const m = css.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    let rgb = accentCache.rgb;
+    if (m) {
+      const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
+      rgb = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)).join(", ");
+    }
+    accentCache = { css, rgb };
+    return rgb;
+  }
+
   function drawBase() {
     const c = canvasEl;
     const currentClip = clip;
@@ -389,7 +406,7 @@
 
     // ドラムパーツ選択中の行をハイライト
     if (drumHighlight !== null) {
-      g.fillStyle = "rgba(255, 194, 71, 0.08)";
+      g.fillStyle = `rgba(${accentRgb()}, 0.08)`;
       g.fillRect(0, (127 - drumHighlight) * rowH, contentW, rowH);
     }
 
@@ -424,7 +441,7 @@
       const w = Math.max(n.dur * pxPerTick, 4);
       const isSel = selected.has(n.id);
       const alpha = 0.45 + (n.vel / 127) * 0.55;
-      g.fillStyle = isSel ? `rgba(255, 194, 71, ${alpha})` : `rgba(94, 156, 224, ${alpha})`;
+      g.fillStyle = isSel ? `rgba(${accentRgb()}, ${alpha})` : `rgba(94, 156, 224, ${alpha})`;
       g.beginPath();
       g.roundRect(x, y + 1.5, w, rowH - 3, 3);
       g.fill();
@@ -510,7 +527,7 @@
     if (drag?.mode === "move" && (drag.dt !== 0 || drag.dp !== 0)) {
       const ids = new Set(drag.ids);
       g.strokeStyle = "#ffd98a";
-      g.fillStyle = "rgba(255, 194, 71, 0.35)";
+      g.fillStyle = `rgba(${accentRgb()}, 0.35)`;
       g.lineWidth = 1;
       for (const n of currentClip.notes) {
         if (!ids.has(n.id)) continue;
@@ -525,7 +542,7 @@
     if (drag?.mode === "resize" && drag.dt !== 0) {
       const ids = new Set(drag.ids);
       g.strokeStyle = "#ffd98a";
-      g.fillStyle = "rgba(255, 194, 71, 0.35)";
+      g.fillStyle = `rgba(${accentRgb()}, 0.35)`;
       for (const n of currentClip.notes) {
         if (!ids.has(n.id)) continue;
         const dur = Math.max(60, n.dur + drag.dt);
@@ -542,9 +559,9 @@
       const y = Math.min(drag.y0, drag.y1);
       const w = Math.abs(drag.x1 - drag.x0);
       const h = Math.abs(drag.y1 - drag.y0);
-      g.fillStyle = "rgba(255, 194, 71, 0.08)";
+      g.fillStyle = `rgba(${accentRgb()}, 0.08)`;
       g.fillRect(x, y, w, h);
-      g.strokeStyle = "rgba(255, 194, 71, 0.6)";
+      g.strokeStyle = `rgba(${accentRgb()}, 0.6)`;
       g.strokeRect(x, y, w, h);
     }
 
@@ -564,14 +581,14 @@
     // ホバー位置(薄い線。Ctrl+V の貼り付け先の目印)
     if (hoverSnapTick <= lenOf(currentClip)) {
       const hx = hoverSnapTick * pxPerTick;
-      g.fillStyle = "rgba(255, 194, 71, 0.28)";
+      g.fillStyle = `rgba(${accentRgb()}, 0.28)`;
       g.fillRect(hx, 0, 1, contentH);
     }
 
     // 再生ヘッド(クリップ内にあるときだけ)
     const rel = relTick(currentClip);
     if (rel >= 0) {
-      g.fillStyle = "#ffc247";
+      g.fillStyle = `rgb(${accentRgb()})`;
       g.fillRect(rel * pxPerTick, 0, 1.5, contentH);
     }
   }
@@ -586,6 +603,7 @@
     void pxPerBeat;
     void rowH;
     void win;
+    void settings.accent;
     drawBase();
   });
 
@@ -601,6 +619,7 @@
     void rowH;
     void playing;
     void win;
+    void settings.accent;
     drawOverlay();
     followPlayhead();
   });
@@ -831,7 +850,7 @@
       const { x, w } = velBarRect(n);
       const bh = (v / 127) * (VEL_H - VEL_PAD * 2);
       const isSel = selected.has(n.id);
-      g.fillStyle = isSel ? "rgba(255, 194, 71, 0.95)" : "rgba(94, 156, 224, 0.9)";
+      g.fillStyle = isSel ? `rgba(${accentRgb()}, 0.95)` : "rgba(94, 156, 224, 0.9)";
       g.fillRect(x, VEL_H - VEL_PAD - bh, w, bh);
       // 頭に丸(掴む場所の目印)
       g.beginPath();
@@ -848,6 +867,7 @@
     void velDrag;
     void showVel;
     void win;
+    void settings.accent;
     drawVel();
   });
 
@@ -921,11 +941,30 @@
   }
 
   async function applyEdit(commands: unknown[], label: string) {
-    try {
-      await api.applyEdit(commands, label);
-    } catch (e) {
-      console.error(e);
-    }
+    // 失敗は api.applyEdit がトーストで知らせる
+    await api.applyEdit(commands, label).catch(() => {});
+  }
+
+  /// 選択中のノートを時間(tick)と音の高さ(半音)でずらす。範囲外に出るなら何もしない
+  function nudgeSelected(dt: number, dp: number) {
+    const currentClip = clip;
+    if (!currentClip) return;
+    const targets = currentClip.notes.filter((n) => selected.has(n.id));
+    if (targets.length === 0) return;
+    if (targets.some((n) => n.pos + dt < 0 || n.pitch + dp < 0 || n.pitch + dp > 127)) return;
+    const changes = targets.map((n) => ({
+      id: n.id,
+      ...(dt !== 0 ? { pos: n.pos + dt } : {}),
+      ...(dp !== 0 ? { pitch: n.pitch + dp } : {}),
+    }));
+    const what =
+      dp !== 0
+        ? `${Math.abs(dp) === 12 ? "1 オクターブ" : "半音"}${dp > 0 ? "上げる" : "下げる"}`
+        : `${dt > 0 ? "後ろ" : "前"}へずらす`;
+    applyEdit(
+      [{ op: "update_notes", clip: currentClip.id, changes }],
+      `ノート ${targets.length} 個を${what}`,
+    );
   }
 
   // ---- ポルタメントの滑る時間(選択中のポルタメントのノートだけ) ----
@@ -1338,6 +1377,19 @@
       } else if ((e.ctrlKey || e.metaKey) && e.code === "KeyV") {
         e.preventDefault();
         paste();
+      } else if ((e.ctrlKey || e.metaKey) && e.code === "KeyA") {
+        // 全選択(以前はブラウザ既定の「文字の全選択」になっていた)
+        e.preventDefault();
+        selected = new Set((clip?.notes ?? []).map((n) => n.id));
+      } else if ((e.code === "ArrowUp" || e.code === "ArrowDown") && selected.size > 0) {
+        // 選択中のノートを移調(Shift でオクターブ)
+        e.preventDefault();
+        const step = (e.code === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 12 : 1);
+        nudgeSelected(0, step);
+      } else if (e.altKey && (e.code === "ArrowLeft" || e.code === "ArrowRight") && selected.size > 0) {
+        // 選択中のノートをスナップの幅ずつ前後へ
+        e.preventDefault();
+        nudgeSelected(e.code === "ArrowLeft" ? -snapTicks : snapTicks, 0);
       } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
         e.preventDefault();
         const currentClip = clip;

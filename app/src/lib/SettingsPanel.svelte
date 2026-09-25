@@ -529,7 +529,7 @@
   }
 
   .warn {
-    color: #e8a07c;
+    color: var(--warn);
   }
 
   .strong {
@@ -563,7 +563,7 @@
   .meter-fill {
     position: absolute;
     inset: 0 auto 0 0;
-    background: linear-gradient(90deg, #3aa876 0%, #3aa876 70%, #e0c050 85%, #e05555 100%);
+    background: linear-gradient(90deg, var(--ok) 0%, var(--ok) 70%, #e0c050 85%, var(--danger) 100%);
   }
 
   .meter-hold {

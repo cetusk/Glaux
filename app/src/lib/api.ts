@@ -1,3 +1,4 @@
+import { showError } from "./toast.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
@@ -61,11 +62,20 @@ export function onAiActivity(cb: (a: AiActivity) => void): Promise<UnlistenFn> {
 // ---- UI からの編集(Command API 経由、author: human) ----
 
 /** Command JSON を適用する。履歴に載り、AI からも get_history で見える。 */
-export function applyEdit(
+/**
+ * 編集を適用する。失敗したら、ここでトーストを出してから投げ直す
+ * (呼び出し側の .catch(() => {}) で失敗が黙って消えないように)。
+ */
+export async function applyEdit(
   commands: unknown[],
   label: string,
 ): Promise<{ entry_id: string; project_version: number }> {
-  return invoke("apply_edit", { commands, label });
+  try {
+    return await invoke("apply_edit", { commands, label });
+  } catch (e) {
+    showError(`「${label}」を適用できませんでした`, e);
+    throw e;
+  }
 }
 
 // ---- プロジェクト管理 ----

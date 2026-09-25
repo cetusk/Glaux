@@ -298,7 +298,7 @@
   }
 
   .warn {
-    color: #e8a07c;
+    color: var(--warn);
     font-size: 12px;
   }
 

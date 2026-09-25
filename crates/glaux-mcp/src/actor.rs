@@ -37,6 +37,8 @@ pub struct HistoryPage {
     /// 条件(作者・since)に合うエントリの総数(limit で切る前)
     pub total: usize,
     pub entries: Vec<EntrySummary>,
+    /// やり直せる(undo 済みの)エントリ。次に redo されるものが先頭。最大 20 件
+    pub redoable: Vec<EntrySummary>,
 }
 
 /// 履歴一覧用の軽量ビュー(forward/inverse は含めない)。
@@ -615,6 +617,13 @@ fn history_view(
         project_version: version(session, store),
         total,
         entries,
+        redoable: session
+            .history()
+            .redoable()
+            .iter()
+            .take(20)
+            .map(EntrySummary::from)
+            .collect(),
     })
 }
 

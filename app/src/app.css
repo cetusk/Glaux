@@ -15,6 +15,12 @@
   --ai: #b07ce8;
   --human: #5da2e8;
   --system: #7a7a7a;
+  /* 状態の色(トースト・ミュート・ソロ・録音など。コンポーネントに直書きしない) */
+  --danger: #e05555;
+  --danger-bg: #46242c;
+  --danger-text: #ffb4c0;
+  --warn: #e8a07c;
+  --ok: #3aa876;
   font-family: "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
   font-size: 14px;
   color-scheme: dark;
@@ -22,6 +28,12 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* キーボードで操作したときのフォーカスの輪(マウスのクリックでは出ない) */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 html,
