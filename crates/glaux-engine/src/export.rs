@@ -240,6 +240,206 @@ pub fn export_wav(
     Ok(samples.len() as f64 / 2.0 / sample_rate)
 }
 
+// ---- 書き出しの選択肢 ------------------------------------------------------
+
+/// 書き出しの設定。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExportOptions {
+    /// 44100 か 48000
+    pub sample_rate: u32,
+    /// 16 / 24(整数、ディザあり)/ 32(浮動小数)
+    pub bits: u16,
+    /// 秒の範囲 [開始, 終了)。None で曲全体
+    pub range_secs: Option<(f64, f64)>,
+    /// 音量の目標(統合ラウドネス LUFS)。None でそのまま
+    pub target_lufs: Option<f64>,
+    /// 音量を合わせるときのピークの上限(dBFS)。超える所はリミッタで抑える
+    pub ceiling_db: f64,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        ExportOptions {
+            sample_rate: 48_000,
+            bits: 16,
+            range_secs: None,
+            target_lufs: None,
+            ceiling_db: -1.0,
+        }
+    }
+}
+
+/// 書き出しの結果(書き出した音の測定値)。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ExportReport {
+    pub seconds: f64,
+    /// 統合ラウドネス(LUFS)
+    pub lufs: f64,
+    /// サンプルのピーク(dBFS)
+    pub peak_db: f64,
+    /// 音量を合わせるために掛けたゲイン(dB)
+    pub gain_db: f64,
+}
+
+fn db(a: f64) -> f64 {
+    20.0 * a.max(1e-9).log10()
+}
+
+/// 範囲の指定があればその範囲、無ければ全体を描き出す。`master_clip` が false ならマスターのクリップ防止を通さない
+pub fn render(
+    project: &Project,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+    range_secs: Option<(f64, f64)>,
+    master_clip: bool,
+) -> Result<Vec<f32>, ExportError> {
+    let range = range_secs.map(|(a, b)| {
+        let from = (a.max(0.0) * sample_rate) as u64;
+        (from, ((b * sample_rate) as u64).max(from))
+    });
+    render_inner(project, sample_rate, bank, range, master_clip)
+}
+
+/// ピークを `ceiling_db` 以下に抑える先読み付きのリミッタ(書き出し用。全体を先に持っているので先読みできる)。
+/// ピークの 5ms 前からゲインを下げ始め、過ぎたら 80ms ほどで戻す。最後に上限でクリップして保証する
+pub fn limit_peaks(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) {
+    let ceil = 10f32.powf(ceiling_db as f32 / 20.0);
+    let n = stereo.len() / 2;
+    if n == 0 {
+        return;
+    }
+    // 各フレームで必要なゲイン
+    let need: Vec<f32> = (0..n)
+        .map(|i| {
+            let p = stereo[i * 2].abs().max(stereo[i * 2 + 1].abs());
+            if p > ceil {
+                ceil / p
+            } else {
+                1.0
+            }
+        })
+        .collect();
+    let look = ((0.005 * sample_rate) as usize).max(1);
+    // 先読みの窓の最小値(単調な両端キューで O(n))
+    let mut env = vec![1.0f32; n];
+    let mut dq: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    for j in (0..n).rev() {
+        while dq.back().is_some_and(|&k| need[k] >= need[j]) {
+            dq.pop_back();
+        }
+        dq.push_back(j);
+        while dq.front().is_some_and(|&k| k > j + look) {
+            dq.pop_front();
+        }
+        env[j] = need[*dq.front().expect("入れた直後")];
+    }
+    // 戻り(リリース)は前向き、下げ始め(アタック)は後ろ向きに滑らかに
+    let rel = 1.0 - (-1.0 / (0.08 * sample_rate)).exp() as f32;
+    let att = 1.0 - (-1.0 / (look as f64 / 3.0)).exp() as f32;
+    for i in 1..n {
+        env[i] = env[i].min(env[i - 1] + (1.0 - env[i - 1]) * rel);
+    }
+    for i in (0..n - 1).rev() {
+        env[i] = env[i].min(env[i + 1] + (1.0 - env[i + 1]) * att);
+    }
+    for i in 0..n {
+        for c in 0..2 {
+            let v = &mut stereo[i * 2 + c];
+            *v = (*v * env[i]).clamp(-ceil, ceil);
+        }
+    }
+}
+
+/// 設定に従って描き出し、音量を合わせて(指定があれば)WAV に書く。
+pub fn export_audio(
+    project: &Project,
+    path: &Path,
+    opts: &ExportOptions,
+    bank: &crate::data::SampleBank,
+) -> Result<ExportReport, ExportError> {
+    let sr = opts.sample_rate as f64;
+    let mut stereo = render(
+        project,
+        sr,
+        bank,
+        opts.range_secs,
+        opts.target_lufs.is_none(),
+    )?;
+    let mut gain_db = 0.0;
+    if let Some(target) = opts.target_lufs {
+        // ラウドネスは 48kHz の係数で測る(サンプルレートが違えば 48kHz で描き出して測る)
+        let measured = if opts.sample_rate == 48_000 {
+            crate::analyze::integrated_lufs(&stereo)
+        } else {
+            let m = render(project, 48_000.0, bank, opts.range_secs, false)?;
+            crate::analyze::integrated_lufs(&m)
+        };
+        if measured.is_finite() {
+            gain_db = target - measured;
+            let g = 10f32.powf(gain_db as f32 / 20.0);
+            stereo.iter_mut().for_each(|v| *v *= g);
+        }
+        limit_peaks(&mut stereo, sr, opts.ceiling_db);
+    }
+    write_wav(path, &stereo, opts.sample_rate, opts.bits)?;
+    let lufs = if opts.sample_rate == 48_000 {
+        crate::analyze::integrated_lufs(&stereo)
+    } else {
+        f64::NAN
+    };
+    let peak = stereo.iter().fold(0.0f32, |m, v| m.max(v.abs())) as f64;
+    Ok(ExportReport {
+        seconds: stereo.len() as f64 / 2.0 / sr,
+        lufs: (lufs * 10.0).round() / 10.0,
+        peak_db: (db(peak) * 10.0).round() / 10.0,
+        gain_db: (gain_db * 10.0).round() / 10.0,
+    })
+}
+
+/// ステレオ・インターリーブを WAV に書く(16 / 24 はディザ付きの整数、32 は浮動小数)
+pub fn write_wav(
+    path: &Path,
+    stereo: &[f32],
+    sample_rate: u32,
+    bits: u16,
+) -> Result<(), ExportError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let float = bits == 32;
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate,
+        bits_per_sample: if float {
+            32
+        } else if bits == 24 {
+            24
+        } else {
+            16
+        },
+        sample_format: if float {
+            hound::SampleFormat::Float
+        } else {
+            hound::SampleFormat::Int
+        },
+    };
+    let mut w = hound::WavWriter::create(path, spec)?;
+    let mut dither = Tpdf::new();
+    for &s in stereo {
+        if float {
+            w.write_sample(s)?;
+        } else if bits == 24 {
+            let full = 8_388_607.0f32;
+            let v = (s.clamp(-1.0, 1.0) * full + dither.next()).round();
+            w.write_sample(v.clamp(-full - 1.0, full) as i32)?;
+        } else {
+            w.write_sample(to_i16_dithered(s, &mut dither))?;
+        }
+    }
+    w.finalize()?;
+    Ok(())
+}
+
 /// TPDF ディザ(三角分布の雑音)。16bit に丸めるときの量子化の歪みを、耳につきにくい
 /// 一様な雑音に変える(フェードアウトや静かな余韻が「ジリジリ」しない)
 struct Tpdf(u32);
@@ -271,6 +471,59 @@ fn to_i16_dithered(s: f32, dither: &mut Tpdf) -> i16 {
 mod tests {
     use super::*;
     use glaux_core::{Clip, ClipContent, ClipId, Note, NoteId, Tick, Track, TrackId, TrackKind};
+
+    #[test]
+    fn limiter_keeps_peaks_under_the_ceiling_and_leaves_quiet_parts() {
+        let sr = 48_000.0;
+        // 静かな音の途中に大きな山
+        let mut x: Vec<f32> = (0..48_000)
+            .flat_map(|i| {
+                let t = i as f32 / 48_000.0;
+                let a = if (0.5..0.52).contains(&t) { 1.8 } else { 0.2 };
+                let v = a * (t * 440.0 * std::f32::consts::TAU).sin();
+                [v, v]
+            })
+            .collect();
+        limit_peaks(&mut x, sr, -1.0);
+        let ceil = 10f32.powf(-1.0 / 20.0);
+        assert!(x.iter().all(|v| v.abs() <= ceil + 1e-6));
+        // 山から離れた静かな所はそのまま
+        let quiet = x[2 * 10_000..2 * 10_100]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!((quiet - 0.2).abs() < 0.01, "{quiet}");
+    }
+
+    #[test]
+    fn export_hits_the_loudness_target_and_the_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = test_project();
+        let path = tmp.path().join("out.wav");
+        let opts = ExportOptions {
+            sample_rate: 44_100,
+            bits: 24,
+            target_lufs: Some(-14.0),
+            ..Default::default()
+        };
+        let r = export_audio(&project, &path, &opts, &Default::default()).unwrap();
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.spec().sample_rate, 44_100);
+        assert_eq!(reader.spec().bits_per_sample, 24);
+        assert!(r.peak_db <= -0.9, "{r:?}");
+        // 48kHz で書き出せばラウドネスを測って返す。目標に ±1 LU
+        let path48 = tmp.path().join("out48.wav");
+        let r = export_audio(
+            &project,
+            &path48,
+            &ExportOptions {
+                target_lufs: Some(-14.0),
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        assert!((r.lufs + 14.0).abs() < 1.0, "{r:?}");
+    }
 
     #[test]
     fn dither_turns_a_tiny_signal_into_noise_instead_of_silence_or_steps() {

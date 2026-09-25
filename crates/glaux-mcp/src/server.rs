@@ -2681,6 +2681,27 @@ impl GlauxServer {
         Ok(JsonText(v))
     }
 
+    #[tool(
+        description = "曲を WAV に書き出す。sample_rate(44100 / 48000)、bits(16 / 24 / 32 = 浮動小数)、範囲(start_tick / end_tick)、\
+        loudness_lufs(音量の目標。配信なら -14。超えるピークは -1dB でリミッタ)を選べる。stems: true でトラックごと(マスターを通さない)。\
+        path 省略でプロジェクトの export/ に日時付きの名前。返り値に書いたファイルと、ラウドネス・ピーク・掛けたゲイン。\
+        書き出したらその値で音量を確かめて報告する。"
+    )]
+    async fn export_audio(&self, params: Parameters<crate::export::ExportRequest>) -> ToolResult {
+        let _activity = self.handle.begin_activity("export_audio");
+        let req = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+            crate::export::run(&project, dir, &req, &bank)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(JsonText(v))
+    }
+
     async fn apply_arrangement(
         &self,
         cmds: Vec<Command>,

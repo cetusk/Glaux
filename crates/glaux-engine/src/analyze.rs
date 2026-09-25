@@ -491,7 +491,7 @@ impl Biquad {
 }
 
 /// ITU-R BS.1770-4 の統合ラウドネス(48kHz 固定係数)。
-fn integrated_lufs(stereo: &[f32]) -> f64 {
+pub(crate) fn integrated_lufs(stereo: &[f32]) -> f64 {
     // K 特性: 高域シェルフ + ハイパス(チャンネルごと)
     let mut filters: Vec<(Biquad, Biquad)> = (0..2)
         .map(|_| {

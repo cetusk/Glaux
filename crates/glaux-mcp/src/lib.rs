@@ -12,6 +12,7 @@ pub mod assets;
 pub mod bounce;
 pub mod changes;
 pub mod clap_presets;
+pub mod export;
 pub mod guide;
 pub mod models;
 pub mod preset_index;

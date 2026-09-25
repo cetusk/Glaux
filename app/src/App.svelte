@@ -14,6 +14,7 @@
   import ProjectMenu from "./lib/ProjectMenu.svelte";
   import PianoRoll from "./lib/PianoRoll.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
+  import ExportDialog from "./lib/ExportDialog.svelte";
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import { applyTheme, settings } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
@@ -39,6 +40,7 @@
   // 再生状態は共有ストア(問い合わせは startTransportPolling の 1 か所だけ)
   const transport = $derived(transportStore.state);
   let showSettings = $state(false);
+  let showExport = $state(false);
 
   function closeSettings() {
     showSettings = false;
@@ -271,6 +273,11 @@
       if (e.key === "Escape" && showSettings) {
         e.preventDefault();
         closeSettings();
+        return;
+      }
+      if (e.key === "Escape" && showExport) {
+        e.preventDefault();
+        showExport = false;
         return;
       }
       if (shouldYieldKey(e)) return;
@@ -593,24 +600,6 @@
     if (range) api.transportSetLoop(range.start, range.end).catch(() => {});
   });
 
-  let exporting = $state(false);
-  let exportMsg = $state<string | null>(null);
-
-  async function doExport() {
-    if (exporting) return;
-    exporting = true;
-    exportMsg = "書き出し中…";
-    try {
-      const r = await api.exportWav();
-      exportMsg = `書き出しました(${r.seconds.toFixed(1)} 秒): ${r.path}`;
-    } catch (e) {
-      exportMsg = null;
-      error = String(e);
-    } finally {
-      exporting = false;
-    }
-  }
-
   function startBpmEdit() {
     bpmInput = String(bpm);
     editingBpm = true;
@@ -930,12 +919,11 @@
         </button>
       </div>
       <button
-        onclick={doExport}
-        disabled={exporting}
-        title="WAV に書き出す(プロジェクト内 export フォルダ)"
-        aria-label="WAV に書き出す"
+        onclick={() => (showExport = true)}
+        title="書き出し(WAV。形式・範囲・音量・トラックごとを選べる)"
+        aria-label="書き出し"
       >
-        {#if exporting}書き出し中…{:else}⬇<span class="export-label"> WAV</span>{/if}
+        ⬇<span class="export-label"> 書き出し</span>
       </button>
       <button onclick={() => (showSettings = true)} title="設定" aria-label="設定">⚙</button>
     </div>
@@ -1039,11 +1027,12 @@
   {#if showSettings}
     <SettingsPanel onClose={closeSettings} />
   {/if}
+  {#if showExport}
+    <ExportDialog onClose={() => (showExport = false)} loop={transport.loop ?? null} />
+  {/if}
 
   <footer>
-    {#if exportMsg}
-      <code class="export-msg">{exportMsg}</code>
-    {:else if info}
+    {#if info}
       <code title="プロジェクトフォルダ">{info.project_dir}</code>
     {/if}
     {#if audioDev}
@@ -1493,9 +1482,6 @@
     background: var(--danger);
   }
 
-  .export-msg {
-    color: var(--accent);
-  }
 
   .error {
     background: var(--danger-bg);

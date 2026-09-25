@@ -121,11 +121,6 @@ export function createProject(
   return invoke("create_project", { parentDir, name });
 }
 
-/** プロジェクトを WAV に書き出す(<プロジェクト>/export/ 配下)。 */
-export function exportWav(): Promise<{ path: string; seconds: number }> {
-  return invoke("export_project_wav");
-}
-
 // ---- 音作りビュー ----
 
 export function getTrackParams(trackId: string): Promise<import("./types").TrackParams> {
@@ -568,6 +563,30 @@ export function sendChat(
 
 export function cancelChat(): Promise<void> {
   return invoke("cancel_chat");
+}
+
+/** 書き出しの依頼(glaux-mcp の ExportRequest と同じ) */
+export interface ExportRequest {
+  path?: string;
+  sample_rate?: number;
+  bits?: number;
+  start_tick?: number;
+  end_tick?: number;
+  loudness_lufs?: number;
+  stems?: boolean;
+}
+
+/** 書き出す。ミックスなら path と測定値、ステムなら stems と folder */
+export function exportAudio(request: ExportRequest): Promise<{
+  path?: string;
+  seconds?: number;
+  lufs?: number;
+  peak_db?: number;
+  gain_db?: number;
+  stems?: { track: string; path: string }[];
+  folder?: string;
+}> {
+  return invoke("export_audio", { request });
 }
 
 /** キーと小節ごとのコード(ノートからの推定)とスケールの音 */

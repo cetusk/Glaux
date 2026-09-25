@@ -1559,6 +1559,23 @@ async fn revert_entry(state: State<'_, AppState>, entry_id: String) -> Result<Va
     }))
 }
 
+/// 書き出し(形式・範囲・音量の目標・トラックごとを選べる)。結果は書いたファイルと測定値
+#[tauri::command]
+async fn export_audio(
+    state: State<'_, AppState>,
+    request: glaux_mcp::export::ExportRequest,
+) -> Result<Value, String> {
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::Path::new(&dir);
+        let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+        glaux_mcp::export::run(&project, dir, &request, &bank)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// キーと小節ごとのコード(ノートからの推定)と、キーのスケールの音(ピッチクラス)。画面の表示用
 #[tauri::command]
 async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
@@ -1655,55 +1672,6 @@ async fn revert_turn(state: State<'_, AppState>, since: Option<String>) -> Resul
         reverted += 1;
     }
     Ok(json!({ "reverted": reverted, "conflicts": conflicts }))
-}
-
-// ---- エクスポート ----------------------------------------------------------
-
-/// プロジェクトを WAV に書き出す(`<プロジェクト>/export/` 配下、48kHz/16bit)。
-/// 再生と同じレンダラを使うので聴こえている音がそのまま書き出される。
-#[tauri::command]
-async fn export_project_wav(state: State<'_, AppState>) -> Result<Value, String> {
-    let (project, _) = state.handle.get_project().await?;
-    let file_name = format!(
-        "{}_{}.wav",
-        sanitize_file_name(&project.meta.title),
-        chrono::Local::now().format("%Y%m%d-%H%M%S")
-    );
-    let path = std::path::Path::new(&state.project_dir())
-        .join("export")
-        .join(file_name);
-
-    // レンダリングは CPU バウンドなのでブロッキングスレッドで
-    let path_for_render = path.clone();
-    let project_dir = state.project_dir();
-    let seconds = tauri::async_runtime::spawn_blocking(move || {
-        let bank =
-            glaux_engine::SampleBank::for_offline(&project, std::path::Path::new(&project_dir));
-        glaux_engine::export_wav(&project, &path_for_render, 48_000.0, &bank)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
-
-    Ok(json!({ "path": path.to_string_lossy(), "seconds": seconds }))
-}
-
-fn sanitize_file_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        "untitled".to_owned()
-    } else {
-        cleaned
-    }
 }
 
 // ---- トランスポート(再生) ----------------------------------------------
@@ -2188,13 +2156,13 @@ fn main() -> Result<()> {
             list_soundfont_presets,
             add_soundfont,
             create_project,
-            export_project_wav,
             apply_edit,
             revert_entry,
             turn_changes,
             revert_turn,
             bounce_track,
             harmony,
+            export_audio,
             import_audio_clip,
             clip_peaks,
             transcribe_clip,

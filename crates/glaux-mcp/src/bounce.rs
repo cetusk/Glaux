@@ -25,7 +25,7 @@ pub struct Bounced {
 
 /// 描き出す用のプロジェクト: 対象のトラックと、それがセンドしているバスだけを残す。
 /// マスターのエフェクト・オートメーションは外し、音量は 0dB にする
-fn stem_project(project: &Project, track: &Track) -> Project {
+pub fn stem_project(project: &Project, track: &Track) -> Project {
     let buses: Vec<TrackId> = track.sends.iter().map(|s| s.target.clone()).collect();
     let mut p = project.clone();
     p.tracks
