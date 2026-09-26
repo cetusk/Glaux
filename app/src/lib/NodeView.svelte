@@ -39,13 +39,18 @@
   });
 
   let clapEffects = $state<api.ClapPluginInfo[]>([]);
+  /** CLAP 音源の名前(入力の表示用) */
+  let clapNames = $state(new Map<string, string>());
   let clapLoaded = false;
   $effect(() => {
     if (clapLoaded) return;
     clapLoaded = true;
     api
       .clapPlugins()
-      .then((r) => (clapEffects = r.plugins.filter((p) => p.effect)))
+      .then((r) => {
+        clapEffects = r.plugins.filter((p) => p.effect);
+        clapNames = new Map(r.plugins.map((p) => [p.id, p.name]));
+      })
       .catch(() => {});
   });
 
@@ -273,7 +278,7 @@
   }
 
   // ---- 入力・出口 ----
-  const inputLabel = $derived(isMaster ? "全トラック" : track?.kind === "bus" ? "送られてきた音" : track?.kind === "audio" ? "音声" : deviceName(track?.device ?? null));
+  const inputLabel = $derived(isMaster ? "全トラック" : track?.kind === "bus" ? "送られてきた音" : track?.kind === "audio" ? "音声" : track?.device?.type === "clap" ? (clapNames.get(track.device.plugin_id ?? "") ?? deviceName(track.device)) : deviceName(track?.device ?? null));
   const outX = $derived(chainX(layout.length) + (layout.length === 0 ? 0 : 0));
   const outputLabel = $derived.by(() => {
     if (isMaster) return "出力";

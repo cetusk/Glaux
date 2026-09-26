@@ -7,6 +7,8 @@
 **A simple, lightweight desktop DAW for making music together with AI** (Rust + Tauri + Svelte 5).
 Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — and the AI edits the project directly, with changes showing up on the timeline right away.
 
+![The timeline with the AI chat and edit history (the UI is in Japanese)](docs/images/screenshot-timeline.png)
+
 > [!NOTE]
 > This is an experimental personal project, mainly tested on Windows 11 (on Linux only the core and engine are built and tested; macOS is untested).
 > Features and the file format may change without notice. The UI and the in-code documentation are in Japanese.
@@ -20,6 +22,8 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 - **Write and record** — Piano roll, drum kit, fretboard, MIDI keyboard, MIDI file import/export, audio recording, humming-to-MIDI, stem separation, tempo-following audio clips
 - **Designed for AI** — Projects are readable JSON. Every edit goes through the same command API with full undo. Built-in MCP server
 - **Play it in games** — A Godot 4 extension plays your songs in-game and syncs enemies or hit judgement to the beat
+
+![The mixer and the effect node view](docs/images/screenshot-mixer.png)
 
 See [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) (Japanese) for what the AI can do and which genres it can make.
 

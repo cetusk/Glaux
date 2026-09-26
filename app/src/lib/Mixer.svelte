@@ -111,12 +111,12 @@
   let rootEl = $state<HTMLDivElement | undefined>(undefined);
   let rootH = $state(800);
   /** 実際の上の段の高さ(画面が低いときは、下のノード表示に 220px は残す) */
-  const shownTop = $derived(Math.min(topH, Math.max(220, rootH - 250)));
+  const shownTop = $derived(Math.min(topH, Math.max(300, rootH - 250)));
   function startSplit(e: PointerEvent) {
     const y0 = e.clientY;
     const h0 = shownTop;
     const max = (rootEl?.clientHeight ?? 800) - 160;
-    const move = (m: PointerEvent) => (topH = Math.round(Math.min(max, Math.max(220, h0 + m.clientY - y0))));
+    const move = (m: PointerEvent) => (topH = Math.round(Math.min(max, Math.max(300, h0 + m.clientY - y0))));
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
@@ -345,7 +345,9 @@
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: var(--r-md);
-    overflow: hidden;
+    /* 上の段が低くて入りきらないときは、重ねずに列の中でスクロール */
+    overflow: hidden auto;
+    scrollbar-width: thin;
     cursor: pointer;
     min-height: 0;
   }
@@ -548,9 +550,9 @@
 
   /* 残りの高さはフェーダーに回す(上の段の高さに合わせて伸び縮み) */
   .s-bottom {
-    flex: 1 1 auto;
-    min-height: 0;
-    justify-content: flex-end;
+    flex: 1 0 auto;
+    /* パン・M/S・フェーダーの最小 48px・dB 表示が入る高さ。これより低くしない(はみ出して送りに重なっていた) */
+    min-height: 136px;
     padding: 6px 6px 5px;
     display: flex;
     flex-direction: column;
@@ -604,7 +606,7 @@
     display: flex;
     gap: 8px;
     align-items: stretch;
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 48px;
     max-height: 170px;
   }
@@ -614,6 +616,7 @@
     direction: rtl;
     width: 20px;
     height: auto;
+    min-height: 0;
     margin: 0;
     accent-color: #d8d8d8;
   }
