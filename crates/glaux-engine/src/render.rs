@@ -1980,7 +1980,10 @@ impl Renderer {
         let mut peak = 0.0f32;
         let k = gain_smooth_coef(sr);
         let (mon_mode, xfeed) = self.shared.monitor.get();
-        let monitoring = mon_mode != crate::monitor::MonitorMode::Stereo || xfeed;
+        let speaker = self.shared.monitor.speaker();
+        let monitoring = mon_mode != crate::monitor::MonitorMode::Stereo
+            || xfeed
+            || speaker != crate::monitor::Speaker::Off;
         for f in 0..frames {
             let pos = self.blk_pos[f];
             if f > 0 && pos < self.blk_pos[f - 1] {
@@ -2008,7 +2011,7 @@ impl Renderer {
             self.monitor.measure(&self.shared.monitor, ol, or, sr);
             peak = peak.max((ol + click).abs()).max((or + click).abs());
             let (ol, or) = if monitoring {
-                self.monitor.apply(mon_mode, xfeed, ol, or, sr)
+                self.monitor.apply(mon_mode, xfeed, speaker, ol, or, sr)
             } else {
                 (ol, or)
             };

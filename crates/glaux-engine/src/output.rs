@@ -581,6 +581,15 @@ impl EngineHandle {
         self.shared.monitor.set(mode, crossfeed);
     }
 
+    /// 小さなスピーカーのシミュレーション(出力デバイスへの音だけに掛かる)
+    pub fn set_speaker(&self, speaker: crate::monitor::Speaker) {
+        self.shared.monitor.set_speaker(speaker);
+    }
+
+    pub fn speaker(&self) -> crate::monitor::Speaker {
+        self.shared.monitor.speaker()
+    }
+
     pub fn monitor(&self) -> (crate::monitor::MonitorMode, bool) {
         self.shared.monitor.get()
     }

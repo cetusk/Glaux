@@ -6,7 +6,7 @@
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { pollTransport, transportStore } from "./transport.svelte";
-  import type { MonitorMode } from "./types";
+  import type { MonitorMode, SpeakerSim } from "./types";
 
   const MODES: { id: MonitorMode; label: string; title: string }[] = [
     { id: "stereo", label: "ステレオ", title: "そのまま聴く" },
@@ -17,6 +17,18 @@
 
   const mode = $derived(transportStore.state.monitor?.mode ?? "stereo");
   const crossfeed = $derived(transportStore.state.monitor?.crossfeed ?? false);
+  const speaker = $derived<SpeakerSim>(transportStore.state.monitor?.speaker ?? "off");
+  const SPEAKERS: { id: SpeakerSim; label: string; title: string }[] = [
+    { id: "off", label: "なし", title: "そのまま" },
+    { id: "phone", label: "スマホ", title: "スマホの内蔵スピーカーで鳴らしたときの聞こえ方(モノラル、低音と高音が出ない)。低音が消えてもベースやキックが聞こえるかの確認に" },
+    { id: "laptop", label: "PC", title: "ノート PC の内蔵スピーカーで鳴らしたときの聞こえ方(左右が狭く、低音が出ない)" },
+  ];
+  function setSpeaker(s: SpeakerSim) {
+    api
+      .transportSetSpeaker(s)
+      .then(() => pollTransport())
+      .catch(() => {});
+  }
   const corr = $derived(transportStore.state.levels?.correlation ?? null);
 
   // 相関は表示だけなめらかに(問い合わせの間隔ごとに跳ねないように)
@@ -225,6 +237,19 @@
         title="クロスフィード: ヘッドホンで聴くときに、左右の極端な分離をやわらげる(スピーカーで聴いたときの広がりに近づける)"
         onclick={() => setMode(mode, !crossfeed)}>クロスフィード</button
       >
+      <div class="spk" role="radiogroup" aria-label="小さなスピーカー" title="小さなスピーカーで鳴らしたときの聞こえ方(設計値のフィルタ。実際の機種の測定ではない)">
+        {#each SPEAKERS as s (s.id)}
+          <button
+            class="btn sm"
+            class:on={speaker === s.id}
+            class:alt={speaker === s.id && s.id !== "off"}
+            role="radio"
+            aria-checked={speaker === s.id}
+            title={s.title}
+            onclick={() => setSpeaker(s.id)}>{s.label}</button
+          >
+        {/each}
+      </div>
       <div class="note">聴き方は書き出しに入りません</div>
     </div>
   </div>
@@ -389,6 +414,25 @@
     grid-template-columns: 1fr 1fr;
     gap: 3px;
     padding: 2px 6px;
+  }
+
+  .spk {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 3px;
+    padding: 4px 6px 0;
+  }
+
+  .spk .btn {
+    justify-content: center;
+    padding-left: 1px;
+    padding-right: 1px;
+  }
+
+  .spk .btn.alt {
+    background: #5a4520;
+    border-color: #e0b050;
+    color: #ffe2a8;
   }
 
   .modes .btn,

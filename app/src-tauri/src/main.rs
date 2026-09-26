@@ -1868,6 +1868,7 @@ fn transport_state(state: State<'_, AppState>) -> Value {
             "monitor": {
                 "mode": e.monitor().0.name(),
                 "crossfeed": e.monitor().1,
+                "speaker": e.speaker().name(),
             },
             "loudness": e.loudness(),
             "tick": e.playhead_tick(),
@@ -1919,6 +1920,15 @@ fn transport_spectrum(state: State<'_, AppState>) -> Result<Value, String> {
 #[tauri::command]
 fn transport_reset_loudness(state: State<'_, AppState>) -> Result<(), String> {
     state.engine()?.reset_loudness();
+    Ok(())
+}
+
+/// 小さなスピーカーのシミュレーション(off / phone / laptop)。書き出しには入らない
+#[tauri::command]
+fn transport_set_speaker(state: State<'_, AppState>, speaker: String) -> Result<(), String> {
+    let sp = glaux_engine::monitor::Speaker::from_name(&speaker)
+        .ok_or_else(|| format!("スピーカー「{speaker}」は分かりません"))?;
+    state.engine()?.set_speaker(sp);
     Ok(())
 }
 
@@ -2424,6 +2434,7 @@ fn main() -> Result<()> {
             transport_set_monitor,
             transport_scope,
             transport_spectrum,
+            transport_set_speaker,
             transport_reset_loudness,
             send_chat,
             cancel_chat,

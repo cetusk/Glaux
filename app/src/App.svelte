@@ -465,12 +465,14 @@
     const m = transport.monitor;
     if (!m) return null;
     const mode = { stereo: "", mono: "モノ", side: "サイド", swap: "左右入替" }[m.mode] ?? "";
-    const parts = [mode, m.crossfeed ? "クロスフィード" : ""].filter(Boolean);
+    const spk = { off: "", phone: "スマホ", laptop: "ノート PC" }[m.speaker ?? "off"] ?? "";
+    const parts = [mode, m.crossfeed ? "クロスフィード" : "", spk].filter(Boolean);
     return parts.length ? parts.join("+") : null;
   });
   async function resetMonitor() {
     try {
       await api.transportSetMonitor("stereo", false);
+      await api.transportSetSpeaker("off");
       await pollTransport();
     } catch (e) {
       error = String(e);

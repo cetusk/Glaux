@@ -301,7 +301,7 @@ export interface TransportState {
     master_load?: number;
   };
   /** 聴き方(出力デバイスへの音だけ。書き出しには入らない) */
-  monitor?: { mode: MonitorMode; crossfeed: boolean };
+  monitor?: { mode: MonitorMode; crossfeed: boolean; speaker?: SpeakerSim };
   /** マスターのラウドネス(LUFS。瞬時 / 短期 / 統合)と True Peak(dBTP。測り始めてからの最大 / 直近)。測れなければ null */
   loudness?: {
     momentary: number | null;
@@ -314,6 +314,9 @@ export interface TransportState {
 
 /** 聴き方: そのまま / 左右を足す / 左右の差だけ / 左右を入れ替え */
 export type MonitorMode = "stereo" | "mono" | "side" | "swap";
+
+/** 小さなスピーカーのシミュレーション: なし / スマホ / ノート PC */
+export type SpeakerSim = "off" | "phone" | "laptop";
 
 export type ChatEvent =
   | { kind: "started" }

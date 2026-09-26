@@ -37,7 +37,9 @@ mod wavetable;
 mod width;
 
 pub use drum::DrumParams;
-pub use effects::{bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState};
+pub use effects::{
+    bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState, SvfCoeffs, SvfState,
+};
 pub use expr::{articulation_cents, articulation_moves_pitch, PitchCurve};
 pub use fm::{FmParams, FmVoice};
 pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, ZoneMod, MAX_LAYERS};

@@ -8,6 +8,7 @@ import type {
   HistorySnapshot,
   MonitorMode,
   PresetInfo,
+  SpeakerSim,
   ProjectSnapshot,
   RecentProject,
   TransportState,
@@ -390,6 +391,11 @@ export function transportSpectrum(): Promise<{ bands: number[]; db: number[] }> 
 /** ラウドネスメーターの統合値と True Peak の最大を測り直す */
 export function transportResetLoudness(): Promise<void> {
   return invoke("transport_reset_loudness");
+}
+
+/** 小さなスピーカーのシミュレーション(出力デバイスへの音だけ。書き出しには入らない) */
+export function transportSetSpeaker(speaker: SpeakerSim): Promise<void> {
+  return invoke("transport_set_speaker", { speaker });
 }
 
 /** ゴニオメーターの点(古い順の [左, 右]) */

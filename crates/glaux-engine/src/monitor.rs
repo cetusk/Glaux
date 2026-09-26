@@ -74,6 +74,103 @@ impl MonitorMode {
 
 const XFEED_BIT: u32 = 1 << 8;
 
+/// 小さなスピーカーで鳴らしたときの聞こえ方(設計値のフィルタ。実測のデータは使わない)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Speaker {
+    /// そのまま
+    Off,
+    /// スマホの内蔵スピーカー: モノラル、300Hz より下と 8kHz より上を削り、2.5kHz あたりが少し出る
+    Phone,
+    /// ノート PC の内蔵スピーカー: 左右は狭く、150Hz より下と 12kHz より上を削る
+    Laptop,
+}
+
+impl Speaker {
+    pub fn name(self) -> &'static str {
+        match self {
+            Speaker::Off => "off",
+            Speaker::Phone => "phone",
+            Speaker::Laptop => "laptop",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        Some(match s {
+            "off" => Speaker::Off,
+            "phone" => Speaker::Phone,
+            "laptop" => Speaker::Laptop,
+            _ => return None,
+        })
+    }
+
+    fn bits(self) -> u32 {
+        match self {
+            Speaker::Off => 0,
+            Speaker::Phone => 1,
+            Speaker::Laptop => 2,
+        }
+    }
+
+    fn from_bits(b: u32) -> Self {
+        match b {
+            1 => Speaker::Phone,
+            2 => Speaker::Laptop,
+            _ => Speaker::Off,
+        }
+    }
+
+    /// (ハイパス、ローパス、山の周波数、山の高さ dB、左右の幅)
+    fn design(self) -> (f32, f32, f32, f32, f32) {
+        match self {
+            Speaker::Off => (20.0, 20_000.0, 1000.0, 0.0, 1.0),
+            Speaker::Phone => (300.0, 8000.0, 2500.0, 4.0, 0.0),
+            Speaker::Laptop => (150.0, 12_000.0, 3000.0, 2.0, 0.5),
+        }
+    }
+}
+
+/// 小さなスピーカーのフィルタ(左右)。係数はスピーカーとサンプルレートが変わったときだけ作り直す
+#[derive(Default)]
+struct SpeakerSim {
+    key: Option<(Speaker, u32)>,
+    hp: Option<glaux_dsp::SvfCoeffs>,
+    lp: Option<glaux_dsp::SvfCoeffs>,
+    bell: Option<glaux_dsp::SvfCoeffs>,
+    width: f32,
+    st: [[glaux_dsp::SvfState; 5]; 2],
+}
+
+impl SpeakerSim {
+    fn process(&mut self, speaker: Speaker, l: f32, r: f32, sr: f32) -> (f32, f32) {
+        let key = (speaker, sr as u32);
+        if self.key != Some(key) {
+            let (hp, lp, f, g, w) = speaker.design();
+            self.hp = Some(glaux_dsp::SvfCoeffs::high_pass(sr, hp));
+            self.lp = Some(glaux_dsp::SvfCoeffs::low_pass(sr, lp));
+            self.bell = Some(glaux_dsp::SvfCoeffs::bell(sr, f, 1.0, g));
+            self.width = w;
+            self.st = Default::default();
+            self.key = Some(key);
+        }
+        let (Some(hp), Some(lp), Some(bell)) = (&self.hp, &self.lp, &self.bell) else {
+            return (l, r);
+        };
+        // 幅(0 でモノラル)
+        let m = 0.5 * (l + r);
+        let s = 0.5 * (l - r) * self.width;
+        let mut out = [m + s, m - s];
+        for (x, st) in out.iter_mut().zip(self.st.iter_mut()) {
+            // 低域は 24dB/oct、高域は 24dB/oct で削る(小さなスピーカーは低音が急に出なくなる)
+            let mut v = st[0].process(hp, 1.0, *x);
+            v = st[1].process(hp, 1.0, v);
+            v = st[2].process(lp, 1.0, v);
+            v = st[3].process(lp, 1.0, v);
+            *x = st[4].process(bell, 1.0, v);
+        }
+        (out[0], out[1])
+    }
+}
+
 /// ラウドネス・スペクトル用に残す音の長さ(フレーム。48kHz で約 0.68 秒。UI の問い合わせの間隔より十分長く)
 pub const AUDIO_RING: usize = 1 << 15;
 
@@ -81,6 +178,8 @@ pub const AUDIO_RING: usize = 1 << 15;
 pub struct MonitorShared {
     /// 下位 2 ビット = 聴き方、8 ビット目 = クロスフィード
     settings: AtomicU32,
+    /// 小さなスピーカーのシミュレーション([`Speaker`])
+    speaker: AtomicU32,
     /// 相関(f32 のビット列。NaN = ほぼ無音で測れない)
     correlation: AtomicU32,
     /// ゴニオメーターの点(左, 右 の f32 ビット列を交互に)。リングバッファ
@@ -97,6 +196,7 @@ impl Default for MonitorShared {
     fn default() -> Self {
         MonitorShared {
             settings: AtomicU32::new(0),
+            speaker: AtomicU32::new(0),
             correlation: AtomicU32::new(f32::NAN.to_bits()),
             points: std::array::from_fn(|_| AtomicU32::new(0)),
             write: AtomicU32::new(0),
@@ -110,6 +210,14 @@ impl MonitorShared {
     pub fn set(&self, mode: MonitorMode, crossfeed: bool) {
         let bits = mode.bits() | if crossfeed { XFEED_BIT } else { 0 };
         self.settings.store(bits, Ordering::Release);
+    }
+
+    pub fn set_speaker(&self, speaker: Speaker) {
+        self.speaker.store(speaker.bits(), Ordering::Release);
+    }
+
+    pub fn speaker(&self) -> Speaker {
+        Speaker::from_bits(self.speaker.load(Ordering::Acquire))
     }
 
     pub fn get(&self) -> (MonitorMode, bool) {
@@ -150,6 +258,7 @@ pub struct MonitorState {
     write: usize,
     /// クロスフィードのローパス(左, 右)
     lp: (f32, f32),
+    speaker: SpeakerSim,
 }
 
 impl MonitorState {
@@ -189,10 +298,13 @@ impl MonitorState {
     }
 
     /// 出力デバイスへ送る直前の聴き方の切り替え
+    /// 小さなスピーカーのシミュレーションを掛けていれば、クロスフィードは掛けない
+    /// (スピーカーで聞く想定なので、ヘッドホン向けの処理は要らない)
     pub fn apply(
         &mut self,
         mode: MonitorMode,
         crossfeed: bool,
+        speaker: Speaker,
         l: f32,
         r: f32,
         sr: f32,
@@ -209,6 +321,9 @@ impl MonitorState {
             }
             MonitorMode::Swap => (r, l),
         };
+        if speaker != Speaker::Off {
+            return self.speaker.process(speaker, l, r, sr);
+        }
         if !crossfeed {
             return (l, r);
         }
@@ -451,6 +566,29 @@ mod tests {
     }
 
     #[test]
+    fn phone_speaker_cuts_lows_and_is_mono() {
+        let run = |f: f32, speaker: Speaker| {
+            let mut st = MonitorState::default();
+            let mut peak = (0.0f32, 0.0f32);
+            for i in 0..24_000 {
+                let x = (i as f32 * f * std::f32::consts::TAU / 48_000.0).sin();
+                let (l, r) = st.apply(MonitorMode::Stereo, false, speaker, x, -x * 0.2, 48_000.0);
+                if i > 12_000 {
+                    peak = (peak.0.max(l.abs()), peak.1.max(r.abs()));
+                }
+            }
+            peak
+        };
+        let low = run(80.0, Speaker::Phone);
+        let mid = run(1000.0, Speaker::Phone);
+        assert!(low.0 < mid.0 * 0.1, "80Hz は削れる: {low:?} / {mid:?}");
+        assert!((mid.0 - mid.1).abs() < 1e-4, "モノラル: {mid:?}");
+        // ノート PC は左右が残る(狭く)
+        let lap = run(1000.0, Speaker::Laptop);
+        assert!((lap.0 - lap.1).abs() > 0.05, "{lap:?}");
+    }
+
+    #[test]
     fn scope_keeps_recent_points_in_order() {
         let shared = MonitorShared::default();
         let mut st = MonitorState::default();
@@ -468,29 +606,29 @@ mod tests {
     fn monitor_modes_and_flat_crossfeed() {
         let mut st = MonitorState::default();
         assert_eq!(
-            st.apply(MonitorMode::Mono, false, 1.0, 0.0, 48_000.0),
+            st.apply(MonitorMode::Mono, false, Speaker::Off, 1.0, 0.0, 48_000.0),
             (0.5, 0.5)
         );
         assert_eq!(
-            st.apply(MonitorMode::Side, false, 1.0, 1.0, 48_000.0),
+            st.apply(MonitorMode::Side, false, Speaker::Off, 1.0, 1.0, 48_000.0),
             (0.0, 0.0)
         );
         assert_eq!(
-            st.apply(MonitorMode::Swap, false, 1.0, 0.0, 48_000.0),
+            st.apply(MonitorMode::Swap, false, Speaker::Off, 1.0, 0.0, 48_000.0),
             (0.0, 1.0)
         );
         // クロスフィード: モノラルの音はそのまま、片側だけの低音は反対側へ -4.5dB 回り込む
         let mut st = MonitorState::default();
         for i in 0..4800 {
             let x = (i as f32 * 100.0 * std::f32::consts::TAU / 48_000.0).sin();
-            let (l, r) = st.apply(MonitorMode::Stereo, true, x, x, 48_000.0);
+            let (l, r) = st.apply(MonitorMode::Stereo, true, Speaker::Off, x, x, 48_000.0);
             assert!((l - x).abs() < 1e-4 && (r - x).abs() < 1e-4);
         }
         let mut st = MonitorState::default();
         let (mut pl, mut pr) = (0.0f32, 0.0f32);
         for i in 0..9600 {
             let x = (i as f32 * 60.0 * std::f32::consts::TAU / 48_000.0).sin();
-            let (l, r) = st.apply(MonitorMode::Stereo, true, x, 0.0, 48_000.0);
+            let (l, r) = st.apply(MonitorMode::Stereo, true, Speaker::Off, x, 0.0, 48_000.0);
             if i > 4800 {
                 pl = pl.max(l.abs());
                 pr = pr.max(r.abs());
