@@ -968,6 +968,10 @@ pub fn bake_sf2(
     zones: std::sync::Arc<Vec<crate::multi::Zone>>,
 ) -> crate::multi::MultiSamplerParams {
     let s = SF2_SPECS;
+    // 高く鳴らすときの縮小版(ゾーンごとに 1 回だけ作る。オーディオスレッドの外のここで)
+    for z in zones.iter() {
+        z.data.prepare_mips();
+    }
     crate::multi::MultiSamplerParams {
         zones,
         gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 12.0)),
@@ -982,6 +986,8 @@ pub fn bake_sampler(
 ) -> crate::sampler::SamplerParams {
     let s = SAMPLER_SPECS;
     let release_ms = get_f32(map, s, "release_ms").clamp(5.0, 2000.0);
+    // 高く鳴らすときの縮小版(1 回だけ作る。オーディオスレッドの外のここで)
+    data.prepare_mips();
     crate::sampler::SamplerParams {
         data,
         root: get_f32(map, s, "root").clamp(0.0, 127.0) as u8,

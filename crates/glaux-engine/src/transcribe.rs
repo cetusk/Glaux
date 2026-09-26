@@ -762,6 +762,7 @@ mod tests {
             frames,
             sample_rate: sr,
             side: None,
+            mips: Default::default(),
         }
     }
 
@@ -838,6 +839,7 @@ mod tests {
             frames,
             sample_rate: sr,
             side: None,
+            mips: Default::default(),
         };
         let notes = transcribe_mono(&data, &TranscribeOptions::default());
         assert_eq!(notes.len(), 1, "{notes:?}");
@@ -877,6 +879,7 @@ mod tests {
             frames,
             sample_rate: sr,
             side: None,
+            mips: Default::default(),
         }
     }
 
@@ -930,6 +933,7 @@ mod tests {
                 frames,
                 sample_rate: sr,
                 side: None,
+                mips: Default::default(),
             },
             &TranscribeOptions::default(),
         );
@@ -977,6 +981,7 @@ mod tests {
             frames,
             sample_rate: sr,
             side: None,
+            mips: Default::default(),
         };
         let notes = transcribe_mono(&data, &TranscribeOptions::default());
         assert_eq!(notes.len(), 4, "{notes:?}");

@@ -117,6 +117,7 @@ mod tests {
             frames,
             sample_rate: sr,
             side: None,
+            mips: Default::default(),
         }
     }
 
@@ -154,6 +155,7 @@ mod tests {
             frames: vec![0.0; 48_000 * 5],
             sample_rate: 48_000.0,
             side: None,
+            mips: Default::default(),
         };
         assert!(estimate_latency(&data, &beats).is_err());
     }

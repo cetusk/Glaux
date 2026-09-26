@@ -20,6 +20,52 @@ pub struct SampleData {
     pub sample_rate: f32,
     /// ステレオ素材の左右差成分 S = (L − R) / 2(L = M + S、R = M − S)。モノラル素材は None
     pub side: Option<Vec<f32>>,
+    /// 音程を上げて鳴らすときの、帯域を制限した縮小版(レベル k は長さ 1/2^k・帯域 1/2^k)。
+    /// サンプラー・SoundFont で使うときにだけ作る([`SampleData::prepare_mips`]。オーディオスレッドの外で)
+    pub mips: std::sync::OnceLock<Vec<Vec<f32>>>,
+}
+
+/// 縮小版の段数(2 オクターブ × 2 = 16 倍の速さまで)
+const MIP_LEVELS: usize = 4;
+/// 半分にするときのローパス(窓付き sinc)の片側のタップ数
+const MIP_HALF: usize = 16;
+
+/// 帯域を半分にしてから 1 つおきに間引く(窓付き sinc、Blackman 窓。遅れは中央合わせで 0)
+fn halve(x: &[f32]) -> Vec<f32> {
+    let taps: Vec<f32> = (0..=2 * MIP_HALF)
+        .map(|k| {
+            let n = k as f32 - MIP_HALF as f32;
+            // 遮断は元のナイキストの 0.45 倍(= 間引いた後のナイキストの 0.9 倍)
+            let fc = 0.225f32;
+            let sinc = if n == 0.0 {
+                2.0 * fc
+            } else {
+                (std::f32::consts::TAU * fc * n).sin() / (std::f32::consts::PI * n)
+            };
+            let t = k as f32 / (2 * MIP_HALF) as f32;
+            let w = 0.42 - 0.5 * (std::f32::consts::TAU * t).cos()
+                + 0.08 * (2.0 * std::f32::consts::TAU * t).cos();
+            sinc * w
+        })
+        .collect();
+    let sum: f32 = taps.iter().sum();
+    let at = |i: isize| -> f32 {
+        if i < 0 || i as usize >= x.len() {
+            0.0
+        } else {
+            x[i as usize]
+        }
+    };
+    (0..x.len().div_ceil(2))
+        .map(|n| {
+            let c = (2 * n) as isize;
+            taps.iter()
+                .enumerate()
+                .map(|(k, t)| t * at(c + k as isize - MIP_HALF as isize))
+                .sum::<f32>()
+                / sum
+        })
+        .collect()
 }
 
 impl SampleData {
@@ -29,6 +75,7 @@ impl SampleData {
             frames,
             sample_rate,
             side: None,
+            mips: Default::default(),
         }
     }
 
@@ -40,6 +87,58 @@ impl SampleData {
             frames,
             sample_rate,
             side: Some(side),
+            mips: Default::default(),
+        }
+    }
+
+    /// 音程を上げて鳴らすための縮小版を作っておく(1 回だけ。オーディオスレッドの外で呼ぶ)
+    pub fn prepare_mips(&self) {
+        self.mips.get_or_init(|| {
+            let mut out: Vec<Vec<f32>> = Vec::with_capacity(MIP_LEVELS);
+            let mut cur = halve(&self.frames);
+            for _ in 0..MIP_LEVELS {
+                let next = halve(&cur);
+                out.push(std::mem::replace(&mut cur, next));
+                if out.last().is_some_and(|v| v.len() < 4) {
+                    break;
+                }
+            }
+            out
+        });
+    }
+
+    /// 位置 `pos`(元のサンプルの番号、小数)の値を、1 サンプルあたり `step` 進む速さで鳴らすときの帯域で読む。
+    /// `step` が 1 を超える(元より高く鳴らす)と、ナイキストを超えて折り返す倍音を縮小版で落とす。
+    /// 段の間は速さの比で混ぜる(少し上げただけで急にこもらないように)。縮小版が無ければ元のまま読む。
+    /// 呼び出し側が `pos as usize + 1 < frames.len()` を保証する
+    #[inline]
+    pub fn read(&self, pos: f64, step: f64) -> f32 {
+        let base = |pos: f64| {
+            let i = pos as usize;
+            hermite(&self.frames, i, (pos - i as f64) as f32)
+        };
+        let Some(mips) = self.mips.get().filter(|m| !m.is_empty()) else {
+            return base(pos);
+        };
+        if step <= 1.0 {
+            return base(pos);
+        }
+        let level = step.log2().min(mips.len() as f64);
+        let lo = level.floor() as usize;
+        let t = (level - lo as f64) as f32;
+        let at = |k: usize| -> f32 {
+            if k == 0 {
+                return base(pos);
+            }
+            let m = &mips[k - 1];
+            let p = pos / (1u64 << k) as f64;
+            let i = (p as usize).min(m.len().saturating_sub(2));
+            hermite(m, i, ((p - i as f64) as f32).clamp(0.0, 1.0))
+        };
+        if t <= 0.0 || lo >= mips.len() {
+            at(lo.min(mips.len()))
+        } else {
+            at(lo) * (1.0 - t) + at(lo + 1) * t
         }
     }
 
@@ -141,16 +240,16 @@ impl SamplerVoice {
             self.done = true;
             return 0.0;
         }
-        let frac = (self.pos - i as f64) as f32;
-        let s = hermite(frames, i, frac);
-
         // ピッチ表現(ビブラート / チョーキング)はレートに掛ける
         let ratio = if self.expr.is_active() {
             self.expr.next_ratio(self.sample_rate) as f64
         } else {
             1.0
         };
-        self.pos += self.rate * ratio;
+        let step = self.rate * ratio;
+        // 高く鳴らすときは帯域を制限した縮小版から読む(折り返し雑音を出さない)
+        let s = p.data.read(self.pos, step);
+        self.pos += step;
 
         if self.attack_env < 1.0 {
             self.attack_env = (self.attack_env + self.attack_inc).min(1.0);
@@ -210,11 +309,7 @@ mod tests {
         let frames = (0..(sr * 0.5) as usize)
             .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / sr).sin() * 0.5)
             .collect();
-        Arc::new(SampleData {
-            frames,
-            sample_rate: sr,
-            side: None,
-        })
+        Arc::new(SampleData::mono(frames, sr))
     }
 
     fn params(root: u8) -> SamplerParams {
@@ -228,6 +323,77 @@ mod tests {
 
     fn rms(v: &[f32]) -> f32 {
         (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt()
+    }
+
+    /// 倍音(f0 の整数倍)以外の成分の、全体に対する割合(dB)
+    fn alias_db(v: &[f32], f0: f32, sr: f32) -> f32 {
+        let (mut total, mut alias) = (0.0f64, 0.0f64);
+        let bins = 300;
+        let len = v.len() as f64;
+        for b in 1..bins {
+            let f = b as f64 * sr as f64 / 2.0 / bins as f64;
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (k, s) in v.iter().enumerate() {
+                let w = 0.5 - 0.5 * (std::f64::consts::TAU * k as f64 / len).cos();
+                let ph = k as f64 * f * std::f64::consts::TAU / sr as f64;
+                re += *s as f64 * w * ph.cos();
+                im += *s as f64 * w * ph.sin();
+            }
+            let pw = re * re + im * im;
+            total += pw;
+            let h = f / f0 as f64;
+            if (h - h.round()).abs() * f0 as f64 > 150.0 {
+                alias += pw;
+            }
+        }
+        (10.0 * (alias / total).log10()) as f32
+    }
+
+    #[test]
+    fn pitching_up_uses_band_limited_mips() {
+        // 倍音をナイキストの手前(20kHz)まで並べたのこぎり波(1234Hz。48kHz の約数にならない高さ)を
+        // 2 オクターブ上(4 倍の速さ)で鳴らすと、5kHz より上の倍音が折り返す
+        let sr = 48_000.0f32;
+        let f = 1234.0f32;
+        let saw: Vec<f32> = (0..24_000)
+            .map(|i| {
+                let t = i as f32 / sr;
+                (1..=(20_000.0 / f) as usize)
+                    .map(|h| (std::f32::consts::TAU * f * h as f32 * t).sin() / h as f32)
+                    .sum::<f32>()
+                    * 0.2
+            })
+            .collect();
+        let play = |mips: bool| {
+            let data = Arc::new(SampleData::mono(saw.clone(), sr));
+            if mips {
+                data.prepare_mips();
+            }
+            let p = SamplerParams {
+                data,
+                root: 60,
+                gain: 1.0,
+                release_coef: 0.001,
+            };
+            let mut v = SamplerVoice::start(&p, 84, 1.0, Articulation::Normal, sr);
+            (0..4800).map(|_| v.next(&p)).collect::<Vec<f32>>()
+        };
+        let plain = alias_db(&play(false)[400..], f * 4.0, sr);
+        let mipped = alias_db(&play(true)[400..], f * 4.0, sr);
+        assert!(
+            mipped < plain - 10.0,
+            "縮小版 {mipped:.1} dB / そのまま {plain:.1} dB"
+        );
+        // 元の高さ以下では縮小版を使わない(同じ音)
+        let data = Arc::new(SampleData::mono(saw.clone(), sr));
+        data.prepare_mips();
+        for k in 0..100 {
+            let pos = k as f64 * 3.3;
+            assert_eq!(
+                data.read(pos, 1.0),
+                hermite(&saw, pos as usize, (pos - pos.floor()) as f32)
+            );
+        }
     }
 
     fn crossings(v: &[f32]) -> usize {

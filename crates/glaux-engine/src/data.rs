@@ -688,6 +688,7 @@ fn render_follow(
         frames,
         sample_rate: src.sample_rate,
         side,
+        mips: Default::default(),
     }
 }
 

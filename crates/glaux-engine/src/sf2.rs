@@ -137,14 +137,13 @@ pub fn build_zones_shared(
             let data = cache
                 .entry((start, end))
                 .or_insert_with(|| {
-                    Arc::new(SampleData {
-                        frames: wave[start..end]
+                    Arc::new(SampleData::mono(
+                        wave[start..end]
                             .iter()
                             .map(|&s| s as f32 / 32768.0)
                             .collect(),
                         sample_rate,
-                        side: None,
-                    })
+                    ))
                 })
                 .clone();
 

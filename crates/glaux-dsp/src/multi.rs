@@ -409,9 +409,10 @@ impl MultiVoice {
                 pl.active = false;
                 continue;
             }
-            let frac = (pl.pos - i as f64) as f32;
-            let mut s = crate::sampler::hermite(frames, i, frac);
-            pl.pos += pl.rate * ratio * pl.pitch_mul;
+            let step = pl.rate * ratio * pl.pitch_mul;
+            // 高く鳴らすときは帯域を制限した縮小版から読む(折り返し雑音を出さない)
+            let mut s = z.data.read(pl.pos, step);
+            pl.pos += step;
             if pl.filter_on {
                 s = pl.filter(s);
             }
@@ -462,11 +463,7 @@ mod tests {
         let frames = (0..(sr * secs) as usize)
             .map(|i| (i as f32 * freq * std::f32::consts::TAU / sr).sin() * 0.5)
             .collect();
-        Arc::new(SampleData {
-            frames,
-            sample_rate: sr,
-            side: None,
-        })
+        Arc::new(SampleData::mono(frames, sr))
     }
 
     fn env() -> ZoneEnv {
@@ -613,11 +610,7 @@ mod tests {
                 }
             })
             .collect();
-        Arc::new(SampleData {
-            frames,
-            sample_rate: sr,
-            side: None,
-        })
+        Arc::new(SampleData::mono(frames, sr))
     }
 
     #[test]
