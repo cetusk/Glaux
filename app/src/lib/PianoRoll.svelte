@@ -47,11 +47,28 @@
     return null;
   });
 
-  // クリップが消えた(AI が削除した等)ら閉じる
+  // クリップが消えた(AI が削除した等)ら閉じる。作った直後は、画面の曲のデータが新しいクリップを取り込む前に
+  // 開くことがあるので、「一度見つかったクリップが消えた」ときだけ閉じる(しばらく見つからなければ閉じる)。
+  // 以前は、ダブルクリックでクリップを作ると、取り込む前の一瞬に「消えた」と見なして開いた直後に閉じることがあった
+  let seenClip: string | null = null;
   $effect(() => {
-    if (myFocus && !found) {
-      close();
+    const id = myFocus?.clipId ?? null;
+    if (!id) {
+      seenClip = null;
+      return;
     }
+    if (found) {
+      seenClip = id;
+      return;
+    }
+    if (seenClip === id) {
+      close();
+      return;
+    }
+    const t = setTimeout(() => {
+      if (myFocus?.clipId === id && !found) close();
+    }, 3000);
+    return () => clearTimeout(t);
   });
 
   function close() {

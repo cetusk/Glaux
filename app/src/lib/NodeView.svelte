@@ -747,7 +747,8 @@
           {/if}
           {#each shownParams(e) as p (p.path)}
             <div class="pm" title={p.description}>
-              <div class="top"><span>{p.display_name}</span><span>{fmtValue(p, dragValues[p.path])}</span></div>
+              <!-- 値の文字は数値のつまみだけ(選ぶつまみは選択欄に名前が出る。以前はトラックの ID がそのまま出ていた) -->
+              <div class="top"><span>{p.display_name}</span>{#if p.range.kind === "float" || p.range.kind === "int"}<span>{fmtValue(p, dragValues[p.path])}</span>{/if}</div>
               {#if p.range.kind === "float" || p.range.kind === "int"}
                 <input
                   type="range"
