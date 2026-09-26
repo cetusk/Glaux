@@ -83,11 +83,18 @@
     api.applyEdit(commands, label).catch(() => {});
   }
   let dragVol = $state<Record<string, number>>({});
+  function volumeCommand(t: Track | null, v: number): unknown {
+    return t ? { op: "set_track_prop", id: t.id, prop: "volume_db", value: v } : { op: "set_master_volume", volume_db: v };
+  }
   function setVolume(t: Track | null, v: number) {
     const key = t?.id ?? MASTER_FOCUS_ID;
     delete dragVol[key];
-    if (!t) edit([{ op: "set_master_volume", volume_db: v }], `マスター音量を ${v.toFixed(1)} dB に`);
-    else edit([{ op: "set_track_prop", id: t.id, prop: "volume_db", value: v }], `${t.name} の音量を ${v.toFixed(1)} dB に`);
+    edit([volumeCommand(t, v)], t ? `${t.name} の音量を ${v.toFixed(1)} dB に` : `マスター音量を ${v.toFixed(1)} dB に`);
+  }
+  /** ドラッグ中: 表示と音だけ変える(離したときに 1 回だけ確定する) */
+  function dragVolume(t: Track | null, v: number) {
+    dragVol[t?.id ?? MASTER_FOCUS_ID] = v;
+    api.previewEdit([volumeCommand(t, v)]);
   }
   function setPan(t: Track, v: number) {
     edit([{ op: "set_track_prop", id: t.id, prop: "pan", value: v }], `${t.name} のパンを ${v.toFixed(2)} に`);
@@ -212,7 +219,7 @@
       max="6"
       step="0.5"
       value={t ? t.volume_db : project.master.volume_db}
-      oninput={(e) => (dragVol[key] = Number(e.currentTarget.value))}
+      oninput={(e) => dragVolume(t, Number(e.currentTarget.value))}
       onchange={(e) => setVolume(t, Number(e.currentTarget.value))}
       ondblclick={() => setVolume(t, 0)}
       aria-label="音量"
@@ -257,7 +264,16 @@
                   max="6"
                   step="0.5"
                   value={snd?.level_db ?? -60}
-                  oninput={(e) => (dragSend[`${t.id}>${b.id}`] = Number(e.currentTarget.value))}
+                  oninput={(e) => {
+                    const v = Number(e.currentTarget.value);
+                    dragSend[`${t.id}>${b.id}`] = v;
+                    const pre = t.sends?.find((s) => s.target === b.id)?.pre_fader ?? false;
+                    api.previewEdit([
+                      v <= -60
+                        ? { op: "set_send", track: t.id, target: b.id }
+                        : { op: "set_send", track: t.id, target: b.id, level_db: v, pre_fader: pre },
+                    ]);
+                  }}
                   onchange={(e) => setSend(t, b, Number(e.currentTarget.value))}
                   aria-label={`${b.name} へ送る量`}
                   title={`${b.name} へ送る量(左端で送らない)`}
@@ -276,6 +292,7 @@
               max="1"
               step="0.02"
               value={t.pan}
+              oninput={(e) => api.previewEdit([{ op: "set_track_prop", id: t.id, prop: "pan", value: Number(e.currentTarget.value) }])}
               onchange={(e) => setPan(t, Number(e.currentTarget.value))}
               ondblclick={() => setPan(t, 0)}
               aria-label="パン"
@@ -307,7 +324,7 @@
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div class="pan" role="presentation" onclick={(e) => e.stopPropagation()}>
             <span>L</span>
-            <input type="range" min="-1" max="1" step="0.02" value={t.pan} onchange={(e) => setPan(t, Number(e.currentTarget.value))} ondblclick={() => setPan(t, 0)} aria-label="パン" />
+            <input type="range" min="-1" max="1" step="0.02" value={t.pan} oninput={(e) => api.previewEdit([{ op: "set_track_prop", id: t.id, prop: "pan", value: Number(e.currentTarget.value) }])} onchange={(e) => setPan(t, Number(e.currentTarget.value))} ondblclick={() => setPan(t, 0)} aria-label="パン" />
             <span>R</span>
           </div>
           <div class="ms">

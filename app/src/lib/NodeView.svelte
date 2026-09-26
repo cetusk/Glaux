@@ -506,15 +506,20 @@
     edit([{ op: "remove_effect", id: e.id }], `${targetName} の ${fxName(e)} を削除`);
   }
 
-  function commitParam(p: ParamView, raw: string | number | boolean) {
+  function paramCommand(p: ParamView, raw: string | number | boolean): unknown {
     let value: unknown = raw;
     if (p.range.kind === "float") value = Number(raw);
     if (p.range.kind === "int") value = Math.round(Number(raw));
     if (p.range.kind === "bool") value = Boolean(raw);
-    edit(
-      [isMaster ? { op: "set_master_param", path: p.path, value } : { op: "set_param", track: targetId, path: p.path, value }],
-      `${targetName} の ${p.display_name} を変更`,
-    );
+    return isMaster ? { op: "set_master_param", path: p.path, value } : { op: "set_param", track: targetId, path: p.path, value };
+  }
+  function commitParam(p: ParamView, raw: string | number | boolean) {
+    edit([paramCommand(p, raw)], `${targetName} の ${p.display_name} を変更`);
+  }
+  /** ドラッグ中: 表示と音だけ変える(離したときに 1 回だけ確定する) */
+  function dragParam(p: ParamView, v: number) {
+    dragValues[p.path] = v;
+    api.previewEdit([paramCommand(p, v)]);
   }
   let dragValues = $state<Record<string, number>>({});
 
@@ -749,7 +754,7 @@
                   min="0"
                   max={SLIDER_MAX}
                   value={toPos(p, Number(p.current))}
-                  oninput={(ev) => (dragValues[p.path] = fromPos(p, Number(ev.currentTarget.value)))}
+                  oninput={(ev) => dragParam(p, fromPos(p, Number(ev.currentTarget.value)))}
                   onchange={(ev) => {
                     delete dragValues[p.path];
                     commitParam(p, fromPos(p, Number(ev.currentTarget.value)));

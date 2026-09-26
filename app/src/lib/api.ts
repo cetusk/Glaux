@@ -68,10 +68,40 @@ export function onAiActivity(cb: (a: AiActivity) => void): Promise<UnlistenFn> {
  * 編集を適用する。失敗したら、ここでトーストを出してから投げ直す
  * (呼び出し側の .catch(() => {}) で失敗が黙って消えないように)。
  */
+// ---- ドラッグ中の試聴(履歴に載せずに音だけ変える) ----
+// 送るのは同時に 1 つだけ。送っている間に来た値は最後の 1 つだけ覚えておき、終わったら送る
+let previewBusy: Promise<void> | null = null;
+let previewNext: unknown[] | null = null;
+
+function pumpPreview() {
+  const commands = previewNext;
+  previewNext = null;
+  if (!commands) {
+    previewBusy = null;
+    return;
+  }
+  previewBusy = invoke<void>("preview_edit", { commands })
+    .catch(() => undefined)
+    .then(pumpPreview);
+}
+
+/** スライダーをドラッグしている間に、その値の音を聴かせる(履歴・プロジェクトは変えない)。 */
+export function previewEdit(commands: unknown[]) {
+  previewNext = commands;
+  if (!previewBusy) pumpPreview();
+}
+
+/** 送りかけの試聴を捨て、送っている最中のものが終わるのを待つ(確定の前に。古い試聴が後から上書きしないように) */
+async function settlePreview() {
+  previewNext = null;
+  while (previewBusy) await previewBusy;
+}
+
 export async function applyEdit(
   commands: unknown[],
   label: string,
 ): Promise<{ entry_id: string; project_version: number }> {
+  await settlePreview();
   try {
     return await invoke("apply_edit", { commands, label });
   } catch (e) {

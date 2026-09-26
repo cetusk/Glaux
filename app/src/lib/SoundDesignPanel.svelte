@@ -162,28 +162,33 @@
 
   // ---- パラメータ編集 ----
 
-  function commitParam(p: ParamView, raw: string | number | boolean) {
+  /** つまみを値にするコマンド(対象が無ければ null) */
+  function paramCommand(p: ParamView, raw: string | number | boolean): unknown | null {
     const t = track;
-    if (!t && !isMaster) return;
+    if (!t && !isMaster) return null;
     let value: unknown = raw;
     if (p.range.kind === "float") value = Number(raw);
     if (p.range.kind === "int") value = Math.round(Number(raw));
     if (p.range.kind === "bool") value = Boolean(raw);
-    applyEdit(
-      [
-        isMaster
-          ? { op: "set_master_param", path: p.path, value }
-          : { op: "set_param", track: t!.id, path: p.path, value },
-      ],
-      `${targetName} の ${p.display_name} を変更`,
-    );
+    return isMaster
+      ? { op: "set_master_param", path: p.path, value }
+      : { op: "set_param", track: t!.id, path: p.path, value };
+  }
+
+  function commitParam(p: ParamView, raw: string | number | boolean) {
+    const cmd = paramCommand(p, raw);
+    if (cmd) applyEdit([cmd], `${targetName} の ${p.display_name} を変更`);
   }
 
   /// ドラッグ中の値(パラメータのパス → 値)。離すまで表示だけ変える
   let dragValues = $state<Record<string, number>>({});
 
   function onSliderInput(p: ParamView, e: Event) {
-    dragValues[p.path] = fromPos(p, Number((e.currentTarget as HTMLInputElement).value));
+    const v = fromPos(p, Number((e.currentTarget as HTMLInputElement).value));
+    dragValues[p.path] = v;
+    // ドラッグ中から音に反映する(履歴には載せない。離したときに 1 回だけ確定する)
+    const cmd = paramCommand(p, v);
+    if (cmd) api.previewEdit([cmd]);
   }
 
   function onSliderChange(p: ParamView, e: Event) {
@@ -942,7 +947,14 @@
                     step="0.5"
                     value={snd?.level_db ?? -60}
                     aria-label={`${bus.name} へ送る量`}
-                    oninput={(e) => (sendDrag[bus.id] = Number((e.currentTarget as HTMLInputElement).value))}
+                    oninput={(e) => {
+                      const v = Number((e.currentTarget as HTMLInputElement).value);
+                      sendDrag[bus.id] = v;
+                      if (track)
+                        api.previewEdit([
+                          { op: "set_send", track: track.id, target: bus.id, level_db: v, pre_fader: snd?.pre_fader ?? false },
+                        ]);
+                    }}
                     onchange={(e) => {
                       delete sendDrag[bus.id];
                       setSend(bus, Number((e.currentTarget as HTMLInputElement).value), snd?.pre_fader ?? false);

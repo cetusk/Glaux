@@ -1707,6 +1707,24 @@ async fn apply_edit(
     Ok(json!({ "entry_id": entry_id, "project_version": m.project_version }))
 }
 
+/// スライダーをドラッグしている間の試聴: いまのプロジェクトの複製にコマンドを当てて、エンジンにだけ渡す。
+/// 履歴にもプロジェクトにも残らない(離したときに `apply_edit` で 1 回だけ確定する。
+/// 確定すると、いつもどおりプロジェクトの変更としてエンジンが作り直される)。
+#[tauri::command]
+async fn preview_edit(state: State<'_, AppState>, commands: Vec<Value>) -> Result<(), String> {
+    let engine = state.engine()?.clone();
+    let (mut project, _) = state.handle.get_project().await?;
+    for (i, value) in commands.into_iter().enumerate() {
+        let cmd: Command = serde_json::from_value(value)
+            .map_err(|e| format!("commands[{i}] を Command として解釈できません: {e}"))?;
+        project.apply(&cmd).map_err(|e| e.to_string())?;
+    }
+    let dir = state.project_dir();
+    tokio::task::spawn_blocking(move || engine.set_project(&project, std::path::Path::new(&dir)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 履歴の途中のエントリを 1 件だけ取り消す(`git revert` 相当)。
 /// 逆コマンドが新エントリとして積まれるので、取り消し自体も undo できる。
 #[tauri::command]
@@ -2455,6 +2473,7 @@ fn main() -> Result<()> {
             add_soundfont,
             create_project,
             apply_edit,
+            preview_edit,
             revert_entry,
             turn_changes,
             revert_turn,
