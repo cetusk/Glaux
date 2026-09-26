@@ -1,6 +1,6 @@
 <script lang="ts">
   // ミキサーの右端の「モニター」列: ゴニオメーター(左右の広がりの形)・相関メーター・ラウドネス(LUFS)と True Peak・
-  // スペクトル(1/3 オクターブ、4.5dB/oct の傾き付き)・聴き方の切り替え。
+  // スペクトル(1/3 オクターブ、傾き付き)・聴き方の切り替え。
   // 聴き方(モノ・サイド・入替・クロスフィード)は出力デバイスへの音だけに掛かり、書き出しには入らない。
   import { untrack } from "svelte";
   import * as api from "./api";
@@ -42,8 +42,10 @@
   // ---- スペクトル ----
   let specCanvas = $state<HTMLCanvasElement | undefined>(undefined);
   const SPEC_H = 64;
-  /** 傾き(dB/oct)。ミックスのふつうのスペクトルは高域ほど下がるので、持ち上げて平らに見えるように */
-  const TILT = 4.5;
+  /** 傾き(dB/oct)。ミックスのふつうのスペクトルは高域ほど下がるので、持ち上げて平らに見えるように。
+   *  帯域ごとのエネルギーに掛けるので 1.5(FFT の密度で表示する解析器の定番の 4.5dB/oct と同じ見え方。
+   *  ピンクノイズは帯域ごとのエネルギーが平らで、密度では -3dB/oct になる分の差) */
+  const TILT = 1.5;
   let hold: number[] = [];
   function drawSpectrum(bands: number[], db: number[], dt: number) {
     const c = specCanvas;
@@ -201,7 +203,7 @@
         bind:this={specCanvas}
         class="spec"
         style="width:{SIZE}px;height:{SPEC_H}px"
-        title="スペクトル(1/3 オクターブ、25Hz〜20kHz)。4.5dB/oct 持ち上げて表示しているので、バランスの良いミックスはおおむね平らに見える。白い線は直近の最大"
+        title="スペクトル(1/3 オクターブ、25Hz〜20kHz)。高域を持ち上げて表示している(FFT 表示の解析器で定番の 4.5dB/oct と同じ見え方)ので、バランスの良いミックスはおおむね平らに見える。白い線は直近の最大"
       ></canvas>
       <div class="modes" role="radiogroup" aria-label="聴き方">
         {#each MODES as m (m.id)}

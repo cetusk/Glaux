@@ -62,6 +62,29 @@ pub struct Analysis {
     pub streaming: Vec<crate::loudness::StreamingPreview>,
     /// ステレオの広がり
     pub stereo: StereoInfo,
+    /// 音色の釣り合い(1/3 オクターブの長時間平均と、その傾き・出っ張り)
+    pub tonal_balance: TonalBalance,
+}
+
+/// 音色の釣り合い。
+#[derive(Clone, Debug, Serialize)]
+pub struct TonalBalance {
+    /// 1/3 オクターブ帯域ごとの量(全体に対する dB)。[中心 Hz, dB] の並び
+    pub third_octave: Vec<(u32, f64)>,
+    /// 50Hz〜10kHz の傾き(dB/oct、帯域ごとのエネルギーで)。0 = ピンクノイズと同じ(どのオクターブも同じ量)、
+    /// マイナスほど高域が少ない(暗い)、プラスほど明るい
+    pub slope_db_per_oct: f64,
+    /// 傾きの直線から ±3dB 以上ずれた帯域(40Hz〜16kHz)。プラス = 出っ張り(こもり・刺さりの候補)、マイナス = へこみ
+    pub deviations: Vec<(u32, f64)>,
+}
+
+/// 帯域ごとのステレオの広がり。
+#[derive(Clone, Debug, Serialize)]
+pub struct StereoBand {
+    /// "low"(250Hz 未満)/ "mid"(250Hz〜4kHz)/ "high"(4kHz 以上)
+    pub band: &'static str,
+    pub correlation: f64,
+    pub side_to_mid_db: f64,
 }
 
 /// ステレオの広がり・位相。
@@ -75,6 +98,13 @@ pub struct StereoInfo {
     pub side_to_mid_db: f64,
     /// 左右の音量差(dB。正 = 右が大きい)
     pub balance_db: f64,
+    /// 帯域ごとの相関と広がり(低い帯域ほど中央に集まり、高い帯域ほど広いのがふつう)
+    pub bands: Vec<StereoBand>,
+    /// 音が鳴っている 100ms の区間のうち、相関がマイナス(逆相)だった割合
+    pub negative_correlation_ratio: f64,
+    /// モノラルにしたときの統合ラウドネスの変化(dB)。左右が同じなら 0、無相関で約 -3、
+    /// それより大きく下がるなら逆相の成分がモノラルで消えている
+    pub mono_loudness_change_db: f64,
 }
 
 /// トラック間の周波数のかぶり(マスキング)。
@@ -172,7 +202,25 @@ fn analyze_stereo(
 
     let loudness_lufs = integrated_lufs(sliced);
     let r128 = r128_stats(sliced);
-    let stereo = stereo_info(sliced);
+    let mut stereo = stereo_info(sliced);
+    if loudness_lufs.is_finite() {
+        let mono_dup: Vec<f32> = sliced
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| {
+                let m = (c[0] + c[1]) * 0.5;
+                [m, m]
+            })
+            .collect();
+        let mono_lufs = integrated_lufs(&mono_dup);
+        stereo.mono_loudness_change_db = if mono_lufs.is_finite() {
+            ((mono_lufs - loudness_lufs) * 10.0).round() / 10.0
+        } else {
+            -70.0
+        };
+    }
+    let tonal_balance = tonal_balance(&mono);
 
     // ---- スペクトル系(Welch 平均) ----
     let (spectral_centroid_hz, band_energy) = spectrum_stats(&mono);
@@ -204,6 +252,7 @@ fn analyze_stereo(
         psr_min_db: r128.4.map(|v| (v * 10.0).round() / 10.0),
         streaming: crate::loudness::streaming_previews(loudness_lufs, r128.1),
         stereo,
+        tonal_balance,
     })
 }
 
@@ -493,11 +542,146 @@ fn lowpass(fc: f64) -> Biquad {
     )
 }
 
+/// RBJ の 2 次ハイパス(48kHz)。
+fn highpass(fc: f64) -> Biquad {
+    let w0 = std::f64::consts::TAU * fc / SAMPLE_RATE;
+    let alpha = w0.sin() / (2.0 * std::f64::consts::FRAC_1_SQRT_2);
+    let cos = w0.cos();
+    let a0 = 1.0 + alpha;
+    Biquad::new(
+        [
+            (1.0 + cos) / 2.0 / a0,
+            -(1.0 + cos) / a0,
+            (1.0 + cos) / 2.0 / a0,
+        ],
+        [-2.0 * cos / a0, (1.0 - alpha) / a0],
+    )
+}
+
+/// 1/3 オクターブの中心(Hz)
+const THIRD_OCTAVES: [u32; 30] = [
+    25, 31, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600,
+    2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000,
+];
+
+/// 音色の釣り合い(1/3 オクターブの長時間平均、傾き、直線からのずれ)
+fn tonal_balance(mono: &[f32]) -> TonalBalance {
+    const N: usize = 8192;
+    const HOP: usize = 4096;
+    let mut planner = FftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(N);
+    let hann: Vec<f64> = (0..N)
+        .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / N as f64).cos())
+        .collect();
+    let mut power = vec![0.0f64; N / 2];
+    let mut buf = vec![Complex::new(0.0, 0.0); N];
+    let mut pos = 0;
+    while pos + N <= mono.len() {
+        for i in 0..N {
+            buf[i] = Complex::new(mono[pos + i] as f64 * hann[i], 0.0);
+        }
+        fft.process(&mut buf);
+        for (i, p) in power.iter_mut().enumerate() {
+            *p += buf[i].norm_sqr();
+        }
+        pos += HOP;
+    }
+    let bin_hz = SAMPLE_RATE / N as f64;
+    let total: f64 = power.iter().sum::<f64>().max(1e-20);
+    let edge = 2f64.powf(1.0 / 6.0);
+    let r1 = |v: f64| (v * 10.0).round() / 10.0;
+    let levels: Vec<(u32, f64)> = THIRD_OCTAVES
+        .iter()
+        .map(|&c| {
+            let (lo, hi) = (c as f64 / edge, c as f64 * edge);
+            let e: f64 = power
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| {
+                    let f = *i as f64 * bin_hz;
+                    f >= lo && f < hi
+                })
+                .map(|(_, p)| p)
+                .sum();
+            (c, (10.0 * (e / total).max(1e-10).log10()).max(-100.0))
+        })
+        .collect();
+    // 50Hz〜10kHz で dB = a + b·log2(f) を最小 2 乗で当てはめる
+    let pts: Vec<(f64, f64)> = levels
+        .iter()
+        .filter(|(c, _)| (50..=10_000).contains(c))
+        .map(|(c, db)| ((*c as f64).log2(), *db))
+        .collect();
+    let n = pts.len() as f64;
+    let (sx, sy) = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+    let (mx, my) = (sx / n, sy / n);
+    let sxx: f64 = pts.iter().map(|p| (p.0 - mx).powi(2)).sum();
+    let sxy: f64 = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
+    let slope = if sxx > 0.0 { sxy / sxx } else { 0.0 };
+    let line = |c: u32| my + slope * ((c as f64).log2() - mx);
+    let deviations = levels
+        .iter()
+        .filter(|(c, db)| (40..=16_000).contains(c) && *db > -80.0)
+        .map(|(c, db)| (*c, r1(db - line(*c))))
+        .filter(|(_, d)| d.abs() >= 3.0)
+        .collect();
+    TonalBalance {
+        third_octave: levels.into_iter().map(|(c, db)| (c, r1(db))).collect(),
+        slope_db_per_oct: (slope * 100.0).round() / 100.0,
+        deviations,
+    }
+}
+
+/// 100ms ごとの相関がマイナスだった区間の割合(ほぼ無音の区間は数えない)
+fn negative_correlation_ratio(stereo: &[f32]) -> f64 {
+    let win = (0.1 * SAMPLE_RATE) as usize;
+    let (mut neg, mut all) = (0usize, 0usize);
+    for w in stereo.chunks(win * 2) {
+        let (mut ll, mut rr, mut lr) = (0.0f64, 0.0f64, 0.0f64);
+        for c in w.as_chunks::<2>().0 {
+            let (l, r) = (c[0] as f64, c[1] as f64);
+            ll += l * l;
+            rr += r * r;
+            lr += l * r;
+        }
+        let frames = (w.len() / 2).max(1) as f64;
+        // -50dBFS 程度より小さい区間は数えない
+        if (ll + rr) / frames < 1e-5 {
+            continue;
+        }
+        all += 1;
+        if lr < 0.0 {
+            neg += 1;
+        }
+    }
+    if all == 0 {
+        0.0
+    } else {
+        ((neg as f64 / all as f64) * 1000.0).round() / 1000.0
+    }
+}
+
 fn stereo_info(stereo: &[f32]) -> StereoInfo {
     let (mut ll, mut rr, mut lr) = (0.0f64, 0.0f64, 0.0f64);
     let (mut lo_ll, mut lo_rr, mut lo_lr) = (0.0f64, 0.0f64, 0.0f64);
     let (mut mid, mut side) = (0.0f64, 0.0f64);
     let (mut fl, mut fr) = (lowpass(250.0), lowpass(250.0));
+    // 帯域ごと: 低 = 250Hz 未満、中 = 250Hz〜4kHz、高 = 4kHz 以上([ll, rr, lr, mid, side])
+    let mut band_acc = [[0.0f64; 5]; 3];
+    let mut split = [
+        [
+            lowpass(250.0),
+            highpass(250.0),
+            lowpass(4000.0),
+            highpass(4000.0),
+        ],
+        [
+            lowpass(250.0),
+            highpass(250.0),
+            lowpass(4000.0),
+            highpass(4000.0),
+        ],
+    ];
     for c in stereo.as_chunks::<2>().0 {
         let (l, r) = (c[0] as f64, c[1] as f64);
         ll += l * l;
@@ -509,6 +693,21 @@ fn stereo_info(stereo: &[f32]) -> StereoInfo {
         lo_ll += a * a;
         lo_rr += b * b;
         lo_lr += a * b;
+        let mut bands_of = |ch: usize, x: f64| {
+            let s = &mut split[ch];
+            let low = s[0].next(x);
+            let rest = s[1].next(x);
+            [low, s[2].next(rest), s[3].next(rest)]
+        };
+        let (bl, br) = (bands_of(0, l), bands_of(1, r));
+        for b in 0..3 {
+            let acc = &mut band_acc[b];
+            acc[0] += bl[b] * bl[b];
+            acc[1] += br[b] * br[b];
+            acc[2] += bl[b] * br[b];
+            acc[3] += (bl[b] + br[b]).powi(2);
+            acc[4] += (bl[b] - br[b]).powi(2);
+        }
     }
     let corr = |xy: f64, xx: f64, yy: f64| {
         let d = (xx * yy).sqrt();
@@ -524,6 +723,20 @@ fn stereo_info(stereo: &[f32]) -> StereoInfo {
         low_correlation: r3(corr(lo_lr, lo_ll, lo_rr)),
         side_to_mid_db: (10.0 * (side.max(1e-12) / mid.max(1e-12)).log10()).max(-60.0),
         balance_db: 10.0 * (rr.max(1e-12) / ll.max(1e-12)).log10(),
+        bands: ["low", "mid", "high"]
+            .iter()
+            .zip(band_acc)
+            .map(|(name, a)| StereoBand {
+                band: name,
+                correlation: r3(corr(a[2], a[0], a[1])),
+                side_to_mid_db: ((10.0 * (a[4].max(1e-12) / a[3].max(1e-12)).log10()).max(-60.0)
+                    * 10.0)
+                    .round()
+                    / 10.0,
+            })
+            .collect(),
+        negative_correlation_ratio: negative_correlation_ratio(stereo),
+        mono_loudness_change_db: 0.0,
     }
 }
 
@@ -965,6 +1178,72 @@ mod tests {
         assert!(a.spectral_centroid_hz < 1500.0);
         assert!(a.loudness_lufs < 0.0 && a.loudness_lufs > -60.0);
         assert!(a.crest_factor_db > 0.0);
+    }
+
+    fn noise(seed: u32, n: usize) -> Vec<f32> {
+        let mut r = seed.max(1);
+        (0..n)
+            .map(|_| {
+                r ^= r << 13;
+                r ^= r >> 17;
+                r ^= r << 5;
+                (r as f32 / u32::MAX as f32 - 0.5) * 0.4
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stereo_bands_and_mono_loudness() {
+        let p = Project::new("t");
+        let n = 96_000;
+        let (a, b) = (noise(1, n), noise(2, n));
+        let make = |f: &dyn Fn(usize) -> (f32, f32)| -> Vec<f32> {
+            (0..n)
+                .flat_map(|i| {
+                    let (l, r) = f(i);
+                    [l, r]
+                })
+                .collect()
+        };
+        // 左右が同じ: モノにしても変わらない
+        let same = analyze_stereo(&p, None, &make(&|i| (a[i], a[i]))).unwrap();
+        assert!(same.stereo.mono_loudness_change_db.abs() < 0.2);
+        assert!(same.stereo.bands.iter().all(|b| b.correlation > 0.99));
+        // 無相関: 約 -3dB
+        let wide = analyze_stereo(&p, None, &make(&|i| (a[i], b[i]))).unwrap();
+        let d = wide.stereo.mono_loudness_change_db;
+        assert!((d + 3.0).abs() < 0.5, "{d}");
+        // 逆相: 大きく下がり、ほぼ全区間が逆相
+        let inv = analyze_stereo(&p, None, &make(&|i| (a[i], -a[i] * 0.9))).unwrap();
+        assert!(inv.stereo.mono_loudness_change_db < -15.0);
+        assert!(inv.stereo.negative_correlation_ratio > 0.95);
+    }
+
+    #[test]
+    fn tonal_balance_slope_and_bumps() {
+        // 白色雑音は帯域ごとのエネルギーが高域ほど増える(+3dB/oct)
+        let n = 96_000;
+        let a = noise(3, n);
+        let t = tonal_balance(&a);
+        assert!(
+            (t.slope_db_per_oct - 3.0).abs() < 0.5,
+            "{}",
+            t.slope_db_per_oct
+        );
+        // 1kHz のサイン波を強く足すと、1kHz の帯が出っ張りとして出る
+        let bumped: Vec<f32> = a
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                v * 0.2 + (i as f32 * 1000.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.1
+            })
+            .collect();
+        let t = tonal_balance(&bumped);
+        assert!(
+            t.deviations.iter().any(|(hz, d)| *hz == 1000 && *d > 3.0),
+            "{:?}",
+            t.deviations
+        );
     }
 
     #[test]

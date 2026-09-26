@@ -1602,7 +1602,11 @@ impl GlauxServer {
         streaming=Spotify / Apple Music / YouTube / AES77 で再生されたときの音量の調整の予測(gain_db がマイナスなら下げられる。\
         大きく下げられるなら音圧を上げすぎ。正規化される配信では、潰して大きくしても得をしない)、\
         stereo(correlation=左右の相関。1=モノラル、負=逆相で危険 / low_correlation=250Hz 以下の相関。低域は 1 近くが望ましい /\
-        side_to_mid_db=広がり / balance_db=左右の偏り)。\
+        side_to_mid_db=広がり / balance_db=左右の偏り / bands=低・中・高の帯域ごとの相関と広がり(低いほど中央、高いほど広いのがふつう) /\
+        negative_correlation_ratio=逆相だった時間の割合 / mono_loudness_change_db=モノラルにしたときのラウドネスの変化。\
+        無相関で約 -3、それより大きく下がるならモノラルで音が消えている)、\
+        tonal_balance(third_octave=1/3 オクターブごとの量、slope_db_per_oct=傾き。0 = ピンクノイズと同じ・マイナスほど暗い、\
+        deviations=傾きの直線から ±3dB 以上ずれた帯域。プラスはこもり・刺さりの候補。EQ で直す場所の目星に)。\
         【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy 一覧と、\
         masking(トラック間の周波数のかぶり: track が masked_by に band_hz の帯域で time_ratio の時間 6dB 以上負けている。\
         band_share はその帯域が track の音に占める割合)が返る。かぶりは EQ で片方を削る・パンで分ける・sidechain で解消する。\
