@@ -11,6 +11,7 @@ import type {
   SpeakerSim,
   ProjectSnapshot,
   RecentProject,
+  Track,
   TransportState,
 } from "./types";
 
@@ -48,10 +49,17 @@ export function appInfo(): Promise<AppInfo> {
 /** 変更通知の中身。save_error は保存に失敗したとき(編集はメモリ上では反映済み)。 */
 export interface ProjectChangedEvent {
   project_version: number;
+  /** 何が変わったか(`kind` と対象の ID)。空 = 全体が変わった(切り替え・読み直し)か、本体は変わらない操作 */
+  changes?: { kind: string; track?: string; clip?: string; id?: string }[];
   save_error?: string;
 }
 
-/** MCP / UI どちらの編集でも発火する。受けたら全体を取得し直す。 */
+/** 指定したトラックだけを取得する(見つからない ID は含まれない) */
+export function getTracks(ids: string[]): Promise<{ project_version: number; tracks: Track[] }> {
+  return invoke("get_tracks", { ids });
+}
+
+/** MCP / UI どちらの編集でも発火する。変わった所(changes)を見て取り直す。 */
 export function onProjectChanged(cb: (ev: ProjectChangedEvent) => void): Promise<UnlistenFn> {
   return listen<ProjectChangedEvent>("project-changed", (e) => cb(e.payload));
 }

@@ -144,9 +144,15 @@
   );
 
 
+  /// 取り直しの通し番号。後から始めた取り直しがあれば、先に始めた方の結果は捨てる
+  /// (トラックだけの取り直しと全体の取り直しが追い越し合って、古い内容で上書きしないように)
+  let syncSeq = 0;
+
   async function refresh() {
+    const seq = ++syncSeq;
     try {
       const [p, h] = await Promise.all([api.getProject(), api.getHistory()]);
+      if (seq !== syncSeq) return;
       project = p.project;
       projectVersion = p.project_version;
       entries = h.entries;
@@ -161,6 +167,77 @@
     }
   }
 
+  // ---- 変わったトラックだけの取り直し ----
+  // 変更がトラックの中だけ(クリップ・ノート・つまみ・エフェクト・オートメーション・トラックの設定)で、
+  // 版が手元の続きになっているときは、そのトラックだけを取り直して差し替える。
+  // それ以外(トラックの追加・削除・並べ替え、テンポ、マスター、切り替えなど)は全体を取り直す
+
+  /// 合流の窓の間にたまった変更通知
+  let pendingChanges: api.ProjectChangedEvent[] = [];
+
+  /** トラックだけで済むなら、そのトラックの ID と、取り直した後の版。済まなければ null */
+  function changedTracks(evs: api.ProjectChangedEvent[]): { ids: Set<string>; version: number } | null {
+    const p = project;
+    if (!p || evs.length === 0) return null;
+    const ids = new Set<string>();
+    let v = projectVersion;
+    for (const ev of evs) {
+      if (ev.project_version !== v + 1) return null;
+      v = ev.project_version;
+      if (!ev.changes || ev.changes.length === 0) return null;
+      for (const c of ev.changes) {
+        let id: string | undefined;
+        switch (c.kind) {
+          case "track_prop_changed":
+            id = c.id;
+            break;
+          case "clips_changed":
+          case "param_changed":
+          case "device_changed":
+          case "effects_changed":
+          case "automation_changed":
+            id = c.track;
+            break;
+          case "notes_changed":
+            id = p.tracks.find((t) => t.clips.some((cl) => cl.id === c.clip))?.id;
+            break;
+          default:
+            return null;
+        }
+        if (!id || !p.tracks.some((t) => t.id === id)) return null;
+        ids.add(id);
+      }
+    }
+    return { ids, version: v };
+  }
+
+  async function sync() {
+    const evs = pendingChanges;
+    pendingChanges = [];
+    const partial = changedTracks(evs);
+    if (!partial) return refresh();
+    const seq = ++syncSeq;
+    try {
+      const [t, h] = await Promise.all([api.getTracks([...partial.ids]), api.getHistory()]);
+      if (seq !== syncSeq) return;
+      const p = project;
+      if (!p || t.project_version !== partial.version || t.tracks.length !== partial.ids.size) return refresh();
+      for (const nt of t.tracks) {
+        const i = p.tracks.findIndex((x) => x.id === nt.id);
+        if (i < 0) return refresh();
+        p.tracks[i] = nt;
+      }
+      projectVersion = t.project_version;
+      entries = h.entries;
+      historyTotal = h.total;
+      redoable = h.redoable ?? [];
+      refreshHarmony();
+      error = null;
+    } catch {
+      refresh();
+    }
+  }
+
   // 変更イベントの合流: 先頭は即時、連続分は 80ms 窓でまとめて 1 回だけ再取得する
   // (AI の連続編集で全量再取得が毎回走るのを防ぐ)
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -171,7 +248,7 @@
       refreshPending = true;
       return;
     }
-    refresh();
+    sync();
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined;
       if (refreshPending) {
@@ -258,6 +335,7 @@
     const unlistenChanged = api.onProjectChanged((ev) => {
       // 保存の失敗は、次に保存が成功するまで出し続ける(再取得で消える error とは分ける)
       saveError = ev?.save_error ?? null;
+      pendingChanges.push(ev);
       scheduleRefresh();
     }).catch((e) => {
       error = `変更イベントの購読に失敗: ${e}`;

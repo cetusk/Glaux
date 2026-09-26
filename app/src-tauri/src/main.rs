@@ -66,6 +66,19 @@ async fn get_project(state: State<'_, AppState>) -> Result<Value, String> {
     Ok(json!({ "project_version": version, "project": project }))
 }
 
+/// 指定したトラックだけを返す(変更がトラックの中だけのとき、画面が全体を取り直さずに済むように)。
+/// 見つからない ID は含めない(画面はそのとき全体を取り直す)。
+#[tauri::command]
+async fn get_tracks(state: State<'_, AppState>, ids: Vec<String>) -> Result<Value, String> {
+    let (project, version) = state.handle.get_project().await?;
+    let tracks: Vec<&glaux_core::Track> = project
+        .tracks
+        .iter()
+        .filter(|t| ids.iter().any(|i| i == t.id.as_str()))
+        .collect();
+    Ok(json!({ "project_version": version, "tracks": tracks }))
+}
+
 #[tauri::command]
 async fn get_history(state: State<'_, AppState>, limit: Option<usize>) -> Result<Value, String> {
     let page = state
@@ -2449,6 +2462,7 @@ fn main() -> Result<()> {
         })
         .invoke_handler(tauri::generate_handler![
             get_project,
+            get_tracks,
             get_history,
             undo,
             redo,
