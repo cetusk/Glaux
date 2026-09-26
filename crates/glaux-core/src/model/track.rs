@@ -134,6 +134,9 @@ pub struct Track {
     /// エフェクトのつながり(ノード表示の線)。無ければ並び順の直列([`super::routing`])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fx_links: Option<Vec<super::routing::FxLink>>,
+    /// ノード表示での入力と出口の置き場所(無ければ自動)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx_io_pos: Option<super::routing::FxIoPos>,
     /// (start, id) 昇順を保つ
     #[serde(default)]
     pub clips: Vec<Clip>,
@@ -164,6 +167,7 @@ impl Track {
             device: None,
             effects: vec![],
             fx_links: None,
+            fx_io_pos: None,
             clips: vec![],
             automation: vec![],
             sends: vec![],
@@ -220,6 +224,9 @@ pub struct MasterBus {
     /// マスターのエフェクトのつながり。無ければ並び順の直列
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fx_links: Option<Vec<super::routing::FxLink>>,
+    /// ノード表示での入力と出口の置き場所(無ければ自動)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx_io_pos: Option<super::routing::FxIoPos>,
     /// マスターのオートメーション。対象は `track/volume_db`(マスター音量)と
     /// `fx/<マスターのエフェクト ID>/<パラメータ>`
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

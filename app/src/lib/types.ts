@@ -96,8 +96,15 @@ export interface Track {
   effects: ProjectEffect[];
   /** エフェクトのつながり(ノード表示の線)。無ければ並び順の直列 */
   fx_links?: FxLink[] | null;
+  /** ノード表示での入力と出口の置き場所(無ければ自動) */
+  fx_io_pos?: FxIoPos | null;
   clips: Clip[];
   automation: AutomationLane[];
+}
+
+export interface FxIoPos {
+  input: [number, number];
+  output: [number, number];
 }
 
 /** エフェクトの線 1 本。端は "in"(音源・受けた音)/ "out"(音量・パンへ)/ エフェクト ID */
@@ -116,7 +123,7 @@ export interface Project {
   tempo_map: { tick: number; bpm: number }[];
   time_sig_map: { tick: number; num: number; den: number }[];
   tracks: Track[];
-  master: { volume_db: number; effects: ProjectEffect[]; fx_links?: FxLink[] | null; automation?: AutomationLane[] };
+  master: { volume_db: number; effects: ProjectEffect[]; fx_links?: FxLink[] | null; fx_io_pos?: FxIoPos | null; automation?: AutomationLane[] };
   assets: Record<string, unknown>;
   /** 曲の構成マーカー(tick 昇順)。省略 = なし */
   sections?: { tick: number; name: string }[];

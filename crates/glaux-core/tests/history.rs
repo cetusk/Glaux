@@ -101,11 +101,11 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
     let pick_track = |rng: &mut StdRng| tracks.choose(rng).unwrap().id.clone();
 
     loop {
-        // 0..=27 は単体コマンド、28 以上は Batch(入れ子は 1 段まで)
+        // 0..=28 は単体コマンド、29 以上は Batch(入れ子は 1 段まで)
         let choice = if depth == 0 {
-            rng.gen_range(0..29)
+            rng.gen_range(0..30)
         } else {
-            rng.gen_range(0..28)
+            rng.gen_range(0..29)
         };
         match choice {
             0 => {
@@ -611,6 +611,15 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                     track: target.map(|t| t.id.clone()),
                     links,
                 };
+            }
+            28 => {
+                // ノード表示の入力と出口の置き場所
+                let track = rng.gen_bool(0.7).then(|| pick_track(rng));
+                let pos = rng.gen_bool(0.8).then(|| FxIoPos {
+                    input: [rng.gen_range(0.0..300.0), rng.gen_range(0.0..300.0)],
+                    output: [rng.gen_range(300.0..1200.0), rng.gen_range(0.0..300.0)],
+                });
+                return Command::SetFxIoPos { track, pos };
             }
             19 => {
                 let Some(c) = midi_clips.choose(rng) else {

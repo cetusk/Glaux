@@ -92,7 +92,18 @@
   const TOP = 40;
   const ROW_H = 200;
   const PORT_Y = 22;
-  const IN_POS: [number, number] = [24, TOP];
+  /** 保存してある入力・出口の置き場所(無ければ自動) */
+  const ioSaved = $derived(isMaster ? project.master.fx_io_pos : track?.fx_io_pos);
+  /** ドラッグの直後は保存が戻るまで手元の位置 */
+  let localIo = $state<{ input?: [number, number]; output?: [number, number] }>({});
+  $effect(() => {
+    void ioSaved;
+    localIo = {};
+  });
+  const inPos = $derived.by((): [number, number] => {
+    if (drag?.kind === "io" && drag.id === IN && drag.moved) return [drag.x, drag.y];
+    return localIo.input ?? ioSaved?.input ?? [24, TOP];
+  });
 
   /** 位置を保存していないカードの置き場所: 鳴るカードは入力からの段数で左から、鳴らないカードは下の段に */
   const auto = $derived.by(() => {
@@ -125,8 +136,11 @@
     return localPos[id] ?? e?.pos ?? auto.pos.get(id) ?? [0, 0];
   }
 
-  /** 出口: 鳴るカードの右か、いちばん右のカードの右 */
+  /** 出口: 保存してあればそこ、無ければ鳴るカードの右か、いちばん右のカードの右 */
   const outPos = $derived.by((): [number, number] => {
+    if (drag?.kind === "io" && drag.id === OUT && drag.moved) return [drag.x, drag.y];
+    const saved = localIo.output ?? ioSaved?.output;
+    if (saved) return saved;
     let x = 24 + IO_W + GAP + auto.maxDepth * (CARD_W + GAP);
     for (const e of all) {
       if (!on.has(e.id)) continue;
@@ -136,7 +150,7 @@
   });
 
   function nodePos(id: string): [number, number] {
-    if (id === IN) return IN_POS;
+    if (id === IN) return inPos;
     if (id === OUT) return outPos;
     return posOf(id);
   }
@@ -215,7 +229,8 @@
   type Drag =
     | { kind: "card"; id: string; x: number; y: number; ox: number; oy: number; sx: number; sy: number; moved: boolean; free: boolean; hot: FxLink | null }
     | { kind: "port"; id: string; side: "in" | "out"; x: number; y: number; target: string | null; problem: string | null }
-    | { kind: "knife"; a: [number, number]; b: [number, number]; cut: Set<string> };
+    | { kind: "knife"; a: [number, number]; b: [number, number]; cut: Set<string> }
+    | { kind: "io"; id: string; x: number; y: number; ox: number; oy: number; sx: number; sy: number; moved: boolean };
   let drag = $state<Drag | null>(null);
   let canvasEl = $state<HTMLDivElement | undefined>(undefined);
 
@@ -281,6 +296,40 @@
           localPos = { ...localPos, [e.id]: pos };
           edit([posCmd(e.id, pos)], `${targetName} の ${nameOf(e.id)} を動かす`);
         }
+      },
+    );
+  }
+
+  /** 入力・出口を動かす(位置は set_fx_io_pos で曲に保存。音には関係しない) */
+  function onIoDown(ev: PointerEvent, id: string) {
+    if (ev.button !== 0 || (ev.target as HTMLElement).closest("[data-port], button")) return;
+    const [x, y] = nodePos(id);
+    const [px, py] = spacePt(ev);
+    drag = { kind: "io", id, x, y, ox: px - x, oy: py - y, sx: x, sy: y, moved: false };
+    sel = null;
+    follow(
+      ev,
+      (m) => {
+        if (drag?.kind !== "io") return;
+        const [mx, my] = spacePt(m);
+        const nx = Math.max(0, mx - drag.ox);
+        const ny = Math.max(0, my - drag.oy);
+        drag = { ...drag, x: nx, y: ny, moved: drag.moved || Math.abs(nx - drag.sx) + Math.abs(ny - drag.sy) > 4 };
+      },
+      () => {
+        const d = drag;
+        if (d?.kind !== "io" || !d.moved) {
+          drag = null;
+          return;
+        }
+        const p: [number, number] = [Math.round(d.x), Math.round(d.y)];
+        const next = { input: id === IN ? p : [...inPos] as [number, number], output: id === OUT ? p : [...outPos] as [number, number] };
+        localIo = next;
+        drag = null;
+        edit(
+          [isMaster ? { op: "set_fx_io_pos", pos: next } : { op: "set_fx_io_pos", track: targetId, pos: next }],
+          `${targetName} の${id === IN ? "入力" : "出口"}を動かす`,
+        );
       },
     );
   }
@@ -441,8 +490,10 @@
     setLinks(insertBeforeOutput(unlinkBridging(links, e.id), e.id), `${targetName} の ${fxName(e)} を出口の前につなぐ`);
   }
   function arrange() {
-    const cmds = all.filter((e) => e.pos).map((e) => posCmd(e.id, null));
+    const cmds: unknown[] = all.filter((e) => e.pos).map((e) => posCmd(e.id, null));
+    if (ioSaved) cmds.push(isMaster ? { op: "set_fx_io_pos", pos: null } : { op: "set_fx_io_pos", track: targetId, pos: null });
     localPos = {};
+    localIo = {};
     if (cmds.length > 0) edit(cmds, `${targetName} のエフェクトを並べ直す`);
   }
 
@@ -506,8 +557,8 @@
   const outConnected = $derived(links.some((l) => l.to === OUT && (l.from === IN || on.has(l.from))));
 
   const size = $derived.by(() => {
-    let w = outPos[0] + IO_W + 60;
-    let h = TOP + ROW_H + 80;
+    let w = Math.max(outPos[0], inPos[0]) + IO_W + 60;
+    let h = Math.max(TOP + ROW_H + 80, inPos[1] + 160, outPos[1] + 160);
     for (const e of all) {
       const [x, y] = posOf(e.id);
       w = Math.max(w, x + CARD_W + 60);
@@ -573,20 +624,30 @@
       <span class="gain" style="left:{m[0]}px;top:{m[1]}px">{(l.gain_db ?? 0) > 0 ? "+" : ""}{(l.gain_db ?? 0).toFixed(1)} dB</span>
     {/each}
 
-    <div class="io" data-node={IN} style="left:{IN_POS[0]}px;top:{IN_POS[1]}px;width:{IO_W}px">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="io" class:lifted={drag?.kind === "io" && drag.id === IN && drag.moved} data-node={IN} style="left:{inPos[0]}px;top:{inPos[1]}px;width:{IO_W}px" onpointerdown={(ev) => onIoDown(ev, IN)}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <span class="port out" data-port onpointerdown={(ev) => onPortDown(ev, IN, "out")} title="ここから線を引いてつなぐ"></span>
       <Icon name={isMaster ? "merge" : "plug"} />
       <b>入力</b><small>{inputLabel}</small>
     </div>
-    <div class="io" class:target={drag?.kind === "port" && drag.target === OUT} class:warn={!outConnected} data-node={OUT} style="left:{outPos[0]}px;top:{outPos[1]}px;width:{IO_W}px">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="io"
+      class:lifted={drag?.kind === "io" && drag.id === OUT && drag.moved}
+      class:target={drag?.kind === "port" && drag.target === OUT}
+      class:warn={!outConnected}
+      data-node={OUT}
+      style="left:{outPos[0]}px;top:{outPos[1]}px;width:{IO_W}px"
+      onpointerdown={(ev) => onIoDown(ev, OUT)}
+    >
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <span class="port in" data-port onpointerdown={(ev) => onPortDown(ev, OUT, "in")} title="ここへ線を引いてつなぐ"></span>
       {#if inCount(OUT) > 1}<span class="sum">{inCount(OUT)} 本</span>{/if}
       <Icon name="volume-2" />
       <b>出口</b><small>{outConnected ? outputLabel : "何もつながっていない(鳴らない)"}</small>
     </div>
-    <button class="add" style="left:{outPos[0] - GAP / 2 - 12}px;top:{TOP + PORT_Y + 24}px" onclick={(e) => (addMenu = at(e))} title="エフェクトを足す(出口の前に入る)" aria-label="エフェクトを足す"
+    <button class="add" style="left:{outPos[0] - GAP / 2 - 12}px;top:{outPos[1] + PORT_Y + 24}px" onclick={(e) => (addMenu = at(e))} title="エフェクトを足す(出口の前に入る)" aria-label="エフェクトを足す"
       ><Icon name="plus" size={14} /></button
     >
 
@@ -741,7 +802,7 @@
     {/if}
   </div>
 </div>
-<button class="btn sm arrange" onclick={arrange} title="置き場所を自動に戻す(鳴るカードはつながりの順、鳴らないカードは下に)"><Icon name="layout-grid" />整列</button>
+<button class="btn sm arrange" onclick={arrange} title="置き場所を自動に戻す(入力と出口も。鳴るカードはつながりの順、鳴らないカードは下に)"><Icon name="layout-grid" />整列</button>
 </div>
 
 {#if menu || addMenu}
@@ -938,6 +999,17 @@
     align-items: center;
     gap: 2px;
     z-index: 1;
+  }
+
+  .io {
+    cursor: grab;
+  }
+
+  .io.lifted {
+    cursor: grabbing;
+    z-index: 4;
+    border-color: var(--accent);
+    box-shadow: 0 16px 30px rgba(0, 0, 0, 0.6);
   }
 
   .io.target {

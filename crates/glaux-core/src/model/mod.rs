@@ -14,7 +14,7 @@ pub use clip::{
     LEGATO_MS_RANGE, MAX_PITCH_CENTS, MAX_PITCH_POINTS,
 };
 pub use param::{ParamMap, ParamPath, ParamRange, ParamSpec, ParamValue};
-pub use routing::{FxLink, FxNode};
+pub use routing::{FxIoPos, FxLink, FxNode};
 pub use track::{Device, Effect, EffectUi, MasterBus, PluginSource, Send, Track, TrackKind};
 
 pub(crate) use clip::sort_notes;

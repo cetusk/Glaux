@@ -680,6 +680,36 @@ impl Project {
                     changes: vec![Change::EffectsChanged { track }],
                 })
             }
+            SetFxIoPos { track, pos } => {
+                if pos.is_some_and(|p| {
+                    p.input
+                        .iter()
+                        .chain(p.output.iter())
+                        .any(|v| !v.is_finite())
+                }) {
+                    return Err(CoreError::OutOfRange(format!("fx io pos {pos:?}")));
+                }
+                let (slot, change) = match track {
+                    Some(tid) => {
+                        let t = self
+                            .track_mut(tid)
+                            .ok_or_else(|| CoreError::TrackNotFound(tid.clone()))?;
+                        (
+                            &mut t.fx_io_pos,
+                            Change::EffectsChanged { track: tid.clone() },
+                        )
+                    }
+                    None => (&mut self.master.fx_io_pos, Change::MasterChanged),
+                };
+                let old = std::mem::replace(slot, *pos);
+                Ok(Applied {
+                    inverse: SetFxIoPos {
+                        track: track.clone(),
+                        pos: old,
+                    },
+                    changes: vec![change],
+                })
+            }
             SetFxLinks { track, links } => {
                 let (effects, slot, change) = match track {
                     Some(tid) => {

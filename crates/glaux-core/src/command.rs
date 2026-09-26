@@ -9,7 +9,7 @@
 
 use crate::id::{AssetId, ClipId, FxId, NoteId, TrackId};
 use crate::model::{
-    Articulation, Asset, AutomationPoint, Clip, Device, Effect, FxLink, Note, ParamPath,
+    Articulation, Asset, AutomationPoint, Clip, Device, Effect, FxIoPos, FxLink, Note, ParamPath,
     ParamValue, PitchPoint, SectionMarker, Stretch, Track,
 };
 use crate::time::{TempoEvent, Tick, TimeSigEvent};
@@ -222,6 +222,12 @@ pub enum Command {
         track: Option<TrackId>,
         links: Option<Vec<FxLink>>,
     },
+    /// ノード表示での入力と出口の置き場所(`track` 省略でマスター、`pos: null` で自動に戻す)。音には関係しない
+    SetFxIoPos {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track: Option<TrackId>,
+        pos: Option<FxIoPos>,
+    },
     /// エフェクトの表示名・外してあるか・メモ・ノード表示での位置(トラック・マスターのどちらでも)
     SetEffectProp {
         id: FxId,
@@ -405,7 +411,7 @@ impl Command {
                 out.insert(T::Track(track.clone()));
                 out.insert(T::Track(target.clone()));
             }
-            SetFxLinks { track, .. } => {
+            SetFxLinks { track, .. } | SetFxIoPos { track, .. } => {
                 out.insert(match track {
                     Some(t) => T::Track(t.clone()),
                     None => T::Master,

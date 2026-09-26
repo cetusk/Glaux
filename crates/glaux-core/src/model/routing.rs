@@ -77,6 +77,13 @@ impl FxLink {
     }
 }
 
+/// ノード表示での入力と出口の置き場所 [x, y](画面の表示だけ。音には関係しない)
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct FxIoPos {
+    pub input: [f32; 2],
+    pub output: [f32; 2],
+}
+
 /// 実際に使う線の一覧。`links` が無ければ、並び順の直列(外してあるものを除く)を線にして返す。
 pub fn effective_links(effects: &[Effect], links: Option<&[FxLink]>) -> Vec<FxLink> {
     if let Some(l) = links {
