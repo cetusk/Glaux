@@ -509,6 +509,7 @@ pub enum EffectParams {
     DynamicEq(crate::dynamics::DynEqParams),
     /// 畳み込みリバーブ。本体([`crate::convolver::ConvEngine`])は再生データが持ち、エンジンが通す
     Convolution(ConvParams),
+    Resonance(crate::resonance::ResonanceParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -531,6 +532,7 @@ enum EffectKind {
     Width,
     DynamicEq,
     Convolution,
+    Resonance,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -575,6 +577,7 @@ pub struct EffectState {
     limiter: crate::limiter::LimiterState,
     width: crate::width::WidthState,
     dyn_eq: crate::dynamics::DynEqState,
+    resonance: crate::resonance::ResonanceState,
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -625,6 +628,7 @@ impl EffectState {
             limiter: Default::default(),
             width: Default::default(),
             dyn_eq: Default::default(),
+            resonance: Default::default(),
         }
     }
 
@@ -653,6 +657,7 @@ impl EffectState {
             EffectParams::Width(_) => EffectKind::Width,
             EffectParams::DynamicEq(_) => EffectKind::DynamicEq,
             EffectParams::Convolution(_) => EffectKind::Convolution,
+            EffectParams::Resonance(_) => EffectKind::Resonance,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -692,6 +697,7 @@ impl EffectState {
             self.limiter = Default::default();
             self.width = Default::default();
             self.dyn_eq = Default::default();
+            self.resonance.reset();
         }
     }
 
@@ -886,6 +892,7 @@ impl EffectState {
             EffectParams::DynamicEq(d) => self.dyn_eq.process(d, l, r, key),
             // 本体はエンジンが(再生データの畳み込みの本体で)通す
             EffectParams::Convolution(_) => (l, r),
+            EffectParams::Resonance(rp) => self.resonance.process(rp, l, r),
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1477,6 +1484,93 @@ pub static CONVOLUTION_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static RESONANCE_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "depth_db",
+        display_name: "深さ",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 18.0,
+            default: 6.0,
+            skew: None,
+        },
+        description: "共鳴を下げる量の上限。",
+    },
+    ParamSpec {
+        name: "threshold_db",
+        display_name: "しきい値",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 12.0,
+            default: 3.0,
+            skew: None,
+        },
+        description: "周りより何 dB 出ている所を共鳴とみなすか。小さいほど細かく効く。",
+    },
+    ParamSpec {
+        name: "width",
+        display_name: "周りの幅",
+        unit: Some("oct"),
+        range: ParamRange::Float {
+            min: 0.1,
+            max: 2.0,
+            default: 0.5,
+            skew: Some(0.6),
+        },
+        description: "共鳴かどうかを比べる周りの幅(オクターブ)。狭いと細い鳴きだけ、広いと広めの出っ張りも下げる。",
+    },
+    ParamSpec {
+        name: "low_hz",
+        display_name: "下の周波数",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 20.0,
+            max: 20000.0,
+            default: 200.0,
+            skew: Some(0.3),
+        },
+        description: "これより低い所は触らない。",
+    },
+    ParamSpec {
+        name: "high_hz",
+        display_name: "上の周波数",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 20.0,
+            max: 20000.0,
+            default: 12000.0,
+            skew: Some(0.3),
+        },
+        description: "これより高い所は触らない。",
+    },
+    ParamSpec {
+        name: "release_ms",
+        display_name: "戻り",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 10.0,
+            max: 1000.0,
+            default: 80.0,
+            skew: Some(0.5),
+        },
+        description: "共鳴が消えてから元に戻る速さ。",
+    },
+    ParamSpec {
+        name: "mix",
+        display_name: "ミックス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "効かせた音の割合。",
+    },
+];
+
 pub static COMPRESSOR_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "threshold_db",
@@ -2047,6 +2141,7 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "width" => Some(WIDTH_SPECS),
         "dynamic_eq" => Some(DYNAMIC_EQ_SPECS),
         "convolution" => Some(CONVOLUTION_SPECS),
+        "resonance" => Some(RESONANCE_SPECS),
         _ => None,
     }
 }
@@ -2167,6 +2262,13 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
             params: CONVOLUTION_SPECS,
             articulations: &[],
         },
+        crate::params::InstrumentInfo {
+            name: "resonance",
+            description: "共鳴抑制。周りより細く出っ張った帯域(耳につく鳴き・部屋の響きのこもり・ボーカルの刺さり)だけを、\
+                鳴っている間だけ自動で下げる。EQ で一点を削るより自然。約 21ms 遅れる(遅延補正される)。",
+            params: RESONANCE_SPECS,
+            articulations: &[],
+        },
     ]
 }
 
@@ -2239,6 +2341,7 @@ impl EffectParams {
         match self {
             EffectParams::Limiter(p) => p.latency(),
             EffectParams::Convolution(p) => p.latency,
+            EffectParams::Resonance(p) => p.latency(),
             _ => 0,
         }
     }
@@ -2359,6 +2462,28 @@ impl EffectParams {
                     }
                 }
                 *p = crate::dynamics::MultibandParams::new(r);
+            }
+            EffectParams::Resonance(p) => {
+                let (mut d, mut t, mut w, mut lo, mut hi, mut rel, mut m) = (
+                    p.depth_db,
+                    p.threshold_db,
+                    p.width,
+                    p.low_hz,
+                    p.high_hz,
+                    p.release_ms,
+                    p.mix,
+                );
+                match name {
+                    "depth_db" => d = v,
+                    "threshold_db" => t = v,
+                    "width" => w = v,
+                    "low_hz" => lo = v,
+                    "high_hz" => hi = v,
+                    "release_ms" => rel = v,
+                    "mix" => m = v,
+                    _ => return false,
+                }
+                *p = crate::resonance::ResonanceParams::new(d, t, lo, hi, rel, m, w, sample_rate);
             }
             EffectParams::Convolution(p) => match name {
                 "mix" => p.mix = v.clamp(0.0, 1.0),
@@ -2636,6 +2761,21 @@ pub fn bake_effect(
                 source_track,
             )))
         }
+        "resonance" => {
+            let s = RESONANCE_SPECS;
+            Some(EffectParams::Resonance(
+                crate::resonance::ResonanceParams::new(
+                    get(map, s, "depth_db"),
+                    get(map, s, "threshold_db"),
+                    get(map, s, "low_hz"),
+                    get(map, s, "high_hz"),
+                    get(map, s, "release_ms"),
+                    get(map, s, "mix"),
+                    get(map, s, "width"),
+                    sample_rate,
+                ),
+            ))
+        }
         "width" => {
             let s = WIDTH_SPECS;
             Some(EffectParams::Width(crate::width::WidthParams::new(
@@ -2729,6 +2869,8 @@ mod tests {
             ("width", "decorrelate", 0.4),
             ("dynamic_eq", "freq", 6000.0),
             ("dynamic_eq", "threshold_db", -20.0),
+            ("resonance", "depth_db", 9.0),
+            ("resonance", "low_hz", 400.0),
         ];
         let none = |_: &str| None;
         for (fx, name, v) in cases {

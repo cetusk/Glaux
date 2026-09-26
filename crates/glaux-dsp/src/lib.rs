@@ -29,6 +29,7 @@ mod multi;
 mod oversample;
 mod params;
 mod pluck;
+pub mod resonance;
 mod reverb;
 mod sampler;
 pub mod stretch;

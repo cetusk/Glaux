@@ -1586,7 +1586,7 @@ impl GlauxServer {
 
     #[tool(
         description = "楽器・エフェクトのパラメータ仕様と現在値を返す。つまみを理解する唯一の情報源。\
-        track_id を省略するとカタログ: 内蔵楽器(subtractive / drum / pluck / fm / wavetable 等)と内蔵エフェクト(eq / dynamic_eq / compressor / multiband / transient / limiter / width / reverb / delay / chorus / tape 等)の\
+        track_id を省略するとカタログ: 内蔵楽器(subtractive / drum / pluck / fm / wavetable 等)と内蔵エフェクト(eq / dynamic_eq / resonance / compressor / multiband / transient / limiter / width / reverb / delay / chorus / tape 等)の\
         全パラメータ仕様(範囲と聴感上の効果)と、今のマスターのエフェクトチェーン(master_effects)を返す。\
         track_id を指定するとそのトラックの現在のデバイスとエフェクトチェーン(spec + current)を返す。\
         音源の設定は set_device(例: {\"op\":\"set_device\",\"track\":\"trk_x\",\"device\":{\"type\":\"builtin\",\"name\":\"drum\"}})、\
