@@ -83,6 +83,9 @@ pub enum Speaker {
     Phone,
     /// ノート PC の内蔵スピーカー: 左右は狭く、150Hz より下と 12kHz より上を削る
     Laptop,
+    /// ヘッドホンで、前に置いた 2 本のスピーカー(左右 30°)で聴いているように。
+    /// 頭を球とみなした模型(Brown & Duda 1998)で、左右の耳への時間差と頭の陰を計算する(測定データは使わない)
+    Front,
 }
 
 impl Speaker {
@@ -91,6 +94,7 @@ impl Speaker {
             Speaker::Off => "off",
             Speaker::Phone => "phone",
             Speaker::Laptop => "laptop",
+            Speaker::Front => "front",
         }
     }
 
@@ -99,6 +103,7 @@ impl Speaker {
             "off" => Speaker::Off,
             "phone" => Speaker::Phone,
             "laptop" => Speaker::Laptop,
+            "front" => Speaker::Front,
             _ => return None,
         })
     }
@@ -108,6 +113,7 @@ impl Speaker {
             Speaker::Off => 0,
             Speaker::Phone => 1,
             Speaker::Laptop => 2,
+            Speaker::Front => 3,
         }
     }
 
@@ -115,6 +121,7 @@ impl Speaker {
         match b {
             1 => Speaker::Phone,
             2 => Speaker::Laptop,
+            3 => Speaker::Front,
             _ => Speaker::Off,
         }
     }
@@ -122,7 +129,7 @@ impl Speaker {
     /// (ハイパス、ローパス、山の周波数、山の高さ dB、左右の幅)
     fn design(self) -> (f32, f32, f32, f32, f32) {
         match self {
-            Speaker::Off => (20.0, 20_000.0, 1000.0, 0.0, 1.0),
+            Speaker::Off | Speaker::Front => (20.0, 20_000.0, 1000.0, 0.0, 1.0),
             Speaker::Phone => (300.0, 8000.0, 2500.0, 4.0, 0.0),
             Speaker::Laptop => (150.0, 12_000.0, 3000.0, 2.0, 0.5),
         }
@@ -138,10 +145,137 @@ struct SpeakerSim {
     bell: Option<glaux_dsp::SvfCoeffs>,
     width: f32,
     st: [[glaux_dsp::SvfState; 5]; 2],
+    /// 仮想スピーカー
+    front: FrontSpeakers,
+}
+
+/// 頭の半径(m)と音速(m/s)
+const HEAD_RADIUS: f32 = 0.0875;
+const SOUND_SPEED: f32 = 343.0;
+/// 仮想スピーカーの角度(左右 30°)
+const FRONT_ANGLE: f32 = std::f32::consts::PI / 6.0;
+/// 時間差の遅延線の長さ(192kHz で 2ms 足りる)
+const ITD_CAP: usize = 512;
+
+/// 球の頭の模型の 1 本の道(スピーカー → 耳): 頭の陰(1 次のシェルフ)と、回り込みの時間差
+#[derive(Clone, Copy, Default)]
+struct HeadPath {
+    /// 双一次変換した 1 次フィルタ(b0, b1, a1)
+    b0: f32,
+    b1: f32,
+    a1: f32,
+    x1: f32,
+    y1: f32,
+    delay: f32,
+}
+
+impl HeadPath {
+    /// `theta` = 耳から見た音の来る角度(0 = 耳の正面、π = 真裏)
+    fn new(theta: f32, sr: f32) -> Self {
+        // 頭の陰: H(s) = (1 + α s/(2ω0)) / (1 + s/(2ω0))、ω0 = c/a、
+        // α(θ) = (1 + αmin/2) + (1 − αmin/2)·cos(θ·180°/θmin)、αmin = 0.1、θmin = 150°
+        let alpha_min = 0.1f32;
+        let theta_min = 150f32.to_radians();
+        let alpha = (1.0 + alpha_min / 2.0)
+            + (1.0 - alpha_min / 2.0) * (theta * std::f32::consts::PI / theta_min).cos();
+        let w0 = SOUND_SPEED / HEAD_RADIUS;
+        // 双一次変換(s = 2·sr·(1 − z⁻¹)/(1 + z⁻¹))
+        let k = 2.0 * sr;
+        let t = 1.0 / (2.0 * w0);
+        let (n0, n1) = (1.0 + alpha * t * k, 1.0 - alpha * t * k);
+        let (d0, d1) = (1.0 + t * k, 1.0 - t * k);
+        // 時間差(耳の正面からの角度で): a/c·(1 − cos θ)(θ < 90°)、a/c·(θ − 90° + 1)(それより後ろ)
+        let half = std::f32::consts::FRAC_PI_2;
+        let tau = if theta < half {
+            HEAD_RADIUS / SOUND_SPEED * (1.0 - theta.cos())
+        } else {
+            HEAD_RADIUS / SOUND_SPEED * (theta - half + 1.0)
+        };
+        HeadPath {
+            b0: n0 / d0,
+            b1: n1 / d0,
+            a1: d1 / d0,
+            x1: 0.0,
+            y1: 0.0,
+            delay: tau * sr,
+        }
+    }
+
+    #[inline]
+    fn filter(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.b1 * self.x1 - self.a1 * self.y1;
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
+}
+
+/// 前に置いた 2 本のスピーカーを、ヘッドホンで聴く。固定長の配列だけで、係数はサンプルレートが変わったときに作り直す
+/// (オーディオスレッドでアロケーションしない)
+struct FrontSpeakers {
+    /// [左スピーカー → 左耳, 左 → 右耳, 右 → 左耳, 右 → 右耳]
+    paths: [HeadPath; 4],
+    /// 左右のスピーカーの音の遅延線
+    lines: [[f32; ITD_CAP]; 2],
+    pos: usize,
+    /// 係数を作ったサンプルレート(0 = まだ)
+    rate: u32,
+}
+
+impl Default for FrontSpeakers {
+    fn default() -> Self {
+        FrontSpeakers {
+            paths: Default::default(),
+            lines: [[0.0; ITD_CAP]; 2],
+            pos: 0,
+            rate: 0,
+        }
+    }
+}
+
+impl FrontSpeakers {
+    fn configure(&mut self, sr: f32) {
+        // 左スピーカー(−30°)は左耳(−90°)から 60°、右耳(+90°)から 120° の方向
+        let near = std::f32::consts::FRAC_PI_2 - FRONT_ANGLE;
+        let far = std::f32::consts::FRAC_PI_2 + FRONT_ANGLE;
+        let (n, f) = (HeadPath::new(near, sr), HeadPath::new(far, sr));
+        self.paths = [n, f, f, n];
+        self.lines = [[0.0; ITD_CAP]; 2];
+        self.rate = sr as u32;
+    }
+
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        self.lines[0][self.pos] = l;
+        self.lines[1][self.pos] = r;
+        let read = |line: &[f32; ITD_CAP], pos: usize, d: f32| {
+            let d = d.clamp(0.0, (ITD_CAP - 2) as f32);
+            let i = d.floor() as usize;
+            let t = d - i as f32;
+            let a = line[(pos + ITD_CAP - i) % ITD_CAP];
+            let b = line[(pos + ITD_CAP - i - 1) % ITD_CAP];
+            a + (b - a) * t
+        };
+        let mut ears = [0.0f32; 2];
+        for (k, p) in self.paths.iter_mut().enumerate() {
+            let (spk, ear) = (k / 2, k % 2);
+            let x = read(&self.lines[spk], self.pos, p.delay);
+            ears[ear] += p.filter(x);
+        }
+        self.pos = (self.pos + 1) % ITD_CAP;
+        // 真ん中の音が低音で 2 倍になる分を、左右どちらの音も極端に変わらない 1/√2 でならす
+        let g = std::f32::consts::FRAC_1_SQRT_2;
+        (ears[0] * g, ears[1] * g)
+    }
 }
 
 impl SpeakerSim {
     fn process(&mut self, speaker: Speaker, l: f32, r: f32, sr: f32) -> (f32, f32) {
+        if speaker == Speaker::Front {
+            if self.front.rate != sr as u32 {
+                self.front.configure(sr);
+            }
+            return self.front.process(l, r);
+        }
         let key = (speaker, sr as u32);
         if self.key != Some(key) {
             let (hp, lp, f, g, w) = speaker.design();
@@ -586,6 +720,41 @@ mod tests {
         // ノート PC は左右が残る(狭く)
         let lap = run(1000.0, Speaker::Laptop);
         assert!((lap.0 - lap.1).abs() > 0.05, "{lap:?}");
+    }
+
+    #[test]
+    fn front_speakers_reach_the_far_ear_later_and_darker() {
+        // 左だけの音: 右耳には少し遅れて(約 0.26ms 前後)、高域が弱く届く
+        let mut st = MonitorState::default();
+        let mut outs = Vec::new();
+        for i in 0..4800 {
+            let x = if i == 100 { 1.0 } else { 0.0 };
+            outs.push(st.apply(MonitorMode::Stereo, false, Speaker::Front, x, 0.0, 48_000.0));
+        }
+        let first = |ch: usize| {
+            outs.iter()
+                .position(|o| (if ch == 0 { o.0 } else { o.1 }).abs() > 1e-3)
+                .unwrap()
+        };
+        let (near, far) = (first(0), first(1));
+        assert!(
+            far > near + 5 && far < near + 25,
+            "左耳 {near} / 右耳 {far}"
+        );
+        // 高域(ナイキスト付近の交互の符号)は近い耳の方が大きい
+        let hf = |ch: usize| -> f32 {
+            outs.windows(2)
+                .map(|w| {
+                    let (a, b) = if ch == 0 {
+                        (w[0].0, w[1].0)
+                    } else {
+                        (w[0].1, w[1].1)
+                    };
+                    (a - b).abs()
+                })
+                .sum()
+        };
+        assert!(hf(0) > hf(1) * 1.5, "近い耳 {} / 遠い耳 {}", hf(0), hf(1));
     }
 
     #[test]

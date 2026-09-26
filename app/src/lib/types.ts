@@ -315,8 +315,8 @@ export interface TransportState {
 /** 聴き方: そのまま / 左右を足す / 左右の差だけ / 左右を入れ替え */
 export type MonitorMode = "stereo" | "mono" | "side" | "swap";
 
-/** 小さなスピーカーのシミュレーション: なし / スマホ / ノート PC */
-export type SpeakerSim = "off" | "phone" | "laptop";
+/** 聴く機器のシミュレーション: なし / スマホ / ノート PC / 前に置いたスピーカー(ヘッドホン用) */
+export type SpeakerSim = "off" | "phone" | "laptop" | "front";
 
 export type ChatEvent =
   | { kind: "started" }

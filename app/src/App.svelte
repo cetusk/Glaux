@@ -465,7 +465,7 @@
     const m = transport.monitor;
     if (!m) return null;
     const mode = { stereo: "", mono: "モノ", side: "サイド", swap: "左右入替" }[m.mode] ?? "";
-    const spk = { off: "", phone: "スマホ", laptop: "ノート PC" }[m.speaker ?? "off"] ?? "";
+    const spk = { off: "", phone: "スマホ", laptop: "ノート PC", front: "仮想スピーカー" }[m.speaker ?? "off"] ?? "";
     const parts = [mode, m.crossfeed ? "クロスフィード" : "", spk].filter(Boolean);
     return parts.length ? parts.join("+") : null;
   });

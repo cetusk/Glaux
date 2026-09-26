@@ -22,6 +22,11 @@
     { id: "off", label: "なし", title: "そのまま" },
     { id: "phone", label: "スマホ", title: "スマホの内蔵スピーカーで鳴らしたときの聞こえ方(モノラル、低音と高音が出ない)。低音が消えてもベースやキックが聞こえるかの確認に" },
     { id: "laptop", label: "PC", title: "ノート PC の内蔵スピーカーで鳴らしたときの聞こえ方(左右が狭く、低音が出ない)" },
+    {
+      id: "front",
+      label: "前",
+      title: "ヘッドホンで、前に置いた 2 本のスピーカー(左右 30°)で聴いているように。頭の模型で左右の耳への時間差と頭の陰を計算する(ヘッドホン特有の頭の中で鳴る感じをやわらげる)",
+    },
   ];
   function setSpeaker(s: SpeakerSim) {
     api
@@ -237,7 +242,7 @@
         title="クロスフィード: ヘッドホンで聴くときに、左右の極端な分離をやわらげる(スピーカーで聴いたときの広がりに近づける)"
         onclick={() => setMode(mode, !crossfeed)}>クロスフィード</button
       >
-      <div class="spk" role="radiogroup" aria-label="小さなスピーカー" title="小さなスピーカーで鳴らしたときの聞こえ方(設計値のフィルタ。実際の機種の測定ではない)">
+      <div class="spk" role="radiogroup" aria-label="小さなスピーカー" title="聴く機器で鳴らしたときの聞こえ方(設計値のフィルタと頭の模型。実際の機種の測定ではない)">
         {#each SPEAKERS as s (s.id)}
           <button
             class="btn sm"
@@ -418,7 +423,7 @@
 
   .spk {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1.1fr 1fr 0.8fr;
     gap: 3px;
     padding: 4px 6px 0;
   }
