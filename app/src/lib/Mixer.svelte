@@ -9,6 +9,7 @@
   import { deviceIcon, deviceName } from "./instruments";
   import NodeView from "./NodeView.svelte";
   import FxPresetShelf from "./FxPresetShelf.svelte";
+  import MonitorStrip from "./MonitorStrip.svelte";
   import { instrumentPickerStore, MASTER_FOCUS_ID, soundDesignStore, viewStore } from "./selection.svelte";
   import { requestFastPolling, transportStore } from "./transport.svelte";
   import type { EffectView, FxLink, Project, ProjectEffect, Track } from "./types";
@@ -303,6 +304,7 @@
       {@render slots(project.master.effects, project.master.fx_links, MASTER_FOCUS_ID)}
       <div class="s-bottom">{@render fader(null)}</div>
     </div>
+    <MonitorStrip />
   </div>
 
   <div class="split" role="separator" aria-orientation="horizontal" title="ドラッグで高さを変える" onpointerdown={startSplit}></div>

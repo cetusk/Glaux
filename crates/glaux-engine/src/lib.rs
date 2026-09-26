@@ -24,6 +24,7 @@ pub mod data;
 pub mod export;
 pub mod loudness;
 pub mod midi;
+pub mod monitor;
 pub mod output;
 pub mod plugins;
 pub mod record;

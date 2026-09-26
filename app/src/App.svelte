@@ -455,6 +455,23 @@
     }
   }
 
+  /** 聴き方を切り替えている(モノ・サイド・入替・クロスフィード)。忘れないよう再生ボタンの横に出す */
+  const monitorLabel = $derived.by(() => {
+    const m = transport.monitor;
+    if (!m) return null;
+    const mode = { stereo: "", mono: "モノ", side: "サイド", swap: "左右入替" }[m.mode] ?? "";
+    const parts = [mode, m.crossfeed ? "クロスフィード" : ""].filter(Boolean);
+    return parts.length ? parts.join("+") : null;
+  });
+  async function resetMonitor() {
+    try {
+      await api.transportSetMonitor("stereo", false);
+      await pollTransport();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   async function toggleMetronome() {
     if (!transport.available) return;
     try {
@@ -797,6 +814,15 @@
           title="メトロノーム(拍ごとにクリック。小節頭は高い音)"
           ><Icon name="metronome" /></button
         >
+        {#if monitorLabel}
+          <button
+            class="btn icon monitor-on"
+            aria-label={`聴き方: ${monitorLabel}(押すとステレオに戻す)`}
+            onclick={resetMonitor}
+            title={`聴き方を「${monitorLabel}」に切り替えています(ミキサーのモニター列)。押すとふつうのステレオに戻します。書き出しには入りません`}
+            ><Icon name="headphones" /></button
+          >
+        {/if}
         <button
           class="btn icon rec"
           aria-label={transport.recording ? "録音を止める" : "録音"}
@@ -1179,6 +1205,12 @@
     border-color: var(--danger);
     background: color-mix(in srgb, var(--danger) 25%, var(--bg-panel));
     animation: rec-blink 1s ease-in-out infinite;
+  }
+
+  .monitor-on {
+    background: #5a4520;
+    border-color: #e0b050;
+    color: #ffe2a8;
   }
 
   @keyframes rec-blink {

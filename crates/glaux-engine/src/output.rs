@@ -546,6 +546,25 @@ impl EngineHandle {
         self.shared.click_only.store(on, Ordering::Release);
     }
 
+    /// 聴き方(モノ・サイド・左右入れ替え)とクロスフィード。出力デバイスへの音だけに掛かる
+    pub fn set_monitor(&self, mode: crate::monitor::MonitorMode, crossfeed: bool) {
+        self.shared.monitor.set(mode, crossfeed);
+    }
+
+    pub fn monitor(&self) -> (crate::monitor::MonitorMode, bool) {
+        self.shared.monitor.get()
+    }
+
+    /// マスターの左右の相関(ほぼ無音なら None)
+    pub fn correlation(&self) -> Option<f32> {
+        self.shared.monitor.correlation()
+    }
+
+    /// ゴニオメーターの点(古い順の (左, 右))
+    pub fn scope_points(&self) -> Vec<(f32, f32)> {
+        self.shared.monitor.scope_points()
+    }
+
     pub fn set_metronome(&self, on: bool) {
         self.shared.metronome.store(on, Ordering::Release);
     }

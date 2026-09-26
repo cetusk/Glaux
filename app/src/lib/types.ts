@@ -280,9 +280,15 @@ export interface TransportState {
   tick: number;
   /** ループ区間 [開始tick, 終了tick]。null ならループなし */
   loop?: [number, number] | null;
-  /** ミキサーのメーター: トラック(プロジェクトの並び)とマスターの直近のピーク(dBFS、無音は -120) */
-  levels?: { tracks: number[]; master: number };
+  /** ミキサーのメーター: トラック(プロジェクトの並び)とマスターの直近のピーク(dBFS、無音は -120)。
+   *  correlation はマスターの左右の相関(-1..1、ほぼ無音なら null) */
+  levels?: { tracks: number[]; master: number; correlation?: number | null };
+  /** 聴き方(出力デバイスへの音だけ。書き出しには入らない) */
+  monitor?: { mode: MonitorMode; crossfeed: boolean };
 }
+
+/** 聴き方: そのまま / 左右を足す / 左右の差だけ / 左右を入れ替え */
+export type MonitorMode = "stereo" | "mono" | "side" | "swap";
 
 export type ChatEvent =
   | { kind: "started" }

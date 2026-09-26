@@ -121,6 +121,8 @@ pub struct Shared {
     pub plugin_slots: Arc<[PluginSlot; MAX_PLUGINS]>,
     /// トラック・マスターの直近のピーク(ミキサーのメーター用)。[`Levels`] 参照
     pub levels: Levels,
+    /// 聴き方の切り替えと、相関・ゴニオメーター([`crate::monitor`])
+    pub monitor: crate::monitor::MonitorShared,
 }
 
 /// トラック(フェーダー・パンの後)とマスター(マスターの音量の後、クリップ防止の前)の直近のピーク。
@@ -264,6 +266,7 @@ impl Shared {
             pos_nanos: AtomicU64::new(0),
             plugin_slots: Arc::new(crate::plugins::new_slots()),
             levels: Levels::default(),
+            monitor: Default::default(),
         }
     }
 
@@ -519,6 +522,8 @@ pub struct Renderer {
     gain_smooth: [(f32, f32); MAX_TRACKS],
     /// マスター音量のなめらかにした値(同上)
     master_smooth: f32,
+    /// 相関・ゴニオメーターの測定と、聴き方の切り替え([`crate::monitor`])
+    monitor: crate::monitor::MonitorState,
     /// device オートメーション適用済みの楽器パラメータ(トラック別スクラッチ)。
     /// レーンのあるトラックだけブロック頭でベースからコピーして値を上書きする。
     /// 起動時に確保し、以後アロケーションしない(clone は Arc 参照カウントのみ)
@@ -659,6 +664,7 @@ impl Renderer {
             master_cursor: 0,
             gain_smooth: [(f32::NAN, f32::NAN); MAX_TRACKS],
             master_smooth: f32::NAN,
+            monitor: Default::default(),
             inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
             fx_scratch: vec![None; MAX_EFFECT_SLOTS],
             next_event: 0,
@@ -1888,6 +1894,8 @@ impl Renderer {
         }
         let mut peak = 0.0f32;
         let k = gain_smooth_coef(sr);
+        let (mon_mode, xfeed) = self.shared.monitor.get();
+        let monitoring = mon_mode != crate::monitor::MonitorMode::Stereo || xfeed;
         for f in 0..frames {
             let pos = self.blk_pos[f];
             if f > 0 && pos < self.blk_pos[f - 1] {
@@ -1910,8 +1918,16 @@ impl Renderer {
             let master_amp = self.master_smooth;
             let click = self.blk_click[f];
             let base = f * channels;
-            let (ol, or) = (l[f] * master_amp + click, r[f] * master_amp + click);
-            peak = peak.max(ol.abs()).max(or.abs());
+            let (ol, or) = (l[f] * master_amp, r[f] * master_amp);
+            // メーター・相関はミックスそのもの(聴き方の切り替えの前)で測る
+            self.monitor.measure(&self.shared.monitor, ol, or, sr);
+            peak = peak.max((ol + click).abs()).max((or + click).abs());
+            let (ol, or) = if monitoring {
+                self.monitor.apply(mon_mode, xfeed, ol, or, sr)
+            } else {
+                (ol, or)
+            };
+            let (ol, or) = (ol + click, or + click);
             if clip {
                 out[base] = soft_clip(ol);
                 if channels >= 2 {
@@ -1925,6 +1941,7 @@ impl Renderer {
             }
         }
         Levels::note(&self.shared.levels.master, peak);
+        self.monitor.publish(&self.shared.monitor);
         self.mix_l = l;
         self.mix_r = r;
     }

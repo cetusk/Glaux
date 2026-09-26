@@ -6,6 +6,7 @@ import type {
   AppInfo,
   ChatEvent,
   HistorySnapshot,
+  MonitorMode,
   PresetInfo,
   ProjectSnapshot,
   RecentProject,
@@ -374,6 +375,16 @@ export function recordStart(opts: {
 
 export function transportSetMetronome(on: boolean): Promise<void> {
   return invoke("transport_set_metronome", { on });
+}
+
+/** 聴き方とクロスフィード(出力デバイスへの音だけ。書き出しには入らない) */
+export function transportSetMonitor(mode: MonitorMode, crossfeed: boolean): Promise<void> {
+  return invoke("transport_set_monitor", { mode, crossfeed });
+}
+
+/** ゴニオメーターの点(古い順の [左, 右]) */
+export function transportScope(): Promise<[number, number][]> {
+  return invoke("transport_scope");
 }
 
 /** 録音を止めて音声クリップとして配置する。trackId 省略で最初の音声トラック(無ければ新設)。

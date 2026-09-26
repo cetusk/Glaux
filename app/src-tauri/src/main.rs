@@ -1810,7 +1810,7 @@ async fn revert_turn(state: State<'_, AppState>, since: Option<String>) -> Resul
 /// ミキサーのメーター: トラック(プロジェクトの並び)とマスターの直近のピーク(dBFS)
 fn levels_json(e: &EngineHandle) -> Value {
     let (tracks, master) = e.take_levels();
-    json!({ "tracks": tracks, "master": master })
+    json!({ "tracks": tracks, "master": master, "correlation": e.correlation() })
 }
 
 #[tauri::command]
@@ -1827,6 +1827,10 @@ fn transport_state(state: State<'_, AppState>) -> Value {
             "input_monitor": e.input_monitoring(),
             "dsp": e.take_stats(),
             "levels": levels_json(e),
+            "monitor": {
+                "mode": e.monitor().0.name(),
+                "crossfeed": e.monitor().1,
+            },
             "tick": e.playhead_tick(),
             "loop": e.loop_region().map(|(s, gl_end)| json!([s, gl_end])),
         }),
@@ -1850,6 +1854,30 @@ fn transport_set_loop(
 fn transport_clear_loop(state: State<'_, AppState>) -> Result<(), String> {
     state.engine()?.clear_loop();
     Ok(())
+}
+
+/// 聴き方(stereo / mono / side / swap)とクロスフィード。書き出しには入らない
+#[tauri::command]
+fn transport_set_monitor(
+    state: State<'_, AppState>,
+    mode: String,
+    crossfeed: bool,
+) -> Result<(), String> {
+    let mode = glaux_engine::monitor::MonitorMode::from_name(&mode)
+        .ok_or_else(|| format!("聴き方「{mode}」は分かりません"))?;
+    state.engine()?.set_monitor(mode, crossfeed);
+    Ok(())
+}
+
+/// ゴニオメーターの点(古い順の [左, 右])
+#[tauri::command]
+fn transport_scope(state: State<'_, AppState>) -> Result<Vec<[f32; 2]>, String> {
+    Ok(state
+        .engine()?
+        .scope_points()
+        .into_iter()
+        .map(|(l, r)| [l, r])
+        .collect())
 }
 
 #[tauri::command]
@@ -2339,6 +2367,8 @@ fn main() -> Result<()> {
             calibrate_start,
             calibrate_stop,
             transport_set_metronome,
+            transport_set_monitor,
+            transport_scope,
             send_chat,
             cancel_chat,
             reset_chat,
