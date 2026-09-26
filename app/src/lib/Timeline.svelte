@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
@@ -19,6 +20,9 @@
     pianoRollStore,
     selectionStore,
     soundDesignStore,
+    timelineZoom,
+    TIMELINE_ZOOM_MAX,
+    TIMELINE_ZOOM_MIN,
   } from "./selection.svelte";
   import Icon from "./Icon.svelte";
   import { flip } from "svelte/animate";
@@ -37,9 +41,15 @@
     onSeek?: (tick: number) => void;
   } = $props();
 
-  // 4/4 の 1 小節 = 96px となる密度。小節の実幅は拍子に応じて変わる(7/8 は狭い)
+  // 拡大率 1 で 4/4 の 1 小節 = 96px となる密度。小節の実幅は拍子に応じて変わる(7/8 は狭い)
   const PX_PER_WHOLE = 96;
-  const pxPerTick = $derived(PX_PER_WHOLE / (project.ppq * 4));
+  const pxPerTick = $derived((PX_PER_WHOLE * timelineZoom.value) / (project.ppq * 4));
+  /// 小節番号を何小節おきに出すか(詰まって重ならないように、番号の間を 28px 以上あける)
+  const barLabelEvery = $derived.by(() => {
+    const barPx = PX_PER_WHOLE * timelineZoom.value;
+    for (const n of [1, 2, 4, 8, 16, 32]) if (barPx * n >= 28) return n;
+    return 64;
+  });
 
   const endTick = $derived.by(() => {
     let end = 0;
@@ -77,6 +87,57 @@
   }
 
   const HEAD_W = 200;
+
+  // ---- 横の拡大・縮小(Ctrl+ホイールはカーソルの下の位置を保つ。ボタンは画面の左端を保つ) ----
+
+  /// 拡大率を変える。`anchorX` はスクローラーの左端からの画面上の位置(そこにある時刻を動かさない)
+  function setZoom(next: number, anchorX?: number) {
+    const scroller = root?.parentElement;
+    const z = Math.min(TIMELINE_ZOOM_MAX, Math.max(TIMELINE_ZOOM_MIN, next));
+    if (!scroller || z === timelineZoom.value) {
+      timelineZoom.value = z;
+      return;
+    }
+    const ax = anchorX ?? HEAD_W;
+    const tickAt = Math.max(0, (scroller.scrollLeft + ax - HEAD_W) / pxPerTick);
+    timelineZoom.value = z;
+    // 幅が変わったあとで位置を合わせる
+    tick().then(() => {
+      scroller.scrollLeft = Math.max(0, HEAD_W + tickAt * pxPerTick - ax);
+    });
+  }
+
+  function zoomBy(factor: number) {
+    setZoom(timelineZoom.value * factor);
+  }
+
+  /// 曲全体(クリップのある所まで)が横に収まる拡大率にする
+  function zoomToFit() {
+    const scroller = root?.parentElement;
+    if (!scroller) return;
+    const end = Math.max(endTick, project.ppq * 4 * 4);
+    const avail = Math.max(100, scroller.clientWidth - HEAD_W - 24);
+    setZoom((avail / end) * ((project.ppq * 4) / PX_PER_WHOLE));
+    tick().then(() => (scroller.scrollLeft = 0));
+  }
+
+  function onWheel(e: WheelEvent) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    const scroller = root?.parentElement;
+    if (!scroller) return;
+    const x = e.clientX - scroller.getBoundingClientRect().left;
+    if (x < HEAD_W) return;
+    // ホイール 1 目盛り(100)で約 1.25 倍。タッチパッドの細かい量にもなめらかに
+    setZoom(timelineZoom.value * Math.exp(-e.deltaY * 0.0022), x);
+  }
+
+  $effect(() => {
+    const el = root;
+    if (!el) return;
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  });
   /// セクション行の高さ(18px + 下線 1px)。ルーラーはこの下に固定する
   const SECTION_ROW_H = 19;
   const playheadPx = $derived(HEAD_W + playheadTick * pxPerTick);
@@ -1437,7 +1498,20 @@
 
   <!-- 小節ルーラー(クリックでシーク、ドラッグで範囲選択) -->
   <div class="ruler-row" style="top:{project.sections && project.sections.length > 0 ? SECTION_ROW_H : 0}px">
-    <div class="track-head ruler-head"></div>
+    <div class="track-head ruler-head">
+      <div class="zoom" title="横の拡大・縮小(タイムラインの上で Ctrl+ホイールでも)">
+        <button class="btn sm icon-only" onclick={() => zoomBy(1 / 1.5)} disabled={timelineZoom.value <= TIMELINE_ZOOM_MIN} aria-label="縮小" title="縮小"
+          ><Icon name="zoom-out" size={13} /></button
+        >
+        <button class="btn sm icon-only" onclick={() => zoomBy(1.5)} disabled={timelineZoom.value >= TIMELINE_ZOOM_MAX} aria-label="拡大" title="拡大"
+          ><Icon name="zoom-in" size={13} /></button
+        >
+        <button class="btn sm" onclick={zoomToFit} title="曲全体が横に収まるようにする">全体</button>
+        {#if Math.abs(timelineZoom.value - 1) > 0.01}
+          <button class="btn sm" onclick={() => setZoom(1)} title="元の拡大率(100%)に戻す">{Math.round(timelineZoom.value * 100)}%</button>
+        {/if}
+      </div>
+    </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="lane seekable"
@@ -1449,8 +1523,8 @@
       title="クリックで移動、ドラッグで範囲選択、右クリックでその小節から拍子を変更"
     >
       {#each barList as bar (bar.index)}
-        <div class="bar-mark" style="left:{bar.tick * pxPerTick}px">
-          {bar.index + 1}{#if chordAt.get(bar.tick)}<span class="chord-chip">{chordAt.get(bar.tick)}</span>{/if}{#if bar.sigChange}<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions --><span
+        <div class="bar-mark" class:quiet={bar.index % barLabelEvery !== 0} style="left:{bar.tick * pxPerTick}px">
+          {#if bar.index % barLabelEvery === 0}{bar.index + 1}{/if}{#if barLabelEvery === 1 && chordAt.get(bar.tick)}<span class="chord-chip">{chordAt.get(bar.tick)}</span>{/if}{#if bar.sigChange && barLabelEvery === 1}<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions --><span
               class="sig-chip"
               title="クリックで拍子を編集・削除"
               onpointerdown={(e) => e.stopPropagation()}
@@ -1989,6 +2063,25 @@
 
   .bar-mark {
     pointer-events: none;
+  }
+
+  /* 縮小して番号を間引いた小節は、区切りの線も薄く */
+  .bar-mark.quiet {
+    border-left-color: color-mix(in srgb, var(--border) 45%, transparent);
+  }
+
+  .zoom {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    height: 100%;
+    padding: 0 6px;
+  }
+
+  .zoom .btn {
+    height: 18px;
+    padding: 0 5px;
+    font-size: var(--fs-xs);
   }
 
   /* 小節のコード(推定)。小節番号の横に小さく */

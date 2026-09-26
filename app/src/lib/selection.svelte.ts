@@ -86,3 +86,8 @@ export const viewStore = $state<{
   mixerTrack: string | null;
   highlightFx: string | null;
 }>({ main: "timeline", mixerTrack: null, highlightFx: null });
+
+/// タイムラインの横の拡大率(1 = 4/4 の 1 小節が 96px)。ミキサーと行き来しても保つ
+export const timelineZoom = $state<{ value: number }>({ value: 1 });
+export const TIMELINE_ZOOM_MIN = 0.1;
+export const TIMELINE_ZOOM_MAX = 8;
