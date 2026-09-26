@@ -3,6 +3,8 @@
 //! - モニターの切り替え(モノ・サイド・左右入れ替え・クロスフィード)は、出力デバイスへ送る直前だけに掛ける。
 //!   書き出し・フリーズ・Godot はそれぞれ自分の [`crate::render::Shared`] を持つので、ここの設定は入らない
 //! - 相関とゴニオメーターの点は、マスターの音量の後(クリップ防止の前)の音で測る
+//! - ラウドネス(LUFS の M / S / I)・True Peak・スペクトルは、同じ音を輪のバッファに写しておき、
+//!   UI の問い合わせのたびに別のスレッドで計算する([`Meter`])
 //!
 //! オーディオスレッドはアトミックに書くだけ(アロケーション・ロックなし)。
 
@@ -72,6 +74,9 @@ impl MonitorMode {
 
 const XFEED_BIT: u32 = 1 << 8;
 
+/// ラウドネス・スペクトル用に残す音の長さ(フレーム。48kHz で約 0.68 秒。UI の問い合わせの間隔より十分長く)
+pub const AUDIO_RING: usize = 1 << 15;
+
 /// UI とオーディオスレッドで共有する部分
 pub struct MonitorShared {
     /// 下位 2 ビット = 聴き方、8 ビット目 = クロスフィード
@@ -82,6 +87,10 @@ pub struct MonitorShared {
     points: [AtomicU32; SCOPE_LEN * 2],
     /// 次に書く点の位置
     write: AtomicU32,
+    /// マスターの音(左, 右 の f32 ビット列を交互に)。輪のバッファ
+    audio: Box<[AtomicU32]>,
+    /// 書いたフレームの総数(輪の中の位置は AUDIO_RING で割った余り)
+    audio_written: std::sync::atomic::AtomicU64,
 }
 
 impl Default for MonitorShared {
@@ -91,6 +100,8 @@ impl Default for MonitorShared {
             correlation: AtomicU32::new(f32::NAN.to_bits()),
             points: std::array::from_fn(|_| AtomicU32::new(0)),
             write: AtomicU32::new(0),
+            audio: (0..AUDIO_RING * 2).map(|_| AtomicU32::new(0)).collect(),
+            audio_written: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -130,6 +141,8 @@ impl MonitorShared {
 /// オーディオスレッド側の状態
 #[derive(Default)]
 pub struct MonitorState {
+    /// 輪のバッファに書いたフレームの総数(ブロックの終わりに公開する)
+    audio_written: u64,
     lr: f32,
     ll: f32,
     rr: f32,
@@ -146,6 +159,10 @@ impl MonitorState {
         self.lr += (l * r - self.lr) * a;
         self.ll += (l * l - self.ll) * a;
         self.rr += (r * r - self.rr) * a;
+        let i = (self.audio_written % AUDIO_RING as u64) as usize;
+        shared.audio[i * 2].store(l.to_bits(), Ordering::Relaxed);
+        shared.audio[i * 2 + 1].store(r.to_bits(), Ordering::Relaxed);
+        self.audio_written += 1;
         self.decim += 1;
         if self.decim >= SCOPE_DECIM {
             self.decim = 0;
@@ -166,6 +183,9 @@ impl MonitorState {
         };
         shared.correlation.store(corr.to_bits(), Ordering::Relaxed);
         shared.write.store(self.write as u32, Ordering::Release);
+        shared
+            .audio_written
+            .store(self.audio_written, Ordering::Release);
     }
 
     /// 出力デバイスへ送る直前の聴き方の切り替え
@@ -208,6 +228,167 @@ impl MonitorState {
     }
 }
 
+// ============================ メーター(RT の外) ============================
+
+/// 1/3 オクターブの帯域の中心(Hz。25Hz〜20kHz の 30 本)
+pub const SPECTRUM_BANDS: [f32; 30] = [
+    25., 31.5, 40., 50., 63., 80., 100., 125., 160., 200., 250., 315., 400., 500., 630., 800.,
+    1000., 1250., 1600., 2000., 2500., 3150., 4000., 5000., 6300., 8000., 10000., 12500., 16000.,
+    20000.,
+];
+/// スペクトルの FFT の長さ
+const FFT_LEN: usize = 8192;
+
+/// ラウドネスの読み(LUFS。測れないときは None)
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct LoudnessReading {
+    /// 瞬時(400ms)
+    pub momentary: Option<f64>,
+    /// 短期(3 秒)
+    pub short_term: Option<f64>,
+    /// 統合(測り始めてから。再生を始めるたびにやり直す)
+    pub integrated: Option<f64>,
+    /// 測り始めてからの True Peak の最大(dBTP)
+    pub true_peak_max: Option<f64>,
+    /// 直近の問い合わせの間の True Peak(dBTP)
+    pub true_peak: Option<f64>,
+}
+
+/// 輪のバッファの音を読んで、ラウドネスとスペクトルを求める(UI の問い合わせのスレッドで動く)
+pub struct Meter {
+    ebu: Option<ebur128::EbuR128>,
+    sample_rate: u32,
+    read: u64,
+    was_playing: bool,
+    reading: LoudnessReading,
+    scratch: Vec<f32>,
+    fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
+    window: Vec<f32>,
+}
+
+impl Default for Meter {
+    fn default() -> Self {
+        let mut planner = rustfft::FftPlanner::<f32>::new();
+        Meter {
+            ebu: None,
+            sample_rate: 0,
+            read: 0,
+            was_playing: false,
+            reading: LoudnessReading::default(),
+            scratch: Vec::new(),
+            fft: planner.plan_fft_forward(FFT_LEN),
+            window: (0..FFT_LEN)
+                .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / FFT_LEN as f32).cos())
+                .collect(),
+        }
+    }
+}
+
+fn finite(v: Result<f64, ebur128::Error>) -> Option<f64> {
+    v.ok()
+        .filter(|x| x.is_finite() && *x > -70.0)
+        .map(|x| (x * 10.0).round() / 10.0)
+}
+
+impl Meter {
+    /// 測り直す(統合ラウドネスと True Peak の最大を捨てる)
+    pub fn reset(&mut self) {
+        self.ebu = None;
+        self.reading = LoudnessReading::default();
+    }
+
+    /// 前回から増えた音を読んでラウドネスを進める。`playing` が止まっている → 再生の切り替わりで測り直す
+    pub fn update(
+        &mut self,
+        shared: &MonitorShared,
+        sample_rate: f64,
+        playing: bool,
+    ) -> LoudnessReading {
+        use ebur128::{EbuR128, Mode};
+        let sr = sample_rate.round().max(1.0) as u32;
+        if playing && !self.was_playing || sr != self.sample_rate {
+            self.reset();
+            self.sample_rate = sr;
+        }
+        self.was_playing = playing;
+        let written = shared.audio_written.load(Ordering::Acquire);
+        // 読み残しが輪より多ければ(問い合わせが途切れた)、新しい方だけ読む
+        let from = self.read.max(written.saturating_sub(AUDIO_RING as u64 - 1));
+        self.read = written;
+        if !playing || written <= from {
+            self.reading.true_peak = None;
+            return self.reading;
+        }
+        if self.ebu.is_none() {
+            self.ebu = EbuR128::new(2, sr, Mode::M | Mode::S | Mode::I | Mode::TRUE_PEAK).ok();
+        }
+        let Some(ebu) = self.ebu.as_mut() else {
+            return self.reading;
+        };
+        self.scratch.clear();
+        for n in from..written {
+            let i = (n % AUDIO_RING as u64) as usize;
+            self.scratch
+                .push(f32::from_bits(shared.audio[i * 2].load(Ordering::Relaxed)));
+            self.scratch.push(f32::from_bits(
+                shared.audio[i * 2 + 1].load(Ordering::Relaxed),
+            ));
+        }
+        if ebu.add_frames_f32(&self.scratch).is_err() {
+            return self.reading;
+        }
+        let db = |v: f64| (v > 0.0).then(|| ((20.0 * v.log10()) * 10.0).round() / 10.0);
+        let tp_now = (0..2)
+            .filter_map(|c| ebu.prev_true_peak(c).ok())
+            .fold(0.0f64, f64::max);
+        let tp_max = (0..2)
+            .filter_map(|c| ebu.true_peak(c).ok())
+            .fold(0.0f64, f64::max);
+        self.reading = LoudnessReading {
+            momentary: finite(ebu.loudness_momentary()),
+            short_term: finite(ebu.loudness_shortterm()),
+            integrated: finite(ebu.loudness_global()),
+            true_peak_max: db(tp_max),
+            true_peak: db(tp_now),
+        };
+        self.reading
+    }
+
+    /// 直近 8192 フレームのスペクトル(1/3 オクターブ、dB。フルスケールのサイン波が 0dB)
+    pub fn spectrum(&mut self, shared: &MonitorShared, sample_rate: f64) -> Vec<f32> {
+        let written = shared.audio_written.load(Ordering::Acquire);
+        let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..FFT_LEN)
+            .map(|k| {
+                let n = written.wrapping_sub(FFT_LEN as u64) + k as u64;
+                let i = (n % AUDIO_RING as u64) as usize;
+                let l = f32::from_bits(shared.audio[i * 2].load(Ordering::Relaxed));
+                let r = f32::from_bits(shared.audio[i * 2 + 1].load(Ordering::Relaxed));
+                rustfft::num_complex::Complex::new((l + r) * 0.5 * self.window[k], 0.0)
+            })
+            .collect();
+        if written < FFT_LEN as u64 {
+            return vec![-120.0; SPECTRUM_BANDS.len()];
+        }
+        self.fft.process(&mut buf);
+        let bin_hz = sample_rate as f32 / FFT_LEN as f32;
+        // Hann 窓の山の高さ(N/4)の 2 乗 × 等価雑音帯域(1.5 ビン)で割ると、サイン波が帯域の中で 0dB になる
+        let norm = (FFT_LEN as f32 / 4.0).powi(2) * 1.5;
+        let edge = 2f32.powf(1.0 / 6.0);
+        SPECTRUM_BANDS
+            .iter()
+            .map(|&c| {
+                let lo = ((c / edge) / bin_hz).floor().max(1.0) as usize;
+                let hi = (((c * edge) / bin_hz).ceil() as usize).min(FFT_LEN / 2 - 1);
+                if lo > hi || c > sample_rate as f32 / 2.0 {
+                    return -120.0;
+                }
+                let p: f32 = buf[lo..=hi].iter().map(|z| z.norm_sqr()).sum();
+                (10.0 * (p / norm).max(1e-12).log10()).max(-120.0)
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +415,39 @@ mod tests {
             "90° ずれは 0"
         );
         assert!(corr_of(|_| (0.0, 0.0)).is_none(), "無音は測れない");
+    }
+
+    #[test]
+    fn meter_reads_loudness_and_spectrum() {
+        // ピーク -20dBFS の 1kHz(左右同じ)を 3 秒流す
+        let shared = MonitorShared::default();
+        let mut st = MonitorState::default();
+        let mut meter = Meter::default();
+        let amp = 0.1f32; // -20 dBFS のピーク
+        let mut last = LoudnessReading::default();
+        for block in 0..30 {
+            for i in 0..4800 {
+                let n = block * 4800 + i;
+                let x = (n as f32 * 1000.0 * std::f32::consts::TAU / 48_000.0).sin() * amp;
+                st.measure(&shared, x, x, 48_000.0);
+            }
+            st.publish(&shared);
+            last = meter.update(&shared, 48_000.0, true);
+        }
+        // サイン波ピーク -20dBFS の RMS は -23dB、左右 2ch の和で +3dB → 約 -20 LUFS
+        let i = last.integrated.unwrap();
+        assert!((i + 20.0).abs() < 1.0, "統合 {i}");
+        assert!((last.momentary.unwrap() - i).abs() < 0.5);
+        let tp = last.true_peak_max.unwrap();
+        assert!((tp + 20.0).abs() < 0.3, "True Peak {tp}");
+        let sp = meter.spectrum(&shared, 48_000.0);
+        let k = SPECTRUM_BANDS.iter().position(|b| *b == 1000.0).unwrap();
+        assert!((sp[k] + 20.0).abs() < 1.5, "1kHz の帯 {}", sp[k]);
+        assert!(sp[3] < sp[k] - 40.0, "離れた帯は小さい {}", sp[3]);
+        // 止めて再生し直すと測り直す
+        meter.update(&shared, 48_000.0, false);
+        let r = meter.update(&shared, 48_000.0, true);
+        assert!(r.integrated.is_none());
     }
 
     #[test]

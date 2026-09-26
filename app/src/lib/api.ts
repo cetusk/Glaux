@@ -382,6 +382,16 @@ export function transportSetMonitor(mode: MonitorMode, crossfeed: boolean): Prom
   return invoke("transport_set_monitor", { mode, crossfeed });
 }
 
+/** マスターの直近のスペクトル(1/3 オクターブ。帯域の中心 Hz と dB) */
+export function transportSpectrum(): Promise<{ bands: number[]; db: number[] }> {
+  return invoke("transport_spectrum");
+}
+
+/** ラウドネスメーターの統合値と True Peak の最大を測り直す */
+export function transportResetLoudness(): Promise<void> {
+  return invoke("transport_reset_loudness");
+}
+
 /** ゴニオメーターの点(古い順の [左, 右]) */
 export function transportScope(): Promise<[number, number][]> {
   return invoke("transport_scope");

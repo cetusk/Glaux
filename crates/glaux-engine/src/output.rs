@@ -34,6 +34,8 @@ pub struct EngineHandle {
     output_name: Arc<Mutex<String>>,
     /// 出力バッファの大きさ(フレーム)の希望と、実際に開いたときの様子
     buffer: Arc<Mutex<BufferInfo>>,
+    /// ラウドネス・スペクトルの計算(UI の問い合わせのスレッドで動く)
+    meter: Arc<Mutex<crate::monitor::Meter>>,
     /// 録音・入力テストに使う入力デバイス(None = OS の既定)
     input_device: Arc<Mutex<Option<String>>>,
     /// 入力テスト(録音せずレベルだけ見る)
@@ -582,6 +584,29 @@ impl EngineHandle {
         self.shared.monitor.correlation()
     }
 
+    /// マスターのラウドネス(M / S / I)と True Peak。前回から増えた音を読んで進める(再生を始めるたびに測り直す)
+    pub fn loudness(&self) -> crate::monitor::LoudnessReading {
+        let playing = self.shared.playing.load(Ordering::Acquire);
+        self.meter.lock().expect("meter lock").update(
+            &self.shared.monitor,
+            self.sample_rate(),
+            playing,
+        )
+    }
+
+    /// 統合ラウドネスと True Peak の最大を測り直す
+    pub fn reset_loudness(&self) {
+        self.meter.lock().expect("meter lock").reset();
+    }
+
+    /// マスターの直近のスペクトル(1/3 オクターブ、dB)。帯域の中心は `monitor::SPECTRUM_BANDS`
+    pub fn spectrum(&self) -> Vec<f32> {
+        self.meter
+            .lock()
+            .expect("meter lock")
+            .spectrum(&self.shared.monitor, self.sample_rate())
+    }
+
     /// ゴニオメーターの点(古い順の (左, 右))
     pub fn scope_points(&self) -> Vec<(f32, f32)> {
         self.shared.monitor.scope_points()
@@ -714,6 +739,7 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                 ctl,
                 output_name: Arc::new(Mutex::new(name)),
                 buffer: Arc::new(Mutex::new(opened.buffer)),
+                meter: Arc::new(Mutex::new(crate::monitor::Meter::default())),
                 input_device: Arc::new(Mutex::new(None)),
                 monitor: Arc::new(Mutex::new(None)),
                 tempo: Arc::new(Mutex::new(TempoMap::default())),
