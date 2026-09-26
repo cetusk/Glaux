@@ -1,6 +1,6 @@
 [package]
 name = "glaux-godot"
-version = "0.3.1"
+version = "0.1.1"
 edition.workspace = true
 # godot(gdext)が要求する
 rust-version = "1.94"
