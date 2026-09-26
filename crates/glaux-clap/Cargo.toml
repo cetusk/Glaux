@@ -1,6 +1,6 @@
 [package]
 name = "glaux-clap"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 # clack が新しい Rust(edition 2024)を要求するため、workspace の 1.75 より新しい MSRV を個別指定
 rust-version = "1.88"
