@@ -23,9 +23,12 @@
     processingOrder,
     soundingSet,
     splitLink,
+    IR_FROM_FILE,
+    irChoices,
     trackChoices,
     unlinkBridging,
   } from "./fx";
+  import { loadIrFromFile } from "./ir";
   import { fxDrag, fxDropTargets, isOverShelf } from "./fxDrag.svelte";
   import { deviceName } from "./instruments";
   import { focusNow, keepInView } from "./menu";
@@ -754,8 +757,18 @@
                   aria-label={p.display_name}
                 />
               {:else if p.range.kind === "enum"}
-                {@const tc = trackChoices(p, project.tracks)}
-                <select value={String(p.current)} onchange={(ev) => commitParam(p, ev.currentTarget.value)} aria-label={p.display_name}>
+                {@const tc = trackChoices(p, project.tracks) ?? irChoices(p, project.assets)}
+                <select
+                  value={String(p.current)}
+                  onchange={(ev) => {
+                    const v = ev.currentTarget.value;
+                    if (v === IR_FROM_FILE) {
+                      ev.currentTarget.value = String(p.current);
+                      loadIrFromFile(isMaster ? null : targetId, p.path);
+                    } else commitParam(p, v);
+                  }}
+                  aria-label={p.display_name}
+                >
                   {#if tc}
                     {#each tc as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
                   {:else}

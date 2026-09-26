@@ -891,6 +891,45 @@ async fn refine_by_words_moves_eq_toward_the_words() {
 }
 
 #[tokio::test]
+async fn import_ir_adds_a_convolution_reverb() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_ir0001", "Keys")).await;
+    // IR: 0.5 秒の減衰する雑音
+    let mut rng: u32 = 11;
+    let ir: Vec<f32> = (0..24_000)
+        .map(|i| {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng as f32 / u32::MAX as f32 - 0.5) * (-(i as f32) / 5000.0).exp()
+        })
+        .collect();
+    let path = fx.dir.join("hall.wav");
+    write_mono_wav(&path, &ir, 48_000);
+    let v = ok_json(
+        &call(
+            &fx,
+            "import_ir",
+            json!({ "path": path.to_string_lossy(), "track_id": "trk_ir0001", "mix": 0.4 }),
+        )
+        .await,
+    );
+    assert!(v["asset"].as_str().unwrap().starts_with("sha256:"));
+    let p = ok_json(&call(&fx, "get_project", json!({ "include_notes": false })).await);
+    let fxs = &p["project"]["tracks"][0]["effects"];
+    assert_eq!(fxs[0]["name"], "convolution", "{fxs}");
+    assert_eq!(fxs[0]["params"]["ir"], v["asset"]);
+    // マスターにも(track_id 省略)
+    ok_json(&call(&fx, "import_ir", json!({ "path": path.to_string_lossy() })).await);
+    let p = ok_json(&call(&fx, "get_project", json!({ "include_notes": false })).await);
+    assert_eq!(p["project"]["master"]["effects"][0]["name"], "convolution");
+    // 1 回の undo で戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let p = ok_json(&call(&fx, "get_project", json!({ "include_notes": false })).await);
+    assert_eq!(p["project"]["master"]["effects"], json!([]));
+}
+
+#[tokio::test]
 async fn analyze_audio_per_track_reveals_balance() {
     let fx = setup().await;
     // 静かなリードと大きいベース

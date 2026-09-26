@@ -18,6 +18,7 @@
 //! - `fm`: FM シンセ(2 オペレーター + フィードバック。エレピ・ベル)
 //! - `wavetable`: ウェーブテーブルシンセ(波形の並びを行き来して音色を動かす)
 
+pub mod convolver;
 mod drum;
 mod dynamics;
 mod effects;
@@ -38,7 +39,8 @@ mod width;
 
 pub use drum::DrumParams;
 pub use effects::{
-    bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState, SvfCoeffs, SvfState,
+    bake_effect, convolution_length, effect_catalog, effect_params_spec, ConvParams, EffectParams,
+    EffectState, SvfCoeffs, SvfState,
 };
 pub use expr::{articulation_cents, articulation_moves_pitch, PitchCurve};
 pub use fm::{FmParams, FmVoice};

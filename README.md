@@ -17,7 +17,7 @@
 
 - **AI と共同作曲** — 相手は Claude(Claude Code)か GPT(Codex CLI)。人間と AI の編集は同じ履歴に残り、AI の 1 ターン分をまとめて取り消せます
 - **AI の「耳」** — 音量・帯域・キーとコード・リズム・音色を AI 自身が測り、確かめてから報告します
-- **音源とエフェクト** — 内蔵シンセ 7 種(シンセ・FM・ウェーブテーブル・ドラム・撥弦・サンプラー・SoundFont)、エフェクト 14 種(EQ・ダイナミック EQ・コンプ・マルチバンドコンプ・トランジェントシェイパー・リミッタ・ステレオの幅・リバーブ・アンプなど)、CLAP プラグイン(Surge XT など)
+- **音源とエフェクト** — 内蔵シンセ 7 種(シンセ・FM・ウェーブテーブル・ドラム・撥弦・サンプラー・SoundFont)、エフェクト 15 種(EQ・ダイナミック EQ・コンプ・マルチバンドコンプ・トランジェントシェイパー・リミッタ・ステレオの幅・リバーブ・畳み込みリバーブ・アンプなど)、CLAP プラグイン(Surge XT など)
 - **ミキサーとエフェクトのノード表示** — 全トラックを縦の列で並べて音量・パン・送り・メーターを見渡せます。エフェクトはカードを自由に置いて線でつなぎ、分けて混ぜる(原音 + リバーブなど)こともできます。つながっていないカードは鳴らずに取っておけ、よくできた設定は「エフェクトのプリセット」として別の曲でも使えます。右端のモニター列では、左右の広がり(ゴニオメーター・相関)を見て、モノ・サイド・左右入れ替え・ヘッドホン向けのクロスフィードに切り替えて聴けます(書き出しには入りません)
 - **打ち込みと録音** — ピアノロール、ドラムキット、フレット盤、MIDI キーボード、MIDI ファイルの読み書き、録音、鼻歌の譜起こし、パート分離、テンポ追従
 - **AI にやさしい設計** — プロジェクトは読める JSON。すべての編集が同じコマンドを通り、完全に undo できます。MCP サーバーを内蔵
@@ -90,7 +90,7 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 | 音色 | `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | エフェクトのプリセット | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |
 | CLAP | `list_plugins` `list_plugin_presets` `load_plugin_preset` `refine_plugin_params` |
-| 素材 | `import_sample` `import_audio_clip` `import_midi` `transcribe_audio` `separate_audio` |
+| 素材 | `import_sample` `import_ir` `import_audio_clip` `import_midi` `transcribe_audio` `separate_audio` |
 
 </details>
 

@@ -142,6 +142,11 @@ export function importSample(
   return invoke("import_sample", { trackId, path });
 }
 
+/** 畳み込みリバーブの響き(IR)を音声ファイルから取り込み、エフェクトの ir に設定する(1 undo)。trackId が null ならマスター */
+export function importIr(trackId: string | null, fxId: string, path: string): Promise<{ asset_id: string }> {
+  return invoke("import_ir", { trackId, fxId, path });
+}
+
 /** WAV を音声クリップとして音声トラックに置く(履歴 1 件)。 */
 export function importAudioClip(
   trackId: string,

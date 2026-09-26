@@ -172,6 +172,50 @@ async fn import_sample(
     Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }))
 }
 
+/// 畳み込みリバーブの響き(IR)を音声ファイルから取り込み、そのエフェクトの ir に設定する(履歴 1 件)。
+/// `track_id` が無ければマスターのエフェクト
+#[tauri::command]
+async fn import_ir(
+    state: State<'_, AppState>,
+    track_id: Option<String>,
+    fx_id: String,
+    path: String,
+) -> Result<Value, String> {
+    let fx = glaux_core::FxId::parse(&fx_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let dir = state.project_dir();
+    let imported =
+        glaux_mcp::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))?;
+    let mut cmds = Vec::new();
+    if !project.assets.contains_key(&imported.id) {
+        cmds.push(Command::AddAsset {
+            id: imported.id.clone(),
+            asset: imported.asset.clone(),
+        });
+    }
+    let param = glaux_core::ParamPath::effect(fx, "ir");
+    let value = glaux_core::ParamValue::Enum(imported.id.to_string());
+    cmds.push(match &track_id {
+        Some(t) => Command::SetParam {
+            track: glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?,
+            path: param,
+            value,
+        },
+        None => Command::SetMasterParam { path: param, value },
+    });
+    let file_name = std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "IR".to_owned());
+    let label = format!("畳み込みリバーブの響きを「{file_name}」に");
+    let (_, m) = state
+        .handle
+        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }))
+}
+
 /// WAV を音声クリップとして音声トラックに置く(履歴 1 件)。
 #[tauri::command]
 async fn import_audio_clip(
@@ -2385,6 +2429,7 @@ fn main() -> Result<()> {
             load_preset,
             get_track_params,
             import_sample,
+            import_ir,
             list_soundfonts,
             list_soundfont_presets,
             add_soundfont,

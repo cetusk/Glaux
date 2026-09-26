@@ -1631,7 +1631,12 @@ impl Renderer {
         bus_r: &mut [Vec<f32>],
     ) -> bool {
         // 残響テールが確実に消えるまでの猶予(これを超えて無音ならチェーンごと省く)
-        let tail_limit = (4.0 * sr) as u32;
+        // (畳み込みリバーブの IR は最長 8 秒なので、それがあるトラックは長めに待つ)
+        let long_tail = mix
+            .effects
+            .iter()
+            .any(|e| matches!(e.params, EffectParams::Convolution(_)));
+        let tail_limit = ((if long_tail { 9.0 } else { 4.0 }) * sr) as u32;
         let silent_before = self.track_silence[ti];
         self.track_silence[ti] = if any {
             0
@@ -1838,6 +1843,13 @@ impl Renderer {
             }
             let slot = fx.slot as usize;
             let params = self.fx_scratch[slot].unwrap_or(fx.params);
+            // 畳み込みリバーブは再生データの本体でブロックごとに通す
+            if let EffectParams::Convolution(c) = &params {
+                if let Some(eng) = data.conv.get(c.index as usize) {
+                    eng.process_block(&mut fl[..frames], &mut fr[..frames], c.mix, c.wet);
+                }
+                return;
+            }
             // サイドチェイン・ダイナミック EQ の検出信号: ソーストラックの生ミックス(エフェクト前)
             let key_track = params.key_source().map(|t| t as usize);
             let state = &mut self.effect_states[slot];
@@ -2669,6 +2681,7 @@ mod tests {
             sample_rate: 48_000.0,
             tempo: vec![],
             sigs: vec![],
+            conv: vec![],
         }
     }
 
@@ -2806,6 +2819,66 @@ mod tests {
         }
         let ratio = level_across_swap(&before, &after);
         assert!(ratio > 0.7, "途切れた: {ratio:.3}");
+    }
+
+    #[test]
+    fn convolution_reverb_uses_the_ir_asset_and_survives_rebuilds() {
+        use glaux_core::{Asset, AssetId, Effect, FxId, ParamValue};
+        let mut p = two_pads();
+        let asset = AssetId::from_sha256_hex(&"ab".repeat(32)).unwrap();
+        p.assets.insert(
+            asset.clone(),
+            Asset {
+                path: "audio/ir.wav".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                frames: 24_000,
+            },
+        );
+        let mut fx = Effect::builtin(FxId::new(), "convolution");
+        fx.params
+            .insert("ir".into(), ParamValue::Enum(asset.to_string()));
+        fx.params.insert("mix".into(), ParamValue::Float(1.0));
+        p.tracks[0].effects.push(fx);
+        // IR: 0.5 秒の減衰する雑音
+        let mut bank = crate::data::SampleBank::default();
+        bank.sync_with(
+            &p,
+            &mut |_| {
+                let mut r: u32 = 3;
+                Ok(glaux_dsp::SampleData::mono(
+                    (0..24_000)
+                        .map(|i| {
+                            r ^= r << 13;
+                            r ^= r >> 17;
+                            r ^= r << 5;
+                            (r as f32 / u32::MAX as f32 - 0.5) * (-(i as f32) / 4000.0).exp()
+                        })
+                        .collect(),
+                    48_000.0,
+                ))
+            },
+            &mut |_| Err("なし".into()),
+        );
+        let data = crate::data::build_playback_data(&p, 48_000.0, &bank);
+        assert_eq!(data.conv.len(), 1);
+        // 作り直しても同じ IR なら同じ本体(響きが途切れない)
+        let again = crate::data::build_playback_data(&p, 48_000.0, &bank);
+        assert!(Arc::ptr_eq(&data.conv[0], &again.conv[0]));
+        // 鳴らすと音が出て、ほかのトラックは畳み込みの遅れぶん遅らせる
+        let shared = Arc::new(Shared::new(data));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let out = render_block(&mut r, 48_000);
+        assert!(rms(&out) > 1e-4);
+        assert_eq!(r.pdc_delay(1), glaux_dsp::convolver::PART as u32);
+        // IR が無ければ素通し(本体は作らない)
+        let mut none = p.clone();
+        none.assets.clear();
+        let bank2 = crate::data::SampleBank::default();
+        assert!(crate::data::build_playback_data(&none, 48_000.0, &bank2)
+            .conv
+            .is_empty());
     }
 
     #[test]

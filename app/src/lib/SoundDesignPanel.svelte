@@ -10,7 +10,19 @@
   import { newClipId, newFxId } from "./ids";
   import { deviceIcon, deviceKind, deviceName } from "./instruments";
   import { fmtValue, fromPos, SLIDER_MAX, toPos } from "./params";
-  import { effectiveLinks, insertBeforeOutput, moveIndexFor, processingOrder, serialLinks, serialOrder, trackChoices, unlinkBridging } from "./fx";
+  import {
+    effectiveLinks,
+    insertBeforeOutput,
+    IR_FROM_FILE,
+    irChoices,
+    moveIndexFor,
+    processingOrder,
+    serialLinks,
+    serialOrder,
+    trackChoices,
+    unlinkBridging,
+  } from "./fx";
+  import { loadIrFromFile } from "./ir";
   import { keepInView } from "./menu";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
   import {
@@ -614,8 +626,18 @@
         {p.current ? "オン" : "オフ"}</label
       >
     {:else}
-      {@const tc = trackChoices(p, project.tracks)}
-      <select value={String(p.current)} onchange={(e) => commitParam(p, (e.currentTarget as HTMLSelectElement).value)} aria-label={p.display_name}>
+      {@const tc = trackChoices(p, project.tracks) ?? irChoices(p, project.assets)}
+      <select
+        value={String(p.current)}
+        onchange={(e) => {
+          const el = e.currentTarget as HTMLSelectElement;
+          if (el.value === IR_FROM_FILE) {
+            el.value = String(p.current);
+            loadIrFromFile(isMaster ? null : (track?.id ?? null), p.path);
+          } else commitParam(p, el.value);
+        }}
+        aria-label={p.display_name}
+      >
         {#if tc}
           {#each tc as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
         {:else}

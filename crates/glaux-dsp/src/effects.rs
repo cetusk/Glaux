@@ -507,6 +507,8 @@ pub enum EffectParams {
     Limiter(crate::limiter::LimiterParams),
     Width(crate::width::WidthParams),
     DynamicEq(crate::dynamics::DynEqParams),
+    /// 畳み込みリバーブ。本体([`crate::convolver::ConvEngine`])は再生データが持ち、エンジンが通す
+    Convolution(ConvParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -528,6 +530,7 @@ enum EffectKind {
     Limiter,
     Width,
     DynamicEq,
+    Convolution,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -649,6 +652,7 @@ impl EffectState {
             EffectParams::Limiter(_) => EffectKind::Limiter,
             EffectParams::Width(_) => EffectKind::Width,
             EffectParams::DynamicEq(_) => EffectKind::DynamicEq,
+            EffectParams::Convolution(_) => EffectKind::Convolution,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -880,6 +884,8 @@ impl EffectState {
             EffectParams::Limiter(m) => self.limiter.process(m, l, r),
             EffectParams::Width(w) => self.width.process(w, l, r),
             EffectParams::DynamicEq(d) => self.dyn_eq.process(d, l, r, key),
+            // 本体はエンジンが(再生データの畳み込みの本体で)通す
+            EffectParams::Convolution(_) => (l, r),
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1418,6 +1424,56 @@ pub static DYNAMIC_EQ_SPECS: &[ParamSpec] = &[
             トラック ID を入れると、そのトラックがこの帯域で鳴っている間だけ自分を下げる\
             (伴奏にボーカルのトラックを指定して 2〜4kHz を空ける、など)。\
             例: set_param path=fx/<fx_id>/source value=\"trk_vox001\"",
+    },
+];
+
+pub static CONVOLUTION_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "ir",
+        display_name: "響き(IR)",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &[],
+            default: "",
+        },
+        description: "畳み込む響き(インパルス応答)の音声素材の ID(sha256:…)。部屋・ホール・教会・スプリング・\
+            プレートなどを録った WAV を import_ir で取り込むと入る。空なら素通し。",
+    },
+    ParamSpec {
+        name: "mix",
+        display_name: "ミックス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.3,
+            skew: None,
+        },
+        description: "響きの割合。センド用のバスに挿すなら 1。",
+    },
+    ParamSpec {
+        name: "wet_db",
+        display_name: "響きの音量",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "響きの音量。IR ごとの大きさはそろえてある。",
+    },
+    ParamSpec {
+        name: "length",
+        display_name: "長さ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.05,
+            max: 1.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "IR の後ろを短くして、響きを短く切る(終わりはなめらかに消す)。変えると響きが一度切れる。",
     },
 ];
 
@@ -1990,6 +2046,7 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "limiter" => Some(LIMITER_SPECS),
         "width" => Some(WIDTH_SPECS),
         "dynamic_eq" => Some(DYNAMIC_EQ_SPECS),
+        "convolution" => Some(CONVOLUTION_SPECS),
         _ => None,
     }
 }
@@ -2103,7 +2160,42 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
             params: DYNAMIC_EQ_SPECS,
             articulations: &[],
         },
+        crate::params::InstrumentInfo {
+            name: "convolution",
+            description: "畳み込みリバーブ。実在の部屋・ホール・機材の響き(インパルス応答 IR の WAV)をそのまま音に重ねる。\
+                本物の空間の質感が欲しいときに(reverb より重い)。IR は import_ir で取り込む。約 11ms 遅れる(遅延補正される)。",
+            params: CONVOLUTION_SPECS,
+            articulations: &[],
+        },
     ]
+}
+
+/// 畳み込みリバーブのつまみ(本体の番号は再生データの中の位置)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConvParams {
+    pub index: u32,
+    pub mix: f32,
+    /// 響きの音量(リニア)
+    pub wet: f32,
+    pub latency: u32,
+}
+
+impl ConvParams {
+    /// つまみ(mix / wet_db)を読む。本体の番号と遅れは呼ぶ側が入れる
+    pub fn from_map(map: &ParamMap, index: u32, latency: u32) -> Self {
+        let s = CONVOLUTION_SPECS;
+        ConvParams {
+            index,
+            mix: get(map, s, "mix").clamp(0.0, 1.0),
+            wet: 10.0_f32.powf(get(map, s, "wet_db").clamp(-24.0, 12.0) / 20.0),
+            latency,
+        }
+    }
+}
+
+/// 畳み込みリバーブの IR の長さの設定(0.05〜1)
+pub fn convolution_length(map: &ParamMap) -> f32 {
+    get(map, CONVOLUTION_SPECS, "length").clamp(0.05, 1.0)
 }
 
 /// 選択肢のパラメータ(無ければ既定)
@@ -2146,6 +2238,7 @@ impl EffectParams {
     pub fn latency(&self) -> u32 {
         match self {
             EffectParams::Limiter(p) => p.latency(),
+            EffectParams::Convolution(p) => p.latency,
             _ => 0,
         }
     }
@@ -2267,6 +2360,11 @@ impl EffectParams {
                 }
                 *p = crate::dynamics::MultibandParams::new(r);
             }
+            EffectParams::Convolution(p) => match name {
+                "mix" => p.mix = v.clamp(0.0, 1.0),
+                "wet_db" => p.wet = db(v.clamp(-24.0, 12.0)),
+                _ => return false,
+            },
             EffectParams::DynamicEq(p) => {
                 let mut r = p.raw;
                 match name {

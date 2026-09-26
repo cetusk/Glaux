@@ -122,6 +122,18 @@ pub struct AnalyzeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ImportIrParams {
+    /// インパルス応答(IR)の音声ファイルの絶対パス(WAV / MP3 / FLAC など。部屋・ホール・機材の響きを録ったもの)
+    pub path: String,
+    /// 畳み込みリバーブを挿すトラックの ID。省略でマスター
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// 響きの割合(0〜1、既定 0.3。センド用のバスなら 1)
+    #[serde(default)]
+    pub mix: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct RefineByWordsParams {
     /// 追い込むトラックの ID
     pub track_id: String,
@@ -1712,6 +1724,81 @@ impl GlauxServer {
             v["tracks"] = serde_json::to_value(&tracks).map_err(|e| e.to_string())?;
         }
         Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "畳み込みリバーブを足す。インパルス応答(IR: 実在の部屋・ホール・教会・スプリング・プレートなどの響きを録った音声)を\
+        プロジェクトに取り込み、トラック(省略でマスター)に convolution エフェクトを挿す(1 回の undo で戻せる)。\
+        本物の空間の質感が欲しいときに。複数のトラックで同じ響きを使うなら、バスに mix 1 で挿して set_send で送るのが軽い。\
+        つまみ(mix / wet_db / length)は set_param で変えられる。約 11ms 遅れる(エンジンが遅延補正する)。"
+    )]
+    async fn import_ir(
+        &self,
+        params: Parameters<ImportIrParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("import_ir");
+        let p = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        let track = match &p.track_id {
+            Some(t) => {
+                let id = glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?;
+                if project.track(&id).is_none() {
+                    return Err(format!("トラックが見つかりません: {id}"));
+                }
+                Some(id)
+            }
+            None => None,
+        };
+        let dir = self.handle.project_dir().await?;
+        let imported =
+            crate::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
+        let mut cmds = Vec::new();
+        if !project.assets.contains_key(&imported.id) {
+            cmds.push(Command::AddAsset {
+                id: imported.id.clone(),
+                asset: imported.asset.clone(),
+            });
+        }
+        let mut effect = glaux_core::Effect::builtin(glaux_core::FxId::new(), "convolution");
+        effect.params.insert(
+            "ir".into(),
+            glaux_core::ParamValue::Enum(imported.id.to_string()),
+        );
+        if let Some(m) = p.mix {
+            effect.params.insert(
+                "mix".into(),
+                glaux_core::ParamValue::Float(m.clamp(0.0, 1.0)),
+            );
+        }
+        let name = std::path::Path::new(&p.path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        effect.ui.label = Some(format!("響き: {name}"));
+        let fx_id = effect.id.clone();
+        cmds.push(match &track {
+            Some(t) => Command::AddEffect {
+                track: t.clone(),
+                effect,
+                index: None,
+            },
+            None => Command::AddMasterEffect {
+                effect,
+                index: None,
+            },
+        });
+        let label = format!("畳み込みリバーブ「{name}」を足す");
+        let command = glaux_core::Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        Ok(JsonText(json!({
+            "fx_id": fx_id.to_string(),
+            "asset": imported.id.to_string(),
+            "seconds": imported.asset.frames as f64 / imported.asset.sample_rate.max(1) as f64,
+            "entry_id": entry_id.to_string(),
+            "project_version": m.project_version,
+        })))
     }
 
     #[tool(

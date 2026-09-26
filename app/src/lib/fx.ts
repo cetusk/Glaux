@@ -17,6 +17,7 @@ export const FX_COLORS: Record<string, string> = {
   limiter: "#d9534f",
   width: "#5fb3c9",
   dynamic_eq: "#6f86e8",
+  convolution: "#8f6fd6",
   sidechain: "#caa43a",
   clap: "#b07ce8",
 };
@@ -36,6 +37,7 @@ export const FX_KIND_JA: Record<string, string> = {
   limiter: "リミッタ",
   width: "幅",
   dynamic_eq: "ダイナミック EQ",
+  convolution: "畳み込みリバーブ",
   sidechain: "サイドチェイン",
 };
 
@@ -46,6 +48,22 @@ export function trackChoices(
 ): { value: string; label: string }[] | null {
   if (p.name !== "source" || p.range.kind !== "enum" || (p.range.choices?.length ?? 0) > 0) return null;
   return [{ value: "", label: "なし(自分の音)" }, ...tracks.map((t) => ({ value: t.id, label: t.name }))];
+}
+
+/** 選択肢の「ファイルから読み込む…」 */
+export const IR_FROM_FILE = "__file__";
+
+/** 選択肢が空の「響き(IR)」(畳み込みリバーブの ir)は、プロジェクトの音声素材から選ぶか、ファイルから読み込む */
+export function irChoices(
+  p: { name: string; range: { kind: string; choices?: readonly string[] } },
+  assets: Record<string, unknown>,
+): { value: string; label: string }[] | null {
+  if (p.name !== "ir" || p.range.kind !== "enum" || (p.range.choices?.length ?? 0) > 0) return null;
+  const items = Object.entries(assets).map(([id, a]) => {
+    const path = (a as { path?: string })?.path ?? id;
+    return { value: id, label: path.split(/[\\/]/).pop() ?? path };
+  });
+  return [{ value: "", label: "なし(素通し)" }, ...items, { value: IR_FROM_FILE, label: "ファイルから読み込む…" }];
 }
 
 /** 種類のキー(内蔵エフェクト名。CLAP は "clap") */

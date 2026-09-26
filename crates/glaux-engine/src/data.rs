@@ -326,6 +326,73 @@ pub struct PlaybackData {
     pub tempo: Vec<TempoSeg>,
     /// 拍子イベント(tick, 分子, 分母)。メトロノームの拍・小節頭の判定に使う
     pub sigs: Vec<(u64, u8, u8)>,
+    /// 畳み込みリバーブの本体(`EffectParams::Convolution` の `index` で引く)。
+    /// 同じ IR なら作り直しの間で使い回す(響きが途切れない)
+    pub conv: Vec<Arc<glaux_dsp::convolver::ConvEngine>>,
+}
+
+/// 畳み込みリバーブの本体の使い回し(エフェクト ID → (条件のハッシュ, 本体))。
+/// 再生エンジンの bank だけが持つ: 複製(オフラインの描き出し用)には渡さない
+/// (同じ本体を 2 つのレンダラが同時に回さないように)
+#[derive(Default)]
+pub struct ConvCache(
+    std::sync::Mutex<HashMap<glaux_core::FxId, (u64, Arc<glaux_dsp::convolver::ConvEngine>)>>,
+);
+
+impl Clone for ConvCache {
+    fn clone(&self) -> Self {
+        ConvCache::default()
+    }
+}
+
+/// 焼き込みの間に作る畳み込みリバーブの本体
+struct ConvBuild<'a> {
+    bank: &'a SampleBank,
+    out: std::cell::RefCell<Vec<Arc<glaux_dsp::convolver::ConvEngine>>>,
+}
+
+impl ConvBuild<'_> {
+    /// エフェクトの畳み込みの本体を用意して番号を返す(IR が無ければ None)
+    fn engine(&self, e: &Effect, sample_rate: f32) -> Option<glaux_dsp::ConvParams> {
+        let Some(glaux_core::ParamValue::Enum(ir)) = e.params.get("ir") else {
+            return None;
+        };
+        let asset = glaux_core::AssetId::parse(ir).ok()?;
+        let data = self.bank.get(&asset)?;
+        let length = glaux_dsp::convolution_length(&e.params);
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            ir.hash(&mut h);
+            length.to_bits().hash(&mut h);
+            sample_rate.to_bits().hash(&mut h);
+            h.finish()
+        };
+        let mut cache = self.bank.conv.0.lock().unwrap_or_else(|p| p.into_inner());
+        let eng = match cache.get(&e.id) {
+            Some((k, eng)) if *k == key => eng.clone(),
+            _ => {
+                let (l, r) = data.left_right();
+                let eng = Arc::new(glaux_dsp::convolver::ConvEngine::new(
+                    &l,
+                    &r,
+                    data.sample_rate,
+                    sample_rate,
+                    length,
+                ));
+                cache.insert(e.id.clone(), (key, eng.clone()));
+                eng
+            }
+        };
+        let mut out = self.out.borrow_mut();
+        let latency = eng.latency();
+        out.push(eng);
+        Some(glaux_dsp::ConvParams::from_map(
+            &e.params,
+            (out.len() - 1) as u32,
+            latency,
+        ))
+    }
 }
 
 /// メトロノームの次のクリック。
@@ -405,6 +472,8 @@ pub struct SampleBank {
     stretched: HashMap<glaux_core::ClipId, (u64, Arc<SampleData>)>,
     /// CLAP プラグインの持ち主(トラック・エフェクト)→ (スロット, 世代)。[`crate::plugins`] が決める
     pub plugin_slots: HashMap<crate::plugins::PluginOwner, (u32, u64)>,
+    /// 畳み込みリバーブの本体の使い回し(複製には渡さない)
+    conv: ConvCache,
 }
 
 /// 再生エンジンの bank([`SampleBank::for_offline`] 用。エンジンが終われば無効になる)
@@ -423,6 +492,7 @@ impl Default for SampleBank {
             waves: HashMap::new(),
             stretched: HashMap::new(),
             plugin_slots: HashMap::new(),
+            conv: ConvCache::default(),
         }
     }
 }
@@ -828,6 +898,7 @@ fn bake_one(
     next_slot: &mut u32,
     resolve_track: &dyn Fn(&str) -> Option<u32>,
     plugin_slots: &HashMap<crate::plugins::PluginOwner, (u32, u64)>,
+    conv: &ConvBuild,
 ) -> Option<BakedEffect> {
     if e.bypass {
         return None;
@@ -838,8 +909,12 @@ fn bake_one(
         }
         _ => None,
     };
+    let is_conv =
+        matches!(&e.source, glaux_core::PluginSource::Builtin { name } if name == "convolution");
     let params = match plugin {
         Some(_) => EffectParams::External,
+        // 畳み込みは本体を用意する(IR が無ければ素通し)
+        None if is_conv => EffectParams::Convolution(conv.engine(e, sample_rate)?),
         None => glaux_dsp::bake_effect(e, sample_rate, resolve_track)?,
     };
     if *next_slot as usize >= MAX_EFFECT_SLOTS {
@@ -868,6 +943,7 @@ fn bake_fx_plan(
     next_slot: &mut u32,
     resolve_track: &dyn Fn(&str) -> Option<u32>,
     plugin_slots: &HashMap<crate::plugins::PluginOwner, (u32, u64)>,
+    conv: &ConvBuild,
 ) -> (Vec<(glaux_core::FxId, BakedEffect)>, Option<FxGraphPlan>) {
     use glaux_core::model::routing::{processing_order, sounding};
     use glaux_core::FxNode;
@@ -881,7 +957,7 @@ fn bake_fx_plan(
             continue;
         };
         let b = if baked.len() < MAX_GRAPH_NODES {
-            bake_one(e, sample_rate, next_slot, resolve_track, plugin_slots)
+            bake_one(e, sample_rate, next_slot, resolve_track, plugin_slots, conv)
         } else {
             tracing::warn!("つながったエフェクトが多すぎます({MAX_GRAPH_NODES} 超)。{id} は素通し");
             None
@@ -1039,6 +1115,10 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
     };
 
     let mut next_slot: u32 = 0;
+    let conv = ConvBuild {
+        bank,
+        out: std::cell::RefCell::new(Vec::new()),
+    };
     let mut tracks: Vec<TrackMix> = project
         .tracks
         .iter()
@@ -1053,6 +1133,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 &mut next_slot,
                 &resolve_track,
                 &bank.plugin_slots,
+                &conv,
             );
             let fx_auto = bake_fx_lanes(&t.automation, &chain);
             TrackMix {
@@ -1126,6 +1207,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         &mut next_slot,
         &resolve_track,
         &bank.plugin_slots,
+        &conv,
     );
     let master_fx_auto = bake_fx_lanes(&project.master.automation, &master_chain);
     let master_vol_auto: Vec<AutoPoint> = {
@@ -1315,6 +1397,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         sample_rate,
         tempo,
         sigs,
+        conv: conv.out.into_inner(),
     }
 }
 

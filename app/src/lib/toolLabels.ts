@@ -38,6 +38,7 @@ const LABELS: Record<string, ToolLabel> = {
   compare_sounds: { short: "音を比較", doing: "音を比べています" },
   compare_mix: { short: "編集の前後を聴き比べ", doing: "編集の前後を聴き比べています" },
   master_mix: { short: "マスタリング", doing: "マスタリングしています" },
+  import_ir: { short: "響き(IR)を読み込む", doing: "響きを読み込んでいます" },
   refine_by_words: { short: "言葉で音を追い込む", doing: "言葉に合わせて音を追い込んでいます" },
   match_sound: { short: "音色を似せる", doing: "音色を似せています" },
   // ノート
