@@ -39,9 +39,8 @@ struct Inner {
 }
 
 pub struct ConvEngine {
-    /// IR の左右のスペクトル(分割ごと、長さ 2·PART)
-    ir_l: Vec<Vec<Complex<f32>>>,
-    ir_r: Vec<Vec<Complex<f32>>>,
+    /// IR のスペクトル(分割ごと、長さ 2·PART)。左 + j·右 にまとめてある
+    ir: Vec<Vec<Complex<f32>>>,
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     inner: UnsafeCell<Inner>,
@@ -53,7 +52,7 @@ unsafe impl Sync for ConvEngine {}
 
 impl std::fmt::Debug for ConvEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ConvEngine({} 分割)", self.ir_l.len())
+        write!(f, "ConvEngine({} 分割)", self.ir.len())
     }
 }
 
@@ -128,13 +127,18 @@ impl ConvEngine {
                 })
                 .collect()
         };
-        let (ir_l, ir_r) = (spectra(&l), spectra(&r));
+        // 左 + j·右 にまとめておく(処理の内側のループで 1 回の複素数の掛け算にするため)
+        let j = Complex::new(0.0f32, 1.0);
+        let ir: Vec<Vec<Complex<f32>>> = spectra(&l)
+            .into_iter()
+            .zip(spectra(&r))
+            .map(|(hl, hr)| hl.iter().zip(&hr).map(|(a, b)| a + j * b).collect())
+            .collect();
         let scratch_len = fft
             .get_inplace_scratch_len()
             .max(ifft.get_inplace_scratch_len());
         ConvEngine {
-            ir_l,
-            ir_r,
+            ir,
             fft,
             ifft,
             inner: UnsafeCell::new(Inner {
@@ -186,7 +190,7 @@ impl ConvEngine {
             }
             s.pos = 0;
             // 1 分割たまった: [前の分割, この分割] の FFT を輪に入れる
-            let parts = self.ir_l.len();
+            let parts = self.ir.len();
             s.head = (s.head + parts - 1) % parts;
             let slot = &mut s.fdl[s.head];
             for k in 0..PART {
@@ -197,12 +201,10 @@ impl ConvEngine {
             s.prev.copy_from_slice(&s.in_buf);
             // Σ 過去の入力 × IR の分割(左は実部、右は虚部にまとめて 1 回の逆 FFT)
             s.acc.iter_mut().for_each(|c| *c = Complex::new(0.0, 0.0));
-            let j = Complex::new(0.0, 1.0);
-            for p in 0..parts {
+            for (p, h) in self.ir.iter().enumerate() {
                 let x = &s.fdl[(s.head + p) % parts];
-                let (hl, hr) = (&self.ir_l[p], &self.ir_r[p]);
-                for k in 0..size {
-                    s.acc[k] += x[k] * (hl[k] + j * hr[k]);
+                for ((a, xv), hv) in s.acc.iter_mut().zip(x).zip(h) {
+                    *a += xv * hv;
                 }
             }
             s.work.copy_from_slice(&s.acc);
@@ -280,6 +282,6 @@ mod tests {
         eng.process_block(&mut l, &mut r, 0.0, 1.0);
         assert_eq!(l[10 + PART], 1.0, "原音は 1 分割遅れる");
         let short = ConvEngine::new(&ir, &ir, 48_000.0, 48_000.0, 0.25);
-        assert!(short.ir_l.len() < eng.ir_l.len() / 3);
+        assert!(short.ir.len() < eng.ir.len() / 3);
     }
 }

@@ -43,4 +43,21 @@ fn main() {
             if sink.is_nan() { "!" } else { "" }
         );
     }
+    // 畳み込みリバーブ(本体は再生データが持つので別に測る)。IR の長さごと
+    for secs in [1.0f32, 3.0, 6.0] {
+        let ir: Vec<f32> = (0..(sr * secs) as usize)
+            .map(|i| {
+                (-(i as f32) / (sr * secs / 5.0)).exp()
+                    * (((i * 7919) % 1000) as f32 / 1000.0 - 0.5)
+            })
+            .collect();
+        let eng = glaux_dsp::convolver::ConvEngine::new(&ir, &ir, sr, sr, 1.0);
+        let (mut l, mut r): (Vec<f32>, Vec<f32>) = input.iter().copied().unzip();
+        let t = Instant::now();
+        for (bl, br) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            eng.process_block(bl, br, 0.3, 1.0);
+        }
+        let ns = t.elapsed().as_nanos() as f64 / n as f64;
+        println!("convolution {secs:.0}s {ns:>7.1}");
+    }
 }
