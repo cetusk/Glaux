@@ -19,6 +19,7 @@
 //! - `wavetable`: ウェーブテーブルシンセ(波形の並びを行き来して音色を動かす)
 
 mod drum;
+mod dynamics;
 mod effects;
 mod expr;
 mod fm;

@@ -92,6 +92,18 @@ impl SvfCoeffs {
         }
     }
 
+    /// 2 次のオールパス(Q = 0.707。LR4 の分かれ目の位相の回りと同じ)
+    pub fn all_pass(sr: f32, freq: f32) -> Self {
+        let k = std::f32::consts::SQRT_2;
+        SvfCoeffs {
+            g: Self::g_of(sr, freq),
+            k,
+            m0: 1.0,
+            m1: -2.0 * k,
+            m2: 0.0,
+        }
+    }
+
     /// 12 dB/oct のローパス(バターワース)
     pub fn low_pass(sr: f32, freq: f32) -> Self {
         SvfCoeffs {
@@ -249,7 +261,7 @@ pub struct CompressorParams {
 impl CompressorParams {
     /// dB 領域のゲインの計算(ソフトニー)。入力のレベル(dB)に対して掛ける量(dB、0 以下)
     #[inline]
-    fn gain_db(&self, x: f32) -> f32 {
+    pub(crate) fn gain_db(&self, x: f32) -> f32 {
         let (t, r, w) = (self.threshold_db, self.ratio, self.knee_db);
         let over = x - t;
         let y = if 2.0 * over < -w {
@@ -264,7 +276,7 @@ impl CompressorParams {
 }
 
 /// アタック / リリースの時間(ms)から 1 サンプルあたりの係数
-fn time_coef(ms: f32, sample_rate: f32) -> f32 {
+pub(crate) fn time_coef(ms: f32, sample_rate: f32) -> f32 {
     (-1.0 / (ms.max(0.1) * 0.001 * sample_rate)).exp()
 }
 
@@ -459,6 +471,8 @@ pub enum EffectParams {
     Delay(DelayParams),
     Chorus(ChorusParams),
     Tape(TapeParams),
+    Multiband(crate::dynamics::MultibandParams),
+    Transient(crate::dynamics::TransientParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -475,6 +489,8 @@ enum EffectKind {
     Delay,
     Chorus,
     Tape,
+    Multiband,
+    Transient,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -513,6 +529,9 @@ pub struct EffectState {
     rng: u32,
     // Tape のパチパチ(左右それぞれの減衰中の振幅。符号込み)
     crackle: [f32; 2],
+    // マルチバンドコンプ・トランジェントシェイパー
+    multiband: crate::dynamics::MultibandState,
+    transient: crate::dynamics::TransientState,
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -558,6 +577,8 @@ impl EffectState {
             lfo: [0.0; 2],
             rng: RNG_SEED,
             crackle: [0.0; 2],
+            multiband: Default::default(),
+            transient: Default::default(),
         }
     }
 
@@ -580,6 +601,8 @@ impl EffectState {
             EffectParams::Delay(_) => EffectKind::Delay,
             EffectParams::Chorus(_) => EffectKind::Chorus,
             EffectParams::Tape(_) => EffectKind::Tape,
+            EffectParams::Multiband(_) => EffectKind::Multiband,
+            EffectParams::Transient(_) => EffectKind::Transient,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -614,6 +637,8 @@ impl EffectState {
             self.lfo = [0.0; 2];
             self.rng = RNG_SEED;
             self.crackle = [0.0; 2];
+            self.multiband = Default::default();
+            self.transient = Default::default();
         }
     }
 
@@ -801,6 +826,8 @@ impl EffectState {
                     r * (1.0 - c.mix) + yr * c.mix,
                 )
             }
+            EffectParams::Multiband(m) => self.multiband.process(m, l, r),
+            EffectParams::Transient(t) => self.transient.process(t, l, r),
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -974,6 +1001,193 @@ pub static EQ_SPECS: &[ParamSpec] = &[
         },
         description: "これより高い音を 12dB/oct で削る(20000 で切る)。刺さる高域やノイズを抑え、\
             音を奥に引っ込める。",
+    },
+];
+
+pub static MULTIBAND_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "low_freq",
+        display_name: "低域の分かれ目",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 40.0,
+            max: 1000.0,
+            default: 200.0,
+            skew: Some(0.4),
+        },
+        description: "低域と中域を分ける周波数。キック・ベースだけを低域に入れるなら 120〜250。",
+    },
+    ParamSpec {
+        name: "high_freq",
+        display_name: "高域の分かれ目",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 1000.0,
+            max: 12000.0,
+            default: 3000.0,
+            skew: Some(0.4),
+        },
+        description:
+            "中域と高域を分ける周波数。ボーカルの刺さり・シンバルを高域に分けるなら 3000〜6000。",
+    },
+    ParamSpec {
+        name: "low_threshold_db",
+        display_name: "低域のスレッショルド",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -60.0,
+            max: 0.0,
+            default: -20.0,
+            skew: None,
+        },
+        description: "低域がこれを超えると圧縮する。",
+    },
+    ParamSpec {
+        name: "low_ratio",
+        display_name: "低域のレシオ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 1.0,
+            max: 10.0,
+            default: 2.0,
+            skew: None,
+        },
+        description: "低域の圧縮の強さ。1 で圧縮しない。",
+    },
+    ParamSpec {
+        name: "low_gain_db",
+        display_name: "低域のゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "圧縮した後の低域の音量。帯域ごとの EQ としても使える。",
+    },
+    ParamSpec {
+        name: "mid_threshold_db",
+        display_name: "中域のスレッショルド",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -60.0,
+            max: 0.0,
+            default: -20.0,
+            skew: None,
+        },
+        description: "中域がこれを超えると圧縮する。",
+    },
+    ParamSpec {
+        name: "mid_ratio",
+        display_name: "中域のレシオ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 1.0,
+            max: 10.0,
+            default: 2.0,
+            skew: None,
+        },
+        description: "中域の圧縮の強さ。1 で圧縮しない。",
+    },
+    ParamSpec {
+        name: "mid_gain_db",
+        display_name: "中域のゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "圧縮した後の中域の音量。帯域ごとの EQ としても使える。",
+    },
+    ParamSpec {
+        name: "high_threshold_db",
+        display_name: "高域のスレッショルド",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -60.0,
+            max: 0.0,
+            default: -20.0,
+            skew: None,
+        },
+        description: "高域がこれを超えると圧縮する。",
+    },
+    ParamSpec {
+        name: "high_ratio",
+        display_name: "高域のレシオ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 1.0,
+            max: 10.0,
+            default: 2.0,
+            skew: None,
+        },
+        description: "高域の圧縮の強さ。1 で圧縮しない。",
+    },
+    ParamSpec {
+        name: "high_gain_db",
+        display_name: "高域のゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "圧縮した後の高域の音量。帯域ごとの EQ としても使える。",
+    },
+    ParamSpec {
+        name: "attack_ms",
+        display_name: "アタック",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.1,
+            max: 100.0,
+            default: 10.0,
+            skew: Some(0.5),
+        },
+        description: "圧縮が効き始める速さ(全帯域共通)。",
+    },
+    ParamSpec {
+        name: "release_ms",
+        display_name: "リリース",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 10.0,
+            max: 1000.0,
+            default: 120.0,
+            skew: Some(0.5),
+        },
+        description: "圧縮が戻る速さ(全帯域共通)。",
+    },
+];
+
+pub static TRANSIENT_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "attack_db",
+        display_name: "アタック",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -12.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "打点(鳴り始めの一瞬)の増減。上げるとドラムやギターの輪郭が立ち、下げると角が取れて奥に下がる。",
+    },
+    ParamSpec {
+        name: "sustain_db",
+        display_name: "サステイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -12.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "余韻の増減。下げるとドラムの響き・部屋鳴りが締まり、上げると太く長く鳴る。",
     },
 ];
 
@@ -1541,6 +1755,8 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "delay" => Some(DELAY_SPECS),
         "chorus" => Some(CHORUS_SPECS),
         "tape" => Some(TAPE_SPECS),
+        "multiband" => Some(MULTIBAND_SPECS),
+        "transient" => Some(TRANSIENT_SPECS),
         _ => None,
     }
 }
@@ -1550,7 +1766,7 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
     vec![
         crate::params::InstrumentInfo {
             name: "eq",
-            description: "3 バンド EQ(低域シェルフ + 中域ピーク + 高域シェルフ)。\
+            description: "EQ(ハイパス + 低域シェルフ + 中域ピーク + 高域シェルフ + ローパス)。\
                 帯域バランスの調整に使う。analyze_audio の band_energy と組み合わせると効果的。",
             params: EQ_SPECS,
             articulations: &[],
@@ -1615,6 +1831,21 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
                 高域の減衰、ヒスノイズ、ビット落としで古びた質感を作る。Lo-fi Hip Hop、\
                 シティポップ、ヴィンテージ感を出したいエレピやドラムバス・マスターに。",
             params: TAPE_SPECS,
+            articulations: &[],
+        },
+        crate::params::InstrumentInfo {
+            name: "multiband",
+            description: "マルチバンドコンプ。低・中・高の 3 帯域に分けて、帯域ごとに圧縮と音量を変える。\
+                低音だけ暴れるベース、刺さる高域だけ抑えたいボーカル、マスターの帯域ごとの整えに。\
+                圧縮しなければ(ratio 1)元の音と同じ。",
+            params: MULTIBAND_SPECS,
+            articulations: &[],
+        },
+        crate::params::InstrumentInfo {
+            name: "transient",
+            description: "トランジェントシェイパー。音量に関係なく、打点(アタック)と余韻(サステイン)を\
+                別々に増減する。ドラムの輪郭を立てる・響きを締める、ギターのピッキングを目立たせるなどに。",
+            params: TRANSIENT_SPECS,
             articulations: &[],
         },
     ]
@@ -1732,6 +1963,45 @@ impl EffectParams {
                 "depth_ms" => p.depth = v.clamp(0.0, 8.0) * 0.001 * sample_rate,
                 "delay_ms" => p.base = v.clamp(3.0, 30.0) * 0.001 * sample_rate,
                 "mix" => p.mix = v.clamp(0.0, 1.0),
+                _ => return false,
+            },
+            EffectParams::Multiband(p) => {
+                let mut r = p.raw;
+                let band = |n: &str| match n {
+                    "low" => Some(0),
+                    "mid" => Some(1),
+                    "high" => Some(2),
+                    _ => None,
+                };
+                match name {
+                    "low_freq" => r.low_freq = v,
+                    "high_freq" => r.high_freq = v,
+                    "attack_ms" => r.attack_ms = v,
+                    "release_ms" => r.release_ms = v,
+                    _ => {
+                        let Some((b, what)) = name.split_once('_') else {
+                            return false;
+                        };
+                        let Some(b) = band(b) else {
+                            return false;
+                        };
+                        match what {
+                            "threshold_db" => r.threshold_db[b] = v,
+                            "ratio" => r.ratio[b] = v,
+                            "gain_db" => r.gain_db[b] = v,
+                            _ => return false,
+                        }
+                    }
+                }
+                *p = crate::dynamics::MultibandParams::new(r);
+            }
+            EffectParams::Transient(p) => match name {
+                "attack_db" => {
+                    *p = crate::dynamics::TransientParams::new(v, p.sustain_db, p.sample_rate)
+                }
+                "sustain_db" => {
+                    *p = crate::dynamics::TransientParams::new(p.attack_db, v, p.sample_rate)
+                }
                 _ => return false,
             },
             EffectParams::Tape(p) => match name {
@@ -1922,6 +2192,34 @@ pub fn bake_effect(
                 mix: get(map, s, "mix").clamp(0.0, 1.0),
             }))
         }
+        "multiband" => {
+            let s = MULTIBAND_SPECS;
+            let per = |what: &str| -> [f32; 3] {
+                ["low", "mid", "high"].map(|b| get(map, s, &format!("{b}_{what}")))
+            };
+            Some(EffectParams::Multiband(
+                crate::dynamics::MultibandParams::new(crate::dynamics::MultibandRaw {
+                    low_freq: get(map, s, "low_freq"),
+                    high_freq: get(map, s, "high_freq"),
+                    threshold_db: per("threshold_db"),
+                    ratio: per("ratio"),
+                    gain_db: per("gain_db"),
+                    attack_ms: get(map, s, "attack_ms"),
+                    release_ms: get(map, s, "release_ms"),
+                    sample_rate,
+                }),
+            ))
+        }
+        "transient" => {
+            let s = TRANSIENT_SPECS;
+            Some(EffectParams::Transient(
+                crate::dynamics::TransientParams::new(
+                    get(map, s, "attack_db"),
+                    get(map, s, "sustain_db"),
+                    sample_rate,
+                ),
+            ))
+        }
         "tape" => {
             let s = TAPE_SPECS;
             let ms = 0.001 * sample_rate;
@@ -1975,6 +2273,11 @@ mod tests {
             ("tape", "wow", 0.8),
             ("tape", "bits", 8.0),
             ("tape", "crackle", 0.4),
+            ("multiband", "low_ratio", 4.0),
+            ("multiband", "high_freq", 5000.0),
+            ("multiband", "mid_gain_db", -3.0),
+            ("transient", "attack_db", 6.0),
+            ("transient", "sustain_db", -4.0),
         ];
         let none = |_: &str| None;
         for (fx, name, v) in cases {

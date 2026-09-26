@@ -12,6 +12,8 @@ export const FX_COLORS: Record<string, string> = {
   delay: "#3fbf9f",
   chorus: "#38a9d6",
   tape: "#c08a55",
+  multiband: "#7f9cc0",
+  transient: "#d0739a",
   sidechain: "#caa43a",
   clap: "#b07ce8",
 };
@@ -26,6 +28,8 @@ export const FX_KIND_JA: Record<string, string> = {
   delay: "ディレイ",
   chorus: "コーラス",
   tape: "テープ",
+  multiband: "マルチバンド",
+  transient: "トランジェント",
   sidechain: "サイドチェイン",
 };
 
