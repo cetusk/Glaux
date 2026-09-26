@@ -92,6 +92,8 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 - EQ: ベース・キック以外は hp_freq で 80〜150Hz 以下を切ると低域がすっきりする。刺さる高域やノイズは lp_freq。\n\
 - compressor: ratio 2〜4・knee_db 6〜12 で自然に揃える。ボーカルやバス・マスターは detector: \"rms\"、ドラムの山を抑えるなら \"peak\"。\n\
   アタックを 10〜30ms にすると打点の抜けが残る。バス・マスターは sc_hpf_hz 80〜150 で低音によるポンピングを防ぐ。\n\
+- 仕上げ(マスタリング): master_mix で、マスターの最後に EQ → コンプ → リミッタを足して音量と釣り合いを整える\n\
+  (reference_file に参照曲を渡すと、その音色の釣り合い・広がり・音量に寄せる)。足した後は compare_mix で前後を確かめる。\n\
 - 音量の仕上げ: 配信は正規化される(Spotify・YouTube -14 LUFS、Apple Music -16)。-14 より大きいマスターは下げて再生されるだけで、\n\
   潰した分ダイナミクスを失う(analyze_audio の streaming で予測が見られる)。True Peak は -1 dBTP 以下\n\
   (export_audio のリミッタが保証する)。plr_db・psr_min_db はおおむね 8 以上を保つ(下回ると潰しすぎの目安。規格ではない)。",

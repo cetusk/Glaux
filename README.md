@@ -85,7 +85,7 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 |---|---|
 | 基本 | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
 | 構成 | `duplicate_clips` `insert_bars` `delete_bars` `bounce_track` `export_audio` `export_midi` |
-| 分析 | `analyze_audio` `compare_mix` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` |
+| 分析 | `analyze_audio` `compare_mix` `master_mix` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` |
 | ノート | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` |
 | 音色 | `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | エフェクトのプリセット | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |

@@ -92,6 +92,27 @@ impl SvfCoeffs {
         }
     }
 
+    /// 周波数 `freq` での利得(dB)。SVF(台形積分)の伝達関数
+    /// H = m0 + (m1·s + m2) / (s² + k·s + 1)、s = j·tan(π f / sr) / g
+    pub fn magnitude_db(&self, sr: f32, freq: f32) -> f32 {
+        let w = (std::f64::consts::PI * (freq as f64 / sr as f64).clamp(0.0, 0.4999)).tan()
+            / (self.g as f64).max(1e-9);
+        // s = j·w
+        let (k, m0, m1, m2) = (
+            self.k as f64,
+            self.m0 as f64,
+            self.m1 as f64,
+            self.m2 as f64,
+        );
+        // 分母 (1 − w²) + j·k·w、分子 m2 + j·m1·w
+        let (dr, di) = (1.0 - w * w, k * w);
+        let (nr, ni) = (m2, m1 * w);
+        let d2 = dr * dr + di * di;
+        let (qr, qi) = ((nr * dr + ni * di) / d2, (ni * dr - nr * di) / d2);
+        let (hr, hi) = (m0 + qr, qi);
+        (10.0 * (hr * hr + hi * hi).max(1e-20).log10()) as f32
+    }
+
     /// 2 次のオールパス(Q = 0.707。LR4 の分かれ目の位相の回りと同じ)
     pub fn all_pass(sr: f32, freq: f32) -> Self {
         let k = std::f32::consts::SQRT_2;
@@ -229,6 +250,16 @@ impl EqParams {
             smooth: smooth_coef(sample_rate),
             raw: r,
         }
+    }
+
+    /// 周波数 `freq` での利得(dB)。オフラインで EQ を当てはめるときに、音を通さずに特性を求める用
+    pub fn magnitude_db(&self, sample_rate: f32, freq: f32) -> f32 {
+        self.bands
+            .iter()
+            .zip(self.active)
+            .filter(|(_, on)| *on)
+            .map(|(b, _)| b.magnitude_db(sample_rate, freq))
+            .sum()
     }
 }
 
@@ -2708,6 +2739,32 @@ mod tests {
             (through - 0.5 / 2.0_f32.sqrt()).abs() < 1e-3,
             "素通し: {through}"
         );
+    }
+
+    #[test]
+    fn eq_magnitude_matches_the_processed_level() {
+        // 計算した特性と、実際に通したときの音量が一致する
+        let e = effect(
+            "eq",
+            &[
+                ("low_gain_db", 4.0),
+                ("mid_gain_db", -6.0),
+                ("mid_freq", 1500.0),
+                ("high_gain_db", 3.0),
+                ("hp_freq", 60.0),
+            ],
+        );
+        let p = bake(&e).unwrap();
+        let EffectParams::Eq(eq) = &p else { panic!() };
+        let flat = rms_through(&bake(&effect("eq", &[])).unwrap(), 1000.0, 19200);
+        for f in [40.0f32, 120.0, 800.0, 1500.0, 5000.0, 12000.0] {
+            let got = 20.0 * (rms_through(&p, f, 19200) / flat).log10();
+            let want = eq.magnitude_db(48_000.0, f);
+            assert!(
+                (got - want).abs() < 0.3,
+                "{f}Hz: 通した {got:.2} / 計算 {want:.2}"
+            );
+        }
     }
 
     #[test]

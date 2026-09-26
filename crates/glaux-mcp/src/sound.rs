@@ -29,6 +29,55 @@ pub struct LoadedSound {
     pub label: String,
 }
 
+/// 音声ファイルをステレオ 48kHz(インターリーブ)で読む(参照曲用)。
+/// モノラルは左右に複製、3ch 以上は最初の 2ch。48kHz 以外は 4 点補間で変換する
+pub fn load_stereo_48k(path: &Path) -> Result<Vec<f32>, String> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let (inter, ch, sr) = if ext == "wav" {
+        let mut r = hound::WavReader::open(path)
+            .map_err(|e| format!("読み込めません({}): {e}", path.display()))?;
+        let spec = r.spec();
+        let data: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => r.samples::<f32>().filter_map(Result::ok).collect(),
+            hound::SampleFormat::Int => {
+                let scale = 1.0 / (1u64 << (spec.bits_per_sample.max(1) - 1)) as f32;
+                r.samples::<i32>()
+                    .filter_map(Result::ok)
+                    .map(|v| v as f32 * scale)
+                    .collect()
+            }
+        };
+        (data, spec.channels, spec.sample_rate)
+    } else {
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("読み込めません({}): {e}", path.display()))?;
+        crate::assets::decode_audio(bytes, &ext)?
+    };
+    let ch = ch.max(1) as usize;
+    let (l, r): (Vec<f32>, Vec<f32>) = inter
+        .chunks(ch)
+        .map(|c| (c[0], *c.get(1).unwrap_or(&c[0])))
+        .unzip();
+    if l.is_empty() {
+        return Err(format!("音が入っていません: {}", path.display()));
+    }
+    let step = sr as f64 / RENDER_RATE;
+    // 補間は次のサンプルまで読むので、最後の 1 つの手前まで
+    let n = ((l.len().saturating_sub(1)) as f64 / step) as usize;
+    let mut out = Vec::with_capacity(n * 2);
+    for k in 0..n {
+        let pos = k as f64 * step;
+        let i = pos as usize;
+        let t = (pos - i as f64) as f32;
+        out.push(glaux_dsp::hermite(&l, i, t));
+        out.push(glaux_dsp::hermite(&r, i, t));
+    }
+    Ok(out)
+}
+
 /// 試し鳴らしのサンプルレート
 pub const RENDER_RATE: f64 = 48_000.0;
 

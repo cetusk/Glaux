@@ -122,6 +122,23 @@ pub struct AnalyzeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct MasterMixParams {
+    /// 参照曲の音声ファイルの絶対パス(WAV / MP3 / FLAC / OGG / M4A)。あれば、その音色の釣り合い・広がり・音量に寄せる
+    #[serde(default)]
+    pub reference_file: Option<String>,
+    /// 目標の音量: "spotify"(-14 LUFS)/ "youtube"(-14)/ "apple"(-16)/ "loud"(-9、クラブ・EDM 向け)/
+    /// "reference"(参照曲と同じ。参照曲があるときの既定)。参照曲が無いときの既定は "spotify"
+    #[serde(default)]
+    pub target: Option<String>,
+    /// 目標の統合ラウドネス(LUFS)を数値で(target より優先)
+    #[serde(default)]
+    pub target_lufs: Option<f64>,
+    /// false なら案を返すだけ(プロジェクトは変えない)。既定は true(マスターに足す。1 回の undo で戻せる)
+    #[serde(default)]
+    pub apply: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct CompareMixParams {
     /// 「前」にするチェックポイントの名前(checkpoint で付けたもの)。
     /// checkpoint / before_entry / back のどれか 1 つを指定する(どれも無ければ直前の 1 編集の前)
@@ -1672,6 +1689,119 @@ impl GlauxServer {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             v["tracks"] = serde_json::to_value(&tracks).map_err(|e| e.to_string())?;
+        }
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "マスタリングの助手・参照曲に寄せる。曲を描き出して、マスターの最後に足す EQ → コンプ → (幅)→ リミッタ\
+        のつまみを決め、既定ではそのまま足す(1 回の undo で戻せる。apply: false なら案だけ)。\
+        reference_file があれば、その曲の音色の釣り合い(1/3 オクターブ)・左右の広がり・音量に寄せる。\
+        無ければ曲自身の出っ張り・へこみだけを均し、target(spotify -14 / youtube -14 / apple -16 / loud -9)の音量にする。\
+        True Peak は -1 dBTP 以下に保つ。曲が目標より大きければマスター音量で下げる。\
+        返り値: effects(足したエフェクトとつまみ)、master_volume_db、before / after / reference(ラウドネス・True Peak・PLR・\
+        傾き・広がり)、tonal_error_db(釣り合いの目標とのずれ。EQ の前と後)、notes(潰しすぎなどの注意)。\
+        仕上げの確認は compare_mix(checkpoint)で。音を大きくしすぎない(配信は正規化される)。"
+    )]
+    async fn master_mix(
+        &self,
+        params: Parameters<MasterMixParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("master_mix");
+        let p = params.0;
+        let reference = p.reference_file.map(std::path::PathBuf::from);
+        let target = match (p.target_lufs, p.target.as_deref()) {
+            (Some(v), _) => glaux_engine::mastering::LoudnessTarget::Lufs(v.clamp(-30.0, -5.0)),
+            (None, Some("spotify" | "youtube")) => {
+                glaux_engine::mastering::LoudnessTarget::Lufs(-14.0)
+            }
+            (None, Some("apple")) => glaux_engine::mastering::LoudnessTarget::Lufs(-16.0),
+            (None, Some("loud")) => glaux_engine::mastering::LoudnessTarget::Lufs(-9.0),
+            (None, Some("reference")) if reference.is_some() => {
+                glaux_engine::mastering::LoudnessTarget::Reference
+            }
+            (None, None) if reference.is_some() => {
+                glaux_engine::mastering::LoudnessTarget::Reference
+            }
+            (None, None) => glaux_engine::mastering::LoudnessTarget::Lufs(-14.0),
+            (None, Some(t)) => {
+                return Err(format!(
+                    "target「{t}」は分かりません(spotify / youtube / apple / loud / reference)"
+                ))
+            }
+        };
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let before_volume = project.master.volume_db as f64;
+        let plan = tokio::task::spawn_blocking({
+            let project = project.clone();
+            move || -> Result<glaux_engine::mastering::MasterPlan, String> {
+                // 足すエフェクトは今のマスターのエフェクトの後、マスター音量の前に入るので、音量 0dB で描き出す
+                let mut p = project;
+                p.master.volume_db = 0.0;
+                let bank = glaux_engine::SampleBank::for_offline(&p, std::path::Path::new(&dir));
+                let mix = glaux_engine::render_project(&p, 48_000.0, &bank)
+                    .map_err(|e| format!("曲を描き出せません: {e}"))?;
+                let reference = match &reference {
+                    Some(path) => {
+                        let r = crate::sound::load_stereo_48k(path)?;
+                        if r.len() < 48_000 * 2 * 3 {
+                            return Err("参照曲が短すぎます(3 秒以上)".to_owned());
+                        }
+                        Some(r)
+                    }
+                    None => None,
+                };
+                if mix.len() < 48_000 * 2 {
+                    return Err("曲が短すぎます(1 秒以上)".to_owned());
+                }
+                Ok(glaux_engine::mastering::plan_master(
+                    &mix,
+                    reference.as_deref(),
+                    target,
+                ))
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let mut v = serde_json::to_value(&plan).map_err(|e| e.to_string())?;
+        if p.apply.unwrap_or(true) {
+            let mut cmds: Vec<glaux_core::Command> = plan
+                .effects
+                .iter()
+                .map(|e| glaux_core::Command::AddMasterEffect {
+                    effect: e.to_effect(),
+                    index: None,
+                })
+                .collect();
+            let volume_changed = (plan.master_volume_db - before_volume).abs() > 0.05;
+            if volume_changed {
+                cmds.push(glaux_core::Command::SetMasterVolume {
+                    volume_db: plan.master_volume_db as f32,
+                });
+            }
+            let label = if v["reference"].is_null() {
+                "マスタリング(音量と釣り合いを整える)".to_owned()
+            } else {
+                "マスタリング(参照曲に寄せる)".to_owned()
+            };
+            let command = glaux_core::Command::batch(label.clone(), cmds);
+            let author = self.author(&ctx);
+            let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+            v["applied"] = json!(true);
+            v["entry_id"] = json!(entry_id.to_string());
+            v["project_version"] = json!(m.project_version);
+            if volume_changed {
+                if let Some(notes) = v["notes"].as_array_mut() {
+                    notes.push(json!(format!(
+                        "マスター音量を {before_volume:.1} dB から {:.1} dB に変えた",
+                        plan.master_volume_db
+                    )));
+                }
+            }
+        } else {
+            v["applied"] = json!(false);
         }
         Ok(JsonText(v))
     }

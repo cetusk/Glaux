@@ -23,6 +23,7 @@ pub mod calibrate;
 pub mod data;
 pub mod export;
 pub mod loudness;
+pub mod mastering;
 pub mod midi;
 pub mod monitor;
 pub mod output;

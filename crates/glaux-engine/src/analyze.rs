@@ -569,7 +569,7 @@ const THIRD_OCTAVES: [u32; 30] = [
 ];
 
 /// 音色の釣り合い(1/3 オクターブの長時間平均、傾き、直線からのずれ)
-fn tonal_balance(mono: &[f32]) -> TonalBalance {
+pub(crate) fn tonal_balance(mono: &[f32]) -> TonalBalance {
     const N: usize = 8192;
     const HOP: usize = 4096;
     let mut planner = FftPlanner::<f64>::new();
@@ -665,7 +665,7 @@ fn negative_correlation_ratio(stereo: &[f32]) -> f64 {
     }
 }
 
-fn stereo_info(stereo: &[f32]) -> StereoInfo {
+pub(crate) fn stereo_info(stereo: &[f32]) -> StereoInfo {
     let (mut ll, mut rr, mut lr) = (0.0f64, 0.0f64, 0.0f64);
     let (mut lo_ll, mut lo_rr, mut lo_lr) = (0.0f64, 0.0f64, 0.0f64);
     let (mut mid, mut side) = (0.0f64, 0.0f64);

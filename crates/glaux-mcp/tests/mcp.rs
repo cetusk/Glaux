@@ -743,6 +743,91 @@ async fn compare_mix_reports_loudness_and_tone_separately() {
 }
 
 #[tokio::test]
+async fn master_mix_adds_a_mastering_chain_and_can_be_undone() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_pad002", "Pad")).await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [{
+                "op": "add_clip", "track": "trk_pad002",
+                "clip": { "id": "clp_pad002", "name": "P", "start": 0, "length": 7680, "kind": "midi",
+                  "notes": [
+                    { "id": "nt_pad101", "pos": 0, "dur": 7680, "pitch": 48, "vel": 90 },
+                    { "id": "nt_pad102", "pos": 0, "dur": 7680, "pitch": 55, "vel": 90 },
+                    { "id": "nt_pad103", "pos": 0, "dur": 7680, "pitch": 64, "vel": 90 }
+                  ] }
+            }],
+            "label": "パッド",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    // 案だけ: プロジェクトは変わらない
+    let v = ok_json(&call(&fx, "master_mix", json!({ "apply": false })).await);
+    assert_eq!(v["applied"], false);
+    let p = ok_json(&call(&fx, "get_project", json!({ "include_notes": false })).await);
+    assert_eq!(p["project"]["master"]["effects"], json!([]));
+    // 足す: EQ・コンプ・リミッタが入り、-14 LUFS 前後・True Peak -1 以下
+    let v = ok_json(&call(&fx, "master_mix", json!({ "target": "spotify" })).await);
+    eprintln!("{v:#}");
+    assert_eq!(v["applied"], true);
+    let lufs = v["after"]["loudness_lufs"].as_f64().unwrap();
+    assert!((lufs + 14.0).abs() < 1.0, "{lufs}");
+    assert!(v["after"]["true_peak_dbtp"].as_f64().unwrap() <= -0.8);
+    let p = ok_json(&call(&fx, "get_project", json!({ "include_notes": false })).await);
+    let names: Vec<&str> = p["project"]["master"]["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        names.ends_with(&["compressor", "limiter"]) || names.ends_with(&["width", "limiter"]),
+        "{names:?}"
+    );
+    assert!(names.contains(&"eq"));
+    // 1 回の undo で戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let p = ok_json(&call(&fx, "get_project", json!({ "include_notes": false })).await);
+    assert_eq!(p["project"]["master"]["effects"], json!([]));
+    // 分からない target はエラー
+    let r = call(&fx, "master_mix", json!({ "target": "cd" })).await;
+    assert_eq!(r.is_error, Some(true));
+    // 参照曲(44.1kHz のモノラルの雑音)に寄せる案: 音量が参照曲に合う
+    let mut rng: u32 = 5;
+    let noise: Vec<f32> = (0..44_100 * 5)
+        .map(|_| {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng as f32 / u32::MAX as f32 - 0.5) * 0.5
+        })
+        .collect();
+    let path = fx.dir.join("reference.wav");
+    write_mono_wav(&path, &noise, 44_100);
+    let v = ok_json(
+        &call(
+            &fx,
+            "master_mix",
+            json!({ "reference_file": path.to_string_lossy(), "apply": false }),
+        )
+        .await,
+    );
+    let (got, want) = (
+        v["after"]["loudness_lufs"].as_f64().unwrap(),
+        v["reference"]["loudness_lufs"].as_f64().unwrap(),
+    );
+    assert!((got - want).abs() < 1.0, "{got} / {want}");
+    let (e0, e1) = (
+        v["tonal_error_db"][0].as_f64().unwrap(),
+        v["tonal_error_db"][1].as_f64().unwrap(),
+    );
+    assert!(e1 < e0, "釣り合いが参照曲に近づく: {e0} → {e1}");
+}
+
+#[tokio::test]
 async fn analyze_audio_per_track_reveals_balance() {
     let fx = setup().await;
     // 静かなリードと大きいベース
