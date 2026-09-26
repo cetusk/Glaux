@@ -3265,7 +3265,7 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "曲を WAV に書き出す。sample_rate(44100 / 48000)、bits(16 / 24 / 32 = 浮動小数)、範囲(start_tick / end_tick)、\
+        description = "曲を WAV / FLAC に書き出す。format(wav / flac。flac は可逆圧縮で 16 / 24bit のみ)、sample_rate(44100 / 48000)、bits(16 / 24 / 32 = 浮動小数)、範囲(start_tick / end_tick)、\
         loudness_lufs(音量の目標。配信なら -14。True Peak が -1 dBTP を超える所はリミッタで抑える)を選べる。stems: true でトラックごと(マスターを通さない)。\
         path 省略でプロジェクトの export/ に日時付きの名前。返り値に書いたファイルと、ラウドネス・サンプルのピーク・True Peak・PLR・\
         掛けたゲイン・limiter_db(リミッタで最も下げた量。1 dB 程度を超えるなら目標が大きすぎるか、ミックスのピークが強すぎる)・\

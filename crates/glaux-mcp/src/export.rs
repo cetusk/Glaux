@@ -1,10 +1,10 @@
 //! 書き出し(アプリの書き出し画面と MCP の export_audio で共通)。
 //!
-//! 曲全体(ミックス)か、トラックごと(ステム)を WAV に書く。形式・範囲・音量の目標を選べる。
+//! 曲全体(ミックス)か、トラックごと(ステム)を WAV / FLAC に書く。形式・範囲・音量の目標を選べる。
 //! 以前は 48kHz / 16bit / 曲全体 / プロジェクトの export/ 固定だった。
 
 use glaux_core::{Project, Tick, TrackKind};
-use glaux_engine::{ExportOptions, SampleBank};
+use glaux_engine::{AudioFormat, ExportOptions, SampleBank};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -18,9 +18,12 @@ pub struct ExportRequest {
     /// 44100 か 48000(既定 48000)
     #[serde(default)]
     pub sample_rate: Option<u32>,
-    /// 16 / 24 / 32(32 は浮動小数。既定 16)
+    /// 16 / 24 / 32(32 は浮動小数。既定 16。FLAC は 16 / 24 のみ)
     #[serde(default)]
     pub bits: Option<u16>,
+    /// "wav"(既定)か "flac"(可逆圧縮。WAV の半分前後の大きさ)。省略時は path の拡張子が .flac なら FLAC
+    #[serde(default)]
+    pub format: Option<String>,
     /// 16bit のとき、量子化の雑音を耳につきにくい高域へ寄せる(ノイズシェーピング)。既定 true。
     /// 書き出した後でさらに加工・変換するなら false(TPDF ディザだけ)がよい
     #[serde(default)]
@@ -65,6 +68,25 @@ fn options(project: &Project, req: &ExportRequest) -> Result<ExportOptions, Stri
     if !matches!(bits, 16 | 24 | 32) {
         return Err("bits は 16 / 24 / 32".to_owned());
     }
+    let format = match req.format.as_deref() {
+        Some("wav") => AudioFormat::Wav,
+        Some("flac") => AudioFormat::Flac,
+        Some(other) => return Err(format!("format は wav か flac(got: {other})")),
+        None => {
+            let flac = req
+                .path
+                .as_deref()
+                .is_some_and(|p| p.to_ascii_lowercase().ends_with(".flac"));
+            if flac {
+                AudioFormat::Flac
+            } else {
+                AudioFormat::Wav
+            }
+        }
+    };
+    if format == AudioFormat::Flac && bits == 32 {
+        return Err("FLAC は 16 か 24bit(32bit 浮動小数は WAV で)".to_owned());
+    }
     let range_secs = match (req.start_tick, req.end_tick) {
         (None, None) => None,
         (s, e) => {
@@ -88,6 +110,7 @@ fn options(project: &Project, req: &ExportRequest) -> Result<ExportOptions, Stri
         range_secs,
         target_lufs: req.loudness_lufs,
         noise_shaping: req.noise_shaping.unwrap_or(true),
+        format,
         ..Default::default()
     })
 }
@@ -125,13 +148,19 @@ pub fn run(
                 Err(glaux_engine::ExportError::Empty) => continue, // 鳴る音が無いトラック
                 Err(e) => return Err(format!("「{}」を描き出せません: {e}", t.name)),
             };
-            let path = dir.join(format!("{:02}_{}.wav", i + 1, sanitize(&t.name)));
-            glaux_engine::write_wav_with(
+            let path = dir.join(format!(
+                "{:02}_{}.{}",
+                i + 1,
+                sanitize(&t.name),
+                opts.format.extension()
+            ));
+            glaux_engine::write_audio(
                 &path,
                 &stereo,
                 opts.sample_rate,
                 opts.bits,
                 opts.noise_shaping,
+                opts.format,
             )
             .map_err(|e| e.to_string())?;
             files.push(json!({ "track": t.name, "path": path.to_string_lossy() }));
@@ -144,7 +173,7 @@ pub fn run(
     let path = req.path.as_ref().map(PathBuf::from).unwrap_or_else(|| {
         project_dir
             .join("export")
-            .join(format!("{title}_{stamp}.wav"))
+            .join(format!("{title}_{stamp}.{}", opts.format.extension()))
     });
     let report =
         glaux_engine::export_audio(project, &path, &opts, bank).map_err(|e| e.to_string())?;
@@ -179,6 +208,62 @@ mod tests {
             p.tracks.push(t);
         }
         p
+    }
+
+    #[test]
+    fn exports_flac_by_format_or_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = song();
+        let v = run(
+            &p,
+            tmp.path(),
+            &ExportRequest {
+                format: Some("flac".to_owned()),
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        let path = v["path"].as_str().unwrap();
+        assert!(path.ends_with(".flac"), "{path}");
+        assert_eq!(&std::fs::read(path).unwrap()[..4], b"fLaC");
+        // 拡張子が .flac なら形式を省略しても FLAC。ステムも FLAC
+        let dest = tmp.path().join("x.flac");
+        run(
+            &p,
+            tmp.path(),
+            &ExportRequest {
+                path: Some(dest.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(&std::fs::read(&dest).unwrap()[..4], b"fLaC");
+        let v = run(
+            &p,
+            tmp.path(),
+            &ExportRequest {
+                format: Some("flac".to_owned()),
+                stems: Some(true),
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(v["stems"][0]["path"].as_str().unwrap().ends_with(".flac"));
+        // 32bit 浮動小数は FLAC にできない
+        let e = run(
+            &p,
+            tmp.path(),
+            &ExportRequest {
+                format: Some("flac".to_owned()),
+                bits: Some(32),
+                ..Default::default()
+            },
+            &Default::default(),
+        );
+        assert!(e.is_err());
     }
 
     #[test]

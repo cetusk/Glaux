@@ -19,15 +19,21 @@
   let range = $state<"all" | "loop" | "selection">("all");
   let sampleRate = $state(48000);
   let bits = $state(16);
+  let format = $state<"wav" | "flac">("wav");
+  // FLAC は整数のみ(32bit 浮動小数は WAV だけ)
+  $effect(() => {
+    if (format === "flac" && bits === 32) bits = 24;
+  });
   let noiseShaping = $state(true);
   let loudness = $state<string>("none");
   let path = $state<string | null>(null);
   let busy = $state(false);
   let result = $state<string | null>(null);
 
-  // 対象を変えたら保存先は既定に戻す(WAV・フォルダ・.mid で選ぶものが違う)
+  // 対象・形式を変えたら保存先は既定に戻す(WAV / FLAC・フォルダ・.mid で選ぶものが違う)
   $effect(() => {
     void target;
+    void format;
     path = null;
     result = null;
   });
@@ -43,10 +49,12 @@
     try {
       const p =
         target === "stems"
-          ? await pickDir({ directory: true, title: "トラックごとの WAV を書き出すフォルダ" })
+          ? await pickDir({ directory: true, title: `トラックごとの ${format.toUpperCase()} を書き出すフォルダ` })
           : target === "midi"
             ? await pickFile({ title: "書き出す MIDI ファイル", filters: [{ name: "MIDI", extensions: ["mid"] }] })
-            : await pickFile({ title: "書き出す WAV ファイル", filters: [{ name: "WAV", extensions: ["wav"] }] });
+            : format === "flac"
+              ? await pickFile({ title: "書き出す FLAC ファイル", filters: [{ name: "FLAC", extensions: ["flac"] }] })
+              : await pickFile({ title: "書き出す WAV ファイル", filters: [{ name: "WAV", extensions: ["wav"] }] });
       if (typeof p === "string") path = p;
     } catch (e) {
       showError("保存先を選べませんでした", e);
@@ -73,6 +81,7 @@
       path: path ?? undefined,
       sample_rate: sampleRate,
       bits,
+      format,
       noise_shaping: bits === 16 ? noiseShaping : undefined,
       stems: target === "stems",
       loudness_lufs: target === "mix" && loudness !== "none" ? Number(loudness) : undefined,
@@ -143,6 +152,10 @@
     <div class="section">
       <div class="section-title">形式</div>
       <div class="row">
+        <select bind:value={format} aria-label="ファイルの形式">
+          <option value="wav">WAV</option>
+          <option value="flac">FLAC(可逆圧縮。WAV の半分前後の大きさ)</option>
+        </select>
         <select bind:value={sampleRate} aria-label="サンプルレート">
           <option value={48000}>48 kHz</option>
           <option value={44100}>44.1 kHz(CD・配信)</option>
@@ -150,7 +163,7 @@
         <select bind:value={bits} aria-label="ビット数">
           <option value={16}>16 bit</option>
           <option value={24}>24 bit</option>
-          <option value={32}>32 bit 浮動小数</option>
+          {#if format === "wav"}<option value={32}>32 bit 浮動小数</option>{/if}
         </select>
       </div>
       {#if bits === 16}

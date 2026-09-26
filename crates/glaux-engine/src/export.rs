@@ -19,6 +19,28 @@ pub enum ExportError {
     Wav(#[from] hound::Error),
     #[error("書き込み先を作成できません: {0}")]
     Io(#[from] std::io::Error),
+    #[error("FLAC の書き出しに失敗: {0}")]
+    Flac(String),
+}
+
+/// 書き出すファイルの形式。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioFormat {
+    /// 16 / 24bit 整数、32bit 浮動小数
+    #[default]
+    Wav,
+    /// 可逆圧縮(WAV の半分前後の大きさ)。16 / 24bit 整数のみ
+    Flac,
+}
+
+impl AudioFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            AudioFormat::Wav => "wav",
+            AudioFormat::Flac => "flac",
+        }
+    }
 }
 
 /// プロジェクト全体をステレオ・インターリーブの f32 にレンダリングする。
@@ -258,6 +280,8 @@ pub struct ExportOptions {
     pub ceiling_db: f64,
     /// 16bit のとき、量子化の雑音を耳につきにくい帯域へ寄せる(ノイズシェーピング)
     pub noise_shaping: bool,
+    /// ファイルの形式(FLAC は 16 / 24bit のみ)
+    pub format: AudioFormat,
 }
 
 impl Default for ExportOptions {
@@ -269,6 +293,7 @@ impl Default for ExportOptions {
             target_lufs: None,
             ceiling_db: -1.0,
             noise_shaping: true,
+            format: AudioFormat::Wav,
         }
     }
 }
@@ -401,12 +426,13 @@ pub fn export_audio(
         }
         limiter_db = limit_peaks(&mut stereo, sr, opts.ceiling_db);
     }
-    write_wav_with(
+    write_audio(
         path,
         &stereo,
         opts.sample_rate,
         opts.bits,
         opts.noise_shaping,
+        opts.format,
     )?;
     let lufs = if opts.sample_rate == 48_000 {
         crate::analyze::integrated_lufs(&stereo)
@@ -480,22 +506,94 @@ pub fn write_wav_with(
         },
     };
     let mut w = hound::WavWriter::create(path, spec)?;
-    let mut dither = Tpdf::new();
-    let mut shaper = (bits == 16 && noise_shaping).then(|| Shaper::new(sample_rate as f64));
-    for (i, &s) in stereo.iter().enumerate() {
-        if float {
+    if float {
+        for &s in stereo {
             w.write_sample(s)?;
-        } else if bits == 24 {
-            let full = 8_388_607.0f32;
-            let v = (s.clamp(-1.0, 1.0) * full + dither.next()).round();
-            w.write_sample(v.clamp(-full - 1.0, full) as i32)?;
-        } else if let Some(sh) = shaper.as_mut() {
-            w.write_sample(sh.quantize(s, i % 2))?;
-        } else {
-            w.write_sample(to_i16_dithered(s, &mut dither))?;
+        }
+    } else {
+        for v in to_ints(stereo, sample_rate, bits, noise_shaping) {
+            w.write_sample(v)?;
         }
     }
     w.finalize()?;
+    Ok(())
+}
+
+/// 形式を選んで書く([`write_wav_with`] か FLAC)
+pub fn write_audio(
+    path: &Path,
+    stereo: &[f32],
+    sample_rate: u32,
+    bits: u16,
+    noise_shaping: bool,
+    format: AudioFormat,
+) -> Result<(), ExportError> {
+    match format {
+        AudioFormat::Wav => write_wav_with(path, stereo, sample_rate, bits, noise_shaping),
+        AudioFormat::Flac => write_flac(path, stereo, sample_rate, bits, noise_shaping),
+    }
+}
+
+/// 16 / 24bit の整数にする(ディザ付き。16bit は `noise_shaping` でノイズシェーピング)。WAV と FLAC で共通
+fn to_ints(stereo: &[f32], sample_rate: u32, bits: u16, noise_shaping: bool) -> Vec<i32> {
+    let mut dither = Tpdf::new();
+    let mut shaper = (bits == 16 && noise_shaping).then(|| Shaper::new(sample_rate as f64));
+    stereo
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            if bits == 24 {
+                let full = 8_388_607.0f32;
+                let v = (s.clamp(-1.0, 1.0) * full + dither.next()).round();
+                v.clamp(-full - 1.0, full) as i32
+            } else if let Some(sh) = shaper.as_mut() {
+                sh.quantize(s, i % 2) as i32
+            } else {
+                to_i16_dithered(s, &mut dither) as i32
+            }
+        })
+        .collect()
+}
+
+/// ステレオ・インターリーブを FLAC(可逆圧縮)で書く。16 / 24bit のみ
+pub fn write_flac(
+    path: &Path,
+    stereo: &[f32],
+    sample_rate: u32,
+    bits: u16,
+    noise_shaping: bool,
+) -> Result<(), ExportError> {
+    use flacenc::component::BitRepr;
+    use flacenc::error::Verify;
+    if !matches!(bits, 16 | 24) {
+        return Err(ExportError::Flac(
+            "FLAC は 16 か 24bit で書き出してください".to_owned(),
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let ints = to_ints(stereo, sample_rate, bits, noise_shaping);
+    let config = flacenc::config::Encoder::default()
+        .into_verified()
+        .map_err(|(_, e)| ExportError::Flac(format!("{e:?}")))?;
+    let source =
+        flacenc::source::MemSource::from_samples(&ints, 2, bits as usize, sample_rate as usize);
+    let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
+        .map_err(|e| ExportError::Flac(format!("{e:?}")))?;
+    let mut sink = flacenc::bitsink::ByteSink::new();
+    stream
+        .write(&mut sink)
+        .map_err(|e| ExportError::Flac(format!("{e:?}")))?;
+    let mut bytes = sink.as_slice().to_vec();
+    // STREAMINFO の最小ブロック長は「最後のブロックを除く」(仕様)。flacenc は最後の短いブロックの長さを
+    // 入れるため、最小と最大が違う = 可変ブロック長のストリームと読まれ、symphonia(Glaux の取り込みも)が
+    // 読めなかった。固定長で書いているので最大と同じにする(先頭 4 バイト "fLaC" + ブロックの頭 4 バイトの後)
+    if bytes.len() >= 12 && &bytes[..4] == b"fLaC" && bytes[4] & 0x7f == 0 {
+        let max = [bytes[10], bytes[11]];
+        bytes[8..10].copy_from_slice(&max);
+    }
+    std::fs::write(path, bytes)?;
     Ok(())
 }
 
@@ -741,6 +839,87 @@ mod tests {
         )
         .unwrap();
         assert!((r.lufs + 14.0).abs() < 1.0, "{r:?}");
+    }
+
+    /// FLAC を symphonia で読み戻す(左右インターリーブの整数と、1 サンプルのビット数)
+    fn read_flac(path: &Path) -> (Vec<i32>, u32, u32) {
+        use symphonia::core::audio::SampleBuffer;
+        use symphonia::core::codecs::DecoderOptions;
+        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::probe::Hint;
+        let file = std::fs::File::open(path).unwrap();
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new();
+        hint.with_extension("flac");
+        let probed = symphonia::default::get_probe()
+            .format(
+                &hint,
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .unwrap();
+        let mut format = probed.format;
+        let track = format.default_track().unwrap();
+        let params = track.codec_params.clone();
+        let mut dec = symphonia::default::get_codecs()
+            .make(&params, &DecoderOptions::default())
+            .unwrap();
+        let mut out = Vec::new();
+        while let Ok(packet) = format.next_packet() {
+            let buf = dec.decode(&packet).unwrap();
+            let mut sb = SampleBuffer::<i32>::new(buf.capacity() as u64, *buf.spec());
+            sb.copy_interleaved_ref(buf);
+            out.extend_from_slice(sb.samples());
+        }
+        (
+            out,
+            params.sample_rate.unwrap(),
+            params.bits_per_sample.unwrap(),
+        )
+    }
+
+    #[test]
+    fn flac_is_lossless_and_smaller_than_wav() {
+        let tmp = tempfile::tempdir().unwrap();
+        let n = 48_000;
+        let stereo: Vec<f32> = (0..n)
+            .flat_map(|i| {
+                let t = i as f32 / 48_000.0;
+                let x = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5 * (-t * 2.0).exp();
+                [x, x * 0.7]
+            })
+            .collect();
+        for bits in [16u16, 24] {
+            let path = tmp.path().join(format!("a{bits}.flac"));
+            write_audio(&path, &stereo, 44_100, bits, true, AudioFormat::Flac).unwrap();
+            let (got, sr, b) = read_flac(&path);
+            assert_eq!((sr, b), (44_100, bits as u32));
+            // 読み戻した整数が、書く前の整数とぴったり同じ(可逆)。symphonia は 32bit に左寄せで返す
+            let want = to_ints(&stereo, 44_100, bits, true);
+            let shift = 32 - bits as u32;
+            assert_eq!(got.len(), want.len());
+            assert!(got.iter().zip(&want).all(|(g, w)| g >> shift == *w));
+            let wav = tmp.path().join(format!("a{bits}.wav"));
+            write_audio(&wav, &stereo, 44_100, bits, true, AudioFormat::Wav).unwrap();
+            let (fs, ws) = (
+                std::fs::metadata(&path).unwrap().len(),
+                std::fs::metadata(&wav).unwrap().len(),
+            );
+            assert!(fs * 2 < ws, "{bits}bit: FLAC {fs} / WAV {ws}");
+        }
+        // 32bit(浮動小数)は FLAC にできない
+        assert!(write_audio(
+            &tmp.path().join("x.flac"),
+            &stereo,
+            48_000,
+            32,
+            false,
+            AudioFormat::Flac
+        )
+        .is_err());
     }
 
     #[test]

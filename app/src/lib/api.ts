@@ -695,6 +695,8 @@ export interface ExportRequest {
   path?: string;
   sample_rate?: number;
   bits?: number;
+  /** "wav"(既定)か "flac"(16 / 24bit のみ) */
+  format?: "wav" | "flac";
   /** 16bit のノイズシェーピング(既定 true) */
   noise_shaping?: boolean;
   start_tick?: number;
