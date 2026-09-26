@@ -375,7 +375,7 @@ pub struct DistortionParams {
 pub struct AmpParams {
     /// プリゲイン(リニア。gain_db から変換済み)
     pub gain: f32,
-    /// 段間 LP の係数(クリップ段の間で高域を丸め、フィジーさを抑える)
+    /// 段間 LP の係数(クリップ段の間で高域を丸め、フィジーさを抑える。プリアンプは 2 倍のレートで回るので 2 倍レート用)
     pub stage_coef: f32,
     /// 歪み後トーン LP の係数(exp(-2πfc/sr)。1 に近いほど暗い)
     pub tone_coef: f32,
@@ -408,6 +408,8 @@ struct AmpChState {
     cab_lp1: f32,
     cab_lp2: f32,
     cab_lp3: f32,
+    /// プリアンプ(2 段のクリップ)を 2 倍のレートで回す(折り返し対策)
+    os: crate::oversample::Halfband,
 }
 
 // ========================== Sidechain Comp =============================
@@ -570,6 +572,10 @@ pub struct EffectState {
     key_was_above: bool,
     // Distortion のトーン用 1 次 LP(2ch)
     tone_lp: [f32; 2],
+    // Distortion の折り返し対策(tanh の ADAA、2ch)
+    adaa: [crate::oversample::AdaaTanh; 2],
+    // Tape の飽和を 2 倍のレートで回す(2ch)
+    tape_os: [crate::oversample::Halfband; 2],
     // Amp のフィルタ群(2ch)
     amp: [AmpChState; 2],
     // Reverb
@@ -619,6 +625,8 @@ impl EffectState {
             duck_active: false,
             key_was_above: false,
             tone_lp: [0.0; 2],
+            adaa: Default::default(),
+            tape_os: Default::default(),
             amp: Default::default(),
             reverb: [ReverbChannel::new(0), ReverbChannel::new(STEREO_SPREAD)],
             dly: [Vec::new(), Vec::new()],
@@ -667,6 +675,8 @@ impl EffectState {
             self.duck_active = false;
             self.key_was_above = false;
             self.tone_lp = [0.0; 2];
+            self.adaa = Default::default();
+            self.tape_os = Default::default();
             self.amp = Default::default();
             self.reverb[0].reset();
             self.reverb[1].reset();
@@ -747,7 +757,8 @@ impl EffectState {
             }
             EffectParams::Distortion(d) => {
                 let mut shape = |x: f32, ch: usize| {
-                    let wet = (x * d.drive).tanh();
+                    // tanh を ADAA で(強く歪ませた高い音の折り返しを減らす。遅れは 0.5 サンプル)
+                    let wet = self.adaa[ch].process(x * d.drive);
                     // 歪みで出た高域のギラつきをトーンで丸める(1 次 LP)
                     self.tone_lp[ch] += (wet - self.tone_lp[ch]) * (1.0 - d.tone_coef);
                     let toned = self.tone_lp[ch];
@@ -762,10 +773,14 @@ impl EffectState {
                     st.dc_in = x;
                     st.dc_out = hp;
                     // プリアンプ 2 段。段間 LP でフィジーさを抑え、
-                    // 2 段目は非対称クリップ(偶数次倍音 = 真空管っぽい太さ)
-                    let s1 = (hp * a.gain * 0.5).tanh();
-                    st.stage_lp += (s1 - st.stage_lp) * a.stage_coef;
-                    let s2 = (st.stage_lp * 2.4 + 0.12).tanh() - 0.119_4;
+                    // 2 段目は非対称クリップ(偶数次倍音 = 真空管っぽい太さ)。
+                    // 歪みで出た倍音が折り返さないよう、2 倍のレートで回す(段間 LP の係数も 2 倍レート用)
+                    let AmpChState { os, stage_lp, .. } = st;
+                    let s2 = os.run(hp, |u| {
+                        let s1 = (u * a.gain * 0.5).tanh();
+                        *stage_lp += (s1 - *stage_lp) * a.stage_coef;
+                        (*stage_lp * 2.4 + 0.12).tanh() - 0.119_4
+                    });
                     // トーン
                     st.tone_lp += (s2 - st.tone_lp) * (1.0 - a.tone_coef);
                     let mut y = st.tone_lp;
@@ -897,8 +912,9 @@ impl EffectState {
                 let mut out = [0.0f32; 2];
                 for (ch, o) in out.iter_mut().enumerate() {
                     let x = read_frac(&self.dly[ch], idx, delay);
-                    // 飽和(小さい音はほぼ素通し、大きい音ほど丸く潰れる)
-                    let mut y = (x * t.drive).tanh() / t.drive;
+                    // 飽和(小さい音はほぼ素通し、大きい音ほど丸く潰れる)。折り返さないよう 2 倍のレートで
+                    let drive = t.drive;
+                    let mut y = self.tape_os[ch].run(x, |u| (u * drive).tanh() / drive);
                     self.tone_lp[ch] += (y - self.tone_lp[ch]) * (1.0 - t.tone_coef);
                     y = self.tone_lp[ch];
                     if t.hiss > 0.0 {
@@ -1896,7 +1912,8 @@ pub fn bake_effect(
             };
             Some(EffectParams::Amp(AmpParams {
                 gain: 10.0_f32.powf(get(map, s, "gain_db").clamp(0.0, 54.0) / 20.0),
-                stage_coef: lp_coef(6000.0),
+                // 段間 LP はプリアンプと一緒に 2 倍のレートで回る
+                stage_coef: 1.0 - (-tau * 6000.0 / (2.0 * sample_rate)).exp(),
                 tone_coef: (-tau * (900.0 + tone * 5500.0) / sample_rate).exp(),
                 presence: get(map, s, "presence").clamp(0.0, 1.0),
                 pres_coef: lp_coef(3000.0),

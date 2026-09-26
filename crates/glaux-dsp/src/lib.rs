@@ -23,6 +23,7 @@ mod effects;
 mod expr;
 mod fm;
 mod multi;
+mod oversample;
 mod params;
 mod pluck;
 mod sampler;
