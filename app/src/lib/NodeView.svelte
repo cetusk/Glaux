@@ -23,6 +23,7 @@
     processingOrder,
     soundingSet,
     splitLink,
+    trackChoices,
     unlinkBridging,
   } from "./fx";
   import { fxDrag, fxDropTargets, isOverShelf } from "./fxDrag.svelte";
@@ -753,8 +754,13 @@
                   aria-label={p.display_name}
                 />
               {:else if p.range.kind === "enum"}
+                {@const tc = trackChoices(p, project.tracks)}
                 <select value={String(p.current)} onchange={(ev) => commitParam(p, ev.currentTarget.value)} aria-label={p.display_name}>
-                  {#each p.range.choices as c (c)}<option value={c}>{c}</option>{/each}
+                  {#if tc}
+                    {#each tc as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
+                  {:else}
+                    {#each p.range.choices as c (c)}<option value={c}>{c}</option>{/each}
+                  {/if}
                 </select>
               {/if}
             </div>

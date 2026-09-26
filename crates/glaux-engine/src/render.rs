@@ -1765,11 +1765,8 @@ impl Renderer {
             }
             let slot = fx.slot as usize;
             let params = self.fx_scratch[slot].unwrap_or(fx.params);
-            // サイドチェインの検出信号: ソーストラックの生ミックス(エフェクト前)
-            let key_track = match &params {
-                EffectParams::Sidechain(sc) => Some(sc.source_track as usize),
-                _ => None,
-            };
+            // サイドチェイン・ダイナミック EQ の検出信号: ソーストラックの生ミックス(エフェクト前)
+            let key_track = params.key_source().map(|t| t as usize);
             let state = &mut self.effect_states[slot];
             for f in 0..frames {
                 let key = key_track

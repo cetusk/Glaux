@@ -16,6 +16,7 @@ export const FX_COLORS: Record<string, string> = {
   transient: "#d0739a",
   limiter: "#d9534f",
   width: "#5fb3c9",
+  dynamic_eq: "#6f86e8",
   sidechain: "#caa43a",
   clap: "#b07ce8",
 };
@@ -34,8 +35,18 @@ export const FX_KIND_JA: Record<string, string> = {
   transient: "トランジェント",
   limiter: "リミッタ",
   width: "幅",
+  dynamic_eq: "ダイナミック EQ",
   sidechain: "サイドチェイン",
 };
+
+/** 選択肢が空の「検出のトラック」(サイドチェイン・ダイナミック EQ の source)は、曲のトラックから選ばせる */
+export function trackChoices(
+  p: { name: string; range: { kind: string; choices?: readonly string[] } },
+  tracks: { id: string; name: string }[],
+): { value: string; label: string }[] | null {
+  if (p.name !== "source" || p.range.kind !== "enum" || (p.range.choices?.length ?? 0) > 0) return null;
+  return [{ value: "", label: "なし(自分の音)" }, ...tracks.map((t) => ({ value: t.id, label: t.name }))];
+}
 
 /** 種類のキー(内蔵エフェクト名。CLAP は "clap") */
 export function fxKind(e: EffectView | ProjectEffect): string {

@@ -202,6 +202,129 @@ impl TransientState {
     }
 }
 
+// ============================ ダイナミック EQ ============================
+
+/// 係数を作り直す間隔(サンプル)。間は SVF の係数の補間でつなぐ
+const DYN_EQ_UPDATE: u32 = 8;
+
+/// 焼き込み前の値
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DynEqRaw {
+    pub freq: f32,
+    pub q: f32,
+    pub threshold_db: f32,
+    pub ratio: f32,
+    /// 下げる量の上限(dB)
+    pub range_db: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub sample_rate: f32,
+}
+
+/// ダイナミック EQ(1 バンドのベル)。帯域の音量がしきい値を超えた分だけ、そのベルを下げる。
+/// `source_track` を指定すると、その帯域で別のトラックが鳴っている間だけ下げる(帯域を絞ったダッキング。
+/// ボーカルが鳴っている間だけ、伴奏の 2〜4kHz を空けるなど)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DynEqParams {
+    pub raw: DynEqRaw,
+    /// 検出の帯域通過(ピークで 0dB)
+    detect: SvfCoeffs,
+    /// 包絡の係数(速い立ち上がり・50ms の戻り)
+    env_att: f32,
+    env_rel: f32,
+    /// 下げる量のアタック / リリース
+    attack: f32,
+    release: f32,
+    /// 検出に使うトラックの index(u32::MAX = 自分の音)
+    pub source_track: u32,
+}
+
+impl DynEqParams {
+    pub fn new(raw: DynEqRaw, source_track: u32) -> Self {
+        let sr = raw.sample_rate.max(1.0);
+        let freq = raw.freq.clamp(20.0, sr * 0.45);
+        let q = raw.q.clamp(0.3, 10.0);
+        let k = 1.0 / q;
+        DynEqParams {
+            raw: DynEqRaw { freq, q, ..raw },
+            detect: SvfCoeffs {
+                g: (std::f32::consts::PI * freq / sr).tan(),
+                k,
+                m0: 0.0,
+                m1: k,
+                m2: 0.0,
+            },
+            env_att: time_coef(1.0, sr),
+            env_rel: time_coef(50.0, sr),
+            attack: time_coef(raw.attack_ms, sr),
+            release: time_coef(raw.release_ms, sr),
+            source_track,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DynEqState {
+    detect: SvfState,
+    bell: [SvfState; 2],
+    coeffs: Option<SvfCoeffs>,
+    env: f32,
+    /// いま下げている量(dB、正)
+    reduction: f32,
+    count: u32,
+}
+
+impl DynEqState {
+    /// `key` は検出に使う別トラックの音(`source_track` が自分のときは使わない)
+    #[inline]
+    pub fn process(&mut self, p: &DynEqParams, l: f32, r: f32, key: f32) -> (f32, f32) {
+        let input = if p.source_track == u32::MAX {
+            0.5 * (l + r)
+        } else {
+            key
+        };
+        let band = self.detect.process(&p.detect, 1.0, input).abs();
+        let c = if band > self.env {
+            p.env_att
+        } else {
+            p.env_rel
+        };
+        self.env = c * self.env + (1.0 - c) * band;
+        let raw = &p.raw;
+        let over = 20.0 * self.env.max(1e-6).log10() - raw.threshold_db;
+        let want = (over.max(0.0) * (1.0 - 1.0 / raw.ratio.max(1.0))).min(raw.range_db.max(0.0));
+        let c = if want > self.reduction {
+            p.attack
+        } else {
+            p.release
+        };
+        self.reduction = c * self.reduction + (1.0 - c) * want;
+        if self.count == 0 || self.coeffs.is_none() {
+            self.coeffs = Some(SvfCoeffs::bell(
+                raw.sample_rate,
+                raw.freq,
+                raw.q,
+                -self.reduction,
+            ));
+        }
+        self.count = (self.count + 1) % DYN_EQ_UPDATE;
+        let Some(co) = self.coeffs else {
+            return (l, r);
+        };
+        let smooth = 1.0 / DYN_EQ_UPDATE as f32;
+        (
+            self.bell[0].process(&co, smooth, l),
+            self.bell[1].process(&co, smooth, r),
+        )
+    }
+
+    /// いま下げている量(dB)。テスト用
+    #[cfg(test)]
+    fn reduction(&self) -> f32 {
+        self.reduction
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +414,65 @@ mod tests {
             }
         }
         (head, tail)
+    }
+
+    fn dyn_raw() -> DynEqRaw {
+        DynEqRaw {
+            freq: 3000.0,
+            q: 1.5,
+            threshold_db: -30.0,
+            ratio: 4.0,
+            range_db: 12.0,
+            attack_ms: 5.0,
+            release_ms: 100.0,
+            sample_rate: 48_000.0,
+        }
+    }
+
+    #[test]
+    fn dynamic_eq_cuts_only_when_the_band_is_loud() {
+        let p = DynEqParams::new(dyn_raw(), u32::MAX);
+        let tone =
+            |f: f32, a: f32, i: usize| (i as f32 * f * std::f32::consts::TAU / 48_000.0).sin() * a;
+        // 3kHz が大きい → 下がる。3kHz が小さい・200Hz だけ大きい → 下げない
+        let mut st = DynEqState::default();
+        for i in 0..24_000 {
+            let x = tone(3000.0, 0.5, i);
+            st.process(&p, x, x, 0.0);
+        }
+        assert!(st.reduction() > 6.0, "{}", st.reduction());
+        let mut st = DynEqState::default();
+        for i in 0..24_000 {
+            let x = tone(3000.0, 0.01, i) + tone(200.0, 0.5, i);
+            st.process(&p, x, x, 0.0);
+        }
+        assert!(st.reduction() < 1.0, "{}", st.reduction());
+    }
+
+    #[test]
+    fn dynamic_eq_ducks_from_another_track() {
+        // 別トラック(key)が 3kHz で鳴っている間だけ、自分の 3kHz を下げる
+        let p = DynEqParams::new(dyn_raw(), 0);
+        let tone = |i: usize| (i as f32 * 3000.0 * std::f32::consts::TAU / 48_000.0).sin();
+        let mut st = DynEqState::default();
+        let mut rms = |key_on: bool| {
+            let mut sum = 0.0f32;
+            for i in 0..24_000 {
+                let (y, _) = st.process(
+                    &p,
+                    tone(i) * 0.1,
+                    tone(i) * 0.1,
+                    if key_on { tone(i) * 0.5 } else { 0.0 },
+                );
+                if i > 12_000 {
+                    sum += y * y;
+                }
+            }
+            (sum / 12_000.0).sqrt()
+        };
+        let off = rms(false);
+        let on = rms(true);
+        assert!(20.0 * (on / off).log10() < -6.0, "{off} → {on}");
     }
 
     #[test]

@@ -10,7 +10,7 @@
   import { newClipId, newFxId } from "./ids";
   import { deviceIcon, deviceKind, deviceName } from "./instruments";
   import { fmtValue, fromPos, SLIDER_MAX, toPos } from "./params";
-  import { effectiveLinks, insertBeforeOutput, moveIndexFor, processingOrder, serialLinks, serialOrder, unlinkBridging } from "./fx";
+  import { effectiveLinks, insertBeforeOutput, moveIndexFor, processingOrder, serialLinks, serialOrder, trackChoices, unlinkBridging } from "./fx";
   import { keepInView } from "./menu";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
   import {
@@ -614,10 +614,15 @@
         {p.current ? "オン" : "オフ"}</label
       >
     {:else}
+      {@const tc = trackChoices(p, project.tracks)}
       <select value={String(p.current)} onchange={(e) => commitParam(p, (e.currentTarget as HTMLSelectElement).value)} aria-label={p.display_name}>
-        {#each p.range.choices as c (c)}
-          <option value={c}>{c}</option>
-        {/each}
+        {#if tc}
+          {#each tc as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
+        {:else}
+          {#each p.range.choices as c (c)}
+            <option value={c}>{c}</option>
+          {/each}
+        {/if}
       </select>
     {/if}
   </div>

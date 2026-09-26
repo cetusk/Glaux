@@ -475,6 +475,7 @@ pub enum EffectParams {
     Transient(crate::dynamics::TransientParams),
     Limiter(crate::limiter::LimiterParams),
     Width(crate::width::WidthParams),
+    DynamicEq(crate::dynamics::DynEqParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -495,6 +496,7 @@ enum EffectKind {
     Transient,
     Limiter,
     Width,
+    DynamicEq,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -538,6 +540,7 @@ pub struct EffectState {
     transient: crate::dynamics::TransientState,
     limiter: crate::limiter::LimiterState,
     width: crate::width::WidthState,
+    dyn_eq: crate::dynamics::DynEqState,
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -587,6 +590,7 @@ impl EffectState {
             transient: Default::default(),
             limiter: Default::default(),
             width: Default::default(),
+            dyn_eq: Default::default(),
         }
     }
 
@@ -613,6 +617,7 @@ impl EffectState {
             EffectParams::Transient(_) => EffectKind::Transient,
             EffectParams::Limiter(_) => EffectKind::Limiter,
             EffectParams::Width(_) => EffectKind::Width,
+            EffectParams::DynamicEq(_) => EffectKind::DynamicEq,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -651,6 +656,7 @@ impl EffectState {
             self.transient = Default::default();
             self.limiter = Default::default();
             self.width = Default::default();
+            self.dyn_eq = Default::default();
         }
     }
 
@@ -842,6 +848,7 @@ impl EffectState {
             EffectParams::Transient(t) => self.transient.process(t, l, r),
             EffectParams::Limiter(m) => self.limiter.process(m, l, r),
             EffectParams::Width(w) => self.width.process(w, l, r),
+            EffectParams::DynamicEq(d) => self.dyn_eq.process(d, l, r, key),
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1280,6 +1287,106 @@ pub static WIDTH_SPECS: &[ParamSpec] = &[
             skew: None,
         },
         description: "モノラルの音にも左右の違いを作って広げる(まばらな雑音で畳み込んだ音を左右の差に足す)。モノラルにすると消えて元の音に戻る。打点はにじまないよう弱める。パッド・コーラス・ボーカルの重ねに。",
+    },
+];
+
+pub static DYNAMIC_EQ_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "freq",
+        display_name: "周波数",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 40.0,
+            max: 16000.0,
+            default: 3000.0,
+            skew: Some(0.3),
+        },
+        description: "動かす帯域の中心。ボーカルの刺さり(歯擦音)は 5000〜8000、こもりは 200〜400、ボーカルと伴奏の住み分けは 2000〜4000。",
+    },
+    ParamSpec {
+        name: "q",
+        display_name: "Q",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.3,
+            max: 10.0,
+            default: 1.5,
+            skew: Some(0.5),
+        },
+        description: "帯域の幅。大きいほど狭い。",
+    },
+    ParamSpec {
+        name: "threshold_db",
+        display_name: "スレッショルド",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -60.0,
+            max: 0.0,
+            default: -30.0,
+            skew: None,
+        },
+        description: "その帯域の音量がこれを超えた分だけ下げる。",
+    },
+    ParamSpec {
+        name: "ratio",
+        display_name: "レシオ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 1.0,
+            max: 10.0,
+            default: 3.0,
+            skew: None,
+        },
+        description: "下げる強さ。",
+    },
+    ParamSpec {
+        name: "range_db",
+        display_name: "最大の下げ幅",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 24.0,
+            default: 12.0,
+            skew: None,
+        },
+        description: "下げる量の上限。",
+    },
+    ParamSpec {
+        name: "attack_ms",
+        display_name: "アタック",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.5,
+            max: 100.0,
+            default: 5.0,
+            skew: Some(0.5),
+        },
+        description: "下がり始める速さ。",
+    },
+    ParamSpec {
+        name: "release_ms",
+        display_name: "リリース",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 10.0,
+            max: 1000.0,
+            default: 120.0,
+            skew: Some(0.5),
+        },
+        description: "戻る速さ。",
+    },
+    ParamSpec {
+        name: "source",
+        display_name: "検出のトラック",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &[],
+            default: "",
+        },
+        description: "空なら自分の音で検出(その帯域が大きいときだけ下げる = 歯擦音やこもりの抑え)。\
+            トラック ID を入れると、そのトラックがこの帯域で鳴っている間だけ自分を下げる\
+            (伴奏にボーカルのトラックを指定して 2〜4kHz を空ける、など)。\
+            例: set_param path=fx/<fx_id>/source value=\"trk_vox001\"",
     },
 ];
 
@@ -1851,6 +1958,7 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "transient" => Some(TRANSIENT_SPECS),
         "limiter" => Some(LIMITER_SPECS),
         "width" => Some(WIDTH_SPECS),
+        "dynamic_eq" => Some(DYNAMIC_EQ_SPECS),
         _ => None,
     }
 }
@@ -1956,6 +2064,14 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
             params: WIDTH_SPECS,
             articulations: &[],
         },
+        crate::params::InstrumentInfo {
+            name: "dynamic_eq",
+            description: "ダイナミック EQ(1 バンド)。その帯域が大きいときだけベルで下げる(歯擦音・こもり・\
+                ギターの耳障りな帯域を、鳴っているときだけ抑える)。source に別トラックを入れると、\
+                そのトラックがその帯域で鳴っている間だけ下げる(帯域を絞ったダッキング)。",
+            params: DYNAMIC_EQ_SPECS,
+            articulations: &[],
+        },
     ]
 }
 
@@ -1986,6 +2102,15 @@ fn get(map: &ParamMap, specs: &[ParamSpec], name: &str) -> f32 {
 }
 
 impl EffectParams {
+    /// 検出に別トラックの音を使うエフェクト(サイドチェイン・ダイナミック EQ)の、そのトラックの index
+    pub fn key_source(&self) -> Option<u32> {
+        match self {
+            EffectParams::Sidechain(sc) => Some(sc.source_track),
+            EffectParams::DynamicEq(d) if d.source_track != u32::MAX => Some(d.source_track),
+            _ => None,
+        }
+    }
+
     /// 処理の遅れ(サンプル)。エンジンの遅延補正に使う(先読みするリミッタだけ 0 でない)
     pub fn latency(&self) -> u32 {
         match self {
@@ -2110,6 +2235,20 @@ impl EffectParams {
                     }
                 }
                 *p = crate::dynamics::MultibandParams::new(r);
+            }
+            EffectParams::DynamicEq(p) => {
+                let mut r = p.raw;
+                match name {
+                    "freq" => r.freq = v,
+                    "q" => r.q = v,
+                    "threshold_db" => r.threshold_db = v,
+                    "ratio" => r.ratio = v,
+                    "range_db" => r.range_db = v,
+                    "attack_ms" => r.attack_ms = v,
+                    "release_ms" => r.release_ms = v,
+                    _ => return false,
+                }
+                *p = crate::dynamics::DynEqParams::new(r, p.source_track);
             }
             EffectParams::Width(p) => {
                 let (mut w, mut m, mut d) = (p.width, p.mono_below_hz, p.decorrelate);
@@ -2346,6 +2485,28 @@ pub fn bake_effect(
                 }),
             ))
         }
+        "dynamic_eq" => {
+            let s = DYNAMIC_EQ_SPECS;
+            let source_track = match map.get("source") {
+                Some(ParamValue::Enum(id)) if !id.is_empty() => {
+                    resolve_track(id).unwrap_or(u32::MAX)
+                }
+                _ => u32::MAX,
+            };
+            Some(EffectParams::DynamicEq(crate::dynamics::DynEqParams::new(
+                crate::dynamics::DynEqRaw {
+                    freq: get(map, s, "freq"),
+                    q: get(map, s, "q"),
+                    threshold_db: get(map, s, "threshold_db").clamp(-60.0, 0.0),
+                    ratio: get(map, s, "ratio").clamp(1.0, 10.0),
+                    range_db: get(map, s, "range_db").clamp(0.0, 24.0),
+                    attack_ms: get(map, s, "attack_ms"),
+                    release_ms: get(map, s, "release_ms"),
+                    sample_rate,
+                },
+                source_track,
+            )))
+        }
         "width" => {
             let s = WIDTH_SPECS;
             Some(EffectParams::Width(crate::width::WidthParams::new(
@@ -2437,6 +2598,8 @@ mod tests {
             ("width", "width", 1.5),
             ("width", "mono_below_hz", 120.0),
             ("width", "decorrelate", 0.4),
+            ("dynamic_eq", "freq", 6000.0),
+            ("dynamic_eq", "threshold_db", -20.0),
         ];
         let none = |_: &str| None;
         for (fx, name, v) in cases {
