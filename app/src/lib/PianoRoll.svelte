@@ -1020,6 +1020,35 @@
     );
   }
 
+  // ---- クオンタイズ(選択中のノート、無ければクリップ全体。開始位置をスナップの格子へ寄せる。長さは変えない) ----
+  function quantize(strength: number) {
+    const currentClip = clip;
+    if (!currentClip) return;
+    const g = snapTicks;
+    const len = lenOf(currentClip);
+    const targets = currentClip.notes.filter((n) => selected.size === 0 || selected.has(n.id));
+    // 格子は曲の小節線に合わせる(クリップの頭が拍の途中にあっても)
+    const changes = targets
+      .map((n) => {
+        const abs = currentClip.start + n.pos;
+        const want = Math.round(abs / g) * g - currentClip.start;
+        const pos = Math.min(Math.max(0, Math.round(n.pos + (want - n.pos) * strength)), len - 1);
+        return { id: n.id, pos, old: n.pos };
+      })
+      .filter((c) => c.pos !== c.old)
+      .map(({ id, pos }) => ({ id, pos }));
+    const unit = snapOptions.find((o) => o.ticks === g)?.label ?? `${g} tick`;
+    if (changes.length === 0) {
+      swingMsg = "もう格子にそろっています";
+      setTimeout(() => (swingMsg = null), 3000);
+      return;
+    }
+    applyEdit(
+      [{ op: "update_notes", clip: currentClip.id, changes }],
+      `クオンタイズ ${unit}${strength < 1 ? ` ${Math.round(strength * 100)}%` : ""}(${changes.length} ノート)`,
+    );
+  }
+
   // ---- スウィング(選択中のノート、無ければクリップ全体) ----
   let swingGrid = $state(480);
   let swingMsg = $state<string | null>(null);
@@ -1455,6 +1484,10 @@
         if (!entry) return;
         e.preventDefault();
         toggleArticulation(entry.art);
+      } else if (e.code === "KeyQ" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // クオンタイズ(Shift で 50% = 人間味を残す)
+        e.preventDefault();
+        quantize(e.shiftKey ? 0.5 : 1);
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         deleteNotes([...selected]);
@@ -1566,6 +1599,22 @@
             {#each snapOptions as o (o.ticks)}
               <option value={o.ticks}>{o.label}</option>
             {/each}
+          </select>
+        </label>
+        <label class="snap" title="ノートの開始位置をスナップの格子へ寄せる(選択中のノート、無ければクリップ全体)。長さは変えない。Q キーで 100%、Shift+Q で 50%">
+          <select
+            value=""
+            aria-label="クオンタイズ"
+            onchange={(e) => {
+              const el = e.currentTarget as HTMLSelectElement;
+              if (el.value) quantize(Number(el.value));
+              el.value = "";
+            }}
+          >
+            <option value="">クオンタイズ…</option>
+            <option value="1">格子にそろえる(100%)</option>
+            <option value="0.75">75%(少し残す)</option>
+            <option value="0.5">50%(人間味を残す)</option>
           </select>
         </label>
         <label class="snap" title="裏拍の音をハネさせる(選択中のノート、無ければクリップ全体)。表の音と長さは変えない。同じ設定なら何度掛けても同じ">
