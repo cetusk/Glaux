@@ -29,6 +29,7 @@
     inspectorStore,
     instrumentPickerStore,
     MASTER_FOCUS_ID,
+    projectRev,
     saveInspectorWidth,
     soundDesignStore,
     viewStore,
@@ -123,7 +124,7 @@
   $effect(() => {
     const t = track;
     const master = isMaster;
-    void project; // 依存: どの編集でも現在値を取り直す
+    void projectRev.value; // 依存: どの編集でも現在値を取り直す
     if (!t && !master) {
       info = null;
       return;

@@ -7,6 +7,7 @@
   import { focusNow } from "./menu";
   import { FX_COLORS, FX_KIND_JA, fxName } from "./fx";
   import { fxDrag, fxDropTargets } from "./fxDrag.svelte";
+  import { projectRev } from "./selection.svelte";
   import { showError, showToast } from "./toast.svelte";
   import type { EffectView, Project } from "./types";
 
@@ -38,7 +39,7 @@
       .catch(() => {});
   }
   $effect(() => {
-    void project;
+    void projectRev.value;
     reload();
   });
 

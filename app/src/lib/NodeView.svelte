@@ -33,7 +33,7 @@
   import { deviceName } from "./instruments";
   import { focusNow, keepInView } from "./menu";
   import { fmtValue, fromPos, SLIDER_MAX, toPos } from "./params";
-  import { MASTER_FOCUS_ID, viewStore } from "./selection.svelte";
+  import { MASTER_FOCUS_ID, projectRev, viewStore } from "./selection.svelte";
   import { showError } from "./toast.svelte";
   import { newFxId } from "./ids";
   import type { EffectView, FxLink, ParamView, Project, TrackParams } from "./types";
@@ -53,7 +53,7 @@
   let info = $state<TrackParams | null>(null);
   $effect(() => {
     const id = targetId;
-    void project;
+    void projectRev.value;
     (id === MASTER_FOCUS_ID ? api.getMasterParams() : api.getTrackParams(id))
       .then((r) => {
         info = r;

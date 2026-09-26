@@ -35,6 +35,7 @@
     inspectorStore,
     midiArmStore,
     pianoRollStore,
+    projectRev,
     selectionStore,
     soundDesignStore,
     viewStore,
@@ -155,6 +156,7 @@
       const [p, h] = await Promise.all([api.getProject(), api.getHistory()]);
       if (seq !== syncSeq) return;
       project = p.project;
+      projectRev.value += 1;
       projectVersion = p.project_version;
       entries = h.entries;
       historyTotal = h.total;
@@ -229,6 +231,7 @@
         p.tracks[i] = nt;
       }
       projectVersion = t.project_version;
+      projectRev.value += 1;
       entries = h.entries;
       historyTotal = h.total;
       redoable = h.redoable ?? [];
