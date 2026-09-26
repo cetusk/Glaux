@@ -1631,7 +1631,7 @@ checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
 
 [[package]]
 name = "glaux-app"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "glaux-clap"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "clack-extensions",
  "clack-host",
@@ -1664,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "glaux-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rand 0.8.8",
@@ -1675,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "glaux-dsp"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "glaux-core",
  "rustfft",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "glaux-engine"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "glaux-godot"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "glaux-core",
  "glaux-engine",
@@ -1720,7 +1720,7 @@ dependencies = [
 
 [[package]]
 name = "glaux-mcp"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "glaux-ml"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "rustfft",
