@@ -254,7 +254,7 @@ pub struct ExportOptions {
     pub range_secs: Option<(f64, f64)>,
     /// 音量の目標(統合ラウドネス LUFS)。None でそのまま
     pub target_lufs: Option<f64>,
-    /// 音量を合わせるときのピークの上限(dBFS)。超える所はリミッタで抑える
+    /// 音量を合わせるときのピークの上限(dBTP = True Peak)。超える所はリミッタで抑える
     pub ceiling_db: f64,
 }
 
@@ -278,8 +278,16 @@ pub struct ExportReport {
     pub lufs: f64,
     /// サンプルのピーク(dBFS)
     pub peak_db: f64,
+    /// True Peak(dBTP。サンプルの間の山も含む)
+    pub true_peak_db: f64,
+    /// PLR(True Peak − 統合ラウドネス、dB)。小さいほど潰れている
+    pub plr_db: f64,
     /// 音量を合わせるために掛けたゲイン(dB)
     pub gain_db: f64,
+    /// リミッタで最も下げた量(dB。0 なら掛かっていない)。AES TD1008 は 1 dB 程度までを出発点に勧めている
+    pub limiter_db: f64,
+    /// 配信サービスで再生されたときの音量の調整の予測
+    pub streaming: Vec<crate::loudness::StreamingPreview>,
 }
 
 fn db(a: f64) -> f64 {
@@ -301,24 +309,29 @@ pub fn render(
     render_inner(project, sample_rate, bank, range, master_clip)
 }
 
-/// ピークを `ceiling_db` 以下に抑える先読み付きのリミッタ(書き出し用。全体を先に持っているので先読みできる)。
-/// ピークの 5ms 前からゲインを下げ始め、過ぎたら 80ms ほどで戻す。最後に上限でクリップして保証する
-pub fn limit_peaks(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) {
+/// True Peak を `ceiling_db`(dBTP)以下に抑える先読み付きのリミッタ(書き出し用。全体を先に持っているので先読みできる)。
+/// ピークの 5ms 前からゲインを下げ始め、過ぎたら 80ms ほどで戻す。ゲインの変化で波形が変わり
+/// サンプルの間の山がわずかに残ることがあるので、測り直して超えていればもう一度かける。
+/// 最後にサンプル値でも上限でクリップして保証する。最も下げた量(dB、正の値)を返す
+pub fn limit_peaks(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) -> f64 {
+    let mut reduced = limit_once(stereo, sample_rate, ceiling_db);
+    let over = crate::loudness::true_peak_db(stereo) - ceiling_db;
+    if over > 0.02 {
+        reduced += limit_once(stereo, sample_rate, ceiling_db - over - 0.05);
+    }
+    reduced
+}
+
+fn limit_once(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) -> f64 {
     let ceil = 10f32.powf(ceiling_db as f32 / 20.0);
     let n = stereo.len() / 2;
     if n == 0 {
-        return;
+        return 0.0;
     }
-    // 各フレームで必要なゲイン
-    let need: Vec<f32> = (0..n)
-        .map(|i| {
-            let p = stereo[i * 2].abs().max(stereo[i * 2 + 1].abs());
-            if p > ceil {
-                ceil / p
-            } else {
-                1.0
-            }
-        })
+    // 各フレームで必要なゲイン(True Peak で判定)
+    let need: Vec<f32> = crate::loudness::true_peak_frames(stereo)
+        .into_iter()
+        .map(|p| if p > ceil { ceil / p } else { 1.0 })
         .collect();
     let look = ((0.005 * sample_rate) as usize).max(1);
     // 先読みの窓の最小値(単調な両端キューで O(n))
@@ -349,6 +362,8 @@ pub fn limit_peaks(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) {
             *v = (*v * env[i]).clamp(-ceil, ceil);
         }
     }
+    let min = env.iter().copied().fold(1.0f32, f32::min);
+    -20.0 * (min as f64).max(1e-9).log10()
 }
 
 /// 設定に従って描き出し、音量を合わせて(指定があれば)WAV に書く。
@@ -367,6 +382,7 @@ pub fn export_audio(
         opts.target_lufs.is_none(),
     )?;
     let mut gain_db = 0.0;
+    let mut limiter_db = 0.0;
     if let Some(target) = opts.target_lufs {
         // ラウドネスは 48kHz の係数で測る(サンプルレートが違えば 48kHz で描き出して測る)
         let measured = if opts.sample_rate == 48_000 {
@@ -380,20 +396,38 @@ pub fn export_audio(
             let g = 10f32.powf(gain_db as f32 / 20.0);
             stereo.iter_mut().for_each(|v| *v *= g);
         }
-        limit_peaks(&mut stereo, sr, opts.ceiling_db);
+        limiter_db = limit_peaks(&mut stereo, sr, opts.ceiling_db);
     }
     write_wav(path, &stereo, opts.sample_rate, opts.bits)?;
     let lufs = if opts.sample_rate == 48_000 {
         crate::analyze::integrated_lufs(&stereo)
     } else {
-        f64::NAN
+        // 48kHz 以外は ebur128(サンプルレートに合わせた K 特性)で測る
+        ebur128::EbuR128::new(2, opts.sample_rate, ebur128::Mode::I)
+            .ok()
+            .and_then(|mut m| {
+                m.add_frames_f32(&stereo).ok()?;
+                m.loudness_global().ok()
+            })
+            .filter(|v| v.is_finite())
+            .unwrap_or(f64::NAN)
     };
     let peak = stereo.iter().fold(0.0f32, |m, v| m.max(v.abs())) as f64;
+    let true_peak = crate::loudness::true_peak_db(&stereo);
+    let round = |v: f64| (v * 10.0).round() / 10.0;
     Ok(ExportReport {
         seconds: stereo.len() as f64 / 2.0 / sr,
-        lufs: (lufs * 10.0).round() / 10.0,
-        peak_db: (db(peak) * 10.0).round() / 10.0,
-        gain_db: (gain_db * 10.0).round() / 10.0,
+        lufs: round(lufs),
+        peak_db: round(db(peak)),
+        true_peak_db: round(true_peak),
+        plr_db: if lufs.is_finite() {
+            round(true_peak - lufs)
+        } else {
+            f64::NAN
+        },
+        gain_db: round(gain_db),
+        limiter_db: round(limiter_db),
+        streaming: crate::loudness::streaming_previews(lufs, true_peak),
     })
 }
 
@@ -488,6 +522,9 @@ mod tests {
         limit_peaks(&mut x, sr, -1.0);
         let ceil = 10f32.powf(-1.0 / 20.0);
         assert!(x.iter().all(|v| v.abs() <= ceil + 1e-6));
+        // サンプルの間の山(True Peak)も上限を超えない
+        let tp = crate::loudness::true_peak_db(&x);
+        assert!(tp <= -1.0 + 0.05, "True Peak も上限以下: {tp:.2} dBTP");
         // 山から離れた静かな所はそのまま
         let quiet = x[2 * 10_000..2 * 10_100]
             .iter()
@@ -511,6 +548,10 @@ mod tests {
         assert_eq!(reader.spec().sample_rate, 44_100);
         assert_eq!(reader.spec().bits_per_sample, 24);
         assert!(r.peak_db <= -0.9, "{r:?}");
+        // True Peak も上限(-1 dBTP)以下で、44.1kHz でもラウドネスを測って配信の予測を返す
+        assert!(r.true_peak_db <= -0.9, "{r:?}");
+        assert!((r.lufs + 14.0).abs() < 1.0, "{r:?}");
+        assert!(r.streaming.iter().any(|s| s.service == "Spotify"));
         // 48kHz で書き出せばラウドネスを測って返す。目標に ±1 LU
         let path48 = tmp.path().join("out48.wav");
         let r = export_audio(

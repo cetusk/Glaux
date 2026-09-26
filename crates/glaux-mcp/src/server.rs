@@ -1575,6 +1575,9 @@ impl GlauxServer {
         track_ids に 1 トラックだけ渡せば単体を聴ける。start/end_tick で範囲を絞れる(範囲指定の指示と併用推奨)。\
         loudness_range_lu=曲中の音量の起伏(小さいと平板)、true_peak_dbtp=サンプル間のピーク(配信は -1 以下が目安)、\
         short_term_lufs=1 秒ごとの短期ラウドネスの推移(展開・盛り上がりの確認)、\
+        plr_db=True Peak − 統合ラウドネス(小さいほど潰れている)、psr_min_db=いちばん詰まった所のピークと短期ラウドネスの差(実務の目安は 8 以上)、\
+        streaming=Spotify / Apple Music / YouTube / AES77 で再生されたときの音量の調整の予測(gain_db がマイナスなら下げられる。\
+        大きく下げられるなら音圧を上げすぎ。正規化される配信では、潰して大きくしても得をしない)、\
         stereo(correlation=左右の相関。1=モノラル、負=逆相で危険 / low_correlation=250Hz 以下の相関。低域は 1 近くが望ましい /\
         side_to_mid_db=広がり / balance_db=左右の偏り)。\
         【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy 一覧と、\
@@ -2846,8 +2849,10 @@ impl GlauxServer {
 
     #[tool(
         description = "曲を WAV に書き出す。sample_rate(44100 / 48000)、bits(16 / 24 / 32 = 浮動小数)、範囲(start_tick / end_tick)、\
-        loudness_lufs(音量の目標。配信なら -14。超えるピークは -1dB でリミッタ)を選べる。stems: true でトラックごと(マスターを通さない)。\
-        path 省略でプロジェクトの export/ に日時付きの名前。返り値に書いたファイルと、ラウドネス・ピーク・掛けたゲイン。\
+        loudness_lufs(音量の目標。配信なら -14。True Peak が -1 dBTP を超える所はリミッタで抑える)を選べる。stems: true でトラックごと(マスターを通さない)。\
+        path 省略でプロジェクトの export/ に日時付きの名前。返り値に書いたファイルと、ラウドネス・サンプルのピーク・True Peak・PLR・\
+        掛けたゲイン・limiter_db(リミッタで最も下げた量。1 dB 程度を超えるなら目標が大きすぎるか、ミックスのピークが強すぎる)・\
+        streaming(配信サービスでの音量の調整の予測)。\
         書き出したらその値で音量を確かめて報告する。"
     )]
     async fn export_audio(&self, params: Parameters<crate::export::ExportRequest>) -> ToolResult {

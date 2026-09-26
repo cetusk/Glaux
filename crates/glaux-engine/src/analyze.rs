@@ -53,6 +53,13 @@ pub struct Analysis {
     pub short_term_lufs: Vec<f64>,
     /// 短期ラウドネスの最大値(いちばん大きい所)
     pub max_short_term_lufs: f64,
+    /// PLR(True Peak − 統合ラウドネス、dB)。小さいほどピークが潰れている(目安: 8 を大きく下回ると潰しすぎ)
+    pub plr_db: f64,
+    /// PSR(3 秒窓の True Peak − 短期ラウドネス)の最小値(dB)。いちばん詰まった所の余裕。
+    /// 実務の目安は 8 を下回らない(Ian Shepherd。規格ではない)。測れなければ null
+    pub psr_min_db: Option<f64>,
+    /// 配信サービスで再生されたときの音量の調整の予測(Spotify・Apple Music・YouTube・AES77)
+    pub streaming: Vec<crate::loudness::StreamingPreview>,
     /// ステレオの広がり
     pub stereo: StereoInfo,
 }
@@ -180,16 +187,23 @@ pub fn analyze_project(
         true_peak_dbtp: r128.1,
         short_term_lufs: r128.2,
         max_short_term_lufs: r128.3,
+        plr_db: if loudness_lufs.is_finite() {
+            ((r128.1 - loudness_lufs) * 10.0).round() / 10.0
+        } else {
+            f64::NAN
+        },
+        psr_min_db: r128.4.map(|v| (v * 10.0).round() / 10.0),
+        streaming: crate::loudness::streaming_previews(loudness_lufs, r128.1),
         stereo,
     })
 }
 
-/// EBU R128: (LRA, True Peak dBTP, 短期ラウドネスの 1 秒ごとの推移, その最大)。
-fn r128_stats(stereo: &[f32]) -> (f64, f64, Vec<f64>, f64) {
+/// EBU R128: (LRA, True Peak dBTP, 短期ラウドネスの 1 秒ごとの推移, その最大, PSR の最小)。
+fn r128_stats(stereo: &[f32]) -> (f64, f64, Vec<f64>, f64, Option<f64>) {
     use ebur128::{EbuR128, Mode};
     let Ok(mut m) = EbuR128::new(2, SAMPLE_RATE as u32, Mode::LRA | Mode::TRUE_PEAK | Mode::S)
     else {
-        return (0.0, -120.0, vec![], -70.0);
+        return (0.0, -120.0, vec![], -70.0, None);
     };
     let sec = SAMPLE_RATE as usize * 2;
     let mut timeline = Vec::new();
@@ -209,10 +223,11 @@ fn r128_stats(stereo: &[f32]) -> (f64, f64, Vec<f64>, f64) {
         .filter_map(|c| m.true_peak(c).ok())
         .fold(0.0f64, f64::max);
     let max_st = timeline.iter().copied().fold(-70.0f64, f64::max);
+    let psr = crate::loudness::psr_min_db(stereo, SAMPLE_RATE, &timeline);
     // 長い曲は間引いて 180 点以内に
     let step = timeline.len().div_ceil(180).max(1);
     let timeline: Vec<f64> = timeline.iter().step_by(step).copied().collect();
-    (lra, amp_db(tp), timeline, max_st)
+    (lra, amp_db(tp), timeline, max_st, psr)
 }
 
 /// RBJ の 2 次ローパス(48kHz)。

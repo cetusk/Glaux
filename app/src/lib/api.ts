@@ -630,7 +630,11 @@ export function exportAudio(request: ExportRequest): Promise<{
   seconds?: number;
   lufs?: number;
   peak_db?: number;
+  true_peak_db?: number;
+  plr_db?: number;
   gain_db?: number;
+  limiter_db?: number;
+  streaming?: { service: string; target_lufs: number; gain_db: number; result_lufs: number; note?: string }[];
   stems?: { track: string; path: string }[];
   folder?: string;
 }> {

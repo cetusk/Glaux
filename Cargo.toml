@@ -41,7 +41,8 @@ tauri-build = "2"
 tauri-plugin-dialog = "2"
 axum = "0.8"
 # glaux-engine
-cpal = "0.18"
+# realtime: オーディオスレッドの優先度を上げる(Windows は MMCSS の Pro Audio、Linux は RT)
+cpal = { version = "0.18", features = ["realtime"] }
 arc-swap = "1"
 hound = "3"
 sha2 = "0.10"
@@ -54,8 +55,8 @@ clack-host = "0.2"
 clack-extensions = { version = "0.2", features = ["clack-host", "audio-ports", "note-ports", "params", "state", "thread-check", "log", "latency", "gui", "preset-discovery"] }
 # CLAP プラグインの状態をプロジェクトに書く
 base64 = "0.22"
-# Windows でプラグインの画面を入れるウィンドウ(glaux-clap のみ)
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+# Windows の API: プラグインの画面を入れるウィンドウ(glaux-clap)、電力抑制を外す(glaux-engine)
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Threading"] }
 # ラウドネス(EBU R128: 短期・LRA・True Peak)
 ebur128 = "0.1"
 # MIDI キーボード入力

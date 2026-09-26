@@ -91,7 +91,10 @@
       } else {
         const lufs = Number.isFinite(r.lufs) ? `${r.lufs} LUFS / ` : "";
         const gain = r.gain_db ? ` / 音量 ${r.gain_db > 0 ? "+" : ""}${r.gain_db} dB` : "";
-        result = `書き出しました(${r.seconds?.toFixed(1)} 秒、${lufs}ピーク ${r.peak_db} dBFS${gain}): ${r.path}`;
+        const lim = r.limiter_db ? ` / リミッタ最大 -${r.limiter_db} dB` : "";
+        const sp = r.streaming?.find((s) => s.service === "Spotify");
+        const spot = sp && sp.gain_db < -0.5 ? `。Spotify では ${-sp.gain_db} dB 下げて再生される見込み` : "";
+        result = `書き出しました(${r.seconds?.toFixed(1)} 秒、${lufs}True Peak ${r.true_peak_db ?? r.peak_db} dBTP${gain}${lim}${spot}): ${r.path}`;
       }
       showToast("ok", result);
     } catch (e) {
@@ -161,7 +164,7 @@
         {/each}
       </select>
       {#if loudness !== "none"}
-        <div class="note">曲全体の音量をこの値に合わせ、ピークが -1 dB を超える所はリミッタで抑えます</div>
+        <div class="note">曲全体の音量をこの値に合わせ、True Peak(サンプルの間の山も含むピーク)が -1 dBTP を超える所はリミッタで抑えます</div>
       {/if}
     </div>
   {/if}

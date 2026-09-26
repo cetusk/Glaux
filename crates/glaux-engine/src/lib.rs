@@ -22,6 +22,7 @@ pub mod analyze;
 pub mod calibrate;
 pub mod data;
 pub mod export;
+pub mod loudness;
 pub mod midi;
 pub mod output;
 pub mod plugins;

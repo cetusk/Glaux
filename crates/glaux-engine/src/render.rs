@@ -215,9 +215,10 @@ impl StatsCounters {
     }
 }
 
-/// この(オーディオ)スレッドでデノーマル数を 0 に丸める(FTZ / DAZ)。
-/// 残響やフィルタが減衰しきる直前の極小値は x86 で桁違いに遅い演算になり、
-/// 音の消え際で処理落ちを起こすことがある。DAW では標準的な対策。
+/// この(オーディオ)スレッドでデノーマル数を 0 に丸める(x86_64 は FTZ / DAZ、aarch64 は FZ)。
+/// 残響やフィルタが減衰しきる直前の極小値は桁違いに遅い演算になり、
+/// 音の消え際で処理落ちやノイズを起こすことがある。DAW では標準的な対策。
+/// 設定はスレッドごとで子スレッドに受け継がれないので、処理するスレッドで毎ブロック呼ぶ。
 #[inline]
 pub fn flush_denormals() {
     #[cfg(target_arch = "x86_64")]
@@ -227,6 +228,16 @@ pub fn flush_denormals() {
     unsafe {
         use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
         _mm_setcsr(_mm_getcsr() | 0x8040);
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: FPCR の FZ(bit 24)を立てるだけ(Apple Silicon などの ARM)。
+    // このスレッドの浮動小数演算でデノーマル数が 0 になる
+    unsafe {
+        let fpcr: u64;
+        std::arch::asm!("mrs {}, fpcr", out(reg) fpcr, options(nomem, nostack, preserves_flags));
+        if fpcr & (1 << 24) == 0 {
+            std::arch::asm!("msr fpcr, {}", in(reg) fpcr | (1 << 24), options(nomem, nostack, preserves_flags));
+        }
     }
 }
 

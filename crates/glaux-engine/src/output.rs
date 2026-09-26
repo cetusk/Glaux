@@ -611,6 +611,7 @@ pub fn list_devices() -> DeviceList {
 /// デバイスが無い環境ではエラーを返す(アプリ側は再生なしで動作を続ける)。
 pub fn start_engine() -> Result<EngineHandle, EngineError> {
     let (tx, rx) = mpsc::channel::<Result<EngineHandle, EngineError>>();
+    disable_power_throttling();
 
     std::thread::Builder::new()
         .name("glaux-audio".into())
@@ -756,3 +757,32 @@ const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<EngineHandle>();
 };
+
+/// Windows の電力抑制(EcoQoS)からこのプロセスを外す。ハイブリッド CPU で省電力のコアへ回されたり
+/// 実行速度を落とされたりすると、音が途切れる原因になる(Steinberg も案内している対策)
+fn disable_power_throttling() {
+    #[cfg(windows)]
+    // SAFETY: 自分のプロセスの電力抑制の設定を変えるだけ。構造体は API の定義どおり
+    unsafe {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_STATE,
+        };
+        let state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            // ControlMask に立てて StateMask に立てない = 抑制しない
+            StateMask: 0,
+        };
+        let ok = SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            (&state as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        );
+        if ok == 0 {
+            tracing::warn!("電力抑制(EcoQoS)を外せませんでした");
+        }
+    }
+}
