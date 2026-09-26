@@ -116,10 +116,14 @@ pub struct MaskingIssue {
     pub masked_by: String,
     /// 帯域(聴覚の帯域幅に近い区切り、Hz)
     pub band_hz: (u32, u32),
-    /// `track` がこの帯域で鳴っている時間のうち、`masked_by` が 6dB 以上大きい時間の割合
+    /// `track` がこの帯域で聞こえるはずの時間のうち、`masked_by` のマスキングのしきい値より下にいる
+    /// (覆われて聞こえない)時間の割合
     pub time_ratio: f64,
     /// この帯域が `track` のエネルギーに占める割合(大きいほど、その音の主要な帯域)
     pub band_share: f64,
+    /// 覆われている時間に、しきい値より何 dB 下にいるか(中央値)。`masked_by` をこの帯域でこれだけ下げる
+    /// (か `track` を上げる)と聞こえてくる目安
+    pub suggest_cut_db: f64,
 }
 
 /// トラックごとの要約と、トラック間のかぶり。
@@ -747,8 +751,14 @@ const BARK_EDGES: [f64; 25] = [
     15500.0,
 ];
 
-/// モノラルを 100ms ごとの臨界帯域エネルギー(dB)の列にする。
-fn band_frames(mono: &[f32]) -> Vec<[f64; 24]> {
+/// 100ms ごとの臨界帯域の音の量(dBFS。フルスケールのサイン波が 0dB)と、帯域ごとの音のらしさ(0 = 雑音、1 = 純音)
+struct BandFrame {
+    db: [f64; 24],
+    tonality: [f64; 24],
+}
+
+/// モノラルを 100ms ごとの臨界帯域の [`BandFrame`] の列にする。
+fn band_frames(mono: &[f32]) -> Vec<BandFrame> {
     const N: usize = 4096;
     let hop = (0.1 * SAMPLE_RATE) as usize;
     let mut planner = FftPlanner::<f64>::new();
@@ -757,6 +767,14 @@ fn band_frames(mono: &[f32]) -> Vec<[f64; 24]> {
         .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / N as f64).cos())
         .collect();
     let bin_hz = SAMPLE_RATE / N as f64;
+    // Hann 窓の山の高さ(N/4)の 2 乗 × 等価雑音帯域(1.5 ビン)で割ると、サイン波が 0dB
+    let norm = (N as f64 / 4.0).powi(2) * 1.5;
+    let band_of: Vec<Option<usize>> = (0..N / 2)
+        .map(|k| {
+            let f = k as f64 * bin_hz;
+            BARK_EDGES.windows(2).position(|w| f >= w[0] && f < w[1])
+        })
+        .collect();
     let mut out = Vec::new();
     let mut buf = vec![Complex::new(0.0, 0.0); N];
     let mut pos = 0;
@@ -765,24 +783,93 @@ fn band_frames(mono: &[f32]) -> Vec<[f64; 24]> {
             buf[i] = Complex::new(mono[pos + i] as f64 * hann[i], 0.0);
         }
         fft.process(&mut buf);
-        let mut bands = [0.0f64; 24];
+        let mut power = [0.0f64; 24];
+        // 帯域の中で、隣り合う 3 ビンの和のいちばん大きいもの(純音なら窓の山がほぼ全部入る)
+        let mut peak3 = [0.0f64; 24];
         for (k, c) in buf[..N / 2].iter().enumerate() {
-            let f = k as f64 * bin_hz;
-            if let Some(b) = BARK_EDGES.windows(2).position(|w| f >= w[0] && f < w[1]) {
-                bands[b] += c.norm_sqr();
+            if let Some(b) = band_of[k] {
+                power[b] += c.norm_sqr();
+                if k >= 1 && k + 1 < N / 2 {
+                    let three = buf[k - 1].norm_sqr() + c.norm_sqr() + buf[k + 1].norm_sqr();
+                    peak3[b] = peak3[b].max(three);
+                }
             }
         }
-        out.push(bands.map(|p| 10.0 * p.max(1e-12).log10()));
+        // 音のらしさ: 3 ビンの山が帯域の音のほとんどを占めれば純音(1)、雑音なら 3 / ビン数 程度(0)。
+        // 臨界帯域のビン数は 7〜数百と少ないので、スペクトルの平坦さ(SFM)より安定する
+        let tonality: [f64; 24] = std::array::from_fn(|b| {
+            if power[b] > 1e-20 {
+                ((peak3[b] / power[b] - 0.5) / 0.45).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        });
+        out.push(BandFrame {
+            db: power.map(|p| (10.0 * (p / norm).max(1e-14).log10()).max(-140.0)),
+            tonality,
+        });
         pos += hop;
+    }
+    out
+}
+
+/// 臨界帯域 k の中心(Bark)
+fn bark_center(k: usize) -> f64 {
+    k as f64 + 0.5
+}
+
+/// 絶対閾(Terhardt、dB SPL)を dBFS に(フルスケールのサイン波 = 96dB SPL として)
+fn hearing_threshold_dbfs(k: usize) -> f64 {
+    let f = ((BARK_EDGES[k] * BARK_EDGES[k + 1]).sqrt() / 1000.0).max(0.02);
+    let spl = 3.64 * f.powf(-0.8) - 6.5 * (-0.6 * (f - 3.3).powi(2)).exp() + 1e-3 * f.powi(4);
+    spl - 96.0
+}
+
+/// 広がり関数(Schroeder、dB)。`dz` = 聞く側の帯域 − 覆う側の帯域(Bark)
+fn spreading_db(dz: f64) -> f64 {
+    15.81 + 7.5 * (dz + 0.474) - 17.5 * (1.0 + (dz + 0.474).powi(2)).sqrt()
+}
+
+/// 前向きのマスキングが 100ms ごとに弱まる量(dB)
+const FORWARD_DECAY_DB: f64 = 15.0;
+
+/// あるトラックが作るマスキングのしきい値(dBFS、100ms ごと × 臨界帯域)。
+/// 帯域ごとの音を広がり関数で周りの帯域へ広げ、音のらしさで決まる分だけ下げる
+/// (純音は覆う力が弱い: 14.5 + z dB、雑音は強い: 5.5 dB。Johnston)。
+/// 大きな音の直後もしばらく覆う(前向きのマスキング)
+fn masking_threshold(frames: &[BandFrame]) -> Vec<[f64; 24]> {
+    let mut out: Vec<[f64; 24]> = Vec::with_capacity(frames.len());
+    for f in frames {
+        let mut t = [-140.0f64; 24];
+        for (k, tk) in t.iter_mut().enumerate() {
+            let mut sum = 0.0f64;
+            for j in 0..24 {
+                if f.db[j] <= -130.0 {
+                    continue;
+                }
+                let a = f.tonality[j];
+                let offset = a * (14.5 + bark_center(j)) + (1.0 - a) * 5.5;
+                let level = f.db[j] + spreading_db(bark_center(k) - bark_center(j)) - offset;
+                sum += 10f64.powf(level / 10.0);
+            }
+            *tk = 10.0 * sum.max(1e-14).log10();
+        }
+        if let Some(prev) = out.last() {
+            for k in 0..24 {
+                t[k] = t[k].max(prev[k] - FORWARD_DECAY_DB);
+            }
+        }
+        out.push(t);
     }
     out
 }
 
 /// トラックごとにソロでレンダし、要約とトラック間のかぶり(マスキング)を求める。
 ///
-/// かぶりの判定(簡易な心理音響モデル): 臨界帯域ごとに、あるトラックが鳴っている
-/// (その帯域での自分の最大から -30dB 以内の)時間のうち、別のトラックが同じ帯域で
-/// 6dB 以上大きい時間の割合。その帯域が自分のエネルギーの 8% 以上を占めるものだけを数える。
+/// かぶりの判定(心理音響モデル): 臨界帯域ごとに、あるトラックが聞こえるはずの
+/// (絶対閾より上で、その帯域での自分の最大から -30dB 以内の)時間のうち、別のトラックの
+/// マスキングのしきい値([`masking_threshold`])より下にいる時間の割合。
+/// その帯域が自分のエネルギーの 8% 以上を占めるものだけを数える。
 pub fn analyze_mix(
     project: &Project,
     range: Option<(Tick, Tick)>,
@@ -840,7 +927,7 @@ pub fn analyze_mix(
     };
 
     let mut tracks = Vec::new();
-    let mut frames: Vec<(String, Vec<[f64; 24]>)> = Vec::new();
+    let mut frames: Vec<(String, Vec<BandFrame>)> = Vec::new();
     for (t, stereo) in project.tracks.iter().zip(rendered) {
         let Some(stereo) = stereo else {
             continue;
@@ -869,45 +956,54 @@ pub fn analyze_mix(
         });
         frames.push((t.name.clone(), band_frames(&mono)));
     }
+    let thresholds: Vec<Vec<[f64; 24]>> =
+        frames.iter().map(|(_, f)| masking_threshold(f)).collect();
+    let ath: [f64; 24] = std::array::from_fn(hearing_threshold_dbfs);
     let mut masking = Vec::new();
     for (bi, (b_name, b)) in frames.iter().enumerate() {
         // 帯域ごとのエネルギーの割合と、帯域ごとの最大
         let mut share = [0.0f64; 24];
-        let mut maxes = [-120.0f64; 24];
+        let mut maxes = [-140.0f64; 24];
         for f in b {
             for k in 0..24 {
-                share[k] += 10f64.powf(f[k] / 10.0);
-                maxes[k] = maxes[k].max(f[k]);
+                share[k] += 10f64.powf(f.db[k] / 10.0);
+                maxes[k] = maxes[k].max(f.db[k]);
             }
         }
-        let total: f64 = share.iter().sum::<f64>().max(1e-12);
-        for (ai, (a_name, a)) in frames.iter().enumerate() {
+        let total: f64 = share.iter().sum::<f64>().max(1e-14);
+        for (ai, (a_name, _)) in frames.iter().enumerate() {
             if ai == bi {
                 continue;
             }
+            let thr = &thresholds[ai];
             for k in 0..24 {
                 let s = share[k] / total;
                 if s < 0.08 {
                     continue;
                 }
-                let n = b.len().min(a.len());
+                let n = b.len().min(thr.len());
                 let mut active = 0;
-                let mut masked = 0;
+                let mut margins = Vec::new();
                 for t in 0..n {
-                    if b[t][k] > maxes[k] - 30.0 {
+                    let level = b[t].db[k];
+                    if level > maxes[k] - 30.0 && level > ath[k] {
                         active += 1;
-                        if a[t][k] >= b[t][k] + 6.0 {
-                            masked += 1;
+                        if level < thr[t][k] {
+                            margins.push(thr[t][k] - level);
                         }
                     }
                 }
+                let masked = margins.len();
                 if active >= 5 && masked as f64 / active as f64 >= 0.3 {
+                    margins.sort_by(f64::total_cmp);
+                    let median = margins[margins.len() / 2];
                     masking.push(MaskingIssue {
                         track: b_name.clone(),
                         masked_by: a_name.clone(),
                         band_hz: (BARK_EDGES[k] as u32, BARK_EDGES[k + 1] as u32),
                         time_ratio: (masked as f64 / active as f64 * 100.0).round() / 100.0,
                         band_share: (s * 100.0).round() / 100.0,
+                        suggest_cut_db: ((median + 1.0).min(24.0) * 10.0).round() / 10.0,
                     });
                 }
             }
@@ -1392,6 +1488,82 @@ mod tests {
             lead.loudness_lufs
         );
         assert!(bass.band_energy.low > lead.band_energy.low);
+    }
+
+    /// 帯域 k のしきい値と、聞く側の音の量(最後のフレーム)
+    fn masked_margin(masker: &[f32], target: &[f32], k: usize) -> f64 {
+        let thr = masking_threshold(&band_frames(masker));
+        let tgt = band_frames(target);
+        let t = thr.len().min(tgt.len()) - 1;
+        thr[t][k] - tgt[t].db[k]
+    }
+
+    fn band_of_hz(f: f64) -> usize {
+        BARK_EDGES
+            .windows(2)
+            .position(|w| f >= w[0] && f < w[1])
+            .unwrap()
+    }
+
+    #[test]
+    fn noise_masks_more_than_a_tone_and_far_bands_do_not_mask() {
+        let n = 48_000;
+        let sine = |f: f32, amp: f32| -> Vec<f32> {
+            (0..n)
+                .map(|i| (i as f32 * f * std::f32::consts::TAU / 48_000.0).sin() * amp)
+                .collect()
+        };
+        // 1kHz の帯域(920〜1080Hz)に絞った雑音: 白色雑音を 2 次のバンドパスで
+        let band_noise = |amp: f32| -> Vec<f32> {
+            let mut r: u32 = 9;
+            let (mut lp, mut hp) = (lowpass(1080.0), highpass(920.0));
+            let raw: Vec<f32> = (0..n)
+                .map(|_| {
+                    r ^= r << 13;
+                    r ^= r >> 17;
+                    r ^= r << 5;
+                    let x = (r as f64 / u32::MAX as f64 - 0.5) * 2.0;
+                    lp.next(hp.next(x)) as f32
+                })
+                .collect();
+            let rms = (raw.iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt();
+            raw.iter()
+                .map(|v| v / rms * amp * std::f32::consts::FRAC_1_SQRT_2)
+                .collect()
+        };
+        let k = band_of_hz(1000.0);
+        // 聞く側は約 -30dBFS。同じ大きさ(約 -10dBFS)でも、雑音は純音よりずっと強く覆う
+        // (帯域に絞った雑音は一部が帯域の外へ漏れるので、差は理論値の 17.5dB より小さく出る)
+        let target = sine(1000.0, 0.03);
+        let by_tone = masked_margin(&sine(1000.0, 0.3), &target, k);
+        let by_noise = masked_margin(&band_noise(0.3), &target, k);
+        assert!(
+            by_noise > by_tone + 6.0,
+            "雑音 {by_noise:.1} / 純音 {by_tone:.1}"
+        );
+        assert!(by_noise > 0.0, "雑音には覆われる: {by_noise:.1}");
+        assert!(by_tone < 0.0, "純音には覆われない: {by_tone:.1}");
+        // 離れた帯域(4kHz)は 500Hz の大きな雑音に覆われない
+        let far = masked_margin(&sine(500.0, 0.5), &sine(4000.0, 0.03), band_of_hz(4000.0));
+        assert!(far < -20.0, "{far:.1}");
+    }
+
+    #[test]
+    fn masking_lingers_shortly_after_a_loud_sound() {
+        // 大きな雑音の 100ms 後でも、しきい値はすぐには下がらない(前向きのマスキング)
+        let frames = vec![
+            BandFrame {
+                db: [-10.0; 24],
+                tonality: [0.0; 24],
+            },
+            BandFrame {
+                db: [-140.0; 24],
+                tonality: [0.0; 24],
+            },
+        ];
+        let t = masking_threshold(&frames);
+        assert!(t[1][10] > t[0][10] - FORWARD_DECAY_DB - 0.01);
+        assert!(t[1][10] > -60.0);
     }
 
     #[test]

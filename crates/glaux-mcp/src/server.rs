@@ -1608,8 +1608,10 @@ impl GlauxServer {
         tonal_balance(third_octave=1/3 オクターブごとの量、slope_db_per_oct=傾き。0 = ピンクノイズと同じ・マイナスほど暗い、\
         deviations=傾きの直線から ±3dB 以上ずれた帯域。プラスはこもり・刺さりの候補。EQ で直す場所の目星に)。\
         【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy 一覧と、\
-        masking(トラック間の周波数のかぶり: track が masked_by に band_hz の帯域で time_ratio の時間 6dB 以上負けている。\
-        band_share はその帯域が track の音に占める割合)が返る。かぶりは EQ で片方を削る・パンで分ける・sidechain で解消する。\
+        masking(トラック間の周波数のかぶり。心理音響モデル(広がり・純音か雑音か・聞こえる最小の音・直後の残り)で、\
+        track が masked_by に band_hz の帯域で time_ratio の時間覆われて聞こえない。band_share はその帯域が track の音に占める割合、\
+        suggest_cut_db は masked_by をその帯域でどれだけ下げれば聞こえてくるかの目安)が返る。\
+        かぶりは EQ・dynamic_eq(source に track を入れると、track が鳴る間だけ masked_by を下げる)で削る・パンで分ける・sidechain で解消する。\
         目立たせたいトラック(リード/ボーカル的存在)は伴奏より 2〜4dB 上、\
         同じ帯域に重心が密集していたら EQ で住み分け(片方の被り帯域を削る)か\
         sidechain で空間を空ける。「あるトラックが埋もれる」相談ではまず per_track で全体像を見ること。"
