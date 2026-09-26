@@ -36,6 +36,7 @@ const LABELS: Record<string, ToolLabel> = {
   analyze_beats: { short: "テンポを測定", doing: "テンポを測っています" },
   analyze_sound: { short: "音色を確認", doing: "音色を調べています" },
   compare_sounds: { short: "音を比較", doing: "音を比べています" },
+  compare_mix: { short: "編集の前後を聴き比べ", doing: "編集の前後を聴き比べています" },
   match_sound: { short: "音色を似せる", doing: "音色を似せています" },
   // ノート
   transpose_notes: { short: "移調", doing: "移調しています" },

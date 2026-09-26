@@ -863,6 +863,44 @@ fn undo_redo_and_checkpoints() {
 }
 
 #[test]
+fn project_at_rebuilds_past_states_without_touching_session() {
+    // 聴き比べ用: 過去の地点のプロジェクトを、今のセッションを変えずに作る
+    let mut s = Session::new(seed_project());
+    let start = s.project().clone();
+    let tid = s.project().tracks[0].id.clone();
+    s.checkpoint("before");
+    s.apply(
+        Command::SetTrackProp {
+            id: tid.clone(),
+            prop: TrackProp::Mute(true),
+        },
+        Author::Human,
+        "mute",
+    )
+    .unwrap();
+    let after_mute = s.project().clone();
+    let mute_entry = s.history().applied()[0].id.clone();
+    s.apply(
+        Command::SetMasterVolume { volume_db: -6.0 },
+        Author::Human,
+        "master",
+    )
+    .unwrap();
+    let now = s.project().clone();
+
+    let at = |p: HistoryPoint| s.project_at(s.resolve_point(&p).unwrap()).unwrap();
+    assert_eq!(at(HistoryPoint::Checkpoint("before".into())), start);
+    assert_eq!(at(HistoryPoint::BeforeEntry(mute_entry)), start);
+    assert_eq!(at(HistoryPoint::Back(1)), after_mute);
+    assert_eq!(at(HistoryPoint::Back(0)), now);
+    assert_eq!(at(HistoryPoint::Back(99)), start);
+    assert_eq!(s.project(), &now, "セッションは変わらない");
+    assert!(s
+        .resolve_point(&HistoryPoint::Checkpoint("no_such".into()))
+        .is_err());
+}
+
+#[test]
 fn revert_middle_entry_detects_conflicts() {
     let mut s = Session::new(seed_project());
     let ai = Author::Ai {

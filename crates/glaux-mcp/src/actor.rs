@@ -122,6 +122,12 @@ pub enum Request {
         limit: usize,
         reply: oneshot::Sender<Result<Vec<HistoryEntry>, CoreError>>,
     },
+    /// 履歴の地点でのプロジェクト(今のセッションは変えない)。聴き比べ用。
+    /// 返り値は (その地点のプロジェクト, 今のプロジェクト, 今のバージョン, 戻した編集の数)
+    ProjectAt {
+        point: glaux_core::HistoryPoint,
+        reply: oneshot::Sender<Result<(Project, Project, usize, usize), CoreError>>,
+    },
     GetHistory {
         /// `Author` の種別名("human" | "ai" | "system")。None なら全部。
         author_kind: Option<String>,
@@ -296,6 +302,15 @@ impl SessionHandle {
             reply,
         })
         .await
+    }
+
+    /// 履歴の地点でのプロジェクトと今のプロジェクト(今のセッションは変えない)
+    pub async fn project_at(
+        &self,
+        point: glaux_core::HistoryPoint,
+    ) -> Result<Result<(Project, Project, usize, usize), CoreError>, String> {
+        self.request(|reply| Request::ProjectAt { point, reply })
+            .await
     }
 
     pub async fn get_history(
@@ -501,6 +516,14 @@ fn handle(
             .map(|start| {
                 let tail = &applied[start..];
                 tail[tail.len().saturating_sub(limit)..].to_vec()
+            });
+            let _ = reply.send(result);
+        }
+        Request::ProjectAt { point, reply } => {
+            let v = version(session, store);
+            let result = session.resolve_point(&point).and_then(|at| {
+                let back = session.history().applied().len() - at;
+                Ok((session.project_at(at)?, session.project().clone(), v, back))
             });
             let _ = reply.send(result);
         }

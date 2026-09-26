@@ -122,6 +122,29 @@ pub struct AnalyzeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct CompareMixParams {
+    /// 「前」にするチェックポイントの名前(checkpoint で付けたもの)。
+    /// checkpoint / before_entry / back のどれか 1 つを指定する(どれも無ければ直前の 1 編集の前)
+    #[serde(default)]
+    pub checkpoint: Option<String>,
+    /// 「前」にする履歴エントリ ID(そのエントリを適用する直前と比べる)
+    #[serde(default)]
+    pub before_entry: Option<String>,
+    /// 最新から n 個の編集を戻した所を「前」にする
+    #[serde(default)]
+    pub back: Option<usize>,
+    /// 比べるトラック ID の配列。省略で全トラックのミックス
+    #[serde(default)]
+    pub track_ids: Option<Vec<String>>,
+    /// 比べる範囲の開始 tick。省略で曲頭から
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// 比べる範囲の終了 tick。省略で曲末まで
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct AnalyzeHarmonyParams {
     /// 対象トラック ID の配列。省略で全トラック(ドラムは自動で除外される)。
     #[serde(default)]
@@ -1644,6 +1667,82 @@ impl GlauxServer {
             });
             v["tracks"] = serde_json::to_value(&tracks).map_err(|e| e.to_string())?;
         }
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "編集の前と後を、同じ条件でレンダして比べる(聴き比べ)。ミックスの編集が本当に良くなったかの確認に使う。\
+        「前」は checkpoint(名前)・before_entry(履歴エントリ ID の直前)・back(最新から n 個戻した所)のどれかで指定\
+        (省略で直前の 1 編集の前)。今のプロジェクトは変えない。\
+        【大事】人の耳は 0.5〜1dB 大きいだけで「良くなった」と感じる。loudness_diff_db が 0 でなければ、\
+        その差で良し悪しを決めないこと。tonal_balance(オクターブ帯域ごとの、それぞれ全体に対する dB。音量差の影響を受けない)・\
+        stereo・plr_db / psr_min_db(ダイナミクス)・loudness_range_lu で比べる。match_gain_db は後の方に掛けると前と同じ音量になる量。\
+        notes に目立つ違いの要約が入る。編集で音量まで変えたくなければ、音量(フェーダー・makeup)を match_gain_db の分だけ戻して\
+        もう一度比べるとよい。track_ids・start/end_tick は analyze_audio と同じ。"
+    )]
+    async fn compare_mix(&self, params: Parameters<CompareMixParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("compare_mix");
+        let p = params.0;
+        let point = match (p.checkpoint, p.before_entry, p.back) {
+            (Some(c), None, None) => glaux_core::HistoryPoint::Checkpoint(c),
+            (None, Some(e), None) => glaux_core::HistoryPoint::BeforeEntry(
+                glaux_core::EntryId::parse(&e).map_err(|e| e.to_string())?,
+            ),
+            (None, None, Some(n)) => glaux_core::HistoryPoint::Back(n),
+            (None, None, None) => glaux_core::HistoryPoint::Back(1),
+            _ => {
+                return Err(
+                    "checkpoint / before_entry / back はどれか 1 つだけ指定すること".to_owned(),
+                )
+            }
+        };
+        let (before, after, version, back) = self
+            .handle
+            .project_at(point)
+            .await?
+            .map_err(|e| e.to_string())?;
+        if back == 0 {
+            return Err("「前」が今と同じ地点です(比べる編集がありません)".to_owned());
+        }
+        let track_ids: Option<Vec<glaux_core::TrackId>> = match &p.track_ids {
+            None => None,
+            Some(ids) => Some(
+                ids.iter()
+                    .map(|s| glaux_core::TrackId::parse(s).map_err(|e| e.to_string()))
+                    .collect::<Result<_, _>>()?,
+            ),
+        };
+        let range = match (p.start_tick, p.end_tick) {
+            (None, None) => None,
+            (s, e) => {
+                let start = s.unwrap_or(0);
+                let end = e.unwrap_or(u64::MAX);
+                if end <= start {
+                    return Err("end_tick は start_tick より大きくすること".to_owned());
+                }
+                Some((glaux_core::Tick(start), glaux_core::Tick(end)))
+            }
+        };
+        let project_dir = self.handle.project_dir().await?;
+        let cmp = tokio::task::spawn_blocking(move || {
+            let dir = std::path::Path::new(&project_dir);
+            let bank_before = glaux_engine::SampleBank::for_offline(&before, dir);
+            let bank_after = glaux_engine::SampleBank::for_offline(&after, dir);
+            glaux_engine::compare_projects(
+                &before,
+                &after,
+                track_ids.as_deref(),
+                range,
+                &bank_before,
+                &bank_after,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("比べられません: {e}"))?;
+        let mut v = serde_json::to_value(&cmp).map_err(|e| e.to_string())?;
+        v["edits_compared"] = json!(back);
+        v["project_version"] = json!(version);
         Ok(JsonText(v))
     }
 

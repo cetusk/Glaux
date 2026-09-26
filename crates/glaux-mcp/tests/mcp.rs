@@ -690,6 +690,59 @@ async fn switch_project_swaps_session_for_all_handles() {
 }
 
 #[tokio::test]
+async fn compare_mix_reports_loudness_and_tone_separately() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_pad001", "Pad")).await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [{
+                "op": "add_clip", "track": "trk_pad001",
+                "clip": { "id": "clp_pad001", "name": "P", "start": 0, "length": 3840, "kind": "midi",
+                  "notes": [
+                    { "id": "nt_pad001", "pos": 0, "dur": 3840, "pitch": 57, "vel": 100 },
+                    { "id": "nt_pad002", "pos": 0, "dur": 3840, "pitch": 64, "vel": 100 }
+                  ] }
+            }],
+            "label": "パッドを追加",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    call(&fx, "checkpoint", json!({ "label": "mix_a" })).await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [{ "op": "set_track_prop", "id": "trk_pad001", "prop": "volume_db", "value": -6.0 }], "label": "下げる" }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+
+    let v = ok_json(&call(&fx, "compare_mix", json!({ "checkpoint": "mix_a" })).await);
+    assert_eq!(v["edits_compared"], 1);
+    let d = v["loudness_diff_db"].as_f64().unwrap();
+    assert!((d + 6.0).abs() < 0.3, "音量差: {d}");
+    assert!((v["match_gain_db"].as_f64().unwrap() - 6.0).abs() < 0.3);
+    assert!(v["tonal_balance"].as_array().unwrap().len() >= 8);
+    assert!(v["notes"][0].as_str().unwrap().contains("小さい"));
+    // 省略時は直前の 1 編集の前と比べる(同じ結果)
+    let v2 = ok_json(&call(&fx, "compare_mix", json!({})).await);
+    assert_eq!(v2["loudness_diff_db"], v["loudness_diff_db"]);
+    // 今のプロジェクトは変わらない
+    let p = ok_json(&call(&fx, "get_project", json!({ "include_notes": false })).await);
+    assert_eq!(p["project"]["tracks"][0]["volume_db"], -6.0);
+    // 2 つ指定はエラー
+    let r = call(
+        &fx,
+        "compare_mix",
+        json!({ "checkpoint": "mix_a", "back": 1 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn analyze_audio_per_track_reveals_balance() {
     let fx = setup().await;
     // 静かなリードと大きいベース

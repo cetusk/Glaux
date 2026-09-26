@@ -140,8 +140,17 @@ pub fn analyze_project(
         }
     }
     let stereo = render_for_analysis(&target, range, bank)?;
+    analyze_stereo(project, range, &stereo)
+}
+
+/// レンダ済みのステレオ(48kHz、インターリーブ)を解析する
+fn analyze_stereo(
+    project: &Project,
+    range: Option<(Tick, Tick)>,
+    stereo: &[f32],
+) -> Result<Analysis, ExportError> {
     let offset_seconds = range.map_or(0.0, |(start, _)| project.tempo_map.tick_to_seconds(start));
-    let sliced: &[f32] = &stereo;
+    let sliced: &[f32] = stereo;
     if sliced.len() < 4096 {
         return Err(ExportError::Empty);
     }
@@ -196,6 +205,244 @@ pub fn analyze_project(
         streaming: crate::loudness::streaming_previews(loudness_lufs, r128.1),
         stereo,
     })
+}
+
+/// オクターブ帯域ごとの音の量(全体に対する dB)。音量に左右されない「音色の釣り合い」
+#[derive(Clone, Debug, Serialize)]
+pub struct OctaveLevel {
+    /// 中心周波数(Hz)
+    pub hz: u32,
+    pub before_db: f64,
+    pub after_db: f64,
+    /// after − before(dB)。プラスはその帯域が相対的に増えた
+    pub diff_db: f64,
+}
+
+/// 比べるときの要約(前・後それぞれ)
+#[derive(Clone, Debug, Serialize)]
+pub struct CompareSide {
+    pub loudness_lufs: f64,
+    pub true_peak_dbtp: f64,
+    pub plr_db: f64,
+    pub psr_min_db: Option<f64>,
+    pub loudness_range_lu: f64,
+    pub crest_factor_db: f64,
+    pub spectral_centroid_hz: f64,
+    pub band_energy: BandEnergy,
+    pub stereo: StereoInfo,
+}
+
+impl From<&Analysis> for CompareSide {
+    fn from(a: &Analysis) -> Self {
+        CompareSide {
+            loudness_lufs: a.loudness_lufs,
+            true_peak_dbtp: a.true_peak_dbtp,
+            plr_db: a.plr_db,
+            psr_min_db: a.psr_min_db,
+            loudness_range_lu: a.loudness_range_lu,
+            crest_factor_db: a.crest_factor_db,
+            spectral_centroid_hz: a.spectral_centroid_hz,
+            band_energy: a.band_energy.clone(),
+            stereo: a.stereo.clone(),
+        }
+    }
+}
+
+/// 編集の前後の比較。音量の差と、音量をそろえたうえでの違いを分けて返す
+#[derive(Clone, Debug, Serialize)]
+pub struct Comparison {
+    pub before: CompareSide,
+    pub after: CompareSide,
+    /// 統合ラウドネスの差(after − before、dB)。大きい方が良く聞こえる錯覚の元
+    pub loudness_diff_db: f64,
+    /// after にこれを掛けると before と同じ音量になる(dB)。聴き比べるときの補正量
+    pub match_gain_db: f64,
+    /// オクターブ帯域ごとの釣り合い(それぞれの全体に対する dB。音量差の影響を受けない)
+    pub tonal_balance: Vec<OctaveLevel>,
+    /// 目立つ違いの要約(日本語)
+    pub notes: Vec<String>,
+}
+
+/// 2 つのプロジェクト(編集の前と後)を同じ条件でレンダして比べる。
+/// 音量が違うと大きい方が良く聞こえるので、音色・広がり・ダイナミクスは音量に左右されない指標で比べる
+pub fn compare_projects(
+    before: &Project,
+    after: &Project,
+    track_ids: Option<&[TrackId]>,
+    range: Option<(Tick, Tick)>,
+    bank_before: &crate::data::SampleBank,
+    bank_after: &crate::data::SampleBank,
+) -> Result<Comparison, ExportError> {
+    let render = |p: &Project, bank| -> Result<(Analysis, Vec<f64>), ExportError> {
+        let mut target = p.clone();
+        if let Some(ids) = track_ids {
+            target.tracks.retain(|t| ids.contains(&t.id));
+            for t in &mut target.tracks {
+                t.solo = false;
+            }
+        }
+        let stereo = render_for_analysis(&target, range, bank)?;
+        let a = analyze_stereo(p, range, &stereo)?;
+        let mono: Vec<f32> = stereo
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| (c[0] + c[1]) * 0.5)
+            .collect();
+        Ok((a, octave_levels(&mono)))
+    };
+    let (a0, o0) = render(before, bank_before)?;
+    let (a1, o1) = render(after, bank_after)?;
+    let r1 = |v: f64| (v * 10.0).round() / 10.0;
+    let diff = if a0.loudness_lufs.is_finite() && a1.loudness_lufs.is_finite() {
+        r1(a1.loudness_lufs - a0.loudness_lufs)
+    } else {
+        0.0
+    };
+    let tonal: Vec<OctaveLevel> = OCTAVES
+        .iter()
+        .zip(o0.iter().zip(&o1))
+        .map(|(hz, (b, a))| OctaveLevel {
+            hz: *hz,
+            before_db: r1(*b),
+            after_db: r1(*a),
+            diff_db: r1(a - b),
+        })
+        .collect();
+    let notes = compare_notes(&a0, &a1, diff, &tonal);
+    Ok(Comparison {
+        before: (&a0).into(),
+        after: (&a1).into(),
+        loudness_diff_db: diff,
+        match_gain_db: -diff,
+        tonal_balance: tonal,
+        notes,
+    })
+}
+
+/// 目立つ違いを文章にする(しきい値は「聞いて分かる」程度の目安)
+fn compare_notes(a0: &Analysis, a1: &Analysis, diff: f64, tonal: &[OctaveLevel]) -> Vec<String> {
+    let mut n = Vec::new();
+    if diff.abs() >= 0.5 {
+        n.push(format!(
+            "後の方が {:.1} dB {}。音量の差は良し悪しの判断を狂わせる(大きい方が良く聞こえる)ので、\
+             以下の音色・広がり・ダイナミクスの違いで判断する",
+            diff.abs(),
+            if diff > 0.0 { "大きい" } else { "小さい" }
+        ));
+    }
+    let bands: Vec<String> = tonal
+        .iter()
+        .filter(|o| o.diff_db.abs() >= 1.5 && o.before_db.max(o.after_db) > -40.0)
+        .map(|o| format!("{}Hz 帯 {:+.1} dB", o.hz, o.diff_db))
+        .collect();
+    if !bands.is_empty() {
+        n.push(format!(
+            "音色の釣り合い(音量をそろえた比較): {}",
+            bands.join("、")
+        ));
+    }
+    if a0.plr_db.is_finite() && a1.plr_db.is_finite() && a1.plr_db - a0.plr_db <= -1.5 {
+        n.push(format!(
+            "ピークと平均の差(PLR)が {:.1} → {:.1} dB に縮んだ(潰れた・迫力が減った可能性)",
+            a0.plr_db, a1.plr_db
+        ));
+    }
+    if let (Some(p0), Some(p1)) = (a0.psr_min_db, a1.psr_min_db) {
+        if p1 < 8.0 && p1 < p0 - 1.0 {
+            n.push(format!(
+                "いちばん詰まった所の PSR が {p0:.1} → {p1:.1} dB(8 を下回ると潰しすぎの目安)"
+            ));
+        }
+    }
+    if a1.true_peak_dbtp > -1.0 && a1.true_peak_dbtp > a0.true_peak_dbtp + 0.3 {
+        n.push(format!(
+            "True Peak が {:.1} dBTP に上がった(配信は -1 以下が目安)",
+            a1.true_peak_dbtp
+        ));
+    }
+    let (s0, s1) = (&a0.stereo, &a1.stereo);
+    if s1.correlation < s0.correlation - 0.15 {
+        n.push(format!(
+            "左右の相関が {:.2} → {:.2} に下がった(広がった。0 を下回るとモノラルで消える)",
+            s0.correlation, s1.correlation
+        ));
+    } else if s1.correlation > s0.correlation + 0.15 {
+        n.push(format!(
+            "左右の相関が {:.2} → {:.2} に上がった(狭くなった)",
+            s0.correlation, s1.correlation
+        ));
+    }
+    if s1.low_correlation < 0.7 && s1.low_correlation < s0.low_correlation - 0.1 {
+        n.push(format!(
+            "低域(250Hz 以下)の相関が {:.2} に下がった(低音は中央に集めるのが無難)",
+            s1.low_correlation
+        ));
+    }
+    if (s1.balance_db - s0.balance_db).abs() >= 1.0 {
+        n.push(format!(
+            "左右の偏りが {:+.1} → {:+.1} dB(正 = 右)",
+            s0.balance_db, s1.balance_db
+        ));
+    }
+    if a0.loudness_range_lu > 0.0 && a1.loudness_range_lu < a0.loudness_range_lu - 2.0 {
+        n.push(format!(
+            "曲中の音量の起伏(LRA)が {:.1} → {:.1} LU に減った(平板になった可能性)",
+            a0.loudness_range_lu, a1.loudness_range_lu
+        ));
+    }
+    if n.is_empty() {
+        n.push("聞いて分かるほどの違いは測れなかった".to_owned());
+    }
+    n
+}
+
+/// オクターブ帯域の中心周波数
+const OCTAVES: [u32; 10] = [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
+/// オクターブ帯域ごとの音の量(全体に対する dB)。Welch 平均のパワースペクトルから
+fn octave_levels(mono: &[f32]) -> Vec<f64> {
+    const N: usize = 8192;
+    const HOP: usize = 4096;
+    let mut planner = FftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(N);
+    let hann: Vec<f64> = (0..N)
+        .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / N as f64).cos())
+        .collect();
+    let mut power = vec![0.0f64; N / 2];
+    let mut buf = vec![Complex::new(0.0, 0.0); N];
+    let mut pos = 0;
+    while pos + N <= mono.len() {
+        for i in 0..N {
+            buf[i] = Complex::new(mono[pos + i] as f64 * hann[i], 0.0);
+        }
+        fft.process(&mut buf);
+        for (i, p) in power.iter_mut().enumerate() {
+            *p += buf[i].norm_sqr();
+        }
+        pos += HOP;
+    }
+    let bin_hz = SAMPLE_RATE / N as f64;
+    let total: f64 = power.iter().sum::<f64>().max(1e-20);
+    OCTAVES
+        .iter()
+        .map(|&c| {
+            let (lo, hi) = (
+                c as f64 / std::f64::consts::SQRT_2,
+                c as f64 * std::f64::consts::SQRT_2,
+            );
+            let e: f64 = power
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| {
+                    let f = *i as f64 * bin_hz;
+                    f >= lo && f < hi
+                })
+                .map(|(_, p)| p)
+                .sum();
+            (10.0 * (e / total).max(1e-10).log10()).max(-100.0)
+        })
+        .collect()
 }
 
 /// EBU R128: (LRA, True Peak dBTP, 短期ラウドネスの 1 秒ごとの推移, その最大, PSR の最小)。
@@ -718,6 +965,48 @@ mod tests {
         assert!(a.spectral_centroid_hz < 1500.0);
         assert!(a.loudness_lufs < 0.0 && a.loudness_lufs > -60.0);
         assert!(a.crest_factor_db > 0.0);
+    }
+
+    #[test]
+    fn compare_separates_loudness_from_tone() {
+        // 和音を 2 秒。音量だけ上げた版と、EQ で低域を削った版を比べる
+        let mut before = Project::new("t");
+        before.tracks.push(midi_track(
+            "Pad",
+            vec![(0, 3840, 45, 100), (0, 3840, 57, 100), (0, 3840, 64, 100)],
+        ));
+        let mut louder = before.clone();
+        louder.tracks[0].volume_db = 6.0;
+        let bank = crate::data::SampleBank::default();
+        let c = compare_projects(&before, &louder, None, None, &bank, &bank).unwrap();
+        assert!(
+            (c.loudness_diff_db - 6.0).abs() < 0.3,
+            "{}",
+            c.loudness_diff_db
+        );
+        assert!((c.match_gain_db + 6.0).abs() < 0.3);
+        assert!(
+            c.tonal_balance
+                .iter()
+                .all(|o| o.diff_db.abs() < 0.3 || o.before_db < -60.0),
+            "音量だけなら釣り合いは変わらない: {:?}",
+            c.tonal_balance
+        );
+        assert!(c.notes[0].contains("大きい"));
+
+        let mut cut = before.clone();
+        let mut eq = glaux_core::Effect::builtin(glaux_core::FxId::new(), "eq");
+        eq.params.insert("low_gain_db".into(), (-12.0).into());
+        cut.tracks[0].effects.push(eq);
+        let c = compare_projects(&before, &cut, None, None, &bank, &bank).unwrap();
+        let at = |hz: u32| c.tonal_balance.iter().find(|o| o.hz == hz).unwrap().diff_db;
+        assert!(at(125) < -3.0, "低域が相対的に減る: {:?}", c.tonal_balance);
+        assert!(
+            at(2000) > 0.0,
+            "高めの帯域は相対的に増える: {:?}",
+            c.tonal_balance
+        );
+        assert!(c.notes.iter().any(|n| n.contains("125Hz")), "{:?}", c.notes);
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub mod validate;
 pub use apply::{Applied, Change};
 pub use command::{Command, EffectProp, NoteChange, Target, TrackProp};
 pub use error::CoreError;
-pub use history::{Author, History, HistoryEntry, RevertResult, Session};
+pub use history::{Author, History, HistoryEntry, HistoryPoint, RevertResult, Session};
 pub use id::{AssetId, ClipId, EntryId, FxId, NoteId, TrackId};
 pub use model::*;
 pub use time::{TempoEvent, TempoMap, Tick, TimeSigEvent, MAX_TICK, PPQ};

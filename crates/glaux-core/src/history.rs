@@ -119,6 +119,17 @@ pub struct RevertResult {
     pub conflicts: Vec<EntryId>,
 }
 
+/// 履歴の中の地点(聴き比べの「前」を指す)。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum HistoryPoint {
+    /// 名前を付けたチェックポイント
+    Checkpoint(String),
+    /// このエントリを適用する直前
+    BeforeEntry(EntryId),
+    /// 最新から n 個の編集を戻した所
+    Back(usize),
+}
+
 /// プロジェクトと履歴を束ねた編集セッション。UI も MCP もこれを通す。
 #[derive(Clone, Debug, Default)]
 pub struct Session {
@@ -153,6 +164,42 @@ impl Session {
 
     pub fn history(&self) -> &History {
         &self.history
+    }
+
+    /// 履歴の地点を、適用済みのエントリ数(0 = 最初)に直す。
+    pub fn resolve_point(&self, point: &HistoryPoint) -> Result<usize> {
+        let cursor = self.history.cursor;
+        match point {
+            HistoryPoint::Checkpoint(label) => {
+                let at = *self
+                    .history
+                    .checkpoints
+                    .get(label)
+                    .ok_or_else(|| CoreError::CheckpointNotFound(label.clone()))?;
+                // redo 側にあるチェックポイントは、今の位置より先なので扱わない
+                Ok(at.min(cursor))
+            }
+            HistoryPoint::BeforeEntry(id) => self
+                .history
+                .applied()
+                .iter()
+                .position(|e| &e.id == id)
+                .ok_or_else(|| CoreError::EntryNotFound(id.clone())),
+            HistoryPoint::Back(n) => Ok(cursor.saturating_sub(*n)),
+        }
+    }
+
+    /// 履歴の地点(適用済みのエントリ数)でのプロジェクトを、今のセッションを変えずに作る。
+    /// 聴き比べ(編集の前後の比較)に使う
+    pub fn project_at(&self, at: usize) -> Result<Project> {
+        let mut p = self.project.clone();
+        for e in self.history.applied()[at.min(self.history.cursor)..]
+            .iter()
+            .rev()
+        {
+            p.apply(&e.inverse)?;
+        }
+        Ok(p)
     }
 
     /// コマンドを適用して履歴に積む。

@@ -18,7 +18,7 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 - **Compose with AI** — Work with Claude (Claude Code) or GPT (Codex CLI). Human and AI edits share one history, and you can undo an AI's whole turn at once
 - **The AI can listen** — It measures loudness, frequency balance, key and chords, rhythm and timbre by itself, and checks its work before reporting
 - **Instruments and effects** — 7 built-in instruments (subtractive, FM, wavetable, drums, plucked string, sampler, SoundFont), 9 effects (EQ, compressor, reverb, amp, and more), and CLAP plugins (e.g. Surge XT)
-- **Mixer and effect node view** — See every track as a vertical strip with volume, pan, sends and meters. Effects are cards you place freely and connect with cables, including splitting and merging (e.g. dry + reverb in parallel). Unconnected cards stay silent but keep their settings, and good settings can be saved as effect presets for other songs
+- **Mixer and effect node view** — See every track as a vertical strip with volume, pan, sends and meters. Effects are cards you place freely and connect with cables, including splitting and merging (e.g. dry + reverb in parallel). Unconnected cards stay silent but keep their settings, and good settings can be saved as effect presets for other songs. The monitor strip on the right shows the stereo image (goniometer and correlation) and lets you listen in mono, side only, swapped, or with headphone crossfeed (never included in exports)
 - **Write and record** — Piano roll, drum kit, fretboard, MIDI keyboard, MIDI file import/export, audio recording, humming-to-MIDI, stem separation, tempo-following audio clips
 - **Designed for AI** — Projects are readable JSON. Every edit goes through the same command API with full undo. Built-in MCP server
 - **Play it in games** — A Godot 4 extension plays your songs in-game and syncs enemies or hit judgement to the beat
@@ -85,7 +85,7 @@ To use it without the app, run the stdio server: `scripts\glaux-mcp.bat <song fo
 |---|---|
 | Basics | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
 | Arrangement | `duplicate_clips` `insert_bars` `delete_bars` `bounce_track` `export_audio` `export_midi` |
-| Analysis | `analyze_audio` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` |
+| Analysis | `analyze_audio` `compare_mix` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` |
 | Notes | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` |
 | Sounds | `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | Effect presets | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |

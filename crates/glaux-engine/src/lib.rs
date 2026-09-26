@@ -37,8 +37,8 @@ pub mod timeline;
 pub mod transcribe;
 
 pub use analyze::{
-    analyze_mix, analyze_project, analyze_project_tracks, Analysis, MaskingIssue, MixAnalysis,
-    TrackAnalysis,
+    analyze_mix, analyze_project, analyze_project_tracks, compare_projects, Analysis, Comparison,
+    MaskingIssue, MixAnalysis, TrackAnalysis,
 };
 pub use data::{
     build_playback_data, load_wav, load_wav_mono, wave_peaks, PlaybackData, SampleBank,

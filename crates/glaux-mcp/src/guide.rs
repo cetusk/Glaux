@@ -18,6 +18,7 @@ analyze_sound(音色)。フレーズを足す前に harmony と rhythm を見て
 (instruments / genres / expression / mix / audio / sound_match / clap)で読める。\
 セルフレビュー: まとまった編集の後、完了報告の前に analyze_harmony で調性、analyze_audio でクリップやバランスの破綻を\
 確かめ、問題があれば直してから、確認結果(キー・LUFS など)を一言添えて報告する。\
+ミックスを変えたら compare_mix で前後を比べる(音量の差ではなく、音量をそろえた違いで判断する)。\
 大きな試行錯誤の前は checkpoint、戻すときは revert_to / revert。";
 
 /// (トピック名, 見出し, 本文)
@@ -82,7 +83,18 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
   トラックは EQ で住み分け / それでも埋もれるなら伴奏側に sidechain。音量を上げる前に被りを削ることを検討する。\n\
 - 時間変化: set_automation_points(target: track/volume_db・track/pan・device/<パラメータ>・fx/<id>/<パラメータ>)。\n\
   曲全体のフェードやマスターのエフェクトは set_master_automation_points。\n\
-- ミックス調整は「編集 → analyze_audio で確認 → 微調整」のループで行う。",
+- ミックス調整は「checkpoint → 編集 → compare_mix {checkpoint} で前後を比べる → 微調整」のループで行う。\n\
+  人の耳は 0.5〜1dB 大きいだけで良く聞こえるので、loudness_diff_db ではなく tonal_balance・stereo・plr/psr で良し悪しを決める。\n\
+  音量まで変わったなら match_gain_db の分だけ戻してから比べ直す。\n\
+- 自動ミキシングの研究の経験則: (1) まず各トラックのラウドネスをおおむね揃え、主役だけ 2〜4dB 上げる。\n\
+  (2) 低い帯域ほど中央、高い帯域ほど左右へ(キック・ベース・低音のパッドはパン 0。stereo.low_correlation は 1 近く)。\n\
+  (3) 被りはまず EQ で削る(持ち上げるより削る。狭く削って広く持ち上げる)。(4) コンプの量は役割とクレストファクターで決める。\n\
+- EQ: ベース・キック以外は hp_freq で 80〜150Hz 以下を切ると低域がすっきりする。刺さる高域やノイズは lp_freq。\n\
+- compressor: ratio 2〜4・knee_db 6〜12 で自然に揃える。ボーカルやバス・マスターは detector: \"rms\"、ドラムの山を抑えるなら \"peak\"。\n\
+  アタックを 10〜30ms にすると打点の抜けが残る。バス・マスターは sc_hpf_hz 80〜150 で低音によるポンピングを防ぐ。\n\
+- 音量の仕上げ: 配信は正規化される(Spotify・YouTube -14 LUFS、Apple Music -16)。-14 より大きいマスターは下げて再生されるだけで、\n\
+  潰した分ダイナミクスを失う(analyze_audio の streaming で予測が見られる)。True Peak は -1 dBTP 以下\n\
+  (export_audio のリミッタが保証する)。plr_db・psr_min_db はおおむね 8 以上を保つ(下回ると潰しすぎの目安。規格ではない)。",
     ),
     (
         "audio",
