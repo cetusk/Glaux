@@ -118,7 +118,6 @@ godot/          Godot のデモとアドオンのビルド
 ```
 
 開発: `cargo test --workspace` / `cargo clippy --workspace --all-targets`。ドキュメント・コメントは日本語で、AI(Claude Code)と共同で開発しています。
-改善の予定は [`docs/IMPROVEMENTS.md`](docs/IMPROVEMENTS.md) にあります。
 
 ## 同梱物とライセンス
 

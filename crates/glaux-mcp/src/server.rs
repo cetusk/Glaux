@@ -1,7 +1,7 @@
 //! MCP ツール層。
 //!
 //! ここは「AI が読む API ドキュメント」でもある。ツールの description には
-//! いつ使うか・注意点を書く(`docs/mcp-spec-draft.md` の方針)。
+//! いつ使うか・注意点を書く。
 //!
 //! すべての編集は `glaux_core::Command` に変換して Session アクターに送る。
 //! 各レスポンスには `project_version`(版数。編集・undo・redo のたびに増え、戻らない)を含め、

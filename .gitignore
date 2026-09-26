@@ -20,6 +20,8 @@ node_modules/
 # 開発者の手元だけで使う文書(開発規約・引き継ぎ。過去の版はコミット履歴にある)
 /CLAUDE.md
 /docs/HANDOFF.md
+/docs/IMPROVEMENTS.md
+/docs/mcp-spec-draft.md
 /docs/ui-review/
 
 # ---- 個人設定・エディタ・OS ----

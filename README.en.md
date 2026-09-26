@@ -118,7 +118,6 @@ godot/          Godot demo and add-on build
 ```
 
 Development: `cargo test --workspace` / `cargo clippy --workspace --all-targets`. Docs and comments are in Japanese; the project is developed together with AI (Claude Code).
-Planned improvements are listed in [`docs/IMPROVEMENTS.md`](docs/IMPROVEMENTS.md).
 
 ## Bundled components and license
 
