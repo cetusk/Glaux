@@ -94,6 +94,37 @@
   const HEAD_W = $derived(timelineLayout.headW);
   let layoutMenu = $state(false);
 
+  /// 見出しの右の端(幅)・下の端(トラックの高さ)をドラッグして変える
+  function startLayoutDrag(e: PointerEvent, what: "w" | "h") {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const start = what === "w" ? e.clientX : e.clientY;
+    const orig = what === "w" ? timelineLayout.headW : timelineLayout.trackH;
+    const r = what === "w" ? TIMELINE_HEAD_W : TIMELINE_TRACK_H;
+    const move = (ev: PointerEvent) => {
+      const d = (what === "w" ? ev.clientX : ev.clientY) - start;
+      const v = Math.round(Math.min(r.max, Math.max(r.min, orig + d)));
+      if (what === "w") timelineLayout.headW = v;
+      else timelineLayout.trackH = v;
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove(what === "w" ? "resizing-w" : "resizing-h");
+      saveTimelineLayout();
+    };
+    document.body.classList.add(what === "w" ? "resizing-w" : "resizing-h");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function resetLayout(what: "w" | "h") {
+    if (what === "w") timelineLayout.headW = TIMELINE_HEAD_W.def;
+    else timelineLayout.trackH = TIMELINE_TRACK_H.def;
+    saveTimelineLayout();
+  }
+
   // ---- 横の拡大・縮小(Ctrl+ホイールはカーソルの下の位置を保つ。ボタンは画面の左端を保つ) ----
 
   /// 拡大率を変える。`anchorX` はスクローラーの左端からの画面上の位置(そこにある時刻を動かさない)
@@ -1641,6 +1672,7 @@
   <!-- 小節ルーラー(クリックでシーク、ドラッグで範囲選択) -->
   <div class="ruler-row" style="top:{project.sections && project.sections.length > 0 ? SECTION_ROW_H : 0}px">
     <div class="track-head ruler-head">
+      <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
       <div class="zoom" title="横の拡大・縮小(タイムラインの上で Ctrl+ホイールでも)">
         <button class="btn sm icon-only" onclick={() => zoomBy(1 / 1.5)} disabled={timelineZoom.value <= TIMELINE_ZOOM_MIN} aria-label="縮小" title="縮小"
           ><Icon name="zoom-out" size={13} /></button
@@ -1807,6 +1839,8 @@
         style={track.color ? `--tc:${track.color}` : ""}
         oncontextmenu={(e) => openTrackMenu(e, track)}
       >
+        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
+        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="h-grip" onpointerdown={(e) => startLayoutDrag(e, "h")} ondblclick={() => resetLayout("h")} title="ドラッグでトラックの高さを変える(ダブルクリックで元に戻す)"></span>
         <div class="head-row">
           <span class="grip" role="button" tabindex="-1" aria-label="並べ替え" title="つかんで上下にドラッグで並べ替え" onpointerdown={(e) => onGripDown(e, track, ti)}
             ><Icon name="grip-vertical" size={14} /></span
@@ -2686,6 +2720,46 @@
     width: 100%;
     height: 16px;
     margin: 0;
+  }
+
+  /* 見出しの右の端(幅)と下の端(高さ)のつかむ所。乗せると色が付く */
+  .w-grip,
+  .h-grip {
+    position: absolute;
+    z-index: 3;
+  }
+
+  .w-grip {
+    top: 0;
+    bottom: 0;
+    right: -1px;
+    width: 6px;
+    cursor: col-resize;
+  }
+
+  .h-grip {
+    left: 0;
+    right: 6px;
+    bottom: -1px;
+    height: 6px;
+    cursor: row-resize;
+  }
+
+  .w-grip:hover,
+  .h-grip:hover {
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+
+  :global(body.resizing-w),
+  :global(body.resizing-w *) {
+    cursor: col-resize !important;
+    user-select: none;
+  }
+
+  :global(body.resizing-h),
+  :global(body.resizing-h *) {
+    cursor: row-resize !important;
+    user-select: none;
   }
 
   .layout-pop {

@@ -1060,7 +1060,6 @@
           ondblclick={() => setListenVolume(0, true)}
           aria-label="聴く音量(曲には影響しない)"
         />
-        {#if settings.outputVolumeDb !== 0}<span class="lv">{fmtListen(settings.outputVolumeDb)}</span>{/if}
       </div>
       <button
         class="btn icon"
@@ -1358,12 +1357,6 @@
     width: 72px;
     min-width: 36px;
     flex-shrink: 1;
-  }
-
-  .listen-vol .lv {
-    font-size: var(--fs-xs);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
   }
 
   .monitor-on {
