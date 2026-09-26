@@ -211,6 +211,7 @@ impl ClapPlugin {
             events: EventBuffer::with_capacity(MAX_EVENTS),
             steady: 0,
             failed: false,
+            sleeping: false,
         })
     }
 
@@ -434,6 +435,13 @@ impl ClapPlugin {
     }
 
     /// プラグインから「状態が変わった」と知らされていたら true(読むと戻る)。
+    /// プラグインが再起動を頼んだか(処理の遅延が変わったときなど。読むと消える)。
+    /// 頼まれたらオーディオスレッドから処理窓口を取り戻し、止めて起動し直す(遅延は起動時に読み直す)
+    pub fn take_restart_requested(&self) -> bool {
+        self.instance
+            .access_shared_handler(|h| h.restart_requested.swap(false, Ordering::AcqRel))
+    }
+
     pub fn take_dirty(&mut self) -> bool {
         self.instance.access_handler(|h| h.dirty.replace(false))
     }
@@ -645,6 +653,8 @@ pub struct ClapProcessor {
     latency: u32,
     /// 処理に失敗した(以後は無音を返す)
     failed: bool,
+    /// プラグインが「眠ってよい」と返した。入力が無音でイベントも無い間は process を呼ばない(CPU の節約)
+    sleeping: bool,
 }
 
 impl ClapProcessor {
@@ -753,6 +763,20 @@ impl ClapProcessor {
             self.clear_outputs(n);
             return;
         }
+        // 入力のチャンネルごとに「一定の値か」(無音など)。プラグインへ知らせると処理を省ける(constant_mask)
+        let constant = |ch: &[f32]| ch.iter().all(|v| *v == ch[0]);
+        let input_silent = self
+            .in_bufs
+            .iter()
+            .all(|port| port.iter().all(|ch| ch[..n].iter().all(|v| *v == 0.0)));
+        if self.sleeping {
+            if self.events.is_empty() && input_silent {
+                self.clear_outputs(n);
+                self.steady += n as u64;
+                return;
+            }
+            self.sleeping = false;
+        }
         let Some(proc) = self.processor.as_mut() else {
             self.clear_outputs(n);
             return;
@@ -770,9 +794,10 @@ impl ClapProcessor {
             .with_input_buffers(self.in_bufs.iter_mut().map(|port| AudioPortBuffer {
                 latency: 0,
                 channels: AudioPortBufferType::f32_input_only(port.iter_mut().map(|ch| {
+                    let is_constant = constant(&ch[..n]);
                     InputChannel {
                         buffer: &mut ch[..n],
-                        is_constant: false,
+                        is_constant,
                     }
                 })),
             }));
@@ -793,9 +818,20 @@ impl ClapProcessor {
             None,
         );
         self.steady += n as u64;
-        if result.is_err() {
-            self.failed = true;
-            self.clear_outputs(n);
+        match result {
+            Err(_) => {
+                self.failed = true;
+                self.clear_outputs(n);
+            }
+            Ok(ProcessStatus::Sleep) => self.sleeping = input_silent,
+            Ok(ProcessStatus::ContinueIfNotQuiet) => {
+                let quiet = self
+                    .out_bufs
+                    .iter()
+                    .all(|port| port.iter().all(|ch| ch[..n].iter().all(|v| v.abs() < 1e-7)));
+                self.sleeping = input_silent && quiet;
+            }
+            Ok(_) => {}
         }
     }
 

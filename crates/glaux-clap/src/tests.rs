@@ -277,3 +277,49 @@ fn effect_processes_input_audio() {
     proc.stop();
     plugin.deactivate(proc);
 }
+
+/// 眠り(Sleep)と再起動(遅延の変化)の扱い。環境変数 `GLAUX_TEST_CLAP_SLEEPY` に、次のようにふるまう
+/// テスト用のステレオのエフェクトを指定したときだけ動く:
+/// 出力 = 入力 + 0.001、入力が無音なら Sleep を返す、遅延 = 10 × 起動した回数、最初の process で再起動を頼む
+#[test]
+fn sleeping_plugin_is_skipped_and_restart_rereads_latency() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_SLEEPY").map(PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP_SLEEPY が未設定のためスキップ");
+        return;
+    };
+    let list = describe(&path).expect("記述子を読める");
+    let id = list[0].id.clone();
+    let mut plugin = ClapPlugin::new(&path, &id).expect("生成できる");
+    let proc = plugin.activate(48_000.0).expect("起動できる");
+    assert_eq!(proc.latency(), 10);
+    let (proc, first, skipped, woke) = std::thread::spawn(move || {
+        let mut proc = proc;
+        let run = |proc: &mut ClapProcessor, v: f32| {
+            let (l, r) = proc.input_mut().unwrap();
+            l[..256].fill(v);
+            if let Some(r) = r {
+                r[..256].fill(v);
+            }
+            proc.process(256, &[]);
+            proc.output().unwrap().0[0]
+        };
+        // 無音: 1 回目は処理される(+0.001)が Sleep を返す → 2 回目は呼ばれない(無音のまま)
+        let first = run(&mut proc, 0.0);
+        let skipped = run(&mut proc, 0.0);
+        // 音が来たら起きる
+        let woke = run(&mut proc, 0.5);
+        (proc, first, skipped, woke)
+    })
+    .join()
+    .unwrap();
+    assert!((first - 0.001).abs() < 1e-6, "最初は処理される: {first}");
+    assert_eq!(skipped, 0.0, "眠っている間は呼ばない");
+    assert!((woke - 0.501).abs() < 1e-6, "音が来たら起きる: {woke}");
+    // 再起動を頼まれていて、起動し直すと遅延を読み直す
+    assert!(plugin.take_restart_requested());
+    assert!(!plugin.take_restart_requested(), "読むと消える");
+    plugin.deactivate(proc);
+    let proc = plugin.activate(48_000.0).expect("起動し直せる");
+    assert_eq!(proc.latency(), 20);
+    plugin.deactivate(proc);
+}

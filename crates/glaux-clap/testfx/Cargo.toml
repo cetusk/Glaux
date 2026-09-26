@@ -1,0 +1,19 @@
+# テスト用の CLAP エフェクト(Glaux のワークスペースには入れない。配布もしない)。
+# 眠り(Sleep)と再起動(遅延の変化)の扱いを確かめるテストが使う:
+#   cargo build --release --manifest-path crates/glaux-clap/testfx/Cargo.toml
+#   (出来た libtestfx.so / testfx.dll を testfx.clap という名前でどこかのフォルダへ写し)
+#   GLAUX_TEST_CLAP_SLEEPY=<そのパス> cargo test -p glaux-clap -p glaux-engine
+[package]
+name = "testfx"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+clack-plugin = "0.2"
+clack-extensions = { version = "0.2", features = ["clack-plugin", "audio-ports", "latency"] }
+
+[workspace]

@@ -465,6 +465,10 @@ struct Live {
     dying: bool,
     /// この時刻を過ぎたら今の値を読み直す(変更がオーディオスレッドで反映されてから)
     refresh_at: Option<std::time::Instant>,
+    /// 起動したときのサンプルレート(再起動に使う)
+    sample_rate: f64,
+    /// 再起動を頼まれ、オーディオスレッドから処理窓口が返ってくるのを待っている
+    restarting: bool,
 }
 
 impl Live {
@@ -524,6 +528,29 @@ fn host_thread(
             live[i].plugin.deactivate(p.clap);
             if live[i].dying {
                 live.remove(i);
+                return;
+            }
+            // 再起動: 止めた窓口を起動し直して(遅延を読み直す)、同じ世代のまま渡し直す
+            if live[i].restarting {
+                live[i].restarting = false;
+                let l = &mut live[i];
+                match l.plugin.activate(l.sample_rate) {
+                    Ok(proc) => {
+                        tracing::info!(
+                            "CLAP を再起動しました(slot {}、遅延 {} サンプル)",
+                            l.slot,
+                            proc.latency()
+                        );
+                        slots[l.slot].request_remove(0);
+                        if let Some(old) = slots[l.slot].put_incoming(Box::new(Processor {
+                            gen: l.gen,
+                            clap: proc,
+                        })) {
+                            l.plugin.deactivate(old.clap);
+                        }
+                    }
+                    Err(e) => tracing::warn!("CLAP を再起動できません: {e}"),
+                }
             }
         }
     };
@@ -566,6 +593,8 @@ fn host_thread(
                             plugin,
                             dying: false,
                             refresh_at: None,
+                            sample_rate,
+                            restarting: false,
                         };
                         // 上書き値は窓口と一緒に届くよう、窓口を置く前に積む
                         l.send_params(&slots, &params);
@@ -652,6 +681,30 @@ fn host_thread(
             if let Some(p) = s.take_outgoing() {
                 retire(&mut live, p);
             }
+        }
+        // 再起動の頼み(処理の遅延が変わったときなど): オーディオスレッドに窓口を返してもらう
+        // (返ってきたら retire で起動し直す)。まだ受け取られていない窓口なら、ここで取り戻して直す
+        let mut back = Vec::new();
+        for l in live.iter_mut() {
+            if !l.dying
+                && !l.restarting
+                && l.plugin.is_active()
+                && l.plugin.take_restart_requested()
+            {
+                l.restarting = true;
+                slots[l.slot].request_remove(l.gen);
+                if let Some(p) = slots[l.slot].take_incoming() {
+                    if p.gen == l.gen {
+                        back.push(p);
+                    } else if let Some(other) = slots[l.slot].put_incoming(p) {
+                        // 入れ直す間に別の窓口が置かれた(ふつうは起きない)
+                        back.push(other);
+                    }
+                }
+            }
+        }
+        for p in back {
+            retire(&mut live, p);
         }
         let mut ev = Vec::new();
         for l in live.iter_mut() {
@@ -1919,6 +1972,62 @@ mod tests {
     }
 
     /// 遅延のあるエフェクトを挿したトラックに、ほかのトラックが揃う(`GLAUX_TEST_CLAP_FX`)。
+    /// プラグインが再起動を頼んだら(遅延の変化)、窓口を取り戻して起動し直し、新しい遅延で遅延補正する。
+    /// `GLAUX_TEST_CLAP_SLEEPY` のテスト用エフェクト(遅延 = 10 × そのインスタンスの起動回数、
+    /// 最初の process で再起動を頼む)で確かめる
+    #[test]
+    fn restart_request_reactivates_and_updates_delay_compensation() {
+        use glaux_core::{Effect, FxId};
+        let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_SLEEPY").map(PathBuf::from) else {
+            eprintln!("GLAUX_TEST_CLAP_SLEEPY が未設定のためスキップ");
+            return;
+        };
+        std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+        let fx_plugin = rescan()
+            .into_iter()
+            .find(|p| p.path == path)
+            .expect("テスト用エフェクトが見つかる")
+            .id;
+        let mut project = Project::new("t");
+        let mut a = Track::new(TrackId::new(), "A", TrackKind::Midi);
+        a.effects.push(Effect {
+            id: FxId::new(),
+            source: PluginSource::Clap {
+                plugin_id: fx_plugin,
+                state: None,
+            },
+            bypass: false,
+            params: Default::default(),
+            ui: Default::default(),
+        });
+        project.tracks = vec![a, Track::new(TrackId::new(), "B", TrackKind::Midi)];
+        let shared = Arc::new(Shared::new(Default::default()));
+        let manager = PluginManager::start(shared.plugin_slots.clone());
+        let mut bank = SampleBank::default();
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        shared
+            .playing
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 480 * 2];
+        let mut seen: Vec<u32> = Vec::new();
+        for _ in 0..400 {
+            r.process(&mut buf, 2);
+            let d = r.pdc_delay(1);
+            if d > 0 && seen.last() != Some(&d) {
+                seen.push(d);
+            }
+            if seen.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(seen, [10, 20], "起動時は 10、再起動で遅延を読み直して 20");
+    }
+
     #[test]
     fn plugin_delay_compensation_aligns_other_tracks() {
         use glaux_core::{Effect, FxId};
