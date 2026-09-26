@@ -516,20 +516,35 @@
 
   // ---- メニュー ----
   let menu = $state<{ fx: EffectView; x: number; y: number } | null>(null);
-  let addMenu = $state<{ x: number; y: number } | null>(null);
+  /** エフェクトを足すメニュー。`split` があれば、その線の間に入れる */
+  let addMenu = $state<{ x: number; y: number; split?: FxLink } | null>(null);
   function at(ev: MouseEvent) {
     const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
     return { x: r.left, y: r.bottom + 4 };
   }
 
   function addEffect(name: string) {
+    const split = addMenu?.split;
     addMenu = null;
     const clapId = name.startsWith("clap:") ? name.slice(5) : null;
-    const effect = clapId ? { id: newFxId(), type: "clap", plugin_id: clapId } : { id: newFxId(), type: "builtin", name };
+    const id = newFxId();
+    const base = clapId ? { id, type: "clap", plugin_id: clapId } : { id, type: "builtin", name };
     const label = clapId ? (clapEffects.find((p) => p.id === clapId)?.name ?? clapId) : name;
+    if (split) {
+      // 線の途中に入れる: つながずに足してから、その線を「元 → 新しいエフェクト → 先」に付け替える(1 回の undo)
+      const effect = { ...base, parked: true };
+      edit(
+        [
+          isMaster ? { op: "add_master_effect", effect } : { op: "add_effect", track: targetId, effect },
+          linksCmd(splitLink(links, split.from, split.to, id)),
+        ],
+        `${targetName} の ${nameOf(split.from)} と ${nameOf(split.to)} の間に ${label} を追加`,
+      );
+      return;
+    }
     // つながりの表があれば出口の直前に、無ければ並びの最後に入る(どちらでも鳴る)
     edit(
-      [isMaster ? { op: "add_master_effect", effect } : { op: "add_effect", track: targetId, effect }],
+      [isMaster ? { op: "add_master_effect", effect: base } : { op: "add_effect", track: targetId, effect: base }],
       `${targetName} に ${label} を追加`,
     );
   }
@@ -795,7 +810,18 @@
           <span class="v">{g > 0 ? "+" : ""}{g.toFixed(1)} dB</span>
         </div>
         <div class="row">
+          <button
+            class="btn sm"
+            onclick={(ev) => {
+              const l = selLink;
+              sel = null;
+              addMenu = { ...at(ev), split: l };
+            }}
+            title="この線の間にエフェクトを入れる"><Icon name="plus" />ここにエフェクトを足す</button
+          >
           <button class="btn sm danger" onclick={() => cut(selLink)}><Icon name="scissors" />切る</button>
+        </div>
+        <div class="row">
           <span class="dim small">Delete でも切れる・ダブルクリックでもすぐ切れる</span>
         </div>
       </div>
@@ -857,6 +883,10 @@
 {/if}
 {#if addMenu && info}
   <div class="menu" use:keepInView style="left:{addMenu.x}px;top:{addMenu.y}px">
+    {#if addMenu.split}
+      <div class="menu-h">{nameOf(addMenu.split.from)} と {nameOf(addMenu.split.to)} の間に入れる</div>
+      <div class="menu-sep"></div>
+    {/if}
     <div class="menu-h">内蔵</div>
     {#each info.available_effects as fx (fx.name)}
       <button class="rich" onclick={() => addEffect(fx.name)}><span>{FX_KIND_JA[fx.name] ?? fx.name}<small>{fx.name} · {fx.description}</small></span></button>

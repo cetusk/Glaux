@@ -312,7 +312,7 @@
       <span class="dot" style="background:{selected === MASTER_FOCUS_ID ? 'var(--accent)' : (selectedTrack?.color ?? '#777')}"></span>
       <b>{selected === MASTER_FOCUS_ID ? "マスター" : selectedTrack?.name}</b><span class="dim">のエフェクト</span>
       <span class="sp"></span>
-      <span class="dim hint">口から線を引いてつなぐ・線をクリックで音量 / 切る・Ctrl+ドラッグでまとめて切る・名前はダブルクリック</span>
+      <span class="dim hint">口から線を引いてつなぐ・線をクリックで音量 / 間に足す / 切る・Ctrl+ドラッグでまとめて切る・名前はダブルクリック</span>
       <button
         class="btn sm"
         class:on={inspectorOpen}
