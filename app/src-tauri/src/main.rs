@@ -2174,6 +2174,26 @@ fn reset_chat(state: State<'_, AppState>) {
     state.chat.reset();
 }
 
+/// 画面の会話ログを読む(再起動・プロジェクトの切り替えのあとに表示を戻す)。
+#[derive(serde::Serialize)]
+struct ChatLog {
+    /// 読んだプロジェクトのフォルダ(保存のときにそのまま返してもらう)
+    dir: String,
+    log: Option<String>,
+}
+
+#[tauri::command]
+fn load_chat_log(state: State<'_, AppState>) -> ChatLog {
+    let (dir, log) = state.chat.load_log();
+    ChatLog { dir, log }
+}
+
+/// 画面の会話ログを保存する。読んだときとプロジェクトが変わっていたら保存しない(false)。
+#[tauri::command]
+fn save_chat_log(state: State<'_, AppState>, dir: String, log: String) -> bool {
+    state.chat.save_log(&dir, &log)
+}
+
 // ---- 起動 -----------------------------------------------------------------
 
 fn resolve_project_dir() -> String {
@@ -2484,6 +2504,8 @@ fn main() -> Result<()> {
             send_chat,
             cancel_chat,
             reset_chat,
+            load_chat_log,
+            save_chat_log,
             transport_state,
             transport_set_loop,
             transport_clear_loop,

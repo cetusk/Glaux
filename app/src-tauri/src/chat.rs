@@ -377,6 +377,23 @@ impl ChatManager {
         write_cache(&last_seen_file(&self.project_dir()), id.as_deref());
     }
 
+    /// 画面の会話ログ(`cache/chat-log.json`)と、それを読んだプロジェクトのフォルダ。
+    /// ログの中身は画面が決める JSON(こちらは中身を見ずにそのまま読み書きする)
+    pub fn load_log(&self) -> (String, Option<String>) {
+        let dir = self.project_dir();
+        let log = read_cache(&log_file(&dir));
+        (dir, log)
+    }
+
+    /// 会話ログを保存する。`dir` が今のプロジェクトと違えば(保存の途中で切り替わった)書かない
+    pub fn save_log(&self, dir: &str, log: &str) -> bool {
+        if self.project_dir() != dir {
+            return false;
+        }
+        write_cache(&log_file(dir), Some(log));
+        true
+    }
+
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
@@ -533,6 +550,12 @@ fn last_seen_file(project_dir: &str) -> std::path::PathBuf {
     std::path::Path::new(project_dir)
         .join("cache")
         .join("chat-last-seen.txt")
+}
+
+fn log_file(project_dir: &str) -> std::path::PathBuf {
+    std::path::Path::new(project_dir)
+        .join("cache")
+        .join("chat-log.json")
 }
 
 fn read_cache(path: &std::path::Path) -> Option<String> {

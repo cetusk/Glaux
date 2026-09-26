@@ -5,6 +5,7 @@
   import { chatStatus } from "./aiStatus.svelte";
   import { toolShort } from "./toolLabels";
   import { clearAiHighlight, setAiHighlight } from "./aiHighlight.svelte";
+  import { renderMarkdown } from "./markdown";
   import { showError, showToast } from "./toast.svelte";
   import {
     CHAT_MODELS,
@@ -48,7 +49,16 @@
     /** role "turn": ターンの開始前の最後の履歴エントリ(取り消しの起点)と、取り消したか */
     since?: string | null;
     reverted?: boolean;
+    /** role "user": 送信待ちのまま停止したので送らなかった */
+    dropped?: boolean;
   }
+
+  /// 送信待ちの指示(実行中に書いたもの)。会話の下に並べ、前のターンが終わったら順に送る
+  interface Pending {
+    text: string;
+    fullPrompt: string;
+  }
+  let pending = $state<Pending[]>([]);
 
   /// 実行中のターンの開始前の最後の履歴エントリ(null = 履歴が空)
   let turnStart: string | null = null;
@@ -70,6 +80,7 @@
     try {
       const r = await api.revertTurn(m.since ?? null);
       m.reverted = true;
+      saveLog();
       clearAiHighlight();
       showToast(
         r.conflicts.length > 0 ? "warn" : "ok",
@@ -85,6 +96,74 @@
 
   let messages = $state<Msg[]>([]);
   let input = $state("");
+
+  // ---- 送った指示の履歴(入力欄が空のとき ↑ でさかのぼる。ターミナルと同じ) ----
+  const MAX_PROMPTS = 100;
+  let prompts: string[] = [];
+  /** いま入力欄に出している履歴の位置(null = 履歴をたどっていない) */
+  let recall: number | null = null;
+
+  /** ↑↓ で履歴をたどる。たどれたら true(キーの既定の動きを止める) */
+  function recallPrompt(dir: -1 | 1): boolean {
+    // 空の欄か、たどって出した文をそのまま(手を加えずに)出しているときだけ
+    const browsing = recall !== null && input === prompts[recall];
+    if (!browsing && input !== "") return false;
+    if (!browsing) recall = null;
+    if (dir === -1) {
+      if (prompts.length === 0) return false;
+      recall = recall === null ? prompts.length - 1 : Math.max(0, recall - 1);
+    } else {
+      if (recall === null) return false;
+      recall = recall + 1 < prompts.length ? recall + 1 : null;
+    }
+    input = recall === null ? "" : prompts[recall];
+    // カーソルは文末へ
+    tick().then(() => {
+      if (inputEl) inputEl.selectionStart = inputEl.selectionEnd = input.length;
+    });
+    return true;
+  }
+
+  function rememberPrompt(prompt: string) {
+    if (prompts[prompts.length - 1] !== prompt) prompts.push(prompt);
+    if (prompts.length > MAX_PROMPTS) prompts = prompts.slice(-MAX_PROMPTS);
+    recall = null;
+  }
+
+  // ---- 会話ログの保存と復元(プロジェクトの cache/chat-log.json) ----
+  const MAX_SAVED = 400;
+  /** ログを読んだプロジェクトのフォルダ(null = まだ読んでいない。読むまで保存しない) */
+  let logDir: string | null = null;
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function saveLog() {
+    clearTimeout(saveTimer);
+    const dir = logDir;
+    if (dir === null) return;
+    saveTimer = setTimeout(() => {
+      const kept = messages.slice(-MAX_SAVED);
+      const log = JSON.stringify({ version: 1, messages: kept, prompts });
+      api.saveChatLog(dir, log).catch(() => undefined);
+    }, 300);
+  }
+
+  async function loadLog() {
+    logDir = null;
+    pending = [];
+    try {
+      const r = await api.loadChatLog();
+      const saved = r.log ? JSON.parse(r.log) : null;
+      messages = Array.isArray(saved?.messages) ? (saved.messages as Msg[]) : [];
+      prompts = Array.isArray(saved?.prompts) ? (saved.prompts as string[]).filter((p) => typeof p === "string") : [];
+      logDir = r.dir;
+    } catch {
+      messages = [];
+      prompts = [];
+    }
+    recall = null;
+    stickToBottom = true;
+    scrollToBottom(true);
+  }
 
   // 入力欄は内容に合わせて高くなる(1 行〜5 行。それ以上は欄の中でスクロール)
   const MAX_LINES = 5;
@@ -107,25 +186,35 @@
   });
   let scroller: HTMLDivElement | undefined = $state();
 
-  // プロジェクト切り替えで会話表示をクリアする(会話自体はプロジェクトごとに保存されている)
+  // プロジェクトを切り替えたら、そのプロジェクトの会話ログを出す(会話はプロジェクトごと)
   $effect(() => {
     void chatStatus.epoch;
-    messages = [];
+    loadLog();
   });
 
-  async function scrollToBottom() {
+  /// 下端の近くにいるときだけ、新しい発言で下へ送る(上を読み返している間は動かさない)
+  let stickToBottom = true;
+  function onScroll() {
+    const el = scroller;
+    if (!el) return;
+    stickToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }
+
+  async function scrollToBottom(force = false) {
+    if (!force && !stickToBottom) return;
     await tick();
     scroller?.scrollTo({ top: scroller.scrollHeight });
   }
 
-  function push(msg: Msg) {
+  function push(msg: Msg, force = false) {
     messages.push(msg);
-    scrollToBottom();
+    scrollToBottom(force);
+    saveLog();
   }
 
   async function send() {
     const prompt = input.trim();
-    if (!prompt || chatStatus.running) return;
+    if (!prompt) return;
 
     // タイムラインの小節範囲・ピアノロールで開いているクリップを対象として指示に添える(マスク)
     const range = selectionStore.range;
@@ -158,9 +247,27 @@
       shown = `〔音作り: ${sd.trackName}〕 ${shown}`;
     }
     const fullPrompt = prefix ? `${prefix}\n${prompt}` : prompt;
-    push({ role: "user", text: shown });
-
+    rememberPrompt(prompt);
     input = "";
+    if (chatStatus.running || pending.length > 0) {
+      // 実行中に書いた指示は、今のターンが終わってから送る
+      pending.push({ text: shown, fullPrompt });
+      scrollToBottom(true);
+      return;
+    }
+    push({ role: "user", text: shown }, true);
+    await start(fullPrompt);
+  }
+
+  /// 送信待ちの次の指示を送る(ターンが終わったとき)
+  function sendNext() {
+    const next = pending.shift();
+    if (!next) return;
+    push({ role: "user", text: next.text }, true);
+    start(next.fullPrompt);
+  }
+
+  async function start(fullPrompt: string) {
     chatStatus.running = true;
     clearAiHighlight();
     try {
@@ -178,13 +285,25 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (e.isComposing) return;
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
+    } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      if (recallPrompt(e.key === "ArrowUp" ? -1 : 1)) e.preventDefault();
     }
   }
 
+  /// 送信待ちの指示を取り消す
+  function dropPending(i: number) {
+    pending.splice(i, 1);
+  }
+
   async function cancel() {
+    // 停止したら、送信待ちの指示も送らない(送らなかったことは会話に残す)
+    for (const p of pending) messages.push({ role: "user", text: p.text, dropped: true });
+    pending = [];
+    saveLog();
     await api.cancelChat();
   }
 
@@ -192,6 +311,8 @@
     if (chatStatus.running) return;
     await api.resetChat();
     messages = [];
+    pending = [];
+    saveLog();
   }
 
   onMount(() => {
@@ -214,7 +335,7 @@
             }
             if (ev.ok) playDoneChime();
             else playErrorChime();
-            finishTurn();
+            finishTurn().then(sendNext);
             break;
           case "notice":
             push({ role: "notice", text: ev.text });
@@ -223,6 +344,7 @@
             chatStatus.running = false;
             push({ role: "error", text: ev.message });
             playErrorChime();
+            sendNext();
             break;
         }
       })
@@ -269,7 +391,7 @@
     </div>
   </div>
 
-  <div class="messages" bind:this={scroller}>
+  <div class="messages" bind:this={scroller} onscroll={onScroll}>
     {#if messages.length === 0}
       <div class="hint">
         例:「4小節のベースラインを作って」「もっと音を明るくして」「さっきの編集を取り消して」
@@ -290,6 +412,13 @@
             >
           {/if}
         </div>
+      {:else if m.role === "assistant"}
+        <div class="msg assistant md">{@html renderMarkdown(m.text)}</div>
+      {:else if m.role === "user" && m.dropped}
+        <div class="msg user dropped">
+          <span class="struck">{m.text}</span>
+          <div class="queue-note">停止したので送っていません</div>
+        </div>
       {:else}
         <div class="msg {m.role}">{m.text}</div>
       {/if}
@@ -297,6 +426,17 @@
     {#if chatStatus.running}
       <div class="msg thinking"><span class="dots"></span></div>
     {/if}
+    {#each pending as p, i}
+      <div class="msg user waiting">
+        {p.text}
+        <div class="queue-note">
+          送信待ち(今の指示が終わったら送ります)
+          <button class="chip-x" onclick={() => dropPending(i)} title="この指示を送らない" aria-label="この指示を送らない"
+            ><Icon name="x" size={11} /></button
+          >
+        </div>
+      </div>
+    {/each}
   </div>
 
   <!-- 指示の対象(ピアノロールのクリップ・インスペクターのトラック・選んだ小節)。✕ で外す -->
@@ -343,13 +483,17 @@
     <textarea
       bind:this={inputEl}
       rows="2"
-      placeholder="AI への指示を入力(Enter で送信 / Shift+Enter で改行)"
+      placeholder={chatStatus.running
+        ? "次の指示を書けます(今の指示が終わったら送ります)"
+        : "AI への指示を入力(Enter で送信 / Shift+Enter で改行 / ↑ で前の指示)"}
       bind:value={input}
       onkeydown={onKeydown}
-      disabled={chatStatus.running}
     ></textarea>
     {#if chatStatus.running}
-      <button class="stop" onclick={cancel} title="実行中の指示を中断する">停止</button>
+      {#if input.trim()}
+        <button class="send" onclick={send} title="今の指示が終わったら送ります">予約</button>
+      {/if}
+      <button class="stop" onclick={cancel} title="実行中の指示を中断する(送信待ちの指示も送りません)">停止</button>
     {:else}
       <button class="send" onclick={send} disabled={!input.trim()}>送信</button>
     {/if}
@@ -439,6 +583,113 @@
     background: var(--bg);
     border: 1px solid var(--border);
     border-left: 3px solid var(--ai);
+  }
+
+  .msg.user.waiting {
+    opacity: 0.7;
+    border: 1px dashed var(--border);
+  }
+
+  .msg.user.dropped {
+    opacity: 0.5;
+  }
+
+  .struck {
+    text-decoration: line-through;
+  }
+
+  .queue-note {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 3px;
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    text-decoration: none;
+  }
+
+  /* Markdown の返答: 段落などの間を詰め、改行は Markdown に任せる */
+  .msg.md {
+    white-space: normal;
+  }
+
+  .msg.md :global(p),
+  .msg.md :global(ul),
+  .msg.md :global(ol),
+  .msg.md :global(pre),
+  .msg.md :global(blockquote),
+  .msg.md :global(.md-table) {
+    margin: 0 0 6px;
+  }
+
+  .msg.md :global(:last-child) {
+    margin-bottom: 0;
+  }
+
+  .msg.md :global(h4),
+  .msg.md :global(h5),
+  .msg.md :global(h6) {
+    margin: 8px 0 4px;
+    font-size: 13px;
+  }
+
+  .msg.md :global(ul),
+  .msg.md :global(ol) {
+    padding-left: 20px;
+  }
+
+  .msg.md :global(li.nested) {
+    margin-left: 16px;
+    list-style-type: circle;
+  }
+
+  .msg.md :global(code) {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    background: var(--bg-inset);
+    border-radius: 3px;
+    padding: 0 3px;
+  }
+
+  .msg.md :global(pre) {
+    background: var(--bg-inset);
+    border-radius: var(--r-sm);
+    padding: 6px 8px;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .msg.md :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+
+  .msg.md :global(blockquote) {
+    border-left: 3px solid var(--border);
+    padding-left: 8px;
+    color: var(--text-dim);
+  }
+
+  .msg.md :global(.md-table) {
+    overflow-x: auto;
+  }
+
+  .msg.md :global(table) {
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  .msg.md :global(th),
+  .msg.md :global(td) {
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    text-align: left;
+  }
+
+  .msg.md :global(hr) {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 6px 0;
   }
 
   .msg.tool {

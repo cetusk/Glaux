@@ -725,6 +725,16 @@ export function resetChat(): Promise<void> {
   return invoke("reset_chat");
 }
 
+/** 画面の会話ログ(JSON の文字列)と、それを読んだプロジェクトのフォルダ */
+export function loadChatLog(): Promise<{ dir: string; log: string | null }> {
+  return invoke("load_chat_log");
+}
+
+/** 会話ログを保存する。dir は loadChatLog で受け取ったもの(プロジェクトが変わっていたら保存されない) */
+export function saveChatLog(dir: string, log: string): Promise<boolean> {
+  return invoke("save_chat_log", { dir, log });
+}
+
 export function onChatEvent(cb: (e: ChatEvent) => void): Promise<UnlistenFn> {
   return listen<ChatEvent>("chat-event", (e) => cb(e.payload));
 }
