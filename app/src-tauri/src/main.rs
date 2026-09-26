@@ -1862,6 +1862,7 @@ fn transport_state(state: State<'_, AppState>) -> Value {
                 "mode": e.monitor().0.name(),
                 "crossfeed": e.monitor().1,
             },
+            "loudness": e.loudness(),
             "tick": e.playhead_tick(),
             "loop": e.loop_region().map(|(s, gl_end)| json!([s, gl_end])),
         }),
@@ -1897,6 +1898,20 @@ fn transport_set_monitor(
     let mode = glaux_engine::monitor::MonitorMode::from_name(&mode)
         .ok_or_else(|| format!("聴き方「{mode}」は分かりません"))?;
     state.engine()?.set_monitor(mode, crossfeed);
+    Ok(())
+}
+
+/// マスターの直近のスペクトル(1/3 オクターブ。帯域の中心 Hz と dB)
+#[tauri::command]
+fn transport_spectrum(state: State<'_, AppState>) -> Result<Value, String> {
+    let e = state.engine()?;
+    Ok(json!({ "bands": glaux_engine::monitor::SPECTRUM_BANDS, "db": e.spectrum() }))
+}
+
+/// ラウドネスメーターの統合値と True Peak の最大を測り直す
+#[tauri::command]
+fn transport_reset_loudness(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine()?.reset_loudness();
     Ok(())
 }
 
@@ -2401,6 +2416,8 @@ fn main() -> Result<()> {
             transport_set_metronome,
             transport_set_monitor,
             transport_scope,
+            transport_spectrum,
+            transport_reset_loudness,
             send_chat,
             cancel_chat,
             reset_chat,
