@@ -10,82 +10,168 @@
 use glaux_core::{ParamMap, ParamRange, ParamSpec, ParamValue};
 
 // ============================== EQ =====================================
+//
+// Cytomic(Andrew Simper)の線形台形積分 SVF。係数を毎サンプル動かしても安定し、
+// 1 つの構造で ベル・シェルフ・ハイパス・ローパスを出せる(RBJ の biquad は係数の急な変化に弱い)。
+// 出力 = m0·入力 + m1·バンドパス + m2·ローパス。係数は g = tan(π·fc/sr)、k = 1/Q から作る。
 
-/// biquad 係数(1 バンド分)。
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct BiquadCoeffs {
-    pub b0: f32,
-    pub b1: f32,
-    pub b2: f32,
-    pub a1: f32,
-    pub a2: f32,
+/// SVF 1 バンド分の係数(g・k と出力の混ぜ方)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SvfCoeffs {
+    pub g: f32,
+    pub k: f32,
+    pub m0: f32,
+    pub m1: f32,
+    pub m2: f32,
 }
 
-impl BiquadCoeffs {
+impl SvfCoeffs {
+    /// 何もしない(素通し)
     pub fn identity() -> Self {
-        BiquadCoeffs {
-            b0: 1.0,
-            ..Default::default()
+        SvfCoeffs {
+            g: 0.1,
+            k: 1.414,
+            m0: 1.0,
+            m1: 0.0,
+            m2: 0.0,
         }
     }
 
-    /// RBJ cookbook: low shelf
+    fn g_of(sr: f32, freq: f32) -> f32 {
+        (std::f32::consts::PI * (freq / sr).clamp(0.0001, 0.49)).tan()
+    }
+
+    /// ベル(ピーク / ディップ)
+    pub fn bell(sr: f32, freq: f32, q: f32, gain_db: f32) -> Self {
+        let a = 10.0_f32.powf(gain_db / 40.0);
+        let k = 1.0 / (q.max(0.1) * a);
+        SvfCoeffs {
+            g: Self::g_of(sr, freq),
+            k,
+            m0: 1.0,
+            m1: k * (a * a - 1.0),
+            m2: 0.0,
+        }
+    }
+
+    /// 低域シェルフ(Q = 0.707 で RBJ の S = 1 と同じ傾き)
     pub fn low_shelf(sr: f32, freq: f32, gain_db: f32) -> Self {
-        Self::shelf(sr, freq, gain_db, true)
-    }
-
-    /// RBJ cookbook: high shelf
-    pub fn high_shelf(sr: f32, freq: f32, gain_db: f32) -> Self {
-        Self::shelf(sr, freq, gain_db, false)
-    }
-
-    fn shelf(sr: f32, freq: f32, gain_db: f32, low: bool) -> Self {
         let a = 10.0_f32.powf(gain_db / 40.0);
-        let w0 = std::f32::consts::TAU * (freq / sr).clamp(0.0001, 0.49);
-        let (sin, cos) = w0.sin_cos();
-        let s = 1.0f32; // shelf slope
-        let alpha = sin / 2.0 * ((a + 1.0 / a) * (1.0 / s - 1.0) + 2.0).sqrt();
-        let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
-        let sign = if low { 1.0 } else { -1.0 };
-
-        let b0 = a * ((a + 1.0) - sign * (a - 1.0) * cos + two_sqrt_a_alpha);
-        let b1 = sign * 2.0 * a * ((a - 1.0) - sign * (a + 1.0) * cos);
-        let b2 = a * ((a + 1.0) - sign * (a - 1.0) * cos - two_sqrt_a_alpha);
-        let a0 = (a + 1.0) + sign * (a - 1.0) * cos + two_sqrt_a_alpha;
-        let a1 = sign * -2.0 * ((a - 1.0) + sign * (a + 1.0) * cos);
-        let a2 = (a + 1.0) + sign * (a - 1.0) * cos - two_sqrt_a_alpha;
-        BiquadCoeffs {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
+        let k = std::f32::consts::SQRT_2;
+        SvfCoeffs {
+            g: Self::g_of(sr, freq) / a.sqrt(),
+            k,
+            m0: 1.0,
+            m1: k * (a - 1.0),
+            m2: a * a - 1.0,
         }
     }
 
-    /// RBJ cookbook: peaking EQ
-    pub fn peaking(sr: f32, freq: f32, q: f32, gain_db: f32) -> Self {
+    /// 高域シェルフ
+    pub fn high_shelf(sr: f32, freq: f32, gain_db: f32) -> Self {
         let a = 10.0_f32.powf(gain_db / 40.0);
-        let w0 = std::f32::consts::TAU * (freq / sr).clamp(0.0001, 0.49);
-        let (sin, cos) = w0.sin_cos();
-        let alpha = sin / (2.0 * q.max(0.1));
-        let a0 = 1.0 + alpha / a;
-        BiquadCoeffs {
-            b0: (1.0 + alpha * a) / a0,
-            b1: (-2.0 * cos) / a0,
-            b2: (1.0 - alpha * a) / a0,
-            a1: (-2.0 * cos) / a0,
-            a2: (1.0 - alpha / a) / a0,
+        let k = std::f32::consts::SQRT_2;
+        SvfCoeffs {
+            g: Self::g_of(sr, freq) * a.sqrt(),
+            k,
+            m0: a * a,
+            m1: k * (1.0 - a) * a,
+            m2: 1.0 - a * a,
+        }
+    }
+
+    /// 12 dB/oct のハイパス(バターワース)
+    pub fn high_pass(sr: f32, freq: f32) -> Self {
+        let k = std::f32::consts::SQRT_2;
+        SvfCoeffs {
+            g: Self::g_of(sr, freq),
+            k,
+            m0: 1.0,
+            m1: -k,
+            m2: -1.0,
+        }
+    }
+
+    /// 12 dB/oct のローパス(バターワース)
+    pub fn low_pass(sr: f32, freq: f32) -> Self {
+        SvfCoeffs {
+            g: Self::g_of(sr, freq),
+            k: std::f32::consts::SQRT_2,
+            m0: 0.0,
+            m1: 0.0,
+            m2: 1.0,
         }
     }
 }
 
-/// EQ の焼き込み済み係数(3 バンド)。
+/// SVF の状態。係数は `cur` をゆっくり目標へ寄せて使う(オートメーションで係数が段差にならないように)
+#[derive(Clone, Copy, Debug)]
+pub struct SvfState {
+    ic1: f32,
+    ic2: f32,
+    cur: SvfCoeffs,
+    /// 最初の 1 サンプルは目標にそろえる
+    primed: bool,
+}
+
+impl Default for SvfState {
+    fn default() -> Self {
+        SvfState {
+            ic1: 0.0,
+            ic2: 0.0,
+            cur: SvfCoeffs::identity(),
+            primed: false,
+        }
+    }
+}
+
+impl SvfState {
+    /// 1 サンプル処理する。`smooth` は係数を目標に寄せる 1 サンプルあたりの割合(0..1)
+    #[inline]
+    pub fn process(&mut self, target: &SvfCoeffs, smooth: f32, v0: f32) -> f32 {
+        if self.primed {
+            let c = &mut self.cur;
+            c.g += (target.g - c.g) * smooth;
+            c.k += (target.k - c.k) * smooth;
+            c.m0 += (target.m0 - c.m0) * smooth;
+            c.m1 += (target.m1 - c.m1) * smooth;
+            c.m2 += (target.m2 - c.m2) * smooth;
+        } else {
+            self.cur = *target;
+            self.primed = true;
+        }
+        let c = &self.cur;
+        let a1 = 1.0 / (1.0 + c.g * (c.g + c.k));
+        let a2 = c.g * a1;
+        let a3 = c.g * a2;
+        let v3 = v0 - self.ic2;
+        let v1 = a1 * self.ic1 + a2 * v3;
+        let v2 = self.ic2 + a2 * self.ic1 + a3 * v3;
+        self.ic1 = 2.0 * v1 - self.ic1;
+        self.ic2 = 2.0 * v2 - self.ic2;
+        c.m0 * v0 + c.m1 * v1 + c.m2 * v2
+    }
+}
+
+/// 係数の平滑化の時定数(秒)
+const SMOOTH_SECS: f32 = 0.005;
+
+fn smooth_coef(sample_rate: f32) -> f32 {
+    1.0 - (-1.0 / (SMOOTH_SECS * sample_rate)).exp()
+}
+
+/// EQ のバンド数(ハイパス・低域・中域・高域・ローパス)
+const EQ_BANDS: usize = 5;
+
+/// EQ の焼き込み済み係数。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EqParams {
-    pub low: BiquadCoeffs,
-    pub mid: BiquadCoeffs,
-    pub high: BiquadCoeffs,
+    /// ハイパス・低域シェルフ・中域ベル・高域シェルフ・ローパス の順
+    pub bands: [SvfCoeffs; EQ_BANDS],
+    /// 使うバンド(ハイパス・ローパスは切ってあれば飛ばす)
+    pub active: [bool; EQ_BANDS],
+    /// 係数の平滑化の割合(1 サンプルあたり)
+    pub smooth: f32,
     /// 係数を計算し直すための生の値(オートメーション用)
     pub raw: EqRaw,
 }
@@ -100,54 +186,86 @@ pub struct EqRaw {
     pub mid_gain_db: f32,
     pub high_freq: f32,
     pub high_gain_db: f32,
+    /// ハイパスの周波数(20 以下で切る)
+    pub hp_freq: f32,
+    /// ローパスの周波数(20000 以上で切る)
+    pub lp_freq: f32,
 }
+
+/// ハイパス・ローパスを「切る」とみなす周波数
+const EQ_HP_OFF: f32 = 20.0;
+const EQ_LP_OFF: f32 = 20_000.0;
 
 impl EqParams {
     fn from_raw(sample_rate: f32, r: EqRaw) -> EqParams {
+        let hp_on = r.hp_freq > EQ_HP_OFF;
+        let lp_on = r.lp_freq < EQ_LP_OFF;
         EqParams {
-            low: BiquadCoeffs::low_shelf(sample_rate, r.low_freq, r.low_gain_db.clamp(-15.0, 15.0)),
-            mid: BiquadCoeffs::peaking(
-                sample_rate,
-                r.mid_freq,
-                r.mid_q,
-                r.mid_gain_db.clamp(-15.0, 15.0),
-            ),
-            high: BiquadCoeffs::high_shelf(
-                sample_rate,
-                r.high_freq,
-                r.high_gain_db.clamp(-15.0, 15.0),
-            ),
+            bands: [
+                SvfCoeffs::high_pass(sample_rate, r.hp_freq.max(EQ_HP_OFF)),
+                SvfCoeffs::low_shelf(sample_rate, r.low_freq, r.low_gain_db.clamp(-15.0, 15.0)),
+                SvfCoeffs::bell(
+                    sample_rate,
+                    r.mid_freq,
+                    r.mid_q,
+                    r.mid_gain_db.clamp(-15.0, 15.0),
+                ),
+                SvfCoeffs::high_shelf(sample_rate, r.high_freq, r.high_gain_db.clamp(-15.0, 15.0)),
+                SvfCoeffs::low_pass(sample_rate, r.lp_freq.min(EQ_LP_OFF)),
+            ],
+            active: [hp_on, true, true, true, lp_on],
+            smooth: smooth_coef(sample_rate),
             raw: r,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct BiquadState {
-    x: [f32; 2],
-    y: [f32; 2],
-}
-
-impl BiquadState {
-    fn next(&mut self, c: &BiquadCoeffs, x0: f32) -> f32 {
-        let y0 =
-            c.b0 * x0 + c.b1 * self.x[0] + c.b2 * self.x[1] - c.a1 * self.y[0] - c.a2 * self.y[1];
-        self.x = [x0, self.x[0]];
-        self.y = [y0, self.y[0]];
-        y0
-    }
-}
-
 // =========================== Compressor ================================
+//
+// Giannoulis・Massberg・Reiss(JAES 2012)の構成: フィードフォワード、ゲインの計算は dB 領域で
+// ソフトニー、減衰量(dB)を「なめらかで分離したピーク検出」でアタック / リリースに追従させる。
+// 検出はステレオリンク(左右の大きい方)で、ピークか RMS を選べる。検出側にハイパス(低音でポンプしないように)。
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompressorParams {
     pub threshold_db: f32,
     pub ratio: f32,
-    /// 1 サンプルあたりのエンベロープ追従係数(attack)
+    /// ソフトニーの幅(dB。0 でハードニー)
+    pub knee_db: f32,
+    /// アタック / リリースの 1 サンプルあたりの係数(exp(-1/(t·sr)))
     pub attack_coef: f32,
     pub release_coef: f32,
     pub makeup: f32,
+    /// RMS で検出する(false はピーク)
+    pub rms: bool,
+    /// RMS の平均化の係数(約 10ms)
+    pub rms_coef: f32,
+    /// 検出側のハイパス(None で掛けない)
+    pub sc_hpf: Option<SvfCoeffs>,
+    /// ハイパスの周波数(オートメーション用の生の値)
+    pub sc_hpf_hz: f32,
+}
+
+impl CompressorParams {
+    /// dB 領域のゲインの計算(ソフトニー)。入力のレベル(dB)に対して掛ける量(dB、0 以下)
+    #[inline]
+    fn gain_db(&self, x: f32) -> f32 {
+        let (t, r, w) = (self.threshold_db, self.ratio, self.knee_db);
+        let over = x - t;
+        let y = if 2.0 * over < -w {
+            x
+        } else if w > 0.0 && 2.0 * over.abs() <= w {
+            x + (1.0 / r - 1.0) * (over + w / 2.0).powi(2) / (2.0 * w)
+        } else {
+            t + over / r
+        };
+        y - x
+    }
+}
+
+/// アタック / リリースの時間(ms)から 1 サンプルあたりの係数
+fn time_coef(ms: f32, sample_rate: f32) -> f32 {
+    (-1.0 / (ms.max(0.1) * 0.001 * sample_rate)).exp()
 }
 
 // ============================= Reverb ==================================
@@ -384,14 +502,22 @@ impl TapeParams {
     }
 }
 
-/// 小数遅延の読み出し(線形補間)。`idx` は次に書く位置。
+/// 小数遅延の読み出し(4 点の 3 次 Hermite 補間)。`idx` は次に書く位置。
+/// 線形補間は遅延を揺らす(コーラス・テープ)と高域が落ちるので、4 点で読む
 fn read_frac(buf: &[f32], idx: usize, delay: f32) -> f32 {
-    let delay = delay.clamp(1.0, (DLY_LEN - 2) as f32);
+    let delay = delay.clamp(2.0, (DLY_LEN - 3) as f32);
     let d0 = delay.floor();
-    let frac = delay - d0;
-    let i0 = idx.wrapping_sub(d0 as usize) & DLY_MASK;
-    let i1 = i0.wrapping_sub(1) & DLY_MASK;
-    buf[i0] * (1.0 - frac) + buf[i1] * frac
+    let t = delay - d0;
+    // 新しい順に y0(遅延 d0-1)・y1(d0)・y2(d0+1)・y3(d0+2)。t は y1 → y2 の間
+    let i1 = idx.wrapping_sub(d0 as usize) & DLY_MASK;
+    let y0 = buf[(i1 + 1) & DLY_MASK];
+    let y1 = buf[i1];
+    let y2 = buf[i1.wrapping_sub(1) & DLY_MASK];
+    let y3 = buf[i1.wrapping_sub(2) & DLY_MASK];
+    let c1 = 0.5 * (y2 - y0);
+    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+    ((c3 * t + c2) * t + c1) * t + y1
 }
 
 // ======================= 統合(定義と状態) =============================
@@ -430,10 +556,14 @@ enum EffectKind {
 #[derive(Clone)]
 pub struct EffectState {
     kind: EffectKind,
-    // EQ: 3 バンド × 2ch
-    eq: [[BiquadState; 3]; 2],
-    // Compressor / Sidechain の検出エンベロープ
+    // EQ: 5 バンド × 2ch
+    eq: [[SvfState; EQ_BANDS]; 2],
+    // Compressor / Sidechain の検出エンベロープ(Compressor は減衰量 dB)
     envelope: f32,
+    // Compressor: 分離したピーク検出の 1 段目・RMS の平均・検出側のハイパス(2ch)
+    comp_y1: f32,
+    comp_ms: f32,
+    comp_hp: [SvfState; 2],
     // Sidechain(ダッカー)のトリガー状態
     duck_pos: f32,
     duck_active: bool,
@@ -482,6 +612,9 @@ impl EffectState {
             kind: EffectKind::None,
             eq: Default::default(),
             envelope: 0.0,
+            comp_y1: 0.0,
+            comp_ms: 0.0,
+            comp_hp: Default::default(),
             duck_pos: 0.0,
             duck_active: false,
             key_was_above: false,
@@ -527,6 +660,9 @@ impl EffectState {
             self.kind = kind;
             self.eq = Default::default();
             self.envelope = 0.0;
+            self.comp_y1 = 0.0;
+            self.comp_ms = 0.0;
+            self.comp_hp = Default::default();
             self.duck_pos = 0.0;
             self.duck_active = false;
             self.key_was_above = false;
@@ -563,30 +699,41 @@ impl EffectState {
         match p {
             EffectParams::External => (l, r),
             EffectParams::Eq(eq) => {
-                let ch = |s: f32, st: &mut [BiquadState; 3]| {
-                    let s = st[0].next(&eq.low, s);
-                    let s = st[1].next(&eq.mid, s);
-                    st[2].next(&eq.high, s)
+                let ch = |mut s: f32, st: &mut [SvfState; EQ_BANDS]| {
+                    for (b, state) in st.iter_mut().enumerate() {
+                        if eq.active[b] {
+                            s = state.process(&eq.bands[b], eq.smooth, s);
+                        }
+                    }
+                    s
                 };
                 let [sl, sr] = &mut self.eq;
                 (ch(l, sl), ch(r, sr))
             }
             EffectParams::Compressor(c) => {
-                let level = l.abs().max(r.abs());
-                let coef = if level > self.envelope {
-                    c.attack_coef
-                } else {
-                    c.release_coef
+                // 検出: 検出側のハイパス → 左右の大きい方(ピーク)か、二乗平均(RMS)
+                let (dl, dr) = match &c.sc_hpf {
+                    Some(hp) => (
+                        self.comp_hp[0].process(hp, 1.0, l),
+                        self.comp_hp[1].process(hp, 1.0, r),
+                    ),
+                    None => (l, r),
                 };
-                self.envelope += (level - self.envelope) * coef;
-                let level_db = 20.0 * self.envelope.max(1e-6).log10();
-                let over = level_db - c.threshold_db;
-                let gain_db = if over > 0.0 {
-                    -over * (1.0 - 1.0 / c.ratio)
+                let level = if c.rms {
+                    let sq = (dl * dl).max(dr * dr);
+                    self.comp_ms = c.rms_coef * self.comp_ms + (1.0 - c.rms_coef) * sq;
+                    self.comp_ms.sqrt()
                 } else {
-                    0.0
+                    dl.abs().max(dr.abs())
                 };
-                let gain = 10.0_f32.powf(gain_db / 20.0) * c.makeup;
+                let level_db = 20.0 * level.max(1e-6).log10();
+                // 減衰量(dB、正)をなめらかで分離したピーク検出で追う
+                let want = -c.gain_db(level_db);
+                self.comp_y1 =
+                    want.max(c.release_coef * self.comp_y1 + (1.0 - c.release_coef) * want);
+                self.envelope =
+                    c.attack_coef * self.envelope + (1.0 - c.attack_coef) * self.comp_y1;
+                let gain = 10.0_f32.powf(-self.envelope / 20.0) * c.makeup;
                 (l * gain, r * gain)
             }
             EffectParams::Reverb(rv) => {
@@ -866,6 +1013,32 @@ pub static EQ_SPECS: &[ParamSpec] = &[
         },
         description: "高域シェルフの境界。",
     },
+    ParamSpec {
+        name: "hp_freq",
+        display_name: "ハイパス",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 20.0,
+            max: 1000.0,
+            default: 20.0,
+            skew: Some(0.4),
+        },
+        description: "これより低い音を 12dB/oct で削る(20 で切る)。ベース・キック以外のトラックの\
+            不要な低音(80〜150Hz 以下)を削ると、低域がすっきりして被りが減る。",
+    },
+    ParamSpec {
+        name: "lp_freq",
+        display_name: "ローパス",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 1000.0,
+            max: 20000.0,
+            default: 20000.0,
+            skew: Some(0.4),
+        },
+        description: "これより高い音を 12dB/oct で削る(20000 で切る)。刺さる高域やノイズを抑え、\
+            音を奥に引っ込める。",
+    },
 ];
 
 pub static COMPRESSOR_SPECS: &[ParamSpec] = &[
@@ -892,6 +1065,20 @@ pub static COMPRESSOR_SPECS: &[ParamSpec] = &[
             skew: Some(0.5),
         },
         description: "圧縮の強さ。2〜4 で自然に音量を揃え、8 以上でパツパツに潰れた質感になる。",
+    },
+    ParamSpec {
+        name: "knee_db",
+        display_name: "ニー",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 24.0,
+            default: 6.0,
+            skew: None,
+        },
+        description:
+            "スレッショルドの前後で圧縮がなだらかに効き始める幅。0 でカチッと(ハードニー)、\
+            大きいほど自然。ボーカルやバスには 6〜12、ドラムの潰しには 0〜3。",
     },
     ParamSpec {
         name: "attack_ms",
@@ -929,6 +1116,30 @@ pub static COMPRESSOR_SPECS: &[ParamSpec] = &[
             skew: None,
         },
         description: "圧縮で下がった分の音量を持ち上げる。",
+    },
+    ParamSpec {
+        name: "detector",
+        display_name: "検出",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["peak", "rms"],
+            default: "peak",
+        },
+        description: "音量の測り方。peak は瞬間の山に反応して素早く抑える(ドラム・ピーク管理)、\
+            rms は平均的な音量に反応してなめらか(ボーカル・バス・音量をそろえる)。",
+    },
+    ParamSpec {
+        name: "sc_hpf_hz",
+        display_name: "検出のハイパス",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 20.0,
+            max: 500.0,
+            default: 20.0,
+            skew: Some(0.5),
+        },
+        description: "音量を測るときだけ低音を削る(20 で切る)。キックやベースの低音でコンプが\
+            ポンピングするのを防ぐ。ミックス全体・バスには 80〜150。",
     },
 ];
 
@@ -1448,6 +1659,22 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
     ]
 }
 
+/// 選択肢のパラメータ(無ければ既定)
+fn get_choice<'a>(map: &'a ParamMap, specs: &[ParamSpec], name: &str) -> &'a str {
+    if let Some(ParamValue::Enum(v)) = map.get(name) {
+        return v.as_str();
+    }
+    match specs.iter().find(|s| s.name == name).map(|s| &s.range) {
+        Some(ParamRange::Enum { default, .. }) => default,
+        _ => "",
+    }
+}
+
+/// コンプの検出側のハイパス(20Hz 以下なら掛けない)
+fn comp_sc_hpf(hz: f32, sample_rate: f32) -> Option<SvfCoeffs> {
+    (hz > 20.0).then(|| SvfCoeffs::high_pass(sample_rate, hz.min(1000.0)))
+}
+
 fn get(map: &ParamMap, specs: &[ParamSpec], name: &str) -> f32 {
     if let Some(v) = map.get(name).and_then(ParamValue::as_f64) {
         return v as f32;
@@ -1476,21 +1703,25 @@ impl EffectParams {
                     "mid_gain_db" => r.mid_gain_db = v,
                     "high_freq" => r.high_freq = v,
                     "high_gain_db" => r.high_gain_db = v,
+                    "hp_freq" => r.hp_freq = v,
+                    "lp_freq" => r.lp_freq = v,
                     _ => return false,
                 }
                 *p = EqParams::from_raw(sample_rate, r);
             }
-            EffectParams::Compressor(p) => {
-                let coef = |ms: f32| 1.0 - (-1.0 / (ms.max(0.1) * 0.001 * sample_rate)).exp();
-                match name {
-                    "threshold_db" => p.threshold_db = v.clamp(-40.0, 0.0),
-                    "ratio" => p.ratio = v.clamp(1.0, 20.0),
-                    "attack_ms" => p.attack_coef = coef(v),
-                    "release_ms" => p.release_coef = coef(v),
-                    "makeup_db" => p.makeup = db(v.clamp(0.0, 24.0)),
-                    _ => return false,
+            EffectParams::Compressor(p) => match name {
+                "threshold_db" => p.threshold_db = v.clamp(-40.0, 0.0),
+                "ratio" => p.ratio = v.clamp(1.0, 20.0),
+                "knee_db" => p.knee_db = v.clamp(0.0, 24.0),
+                "attack_ms" => p.attack_coef = time_coef(v, sample_rate),
+                "release_ms" => p.release_coef = time_coef(v, sample_rate),
+                "makeup_db" => p.makeup = db(v.clamp(0.0, 24.0)),
+                "sc_hpf_hz" => {
+                    p.sc_hpf_hz = v;
+                    p.sc_hpf = comp_sc_hpf(v, sample_rate);
                 }
-            }
+                _ => return false,
+            },
             EffectParams::Reverb(p) => match name {
                 "mix" => p.mix = v.clamp(0.0, 1.0),
                 "size" => p.feedback = 0.7 + v.clamp(0.0, 1.0) * 0.28,
@@ -1613,18 +1844,25 @@ pub fn bake_effect(
                     mid_gain_db: get(map, s, "mid_gain_db"),
                     high_freq: get(map, s, "high_freq"),
                     high_gain_db: get(map, s, "high_gain_db"),
+                    hp_freq: get(map, s, "hp_freq"),
+                    lp_freq: get(map, s, "lp_freq"),
                 },
             )))
         }
         "compressor" => {
             let s = COMPRESSOR_SPECS;
-            let coef = |ms: f32| 1.0 - (-1.0 / (ms.max(0.1) * 0.001 * sample_rate)).exp();
+            let hpf = get(map, s, "sc_hpf_hz");
             Some(EffectParams::Compressor(CompressorParams {
                 threshold_db: get(map, s, "threshold_db").clamp(-40.0, 0.0),
                 ratio: get(map, s, "ratio").clamp(1.0, 20.0),
-                attack_coef: coef(get(map, s, "attack_ms")),
-                release_coef: coef(get(map, s, "release_ms")),
+                knee_db: get(map, s, "knee_db").clamp(0.0, 24.0),
+                attack_coef: time_coef(get(map, s, "attack_ms"), sample_rate),
+                release_coef: time_coef(get(map, s, "release_ms"), sample_rate),
                 makeup: 10.0_f32.powf(get(map, s, "makeup_db").clamp(0.0, 24.0) / 20.0),
+                rms: get_choice(map, s, "detector") == "rms",
+                rms_coef: time_coef(10.0, sample_rate),
+                sc_hpf: comp_sc_hpf(hpf, sample_rate),
+                sc_hpf_hz: hpf,
             }))
         }
         "reverb" => {
@@ -1745,6 +1983,11 @@ mod tests {
             ("eq", "mid_freq", 1500.0),
             ("compressor", "ratio", 8.0),
             ("compressor", "makeup_db", 6.0),
+            ("compressor", "knee_db", 0.0),
+            ("compressor", "attack_ms", 3.0),
+            ("compressor", "sc_hpf_hz", 120.0),
+            ("eq", "hp_freq", 100.0),
+            ("eq", "lp_freq", 8000.0),
             ("reverb", "mix", 0.8),
             ("distortion", "drive_db", 30.0),
             ("amp", "tone", 0.2),
@@ -1848,6 +2091,104 @@ mod tests {
         let loud = rms_through(&p, 440.0, 9600); // 0.5 amp ≒ -9dB(スレッショルド超え)
         let bypass_rms = 0.5 / 2.0_f32.sqrt();
         assert!(loud < bypass_rms * 0.7, "圧縮で音量が下がるはず: {loud}");
+    }
+
+    #[test]
+    fn eq_bell_boost_matches_gain_and_flat_is_transparent() {
+        // 1kHz を +6dB 持ち上げると、1kHz はほぼ 2 倍(+6dB)、既定値(全部 0)は素通し
+        let p = bake(&effect("eq", &[("mid_gain_db", 6.0), ("mid_freq", 1000.0)])).unwrap();
+        let boosted = rms_through(&p, 1000.0, 19200);
+        let flat = bake(&effect("eq", &[])).unwrap();
+        let through = rms_through(&flat, 1000.0, 19200);
+        let db = 20.0 * (boosted / through).log10();
+        assert!((db - 6.0).abs() < 0.3, "ベルの中心は +6dB: {db:.2}");
+        assert!(
+            (through - 0.5 / 2.0_f32.sqrt()).abs() < 1e-3,
+            "素通し: {through}"
+        );
+    }
+
+    #[test]
+    fn eq_high_and_low_pass() {
+        let p = bake(&effect("eq", &[("hp_freq", 200.0), ("lp_freq", 4000.0)])).unwrap();
+        let ref_rms = 0.5 / 2.0_f32.sqrt();
+        let db = |f: f32| 20.0 * (rms_through(&p, f, 19200) / ref_rms).log10();
+        // 12dB/oct: 1 オクターブ下・上でおよそ -12dB
+        assert!(db(50.0) < -20.0, "50Hz はハイパスで削れる: {:.1}", db(50.0));
+        assert!(
+            db(1000.0).abs() < 0.5,
+            "通過域はそのまま: {:.1}",
+            db(1000.0)
+        );
+        assert!(
+            db(16000.0) < -20.0,
+            "16kHz はローパスで削れる: {:.1}",
+            db(16000.0)
+        );
+    }
+
+    #[test]
+    fn compressor_static_curve_and_soft_knee() {
+        // 一定の振幅の直流で、落ち着いた後の出力レベルが静特性どおりになる
+        let settle = |params: &[(&str, f64)], level_db: f32| {
+            let p = bake(&effect("compressor", params)).unwrap();
+            let mut st = EffectState::default();
+            st.ensure_kind(&p);
+            let x = 10.0_f32.powf(level_db / 20.0);
+            let mut y = 0.0;
+            for _ in 0..48_000 {
+                y = st.process(&p, x, x, 0.0).0;
+            }
+            20.0 * y.log10()
+        };
+        let hard = [("threshold_db", -20.0), ("ratio", 4.0), ("knee_db", 0.0)];
+        // -8dB 入力 = 12dB 超え → 4:1 で 3dB 超え = -17dB
+        assert!((settle(&hard, -8.0) + 17.0).abs() < 0.2);
+        // スレッショルド以下は素通し
+        assert!((settle(&hard, -30.0) + 30.0).abs() < 0.05);
+        // ソフトニー: スレッショルドちょうどでも少し効く(ハードニーは効かない)
+        let soft = [("threshold_db", -20.0), ("ratio", 4.0), ("knee_db", 12.0)];
+        assert!(settle(&soft, -20.0) < -20.5);
+        assert!((settle(&hard, -20.0) + 20.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn compressor_sidechain_hpf_ignores_low_end() {
+        // 検出のハイパスを掛けると、40Hz の大きな低音ではほとんど圧縮しない
+        let params = |hpf: f64| {
+            bake(&effect(
+                "compressor",
+                &[("threshold_db", -20.0), ("ratio", 8.0), ("sc_hpf_hz", hpf)],
+            ))
+            .unwrap()
+        };
+        let plain = rms_through(&params(20.0), 40.0, 48_000);
+        let hpf = rms_through(&params(300.0), 40.0, 48_000);
+        assert!(hpf > plain * 1.5, "低音で潰れない: {hpf} vs {plain}");
+    }
+
+    #[test]
+    fn hermite_read_is_accurate_between_samples() {
+        // ゆっくりしたサイン波を小数遅延で読むと、線形補間より正確に元の値が出る
+        let mut buf = vec![0.0f32; DLY_LEN];
+        let w = 0.3f32;
+        let idx = 1000usize;
+        for k in 0..64 {
+            // idx - 1 - k に「k + 1 サンプル前」の値
+            buf[(idx - 1 - k) & DLY_MASK] = (w * -((k + 1) as f32)).sin();
+        }
+        for d in [2.25f32, 3.5, 7.75, 20.5] {
+            let got = read_frac(&buf, idx, d);
+            let want = (w * -d).sin();
+            let (d0, t) = (d.floor(), d - d.floor());
+            let linear = (w * -d0).sin() * (1.0 - t) + (w * -(d0 + 1.0)).sin() * t;
+            let err = (got - want).abs();
+            assert!(err < 1e-3, "遅延 {d}: {got} vs {want}");
+            assert!(
+                err * 5.0 < (linear - want).abs(),
+                "線形補間より正確: 遅延 {d}"
+            );
+        }
     }
 
     #[test]

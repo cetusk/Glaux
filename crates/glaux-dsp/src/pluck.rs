@@ -56,7 +56,7 @@ impl PluckVoice {
         sample_rate: f32,
     ) -> Self {
         let sr = sample_rate;
-        let period = (sr / freq.max(1.0)).clamp(2.0, (DELAY_MAX - 3) as f32);
+        let period = (sr / freq.max(1.0)).clamp(2.0, (DELAY_MAX - 4) as f32);
 
         // 奏法: パームミュートは「掌で弦を押さえる」= 減衰を強く・暗く・ピックも柔らかめ
         let (decay_mul, bright_mul, pick_mul, amp_mul) = match articulation {
@@ -115,23 +115,35 @@ impl PluckVoice {
         self.released && self.env < 1e-4
     }
 
+    /// `delay` サンプル前の値(4 点の 3 次 Hermite 補間)。
+    /// 線形補間は小数部分によって高域の減り方が変わり、音程ごとに明るさがばらつくので 4 点で読む
     fn read_at(&self, delay: f32) -> f32 {
-        let pos = self.write as f32 - delay + DELAY_MAX as f32;
-        let i0 = pos as usize;
-        let frac = pos - i0 as f32;
-        let a = self.buf[i0 % DELAY_MAX];
-        let b = self.buf[(i0 + 1) % DELAY_MAX];
-        a + (b - a) * frac
+        let delay = delay.clamp(2.0, (DELAY_MAX - 3) as f32);
+        let d0 = delay.floor();
+        let t = delay - d0;
+        // y1 = d0 サンプル前、y0 はその 1 つ新しい方、y2・y3 は古い方
+        let i1 = (self.write + DELAY_MAX - d0 as usize) % DELAY_MAX;
+        let y0 = self.buf[(i1 + 1) % DELAY_MAX];
+        let y1 = self.buf[i1];
+        let y2 = self.buf[(i1 + DELAY_MAX - 1) % DELAY_MAX];
+        let y3 = self.buf[(i1 + DELAY_MAX - 2) % DELAY_MAX];
+        let c1 = 0.5 * (y2 - y0);
+        let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+        let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+        ((c3 * t + c2) * t + c1) * t + y1
     }
 
     pub fn next(&mut self, p: &PluckParams) -> f32 {
         // ピッチ表現(ビブラート / チョーキング): 実効周期を比で割る
         let period = if self.expr.is_active() {
             (self.period / self.expr.next_ratio(self.sample_rate))
-                .clamp(2.0, (DELAY_MAX - 3) as f32)
+                .clamp(2.0, (DELAY_MAX - 4) as f32)
         } else {
             self.period
         };
+        // ループのローパス(2 点の加重平均)は 0.5 × (1 - 明るさ) サンプル遅れるので、その分を周期から引く
+        // (引かないと高い音ほど低くずれる。1760Hz・明るさ 0 で約 30 セント)
+        let period = period - 0.5 * (1.0 - self.bright);
         // 弦の 1 サンプル: 周期前の 2 点の平均(ローパス)と生値を明るさでブレンド
         let s0 = self.read_at(period);
         let s1 = self.read_at(period + 1.0);
@@ -217,6 +229,33 @@ mod tests {
             (best_lag as f32 - expected).abs() < expected * 0.08,
             "音程がずれすぎ: 周期 {best_lag} サンプル(期待 {expected})"
         );
+    }
+
+    /// 高い音でも音程が合う(ループのローパスの遅れを周期から引いている)
+    #[test]
+    fn high_notes_are_in_tune() {
+        for brightness in [0.0, 0.5] {
+            let p = PluckParams {
+                decay: 4.0,
+                brightness,
+                ..default_params()
+            };
+            let freq = 1760.0;
+            let mut v = PluckVoice::start(&p, freq, 1.0, Articulation::Normal, 48_000.0);
+            let out: Vec<f32> = (0..48_000).map(|_| v.next(&p)).collect();
+            // 倍音が減った後(0.1〜0.35 秒)で、上向きのゼロクロス(線形補間で小数位置)から周期を測る
+            let crossings: Vec<f64> = (4_800..16_800)
+                .filter(|&i| out[i] <= 0.0 && out[i + 1] > 0.0)
+                .map(|i| i as f64 + (-out[i] / (out[i + 1] - out[i])) as f64)
+                .collect();
+            let n = crossings.len();
+            let period = (crossings[n - 1] - crossings[0]) / (n - 1) as f64;
+            let cents = 1200.0 * (48_000.0 / period / freq as f64).log2();
+            assert!(
+                cents.abs() < 3.0,
+                "明るさ {brightness}: {cents:.1} セントずれている"
+            );
+        }
     }
 
     #[test]

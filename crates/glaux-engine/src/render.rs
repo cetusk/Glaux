@@ -514,6 +514,11 @@ pub struct Renderer {
     auto_cursors: [(usize, usize); MAX_TRACKS],
     /// マスター音量オートメーションの評価カーソル
     master_cursor: usize,
+    /// トラックの音量・パンの左右ゲインを、目標へ約 5ms でなめらかに寄せた値(NaN = まだ無い → 最初は目標そのまま)。
+    /// フェーダーやパンを動かしたとき・ブロックごとのオートメーションの段差で「プチッ」と鳴らないように
+    gain_smooth: [(f32, f32); MAX_TRACKS],
+    /// マスター音量のなめらかにした値(同上)
+    master_smooth: f32,
     /// device オートメーション適用済みの楽器パラメータ(トラック別スクラッチ)。
     /// レーンのあるトラックだけブロック頭でベースからコピーして値を上書きする。
     /// 起動時に確保し、以後アロケーションしない(clone は Arc 参照カウントのみ)
@@ -542,6 +547,11 @@ pub struct Renderer {
     last_tick: f64,
     /// 前回のコールバック時刻(呼び出し遅延の検出用)
     last_call: Option<std::time::Instant>,
+}
+
+/// 音量・パンのなめらかさ(1 サンプルで目標へ寄せる割合。時定数 5ms)
+fn gain_smooth_coef(sr: f32) -> f32 {
+    1.0 - (-1.0 / (0.005 * sr.max(1.0))).exp()
 }
 
 /// オートメーション点列を区分補間で評価する(core の `AutomationLane::value_at` と同義)。
@@ -647,6 +657,8 @@ impl Renderer {
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
             master_cursor: 0,
+            gain_smooth: [(f32::NAN, f32::NAN); MAX_TRACKS],
+            master_smooth: f32::NAN,
             inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
             fx_scratch: vec![None; MAX_EFFECT_SLOTS],
             next_event: 0,
@@ -1574,6 +1586,12 @@ impl Renderer {
         };
         let post: &[crate::data::SendMix] = &mix.sends;
         let mut peak = 0.0f32;
+        let k = gain_smooth_coef(sr);
+        let mut gs = self
+            .gain_smooth
+            .get(ti)
+            .copied()
+            .unwrap_or((f32::NAN, f32::NAN));
         for f in 0..frames {
             let pos = self.blk_pos[f];
             // ループで位置が戻ったらオートメーションのカーソルを戻す
@@ -1598,6 +1616,13 @@ impl Renderer {
                 let (pl, pr) = pan_gains(pan);
                 (amp * pl, amp * pr)
             };
+            if gs.0.is_nan() {
+                gs = (gl, gr);
+            } else {
+                gs.0 += (gl - gs.0) * k;
+                gs.1 += (gr - gs.1) * k;
+            }
+            let (gl, gr) = gs;
             let (ol, or) = (fl[f] * gl * boost, fr[f] * gr * boost);
             peak = peak.max(ol.abs()).max(or.abs());
             mix_l[f] += ol;
@@ -1609,6 +1634,7 @@ impl Renderer {
             }
         }
         if ti < MAX_TRACKS {
+            self.gain_smooth[ti] = gs;
             Levels::note(&self.shared.levels.tracks[ti], peak);
         }
         true
@@ -1846,7 +1872,7 @@ impl Renderer {
         &mut self,
         data: &PlaybackData,
         frames: usize,
-        _sr: f32,
+        sr: f32,
         out: &mut [f32],
         channels: usize,
     ) {
@@ -1861,6 +1887,7 @@ impl Renderer {
             None => {}
         }
         let mut peak = 0.0f32;
+        let k = gain_smooth_coef(sr);
         for f in 0..frames {
             let pos = self.blk_pos[f];
             if f > 0 && pos < self.blk_pos[f - 1] {
@@ -1875,6 +1902,12 @@ impl Renderer {
                     pos,
                 ))
             };
+            self.master_smooth = if self.master_smooth.is_nan() {
+                master_amp
+            } else {
+                self.master_smooth + (master_amp - self.master_smooth) * k
+            };
+            let master_amp = self.master_smooth;
             let click = self.blk_click[f];
             let base = f * channels;
             let (ol, or) = (l[f] * master_amp + click, r[f] * master_amp + click);
@@ -2668,6 +2701,28 @@ mod tests {
         }
         let ratio = level_across_swap(&before, &after);
         assert!(ratio > 0.7, "途切れた: {ratio:.3}");
+    }
+
+    #[test]
+    fn fader_moves_ramp_instead_of_jumping() {
+        // フェーダーを 0 → -40dB に一気に下げても、音量は約 5ms かけて下がる(段差でプチッと鳴らない)
+        let mut before = two_pads();
+        before.tracks[1].mute = true;
+        let mut after = before.clone();
+        after.tracks[0].volume_db = -40.0;
+        after.master.volume_db = -6.0;
+        let shared = Arc::new(Shared::new((*build(&before)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 48_000 / 2);
+        let pre = rms(&render_block(&mut r, 48));
+        shared.data.store(build(&after));
+        let first = rms(&render_block(&mut r, 48));
+        let _ = render_block(&mut r, 2400);
+        let settled = rms(&render_block(&mut r, 480));
+        assert!(first / pre > 0.3, "直後に飛び下がった: {:.3}", first / pre);
+        let db = 20.0 * (settled / pre).log10();
+        assert!(db < -40.0, "50ms 後には下がりきる: {db:.1} dB");
     }
 
     #[test]
