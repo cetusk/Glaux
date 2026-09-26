@@ -96,14 +96,19 @@ export const TIMELINE_ZOOM_MAX = 8;
 export const TIMELINE_TRACK_H = { min: 44, max: 160, def: 72 };
 export const TIMELINE_HEAD_W = { min: 160, max: 360, def: 200 };
 
-function loadTimelineLayout(): { trackH: number; headW: number } {
+/// `trackH` は既定の高さ、`trackHeights` はトラック(ID)ごとに変えた高さ
+function loadTimelineLayout(): { trackH: number; headW: number; trackHeights: Record<string, number> } {
   const clamp = (v: unknown, r: { min: number; max: number; def: number }) =>
     typeof v === "number" && Number.isFinite(v) ? Math.min(r.max, Math.max(r.min, v)) : r.def;
   try {
     const v = JSON.parse(localStorage.getItem("glaux.timeline.layout") ?? "{}");
-    return { trackH: clamp(v.trackH, TIMELINE_TRACK_H), headW: clamp(v.headW, TIMELINE_HEAD_W) };
+    const heights: Record<string, number> = {};
+    if (v.trackHeights && typeof v.trackHeights === "object") {
+      for (const [id, h] of Object.entries(v.trackHeights)) heights[id] = clamp(h, TIMELINE_TRACK_H);
+    }
+    return { trackH: clamp(v.trackH, TIMELINE_TRACK_H), headW: clamp(v.headW, TIMELINE_HEAD_W), trackHeights: heights };
   } catch {
-    return { trackH: TIMELINE_TRACK_H.def, headW: TIMELINE_HEAD_W.def };
+    return { trackH: TIMELINE_TRACK_H.def, headW: TIMELINE_HEAD_W.def, trackHeights: {} };
   }
 }
 
@@ -111,7 +116,7 @@ export const timelineLayout = $state(loadTimelineLayout());
 
 export function saveTimelineLayout() {
   try {
-    localStorage.setItem("glaux.timeline.layout", JSON.stringify({ ...timelineLayout }));
+    localStorage.setItem("glaux.timeline.layout", JSON.stringify($state.snapshot(timelineLayout)));
   } catch {
     // 覚えられなくても表示には支障なし
   }

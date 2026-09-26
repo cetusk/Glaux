@@ -94,24 +94,34 @@
   const HEAD_W = $derived(timelineLayout.headW);
   let layoutMenu = $state(false);
 
-  /// 見出しの右の端(幅)・下の端(トラックの高さ)をドラッグして変える
-  function startLayoutDrag(e: PointerEvent, what: "w" | "h") {
+  /// 見出しの幅のつかむ所にマウスが乗っている・ドラッグ中(幅は全トラック共通なので、列全体を光らせる)
+  let wGripHot = $state(false);
+
+  /// トラックの高さ(個別に変えていなければ既定の高さ)
+  function trackHeight(id: string): number {
+    return timelineLayout.trackHeights[id] ?? timelineLayout.trackH;
+  }
+
+  /// 見出しの右の端(幅。全トラック共通)・下の端(そのトラックの高さ)をドラッグして変える
+  function startLayoutDrag(e: PointerEvent, what: "w" | "h", trackId?: string) {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     const start = what === "w" ? e.clientX : e.clientY;
-    const orig = what === "w" ? timelineLayout.headW : timelineLayout.trackH;
+    const orig = what === "w" ? timelineLayout.headW : trackHeight(trackId ?? "");
     const r = what === "w" ? TIMELINE_HEAD_W : TIMELINE_TRACK_H;
+    if (what === "w") wGripHot = true;
     const move = (ev: PointerEvent) => {
       const d = (what === "w" ? ev.clientX : ev.clientY) - start;
       const v = Math.round(Math.min(r.max, Math.max(r.min, orig + d)));
       if (what === "w") timelineLayout.headW = v;
-      else timelineLayout.trackH = v;
+      else if (trackId) timelineLayout.trackHeights[trackId] = v;
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       document.body.classList.remove(what === "w" ? "resizing-w" : "resizing-h");
+      if (what === "w") wGripHot = false;
       saveTimelineLayout();
     };
     document.body.classList.add(what === "w" ? "resizing-w" : "resizing-h");
@@ -119,9 +129,9 @@
     window.addEventListener("pointerup", up);
   }
 
-  function resetLayout(what: "w" | "h") {
+  function resetLayout(what: "w" | "h", trackId?: string) {
     if (what === "w") timelineLayout.headW = TIMELINE_HEAD_W.def;
-    else timelineLayout.trackH = TIMELINE_TRACK_H.def;
+    else if (trackId) delete timelineLayout.trackHeights[trackId];
     saveTimelineLayout();
   }
 
@@ -1607,7 +1617,7 @@
   }
 </script>
 
-<div class="timeline" bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{timelineLayout.trackH}px">
+<div class="timeline" class:w-hot={wGripHot} bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{timelineLayout.trackH}px">
   <!-- 再生ヘッド -->
   <div class="playhead" style="left:{playheadPx}px"></div>
 
@@ -1672,7 +1682,7 @@
   <!-- 小節ルーラー(クリックでシーク、ドラッグで範囲選択) -->
   <div class="ruler-row" style="top:{project.sections && project.sections.length > 0 ? SECTION_ROW_H : 0}px">
     <div class="track-head ruler-head">
-      <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
+      <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
       <div class="zoom" title="横の拡大・縮小(タイムラインの上で Ctrl+ホイールでも)">
         <button class="btn sm icon-only" onclick={() => zoomBy(1 / 1.5)} disabled={timelineZoom.value <= TIMELINE_ZOOM_MIN} aria-label="縮小" title="縮小"
           ><Icon name="zoom-out" size={13} /></button
@@ -1697,13 +1707,18 @@
         <div class="menu-backdrop" role="presentation" onclick={() => (layoutMenu = false)}></div>
         <div class="layout-pop">
           <label>
-            <span>トラックの高さ <b>{timelineLayout.trackH}px</b></span>
+            <span>トラックの高さ(全部) <b>{timelineLayout.trackH}px</b></span>
             <input
               type="range"
               min={TIMELINE_TRACK_H.min}
               max={TIMELINE_TRACK_H.max}
               step="2"
-              bind:value={timelineLayout.trackH}
+              value={timelineLayout.trackH}
+              oninput={(e) => {
+                // 全部そろえる(見出しの下の端で個別に変えた高さも、この高さにする)
+                timelineLayout.trackH = Number(e.currentTarget.value);
+                timelineLayout.trackHeights = {};
+              }}
               onchange={saveTimelineLayout}
               aria-label="トラックの高さ"
             />
@@ -1724,6 +1739,7 @@
             class="btn sm"
             onclick={() => {
               timelineLayout.trackH = TIMELINE_TRACK_H.def;
+              timelineLayout.trackHeights = {};
               timelineLayout.headW = TIMELINE_HEAD_W.def;
               saveTimelineLayout();
             }}>元に戻す</button
@@ -1762,6 +1778,7 @@
        (以前は一番下で、音量のつまみも短かった) -->
   <div class="track-row master-row">
     <div class="track-head">
+      <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
       <div class="head-row">
         <span class="track-name master-name" title="曲全体の音量・エフェクト(書き出しにも入る)">マスター</span>
         <span class="db master-db">{(masterDrag ?? project.master.volume_db).toFixed(1)} dB</span>
@@ -1830,7 +1847,7 @@
       style={trackDrag ? `transform:translateY(${dragShift(ti)}px)` : ""}
       animate:flip={{ duration: 180 }}
     >
-    <div class="track-row" class:alt={ti % 2 === 1}>
+    <div class="track-row" class:alt={ti % 2 === 1} style="--track-h:{trackHeight(track.id)}px">
       <!-- 見出し: 1 段目 = つかむ所・種類・名前・⋯ / 2 段目 = M・S・音量 / 3 段目 = 音源と固定の 3 つ
            (アーム・オートメーション・インスペクター。無いものは空けて、どのトラックでも同じ位置に) -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1839,8 +1856,8 @@
         style={track.color ? `--tc:${track.color}` : ""}
         oncontextmenu={(e) => openTrackMenu(e, track)}
       >
-        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
-        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="h-grip" onpointerdown={(e) => startLayoutDrag(e, "h")} ondblclick={() => resetLayout("h")} title="ドラッグでトラックの高さを変える(ダブルクリックで元に戻す)"></span>
+        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
+        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="h-grip" onpointerdown={(e) => startLayoutDrag(e, "h", track.id)} ondblclick={() => resetLayout("h", track.id)} title="ドラッグでこのトラックの高さを変える(ダブルクリックで既定の高さに戻す)"></span>
         <div class="head-row">
           <span class="grip" role="button" tabindex="-1" aria-label="並べ替え" title="つかんで上下にドラッグで並べ替え" onpointerdown={(e) => onGripDown(e, track, ti)}
             ><Icon name="grip-vertical" size={14} /></span
@@ -2745,7 +2762,7 @@
     cursor: row-resize;
   }
 
-  .w-grip:hover,
+  .timeline.w-hot .w-grip,
   .h-grip:hover {
     background: color-mix(in srgb, var(--accent) 45%, transparent);
   }
