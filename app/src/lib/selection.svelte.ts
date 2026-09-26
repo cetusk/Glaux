@@ -92,9 +92,31 @@ export const timelineZoom = $state<{ value: number }>({ value: 1 });
 export const TIMELINE_ZOOM_MIN = 0.1;
 export const TIMELINE_ZOOM_MAX = 8;
 
-/// タイムラインのトラックの高さと見出しの横幅(px)。この PC の表示の好みとして覚えておく
-export const TIMELINE_TRACK_H = { min: 44, max: 160, def: 72 };
-export const TIMELINE_HEAD_W = { min: 160, max: 360, def: 200 };
+/// タイムラインのトラックの高さと見出しの横幅(px)。この PC の表示の好みとして覚えておく。
+/// 上限はウィンドウの半分(高さはウィンドウの高さ、幅はウィンドウの幅の半分)。`max` は覚えておく値の上限で、
+/// 表示するときは `layoutMax()` で今のウィンドウに合わせて抑える(ウィンドウを大きく戻せば元の大きさに戻る)
+export const TIMELINE_TRACK_H = { min: 44, max: 4000, def: 72 };
+export const TIMELINE_HEAD_W = { min: 160, max: 4000, def: 200 };
+
+/// ウィンドウの大きさ(上限を決めるため)
+const windowSize = $state({ w: 1280, h: 800 });
+try {
+  const update = () => {
+    windowSize.w = window.innerWidth;
+    windowSize.h = window.innerHeight;
+  };
+  update();
+  window.addEventListener("resize", update);
+} catch {
+  // ウィンドウの無い環境(テスト)では既定の大きさ
+}
+
+/// 今のウィンドウでの上限(ウィンドウの半分。下限より小さくはしない)
+export function layoutMax(what: "h" | "w"): number {
+  return what === "h"
+    ? Math.max(TIMELINE_TRACK_H.min, Math.floor(windowSize.h / 2))
+    : Math.max(TIMELINE_HEAD_W.min, Math.floor(windowSize.w / 2));
+}
 
 /// `trackH` は既定の高さ、`trackHeights` はトラック(ID)ごとに変えた高さ
 function loadTimelineLayout(): { trackH: number; headW: number; trackHeights: Record<string, number> } {

@@ -21,6 +21,7 @@
     selectionStore,
     soundDesignStore,
     saveTimelineLayout,
+    layoutMax,
     TIMELINE_HEAD_W,
     TIMELINE_TRACK_H,
     timelineLayout,
@@ -91,7 +92,9 @@
   }
 
   /// 見出しの横幅とトラックの高さ(ルーラー左の「表示」で変える)
-  const HEAD_W = $derived(timelineLayout.headW);
+  const HEAD_W = $derived(Math.min(timelineLayout.headW, layoutMax("w")));
+  /// 既定のトラックの高さ(ウィンドウの高さの半分までに抑えた値)
+  const defaultTrackH = $derived(Math.min(timelineLayout.trackH, layoutMax("h")));
   let layoutMenu = $state(false);
 
   /// 見出しの幅のつかむ所にマウスが乗っている・ドラッグ中(幅は全トラック共通なので、列全体を光らせる)
@@ -99,7 +102,7 @@
 
   /// トラックの高さ(個別に変えていなければ既定の高さ)
   function trackHeight(id: string): number {
-    return timelineLayout.trackHeights[id] ?? timelineLayout.trackH;
+    return Math.min(timelineLayout.trackHeights[id] ?? timelineLayout.trackH, layoutMax("h"));
   }
 
   /// 見出しの右の端(幅。全トラック共通)・下の端(そのトラックの高さ)をドラッグして変える
@@ -108,8 +111,8 @@
     e.preventDefault();
     e.stopPropagation();
     const start = what === "w" ? e.clientX : e.clientY;
-    const orig = what === "w" ? timelineLayout.headW : trackHeight(trackId ?? "");
-    const r = what === "w" ? TIMELINE_HEAD_W : TIMELINE_TRACK_H;
+    const orig = what === "w" ? HEAD_W : trackHeight(trackId ?? "");
+    const r = { min: (what === "w" ? TIMELINE_HEAD_W : TIMELINE_TRACK_H).min, max: layoutMax(what) };
     if (what === "w") wGripHot = true;
     const move = (ev: PointerEvent) => {
       const d = (what === "w" ? ev.clientX : ev.clientY) - start;
@@ -1617,7 +1620,7 @@
   }
 </script>
 
-<div class="timeline" class:w-hot={wGripHot} bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{timelineLayout.trackH}px">
+<div class="timeline" class:w-hot={wGripHot} bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{defaultTrackH}px">
   <!-- 再生ヘッド -->
   <div class="playhead" style="left:{playheadPx}px"></div>
 
@@ -1707,13 +1710,13 @@
         <div class="menu-backdrop" role="presentation" onclick={() => (layoutMenu = false)}></div>
         <div class="layout-pop">
           <label>
-            <span>トラックの高さ(全部) <b>{timelineLayout.trackH}px</b></span>
+            <span>トラックの高さ(全部) <b>{defaultTrackH}px</b></span>
             <input
               type="range"
               min={TIMELINE_TRACK_H.min}
-              max={TIMELINE_TRACK_H.max}
+              max={layoutMax("h")}
               step="2"
-              value={timelineLayout.trackH}
+              value={defaultTrackH}
               oninput={(e) => {
                 // 全部そろえる(見出しの下の端で個別に変えた高さも、この高さにする)
                 timelineLayout.trackH = Number(e.currentTarget.value);
@@ -1724,13 +1727,14 @@
             />
           </label>
           <label>
-            <span>見出しの幅 <b>{timelineLayout.headW}px</b></span>
+            <span>見出しの幅 <b>{HEAD_W}px</b></span>
             <input
               type="range"
               min={TIMELINE_HEAD_W.min}
-              max={TIMELINE_HEAD_W.max}
+              max={layoutMax("w")}
               step="4"
-              bind:value={timelineLayout.headW}
+              value={HEAD_W}
+              oninput={(e) => (timelineLayout.headW = Number(e.currentTarget.value))}
               onchange={saveTimelineLayout}
               aria-label="見出しの幅"
             />
