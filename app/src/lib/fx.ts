@@ -2,9 +2,6 @@
 import type { IconName } from "./icons";
 import type { EffectView, ProjectEffect } from "./types";
 
-/** エフェクトのプリセットの棚からノード表示へドラッグするときのデータの種類(中身はプリセット名) */
-export const FX_PRESET_MIME = "application/x-glaux-fx-preset";
-
 /** 種類ごとの色(カードの帯・列の印) */
 export const FX_COLORS: Record<string, string> = {
   eq: "#4f8fdd",

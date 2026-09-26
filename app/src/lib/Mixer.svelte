@@ -130,6 +130,19 @@
     window.addEventListener("pointerup", up);
   }
 
+  // インスペクター: このボタンで開き、もう一度押すと閉じる(別の列を開いているときは、この列に切り替える)
+  const inspectorOpen = $derived(soundDesignStore.focus?.trackId === selected);
+  function toggleInspector() {
+    if (inspectorOpen) {
+      soundDesignStore.focus = null;
+      return;
+    }
+    soundDesignStore.focus = {
+      trackId: selected,
+      trackName: selected === MASTER_FOCUS_ID ? "マスター" : (selectedTrack?.name ?? ""),
+    };
+  }
+
   // エフェクトのプリセットの棚(下の段の右端)
   let shelf = $state<FxPresetShelf | undefined>(undefined);
   function savePreset(fx: EffectView) {
@@ -292,12 +305,10 @@
       <span class="dim hint">つかんで並べ替え・帯の下へ置くと外す・名前はダブルクリックで変える</span>
       <button
         class="btn sm"
-        onclick={() =>
-          (soundDesignStore.focus = {
-            trackId: selected,
-            trackName: selected === MASTER_FOCUS_ID ? "マスター" : (selectedTrack?.name ?? ""),
-          })}
-        title="インスペクターで開く(つまみを全部見る)"><Icon name="sliders-horizontal" />インスペクター</button
+        class:on={inspectorOpen}
+        aria-pressed={inspectorOpen}
+        onclick={toggleInspector}
+        title={inspectorOpen ? "インスペクターを閉じる" : "インスペクターで開く(つまみを全部見る)"}><Icon name="sliders-horizontal" />インスペクター</button
       >
     </div>
     <div class="d-body">

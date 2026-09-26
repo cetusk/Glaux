@@ -5,7 +5,8 @@
   // すべての編集は Command(move_effect / set_effect_prop / add_effect など)を通るので Ctrl+Z で戻せる。
   import * as api from "./api";
   import Icon from "./Icon.svelte";
-  import { fxColor, fxIcon, fxKind, fxName, FX_KIND_JA, FX_PRESET_MIME, insertIndexFor, moveIndexFor } from "./fx";
+  import { fxColor, fxIcon, fxKind, fxName, FX_KIND_JA, insertIndexFor, moveIndexFor } from "./fx";
+  import { fxDrag, fxDropTargets, isOverShelf } from "./fxDrag.svelte";
   import { deviceName } from "./instruments";
   import { focusNow, keepInView } from "./menu";
   import { fmtValue, fromPos, SLIDER_MAX, toPos } from "./params";
@@ -78,41 +79,44 @@
   let drag = $state<{ id: string; wasParked: boolean; x: number; y: number; ox: number; oy: number; moved: boolean } | null>(null);
   let canvasEl = $state<HTMLDivElement | undefined>(undefined);
 
-  /** 棚(エフェクトのプリセット)からドラッグして来ているときの、カードの左上の位置 */
+  /** 棚(エフェクトのプリセット)から運んで来ているときの、カードの左上の位置(ノード表示の外なら null) */
   let ghost = $state<{ x: number; y: number } | null>(null);
 
-  /** ドラッグ中のカードが帯の中なら、並びのどこに入るか(帯の下なら null) */
+  /** 左上が (x, y) のカードを落とすと、並びのどこに入るか(帯の下なら null) */
+  function indexAt(x: number, y: number, skipId: string | null): number | null {
+    if (y + 60 > BAND_H) return null;
+    const cx = x + CARD_W / 2;
+    return chain.filter((e) => e.id !== skipId).filter((_, i) => chainX(i) + CARD_W / 2 < cx).length;
+  }
+
+  /** ドラッグ中のカードが帯の中なら、並びのどこに入るか(帯の下・棚の上なら null) */
   const dropIndex = $derived.by((): number | null => {
-    const d = drag?.moved ? drag : ghost;
-    if (!d || d.y + 60 > BAND_H) return null;
-    const cx = d.x + CARD_W / 2;
-    return chain.filter((e) => e.id !== drag?.id).filter((_, i) => chainX(i) + CARD_W / 2 < cx).length;
+    if (drag?.moved) return fxDrag.overShelf ? null : indexAt(drag.x, drag.y, drag.id);
+    return ghost ? indexAt(ghost.x, ghost.y, null) : null;
   });
 
-  function spacePoint(ev: DragEvent): { x: number; y: number } | null {
+  /** 画面の座標 → ノード表示の中の、カードの左上(ノード表示の外なら null) */
+  function clientToSpace(cx: number, cy: number): { x: number; y: number } | null {
     if (!canvasEl) return null;
     const r = canvasEl.getBoundingClientRect();
+    if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) return null;
     return {
-      x: Math.max(0, ev.clientX - r.left + canvasEl.scrollLeft - CARD_W / 2),
-      y: Math.max(0, ev.clientY - r.top + canvasEl.scrollTop - 16),
+      x: Math.max(0, cx - r.left + canvasEl.scrollLeft - CARD_W / 2),
+      y: Math.max(0, cy - r.top + canvasEl.scrollTop - 16),
     };
   }
-  function onPresetOver(ev: DragEvent) {
-    if (!ev.dataTransfer?.types.includes(FX_PRESET_MIME)) return;
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "copy";
-    ghost = spacePoint(ev);
-  }
-  function onPresetLeave(ev: DragEvent) {
-    if (!canvasEl?.contains(ev.relatedTarget as Node | null)) ghost = null;
-  }
-  async function onPresetDrop(ev: DragEvent) {
-    const name = ev.dataTransfer?.getData(FX_PRESET_MIME);
-    const idx = dropIndex;
-    const pt = spacePoint(ev);
+
+  // 棚から運ばれてくるプリセットの影
+  $effect(() => {
+    ghost = fxDrag.preset ? clientToSpace(fxDrag.x, fxDrag.y) : null;
+  });
+
+  // 棚から運んだプリセットを離したとき(棚が呼ぶ)
+  async function dropPreset(name: string, cx: number, cy: number) {
+    const pt = clientToSpace(cx, cy);
     ghost = null;
-    if (!name || !pt) return;
-    ev.preventDefault();
+    if (!pt) return;
+    const idx = indexAt(pt.x, pt.y, null);
     try {
       if (idx === null) {
         await api.applyFxPreset(targetId, name, { parked: true, pos: [Math.round(pt.x), Math.round(Math.max(pt.y, BAND_H - 40))] });
@@ -123,6 +127,12 @@
       showError("エフェクトを足せませんでした", err);
     }
   }
+  $effect(() => {
+    fxDropTargets.canvas = dropPreset;
+    return () => {
+      if (fxDropTargets.canvas === dropPreset) fxDropTargets.canvas = null;
+    };
+  });
 
   /** 画面に出す並び(ドラッグ中は、つかんだカードを除いて、入る所を空ける) */
   const layout = $derived.by(() => {
@@ -156,15 +166,20 @@
       const ny = Math.max(0, m.clientY - r.top + canvasEl.scrollTop - drag.oy);
       const moved = drag.moved || Math.abs(nx - x) + Math.abs(ny - y) > 4;
       drag = { ...drag, x: nx, y: ny, moved };
+      fxDrag.overShelf = moved && !!onSavePreset && isOverShelf(m.clientX, m.clientY);
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       const d = drag;
       const idx = dropIndex;
+      const toShelf = fxDrag.overShelf;
+      fxDrag.overShelf = false;
       drag = null;
       if (!d || !d.moved) return;
-      drop(e, d, idx);
+      // 棚に落とした: 動かさずに、エフェクトのプリセットとして保存する
+      if (toShelf) onSavePreset?.(e);
+      else drop(e, d, idx);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -326,7 +341,7 @@
   const shownParams = (e: EffectView) => e.params.slice(0, fxKind(e) === "clap" ? 2 : 3);
 </script>
 
-<div class="nodes" bind:this={canvasEl} ondragover={onPresetOver} ondragleave={onPresetLeave} ondrop={onPresetDrop} role="application" aria-label="エフェクトのノード表示">
+<div class="nodes" bind:this={canvasEl} role="application" aria-label="エフェクトのノード表示">
   <div class="space" style="width:{size.w}px;height:{size.h}px">
     <div class="band" style="height:{BAND_H}px"></div>
     <div class="side-label" style="top:{BAND_H + 10}px">
@@ -334,7 +349,7 @@
     </div>
     {#if drag && drag.moved}
       <div class="drop-hint" style="left:{drag.x}px;top:{drag.y - 26}px">
-        {dropIndex !== null ? (drag.wasParked ? "ここで離すと線に戻す" : "ここで離すと並べ替え") : drag.wasParked ? "わきに置く" : "ここで離すと線から外す(設定はそのまま)"}
+        {fxDrag.overShelf ? "離すとエフェクトのプリセットに保存(ここには残る)" : dropIndex !== null ? (drag.wasParked ? "ここで離すと線に戻す" : "ここで離すと並べ替え") : drag.wasParked ? "わきに置く" : "ここで離すと線から外す(設定はそのまま)"}
       </div>
     {/if}
     {#if ghost}

@@ -5,7 +5,8 @@
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { focusNow } from "./menu";
-  import { FX_COLORS, FX_KIND_JA, FX_PRESET_MIME, fxName } from "./fx";
+  import { FX_COLORS, FX_KIND_JA, fxName } from "./fx";
+  import { fxDrag, fxDropTargets } from "./fxDrag.svelte";
   import { showError, showToast } from "./toast.svelte";
   import type { EffectView, Project } from "./types";
 
@@ -76,11 +77,40 @@
     }
   }
 
-  function onDragStart(e: DragEvent, p: api.FxPresetInfo) {
-    e.dataTransfer?.setData(FX_PRESET_MIME, p.name);
-    e.dataTransfer?.setData("text/plain", p.name);
-    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+  // ---- ノード表示へ運ぶ(pointer で自前に。HTML5 の DnD は Tauri の Windows 版では動かない) ----
+  function onCardDown(ev: PointerEvent, p: api.FxPresetInfo) {
+    if (ev.button !== 0 || (ev.target as HTMLElement).closest("button")) return;
+    ev.preventDefault();
+    const x0 = ev.clientX;
+    const y0 = ev.clientY;
+    let started = false;
+    const move = (m: PointerEvent) => {
+      if (!started && Math.abs(m.clientX - x0) + Math.abs(m.clientY - y0) < 5) return;
+      started = true;
+      fxDrag.preset = { name: p.name, kind: p.kind };
+      fxDrag.x = m.clientX;
+      fxDrag.y = m.clientY;
+    };
+    const up = (u: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (!started) return;
+      fxDrag.preset = null;
+      fxDropTargets.canvas?.(p.name, u.clientX, u.clientY);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   }
+
+  // 棚の要素を受け口として知らせる(ノード表示のカードを落とすと保存)
+  let rootEl = $state<HTMLDivElement | undefined>(undefined);
+  $effect(() => {
+    const el = rootEl ?? null;
+    fxDropTargets.shelf = el;
+    return () => {
+      if (fxDropTargets.shelf === el) fxDropTargets.shelf = null;
+    };
+  });
 
   // ---- 保存(ノード表示のカードの「エフェクトのプリセットに保存」から) ----
   let saving = $state<{ target: string; fx: EffectView; name: string; note: string; exists: boolean } | null>(null);
@@ -111,7 +141,10 @@
   }
 </script>
 
-<div class="shelf" class:open>
+<div class="shelf" class:open class:drop={fxDrag.overShelf} bind:this={rootEl}>
+  {#if fxDrag.overShelf}
+    <div class="drop-msg"><Icon name="archive" />離すとエフェクトのプリセットに保存</div>
+  {/if}
   {#if !open}
     <button class="rail" onclick={toggle} title="エフェクトのプリセットを開く" aria-expanded="false">
       <Icon name="archive" /><span>エフェクトのプリセット</span><span class="count">{presets.length}</span>
@@ -162,7 +195,7 @@
 
     <div class="list" role="list">
       {#each shown as p (p.name)}
-        <div class="card" style="--nc:{colorOf(p)}" draggable="true" ondragstart={(e) => onDragStart(e, p)} role="listitem" title={p.note ?? p.name}>
+        <div class="card" style="--nc:{colorOf(p)}" onpointerdown={(e) => onCardDown(e, p)} role="listitem" title={p.note ?? p.name}>
           <div class="top">
             <span class="kind">{kindLabel(p)}</span>
             <span class="sp"></span>
@@ -184,18 +217,24 @@
       {:else}
         <div class="empty">
           {#if presets.length === 0}
-            まだありません。カードの「…」→「エフェクトのプリセットに保存」で入れられます。どのトラック・曲でも使えます
+            まだありません。左のカードをここへドラッグするか、カードの「…」→「エフェクトのプリセットに保存」で入れられます。どのトラック・曲でも使えます
           {:else}
             見つかりません
           {/if}
         </div>
       {/each}
       {#if shown.length > 0}
-        <div class="hint">左へドラッグして置く(線の中 / わき)。どのトラック・曲でも使える</div>
+        <div class="hint">左へドラッグして置く(線の中 / わき)。左のカードをここへ落とすと保存。どのトラック・曲でも使える</div>
       {/if}
     </div>
   {/if}
 </div>
+
+{#if fxDrag.preset}
+  <div class="float" style="left:{fxDrag.x + 10}px;top:{fxDrag.y + 10}px;--nc:{FX_COLORS[fxDrag.preset.kind] ?? '#777'}">
+    <Icon name="archive" size={13} />{fxDrag.preset.name}
+  </div>
+{/if}
 
 <style>
   .shelf {
@@ -210,6 +249,52 @@
 
   .shelf.open {
     width: 224px;
+  }
+
+  .shelf {
+    position: relative;
+  }
+
+  .shelf.drop {
+    outline: 2px dashed var(--accent);
+    outline-offset: -3px;
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+  }
+
+  .drop-msg {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    top: 40%;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 6px;
+    border-radius: var(--r-md);
+    background: rgba(10, 30, 28, 0.92);
+    color: var(--accent);
+    font-size: var(--fs-sm);
+    text-align: center;
+    pointer-events: none;
+  }
+
+  .float {
+    position: fixed;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--nc);
+    background: var(--bg-raised);
+    color: var(--text);
+    font-size: var(--fs-sm);
+    box-shadow: var(--shadow-pop);
+    pointer-events: none;
+    white-space: nowrap;
   }
 
   .rail {
