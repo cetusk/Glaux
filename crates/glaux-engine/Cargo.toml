@@ -1,6 +1,6 @@
 [package]
 name = "glaux-engine"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 # glaux-clap(clack)が新しい Rust を要求するため個別指定
 rust-version = "1.88"
