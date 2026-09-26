@@ -32,6 +32,8 @@ pub struct EngineHandle {
     ctl: mpsc::Sender<Ctl>,
     /// 使用中の出力デバイス名
     output_name: Arc<Mutex<String>>,
+    /// 出力バッファの大きさ(フレーム)の希望と、実際に開いたときの様子
+    buffer: Arc<Mutex<BufferInfo>>,
     /// 録音・入力テストに使う入力デバイス(None = OS の既定)
     input_device: Arc<Mutex<Option<String>>>,
     /// 入力テスト(録音せずレベルだけ見る)
@@ -124,11 +126,10 @@ impl EngineHandle {
         }
         let mut graveyard = self.graveyard.lock().expect("graveyard lock");
         graveyard.push(old);
-        // オーディオスレッドは数ブロックで新データに移るので、少数残せば十分
-        if graveyard.len() > 8 {
-            let excess = graveyard.len() - 8;
-            graveyard.drain(..excess);
-        }
+        // ここだけが持っている(= オーディオスレッドがもう使っていない)ものを、このスレッドで解放する。
+        // 差し替えた後のデータは ArcSwap から外れているので、参照が 1 から増えることはない。
+        // 以前は「最新 8 個を残す」だったため、まだ使われているものを解放しうるうえ、大きなデータが残り続けた
+        graveyard.retain(|d| Arc::strong_count(d) > 1);
     }
 
     pub fn play(&self) {
@@ -479,6 +480,27 @@ impl EngineHandle {
             .map_err(|_| EngineError::Stream("出力デバイスの切り替えが応答しません".into()))?
     }
 
+    /// 出力バッファの大きさ(フレーム)を変えて、同じデバイスを開き直す。再生位置は保つ
+    pub fn set_buffer_frames(&self, frames: u32) -> Result<(), EngineError> {
+        self.buffer.lock().expect("buffer lock").requested = frames.clamp(16, 8192);
+        let (reply, rx) = mpsc::channel();
+        self.ctl
+            .send(Ctl::Reopen { reply })
+            .map_err(|_| EngineError::Stream("オーディオスレッドが停止しています".into()))?;
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| EngineError::Stream("出力の開き直しが応答しません".into()))?
+    }
+
+    /// 出力バッファの大きさの希望と、実際に開いたときの様子
+    pub fn buffer_info(&self) -> BufferInfo {
+        *self.buffer.lock().expect("buffer lock")
+    }
+
+    /// 直前のブロックの大きさ(フレーム。OS が実際に呼んできた大きさ)
+    pub fn block_frames(&self) -> u32 {
+        self.shared.block_frames.load(Ordering::Relaxed)
+    }
+
     /// 録音・入力テストに使う入力デバイス(None = OS の既定)。
     pub fn set_input_device(&self, name: Option<String>) -> Result<(), EngineError> {
         if let Some(n) = &name {
@@ -590,6 +612,44 @@ enum Ctl {
         name: Option<String>,
         reply: mpsc::Sender<Result<(), EngineError>>,
     },
+    /// 同じデバイスを開き直す(バッファの大きさを変えたとき)
+    Reopen {
+        reply: mpsc::Sender<Result<(), EngineError>>,
+    },
+}
+
+/// 出力バッファの既定の大きさ(フレーム。48kHz で約 21ms)。途切れにくさを優先した値
+pub const DEFAULT_BUFFER_FRAMES: u32 = 1024;
+
+/// 出力バッファの大きさ。小さいほど操作から音までが速いが、処理が間に合わず途切れやすい
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct BufferInfo {
+    /// 希望(フレーム)
+    pub requested: u32,
+    /// 実際に指定できた大きさ(ドライバが受け付けず、OS 任せで開いたときは None)
+    pub applied: Option<u32>,
+    /// デバイスが受け付ける範囲(分からなければ None)
+    pub min: Option<u32>,
+    pub max: Option<u32>,
+}
+
+impl Default for BufferInfo {
+    fn default() -> Self {
+        BufferInfo {
+            requested: DEFAULT_BUFFER_FRAMES,
+            applied: None,
+            min: None,
+            max: None,
+        }
+    }
+}
+
+/// 開いた出力ストリームと、その様子
+struct Opened {
+    stream: cpal::Stream,
+    sample_rate: f64,
+    name: String,
+    buffer: BufferInfo,
 }
 
 /// 利用できるオーディオデバイスの一覧。
@@ -639,19 +699,21 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                 sample_rate: 48_000.0,
                 ..PlaybackData::default()
             }));
-            let (stream, sample_rate, name) = match open_stream(None, &shared) {
+            let opened = match open_stream(None, &shared, DEFAULT_BUFFER_FRAMES) {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = tx.send(Err(e));
                     return;
                 }
             };
+            let (stream, sample_rate, name) = (opened.stream, opened.sample_rate, opened.name);
             let (ctl, ctl_rx) = mpsc::channel();
             let handle = EngineHandle {
                 shared: shared.clone(),
                 sample_rate: Arc::new(AtomicU64::new(sample_rate.to_bits())),
                 ctl,
                 output_name: Arc::new(Mutex::new(name)),
+                buffer: Arc::new(Mutex::new(opened.buffer)),
                 input_device: Arc::new(Mutex::new(None)),
                 monitor: Arc::new(Mutex::new(None)),
                 tempo: Arc::new(Mutex::new(TempoMap::default())),
@@ -676,33 +738,44 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
             let _ = tx.send(Ok(handle.clone()));
             // ストリームはこのスレッドが持ち続ける(cpal::Stream は Send でない)
             let mut stream = Some(stream);
+            // 選んでいる出力デバイス(None = OS の既定)。開き直すときに使う
+            let mut choice: Option<String> = None;
+            let adopt = |o: Opened, stream: &mut Option<cpal::Stream>| {
+                *stream = Some(o.stream);
+                handle
+                    .sample_rate
+                    .store(o.sample_rate.to_bits(), Ordering::Release);
+                *handle.output_name.lock().expect("output lock") = o.name;
+                *handle.buffer.lock().expect("buffer lock") = o.buffer;
+            };
             while let Ok(req) = ctl_rx.recv() {
-                match req {
+                let reply = match req {
                     Ctl::SwitchOutput { name, reply } => {
-                        // 再生位置を保つため、新しいレンダラに現在位置へのシークを渡す
-                        let pos = shared.pos.load(Ordering::Acquire);
-                        drop(stream.take());
-                        shared.seek.store(pos, Ordering::Release);
-                        let result = match open_stream(name.as_deref(), &shared) {
-                            Ok((s, sr, n)) => {
-                                stream = Some(s);
-                                handle.sample_rate.store(sr.to_bits(), Ordering::Release);
-                                *handle.output_name.lock().expect("output lock") = n;
-                                Ok(())
-                            }
-                            Err(e) => {
-                                // 失敗したら既定デバイスに戻す
-                                if let Ok((s, sr, n)) = open_stream(None, &shared) {
-                                    stream = Some(s);
-                                    handle.sample_rate.store(sr.to_bits(), Ordering::Release);
-                                    *handle.output_name.lock().expect("output lock") = n;
-                                }
-                                Err(e)
-                            }
-                        };
-                        let _ = reply.send(result);
+                        choice = name;
+                        reply
                     }
-                }
+                    Ctl::Reopen { reply } => reply,
+                };
+                let frames = handle.buffer.lock().expect("buffer lock").requested;
+                // 再生位置を保つため、新しいレンダラに現在位置へのシークを渡す
+                let pos = shared.pos.load(Ordering::Acquire);
+                drop(stream.take());
+                shared.seek.store(pos, Ordering::Release);
+                let result = match open_stream(choice.as_deref(), &shared, frames) {
+                    Ok(o) => {
+                        adopt(o, &mut stream);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // 失敗したら既定デバイスに戻す
+                        choice = None;
+                        if let Ok(o) = open_stream(None, &shared, frames) {
+                            adopt(o, &mut stream);
+                        }
+                        Err(e)
+                    }
+                };
+                let _ = reply.send(result);
             }
         })
         .expect("audio thread spawn");
@@ -710,11 +783,13 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
     rx.recv().unwrap_or(Err(EngineError::NoDevice))
 }
 
-/// 出力ストリームを開いて再生を始める。戻り値は (ストリーム, サンプルレート, デバイス名)。
+/// 出力ストリームを開いて再生を始める。`frames` はバッファの大きさの希望
+/// (デバイスの受け付ける範囲に丸める。ドライバが拒否したら OS 任せで開く)。
 fn open_stream(
     name: Option<&str>,
     shared: &Arc<Shared>,
-) -> Result<(cpal::Stream, f64, String), EngineError> {
+    frames: u32,
+) -> Result<Opened, EngineError> {
     let host = cpal::default_host();
     let device = match name {
         Some(n) => host
@@ -737,29 +812,35 @@ fn open_stream(
     let dev_name = device_name(&device);
     tracing::info!("オーディオ出力: {dev_name} / {sample_rate} Hz / {channels} ch");
 
-    // バッファは大きめ(1024 フレーム ≒ 21ms @48k)を要求してスパイク耐性を稼ぐ。
-    // ドライバが拒否したらデフォルトにフォールバック
+    // 既定は大きめ(1024 フレーム ≒ 21ms @48k)でスパイク耐性を稼ぐ。設定で小さくもできる。
+    // デバイスの受け付ける範囲に丸め、ドライバが拒否したら OS 任せで開く
+    let (min, max) = match config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => (Some(*min), Some(*max)),
+        cpal::SupportedBufferSize::Unknown => (None, None),
+    };
+    let want = frames.clamp(min.unwrap_or(16).max(16), max.unwrap_or(8192).min(8192));
     let mut stream_config = config.config();
-    stream_config.buffer_size = cpal::BufferSize::Fixed(1024);
-    let err_fn = |e| tracing::error!("オーディオストリームエラー: {e}");
+    stream_config.buffer_size = cpal::BufferSize::Fixed(want);
+    let mut applied = Some(want);
     let stream = match device.build_output_stream(
         stream_config,
         {
             let mut r = Renderer::new(shared.clone());
             move |out: &mut [f32], _| r.process(out, channels)
         },
-        err_fn,
+        stream_error_handler(shared),
         None,
     ) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("バッファ 1024 での起動に失敗({e})。既定バッファで再試行");
+            tracing::warn!("バッファ {want} での起動に失敗({e})。既定バッファで再試行");
+            applied = None;
             let mut r = Renderer::new(shared.clone());
             device
                 .build_output_stream(
                     config.config(),
                     move |out: &mut [f32], _| r.process(out, channels),
-                    err_fn,
+                    stream_error_handler(shared),
                     None,
                 )
                 .map_err(|e| EngineError::Stream(e.to_string()))?
@@ -768,7 +849,32 @@ fn open_stream(
     stream
         .play()
         .map_err(|e| EngineError::Stream(e.to_string()))?;
-    Ok((stream, sample_rate, dev_name))
+    Ok(Opened {
+        stream,
+        sample_rate,
+        name: dev_name,
+        buffer: BufferInfo {
+            requested: frames,
+            applied,
+            min,
+            max,
+        },
+    })
+}
+
+/// ストリームのエラーの受け口。音切れ(xrun)とリアルタイム優先度の拒否は数えて UI に出す
+fn stream_error_handler(shared: &Arc<Shared>) -> impl FnMut(cpal::Error) + Send + 'static {
+    let shared = shared.clone();
+    move |e: cpal::Error| match e.kind() {
+        cpal::ErrorKind::Xrun => {
+            shared.stats.xruns.fetch_add(1, Ordering::Relaxed);
+        }
+        cpal::ErrorKind::RealtimeDenied => {
+            shared.stats.realtime_denied.store(true, Ordering::Relaxed);
+            tracing::warn!("オーディオスレッドのリアルタイム優先度が認められませんでした: {e}");
+        }
+        _ => tracing::error!("オーディオストリームエラー: {e}"),
+    }
 }
 
 // ハンドルは UI・MCP の複数スレッドで共有する(MIDI 接続を持っても Send + Sync を保つ)

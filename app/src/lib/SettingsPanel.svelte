@@ -49,6 +49,27 @@
     await loadDevices();
   }
 
+  const BUFFER_SIZES = [64, 128, 256, 512, 1024, 2048];
+  /** 選べる大きさ(デバイスの範囲に入るもの。範囲が分からなければ全部) */
+  const bufferChoices = $derived.by(() => {
+    const b = devices?.buffer;
+    return BUFFER_SIZES.filter((n) => (b?.min == null || n >= b.min) && (b?.max == null || n <= b.max));
+  });
+  const msOf = (frames: number) => (devices?.sample_rate ? (frames / devices.sample_rate) * 1000 : 0);
+  async function pickBuffer(e: Event) {
+    const v = Number((e.currentTarget as HTMLSelectElement).value);
+    deviceMsg = "開き直し中…";
+    try {
+      const r = await api.setBufferSize(v);
+      settings.bufferFrames = v;
+      saveSettings();
+      deviceMsg = r.applied === null ? "このデバイスは大きさを指定できないため、OS に任せています" : null;
+    } catch (err) {
+      deviceMsg = `変えられませんでした: ${err}`;
+    }
+    await loadDevices();
+  }
+
   async function pickInput(e: Event) {
     const v = (e.currentTarget as HTMLSelectElement).value;
     try {
@@ -340,6 +361,18 @@
             <select class="sc" value={settings.outputDevice} onchange={pickOutput} aria-label="出力デバイス">
               <option value="">OS の既定({devices.default_output ?? "なし"})</option>
               {#each devices.outputs as d (d)}<option value={d}>{d}</option>{/each}
+            </select>
+          </div>
+          <div class="srow">
+            {@render row(
+              "バッファの大きさ",
+              `小さいほど鍵盤やつまみから音までが速く、大きいほど途切れにくい。途切れるときは大きく` +
+                (devices.buffer?.block ? `(いま 1 回に ${devices.buffer.block} フレーム ≒ ${msOf(devices.buffer.block).toFixed(1)} ms で処理)` : ""),
+            )}
+            <select class="sc" value={settings.bufferFrames || 1024} onchange={pickBuffer} aria-label="バッファの大きさ">
+              {#each bufferChoices as n (n)}
+                <option value={n}>{n} フレーム({msOf(n).toFixed(1)} ms){n === 1024 ? " — 既定" : ""}</option>
+              {/each}
             </select>
           </div>
           <div class="srow">

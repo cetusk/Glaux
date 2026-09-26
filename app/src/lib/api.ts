@@ -447,10 +447,17 @@ export interface AudioDevices {
   current_output: string | null;
   current_input: string | null;
   sample_rate: number;
+  /** 出力バッファ(フレーム): 希望・実際に指定できた大きさ(null = OS 任せ)・デバイスの範囲・直前のブロック */
+  buffer?: { requested: number; applied: number | null; min: number | null; max: number | null; block: number } | null;
 }
 
 export function audioDevices(): Promise<AudioDevices> {
   return invoke("audio_devices");
+}
+
+/** 出力バッファの大きさ(フレーム、0 = 既定の 1024)を変えて開き直す */
+export function setBufferSize(frames: number): Promise<{ requested: number; applied: number | null }> {
+  return invoke("set_buffer_size", { frames });
 }
 
 /** 出力デバイスを切り替える(null = OS の既定)。 */

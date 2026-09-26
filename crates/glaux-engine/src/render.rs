@@ -183,6 +183,10 @@ pub struct StatsCounters {
     pub late: AtomicU64,
     /// 起動からの累計: 再生中の再生データ差し替え(発音中の音が切り直される)
     pub swaps: AtomicU64,
+    /// 起動からの累計: OS のオーディオが知らせてきた音切れ(バッファの不足。対応している環境だけ)
+    pub xruns: AtomicU64,
+    /// OS がオーディオスレッドのリアルタイム優先度を認めなかった
+    pub realtime_denied: std::sync::atomic::AtomicBool,
 }
 
 /// UI に渡す負荷の要約。
@@ -195,6 +199,8 @@ pub struct DspStats {
     pub overruns: u64,
     pub late: u64,
     pub swaps: u64,
+    pub xruns: u64,
+    pub realtime_denied: bool,
 }
 
 impl StatsCounters {
@@ -213,6 +219,8 @@ impl StatsCounters {
             overruns: self.overruns.load(Ordering::Acquire),
             late: self.late.load(Ordering::Acquire),
             swaps: self.swaps.load(Ordering::Acquire),
+            xruns: self.xruns.load(Ordering::Acquire),
+            realtime_denied: self.realtime_denied.load(Ordering::Acquire),
         }
     }
 }

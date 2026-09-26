@@ -34,6 +34,8 @@ interface Settings {
   /// オーディオデバイス(空文字 = OS の既定)
   outputDevice: string;
   inputDevice: string;
+  /// 出力バッファの大きさ(フレーム、0 = 既定の 1024)
+  bufferFrames: number;
   /// 録音の音量を自動で整える(一番大きい所を -6dB に)
   autoGain: boolean;
   /// ステレオで録音する(入力が 2 ch 以上のとき。1 本のマイクならモノラルでよい)
@@ -60,6 +62,7 @@ function load(): Settings {
         chatCodexModel: typeof v.chatCodexModel === "string" ? v.chatCodexModel : "",
         outputDevice: typeof v.outputDevice === "string" ? v.outputDevice : "",
         inputDevice: typeof v.inputDevice === "string" ? v.inputDevice : "",
+        bufferFrames: typeof v.bufferFrames === "number" ? v.bufferFrames : 0,
         autoGain: v.autoGain !== false,
         recordStereo: v.recordStereo === true,
         midiInput: typeof v.midiInput === "string" ? v.midiInput : "",
@@ -80,6 +83,7 @@ function load(): Settings {
     chatCodexModel: "",
     outputDevice: "",
     inputDevice: "",
+    bufferFrames: 0,
     autoGain: true,
     recordStereo: false,
     midiInput: "",

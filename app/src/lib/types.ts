@@ -276,7 +276,17 @@ export interface TransportState {
   /** 入力テスト中 */
   input_monitor?: boolean;
   /** オーディオ処理の負荷(直近の平均・最大 % と起動からの累計回数) */
-  dsp?: { avg_pct: number; max_pct: number; overruns: number; late: number; swaps: number };
+  dsp?: {
+    avg_pct: number;
+    max_pct: number;
+    overruns: number;
+    late: number;
+    swaps: number;
+    /** OS のオーディオが知らせてきた音切れ(対応している環境だけ) */
+    xruns?: number;
+    /** OS がリアルタイム優先度を認めなかった */
+    realtime_denied?: boolean;
+  };
   tick: number;
   /** ループ区間 [開始tick, 終了tick]。null ならループなし */
   loop?: [number, number] | null;

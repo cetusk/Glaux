@@ -232,6 +232,9 @@
     refresh();
     // 前回選んだオーディオデバイスに戻す(抜かれていたら既定のまま)
     (async () => {
+      if (settings.bufferFrames) {
+        await api.setBufferSize(settings.bufferFrames).catch(() => {});
+      }
       if (settings.outputDevice) {
         await api.setOutputDevice(settings.outputDevice).catch(() => {
           error = `前回の出力デバイス「${settings.outputDevice}」が見つからないため、既定のデバイスを使います`;
@@ -385,8 +388,8 @@
   let dspAvg = $state(0);
   let dspMaxWindow: number[] = [];
   let dspMax = $state(0);
-  let dspBase: { overruns: number; late: number; swaps: number } | null = null;
-  let dspCounts = $state({ overruns: 0, late: 0, swaps: 0 });
+  let dspBase: { overruns: number; late: number; swaps: number; xruns: number } | null = null;
+  let dspCounts = $state({ overruns: 0, late: 0, swaps: 0, xruns: 0 });
   $effect(() => {
     const d = transport.dsp;
     if (!d) return;
@@ -394,7 +397,7 @@
       dspBase = null;
       return;
     }
-    if (!dspBase) dspBase = { overruns: d.overruns, late: d.late, swaps: d.swaps };
+    if (!dspBase) dspBase = { overruns: d.overruns, late: d.late, swaps: d.swaps, xruns: d.xruns ?? 0 };
     dspAvg = d.avg_pct;
     dspMaxWindow = [...dspMaxWindow.slice(-29), d.max_pct];
     dspMax = Math.max(...dspMaxWindow);
@@ -402,9 +405,11 @@
       overruns: d.overruns - dspBase.overruns,
       late: d.late - dspBase.late,
       swaps: d.swaps - dspBase.swaps,
+      xruns: (d.xruns ?? 0) - dspBase.xruns,
     };
   });
-  const dspWarn = $derived(dspCounts.overruns + dspCounts.late > 0 || dspMax > 80);
+  const dspDrops = $derived(dspCounts.overruns + dspCounts.late + dspCounts.xruns);
+  const dspWarn = $derived(dspDrops > 0 || dspMax > 80);
 
   // 録音中の入力レベル(上がるときは即座に、下がるときはゆっくり)
   let recLevel = $state(-90);
@@ -1074,9 +1079,9 @@
         <span
           class="it"
           class:warn={dspWarn}
-          title={`音の処理の負荷(この再生の開始から)\n平均 ${dspAvg.toFixed(0)}% / 直近 3 秒の最大 ${dspMax.toFixed(0)}%\n処理落ち(Glaux の計算が間に合わない): ${dspCounts.overruns} 回\n呼び出し遅延(他の処理に CPU を奪われた): ${dspCounts.late} 回\n再生データの差し替え(編集で音が切り直される): ${dspCounts.swaps} 回`}
-          ><Icon name="cpu" size={12} />{dspAvg.toFixed(0)}%{#if dspCounts.overruns + dspCounts.late > 0}
-            <Icon name="triangle-alert" size={12} />{dspCounts.overruns}/{dspCounts.late}{/if}</span
+          title={`音の処理の負荷(この再生の開始から)\n平均 ${dspAvg.toFixed(0)}% / 直近 3 秒の最大 ${dspMax.toFixed(0)}%\n処理落ち(Glaux の計算が間に合わない): ${dspCounts.overruns} 回\n呼び出し遅延(他の処理に CPU を奪われた): ${dspCounts.late} 回\nOS が知らせた音切れ: ${dspCounts.xruns} 回\n再生データの差し替え(編集で音が切り直される): ${dspCounts.swaps} 回${transport.dsp?.realtime_denied ? "\nOS がリアルタイム優先度を認めていません(途切れやすくなります)" : ""}${dspDrops > 0 ? "\n途切れるときは、設定 → オーディオでバッファを大きくしてください" : ""}`}
+          ><Icon name="cpu" size={12} />{dspAvg.toFixed(0)}%{#if dspDrops > 0}
+            <Icon name="triangle-alert" size={12} />{dspDrops}{/if}</span
         >
       {/if}
       {#if audioDev}

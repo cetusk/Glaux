@@ -1092,7 +1092,18 @@ fn audio_devices(state: State<'_, AppState>) -> Value {
         Some(e) => (Some(e.output_device()), e.input_device(), e.sample_rate()),
         None => (None, list.default_input.clone(), 0.0),
     };
+    let buffer = state.engine.as_ref().map(|e| {
+        let b = e.buffer_info();
+        json!({
+            "requested": b.requested,
+            "applied": b.applied,
+            "min": b.min,
+            "max": b.max,
+            "block": e.block_frames(),
+        })
+    });
     json!({
+        "buffer": buffer,
         "outputs": list.outputs,
         "inputs": list.inputs,
         "default_output": list.default_output,
@@ -1130,6 +1141,26 @@ async fn set_output_device(
     }
     result.map_err(|e| e.to_string())?;
     Ok(json!({ "current_output": engine.output_device(), "sample_rate": engine.sample_rate() }))
+}
+
+/// 出力バッファの大きさ(フレーム)を変えて開き直す。0 なら既定(1024)
+#[tauri::command]
+async fn set_buffer_size(state: State<'_, AppState>, frames: u32) -> Result<Value, String> {
+    let engine = state.engine()?.clone();
+    let frames = if frames == 0 {
+        glaux_engine::output::DEFAULT_BUFFER_FRAMES
+    } else {
+        frames
+    };
+    {
+        let engine = engine.clone();
+        tokio::task::spawn_blocking(move || engine.set_buffer_frames(frames))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+    }
+    let b = engine.buffer_info();
+    Ok(json!({ "requested": b.requested, "applied": b.applied, "min": b.min, "max": b.max }))
 }
 
 /// 録音に使う入力デバイス(name 省略 = OS 既定)。
@@ -2362,6 +2393,7 @@ fn main() -> Result<()> {
             audio_devices,
             get_master_params,
             set_output_device,
+            set_buffer_size,
             set_input_device,
             input_monitor,
             calibrate_start,
