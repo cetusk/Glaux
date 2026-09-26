@@ -269,86 +269,9 @@ fn time_coef(ms: f32, sample_rate: f32) -> f32 {
 }
 
 // ============================= Reverb ==================================
+// 本体は crate::reverb(8 本の遅延線の FDN)
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ReverbParams {
-    /// ウェット比率 0..=1
-    pub mix: f32,
-    /// コムフィードバック 0.7..=0.98 に写像済み
-    pub feedback: f32,
-    /// 高域減衰 0..=1
-    pub damping: f32,
-    /// ディレイ長の倍率(サンプルレート / 48kHz。バッファは 48kHz 分なので 1 が上限)。
-    /// これが無いと 44.1kHz で部屋が 9% 大きく聞こえる
-    pub len_scale: f32,
-}
-
-/// コムフィルタのディレイ長(48kHz 基準、Freeverb 由来の素数付近)。
-const COMB_LENS: [usize; 4] = [1557, 1617, 1491, 1422];
-const ALLPASS_LENS: [usize; 2] = [225, 556];
-/// 右チャンネルはディレイをずらしてステレオ感を出す
-const STEREO_SPREAD: usize = 23;
-const MAX_COMB: usize = 1617 + STEREO_SPREAD;
-const MAX_ALLPASS: usize = 556 + STEREO_SPREAD;
-
-#[derive(Clone)]
-struct ReverbChannel {
-    combs: [Vec<f32>; 4],
-    comb_lp: [f32; 4],
-    comb_idx: [usize; 4],
-    allpasses: [Vec<f32>; 2],
-    ap_idx: [usize; 2],
-    spread: usize,
-}
-
-impl ReverbChannel {
-    fn new(spread: usize) -> Self {
-        ReverbChannel {
-            combs: std::array::from_fn(|_| vec![0.0; MAX_COMB]),
-            comb_lp: [0.0; 4],
-            comb_idx: [0; 4],
-            allpasses: std::array::from_fn(|_| vec![0.0; MAX_ALLPASS]),
-            ap_idx: [0; 2],
-            spread,
-        }
-    }
-
-    fn reset(&mut self) {
-        for c in &mut self.combs {
-            c.fill(0.0);
-        }
-        for a in &mut self.allpasses {
-            a.fill(0.0);
-        }
-        self.comb_lp = [0.0; 4];
-    }
-
-    fn next(&mut self, p: &ReverbParams, x: f32) -> f32 {
-        let mut wet = 0.0;
-        let scaled = |base: usize| ((base as f32 * p.len_scale) as usize).max(1);
-        for (i, base_len) in COMB_LENS.iter().enumerate() {
-            let len = scaled(*base_len) + self.spread;
-            let idx = self.comb_idx[i];
-            let out = self.combs[i][idx];
-            // フィードバック経路の一次ローパス(damping)
-            self.comb_lp[i] = out * (1.0 - p.damping) + self.comb_lp[i] * p.damping;
-            self.combs[i][idx] = x + self.comb_lp[i] * p.feedback;
-            self.comb_idx[i] = (idx + 1) % len;
-            wet += out;
-        }
-        wet *= 0.25;
-        for (i, base_len) in ALLPASS_LENS.iter().enumerate() {
-            let len = scaled(*base_len) + self.spread;
-            let idx = self.ap_idx[i];
-            let buf = self.allpasses[i][idx];
-            let out = -wet + buf;
-            self.allpasses[i][idx] = wet + buf * 0.5;
-            self.ap_idx[i] = (idx + 1) % len;
-            wet = out;
-        }
-        wet
-    }
-}
+pub use crate::reverb::ReverbParams;
 
 // =========================== Distortion ================================
 
@@ -579,7 +502,7 @@ pub struct EffectState {
     // Amp のフィルタ群(2ch)
     amp: [AmpChState; 2],
     // Reverb
-    reverb: [ReverbChannel; 2],
+    reverb: crate::reverb::FdnState,
     // Delay / Chorus / Tape の共有ディレイバッファ(2ch)
     dly: [Vec<f32>; 2],
     dly_idx: usize,
@@ -628,7 +551,7 @@ impl EffectState {
             adaa: Default::default(),
             tape_os: Default::default(),
             amp: Default::default(),
-            reverb: [ReverbChannel::new(0), ReverbChannel::new(STEREO_SPREAD)],
+            reverb: crate::reverb::FdnState::new(),
             dly: [Vec::new(), Vec::new()],
             dly_idx: 0,
             dly_lp: [0.0; 2],
@@ -678,8 +601,7 @@ impl EffectState {
             self.adaa = Default::default();
             self.tape_os = Default::default();
             self.amp = Default::default();
-            self.reverb[0].reset();
-            self.reverb[1].reset();
+            self.reverb.reset();
             if matches!(
                 kind,
                 EffectKind::Delay | EffectKind::Chorus | EffectKind::Tape
@@ -747,9 +669,7 @@ impl EffectState {
                 (l * gain, r * gain)
             }
             EffectParams::Reverb(rv) => {
-                let input = (l + r) * 0.35;
-                let wl = self.reverb[0].next(rv, input);
-                let wr = self.reverb[1].next(rv, input);
+                let (wl, wr) = self.reverb.process(rv, l, r);
                 (
                     l * (1.0 - rv.mix) + wl * rv.mix,
                     r * (1.0 - rv.mix) + wr * rv.mix,
@@ -1196,6 +1116,31 @@ pub static REVERB_SPECS: &[ParamSpec] = &[
             skew: None,
         },
         description: "残響の高域の減衰。上げると暗く柔らかい残響、下げるとキラキラ響く。",
+    },
+    ParamSpec {
+        name: "predelay_ms",
+        display_name: "プリディレイ",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 100.0,
+            default: 0.0,
+            skew: Some(0.5),
+        },
+        description:
+            "原音から残響が始まるまでの間。10〜30ms 空けると、ボーカルや楽器の輪郭が残響に埋もれず\
+            前に出る。大きいほど広い空間の印象。",
+    },
+    ParamSpec {
+        name: "character",
+        display_name: "種類",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["room", "plate"],
+            default: "room",
+        },
+        description: "room は部屋・ホールの自然な響き。plate は鉄板リバーブ風の密で明るい響きで、\
+            ボーカルやスネアに艶を足す定番。",
     },
 ];
 
@@ -1738,12 +1683,20 @@ impl EffectParams {
                 }
                 _ => return false,
             },
-            EffectParams::Reverb(p) => match name {
-                "mix" => p.mix = v.clamp(0.0, 1.0),
-                "size" => p.feedback = 0.7 + v.clamp(0.0, 1.0) * 0.28,
-                "damping" => p.damping = v.clamp(0.0, 1.0),
-                _ => return false,
-            },
+            EffectParams::Reverb(p) => {
+                let mut raw = p.raw;
+                match name {
+                    "mix" => {
+                        p.mix = v.clamp(0.0, 1.0);
+                        return true;
+                    }
+                    "size" => raw.size = v.clamp(0.0, 1.0),
+                    "damping" => raw.damping = v.clamp(0.0, 1.0),
+                    "predelay_ms" => raw.predelay_ms = v.clamp(0.0, crate::reverb::PREDELAY_MAX_MS),
+                    _ => return false,
+                }
+                *p = ReverbParams::new(p.mix, raw);
+            }
             EffectParams::Distortion(p) => match name {
                 "drive_db" => p.drive = db(v.clamp(0.0, 40.0)),
                 "tone" => p.tone_coef = (-tau * v.clamp(500.0, 12000.0) / sample_rate).exp(),
@@ -1883,12 +1836,17 @@ pub fn bake_effect(
         }
         "reverb" => {
             let s = REVERB_SPECS;
-            Some(EffectParams::Reverb(ReverbParams {
-                mix: get(map, s, "mix").clamp(0.0, 1.0),
-                feedback: 0.7 + get(map, s, "size").clamp(0.0, 1.0) * 0.28,
-                damping: get(map, s, "damping").clamp(0.0, 1.0),
-                len_scale: (sample_rate / 48_000.0).clamp(0.1, 1.0),
-            }))
+            Some(EffectParams::Reverb(ReverbParams::new(
+                get(map, s, "mix"),
+                crate::reverb::ReverbRaw {
+                    size: get(map, s, "size").clamp(0.0, 1.0),
+                    damping: get(map, s, "damping").clamp(0.0, 1.0),
+                    predelay_ms: get(map, s, "predelay_ms")
+                        .clamp(0.0, crate::reverb::PREDELAY_MAX_MS),
+                    plate: get_choice(map, s, "character") == "plate",
+                    sample_rate,
+                },
+            )))
         }
         "distortion" => {
             let s = DISTORTION_SPECS;
@@ -2006,6 +1964,8 @@ mod tests {
             ("eq", "hp_freq", 100.0),
             ("eq", "lp_freq", 8000.0),
             ("reverb", "mix", 0.8),
+            ("reverb", "size", 0.9),
+            ("reverb", "predelay_ms", 25.0),
             ("distortion", "drive_db", 30.0),
             ("amp", "tone", 0.2),
             ("sidechain", "duck_db", 12.0),

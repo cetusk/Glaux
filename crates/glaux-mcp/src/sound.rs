@@ -461,12 +461,17 @@ pub struct MatchOutcome {
 }
 
 /// 目標の音の高さ(MIDI)。音程が取れない非調和な音(ベル等)はスペクトルの主要な成分から、それも無ければ 60。
+/// ベルのように成分の比が非整数の音は、推定が成分の無い低いオクターブ(見かけの基音)になることがあるので、
+/// 実際に鳴っているオクターブへ直す
 pub fn target_pitch(sound: &LoadedSound, d: &glaux_engine::timbre::SoundDescriptors) -> u8 {
-    d.pitch
-        .as_ref()
-        .map(|p| p.midi)
-        .or_else(|| glaux_engine::timbre::dominant_pitch(&sound.frames, sound.sample_rate))
-        .unwrap_or(60)
+    match d.pitch.as_ref() {
+        Some(p) => {
+            glaux_engine::timbre::lift_missing_fundamental(&sound.frames, sound.sample_rate, p.midi)
+        }
+        None => {
+            glaux_engine::timbre::dominant_pitch(&sound.frames, sound.sample_rate).unwrap_or(60)
+        }
+    }
 }
 
 /// 鍵盤を押していた秒数の推定: 鳴っている長さ − 余韻(最後の減衰)。

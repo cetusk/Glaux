@@ -247,6 +247,48 @@ pub fn dominant_pitch(frames: &[f32], sr: f32) -> Option<u8> {
     Some(midi.round().clamp(0.0, 127.0) as u8)
 }
 
+/// 周波数 `freq` の成分の強さ(鳴り始めから最大 0.5 秒、Hann 窓の DFT の振幅)
+fn partial_level(frames: &[f32], sr: f32, freq: f32) -> f32 {
+    let Some(start) = frames.iter().position(|v| v.abs() > 1e-3) else {
+        return 0.0;
+    };
+    let seg = &frames[start..frames.len().min(start + (sr * 0.5) as usize)];
+    let n = seg.len() as f32;
+    let (mut re, mut im) = (0.0f32, 0.0f32);
+    for (k, v) in seg.iter().enumerate() {
+        let w = 0.5 - 0.5 * (std::f32::consts::TAU * k as f32 / n).cos();
+        let ph = k as f32 * freq * std::f32::consts::TAU / sr;
+        re += v * w * ph.cos();
+        im += v * w * ph.sin();
+    }
+    (re * re + im * im).sqrt()
+}
+
+/// 音程の推定がベルのような非調和な音で「成分の無い低い音」(基音の欠けた見かけの音程)になったとき、
+/// 実際に鳴っているオクターブへ上げる。推定の音にも、その 3 倍にもほとんど成分が無く、
+/// 2 倍(1 オクターブ上)に成分があるときだけ上げる(倍音が並ぶふつうの音で基音が弱いだけなら、
+/// 3 倍に成分があるので上げない)
+pub fn lift_missing_fundamental(frames: &[f32], sr: f32, midi: u8) -> u8 {
+    let mut m = midi;
+    for _ in 0..2 {
+        let f = 440.0 * 2f32.powf((m as f32 - 69.0) / 12.0);
+        if f * 2.0 > sr * 0.45 {
+            break;
+        }
+        let (e1, e2, e3) = (
+            partial_level(frames, sr, f),
+            partial_level(frames, sr, f * 2.0),
+            partial_level(frames, sr, f * 3.0),
+        );
+        if e2 > 0.0 && e1 < 0.1 * e2 && e3 < 0.1 * e2 && m <= 115 {
+            m += 12;
+        } else {
+            break;
+        }
+    }
+    m
+}
+
 /// 単音を解析する。`pitch` を渡せばそれを使い、無ければ内蔵の YIN で求める。
 pub fn describe(frames: &[f32], sr: f32, pitch: Option<&[PitchFrame]>) -> SoundDescriptors {
     let n = frames.len().min((MAX_SECONDS * sr) as usize);
@@ -1002,6 +1044,31 @@ mod tests {
             p.vibrato_depth_cents
         );
         assert!(p.glide_cents < -30.0, "{}", p.glide_cents);
+    }
+
+    #[test]
+    fn missing_fundamental_is_lifted_only_for_inharmonic_sounds() {
+        let sr = 48_000.0;
+        let tone = |parts: &[(f32, f32)]| -> Vec<f32> {
+            (0..24_000)
+                .map(|i| {
+                    let t = i as f32 / sr;
+                    parts
+                        .iter()
+                        .map(|(f, a)| a * (std::f32::consts::TAU * f * t).sin())
+                        .sum()
+                })
+                .collect()
+        };
+        // ベル: 523Hz と、その 3.5 倍(見かけの基音は 262Hz = MIDI 60)→ 72 に直す
+        let bell = tone(&[(523.25, 1.0), (523.25 * 3.5, 0.6)]);
+        assert_eq!(lift_missing_fundamental(&bell, sr, 60), 72);
+        // 基音の弱い倍音列(262Hz の 2・3・4 倍)は 60 のまま(3 倍に成分がある)
+        let harm = tone(&[(523.25, 1.0), (784.9, 0.8), (1046.5, 0.5)]);
+        assert_eq!(lift_missing_fundamental(&harm, sr, 60), 60);
+        // ふつうの音(基音あり)は変えない
+        let saw = tone(&[(261.6, 1.0), (523.25, 0.5), (784.9, 0.33)]);
+        assert_eq!(lift_missing_fundamental(&saw, sr, 60), 60);
     }
 
     #[test]

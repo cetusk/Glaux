@@ -2259,7 +2259,7 @@ async fn match_sound_picks_fm_for_a_bell_and_adds_reverb() {
     let v = ok_json(&r);
     eprintln!("{}", v["match"]);
     assert_eq!(v["match"]["instrument"], json!("fm"), "{}", v["match"]);
-    // 探索は評価回数で打ち切るので、CPU の混み具合に関係なく同じ結果になる(0.261)
+    // 探索は評価回数で打ち切るので、CPU の混み具合に関係なく同じ結果になる(0.299)
     let d = v["match"]["distance"].as_f64().unwrap();
     assert!(d < 0.35, "{d}");
     let (project, _) = fx.handle.get_project().await.unwrap();
