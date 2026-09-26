@@ -20,3 +20,12 @@ export function keepInView(node: HTMLElement) {
   ro.observe(node);
   return { destroy: () => ro.disconnect() };
 }
+
+/** 出てきた入力欄に入力位置を置いて中身を選ぶ(`use:focusNow`)。
+ *  autofocus は、ダブルクリックやメニューの直後だと前に押したボタンに負けることがあった */
+export function focusNow(node: HTMLInputElement | HTMLTextAreaElement) {
+  requestAnimationFrame(() => {
+    node.focus();
+    node.select();
+  });
+}

@@ -119,6 +119,52 @@ pub struct Shared {
     pub pos_nanos: AtomicU64,
     /// CLAP プラグインの処理窓口の受け渡し口([`crate::plugins`])
     pub plugin_slots: Arc<[PluginSlot; MAX_PLUGINS]>,
+    /// トラック・マスターの直近のピーク(ミキサーのメーター用)。[`Levels`] 参照
+    pub levels: Levels,
+}
+
+/// トラック(フェーダー・パンの後)とマスター(マスターの音量の後、クリップ防止の前)の直近のピーク。
+/// オーディオスレッドが振幅の最大を書き(`fetch_max`)、UI が読んでリセットする。
+/// 値は振幅(0 以上)の f32 のビット。0 以上の f32 はビットの大小と値の大小が同じなので `fetch_max` で比べられる
+pub struct Levels {
+    pub tracks: [AtomicU32; MAX_TRACKS],
+    pub master: AtomicU32,
+}
+
+impl Default for Levels {
+    fn default() -> Self {
+        Levels {
+            tracks: std::array::from_fn(|_| AtomicU32::new(0)),
+            master: AtomicU32::new(0),
+        }
+    }
+}
+
+impl Levels {
+    fn note(slot: &AtomicU32, peak: f32) {
+        if peak > 0.0 {
+            slot.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// 最初の `ntracks` 本とマスターのピーク(dBFS。無音は -120)を読み出してリセットする
+    pub fn take(&self, ntracks: usize) -> (Vec<f32>, f32) {
+        let db = |slot: &AtomicU32| {
+            let v = f32::from_bits(slot.swap(0, Ordering::Relaxed));
+            if v > 1e-6 {
+                20.0 * v.log10()
+            } else {
+                -120.0
+            }
+        };
+        let tracks = self
+            .tracks
+            .iter()
+            .take(ntracks.min(MAX_TRACKS))
+            .map(db)
+            .collect();
+        (tracks, db(&self.master))
+    }
 }
 
 /// オーディオ処理の負荷統計(アトミック。オーディオスレッドからロックなしで更新)。
@@ -206,6 +252,7 @@ impl Shared {
             block_frames: AtomicU32::new(0),
             pos_nanos: AtomicU64::new(0),
             plugin_slots: Arc::new(crate::plugins::new_slots()),
+            levels: Levels::default(),
         }
     }
 
@@ -1508,6 +1555,7 @@ impl Renderer {
             1.0
         };
         let post: &[crate::data::SendMix] = &mix.sends;
+        let mut peak = 0.0f32;
         for f in 0..frames {
             let pos = self.blk_pos[f];
             // ループで位置が戻ったらオートメーションのカーソルを戻す
@@ -1533,6 +1581,7 @@ impl Renderer {
                 (amp * pl, amp * pr)
             };
             let (ol, or) = (fl[f] * gl * boost, fr[f] * gr * boost);
+            peak = peak.max(ol.abs()).max(or.abs());
             mix_l[f] += ol;
             mix_r[f] += or;
             // フェーダー後のセンド(トラックの音量・パンに追従)
@@ -1540,6 +1589,9 @@ impl Renderer {
                 bus_l[snd.target as usize][f] += ol * snd.amp;
                 bus_r[snd.target as usize][f] += or * snd.amp;
             }
+        }
+        if ti < MAX_TRACKS {
+            Levels::note(&self.shared.levels.tracks[ti], peak);
         }
         true
     }
@@ -1699,6 +1751,7 @@ impl Renderer {
         if !data.master_effects.is_empty() {
             self.run_chain(&data.master_effects, data, &mut l, &mut r, frames);
         }
+        let mut peak = 0.0f32;
         for f in 0..frames {
             let pos = self.blk_pos[f];
             if f > 0 && pos < self.blk_pos[f - 1] {
@@ -1716,6 +1769,7 @@ impl Renderer {
             let click = self.blk_click[f];
             let base = f * channels;
             let (ol, or) = (l[f] * master_amp + click, r[f] * master_amp + click);
+            peak = peak.max(ol.abs()).max(or.abs());
             if clip {
                 out[base] = soft_clip(ol);
                 if channels >= 2 {
@@ -1728,6 +1782,7 @@ impl Renderer {
                 }
             }
         }
+        Levels::note(&self.shared.levels.master, peak);
         self.mix_l = l;
         self.mix_r = r;
     }
@@ -2468,6 +2523,27 @@ mod tests {
         shared.data.store(build(after));
         let post = rms(&render_block(&mut r, 240));
         post / pre
+    }
+
+    #[test]
+    fn levels_follow_each_track_and_reset_when_read() {
+        // ミキサーのメーター: トラックごと(フェーダーの後)とマスターのピーク。読むと 0 に戻る
+        let mut p = two_pads();
+        p.tracks[1].volume_db = -20.0;
+        p.tracks[1].mute = true;
+        let shared = Arc::new(Shared::new((*build(&p)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 4800);
+        let (tracks, master) = shared.levels.take(2);
+        assert!(tracks[0] > -30.0, "鳴っているトラック {tracks:?}");
+        assert!(
+            tracks[1] <= -100.0,
+            "ミュートしたトラックは振れない {tracks:?}"
+        );
+        assert!(master > -30.0 && master <= 6.0, "マスター {master}");
+        let (again, m2) = shared.levels.take(2);
+        assert!(again[0] <= -100.0 && m2 <= -100.0, "読むとリセットされる");
     }
 
     #[test]

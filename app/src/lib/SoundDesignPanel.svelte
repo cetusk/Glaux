@@ -9,6 +9,8 @@
   import { flip } from "svelte/animate";
   import { newClipId, newFxId } from "./ids";
   import { deviceIcon, deviceKind, deviceName } from "./instruments";
+  import { fmtValue, fromPos, SLIDER_MAX, toPos } from "./params";
+  import { moveIndexFor } from "./fx";
   import { keepInView } from "./menu";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
   import {
@@ -17,6 +19,7 @@
     MASTER_FOCUS_ID,
     saveInspectorWidth,
     soundDesignStore,
+    viewStore,
   } from "./selection.svelte";
   import type { EffectView, ParamView, Project, Track, TrackParams } from "./types";
 
@@ -162,42 +165,6 @@
       ],
       `${targetName} の ${p.display_name} を変更`,
     );
-  }
-
-  function fmtValue(p: ParamView, dragging?: number): string {
-    // CLAP プラグインのつまみはプラグイン自身の表示を優先(ドラッグ中はその値)
-    if (dragging === undefined && p.current_text) return p.current_text;
-    const v = dragging ?? p.current;
-    if (typeof v === "number") {
-      const digits = p.range.kind === "int" ? 0 : Math.abs(v) >= 100 ? 0 : 2;
-      return `${v.toFixed(digits)}${p.unit ?? ""}`;
-    }
-    return `${v}`;
-  }
-
-  // ---- スライダー: 位置(0〜SLIDER_MAX)と値の変換 ----
-  // 周波数・時間のように広い範囲を持つパラメータは skew(< 1)で下側の分解能を上げる
-  // (以前は線形で、カットオフ 40〜12000Hz のうち 200〜800Hz がスライダーの 5% しかなかった)。
-  // 式は JUCE と同じ: 位置 = ((値 − 最小) / 幅)^skew
-  const SLIDER_MAX = 1000;
-
-  function toPos(p: ParamView, v: number): number {
-    if (p.range.kind !== "float" && p.range.kind !== "int") return 0;
-    const { min, max } = p.range;
-    const t = Math.min(1, Math.max(0, (v - min) / (max - min || 1)));
-    const skew = p.range.kind === "float" ? (p.range.skew ?? 1) : 1;
-    return Math.round(Math.pow(t, skew) * SLIDER_MAX);
-  }
-
-  function fromPos(p: ParamView, pos: number): number {
-    if (p.range.kind !== "float" && p.range.kind !== "int") return 0;
-    const { min, max } = p.range;
-    const skew = p.range.kind === "float" ? (p.range.skew ?? 1) : 1;
-    const v = min + (max - min) * Math.pow(pos / SLIDER_MAX, 1 / skew);
-    if (p.range.kind === "int") return Math.round(v);
-    // 表示の桁に合わせて丸める(履歴に 0.30000000004 のような値を残さない)
-    const digits = Math.abs(v) >= 100 ? 1 : 3;
-    return Number(v.toFixed(digits));
   }
 
   /// ドラッグ中の値(パラメータのパス → 値)。離すまで表示だけ変える
@@ -356,6 +323,7 @@
 
   /// エフェクトの表示名(CLAP はプラグイン名)
   function fxLabel(fx: EffectView): string {
+    if (fx.label) return fx.label;
     if (fx.name !== "clap") return fx.name;
     return fx.plugin_name ?? fx.plugin_id ?? "CLAP";
   }
@@ -462,8 +430,11 @@
   let fxOrder = $state<string[] | null>(null);
   let fxOrderTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /// 線から外してある(ノード表示のわきに置いてある)エフェクト。音は通らないので、並びとは別に畳んで出す
+  const parkedEffects = $derived((info?.effects ?? []).filter((f) => f.parked));
+
   const shownEffects = $derived.by((): EffectView[] => {
-    const list = info?.effects ?? [];
+    const list = (info?.effects ?? []).filter((f) => !f.parked);
     const order = fxOrder;
     if (!order) return list;
     const byId = new Map(list.map((f) => [f.id, f]));
@@ -473,7 +444,7 @@
 
   $effect(() => {
     const order = fxOrder;
-    if (order && (info?.effects ?? []).map((f) => f.id).join() === order.join()) fxOrder = null;
+    if (order && (info?.effects ?? []).filter((f) => !f.parked).map((f) => f.id).join() === order.join()) fxOrder = null;
   });
 
   function onFxGripDown(e: PointerEvent, fx: EffectView, index: number) {
@@ -507,6 +478,9 @@
           });
         return;
       }
+      // 外してあるものも含めた全体の並びでの位置に直す
+      const toIndex = moveIndexFor(info?.effects ?? [], d.id, d.to);
+      if (toIndex === null) return;
       const ids = shownEffects.map((f) => f.id);
       ids.splice(d.from, 1);
       ids.splice(d.to, 0, d.id);
@@ -514,7 +488,7 @@
       clearTimeout(fxOrderTimer);
       fxOrderTimer = setTimeout(() => (fxOrder = null), 3000);
       api
-        .applyEdit([{ op: "move_effect", id: d.id, to_index: d.to }], `${targetName} の ${fxLabel(fx)} を ${d.to + 1} 番目へ`)
+        .applyEdit([{ op: "move_effect", id: d.id, to_index: toIndex }], `${targetName} の ${fxLabel(fx)} を ${d.to + 1} 番目へ`)
         .catch((e) => {
           fxOrder = null;
           loadError = String(e);
@@ -522,6 +496,27 @@
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  }
+
+  /// 外してあるエフェクトを線(並びの最後)に戻す
+  function unpark(fx: EffectView) {
+    const all = info?.effects ?? [];
+    const to = moveIndexFor(all, fx.id, all.filter((f) => !f.parked).length);
+    const cmds: unknown[] = [
+      { op: "set_effect_prop", id: fx.id, prop: "parked", value: false },
+      { op: "set_effect_prop", id: fx.id, prop: "pos", value: null },
+    ];
+    if (to !== null) cmds.push({ op: "move_effect", id: fx.id, to_index: to });
+    applyEdit(cmds, `${targetName} の ${fxLabel(fx)} を線に戻す`);
+  }
+
+  /// ミキサーのノード表示で開く(並べ替え・外す・名前やメモ)
+  function openInMixer() {
+    const id = soundDesignStore.focus?.trackId;
+    if (!id) return;
+    viewStore.mixerTrack = id;
+    viewStore.highlightFx = null;
+    viewStore.main = "mixer";
   }
 
   /// ドラッグ中の各カードのずれ
@@ -668,16 +663,16 @@
                     >{deviceKind(track.device)}{info?.device.is_default_fallback ? "(未設定なので既定の音)" : ""}</small
                   ></span
                 >
-                <button class="btn sm" onclick={(e) => openPicker(e)} title="音源を変える(内蔵・マイプリセット・SoundFont・CLAP・サンプル)"
+                <button class="btn sm" onclick={(e) => openPicker(e)} title="音源を変える(内蔵・音色のプリセット・SoundFont・CLAP・サンプル)"
                   >変更<Icon name="chevron-down" /></button
                 >
               </div>
               <div class="row">
-                <button class="btn sm" onclick={(e) => openPicker(e, "preset")} title="保存したプリセット(全プロジェクト共通)から選ぶ"
-                  ><Icon name="save" />プリセットから</button
+                <button class="btn sm" onclick={(e) => openPicker(e, "preset")} title="保存した音色のプリセット(音源 + エフェクト一式。全プロジェクト共通)から選ぶ"
+                  ><Icon name="save" />音色のプリセット</button
                 >
                 {#if track.device?.type !== "clap"}
-                  <button class="btn sm" class:on={savingPreset} onclick={() => (savingPreset = !savingPreset)} title="今の音(音源とエフェクト)をプリセットとして保存"
+                  <button class="btn sm" class:on={savingPreset} onclick={() => (savingPreset = !savingPreset)} title="今の音(音源とエフェクト)を音色のプリセットとして保存"
                     ><Icon name="plus" />保存</button
                   >
                 {:else}
@@ -855,7 +850,26 @@
                   </div>
                 {/each}
               </div>
-              <button class="btn sm add-fx" onclick={(e) => (addMenu = menuAt(e))}><Icon name="plus" />エフェクトを追加<Icon name="chevron-down" /></button>
+              {#if parkedEffects.length > 0}
+                <div class="parked">
+                  <div class="parked-h" title="ミキサーのノード表示で、線から外してわきに置いてあるエフェクト。設定は残っていて、音は通らない">
+                    <Icon name="unplug" size={12} />外してある {parkedEffects.length}(音は通らない)
+                  </div>
+                  {#each parkedEffects as fx (fx.id)}
+                    <div class="parked-row" title={fx.note ?? ""}>
+                      <span class="parked-nm">{fxLabel(fx)}{#if fx.note}<small>{fx.note}</small>{/if}</span>
+                      <button class="btn sm ghost" onclick={() => unpark(fx)} title="線の最後に戻す"><Icon name="arrow-up" />戻す</button>
+                      <button class="btn sm icon ghost" onclick={() => removeEffect(fx)} title="削除(Ctrl+Z で戻せます)" aria-label="削除"><Icon name="trash-2" /></button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              <div class="row">
+                <button class="btn sm add-fx" onclick={(e) => (addMenu = menuAt(e))}><Icon name="plus" />エフェクトを追加<Icon name="chevron-down" /></button>
+                <button class="btn sm ghost" onclick={openInMixer} title="ミキサーのノード表示で開く(カードで並べ替え・外して取っておく・名前やメモ)"
+                  ><Icon name="sliders-horizontal" />ノード表示</button
+                >
+              </div>
             </div>
           {/if}
         </section>
@@ -1360,6 +1374,48 @@
 
   .add-fx {
     align-self: flex-start;
+  }
+
+  .parked {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-md);
+  }
+
+  .parked-h {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+  }
+
+  .parked-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .parked-nm {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .parked-nm small {
+    font-size: 10px;
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .send {

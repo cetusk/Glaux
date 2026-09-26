@@ -510,6 +510,53 @@ export function loadPreset(trackId: string, name: string): Promise<{ applied: st
   return invoke("load_preset", { trackId, name });
 }
 
+// ---- エフェクトのプリセット(エフェクト 1 つ分) ----
+
+export interface FxPresetInfo {
+  name: string;
+  /** 内蔵エフェクト名(eq / compressor …)。CLAP は "clap" */
+  kind: string;
+  plugin_id?: string;
+  note?: string;
+  /** 保存元のトラック名 */
+  origin?: string;
+  created: string;
+}
+
+export function listFxPresets(): Promise<{ presets: FxPresetInfo[] }> {
+  return invoke("list_fx_presets");
+}
+
+/** エフェクト 1 つを名前を付けて保存する。target はトラック ID か "master" */
+export function saveFxPreset(
+  target: string,
+  fxId: string,
+  name: string,
+  note: string | null = null,
+  overwrite = false,
+): Promise<{ saved: string }> {
+  return invoke("save_fx_preset", { target, fxId, name, note, overwrite });
+}
+
+/** エフェクトのプリセットを足す。parked なら外してある状態で pos に置く */
+export function applyFxPreset(
+  target: string,
+  name: string,
+  opts: { index?: number | null; parked?: boolean; pos?: [number, number] | null } = {},
+): Promise<{ fx_id: string }> {
+  return invoke("apply_fx_preset", {
+    target,
+    name,
+    index: opts.index ?? null,
+    parked: opts.parked ?? false,
+    pos: opts.pos ?? null,
+  });
+}
+
+export function deleteFxPreset(name: string): Promise<{ deleted: string }> {
+  return invoke("delete_fx_preset", { name });
+}
+
 // ---- トランスポート(再生) ----
 
 export function transportState(): Promise<TransportState> {

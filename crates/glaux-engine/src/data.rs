@@ -802,7 +802,8 @@ fn bake_chain_with_ids(
 ) -> Vec<(glaux_core::FxId, BakedEffect)> {
     effects
         .iter()
-        .filter(|e| !e.bypass)
+        // バイパスと、線から外して置いてある(ノード表示のわき)ものは鳴らさない
+        .filter(|e| !e.bypass && !e.ui.parked)
         .filter_map(|e| {
             // CLAP エフェクトは用意できたものだけ(見つからないプラグインは素通し = 焼かない)
             let plugin = match &e.source {
@@ -1318,14 +1319,17 @@ mod tests {
         rv.params.insert("mix".into(), 0.5.into());
         let mut bypassed = Effect::builtin(FxId::new(), "eq");
         bypassed.bypass = true;
-        project.tracks[0].effects = vec![rv, bypassed];
+        // 線から外して、わきに置いてあるもの(ノード表示)も鳴らさない
+        let mut parked = Effect::builtin(FxId::new(), "distortion");
+        parked.ui.parked = true;
+        project.tracks[0].effects = vec![rv, bypassed, parked];
         project
             .master
             .effects
             .push(Effect::builtin(FxId::new(), "compressor"));
 
         let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
-        // bypass は除外され、スロットは通しで振られる
+        // bypass と外してあるものは除外され、スロットは通しで振られる
         assert_eq!(data.tracks[0].effects.len(), 1);
         assert_eq!(data.tracks[0].effects[0].slot, 0);
         assert_eq!(data.master_effects.len(), 1);

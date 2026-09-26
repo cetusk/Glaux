@@ -970,6 +970,52 @@ async fn preset_tools_save_and_apply_across_tracks() {
     );
     let r = call(&fx, "delete_preset", json!({ "name": "スーパーソー" })).await;
     assert_eq!(ok_json(&r)["deleted"], "スーパーソー");
+
+    // エフェクトのプリセット: distortion 1 つを保存し、別トラックへ「外してある」状態で足す
+    let r = call(
+        &fx,
+        "save_effect_preset",
+        json!({ "target": "trk_lead01", "fx_id": "fx_dist01", "name": "太い歪み", "note": "リード用" }),
+    )
+    .await;
+    assert_eq!(ok_json(&r)["saved"], "太い歪み");
+    let r = call(&fx, "list_effect_presets", json!({})).await;
+    let list = ok_json(&r)["effect_presets"].as_array().unwrap().clone();
+    assert_eq!(list[0]["kind"], "distortion");
+    assert_eq!(list[0]["origin"], "Lead");
+    let r = call(&fx, "list_presets", json!({})).await;
+    assert!(
+        ok_json(&r)["presets"].as_array().unwrap().is_empty(),
+        "音色のプリセットの一覧には混ざらない"
+    );
+
+    let r = call(
+        &fx,
+        "load_effect_preset",
+        json!({ "target": "trk_lead02", "name": "太い歪み", "parked": true }),
+    )
+    .await;
+    let fx_id = ok_json(&r)["fx_id"].as_str().unwrap().to_owned();
+    let r = call(&fx, "get_project", json!({ "track_ids": ["trk_lead02"] })).await;
+    let effects = ok_json(&r)["project"]["tracks"][0]["effects"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let added = effects.iter().find(|e| e["id"] == fx_id.as_str()).unwrap();
+    assert_eq!(added["label"], "太い歪み");
+    assert_eq!(added["note"], "リード用");
+    assert_eq!(added["parked"], true);
+    assert_eq!(added["params"]["drive"], 6.0);
+
+    let r = call(
+        &fx,
+        "load_effect_preset",
+        json!({ "target": "master", "name": "太い歪み" }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    let r = call(&fx, "delete_effect_preset", json!({ "name": "太い歪み" })).await;
+    assert_eq!(ok_json(&r)["deleted"], "太い歪み");
 }
 
 #[tokio::test]

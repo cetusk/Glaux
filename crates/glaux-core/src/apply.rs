@@ -4,7 +4,7 @@
 //! 逆コマンドを Undo スタックに積むのが履歴の基本方式(Git の revert と同じ発想)。
 //! 変更通知はロックフリーキュー経由でオーディオエンジンや UI に流す想定。
 
-use crate::command::{Command, NoteChange, TrackProp};
+use crate::command::{Command, EffectProp, NoteChange, TrackProp};
 use crate::error::{CoreError, Result};
 use crate::id::{ClipId, NoteId, TrackId};
 use crate::model::{
@@ -690,6 +690,45 @@ impl Project {
                     changes: vec![Change::EffectsChanged {
                         track: self.tracks[ti].id.clone(),
                     }],
+                })
+            }
+            SetEffectProp { id, prop } => {
+                let (effect, change) = if let Some(ei) = self.master_effect_index(id) {
+                    (&mut self.master.effects[ei], Change::MasterChanged)
+                } else {
+                    let (ti, ei) = self
+                        .effect_location(id)
+                        .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
+                    let track = self.tracks[ti].id.clone();
+                    (
+                        &mut self.tracks[ti].effects[ei],
+                        Change::EffectsChanged { track },
+                    )
+                };
+                let ui = &mut effect.ui;
+                let old = match prop {
+                    EffectProp::Label(v) => {
+                        EffectProp::Label(std::mem::replace(&mut ui.label, v.clone()))
+                    }
+                    EffectProp::Parked(v) => {
+                        EffectProp::Parked(std::mem::replace(&mut ui.parked, *v))
+                    }
+                    EffectProp::Note(v) => {
+                        EffectProp::Note(std::mem::replace(&mut ui.note, v.clone()))
+                    }
+                    EffectProp::Pos(v) => {
+                        if v.is_some_and(|p| !p[0].is_finite() || !p[1].is_finite()) {
+                            return Err(CoreError::OutOfRange(format!("pos {v:?}")));
+                        }
+                        EffectProp::Pos(std::mem::replace(&mut ui.pos, *v))
+                    }
+                };
+                Ok(Applied {
+                    inverse: SetEffectProp {
+                        id: id.clone(),
+                        prop: old,
+                    },
+                    changes: vec![change],
                 })
             }
             SetEffectBypass { id, bypass } => {

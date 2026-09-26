@@ -101,11 +101,11 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
     let pick_track = |rng: &mut StdRng| tracks.choose(rng).unwrap().id.clone();
 
     loop {
-        // 0..=25 は単体コマンド、26 以上は Batch(入れ子は 1 段まで)
+        // 0..=26 は単体コマンド、27 以上は Batch(入れ子は 1 段まで)
         let choice = if depth == 0 {
-            rng.gen_range(0..27)
+            rng.gen_range(0..28)
         } else {
-            rng.gen_range(0..26)
+            rng.gen_range(0..27)
         };
         match choice {
             0 => {
@@ -410,6 +410,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         },
                         bypass: false,
                         params: Default::default(),
+                        ui: Default::default(),
                     }
                 } else {
                     Effect::builtin(FxId::new(), "eq")
@@ -538,6 +539,33 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 return Command::MoveEffect {
                     id: list.choose(rng).unwrap().id.clone(),
                     to_index: rng.gen_range(0..list.len()),
+                };
+            }
+            26 => {
+                // エフェクトの表示・置き場所(トラックかマスター)
+                let all: Vec<&Effect> = tracks
+                    .iter()
+                    .flat_map(|t| t.effects.iter())
+                    .chain(p.master.effects.iter())
+                    .collect();
+                let Some(e) = all.choose(rng) else {
+                    continue;
+                };
+                let prop = match rng.gen_range(0..4) {
+                    0 => EffectProp::Label(
+                        rng.gen_bool(0.7)
+                            .then(|| format!("fx{}", rng.gen_range(0..100))),
+                    ),
+                    1 => EffectProp::Parked(rng.gen()),
+                    2 => EffectProp::Note(rng.gen_bool(0.5).then(|| "memo".to_owned())),
+                    _ => EffectProp::Pos(
+                        rng.gen_bool(0.7)
+                            .then(|| [rng.gen_range(0.0..800.0), rng.gen_range(0.0..300.0)]),
+                    ),
+                };
+                return Command::SetEffectProp {
+                    id: e.id.clone(),
+                    prop,
                 };
             }
             19 => {

@@ -120,9 +120,11 @@ pub fn save(
         name: name.to_owned(),
         description,
         device,
+        // 線から外して置いてあるもの(ノード表示のわき)は音に入らないので含めない
         effects: track
             .effects
             .iter()
+            .filter(|e| !e.ui.parked)
             .map(|e| PresetEffect {
                 source: e.source.clone(),
                 bypass: e.bypass,
@@ -428,6 +430,7 @@ pub fn apply_commands(track: &Track, preset: &Preset) -> Vec<Command> {
                 source: f.source.clone(),
                 bypass: f.bypass,
                 params: f.params.clone(),
+                ui: Default::default(),
             },
             index: None,
         });
@@ -454,6 +457,7 @@ mod tests {
             },
             bypass: false,
             params: ParamMap::new(),
+            ui: Default::default(),
         });
         t
     }
@@ -514,6 +518,7 @@ mod tests {
             },
             bypass: false,
             params: ParamMap::new(),
+            ui: Default::default(),
         });
 
         let cmds = apply_commands(&dest, &preset);

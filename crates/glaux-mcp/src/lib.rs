@@ -13,6 +13,7 @@ pub mod bounce;
 pub mod changes;
 pub mod clap_presets;
 pub mod export;
+pub mod fx_presets;
 pub mod guide;
 pub mod midi;
 pub mod models;

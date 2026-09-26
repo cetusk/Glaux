@@ -77,6 +77,26 @@ pub struct Effect {
     pub bypass: bool,
     #[serde(default)]
     pub params: ParamMap,
+    /// 表示名・外してあるか・メモ・ノード表示での位置(音には関係しない。外してあるものは鳴らさない)
+    #[serde(flatten, default)]
+    pub ui: EffectUi,
+}
+
+/// エフェクトの表示と置き場所。ノード表示(カード + 線)で使う。
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct EffectUi {
+    /// ユーザーが付けた名前(省略で種類の名前。例「サビの歪み」)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// 線から外して、わきに置いてある。設定は残り、音は通らない(バイパスと違い、並びに居座らない)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parked: bool,
+    /// メモ(なぜ取っておいたかなど)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// ノード表示での位置 [x, y](わきに置いたカード。見た目だけ)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<[f32; 2]>,
 }
 
 impl Effect {
@@ -86,6 +106,7 @@ impl Effect {
             source: PluginSource::Builtin { name: name.into() },
             bypass: false,
             params: ParamMap::new(),
+            ui: EffectUi::default(),
         }
     }
 }

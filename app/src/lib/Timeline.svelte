@@ -1151,7 +1151,7 @@
     copy.name = `${src.name} のコピー`;
     copy.solo = false;
     const fxIds = new Map<string, string>();
-    for (const fx of copy.effects as { id: string }[]) {
+    for (const fx of copy.effects) {
       const id = newFxId();
       fxIds.set(fx.id, id);
       fx.id = id;

@@ -452,6 +452,36 @@ pub struct DeletePresetParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct SaveEffectPresetParams {
+    /// 保存元のエフェクトがあるトラック ID(`trk_xxxxxx`)。マスターのエフェクトなら "master"。
+    pub target: String,
+    /// 保存するエフェクトの ID(`fx_xxxxxx`。get_project の effects[].id)。
+    pub fx_id: String,
+    /// プリセット名(ファイル名になる。日本語可。/ \ : * ? " < > | は不可)。
+    pub name: String,
+    /// メモ(どんな音か・何に使うか)。省略でエフェクトに付いているメモ。
+    #[serde(default)]
+    pub note: Option<String>,
+    /// 同名プリセットがあるとき上書きする。既定 false。
+    #[serde(default)]
+    pub overwrite: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct LoadEffectPresetParams {
+    /// 足す先のトラック ID(`trk_xxxxxx`)。マスターなら "master"。
+    pub target: String,
+    /// 足すプリセット名(list_effect_presets で確認)。
+    pub name: String,
+    /// チェーンの何番目に入れるか(0 始まり)。省略で末尾。
+    #[serde(default)]
+    pub index: Option<usize>,
+    /// true なら鳴らさずに「外してある」状態で置く(後で使う候補として)。既定 false。
+    #[serde(default)]
+    pub parked: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct GetGuideParams {
     /// instruments / genres / expression / mix / audio / sound_match / clap。省略で一覧。
     #[serde(default)]
@@ -756,58 +786,77 @@ pub fn effects_json(effects: &[glaux_core::Effect]) -> Vec<Value> {
     effects
         .iter()
         .map(|e| {
-            // CLAP エフェクト: プラグインが公開しているつまみ(fx/<id>/clap:<param id>)
-            if let glaux_core::PluginSource::Clap { plugin_id, .. } = &e.source {
-                let (params, total) = clap_params_json(
-                    &glaux_engine::plugins::PluginOwner::Effect(e.id.clone()),
-                    plugin_id,
-                    &e.params,
-                    None,
-                    CLAP_EFFECT_PARAM_LIMIT,
-                    &format!("fx/{}/", e.id),
-                );
-                let info = glaux_engine::plugins::find(plugin_id);
-                return json!({
-                    "id": e.id,
-                    "name": "clap",
-                    "plugin_id": plugin_id,
-                    "plugin_name": info.as_ref().map(|i| i.name.clone()),
-                    "missing": info.is_none(),
-                    "bypass": e.bypass,
-                    "params": params,
-                    "param_total": total,
-                });
+            let mut v = effect_json(e);
+            // 表示名・外してあるか・メモ・ノード表示での位置
+            let ui = &e.ui;
+            if let Some(l) = &ui.label {
+                v["label"] = json!(l);
             }
-            let name = match &e.source {
-                glaux_core::PluginSource::Builtin { name } => name.clone(),
-                other => format!("{other:?}"),
-            };
-            let fx_params: Vec<Value> = glaux_dsp::effect_params_spec(&name)
-                .map(|specs| {
-                    specs
-                        .iter()
-                        .map(|spec| {
-                            let current = e
-                                .params
-                                .get(spec.name)
-                                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
-                                .unwrap_or_else(|| range_default(&spec.range));
-                            let mut v = serde_json::to_value(spec).expect("ParamSpec serializes");
-                            v["path"] = json!(format!("fx/{}/{}", e.id, spec.name));
-                            v["current"] = current;
-                            v
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            json!({
-                "id": e.id,
-                "name": name,
-                "bypass": e.bypass,
-                "params": fx_params,
-            })
+            if ui.parked {
+                v["parked"] = json!(true);
+            }
+            if let Some(n) = &ui.note {
+                v["note"] = json!(n);
+            }
+            if let Some(p) = ui.pos {
+                v["pos"] = json!(p);
+            }
+            v
         })
         .collect()
+}
+
+fn effect_json(e: &glaux_core::Effect) -> Value {
+    // CLAP エフェクト: プラグインが公開しているつまみ(fx/<id>/clap:<param id>)
+    if let glaux_core::PluginSource::Clap { plugin_id, .. } = &e.source {
+        let (params, total) = clap_params_json(
+            &glaux_engine::plugins::PluginOwner::Effect(e.id.clone()),
+            plugin_id,
+            &e.params,
+            None,
+            CLAP_EFFECT_PARAM_LIMIT,
+            &format!("fx/{}/", e.id),
+        );
+        let info = glaux_engine::plugins::find(plugin_id);
+        return json!({
+            "id": e.id,
+            "name": "clap",
+            "plugin_id": plugin_id,
+            "plugin_name": info.as_ref().map(|i| i.name.clone()),
+            "missing": info.is_none(),
+            "bypass": e.bypass,
+            "params": params,
+            "param_total": total,
+        });
+    }
+    let name = match &e.source {
+        glaux_core::PluginSource::Builtin { name } => name.clone(),
+        other => format!("{other:?}"),
+    };
+    let fx_params: Vec<Value> = glaux_dsp::effect_params_spec(&name)
+        .map(|specs| {
+            specs
+                .iter()
+                .map(|spec| {
+                    let current = e
+                        .params
+                        .get(spec.name)
+                        .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                        .unwrap_or_else(|| range_default(&spec.range));
+                    let mut v = serde_json::to_value(spec).expect("ParamSpec serializes");
+                    v["path"] = json!(format!("fx/{}/{}", e.id, spec.name));
+                    v["current"] = current;
+                    v
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "id": e.id,
+        "name": name,
+        "bypass": e.bypass,
+        "params": fx_params,
+    })
 }
 
 pub fn track_params_json(track: &glaux_core::Track) -> Result<Value, String> {
@@ -1251,6 +1300,8 @@ impl GlauxServer {
         メタルの「ズクズク」した刻みは pluck + amp(gain_db 40 以上)+ 低音 + palm_mute ノートの組み合わせで作る。\
         マスターバスのエフェクトは add_master_effect {effect, index?} / set_master_param {path: \"fx/<id>/<名前>\", value} / \
         unset_master_param {path}、削除・並べ替え・バイパスはトラックと同じ remove_effect / move_effect {id, to_index} / set_effect_bypass \
+        / set_effect_prop {id, prop: \"label\" | \"parked\" | \"note\" | \"pos\", value}(表示名・線から外してわきに置く・メモ・ノード表示の位置。\
+        parked: true のエフェクトは鳴らないが設定は残る。ユーザーが取っておいたものなので、頼まれない限り消さない) \
         (マスターのチェーンは get_project の master.effects で見える。仕上げのコンプ・EQ・リミッター的な使い方に)/ \
         set_clip_loop {id, loop_len}(MIDI クリップのループ。loop_len に繰り返す長さ(クリップ先頭から、\
         tick)を渡すと、クリップ長までその範囲が繰り返し鳴る。null で解除。ドラムパターンやリフは \
@@ -2493,6 +2544,89 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("delete_preset");
         let name = params.0.name;
         crate::presets::remove(&crate::presets::default_dir(), &name)?;
+        Ok(JsonText(json!({ "deleted": name })))
+    }
+
+    // ---- エフェクトのプリセット ------------------------------------------
+    // エフェクト 1 つ分(種類 + パラメータ + メモ)を曲をまたいで使い回す。
+
+    #[tool(
+        description = "保存済みのエフェクトのプリセット一覧を返す(名前・種類・メモ・保存元のトラック名)。\
+        音色のプリセット(list_presets。音源 + エフェクト一式)とは別の、エフェクト 1 つ分のライブラリ。\
+        エフェクトを足す前に、使える設定がないかここを確認するとよい。"
+    )]
+    async fn list_effect_presets(&self) -> ToolResult {
+        let _activity = self.handle.begin_activity("list_effect_presets");
+        Ok(JsonText(json!({
+            "effect_presets": crate::fx_presets::list(&crate::fx_presets::default_dir()),
+        })))
+    }
+
+    #[tool(
+        description = "トラック(またはマスター)のエフェクト 1 つを、名前を付けてエフェクトのプリセットに保存する。\
+        別のトラックや曲でも load_effect_preset で呼び出せる。note には音の特徴と用途を書くこと。"
+    )]
+    async fn save_effect_preset(&self, params: Parameters<SaveEffectPresetParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("save_effect_preset");
+        let p = params.0;
+        let target = crate::fx_presets::Target::parse(&p.target)?;
+        let fx_id = glaux_core::FxId::parse(&p.fx_id).map_err(|e| e.to_string())?;
+        let (project, version) = self.handle.get_project().await?;
+        let (effect, owner) = crate::fx_presets::find_effect(&project, &target, &fx_id)?;
+        let preset = crate::fx_presets::save(
+            &crate::fx_presets::default_dir(),
+            effect,
+            &p.name,
+            p.note,
+            Some(owner),
+            p.overwrite.unwrap_or(false),
+        )?;
+        Ok(JsonText(json!({
+            "project_version": version,
+            "saved": preset.name,
+        })))
+    }
+
+    #[tool(
+        description = "エフェクトのプリセットをトラック(またはマスター)に足す。表示名はプリセット名になる。\
+        parked: true なら鳴らさずに「外してある」状態で置く。足した後に微調整するときは list_params で\
+        現在値を確認してから set_param。"
+    )]
+    async fn load_effect_preset(
+        &self,
+        params: Parameters<LoadEffectPresetParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("load_effect_preset");
+        let p = params.0;
+        let target = crate::fx_presets::Target::parse(&p.target)?;
+        let (project, _) = self.handle.get_project().await?;
+        let preset = crate::fx_presets::load(&crate::fx_presets::default_dir(), &p.name)?;
+        let (command, fx_id) = crate::fx_presets::add_command(
+            &project,
+            &target,
+            &preset,
+            p.index,
+            p.parked.unwrap_or(false),
+            None,
+        )?;
+        let label = format!("エフェクトのプリセット「{}」を追加", preset.name);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["fx_id"] = json!(fx_id);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "エフェクトのプリセットをライブラリから削除する(元に戻せない。undo の対象外)。\
+        ユーザーに頼まれたときだけ使うこと。"
+    )]
+    async fn delete_effect_preset(&self, params: Parameters<DeletePresetParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("delete_effect_preset");
+        let name = params.0.name;
+        crate::fx_presets::remove(&crate::fx_presets::default_dir(), &name)?;
         Ok(JsonText(json!({ "deleted": name })))
     }
 

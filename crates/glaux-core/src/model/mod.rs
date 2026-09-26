@@ -13,7 +13,7 @@ pub use clip::{
     LEGATO_MS_RANGE, MAX_PITCH_CENTS, MAX_PITCH_POINTS,
 };
 pub use param::{ParamMap, ParamPath, ParamRange, ParamSpec, ParamValue};
-pub use track::{Device, Effect, MasterBus, PluginSource, Send, Track, TrackKind};
+pub use track::{Device, Effect, EffectUi, MasterBus, PluginSource, Send, Track, TrackKind};
 
 pub(crate) use clip::sort_notes;
 

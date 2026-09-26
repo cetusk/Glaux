@@ -93,7 +93,7 @@ export interface Track {
     state?: string;
     params?: Record<string, unknown>;
   } | null;
-  effects: unknown[];
+  effects: ProjectEffect[];
   clips: Clip[];
   automation: AutomationLane[];
 }
@@ -106,7 +106,7 @@ export interface Project {
   tempo_map: { tick: number; bpm: number }[];
   time_sig_map: { tick: number; num: number; den: number }[];
   tracks: Track[];
-  master: { volume_db: number; effects: unknown[]; automation?: AutomationLane[] };
+  master: { volume_db: number; effects: ProjectEffect[]; automation?: AutomationLane[] };
   assets: Record<string, unknown>;
   /** 曲の構成マーカー(tick 昇順)。省略 = なし */
   sections?: { tick: number; name: string }[];
@@ -174,11 +174,35 @@ export interface ParamView {
   current_text?: string | null;
 }
 
+/** プロジェクトの中のエフェクト(project.json のまま) */
+export interface ProjectEffect {
+  id: string;
+  /** "builtin" / "clap" */
+  type: string;
+  /** 内蔵エフェクト名 */
+  name?: string;
+  plugin_id?: string;
+  bypass?: boolean;
+  params?: Record<string, unknown>;
+  /** 表示名(ユーザーが付けた名前) */
+  label?: string;
+  /** 線から外して、わきに置いてある(音は通らない) */
+  parked?: boolean;
+  note?: string;
+  /** ノード表示での位置 [x, y] */
+  pos?: [number, number];
+}
+
 export interface EffectView {
   id: string;
   /** 内蔵エフェクト名。CLAP プラグインは "clap" */
   name: string;
   bypass: boolean;
+  /** 表示名・外してあるか・メモ・ノード表示での位置 */
+  label?: string;
+  parked?: boolean;
+  note?: string;
+  pos?: [number, number];
   params: ParamView[];
   /** CLAP エフェクトのとき */
   plugin_id?: string;
@@ -237,6 +261,8 @@ export interface TransportState {
   tick: number;
   /** ループ区間 [開始tick, 終了tick]。null ならループなし */
   loop?: [number, number] | null;
+  /** ミキサーのメーター: トラック(プロジェクトの並び)とマスターの直近のピーク(dBFS、無音は -120) */
+  levels?: { tracks: number[]; master: number };
 }
 
 export type ChatEvent =

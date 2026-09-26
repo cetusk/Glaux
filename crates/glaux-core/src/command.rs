@@ -16,6 +16,20 @@ use crate::time::{TempoEvent, Tick, TimeSigEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// エフェクトの表示・置き場所([`crate::EffectUi`])。音には関係しない(外してあるものは鳴らさない)
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(tag = "prop", content = "value", rename_all = "snake_case")]
+pub enum EffectProp {
+    /// 表示名(null で種類の名前に戻す)
+    Label(Option<String>),
+    /// true で線から外して、わきに置く(音は通らない)。false で戻す(並びの位置は move_effect で)
+    Parked(bool),
+    /// メモ(null で消す)
+    Note(Option<String>),
+    /// ノード表示での位置 [x, y](null で自動の位置)
+    Pos(Option<[f32; 2]>),
+}
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(tag = "prop", content = "value", rename_all = "snake_case")]
 pub enum TrackProp {
@@ -201,6 +215,12 @@ pub enum Command {
         id: FxId,
         to_index: usize,
     },
+    /// エフェクトの表示名・外してあるか・メモ・ノード表示での位置(トラック・マスターのどちらでも)
+    SetEffectProp {
+        id: FxId,
+        #[serde(flatten)]
+        prop: EffectProp,
+    },
     /// マスターバスにエフェクトを追加する(`index` 省略で末尾)
     AddMasterEffect {
         effect: Effect,
@@ -380,6 +400,7 @@ impl Command {
             }
             RemoveEffect { id }
             | MoveEffect { id, .. }
+            | SetEffectProp { id, .. }
             | SetEffectBypass { id, .. }
             | SetEffectState { id, .. } => {
                 out.insert(T::Effect(id.clone()));

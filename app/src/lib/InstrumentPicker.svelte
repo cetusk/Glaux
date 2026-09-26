@@ -1,5 +1,5 @@
 <script lang="ts">
-  // 音源ピッカー: 内蔵・マイプリセット・SoundFont・CLAP・サンプル(WAV)を 1 か所から選ぶ。
+  // 音源ピッカー: 内蔵・音色のプリセット・SoundFont・CLAP・サンプル(WAV)を 1 か所から選ぶ。
   // トラックの見出しの音源名と、インスペクターの「変更」から開く(instrumentPickerStore)。
   // どの選び方も Command(set_device など)を通るので Ctrl+Z で戻せる。
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
@@ -17,7 +17,7 @@
   type Tab = "builtin" | "preset" | "sf2" | "clap" | "sample";
   const TABS: { key: Tab; label: string; icon: IconName }[] = [
     { key: "builtin", label: "内蔵", icon: "audio-waveform" },
-    { key: "preset", label: "マイプリセット", icon: "save" },
+    { key: "preset", label: "音色のプリセット", icon: "save" },
     { key: "sf2", label: "SoundFont", icon: "library" },
     { key: "clap", label: "CLAP", icon: "plug" },
     { key: "sample", label: "サンプル(WAV)", icon: "file-audio" },

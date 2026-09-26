@@ -37,7 +37,9 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 - 本物っぽい楽器一式(ピアノ・ストリングス・ブラス等): SoundFont。list_soundfonts で .sf2 とプリセットを見て\n\
   set_soundfont_instrument。.sf2 が無ければ「FluidR3_GM.sf2 などのフリー SoundFont を設定の SoundFont フォルダに置いて」と案内する。\n\
 - 実録の音を鳴らす: import_sample(WAV の絶対パス。root にサンプルの実音)でトラックの音源を sampler にする。\n\
-- 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。",
+- 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。\n\
+- エフェクトのプリセット: エフェクト 1 つ分(list_effect_presets → load_effect_preset)。エフェクトを足す前に使える設定がないか見る。\n\
+  外してある(parked: true)エフェクトは鳴らないが、ユーザーが取っておいたもの。頼まれない限り消さない。",
     ),
     (
         "genres",

@@ -453,6 +453,13 @@ impl EngineHandle {
         self.shared.stats.take()
     }
 
+    /// トラック(再生データの並び = プロジェクトのトラックの並び)とマスターの直近のピーク(dBFS)。
+    /// 読むとリセットされる(ミキサーのメーター用)
+    pub fn take_levels(&self) -> (Vec<f32>, f32) {
+        let n = self.shared.data.load().tracks.len();
+        self.shared.levels.take(n)
+    }
+
     // ---- オーディオデバイス ----
 
     /// 使用中の出力デバイス名。

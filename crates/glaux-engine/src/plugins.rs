@@ -1751,6 +1751,7 @@ mod tests {
             },
             bypass: false,
             params: Default::default(),
+            ui: Default::default(),
         };
         let mut on_track = project.clone();
         on_track.tracks[0].effects.push(clap_fx(FxId::new()));
@@ -1803,6 +1804,7 @@ mod tests {
             },
             bypass,
             params: Default::default(),
+            ui: Default::default(),
         };
         let mut project = Project::new("t");
         let mut track = Track::new(TrackId::new(), "Lead", TrackKind::Midi);
@@ -1959,6 +1961,7 @@ mod tests {
             },
             bypass: false,
             params: Default::default(),
+            ui: Default::default(),
         });
         let mut b = mk("B");
         b.solo = true;

@@ -1355,6 +1355,68 @@ async fn load_preset(
     Ok(json!({ "applied": preset.name, "project_version": m.project_version }))
 }
 
+// ---- エフェクトのプリセット(glaux-mcp の fx_presets モジュールを共用) -------
+
+#[tauri::command]
+fn list_fx_presets() -> Value {
+    json!({ "presets": glaux_mcp::fx_presets::list(&glaux_mcp::fx_presets::default_dir()) })
+}
+
+/// エフェクト 1 つを名前を付けて保存する。`target` はトラック ID か "master"
+#[tauri::command]
+async fn save_fx_preset(
+    state: State<'_, AppState>,
+    target: String,
+    fx_id: String,
+    name: String,
+    note: Option<String>,
+    overwrite: bool,
+) -> Result<Value, String> {
+    let target = glaux_mcp::fx_presets::Target::parse(&target)?;
+    let fx_id = glaux_core::FxId::parse(&fx_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project().await?;
+    let (effect, owner) = glaux_mcp::fx_presets::find_effect(&project, &target, &fx_id)?;
+    let preset = glaux_mcp::fx_presets::save(
+        &glaux_mcp::fx_presets::default_dir(),
+        effect,
+        &name,
+        note,
+        Some(owner),
+        overwrite,
+    )?;
+    Ok(json!({ "saved": preset.name }))
+}
+
+/// エフェクトのプリセットを足す。`parked` なら外してある状態で `pos` に置く
+#[tauri::command]
+async fn apply_fx_preset(
+    state: State<'_, AppState>,
+    target: String,
+    name: String,
+    index: Option<usize>,
+    parked: bool,
+    pos: Option<[f32; 2]>,
+) -> Result<Value, String> {
+    let target = glaux_mcp::fx_presets::Target::parse(&target)?;
+    let (project, _) = state.handle.get_project().await?;
+    let preset = glaux_mcp::fx_presets::load(&glaux_mcp::fx_presets::default_dir(), &name)?;
+    let (command, fx_id) =
+        glaux_mcp::fx_presets::add_command(&project, &target, &preset, index, parked, pos)?;
+    let label = format!("エフェクトのプリセット「{}」を追加", preset.name);
+    let (_, m) = state
+        .handle
+        .apply(command, Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "fx_id": fx_id, "project_version": m.project_version }))
+}
+
+#[tauri::command]
+fn delete_fx_preset(name: String) -> Result<Value, String> {
+    glaux_mcp::fx_presets::remove(&glaux_mcp::fx_presets::default_dir(), &name)?;
+    Ok(json!({ "deleted": name }))
+}
+
 fn set_window_title(app: &tauri::AppHandle, title: &str) {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main") {
@@ -1717,6 +1779,12 @@ async fn revert_turn(state: State<'_, AppState>, since: Option<String>) -> Resul
 
 // ---- トランスポート(再生) ----------------------------------------------
 
+/// ミキサーのメーター: トラック(プロジェクトの並び)とマスターの直近のピーク(dBFS)
+fn levels_json(e: &EngineHandle) -> Value {
+    let (tracks, master) = e.take_levels();
+    json!({ "tracks": tracks, "master": master })
+}
+
 #[tauri::command]
 fn transport_state(state: State<'_, AppState>) -> Value {
     match &state.engine {
@@ -1730,6 +1798,7 @@ fn transport_state(state: State<'_, AppState>) -> Value {
             "input_peak_db": e.take_input_peak_db(),
             "input_monitor": e.input_monitoring(),
             "dsp": e.take_stats(),
+            "levels": levels_json(e),
             "tick": e.playhead_tick(),
             "loop": e.loop_region().map(|(s, gl_end)| json!([s, gl_end])),
         }),
@@ -2189,6 +2258,10 @@ fn main() -> Result<()> {
             open_project,
             move_project,
             list_presets,
+            list_fx_presets,
+            save_fx_preset,
+            apply_fx_preset,
+            delete_fx_preset,
             save_preset,
             load_preset,
             get_track_params,

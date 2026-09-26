@@ -21,6 +21,7 @@ grip-vertical power app-window save mic speaker cpu audio-waveform drum guitar b
 file-audio pencil arrow-up arrow-down palette layers music list-music move-horizontal circle-help
 chart-no-axes-column rows-2 arrow-up-down magnet link check piano headphones triangle-alert info
 loader-circle eye send square-stop message-square-plus folder file-plus-2 hand-metal ruler target clapperboard
+unplug pin archive
 """.split()
 
 ROOT = Path(__file__).resolve().parent.parent

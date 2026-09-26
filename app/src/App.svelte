@@ -27,6 +27,7 @@
   import ExportDialog from "./lib/ExportDialog.svelte";
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import InstrumentPicker from "./lib/InstrumentPicker.svelte";
+  import Mixer from "./lib/Mixer.svelte";
   import { applyTheme, openSettings, settings, settingsUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import {
@@ -35,6 +36,7 @@
     pianoRollStore,
     selectionStore,
     soundDesignStore,
+    viewStore,
   } from "./lib/selection.svelte";
 
   let project = $state<Project | null>(null);
@@ -731,6 +733,22 @@
     <div class="h-left">
       <img class="owl" src="/glaux-icon.png" alt="Glaux" width="28" height="28" />
       <ProjectMenu title={project?.meta.title ?? "…"} />
+      <div class="view-switch" role="tablist" aria-label="表示の切り替え">
+        <button
+          role="tab"
+          aria-selected={viewStore.main === "timeline"}
+          class:on={viewStore.main === "timeline"}
+          onclick={() => (viewStore.main = "timeline")}
+          title="タイムライン(曲の流れ・クリップ・ピアノロール)"><Icon name="rows-2" />タイムライン</button
+        >
+        <button
+          role="tab"
+          aria-selected={viewStore.main === "mixer"}
+          class:on={viewStore.main === "mixer"}
+          onclick={() => (viewStore.main = "mixer")}
+          title="ミキサー(音量・パン・送り・エフェクトのつなぎ方)"><Icon name="sliders-horizontal" />ミキサー</button
+        >
+      </div>
     </div>
     <div class="h-center">
       <div class="tp">
@@ -934,6 +952,11 @@
              overflow 要素の absolute 子はスクロール原点に張り付くため、
              スクロール中に開くと画面外に出てしまう -->
         <!-- インスペクターを開いている間は、その幅だけ押し縮める(上に被せない) -->
+        {#if viewStore.main === "mixer"}
+          <div class="mixer-host" style={soundDesignStore.focus ? `margin-right:${inspectorStore.width}px` : ""}>
+            <Mixer {project} />
+          </div>
+        {:else}
         <div class="timeline-scroll" style={soundDesignStore.focus ? `margin-right:${inspectorStore.width}px` : ""}>
           <Timeline
             {project}
@@ -971,6 +994,7 @@
               </div>
             {/if}
           </div>
+        {/if}
         {/if}
         <SoundDesignPanel {project} />
         <InstrumentPicker {project} />
@@ -1091,6 +1115,38 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
+  }
+
+  /* タイムライン / ミキサーの切り替え(2 つだけの切り替えなので、つながったボタン) */
+  .view-switch {
+    display: flex;
+    margin-left: var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+  }
+
+  .view-switch button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+    --icon-size: 14px;
+  }
+
+  .view-switch button + button {
+    border-left: 1px solid var(--border);
+  }
+
+  .view-switch button.on {
+    background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+    color: var(--accent);
   }
 
   /* ブランドガイド: アプリ内では白フチの全身版を使い、影・発光は加えない */
@@ -1348,6 +1404,12 @@
     position: relative;
     display: flex;
     flex-direction: column;
+  }
+
+  .mixer-host {
+    flex: 1;
+    min-height: 0;
+    position: relative;
   }
 
   .timeline-scroll {
