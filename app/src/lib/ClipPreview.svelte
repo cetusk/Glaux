@@ -7,15 +7,17 @@
   let { clip, widthPx }: { clip: MidiClip; widthPx: number } = $props();
 
   let canvas: HTMLCanvasElement | undefined = $state();
-
-  const H = 44; // クリップ内側の描画高さ(CSS 側と合わせる)
+  /// 表示されている大きさ(CSS px)。描くときはこれに画面の拡大率を掛けた解像度で描く
+  /// (以前は高さ 44px 固定の絵を引き伸ばしていたので、トラックを高くしたり高解像度の画面だとぼやけた)
+  let cssW = $state(0);
+  let cssH = $state(0);
 
   /// 前回描いた内容の署名。編集のたびにプロジェクト全体を取り直すので clip は毎回新しい
   /// オブジェクトになるが、中身が同じなら描き直さない(大きな曲で 1 回の編集に数百枚を描き直していた)
   let drawn = "";
 
   /** 描く内容の署名(ノートの位置・長さ・音高と、クリップの長さ・ループ・幅) */
-  function signature(w: number): string {
+  function signature(w: number, h0: number): string {
     let h = 0x811c9dc5;
     const mix = (v: number) => {
       h ^= v;
@@ -26,23 +28,31 @@
       mix(n.dur);
       mix(n.pitch);
     }
-    return `${w}:${clip.length}:${clip.loop ? clip.loop_len : 0}:${clip.notes.length}:${h}`;
+    return `${w}x${h0}:${clip.length}:${clip.loop ? clip.loop_len : 0}:${clip.notes.length}:${h}`;
   }
 
   $effect(() => {
     const c = canvas;
     if (!c) return;
     const notes = clip.notes;
-    const w = Math.max(1, Math.min(Math.round(widthPx), 4096));
-    const sig = signature(w);
-    if (sig === drawn && c.width === w) return;
+    // 描く大きさ(CSS px)と、キャンバスの画素数(画面の拡大率を掛ける。横はキャンバスの上限で抑える)
+    const w = Math.max(1, cssW || widthPx);
+    const H = Math.max(1, cssH || 44);
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.max(1, Math.min(Math.round(w * dpr), 8192));
+    const ph = Math.max(1, Math.round(H * dpr));
+    const sig = signature(pw, ph);
+    if (sig === drawn && c.width === pw && c.height === ph) return;
     drawn = sig;
-    if (c.width !== w || c.height !== H) {
-      c.width = w;
-      c.height = H;
+    if (c.width !== pw || c.height !== ph) {
+      c.width = pw;
+      c.height = ph;
     }
     const g = c.getContext("2d")!;
-    g.clearRect(0, 0, w, H);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, pw, ph);
+    // ここから下は CSS px で描く
+    g.setTransform(pw / w, 0, 0, ph / H, 0, 0);
     if (notes.length === 0) return;
 
     let lo = 127;
@@ -52,7 +62,8 @@
       if (n.pitch > hi) hi = n.pitch;
     }
     const span = Math.max(hi - lo + 1, 12);
-    const rowH = Math.max(2, Math.min(6, H / span));
+    // 1 音の太さ: 高さに比例(44px で最大 6px)、音域が広ければ細く
+    const rowH = Math.max(2, Math.min((6 * H) / 44, H / span));
     const scaleX = w / clip.length;
 
     // ループクリップは繰り返す 1 回分をクリップの長さまで並べ、2 回目以降は薄く描く
@@ -83,7 +94,7 @@
   });
 </script>
 
-<canvas bind:this={canvas} class="preview"></canvas>
+<canvas bind:this={canvas} bind:clientWidth={cssW} bind:clientHeight={cssH} class="preview"></canvas>
 
 <style>
   .preview {

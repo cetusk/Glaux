@@ -19,7 +19,9 @@
   } = $props();
 
   let canvas: HTMLCanvasElement | undefined = $state();
-  const H = 44;
+  /// 表示されている大きさ(CSS px)。画面の拡大率を掛けた解像度で描く(引き伸ばしてぼやけないように)
+  let cssW = $state(0);
+  let cssH = $state(0);
 
   const cache = new Map<string, Promise<[number, number][]>>();
 
@@ -35,19 +37,26 @@
   $effect(() => {
     const c = canvas;
     if (!c) return;
-    const w = Math.max(1, Math.min(Math.round(widthPx), 4096));
-    const buckets = Math.max(8, Math.min(w, 1024));
+    const w = Math.max(1, cssW || widthPx);
+    const H = Math.max(1, cssH || 44);
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.max(1, Math.min(Math.round(w * dpr), 8192));
+    const ph = Math.max(1, Math.round(H * dpr));
+    const buckets = Math.max(8, Math.min(Math.round(w), 1024));
     const key = `${clipId}:${start}:${length}:${buckets}:${variant}`;
     let cancelled = false;
     load(key, clipId, buckets)
       .then((peaks) => {
         if (cancelled) return;
-        if (c.width !== w || c.height !== H) {
-          c.width = w;
-          c.height = H;
+        if (c.width !== pw || c.height !== ph) {
+          c.width = pw;
+          c.height = ph;
         }
         const g = c.getContext("2d")!;
-        g.clearRect(0, 0, w, H);
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.clearRect(0, 0, pw, ph);
+        // ここから下は CSS px で描く
+        g.setTransform(pw / w, 0, 0, ph / H, 0, 0);
         g.fillStyle = "rgba(255,255,255,0.8)";
         const mid = H / 2;
         const sx = w / peaks.length;
@@ -65,7 +74,7 @@
   });
 </script>
 
-<canvas bind:this={canvas} class="preview"></canvas>
+<canvas bind:this={canvas} bind:clientWidth={cssW} bind:clientHeight={cssH} class="preview"></canvas>
 
 <style>
   .preview {
