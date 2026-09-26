@@ -34,6 +34,7 @@ pub mod stretch;
 mod subtractive;
 mod voice;
 mod wavetable;
+mod width;
 
 pub use drum::DrumParams;
 pub use effects::{bake_effect, effect_catalog, effect_params_spec, EffectParams, EffectState};

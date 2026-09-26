@@ -15,6 +15,7 @@ export const FX_COLORS: Record<string, string> = {
   multiband: "#7f9cc0",
   transient: "#d0739a",
   limiter: "#d9534f",
+  width: "#5fb3c9",
   sidechain: "#caa43a",
   clap: "#b07ce8",
 };
@@ -32,6 +33,7 @@ export const FX_KIND_JA: Record<string, string> = {
   multiband: "マルチバンド",
   transient: "トランジェント",
   limiter: "リミッタ",
+  width: "幅",
   sidechain: "サイドチェイン",
 };
 

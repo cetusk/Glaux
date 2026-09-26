@@ -474,6 +474,7 @@ pub enum EffectParams {
     Multiband(crate::dynamics::MultibandParams),
     Transient(crate::dynamics::TransientParams),
     Limiter(crate::limiter::LimiterParams),
+    Width(crate::width::WidthParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -493,6 +494,7 @@ enum EffectKind {
     Multiband,
     Transient,
     Limiter,
+    Width,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -535,6 +537,7 @@ pub struct EffectState {
     multiband: crate::dynamics::MultibandState,
     transient: crate::dynamics::TransientState,
     limiter: crate::limiter::LimiterState,
+    width: crate::width::WidthState,
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -583,6 +586,7 @@ impl EffectState {
             multiband: Default::default(),
             transient: Default::default(),
             limiter: Default::default(),
+            width: Default::default(),
         }
     }
 
@@ -608,6 +612,7 @@ impl EffectState {
             EffectParams::Multiband(_) => EffectKind::Multiband,
             EffectParams::Transient(_) => EffectKind::Transient,
             EffectParams::Limiter(_) => EffectKind::Limiter,
+            EffectParams::Width(_) => EffectKind::Width,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -645,6 +650,7 @@ impl EffectState {
             self.multiband = Default::default();
             self.transient = Default::default();
             self.limiter = Default::default();
+            self.width = Default::default();
         }
     }
 
@@ -835,6 +841,7 @@ impl EffectState {
             EffectParams::Multiband(m) => self.multiband.process(m, l, r),
             EffectParams::Transient(t) => self.transient.process(t, l, r),
             EffectParams::Limiter(m) => self.limiter.process(m, l, r),
+            EffectParams::Width(w) => self.width.process(w, l, r),
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1234,6 +1241,45 @@ pub static LIMITER_SPECS: &[ParamSpec] = &[
             skew: Some(0.4),
         },
         description: "音量が戻る速さ。短いと音圧が上がるが歪みやポンピングが出やすく、長いと自然。",
+    },
+];
+
+pub static WIDTH_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "width",
+        display_name: "幅",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 2.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "左右の広がり。0 でモノラル、1 でそのまま、2 で広く(左右の差を 2 倍)。広げすぎるとモノラルで痩せる。",
+    },
+    ParamSpec {
+        name: "mono_below_hz",
+        display_name: "低域のモノ化",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 20.0,
+            max: 500.0,
+            default: 20.0,
+            skew: Some(0.5),
+        },
+        description: "これより低い音を中央に集める(20 で切る)。ミックス全体やシンセのバスに 100〜150 で、低音の位置が定まりモノラルでも痩せない。",
+    },
+    ParamSpec {
+        name: "decorrelate",
+        display_name: "広げる",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "モノラルの音にも左右の違いを作って広げる(まばらな雑音で畳み込んだ音を左右の差に足す)。モノラルにすると消えて元の音に戻る。打点はにじまないよう弱める。パッド・コーラス・ボーカルの重ねに。",
     },
 ];
 
@@ -1804,6 +1850,7 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "multiband" => Some(MULTIBAND_SPECS),
         "transient" => Some(TRANSIENT_SPECS),
         "limiter" => Some(LIMITER_SPECS),
+        "width" => Some(WIDTH_SPECS),
         _ => None,
     }
 }
@@ -1900,6 +1947,13 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
             description: "True Peak リミッタ(先読み)。サンプルの間の山も含めて、出力を上限(ceiling_db)より\
                 上に出さない。マスターの最後に挿して音圧と安全を整える定番。約 1ms 遅れる(エンジンが遅延補正する)。",
             params: LIMITER_SPECS,
+            articulations: &[],
+        },
+        crate::params::InstrumentInfo {
+            name: "width",
+            description: "ステレオの幅(M/S)。左右の広がりを狭める・広げる、低域だけ中央に集める、\
+                モノラルの音を広げる。広げてもモノラルにすると元の音に戻る作り(モノラルで音が消えない)。",
+            params: WIDTH_SPECS,
             articulations: &[],
         },
     ]
@@ -2056,6 +2110,16 @@ impl EffectParams {
                     }
                 }
                 *p = crate::dynamics::MultibandParams::new(r);
+            }
+            EffectParams::Width(p) => {
+                let (mut w, mut m, mut d) = (p.width, p.mono_below_hz, p.decorrelate);
+                match name {
+                    "width" => w = v,
+                    "mono_below_hz" => m = v,
+                    "decorrelate" => d = v,
+                    _ => return false,
+                }
+                *p = crate::width::WidthParams::new(w, m, d, p.sample_rate);
             }
             EffectParams::Limiter(p) => {
                 let (mut i, mut c, mut r) = (p.input_db, p.ceiling_db, p.release_ms);
@@ -2282,6 +2346,15 @@ pub fn bake_effect(
                 }),
             ))
         }
+        "width" => {
+            let s = WIDTH_SPECS;
+            Some(EffectParams::Width(crate::width::WidthParams::new(
+                get(map, s, "width"),
+                get(map, s, "mono_below_hz"),
+                get(map, s, "decorrelate"),
+                sample_rate,
+            )))
+        }
         "limiter" => {
             let s = LIMITER_SPECS;
             Some(EffectParams::Limiter(crate::limiter::LimiterParams::new(
@@ -2361,6 +2434,9 @@ mod tests {
             ("transient", "sustain_db", -4.0),
             ("limiter", "input_db", 6.0),
             ("limiter", "ceiling_db", -2.0),
+            ("width", "width", 1.5),
+            ("width", "mono_below_hz", 120.0),
+            ("width", "decorrelate", 0.4),
         ];
         let none = |_: &str| None;
         for (fx, name, v) in cases {
