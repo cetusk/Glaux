@@ -19,6 +19,7 @@ export const FX_COLORS: Record<string, string> = {
   dynamic_eq: "#6f86e8",
   convolution: "#8f6fd6",
   resonance: "#c9a86a",
+  virtual_bass: "#b86a4c",
   sidechain: "#caa43a",
   clap: "#b07ce8",
 };
@@ -40,6 +41,7 @@ export const FX_KIND_JA: Record<string, string> = {
   dynamic_eq: "ダイナミック EQ",
   convolution: "畳み込みリバーブ",
   resonance: "共鳴抑制",
+  virtual_bass: "仮想低音",
   sidechain: "サイドチェイン",
 };
 

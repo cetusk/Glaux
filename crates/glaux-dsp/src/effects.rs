@@ -510,6 +510,7 @@ pub enum EffectParams {
     /// 畳み込みリバーブ。本体([`crate::convolver::ConvEngine`])は再生データが持ち、エンジンが通す
     Convolution(ConvParams),
     Resonance(crate::resonance::ResonanceParams),
+    VirtualBass(crate::dynamics::VirtualBassParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -533,6 +534,7 @@ enum EffectKind {
     DynamicEq,
     Convolution,
     Resonance,
+    VirtualBass,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -578,6 +580,7 @@ pub struct EffectState {
     width: crate::width::WidthState,
     dyn_eq: crate::dynamics::DynEqState,
     resonance: crate::resonance::ResonanceState,
+    virtual_bass: crate::dynamics::VirtualBassState,
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -629,6 +632,7 @@ impl EffectState {
             width: Default::default(),
             dyn_eq: Default::default(),
             resonance: Default::default(),
+            virtual_bass: Default::default(),
         }
     }
 
@@ -658,6 +662,7 @@ impl EffectState {
             EffectParams::DynamicEq(_) => EffectKind::DynamicEq,
             EffectParams::Convolution(_) => EffectKind::Convolution,
             EffectParams::Resonance(_) => EffectKind::Resonance,
+            EffectParams::VirtualBass(_) => EffectKind::VirtualBass,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -698,6 +703,7 @@ impl EffectState {
             self.width = Default::default();
             self.dyn_eq = Default::default();
             self.resonance.reset();
+            self.virtual_bass = Default::default();
         }
     }
 
@@ -893,6 +899,7 @@ impl EffectState {
             // 本体はエンジンが(再生データの畳み込みの本体で)通す
             EffectParams::Convolution(_) => (l, r),
             EffectParams::Resonance(rp) => self.resonance.process(rp, l, r),
+            EffectParams::VirtualBass(vb) => self.virtual_bass.process(vb, l, r),
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1571,6 +1578,45 @@ pub static RESONANCE_SPECS: &[ParamSpec] = &[
     },
 ];
 
+pub static VIRTUAL_BASS_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "freq",
+        display_name: "低音の上限",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 30.0,
+            max: 250.0,
+            default: 90.0,
+            skew: Some(0.6),
+        },
+        description: "これより低い音から倍音を作る。",
+    },
+    ParamSpec {
+        name: "amount",
+        display_name: "量",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            skew: None,
+        },
+        description: "足す倍音の量。上げすぎると濁る。",
+    },
+    ParamSpec {
+        name: "remove_lows",
+        display_name: "元の低音を減らす",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "元の低音をどれだけ減らすか(減らした分は倍音が補う)。スピーカーで出ない低音に余裕を取られないように。",
+    },
+];
+
 pub static COMPRESSOR_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "threshold_db",
@@ -2142,6 +2188,7 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "dynamic_eq" => Some(DYNAMIC_EQ_SPECS),
         "convolution" => Some(CONVOLUTION_SPECS),
         "resonance" => Some(RESONANCE_SPECS),
+        "virtual_bass" => Some(VIRTUAL_BASS_SPECS),
         _ => None,
     }
 }
@@ -2267,6 +2314,13 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
             description: "共鳴抑制。周りより細く出っ張った帯域(耳につく鳴き・部屋の響きのこもり・ボーカルの刺さり)だけを、\
                 鳴っている間だけ自動で下げる。EQ で一点を削るより自然。約 21ms 遅れる(遅延補正される)。",
             params: RESONANCE_SPECS,
+            articulations: &[],
+        },
+        crate::params::InstrumentInfo {
+            name: "virtual_bass",
+            description: "仮想低音。低音から倍音を作って足し、スマホやノート PC のように低音が出ない機器でも\
+                ベースやキックがあるように聞かせる(耳が倍音の並びから基音を補う)。ベース・キックのトラックかマスターに。",
+            params: VIRTUAL_BASS_SPECS,
             articulations: &[],
         },
     ]
@@ -2462,6 +2516,16 @@ impl EffectParams {
                     }
                 }
                 *p = crate::dynamics::MultibandParams::new(r);
+            }
+            EffectParams::VirtualBass(p) => {
+                let (mut f, mut a, mut rl) = (p.freq, p.amount, p.remove_lows);
+                match name {
+                    "freq" => f = v,
+                    "amount" => a = v,
+                    "remove_lows" => rl = v,
+                    _ => return false,
+                }
+                *p = crate::dynamics::VirtualBassParams::new(f, a, rl, sample_rate);
             }
             EffectParams::Resonance(p) => {
                 let (mut d, mut t, mut w, mut lo, mut hi, mut rel, mut m) = (
@@ -2761,6 +2825,17 @@ pub fn bake_effect(
                 source_track,
             )))
         }
+        "virtual_bass" => {
+            let s = VIRTUAL_BASS_SPECS;
+            Some(EffectParams::VirtualBass(
+                crate::dynamics::VirtualBassParams::new(
+                    get(map, s, "freq"),
+                    get(map, s, "amount"),
+                    get(map, s, "remove_lows"),
+                    sample_rate,
+                ),
+            ))
+        }
         "resonance" => {
             let s = RESONANCE_SPECS;
             Some(EffectParams::Resonance(
@@ -2871,6 +2946,8 @@ mod tests {
             ("dynamic_eq", "threshold_db", -20.0),
             ("resonance", "depth_db", 9.0),
             ("resonance", "low_hz", 400.0),
+            ("virtual_bass", "amount", 0.8),
+            ("virtual_bass", "freq", 120.0),
         ];
         let none = |_: &str| None;
         for (fx, name, v) in cases {

@@ -65,6 +65,7 @@ fn cases() -> Vec<(String, Project)> {
         "eq",
         "dynamic_eq",
         "resonance",
+        "virtual_bass",
         "compressor",
         "multiband",
         "transient",

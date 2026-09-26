@@ -325,6 +325,80 @@ impl DynEqState {
     }
 }
 
+// ============================ 低音の倍音(仮想低音) ============================
+
+/// 仮想低音: `freq` より低い音から倍音を作って足す。スマホ・ノート PC のように低音が出ない機器でも、
+/// 倍音の並びから耳が基音を補う(ミッシング・ファンダメンタル)ので、低音があるように聞こえる。
+/// 低音を 4 次のローパスで取り出し、非対称に歪ませ(tanh(x + x²/2)。偶数・奇数の倍音が出る)、
+/// 1.5·`freq`〜4·`freq` を帯域通過させて `amount` だけ足す。`remove_lows` で元の低音を減らせる
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VirtualBassParams {
+    pub freq: f32,
+    pub amount: f32,
+    pub remove_lows: f32,
+    pub sample_rate: f32,
+    lp: SvfCoeffs,
+    hp: SvfCoeffs,
+    band_lo: SvfCoeffs,
+    band_hi: SvfCoeffs,
+    /// 倍音を作る前の持ち上げ(小さな低音でも倍音が出るように)と、その後の戻し
+    drive: f32,
+}
+
+impl VirtualBassParams {
+    pub fn new(freq: f32, amount: f32, remove_lows: f32, sample_rate: f32) -> Self {
+        let sr = sample_rate.max(1.0);
+        let f = freq.clamp(30.0, 250.0);
+        VirtualBassParams {
+            freq: f,
+            amount: amount.clamp(0.0, 1.0),
+            remove_lows: remove_lows.clamp(0.0, 1.0),
+            sample_rate: sr,
+            lp: SvfCoeffs::low_pass(sr, f),
+            hp: SvfCoeffs::high_pass(sr, f),
+            band_lo: SvfCoeffs::high_pass(sr, f * 1.5),
+            band_hi: SvfCoeffs::low_pass(sr, f * 4.0),
+            drive: 4.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VirtualBassState {
+    /// [ローパス 2 段, 帯域の下 2 段, 帯域の上] × 左右、元の音のハイパス × 左右
+    split: [[SvfState; 5]; 2],
+    keep: [SvfState; 2],
+}
+
+impl VirtualBassState {
+    #[inline]
+    pub fn process(&mut self, p: &VirtualBassParams, l: f32, r: f32) -> (f32, f32) {
+        let mut out = [l, r];
+        for (c, x) in out.iter_mut().enumerate() {
+            let st = &mut self.split[c];
+            // 低音を取り出す(4 次)
+            let low = st[0].process(&p.lp, 1.0, *x);
+            let low = st[1].process(&p.lp, 1.0, low);
+            // 非対称に歪ませて倍音を作る(x² の項が偶数、tanh の丸みが奇数の倍音)
+            let d = low * p.drive;
+            let h = (d + 0.5 * d * d).tanh() / p.drive;
+            // 作った倍音のうち、元の基音より上(1.5〜4 倍)だけを残す(下は 4 次で、基音を漏らさない)
+            let h = st[2].process(&p.band_lo, 1.0, h);
+            let h = st[3].process(&p.band_lo, 1.0, h);
+            let h = st[4].process(&p.band_hi, 1.0, h);
+            // 元の低音を減らす(減らした分は倍音が補う)
+            let base = if p.remove_lows > 0.0 {
+                let hp = self.keep[c].process(&p.hp, 1.0, *x);
+                *x * (1.0 - p.remove_lows) + hp * p.remove_lows
+            } else {
+                *x
+            };
+            *x = base + h * p.amount * 3.0;
+        }
+        (out[0], out[1])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,6 +547,54 @@ mod tests {
         let off = rms(false);
         let on = rms(true);
         assert!(20.0 * (on / off).log10() < -6.0, "{off} → {on}");
+    }
+
+    #[test]
+    fn virtual_bass_adds_harmonics_of_the_lows() {
+        // 50Hz のサイン波に、100〜200Hz の倍音が足される。500Hz 以上には何も足さない
+        let p = VirtualBassParams::new(80.0, 1.0, 0.0, 48_000.0);
+        let mut st = VirtualBassState::default();
+        let x: Vec<f32> = (0..48_000)
+            .map(|i| (i as f32 * 50.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.3)
+            .collect();
+        let y: Vec<f32> = x.iter().map(|v| st.process(&p, *v, *v).0).collect();
+        let level = |v: &[f32], f: f32| {
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (k, s) in v.iter().enumerate() {
+                let ph = k as f32 * f * std::f32::consts::TAU / 48_000.0;
+                re += s * ph.cos();
+                im += s * ph.sin();
+            }
+            (re * re + im * im).sqrt() / v.len() as f32
+        };
+        let (x, y) = (&x[24_000..], &y[24_000..]);
+        assert!(
+            level(y, 100.0) > level(x, 100.0) + 0.005,
+            "2 倍音が足される"
+        );
+        assert!(
+            level(y, 150.0) > level(x, 150.0) + 0.002,
+            "3 倍音が足される"
+        );
+        assert!(level(y, 800.0) < 0.002, "高い所には足さない");
+        // 元の低音を減らす
+        let p = VirtualBassParams::new(80.0, 1.0, 1.0, 48_000.0);
+        let mut st = VirtualBassState::default();
+        let z: Vec<f32> = (0..48_000)
+            .map(|i| {
+                st.process(
+                    &p,
+                    (i as f32 * 30.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.3,
+                    0.0,
+                )
+                .0
+            })
+            .collect();
+        assert!(
+            level(&z[24_000..], 30.0) < 0.05,
+            "元の 30Hz は減る: {}",
+            level(&z[24_000..], 30.0)
+        );
     }
 
     #[test]
