@@ -41,6 +41,68 @@ pub struct Store {
     revision: Cell<Option<usize>>,
 }
 
+/// 曲名から、曲のフォルダ名(`.glaux` の前)を作る。曲名そのものは変えず、ファイル名としてだけ整える。
+/// - 空白は `_` に(続く空白・`_` は 1 つに)。Windows で使えない記号(`\ / : * ? " < > |`)と制御文字も `_` に
+/// - 日本語などの文字・数字・`-` `_` `.` `(` `)` `&` `+` `,` `'` はそのまま。先頭と末尾の `_` `.` は落とす
+/// - Windows の予約名(CON・NUL・COM1 など)は末尾に `_`、空になったら `Untitled`、長すぎたら 80 文字で切る
+pub fn folder_name(title: &str) -> String {
+    let mut out = String::new();
+    for c in title.trim().chars() {
+        let keep = (c.is_alphanumeric() || "-_.()&+,'".contains(c)) && !c.is_control();
+        let ch = if keep { c } else { '_' };
+        if ch == '_' && out.ends_with('_') {
+            continue;
+        }
+        out.push(ch);
+    }
+    let name: String = out
+        .trim_matches(|c| c == '_' || c == '.')
+        .chars()
+        .take(80)
+        .collect();
+    let mut name = name.trim_end_matches(['_', '.']).to_owned();
+    if name.is_empty() {
+        return "Untitled".to_owned();
+    }
+    let upper = name.to_ascii_uppercase();
+    let base = upper.split('.').next().unwrap_or("");
+    let reserved = matches!(base, "CON" | "PRN" | "AUX" | "NUL")
+        || (base.len() == 4
+            && (base.starts_with("COM") || base.starts_with("LPT"))
+            && base.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        name.push('_');
+    }
+    name
+}
+
+/// `parent` の中で、まだ使われていない `<name>.glaux` を返す(あれば `<name>-2.glaux`、`-3` …)
+pub fn unique_project_dir(parent: &Path, name: &str) -> PathBuf {
+    let first = parent.join(format!("{name}.glaux"));
+    if !first.exists() {
+        return first;
+    }
+    (2..)
+        .map(|i| parent.join(format!("{name}-{i}.glaux")))
+        .find(|p| !p.exists())
+        .expect("空いている名前は必ず見つかる")
+}
+
+/// 新しい曲を、曲名を付けて作る(project.json と空の履歴)。開くのは呼び出し側
+pub fn create_project(dir: &Path, title: &str) -> Result<()> {
+    if dir.join("project.json").exists() {
+        anyhow::bail!("既に存在します: {}", dir.display());
+    }
+    fs::create_dir_all(dir)
+        .with_context(|| format!("プロジェクトフォルダを作成できません: {}", dir.display()))?;
+    let store = Store {
+        dir: dir.to_path_buf(),
+        saved_entries: Cell::new(0),
+        revision: Cell::new(None),
+    };
+    store.save(&Session::new(Project::new(title.trim())))
+}
+
 impl Store {
     /// プロジェクトフォルダを開く。無ければ新規作成する。
     pub fn open_or_create(dir: impl Into<PathBuf>) -> Result<(Store, Session)> {
@@ -479,5 +541,43 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
                 return Err(e).with_context(|| format!("rename 失敗: {}", path.display()));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_names_are_safe_but_keep_the_title_readable() {
+        assert_eq!(folder_name("Night Drive"), "Night_Drive");
+        assert_eq!(folder_name("  夏の終わり  Ver.2 "), "夏の終わり_Ver.2");
+        assert_eq!(folder_name("A/B: C*?"), "A_B_C");
+        assert_eq!(folder_name("Rock 'n' Roll (Live)"), "Rock_'n'_Roll_(Live)");
+        assert_eq!(folder_name("..."), "Untitled");
+        assert_eq!(folder_name("   "), "Untitled");
+        assert_eq!(folder_name("con"), "con_");
+        assert_eq!(folder_name("COM1"), "COM1_");
+        assert_eq!(folder_name("Community"), "Community");
+        assert_eq!(folder_name(&"あ".repeat(100)).chars().count(), 80);
+    }
+
+    #[test]
+    fn create_project_keeps_the_title_and_avoids_existing_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = unique_project_dir(tmp.path(), &folder_name("My Song"));
+        assert_eq!(dir, tmp.path().join("My_Song.glaux"));
+        create_project(&dir, "My Song").unwrap();
+        let (_, session) = Store::open_or_create(&dir).unwrap();
+        assert_eq!(session.project().meta.title, "My Song");
+        assert!(
+            create_project(&dir, "My Song").is_err(),
+            "同じ場所には作らない"
+        );
+        // 同じ名前のフォルダがあれば番号を付ける
+        assert_eq!(
+            unique_project_dir(tmp.path(), "My_Song"),
+            tmp.path().join("My_Song-2.glaux")
+        );
     }
 }

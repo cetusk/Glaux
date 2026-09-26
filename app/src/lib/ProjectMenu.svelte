@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { folderName } from "./folderName";
   import Icon from "./Icon.svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
@@ -60,7 +61,7 @@
         const cur = splitProjectPath(info.project_dir);
         curParent = cur.parent;
         curStem = cur.stem;
-        moveName = cur.stem;
+        moveName = title;
         moveParent = cur.parent;
       } catch (e) {
         menuError = String(e);
@@ -74,7 +75,7 @@
   }
 
   const moveDirty = $derived(
-    (moveName.trim() !== "" && moveName.trim() !== curStem) || moveParent !== curParent,
+    (moveName.trim() !== "" && moveName.trim() !== title) || moveParent !== curParent,
   );
 
   async function applyMove() {
@@ -84,7 +85,7 @@
     try {
       await api.moveProject(
         moveParent !== curParent ? moveParent : null,
-        moveName.trim() !== curStem ? moveName.trim() : null,
+        moveName.trim() !== title ? moveName.trim() : null,
       );
       // 会話・履歴はフォルダごと移動するので継続。メニューを閉じるだけでよい
       openMenu = false;
@@ -261,6 +262,11 @@
           />
           <button onclick={createNew} disabled={busy || !newName.trim()}>作成</button>
         </div>
+        {#if newName.trim()}
+          <div class="move-note" title="曲名はそのまま。フォルダ名だけ、空白や使えない記号を _ にして付けます(同じ名前があれば -2 …)">
+            フォルダ: {folderName(newName)}.glaux
+          </div>
+        {/if}
         <label class="lab-check" title="1 トラック + 試聴フレーズ + ループ ON + 音作りビューを開いた状態で作成(作業フォルダ内の SoundLab/ に置かれます)">
           <input type="checkbox" bind:checked={soundLab} disabled={busy} />
           音作り用テンプレートで作成
@@ -290,14 +296,14 @@
       </div>
 
       <div class="section">
-        <div class="section-title">現在のプロジェクトの移動 / 名前変更</div>
+        <div class="section-title">現在のプロジェクトの移動 / 曲名の変更</div>
         <div class="new-row">
           <input
             type="text"
-            placeholder="フォルダ名"
+            placeholder="曲名"
             bind:value={moveName}
             disabled={busy}
-            title="プロジェクトのフォルダ名(タイトルも追従します)"
+            title="曲名(フォルダ名は曲名から自動で付けます)"
           />
           <button onclick={applyMove} disabled={busy || !moveDirty}>適用</button>
         </div>
@@ -305,6 +311,7 @@
           移動先: {moveParent}
         </button>
         <div class="move-note">
+          フォルダ: {moveName.trim() && moveName.trim() !== title ? `${folderName(moveName)}.glaux` : `${curStem}.glaux`}<br />
           履歴・AI との会話ごとフォルダを移動します(元に戻すには再度移動)。
         </div>
       </div>

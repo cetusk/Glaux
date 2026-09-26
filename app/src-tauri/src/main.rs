@@ -1473,9 +1473,9 @@ async fn open_project(
     Ok(json!({ "title": title, "project_version": version, "path": path }))
 }
 
-/// 現在のプロジェクトを移動 / 名前変更する。
+/// 現在のプロジェクトを移動 / 曲名を変更する(フォルダ名は曲名から作る)。
 /// `dest_parent` 省略で場所は今のまま、`new_name` 省略で名前は今のまま。
-/// 名前を変えた場合はタイトル(meta.title)も追従させる(SetTitle コマンド、author: system)。
+/// `new_name` は曲名(meta.title。SetTitle コマンド、author: system)で、フォルダ名は曲名をファイル名として整えたもの。
 #[tauri::command]
 async fn move_project(
     app: tauri::AppHandle,
@@ -1507,32 +1507,43 @@ async fn move_project(
             .map(|p| p.to_path_buf())
             .ok_or_else(|| "現在のプロジェクトの親フォルダが分かりません".to_owned())?,
     };
-    let name = match new_name
+    // new_name は曲名。フォルダ名は曲名から作る(空白は _ など。同じ名前があれば -2 …)
+    let new_title = new_name
         .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-    {
-        Some(n) => {
-            if n.contains(['/', '\\', ':']) {
-                return Err("プロジェクト名に使えない文字が含まれています".to_owned());
-            }
-            n
-        }
-        None => cur_stem.clone(),
+        .filter(|s| !s.is_empty());
+    let folder = new_title
+        .as_deref()
+        .map(glaux_mcp::store::folder_name)
+        .unwrap_or_else(|| cur_stem.clone());
+    let same_place = cur.parent() == Some(parent.as_path()) && folder == cur_stem;
+    let dest = if same_place {
+        cur.clone()
+    } else {
+        glaux_mcp::store::unique_project_dir(&parent, &folder)
     };
-    let dest = parent.join(format!("{name}.glaux"));
     let dest_str = dest.to_string_lossy().into_owned();
-    if dest == cur {
+    let (cur_title, _) = {
+        let (p, v) = state.handle.get_project().await?;
+        (p.meta.title.clone(), v)
+    };
+    let retitle = new_title.as_ref().filter(|t| **t != cur_title).cloned();
+    if dest == cur && retitle.is_none() {
         return Ok(json!({ "path": current, "moved": false }));
     }
 
-    if let Some(engine) = &state.engine {
-        engine.stop();
-    }
+    let moved = dest != cur;
     // 同一プロジェクトの移動なのでループ区間はそのまま有効
-    let (mut title, mut version) = state.handle.move_project(dest_str.clone()).await?;
+    let (mut title, mut version) = if moved {
+        if let Some(engine) = &state.engine {
+            engine.stop();
+        }
+        state.handle.move_project(dest_str.clone()).await?
+    } else {
+        (cur_title, 0)
+    };
 
-    // フォルダ名を変えたらタイトルも合わせる(履歴に載るので undo 可)
-    if name != cur_stem && title != name {
+    // 曲名を変えたらタイトルを変える(履歴に載るので undo 可)
+    if let Some(name) = retitle {
         let cmd = glaux_core::Command::SetTitle {
             title: name.clone(),
         };
@@ -1554,12 +1565,14 @@ async fn move_project(
         }
     }
 
-    state.chat.switch_project(dest_str.clone());
-    *state.project_dir.lock().expect("project_dir lock") = dest_str.clone();
-    projects::remove_recent(&current);
+    if moved {
+        state.chat.switch_project(dest_str.clone());
+        *state.project_dir.lock().expect("project_dir lock") = dest_str.clone();
+        projects::remove_recent(&current);
+    }
     projects::push_recent(&dest_str, &title);
     set_window_title(&app, &title);
-    Ok(json!({ "path": dest_str, "title": title, "project_version": version, "moved": true }))
+    Ok(json!({ "path": dest_str, "title": title, "project_version": version, "moved": moved }))
 }
 
 /// 新規プロジェクトを作成して開く。`parent_dir/name.glaux` に作られる。
@@ -1570,23 +1583,22 @@ async fn create_project(
     parent_dir: String,
     name: String,
 ) -> Result<Value, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("プロジェクト名が空です".to_owned());
-    }
-    if name.contains(['/', '\\', ':']) {
-        return Err("プロジェクト名に使えない文字が含まれています".to_owned());
+    let title = name.trim();
+    if title.is_empty() {
+        return Err("曲名が空です".to_owned());
     }
     let parent = if parent_dir.trim().is_empty() {
         projects::default_projects_dir()
     } else {
         parent_dir.trim().to_owned()
     };
-    let dir = std::path::Path::new(&parent).join(format!("{name}.glaux"));
-    if dir.join("project.json").exists() {
-        return Err(format!("既に存在します: {}", dir.display()));
-    }
-    open_project(app, state, dir.to_string_lossy().into_owned(), true).await
+    // 曲名はそのまま、フォルダ名だけファイル名として整える(空白は _ など。同じ名前があれば -2 …)
+    let dir = glaux_mcp::store::unique_project_dir(
+        std::path::Path::new(&parent),
+        &glaux_mcp::store::folder_name(title),
+    );
+    glaux_mcp::store::create_project(&dir, title).map_err(|e| e.to_string())?;
+    open_project(app, state, dir.to_string_lossy().into_owned(), false).await
 }
 
 /// UI からの編集。MCP と同じく `Command` JSON を受け、author を `human` として適用する。
