@@ -108,6 +108,9 @@ pub struct Shared {
     /// トラックごとの追加の音量(リニアの f32 のビット。既定 1.0)。フェーダー・オートメーションに掛ける。
     /// プロジェクトを変えずに外から動かす(ゲームの場面で楽器を足し引きする)
     pub live_gain: [AtomicU32; MAX_TRACKS],
+    /// アプリから鳴る音の音量(リニアの f32 のビット。既定 1.0)。出力の最後(クリップ防止の後)に掛ける。
+    /// 聴く音量だけで、曲(マスター音量)・メーター・書き出しには入らない
+    pub output_gain: AtomicU32,
     /// メトロノーム(拍ごとのクリック)を鳴らすか
     pub metronome: AtomicBool,
     /// 録音中(曲末の自動停止を抑止する)
@@ -368,6 +371,7 @@ impl Shared {
             jump_loop_end: AtomicU64::new(NO_SEEK),
             last_jump: JumpLog::default(),
             live_gain: std::array::from_fn(|_| AtomicU32::new(1.0f32.to_bits())),
+            output_gain: AtomicU32::new(1.0f32.to_bits()),
             metronome: AtomicBool::new(false),
             recording: AtomicBool::new(false),
             click_only: AtomicBool::new(false),
@@ -636,6 +640,8 @@ pub struct Renderer {
     /// トラックの音量・パンの左右ゲインを、目標へ約 5ms でなめらかに寄せた値(NaN = まだ無い → 最初は目標そのまま)。
     /// フェーダーやパンを動かしたとき・ブロックごとのオートメーションの段差で「プチッ」と鳴らないように
     gain_smooth: [(f32, f32); MAX_TRACKS],
+    /// アプリの音量(`Shared::output_gain`)のなめらかな追従
+    out_smooth: f32,
     /// マスター音量のなめらかにした値(同上)
     master_smooth: f32,
     /// このブロックでトラックごとに鳴らした声のサンプル数(発音の時間の按分用)
@@ -781,6 +787,7 @@ impl Renderer {
             auto_cursors: [(0, 0); MAX_TRACKS],
             master_cursor: 0,
             gain_smooth: [(f32::NAN, f32::NAN); MAX_TRACKS],
+            out_smooth: f32::NAN,
             master_smooth: f32::NAN,
             voice_samples: [0; MAX_TRACKS],
             monitor: Default::default(),
@@ -2105,6 +2112,7 @@ impl Renderer {
         let monitoring = mon_mode != crate::monitor::MonitorMode::Stereo
             || xfeed
             || speaker != crate::monitor::Speaker::Off;
+        let out_target = f32::from_bits(self.shared.output_gain.load(Ordering::Relaxed));
         for f in 0..frames {
             let pos = self.blk_pos[f];
             if f > 0 && pos < self.blk_pos[f - 1] {
@@ -2137,16 +2145,21 @@ impl Renderer {
                 (ol, or)
             };
             let (ol, or) = (ol + click, or + click);
-            if clip {
-                out[base] = soft_clip(ol);
-                if channels >= 2 {
-                    out[base + 1] = soft_clip(or);
-                }
+            let (ol, or) = if clip {
+                (soft_clip(ol), soft_clip(or))
             } else {
-                out[base] = ol;
-                if channels >= 2 {
-                    out[base + 1] = or;
-                }
+                (ol, or)
+            };
+            // アプリの音量(聴く音量だけ。メーター・書き出しには入らない)
+            self.out_smooth = if self.out_smooth.is_nan() {
+                out_target
+            } else {
+                self.out_smooth + (out_target - self.out_smooth) * k
+            };
+            let g = self.out_smooth;
+            out[base] = ol * g;
+            if channels >= 2 {
+                out[base + 1] = or * g;
             }
         }
         Levels::note(&self.shared.levels.master, peak);
@@ -3162,6 +3175,29 @@ mod tests {
         assert_eq!((rec.seq, rec.from, rec.to), (2, 28_800, 24_000));
         // 曲の終わりを過ぎてもループ中は止まらない
         assert!(shared.playing.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn output_gain_scales_only_the_output() {
+        let shared = Arc::new(Shared::new(data_with_note(0, 48_000, true)));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 2400);
+        let full = rms(&render_block(&mut r, 2400));
+        let (_, master_full) = shared.levels.take(1);
+        shared
+            .output_gain
+            .store(0.25f32.to_bits(), Ordering::Relaxed);
+        let _ = render_block(&mut r, 2400);
+        let _ = shared.levels.take(1);
+        let quiet = rms(&render_block(&mut r, 2400));
+        let (_, master_quiet) = shared.levels.take(1);
+        assert!((quiet / full - 0.25).abs() < 0.03, "{}", quiet / full);
+        // メーター(曲の音量)は変わらない
+        assert!(
+            (master_quiet - master_full).abs() < 0.5,
+            "{master_full} → {master_quiet}"
+        );
     }
 
     #[test]

@@ -20,6 +20,10 @@
     pianoRollStore,
     selectionStore,
     soundDesignStore,
+    saveTimelineLayout,
+    TIMELINE_HEAD_W,
+    TIMELINE_TRACK_H,
+    timelineLayout,
     timelineZoom,
     TIMELINE_ZOOM_MAX,
     TIMELINE_ZOOM_MIN,
@@ -86,7 +90,9 @@
     return `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
   }
 
-  const HEAD_W = 200;
+  /// 見出しの横幅とトラックの高さ(ルーラー左の「表示」で変える)
+  const HEAD_W = $derived(timelineLayout.headW);
+  let layoutMenu = $state(false);
 
   // ---- 横の拡大・縮小(Ctrl+ホイールはカーソルの下の位置を保つ。ボタンは画面の左端を保つ) ----
 
@@ -1509,8 +1515,12 @@
     else addTrack(kind);
   }
 
+  /// マスター音量のドラッグ中の値(離すまで表示と試聴だけ)
+  let masterDrag = $state<number | null>(null);
+
   function setMasterVolume(e: Event) {
     const v = Number((e.currentTarget as HTMLInputElement).value);
+    masterDrag = null;
     api
       .applyEdit([{ op: "set_master_volume", volume_db: v }], `マスター音量を ${v.toFixed(1)} dB に変更`)
       .catch(() => {});
@@ -1566,7 +1576,7 @@
   }
 </script>
 
-<div class="timeline" bind:this={root}>
+<div class="timeline" bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{timelineLayout.trackH}px">
   <!-- 再生ヘッド -->
   <div class="playhead" style="left:{playheadPx}px"></div>
 
@@ -1639,10 +1649,55 @@
           ><Icon name="zoom-in" size={13} /></button
         >
         <button class="btn sm" onclick={zoomToFit} title="曲全体が横に収まるようにする">全体</button>
+        <button
+          class="btn sm icon-only"
+          class:on={layoutMenu}
+          onclick={() => (layoutMenu = !layoutMenu)}
+          aria-label="トラックの表示の大きさ"
+          title="トラックの高さと見出しの幅"><Icon name="rows-2" size={13} /></button
+        >
         {#if Math.abs(timelineZoom.value - 1) > 0.01}
           <button class="btn sm" onclick={() => setZoom(1)} title="元の拡大率(100%)に戻す">{Math.round(timelineZoom.value * 100)}%</button>
         {/if}
       </div>
+      {#if layoutMenu}
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div class="menu-backdrop" role="presentation" onclick={() => (layoutMenu = false)}></div>
+        <div class="layout-pop">
+          <label>
+            <span>トラックの高さ <b>{timelineLayout.trackH}px</b></span>
+            <input
+              type="range"
+              min={TIMELINE_TRACK_H.min}
+              max={TIMELINE_TRACK_H.max}
+              step="2"
+              bind:value={timelineLayout.trackH}
+              onchange={saveTimelineLayout}
+              aria-label="トラックの高さ"
+            />
+          </label>
+          <label>
+            <span>見出しの幅 <b>{timelineLayout.headW}px</b></span>
+            <input
+              type="range"
+              min={TIMELINE_HEAD_W.min}
+              max={TIMELINE_HEAD_W.max}
+              step="4"
+              bind:value={timelineLayout.headW}
+              onchange={saveTimelineLayout}
+              aria-label="見出しの幅"
+            />
+          </label>
+          <button
+            class="btn sm"
+            onclick={() => {
+              timelineLayout.trackH = TIMELINE_TRACK_H.def;
+              timelineLayout.headW = TIMELINE_HEAD_W.def;
+              saveTimelineLayout();
+            }}>元に戻す</button
+          >
+        </div>
+      {/if}
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -1670,6 +1725,63 @@
       {/each}
     </div>
   </div>
+
+  <!-- マスター: 曲全体の音量・オートメーション・エフェクト。見つけやすいよう、トラックの一番上に置く
+       (以前は一番下で、音量のつまみも短かった) -->
+  <div class="track-row master-row">
+    <div class="track-head">
+      <div class="head-row">
+        <span class="track-name master-name" title="曲全体の音量・エフェクト(書き出しにも入る)">マスター</span>
+        <span class="db master-db">{(masterDrag ?? project.master.volume_db).toFixed(1)} dB</span>
+        <button
+          class="btn sm icon"
+          class:on={autoLanes[MASTER_FOCUS_ID] !== undefined}
+          onclick={() => toggleAutoLane(MASTER_FOCUS_ID)}
+          title={`マスターのオートメーション(フェードアウト、マスターのエフェクトの時間変化)${masterLaneCount > 0 ? `。描いてあるレーン ${masterLaneCount} 本` : ""}`}
+          aria-label="マスターのオートメーション"><Icon name="spline" /></button
+        >
+        <button
+          class="btn sm icon"
+          class:on={soundDesignStore.focus?.trackId === MASTER_FOCUS_ID}
+          onclick={() =>
+            (soundDesignStore.focus =
+              soundDesignStore.focus?.trackId === MASTER_FOCUS_ID ? null : { trackId: MASTER_FOCUS_ID, trackName: "マスター" })}
+          title={`マスターのエフェクト(曲全体に掛かるコンプ・EQ・リバーブなど)${project.master.effects.length > 0 ? `。${project.master.effects.length} 個` : ""}`}
+          aria-label="マスターのエフェクト"><Icon name="sliders-horizontal" /></button
+        >
+      </div>
+      <input
+        class="vol master-vol"
+        type="range"
+        min="-40"
+        max="6"
+        step="0.5"
+        value={project.master.volume_db}
+        title="マスター音量(曲全体。書き出しにも入る。ダブルクリックで 0 dB)"
+        aria-label="マスター音量"
+        oninput={(e) => {
+          masterDrag = Number(e.currentTarget.value);
+          api.previewEdit([{ op: "set_master_volume", volume_db: masterDrag }]);
+        }}
+        onchange={setMasterVolume}
+        ondblclick={() => {
+          masterDrag = null;
+          api.applyEdit([{ op: "set_master_volume", volume_db: 0 }], "マスター音量を 0.0 dB に変更").catch(() => {});
+        }}
+      />
+    </div>
+    <div class="lane" style="width:{totalPx}px"></div>
+  </div>
+  {#if autoLanes[MASTER_FOCUS_ID]}
+    <AutomationLaneRow
+      track={masterTrack}
+      target={autoLanes[MASTER_FOCUS_ID]}
+      {pxPerTick}
+      {totalPx}
+      onTarget={(t) => (autoLanes = { ...autoLanes, [MASTER_FOCUS_ID]: t })}
+      onClose={() => toggleAutoLane(MASTER_FOCUS_ID)}
+    />
+  {/if}
 
   {#if project.tracks.length === 0}
     <div class="empty">
@@ -1963,54 +2075,6 @@
     {/if}
     </div>
   {/each}
-
-  <!-- マスター: 曲全体の音量・オートメーション・エフェクト(以前はヘッダーに分かれていた) -->
-  <div class="track-row master-row">
-    <div class="track-head">
-      <div class="head-row">
-        <span class="track-name master-name">マスター</span>
-        <input
-          class="vol"
-          type="range"
-          min="-40"
-          max="6"
-          step="0.5"
-          value={project.master.volume_db}
-          title="マスター音量"
-          aria-label="マスター音量"
-          onchange={setMasterVolume}
-        />
-        <span class="db">{project.master.volume_db.toFixed(1)}</span>
-        <button
-          class="btn sm icon"
-          class:on={autoLanes[MASTER_FOCUS_ID] !== undefined}
-          onclick={() => toggleAutoLane(MASTER_FOCUS_ID)}
-          title={`マスターのオートメーション(フェードアウト、マスターのエフェクトの時間変化)${masterLaneCount > 0 ? `。描いてあるレーン ${masterLaneCount} 本` : ""}`}
-          aria-label="マスターのオートメーション"><Icon name="spline" /></button
-        >
-        <button
-          class="btn sm icon"
-          class:on={soundDesignStore.focus?.trackId === MASTER_FOCUS_ID}
-          onclick={() =>
-            (soundDesignStore.focus =
-              soundDesignStore.focus?.trackId === MASTER_FOCUS_ID ? null : { trackId: MASTER_FOCUS_ID, trackName: "マスター" })}
-          title={`マスターのエフェクト(曲全体に掛かるコンプ・EQ・リバーブなど)${project.master.effects.length > 0 ? `。${project.master.effects.length} 個` : ""}`}
-          aria-label="マスターのエフェクト"><Icon name="sliders-horizontal" /></button
-        >
-      </div>
-    </div>
-    <div class="lane" style="width:{totalPx}px"></div>
-  </div>
-  {#if autoLanes[MASTER_FOCUS_ID]}
-    <AutomationLaneRow
-      track={masterTrack}
-      target={autoLanes[MASTER_FOCUS_ID]}
-      {pxPerTick}
-      {totalPx}
-      onTarget={(t) => (autoLanes = { ...autoLanes, [MASTER_FOCUS_ID]: t })}
-      onClose={() => toggleAutoLane(MASTER_FOCUS_ID)}
-    />
-  {/if}
 
   {#if sigMenu}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -2356,7 +2420,7 @@
   }
 
   .track-head {
-    width: 200px;
+    width: var(--head-w, 200px);
     flex-shrink: 0;
     padding: 5px 6px 5px 10px;
     background: var(--bg-panel);
@@ -2585,7 +2649,12 @@
   }
 
   .track-row {
-    height: 72px;
+    height: var(--track-h, 72px);
+  }
+
+  /* 低くしたときは、見出しの下の段を隠す(はみ出させない) */
+  .track-row > .track-head {
+    overflow: hidden;
   }
 
   .track-row .lane {
@@ -2594,12 +2663,61 @@
   }
 
   .track-row.master-row {
-    height: 34px;
-    border-top: 2px solid var(--border-strong);
+    height: 56px;
+    border-bottom: 2px solid var(--border-strong);
   }
 
   .master-row .track-head {
-    padding: 7px 6px 7px 10px;
+    padding: 6px 8px 6px 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+  }
+
+  .master-db {
+    width: auto;
+    margin-right: auto;
+  }
+
+  /* マスター音量は見出しの幅いっぱい(以前は名前と横並びで短く、触りにくかった) */
+  .vol.master-vol {
+    flex: none;
+    width: 100%;
+    height: 16px;
+    margin: 0;
+  }
+
+  .layout-pop {
+    position: absolute;
+    top: 26px;
+    left: 6px;
+    z-index: 30;
+    width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-pop);
+    font-size: var(--fs-sm);
+  }
+
+  .layout-pop label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .layout-pop input {
+    width: 100%;
+    accent-color: var(--accent);
+  }
+
+  .layout-pop .btn {
+    align-self: flex-end;
   }
 
   .track-name.master-name {
@@ -2992,7 +3110,7 @@
     padding: 8px;
     position: sticky;
     left: 0;
-    width: 200px;
+    width: var(--head-w, 200px);
   }
 
   .add-track {

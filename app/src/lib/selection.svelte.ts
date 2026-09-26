@@ -91,3 +91,28 @@ export const viewStore = $state<{
 export const timelineZoom = $state<{ value: number }>({ value: 1 });
 export const TIMELINE_ZOOM_MIN = 0.1;
 export const TIMELINE_ZOOM_MAX = 8;
+
+/// タイムラインのトラックの高さと見出しの横幅(px)。この PC の表示の好みとして覚えておく
+export const TIMELINE_TRACK_H = { min: 44, max: 160, def: 72 };
+export const TIMELINE_HEAD_W = { min: 160, max: 360, def: 200 };
+
+function loadTimelineLayout(): { trackH: number; headW: number } {
+  const clamp = (v: unknown, r: { min: number; max: number; def: number }) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.min(r.max, Math.max(r.min, v)) : r.def;
+  try {
+    const v = JSON.parse(localStorage.getItem("glaux.timeline.layout") ?? "{}");
+    return { trackH: clamp(v.trackH, TIMELINE_TRACK_H), headW: clamp(v.headW, TIMELINE_HEAD_W) };
+  } catch {
+    return { trackH: TIMELINE_TRACK_H.def, headW: TIMELINE_HEAD_W.def };
+  }
+}
+
+export const timelineLayout = $state(loadTimelineLayout());
+
+export function saveTimelineLayout() {
+  try {
+    localStorage.setItem("glaux.timeline.layout", JSON.stringify({ ...timelineLayout }));
+  } catch {
+    // 覚えられなくても表示には支障なし
+  }
+}

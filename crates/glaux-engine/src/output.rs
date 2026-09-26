@@ -134,6 +134,18 @@ impl EngineHandle {
         graveyard.retain(|d| Arc::strong_count(d) > 1);
     }
 
+    /// アプリから鳴る音の音量(dB)。聴く音量だけで、曲・メーター・書き出しには入らない。-60 以下で無音
+    pub fn set_output_volume_db(&self, db: f32) {
+        let amp = if db <= -60.0 {
+            0.0
+        } else {
+            10f32.powf(db.min(12.0) / 20.0)
+        };
+        self.shared
+            .output_gain
+            .store(amp.to_bits(), Ordering::Relaxed);
+    }
+
     pub fn play(&self) {
         self.shared.playing.store(true, Ordering::Release);
     }

@@ -29,7 +29,7 @@
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import InstrumentPicker from "./lib/InstrumentPicker.svelte";
   import Mixer from "./lib/Mixer.svelte";
-  import { applyTheme, openSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
+  import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import {
     inspectorStore,
@@ -310,6 +310,9 @@
     refresh();
     // 前回選んだオーディオデバイスに戻す(抜かれていたら既定のまま)
     (async () => {
+      if (settings.outputVolumeDb !== 0) {
+        await api.setOutputVolume(settings.outputVolumeDb).catch(() => {});
+      }
       if (settings.bufferFrames) {
         await api.setBufferSize(settings.bufferFrames).catch(() => {});
       }
@@ -711,6 +714,17 @@
     editingBpm = true;
   }
 
+  // ---- 聴く音量(アプリから鳴る音だけ。曲・書き出しには入らない) ----
+  function fmtListen(db: number): string {
+    return db <= -60 ? "無音" : `${db > 0 ? "+" : ""}${db} dB`;
+  }
+
+  function setListenVolume(db: number, save: boolean) {
+    settings.outputVolumeDb = db;
+    api.setOutputVolume(db).catch(() => {});
+    if (save) saveSettings();
+  }
+
   async function commitBpm() {
     editingBpm = false;
     if (!project) return;
@@ -1027,6 +1041,27 @@
           <span class="ai-text">{indicator === "calling" ? `AI が${toolDoing(aiTool)}…` : "AI が作業中です…"}</span>
         </div>
       {/if}
+      <!-- 聴く音量: アプリから鳴る音だけ(曲のマスター音量・書き出しとは別) -->
+      <div
+        class="listen-vol"
+        class:changed={settings.outputVolumeDb !== 0}
+        title={`聴く音量 ${fmtListen(settings.outputVolumeDb)}(このアプリから鳴る音だけ。曲のマスター音量・書き出しには影響しません。ダブルクリックで 0 dB)`}
+      >
+        <Icon name="volume-2" size={15} />
+        <input
+          type="range"
+          min="-60"
+          max="6"
+          step="1"
+          value={settings.outputVolumeDb}
+          disabled={!transport.available}
+          oninput={(e) => setListenVolume(Number(e.currentTarget.value), false)}
+          onchange={(e) => setListenVolume(Number(e.currentTarget.value), true)}
+          ondblclick={() => setListenVolume(0, true)}
+          aria-label="聴く音量(曲には影響しない)"
+        />
+        {#if settings.outputVolumeDb !== 0}<span class="lv">{fmtListen(settings.outputVolumeDb)}</span>{/if}
+      </div>
       <button
         class="btn icon"
         onclick={doUndo}
@@ -1300,6 +1335,35 @@
     border-color: var(--danger);
     background: color-mix(in srgb, var(--danger) 25%, var(--bg-panel));
     animation: rec-blink 1s ease-in-out infinite;
+  }
+
+  .listen-vol {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 28px;
+    padding: 0 6px;
+    min-width: 0;
+    flex-shrink: 1;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    color: var(--text-dim);
+  }
+
+  .listen-vol.changed {
+    color: var(--text);
+  }
+
+  .listen-vol input {
+    width: 72px;
+    min-width: 36px;
+    flex-shrink: 1;
+  }
+
+  .listen-vol .lv {
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
   .monitor-on {

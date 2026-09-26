@@ -404,7 +404,7 @@
   }
 
   .auto-head {
-    width: 200px;
+    width: var(--head-w, 200px);
     flex-shrink: 0;
     padding: 5px 10px;
     background: color-mix(in srgb, var(--bg-panel) 80%, var(--accent) 6%);

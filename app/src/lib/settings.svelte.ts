@@ -46,6 +46,8 @@ interface Settings {
   midiQuantize: number;
   /// はじめの確認(音の出力・AI・SoundFont・デモ曲)を見た
   welcomeDone: boolean;
+  /// 聴く音量(アプリから鳴る音だけ。曲・書き出しには入らない。dB)
+  outputVolumeDb: number;
 }
 
 function load(): Settings {
@@ -70,6 +72,7 @@ function load(): Settings {
         midiInput: typeof v.midiInput === "string" ? v.midiInput : "",
         midiQuantize: typeof v.midiQuantize === "number" ? v.midiQuantize : 0,
         welcomeDone: v.welcomeDone === true,
+        outputVolumeDb: typeof v.outputVolumeDb === "number" ? v.outputVolumeDb : 0,
       };
     }
   } catch {
@@ -92,6 +95,7 @@ function load(): Settings {
     midiInput: "",
     midiQuantize: 0,
     welcomeDone: false,
+    outputVolumeDb: 0,
   };
 }
 

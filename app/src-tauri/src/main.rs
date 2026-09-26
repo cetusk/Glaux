@@ -2051,6 +2051,13 @@ fn transport_set_speaker(state: State<'_, AppState>, speaker: String) -> Result<
     Ok(())
 }
 
+/// アプリから鳴る音の音量(dB)。聴く音量だけで、曲・メーター・書き出しには入らない
+#[tauri::command]
+fn transport_set_output_volume(state: State<'_, AppState>, db: f32) -> Result<(), String> {
+    state.engine()?.set_output_volume_db(db);
+    Ok(())
+}
+
 /// ゴニオメーターの点(古い順の [左, 右])
 #[tauri::command]
 fn transport_scope(state: State<'_, AppState>) -> Result<Vec<[f32; 2]>, String> {
@@ -2580,6 +2587,7 @@ fn main() -> Result<()> {
             transport_scope,
             transport_spectrum,
             transport_set_speaker,
+            transport_set_output_volume,
             transport_reset_loudness,
             send_chat,
             cancel_chat,

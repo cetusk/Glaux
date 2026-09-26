@@ -441,6 +441,11 @@ export function transportSetSpeaker(speaker: SpeakerSim): Promise<void> {
   return invoke("transport_set_speaker", { speaker });
 }
 
+/** アプリから鳴る音の音量(dB)。聴く音量だけで、曲・メーター・書き出しには入らない */
+export function setOutputVolume(db: number): Promise<void> {
+  return invoke("transport_set_output_volume", { db });
+}
+
 /** ゴニオメーターの点(古い順の [左, 右]) */
 export function transportScope(): Promise<[number, number][]> {
   return invoke("transport_scope");
