@@ -70,7 +70,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
     (
         "mix",
         "ミックスとエフェクト",
-        "- エフェクト: add_effect(eq / compressor / multiband / transient / reverb / distortion / amp / sidechain / delay / chorus / tape)→\n\
+        "- エフェクト: add_effect(eq / compressor / multiband / transient / limiter / reverb / distortion / amp / sidechain / delay / chorus / tape)→\n\
   set_param(fx/<id>/<名前>)。マスターは add_master_effect / set_master_param。\n\
 - distortion はシンセ・ドラム等の歪み。エレキギターの歪みは amp(instruments を参照)。\n\
 - 空間: 複数のトラックに同じリバーブ・ディレイを掛けるなら、バス(add_track kind: \"bus\" + リバーブ mix 1.0)を作り、\n\

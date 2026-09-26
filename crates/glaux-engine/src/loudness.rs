@@ -7,53 +7,8 @@
 
 use serde::Serialize;
 
-/// 補間の半分の幅(元のサンプル数)。1 位相あたり 2 × HALF タップ
-const HALF: usize = 6;
-/// オーバーサンプリングの倍率
-const OS: usize = 4;
-
-fn bessel_i0(x: f64) -> f64 {
-    // 級数展開(収束が速いので 30 項で十分)
-    let mut sum = 1.0;
-    let mut term = 1.0;
-    for k in 1..30 {
-        term *= (x / (2.0 * k as f64)).powi(2);
-        sum += term;
-    }
-    sum
-}
-
-/// 位相 p(1..OS)の補間係数。x[n - HALF + 1 ..= n + HALF] に掛けると x(n + p/OS) になる
-fn kernel() -> [[f32; 2 * HALF]; OS - 1] {
-    const BETA: f64 = 7.0;
-    let mut out = [[0.0f32; 2 * HALF]; OS - 1];
-    for (pi, phase) in out.iter_mut().enumerate() {
-        let frac = (pi + 1) as f64 / OS as f64;
-        let mut taps = [0.0f64; 2 * HALF];
-        for (k, t) in taps.iter_mut().enumerate() {
-            // タップ k は x[n + k - HALF + 1]。補間点からの距離 u
-            let u = (k as f64 - (HALF as f64 - 1.0)) - frac;
-            let sinc = if u.abs() < 1e-12 {
-                1.0
-            } else {
-                (std::f64::consts::PI * u).sin() / (std::f64::consts::PI * u)
-            };
-            let r = u / HALF as f64;
-            let w = if r.abs() >= 1.0 {
-                0.0
-            } else {
-                bessel_i0(BETA * (1.0 - r * r).sqrt()) / bessel_i0(BETA)
-            };
-            *t = sinc * w;
-        }
-        // 直流の利得を 1 に
-        let sum: f64 = taps.iter().sum();
-        for (d, s) in phase.iter_mut().zip(taps) {
-            *d = (s / sum) as f32;
-        }
-    }
-    out
-}
+// 補間の半分の幅と係数は、リアルタイムのリミッタと共通(glaux_dsp::limiter)
+use glaux_dsp::limiter::{true_peak_kernel as kernel, TP_HALF as HALF};
 
 /// フレームごとの True Peak(左右の大きい方、リニア)。
 /// フレーム i の値は、そのサンプルと、次のサンプルまでの間の補間点(1/4・2/4・3/4)の絶対値の最大

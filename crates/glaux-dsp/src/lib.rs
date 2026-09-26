@@ -23,6 +23,7 @@ mod dynamics;
 mod effects;
 mod expr;
 mod fm;
+pub mod limiter;
 mod multi;
 mod oversample;
 mod params;

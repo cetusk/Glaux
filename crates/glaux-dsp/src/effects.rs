@@ -473,6 +473,7 @@ pub enum EffectParams {
     Tape(TapeParams),
     Multiband(crate::dynamics::MultibandParams),
     Transient(crate::dynamics::TransientParams),
+    Limiter(crate::limiter::LimiterParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -491,6 +492,7 @@ enum EffectKind {
     Tape,
     Multiband,
     Transient,
+    Limiter,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -532,6 +534,7 @@ pub struct EffectState {
     // マルチバンドコンプ・トランジェントシェイパー
     multiband: crate::dynamics::MultibandState,
     transient: crate::dynamics::TransientState,
+    limiter: crate::limiter::LimiterState,
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -579,6 +582,7 @@ impl EffectState {
             crackle: [0.0; 2],
             multiband: Default::default(),
             transient: Default::default(),
+            limiter: Default::default(),
         }
     }
 
@@ -603,6 +607,7 @@ impl EffectState {
             EffectParams::Tape(_) => EffectKind::Tape,
             EffectParams::Multiband(_) => EffectKind::Multiband,
             EffectParams::Transient(_) => EffectKind::Transient,
+            EffectParams::Limiter(_) => EffectKind::Limiter,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -639,6 +644,7 @@ impl EffectState {
             self.crackle = [0.0; 2];
             self.multiband = Default::default();
             self.transient = Default::default();
+            self.limiter = Default::default();
         }
     }
 
@@ -828,6 +834,7 @@ impl EffectState {
             }
             EffectParams::Multiband(m) => self.multiband.process(m, l, r),
             EffectParams::Transient(t) => self.transient.process(t, l, r),
+            EffectParams::Limiter(m) => self.limiter.process(m, l, r),
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1188,6 +1195,45 @@ pub static TRANSIENT_SPECS: &[ParamSpec] = &[
             skew: None,
         },
         description: "余韻の増減。下げるとドラムの響き・部屋鳴りが締まり、上げると太く長く鳴る。",
+    },
+];
+
+pub static LIMITER_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "input_db",
+        display_name: "入力",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 24.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "入力を持ち上げる量。上げるほど上限に張り付いて音圧が上がるが、潰れてダイナミクスが減る。配信は -14 LUFS に正規化されるので、上げすぎても得をしない(analyze_audio の streaming で確かめる)。",
+    },
+    ParamSpec {
+        name: "ceiling_db",
+        display_name: "上限",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -12.0,
+            max: 0.0,
+            default: -1.0,
+            skew: None,
+        },
+        description: "出力の上限(True Peak。サンプルの間の山も含む)。配信用は -1、音圧の高い曲は -2 が目安。",
+    },
+    ParamSpec {
+        name: "release_ms",
+        display_name: "リリース",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 5.0,
+            max: 2000.0,
+            default: 100.0,
+            skew: Some(0.4),
+        },
+        description: "音量が戻る速さ。短いと音圧が上がるが歪みやポンピングが出やすく、長いと自然。",
     },
 ];
 
@@ -1757,6 +1803,7 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "tape" => Some(TAPE_SPECS),
         "multiband" => Some(MULTIBAND_SPECS),
         "transient" => Some(TRANSIENT_SPECS),
+        "limiter" => Some(LIMITER_SPECS),
         _ => None,
     }
 }
@@ -1848,6 +1895,13 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
             params: TRANSIENT_SPECS,
             articulations: &[],
         },
+        crate::params::InstrumentInfo {
+            name: "limiter",
+            description: "True Peak リミッタ(先読み)。サンプルの間の山も含めて、出力を上限(ceiling_db)より\
+                上に出さない。マスターの最後に挿して音圧と安全を整える定番。約 1ms 遅れる(エンジンが遅延補正する)。",
+            params: LIMITER_SPECS,
+            articulations: &[],
+        },
     ]
 }
 
@@ -1878,6 +1932,14 @@ fn get(map: &ParamMap, specs: &[ParamSpec], name: &str) -> f32 {
 }
 
 impl EffectParams {
+    /// 処理の遅れ(サンプル)。エンジンの遅延補正に使う(先読みするリミッタだけ 0 でない)
+    pub fn latency(&self) -> u32 {
+        match self {
+            EffectParams::Limiter(p) => p.latency(),
+            _ => 0,
+        }
+    }
+
     /// オートメーション用: 連続パラメータを生の値(ParamSpec と同じ単位)で上書きする。
     /// `bake_effect` と同じクランプ・変換を通す。対象外のパラメータは無視して false。
     /// オーディオスレッドからブロック単位で呼ばれる前提(アロケーションしない)。
@@ -1994,6 +2056,16 @@ impl EffectParams {
                     }
                 }
                 *p = crate::dynamics::MultibandParams::new(r);
+            }
+            EffectParams::Limiter(p) => {
+                let (mut i, mut c, mut r) = (p.input_db, p.ceiling_db, p.release_ms);
+                match name {
+                    "input_db" => i = v,
+                    "ceiling_db" => c = v,
+                    "release_ms" => r = v,
+                    _ => return false,
+                }
+                *p = crate::limiter::LimiterParams::new(i, c, r, p.sample_rate);
             }
             EffectParams::Transient(p) => match name {
                 "attack_db" => {
@@ -2210,6 +2282,15 @@ pub fn bake_effect(
                 }),
             ))
         }
+        "limiter" => {
+            let s = LIMITER_SPECS;
+            Some(EffectParams::Limiter(crate::limiter::LimiterParams::new(
+                get(map, s, "input_db"),
+                get(map, s, "ceiling_db"),
+                get(map, s, "release_ms"),
+                sample_rate,
+            )))
+        }
         "transient" => {
             let s = TRANSIENT_SPECS;
             Some(EffectParams::Transient(
@@ -2278,6 +2359,8 @@ mod tests {
             ("multiband", "mid_gain_db", -3.0),
             ("transient", "attack_db", 6.0),
             ("transient", "sustain_db", -4.0),
+            ("limiter", "input_db", 6.0),
+            ("limiter", "ceiling_db", -2.0),
         ];
         let none = |_: &str| None;
         for (fx, name, v) in cases {

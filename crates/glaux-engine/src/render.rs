@@ -1781,7 +1781,7 @@ impl Renderer {
         }
     }
 
-    /// プラグインの遅延補正の量を決める。通常トラックは(音源 + エフェクトの遅延)の最大に揃え、
+    /// 遅延補正の量を決める(CLAP の申告と、内蔵エフェクトの遅れ)。通常トラックは(音源 + エフェクトの遅延)の最大に揃え、
     /// バスはバス同士の最大に揃える。通常トラックの合算はバスの最大の遅延ぶん遅らせる。
     fn compute_pdc(&mut self, data: &PlaybackData, ntracks: usize) {
         let lat_of = |slot: usize, gen: Option<u64>, plugins: &[Option<Box<Processor>>]| -> u32 {
@@ -1798,10 +1798,11 @@ impl Renderer {
                 .filter(|_| !mix.is_bus)
                 .map(|s| lat_of(s, None, &self.plugins))
                 .unwrap_or(0);
+            // CLAP の申告と、内蔵エフェクト(先読みのリミッタ)の遅れ
             let fx_lat = |fx: &crate::data::BakedEffect| {
                 fx.plugin
                     .map(|(s, g)| lat_of(s as usize, Some(g), &self.plugins))
-                    .unwrap_or(0)
+                    .unwrap_or_else(|| fx.params.latency())
             };
             match &mix.fx_graph {
                 // 分岐があるときは、出口までの道のうち一番遅いもの
@@ -2732,6 +2733,23 @@ mod tests {
         }
         let ratio = level_across_swap(&before, &after);
         assert!(ratio > 0.7, "途切れた: {ratio:.3}");
+    }
+
+    #[test]
+    fn builtin_limiter_latency_is_compensated() {
+        // 先読みのリミッタを挿したトラックの遅れぶん、ほかのトラックを遅らせてそろえる
+        let mut p = two_pads();
+        p.tracks[0].effects.push(glaux_core::Effect::builtin(
+            glaux_core::FxId::new(),
+            "limiter",
+        ));
+        let shared = Arc::new(Shared::new((*build(&p)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 480);
+        let lat = glaux_dsp::limiter::LimiterParams::new(0.0, -1.0, 100.0, 48_000.0).latency();
+        assert_eq!(r.pdc_delay(0), 0);
+        assert_eq!(r.pdc_delay(1), lat);
     }
 
     #[test]
