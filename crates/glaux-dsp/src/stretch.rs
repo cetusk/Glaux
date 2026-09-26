@@ -1,4 +1,7 @@
-//! タイムストレッチ(音程を変えずに長さを変える)。WSOLA 方式。
+//! タイムストレッチ(音程を変えずに長さを変える)。WSOLA と、位相をそろえたフェーズボコーダ。
+//! [`stretch_channels`] が素材に合わせて選ぶ(打楽器・雑音の多い素材は WSOLA、和音・持続音はフェーズボコーダ)。
+//!
+//! WSOLA:
 //!
 //! 出力の各フレーム(40ms、50% 重なり)について「本来読むべき入力位置」を
 //! 写像 `src_pos` から求め、その周囲 ±10ms で直前フレームの自然な続きと最も似た
@@ -163,6 +166,224 @@ fn best_match(
     best
 }
 
+// ===================== 位相をそろえたフェーズボコーダ =====================
+//
+// 和音・持続音向け。4096 点(48kHz で約 85ms)の短時間フーリエ変換で、出力のフレームごとに
+// 入力の位置(写像 `src_pos`)の振幅と、そこから 1 ずらし幅先の位相との差で「本当の周波数」を求め、
+// 出力の位相を積み上げる。周波数の山(ピーク)の位相だけを積み上げ、周りのビンは山との位相の差を
+// そのまま保つ(identity phase locking。Laroche & Dolson)ので、和音が金属的・ぼやけた響きになりにくい。
+// 打点(スペクトルの急な増え)では、出力の位相を入力の位相にそろえ直して、アタックがにじまないようにする。
+
+const PV_N: usize = 4096;
+const PV_HOP: usize = PV_N / 4;
+
+/// フェーズボコーダで伸縮する(チャンネルは M と S を想定。位相の進みは最初のチャンネルで決め、
+/// ほかのチャンネルにも同じ回転を掛けて左右の関係を保つ)
+pub fn phase_vocoder_channels(
+    channels: &[&[f32]],
+    out_len: usize,
+    src_pos: impl Fn(usize) -> f64,
+) -> Vec<Vec<f32>> {
+    use rustfft::{num_complex::Complex, FftPlanner};
+    let nch = channels.len();
+    let Some(input) = channels.first().copied() else {
+        return Vec::new();
+    };
+    let mut outs = vec![vec![0.0f32; out_len + PV_N]; nch];
+    let mut wsum = vec![0.0f32; out_len + PV_N];
+    if input.len() < PV_N || out_len == 0 {
+        for o in outs.iter_mut() {
+            o.truncate(out_len);
+        }
+        return outs;
+    }
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(PV_N);
+    let ifft = planner.plan_fft_inverse(PV_N);
+    let window: Vec<f32> = (0..PV_N)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / PV_N as f32).cos())
+        .collect();
+    let bins = PV_N / 2 + 1;
+    let frame = |ch: &[f32], start: isize| -> Vec<Complex<f32>> {
+        let mut buf: Vec<Complex<f32>> = (0..PV_N)
+            .map(|i| {
+                let j = start + i as isize;
+                let v = if j < 0 || j as usize >= ch.len() {
+                    0.0
+                } else {
+                    ch[j as usize]
+                };
+                Complex::new(v * window[i], 0.0)
+            })
+            .collect();
+        fft.process(&mut buf);
+        buf
+    };
+    let princ = |x: f32| {
+        let tau = std::f32::consts::TAU;
+        x - tau * (x / tau).round()
+    };
+    let mut synth_phase = vec![0.0f32; bins];
+    let mut prev_mag = vec![0.0f32; bins];
+    let mut flux_avg = 0.0f32;
+    let mut first = true;
+    let last_start = input.len().saturating_sub(PV_N) as f64;
+    let mut m = 0usize;
+    loop {
+        let out_start = m * PV_HOP;
+        if out_start >= out_len {
+            break;
+        }
+        let a = src_pos(out_start + PV_N / 2) - (PV_N / 2) as f64;
+        if a > last_start {
+            break;
+        }
+        let a = a.round() as isize;
+        let x0 = frame(input, a);
+        let x1 = frame(input, a + PV_HOP as isize);
+        let mag: Vec<f32> = x0[..bins].iter().map(|c| c.norm()).collect();
+        let phase0: Vec<f32> = x0[..bins].iter().map(|c| c.arg()).collect();
+        // 打点: 増えた分のスペクトルの和が、これまでの平均の 3 倍を超えたら位相をそろえ直す
+        let flux: f32 = mag
+            .iter()
+            .zip(&prev_mag)
+            .map(|(a, b)| (a - b).max(0.0))
+            .sum();
+        let onset = first || flux > 3.0 * flux_avg.max(1e-6);
+        flux_avg = 0.9 * flux_avg + 0.1 * flux;
+        prev_mag.copy_from_slice(&mag);
+        if onset {
+            synth_phase.copy_from_slice(&phase0);
+        } else {
+            // 周波数の山を探し、山の位相だけを「本当の周波数 × ずらし幅」だけ進める
+            let mut peak_of = vec![0usize; bins];
+            let mut peaks = Vec::new();
+            for k in 0..bins {
+                let lo = k.saturating_sub(2);
+                let hi = (k + 2).min(bins - 1);
+                if mag[k] > 0.0 && (lo..=hi).all(|j| j == k || mag[j] <= mag[k]) {
+                    peaks.push(k);
+                }
+            }
+            if peaks.is_empty() {
+                peaks.push(0);
+            }
+            // ビンごとに近い方の山(山の間は真ん中で分ける)
+            let mut pi = 0;
+            for (k, p) in peak_of.iter_mut().enumerate() {
+                while pi + 1 < peaks.len()
+                    && (peaks[pi + 1] as isize - k as isize).abs()
+                        < (k as isize - peaks[pi] as isize).abs()
+                {
+                    pi += 1;
+                }
+                *p = peaks[pi];
+            }
+            let mut new_phase = vec![0.0f32; bins];
+            for &p in &peaks {
+                let omega = std::f32::consts::TAU * p as f32 / PV_N as f32;
+                let dphi = x1[p].arg() - phase0[p];
+                let adv = omega * PV_HOP as f32 + princ(dphi - omega * PV_HOP as f32);
+                new_phase[p] = synth_phase[p] + adv;
+            }
+            for k in 0..bins {
+                let p = peak_of[k];
+                if k != p {
+                    new_phase[k] = new_phase[p] + (phase0[k] - phase0[p]);
+                }
+            }
+            synth_phase = new_phase;
+        }
+        first = false;
+        // 位相の回転(出力の位相 − 入力の位相)を全チャンネルに掛けて戻す
+        for (c, ch) in channels.iter().enumerate() {
+            let spec = if c == 0 { x0.clone() } else { frame(ch, a) };
+            let mut buf = vec![Complex::new(0.0f32, 0.0); PV_N];
+            for k in 0..bins {
+                let rot = Complex::from_polar(1.0, synth_phase[k] - phase0[k]);
+                buf[k] = spec[k] * rot;
+                if k > 0 && k < PV_N - k {
+                    buf[PV_N - k] = buf[k].conj();
+                }
+            }
+            ifft.process(&mut buf);
+            let out = &mut outs[c];
+            for i in 0..PV_N {
+                out[out_start + i] += buf[i].re / PV_N as f32 * window[i];
+            }
+        }
+        for i in 0..PV_N {
+            wsum[out_start + i] += window[i] * window[i];
+        }
+        m += 1;
+    }
+    for out in outs.iter_mut() {
+        for (o, w) in out.iter_mut().zip(&wsum) {
+            if *w > 1e-3 {
+                *o /= *w;
+            }
+        }
+        out.truncate(out_len);
+    }
+    outs
+}
+
+/// 雑音っぽさ(スペクトルの平坦さの平均、0〜1)。打楽器・雑音の多い素材ほど大きい
+fn noisiness(x: &[f32]) -> f32 {
+    use rustfft::{num_complex::Complex, FftPlanner};
+    let n = 2048;
+    if x.len() < n {
+        return 1.0;
+    }
+    let fft = FftPlanner::<f32>::new().plan_fft_forward(n);
+    let step = (x.len() / 40).max(n);
+    let (mut sum, mut count) = (0.0f32, 0usize);
+    let mut pos = 0;
+    while pos + n <= x.len() {
+        let mut buf: Vec<Complex<f32>> = x[pos..pos + n]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let w = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos();
+                Complex::new(v * w, 0.0)
+            })
+            .collect();
+        fft.process(&mut buf);
+        // 約 100Hz〜10kHz(48kHz のとき)の平坦さ
+        let p: Vec<f32> = buf[4..430].iter().map(|c| c.norm_sqr() + 1e-12).collect();
+        let energy: f32 = p.iter().sum();
+        if energy > 1e-6 {
+            let geo = (p.iter().map(|v| v.ln()).sum::<f32>() / p.len() as f32).exp();
+            sum += geo / (energy / p.len() as f32);
+            count += 1;
+        }
+        pos += step;
+    }
+    if count == 0 {
+        1.0
+    } else {
+        sum / count as f32
+    }
+}
+
+/// 雑音っぽい(打楽器が中心の)素材とみなす平坦さ
+const NOISY: f32 = 0.2;
+
+/// 素材に合わせて伸縮の方法を選ぶ: 和音・持続音はフェーズボコーダ、打楽器・雑音の多い素材は WSOLA
+pub fn stretch_channels(
+    channels: &[&[f32]],
+    sample_rate: f32,
+    out_len: usize,
+    src_pos: impl Fn(usize) -> f64,
+) -> Vec<Vec<f32>> {
+    let percussive = channels.first().map_or(true, |c| noisiness(c) > NOISY);
+    if percussive {
+        wsola_channels(channels, sample_rate, out_len, src_pos)
+    } else {
+        phase_vocoder_channels(channels, out_len, src_pos)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +407,97 @@ mod tests {
 
     fn rms(x: &[f32]) -> f32 {
         (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    /// 和音(3 音)以外の成分の、全体に対する割合(dB)
+    fn impurity_db(x: &[f32], notes: &[f32]) -> f32 {
+        let (mut total, mut other) = (0.0f64, 0.0f64);
+        let n = x.len() as f64;
+        for b in 1..400 {
+            let f = b as f64 * 10.0 + 5.0;
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (k, v) in x.iter().enumerate() {
+                let w = 0.5 - 0.5 * (std::f64::consts::TAU * k as f64 / n).cos();
+                let ph = k as f64 * f * std::f64::consts::TAU / SR as f64;
+                re += *v as f64 * w * ph.cos();
+                im += *v as f64 * w * ph.sin();
+            }
+            let pw = re * re + im * im;
+            total += pw;
+            if notes.iter().all(|nf| (f - *nf as f64).abs() > 25.0) {
+                other += pw;
+            }
+        }
+        (10.0 * (other / total).log10()) as f32
+    }
+
+    #[test]
+    fn phase_vocoder_keeps_chords_cleaner_than_wsola() {
+        // 和音を 1.5 倍に伸ばす: フェーズボコーダの方が和音以外の成分(にじみ・うなり)が少ない
+        let notes = [220.0f32, 277.2, 329.6];
+        let x: Vec<f32> = (0..(SR * 2.0) as usize)
+            .map(|i| {
+                notes
+                    .iter()
+                    .map(|f| (std::f32::consts::TAU * f * i as f32 / SR).sin())
+                    .sum::<f32>()
+                    * 0.2
+            })
+            .collect();
+        let out_len = (x.len() as f32 * 1.5) as usize;
+        let map = |i: usize| i as f64 / 1.5;
+        let pv = phase_vocoder_channels(&[&x], out_len, map).remove(0);
+        let ws = wsola(&x, SR, out_len, map);
+        let (a, b) = (
+            impurity_db(&pv[12_000..60_000], &notes),
+            impurity_db(&ws[12_000..60_000], &notes),
+        );
+        assert!(a < b - 3.0, "フェーズボコーダ {a:.1} dB / WSOLA {b:.1} dB");
+        // 音程と音量はそのまま
+        let one =
+            phase_vocoder_channels(&[&sine(440.0, 1.0)], 72_000, |i| i as f64 / 1.5).remove(0);
+        assert!((freq_of(&one[10_000..60_000]) - 440.0).abs() < 2.0);
+        assert!((rms(&one[10_000..60_000]) - 0.5 / 2f32.sqrt()).abs() < 0.05);
+    }
+
+    #[test]
+    fn phase_vocoder_keeps_attacks_sharp() {
+        // 0.25 秒ごとの減衰する打撃音(和音)を 1.25 倍に: 打点の鋭さ(最初の 5ms のピーク)が残る
+        let hit = |i: usize| {
+            let t = (i % 12_000) as f32 / SR;
+            (-t / 0.05).exp()
+                * ((std::f32::consts::TAU * 330.0 * i as f32 / SR).sin()
+                    + (std::f32::consts::TAU * 440.0 * i as f32 / SR).sin())
+                * 0.3
+        };
+        let x: Vec<f32> = (0..48_000).map(hit).collect();
+        let y = phase_vocoder_channels(&[&x], 60_000, |i| i as f64 / 1.25).remove(0);
+        let x_peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let y_peak = y[15_000..45_000].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(y_peak > x_peak * 0.7, "打点が残る: {y_peak} / {x_peak}");
+    }
+
+    #[test]
+    fn chooses_the_method_by_content() {
+        let chord: Vec<f32> = (0..48_000)
+            .map(|i| {
+                ((std::f32::consts::TAU * 220.0 * i as f32 / SR).sin()
+                    + (std::f32::consts::TAU * 330.0 * i as f32 / SR).sin())
+                    * 0.2
+            })
+            .collect();
+        let mut r: u32 = 1;
+        let drums: Vec<f32> = (0..48_000)
+            .map(|i| {
+                r ^= r << 13;
+                r ^= r >> 17;
+                r ^= r << 5;
+                let t = (i % 12_000) as f32 / SR;
+                (r as f32 / u32::MAX as f32 - 0.5) * (-t / 0.03).exp()
+            })
+            .collect();
+        assert!(noisiness(&chord) < NOISY, "和音 {}", noisiness(&chord));
+        assert!(noisiness(&drums) > NOISY, "打楽器 {}", noisiness(&drums));
     }
 
     #[test]

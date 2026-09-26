@@ -727,7 +727,7 @@ fn stretch_key(project: &Project, clip: &glaux_core::Clip) -> Option<u64> {
     Some(h.finish())
 }
 
-/// テンポ追従クリップを伸縮する(WSOLA、音程は保つ)。戻り値はクリップ先頭から末尾までの
+/// テンポ追従クリップを伸縮する(音程は保つ。素材に合わせて WSOLA かフェーズボコーダ)。戻り値はクリップ先頭から末尾までの
 /// 波形(素材のサンプルレート)。出力の各時刻 → テンポマップで tick → 元テンポで素材の位置。
 fn render_follow(
     project: &Project,
@@ -751,7 +751,9 @@ fn render_follow(
     if let Some(side) = &src.side {
         channels.push(side);
     }
-    let mut out = glaux_dsp::stretch::wsola_channels(&channels, src.sample_rate, out_len, src_pos);
+    // 素材に合わせて方法を選ぶ(和音・持続音はフェーズボコーダ、打楽器は WSOLA)
+    let mut out =
+        glaux_dsp::stretch::stretch_channels(&channels, src.sample_rate, out_len, src_pos);
     let side = (out.len() > 1).then(|| out.remove(1));
     let frames = out.remove(0);
     SampleData {
