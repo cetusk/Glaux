@@ -46,6 +46,9 @@ export interface AudioClip {
   asset: string;
   offset_samples?: number;
   gain_db?: number;
+  /** フェードイン / アウトの長さ(ミリ秒) */
+  fade_in_ms?: number;
+  fade_out_ms?: number;
   /** テンポ追従(音程を保ったまま伸縮)。original_bpm = 素材を演奏したテンポ */
   stretch?: { mode: "none" } | { mode: "follow"; original_bpm: number };
 }

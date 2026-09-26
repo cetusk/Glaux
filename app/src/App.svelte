@@ -885,8 +885,14 @@
             />
           </div>
         {:else}
-          <button class="f edit" onclick={startBpmEdit} title="クリックでテンポ(BPM)を編集">
-            <span class="lbl">テンポ</span><span class="val">{bpm}</span>
+          <button
+            class="f edit"
+            onclick={startBpmEdit}
+            title={(project?.tempo_map.length ?? 0) > 1
+              ? "クリックで先頭のテンポ(BPM)を編集(曲の途中にテンポの変更あり。途中の変更はルーラーの右クリックで)"
+              : "クリックでテンポ(BPM)を編集(曲の途中から変えるときはルーラーを右クリック)"}
+          >
+            <span class="lbl">テンポ</span><span class="val">{bpm}{#if (project?.tempo_map.length ?? 0) > 1}*{/if}</span>
           </button>
         {/if}
         {#if editingSig}
