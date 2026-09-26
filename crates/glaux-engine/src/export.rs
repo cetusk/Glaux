@@ -233,9 +233,9 @@ pub fn export_wav(
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(path, spec)?;
-    let mut dither = Tpdf::new();
-    for s in &samples {
-        writer.write_sample(to_i16_dithered(*s, &mut dither))?;
+    let mut shaper = Shaper::new(sample_rate);
+    for (i, s) in samples.iter().enumerate() {
+        writer.write_sample(shaper.quantize(*s, i % 2))?;
     }
     writer.finalize()?;
     Ok(samples.len() as f64 / 2.0 / sample_rate)
@@ -256,6 +256,8 @@ pub struct ExportOptions {
     pub target_lufs: Option<f64>,
     /// 音量を合わせるときのピークの上限(dBTP = True Peak)。超える所はリミッタで抑える
     pub ceiling_db: f64,
+    /// 16bit のとき、量子化の雑音を耳につきにくい帯域へ寄せる(ノイズシェーピング)
+    pub noise_shaping: bool,
 }
 
 impl Default for ExportOptions {
@@ -266,6 +268,7 @@ impl Default for ExportOptions {
             range_secs: None,
             target_lufs: None,
             ceiling_db: -1.0,
+            noise_shaping: true,
         }
     }
 }
@@ -398,7 +401,13 @@ pub fn export_audio(
         }
         limiter_db = limit_peaks(&mut stereo, sr, opts.ceiling_db);
     }
-    write_wav(path, &stereo, opts.sample_rate, opts.bits)?;
+    write_wav_with(
+        path,
+        &stereo,
+        opts.sample_rate,
+        opts.bits,
+        opts.noise_shaping,
+    )?;
     let lufs = if opts.sample_rate == 48_000 {
         crate::analyze::integrated_lufs(&stereo)
     } else {
@@ -431,12 +440,24 @@ pub fn export_audio(
     })
 }
 
-/// ステレオ・インターリーブを WAV に書く(16 / 24 はディザ付きの整数、32 は浮動小数)
+/// ステレオ・インターリーブを WAV に書く(16 / 24 はディザ付きの整数、32 は浮動小数)。
+/// 16bit はノイズシェーピング付き([`write_wav_with`] で切れる)
 pub fn write_wav(
     path: &Path,
     stereo: &[f32],
     sample_rate: u32,
     bits: u16,
+) -> Result<(), ExportError> {
+    write_wav_with(path, stereo, sample_rate, bits, true)
+}
+
+/// [`write_wav`] と同じ。`noise_shaping` が false なら 16bit も TPDF ディザだけ
+pub fn write_wav_with(
+    path: &Path,
+    stereo: &[f32],
+    sample_rate: u32,
+    bits: u16,
+    noise_shaping: bool,
 ) -> Result<(), ExportError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -460,13 +481,16 @@ pub fn write_wav(
     };
     let mut w = hound::WavWriter::create(path, spec)?;
     let mut dither = Tpdf::new();
-    for &s in stereo {
+    let mut shaper = (bits == 16 && noise_shaping).then(|| Shaper::new(sample_rate as f64));
+    for (i, &s) in stereo.iter().enumerate() {
         if float {
             w.write_sample(s)?;
         } else if bits == 24 {
             let full = 8_388_607.0f32;
             let v = (s.clamp(-1.0, 1.0) * full + dither.next()).round();
             w.write_sample(v.clamp(-full - 1.0, full) as i32)?;
+        } else if let Some(sh) = shaper.as_mut() {
+            w.write_sample(sh.quantize(s, i % 2))?;
         } else {
             w.write_sample(to_i16_dithered(s, &mut dither))?;
         }
@@ -496,6 +520,94 @@ impl Tpdf {
     }
 }
 
+/// ノイズシェーピングの段数(Wannamaker と同じ 9 次)
+const SHAPE_ORDER: usize = 9;
+
+/// ノイズシェーピングの係数を設計する(サンプルレートごと)。
+///
+/// 量子化の雑音の形 NTF(z) = 1 + Σ a_k z^-k の、聞こえやすさで重み付けした雑音の大きさ
+/// ∫ |NTF(ω)|² W(ω) dω を最小にする 9 係数を求める。W は人が聞こえる最小の音(Terhardt の絶対閾)の逆で、
+/// 耳が敏感な 2〜5kHz ほど重い。これは線形予測(LPC)と同じ形なので、W の自己相関から Levinson-Durbin で解け、
+/// 答えは必ず最小位相(誤差の帰還が安定)になる。W の幅は 50dB で下を切る(聞こえにくい高域へ雑音を
+/// 押しやりすぎない)。SoX の係数表(LGPL)は使わず、ここで作る
+fn design_noise_shaping(sample_rate: f64) -> [f32; SHAPE_ORDER] {
+    const M: usize = 4096;
+    let ath = |f_hz: f64| -> f64 {
+        let f = (f_hz / 1000.0).max(0.02);
+        3.64 * f.powf(-0.8) - 6.5 * (-0.6 * (f - 3.3).powi(2)).exp() + 1e-3 * f.powi(4)
+    };
+    // 0..ナイキストの重み(聞こえやすさ)。最大から 50dB 下で切る
+    let w_db: Vec<f64> = (0..M)
+        .map(|k| -ath((k as f64 + 0.5) / M as f64 * sample_rate / 2.0))
+        .collect();
+    let top = w_db.iter().copied().fold(f64::MIN, f64::max);
+    let w: Vec<f64> = w_db
+        .iter()
+        .map(|d| 10f64.powf(d.max(top - 50.0) / 10.0))
+        .collect();
+    // 自己相関 r[k] = ∫ W(ω) cos(kω) dω
+    let r: Vec<f64> = (0..=SHAPE_ORDER)
+        .map(|k| {
+            w.iter()
+                .enumerate()
+                .map(|(i, wi)| {
+                    let om = (i as f64 + 0.5) / M as f64 * std::f64::consts::PI;
+                    wi * (k as f64 * om).cos()
+                })
+                .sum::<f64>()
+        })
+        .collect();
+    // Levinson-Durbin
+    let mut a = [0.0f64; SHAPE_ORDER + 1];
+    a[0] = 1.0;
+    let mut err = r[0];
+    for m in 1..=SHAPE_ORDER {
+        let acc: f64 = (1..m).map(|k| a[k] * r[m - k]).sum::<f64>() + r[m];
+        let kappa = -acc / err;
+        let prev = a;
+        for k in 1..m {
+            a[k] = prev[k] + kappa * prev[m - k];
+        }
+        a[m] = kappa;
+        err *= 1.0 - kappa * kappa;
+    }
+    std::array::from_fn(|k| a[k + 1] as f32)
+}
+
+/// 16bit へのノイズシェーピング付きの量子化(TPDF ディザ + 誤差の帰還、左右別)
+struct Shaper {
+    coefs: [f32; SHAPE_ORDER],
+    /// 直近の量子化誤差(左右、新しい順)
+    err: [[f32; SHAPE_ORDER]; 2],
+    dither: Tpdf,
+}
+
+impl Shaper {
+    fn new(sample_rate: f64) -> Self {
+        Shaper {
+            coefs: design_noise_shaping(sample_rate),
+            err: [[0.0; SHAPE_ORDER]; 2],
+            dither: Tpdf::new(),
+        }
+    }
+
+    /// 1 サンプルを 16bit に(`ch` は 0 = 左、1 = 右)
+    fn quantize(&mut self, s: f32, ch: usize) -> i16 {
+        let full = i16::MAX as f32;
+        let e = &mut self.err[ch];
+        let fb: f32 = self.coefs.iter().zip(e.iter()).map(|(a, x)| a * x).sum();
+        let v = s.clamp(-1.0, 1.0) * full + fb;
+        let q = (v + self.dither.next())
+            .round()
+            .clamp(i16::MIN as f32, i16::MAX as f32);
+        // 誤差は大きく振り切れたとき(クリップ)に暴れないよう抑える
+        let err = (q - v).clamp(-4.0, 4.0);
+        e.copy_within(0..SHAPE_ORDER - 1, 1);
+        e[0] = err;
+        q as i16
+    }
+}
+
 /// f32(-1..1)を 16bit に。ディザを足してから丸める(以前は切り捨て)
 fn to_i16_dithered(s: f32, dither: &mut Tpdf) -> i16 {
     let scaled = s.clamp(-1.0, 1.0) * i16::MAX as f32 + dither.next();
@@ -506,6 +618,70 @@ fn to_i16_dithered(s: f32, dither: &mut Tpdf) -> i16 {
 mod tests {
     use super::*;
     use glaux_core::{Clip, ClipContent, ClipId, Note, NoteId, Tick, Track, TrackId, TrackKind};
+
+    /// 量子化の誤差(元の音との差、LSB)を、聞こえやすさ(絶対閾)で重み付けした雑音の大きさ(dB)と、重みなしの大きさ
+    fn noise_db(err: &[f64], sr: f64) -> (f64, f64) {
+        use rustfft::{num_complex::Complex, FftPlanner};
+        let n = 8192;
+        let fft = FftPlanner::<f64>::new().plan_fft_forward(n);
+        let (mut weighted, mut plain) = (0.0, 0.0);
+        for chunk in err.chunks_exact(n) {
+            let mut buf: Vec<Complex<f64>> = chunk
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let w = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n as f64).cos();
+                    Complex::new(v * w, 0.0)
+                })
+                .collect();
+            fft.process(&mut buf);
+            for (k, c) in buf[1..n / 2].iter().enumerate() {
+                let f = ((k + 1) as f64 * sr / n as f64 / 1000.0).max(0.02);
+                let ath =
+                    3.64 * f.powf(-0.8) - 6.5 * (-0.6 * (f - 3.3).powi(2)).exp() + 1e-3 * f.powi(4);
+                let p = c.norm_sqr();
+                plain += p;
+                weighted += p * 10f64.powf(-ath / 10.0);
+            }
+        }
+        (10.0 * weighted.log10(), 10.0 * plain.log10())
+    }
+
+    #[test]
+    fn noise_shaping_moves_noise_away_from_sensitive_bands() {
+        for sr in [44_100.0f64, 48_000.0] {
+            // 静かな(-60dBFS)1kHz の音を 16bit にしたときの誤差
+            let x: Vec<f32> = (0..(sr as usize * 2))
+                .map(|i| (i as f64 * 1000.0 * std::f64::consts::TAU / sr).sin() as f32 * 0.001)
+                .collect();
+            let mut shaper = Shaper::new(sr);
+            let mut tpdf = Tpdf::new();
+            let full = i16::MAX as f64;
+            let shaped: Vec<f64> = x
+                .iter()
+                .map(|v| shaper.quantize(*v, 0) as f64 - *v as f64 * full)
+                .collect();
+            let plain: Vec<f64> = x
+                .iter()
+                .map(|v| to_i16_dithered(*v, &mut tpdf) as f64 - *v as f64 * full)
+                .collect();
+            let (ws, us) = noise_db(&shaped, sr);
+            let (wp, up) = noise_db(&plain, sr);
+            // 聞こえやすさで重み付けすると 10dB 以上静か(重みなしの雑音は増える)
+            assert!(
+                ws < wp - 10.0,
+                "{sr}: 重み付き シェーピング {ws:.1} / TPDF {wp:.1}"
+            );
+            assert!(us > up, "{sr}: 重みなしの雑音は増える {us:.1} / {up:.1}");
+        }
+        // 大きな音(振り切れる所を含む)でも暴れない
+        let mut shaper = Shaper::new(48_000.0);
+        for i in 0..48_000 {
+            let v = (i as f32 * 0.05).sin() * 1.2;
+            let q = shaper.quantize(v, 1) as f32 / i16::MAX as f32;
+            assert!((q - v.clamp(-1.0, 1.0)).abs() < 0.01, "{i}: {q} / {v}");
+        }
+    }
 
     #[test]
     fn limiter_keeps_peaks_under_the_ceiling_and_leaves_quiet_parts() {

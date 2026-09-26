@@ -19,6 +19,7 @@
   let range = $state<"all" | "loop" | "selection">("all");
   let sampleRate = $state(48000);
   let bits = $state(16);
+  let noiseShaping = $state(true);
   let loudness = $state<string>("none");
   let path = $state<string | null>(null);
   let busy = $state(false);
@@ -72,6 +73,7 @@
       path: path ?? undefined,
       sample_rate: sampleRate,
       bits,
+      noise_shaping: bits === 16 ? noiseShaping : undefined,
       stems: target === "stems",
       loudness_lufs: target === "mix" && loudness !== "none" ? Number(loudness) : undefined,
     };
@@ -151,6 +153,13 @@
           <option value={32}>32 bit 浮動小数</option>
         </select>
       </div>
+      {#if bits === 16}
+        <label
+          class="check"
+          title="16bit に丸めるときの雑音を、耳が敏感な 2〜5kHz から聞こえにくい高域へ寄せる(聞こえ方で約 20dB 静か)。書き出した後でさらに加工・変換するなら外す"
+          ><input type="checkbox" bind:checked={noiseShaping} /> ノイズシェーピング</label
+        >
+      {/if}
     </div>
 
   {/if}
@@ -276,5 +285,15 @@
     padding: 6px 12px;
     border-color: var(--accent-dim);
     color: var(--accent);
+  }
+
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    cursor: pointer;
   }
 </style>

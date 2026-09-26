@@ -21,6 +21,10 @@ pub struct ExportRequest {
     /// 16 / 24 / 32(32 は浮動小数。既定 16)
     #[serde(default)]
     pub bits: Option<u16>,
+    /// 16bit のとき、量子化の雑音を耳につきにくい高域へ寄せる(ノイズシェーピング)。既定 true。
+    /// 書き出した後でさらに加工・変換するなら false(TPDF ディザだけ)がよい
+    #[serde(default)]
+    pub noise_shaping: Option<bool>,
     /// 範囲(tick)。両方省略で曲全体
     #[serde(default)]
     pub start_tick: Option<u64>,
@@ -83,6 +87,7 @@ fn options(project: &Project, req: &ExportRequest) -> Result<ExportOptions, Stri
         bits,
         range_secs,
         target_lufs: req.loudness_lufs,
+        noise_shaping: req.noise_shaping.unwrap_or(true),
         ..Default::default()
     })
 }
@@ -121,8 +126,14 @@ pub fn run(
                 Err(e) => return Err(format!("「{}」を描き出せません: {e}", t.name)),
             };
             let path = dir.join(format!("{:02}_{}.wav", i + 1, sanitize(&t.name)));
-            glaux_engine::write_wav(&path, &stereo, opts.sample_rate, opts.bits)
-                .map_err(|e| e.to_string())?;
+            glaux_engine::write_wav_with(
+                &path,
+                &stereo,
+                opts.sample_rate,
+                opts.bits,
+                opts.noise_shaping,
+            )
+            .map_err(|e| e.to_string())?;
             files.push(json!({ "track": t.name, "path": path.to_string_lossy() }));
         }
         if files.is_empty() {

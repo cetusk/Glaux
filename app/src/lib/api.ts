@@ -646,6 +646,8 @@ export interface ExportRequest {
   path?: string;
   sample_rate?: number;
   bits?: number;
+  /** 16bit のノイズシェーピング(既定 true) */
+  noise_shaping?: boolean;
   start_tick?: number;
   end_tick?: number;
   loudness_lufs?: number;

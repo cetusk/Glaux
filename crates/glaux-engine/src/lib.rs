@@ -46,7 +46,8 @@ pub use data::{
 };
 pub use export::{
     export_audio, export_wav, limit_peaks, render, render_project, render_project_range,
-    render_stem, render_track_note, write_wav, ExportError, ExportOptions, ExportReport,
+    render_stem, render_track_note, write_wav, write_wav_with, ExportError, ExportOptions,
+    ExportReport,
 };
 pub use midi::list_midi_inputs;
 pub use output::{
