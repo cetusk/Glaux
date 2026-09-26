@@ -1250,7 +1250,8 @@ async fn get_master_params(state: State<'_, AppState>) -> Result<Value, String> 
         "track_id": "__master__",
         "device": { "name": "master", "is_default_fallback": false },
         "params": [],
-        "effects": glaux_mcp::server::effects_json(&project.master.effects),
+        "effects": glaux_mcp::server::effects_json(&project.master.effects, project.master.fx_links.as_deref()),
+        "fx_links": project.master.fx_links,
         "available_effects": serde_json::to_value(glaux_dsp::effect_catalog()).unwrap_or(Value::Null),
         "project_version": version,
     }))
@@ -1387,8 +1388,10 @@ async fn save_fx_preset(
     Ok(json!({ "saved": preset.name }))
 }
 
-/// エフェクトのプリセットを足す。`parked` なら外してある状態で `pos` に置く
+/// エフェクトのプリセットを足す。`parked` なら、つながずに `pos` に置く。
+/// `split: [from, to]` なら、その線の間に入れる(1 回の undo)
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn apply_fx_preset(
     state: State<'_, AppState>,
     target: String,
@@ -1396,12 +1399,25 @@ async fn apply_fx_preset(
     index: Option<usize>,
     parked: bool,
     pos: Option<[f32; 2]>,
+    split: Option<[String; 2]>,
 ) -> Result<Value, String> {
     let target = glaux_mcp::fx_presets::Target::parse(&target)?;
     let (project, _) = state.handle.get_project().await?;
     let preset = glaux_mcp::fx_presets::load(&glaux_mcp::fx_presets::default_dir(), &name)?;
-    let (command, fx_id) =
-        glaux_mcp::fx_presets::add_command(&project, &target, &preset, index, parked, pos)?;
+    let (command, fx_id) = glaux_mcp::fx_presets::add_command(
+        &project,
+        &target,
+        &preset,
+        index,
+        parked || split.is_some(),
+        pos,
+    )?;
+    let command = match split {
+        None => command,
+        Some([from, to]) => {
+            glaux_mcp::fx_presets::split_command(&project, &target, command, &fx_id, &from, &to)?
+        }
+    };
     let label = format!("エフェクトのプリセット「{}」を追加", preset.name);
     let (_, m) = state
         .handle
