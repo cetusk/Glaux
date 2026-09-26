@@ -37,7 +37,8 @@ signal beat(bar: int, beat: int, time: float)        # 拍の頭を通り過ぎ�
 signal section(name: String, time: float)            # マーカー(「サビ」など)を通り過ぎた
 signal note(track: String, pitch: int, velocity: int, time: float, duration: float)
                                                      # watch_track したトラックの音が鳴った(pitch は MIDI 番号)
-signal song_finished()                               # 曲が余韻まで鳴り終わった
+signal song_finished()                               # 曲が余韻まで鳴り終わった(ループ中は出ない)
+signal jumped(from: float, to: float)                # 再生位置が飛んだのが聞こえた(ループの折り返し・queue_section。秒)
 ```
 
 - シグナルは `_process` の中で、前のフレームから今までに通り過ぎた出来事を**時刻順にまとめて**出す。
@@ -82,6 +83,14 @@ signal song_finished()                               # 曲が余韻まで鳴り�
 | `play_note(track: String, pitch: int, velocity: int = 100, duration: float = 0.2)` | `bool` | トラックの音源とエフェクトで 1 音をすぐ鳴らす(曲を再生していなくても鳴る)。鳴らせなければ false |
 | `play_note_at(track: String, pitch: int, time: float, velocity: int = 100, duration: float = 0.2)` | `bool` | `time`(`sync_to` の曲の時刻。未設定なら自分の曲)に**聞こえるように**鳴らす。過ぎていればすぐ |
 | `release_notes()` | − | 鳴らした音をすべて離す |
+| `set_loop_section(name: String)` | `bool` | マーカー `name` の区間(次のマーカーか曲の終わりの小節の頭まで)を繰り返す。無ければ false |
+| `set_loop(from: float, to: float)` | − | 秒で区間を指定して繰り返す(`to > from`) |
+| `clear_loop()` / `is_looping()` | − / `bool` | 繰り返しをやめる / 繰り返し中か |
+| `queue_section(name: String, at: String = "bar", loop_it: bool = false)` | `bool` | マーカー `name` の区間の頭へ切り替える予約(1 つだけ。新しい予約で置き換わる)。`at`: `"beat"` 次の拍 / `"bar"` 次の小節の頭 / `"section"` 今の区間の終わり(ループ中はループの終わり)。`loop_it` が true なら切り替えた先を繰り返す。false で今のループの外へ出るならループを外す |
+| `cancel_queued_section()` | − | 予約を取り消す(`seek` / `play_from` / `stop` でも消える) |
+| `get_queued_section()` | `String` | 予約している切り替え先(無ければ空。切り替わったら空) |
+| `set_track_volume_db(track: String, db: float, fade: float = 0.0)` | `bool` | トラックの追加の音量(曲の中の音量に足す。0 で元のまま、-80 以下で無音)。`fade` 秒かけて直線的に変える。曲のファイルは変えない |
+| `get_track_volume_db(track: String)` | `float` | 追加の音量の今の値(フェード中は途中の値) |
 
 ### プロパティ
 
@@ -203,6 +212,37 @@ func _on_section(name: String, time: float) -> void:
 
 マーカー名は曲側(Glaux)で決まる。`get_sections()` で実際の名前を確認してから書く。
 
+### 3-7b. 場面に合わせて曲を組み替える(ループ・展開の切り替え・楽器の足し引き)
+
+曲は Glaux 側でマーカー(「探索」「戦闘」「エンディング」など)で区切っておき、ゲーム側で切り替える。
+
+```gdscript
+func _ready() -> void:
+	music.load_song("res://songs/Stage1.glaux")
+	music.jumped.connect(_on_jumped)
+	music.set_loop_section("探索")
+	music.set_track_volume_db("Drums", -80.0)          # 最初はドラム抜き
+	await get_tree().process_frame
+	music.play()
+
+func on_enemy_spotted() -> void:
+	music.set_track_volume_db("Drums", 0.0, 2.0)       # 2 秒かけて入れる
+	music.queue_section("戦闘", "bar", true)           # 次の小節の頭で切り替えて、以後繰り返す
+
+func on_boss_defeated() -> void:
+	music.queue_section("エンディング", "section")      # 今の区間の終わりで切り替え、最後まで鳴らす
+
+func _on_jumped(from: float, to: float) -> void:
+	pass   # 切り替え・折り返しが聞こえた。拍に合わせた処理の位置合わせはここで作り直す
+```
+
+- 切り替えは描き出しの位置(聞こえている位置より少し先)の次の区切りで起きる。区切りの直前に予約すると次の区切りになる
+- 切り替わる前の拍・マーカーは切り替え位置の手前まで出て、その後は飛んだ先の `section`・`beat` が出る。
+  拍で動くものは `beat` シグナルに従えば自然に続く。`get_song_time()` は飛んだ所で戻る(単調増加ではなくなる)
+- 先読み(`get_notes` など)は曲の時間軸のままなので、ループ・切り替えの先は考慮されない。
+  予約した直後は `get_queued_section()` を見て、先読みを飛んだ先の区間に切り替える
+- 楽器の足し引きは `set_track_volume_db` で。ミュート・ソロの代わりにこれを使う(曲のファイルは変えない)
+
 ### 3-8. 効果音を曲のコードに合わせ、拍にぴったり鳴らす(WAV 不要)
 
 効果音は、効果音用の曲(例 `SEKit.glaux`。トラックごとに音色を作ってある)を読み込んだ**別の** `GlauxPlayer` で、
@@ -249,6 +289,7 @@ func on_player_hit(combo: int) -> void:
 - `bus` は `load_song()` の前に設定
 - シーンを切り替えるときは `stop()` してから(`GlauxPlayer` をツリーから外すと音も止まる)
 - 曲を切り替えるときは同じ `GlauxPlayer` で `load_song()` し直してよい(前の曲は解放される)
+- ループ・切り替えを使うときは、`get_song_time()` が単調増加だと仮定しない(飛んだ所で戻る)。`jumped` で作り直す
 - 1 つの `GlauxPlayer` で鳴る曲は 1 つ。同時に別の曲・ジングルを鳴らすなら `GlauxPlayer` をもう 1 つ置く
 - 効果音は WAV の `pitch_scale` で音程を変えず、`play_note` / `play_note_at` で鳴らす(音色が崩れない)。
   効果音用の `GlauxPlayer` には `sync_to` に BGM の `GlauxPlayer` を設定する。効果音用のプレイヤーでは `play()` を呼ばない

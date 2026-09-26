@@ -95,6 +95,19 @@ pub struct Shared {
     /// 影響は 1 ブロックのジャンプ位置に限られる(実害なし)
     pub loop_start: AtomicU64,
     pub loop_end: AtomicU64,
+    /// 予約した位置で飛ぶ(ゲームの曲の展開の切り替え)。再生位置が `jump_at` に来たら `jump_to` へ。
+    /// `NO_SEEK` なら予約なし。飛ぶときに `jump_loop_end > jump_loop_start` ならループ区間もそれに替える
+    /// (`jump_loop_end` が `NO_SEEK` ならループはそのまま、0 ならループを外す)。
+    /// 書く側は `jump_to` → ループ → `jump_at` の順に書く(`jump_at` が予約の合図)
+    pub jump_at: AtomicU64,
+    pub jump_to: AtomicU64,
+    pub jump_loop_start: AtomicU64,
+    pub jump_loop_end: AtomicU64,
+    /// 直近に位置が飛んだ記録(ループの折り返し・予約した飛び先)。[`JumpRecord`] で読む
+    pub last_jump: JumpLog,
+    /// トラックごとの追加の音量(リニアの f32 のビット。既定 1.0)。フェーダー・オートメーションに掛ける。
+    /// プロジェクトを変えずに外から動かす(ゲームの場面で楽器を足し引きする)
+    pub live_gain: [AtomicU32; MAX_TRACKS],
     /// メトロノーム(拍ごとのクリック)を鳴らすか
     pub metronome: AtomicBool,
     /// 録音中(曲末の自動停止を抑止する)
@@ -125,6 +138,58 @@ pub struct Shared {
     pub levels: Levels,
     /// 聴き方の切り替えと、相関・ゴニオメーター([`crate::monitor`])
     pub monitor: crate::monitor::MonitorShared,
+}
+
+/// 位置が飛んだ記録: レンダラの時計 `clock` のサンプルで、再生位置が `from` から `to` へ飛んだ。
+/// 「いま聞こえている位置」を、出力の遅れの間に飛んだ場合も正しく求めるのに使う
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JumpRecord {
+    /// 何回目の飛びか(0 = まだ飛んでいない)
+    pub seq: u64,
+    pub clock: u64,
+    pub from: u64,
+    pub to: u64,
+}
+
+/// [`JumpRecord`] の受け渡し(書くのはレンダラだけ。読む側は `seq` を前後で確かめる)
+#[derive(Default)]
+pub struct JumpLog {
+    seq: AtomicU64,
+    clock: AtomicU64,
+    from: AtomicU64,
+    to: AtomicU64,
+}
+
+impl JumpLog {
+    fn write(&self, clock: u64, from: u64, to: u64) {
+        // 奇数 = 書いている途中
+        let seq = self.seq.load(Ordering::Relaxed);
+        self.seq.store(seq + 1, Ordering::Release);
+        self.clock.store(clock, Ordering::Release);
+        self.from.store(from, Ordering::Release);
+        self.to.store(to, Ordering::Release);
+        self.seq.store(seq + 2, Ordering::Release);
+    }
+
+    /// 直近の記録(書いている途中なら少し待って読み直す)
+    pub fn read(&self) -> JumpRecord {
+        loop {
+            let a = self.seq.load(Ordering::Acquire);
+            if a % 2 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let r = JumpRecord {
+                seq: a / 2,
+                clock: self.clock.load(Ordering::Acquire),
+                from: self.from.load(Ordering::Acquire),
+                to: self.to.load(Ordering::Acquire),
+            };
+            if self.seq.load(Ordering::Acquire) == a {
+                return r;
+            }
+        }
+    }
 }
 
 /// トラック(フェーダー・パンの後)とマスター(マスターの音量の後、クリップ防止の前)の直近のピーク。
@@ -297,6 +362,12 @@ impl Shared {
             preview: AtomicU64::new(0),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
+            jump_at: AtomicU64::new(NO_SEEK),
+            jump_to: AtomicU64::new(0),
+            jump_loop_start: AtomicU64::new(0),
+            jump_loop_end: AtomicU64::new(NO_SEEK),
+            last_jump: JumpLog::default(),
+            live_gain: std::array::from_fn(|_| AtomicU32::new(1.0f32.to_bits())),
             metronome: AtomicBool::new(false),
             recording: AtomicBool::new(false),
             click_only: AtomicBool::new(false),
@@ -1030,10 +1101,12 @@ impl Renderer {
         let hard_limit = (VOICE_HARD_LIMIT_SECS * sr) as u64;
         let frames = out.len() / channels;
 
-        // ループ区間(このブロックの間は固定値として扱う)
-        let loop_start = self.shared.loop_start.load(Ordering::Acquire);
-        let loop_end = self.shared.loop_end.load(Ordering::Acquire);
-        let looping = loop_end > loop_start;
+        // ループ区間(このブロックの間は固定値として扱う。予約した飛びでだけ替わる)
+        let mut loop_start = self.shared.loop_start.load(Ordering::Acquire);
+        let mut loop_end = self.shared.loop_end.load(Ordering::Acquire);
+        let mut looping = loop_end > loop_start;
+        // 予約した飛び先(`jump_at` を先に読み、合図が立っていれば残りを読む)
+        let mut jump_at = self.shared.jump_at.load(Ordering::Acquire);
 
         // メトロノーム: このブロックで最初に来る拍を求める(resync 後も自然に追従)
         let metronome = self.shared.metronome.load(Ordering::Acquire);
@@ -1161,8 +1234,37 @@ impl Renderer {
             // (ぶつ切りのクリックを避ける)、イベント・オートメーションのカーソルを再同期。
             // 旧世代のボイスは 1 周分のリリース猶予の後に解放する(無限に世代が
             // 積み重なって CPU が漸増するのを防ぐ)
-            if playing && looping && self.pos >= loop_end {
-                self.pos = loop_start;
+            let wrap_to = if playing && jump_at != NO_SEEK && self.pos >= jump_at {
+                // 予約した飛び: ループの折り返しより先に見る(ループの終わりちょうどに予約しても飛べる)
+                let to = self.shared.jump_to.load(Ordering::Acquire);
+                let ls = self.shared.jump_loop_start.load(Ordering::Acquire);
+                let le = self.shared.jump_loop_end.load(Ordering::Acquire);
+                if le != NO_SEEK {
+                    loop_start = if le > ls { ls } else { 0 };
+                    loop_end = if le > ls { le } else { 0 };
+                    looping = loop_end > loop_start;
+                    self.shared.loop_start.store(loop_start, Ordering::Release);
+                    self.shared.loop_end.store(loop_end, Ordering::Release);
+                }
+                // 飛んでいる間に次の予約が書かれていたら消さない
+                let _ = self.shared.jump_at.compare_exchange(
+                    jump_at,
+                    NO_SEEK,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                jump_at = NO_SEEK;
+                Some(to)
+            } else if playing && looping && self.pos >= loop_end {
+                Some(loop_start)
+            } else {
+                None
+            };
+            if let Some(to) = wrap_to {
+                self.shared
+                    .last_jump
+                    .write(self.clock + frame as u64, self.pos, to);
+                self.pos = to;
                 self.voices.retain_mut(|v| {
                     // 奪われてフェード中の音は、折り返しを機に消す
                     if v.stolen {
@@ -1685,6 +1787,12 @@ impl Renderer {
         let post: &[crate::data::SendMix] = &mix.sends;
         let mut peak = 0.0f32;
         let k = gain_smooth_coef(sr);
+        // 外から動かす追加の音量(ゲームの場面で楽器を足し引きする)。なめらかさは音量と同じ追従で
+        let live = self
+            .shared
+            .live_gain
+            .get(ti)
+            .map_or(1.0, |g| f32::from_bits(g.load(Ordering::Relaxed)));
         let mut gs = self
             .gain_smooth
             .get(ti)
@@ -1714,6 +1822,7 @@ impl Renderer {
                 let (pl, pr) = pan_law(pan);
                 (amp * pl, amp * pr)
             };
+            let (gl, gr) = (gl * live, gr * live);
             if gs.0.is_nan() {
                 gs = (gl, gr);
             } else {
@@ -3016,6 +3125,57 @@ mod tests {
         let block = render_block(&mut r, 4800);
         assert!(rms(&block) < 1e-3, "ノート終了後はほぼ無音のはず");
         assert_eq!(shared.pos.load(Ordering::Acquire), 4800 * 3);
+    }
+
+    #[test]
+    fn queued_jump_fires_at_the_sample_and_can_switch_the_loop() {
+        // ノート 0..4800。9600 で 24000 へ飛び、飛んだ先は 24000..28800 をループ
+        let shared = Arc::new(Shared::new(data_with_note(0, 4800, true)));
+        shared.playing.store(true, Ordering::Release);
+        shared.jump_to.store(24_000, Ordering::Release);
+        shared.jump_loop_start.store(24_000, Ordering::Release);
+        shared.jump_loop_end.store(28_800, Ordering::Release);
+        shared.jump_at.store(9600, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 4800);
+        assert_eq!(shared.last_jump.read().seq, 0, "まだ飛んでいない");
+        let _ = render_block(&mut r, 4800 + 100);
+        // 9600 のサンプルちょうどで飛び、そこから 100 サンプル進んでいる
+        assert_eq!(shared.pos.load(Ordering::Acquire), 24_100);
+        let rec = shared.last_jump.read();
+        assert_eq!(
+            (rec.seq, rec.clock, rec.from, rec.to),
+            (1, 9600, 9600, 24_000)
+        );
+        assert_eq!(
+            shared.jump_at.load(Ordering::Acquire),
+            NO_SEEK,
+            "予約は消える"
+        );
+        assert_eq!(shared.loop_start.load(Ordering::Acquire), 24_000);
+        assert_eq!(shared.loop_end.load(Ordering::Acquire), 28_800);
+        // 飛んだ先のループで折り返す(記録も増える)
+        let _ = render_block(&mut r, 4800);
+        let pos = shared.pos.load(Ordering::Acquire);
+        assert!((24_000..28_800).contains(&pos), "{pos}");
+        let rec = shared.last_jump.read();
+        assert_eq!((rec.seq, rec.from, rec.to), (2, 28_800, 24_000));
+        // 曲の終わりを過ぎてもループ中は止まらない
+        assert!(shared.playing.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn live_gain_scales_a_track_smoothly() {
+        let shared = Arc::new(Shared::new(data_with_note(0, 48_000, true)));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 2400);
+        let full = rms(&render_block(&mut r, 2400));
+        shared.live_gain[0].store(0.5f32.to_bits(), Ordering::Relaxed);
+        let _ = render_block(&mut r, 2400);
+        let half = rms(&render_block(&mut r, 2400));
+        let ratio = half / full;
+        assert!((ratio - 0.5).abs() < 0.08, "{ratio}");
     }
 
     #[test]

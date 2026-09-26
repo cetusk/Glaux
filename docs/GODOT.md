@@ -13,7 +13,7 @@ Glaux で作った曲(`.glaux` フォルダ)を Godot 4 のゲームの中でそ
 | [`godot/demo/addons/glaux/PROMPT.md`](../godot/demo/addons/glaux/PROMPT.md) | 人間 → AI | ゲーム側の AI に渡すプロンプトの例(導入・敵の同期・判定・調整・効果音) |
 | [`godot/demo/addons/glaux/CHANGELOG.md`](../godot/demo/addons/glaux/CHANGELOG.md) | 両方 | 改訂ノート(版ごとの変更。更新したら必ず書き足す) |
 
-対応: Godot 4.3 以降、Windows(64bit)。Linux でも動作確認済み(macOS は未確認)。
+対応: Godot 4.3 以降、Windows(64bit)・Linux(x86_64)。macOS はビルドの手順を用意しているが未確認。
 
 ## 1. ビルドと配布物の作成(Windows)
 
@@ -32,6 +32,18 @@ godot\build_windows.bat
 3. 配布物を作る:
    - `godot\dist\addons\glaux\`(`glaux.gdextension`・`bin\glaux_godot.dll`・書き出しプラグイン `plugin.cfg` / `plugin.gd` / `export_plugin.gd`・`README.md`・`AI_GUIDE.md`・`PROMPT.md`・`CHANGELOG.md`)
    - `godot\dist\glaux-godot-addon.zip`(上のフォルダを zip にしたもの。`addons\glaux\` の形で入っている)
+
+### Linux / macOS
+
+```sh
+godot/build_unix.sh              # Linux: libglaux_godot.so、macOS: libglaux_godot.dylib(いまの CPU 向け)
+godot/build_unix.sh --universal  # macOS: Apple Silicon と Intel をまとめた .dylib(両方の target を rustup で入れておく)
+```
+
+デモのアドオンと `godot/dist/` に置くところは Windows と同じです。`godot/dist/addons/glaux/bin/` にある
+他の OS のファイルは消さないので、各 OS で順にビルドすると 1 つの zip に全部入ります(Windows の bat も同じ)。
+macOS で配布するときは、受け取った人の環境で「開発元を確認できない」と止められることがあるため、
+署名するか、受け取った人に `xattr -dr com.apple.quarantine addons/glaux` を案内してください。
 
 ## 2. 別のプロジェクト(ゲーム)へ入れる
 

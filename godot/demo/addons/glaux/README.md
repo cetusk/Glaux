@@ -85,6 +85,7 @@ func _on_section(name: String, time: float) -> void:
 | `section` | `name, time` | Glaux で打ったマーカー(「サビ」など)を通り過ぎた |
 | `note` | `track, pitch, velocity, time, duration` | `watch_track` したトラックの音が鳴った |
 | `song_finished` | − | 曲が余韻まで鳴り終わった |
+| `jumped` | `from, to` | 再生位置が飛んだのが聞こえた(ループの折り返し・`queue_section` の切り替え。秒) |
 
 シグナルは毎フレーム(`_process`)、前のフレームから今までに通り過ぎた出来事をまとめて出します。
 そのため最大 1 フレームぶん遅れて届きます。ぴったり合わせたいときは引数の `time` と
@@ -101,6 +102,39 @@ func _on_section(name: String, time: float) -> void:
 | `seek(sec)` | 位置を移す(飛ばした区間のシグナルは出ない) |
 | `is_playing() -> bool` | 再生中か |
 | `watch_track(name)` / `unwatch_track(name)` | `note` シグナルを出すトラック(名前か ID) |
+
+### ループ・展開の切り替え・トラックの音量(場面に合わせて曲を組み替える)
+
+曲のファイルは変えずに、ゲームの場面に合わせて鳴らし方を変えます。
+
+| メソッド | 説明 |
+|---|---|
+| `set_loop_section(name) -> bool` | マーカー `name` の区間(次のマーカーか曲の終わりまで)を繰り返す |
+| `set_loop(from, to)` / `clear_loop()` / `is_looping()` | 秒で区間を指定して繰り返す / やめる / 繰り返し中か |
+| `queue_section(name, at = "bar", loop_it = false) -> bool` | マーカー `name` の区間へ、拍子に合わせて切り替える予約。`at` は `"beat"`(次の拍)/ `"bar"`(次の小節)/ `"section"`(今の区間の終わり。ループ中はループの終わり)。`loop_it` で切り替えた先を繰り返す |
+| `cancel_queued_section()` / `get_queued_section()` | 予約を取り消す / 予約している切り替え先 |
+| `set_track_volume_db(track, db, fade = 0.0) -> bool` | トラックの音量を `db` にする(曲の中の音量に足す。0 で元のまま、-80 以下で無音)。`fade` 秒かけて変える |
+| `get_track_volume_db(track)` | トラックの今の追加の音量(フェード中は途中の値) |
+
+```gdscript
+func _ready() -> void:
+	music.load_song("res://songs/Stage1.glaux")
+	music.set_loop_section("探索")                     # 探索中は「探索」の区間を繰り返す
+	music.set_track_volume_db("Drums", -80.0)          # 最初はドラム抜き
+	await get_tree().process_frame
+	music.play()
+
+func on_enemy_spotted() -> void:
+	music.set_track_volume_db("Drums", 0.0, 2.0)       # 2 秒かけてドラムを入れる
+	music.queue_section("戦闘", "bar", true)           # 次の小節で「戦闘」へ切り替え、以後繰り返す
+
+func on_boss_defeated() -> void:
+	music.queue_section("エンディング", "section")      # 今の区間を弾き切ってから(繰り返さず最後まで)
+```
+
+- 切り替え・折り返しはサンプル単位で正確に行います(鳴っている音は自然に余韻を残して消えます)
+- 切り替えたのが聞こえると `jumped` と、飛んだ先の `section`・`beat` が出ます。飛ぶ位置の先の拍は出ません
+- ループ中は曲の終わりでも止まりません(`song_finished` は出ない)
 
 ### 位置・問い合わせ
 

@@ -21,7 +21,7 @@
 
 use crate::song;
 use crate::stream::{GlauxStream, MixClock};
-use glaux_engine::render::Shared;
+use glaux_engine::render::{JumpRecord, Shared, NO_SEEK};
 use glaux_engine::timeline::Timeline;
 use godot::classes::{AudioServer, AudioStreamPlayer, INode, Node};
 use godot::prelude::*;
@@ -40,6 +40,13 @@ struct Loaded {
     scale: Vec<u8>,
     /// 小節ごとのコード(時刻順)
     chords: Vec<ChordAt>,
+    /// ここまでの「位置の飛び」(ループの折り返し・展開の切り替え)は処理済み(シークでも進める)
+    jump_seen: u64,
+    /// トラックごとの追加の音量(dB)と、フェードの途中なら(目標 dB, 1 秒あたりの変化 dB)
+    track_db: Vec<f64>,
+    track_fade: Vec<Option<(f64, f64)>>,
+    /// 予約している展開の切り替え先(マーカーの名前)
+    queued: Option<String>,
 }
 
 /// 小節ごとのコード。
@@ -98,15 +105,32 @@ impl INode for GlauxPlayer {
         }
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
         if self.song.is_none() {
             return;
         }
         if let Some(a) = self.audio.as_mut() {
             a.set_volume_db(self.volume_db);
         }
+        self.step_fades(delta);
         if !self.playing {
             return;
+        }
+        // 位置の飛び(ループの折り返し・展開の切り替え)が聞こえたら、飛ぶ前の所までの出来事を出してから
+        // 飛んだ先へ移る
+        if let Some(rec) = self.heard_jump() {
+            let sr = self.song.as_ref().map_or(48_000.0, |s| s.sample_rate);
+            let (from, to) = (rec.from as f64 / sr, rec.to as f64 / sr);
+            // 飛ぶ位置ちょうどの音は鳴らない(そのサンプルから飛んだ先を鳴らす)ので、その手前まで
+            self.emit_until(from - 1e-6);
+            if let Some(s) = self.song.as_mut() {
+                s.jump_seen = rec.seq;
+                if s.queued.is_some() && s.shared.jump_at.load(Ordering::Acquire) == NO_SEEK {
+                    s.queued = None;
+                }
+            }
+            self.reset_position(to);
+            self.signals().jumped().emit(from, to);
         }
         let now = self.song_time();
         self.emit_until(now);
@@ -140,6 +164,10 @@ impl GlauxPlayer {
     /// 曲が最後まで鳴り終わった
     #[signal]
     fn song_finished();
+
+    /// 再生位置が飛んだのが聞こえた(ループの折り返し・`queue_section` の切り替え)。`from` から `to` 秒へ
+    #[signal]
+    fn jumped(from: f64, to: f64);
 
     /// 曲(`.glaux` フォルダ。例 `res://songs/stage1.glaux`)を読み込む。失敗したら false
     /// (理由は `get_last_error()`)。読み込むと停止した状態になる
@@ -193,7 +221,16 @@ impl GlauxPlayer {
                     key: s.harmony.key,
                     scale,
                     chords,
+                    jump_seen: 0,
+                    track_db: Vec::new(),
+                    track_fade: Vec::new(),
+                    queued: None,
                 });
+                if let Some(l) = self.song.as_mut() {
+                    let n = l.timeline.tracks().len();
+                    l.track_db = vec![0.0; n];
+                    l.track_fade = vec![None; n];
+                }
                 self.playing = false;
                 self.finished_sent = false;
                 self.reset_position(0.0);
@@ -236,10 +273,12 @@ impl GlauxPlayer {
             return;
         };
         let sample = (sec.max(0.0) * s.sample_rate) as u64;
+        s.shared.jump_at.store(NO_SEEK, Ordering::Release);
         s.shared.seek.store(sample, Ordering::Release);
         s.shared.pos.store(sample, Ordering::Release);
         s.clock.mix_start.store(sample, Ordering::Release);
         s.shared.playing.store(true, Ordering::Release);
+        self.forget_jumps();
         self.reset_position(sec.max(0.0));
         self.playing = true;
         self.finished_sent = false;
@@ -250,8 +289,10 @@ impl GlauxPlayer {
     fn stop(&mut self) {
         if let Some(s) = self.song.as_ref() {
             s.shared.playing.store(false, Ordering::Release);
+            s.shared.jump_at.store(NO_SEEK, Ordering::Release);
             s.shared.seek.store(0, Ordering::Release);
         }
+        self.forget_jumps();
         self.playing = false;
         self.reset_position(0.0);
     }
@@ -287,9 +328,11 @@ impl GlauxPlayer {
             return;
         };
         let sample = (sec.max(0.0) * s.sample_rate) as u64;
+        s.shared.jump_at.store(NO_SEEK, Ordering::Release);
         s.shared.seek.store(sample, Ordering::Release);
         s.shared.pos.store(sample, Ordering::Release);
         s.clock.mix_start.store(sample, Ordering::Release);
+        self.forget_jumps();
         self.reset_position(sec.max(0.0));
     }
 
@@ -640,6 +683,191 @@ impl GlauxPlayer {
         }
     }
 
+    // ---- ループと展開の切り替え(ゲームの場面に合わせて曲を組み替える) ----
+
+    /// `from`〜`to` 秒を繰り返す(終わりに来たら頭へ。ループ中は曲の終わりでも止まらない)
+    #[func]
+    fn set_loop(&mut self, from: f64, to: f64) {
+        let Some(s) = self.song.as_ref() else {
+            return;
+        };
+        let (a, b) = (
+            (from.max(0.0) * s.sample_rate) as u64,
+            (to.max(0.0) * s.sample_rate) as u64,
+        );
+        if b <= a {
+            godot_warn!("Glaux: ループの終わりは始まりより後にしてください");
+            return;
+        }
+        // 前の区間と混ざって終わり <= 始まりにならないよう、終わりを後から書く
+        s.shared.loop_end.store(0, Ordering::Release);
+        s.shared.loop_start.store(a, Ordering::Release);
+        s.shared.loop_end.store(b, Ordering::Release);
+    }
+
+    /// マーカー `name` の区間(次のマーカーか曲の終わりまで)を繰り返す。見つからなければ false
+    #[func]
+    fn set_loop_section(&mut self, name: GString) -> bool {
+        let Some(s) = self.song.as_ref() else {
+            return false;
+        };
+        let Some((a, b)) = Self::section_range(s, &name.to_string()) else {
+            godot_warn!("Glaux: マーカー「{name}」が見つかりません");
+            return false;
+        };
+        s.shared.loop_end.store(0, Ordering::Release);
+        s.shared.loop_start.store(a, Ordering::Release);
+        s.shared.loop_end.store(b, Ordering::Release);
+        true
+    }
+
+    /// ループをやめる(最後まで鳴らして止まる)
+    #[func]
+    fn clear_loop(&mut self) {
+        if let Some(s) = self.song.as_ref() {
+            s.shared.loop_end.store(0, Ordering::Release);
+            s.shared.loop_start.store(0, Ordering::Release);
+        }
+    }
+
+    #[func]
+    fn is_looping(&self) -> bool {
+        self.song.as_ref().is_some_and(|s| {
+            s.shared.loop_end.load(Ordering::Acquire) > s.shared.loop_start.load(Ordering::Acquire)
+        })
+    }
+
+    /// マーカー `name` の区間へ、拍子に合わせて切り替える予約をする(ゲームの場面の変化に合わせて曲の展開を変える)。
+    /// `at` は切り替える所: "beat"(次の拍)/ "bar"(次の小節の頭、既定)/ "section"(今の区間の終わり。ループ中は
+    /// ループの終わり)。`loop_it` が true なら、切り替えた先の区間を繰り返す。切り替わったのが聞こえると
+    /// `jumped` と `section` のシグナルが出る。予約は 1 つだけ(新しい予約で置き換わる)。失敗したら false
+    #[func]
+    fn queue_section(
+        &mut self,
+        name: GString,
+        #[opt(default = "bar")] at: GString,
+        #[opt(default = false)] loop_it: bool,
+    ) -> bool {
+        let Some(s) = self.song.as_ref() else {
+            return false;
+        };
+        let name = name.to_string();
+        let Some((to, to_end)) = Self::section_range(s, &name) else {
+            godot_warn!("Glaux: マーカー「{name}」が見つかりません");
+            return false;
+        };
+        let sr = s.sample_rate;
+        // 描き出しはもう少し先まで進んでいるので、その先の区切りを選ぶ
+        let pos = s.shared.pos.load(Ordering::Acquire);
+        let ls = s.shared.loop_start.load(Ordering::Acquire);
+        let le = s.shared.loop_end.load(Ordering::Acquire);
+        let looping = le > ls;
+        let beats = s.timeline.beats();
+        let next_beat = |bar_only: bool| {
+            beats
+                .iter()
+                .map(|b| ((b.sec * sr) as u64, b.beat))
+                .find(|&(x, beat)| x > pos && (!bar_only || beat == 1))
+                .map(|(x, _)| x)
+        };
+        let boundary = match at.to_string().as_str() {
+            "beat" => next_beat(false),
+            "bar" => next_beat(true),
+            "section" => {
+                let next_mark = s
+                    .timeline
+                    .sections()
+                    .iter()
+                    .map(|m| (m.sec * sr) as u64)
+                    .find(|&x| x > pos);
+                Some(next_mark.unwrap_or_else(|| Self::song_end_sample(s)))
+            }
+            other => {
+                godot_warn!("Glaux: at は \"beat\" / \"bar\" / \"section\"(got: {other})");
+                return false;
+            }
+        };
+        // ループ中は、ループの終わりより先の区切りには届かないので、ループの終わりで切り替える
+        let mut jump_at = boundary.unwrap_or_else(|| Self::song_end_sample(s).max(pos + 1));
+        if looping && pos < le && jump_at > le {
+            jump_at = le;
+        }
+        // 切り替えた先のループ: 指定があればその区間、今のループの外へ出るならループを外す、中ならそのまま
+        let (jls, jle) = if loop_it {
+            (to, to_end)
+        } else if looping && (to < ls || to >= le) {
+            (0, 0)
+        } else {
+            (0, NO_SEEK)
+        };
+        s.shared.jump_at.store(NO_SEEK, Ordering::Release);
+        s.shared.jump_to.store(to, Ordering::Release);
+        s.shared.jump_loop_start.store(jls, Ordering::Release);
+        s.shared.jump_loop_end.store(jle, Ordering::Release);
+        s.shared.jump_at.store(jump_at, Ordering::Release);
+        if let Some(s) = self.song.as_mut() {
+            s.queued = Some(name);
+        }
+        true
+    }
+
+    /// 切り替えの予約を取り消す
+    #[func]
+    fn cancel_queued_section(&mut self) {
+        if let Some(s) = self.song.as_mut() {
+            s.shared.jump_at.store(NO_SEEK, Ordering::Release);
+            s.queued = None;
+        }
+    }
+
+    /// 予約している切り替え先のマーカー(無ければ空)
+    #[func]
+    fn get_queued_section(&self) -> GString {
+        self.song
+            .as_ref()
+            .and_then(|s| s.queued.as_deref())
+            .map(GString::from)
+            .unwrap_or_default()
+    }
+
+    // ---- トラックの音量(場面に合わせて楽器を足し引きする。曲のファイルは変えない) ----
+
+    /// トラック(名前か ID)の音量を `db` にする(曲の中の音量に足す。0 で元のまま、-80 以下で無音)。
+    /// `fade` 秒をかけて変える(0 ならすぐ)。見つからなければ false
+    #[func]
+    fn set_track_volume_db(
+        &mut self,
+        track: GString,
+        db: f64,
+        #[opt(default = 0.0)] fade: f64,
+    ) -> bool {
+        let Some(i) = self.track_index(&track.to_string()) else {
+            godot_warn!("Glaux: トラック「{track}」が見つかりません");
+            return false;
+        };
+        let Some(s) = self.song.as_mut() else {
+            return false;
+        };
+        let db = db.clamp(-80.0, 24.0);
+        if fade > 0.0 {
+            let rate = ((db - s.track_db[i]).abs() / fade).max(1e-6);
+            s.track_fade[i] = Some((db, rate));
+        } else {
+            s.track_fade[i] = None;
+            s.track_db[i] = db;
+            Self::apply_track_db(s, i);
+        }
+        true
+    }
+
+    /// トラックの今の追加の音量(dB。フェード中は途中の値)
+    #[func]
+    fn get_track_volume_db(&self, track: GString) -> f64 {
+        self.track_index(&track.to_string())
+            .and_then(|i| self.song.as_ref()?.track_db.get(i).copied())
+            .unwrap_or(0.0)
+    }
+
     /// 音声スレッドが動いているか(デバッグ用。ミックスした回数)
     #[func]
     fn get_mix_count(&self) -> i64 {
@@ -743,21 +971,144 @@ impl GlauxPlayer {
 
     /// いま聞こえている位置(秒)
     fn song_time(&mut self) -> f64 {
-        let Some(s) = self.song.as_ref() else {
+        if self.song.is_none() {
             return 0.0;
-        };
+        }
         if !self.playing {
             return self.held_time;
         }
-        let server = AudioServer::singleton();
-        let mix_start = s.clock.mix_start.load(Ordering::Acquire) as f64 / s.sample_rate;
-        let t = mix_start + server.get_time_since_last_mix()
-            - server.get_output_latency()
-            - self.latency_offset_ms / 1000.0;
-        // 推定のぶれで逆戻りしない(シーク・再生開始でだけ戻る)
+        let (t, jumped) = self.raw_time();
+        if jumped {
+            // 飛んだのが聞こえた直後(`process` が知らせるまで)は、戻る向きでもそのまま返す
+            self.held_time = t;
+            return t;
+        }
+        // 推定のぶれで逆戻りしない(シーク・再生開始・位置の飛びでだけ戻る)
         self.last_time = self.last_time.max(t);
         self.held_time = self.last_time;
         self.last_time
+    }
+
+    /// 出力の遅れを引いた「いま聞こえている位置」(秒)と、まだ処理していない位置の飛びがもう聞こえているか。
+    /// レンダラの時計で「いま聞こえているサンプル」を求め、その間に位置が飛んでいれば飛ぶ前の位置から数える
+    fn raw_time(&self) -> (f64, bool) {
+        let Some(s) = self.song.as_ref() else {
+            return (0.0, false);
+        };
+        let server = AudioServer::singleton();
+        let sr = s.sample_rate;
+        let mix_start = s.clock.mix_start.load(Ordering::Acquire) as f64;
+        let mix_clock = s.clock.mix_clock.load(Ordering::Acquire) as f64;
+        let heard = mix_clock
+            + (server.get_time_since_last_mix()
+                - server.get_output_latency()
+                - self.latency_offset_ms / 1000.0)
+                * sr;
+        let rec = s.shared.last_jump.read();
+        let unseen = rec.seq > s.jump_seen;
+        let pos = if unseen && heard < rec.clock as f64 {
+            // 飛ぶ前の音がまだ聞こえている
+            rec.from as f64 - (rec.clock as f64 - heard)
+        } else {
+            // 出力の遅れが小さい環境では、推定がまだ描き出していない所まで伸びることがある。
+            // この先で位置が飛ぶ(ループの終わり・予約した切り替え)なら、その手前で止める
+            // (飛ぶ位置の先の拍・ノートは鳴らないので知らせない)
+            let p = mix_start + (heard - mix_clock);
+            let ls = s.shared.loop_start.load(Ordering::Acquire);
+            let le = s.shared.loop_end.load(Ordering::Acquire);
+            let ja = s.shared.jump_at.load(Ordering::Acquire);
+            let mut limit = f64::INFINITY;
+            if le > ls && le as f64 > mix_start {
+                limit = limit.min(le as f64);
+            }
+            if ja != NO_SEEK && ja as f64 > mix_start {
+                limit = limit.min(ja as f64);
+            }
+            p.min(limit - 1.0)
+        };
+        (pos / sr, unseen && heard >= rec.clock as f64)
+    }
+
+    /// まだ処理していない位置の飛びが、もう聞こえていれば返す
+    fn heard_jump(&self) -> Option<JumpRecord> {
+        let s = self.song.as_ref()?;
+        let (_, heard) = self.raw_time();
+        heard.then(|| s.shared.last_jump.read())
+    }
+
+    /// これまでの位置の飛びは処理済みにする(シーク・再生開始の後は古い飛びで位置を求めない)
+    fn forget_jumps(&mut self) {
+        if let Some(s) = self.song.as_mut() {
+            s.jump_seen = s.shared.last_jump.read().seq;
+            s.queued = None;
+        }
+    }
+
+    /// トラックの追加の音量をレンダラへ渡す
+    fn apply_track_db(s: &Loaded, index: usize) {
+        if let (Some(db), Some(g)) = (s.track_db.get(index), s.shared.live_gain.get(index)) {
+            let amp = if *db <= -80.0 {
+                0.0
+            } else {
+                10f64.powf(*db / 20.0) as f32
+            };
+            g.store(amp.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// フェード中のトラックの音量を 1 フレーム分進める
+    fn step_fades(&mut self, delta: f64) {
+        let Some(s) = self.song.as_mut() else {
+            return;
+        };
+        for i in 0..s.track_fade.len() {
+            let Some((target, rate)) = s.track_fade[i] else {
+                continue;
+            };
+            let cur = s.track_db[i];
+            let step = rate * delta;
+            let next = if (target - cur).abs() <= step {
+                s.track_fade[i] = None;
+                target
+            } else {
+                cur + step * (target - cur).signum()
+            };
+            s.track_db[i] = next;
+            Self::apply_track_db(s, i);
+        }
+    }
+
+    /// 名前か ID のトラックの添字(レンダラのトラックと同じ並び)
+    fn track_index(&self, track: &str) -> Option<usize> {
+        let tracks = self.song.as_ref()?.timeline.tracks();
+        tracks
+            .iter()
+            .position(|t| t.name == track)
+            .or_else(|| tracks.iter().position(|t| t.id == track))
+    }
+
+    /// 曲の終わり(最後の出来事の後の最初の小節の頭。無ければ終わりの秒)のサンプル
+    fn song_end_sample(s: &Loaded) -> u64 {
+        let end = s.timeline.end_sec();
+        let sec = s
+            .timeline
+            .beats()
+            .iter()
+            .find(|b| b.beat == 1 && b.sec >= end - 1e-9)
+            .map_or(end, |b| b.sec);
+        (sec * s.sample_rate) as u64
+    }
+
+    /// マーカーの区間(始まりと、次のマーカーか曲の終わり)のサンプル
+    fn section_range(s: &Loaded, name: &str) -> Option<(u64, u64)> {
+        let secs = s.timeline.sections();
+        let i = secs.iter().position(|m| m.name == name)?;
+        let start = (secs[i].sec * s.sample_rate) as u64;
+        let end = secs.get(i + 1).map_or_else(
+            || Self::song_end_sample(s),
+            |m| (m.sec * s.sample_rate) as u64,
+        );
+        (end > start).then_some((start, end))
     }
 
     /// `(emitted_to, now]` に通り過ぎた出来事をシグナルで出す
