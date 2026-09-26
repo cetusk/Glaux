@@ -1,6 +1,6 @@
 [package]
 name = "glaux-app"
-version = "0.1.3"
+version = "0.1.2"
 edition.workspace = true
 # rmcp / tauri の要求に合わせる(workspace の 1.75 より新しい)
 rust-version = "1.89"
