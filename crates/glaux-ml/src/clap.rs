@@ -301,6 +301,21 @@ pub struct WordScore {
     pub z: f32,
 }
 
+/// 音色語を英語か日本語で探す(大文字小文字は区別しない)。無ければ None
+pub fn find_word(word: &str) -> Option<&'static VocabWord> {
+    let w = word.trim().to_lowercase();
+    vocab()
+        .iter()
+        .find(|v| v.en.to_lowercase() == w || v.ja == word.trim())
+}
+
+impl VocabWord {
+    /// 埋め込みとこの語の近さ(いろいろな音に対して出す値と比べた、標準偏差の何倍か)
+    pub fn z(&self, embedding: &[f32]) -> f32 {
+        (similarity(embedding, &self.embedding) - self.ref_mean) / self.ref_std
+    }
+}
+
 /// 埋め込みを音色語の辞書と比べ、カテゴリごとに近い順に `per_category` 語ずつ返す。
 pub fn describe(embedding: &[f32], per_category: usize) -> Vec<WordScore> {
     let mut scores: Vec<WordScore> = vocab()

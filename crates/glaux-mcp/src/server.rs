@@ -122,6 +122,27 @@ pub struct AnalyzeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct RefineByWordsParams {
+    /// 追い込むトラックの ID
+    pub track_id: String,
+    /// 近づけたい音色語(英語か日本語。例 ["warm", "soft"] / ["暖かい"])。辞書の語だけ使える
+    #[serde(default)]
+    pub toward: Vec<String>,
+    /// 遠ざけたい音色語(例 ["harsh", "thin"])
+    #[serde(default)]
+    pub away: Vec<String>,
+    /// 動かすつまみを絞る(`<fx_id>/<name>` か `<name>`。例 ["high_gain_db", "lp_freq"])。省略でトラックの内蔵エフェクトのつまみ全部(最大 10)
+    #[serde(default)]
+    pub params: Vec<String>,
+    /// 評価の回数(1 回 1 秒ほど。既定 30、最大 120)
+    #[serde(default)]
+    pub max_evals: Option<usize>,
+    /// false なら案を返すだけ。既定は true(1 回の undo で戻せる)
+    #[serde(default)]
+    pub apply: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct MasterMixParams {
     /// 参照曲の音声ファイルの絶対パス(WAV / MP3 / FLAC / OGG / M4A)。あれば、その音色の釣り合い・広がり・音量に寄せる
     #[serde(default)]
@@ -1689,6 +1710,80 @@ impl GlauxServer {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             v["tracks"] = serde_json::to_value(&tracks).map_err(|e| e.to_string())?;
+        }
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "言葉で音を追い込む。トラックの内蔵エフェクトのつまみを、音色語(CLAP の辞書の語。英語か日本語)に\
+        近づく方へ自動で動かす(CMA-ES。音を実際に鳴らして CLAP で聴き比べる。音量はそろえて比べるので、大きくするだけでは近づかない)。\
+        使い方: 人間の「もっと暖かく・刺さらないように」を toward: [\"warm\"], away: [\"harsh\"] のような語に置き換え、\
+        先に必要なエフェクト(eq・compressor・reverb・width など)を add_effect で足してから呼ぶ。params で動かすつまみを絞ると速く確実。\
+        元のつまみから離れすぎないようにしてある。良くならなければ変えない。\
+        返り値: changes(変えたつまみの前後)、score_before / score_after(近づけたい語 − 遠ざけたい語の近さ。z 値)、\
+        toward / away(語ごとの前後)。分岐・合流のあるトラックと、音色語のモデル(CLAP)が無い環境では使えない。"
+    )]
+    async fn refine_by_words(
+        &self,
+        params: Parameters<RefineByWordsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("refine_by_words");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let outcome = tokio::task::spawn_blocking({
+            let project = project.clone();
+            let track_id = track_id.clone();
+            move || {
+                crate::words::refine_by_words(
+                    &project,
+                    std::path::Path::new(&dir),
+                    &track_id,
+                    &p.toward,
+                    &p.away,
+                    &p.params,
+                    p.max_evals.unwrap_or(30),
+                )
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let mut v = serde_json::to_value(&outcome).map_err(|e| e.to_string())?;
+        if p.apply.unwrap_or(true) && !outcome.changes.is_empty() {
+            let cmds: Vec<glaux_core::Command> = outcome
+                .changes
+                .iter()
+                .filter_map(|c| {
+                    Some(glaux_core::Command::SetParam {
+                        track: track_id.clone(),
+                        path: glaux_core::ParamPath::effect(
+                            glaux_core::FxId::parse(&c.fx_id).ok()?,
+                            c.param.clone(),
+                        ),
+                        value: glaux_core::ParamValue::Float(c.after),
+                    })
+                })
+                .collect();
+            let words: Vec<&str> = outcome.toward.iter().map(|w| w.ja.as_str()).collect();
+            let name = project
+                .track(&track_id)
+                .map(|t| t.name.clone())
+                .unwrap_or_default();
+            let label = if words.is_empty() {
+                format!("「{name}」のエフェクトを言葉で追い込む")
+            } else {
+                format!("「{name}」を「{}」に寄せる", words.join("・"))
+            };
+            let command = glaux_core::Command::batch(label.clone(), cmds);
+            let author = self.author(&ctx);
+            let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+            v["applied"] = json!(true);
+            v["entry_id"] = json!(entry_id.to_string());
+            v["project_version"] = json!(m.project_version);
+        } else {
+            v["applied"] = json!(false);
         }
         Ok(JsonText(v))
     }

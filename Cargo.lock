@@ -1686,6 +1686,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "cmaes",
  "glaux-clap",
  "glaux-core",
  "glaux-dsp",

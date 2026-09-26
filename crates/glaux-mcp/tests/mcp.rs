@@ -827,6 +827,69 @@ async fn master_mix_adds_a_mastering_chain_and_can_be_undone() {
     assert!(e1 < e0, "釣り合いが参照曲に近づく: {e0} → {e1}");
 }
 
+/// 言葉で追い込む(CLAP の音声側のモデルが要る。`GLAUX_CLAP_MODEL` が無ければスキップ)
+#[tokio::test]
+async fn refine_by_words_moves_eq_toward_the_words() {
+    if std::env::var_os("GLAUX_CLAP_MODEL").is_none() {
+        eprintln!("GLAUX_CLAP_MODEL が未設定のためスキップ");
+        return;
+    }
+    let fx = setup().await;
+    // 明るいのこぎり波のリードに、素通しの EQ
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_lead09", "name": "Lead", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_lead09",
+                  "clip": { "id": "clp_ld0009", "name": "L", "start": 0, "length": 7680, "kind": "midi",
+                    "notes": [
+                      { "id": "nt_ld0901", "pos": 0, "dur": 1920, "pitch": 72, "vel": 110 },
+                      { "id": "nt_ld0902", "pos": 1920, "dur": 1920, "pitch": 76, "vel": 110 },
+                      { "id": "nt_ld0903", "pos": 3840, "dur": 3840, "pitch": 79, "vel": 110 }
+                    ] } },
+                { "op": "set_device", "track": "trk_lead09", "device": { "type": "builtin", "name": "subtractive" } },
+                { "op": "set_param", "track": "trk_lead09", "path": "device/cutoff", "value": 12000.0 },
+                { "op": "add_effect", "track": "trk_lead09", "effect": { "id": "fx_eq0009", "type": "builtin", "name": "eq" } }
+            ],
+            "label": "リード",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    let v = ok_json(
+        &call(
+            &fx,
+            "refine_by_words",
+            json!({
+                "track_id": "trk_lead09",
+                "toward": ["warm", "暗い"],
+                "away": ["bright", "harsh"],
+                "params": ["high_gain_db", "lp_freq"],
+                "max_evals": 18
+            }),
+        )
+        .await,
+    );
+    eprintln!("{v:#}");
+    let (b, a) = (
+        v["score_before"].as_f64().unwrap(),
+        v["score_after"].as_f64().unwrap(),
+    );
+    assert!(a > b, "言葉に近づく: {b} → {a}");
+    assert_eq!(v["applied"], true);
+    assert!(!v["changes"].as_array().unwrap().is_empty());
+    // 辞書に無い語はエラー(使える語の一覧を返す)
+    let r = call(
+        &fx,
+        "refine_by_words",
+        json!({ "track_id": "trk_lead09", "toward": ["ふわもこ"] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
 #[tokio::test]
 async fn analyze_audio_per_track_reveals_balance() {
     let fx = setup().await;
