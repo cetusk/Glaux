@@ -1841,7 +1841,14 @@ async fn revert_turn(state: State<'_, AppState>, since: Option<String>) -> Resul
 /// ミキサーのメーター: トラック(プロジェクトの並び)とマスターの直近のピーク(dBFS)
 fn levels_json(e: &EngineHandle) -> Value {
     let (tracks, master) = e.take_levels();
-    json!({ "tracks": tracks, "master": master, "correlation": e.correlation() })
+    let (loads, master_load) = e.take_loads();
+    json!({
+        "tracks": tracks,
+        "master": master,
+        "correlation": e.correlation(),
+        "loads": loads,
+        "master_load": master_load,
+    })
 }
 
 #[tauri::command]

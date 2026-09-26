@@ -463,6 +463,12 @@ impl EngineHandle {
         self.shared.levels.take(n)
     }
 
+    /// トラック(プロジェクトの並び)とマスターの、前回からの処理の重さ(%)。読むとリセットされる
+    pub fn take_loads(&self) -> (Vec<f32>, f32) {
+        let n = self.shared.data.load().tracks.len();
+        self.shared.stats.take_loads(n)
+    }
+
     // ---- オーディオデバイス ----
 
     /// 使用中の出力デバイス名。

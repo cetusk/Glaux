@@ -172,7 +172,6 @@ impl Levels {
 }
 
 /// オーディオ処理の負荷統計(アトミック。オーディオスレッドからロックなしで更新)。
-#[derive(Default)]
 pub struct StatsCounters {
     /// 直近の集計区間の処理時間・予算の合計(ns)と、ブロック負荷の最大(0.1% 単位)
     busy_ns: AtomicU64,
@@ -189,6 +188,10 @@ pub struct StatsCounters {
     pub xruns: AtomicU64,
     /// OS がオーディオスレッドのリアルタイム優先度を認めなかった
     pub realtime_denied: std::sync::atomic::AtomicBool,
+    /// トラックごと・マスターの処理時間(ns)と、その間の予算(ns)。[`StatsCounters::take_loads`] で読んでリセット
+    track_ns: [AtomicU64; MAX_TRACKS],
+    master_ns: AtomicU64,
+    load_budget_ns: AtomicU64,
 }
 
 /// UI に渡す負荷の要約。
@@ -205,7 +208,39 @@ pub struct DspStats {
     pub realtime_denied: bool,
 }
 
+impl Default for StatsCounters {
+    fn default() -> Self {
+        StatsCounters {
+            busy_ns: AtomicU64::new(0),
+            budget_ns: AtomicU64::new(0),
+            max_permille: AtomicU64::new(0),
+            overruns: AtomicU64::new(0),
+            late: AtomicU64::new(0),
+            swaps: AtomicU64::new(0),
+            xruns: AtomicU64::new(0),
+            realtime_denied: AtomicBool::new(false),
+            track_ns: std::array::from_fn(|_| AtomicU64::new(0)),
+            master_ns: AtomicU64::new(0),
+            load_budget_ns: AtomicU64::new(0),
+        }
+    }
+}
+
 impl StatsCounters {
+    /// 最初の `ntracks` 本とマスターの、前回からの処理の重さ(%。処理時間 / 音の長さ)を読み出してリセットする。
+    /// 音源の発音はトラックをまたいで 1 サンプルずつ回すので、その時間は鳴らした声の数で按分した目安
+    pub fn take_loads(&self, ntracks: usize) -> (Vec<f32>, f32) {
+        let budget = self.load_budget_ns.swap(0, Ordering::AcqRel).max(1) as f32;
+        let pct = |ns: u64| ((ns as f32 / budget * 1000.0).round() / 10.0).min(999.0);
+        let tracks = self
+            .track_ns
+            .iter()
+            .take(ntracks.min(MAX_TRACKS))
+            .map(|a| pct(a.swap(0, Ordering::AcqRel)))
+            .collect();
+        (tracks, pct(self.master_ns.swap(0, Ordering::AcqRel)))
+    }
+
     /// 直近区間の平均・最大を読み出してリセットする(累計カウンタはそのまま)。
     pub fn take(&self) -> DspStats {
         let busy = self.busy_ns.swap(0, Ordering::AcqRel);
@@ -532,6 +567,8 @@ pub struct Renderer {
     gain_smooth: [(f32, f32); MAX_TRACKS],
     /// マスター音量のなめらかにした値(同上)
     master_smooth: f32,
+    /// このブロックでトラックごとに鳴らした声のサンプル数(発音の時間の按分用)
+    voice_samples: [u32; MAX_TRACKS],
     /// 相関・ゴニオメーターの測定と、聴き方の切り替え([`crate::monitor`])
     monitor: crate::monitor::MonitorState,
     /// device オートメーション適用済みの楽器パラメータ(トラック別スクラッチ)。
@@ -674,6 +711,7 @@ impl Renderer {
             master_cursor: 0,
             gain_smooth: [(f32::NAN, f32::NAN); MAX_TRACKS],
             master_smooth: f32::NAN,
+            voice_samples: [0; MAX_TRACKS],
             monitor: Default::default(),
             inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
             fx_scratch: vec![None; MAX_EFFECT_SLOTS],
@@ -741,6 +779,7 @@ impl Renderer {
         let st = &self.shared.stats;
         st.busy_ns.fetch_add(busy, Ordering::Relaxed);
         st.budget_ns.fetch_add(budget, Ordering::Relaxed);
+        st.load_budget_ns.fetch_add(budget, Ordering::Relaxed);
         if let Some(permille) = (busy * 1000).checked_div(budget) {
             st.max_permille.fetch_max(permille, Ordering::Relaxed);
         }
@@ -1092,8 +1131,13 @@ impl Renderer {
                     continue;
                 };
                 // 音源(やバイパス中のエフェクト)には音声を入れない
+                let t = std::time::Instant::now();
                 p.clap.clear_input(frames);
                 p.clap.process(frames, &self.plugin_notes[slot]);
+                let ns = t.elapsed().as_nanos() as u64;
+                if let Some(ti) = self.track_plugin.iter().position(|s| *s == Some(slot)) {
+                    self.shared.stats.track_ns[ti].fetch_add(ns, Ordering::Relaxed);
+                }
                 let [ol, or] = &mut self.plugin_out[slot];
                 match p.clap.output() {
                     Some((l, r)) => {
@@ -1110,6 +1154,8 @@ impl Renderer {
 
         // 1. フレームごとに発音し、トラックごとの合算(エフェクト前)をブロック用のバッファに溜める
         let ntracks = data.tracks.len().min(MAX_TRACKS);
+        let t_voices = std::time::Instant::now();
+        self.voice_samples = [0; MAX_TRACKS];
         for frame in 0..frames {
             // ループ終端に達したら区間頭へ。発音中の音は note_off でリリースに回し
             // (ぶつ切りのクリックを避ける)、イベント・オートメーションのカーソルを再同期。
@@ -1294,6 +1340,9 @@ impl Renderer {
                     continue;
                 }
                 let sample = v.state.next(inst) * fade;
+                if let Some(c) = self.voice_samples.get_mut(v.track as usize) {
+                    *c += 1;
+                }
                 match track_mono.get_mut(v.track as usize) {
                     Some(acc) => *acc += sample,
                     None => {
@@ -1332,6 +1381,9 @@ impl Renderer {
                     _ => 0.0,
                 };
                 v.pos += ev.rate;
+                if let Some(c) = self.voice_samples.get_mut(ev.track as usize) {
+                    *c += 1;
+                }
                 match track_mono.get_mut(ev.track as usize) {
                     Some(acc) => {
                         *acc += sample;
@@ -1424,10 +1476,27 @@ impl Renderer {
             }
         }
 
+        // 発音にかかった時間を、トラックごとに鳴らした声の数で按分する
+        let voice_ns = t_voices.elapsed().as_nanos() as u64;
+        let total: u64 = self.voice_samples.iter().map(|c| *c as u64).sum();
+        for (ti, c) in self.voice_samples.iter().enumerate().take(ntracks) {
+            if let Some(ns) = (voice_ns * *c as u64)
+                .checked_div(total)
+                .filter(|ns| *ns > 0)
+            {
+                self.shared.stats.track_ns[ti].fetch_add(ns, Ordering::Relaxed);
+            }
+        }
+
         // 2. トラックごとに エフェクトチェーン → 音量/パン(ブロック単位。CLAP エフェクトもここで通す)
         self.process_track_chains(data, frames, ntracks, sr);
         // 3. マスターのエフェクト → マスター音量 → ソフトクリップ
+        let t_master = std::time::Instant::now();
         self.process_master(data, frames, sr, out, channels);
+        self.shared
+            .stats
+            .master_ns
+            .fetch_add(t_master.elapsed().as_nanos() as u64, Ordering::Relaxed);
         // 4. 鳴っていないトラックのエフェクトも毎ブロック無音で処理する(処理を呼ばれないと、
         //    画面を開くときに音声処理側の応答を待って固まるプラグインがある: Surge XT Effects)
         self.keep_effects_alive(frames);
@@ -1522,10 +1591,14 @@ impl Renderer {
                     }
                     any
                 };
-                if !self.track_block(
+                let t = std::time::Instant::now();
+                let sounded = self.track_block(
                     data, ti, mix, pslot, any, frames, sr, &mut fl, &mut fr, &mut mix_l,
                     &mut mix_r, &mut bus_l, &mut bus_r,
-                ) {
+                );
+                self.shared.stats.track_ns[ti]
+                    .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                if !sounded {
                     continue;
                 }
             }
@@ -2730,6 +2803,32 @@ mod tests {
         }
         let ratio = level_across_swap(&before, &after);
         assert!(ratio > 0.7, "途切れた: {ratio:.3}");
+    }
+
+    #[test]
+    fn per_track_loads_are_measured() {
+        // リバーブを挿したトラックは、何も挿していないトラックより重い
+        let mut p = two_pads();
+        for _ in 0..4 {
+            p.tracks[1].effects.push(glaux_core::Effect::builtin(
+                glaux_core::FxId::new(),
+                "reverb",
+            ));
+        }
+        let shared = Arc::new(Shared::new((*build(&p)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = shared.stats.take_loads(2);
+        for _ in 0..20 {
+            let _ = render_block(&mut r, 480);
+        }
+        let (tracks, master) = shared.stats.take_loads(2);
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks[0] > 0.0 && tracks[1] > tracks[0], "{tracks:?}");
+        assert!(master >= 0.0);
+        // 読むとリセット
+        let (again, _) = shared.stats.take_loads(2);
+        assert!(again.iter().all(|v| *v == 0.0));
     }
 
     #[test]

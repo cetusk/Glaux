@@ -292,7 +292,14 @@ export interface TransportState {
   loop?: [number, number] | null;
   /** ミキサーのメーター: トラック(プロジェクトの並び)とマスターの直近のピーク(dBFS、無音は -120)。
    *  correlation はマスターの左右の相関(-1..1、ほぼ無音なら null) */
-  levels?: { tracks: number[]; master: number; correlation?: number | null };
+  levels?: {
+    tracks: number[];
+    master: number;
+    correlation?: number | null;
+    /** トラックごと・マスターの処理の重さ(%。処理時間 / 音の長さ。前回の問い合わせから) */
+    loads?: number[];
+    master_load?: number;
+  };
   /** 聴き方(出力デバイスへの音だけ。書き出しには入らない) */
   monitor?: { mode: MonitorMode; crossfeed: boolean };
   /** マスターのラウドネス(LUFS。瞬時 / 短期 / 統合)と True Peak(dBTP。測り始めてからの最大 / 直近)。測れなければ null */

@@ -60,6 +60,24 @@
   });
   const meterPct = (db: number) => Math.max(0, Math.min(100, ((db + 60) / 66) * 100));
 
+  // ---- 処理の重さ(トラックごと。表示はなめらかに) ----
+  let loads = $state<Record<string, number>>({});
+  $effect(() => {
+    void transportStore.seq;
+    const lv = transportStore.state.levels;
+    if (!transportStore.state.playing || !lv?.loads) {
+      untrack(() => (loads = {}));
+      return;
+    }
+    const prev = untrack(() => loads);
+    const next: Record<string, number> = {};
+    const ease = (id: string, v: number) => (prev[id] ?? v) * 0.6 + v * 0.4;
+    project.tracks.forEach((t, i) => (next[t.id] = ease(t.id, lv.loads?.[i] ?? 0)));
+    next[MASTER_FOCUS_ID] = ease(MASTER_FOCUS_ID, lv.master_load ?? 0);
+    loads = next;
+  });
+  const LOAD_TITLE = "処理の重さ(音の長さに対する処理時間の割合。音源の発音は鳴らした声の数で按分した目安)";
+
   // ---- 編集 ----
   function edit(commands: unknown[], label: string) {
     api.applyEdit(commands, label).catch(() => {});
@@ -211,7 +229,10 @@
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
       <div class="strip" role="group" aria-label={t.name} class:sel={selected === t.id} style="--c:{t.color ?? '#555'}" onclick={() => select(t.id)}>
         <div class="s-top"></div>
-        <div class="s-name"><Icon name={KIND_ICON[t.kind]} size={13} /><span title={t.name}>{t.name}</span></div>
+        <div class="s-name">
+          <Icon name={KIND_ICON[t.kind]} size={13} /><span title={t.name}>{t.name}</span>
+          {#if (loads[t.id] ?? 0) >= 0.5}<small class="load" class:heavy={loads[t.id] >= 20} title={LOAD_TITLE}>{loads[t.id].toFixed(0)}%</small>{/if}
+        </div>
         {#if t.kind === "midi"}
           <button class="s-dev" onclick={(e) => openPicker(e, t)} title="音源を変える"
             ><Icon name={deviceIcon(t.device)} size={12} /><span>{deviceName(t.device, clapNames)}</span></button
@@ -276,7 +297,10 @@
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
       <div class="strip bus" role="group" aria-label={t.name} class:sel={selected === t.id} style="--c:{t.color ?? '#e8a07c'}" onclick={() => select(t.id)}>
         <div class="s-top"></div>
-        <div class="s-name"><Icon name="merge" size={13} /><span title={t.name}>{t.name}</span></div>
+        <div class="s-name">
+          <Icon name="merge" size={13} /><span title={t.name}>{t.name}</span>
+          {#if (loads[t.id] ?? 0) >= 0.5}<small class="load" class:heavy={loads[t.id] >= 20} title={LOAD_TITLE}>{loads[t.id].toFixed(0)}%</small>{/if}
+        </div>
         <div class="s-dev plain" title="このバスへ送っているトラック">受けている: {receivers(t).map((r) => r.name).join("・") || "なし"}</div>
         {@render slots(t.effects, t.fx_links, t.id)}
         <div class="s-bottom">
@@ -299,7 +323,12 @@
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
     <div class="strip master" role="group" aria-label="マスター" class:sel={selected === MASTER_FOCUS_ID} onclick={() => select(MASTER_FOCUS_ID)}>
       <div class="s-top" style="background:var(--accent)"></div>
-      <div class="s-name"><Icon name="volume-2" size={13} /><span>マスター</span></div>
+      <div class="s-name">
+        <Icon name="volume-2" size={13} /><span>マスター</span>
+        {#if (loads[MASTER_FOCUS_ID] ?? 0) >= 0.5}<small class="load" class:heavy={loads[MASTER_FOCUS_ID] >= 20} title={LOAD_TITLE}
+            >{loads[MASTER_FOCUS_ID].toFixed(0)}%</small
+          >{/if}
+      </div>
       <div class="s-dev plain">曲全体</div>
       {@render slots(project.master.effects, project.master.fx_links, MASTER_FOCUS_ID)}
       <div class="s-bottom">{@render fader(null)}</div>
@@ -414,6 +443,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .s-name .load {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .s-name .load.heavy {
+    color: #e0b050;
   }
 
   .s-dev {
