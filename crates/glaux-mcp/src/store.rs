@@ -103,6 +103,21 @@ pub fn create_project(dir: &Path, title: &str) -> Result<()> {
     store.save(&Session::new(Project::new(title.trim())))
 }
 
+/// 中身のあるプロジェクト(デモ曲など)を、履歴が空の新しいプロジェクトとして `dir` に作る。
+pub fn create_project_from(dir: &Path, project: Project) -> Result<()> {
+    if dir.join("project.json").exists() {
+        anyhow::bail!("既に存在します: {}", dir.display());
+    }
+    fs::create_dir_all(dir)
+        .with_context(|| format!("プロジェクトフォルダを作成できません: {}", dir.display()))?;
+    let store = Store {
+        dir: dir.to_path_buf(),
+        saved_entries: Cell::new(0),
+        revision: Cell::new(None),
+    };
+    store.save(&Session::new(project))
+}
+
 impl Store {
     /// プロジェクトフォルダを開く。無ければ新規作成する。
     pub fn open_or_create(dir: impl Into<PathBuf>) -> Result<(Store, Session)> {

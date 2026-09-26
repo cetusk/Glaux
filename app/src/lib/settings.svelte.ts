@@ -44,6 +44,8 @@ interface Settings {
   midiInput: string;
   /// MIDI 録音の開始位置の丸め(tick、0 = 丸めない)
   midiQuantize: number;
+  /// はじめの確認(音の出力・AI・SoundFont・デモ曲)を見た
+  welcomeDone: boolean;
 }
 
 function load(): Settings {
@@ -67,6 +69,7 @@ function load(): Settings {
         recordStereo: v.recordStereo === true,
         midiInput: typeof v.midiInput === "string" ? v.midiInput : "",
         midiQuantize: typeof v.midiQuantize === "number" ? v.midiQuantize : 0,
+        welcomeDone: v.welcomeDone === true,
       };
     }
   } catch {
@@ -88,6 +91,7 @@ function load(): Settings {
     recordStereo: false,
     midiInput: "",
     midiQuantize: 0,
+    welcomeDone: false,
   };
 }
 
@@ -96,6 +100,9 @@ export const settings = $state<Settings>(load());
 /// 設定画面の開閉と、開くページ(ステータスバーのデバイスから開くとオーディオのページなど)
 export type SettingsTab = "display" | "audio" | "midi" | "record" | "ai";
 export const settingsUi = $state<{ open: boolean; tab: SettingsTab }>({ open: false, tab: "display" });
+
+/// はじめの確認の開閉(初回は自動で開く。設定の「表示」からいつでも開ける)
+export const welcomeUi = $state<{ open: boolean }>({ open: !settings.welcomeDone });
 
 export function openSettings(tab?: SettingsTab) {
   if (tab) settingsUi.tab = tab;

@@ -40,6 +40,10 @@ AI ができること・作れるジャンルの詳細は [`docs/CAPABILITIES.md
 
 署名をしていないので、初めて開くと「Windows によって PC が保護されました」と出ることがあります。「詳細情報」→「実行」で開けます。
 
+初めて起動すると「はじめの確認」が開き、音の出力・AI のチャット・SoundFont がそろっているかを確かめて、
+足りないもの(GM 音源の SoundFont など)をその場で用意できます。デモ曲もここから開けます。
+使い方の流れは [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)、困ったときは [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) にあります。
+
 ### 自分でビルドする
 
 ```bat
@@ -129,7 +133,9 @@ godot/          Godot のデモとアドオンのビルド
 | 音色語の辞書(LAION-CLAP の言葉側から作成) | 同梱 | Apache-2.0 |
 | LAION-CLAP の音声側モデル | 初めて使うときに取得 | Apache-2.0 |
 | 画面のアイコン(Lucide) | 同梱([全文](app/LICENSE-lucide.txt)) | ISC(一部 MIT) |
-| SoundFont・CLAP プラグイン・Demucs | 同梱しない(各自で入手) | それぞれによる |
+| GM 音源の SoundFont(GeneralUser GS v2.0.3、S. Christian Collins 作) | 同梱しない。はじめの確認で取得できる | GeneralUser GS License v2.0 |
+| デモ曲(CyberNeon) | 同梱(内蔵の音源とエフェクトだけで作った曲) | 上と同じ(MIT / Apache-2.0) |
+| そのほかの SoundFont・CLAP プラグイン・Demucs | 同梱しない(各自で入手) | それぞれによる |
 | **ロゴ・アイコン** | `assets/` ほか | **上のライセンスの対象外** |
 
 ロゴ・アイコン(Glaux のロゴ、フクロウの図柄、それらから作った画像)は、Glaux を紹介する目的以外で使ったり、改変したり、

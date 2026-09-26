@@ -242,7 +242,7 @@
               </button>
             {/each}
           {:else if (sfFiles ?? []).length === 0}
-            <div class="note">まだ .sf2 がありません。FluidR3_GM などのフリー SoundFont を「追加」から登録すると、ピアノ・ストリングス等の GM 音源一式が使えます。</div>
+            <div class="note">まだ .sf2 がありません。設定 → 表示 →「はじめの確認」の「GM 音源を取得」か、手持ちの .sf2 を「追加」から登録すると、ピアノ・ストリングス等の GM 音源一式が使えます。</div>
           {/if}
         {:else if tab === "clap"}
           <div class="row">

@@ -12,6 +12,7 @@
     settings,
     settingsUi,
     type SettingsTab,
+    welcomeUi,
   } from "./settings.svelte";
   import type { IconName } from "./icons";
 
@@ -345,6 +346,18 @@
                 <span class="dot"></span>{p.label}
               </button>
             {/each}
+          </div>
+        </div>
+        <div class="srow">
+          {@render row("はじめの確認", "音の出力・AI のチャット・SoundFont がそろっているかの確認と、デモ曲")}
+          <div class="sc">
+            <button
+              class="btn sm"
+              onclick={() => {
+                welcomeUi.open = true;
+                onClose();
+              }}>開く</button
+            >
           </div>
         </div>
       {:else if settingsUi.tab === "audio"}

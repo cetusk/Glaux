@@ -25,10 +25,11 @@
   import PianoRoll from "./lib/PianoRoll.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
   import ExportDialog from "./lib/ExportDialog.svelte";
+  import WelcomeDialog from "./lib/WelcomeDialog.svelte";
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import InstrumentPicker from "./lib/InstrumentPicker.svelte";
   import Mixer from "./lib/Mixer.svelte";
-  import { applyTheme, openSettings, settings, settingsUi } from "./lib/settings.svelte";
+  import { applyTheme, openSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import {
     inspectorStore,
@@ -1150,6 +1151,9 @@
 
   {#if settingsUi.open}
     <SettingsPanel onClose={closeSettings} />
+  {/if}
+  {#if welcomeUi.open}
+    <WelcomeDialog />
   {/if}
   {#if showExport}
     <ExportDialog onClose={() => (showExport = false)} loop={transport.loop ?? null} />

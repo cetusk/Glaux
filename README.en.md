@@ -40,6 +40,10 @@ Download one of these from [Releases](https://github.com/cetusk/Glaux/releases).
 
 The files are not code-signed, so Windows may show "Windows protected your PC" the first time. Click "More info" → "Run anyway".
 
+On first launch, a setup check shows whether audio output, the AI chat CLI and a SoundFont are available, and lets you
+fix what is missing on the spot (for example, download a General MIDI SoundFont). You can also open the demo song from there.
+A walkthrough (in Japanese) is in [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md), and common problems in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+
 ### Build it yourself
 
 ```bat
@@ -129,7 +133,9 @@ The source code and documentation are dual-licensed under **MIT or Apache-2.0** 
 | Timbre vocabulary (from LAION-CLAP text embeddings) | Bundled | Apache-2.0 |
 | LAION-CLAP audio model | Downloaded on first use | Apache-2.0 |
 | UI icons (Lucide) | Bundled ([full text](app/LICENSE-lucide.txt)) | ISC (partly MIT) |
-| SoundFonts, CLAP plugins, Demucs | Not bundled (get them yourself) | Their own licenses |
+| General MIDI SoundFont (GeneralUser GS v2.0.3 by S. Christian Collins) | Not bundled; can be downloaded from the setup check | GeneralUser GS License v2.0 |
+| Demo song (CyberNeon) | Bundled (made only with the built-in instruments and effects) | Same as above (MIT / Apache-2.0) |
+| Other SoundFonts, CLAP plugins, Demucs | Not bundled (get them yourself) | Their own licenses |
 | **Logos and icons** | `assets/` and others | **Not covered by the license above** |
 
 The logos and icons (the Glaux logo, the owl artwork, and images made from them) may only be used to refer to Glaux itself.

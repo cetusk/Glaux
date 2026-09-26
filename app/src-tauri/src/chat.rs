@@ -539,6 +539,25 @@ impl ChatManager {
     }
 }
 
+/// PATH から AI の CLI を探す(初回の案内の確認用)。見つかったらそのパス。
+/// チャットの起動と同じ PATH を見るので、ここで見つかれば起動もできる
+pub fn find_cli(provider: Provider) -> Option<String> {
+    let name = provider.command_name();
+    let path = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let names = [
+        format!("{name}.cmd"),
+        format!("{name}.exe"),
+        format!("{name}.bat"),
+    ];
+    #[cfg(not(windows))]
+    let names = [name.to_owned()];
+    std::env::split_paths(&path)
+        .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// セッション ID の保存先(`cache/` は再生成可能データ置き場。Git 管理外)。
 fn session_file(project_dir: &str) -> std::path::PathBuf {
     std::path::Path::new(project_dir)

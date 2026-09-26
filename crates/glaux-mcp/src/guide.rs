@@ -36,7 +36,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
   〜10 でクリーン、15〜25 でクランチ、30 前後でオーバードライブ、40 以上でメタル。メタルの刻みはノートに articulation: \"palm_mute\"。\n\
   出荷時プリセット(クリーンエレキ / クランチギター / メタルギター)を load_preset するのが早い。\n\
 - 本物っぽい楽器一式(ピアノ・ストリングス・ブラス等): SoundFont。list_soundfonts で .sf2 とプリセットを見て\n\
-  set_soundfont_instrument。.sf2 が無ければ「FluidR3_GM.sf2 などのフリー SoundFont を設定の SoundFont フォルダに置いて」と案内する。\n\
+  set_soundfont_instrument。.sf2 が無ければ「アプリの設定 → 表示 →『はじめの確認』の『GM 音源を取得』で入れられる(手持ちの .sf2 の追加も可)」と案内する。\n\
 - 実録の音を鳴らす: import_sample(WAV の絶対パス。root にサンプルの実音)でトラックの音源を sampler にする。\n\
 - 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。\n\
 - エフェクトのプリセット: エフェクト 1 つ分(list_effect_presets → load_effect_preset)。エフェクトを足す前に使える設定がないか見る。\n\

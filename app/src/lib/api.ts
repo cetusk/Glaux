@@ -562,6 +562,32 @@ export function listSoundfontPresets(
   return invoke("list_soundfont_presets", { file });
 }
 
+/** はじめの確認: 音の出力(デバイス名。使えなければ null)・AI の CLI のパス(無ければ null)・SoundFont のライブラリ */
+export interface SetupStatus {
+  audio_output: string | null;
+  claude: string | null;
+  codex: string | null;
+  soundfont: { dir: string; files: string[]; download_file: string; download_bytes: number };
+}
+
+export function setupStatus(): Promise<SetupStatus> {
+  return invoke("setup_status");
+}
+
+/** GM 音源一式の SoundFont(GeneralUser GS)を取得する。進捗は onSoundFontDownload で届く */
+export function downloadSoundFont(): Promise<{ path: string }> {
+  return invoke("download_soundfont");
+}
+
+export function onSoundFontDownload(cb: (p: { got: number; total: number }) => void): Promise<UnlistenFn> {
+  return listen<{ got: number; total: number }>("soundfont-download", (e) => cb(e.payload));
+}
+
+/** 同梱のデモ曲を曲のフォルダに写して開く */
+export function openDemoSong(): Promise<{ title: string; project_version: number; path: string }> {
+  return invoke("open_demo_song");
+}
+
 /** .sf2 をライブラリフォルダへコピーして登録する。 */
 export function addSoundfont(path: string): Promise<{ file: string }> {
   return invoke("add_soundfont", { path });

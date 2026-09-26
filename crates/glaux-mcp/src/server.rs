@@ -2610,7 +2610,7 @@ impl GlauxServer {
         file を指定するとそのフォントのプリセット一覧(bank / preset / 名前)。\
         ピアノ・ストリングス・ブラスなど本物っぽい楽器一式が欲しいときは、まずここを確認して\
         set_soundfont_instrument で設定する。ライブラリフォルダに .sf2 が無い場合は、\
-        ユーザーに FluidR3_GM などのフリー SoundFont の導入を提案すること。"
+        ユーザーに、アプリの設定 → 表示 →「はじめの確認」の「GM 音源を取得」(GeneralUser GS)で入れられることを案内する。"
     )]
     async fn list_soundfonts(&self, params: Parameters<ListSoundfontsParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("list_soundfonts");

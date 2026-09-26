@@ -418,6 +418,50 @@ async fn download_clap_model(app: tauri::AppHandle) -> Result<Value, String> {
     Ok(json!({ "path": path.to_string_lossy() }))
 }
 
+/// 初回の案内の確認: 音の出力・AI の CLI(Claude Code / Codex CLI)・SoundFont のライブラリ。
+#[tauri::command]
+fn setup_status(state: State<'_, AppState>) -> Value {
+    json!({
+        "audio_output": state.engine.as_ref().map(|e| e.output_device()),
+        "claude": chat::find_cli(chat::Provider::Claude),
+        "codex": chat::find_cli(chat::Provider::Codex),
+        "soundfont": glaux_mcp::models::soundfont_status(),
+    })
+}
+
+/// GM 音源一式の SoundFont(GeneralUser GS、約 32MB)をライブラリへ取得する。
+/// 進捗は `soundfont-download` イベント({got, total})で届く。
+#[tauri::command]
+async fn download_soundfont(app: tauri::AppHandle) -> Result<Value, String> {
+    let path = tokio::task::spawn_blocking(move || {
+        glaux_mcp::models::download_soundfont(&mut |got, total| {
+            let _ = app.emit("soundfont-download", json!({ "got": got, "total": total }));
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(json!({ "path": path.to_string_lossy() }))
+}
+
+/// 同梱のデモ曲(CyberNeon。内蔵の音源とエフェクトだけで鳴る)を、曲のフォルダに写して開く。
+/// 開くたびに新しい写しを作る(前に開いたデモを直していても上書きしない)。
+#[tauri::command]
+async fn open_demo_song(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    const DEMO: &str = include_str!("../demo/CyberNeon.json");
+    let project: glaux_core::Project =
+        serde_json::from_str(DEMO).map_err(|e| format!("デモ曲を読めません: {e}"))?;
+    let parent = projects::default_projects_dir();
+    let dir = glaux_mcp::store::unique_project_dir(
+        std::path::Path::new(&parent),
+        &glaux_mcp::store::folder_name(&project.meta.title),
+    );
+    glaux_mcp::store::create_project_from(&dir, project).map_err(|e| e.to_string())?;
+    open_project(app, state, dir.to_string_lossy().into_owned(), false).await
+}
+
 /// 音声クリップの元のテンポ・拍子を検出する(テンポ追従の original_bpm 用。速さのため先頭 60 秒)。
 #[tauri::command]
 async fn detect_clip_tempo(state: State<'_, AppState>, clip_id: String) -> Result<Value, String> {
@@ -2506,6 +2550,9 @@ fn main() -> Result<()> {
             find_similar_clap_presets,
             refine_clap_params,
             download_clap_model,
+            setup_status,
+            download_soundfont,
+            open_demo_song,
             record_start,
             record_stop,
             midi_inputs,
@@ -2580,5 +2627,19 @@ mod taskbar_icon_tests {
         assert_eq!(taskbar_icon_size(2.0).0, 48);
         assert_eq!(taskbar_icon_size(3.0).0, 72);
         assert_eq!(taskbar_icon_size(8.0).0, 96, "大きすぎる倍率は最大のもの");
+    }
+
+    #[test]
+    fn demo_song_loads_and_validates() {
+        // 同梱のデモ曲が今の形式で読め、検証で問題が出ず、外部のファイル(SoundFont・音声・CLAP)を使わない
+        let p: glaux_core::Project =
+            serde_json::from_str(include_str!("../demo/CyberNeon.json")).unwrap();
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+        assert!(p.assets.is_empty());
+        assert!(p.tracks.len() >= 5);
+        assert!(p.tracks.iter().all(|t| t
+            .device
+            .as_ref()
+            .is_none_or(|d| matches!(d.source, glaux_core::PluginSource::Builtin { .. }))));
     }
 }
