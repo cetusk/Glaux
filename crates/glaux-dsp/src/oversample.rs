@@ -20,7 +20,7 @@ const HB_COEFS: [f32; 6] = [
     0.448_676_24,
     0.641_122_37,
     0.799_997_56,
-    0.934_482_24,
+    0.934_482_2,
 ];
 const HB_N: usize = HB_COEFS.len();
 
@@ -128,12 +128,12 @@ mod tests {
             for i in 0..20 {
                 let s = if i % 2 == 0 { 1.0 } else { -1.0 };
                 num += s
-                    * q.powi((i * (i + 1)) as i32)
+                    * q.powi(i * (i + 1))
                     * ((i as f64 * 2.0 + 1.0) * c * pi / order as f64).sin();
             }
             for i in 1..20 {
                 let s = if i % 2 == 1 { -1.0 } else { 1.0 };
-                den += s * q.powi((i * i) as i32) * (i as f64 * 2.0 * c * pi / order as f64).cos();
+                den += s * q.powi(i * i) * (i as f64 * 2.0 * c * pi / order as f64).cos();
             }
             let ww = num * q.powf(0.25) / (den + 0.5);
             let w2 = ww * ww;
