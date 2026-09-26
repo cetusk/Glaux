@@ -70,6 +70,12 @@ impl Project {
                 issues.push(Issue::error(format!("duplicate effect id {}", e.id)));
             }
         }
+        // つながりの表の誤りは警告(再生側は直列とみなして鳴らす)
+        if let Some(l) = &self.master.fx_links {
+            if let Err(e) = crate::model::routing::validate_links(&self.master.effects, l) {
+                issues.push(Issue::warn(format!("master: fx_links: {e}")));
+            }
+        }
         for t in &self.tracks {
             if !track_ids.insert(&t.id) {
                 issues.push(Issue::error(format!("duplicate track id {}", t.id)));
@@ -83,6 +89,11 @@ impl Project {
             for e in &t.effects {
                 if !fx_ids.insert(&e.id) {
                     issues.push(Issue::error(format!("duplicate effect id {}", e.id)));
+                }
+            }
+            if let Some(l) = &t.fx_links {
+                if let Err(e) = crate::model::routing::validate_links(&t.effects, l) {
+                    issues.push(Issue::warn(format!("track {}: fx_links: {e}", t.id)));
                 }
             }
             for lane in &t.automation {

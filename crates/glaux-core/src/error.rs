@@ -40,6 +40,8 @@ pub enum CoreError {
     ClipKindMismatch,
     #[error("value out of range: {0}")]
     OutOfRange(String),
+    #[error("invalid effect links: {0}")]
+    InvalidLinks(String),
     #[error(transparent)]
     Time(#[from] TimeError),
     #[error("batch failed at command #{index}: {source}")]

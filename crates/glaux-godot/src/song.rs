@@ -79,22 +79,23 @@ fn prepare(project: &mut Project) -> Vec<String> {
                 ));
             }
         }
-        let before = t.effects.len();
-        t.effects
-            .retain(|e| !matches!(e.source, PluginSource::Clap { .. }));
-        if t.effects.len() != before {
+        // CLAP エフェクトはゲームでは用意できないので素通しになる(つながりを保つため、消さずに残す)
+        if t.effects
+            .iter()
+            .any(|e| matches!(e.source, PluginSource::Clap { .. }))
+        {
             warnings.push(format!(
                 "トラック「{}」の CLAP エフェクトはゲームでは掛かりません",
                 t.name
             ));
         }
     }
-    let before = project.master.effects.len();
-    project
+    if project
         .master
         .effects
-        .retain(|e| !matches!(e.source, PluginSource::Clap { .. }));
-    if project.master.effects.len() != before {
+        .iter()
+        .any(|e| matches!(e.source, PluginSource::Clap { .. }))
+    {
         warnings.push("マスターの CLAP エフェクトはゲームでは掛かりません".to_owned());
     }
     warnings

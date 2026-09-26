@@ -7,6 +7,7 @@
 use crate::command::{Command, EffectProp, NoteChange, TrackProp};
 use crate::error::{CoreError, Result};
 use crate::id::{ClipId, NoteId, TrackId};
+use crate::model::routing::{insert_before_output, unlink_bridging, validate_links};
 use crate::model::{
     sort_notes, AutomationLane, Clip, ClipContent, Note, ParamMap, ParamPath, ParamValue,
     PitchPoint, Project, Stretch, TrackKind,
@@ -628,38 +629,85 @@ impl Project {
                 let idx = index.unwrap_or(t.effects.len());
                 check_index(idx, t.effects.len() + 1)?;
                 t.effects.insert(idx, effect.clone());
+                // つながりの表があるトラックでは、出口の直前に入れて鳴らす(parked なら、つながずに置く)
+                let old_links = t.fx_links.clone();
+                if let Some(l) = &old_links {
+                    if !effect.ui.parked {
+                        t.fx_links = Some(insert_before_output(l, &effect.id));
+                    }
+                }
                 Ok(Applied {
-                    inverse: RemoveEffect {
-                        id: effect.id.clone(),
-                    },
+                    inverse: undo_add_effect(&effect.id, Some(track), old_links),
                     changes: vec![Change::EffectsChanged {
                         track: track.clone(),
                     }],
                 })
             }
             RemoveEffect { id } => {
+                // つながりの表があれば、線を外して前後をつなぎ直す(戻すときは表ごと戻す)
                 if let Some(ei) = self.master_effect_index(id) {
                     let effect = self.master.effects.remove(ei);
+                    let old_links = self.master.fx_links.clone();
+                    if let Some(l) = &old_links {
+                        self.master.fx_links = Some(unlink_bridging(l, id));
+                    }
+                    let add = AddMasterEffect {
+                        effect,
+                        index: Some(ei),
+                    };
                     return Ok(Applied {
-                        inverse: AddMasterEffect {
-                            effect,
-                            index: Some(ei),
-                        },
+                        inverse: with_links(add, None, old_links),
                         changes: vec![Change::MasterChanged],
                     });
                 }
                 let (ti, ei) = self
                     .effect_location(id)
                     .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
-                let effect = self.tracks[ti].effects.remove(ei);
-                let track = self.tracks[ti].id.clone();
+                let t = &mut self.tracks[ti];
+                let effect = t.effects.remove(ei);
+                let old_links = t.fx_links.clone();
+                if let Some(l) = &old_links {
+                    t.fx_links = Some(unlink_bridging(l, id));
+                }
+                let track = t.id.clone();
+                let add = AddEffect {
+                    track: track.clone(),
+                    effect,
+                    index: Some(ei),
+                };
                 Ok(Applied {
-                    inverse: AddEffect {
-                        track: track.clone(),
-                        effect,
-                        index: Some(ei),
-                    },
+                    inverse: with_links(add, Some(&track), old_links),
                     changes: vec![Change::EffectsChanged { track }],
+                })
+            }
+            SetFxLinks { track, links } => {
+                let (effects, slot, change) = match track {
+                    Some(tid) => {
+                        let t = self
+                            .track_mut(tid)
+                            .ok_or_else(|| CoreError::TrackNotFound(tid.clone()))?;
+                        (
+                            &t.effects,
+                            &mut t.fx_links,
+                            Change::EffectsChanged { track: tid.clone() },
+                        )
+                    }
+                    None => (
+                        &self.master.effects,
+                        &mut self.master.fx_links,
+                        Change::MasterChanged,
+                    ),
+                };
+                if let Some(l) = links {
+                    validate_links(effects, l).map_err(CoreError::InvalidLinks)?;
+                }
+                let old = std::mem::replace(slot, links.clone());
+                Ok(Applied {
+                    inverse: SetFxLinks {
+                        track: track.clone(),
+                        links: old,
+                    },
+                    changes: vec![change],
                 })
             }
             MoveEffect { id, to_index } => {
@@ -693,18 +741,24 @@ impl Project {
                 })
             }
             SetEffectProp { id, prop } => {
-                let (effect, change) = if let Some(ei) = self.master_effect_index(id) {
-                    (&mut self.master.effects[ei], Change::MasterChanged)
+                let (effect, change, has_links) = if let Some(ei) = self.master_effect_index(id) {
+                    let has = self.master.fx_links.is_some();
+                    (&mut self.master.effects[ei], Change::MasterChanged, has)
                 } else {
                     let (ti, ei) = self
                         .effect_location(id)
                         .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
-                    let track = self.tracks[ti].id.clone();
-                    (
-                        &mut self.tracks[ti].effects[ei],
-                        Change::EffectsChanged { track },
-                    )
+                    let t = &mut self.tracks[ti];
+                    let track = t.id.clone();
+                    let has = t.fx_links.is_some();
+                    (&mut t.effects[ei], Change::EffectsChanged { track }, has)
                 };
+                if matches!(prop, EffectProp::Parked(_)) && has_links {
+                    return Err(CoreError::InvalidLinks(
+                        "つながりの表(fx_links)があるので parked は使えません。set_fx_links で線を外してください"
+                            .to_owned(),
+                    ));
+                }
                 let ui = &mut effect.ui;
                 let old = match prop {
                     EffectProp::Label(v) => {
@@ -849,10 +903,14 @@ impl Project {
                 let idx = index.unwrap_or(len);
                 check_index(idx, len + 1)?;
                 self.master.effects.insert(idx, effect.clone());
+                let old_links = self.master.fx_links.clone();
+                if let Some(l) = &old_links {
+                    if !effect.ui.parked {
+                        self.master.fx_links = Some(insert_before_output(l, &effect.id));
+                    }
+                }
                 Ok(Applied {
-                    inverse: RemoveEffect {
-                        id: effect.id.clone(),
-                    },
+                    inverse: undo_add_effect(&effect.id, None, old_links),
                     changes: vec![Change::MasterChanged],
                 })
             }
@@ -1248,6 +1306,36 @@ fn lanes_ok(lanes: &[AutomationLane]) -> Result<()> {
         .iter()
         .flat_map(|l| &l.points)
         .try_for_each(|p| tick_ok("automation tick", p.tick))
+}
+
+/// エフェクトを足したときの逆コマンド。つながりの表があれば、消したあとに表を元に戻す
+fn undo_add_effect(
+    id: &crate::id::FxId,
+    track: Option<&TrackId>,
+    old_links: Option<Vec<crate::model::FxLink>>,
+) -> Command {
+    with_links(Command::RemoveEffect { id: id.clone() }, track, old_links)
+}
+
+/// `cmd` のあとにつながりの表を `old_links` に戻す(表が無かったなら `cmd` だけ)
+fn with_links(
+    cmd: Command,
+    track: Option<&TrackId>,
+    old_links: Option<Vec<crate::model::FxLink>>,
+) -> Command {
+    match old_links {
+        None => cmd,
+        Some(l) => Command::batch(
+            "エフェクトとつながり",
+            vec![
+                cmd,
+                Command::SetFxLinks {
+                    track: track.cloned(),
+                    links: Some(l),
+                },
+            ],
+        ),
+    }
 }
 
 /// コマンドに含まれる位置・長さがすべて [`MAX_TICK`] 以内か(適用の前に検査する)。

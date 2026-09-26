@@ -18,7 +18,7 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 - **Compose with AI** — Work with Claude (Claude Code) or GPT (Codex CLI). Human and AI edits share one history, and you can undo an AI's whole turn at once
 - **The AI can listen** — It measures loudness, frequency balance, key and chords, rhythm and timbre by itself, and checks its work before reporting
 - **Instruments and effects** — 7 built-in instruments (subtractive, FM, wavetable, drums, plucked string, sampler, SoundFont), 9 effects (EQ, compressor, reverb, amp, and more), and CLAP plugins (e.g. Surge XT)
-- **Mixer and effect node view** — See every track as a vertical strip with volume, pan, sends and meters. Effects are cards wired in a chain that you drag to reorder; unplug a card to keep it aside without hearing it, and save good settings as effect presets to reuse in other songs
+- **Mixer and effect node view** — See every track as a vertical strip with volume, pan, sends and meters. Effects are cards you place freely and connect with cables, including splitting and merging (e.g. dry + reverb in parallel). Unconnected cards stay silent but keep their settings, and good settings can be saved as effect presets for other songs
 - **Write and record** — Piano roll, drum kit, fretboard, MIDI keyboard, MIDI file import/export, audio recording, humming-to-MIDI, stem separation, tempo-following audio clips
 - **Designed for AI** — Projects are readable JSON. Every edit goes through the same command API with full undo. Built-in MCP server
 - **Play it in games** — A Godot 4 extension plays your songs in-game and syncs enemies or hit judgement to the beat

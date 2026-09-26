@@ -101,11 +101,11 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
     let pick_track = |rng: &mut StdRng| tracks.choose(rng).unwrap().id.clone();
 
     loop {
-        // 0..=26 は単体コマンド、27 以上は Batch(入れ子は 1 段まで)
+        // 0..=27 は単体コマンド、28 以上は Batch(入れ子は 1 段まで)
         let choice = if depth == 0 {
-            rng.gen_range(0..28)
+            rng.gen_range(0..29)
         } else {
-            rng.gen_range(0..27)
+            rng.gen_range(0..28)
         };
         match choice {
             0 => {
@@ -566,6 +566,50 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 return Command::SetEffectProp {
                     id: e.id.clone(),
                     prop,
+                };
+            }
+            27 => {
+                // エフェクトのつながり(分岐・合流・つながっていないものを含む。ときどき直列に戻す)
+                let target = if rng.gen_bool(0.25) {
+                    None
+                } else {
+                    Some(tracks.choose(rng).unwrap())
+                };
+                let effects = match target {
+                    Some(t) => &t.effects,
+                    None => &p.master.effects,
+                };
+                let links = if rng.gen_bool(0.2) || effects.is_empty() {
+                    None
+                } else {
+                    // 並び順の部分列を直列に並べ(= 輪にならない)、ときどき飛ばす線と音量を足す
+                    let mut chain: Vec<FxNode> = vec![FxNode::Input];
+                    chain.extend(
+                        effects
+                            .iter()
+                            .filter(|_| rng.gen_bool(0.7))
+                            .map(|e| FxNode::Fx(e.id.clone())),
+                    );
+                    chain.push(FxNode::Output);
+                    let mut l: Vec<FxLink> = chain
+                        .windows(2)
+                        .map(|w| FxLink::new(w[0].clone(), w[1].clone()))
+                        .collect();
+                    if chain.len() > 3 && rng.gen_bool(0.5) {
+                        l.push(FxLink {
+                            from: chain[0].clone(),
+                            to: chain[chain.len() - 1].clone(),
+                            gain_db: rng.gen_range(-12.0..0.0),
+                        });
+                    }
+                    if rng.gen_bool(0.3) {
+                        l.pop();
+                    }
+                    Some(l)
+                };
+                return Command::SetFxLinks {
+                    track: target.map(|t| t.id.clone()),
+                    links,
                 };
             }
             19 => {

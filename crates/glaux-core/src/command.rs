@@ -9,8 +9,8 @@
 
 use crate::id::{AssetId, ClipId, FxId, NoteId, TrackId};
 use crate::model::{
-    Articulation, Asset, AutomationPoint, Clip, Device, Effect, Note, ParamPath, ParamValue,
-    PitchPoint, SectionMarker, Stretch, Track,
+    Articulation, Asset, AutomationPoint, Clip, Device, Effect, FxLink, Note, ParamPath,
+    ParamValue, PitchPoint, SectionMarker, Stretch, Track,
 };
 use crate::time::{TempoEvent, Tick, TimeSigEvent};
 use serde::{Deserialize, Serialize};
@@ -215,6 +215,13 @@ pub enum Command {
         id: FxId,
         to_index: usize,
     },
+    /// エフェクトのつながり(ノード表示の線)を丸ごと置き換える。`track` 省略でマスター。
+    /// `links: null` で並び順の直列に戻す。入力から出口まで線でたどれるエフェクトだけが鳴る
+    SetFxLinks {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track: Option<TrackId>,
+        links: Option<Vec<FxLink>>,
+    },
     /// エフェクトの表示名・外してあるか・メモ・ノード表示での位置(トラック・マスターのどちらでも)
     SetEffectProp {
         id: FxId,
@@ -397,6 +404,12 @@ impl Command {
             SetSend { track, target, .. } => {
                 out.insert(T::Track(track.clone()));
                 out.insert(T::Track(target.clone()));
+            }
+            SetFxLinks { track, .. } => {
+                out.insert(match track {
+                    Some(t) => T::Track(t.clone()),
+                    None => T::Master,
+                });
             }
             RemoveEffect { id }
             | MoveEffect { id, .. }

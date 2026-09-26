@@ -10,7 +10,7 @@
   import { newClipId, newFxId } from "./ids";
   import { deviceIcon, deviceKind, deviceName } from "./instruments";
   import { fmtValue, fromPos, SLIDER_MAX, toPos } from "./params";
-  import { moveIndexFor } from "./fx";
+  import { effectiveLinks, insertBeforeOutput, moveIndexFor, processingOrder, serialLinks, serialOrder, unlinkBridging } from "./fx";
   import { keepInView } from "./menu";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
   import {
@@ -430,11 +430,19 @@
   let fxOrder = $state<string[] | null>(null);
   let fxOrderTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /// 線から外してある(ノード表示のわきに置いてある)エフェクト。音は通らないので、並びとは別に畳んで出す
-  const parkedEffects = $derived((info?.effects ?? []).filter((f) => f.parked));
+  /// エフェクトのつながり(ノード表示の線)。表が無ければ並び順の直列
+  const rawLinks = $derived(isMaster ? project.master.fx_links : track?.fx_links);
+  const fxLinks = $derived(effectiveLinks(info?.effects ?? [], rawLinks));
+  /// 鳴るエフェクトの処理の順
+  const soundingIds = $derived(processingOrder(info?.effects ?? [], fxLinks));
+  /// ただの 1 本の直列なら並べ替えられる(分岐・合流があるときはノード表示で)
+  const serial = $derived(serialOrder(fxLinks) !== null);
+  /// 鳴らない(入力から出口まで線でたどれない)エフェクト。並びとは別に畳んで出す
+  const parkedEffects = $derived((info?.effects ?? []).filter((f) => !soundingIds.includes(f.id)));
 
   const shownEffects = $derived.by((): EffectView[] => {
-    const list = (info?.effects ?? []).filter((f) => !f.parked);
+    const byAll = new Map((info?.effects ?? []).map((f) => [f.id, f]));
+    const list = soundingIds.map((id) => byAll.get(id)).filter((f): f is EffectView => !!f);
     const order = fxOrder;
     if (!order) return list;
     const byId = new Map(list.map((f) => [f.id, f]));
@@ -444,11 +452,11 @@
 
   $effect(() => {
     const order = fxOrder;
-    if (order && (info?.effects ?? []).filter((f) => !f.parked).map((f) => f.id).join() === order.join()) fxOrder = null;
+    if (order && soundingIds.join() === order.join()) fxOrder = null;
   });
 
   function onFxGripDown(e: PointerEvent, fx: EffectView, index: number) {
-    if (e.button !== 0 || !fxList) return;
+    if (e.button !== 0 || !fxList || !serial) return;
     e.preventDefault();
     const cards = [...fxList.querySelectorAll<HTMLElement>(".fx")];
     const rects = cards.map((c) => c.getBoundingClientRect());
@@ -478,17 +486,23 @@
           });
         return;
       }
-      // 外してあるものも含めた全体の並びでの位置に直す
-      const toIndex = moveIndexFor(info?.effects ?? [], d.id, d.to);
-      if (toIndex === null) return;
       const ids = shownEffects.map((f) => f.id);
       ids.splice(d.from, 1);
       ids.splice(d.to, 0, d.id);
+      // 表が無ければ並び順を動かす(外してあるものも含めた全体の位置に直す)。表があれば直列の線を引き直す
+      let cmd: unknown;
+      if (rawLinks) {
+        cmd = isMaster ? { op: "set_fx_links", links: serialLinks(ids) } : { op: "set_fx_links", track: track?.id, links: serialLinks(ids) };
+      } else {
+        const toIndex = moveIndexFor(info?.effects ?? [], d.id, d.to);
+        if (toIndex === null) return;
+        cmd = { op: "move_effect", id: d.id, to_index: toIndex };
+      }
       fxOrder = ids;
       clearTimeout(fxOrderTimer);
       fxOrderTimer = setTimeout(() => (fxOrder = null), 3000);
       api
-        .applyEdit([{ op: "move_effect", id: d.id, to_index: toIndex }], `${targetName} の ${fxLabel(fx)} を ${d.to + 1} 番目へ`)
+        .applyEdit([cmd], `${targetName} の ${fxLabel(fx)} を ${d.to + 1} 番目へ`)
         .catch((e) => {
           fxOrder = null;
           loadError = String(e);
@@ -498,8 +512,16 @@
     window.addEventListener("pointerup", up);
   }
 
-  /// 外してあるエフェクトを線(並びの最後)に戻す
+  /// 鳴らないエフェクトを線に戻す(出口の前 / 表が無ければ並びの最後)
   function unpark(fx: EffectView) {
+    if (rawLinks) {
+      const next = insertBeforeOutput(unlinkBridging(fxLinks, fx.id), fx.id);
+      applyEdit(
+        [isMaster ? { op: "set_fx_links", links: next } : { op: "set_fx_links", track: track?.id, links: next }],
+        `${targetName} の ${fxLabel(fx)} を出口の前につなぐ`,
+      );
+      return;
+    }
     const all = info?.effects ?? [];
     const to = moveIndexFor(all, fx.id, all.filter((f) => !f.parked).length);
     const cmds: unknown[] = [
@@ -785,7 +807,7 @@
                     animate:flip={{ duration: 180 }}
                   >
                     <div class="fx-h">
-                      <span class="grip" role="button" tabindex="-1" aria-label="並べ替え" title="つかんで上下にドラッグで並べ替え" onpointerdown={(e) => onFxGripDown(e, fx, i)}
+                      <span class="grip" class:off={!serial} role="button" tabindex="-1" aria-label="並べ替え" title={serial ? "つかんで上下にドラッグで並べ替え" : "分かれたり合流したりしているので、並べ替えはノード表示で"} onpointerdown={(e) => onFxGripDown(e, fx, i)}
                         ><Icon name="grip-vertical" size={14} /></span
                       >
                       <button
@@ -852,13 +874,13 @@
               </div>
               {#if parkedEffects.length > 0}
                 <div class="parked">
-                  <div class="parked-h" title="ミキサーのノード表示で、線から外してわきに置いてあるエフェクト。設定は残っていて、音は通らない">
-                    <Icon name="unplug" size={12} />外してある {parkedEffects.length}(音は通らない)
+                  <div class="parked-h" title="入力から出口まで線でたどれないエフェクト。設定は残っていて、音は通らない">
+                    <Icon name="unplug" size={12} />鳴らない {parkedEffects.length}(線がつながっていない)
                   </div>
                   {#each parkedEffects as fx (fx.id)}
                     <div class="parked-row" title={fx.note ?? ""}>
                       <span class="parked-nm">{fxLabel(fx)}{#if fx.note}<small>{fx.note}</small>{/if}</span>
-                      <button class="btn sm ghost" onclick={() => unpark(fx)} title="線の最後に戻す"><Icon name="arrow-up" />戻す</button>
+                      <button class="btn sm ghost" onclick={() => unpark(fx)} title="出口の前につなぐ"><Icon name="plug" />つなぐ</button>
                       <button class="btn sm icon ghost" onclick={() => removeEffect(fx)} title="削除(Ctrl+Z で戻せます)" aria-label="削除"><Icon name="trash-2" /></button>
                     </div>
                   {/each}
@@ -866,7 +888,7 @@
               {/if}
               <div class="row">
                 <button class="btn sm add-fx" onclick={(e) => (addMenu = menuAt(e))}><Icon name="plus" />エフェクトを追加<Icon name="chevron-down" /></button>
-                <button class="btn sm ghost" onclick={openInMixer} title="ミキサーのノード表示で開く(カードで並べ替え・外して取っておく・名前やメモ)"
+                <button class="btn sm ghost" onclick={openInMixer} title="ミキサーのノード表示で開く(線でつなぐ・分ける・混ぜる・名前やメモ)"
                   ><Icon name="sliders-horizontal" />ノード表示</button
                 >
               </div>
@@ -1315,6 +1337,11 @@
 
   .grip:hover {
     color: var(--text);
+  }
+
+  .grip.off {
+    cursor: not-allowed;
+    opacity: 0.35;
   }
 
   .fx-name {

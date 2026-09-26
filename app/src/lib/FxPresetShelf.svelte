@@ -1,7 +1,7 @@
 <script lang="ts">
   // エフェクトのプリセットの棚(ミキサーの下の段の右端。たためる)。エフェクト 1 つ分を名前・メモ付きで取っておき、
-  // どのトラック・どの曲でも使う。ノード表示の「わき」(そのトラックの中だけ)より広く使い回したいものを入れる所。
-  // カードはノード表示へドラッグして置ける(帯なら線の中、帯の下ならわき)。「+」は並びの最後へ。
+  // どのトラック・どの曲でも使う。
+  // カードはノード表示へドラッグして置ける(線の上なら間に入り、それ以外は、つながずに置く)。「+」は出口の前へ。
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { focusNow } from "./menu";
@@ -200,7 +200,7 @@
             <span class="kind">{kindLabel(p)}</span>
             <span class="sp"></span>
             <button class="btn sm icon ghost" onclick={() => add(p, false)} title="線の最後に足す" aria-label="線の最後に足す"><Icon name="plus" size={13} /></button>
-            <button class="btn sm icon ghost" onclick={() => add(p, true)} title="わきに置く(音は通らない)" aria-label="わきに置く"><Icon name="unplug" size={13} /></button>
+            <button class="btn sm icon ghost" onclick={() => add(p, true)} title="つながずに置く(線を引くまで鳴らない)" aria-label="つながずに置く"><Icon name="unplug" size={13} /></button>
             <button
               class="btn sm icon ghost"
               class:armed={confirmDelete === p.name}
@@ -224,7 +224,7 @@
         </div>
       {/each}
       {#if shown.length > 0}
-        <div class="hint">左へドラッグして置く(線の中 / わき)。左のカードをここへ落とすと保存。どのトラック・曲でも使える</div>
+        <div class="hint">左へドラッグして置く(線の上なら間に入る)。左のカードをここへ落とすと保存。どのトラック・曲でも使える</div>
       {/if}
     </div>
   {/if}

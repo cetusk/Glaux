@@ -183,7 +183,7 @@ impl Target {
     }
 }
 
-/// プリセットのエフェクトを足すコマンド(1 件)。`parked` ならわきに置いた状態で、`pos` はその位置
+/// プリセットのエフェクトを足すコマンド(1 件)。`parked` なら、つながずに置く。`pos` はノード表示での位置
 pub fn add_command(
     project: &Project,
     target: &Target,
@@ -202,7 +202,7 @@ pub fn add_command(
             label: Some(preset.name.clone()),
             parked,
             note: preset.note.clone(),
-            pos: if parked { pos } else { None },
+            pos,
         },
     };
     let cmd = match target {
@@ -222,6 +222,42 @@ pub fn add_command(
         }
     };
     Ok((cmd, id))
+}
+
+/// 足すコマンドのあとに、線 from → to の間へ入れるコマンドを続ける(1 回の undo)
+pub fn split_command(
+    project: &Project,
+    target: &Target,
+    add: Command,
+    fx_id: &FxId,
+    from: &str,
+    to: &str,
+) -> Result<Command, String> {
+    let node = |s: &str| -> Result<glaux_core::FxNode, String> {
+        serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(|e| e.to_string())
+    };
+    let (links, track) = match target {
+        Target::Master => (project.master.links(), None),
+        Target::Track(t) => (
+            project
+                .track(t)
+                .ok_or_else(|| format!("トラックが見つかりません: {t}"))?
+                .links(),
+            Some(t.clone()),
+        ),
+    };
+    let new = glaux_core::model::routing::split_link(&links, &node(from)?, &node(to)?, fx_id)
+        .ok_or_else(|| format!("線が見つかりません: {from} → {to}"))?;
+    Ok(Command::batch(
+        "エフェクトのプリセットを線に入れる",
+        vec![
+            add,
+            Command::SetFxLinks {
+                track,
+                links: Some(new),
+            },
+        ],
+    ))
 }
 
 /// トラックかマスターのエフェクトを探す

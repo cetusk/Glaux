@@ -183,6 +183,7 @@ pub fn render_track_note(
     }])
     .map_err(|_| ExportError::Empty)?;
     p.master.effects.clear();
+    p.master.fx_links = None;
     p.master.automation.clear();
     p.master.volume_db = 0.0;
     let mut t = track.clone();

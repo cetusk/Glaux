@@ -30,6 +30,18 @@ pub struct BakedEffect {
     pub plugin: Option<(u32, u64)>,
 }
 
+/// 1 本のトラック(かマスター)の中で、つながりの順にエフェクトを通すための段取り。
+/// `effects[i]` に入る音と出口に入る音を、(元, 量(リニア))の並びで持つ。元 0 = 入力、k + 1 = `effects[k]` の出力。
+/// バイパス中・用意できていないエフェクトは素通しとして前後に畳み込み済み
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FxGraphPlan {
+    pub inputs: Vec<Vec<(u16, f32)>>,
+    pub output: Vec<(u16, f32)>,
+}
+
+/// つながりを処理できるエフェクトの最大数(1 トラック分。超えた分は素通し)
+pub const MAX_GRAPH_NODES: usize = 32;
+
 /// サンプル位置に焼き込んだオートメーション点。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AutoPoint {
@@ -249,8 +261,10 @@ pub struct TrackMix {
     pub fx_auto: Vec<(u32, String, Vec<AutoPoint>)>,
     /// 焼き込み済みの楽器パラメータ(glaux-dsp)
     pub instrument: InstrumentParams,
-    /// エフェクトチェーン(bypass 除外・焼き込み済み)。楽器 → チェーン → 音量/パン の順
+    /// エフェクトチェーン(鳴るものだけ・焼き込み済み・処理の順)。楽器 → チェーン → 音量/パン の順
     pub effects: Vec<BakedEffect>,
+    /// エフェクトのつながりに分岐・合流・線の音量があるとき。`None` なら `effects` を順に通す
+    pub fx_graph: Option<FxGraphPlan>,
     /// CLAP プラグインで鳴らすトラック: (スロット, 世代)。内蔵楽器の代わりにプラグインへ
     /// ノートを送り、その出力(ステレオ)をエフェクト → 音量/パンに通す
     pub plugin: Option<(u32, u64)>,
@@ -297,6 +311,8 @@ pub struct PlaybackData {
     pub tracks: Vec<TrackMix>,
     /// マスターバスのエフェクトチェーン
     pub master_effects: Vec<BakedEffect>,
+    /// マスターのエフェクトのつながり(分岐・合流があるとき)
+    pub master_fx_graph: Option<FxGraphPlan>,
     pub master_amp: f32,
     /// マスター音量のオートメーション(dB)。空ならフェーダー値(`master_amp`)
     pub master_vol_auto: Vec<AutoPoint>,
@@ -791,50 +807,128 @@ pub fn pan_gains(pan: f32) -> (f32, f32) {
     (t.cos(), t.sin())
 }
 
-/// エフェクトチェーンを焼き込み、状態プールのスロットを割り当てる。
-/// 各エフェクトの ID も返す(オートメーションのスロット解決用)。
-fn bake_chain_with_ids(
-    effects: &[Effect],
+/// エフェクトを 1 つ焼き込む(CLAP は用意できたものだけ。無ければ None = 素通し)
+fn bake_one(
+    e: &Effect,
     sample_rate: f32,
     next_slot: &mut u32,
     resolve_track: &dyn Fn(&str) -> Option<u32>,
     plugin_slots: &HashMap<crate::plugins::PluginOwner, (u32, u64)>,
-) -> Vec<(glaux_core::FxId, BakedEffect)> {
-    effects
-        .iter()
-        // バイパスと、線から外して置いてある(ノード表示のわき)ものは鳴らさない
-        .filter(|e| !e.bypass && !e.ui.parked)
-        .filter_map(|e| {
-            // CLAP エフェクトは用意できたものだけ(見つからないプラグインは素通し = 焼かない)
-            let plugin = match &e.source {
-                glaux_core::PluginSource::Clap { .. } => {
-                    Some(*plugin_slots.get(&crate::plugins::PluginOwner::Effect(e.id.clone()))?)
-                }
-                _ => None,
-            };
-            let params = match plugin {
-                Some(_) => EffectParams::External,
-                None => glaux_dsp::bake_effect(e, sample_rate, resolve_track)?,
-            };
-            if *next_slot as usize >= MAX_EFFECT_SLOTS {
-                tracing::warn!(
-                    "エフェクトが多すぎます({MAX_EFFECT_SLOTS} 超)。{} を無視",
-                    e.id
-                );
-                return None;
-            }
-            let slot = *next_slot;
-            *next_slot += 1;
-            Some((
-                e.id.clone(),
-                BakedEffect {
-                    params,
-                    slot,
-                    plugin,
+) -> Option<BakedEffect> {
+    if e.bypass {
+        return None;
+    }
+    let plugin = match &e.source {
+        glaux_core::PluginSource::Clap { .. } => {
+            Some(*plugin_slots.get(&crate::plugins::PluginOwner::Effect(e.id.clone()))?)
+        }
+        _ => None,
+    };
+    let params = match plugin {
+        Some(_) => EffectParams::External,
+        None => glaux_dsp::bake_effect(e, sample_rate, resolve_track)?,
+    };
+    if *next_slot as usize >= MAX_EFFECT_SLOTS {
+        tracing::warn!(
+            "エフェクトが多すぎます({MAX_EFFECT_SLOTS} 超)。{} を無視",
+            e.id
+        );
+        return None;
+    }
+    let slot = *next_slot;
+    *next_slot += 1;
+    Some(BakedEffect {
+        params,
+        slot,
+        plugin,
+    })
+}
+
+/// エフェクトのつながりを焼き込み、状態プールのスロットを割り当てる。
+/// 鳴るエフェクトを処理の順に返し(ID 付き。オートメーションのスロット解決用)、
+/// 分岐・合流・線の音量があれば、その段取りも返す(ただの直列なら None)。
+fn bake_fx_plan(
+    effects: &[Effect],
+    links: &[glaux_core::FxLink],
+    sample_rate: f32,
+    next_slot: &mut u32,
+    resolve_track: &dyn Fn(&str) -> Option<u32>,
+    plugin_slots: &HashMap<crate::plugins::PluginOwner, (u32, u64)>,
+) -> (Vec<(glaux_core::FxId, BakedEffect)>, Option<FxGraphPlan>) {
+    use glaux_core::model::routing::{processing_order, sounding};
+    use glaux_core::FxNode;
+    let order = processing_order(effects, links);
+    let on = sounding(links);
+    let mut baked: Vec<(glaux_core::FxId, BakedEffect)> = Vec::new();
+    // 鳴るエフェクトの行き先: Some(k) = baked[k]、None = 素通し
+    let mut real: HashMap<glaux_core::FxId, Option<usize>> = HashMap::new();
+    for id in &order {
+        let Some(e) = effects.iter().find(|e| &e.id == id) else {
+            continue;
+        };
+        let b = if baked.len() < MAX_GRAPH_NODES {
+            bake_one(e, sample_rate, next_slot, resolve_track, plugin_slots)
+        } else {
+            tracing::warn!("つながったエフェクトが多すぎます({MAX_GRAPH_NODES} 超)。{id} は素通し");
+            None
+        };
+        real.insert(id.clone(), b.as_ref().map(|_| baked.len()));
+        if let Some(b) = b {
+            baked.push((id.clone(), b));
+        }
+    }
+    // ある口に入る音(素通しのものは、その先へ畳み込む)。重なった元は足し合わせる
+    fn feeds(
+        to: &FxNode,
+        links: &[glaux_core::FxLink],
+        on: &std::collections::HashSet<glaux_core::FxId>,
+        real: &HashMap<glaux_core::FxId, Option<usize>>,
+        memo: &mut HashMap<FxNode, Vec<(u16, f32)>>,
+    ) -> Vec<(u16, f32)> {
+        if let Some(v) = memo.get(to) {
+            return v.clone();
+        }
+        let mut acc: Vec<(u16, f32)> = Vec::new();
+        let mut add = |src: u16, amp: f32| match acc.iter_mut().find(|(s, _)| *s == src) {
+            Some((_, a)) => *a += amp,
+            None => acc.push((src, amp)),
+        };
+        for l in links.iter().filter(|l| &l.to == to) {
+            let amp = db_to_amp(l.gain_db);
+            match &l.from {
+                FxNode::Input => add(0, amp),
+                FxNode::Fx(id) if on.contains(id) => match real.get(id) {
+                    Some(Some(k)) => add(*k as u16 + 1, amp),
+                    Some(None) => {
+                        for (src, a) in feeds(&l.from, links, on, real, memo) {
+                            add(src, a * amp);
+                        }
+                    }
+                    None => {}
                 },
-            ))
-        })
-        .collect()
+                // 入力から来ていない(鳴らない)ものや出口からの線は音を運ばない
+                _ => {}
+            }
+        }
+        memo.insert(to.clone(), acc.clone());
+        acc
+    }
+    let mut memo = HashMap::new();
+    let plan = FxGraphPlan {
+        inputs: baked
+            .iter()
+            .map(|(id, _)| feeds(&FxNode::Fx(id.clone()), links, &on, &real, &mut memo))
+            .collect(),
+        output: feeds(&FxNode::Output, links, &on, &real, &mut memo),
+    };
+    // ただの直列(i 番目に入るのは i 番目の元だけ・量 1)なら、今までどおり順に通す
+    let serial = plan
+        .inputs
+        .iter()
+        .enumerate()
+        .all(|(i, v)| v.as_slice() == [(i as u16, 1.0)])
+        && plan.output.as_slice() == [(baked.len() as u16, 1.0)];
+    (baked, (!serial).then_some(plan))
 }
 
 /// プロジェクト全体を再生データに展開する。
@@ -938,8 +1032,9 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
             let (pl, pr) = pan_gains(t.pan);
             let gain = db_to_amp(t.volume_db);
             let instrument = bake_track_instrument(t, bank, sample_rate as f32);
-            let chain = bake_chain_with_ids(
+            let (chain, fx_graph) = bake_fx_plan(
                 &t.effects,
+                &t.links(),
                 sample_rate as f32,
                 &mut next_slot,
                 &resolve_track,
@@ -959,6 +1054,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 fx_auto,
                 instrument,
                 effects: chain.into_iter().map(|(_, b)| b).collect(),
+                fx_graph,
                 is_bus: t.kind == glaux_core::TrackKind::Bus,
                 stereo: false,
                 sends: if t.kind == glaux_core::TrackKind::Bus {
@@ -1009,8 +1105,9 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
             }
         })
         .collect();
-    let master_chain = bake_chain_with_ids(
+    let (master_chain, master_fx_graph) = bake_fx_plan(
         &project.master.effects,
+        &project.master.links(),
         sample_rate as f32,
         &mut next_slot,
         &resolve_track,
@@ -1196,6 +1293,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         audio_events,
         tracks,
         master_effects,
+        master_fx_graph,
         master_amp: db_to_amp(project.master.volume_db),
         master_vol_auto,
         master_fx_auto,
@@ -1334,6 +1432,89 @@ mod tests {
         assert_eq!(data.tracks[0].effects[0].slot, 0);
         assert_eq!(data.master_effects.len(), 1);
         assert_eq!(data.master_effects[0].slot, 1);
+    }
+
+    #[test]
+    fn bakes_branching_links_into_a_graph_plan() {
+        use glaux_core::{Effect, FxId, FxLink, FxNode};
+        let mut project = project_with_notes(vec![note(0, 480, 60, 100)]);
+        let (eq, rv, lone) = (
+            Effect::builtin(FxId::new(), "eq"),
+            Effect::builtin(FxId::new(), "reverb"),
+            Effect::builtin(FxId::new(), "tape"),
+        );
+        let n = |e: &Effect| FxNode::Fx(e.id.clone());
+        let links = vec![
+            FxLink::new(FxNode::Input, n(&eq)),
+            FxLink::new(n(&eq), FxNode::Output),
+            FxLink {
+                from: n(&eq),
+                to: n(&rv),
+                gain_db: -6.0,
+            },
+            FxLink::new(n(&rv), FxNode::Output),
+            // 入力から来ていないものは鳴らさない
+            FxLink::new(n(&lone), FxNode::Output),
+        ];
+        // 並び順では reverb が先だが、処理はつながりの順(eq → reverb)
+        project.tracks[0].effects = vec![rv.clone(), eq.clone(), lone.clone()];
+        project.tracks[0].fx_links = Some(links.clone());
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let t = &data.tracks[0];
+        assert_eq!(t.effects.len(), 2);
+        let g = t.fx_graph.as_ref().expect("分岐があるので段取りを持つ");
+        assert_eq!(g.inputs[0], vec![(0, 1.0)]);
+        assert_eq!(g.inputs[1].len(), 1);
+        assert_eq!(g.inputs[1][0].0, 1);
+        assert!((g.inputs[1][0].1 - db_to_amp(-6.0)).abs() < 1e-6);
+        assert_eq!(g.output, vec![(1, 1.0), (2, 1.0)]);
+
+        // バイパスした eq は素通し: reverb の入口と出口に入力が直接つながる
+        project.tracks[0].effects[1].bypass = true;
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let g = data.tracks[0].fx_graph.clone().unwrap();
+        assert_eq!(data.tracks[0].effects.len(), 1);
+        assert_eq!(g.inputs[0][0].0, 0);
+        assert_eq!(g.output, vec![(0, 1.0), (1, 1.0)]);
+
+        // ただの直列(表があっても)は、今までどおり順に通す
+        project.tracks[0].effects[1].bypass = false;
+        project.tracks[0].fx_links = Some(vec![
+            FxLink::new(FxNode::Input, n(&eq)),
+            FxLink::new(n(&eq), n(&rv)),
+            FxLink::new(n(&rv), FxNode::Output),
+        ]);
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        assert!(data.tracks[0].fx_graph.is_none());
+        assert_eq!(data.tracks[0].effects.len(), 2);
+    }
+
+    #[test]
+    fn link_gain_and_unconnected_output_change_the_sound() {
+        use crate::export::render_project;
+        use glaux_core::{FxLink, FxNode};
+        let peak = |p: &Project| {
+            render_project(p, 48_000.0, &Default::default())
+                .unwrap()
+                .iter()
+                .fold(0.0f32, |m, v| m.max(v.abs()))
+        };
+        let dry = project_with_notes(vec![note(0, 960, 60, 100)]);
+        let base = peak(&dry);
+        assert!(base > 0.01);
+        // 入力 → 出口の線を -6 dB に: 約半分
+        let mut half = dry.clone();
+        half.tracks[0].fx_links = Some(vec![FxLink {
+            from: FxNode::Input,
+            to: FxNode::Output,
+            gain_db: -6.0206,
+        }]);
+        let r = peak(&half) / base;
+        assert!((r - 0.5).abs() < 0.05, "半分になるはず: {r:.3}");
+        // 出口に何もつながっていなければ鳴らない
+        let mut cut = dry.clone();
+        cut.tracks[0].fx_links = Some(vec![]);
+        assert!(peak(&cut) < 1e-4, "出口につながっていないのに鳴った");
     }
 
     #[test]

@@ -538,11 +538,11 @@ export function saveFxPreset(
   return invoke("save_fx_preset", { target, fxId, name, note, overwrite });
 }
 
-/** エフェクトのプリセットを足す。parked なら外してある状態で pos に置く */
+/** エフェクトのプリセットを足す。parked なら、つながずに pos に置く。split なら、その線(from → to)の間に入れる */
 export function applyFxPreset(
   target: string,
   name: string,
-  opts: { index?: number | null; parked?: boolean; pos?: [number, number] | null } = {},
+  opts: { index?: number | null; parked?: boolean; pos?: [number, number] | null; split?: [string, string] | null } = {},
 ): Promise<{ fx_id: string }> {
   return invoke("apply_fx_preset", {
     target,
@@ -550,6 +550,7 @@ export function applyFxPreset(
     index: opts.index ?? null,
     parked: opts.parked ?? false,
     pos: opts.pos ?? null,
+    split: opts.split ?? null,
   });
 }
 

@@ -1,6 +1,6 @@
 // エフェクトの名前・色・アイコン(ミキサーの列・ノード表示・インスペクターで共通)。
 import type { IconName } from "./icons";
-import type { EffectView, ProjectEffect } from "./types";
+import type { EffectView, FxLink, ProjectEffect } from "./types";
 
 /** 種類ごとの色(カードの帯・列の印) */
 export const FX_COLORS: Record<string, string> = {
@@ -79,4 +79,141 @@ export function insertIndexFor(all: { id: string; parked?: boolean }[], chainTo:
   if (chainTo < chain.length) return all.findIndex((e) => e.id === chain[chainTo].id);
   if (chain.length > 0) return all.findIndex((e) => e.id === chain[chain.length - 1].id) + 1;
   return 0;
+}
+
+// ---- エフェクトのつながり(ノード表示の線)。glaux-core の model/routing.rs と同じ決まり ----
+
+export const IN = "in";
+export const OUT = "out";
+
+export const linkKey = (l: FxLink) => `${l.from}>${l.to}`;
+
+/** 実際に使う線。表が無ければ並び順の直列(外してある parked を除く) */
+export function effectiveLinks(effects: { id: string; parked?: boolean }[], links: FxLink[] | null | undefined): FxLink[] {
+  if (links) return links.map((l) => ({ ...l }));
+  const out: FxLink[] = [];
+  let prev = IN;
+  for (const e of effects.filter((e) => !e.parked)) {
+    out.push({ from: prev, to: e.id });
+    prev = e.id;
+  }
+  out.push({ from: prev, to: OUT });
+  return out;
+}
+
+function reach(links: FxLink[], start: string, forward: boolean): Set<string> {
+  const seen = new Set([start]);
+  const stack = [start];
+  while (stack.length) {
+    const n = stack.pop()!;
+    for (const l of links) {
+      const [a, b] = forward ? [l.from, l.to] : [l.to, l.from];
+      if (a === n && !seen.has(b)) {
+        seen.add(b);
+        stack.push(b);
+      }
+    }
+  }
+  return seen;
+}
+
+/** 鳴るエフェクト(入力から出口まで線でたどれるもの) */
+export function soundingSet(links: FxLink[]): Set<string> {
+  const f = reach(links, IN, true);
+  const b = reach(links, OUT, false);
+  return new Set([...f].filter((x) => b.has(x) && x !== IN && x !== OUT));
+}
+
+/** 入力から来ているか(鳴らない理由の表示用) */
+export const fromInput = (links: FxLink[]) => reach(links, IN, true);
+
+/** 鳴るエフェクトを処理の順に(同じ段では並び順) */
+export function processingOrder(effects: { id: string }[], links: FxLink[]): string[] {
+  const on = soundingSet(links);
+  const ids = effects.map((e) => e.id).filter((id) => on.has(id));
+  const indeg = new Map(ids.map((id) => [id, 0]));
+  for (const l of links) if (on.has(l.from) && indeg.has(l.to)) indeg.set(l.to, indeg.get(l.to)! + 1);
+  const out: string[] = [];
+  const done = new Set<string>();
+  while (out.length < ids.length) {
+    const next = ids.find((id) => !done.has(id) && indeg.get(id) === 0);
+    if (!next) break;
+    done.add(next);
+    out.push(next);
+    for (const l of links) if (l.from === next && indeg.has(l.to)) indeg.set(l.to, indeg.get(l.to)! - 1);
+  }
+  return out;
+}
+
+/** a → b をつなげるか。つなげなければ理由 */
+export function connectProblem(links: FxLink[], a: string, b: string): string | null {
+  if (a === b) return "自分自身にはつなげない";
+  if (a === OUT || b === IN) return "向きが逆";
+  if (links.some((l) => l.from === a && l.to === b)) return "もうつながっている";
+  if (reach(links, b, true).has(a)) return "輪になるのでつなげない";
+  return null;
+}
+
+/** 出口の直前に入れる(出口へ入っていた線をこのエフェクトへ付け替え、このエフェクト → 出口) */
+export function insertBeforeOutput(links: FxLink[], id: string): FxLink[] {
+  const out: FxLink[] = [];
+  let redirected = false;
+  for (const l of links) {
+    if (l.to === OUT) {
+      redirected = true;
+      if (!out.some((x) => x.from === l.from && x.to === id)) out.push({ from: l.from, to: id, gain_db: l.gain_db });
+    } else out.push(l);
+  }
+  if (!redirected) out.push({ from: IN, to: id });
+  out.push({ from: id, to: OUT });
+  return out;
+}
+
+/** 線を全部外して前後をつなぎ直す(a → X → b を a → b に。音量は足す) */
+export function unlinkBridging(links: FxLink[], id: string): FxLink[] {
+  const ins = links.filter((l) => l.to === id);
+  const outs = links.filter((l) => l.from === id);
+  const out = links.filter((l) => l.from !== id && l.to !== id);
+  for (const a of ins)
+    for (const b of outs) {
+      if (a.from === b.to || out.some((x) => x.from === a.from && x.to === b.to)) continue;
+      out.push({ from: a.from, to: b.to, gain_db: clampDb((a.gain_db ?? 0) + (b.gain_db ?? 0)) });
+    }
+  return out;
+}
+
+/** 線 from → to の間に入れる */
+export function splitLink(links: FxLink[], from: string, to: string, id: string): FxLink[] {
+  const i = links.findIndex((l) => l.from === from && l.to === to);
+  if (i < 0) return links;
+  const out = links.filter((_, k) => k !== i);
+  out.push({ from, to: id, gain_db: links[i].gain_db }, { from: id, to });
+  return out;
+}
+
+const clampDb = (v: number) => Math.max(-120, Math.min(24, v));
+
+/** ただの 1 本の直列(分岐・合流・線の音量なし)なら、その順番を返す */
+export function serialOrder(links: FxLink[]): string[] | null {
+  const order: string[] = [];
+  let cur = IN;
+  const used = new Set<string>();
+  for (;;) {
+    const outs = links.filter((l) => l.from === cur);
+    if (outs.length !== 1 || (outs[0].gain_db ?? 0) !== 0) return null;
+    const next = outs[0].to;
+    if (links.filter((l) => l.to === next).length !== 1) return null;
+    used.add(linkKey(outs[0]));
+    if (next === OUT) break;
+    order.push(next);
+    cur = next;
+  }
+  // つながっていないもの同士の線などがあれば、ただの直列ではない
+  return used.size === links.length ? order : null;
+}
+
+/** 並びの順の直列の線 */
+export function serialLinks(ids: string[]): FxLink[] {
+  const s = [IN, ...ids, OUT];
+  return s.slice(0, -1).map((from, i) => ({ from, to: s[i + 1] }));
 }

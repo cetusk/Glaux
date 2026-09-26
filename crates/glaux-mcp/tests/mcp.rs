@@ -1989,7 +1989,7 @@ async fn real_clap_effect_params_are_listed_and_set() {
         .await,
     );
     let (project, _) = fx.handle.get_project().await.unwrap();
-    let list = glaux_mcp::server::effects_json(&project.master.effects);
+    let list = glaux_mcp::server::effects_json(&project.master.effects, None);
     assert_eq!(list[0]["params"][0]["current"], json!(0.7));
 }
 
@@ -2361,4 +2361,108 @@ async fn midi_file_round_trips_through_the_tools() {
     let back = glaux_mcp::midi::parse(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(back.parts.len(), 2);
     assert!(back.parts[0].is_drum());
+}
+
+#[tokio::test]
+async fn fx_links_branch_and_report_which_effects_sound() {
+    let fx = setup().await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_lead01", "name": "Lead", "kind": "midi" } },
+                { "op": "add_effect", "track": "trk_lead01",
+                  "effect": { "id": "fx_eq0001", "type": "builtin", "name": "eq" } },
+                { "op": "add_effect", "track": "trk_lead01",
+                  "effect": { "id": "fx_rev001", "type": "builtin", "name": "reverb" } },
+                { "op": "add_effect", "track": "trk_lead01",
+                  "effect": { "id": "fx_tape01", "type": "builtin", "name": "tape" } },
+                // 原音(eq)とリバーブを並列に。tape はどこにもつながない
+                { "op": "set_fx_links", "track": "trk_lead01", "links": [
+                    { "from": "in", "to": "fx_eq0001" },
+                    { "from": "fx_eq0001", "to": "out" },
+                    { "from": "fx_eq0001", "to": "fx_rev001", "gain_db": -8.0 },
+                    { "from": "fx_rev001", "to": "out" }
+                ] }
+            ],
+            "label": "並列のリバーブ",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+
+    let r = call(&fx, "list_params", json!({ "track_id": "trk_lead01" })).await;
+    let v = ok_json(&r);
+    let sounding: Vec<(String, bool)> = v["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_owned(),
+                e["sounding"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sounding,
+        vec![
+            ("fx_eq0001".to_owned(), true),
+            ("fx_rev001".to_owned(), true),
+            ("fx_tape01".to_owned(), false)
+        ]
+    );
+    assert_eq!(v["fx_links"].as_array().unwrap().len(), 4);
+
+    // 表があるトラックに足すと出口の直前に入って鳴る。消すと前後がつながり直す
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [
+            { "op": "add_effect", "track": "trk_lead01",
+              "effect": { "id": "fx_comp01", "type": "builtin", "name": "compressor" } },
+            { "op": "remove_effect", "id": "fx_rev001" }
+        ], "label": "足して消す" }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    let r = call(&fx, "get_project", json!({ "track_ids": ["trk_lead01"] })).await;
+    let links = ok_json(&r)["project"]["tracks"][0]["fx_links"].clone();
+    let has = |from: &str, to: &str| {
+        links
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["from"] == from && l["to"] == to)
+    };
+    assert!(has("fx_comp01", "out"));
+    assert!(has("fx_eq0001", "fx_comp01"));
+    assert!(!has("fx_rev001", "out"));
+
+    // 輪になるつなぎ方と、表があるトラックでの parked は断る
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [ { "op": "set_fx_links", "track": "trk_lead01", "links": [
+            { "from": "fx_eq0001", "to": "fx_comp01" }, { "from": "fx_comp01", "to": "fx_eq0001" }
+        ] } ], "label": "輪" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [ { "op": "set_effect_prop", "id": "fx_eq0001", "prop": "parked", "value": true } ],
+                "label": "外す" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+
+    // 1 回の undo で表ごと戻る
+    call(&fx, "undo", json!({})).await;
+    let r = call(&fx, "get_project", json!({ "track_ids": ["trk_lead01"] })).await;
+    let t = &ok_json(&r)["project"]["tracks"][0];
+    assert_eq!(t["fx_links"].as_array().unwrap().len(), 4);
+    assert_eq!(t["effects"].as_array().unwrap().len(), 3);
 }

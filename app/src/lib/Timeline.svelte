@@ -1156,6 +1156,10 @@
       fxIds.set(fx.id, id);
       fx.id = id;
     }
+    // エフェクトのつながり(ノード表示の線)も新しい ID に
+    if (copy.fx_links) {
+      copy.fx_links = copy.fx_links.map((l) => ({ ...l, from: fxIds.get(l.from) ?? l.from, to: fxIds.get(l.to) ?? l.to }));
+    }
     for (const lane of copy.automation) {
       const m = lane.target.match(/^fx\/([^/]+)\/(.*)$/);
       if (m && fxIds.has(m[1])) lane.target = `fx/${fxIds.get(m[1])}/${m[2]}`;

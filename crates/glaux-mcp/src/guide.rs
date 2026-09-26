@@ -75,6 +75,9 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 - 空間: 複数のトラックに同じリバーブ・ディレイを掛けるなら、バス(add_track kind: \"bus\" + リバーブ mix 1.0)を作り、\n\
   各トラックから set_send で送る(トラックごとに挿すより空間がまとまり軽い)。\n\
 - delay の time_ms: 4 分 = 60000/BPM、付点 8 分 = 45000/BPM。厚みと広がりは chorus。\n\
+- エフェクトのつながり(ノード表示の線): 並列(原音 + リバーブ、パラレル・コンプ)にしたいときは set_fx_links で\n\
+  [in→eq, eq→out, eq→rev(gain_db で混ぜる量), rev→out] のように分けて合流させる。鳴るのは入力から出口までたどれるものだけ\n\
+  (list_params の sounding)。ユーザーがつないだ表は読んでから、必要な線だけを足し引きする。\n\
 - バランス: analyze_audio {per_track: true} で各トラックのラウドネスと帯域。主役は伴奏より 2〜4dB 上 / 帯域の重心が被る\n\
   トラックは EQ で住み分け / それでも埋もれるなら伴奏側に sidechain。音量を上げる前に被りを削ることを検討する。\n\
 - 時間変化: set_automation_points(target: track/volume_db・track/pan・device/<パラメータ>・fx/<id>/<パラメータ>)。\n\

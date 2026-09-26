@@ -481,6 +481,8 @@ pub struct Renderer {
     blk_pos: Vec<u64>,
     /// エフェクトチェーンの作業用(左右)と、マスター前の合算(左右)
     fx_l: Vec<f32>,
+    /// エフェクトのつながり(分岐・合流)用: 入力と各エフェクトの出力(ステレオ)。起動時に確保
+    graph_bufs: Vec<[Vec<f32>; 2]>,
     fx_r: Vec<f32>,
     mix_l: Vec<f32>,
     mix_r: Vec<f32>,
@@ -615,6 +617,9 @@ impl Renderer {
             blk_click: vec![0.0; MAX_FRAMES],
             blk_pos: vec![0; MAX_FRAMES],
             fx_l: vec![0.0; MAX_FRAMES],
+            graph_bufs: (0..=crate::data::MAX_GRAPH_NODES)
+                .map(|_| [vec![0.0; MAX_FRAMES], vec![0.0; MAX_FRAMES]])
+                .collect(),
             fx_r: vec![0.0; MAX_FRAMES],
             mix_l: vec![0.0; MAX_FRAMES],
             mix_r: vec![0.0; MAX_FRAMES],
@@ -1525,8 +1530,10 @@ impl Renderer {
             // 鳴っていない(エフェクトの残響も消えた)トラックは省く(CPU 節約)
             return false;
         }
-        if !mix.effects.is_empty() {
-            self.run_chain(&mix.effects, data, fl, fr, frames);
+        match &mix.fx_graph {
+            Some(g) => self.run_graph(&mix.effects, g, data, fl, fr, frames),
+            None if !mix.effects.is_empty() => self.run_chain(&mix.effects, data, fl, fr, frames),
+            None => {}
         }
         // プラグインの遅延補正: 遅延の少ないトラックを遅らせて揃える(センドもこの揃えた音から)
         let d = self.pdc_delay[ti] as usize;
@@ -1607,6 +1614,66 @@ impl Renderer {
         frames: usize,
     ) {
         for fx in chain {
+            self.run_effect(fx, data, fl, fr, frames);
+        }
+    }
+
+    /// つながり(分岐・合流・線の音量)の順にエフェクトを通す。各エフェクトの入口で、入ってくる線の音を
+    /// 足し合わせてから処理し、最後に出口へ入る線の音を足して `fl` / `fr` に返す。確保はしない
+    fn run_graph(
+        &mut self,
+        chain: &[crate::data::BakedEffect],
+        plan: &crate::data::FxGraphPlan,
+        data: &PlaybackData,
+        fl: &mut [f32],
+        fr: &mut [f32],
+        frames: usize,
+    ) {
+        let mut bufs = std::mem::take(&mut self.graph_bufs);
+        let n = chain.len().min(bufs.len() - 1);
+        bufs[0][0][..frames].copy_from_slice(&fl[..frames]);
+        bufs[0][1][..frames].copy_from_slice(&fr[..frames]);
+        for (i, fx) in chain.iter().enumerate().take(n) {
+            let (done, rest) = bufs.split_at_mut(i + 1);
+            let [ol, or] = &mut rest[0];
+            ol[..frames].fill(0.0);
+            or[..frames].fill(0.0);
+            for &(src, amp) in plan.inputs.get(i).map(|v| v.as_slice()).unwrap_or(&[]) {
+                let Some([sl, sr]) = done.get(src as usize) else {
+                    continue;
+                };
+                for f in 0..frames {
+                    ol[f] += sl[f] * amp;
+                    or[f] += sr[f] * amp;
+                }
+            }
+            self.run_effect(fx, data, &mut ol[..frames], &mut or[..frames], frames);
+        }
+        fl[..frames].fill(0.0);
+        fr[..frames].fill(0.0);
+        for &(src, amp) in &plan.output {
+            if src as usize > n {
+                continue;
+            }
+            let [sl, sr] = &bufs[src as usize];
+            for f in 0..frames {
+                fl[f] += sl[f] * amp;
+                fr[f] += sr[f] * amp;
+            }
+        }
+        self.graph_bufs = bufs;
+    }
+
+    /// エフェクト 1 つを通す(内蔵はサンプルごと、CLAP はブロックごと)
+    fn run_effect(
+        &mut self,
+        fx: &crate::data::BakedEffect,
+        data: &PlaybackData,
+        fl: &mut [f32],
+        fr: &mut [f32],
+        frames: usize,
+    ) {
+        {
             if let Some((ps, gen)) = fx.plugin {
                 let ps = ps as usize;
                 let notes = &self.plugin_notes[ps];
@@ -1616,7 +1683,7 @@ impl Renderer {
                     .and_then(|p| p.as_mut())
                     .filter(|p| p.gen == gen)
                 else {
-                    continue;
+                    return;
                 };
                 if let Some((il, ir)) = p.clap.input_mut() {
                     match ir {
@@ -1637,7 +1704,7 @@ impl Renderer {
                     fl[..frames].copy_from_slice(&ol[..frames]);
                     fr[..frames].copy_from_slice(&or[..frames]);
                 }
-                continue;
+                return;
             }
             let slot = fx.slot as usize;
             let params = self.fx_scratch[slot].unwrap_or(fx.params);
@@ -1674,10 +1741,37 @@ impl Renderer {
                 .filter(|_| !mix.is_bus)
                 .map(|s| lat_of(s, None, &self.plugins))
                 .unwrap_or(0);
-            for fx in &mix.effects {
-                if let Some((s, g)) = fx.plugin {
-                    l += lat_of(s as usize, Some(g), &self.plugins);
+            let fx_lat = |fx: &crate::data::BakedEffect| {
+                fx.plugin
+                    .map(|(s, g)| lat_of(s as usize, Some(g), &self.plugins))
+                    .unwrap_or(0)
+            };
+            match &mix.fx_graph {
+                // 分岐があるときは、出口までの道のうち一番遅いもの
+                // (枝ごとの遅れの違いはまだ揃えない。遅れのある CLAP を並列に置くと少しずれる)
+                Some(g) => {
+                    let mut node = [0u32; crate::data::MAX_GRAPH_NODES + 1];
+                    for (i, fx) in mix
+                        .effects
+                        .iter()
+                        .enumerate()
+                        .take(crate::data::MAX_GRAPH_NODES)
+                    {
+                        let inp = g.inputs[i]
+                            .iter()
+                            .map(|(src, _)| node[*src as usize])
+                            .max()
+                            .unwrap_or(0);
+                        node[i + 1] = inp + fx_lat(fx);
+                    }
+                    l += g
+                        .output
+                        .iter()
+                        .map(|(src, _)| node[*src as usize])
+                        .max()
+                        .unwrap_or(0);
                 }
+                None => l += mix.effects.iter().map(fx_lat).sum::<u32>(),
             }
             lat[ti] = l;
         }
@@ -1748,8 +1842,12 @@ impl Renderer {
         let clip = !self.shared.no_master_clip.load(Ordering::Relaxed);
         let mut l = std::mem::take(&mut self.mix_l);
         let mut r = std::mem::take(&mut self.mix_r);
-        if !data.master_effects.is_empty() {
-            self.run_chain(&data.master_effects, data, &mut l, &mut r, frames);
+        match &data.master_fx_graph {
+            Some(g) => self.run_graph(&data.master_effects, g, data, &mut l, &mut r, frames),
+            None if !data.master_effects.is_empty() => {
+                self.run_chain(&data.master_effects, data, &mut l, &mut r, frames)
+            }
+            None => {}
         }
         let mut peak = 0.0f32;
         for f in 0..frames {
@@ -2402,6 +2500,7 @@ mod tests {
                 fx_auto: vec![],
                 instrument: test_instrument(),
                 effects: vec![],
+                fx_graph: None,
                 plugin: None,
                 plugin_auto: vec![],
                 is_bus: false,
@@ -2413,6 +2512,7 @@ mod tests {
             }],
             audio_events: vec![],
             master_effects: vec![],
+            master_fx_graph: None,
             master_amp: 1.0,
             master_vol_auto: vec![],
             master_fx_auto: vec![],

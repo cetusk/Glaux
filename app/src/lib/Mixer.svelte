@@ -5,13 +5,13 @@
   import { untrack } from "svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
-  import { fxColor, fxName } from "./fx";
+  import { effectiveLinks, fxColor, fxName, processingOrder, serialOrder } from "./fx";
   import { deviceIcon, deviceName } from "./instruments";
   import NodeView from "./NodeView.svelte";
   import FxPresetShelf from "./FxPresetShelf.svelte";
   import { instrumentPickerStore, MASTER_FOCUS_ID, soundDesignStore, viewStore } from "./selection.svelte";
   import { requestFastPolling, transportStore } from "./transport.svelte";
-  import type { EffectView, Project, ProjectEffect, Track } from "./types";
+  import type { EffectView, FxLink, Project, ProjectEffect, Track } from "./types";
 
   let { project }: { project: Project } = $props();
 
@@ -95,8 +95,14 @@
     instrumentPickerStore.open = { trackId: t.id, x: r.left, y: r.bottom + 4 };
   }
   const receivers = (bus: Track) => project.tracks.filter((t) => t.sends?.some((s) => s.target === bus.id));
-  const chainOf = (effects: ProjectEffect[]) => effects.filter((e) => !e.parked);
-  const parkedOf = (effects: ProjectEffect[]) => effects.filter((e) => e.parked).length;
+  /** 列に出すエフェクト: 鳴るものを処理の順に。分岐・合流があるか、鳴らないものの数も */
+  function chainOf(effects: ProjectEffect[], fxLinks: FxLink[] | null | undefined) {
+    const links = effectiveLinks(effects, fxLinks);
+    const order = processingOrder(effects, links);
+    const byId = new Map(effects.map((e) => [e.id, e]));
+    const branched = serialOrder(links) === null && order.length > 0;
+    return { list: order.map((id) => byId.get(id)!).filter(Boolean), mute: effects.length - order.length, branched };
+  }
 
   // ---- 上下の高さ(境目のドラッグ、localStorage に保存) ----
   function loadTop(): number {
@@ -150,10 +156,11 @@
   }
 </script>
 
-{#snippet slots(effects: ProjectEffect[], ownerId: string)}
-  <div class="s-sec"><span>エフェクト</span><span>{chainOf(effects).length}</span></div>
+{#snippet slots(effects: ProjectEffect[], fxLinks: FxLink[] | null | undefined, ownerId: string)}
+  {@const c = chainOf(effects, fxLinks)}
+  <div class="s-sec"><span>エフェクト</span><span>{c.list.length}</span></div>
   <div class="slots">
-    {#each chainOf(effects) as e (e.id)}
+    {#each c.list as e (e.id)}
       <button
         class="slot"
         class:bypass={e.bypass}
@@ -166,8 +173,11 @@
         }}><span class="cb"></span><span class="led"></span><span class="nm">{fxName(e, clapNames)}</span></button
       >
     {/each}
-    {#if parkedOf(effects) > 0}
-      <div class="folded" title="線から外して、わきに置いてあるカード(音は通らない)"><Icon name="unplug" size={11} />外してある {parkedOf(effects)}</div>
+    {#if c.branched}
+      <div class="folded" title="分かれたり合流したりしている(並びは処理の順。つながりはノード表示で)"><Icon name="split" size={11} />分岐あり</div>
+    {/if}
+    {#if c.mute > 0}
+      <div class="folded" title="入力から出口まで線でたどれないカード(設定は残っていて、音は通らない)"><Icon name="unplug" size={11} />鳴らない {c.mute}</div>
     {/if}
   </div>
 {/snippet}
@@ -208,7 +218,7 @@
         {:else}
           <div class="s-dev plain">音声</div>
         {/if}
-        {@render slots(t.effects, t.id)}
+        {@render slots(t.effects, t.fx_links, t.id)}
         {#if buses.length > 0}
           <div class="s-sec"><span>送り</span></div>
           <div class="sends">
@@ -267,7 +277,7 @@
         <div class="s-top"></div>
         <div class="s-name"><Icon name="merge" size={13} /><span title={t.name}>{t.name}</span></div>
         <div class="s-dev plain" title="このバスへ送っているトラック">受けている: {receivers(t).map((r) => r.name).join("・") || "なし"}</div>
-        {@render slots(t.effects, t.id)}
+        {@render slots(t.effects, t.fx_links, t.id)}
         <div class="s-bottom">
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div class="pan" role="presentation" onclick={(e) => e.stopPropagation()}>
@@ -290,7 +300,7 @@
       <div class="s-top" style="background:var(--accent)"></div>
       <div class="s-name"><Icon name="volume-2" size={13} /><span>マスター</span></div>
       <div class="s-dev plain">曲全体</div>
-      {@render slots(project.master.effects, MASTER_FOCUS_ID)}
+      {@render slots(project.master.effects, project.master.fx_links, MASTER_FOCUS_ID)}
       <div class="s-bottom">{@render fader(null)}</div>
     </div>
   </div>
@@ -302,7 +312,7 @@
       <span class="dot" style="background:{selected === MASTER_FOCUS_ID ? 'var(--accent)' : (selectedTrack?.color ?? '#777')}"></span>
       <b>{selected === MASTER_FOCUS_ID ? "マスター" : selectedTrack?.name}</b><span class="dim">のエフェクト</span>
       <span class="sp"></span>
-      <span class="dim hint">つかんで並べ替え・帯の下へ置くと外す・名前はダブルクリックで変える</span>
+      <span class="dim hint">口から線を引いてつなぐ・線をクリックで音量 / 切る・Ctrl+ドラッグでまとめて切る・名前はダブルクリック</span>
       <button
         class="btn sm"
         class:on={inspectorOpen}

@@ -131,6 +131,9 @@ pub struct Track {
     pub device: Option<Device>,
     #[serde(default)]
     pub effects: Vec<Effect>,
+    /// エフェクトのつながり(ノード表示の線)。無ければ並び順の直列([`super::routing`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx_links: Option<Vec<super::routing::FxLink>>,
     /// (start, id) 昇順を保つ
     #[serde(default)]
     pub clips: Vec<Clip>,
@@ -160,6 +163,7 @@ impl Track {
             pan: 0.0,
             device: None,
             effects: vec![],
+            fx_links: None,
             clips: vec![],
             automation: vec![],
             sends: vec![],
@@ -180,9 +184,30 @@ impl Track {
         self.effects.iter().position(|e| &e.id == id)
     }
 
+    /// 実際に使うエフェクトのつながり(表が無い・壊れているときは並び順の直列)
+    pub fn links(&self) -> Vec<super::routing::FxLink> {
+        effective(&self.effects, self.fx_links.as_deref())
+    }
+
     pub(crate) fn sort_clips(&mut self) {
         self.clips
             .sort_by(|a, b| (a.start, &a.id).cmp(&(b.start, &b.id)));
+    }
+}
+
+/// 表があって正しければ表を、無い・壊れているなら並び順の直列を返す
+fn effective(
+    effects: &[Effect],
+    links: Option<&[super::routing::FxLink]>,
+) -> Vec<super::routing::FxLink> {
+    let links = links.filter(|l| super::routing::validate_links(effects, l).is_ok());
+    super::routing::effective_links(effects, links)
+}
+
+impl MasterBus {
+    /// 実際に使うマスターのエフェクトのつながり
+    pub fn links(&self) -> Vec<super::routing::FxLink> {
+        effective(&self.effects, self.fx_links.as_deref())
     }
 }
 
@@ -192,6 +217,9 @@ pub struct MasterBus {
     pub volume_db: f32,
     #[serde(default)]
     pub effects: Vec<Effect>,
+    /// マスターのエフェクトのつながり。無ければ並び順の直列
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx_links: Option<Vec<super::routing::FxLink>>,
     /// マスターのオートメーション。対象は `track/volume_db`(マスター音量)と
     /// `fx/<マスターのエフェクト ID>/<パラメータ>`
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -94,8 +94,18 @@ export interface Track {
     params?: Record<string, unknown>;
   } | null;
   effects: ProjectEffect[];
+  /** エフェクトのつながり(ノード表示の線)。無ければ並び順の直列 */
+  fx_links?: FxLink[] | null;
   clips: Clip[];
   automation: AutomationLane[];
+}
+
+/** エフェクトの線 1 本。端は "in"(音源・受けた音)/ "out"(音量・パンへ)/ エフェクト ID */
+export interface FxLink {
+  from: string;
+  to: string;
+  /** この線を通る音の量(dB)。省略 = 0 */
+  gain_db?: number;
 }
 
 export interface Project {
@@ -106,7 +116,7 @@ export interface Project {
   tempo_map: { tick: number; bpm: number }[];
   time_sig_map: { tick: number; num: number; den: number }[];
   tracks: Track[];
-  master: { volume_db: number; effects: ProjectEffect[]; automation?: AutomationLane[] };
+  master: { volume_db: number; effects: ProjectEffect[]; fx_links?: FxLink[] | null; automation?: AutomationLane[] };
   assets: Record<string, unknown>;
   /** 曲の構成マーカー(tick 昇順)。省略 = なし */
   sections?: { tick: number; name: string }[];
@@ -186,7 +196,7 @@ export interface ProjectEffect {
   params?: Record<string, unknown>;
   /** 表示名(ユーザーが付けた名前) */
   label?: string;
-  /** 線から外して、わきに置いてある(音は通らない) */
+  /** 線から外してある(つながりの表が無いトラックだけで使う。音は通らない) */
   parked?: boolean;
   note?: string;
   /** ノード表示での位置 [x, y] */
@@ -201,6 +211,8 @@ export interface EffectView {
   /** 表示名・外してあるか・メモ・ノード表示での位置 */
   label?: string;
   parked?: boolean;
+  /** 入力から出口まで線でたどれて鳴っているか */
+  sounding?: boolean;
   note?: string;
   pos?: [number, number];
   params: ParamView[];

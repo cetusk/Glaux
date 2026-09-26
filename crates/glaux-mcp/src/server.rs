@@ -782,17 +782,28 @@ const CLAP_EFFECT_PARAM_LIMIT: usize = 64;
 
 /// MCP の `list_params`(track_id 指定)とアプリの音作りビューが共用する。
 /// エフェクトチェーンの spec + 現在値 + path(トラック・マスター共用)。
-pub fn effects_json(effects: &[glaux_core::Effect]) -> Vec<Value> {
+/// エフェクトの一覧(つまみ込み)。`fx_links` はトラック(マスター)のつながりの表(無ければ並び順の直列)。
+/// 各エフェクトに `sounding`(入力から出口まで線でたどれて鳴るか)を付ける
+pub fn effects_json(
+    effects: &[glaux_core::Effect],
+    fx_links: Option<&[glaux_core::FxLink]>,
+) -> Vec<Value> {
+    let valid = fx_links.filter(|l| glaux_core::model::routing::validate_links(effects, l).is_ok());
+    let on = glaux_core::model::routing::sounding(&glaux_core::model::routing::effective_links(
+        effects, valid,
+    ));
     effects
         .iter()
         .map(|e| {
             let mut v = effect_json(e);
+            v["sounding"] = json!(on.contains(&e.id));
             // 表示名・外してあるか・メモ・ノード表示での位置
             let ui = &e.ui;
             if let Some(l) = &ui.label {
                 v["label"] = json!(l);
             }
-            if ui.parked {
+            // つながりの表があるときは parked を使わない(つながっているかは sounding と fx_links で分かる)
+            if ui.parked && fx_links.is_none() {
                 v["parked"] = json!(true);
             }
             if let Some(n) = &ui.note {
@@ -963,7 +974,8 @@ pub fn track_params_json_filtered(
                 "params_total": total,
                 // ビブラート・ベンドは 1 音ごとの音程変化として送る(CLAP のノート表現に対応したプラグインのみ)
                 "articulations": glaux_dsp::articulations_for("clap"),
-                "effects": effects_json(&track.effects),
+                "effects": effects_json(&track.effects, track.fx_links.as_deref()),
+                "fx_links": track.fx_links,
             }));
         }
     }
@@ -1000,7 +1012,7 @@ pub fn track_params_json_filtered(
         .collect();
 
     // エフェクトチェーン(spec + current)
-    let effects_list = effects_json(&track.effects);
+    let effects_list = effects_json(&track.effects, track.fx_links.as_deref());
 
     Ok(json!({
         "device": {
@@ -1012,6 +1024,7 @@ pub fn track_params_json_filtered(
         // この楽器で効く奏法(Note.articulation)。載っていないものは no-op
         "articulations": glaux_dsp::articulations_for(&device_name),
         "effects": effects_list,
+        "fx_links": track.fx_links,
     }))
 }
 
@@ -1300,8 +1313,15 @@ impl GlauxServer {
         メタルの「ズクズク」した刻みは pluck + amp(gain_db 40 以上)+ 低音 + palm_mute ノートの組み合わせで作る。\
         マスターバスのエフェクトは add_master_effect {effect, index?} / set_master_param {path: \"fx/<id>/<名前>\", value} / \
         unset_master_param {path}、削除・並べ替え・バイパスはトラックと同じ remove_effect / move_effect {id, to_index} / set_effect_bypass \
-        / set_effect_prop {id, prop: \"label\" | \"parked\" | \"note\" | \"pos\", value}(表示名・線から外してわきに置く・メモ・ノード表示の位置。\
-        parked: true のエフェクトは鳴らないが設定は残る。ユーザーが取っておいたものなので、頼まれない限り消さない) \
+        / set_effect_prop {id, prop: \"label\" | \"parked\" | \"note\" | \"pos\", value}(表示名・線から外す・メモ・ノード表示の位置。\
+        parked: true のエフェクトは鳴らないが設定は残る。ユーザーが取っておいたものなので、頼まれない限り消さない)/ \
+        set_fx_links {track?, links}(エフェクトのつながり = ノード表示の線を丸ごと置き換える。track 省略でマスター。\
+        links は [{from, to, gain_db?}] で、端は \"in\"(音源・受けた音)/ \"out\"(音量・パンへ)/ エフェクト ID。\
+        1 つの口から何本でも出せ(分岐 = 同じ音を配る)、1 つの口に何本でも入れられる(合流 = 足し合わせる)。\
+        入力から出口まで線でたどれるエフェクトだけが鳴る(各エフェクトの sounding で分かる)。輪は不可。\
+        例: 原音とリバーブを並列に混ぜる = [in→eq, eq→out, eq→rev(gain_db -8), rev→out]。null で並び順の直列に戻す。\
+        つながりの表(get_project の tracks[].fx_links)があるトラックでは parked は使えず、add_effect は出口の直前に入り、\
+        remove_effect は前後をつなぎ直す。表を書き換える前に今の表を読み、ユーザーのつなぎ方を勝手に崩さないこと)\
         (マスターのチェーンは get_project の master.effects で見える。仕上げのコンプ・EQ・リミッター的な使い方に)/ \
         set_clip_loop {id, loop_len}(MIDI クリップのループ。loop_len に繰り返す長さ(クリップ先頭から、\
         tick)を渡すと、クリップ長までその範囲が繰り返し鳴る。null で解除。ドラムパターンやリフは \
@@ -1510,10 +1530,12 @@ impl GlauxServer {
 
         let Some(track_id) = params.0.track_id else {
             // カタログモード(+ 今のマスターのエフェクトチェーン)
-            let master = project.master.effects.clone();
-            let master_effects = tokio::task::spawn_blocking(move || effects_json(&master))
-                .await
-                .map_err(|e| e.to_string())?;
+            let master = project.master.clone();
+            let master_effects = tokio::task::spawn_blocking(move || {
+                effects_json(&master.effects, master.fx_links.as_deref())
+            })
+            .await
+            .map_err(|e| e.to_string())?;
             return Ok(JsonText(json!({
                 "project_version": version,
                 "instruments": glaux_dsp::instrument_catalog(),

@@ -120,11 +120,11 @@ pub fn save(
         name: name.to_owned(),
         description,
         device,
-        // 線から外して置いてあるもの(ノード表示のわき)は音に入らないので含めない
-        effects: track
-            .effects
+        // 鳴っているエフェクトだけを処理の順に(線から外したもの・つながっていないものは音に入らない)。
+        // 分岐・合流のつながりは持たず、処理の順の直列として保存する
+        effects: glaux_core::model::routing::processing_order(&track.effects, &track.links())
             .iter()
-            .filter(|e| !e.ui.parked)
+            .filter_map(|id| track.effects.iter().find(|e| &e.id == id))
             .map(|e| PresetEffect {
                 source: e.source.clone(),
                 bypass: e.bypass,
