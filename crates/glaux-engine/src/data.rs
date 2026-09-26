@@ -801,10 +801,23 @@ pub fn pitch_to_freq(pitch: u8) -> f32 {
     440.0 * 2.0_f32.powf((pitch as f32 - 69.0) / 12.0)
 }
 
-/// 等パワーパン。pan は -1.0(L) ..= 1.0(R)。
+/// 等パワーパン(モノラルの音を左右に置く)。pan は -1.0(L) ..= 1.0(R)。中央は左右とも -3dB
 pub fn pan_gains(pan: f32) -> (f32, f32) {
     let t = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
     (t.cos(), t.sin())
+}
+
+/// バランス(ステレオの音の左右の釣り合い)。pan は -1.0(L) ..= 1.0(R)。
+/// 中央は左右とも 0dB で、振った側はそのまま、反対側だけを下げる(半分で -3dB、端で無音)。
+/// ステレオの音に等パワーのパンを使って中央を 0dB に持ち上げると、振った側が +3dB 大きくなってしまう
+pub fn balance_gains(pan: f32) -> (f32, f32) {
+    let p = pan.clamp(-1.0, 1.0);
+    let down = |x: f32| (x * std::f32::consts::FRAC_PI_2).cos();
+    if p >= 0.0 {
+        (down(p), 1.0)
+    } else {
+        (1.0, down(-p))
+    }
 }
 
 /// エフェクトを 1 つ焼き込む(CLAP は用意できたものだけ。無ければ None = 素通し)
@@ -1307,6 +1320,22 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn balance_keeps_the_panned_side_and_lowers_the_other() {
+        // 中央は左右とも 0dB、振った側は 0dB のまま(+3dB にならない)、反対側だけ下がる
+        assert_eq!(balance_gains(0.0), (1.0, 1.0));
+        let (l, r) = balance_gains(-1.0);
+        assert!((l - 1.0).abs() < 1e-6 && r.abs() < 1e-6);
+        let (l, r) = balance_gains(0.5);
+        assert!((r - 1.0).abs() < 1e-6);
+        assert!((20.0 * l.log10() + 3.01).abs() < 0.05, "半分で -3dB: {l}");
+        // モノラルの等パワーのパンは、どこに置いても左右の和のパワーが同じ
+        for p in [-1.0, -0.3, 0.0, 0.7] {
+            let (l, r) = pan_gains(p);
+            assert!((l * l + r * r - 1.0).abs() < 1e-5);
+        }
+    }
     use glaux_core::{Clip, ClipId, NoteId, Track, TrackId, TrackKind};
 
     fn note(pos: u64, dur: u64, pitch: u8, vel: u8) -> glaux_core::Note {

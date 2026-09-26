@@ -10,7 +10,9 @@
 //! 音源は glaux-dsp の内蔵楽器(subtractive / drum)。トラックの device 設定から
 //! 焼き込まれたパラメータ([`crate::data::TrackMix::instrument`])で発音する。
 
-use crate::data::{db_to_amp, pan_gains, AutoPoint, PlaybackData, MAX_EFFECT_SLOTS, MAX_TRACKS};
+use crate::data::{
+    balance_gains, db_to_amp, pan_gains, AutoPoint, PlaybackData, MAX_EFFECT_SLOTS, MAX_TRACKS,
+};
 use crate::midi::{LiveEvent, LiveQueue, LIVE_NO_TRACK};
 use crate::plugins::{PluginSlot, Processor, MAX_PLUGINS};
 use arc_swap::ArcSwap;
@@ -1591,12 +1593,16 @@ impl Renderer {
                 bus_r[t][f] += fr[f] * snd.amp;
             }
         }
-        // ステレオ出力のプラグインは、パンを左右バランスとして掛ける
-        // (等パワーのパンは中央で -3dB になるので √2 倍して中央を 0dB に)
-        let boost = if pslot.is_some() || mix.is_bus || mix.stereo {
-            std::f32::consts::SQRT_2
+        // ステレオの音(CLAP 音源・バス・ステレオの音声)はパンを左右のバランスとして掛ける
+        // (中央 0dB、反対側だけを下げる)。モノラルの音は等パワーのパン。
+        // 以前は等パワーのパンを √2 倍していたため、振った側が +3dB 大きくなっていた
+        let balance = pslot.is_some() || mix.is_bus || mix.stereo;
+        let pan_law = if balance { balance_gains } else { pan_gains };
+        let static_gains = if balance {
+            let (bl, br) = balance_gains(mix.base_pan);
+            (mix.base_amp * bl, mix.base_amp * br)
         } else {
-            1.0
+            (mix.gain_l, mix.gain_r)
         };
         let post: &[crate::data::SendMix] = &mix.sends;
         let mut peak = 0.0f32;
@@ -1614,7 +1620,7 @@ impl Renderer {
             }
             // 音量・パン: オートメーションレーンがあればフェーダーより優先
             let (gl, gr) = if mix.vol_db_auto.is_empty() && mix.pan_auto.is_empty() {
-                (mix.gain_l, mix.gain_r)
+                static_gains
             } else {
                 let (vol_cur, pan_cur) = &mut self.auto_cursors[ti];
                 let amp = if mix.vol_db_auto.is_empty() {
@@ -1627,7 +1633,7 @@ impl Renderer {
                 } else {
                     eval_auto(&mix.pan_auto, pan_cur, pos).clamp(-1.0, 1.0)
                 };
-                let (pl, pr) = pan_gains(pan);
+                let (pl, pr) = pan_law(pan);
                 (amp * pl, amp * pr)
             };
             if gs.0.is_nan() {
@@ -1637,7 +1643,7 @@ impl Renderer {
                 gs.1 += (gr - gs.1) * k;
             }
             let (gl, gr) = gs;
-            let (ol, or) = (fl[f] * gl * boost, fr[f] * gr * boost);
+            let (ol, or) = (fl[f] * gl, fr[f] * gr);
             peak = peak.max(ol.abs()).max(or.abs());
             mix_l[f] += ol;
             mix_r[f] += or;
