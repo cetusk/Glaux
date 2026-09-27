@@ -8,7 +8,7 @@
   2 段階で縮めてから小さい半径で鮮明化する(1 回で縮めるとぼやける)
 - 48px 以上は白フチの全身版(assets/icons/glaux-app-icon.png)
 - README のロゴ: 白背景の横組み(assets/logos/glaux-lockup-white.png)を、文字とフクロウの端で切って幅 960px に
-  (README の表示幅 480px の 2 倍)
+  (README の表示幅 480px の 2 倍)。同じものを幅 640px にして、設定の「このアプリについて」にも使う
 - ICO には Windows が表示倍率ごとに使うサイズをすべて入れる(足りないと拡大・縮小されてぼやける)。
   並びは大きい順(Tauri はウィンドウのアイコンに ICO の最初の 1 枚を使うので、小さいものが先だと拡大されてぼやける)
 - タスクバー用: 表示倍率ごとのタスクバーの大きさ(24px × 倍率)の画像を RGBA の生データで書き出す。
@@ -71,14 +71,13 @@ def icon(size: int) -> Image.Image:
     return shrink(squared(FULL), size, 60 if size <= 96 else 0)
 
 
-def readme_logo() -> Image.Image:
-    """白背景の横組みロゴを、文字とフクロウの端(白でない画素の範囲)で切り、幅 960px にする。"""
+def readme_logo(w: int = 960) -> Image.Image:
+    """白背景の横組みロゴを、文字とフクロウの端(白でない画素の範囲)で切り、幅 `w` px にする。"""
     im = Image.open(ROOT / "assets/logos/glaux-lockup-white.png").convert("RGB")
     # 白(アンチエイリアスのわずかな色を含む)以外の画素の範囲
     mask = im.convert("L").point(lambda v: 255 if v < 250 else 0)
     box = mask.getbbox()
     cropped = im.crop(box)
-    w = 960
     h = round(cropped.height * w / cropped.width)
     return cropped.resize((w, h), Image.LANCZOS)
 
@@ -116,6 +115,8 @@ def main() -> None:
     # README のロゴ
     (ROOT / "docs/images").mkdir(exist_ok=True)
     readme_logo().save(ROOT / "docs/images/glaux-logo.png", optimize=True)
+    # 設定の「このアプリについて」のロゴ(表示幅 320px の 2 倍)
+    readme_logo(640).save(ROOT / "app/public/glaux-logo.png", optimize=True)
     # 開発時の favicon(ブラウザのタブ)
     icon(32).save(ROOT / "app/public/favicon.png")
     # Godot: エディタのノードのアイコン(16px)、デモのプロジェクトのアイコン

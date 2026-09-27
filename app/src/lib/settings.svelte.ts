@@ -102,7 +102,7 @@ function load(): Settings {
 export const settings = $state<Settings>(load());
 
 /// 設定画面の開閉と、開くページ(ステータスバーのデバイスから開くとオーディオのページなど)
-export type SettingsTab = "display" | "audio" | "midi" | "record" | "ai";
+export type SettingsTab = "display" | "audio" | "midi" | "record" | "ai" | "about";
 export const settingsUi = $state<{ open: boolean; tab: SettingsTab }>({ open: false, tab: "display" });
 
 /// はじめの確認の開閉(初回は自動で開く。設定の「表示」からいつでも開ける)

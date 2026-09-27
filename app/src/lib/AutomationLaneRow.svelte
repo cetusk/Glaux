@@ -411,7 +411,7 @@
     border-right: 1px solid var(--border);
     position: sticky;
     left: 0;
-    z-index: 2;
+    z-index: 5;
   }
 
   .tabs {

@@ -196,6 +196,17 @@
 
   let root: HTMLDivElement | undefined = $state();
 
+  /// 横のスクロール量。再生ヘッドが見出しの列に入ったら描かない(見出しの隙間から透けて見えないように)
+  let scrollX = $state(0);
+  $effect(() => {
+    const scroller = root?.parentElement;
+    if (!scroller) return;
+    const onScroll = () => (scrollX = scroller.scrollLeft);
+    onScroll();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => scroller.removeEventListener("scroll", onScroll);
+  });
+
   let lastFollowPx: number | null = null;
 
   $effect(() => {
@@ -1622,7 +1633,7 @@
 
 <div class="timeline" class:w-hot={wGripHot} bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{defaultTrackH}px">
   <!-- 再生ヘッド -->
-  <div class="playhead" style="left:{playheadPx}px"></div>
+  <div class="playhead" class:under-head={playheadPx < scrollX + HEAD_W} style="left:{playheadPx}px"></div>
 
   <!-- 選択中の小節範囲(チャット指示のマスク) -->
   {#if selection}
@@ -2375,6 +2386,10 @@
     pointer-events: none;
   }
 
+  .playhead.under-head {
+    display: none;
+  }
+
   .selection-overlay {
     position: absolute;
     top: 0;
@@ -2482,7 +2497,8 @@
     border-right: 1px solid var(--border);
     position: sticky;
     left: 0;
-    z-index: 2;
+    /* 横にスクロールしたとき、再生ヘッド(3)やクリップの中の印(〜4)を見出しの下に隠す */
+    z-index: 5;
   }
 
   .head-row {
@@ -2614,12 +2630,13 @@
     border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
-    z-index: 4;
+    z-index: 7;
   }
 
+  /* 縦にスクロールしたとき、トラックの見出し(5)や持ち上げたトラック(6)より上に残す */
   .ruler-row {
     position: sticky;
-    z-index: 4;
+    z-index: 7;
   }
 
   .section-row .track-head,

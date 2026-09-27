@@ -287,7 +287,21 @@
     { key: "midi", label: "MIDI", icon: "keyboard-music" },
     { key: "record", label: "録音", icon: "circle" },
     { key: "ai", label: "AI", icon: "sparkles" },
+    { key: "about", label: "Glaux について", icon: "info" },
   ];
+
+  const APP_VERSION = __APP_VERSION__;
+  const REPO_URL = "https://github.com/cetusk/Glaux";
+  let urlCopied = $state(false);
+  async function copyRepoUrl() {
+    try {
+      await navigator.clipboard.writeText(REPO_URL);
+      urlCopied = true;
+      setTimeout(() => (urlCopied = false), 1500);
+    } catch {
+      // クリップボードが使えなければ何もしない(URL は選んでコピーできる)
+    }
+  }
 
   onMount(() => {
     loadDevices();
@@ -625,6 +639,32 @@
         </div>
         {#if clapProgress}<progress max={clapProgress.total} value={clapProgress.got}></progress>{/if}
         {#if clapMsg}<div class="note">{clapMsg}</div>{/if}
+      {:else if settingsUi.tab === "about"}
+        <div class="about">
+          <img class="about-logo" src="/glaux-logo.png" alt="Glaux" width="320" height="132" />
+          <div class="about-ver">バージョン {APP_VERSION}</div>
+          <p>Glaux は、AI と一緒に曲を作れる、シンプルで軽いデスクトップの DAW です。画面で手を動かしても、チャットで AI に頼んでも、同じ曲を同じように編集できます。</p>
+          <ul>
+            <li>編集はすべて履歴に残り、人と AI のどちらが何をしたかが分かります。どの編集も後から打ち消せます</li>
+            <li>AI はアプリ内のチャットからも、外の AI(Claude Code・Codex など)から MCP でもつなげます</li>
+            <li>内蔵の音源とエフェクトに加えて、SoundFont と CLAP プラグインを使えます</li>
+            <li>作った曲は WAV・FLAC・MIDI に書き出せるほか、Godot のゲームの中でそのまま鳴らせます</li>
+          </ul>
+          <p class="note">名前はギリシャ語で「フクロウ」(γλαύξ)。知恵の象徴のフクロウのように、曲作りにそっと寄り添う道具を目指しています。</p>
+          <div class="srow">
+            {@render row("ソースコード・使い方・更新", "不具合の報告や要望もこちらへ")}
+            <div class="sc about-link">
+              <span class="url">{REPO_URL}</span>
+              <button class="btn sm icon ghost" onclick={copyRepoUrl} title="URL をコピー" aria-label="URL をコピー"
+                ><Icon name={urlCopied ? "check" : "copy"} /></button
+              >
+            </div>
+          </div>
+          <div class="srow">
+            {@render row("ライセンス", "同梱している素材(アイコン・音源・学習済みモデル・グルーブの型)の出典は README に記載")}
+            <div class="sc">MIT または Apache-2.0</div>
+          </div>
+        </div>
       {/if}
     </div>
   </div>
@@ -914,6 +954,47 @@
     bottom: 0;
     border-left: 1px dashed var(--text-dim);
     border-right: 1px dashed var(--text-dim);
+  }
+
+  .about {
+    padding-top: 12px;
+    line-height: 1.7;
+  }
+
+  /* ロゴは白背景の版をそのまま(ブランドガイドの「白い背景ごと表示」) */
+  .about-logo {
+    display: block;
+    width: 320px;
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--r-md);
+  }
+
+  .about-ver {
+    margin: 8px 0 4px;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+  }
+
+  .about p,
+  .about ul {
+    margin: 8px 0;
+  }
+
+  .about ul {
+    padding-left: 20px;
+  }
+
+  .about-link {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .about-link .url {
+    user-select: text;
+    font-family: var(--font-mono, monospace);
+    font-size: var(--fs-sm);
   }
 
   .note {

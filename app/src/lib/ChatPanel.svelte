@@ -408,7 +408,7 @@
               class="btn sm"
               onclick={() => revertTurnAt(m)}
               title="このターンで AI が行った編集をまとめて打ち消す(後から人間が行った編集は残す)"
-              ><Icon name="rotate-ccw" />このターンを取り消す</button
+              ><Icon name="eraser" />このターンを取り消す</button
             >
           {/if}
         </div>

@@ -90,7 +90,7 @@
                 class="btn sm icon ghost"
                 title="この編集だけ打ち消す(後の編集は残す。打ち消し自体も履歴に載り、Ctrl+Z で戻せます)"
                 aria-label="この編集だけ打ち消す"
-                onclick={() => revert(e)}><Icon name="rotate-ccw" /></button
+                onclick={() => revert(e)}><Icon name="eraser" /></button
               >
             {/if}
           </span>
@@ -101,7 +101,7 @@
           {#if e.reverts}
             {@const target = entries.find((x) => x.id === e.reverts)}
             <span class="revert"
-              ><Icon name="rotate-ccw" size={11} />{target ? `「${target.label}」の打ち消し` : "以前の編集の打ち消し"}</span
+              ><Icon name="eraser" size={11} />{target ? `「${target.label}」の打ち消し` : "以前の編集の打ち消し"}</span
             >
           {/if}
         </div>
