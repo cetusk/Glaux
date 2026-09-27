@@ -2985,3 +2985,57 @@ async fn transform_notes_develops_a_motif_in_the_key() {
         Some(true)
     );
 }
+
+#[tokio::test]
+async fn critique_arrangement_points_out_what_to_fix_and_clears_after_fixing() {
+    let fx = setup().await;
+    // 格子どおり・強さ一定の 8 分のハット(ドラム)を 4 小節
+    let notes: Vec<Value> = (0..32)
+        .map(|i| json!({ "pos": i * 480, "dur": 120, "pitch": 42, "vel": 100 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "ハット", "commands": [
+                { "op": "add_track", "track": { "id": "trk_crt001", "name": "Hat", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } },
+                { "op": "add_clip", "track": "trk_crt001", "clip": {
+                    "id": "clp_crt001", "name": "h", "start": 0, "length": 15360, "kind": "midi", "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(&call(&fx, "critique_arrangement", json!({})).await);
+    let whats: Vec<String> = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["what"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(whats.iter().any(|w| w.contains("格子ちょうど")), "{v}");
+    assert!(whats.iter().any(|w| w.contains("平ら")), "{v}");
+    assert_eq!(v["tracks"][0]["on_grid"], 1.0);
+    // グルーブを掛けると、その 2 つは消える
+    ok_json(
+        &call(
+            &fx,
+            "apply_groove",
+            json!({ "clip_id": "clp_crt001", "style": "hiphop", "humanize_ms": 5 }),
+        )
+        .await,
+    );
+    let v = ok_json(&call(&fx, "critique_arrangement", json!({})).await);
+    let whats: Vec<String> = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["what"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        !whats
+            .iter()
+            .any(|w| w.contains("格子ちょうど") || w.contains("平ら")),
+        "{v}"
+    );
+}

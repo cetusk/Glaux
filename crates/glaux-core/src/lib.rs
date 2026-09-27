@@ -14,6 +14,7 @@
 pub mod apply;
 pub mod arrange;
 pub mod command;
+pub mod critique;
 pub mod error;
 pub mod groove;
 pub mod harmony;

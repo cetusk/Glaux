@@ -3877,6 +3877,30 @@ impl GlauxServer {
     }
 
     #[tool(
+        description = "編曲を点検する(完了を報告する前に必ず使う)。楽譜だけで分かる「機械的すぎる(16 分の格子どおり・強弱が平ら)」\
+        「動きが無い(オートメーションが無い)」「変化が無い(同じ小節の繰り返し)」「区間ごとの起伏が小さい」「低い音域の濁り」\
+        「音域の端」を見つけ、直し方(使う道具)と一緒に返す。warn は直してから報告する。トラックごと・区間ごとの数値\
+        (格子どおりの割合・ベロシティの幅・違う小節の数・区間の energy 0〜10)も返す。音の点検は analyze_audio。"
+    )]
+    async fn critique_arrangement(&self) -> ToolResult {
+        let _activity = self.handle.begin_activity("critique_arrangement");
+        let (project, version) = self.handle.get_project().await?;
+        let c = glaux_core::critique::critique(&project);
+        let warns = c.findings.iter().filter(|f| f.severity == "warn").count();
+        let mut v = serde_json::to_value(&c).map_err(|e| e.to_string())?;
+        v["project_version"] = json!(version);
+        v["summary"] = json!(if c.findings.is_empty() {
+            "指摘はありません".to_owned()
+        } else {
+            format!(
+                "直した方がよい所 {warns} 件、検討する所 {} 件",
+                c.findings.len() - warns
+            )
+        });
+        Ok(JsonText(v))
+    }
+
+    #[tool(
         description = "オートメーションを「区間と形」で書く(点は道具が並べる)。ビルドアップのフィルタ、ライザー、フェード、\
         スウェル、一瞬抜く、4 分ごとのポンピング、LFO のような揺れに使う。例: {track_id, target: \"device/cutoff\", start: \"9\", bars: 8, \
         shape: \"exp\", from: 300, to: 12000} / {track_id, target: \"track/volume_db\", start: \"17\", bars: 8, shape: \"pump\", from: 0, to: -8}。\
