@@ -9,7 +9,7 @@ Glaux の AI が何を知覚し・何を操作し・どう表現できるか、�
 
 ## 1. AI ができること
 
-AI(チャットのヘッドレス Claude、または外部の MCP クライアント)は MCP ツール 36 個で Glaux を操作する。
+AI(チャットのヘッドレス Claude、または外部の MCP クライアント)は MCP ツール 58 個で Glaux を操作する。
 すべての編集は人間と同じ履歴に残り、取り消せる。
 
 ### 1.1 感覚(何を知覚できるか)
@@ -27,6 +27,7 @@ AI(チャットのヘッドレス Claude、または外部の MCP クライア�
 | **音楽理論の目** | analyze_harmony | キーと、小節ごとのコード進行(推定値。確からしさ付き) |
 | **リズム感** | analyze_rhythm | スウィング比(ストレート / シャッフル)・グリッド(2 分割 / 3 連)・シンコペーション・ずれの大きさ(機械的 / 人間的)・密度 |
 | **つまみの意味** | list_params | 内蔵の音源・エフェクトのつまみ全部に、範囲と「聴感上の効果」の説明が付く。CLAP プラグインのつまみは名前で絞り込み、画面上の表示(例「-48.00 dB」)も読める |
+| **編曲の点検** | critique_arrangement | 楽譜から「機械的すぎる(16 分の格子どおり・強弱が平ら)」「動きが無い(オートメーションが無い)」「変化が無い」「区間ごとの起伏が小さい」「低い音域の濁り」を見つけ、直し方(使う道具)と一緒に返す。トラックごと・区間ごとの数値(区間の盛り上がり 0〜10 など)も。完了を報告する前に使う |
 | **人間の操作を知る** | get_history | 誰が(人間 / AI)何をしたか。チャットでは前回からの人間の編集が自動で伝わる |
 | **いま見ている場所** | UI からの文脈 | 選択した小節範囲・ピアノロールで開いているクリップ・音作り中のトラックが指示に自動で添えられる |
 
@@ -36,12 +37,14 @@ AI(チャットのヘッドレス Claude、または外部の MCP クライア�
 |---|---|---|
 | **作曲** | apply_commands | トラック・クリップ・ノートの追加・変更・削除、クリップの分割・ループ化、テンポ・拍子(途中変更も)、曲名、構成マーカー(Aメロ・サビ等) |
 | **ノートの一括編集** | transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity | 移調、時間移動、クオンタイズ、スウィング(ハネ・シャッフル)、強弱の一括調整 |
+| **旋律の変形** | transform_notes | 反行・逆行・音階の度数での移調・反復進行(ゼクエンツ)・拡大縮小を、キーに沿って正確に |
+| **グルーブ** | apply_groove / add_ghost_notes | 人間のドラマーの演奏から集計した型(funk・hiphop・soul・rock・pop など。Groove MIDI Dataset、CC BY 4.0)と電子音楽の型(house・techno・trap)で、楽器ごと・拍の位置ごとのずれと強弱を付ける。前ノリ・後ノリ、小さな 1/f の揺れ、ゴーストノート |
 | **音作り(内蔵)** | apply_commands(set_device / set_param / add_effect) | 音源 6 種の選択とつまみ、エフェクトの追加・つまみ・バイパス |
 | **音作り(外部プラグイン)** | list_plugins / list_plugin_presets / load_plugin_preset / list_params | CLAP 音源(Surge XT 等)の選択、プリセット選び、公開されたつまみの操作。CLAP エフェクト(Surge XT Effects・Dragonfly Reverb・LSP 等)をトラック・マスターに挿してつまみ・オートメーションで動かす |
 | **似た音を作る** | match_sound / find_similar_presets / refine_plugin_params | サンプルに合わせて内蔵シンセ(subtractive / fm / wavetable を自動で選ぶ、リバーブ込みも)のつまみを自動で探す(約 30 秒)。CLAP プラグインのプリセットから近いものを探し(初回は索引作りに数分)、主要なつまみを自動で詰める。UI からは音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」「この音に近い CLAP 音源のプリセットを探す」(候補を読み込み → つまみを自動で詰める、まで画面で完結) |
 | **音色の道具箱** | list_presets / save_preset / load_preset / delete_preset、list_effect_presets / save_effect_preset / load_effect_preset / delete_effect_preset、list_soundfonts / set_soundfont_instrument | 音色のプリセット(音源 + エフェクト一式)とエフェクトのプリセット(エフェクト 1 つ分。名前とメモ付き)。どちらも全プロジェクト共通。SoundFont の GM 楽器一式 |
 | **ミックス** | apply_commands | 音量・パン・ミュート・ソロ、EQ・コンプ・サイドチェイン、マスターのエフェクト、バス(リターン)とセンドで共有のリバーブ・ディレイ。エフェクトの並べ替え(move_effect)、つながり(set_fx_links。分岐・合流・線ごとの音量で並列のリバーブやパラレル・コンプ。入力から出口までたどれるものだけ鳴る)、表示名・メモ(set_effect_prop) |
-| **時間変化** | apply_commands(set_automation_points / set_master_automation_points) | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターを曲線で動かす(フェード、ビルドアップ、フィルタスイープ) |
+| **時間変化** | shape_automation、apply_commands(set_automation_points / set_master_automation_points) | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターを動かす。shape_automation は「区間と形」(ビルドアップの exp・フェード・スウェル・4 分ごとのポンピング・LFO のような揺れ)で書けて、点は道具が並べる |
 | **音声素材** | import_sample / import_audio_clip / transcribe_audio / separate_audio | 音声の取り込み、譜起こし(単旋律・和音)、パート分離。テンポ追従は set_clip_stretch |
 | **書き出し・MIDI ファイル** | export_audio / import_midi / export_midi / bounce_track | WAV / FLAC の書き出し(44.1k / 48k、16 / 24 / 32f(FLAC は 16 / 24)、範囲、ラウドネス目標とリミッタ、トラックごと)、MIDI ファイルの読み込み(パートごとにトラック、GM の音色から内蔵の楽器か SoundFont を選ぶ)と書き出し(SMF 1)、トラックの音声化(フリーズ) |
 | **安全網** | checkpoint / revert_to / revert / undo / redo | 試行錯誤の足場。複数コマンドを 1 回の取り消しにまとめられる |
@@ -69,8 +72,8 @@ CLAP の列: ビブラート・ベンドは内蔵音源と同じ形の音程変�
 - **ピッチカーブ**: 1 音ごとに音程を自由な曲線で動かす(しゃくり・ポルタメント・ダイブ・808 のグライド)。
   内蔵音源にも CLAP 音源(1 音だけの音程変化として)にも届く
 - **ベロシティ**: 1 音ごとの強さ。楽器によって音量だけでなく明るさも変わる
-- **タイミングのゆらぎ**: analyze_rhythm で既存のノリを測り、同じスウィング・同じずれ方で書ける(ヒューマナイズ)。
-  既存のノートには swing_notes でまとめてハネを掛けられる(UI はピアノロールの「スウィング」)
+- **タイミングのゆらぎ**: apply_groove でジャンルの型(楽器ごとのずれと強弱)・前ノリ後ノリ・小さな揺れを付ける。
+  analyze_rhythm で既存のノリを測り、swing_notes でまとめてハネを掛けられる(UI はピアノロールの「スウィング」)
 - **ループ**: 1〜2 小節のパターンを繰り返す(ドラム・リフ)
 - **ダイナミクスの流れ**: 音量・音色のオートメーションで、ビルドアップや展開を作る
 

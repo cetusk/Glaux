@@ -8,21 +8,55 @@
 /// 共通の指示(MCP サーバーの instructions。アプリ内チャットのシステムプロンプトにも同じ骨子を入れる)
 pub const CORE: &str = "Glaux(AI と共同作業できる DAW)のプロジェクト編集サーバー。\
 進め方: get_project(include_notes: false)で構造を把握 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
-apply_commands で編集(ノート・クリップの ID は省略可。サーバーが振る)。\
+apply_commands で編集(ノート・クリップの ID は省略可)。\
 相対編集は専用ツール: 移調 transpose_notes / 時間移動 shift_notes / クオンタイズ quantize_notes / ハネ swing_notes / \
-強さ scale_velocity。構成は duplicate_clips(「サビをもう 1 回」)/ insert_bars / delete_bars。\
-感覚: analyze_harmony(キーとコード)・analyze_rhythm(ノリ)・analyze_audio(音量・帯域。per_track でトラック別)・\
-analyze_sound(音色)。フレーズを足す前に harmony と rhythm を見て合わせる。\
-人間も並行して編集する。project_version が最後に見た値より大きければ get_changes {since: 最後の entry_id} で確認してから作業する。\
-音源の選び方・ジャンル・奏法・ミックス・音声素材・似た音作り・CLAP の定石は get_guide {topic}\
-(instruments / genres / expression / mix / audio / sound_match / clap)で読める。\
-セルフレビュー: まとまった編集の後、完了報告の前に analyze_harmony で調性、analyze_audio でクリップやバランスの破綻を\
-確かめ、問題があれば直してから、確認結果(キー・LUFS など)を一言添えて報告する。\
-ミックスを変えたら compare_mix で前後を比べる(音量の差ではなく、音量をそろえた違いで判断する)。\
-大きな試行錯誤の前は checkpoint、戻すときは revert_to / revert。";
+強さ scale_velocity / 旋律の変形 transform_notes。構成は duplicate_clips / insert_bars / delete_bars。\
+曲を作る・大きく直すときは get_guide {topic: \"workflow\"} の工程(計画 → 骨格 → 表情 → 点検)に沿う。\
+感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track でトラック別)・analyze_sound。\
+人間も並行して編集する。project_version が最後に見た値より大きければ get_changes {since: 最後の entry_id} で確認する。\
+定石は get_guide {topic}(workflow / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
+完了の報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを確かめ、\
+確認結果を一言添える。ミックスを変えたら compare_mix で前後を比べる。大きな試行錯誤の前は checkpoint。";
 
 /// (トピック名, 見出し, 本文)
 pub const TOPICS: &[(&str, &str, &str)] = &[
+    (
+        "workflow",
+        "曲を作る工程と点検表",
+        "打ち込みの機械っぽさ・平板さは、AI が作った曲で実際に多かった弱点。次の工程で作る。\n\
+1. 計画: 構成(区間の名前・小節数)・各区間の盛り上がり(0〜10)・役割(何が鳴るか)・動かすもの(ビルドのフィルタ等)を決め、\n\
+   set_sections でマーカーを置く。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
+2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
+   主旋律は短い動機を作り、transform_notes(sequence・transpose・invert)で展開すると統一感が出る。\n\
+3. 区間の差: 同じ繰り返しにしない。区間ごとにトラックを抜き差しし、区切りの前 1〜2 小節にフィル・ライザー、\n\
+   ドロップ・サビの直前に 1 拍〜1 小節の無音。イントロは絞る(全部鳴らさない)。\n\
+4. 表情: ドラムに apply_groove(ジャンルの style)、必要ならファンク系に add_ghost_notes。ベースは apply_groove as_part: kick、\n\
+   コードの刻みは hat。リード・弦・管のつながったフレーズに legato / portamento、伸ばしに vibrato(topic: expression)。\n\
+5. 動き: shape_automation でビルドアップ(カットオフを exp で開く)、区間の頭の音量の出し入れ、パッドの swell、ポンピング(pump)。\n\
+6. 音作り・ミックス・仕上げ(topic: instruments / mix)。\n\
+7. 点検(完了の報告の前に必ず): critique_arrangement の warn を直す → analyze_harmony で調性 → analyze_audio でバランス。\n\
+点検表: 格子どおりが 95% を超えるトラックが無い / 強弱に幅がある / 3 分の曲でオートメーションが数本以上ある / \n\
+区間の energy に差がある(山と谷)/ 低い音域でトラックがぶつからない / 主旋律に山(一番高い音)と終止がある。",
+    ),
+    (
+        "groove",
+        "グルーブと動き",
+        "- apply_groove は、人間のドラマーの演奏から集計した型(funk / hiphop / soul / rock / pop / jazz / latin / neworleans / afrobeat)と\n\
+  電子音楽の手作りの型(house / techno / trap)で、楽器ごと・16 分の位置ごとのずれと強弱を付ける。既定値から始め、誇張しない\n\
+  (ずれを 2 倍にすると評価が下がるという研究がある)。ジャンルの目安:\n\
+  ハウス・テクノ・トランス・EDM → house / techno(タイミングはほぼ格子、強弱で揺らす)/ トラップ → trap /\n\
+  ヒップホップ・ローファイ → hiphop(+ swing_notes 0.54〜0.62 を先に)/ ファンク・ディスコ・R&B → funk か soul / ポップス・ロック → pop か rock。\n\
+- 楽器ごとの前ノリ・後ノリ: pocket_ms。レイドバック(ヒップホップ・ネオソウル)は {snare: 6〜10, hat: -3}、前のめり(パンク)は {snare: -5}。\n\
+- 小さな揺れ: humanize_ms 3〜8(1/f の相関がある揺れ。小節の頭は揺らさない)。電子音楽のドラムは 0〜3。\n\
+- スウィング: swing_notes(0.54 = ストレートのまま硬さが取れる、0.58 = 軽く、0.62 = はっきり、0.667 = 3 連)を先に掛け、\n\
+  apply_groove は quantize 0 のまま重ねる。\n\
+- ゴーストノート: add_ghost_notes(ファンク・ソウル・R&B・ヒップホップ。density 0.3〜0.7)。足した後に apply_groove。\n\
+- 動き(shape_automation): 位置は「小節:拍」、長さは bars。例:\n\
+  ビルドアップ 8 小節 = {target: device/cutoff, shape: exp, from: 300, to: 12000} とスネアの連打、ドロップ直前に 1 拍〜1 小節の無音 /\n\
+  ハイパスで抜く = eq の hp_freq を exp で 20 → 800 / ポンピング = {target: track/volume_db, shape: pump, from: 0, to: -6〜-10, period_beats: 1} /\n\
+  パッドのスウェル = {shape: swell} / フェードアウト = {shape: log, from: 0, to: -60} / ウォブル = {shape: sine, period_beats: 0.5}。\n\
+- critique_arrangement で「格子どおり」「強弱が平ら」「オートメーションが無い」が消えたかを確かめる。",
+    ),
     (
         "instruments",
         "音源の選び方",
@@ -44,16 +78,25 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "genres",
-        "ジャンルの定石",
-        "- EDM: supersaw は subtractive の unison 5〜7 + detune。ポンピングは sidechain エフェクト(source にキックのトラック ID、\n\
-  release_ms = 60000/BPM/2 で 8 分に合わせる)。ビルドアップは cutoff を device/cutoff のオートメーションで開いていく + ドラムのノート 55。\n\
-- ダブステップ・ベースミュージック: wavetable のウォブル(position を lfo_rate で揺らす。8 分 = BPM/30 Hz)。出荷時プリセット「ウォブルベース」。\n\
-- メタル: pluck + amp(gain_db 40 以上)+ palm_mute の刻み。\n\
-- Lo-fi Hip Hop・ヴィンテージ: tape エフェクト(wow / flutter の揺れ、hiss、crackle、bits)。ドラムバスやマスターにも。ハネは swing_notes。\n\
-- ハネ・シャッフル: swing_notes(0.667 ≈ 3 連、0.58 で軽く)。既存のノリに合わせるなら analyze_rhythm の swing_ratio を参考に。\n\
-- 繰り返し: ドラムパターンやリフは 1〜2 小節を書いて set_clip_loop {id, loop_len} → resize_clip で伸ばす(1 か所直せば全体に反映)。\n\
-- 曲の構成: set_sections で intro / Aメロ / サビ などのマーカーを置く。「サビだけ盛り上げて」は sections を見て tick 範囲に解決する。\n\
-  構成が決まってきたら自発的に set_sections で記録しておくと後の指示が正確になる。",
+        "ジャンルの語法",
+        "- テンポの目安: ハウス 118〜128 / テクノ 125〜135 / トランス 128〜140 / ダブステップ 140(ハーフタイム)/ ドラムンベース 170〜176 /\n\
+  フューチャーベース 140〜160 / ヒップホップ 80〜95 / ローファイ 70〜90 / トラップ 130〜150(ハーフタイム)/ ファンク・ディスコ 100〜120 /\n\
+  シンセポップ 110〜128 / J-POP 90〜180。\n\
+- ドラムの型: ハウス・テクノ = 4 つ打ち + 2・4 拍にクラップ + 裏拍のオープンハット / 2-step = 4 つ打ちから 2・4 拍目のキックを抜く /\n\
+  トラップ = キックとスネアはハーフタイム(スネアは 3 拍目)、ハットは 16 分に 2 分割・3 分割の連打を混ぜる、808 は長く伸ばしてグライド /\n\
+  ドラムンベース = 2・4 拍のスネア + 細かいブレイク / ファンク = 1 拍目を強く、16 分のシンコペーションとゴースト。\n\
+- 進行: 洋楽ポップ I–V–vi–IV・I–vi–IV–V / J-POP の王道進行 IV△7–V7–iii7–vi、丸サ進行 IV△7–III7–vi7–v7–I7 /\n\
+  ハウス = m7・m9 の和音を裏拍で短く刻む / フューチャーベース = sus2・sus4・add9・maj9 を広く積んだスーパーソウのスタブ /\n\
+  ローファイ = maj7・m9・13 の和音と ii–V / ファンク = 9th・11th 付きの属七の 1〜2 和音のヴァンプ / トランス = 短調・アルペジオ。\n\
+- ベースの型: ルートの 8 分(ハウス・トランス)/ 裏拍(トランス)/ オクターブ跳躍(ディスコ・ファンク)/ 808 の伸ばし + グライド(トラップ)/\n\
+  ウォーキング(ローファイ・ジャズ)/ 1 音のシンコペーション(ファンク)。\n\
+- 構成: EDM = イントロ 16 → ビルド 8 → ドロップ 16 → ブレイク 16 → ビルド 8 → ドロップ 16 → アウトロ 16(小節)。スネアの連打で予告し、\n\
+  ドロップの前に 1 拍〜1 小節の無音。J-POP = A メロ 8 → B メロ 8 → サビ 8〜16(頭サビ・落ちサビ・ラスサビ)。サビは高い音・伸ばす音・リフレイン。\n\
+- EDM の音作り: スーパーソウは subtractive の unison 5〜7 + detune。ポンピングは sidechain エフェクト(source にキックのトラック ID、\n\
+  release_ms = 60000/BPM/2)か shape_automation の pump。ダブステップのウォブルは wavetable の position を lfo_rate で揺らす(8 分 = BPM/30 Hz)。\n\
+- メタル: pluck + amp(gain_db 40 以上)+ palm_mute の刻み。Lo-fi・ヴィンテージ: tape エフェクト(wow / flutter・hiss・crackle・bits)。\n\
+- 繰り返し: ドラムやリフは 1〜2 小節を書いて set_clip_loop {id, loop_len} → resize_clip で伸ばす。区間ごとの変化(フィル・抜き差し)は別のクリップで。\n\
+- 数値の多くは経験則。critique_arrangement と analyze_audio で確かめる。",
     ),
     (
         "expression",

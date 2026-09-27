@@ -749,7 +749,7 @@ fn find_param_range(v: &Value, path: &str) -> Option<(f64, f64)> {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct GetGuideParams {
-    /// instruments / genres / expression / mix / audio / sound_match / clap。省略で一覧。
+    /// workflow / groove / instruments / genres / expression / mix / audio / sound_match / clap。省略で一覧。
     #[serde(default)]
     pub topic: Option<String>,
 }
@@ -3266,8 +3266,9 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "音作り・ジャンル・奏法・ミックス・音声素材・似た音作り・CLAP の定石を読む。\
-        topic: instruments(音源の選び方・エレキギター・SoundFont)/ genres(EDM・メタル・Lo-fi・ループ・構成)/\
+        description = "曲の作り方の工程・グルーブ・音作り・ジャンル・奏法・ミックス・音声素材・似た音作り・CLAP の定石を読む。\
+        topic: workflow(曲を作る工程と点検表。曲を作るときは最初に読む)/ groove(グルーブの型・前ノリ後ノリ・ゴースト・オートメーションの形)/\
+        instruments(音源の選び方・エレキギター・SoundFont)/ genres(テンポ・ドラムの型・進行・ベース・構成・EDM の音作り)/\
         expression(奏法・レガート・ポルタメント・ピッチカーブ)/ mix(エフェクト・バス・バランス・オートメーション)/\
         audio(音声素材・分離・譜起こし・テンポ追従)/ sound_match(似た音を作る)/ clap(プラグイン)。\
         省略で一覧。その分野の作業を始める前に読むと、道具の選び方と値の目安が分かる。"
