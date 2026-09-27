@@ -20,6 +20,7 @@ pub mod history;
 pub mod id;
 pub mod model;
 pub mod rhythm;
+pub mod shape;
 pub mod time;
 pub mod validate;
 

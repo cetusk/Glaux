@@ -555,6 +555,54 @@ pub struct LoadEffectPresetParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ShapeAutomationParams {
+    /// トラック ID。省略でマスター(target は track/volume_db か fx/<マスターのエフェクト ID>/<名前>)。
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// 動かすもの: "track/volume_db"・"track/pan"・"device/<つまみ>"(例 device/cutoff)・"fx/<エフェクト ID>/<つまみ>"。
+    pub target: String,
+    /// 始まり。"小節" か "小節:拍"(1 始まり。例 "9"・"16:3"・"12:2.5")。
+    pub start: String,
+    /// 終わり("小節:拍"。その位置の頭まで)。bars と どちらか。
+    #[serde(default)]
+    pub end: Option<String>,
+    /// 長さ(小節)。end と どちらか。
+    #[serde(default)]
+    pub bars: Option<f64>,
+    /// 形: linear / exp(初めゆっくり・終わりで急に。ビルドアップ)/ log(初め急に。フェードアウト)/ s_curve /
+    /// swell(to へ膨らんで from へ戻る)/ dip(to へ沈んで戻る)/ step(区間の頭で to に切り替えて保つ)/
+    /// 周期で揺らす: sine / triangle / saw_up / saw_down(= pump。周期の頭で to に沈み from へ戻る)/ square。
+    pub shape: String,
+    /// 始まりの値(つまみの単位。track/volume_db なら dB)。周期で揺らす形では揺れの片側。
+    pub from: f64,
+    /// 終わりの値。swell / dip では山(谷)の値、周期で揺らす形では揺れのもう片側。
+    pub to: f64,
+    /// 周期で揺らす形の周期(拍)。1 = 4 分ごと(ポンピング)、0.5 = 8 分、4 = 1 小節。既定 1。
+    #[serde(default)]
+    pub period_beats: Option<f64>,
+    /// false で区間の外の点も消してレーン全体をこの区間の点だけにする。既定 true(区間の外は残す)。
+    #[serde(default)]
+    pub keep_outside: Option<bool>,
+}
+
+/// つまみの一覧(JSON)から、path が一致するつまみの (最小, 最大) を探す
+fn find_param_range(v: &Value, path: &str) -> Option<(f64, f64)> {
+    match v {
+        Value::Object(m) => {
+            if m.get("path").and_then(Value::as_str) == Some(path) {
+                let r = &m["range"];
+                if let (Some(lo), Some(hi)) = (r["min"].as_f64(), r["max"].as_f64()) {
+                    return Some((lo, hi));
+                }
+            }
+            m.values().find_map(|x| find_param_range(x, path))
+        }
+        Value::Array(a) => a.iter().find_map(|x| find_param_range(x, path)),
+        _ => None,
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct GetGuideParams {
     /// instruments / genres / expression / mix / audio / sound_match / clap。省略で一覧。
     #[serde(default)]
@@ -3433,6 +3481,129 @@ impl GlauxServer {
         let label = format!("{:+} tick 移動({} ノート)", p.delta_ticks, changes.len());
         self.apply_note_changes(clip, changes, clamped, label, version, &ctx)
             .await
+    }
+
+    #[tool(
+        description = "オートメーションを「区間と形」で書く(点は道具が並べる)。ビルドアップのフィルタ、ライザー、フェード、\
+        スウェル、一瞬抜く、4 分ごとのポンピング、LFO のような揺れに使う。例: {track_id, target: \"device/cutoff\", start: \"9\", bars: 8, \
+        shape: \"exp\", from: 300, to: 12000} / {track_id, target: \"track/volume_db\", start: \"17\", bars: 8, shape: \"pump\", from: 0, to: -8}。\
+        位置は「小節:拍」(1 始まり)。値はつまみの単位で、範囲の外は範囲に収める。区間の外の既存の点は残る。1 回の undo で戻る。\
+        target に使えるつまみと範囲は list_params で確かめる。"
+    )]
+    async fn shape_automation(
+        &self,
+        params: Parameters<ShapeAutomationParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::shape::{merge_points, position_to_tick, shape_points, Shape};
+        let _activity = self.handle.begin_activity("shape_automation");
+        let p = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        let shape = Shape::parse(&p.shape).ok_or_else(|| {
+            format!(
+                "shape が不正です({})。linear / exp / log / s_curve / swell / dip / step / sine / triangle / saw_up / saw_down / pump / square",
+                p.shape
+            )
+        })?;
+        let target = glaux_core::ParamPath::parse(&p.target).map_err(|e| e.to_string())?;
+        let start = position_to_tick(&project, &p.start)?;
+        let end = match (&p.end, p.bars) {
+            (Some(e), _) => position_to_tick(&project, e)?,
+            (None, Some(b)) if b > 0.0 => {
+                // 小節数は拍子に沿って数える(始まりが小節の途中なら、終わりも同じだけ途中)
+                let start_bar: u32 = p
+                    .start
+                    .split(':')
+                    .next()
+                    .and_then(|x| x.trim().parse().ok())
+                    .unwrap_or(1);
+                let bar0 = glaux_core::arrange::bar_range(&project, start_bar, 1)
+                    .ok_or("小節が求められません")?
+                    .0;
+                let whole = b.floor() as u32;
+                let after_whole = glaux_core::arrange::bar_range(&project, start_bar + whole, 1)
+                    .ok_or("小節が求められません")?;
+                let frac = ((b - whole as f64) * after_whole.1 as f64).round() as u64;
+                after_whole.0 + (start - bar0) + frac
+            }
+            _ => return Err("end か bars(0 より大きい)を指定すること".to_owned()),
+        };
+        if end <= start {
+            return Err("終わりは始まりより後にすること".to_owned());
+        }
+        // 値の範囲(つまみの一覧から。音量・パンは決まった範囲)
+        let (track, lanes) = match &p.track_id {
+            Some(id) => {
+                let tid = glaux_core::TrackId::parse(id).map_err(|e| e.to_string())?;
+                let t = project
+                    .track(&tid)
+                    .ok_or_else(|| format!("トラックが見つかりません: {id}"))?;
+                (Some(t), &t.automation)
+            }
+            None => (None, &project.master.automation),
+        };
+        let range = match p.target.as_str() {
+            "track/volume_db" => Some((-60.0, 12.0)),
+            "track/pan" => Some((-1.0, 1.0)),
+            path => {
+                let list = match track {
+                    Some(t) => track_params_json(t)?,
+                    None => {
+                        json!({ "effects": effects_json(&project.master.effects, project.master.fx_links.as_deref()) })
+                    }
+                };
+                find_param_range(&list, path)
+            }
+        };
+        let mut clamped = false;
+        let mut clamp = |v: f64| match range {
+            Some((lo, hi)) if v < lo || v > hi => {
+                clamped = true;
+                v.clamp(lo, hi)
+            }
+            _ => v,
+        };
+        let (from, to) = (clamp(p.from), clamp(p.to));
+        let period = ((p.period_beats.unwrap_or(1.0).max(1.0 / 32.0)) * glaux_core::PPQ as f64)
+            .round() as u64;
+        let pts = shape_points(start, end - start, from, to, shape, period);
+        let n = pts.len();
+        let existing = lanes
+            .iter()
+            .find(|l| l.target == target)
+            .map(|l| l.points.clone())
+            .unwrap_or_default();
+        let points = if p.keep_outside.unwrap_or(true) {
+            merge_points(&existing, pts, start, end)
+        } else {
+            pts
+        };
+        let command = match track {
+            Some(t) => Command::SetAutomationPoints {
+                track: t.id.clone(),
+                target,
+                points,
+            },
+            None => Command::SetMasterAutomationPoints { target, points },
+        };
+        let who = track.map_or("マスター".to_owned(), |t| t.name.clone());
+        let label = format!(
+            "{who} の {} を {} 小節目から{}の形で動かす",
+            p.target, p.start, p.shape
+        );
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["points"] = json!(n);
+        v["range_ticks"] = json!([start, end]);
+        if clamped {
+            v["note"] = json!(format!(
+                "値をつまみの範囲 {:?} に収めました(from {from}, to {to})",
+                range.unwrap_or_default()
+            ));
+        }
+        Ok(JsonText(v))
     }
 
     #[tool(

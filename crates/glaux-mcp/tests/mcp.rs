@@ -2706,3 +2706,93 @@ async fn fx_links_branch_and_report_which_effects_sound() {
     assert_eq!(t["fx_links"].as_array().unwrap().len(), 4);
     assert_eq!(t["effects"].as_array().unwrap().len(), 3);
 }
+
+#[tokio::test]
+async fn shape_automation_writes_builds_pumps_and_keeps_other_points() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_shp001", "Lead")).await);
+    // 2 小節目から 8 小節、カットオフを指数で開く(範囲外の値は範囲に収める)
+    let v = ok_json(
+        &call(
+            &fx,
+            "shape_automation",
+            json!({ "track_id": "trk_shp001", "target": "device/cutoff", "start": "2", "bars": 8,
+                    "shape": "exp", "from": 300, "to": 99999 }),
+        )
+        .await,
+    );
+    assert!(v["note"].as_str().unwrap_or("").contains("範囲"), "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let lane = &project.tracks[0].automation[0];
+    assert_eq!(lane.target.to_string(), "device/cutoff");
+    assert_eq!(lane.points.first().unwrap().tick.0, 3840);
+    assert_eq!(lane.points.last().unwrap().tick.0, 3840 * 9);
+    assert!(lane.points.windows(2).all(|w| w[1].value >= w[0].value));
+    assert!(lane.points.len() > 10);
+    // 音量を 4 分ごとにポンピング(2 小節)。カットオフのレーンは残る
+    ok_json(
+        &call(
+            &fx,
+            "shape_automation",
+            json!({ "track_id": "trk_shp001", "target": "track/volume_db", "start": "3:1", "end": "5",
+                    "shape": "pump", "from": 0, "to": -8 }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tracks[0].automation.len(), 2);
+    let vol = project.tracks[0]
+        .automation
+        .iter()
+        .find(|l| l.target.to_string() == "track/volume_db")
+        .unwrap();
+    assert_eq!(vol.points.len(), 16, "8 拍 × 2 点");
+    assert_eq!((vol.points[0].tick.0, vol.points[0].value), (7680, -8.0));
+    // 区間の外の点は残して、区間だけ差し替える
+    ok_json(
+        &call(
+            &fx,
+            "shape_automation",
+            json!({ "track_id": "trk_shp001", "target": "track/volume_db", "start": "4", "bars": 1,
+                    "shape": "linear", "from": -3, "to": -3 }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let vol = project.tracks[0]
+        .automation
+        .iter()
+        .find(|l| l.target.to_string() == "track/volume_db")
+        .unwrap();
+    assert!(vol
+        .points
+        .iter()
+        .any(|p| p.tick.0 == 7680 && p.value == -8.0));
+    assert!(vol
+        .points
+        .iter()
+        .any(|p| p.tick.0 == 11520 && p.value == -3.0));
+    // 1 回の undo で戻る。マスター(track_id 省略)の音量も書ける
+    ok_json(&call(&fx, "undo", json!({})).await);
+    ok_json(
+        &call(
+            &fx,
+            "shape_automation",
+            json!({ "target": "track/volume_db", "start": "10", "bars": 4, "shape": "log", "from": 0, "to": -60 }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(
+        project.master.automation[0].points.last().unwrap().value,
+        -60.0
+    );
+    // 形の名前が違えばエラー
+    let r = call(
+        &fx,
+        "shape_automation",
+        json!({ "track_id": "trk_shp001", "target": "track/pan", "start": "1", "bars": 1, "shape": "zigzag", "from": 0, "to": 1 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
