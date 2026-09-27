@@ -2893,3 +2893,95 @@ async fn apply_groove_and_ghost_notes_make_a_grid_beat_breathe() {
     .await;
     assert_eq!(r.is_error, Some(true));
 }
+
+#[tokio::test]
+async fn transform_notes_develops_a_motif_in_the_key() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_trf001", "Lead")).await);
+    // 動機 C D E を 4 小節のクリップに
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "動機", "commands": [
+                { "op": "add_clip", "track": "trk_trf001", "clip": {
+                    "id": "clp_trf001", "name": "m", "start": 0, "length": 15360, "kind": "midi", "notes": [
+                        { "id": "nt_trf001", "pos": 0, "dur": 480, "pitch": 60, "vel": 100 },
+                        { "id": "nt_trf002", "pos": 480, "dur": 480, "pitch": 62, "vel": 100 },
+                        { "id": "nt_trf003", "pos": 960, "dur": 480, "pitch": 64, "vel": 100 } ] } }
+            ] }),
+        )
+        .await,
+    );
+    // 反復進行: C メジャーで 2 度上へ 2 回(1 小節ずつ後ろ)
+    let v = ok_json(
+        &call(
+            &fx,
+            "transform_notes",
+            json!({ "clip_id": "clp_trf001", "op": "sequence", "steps": 1, "times": 2, "offset_beats": 4, "key": "C major" }),
+        )
+        .await,
+    );
+    assert_eq!(v["added"], 6);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let mut got: Vec<(u64, u8)> = project.tracks[0].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .map(|n| (n.pos.0, n.pitch))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            (0, 60),
+            (480, 62),
+            (960, 64),
+            (3840, 62),
+            (4320, 64),
+            (4800, 65),
+            (7680, 64),
+            (8160, 65),
+            (8640, 67)
+        ]
+    );
+    // 1 回の undo で戻る。A マイナーで反行(軸 = 最初の音 C)
+    ok_json(&call(&fx, "undo", json!({})).await);
+    ok_json(
+        &call(
+            &fx,
+            "transform_notes",
+            json!({ "clip_id": "clp_trf001", "op": "invert", "key": "A minor" }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let pitches: Vec<u8> = project.tracks[0].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .map(|n| n.pitch)
+        .collect();
+    assert_eq!(pitches, vec![60, 59, 57]);
+    // 不正な op・キーはエラー
+    assert_eq!(
+        call(
+            &fx,
+            "transform_notes",
+            json!({ "clip_id": "clp_trf001", "op": "fold" })
+        )
+        .await
+        .is_error,
+        Some(true)
+    );
+    assert_eq!(
+        call(
+            &fx,
+            "transform_notes",
+            json!({ "clip_id": "clp_trf001", "op": "transpose", "steps": 1, "key": "H dorian" })
+        )
+        .await
+        .is_error,
+        Some(true)
+    );
+}

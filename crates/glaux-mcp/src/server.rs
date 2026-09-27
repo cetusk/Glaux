@@ -640,6 +640,75 @@ pub struct AddGhostNotesParams {
     pub seed: Option<u64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct TransformNotesParams {
+    /// 対象クリップ ID(`clp_xxxxxx`)。
+    pub clip_id: String,
+    /// 変形: invert(反行。axis を中心に上下を反転)/ retrograde(逆行。範囲の中で時間を逆に)/
+    /// transpose(音階の度数で移調。steps)/ sequence(反復進行。steps 度ずつずらして times 回、後ろへ写す)/
+    /// stretch(範囲の頭を中心に位置と長さを factor 倍。2 = 拡大、0.5 = 縮小)。
+    pub op: String,
+    /// transpose / sequence の度数(音階の度数。1 = 2 度上、-2 = 3 度下、7 = 1 オクターブ)。
+    #[serde(default)]
+    pub steps: Option<i32>,
+    /// sequence の回数(1〜16、既定 1)。
+    #[serde(default)]
+    pub times: Option<u32>,
+    /// sequence で 1 回ごとに後ろへずらす量(拍)。省略で選んだ音の長さ(動機の長さ)。
+    #[serde(default)]
+    pub offset_beats: Option<f64>,
+    /// invert の軸(MIDI 番号)。省略で最初の音。
+    #[serde(default)]
+    pub axis: Option<u8>,
+    /// stretch の倍率(0.125〜8)。
+    #[serde(default)]
+    pub factor: Option<f64>,
+    /// 音階: "C major" / "A minor" / "F# minor" など、または "chromatic"(半音で数える)。省略で曲から推定したキー。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 対象ノート ID の配列。省略でクリップ内の全ノート。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+}
+
+/// "C major" / "A minor" / "Bb minor" / "chromatic" → 音階
+fn parse_key(s: &str) -> Result<glaux_core::transform::Scale, String> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("chromatic") {
+        return Ok(glaux_core::transform::Scale::chromatic());
+    }
+    let (note, mode) = s
+        .split_once(' ')
+        .ok_or_else(|| format!("key は \"C major\" / \"A minor\" の形で(got: {s})"))?;
+    let mut chars = note.chars();
+    let base = match chars.next().map(|c| c.to_ascii_uppercase()) {
+        Some('C') => 0,
+        Some('D') => 2,
+        Some('E') => 4,
+        Some('F') => 5,
+        Some('G') => 7,
+        Some('A') => 9,
+        Some('B') => 11,
+        _ => return Err(format!("key の音名が不正です({note})")),
+    };
+    let acc: i32 = chars
+        .map(|c| match c {
+            '#' | '♯' => 1,
+            'b' | '♭' => -1,
+            _ => 0,
+        })
+        .sum();
+    let tonic = (base + acc).rem_euclid(12) as u8;
+    let mode = match mode.trim().to_ascii_lowercase().as_str() {
+        "major" | "maj" => "major",
+        "minor" | "min" => "minor",
+        other => return Err(format!("key の種類は major / minor(got: {other})")),
+    };
+    Ok(glaux_core::transform::Scale::new(
+        glaux_core::harmony::scale_pitch_classes(tonic, mode),
+    ))
+}
+
 /// クリップの範囲の小節の頭(拍子に沿う)を引く関数を作る
 fn bar_start_fn(project: &glaux_core::Project, end: u64) -> impl Fn(u64) -> u64 {
     let grid: Vec<u64> = glaux_core::arrange::bar_grid(project, end + 3840)
@@ -3704,6 +3773,106 @@ impl GlauxServer {
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["added"] = json!(added);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "旋律を変形する(動機を展開して曲に統一感を出す作曲の技法を、音程を計算して正確に)。\
+        op: invert(反行)/ retrograde(逆行)/ transpose(音階の度数で移調。steps: 1 = 2 度上)/ \
+        sequence(反復進行。steps 度ずつずらして times 回、後ろへ写す。新しいノートを作る)/ stretch(factor 倍に拡大・縮小)。\
+        音階は key(\"A minor\" など。省略で曲から推定、\"chromatic\" で半音)に沿い、臨時記号の音はそのずれを保つ。\
+        note_ids で動機だけを選ぶ。クリップの長さを越えるときは先に resize_clip。1 回の undo で戻る。"
+    )]
+    async fn transform_notes(
+        &self,
+        params: Parameters<TransformNotesParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::transform::{transform, Op};
+        let _activity = self.handle.begin_activity("transform_notes");
+        let p = params.0;
+        let op = match p.op.as_str() {
+            "invert" => Op::Invert { axis: p.axis },
+            "retrograde" => Op::Retrograde,
+            "transpose" => Op::TransposeDiatonic {
+                steps: p.steps.ok_or("transpose には steps が要ります")?,
+            },
+            "sequence" => Op::Sequence {
+                steps: p.steps.unwrap_or(0),
+                times: p.times.unwrap_or(1),
+                offset: p
+                    .offset_beats
+                    .map(|b| (b.max(0.0) * glaux_core::PPQ as f64).round() as u64),
+            },
+            "stretch" => Op::Stretch {
+                factor: p.factor.ok_or("stretch には factor が要ります")?,
+            },
+            other => {
+                return Err(format!(
+                    "op が不正です({other})。invert / retrograde / transpose / sequence / stretch"
+                ))
+            }
+        };
+        let (clip_id, len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
+        let (project, _) = self.handle.get_project().await?;
+        let (scale, key_name) = match &p.key {
+            Some(k) => (parse_key(k)?, k.clone()),
+            None => match glaux_core::harmony::analyze(&project, None, None).key {
+                Some(k) => (
+                    glaux_core::transform::Scale::new(glaux_core::harmony::scale_pitch_classes(
+                        k.tonic, k.mode,
+                    )),
+                    format!("{}(推定)", k.name),
+                ),
+                None => (
+                    glaux_core::transform::Scale::chromatic(),
+                    "chromatic".to_owned(),
+                ),
+            },
+        };
+        let r = transform(&notes, len.0, &op, &scale, &mut glaux_core::NoteId::new)?;
+        let n_changed = r.changes.len();
+        let n_added = r.added.len();
+        if n_changed == 0 && n_added == 0 {
+            return Ok(JsonText(
+                json!({ "project_version": version, "changed": 0, "note": "変わる音はありませんでした" }),
+            ));
+        }
+        let mut cmds = Vec::new();
+        if n_changed > 0 {
+            cmds.push(Command::UpdateNotes {
+                clip: clip_id.clone(),
+                changes: r
+                    .changes
+                    .into_iter()
+                    .map(|(id, pos, dur, pitch)| {
+                        glaux_core::NoteChange::new(id)
+                            .pos(glaux_core::Tick(pos))
+                            .dur(glaux_core::Tick(dur))
+                            .pitch(pitch)
+                    })
+                    .collect(),
+            });
+        }
+        if n_added > 0 {
+            cmds.push(Command::AddNotes {
+                clip: clip_id,
+                notes: r.added,
+            });
+        }
+        let label = format!("旋律の変形 {}({key_name})", p.op);
+        let command = if cmds.len() == 1 {
+            cmds.pop().expect("1 件")
+        } else {
+            Command::batch(label.clone(), cmds)
+        };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(n_changed);
+        v["added"] = json!(n_added);
+        v["key"] = json!(key_name);
         Ok(JsonText(v))
     }
 

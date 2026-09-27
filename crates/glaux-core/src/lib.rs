@@ -23,6 +23,7 @@ pub mod model;
 pub mod rhythm;
 pub mod shape;
 pub mod time;
+pub mod transform;
 pub mod validate;
 
 pub use apply::{Applied, Change};
