@@ -45,6 +45,11 @@ const LABELS: Record<string, ToolLabel> = {
   transpose_notes: { short: "移調", doing: "移調しています" },
   shift_notes: { short: "ノートを移動", doing: "ノートを動かしています" },
   swing_notes: { short: "スウィング", doing: "ハネを付けています" },
+  apply_groove: { short: "グルーブ", doing: "ノリを付けています" },
+  add_ghost_notes: { short: "ゴーストノート", doing: "ゴーストノートを足しています" },
+  transform_notes: { short: "旋律の変形", doing: "旋律を展開しています" },
+  shape_automation: { short: "動きを付ける", doing: "オートメーションを書いています" },
+  critique_arrangement: { short: "編曲の点検", doing: "編曲を点検しています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色
