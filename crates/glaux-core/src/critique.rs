@@ -65,6 +65,9 @@ pub struct Critique {
     pub automation_lanes: usize,
 }
 
+/// トラックの小節ごとの数値(ドラムか, 音の数, (最低音, 最高音))
+type BarStats = (bool, Vec<usize>, Vec<(u8, u8)>);
+
 fn is_drum(track: &Track) -> bool {
     use crate::model::PluginSource;
     match track.device.as_ref().map(|d| &d.source) {
@@ -118,7 +121,7 @@ pub fn critique(project: &Project) -> Critique {
     let mut findings = Vec::new();
     let mut tracks = Vec::new();
     // トラックごとの、小節ごとの音の数(区間の数値に使う)
-    let mut per_bar: Vec<(bool, Vec<usize>, Vec<(u8, u8)>)> = Vec::new();
+    let mut per_bar: Vec<BarStats> = Vec::new();
     for t in &project.tracks {
         let drums = is_drum(t);
         let mut notes: Vec<(u64, u64, u8, u8, bool)> = t.clips.iter().flat_map(sounding).collect();
@@ -377,7 +380,7 @@ mod tests {
             let mut c = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840 * bars));
             if let ClipContent::Midi { notes, .. } = &mut c.content {
                 for i in 0..bars * 8 {
-                    let off = if jitter { (i * 7 % 11) as u64 } else { 0 };
+                    let off = if jitter { i * 7 % 11 } else { 0 };
                     let vel = if jitter {
                         70 + (i * 13 % 40) as u8
                     } else {
