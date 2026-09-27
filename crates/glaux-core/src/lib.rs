@@ -15,6 +15,7 @@ pub mod apply;
 pub mod arrange;
 pub mod command;
 pub mod error;
+pub mod groove;
 pub mod harmony;
 pub mod history;
 pub mod id;

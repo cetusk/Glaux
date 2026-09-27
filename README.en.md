@@ -131,6 +131,7 @@ The source code and documentation are dual-licensed under **MIT or Apache-2.0** 
 |---|---|---|
 | Models (basic-pitch / SwiftF0 / Beat This!) | Bundled ([sources](crates/glaux-ml/models/README.md)) | Apache-2.0 / MIT / MIT |
 | Timbre vocabulary (from LAION-CLAP text embeddings) | Bundled | Apache-2.0 |
+| Groove templates (aggregated and adapted from Google Magenta's [Groove MIDI Dataset](https://magenta.withgoogle.com/datasets/groove); `crates/glaux-core/data/grooves.json`) | Bundled | CC BY 4.0 |
 | LAION-CLAP audio model | Downloaded on first use | Apache-2.0 |
 | UI icons (Lucide) | Bundled ([full text](app/LICENSE-lucide.txt)) | ISC (partly MIT) |
 | General MIDI SoundFont (GeneralUser GS v2.0.3 by S. Christian Collins) | Not bundled; can be downloaded from the setup check | GeneralUser GS License v2.0 |

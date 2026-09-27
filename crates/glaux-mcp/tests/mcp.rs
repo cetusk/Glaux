@@ -2796,3 +2796,100 @@ async fn shape_automation_writes_builds_pumps_and_keeps_other_points() {
     .await;
     assert_eq!(r.is_error, Some(true));
 }
+
+#[tokio::test]
+async fn apply_groove_and_ghost_notes_make_a_grid_beat_breathe() {
+    let fx = setup().await;
+    // ドラム(内蔵 drum)の格子どおりのビート 2 小節: キック 1・3、スネア 2・4、ハット 16 分(全部 100)
+    let mut notes = Vec::new();
+    for bar in 0..2u64 {
+        let b = bar * 3840;
+        notes.push(json!({ "pos": b, "dur": 120, "pitch": 36, "vel": 100 }));
+        notes.push(json!({ "pos": b + 1920, "dur": 120, "pitch": 36, "vel": 100 }));
+        notes.push(json!({ "pos": b + 960, "dur": 120, "pitch": 38, "vel": 100 }));
+        notes.push(json!({ "pos": b + 2880, "dur": 120, "pitch": 38, "vel": 100 }));
+        for k in 0..16u64 {
+            notes.push(json!({ "pos": b + k * 240, "dur": 60, "pitch": 42, "vel": 100 }));
+        }
+    }
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "ドラム", "commands": [
+                { "op": "add_track", "track": { "id": "trk_grv001", "name": "Drums", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } },
+                { "op": "add_clip", "track": "trk_grv001", "clip": {
+                    "id": "clp_grv001", "name": "beat", "start": 0, "length": 7680, "kind": "midi", "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "apply_groove",
+            json!({ "clip_id": "clp_grv001", "style": "funk", "humanize_ms": 4, "pocket_ms": { "snare": 6 } }),
+        )
+        .await,
+    );
+    assert!(v["changed"].as_u64().unwrap() > 20, "{v}");
+    assert_eq!(v["style"]["from_dataset"], true);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap();
+    // 格子ちょうどの割合が下がり、ハットの強弱に幅が出て、スネアは後ろへ
+    let on_grid = ns.iter().filter(|n| n.pos.0 % 240 == 0).count() as f64 / ns.len() as f64;
+    assert!(on_grid < 0.5, "{on_grid}");
+    let hats: Vec<u8> = ns.iter().filter(|n| n.pitch == 42).map(|n| n.vel).collect();
+    assert!(hats.iter().max().unwrap() - hats.iter().min().unwrap() > 30);
+    let snare = ns
+        .iter()
+        .filter(|n| n.pitch == 38)
+        .map(|n| n.pos.0)
+        .min()
+        .unwrap();
+    assert!(snare > 960 && snare < 1000, "{snare}");
+    // 同じ設定をもう一度掛けると同じ結果(undo してやり直す)
+    ok_json(&call(&fx, "undo", json!({})).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_groove",
+            json!({ "clip_id": "clp_grv001", "style": "funk", "humanize_ms": 4, "pocket_ms": { "snare": 6 } }),
+        )
+        .await,
+    );
+    let (again, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(again.tracks[0].clips[0].notes().unwrap(), ns);
+    // ゴーストノート: バックビートを避けて弱く足す
+    let v = ok_json(
+        &call(
+            &fx,
+            "add_ghost_notes",
+            json!({ "clip_id": "clp_grv001", "style": "funk", "density": 1.0, "seed": 3 }),
+        )
+        .await,
+    );
+    let added = v["added"].as_u64().unwrap();
+    assert!(added >= 2, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ghosts: Vec<_> = project.tracks[0].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .filter(|n| n.pitch == 38 && n.vel <= 60)
+        .cloned()
+        .collect();
+    assert_eq!(ghosts.len() as u64, added);
+    assert!(ghosts
+        .iter()
+        .all(|n| n.pos.0 % 3840 != 960 && n.pos.0 % 3840 != 2880));
+    // 不明な型はエラー(使える型を知らせる)
+    let r = call(
+        &fx,
+        "apply_groove",
+        json!({ "clip_id": "clp_grv001", "style": "polka" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}

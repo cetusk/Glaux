@@ -585,6 +585,82 @@ pub struct ShapeAutomationParams {
     pub keep_outside: Option<bool>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ApplyGrooveParams {
+    /// 対象クリップ ID(`clp_xxxxxx`)。
+    pub clip_id: String,
+    /// 型: funk / hiphop / soul / rock / pop / jazz / latin / neworleans / afrobeat(人間のドラマーの演奏から集計)、
+    /// house / techno / trap(電子音楽の手作り。タイミングはほぼ格子どおりで強弱の型)。
+    pub style: String,
+    /// 先に 16 分の格子へ寄せる量 0〜1(既定 0 = 今の位置にずれを足す。スウィング済みのノートにも使える)。
+    #[serde(default)]
+    pub quantize: Option<f64>,
+    /// 型のずれの効き 0〜1.5(既定 1.0。誇張は評価が下がるので 1 を超えるのは控えめに)。
+    #[serde(default)]
+    pub timing: Option<f64>,
+    /// 型の強弱の効き 0〜1(既定 0.7)。拍の位置ごとのアクセント(表が強く、16 分の裏が弱い、など)。
+    #[serde(default)]
+    pub velocity: Option<f64>,
+    /// 小さな揺れ(1/f の相関がある揺れ)の標準偏差(ms。既定 0、目安 3〜8、上限 20)。小節の頭は揺らさない。
+    #[serde(default)]
+    pub humanize_ms: Option<f64>,
+    /// 楽器ごとの前ノリ(負)・後ノリ(正)(ms、-30〜30)。例 {"snare": 8, "hat": -4}(レイドバック)。
+    #[serde(default)]
+    pub pocket_ms: Option<std::collections::HashMap<String, f64>>,
+    /// ドラム以外のトラックで使う型の楽器: kick(ベースをキックに合わせる)/ snare / hat(コードの刻み・アルペジオ)/ ride。
+    /// 省略時、ドラムのトラックは音程で楽器を分け、それ以外は hat。
+    #[serde(default)]
+    pub as_part: Option<String>,
+    /// 揺れの乱数の種(既定 1。同じ値なら同じ結果)。
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// 対象ノート ID の配列。省略でクリップ内の全ノート。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct AddGhostNotesParams {
+    /// 対象クリップ ID(ドラムのクリップ)。
+    pub clip_id: String,
+    /// どの型のゴーストの置き方に倣うか(既定 funk。ゴーストが多い順に neworleans / latin / funk / jazz / afrobeat / soul / rock / hiphop / pop)。
+    #[serde(default)]
+    pub style: Option<String>,
+    /// 型の出現率に掛ける量 0〜2(既定 0.5。1 で型どおり)。
+    #[serde(default)]
+    pub density: Option<f64>,
+    /// 音程(既定 38 = スネア)。
+    #[serde(default)]
+    pub pitch: Option<u8>,
+    /// 強さ(1〜60。省略で型の平均。±4 ほど揺らす)。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    /// 乱数の種(既定 1)。
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
+/// クリップの範囲の小節の頭(拍子に沿う)を引く関数を作る
+fn bar_start_fn(project: &glaux_core::Project, end: u64) -> impl Fn(u64) -> u64 {
+    let grid: Vec<u64> = glaux_core::arrange::bar_grid(project, end + 3840)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    move |t: u64| {
+        let i = grid.partition_point(|&b| b <= t);
+        grid.get(i.saturating_sub(1)).copied().unwrap_or(0)
+    }
+}
+
+/// トラックがドラム(音程で楽器を分ける)か
+fn is_drum_track(track: &glaux_core::Track) -> bool {
+    match track.device.as_ref().map(|d| &d.source) {
+        Some(glaux_core::PluginSource::Builtin { name }) => name == "drum",
+        Some(glaux_core::PluginSource::Sf2 { bank, .. }) => *bank == 128,
+        _ => false,
+    }
+}
+
 /// つまみの一覧(JSON)から、path が一致するつまみの (最小, 最大) を探す
 fn find_param_range(v: &Value, path: &str) -> Option<(f64, f64)> {
     match v {
@@ -3481,6 +3557,154 @@ impl GlauxServer {
         let label = format!("{:+} tick 移動({} ノート)", p.delta_ticks, changes.len());
         self.apply_note_changes(clip, changes, clamped, label, version, &ctx)
             .await
+    }
+
+    #[tool(
+        description = "ノートにグルーブの型を当てる(打ち込みの機械っぽさを取る)。人間のドラマーの演奏から集計した型\
+        (funk / hiphop / soul / rock / pop / jazz / latin / neworleans / afrobeat)と電子音楽の手作りの型(house / techno / trap)で、\
+        楽器ごと・16 分の位置ごとのずれ(バックビートが少し後ろ、など)と強弱(表が強く 16 分の裏が弱い、など)を付ける。\
+        pocket_ms で楽器ごとの前ノリ・後ノリ、humanize_ms で小さな 1/f の揺れ(3〜8ms)。ドラムは音程で楽器を分け、\
+        ほかのトラックは as_part(ベースは kick、コードの刻みは hat)。誇張は逆効果なので既定値から始める。\
+        スウィングは swing_notes を先に掛け、ここは quantize 0 で重ねる。同じ seed なら同じ結果。1 回の undo で戻る。\
+        型の出典: Groove MIDI Dataset(Google Magenta、CC BY 4.0)を集計して改変。"
+    )]
+    async fn apply_groove(
+        &self,
+        params: Parameters<ApplyGrooveParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("apply_groove");
+        let p = params.0;
+        let style = glaux_core::groove::style(&p.style).ok_or_else(|| {
+            let names: Vec<_> = glaux_core::groove::styles().iter().map(|s| s.0).collect();
+            format!(
+                "style が不明です({})。使えるもの: {}",
+                p.style,
+                names.join(" / ")
+            )
+        })?;
+        let (clip_id, len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
+        let (project, _) = self.handle.get_project().await?;
+        let (track, clip) = project.clip(&clip_id).ok_or("clip not found")?;
+        let start = clip.start.0;
+        // ms → tick(クリップの頭のテンポで)
+        let ticks_per_ms = glaux_core::PPQ as f64 * project.tempo_map.bpm_at(clip.start) / 60_000.0;
+        let humanize = p.humanize_ms.unwrap_or(0.0).clamp(0.0, 20.0);
+        let pocket = p
+            .pocket_ms
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| (k, v.clamp(-30.0, 30.0) * ticks_per_ms))
+            .collect();
+        let as_part = match p.as_part {
+            Some(x) => Some(x),
+            None if is_drum_track(track) => None,
+            None => Some("hat".to_owned()),
+        };
+        let opts = glaux_core::groove::GrooveOptions {
+            quantize: p.quantize.unwrap_or(0.0),
+            timing: p.timing.unwrap_or(1.0),
+            velocity: p.velocity.unwrap_or(0.7),
+            humanize_ticks: humanize * ticks_per_ms,
+            pocket_ticks: pocket,
+            as_part,
+            seed: p.seed.unwrap_or(1),
+        };
+        let bar_of = bar_start_fn(&project, start + len.0);
+        let edits = glaux_core::groove::apply(&notes, start, len.0, style, &opts, &bar_of);
+        let shifted: Vec<f64> = edits
+            .iter()
+            .filter_map(|e| {
+                notes
+                    .iter()
+                    .find(|n| n.id == e.id)
+                    .map(|n| (e.pos as f64 - n.pos.0 as f64).abs() / ticks_per_ms)
+            })
+            .collect();
+        let mean_shift = if shifted.is_empty() {
+            0.0
+        } else {
+            shifted.iter().sum::<f64>() / shifted.len() as f64
+        };
+        let changes: Vec<_> = edits
+            .into_iter()
+            .map(|e| {
+                glaux_core::NoteChange::new(e.id)
+                    .pos(glaux_core::Tick(e.pos))
+                    .vel(e.vel)
+            })
+            .collect();
+        let label = format!("{} のグルーブ({} ノート)", p.style, changes.len());
+        let mut r = self
+            .apply_note_changes(clip_id, changes, 0, label, version, &ctx)
+            .await?;
+        r.0["mean_shift_ms"] = json!((mean_shift * 10.0).round() / 10.0);
+        r.0["style"] =
+            json!({ "name": p.style, "from_dataset": !style.handmade, "bpm": style.bpm });
+        Ok(r)
+    }
+
+    #[tool(
+        description = "ドラムのクリップにゴーストノート(16 分の裏に入るごく弱いスネア)を足す。ファンク・ソウル・R&B・ヒップホップの\
+        推進力になる。型(style)のゴーストの出やすい位置に倣い、バックビート(2・4 拍)と、同じ音程の音の近くは避ける。\
+        density 0.3〜0.7 から。足した後に apply_groove を掛けると強弱とずれもそろう。同じ seed なら同じ結果。1 回の undo で戻る。"
+    )]
+    async fn add_ghost_notes(
+        &self,
+        params: Parameters<AddGhostNotesParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("add_ghost_notes");
+        let p = params.0;
+        let name = p.style.unwrap_or_else(|| "funk".to_owned());
+        let style =
+            glaux_core::groove::style(&name).ok_or_else(|| format!("style が不明です({name})"))?;
+        let (clip_id, len, notes, version) = self.load_notes(&p.clip_id, &None).await?;
+        let (project, _) = self.handle.get_project().await?;
+        let (_, clip) = project.clip(&clip_id).ok_or("clip not found")?;
+        let start = clip.start.0;
+        let pitch = p.pitch.unwrap_or(38);
+        let bar_of = bar_start_fn(&project, start + len.0);
+        let pos = glaux_core::groove::ghost_positions(
+            &notes,
+            pitch,
+            start,
+            len.0,
+            style,
+            p.density.unwrap_or(0.5).clamp(0.0, 2.0),
+            p.velocity.map(|v| v.clamp(1, 60)),
+            p.seed.unwrap_or(1),
+            &bar_of,
+        );
+        if pos.is_empty() {
+            return Ok(JsonText(json!({ "project_version": version, "added": 0,
+                "note": "足せる位置がありませんでした(density を上げるか、別の style を試す)" })));
+        }
+        let added = pos.len();
+        let new_notes: Vec<glaux_core::Note> = pos
+            .into_iter()
+            .map(|(t, v)| glaux_core::Note {
+                id: glaux_core::NoteId::new(),
+                pos: glaux_core::Tick(t),
+                dur: glaux_core::Tick(120),
+                pitch,
+                vel: v,
+                articulation: Default::default(),
+                pitch_curve: vec![],
+                glide_ms: None,
+            })
+            .collect();
+        let command = Command::AddNotes {
+            clip: clip_id,
+            notes: new_notes,
+        };
+        let label = format!("ゴーストノートを {added} 個({name} の置き方)");
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["added"] = json!(added);
+        Ok(JsonText(v))
     }
 
     #[tool(

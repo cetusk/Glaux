@@ -131,6 +131,7 @@ godot/          Godot のデモとアドオンのビルド
 |---|---|---|
 | 学習済みモデル(basic-pitch / SwiftF0 / Beat This!) | 同梱([出典](crates/glaux-ml/models/README.md)) | Apache-2.0 / MIT / MIT |
 | 音色語の辞書(LAION-CLAP の言葉側から作成) | 同梱 | Apache-2.0 |
+| グルーブの型(Google Magenta の [Groove MIDI Dataset](https://magenta.withgoogle.com/datasets/groove) を集計して改変。`crates/glaux-core/data/grooves.json`) | 同梱 | CC BY 4.0 |
 | LAION-CLAP の音声側モデル | 初めて使うときに取得 | Apache-2.0 |
 | 画面のアイコン(Lucide) | 同梱([全文](app/LICENSE-lucide.txt)) | ISC(一部 MIT) |
 | GM 音源の SoundFont(GeneralUser GS v2.0.3、S. Christian Collins 作) | 同梱しない。はじめの確認で取得できる | GeneralUser GS License v2.0 |
