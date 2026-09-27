@@ -6,7 +6,7 @@
 
 use crate::command::Command;
 use crate::id::{ClipId, NoteId};
-use crate::model::{AutomationPoint, ClipContent, Project, SectionMarker};
+use crate::model::{AutomationPoint, Clip, ClipContent, Project, SectionMarker};
 use crate::time::{Tick, TimeSigEvent};
 
 /// (小節頭 tick, 小節長) の列を拍子マップから作る(`end_tick` を越えるまで)。
@@ -303,10 +303,33 @@ pub fn duplicate_clips(
     Ok(out)
 }
 
+/// ループのクリップを、繰り返しを書き出した普通のクリップにする(`ReplaceClip` に渡す)。ループでなければ None。
+/// 1 回目のノートは元の ID のまま、2 回目以降は新しい ID。ループの境目・クリップの終わりをまたぐ音は切り詰める
+/// (鳴り方は変わらない。ループの長さより後ろにある鳴らない音は消える)。
+/// 繰り返しごとに違う揺れを付けるときに使う(apply_groove の unroll_loop)
+pub fn unroll_loop(clip: &Clip) -> Option<Clip> {
+    clip.loop_len()?;
+    let mut seen = std::collections::HashSet::new();
+    let mut notes = clip.playback_notes();
+    for n in &mut notes {
+        if !seen.insert(n.id.clone()) {
+            n.id = NoteId::new();
+        }
+    }
+    notes.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+    let mut out = clip.clone();
+    out.content = ClipContent::Midi {
+        notes,
+        looped: false,
+        loop_len: None,
+    };
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Articulation, Clip, Note, ParamPath, Track, TrackKind};
+    use crate::model::{Articulation, Note, ParamPath, Track, TrackKind};
     use crate::{Curve, TrackId};
 
     const BAR: u64 = 3840;
@@ -484,5 +507,35 @@ mod tests {
             .unwrap();
         assert_ne!(copy.id, id);
         assert!(duplicate_clips(&p, &[id], -1, None).is_err());
+    }
+
+    #[test]
+    fn unroll_loop_writes_out_repeats_and_sounds_the_same() {
+        let mut p = song();
+        let id = p.tracks[0].clips[0].id.clone();
+        // 1 小節のループを 2.5 小節ぶん
+        p.apply(&Command::SetClipLoop {
+            id: id.clone(),
+            loop_len: Some(Tick(BAR)),
+        })
+        .unwrap();
+        p.apply(&Command::ResizeClip {
+            id: id.clone(),
+            length: Tick(BAR * 5 / 2),
+        })
+        .unwrap();
+        let before = played(&p);
+        let clip = p.tracks[0].clips[0].clone();
+        let flat = unroll_loop(&clip).expect("ループ");
+        assert!(flat.loop_len().is_none());
+        let notes = flat.notes().unwrap();
+        assert_eq!(notes.len(), 3);
+        // 1 回目は元の ID、2 回目以降は新しい ID
+        assert_eq!(notes[0].id, clip.notes().unwrap()[0].id);
+        assert_ne!(notes[1].id, notes[0].id);
+        p.apply(&Command::ReplaceClip { id, clip: flat }).unwrap();
+        assert_eq!(played(&p), before);
+        // ループでなければ None
+        assert!(unroll_loop(&p.tracks[0].clips[0]).is_none());
     }
 }

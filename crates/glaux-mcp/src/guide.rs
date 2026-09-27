@@ -28,15 +28,19 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    set_sections でマーカーを置く。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
    主旋律は短い動機を作り、transform_notes(sequence・transpose・invert)で展開すると統一感が出る。\n\
+   繰り返すドラム・リフは add_clip の clip に \"loop\": true, \"loop_len\": 3840(1 小節)を入れ、length を区間の長さにする\n\
+   (1 回で済む。試しの編集は要らない)。区間ごとに別のクリップにしておくと、区間の差を付けやすい。\n\
 3. 区間の差: 同じ繰り返しにしない。区間ごとにトラックを抜き差しし、区切りの前 1〜2 小節にフィル・ライザー、\n\
    ドロップ・サビの直前に 1 拍〜1 小節の無音。イントロは絞る(全部鳴らさない)。\n\
-4. 表情: ドラムに apply_groove(ジャンルの style)、必要ならファンク系に add_ghost_notes。ベースは apply_groove as_part: kick、\n\
-   コードの刻みは hat。リード・弦・管のつながったフレーズに legato / portamento、伸ばしに vibrato(topic: expression)。\n\
+   1 つのトラックを同じ型のまま 3 区間以上続けない(ブレイクでは抜くか変える。フィルタを動かすだけでは差にならない)。\n\
+4. 表情: ドラムに apply_groove(ジャンルの style。clip_ids で曲じゅうのクリップにまとめて)、必要ならファンク系に\n\
+   add_ghost_notes。ベースは apply_groove as_part: kick、コードの刻みは hat。リード・弦・管のつながったフレーズに legato / portamento、伸ばしに vibrato(topic: expression)。\n\
 5. 動き: shape_automation でビルドアップ(カットオフを exp で開く)、区間の頭の音量の出し入れ、パッドの swell、ポンピング(pump)。\n\
 6. 音作り・ミックス・仕上げ(topic: instruments / mix)。\n\
 7. 点検(完了の報告の前に必ず): critique_arrangement の warn を直す → analyze_harmony で調性 → analyze_audio でバランス。\n\
 点検表: 格子どおりが 95% を超えるトラックが無い / 強弱に幅がある / 3 分の曲でオートメーションが数本以上ある / \n\
-区間の energy に差がある(山と谷)/ 低い音域でトラックがぶつからない / 主旋律に山(一番高い音)と終止がある。",
+区間の energy に差がある(山と谷)/ 同じ型のまま 3 区間以上続くトラックが無い / 低い音域でトラックがぶつからない /\n\
+主旋律に山(一番高い音)と終止がある。",
     ),
     (
         "groove",
@@ -46,6 +50,10 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
   (ずれを 2 倍にすると評価が下がるという研究がある)。ジャンルの目安:\n\
   ハウス・テクノ・トランス・EDM → house / techno(タイミングはほぼ格子、強弱で揺らす)/ トラップ → trap /\n\
   ヒップホップ・ローファイ → hiphop(+ swing_notes 0.54〜0.62 を先に)/ ファンク・ディスコ・R&B → funk か soul / ポップス・ロック → pop か rock。\n\
+- 電子音楽の型(house / techno / trap)では 4 つ打ちのキックは動かさない(位置も強さも一定が土台。キックに手で強弱を付けない)。\n\
+- まとめて当てる: clip_ids に曲じゅうのクリップ(ドラム・ベース・コード)を渡す。1 回の undo で戻り、クリップごとに揺れは変わる。\n\
+- ループのクリップは中身に当たるので、揺れも毎回同じ(ドラムマシンらしさ。電子音楽ならそれで良い)。\n\
+  生演奏らしさが要るジャンル(funk / soul / jazz / hiphop・ローファイ)で humanize_ms を使うなら unroll_loop: true。\n\
 - 楽器ごとの前ノリ・後ノリ: pocket_ms。レイドバック(ヒップホップ・ネオソウル)は {snare: 6〜10, hat: -3}、前のめり(パンク)は {snare: -5}。\n\
 - 小さな揺れ: humanize_ms 3〜8(1/f の相関がある揺れ。小節の頭は揺らさない)。電子音楽のドラムは 0〜3。\n\
 - スウィング: swing_notes(0.54 = ストレートのまま硬さが取れる、0.58 = 軽く、0.62 = はっきり、0.667 = 3 連)を先に掛け、\n\
@@ -55,7 +63,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
   ビルドアップ 8 小節 = {target: device/cutoff, shape: exp, from: 300, to: 12000} とスネアの連打、ドロップ直前に 1 拍〜1 小節の無音 /\n\
   ハイパスで抜く = eq の hp_freq を exp で 20 → 800 / ポンピング = {target: track/volume_db, shape: pump, from: 0, to: -6〜-10, period_beats: 1} /\n\
   パッドのスウェル = {shape: swell} / フェードアウト = {shape: log, from: 0, to: -60} / ウォブル = {shape: sine, period_beats: 0.5}。\n\
-- critique_arrangement で「格子どおり」「強弱が平ら」「オートメーションが無い」が消えたかを確かめる。",
+- critique_arrangement で「格子どおり」「強弱が平ら」「オートメーションが無い」「同じ型のまま」が消えたかを確かめる。",
     ),
     (
         "instruments",
@@ -95,7 +103,8 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 - EDM の音作り: スーパーソウは subtractive の unison 5〜7 + detune。ポンピングは sidechain エフェクト(source にキックのトラック ID、\n\
   release_ms = 60000/BPM/2)か shape_automation の pump。ダブステップのウォブルは wavetable の position を lfo_rate で揺らす(8 分 = BPM/30 Hz)。\n\
 - メタル: pluck + amp(gain_db 40 以上)+ palm_mute の刻み。Lo-fi・ヴィンテージ: tape エフェクト(wow / flutter・hiss・crackle・bits)。\n\
-- 繰り返し: ドラムやリフは 1〜2 小節を書いて set_clip_loop {id, loop_len} → resize_clip で伸ばす。区間ごとの変化(フィル・抜き差し)は別のクリップで。\n\
+- 繰り返し: ドラムやリフは 1〜2 小節を書き、add_clip の clip に \"loop\": true, \"loop_len\"(既存のクリップなら set_clip_loop)。\n\
+  区間ごとの変化(フィル・抜き差し)は別のクリップで。\n\
 - 数値の多くは経験則。critique_arrangement と analyze_audio で確かめる。",
     ),
     (

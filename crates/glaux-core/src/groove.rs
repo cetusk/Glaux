@@ -35,6 +35,9 @@ pub struct Style {
     #[serde(default)]
     pub handmade: bool,
     pub bpm: u32,
+    /// 型を当てても動かさない楽器(電子音楽の 4 つ打ちのキックは位置も強さも一定が土台)
+    #[serde(default)]
+    pub locked: Vec<String>,
     /// kick / snare / hat / ride / tom / crash / ghost(スネアのゴースト)ごとの 16 分の 16 か所
     pub parts: HashMap<String, Vec<Slot>>,
 }
@@ -188,6 +191,8 @@ pub fn apply(
     for &i in &order {
         let n = &notes[i];
         let part = parts[i];
+        // 固定の楽器は格子へ寄せるだけ(型のずれ・前ノリ後ノリ・揺れ・強弱は付けない)
+        let locked = style.locked.iter().any(|l| l == part);
         let abs = clip_start + n.pos.0;
         let bar = bar_start_of(abs);
         let x = (abs - bar) as f64 / SIXTEENTH;
@@ -199,15 +204,18 @@ pub fn apply(
             .and_then(|v| v.get((idx as i64).rem_euclid(16) as usize))
             .copied();
         let mut pos = abs as f64 + (grid_abs - abs as f64) * opts.quantize.clamp(0.0, 1.0);
+        let slot = slot.filter(|_| !locked);
         if let Some(s) = slot {
             if s.vel > 0 {
                 pos += s.offset * SIXTEENTH * opts.timing.clamp(0.0, 1.5);
             }
         }
-        pos += opts.pocket_ticks.get(part).copied().unwrap_or(0.0);
+        if !locked {
+            pos += opts.pocket_ticks.get(part).copied().unwrap_or(0.0);
+        }
         // 小節の頭の音は揺らさない(拍の土台)
         let on_downbeat = (idx as i64).rem_euclid(16) == 0 && (x - idx).abs() < 0.25;
-        if opts.humanize_ticks > 0.0 && !on_downbeat {
+        if opts.humanize_ticks > 0.0 && !on_downbeat && !locked {
             let salt = part
                 .bytes()
                 .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
@@ -409,6 +417,37 @@ mod tests {
             edits,
             apply(&ns, 0, 3840 * 4, style("techno").unwrap(), &o, &bars)
         );
+    }
+
+    #[test]
+    fn electronic_styles_keep_the_four_on_the_floor_kick_steady() {
+        // 4 つ打ちのキック(1 つは格子から少しずれている)と 16 分のハット
+        let mut ns: Vec<Note> = (0..4)
+            .map(|k| note(k, k as u64 * 960 + u64::from(k == 2) * 9, 36, 100))
+            .collect();
+        for k in 0..16 {
+            ns.push(note(10 + k, k as u64 * 240, 42, 100));
+        }
+        let mut o = opts();
+        o.humanize_ticks = 12.0;
+        o.pocket_ticks.insert("kick".to_owned(), 20.0);
+        o.pocket_ticks.insert("hat".to_owned(), 10.0);
+        let edits = apply(&ns, 0, 3840, style("house").unwrap(), &o, &bars);
+        let kick = |e: &&NoteEdit| ns.iter().any(|n| n.id == e.id && n.pitch == 36);
+        // キックは揺れも前ノリ後ノリも強弱も付かない
+        assert!(!edits.iter().any(|e| kick(&e)), "{edits:?}");
+        // ハットは動く
+        assert!(edits.len() > 8);
+        // 格子へ寄せるのは効く
+        o.quantize = 1.0;
+        let edits = apply(&ns, 0, 3840, style("house").unwrap(), &o, &bars);
+        let k2: Vec<_> = edits.iter().filter(|e| kick(e)).collect();
+        assert_eq!(k2.len(), 1);
+        assert_eq!((k2[0].pos, k2[0].vel), (1920, 100));
+        // データセットの型(funk)では、キックも型どおりに動く
+        o.quantize = 0.0;
+        let edits = apply(&ns, 0, 3840, style("funk").unwrap(), &o, &bars);
+        assert!(edits.iter().any(|e| kick(&e)));
     }
 
     #[test]

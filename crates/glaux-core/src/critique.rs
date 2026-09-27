@@ -68,6 +68,34 @@ pub struct Critique {
 /// トラックの小節ごとの数値(ドラムか, 音の数, (最低音, 最高音))
 type BarStats = (bool, Vec<usize>, Vec<(u8, u8)>);
 
+/// 小節の中身の形(小節頭からの 16 分の番号, 音程)。グルーブの小さなずれは同じ形とみなす
+type BarShape = Vec<(u64, u8)>;
+
+/// 同じ短い型(1・2・4 小節の周期)が続く、いちばん長い範囲(小節の番号 [始め, 終わり), 周期)
+fn longest_repeat(shapes: &[BarShape]) -> Option<(usize, usize, usize)> {
+    let mut best: Option<(usize, usize, usize)> = None;
+    for period in [1usize, 2, 4] {
+        let mut start = 0;
+        for b in 0..=shapes.len() {
+            let continues = b < shapes.len()
+                && !shapes[b].is_empty()
+                && (b < start + period || shapes[b] == shapes[b - period]);
+            if !continues {
+                if b >= start + period * 2 && best.map_or(true, |(s, e, _)| b - start > e - s) {
+                    best = Some((start, b, period));
+                }
+                // 型が変わった小節から、次の範囲を数え直す(空の小節なら次から)
+                start = if b < shapes.len() && !shapes[b].is_empty() {
+                    b
+                } else {
+                    b + 1
+                };
+            }
+        }
+    }
+    best
+}
+
 fn is_drum(track: &Track) -> bool {
     use crate::model::PluginSource;
     match track.device.as_ref().map(|d| &d.source) {
@@ -122,6 +150,8 @@ pub fn critique(project: &Project) -> Critique {
     let mut tracks = Vec::new();
     // トラックごとの、小節ごとの音の数(区間の数値に使う)
     let mut per_bar: Vec<BarStats> = Vec::new();
+    // ドラム以外のトラックの、小節ごとの中身の形(区間をまたいで同じ型が続くかを見る)
+    let mut shapes_of: Vec<(String, Vec<BarShape>)> = Vec::new();
     for t in &project.tracks {
         let drums = is_drum(t);
         let mut notes: Vec<(u64, u64, u8, u8, bool)> = t.clips.iter().flat_map(sounding).collect();
@@ -137,6 +167,21 @@ pub fn critique(project: &Project) -> Critique {
             patterns[b].push((n.0 - grid.get(b).map_or(0, |g| g.0), n.2));
         }
         per_bar.push((drums, counts.clone(), ranges));
+        if !drums {
+            let shapes = patterns
+                .iter()
+                .map(|p| {
+                    let mut v: BarShape = p
+                        .iter()
+                        .map(|(rel, pitch)| ((rel + SIXTEENTH / 2) / SIXTEENTH, *pitch))
+                        .collect();
+                    v.sort_unstable();
+                    v.dedup();
+                    v
+                })
+                .collect();
+            shapes_of.push((t.name.clone(), shapes));
+        }
         if notes.is_empty() {
             continue;
         }
@@ -174,19 +219,33 @@ pub fn critique(project: &Project) -> Critique {
         let mut durs: Vec<u64> = notes.iter().map(|x| x.1).collect();
         durs.sort_unstable();
         let sustained = durs[durs.len() / 2] >= crate::time::PPQ * 2;
-        if m.notes >= 16 && m.on_grid > 0.95 && !sustained {
+        // ドラムのキック(35・36)は数えない(4 つ打ちのキックは格子どおり・強さ一定が土台。apply_groove も電子音楽の型では動かさない)
+        let judged: Vec<&(u64, u64, u8, u8, bool)> = notes
+            .iter()
+            .filter(|x| !(drums && matches!(x.2, 35 | 36)))
+            .collect();
+        let jn = judged.len().max(1) as f64;
+        let judged_grid = judged.iter().filter(|x| x.0 % SIXTEENTH == 0).count() as f64 / jn;
+        let judged_mean = judged.iter().map(|x| x.3 as f64).sum::<f64>() / jn;
+        let judged_sd = (judged
+            .iter()
+            .map(|x| (x.3 as f64 - judged_mean).powi(2))
+            .sum::<f64>()
+            / jn)
+            .sqrt();
+        if judged.len() >= 16 && judged_grid > 0.95 && !sustained {
             findings.push(Finding {
                 severity: "warn",
                 target: name.clone(),
-                what: format!("{:.0}% の音が 16 分の格子ちょうどにあり、機械的に聞こえやすい", m.on_grid * 100.0),
+                what: format!("{:.0}% の音が 16 分の格子ちょうどにあり、機械的に聞こえやすい", judged_grid * 100.0),
                 fix: "apply_groove(ドラムは型の style、ベースは as_part: \"kick\"、コードは \"hat\")で楽器ごとのずれと強弱を付ける".to_owned(),
             });
         }
-        if m.notes >= 16 && m.velocity_sd < 6.0 {
+        if judged.len() >= 16 && judged_sd < 6.0 {
             findings.push(Finding {
                 severity: "warn",
                 target: name.clone(),
-                what: format!("強弱がほぼ平ら(ベロシティの標準偏差 {:.1})", m.velocity_sd),
+                what: format!("強弱がほぼ平ら(ベロシティの標準偏差 {judged_sd:.1})"),
                 fix: "apply_groove の velocity(拍の位置のアクセント)、フレーズの山に向けた scale_velocity".to_owned(),
             });
         }
@@ -332,6 +391,38 @@ pub fn critique(project: &Project) -> Critique {
                 fix: "イントロは楽器を絞る(ドラムかコードだけ・フィルタを閉じる)、区切りに向けて足していく".to_owned(),
             });
         }
+        // 同じ短い型のまま、3 つ以上の区間をまたいで続く(オートメーションで動かしていても、区間の差が出にくい)
+        for (name, shapes) in &shapes_of {
+            let Some((b0, b1, period)) = longest_repeat(shapes) else {
+                continue;
+            };
+            let covered: Vec<&str> = sections
+                .iter()
+                .filter(|s| {
+                    let (s0, s1) = (s.start_bar - 1, s.start_bar - 1 + s.bars);
+                    let overlap = s1.min(b1).saturating_sub(s0.max(b0));
+                    overlap >= s.bars.min(4)
+                })
+                .map(|s| s.name.as_str())
+                .collect();
+            if b1 - b0 >= 24 && covered.len() >= 3 {
+                findings.push(Finding {
+                    severity: "warn",
+                    target: name.clone(),
+                    what: format!(
+                        "{}〜{} 小節({} 小節)が同じ {period} 小節の型のままで、{} 個の区間({})をまたいでいる。区間が変わっても同じに聞こえる",
+                        b0 + 1,
+                        b1,
+                        b1 - b0,
+                        covered.len(),
+                        covered.join("・")
+                    ),
+                    fix: "区間ごとに変える: 静かな区間では抜く・音を減らす、山ではリズムや音域・転回形を変える(transform_notes)、\
+                          区切りの前の小節だけ型を崩す"
+                        .to_owned(),
+                });
+            }
+        }
         let es: Vec<f64> = sections.iter().map(|s| s.energy).collect();
         let spread = es.iter().cloned().fold(f64::MIN, f64::max)
             - es.iter().cloned().fold(f64::MAX, f64::min);
@@ -426,6 +517,36 @@ mod tests {
     }
 
     #[test]
+    fn a_steady_four_on_the_floor_kick_is_not_called_mechanical() {
+        let mut p = song(8, true);
+        let mut t = Track::new(TrackId::new(), "Kick", TrackKind::Midi);
+        t.device = Some(crate::model::Device::builtin("drum"));
+        let mut c = Clip::new_midi(ClipId::new(), "k", Tick(0), Tick(3840 * 8));
+        if let ClipContent::Midi { notes, .. } = &mut c.content {
+            for i in 0..32 {
+                notes.push(note(i * 960, 36, 110));
+            }
+        }
+        t.clips.push(c);
+        p.tracks.push(t);
+        let c = critique(&p);
+        assert!(
+            !c.findings.iter().any(|f| f.target == "Kick"),
+            "{:?}",
+            c.findings
+        );
+        // 同じ打ち方のハットなら指摘する
+        if let ClipContent::Midi { notes, .. } = &mut p.tracks[2].clips[0].content {
+            notes.iter_mut().for_each(|n| n.pitch = 42);
+        }
+        let c = critique(&p);
+        assert!(c
+            .findings
+            .iter()
+            .any(|f| f.target == "Kick" && f.what.contains("格子ちょうど")));
+    }
+
+    #[test]
     fn sections_and_low_clashes() {
         let mut p = song(24, true);
         p.sections = vec![
@@ -453,6 +574,30 @@ mod tests {
             "{:?}",
             c.findings
         );
+        // 同じ型のまま 3 区間をまたぐ(ずれがあっても 16 分に寄せて同じ形とみなす)
+        assert!(
+            c.findings
+                .iter()
+                .any(|f| f.target == "Keys" && f.what.contains("3 個の区間")),
+            "{:?}",
+            c.findings
+        );
+        // 真ん中の区間で型を変えれば出ない
+        let mut p3 = p.clone();
+        for t in &mut p3.tracks {
+            if let ClipContent::Midi { notes, .. } = &mut t.clips[0].content {
+                for n in notes
+                    .iter_mut()
+                    .filter(|n| (3840 * 8..3840 * 16).contains(&n.pos.0))
+                {
+                    n.pitch += 5;
+                }
+            }
+        }
+        assert!(!critique(&p3)
+            .findings
+            .iter()
+            .any(|f| f.what.contains("区間をまたいでいる")));
         // 低域: Keys を E2(40)の 2 半音上(42)に下げると、Bass とぶつかる
         let mut p2 = song(8, true);
         if let ClipContent::Midi { notes, .. } = &mut p2.tracks[1].clips[0].content {

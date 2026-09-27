@@ -587,8 +587,16 @@ pub struct ShapeAutomationParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ApplyGrooveParams {
-    /// 対象クリップ ID(`clp_xxxxxx`)。
-    pub clip_id: String,
+    /// 対象クリップ ID(`clp_xxxxxx`)。1 つなら clip_id、まとめて当てるなら clip_ids(1 回の undo で戻る)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// 対象クリップ ID の配列(ドラム・ベース・コードなど、トラックをまたいでよい)。
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
+    /// true でループのクリップの繰り返しを書き出してから当てる(繰り返しごとに違う揺れになる)。
+    /// 既定 false(ループの中身に当てるので、揺れも毎回同じ)。生演奏らしさが要るジャンルで humanize_ms と一緒に。
+    #[serde(default)]
+    pub unroll_loop: Option<bool>,
     /// 型: funk / hiphop / soul / rock / pop / jazz / latin / neworleans / afrobeat(人間のドラマーの演奏から集計)、
     /// house / techno / trap(電子音楽の手作り。タイミングはほぼ格子どおりで強弱の型)。
     pub style: String,
@@ -614,7 +622,7 @@ pub struct ApplyGrooveParams {
     /// 揺れの乱数の種(既定 1。同じ値なら同じ結果)。
     #[serde(default)]
     pub seed: Option<u64>,
-    /// 対象ノート ID の配列。省略でクリップ内の全ノート。
+    /// 対象ノート ID の配列(clip_id を 1 つ指定したときだけ)。省略でクリップ内の全ノート。
     #[serde(default)]
     pub note_ids: Option<Vec<String>>,
 }
@@ -3635,6 +3643,9 @@ impl GlauxServer {
         楽器ごと・16 分の位置ごとのずれ(バックビートが少し後ろ、など)と強弱(表が強く 16 分の裏が弱い、など)を付ける。\
         pocket_ms で楽器ごとの前ノリ・後ノリ、humanize_ms で小さな 1/f の揺れ(3〜8ms)。ドラムは音程で楽器を分け、\
         ほかのトラックは as_part(ベースは kick、コードの刻みは hat)。誇張は逆効果なので既定値から始める。\
+        電子音楽の型では 4 つ打ちのキックは動かさない(格子へ寄せる quantize だけ効く)。\
+        clip_ids で曲じゅうのクリップにまとめて当てる(クリップごとに揺れの列は変わる)。ループのクリップは中身に当たるので\
+        揺れも毎回同じ。生演奏らしさが要るなら unroll_loop: true で繰り返しを書き出してから当てる。\
         スウィングは swing_notes を先に掛け、ここは quantize 0 で重ねる。同じ seed なら同じ結果。1 回の undo で戻る。\
         型の出典: Groove MIDI Dataset(Google Magenta、CC BY 4.0)を集計して改変。"
     )]
@@ -3653,65 +3664,153 @@ impl GlauxServer {
                 names.join(" / ")
             )
         })?;
-        let (clip_id, len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
-        let (project, _) = self.handle.get_project().await?;
-        let (track, clip) = project.clip(&clip_id).ok_or("clip not found")?;
-        let start = clip.start.0;
-        // ms → tick(クリップの頭のテンポで)
-        let ticks_per_ms = glaux_core::PPQ as f64 * project.tempo_map.bpm_at(clip.start) / 60_000.0;
+        let mut ids: Vec<String> = p.clip_id.clone().into_iter().collect();
+        for c in p.clip_ids.iter().flatten() {
+            if !ids.contains(c) {
+                ids.push(c.clone());
+            }
+        }
+        if ids.is_empty() {
+            return Err("clip_id か clip_ids を指定してください".to_owned());
+        }
+        if p.note_ids.is_some() && ids.len() > 1 {
+            return Err("note_ids は clip_id を 1 つだけ指定したときに使えます".to_owned());
+        }
+        let unroll = p.unroll_loop.unwrap_or(false);
         let humanize = p.humanize_ms.unwrap_or(0.0).clamp(0.0, 20.0);
-        let pocket = p
-            .pocket_ms
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(k, v)| (k, v.clamp(-30.0, 30.0) * ticks_per_ms))
-            .collect();
-        let as_part = match p.as_part {
-            Some(x) => Some(x),
-            None if is_drum_track(track) => None,
-            None => Some("hat".to_owned()),
+        let (project, version) = self.handle.get_project().await?;
+        let mut commands = Vec::new();
+        let mut clips_out = Vec::new();
+        let mut total = 0usize;
+        let mut shift_sum = 0.0;
+        let mut shift_n = 0usize;
+        let mut looped_kept = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            let (clip_id, _, selected, _) = self.load_notes(id, &p.note_ids).await?;
+            let (track, clip) = project.clip(&clip_id).ok_or("clip not found")?;
+            let start = clip.start.0;
+            let len = clip.length.0;
+            // ループはほどいてから(繰り返しごとに違う揺れ)か、中身にそのまま当てる
+            let mut unrolled = false;
+            let notes = match glaux_core::arrange::unroll_loop(clip) {
+                Some(flat) if unroll => {
+                    let wanted: Option<std::collections::HashSet<_>> = p
+                        .note_ids
+                        .as_ref()
+                        .map(|_| selected.iter().map(|n| n.id.clone()).collect());
+                    let notes: Vec<_> = flat
+                        .notes()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|n| wanted.as_ref().is_none_or(|w| w.contains(&n.id)))
+                        .cloned()
+                        .collect();
+                    commands.push(Command::ReplaceClip {
+                        id: clip_id.clone(),
+                        clip: flat,
+                    });
+                    unrolled = true;
+                    notes
+                }
+                Some(_) => {
+                    looped_kept.push(clip_id.to_string());
+                    selected
+                }
+                None => selected,
+            };
+            // ms → tick(クリップの頭のテンポで)
+            let ticks_per_ms =
+                glaux_core::PPQ as f64 * project.tempo_map.bpm_at(clip.start) / 60_000.0;
+            let pocket = p
+                .pocket_ms
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| (k, v.clamp(-30.0, 30.0) * ticks_per_ms))
+                .collect();
+            let as_part = match &p.as_part {
+                Some(x) => Some(x.clone()),
+                None if is_drum_track(track) => None,
+                None => Some("hat".to_owned()),
+            };
+            let opts = glaux_core::groove::GrooveOptions {
+                quantize: p.quantize.unwrap_or(0.0),
+                timing: p.timing.unwrap_or(1.0),
+                velocity: p.velocity.unwrap_or(0.7),
+                humanize_ticks: humanize * ticks_per_ms,
+                pocket_ticks: pocket,
+                as_part,
+                // クリップごとに揺れの列を変える(同じ型のクリップが並んでも同じ揺れにならない)
+                seed: p.seed.unwrap_or(1).wrapping_add(i as u64 * 7919),
+            };
+            let bar_of = bar_start_fn(&project, start + len);
+            let edits = glaux_core::groove::apply(&notes, start, len, style, &opts, &bar_of);
+            for e in &edits {
+                if let Some(n) = notes.iter().find(|n| n.id == e.id) {
+                    shift_sum += (e.pos as f64 - n.pos.0 as f64).abs() / ticks_per_ms;
+                    shift_n += 1;
+                }
+            }
+            let changed = edits.len();
+            total += changed;
+            clips_out.push(json!({ "clip_id": clip_id, "changed": changed, "unrolled": unrolled }));
+            if changed > 0 {
+                commands.push(Command::UpdateNotes {
+                    clip: clip_id,
+                    changes: edits
+                        .into_iter()
+                        .map(|e| {
+                            glaux_core::NoteChange::new(e.id)
+                                .pos(glaux_core::Tick(e.pos))
+                                .vel(e.vel)
+                        })
+                        .collect(),
+                });
+            }
+        }
+        let style_json = json!({ "name": p.style, "from_dataset": !style.handmade, "bpm": style.bpm,
+                "locked": style.locked });
+        if commands.is_empty() {
+            return Ok(JsonText(json!({
+                "project_version": version,
+                "changed": 0,
+                "note": "対象ノートはすべて変更不要でした",
+                "style": style_json,
+            })));
+        }
+        let label = if ids.len() == 1 {
+            format!("{} のグルーブ({total} ノート)", p.style)
+        } else {
+            format!(
+                "{} のグルーブ({} クリップ・{total} ノート)",
+                p.style,
+                ids.len()
+            )
         };
-        let opts = glaux_core::groove::GrooveOptions {
-            quantize: p.quantize.unwrap_or(0.0),
-            timing: p.timing.unwrap_or(1.0),
-            velocity: p.velocity.unwrap_or(0.7),
-            humanize_ticks: humanize * ticks_per_ms,
-            pocket_ticks: pocket,
-            as_part,
-            seed: p.seed.unwrap_or(1),
+        let command = if commands.len() == 1 {
+            commands.pop().expect("1 つある")
+        } else {
+            Command::batch(label.clone(), commands)
         };
-        let bar_of = bar_start_fn(&project, start + len.0);
-        let edits = glaux_core::groove::apply(&notes, start, len.0, style, &opts, &bar_of);
-        let shifted: Vec<f64> = edits
-            .iter()
-            .filter_map(|e| {
-                notes
-                    .iter()
-                    .find(|n| n.id == e.id)
-                    .map(|n| (e.pos as f64 - n.pos.0 as f64).abs() / ticks_per_ms)
-            })
-            .collect();
-        let mean_shift = if shifted.is_empty() {
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(total);
+        v["clips"] = json!(clips_out);
+        v["mean_shift_ms"] = json!(if shift_n == 0 {
             0.0
         } else {
-            shifted.iter().sum::<f64>() / shifted.len() as f64
-        };
-        let changes: Vec<_> = edits
-            .into_iter()
-            .map(|e| {
-                glaux_core::NoteChange::new(e.id)
-                    .pos(glaux_core::Tick(e.pos))
-                    .vel(e.vel)
-            })
-            .collect();
-        let label = format!("{} のグルーブ({} ノート)", p.style, changes.len());
-        let mut r = self
-            .apply_note_changes(clip_id, changes, 0, label, version, &ctx)
-            .await?;
-        r.0["mean_shift_ms"] = json!((mean_shift * 10.0).round() / 10.0);
-        r.0["style"] =
-            json!({ "name": p.style, "from_dataset": !style.handmade, "bpm": style.bpm });
-        Ok(r)
+            (shift_sum / shift_n as f64 * 10.0).round() / 10.0
+        });
+        v["style"] = style_json;
+        if !looped_kept.is_empty() && humanize > 0.0 {
+            v["note"] = json!(format!(
+                "ループのクリップ({})はループの中身に当てたので、揺れも毎回同じです。繰り返しごとに変えるなら unroll_loop: true",
+                looped_kept.join(", ")
+            ));
+        }
+        Ok(JsonText(v))
     }
 
     #[tool(

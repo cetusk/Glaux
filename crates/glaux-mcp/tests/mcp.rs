@@ -2895,6 +2895,109 @@ async fn apply_groove_and_ghost_notes_make_a_grid_beat_breathe() {
 }
 
 #[tokio::test]
+async fn apply_groove_takes_many_clips_keeps_the_kick_and_unrolls_loops() {
+    let fx = setup().await;
+    // ハウス: 1 小節のループ(4 つ打ち + 16 分のハット)を 4 小節ぶん、コードの刻みのクリップ
+    let mut beat = Vec::new();
+    for k in 0..4u64 {
+        beat.push(json!({ "pos": k * 960, "dur": 120, "pitch": 36, "vel": 110 }));
+    }
+    for k in 0..16u64 {
+        beat.push(json!({ "pos": k * 240, "dur": 60, "pitch": 42, "vel": 100 }));
+    }
+    let stab: Vec<_> = (0..8u64)
+        .map(|k| json!({ "pos": k * 960 + 480, "dur": 240, "pitch": 60, "vel": 100 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "ハウス", "commands": [
+                { "op": "add_track", "track": { "id": "trk_hse001", "name": "Drums", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } },
+                { "op": "add_clip", "track": "trk_hse001", "clip": {
+                    "id": "clp_hse001", "name": "loop", "start": 0, "length": 15360, "kind": "midi",
+                    "loop": true, "loop_len": 3840, "notes": beat } },
+                { "op": "add_track", "track": { "id": "trk_hse002", "name": "Stab", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_hse002", "clip": {
+                    "id": "clp_hse002", "name": "stab", "start": 0, "length": 7680, "kind": "midi", "notes": stab } }
+            ] }),
+        )
+        .await,
+    );
+    let args =
+        json!({ "clip_ids": ["clp_hse001", "clp_hse002"], "style": "house", "humanize_ms": 5 });
+    let v = ok_json(&call(&fx, "apply_groove", args.clone()).await);
+    assert_eq!(v["clips"].as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(v["style"]["locked"], json!(["kick"]));
+    // ループの中身に当てたこと(揺れが毎回同じ)を知らせる
+    assert!(v["note"].as_str().unwrap().contains("unroll_loop"), "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let drums = &project.tracks[0].clips[0];
+    assert!(drums.loop_len().is_some());
+    // 4 つ打ちのキックは動かない
+    let kicks: Vec<(u64, u8)> = drums
+        .notes()
+        .unwrap()
+        .iter()
+        .filter(|n| n.pitch == 36)
+        .map(|n| (n.pos.0, n.vel))
+        .collect();
+    assert_eq!(kicks, vec![(0, 110), (960, 110), (1920, 110), (2880, 110)]);
+    // 刻みも動いた
+    assert!(project.tracks[1].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .any(|n| n.pos.0 % 480 != 0));
+    // 1 回の undo で両方戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (back, _) = fx.handle.get_project().await.unwrap();
+    assert!(back.tracks[1].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .all(|n| n.pos.0 % 480 == 0));
+    // ループをほどいてから: 繰り返しごとに違う揺れ、キックは 16 発とも格子どおり
+    let mut args2 = args.clone();
+    args2["unroll_loop"] = json!(true);
+    let v = ok_json(&call(&fx, "apply_groove", args2).await);
+    assert!(v.get("note").is_none(), "{v}");
+    assert_eq!(v["clips"][0]["unrolled"], true);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let drums = &project.tracks[0].clips[0];
+    assert!(drums.loop_len().is_none());
+    let ns = drums.notes().unwrap();
+    let kicks: Vec<u64> = ns
+        .iter()
+        .filter(|n| n.pitch == 36)
+        .map(|n| n.pos.0)
+        .collect();
+    assert_eq!(kicks, (0..16u64).map(|k| k * 960).collect::<Vec<_>>());
+    let hat_offsets = |bar: u64| -> Vec<i64> {
+        ns.iter()
+            .filter(|n| n.pitch == 42 && n.pos.0 / 3840 == bar)
+            .map(|n| n.pos.0 as i64 - ((n.pos.0 + 120) / 240 * 240) as i64)
+            .collect()
+    };
+    assert_eq!(hat_offsets(0).len(), 16);
+    assert_ne!(hat_offsets(0), hat_offsets(1));
+    // 1 回の undo でループに戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (back, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(back.tracks[0].clips[0].notes().unwrap().len(), 20);
+    assert!(back.tracks[0].clips[0].loop_len().is_some());
+    // note_ids は 1 つのクリップのときだけ
+    let r = call(
+        &fx,
+        "apply_groove",
+        json!({ "clip_ids": ["clp_hse001", "clp_hse002"], "style": "house", "note_ids": ["nt_aaaaaa"] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn transform_notes_develops_a_motif_in_the_key() {
     let fx = setup().await;
     ok_json(&call(&fx, "apply_commands", add_track_args("trk_trf001", "Lead")).await);
