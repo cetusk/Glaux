@@ -9,7 +9,7 @@
 pub const CORE: &str = "Glaux(AI と共同作業できる DAW)のプロジェクト編集サーバー。\
 進め方: get_project(include_notes: false)で構造を把握 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
 apply_commands で編集(ノート・クリップの ID は省略可)。\
-伴奏は write_chords(コード進行から積み方を計算)。相対編集は専用ツール: 移調 transpose_notes / 時間移動 shift_notes / クオンタイズ quantize_notes / ハネ swing_notes / \
+伴奏は write_chords、ベースは write_bassline(コード進行から計算)。相対編集は専用ツール: 移調 transpose_notes / 時間移動 shift_notes / クオンタイズ quantize_notes / ハネ swing_notes / \
 強さ scale_velocity / 旋律の変形 transform_notes。構成は duplicate_clips / insert_bars / delete_bars。\
 曲を作る・大きく直すときは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 → 表情 → 点検)に沿う。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track でトラック別)・analyze_sound。\
@@ -33,6 +33,8 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    進行は記号か、key を付けてローマ数字。積み方はジャンルで: ポップのピアノ = drop2 か close + eighth、\n\
    ハウスのスタブ = close + offbeat(gate 0.4)、パッド・ストリングス = spread + sustain、ジャズ = shell か rootless + charleston、\n\
    ギター = open + strum_ms 15。区間ごとに rhythm・range・voices を変えると区間の差になる。\n\
+   ベースは write_bassline(伴奏と同じ進行の文字列を渡す): ハウス・ポップ = root8 か offbeat、ディスコ = octave、\n\
+   トラップ = 808(C1〜C3)、ファンク = funk か follow_kick(キックと同じ位置)、ジャズ・ローファイ = walking、バラード = root。\n\
    主旋律は短い動機を作り、transform_notes(sequence・transpose・invert)で展開すると統一感が出る。\n\
    繰り返すドラム・リフは add_clip の clip に \"loop\": true, \"loop_len\": 3840(1 小節)を入れ、length を区間の長さにする\n\
    (1 回で済む。試しの編集は要らない)。区間ごとに別のクリップにしておくと、区間の差を付けやすい。\n\

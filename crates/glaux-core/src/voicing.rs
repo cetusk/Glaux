@@ -154,7 +154,7 @@ pub fn voice_progression(chords: &[Chord], opts: &Options) -> Result<Vec<Voiced>
 }
 
 /// 低音の並び(各コードの根音か分数コードの最低音を、音域 lo〜hi のどのオクターブに置くか)
-fn bass_line(chords: &[Chord], lo: u8, hi: u8) -> Vec<u8> {
+pub fn bass_line(chords: &[Chord], lo: u8, hi: u8) -> Vec<u8> {
     let center = (lo as f64 + hi as f64) / 2.0;
     let opts: Vec<Vec<u8>> = chords
         .iter()

@@ -699,6 +699,172 @@ pub struct WriteChordsParams {
     pub name: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct WriteBasslineParams {
+    /// 置く MIDI トラックの ID(`trk_xxxxxx`)。新しいクリップを作って置く。
+    pub track_id: String,
+    /// コード進行(write_chords と同じ書き方。伴奏と同じ文字列を渡すと合う)。例 "Am7 | Fmaj7 | C G/B | %"
+    pub chords: String,
+    /// 始まりの小節(既定 1)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+    /// 進行を何回繰り返すか(既定 1)。
+    #[serde(default)]
+    pub repeat: Option<u32>,
+    /// ローマ数字を読むキー。音階に沿う経過音(approach: "scale")にも使う。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 型: root(伸ばし)/ root8(根音の 8 分。既定)/ offbeat(裏拍)/ octave(ディスコ)/ tresillo(3-3-2)/
+    /// 808(トラップ。伸ばして滑らせる)/ funk / walking(ジャズ・ローファイ)か、1 小節を等分した文字列
+    /// (x = 根音、o = 1 オクターブ上、5 / 3 / 7 = その度数、- = 伸ばす、. = 休み。例 "x..o..x.5.x..7..")。
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// 音域(既定 "E1-E3"。808 は "C1-C3" くらいまで下げてよい)。
+    #[serde(default)]
+    pub range: Option<String>,
+    /// 次の和音へ近づく経過音: none(既定)/ chromatic(半音)/ scale(音階。key が要る)。walking は既定で chromatic。
+    #[serde(default)]
+    pub approach: Option<String>,
+    /// キックのクリップ ID。渡すとキックと同じ位置で根音を鳴らす(ベースとキックをかみ合わせる。pattern より優先)。
+    #[serde(default)]
+    pub follow_kick: Option<String>,
+    /// 808 の滑る時間(ms、既定 60)。
+    #[serde(default)]
+    pub glide_ms: Option<f32>,
+    /// 伸ばさない音の長さの割合 0.1〜1(既定 0.85)。
+    #[serde(default)]
+    pub gate: Option<f64>,
+    /// 強さ(既定 96)。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    /// クリップの名前(既定 "Bass")。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
+struct Layout {
+    /// 鳴らす和音(休みを除く)の並び
+    chords: Vec<glaux_core::chord::Chord>,
+    /// 区間(クリップの頭から)。chord は `chords` の番号
+    spans: Vec<glaux_core::comp::Span>,
+    /// 区間ごとの小節番号
+    span_bar: Vec<u32>,
+    /// クリップの頭からの (小節の頭, 小節の長さ)
+    bar_list: Vec<(u64, u64)>,
+    clip_start: u64,
+    clip_len: u64,
+    n_bars: u32,
+}
+
+/// コード進行の文字列を読み、小節の中を均等に分けて区間にする。`merge_same` なら同じ和音が続く区間を 1 つにまとめる
+fn progression_layout(
+    project: &glaux_core::Project,
+    chords: &str,
+    key: Option<&str>,
+    repeat: Option<u32>,
+    bar: Option<u32>,
+    merge_same: bool,
+) -> Result<Layout, String> {
+    use glaux_core::{chord, comp};
+    let key =
+        match key {
+            Some(k) => Some(chord::Key::parse(k).ok_or_else(|| {
+                format!("key は \"C major\" / \"A minor\" / \"F#m\" の形(got: {k})")
+            })?),
+            None => None,
+        };
+    let mut bars_sym = chord::split_progression(chords)?;
+    let repeat = repeat.unwrap_or(1).clamp(1, 64) as usize;
+    bars_sym = bars_sym
+        .iter()
+        .cloned()
+        .cycle()
+        .take(bars_sym.len() * repeat)
+        .collect();
+    if bars_sym.len() > 512 {
+        return Err("小節が多すぎます(512 まで)".to_owned());
+    }
+    // 記号を読む(読めないものはまとめて知らせる)
+    let mut errors = Vec::new();
+    let parsed: Vec<Vec<Option<chord::Chord>>> = bars_sym
+        .iter()
+        .map(|bar| {
+            bar.iter()
+                .map(|sym| match chord::parse_in_key(sym, key) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        errors.push(e);
+                        None
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    if !errors.is_empty() {
+        errors.dedup();
+        return Err(format!("コードが読めません: {}", errors.join(" / ")));
+    }
+    // 小節の位置
+    let first_bar = bar.unwrap_or(1).max(1);
+    let n_bars = bars_sym.len() as u32;
+    let (clip_start, clip_len) =
+        glaux_core::arrange::bar_range(project, first_bar, n_bars).ok_or("小節を数えられません")?;
+    let bar_list: Vec<(u64, u64)> = (0..n_bars)
+        .map(|i| {
+            glaux_core::arrange::bar_range(project, first_bar + i, 1)
+                .map(|(s, l)| (s - clip_start, l))
+                .ok_or("小節を数えられません")
+        })
+        .collect::<Result<_, _>>()?;
+    let mut chords_list: Vec<chord::Chord> = Vec::new();
+    let mut spans: Vec<comp::Span> = Vec::new();
+    let mut span_bar: Vec<u32> = Vec::new();
+    for (bi, (bar_chords, &(bstart, blen))) in parsed.iter().zip(&bar_list).enumerate() {
+        let k = bar_chords.len() as u64;
+        for (ci, c) in bar_chords.iter().enumerate() {
+            let start = bstart + blen * ci as u64 / k;
+            let end = bstart + blen * (ci as u64 + 1) / k;
+            let same_as_prev = merge_same
+                && spans.last().is_some_and(|last: &comp::Span| {
+                    last.start + last.len == start
+                        && match (last.chord, c) {
+                            (Some(i), Some(c)) => chords_list[i].name == c.name,
+                            (None, None) => true,
+                            _ => false,
+                        }
+                });
+            if same_as_prev {
+                let last = spans.last_mut().expect("直前がある");
+                last.len = end - last.start;
+                continue;
+            }
+            let idx = c.as_ref().map(|c| {
+                chords_list.push(c.clone());
+                chords_list.len() - 1
+            });
+            spans.push(comp::Span {
+                start,
+                len: end - start,
+                chord: idx,
+            });
+            span_bar.push(first_bar + bi as u32);
+        }
+    }
+    if chords_list.is_empty() {
+        return Err("鳴らすコードがありません(すべて N.C.)".to_owned());
+    }
+    Ok(Layout {
+        chords: chords_list,
+        spans,
+        span_bar,
+        bar_list,
+        clip_start,
+        clip_len,
+        n_bars,
+    })
+}
+
 /// "E3-C5" / "low" / "mid" / "high" を音域に
 fn parse_range(s: Option<&str>) -> Result<(u8, u8), String> {
     let s = s.unwrap_or("mid").trim();
@@ -4101,43 +4267,6 @@ impl GlauxServer {
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
         }
-        let key = match &p.key {
-            Some(k) => Some(chord::Key::parse(k).ok_or_else(|| {
-                format!("key は \"C major\" / \"A minor\" / \"F#m\" の形(got: {k})")
-            })?),
-            None => None,
-        };
-        let mut bars_sym = chord::split_progression(&p.chords)?;
-        let repeat = p.repeat.unwrap_or(1).clamp(1, 64) as usize;
-        bars_sym = bars_sym
-            .iter()
-            .cloned()
-            .cycle()
-            .take(bars_sym.len() * repeat)
-            .collect();
-        if bars_sym.len() > 512 {
-            return Err("小節が多すぎます(512 まで)".to_owned());
-        }
-        // 記号を読む(読めないものはまとめて知らせる)
-        let mut errors = Vec::new();
-        let parsed: Vec<Vec<Option<chord::Chord>>> = bars_sym
-            .iter()
-            .map(|bar| {
-                bar.iter()
-                    .map(|sym| match chord::parse_in_key(sym, key) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            errors.push(e);
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-        if !errors.is_empty() {
-            errors.dedup();
-            return Err(format!("コードが読めません: {}", errors.join(" / ")));
-        }
         let rhythm = comp::parse_rhythm(p.rhythm.as_deref().unwrap_or("sustain"))?;
         let style = match &p.style {
             Some(s) => voicing::Style::parse(s).ok_or_else(|| {
@@ -4158,56 +4287,22 @@ impl GlauxServer {
             }
             None => None,
         };
-        // 小節の位置
-        let first_bar = p.bar.unwrap_or(1).max(1);
-        let n_bars = bars_sym.len() as u32;
-        let (clip_start, clip_len) = glaux_core::arrange::bar_range(&project, first_bar, n_bars)
-            .ok_or("小節を数えられません")?;
-        let bar_list: Vec<(u64, u64)> = (0..n_bars)
-            .map(|i| {
-                glaux_core::arrange::bar_range(&project, first_bar + i, 1)
-                    .map(|(s, l)| (s - clip_start, l))
-                    .ok_or("小節を数えられません")
-            })
-            .collect::<Result<_, _>>()?;
-        // 区間(小節の中を均等に分ける)。sustain は同じ和音が続けば 1 つにまとめる
-        let mut chords_list: Vec<chord::Chord> = Vec::new();
-        let mut spans: Vec<comp::Span> = Vec::new();
-        let mut span_bar: Vec<u32> = Vec::new();
-        for (bi, (bar_chords, &(bstart, blen))) in parsed.iter().zip(&bar_list).enumerate() {
-            let k = bar_chords.len() as u64;
-            for (ci, c) in bar_chords.iter().enumerate() {
-                let start = bstart + blen * ci as u64 / k;
-                let end = bstart + blen * (ci as u64 + 1) / k;
-                let same_as_prev = rhythm.is_none()
-                    && spans.last().is_some_and(|last: &comp::Span| {
-                        last.start + last.len == start
-                            && match (last.chord, c) {
-                                (Some(i), Some(c)) => chords_list[i].name == c.name,
-                                (None, None) => true,
-                                _ => false,
-                            }
-                    });
-                if same_as_prev {
-                    let last = spans.last_mut().expect("直前がある");
-                    last.len = end - last.start;
-                    continue;
-                }
-                let idx = c.as_ref().map(|c| {
-                    chords_list.push(c.clone());
-                    chords_list.len() - 1
-                });
-                spans.push(comp::Span {
-                    start,
-                    len: end - start,
-                    chord: idx,
-                });
-                span_bar.push(first_bar + bi as u32);
-            }
-        }
-        if chords_list.is_empty() {
-            return Err("鳴らすコードがありません(すべて N.C.)".to_owned());
-        }
+        let Layout {
+            chords: chords_list,
+            spans,
+            span_bar,
+            bar_list,
+            clip_start,
+            clip_len,
+            n_bars,
+        } = progression_layout(
+            &project,
+            &p.chords,
+            p.key.as_deref(),
+            p.repeat,
+            p.bar,
+            rhythm.is_none(),
+        )?;
         let voices = p.voices.map_or(4, |v| v as usize);
         let opts = voicing::Options {
             style,
@@ -4305,6 +4400,151 @@ impl GlauxServer {
         } else {
             (motion as f64 / changes as f64 * 10.0).round() / 10.0
         });
+        Ok(JsonText(out))
+    }
+
+    #[tool(
+        description = "コード進行からベースラインを書く。根音(分数コードは最低音)のオクターブは進行全体で動きが小さく選ぶ。\
+        型: root / root8 / offbeat / octave / tresillo / 808(伸ばして音が変わる所で滑らせる)/ funk / walking\
+        (根音 → 和音の音 → 次の根音へ半音で近づく)か、x o 5 3 7 - . の文字列で度数とリズムを書く。\
+        approach で区間の最後に次の根音へ近づく経過音、follow_kick でキックと同じ位置に置く(かみ合わせ)。\
+        進行は write_chords と同じ書き方。トラックに新しいクリップを作る(返り値 clip_id)。ずれ・強弱は後から\
+        apply_groove(as_part: kick)。1 回の undo で戻る。"
+    )]
+    async fn write_bassline(
+        &self,
+        params: Parameters<WriteBasslineParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::{bassline, chord};
+        let _activity = self.handle.begin_activity("write_bassline");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err("MIDI トラックを指定してください".to_owned());
+        }
+        let (pattern, slide) = bassline::parse_pattern(p.pattern.as_deref().unwrap_or("root8"))?;
+        let Layout {
+            chords,
+            spans,
+            span_bar,
+            bar_list,
+            clip_start,
+            clip_len,
+            n_bars,
+        } = progression_layout(
+            &project,
+            &p.chords,
+            p.key.as_deref(),
+            p.repeat,
+            p.bar,
+            pattern == bassline::Pattern::Sustain,
+        )?;
+        let (low, high) = parse_range(Some(p.range.as_deref().unwrap_or("E1-E3")))?;
+        let approach = match p.approach.as_deref().unwrap_or("none") {
+            "none" => bassline::Approach::None,
+            "chromatic" => bassline::Approach::Chromatic,
+            "scale" => bassline::Approach::Scale,
+            other => {
+                return Err(format!(
+                    "approach は none / chromatic / scale(got: {other})"
+                ))
+            }
+        };
+        let scale = p.key.as_deref().and_then(chord::Key::parse).map(|k| {
+            glaux_core::harmony::scale_pitch_classes(
+                k.tonic,
+                if k.minor { "minor" } else { "major" },
+            )
+        });
+        if approach == bassline::Approach::Scale && scale.is_none() {
+            return Err("approach: \"scale\" には key が要ります".to_owned());
+        }
+        // キックの位置(クリップの頭から)
+        let kick: Option<Vec<u64>> = match &p.follow_kick {
+            Some(k) => {
+                let kid = glaux_core::ClipId::parse(k).map_err(|e| e.to_string())?;
+                let (_, kc) = project
+                    .clip(&kid)
+                    .ok_or("キックのクリップが見つかりません")?;
+                let end = clip_start + clip_len;
+                let v: Vec<u64> = kc
+                    .playback_notes()
+                    .into_iter()
+                    .filter(|n| matches!(n.pitch, 35 | 36))
+                    .map(|n| kc.start.0 + n.pos.0)
+                    .filter(|t| (clip_start..end).contains(t))
+                    .map(|t| t - clip_start)
+                    .collect();
+                if v.is_empty() {
+                    return Err(
+                        "キックのクリップに、この範囲のキック(36 / 35)がありません".to_owned()
+                    );
+                }
+                Some(v)
+            }
+            None => None,
+        };
+        let opts = bassline::Options {
+            low,
+            high,
+            gate: p.gate.unwrap_or(0.85).clamp(0.1, 1.0),
+            velocity: p.velocity.unwrap_or(96).clamp(1, 127),
+            approach,
+            scale,
+            slide,
+            beat: glaux_core::PPQ,
+        };
+        let notes = bassline::render(&spans, &chords, &bar_list, &pattern, &opts, kick.as_deref())?;
+        let glide = p.glide_ms.unwrap_or(60.0).clamp(5.0, 500.0);
+        let mut clip = glaux_core::Clip::new_midi(
+            glaux_core::ClipId::new(),
+            p.name.clone().unwrap_or_else(|| "Bass".to_owned()),
+            glaux_core::Tick(clip_start),
+            glaux_core::Tick(clip_len),
+        );
+        let clip_id = clip.id.clone();
+        if let Some(ns) = clip.notes_mut() {
+            *ns = notes
+                .iter()
+                .map(|n| glaux_core::Note {
+                    id: glaux_core::NoteId::new(),
+                    pos: glaux_core::Tick(n.pos),
+                    dur: glaux_core::Tick(n.dur),
+                    pitch: n.pitch,
+                    vel: n.vel,
+                    articulation: if n.slide {
+                        glaux_core::Articulation::Portamento
+                    } else {
+                        Default::default()
+                    },
+                    pitch_curve: vec![],
+                    glide_ms: n.slide.then_some(glide),
+                })
+                .collect();
+            ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+        }
+        let summary: Vec<Value> = spans
+            .iter()
+            .zip(&span_bar)
+            .filter_map(|(s, bar)| {
+                let ci = s.chord?;
+                let first = notes.iter().find(|n| n.pos >= s.start && n.pos < s.start + s.len)?;
+                Some(json!({ "bar": bar, "chord": chords[ci].name, "root": chord::note_name(first.pitch) }))
+            })
+            .collect();
+        let label = format!("ベースライン({n_bars} 小節)");
+        let command = Command::AddClip { track: tid, clip };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut out = mutated_json(&m);
+        out["entry_id"] = json!(entry_id);
+        out["clip_id"] = json!(clip_id);
+        out["bars"] = json!(n_bars);
+        out["notes"] = json!(notes.len());
+        out["chords"] = json!(summary);
         Ok(JsonText(out))
     }
 

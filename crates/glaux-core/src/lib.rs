@@ -13,6 +13,7 @@
 
 pub mod apply;
 pub mod arrange;
+pub mod bassline;
 pub mod chord;
 pub mod command;
 pub mod comp;

@@ -3140,6 +3140,95 @@ async fn write_chords_voices_a_progression_with_a_rhythm() {
 }
 
 #[tokio::test]
+async fn write_bassline_follows_the_chords_the_kick_and_slides() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_bas001", "Bass")).await);
+    // 根音の 8 分(既定): 伴奏と同じ進行の根音
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_bas001", "chords": "Am7 | Fmaj7 | C G/B | %", "approach": "chromatic" }),
+        )
+        .await,
+    );
+    assert_eq!(v["bars"], 4, "{v}");
+    let roots: Vec<&str> = v["chords"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["root"].as_str().unwrap())
+        .collect();
+    assert!(
+        roots[0].starts_with('A') && roots[1].starts_with('F'),
+        "{roots:?}"
+    );
+    // 分数コード G/B は B
+    assert!(roots[3].starts_with('B'), "{roots:?}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap();
+    assert!(ns.iter().all(|n| (28..=52).contains(&n.pitch)));
+    // キックに合わせる
+    let kicks: Vec<Value> = [0u64, 960, 1680, 2880]
+        .iter()
+        .map(|p| json!({ "pos": p, "dur": 120, "pitch": 36, "vel": 110 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "キック", "commands": [
+                { "op": "add_track", "track": { "id": "trk_bas002", "name": "Kick", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } },
+                { "op": "add_clip", "track": "trk_bas002", "clip": {
+                    "id": "clp_bas002", "name": "k", "start": 0, "length": 7680, "kind": "midi",
+                    "loop": true, "loop_len": 3840, "notes": kicks } },
+                { "op": "add_track", "track": { "id": "trk_bas003", "name": "Bass2", "kind": "midi" } }
+            ] }),
+        )
+        .await,
+    );
+    ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_bas003", "chords": "Am | F", "follow_kick": "clp_bas002" }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let b2 = project.tracks[2].clips[0].notes().unwrap();
+    let pos: Vec<u64> = b2.iter().map(|n| n.pos.0).collect();
+    assert_eq!(pos, vec![0, 960, 1680, 2880, 3840, 4800, 5520, 6720]);
+    // 808: 音が変わる所は滑らせる(ポルタメント + glide_ms)
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_bas003", "chords": "Am | F | C | G", "pattern": "808", "range": "C1-C3", "glide_ms": 80 }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let b3 = project.tracks[2].clips[0].notes().unwrap();
+    assert!(
+        b3.iter()
+            .any(|n| n.articulation == glaux_core::Articulation::Portamento
+                && n.glide_ms == Some(80.0)),
+        "{v}"
+    );
+    // 読めない型はエラー
+    let r = call(
+        &fx,
+        "write_bassline",
+        json!({ "track_id": "trk_bas003", "chords": "Am", "pattern": "xyz" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn set_song_plan_places_sections_and_critique_checks_the_plan() {
     let fx = setup().await;
     // 120 BPM: intro 4 + verse 8 + chorus 8 = 20 小節 = 40 秒
