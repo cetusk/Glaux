@@ -3695,7 +3695,7 @@ impl GlauxServer {
             let start = clip.start.0;
             let len = clip.length.0;
             // ループはほどいてから(繰り返しごとに違う揺れ)か、中身にそのまま当てる
-            let mut unrolled = false;
+            let mut unrolled_clip = None;
             let notes = match glaux_core::arrange::unroll_loop(clip) {
                 Some(flat) if unroll => {
                     let wanted: Option<std::collections::HashSet<_>> = p
@@ -3709,11 +3709,7 @@ impl GlauxServer {
                         .filter(|n| wanted.as_ref().is_none_or(|w| w.contains(&n.id)))
                         .cloned()
                         .collect();
-                    commands.push(Command::ReplaceClip {
-                        id: clip_id.clone(),
-                        clip: flat,
-                    });
-                    unrolled = true;
+                    unrolled_clip = Some(flat);
                     notes
                 }
                 Some(_) => {
@@ -3757,6 +3753,14 @@ impl GlauxServer {
             }
             let changed = edits.len();
             total += changed;
+            // 変わる音が無ければループはほどかない(ほどくだけの編集を残さない)
+            let unrolled = changed > 0 && unrolled_clip.is_some();
+            if let Some(flat) = unrolled_clip.filter(|_| unrolled) {
+                commands.push(Command::ReplaceClip {
+                    id: clip_id.clone(),
+                    clip: flat,
+                });
+            }
             clips_out.push(json!({ "clip_id": clip_id, "changed": changed, "unrolled": unrolled }));
             if changed > 0 {
                 commands.push(Command::UpdateNotes {

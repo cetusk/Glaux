@@ -3027,6 +3027,36 @@ async fn apply_groove_takes_many_clips_keeps_the_kick_and_unrolls_loops() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+    // キックだけのループは変わる音が無いので、ほどかない(ほどくだけの編集を残さない)
+    let kicks: Vec<_> = (0..4u64)
+        .map(|k| json!({ "pos": k * 960, "dur": 120, "pitch": 36, "vel": 110 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "キック", "commands": [
+                { "op": "add_clip", "track": "trk_hse001", "clip": {
+                    "id": "clp_hse003", "name": "kick", "start": 15360, "length": 15360, "kind": "midi",
+                    "loop": true, "loop_len": 3840, "notes": kicks } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "apply_groove",
+            json!({ "clip_id": "clp_hse003", "style": "house", "humanize_ms": 5, "unroll_loop": true }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 0, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let (_, k) = project
+        .clip(&glaux_core::ClipId::parse("clp_hse003").unwrap())
+        .unwrap();
+    assert!(k.loop_len().is_some());
 }
 
 #[tokio::test]

@@ -191,8 +191,9 @@ pub fn apply(
     for &i in &order {
         let n = &notes[i];
         let part = parts[i];
-        // 固定の楽器は格子へ寄せるだけ(型のずれ・前ノリ後ノリ・揺れ・強弱は付けない)
-        let locked = style.locked.iter().any(|l| l == part);
+        // 固定の楽器は格子へ寄せるだけ(型のずれ・前ノリ後ノリ・揺れ・強弱は付けない)。
+        // ドラムの音だけ(as_part でキックに合わせるベースなどは動かす)
+        let locked = opts.as_part.is_none() && style.locked.iter().any(|l| l == part);
         let abs = clip_start + n.pos.0;
         let bar = bar_start_of(abs);
         let x = (abs - bar) as f64 / SIXTEENTH;
@@ -444,6 +445,14 @@ mod tests {
         let k2: Vec<_> = edits.iter().filter(|e| kick(e)).collect();
         assert_eq!(k2.len(), 1);
         assert_eq!((k2[0].pos, k2[0].vel), (1920, 100));
+        // as_part: "kick"(キックに合わせるベース)は固定しない
+        let bass: Vec<Note> = (0..8)
+            .map(|k| note(40 + k, k as u64 * 480 + 240, 33, 100))
+            .collect();
+        let mut ob = opts();
+        ob.humanize_ticks = 12.0;
+        ob.as_part = Some("kick".to_owned());
+        assert!(!apply(&bass, 0, 3840, style("house").unwrap(), &ob, &bars).is_empty());
         // データセットの型(funk)では、キックも型どおりに動く
         o.quantize = 0.0;
         let edits = apply(&ns, 0, 3840, style("funk").unwrap(), &o, &bars);
