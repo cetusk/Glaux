@@ -849,8 +849,12 @@ pub struct QuantizeNotesParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SwingNotesParams {
-    /// 対象クリップ ID(`clp_xxxxxx`)。
-    pub clip_id: String,
+    /// 対象クリップ ID(`clp_xxxxxx`)。1 つなら clip_id、まとめて掛けるなら clip_ids(1 回の undo で戻る)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// 対象クリップ ID の配列(トラックをまたいでよい)。
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
     /// 裏拍の単位(tick)。480 = 8 分(既定)、240 = 16 分。
     #[serde(default)]
     pub grid_ticks: Option<u64>,
@@ -859,7 +863,7 @@ pub struct SwingNotesParams {
     /// 掛かり具合 0.0〜1.0(省略時 1.0)。
     #[serde(default)]
     pub strength: Option<f64>,
-    /// 対象ノート ID の配列。省略でクリップ内の全ノート。
+    /// 対象ノート ID の配列(clip_id を 1 つ指定したときだけ)。省略でクリップ内の全ノート。
     #[serde(default)]
     pub note_ids: Option<Vec<String>>,
 }
@@ -4127,7 +4131,9 @@ impl GlauxServer {
         description = "ノートにスウィング(ハネ・シャッフル)を掛ける。裏拍(grid_ticks 480 = 8 分裏、240 = 16 分裏)の音だけを\
         swing の位置へ寄せる(0.5 = ストレートに戻す、0.667 ≈ 3 連シャッフル、0.75 = 付点)。表の音と長さは変えない。\
         拍は曲頭から数える。同じ設定なら何度掛けても同じ結果。analyze_rhythm の swing_ratio(裏 8 分の位置 / 480)は\
-        swing × 2 に相当する(swing_ratio 1.33 ≈ swing 0.667)。既存のノリに合わせるなら先に analyze_rhythm で測る。"
+        swing × 2 に相当する(swing_ratio 1.33 ≈ swing 0.667)。既存のノリに合わせるなら先に analyze_rhythm で測る。\
+        clip_ids で曲じゅうのクリップにまとめて掛けられる(1 回の undo で戻る)。\
+        ハネだけでは全部の音が同じ位置にそろって機械的なので、続けて apply_groove(quantize 0)で楽器ごとのずれと揺れを付ける。"
     )]
     async fn swing_notes(
         &self,
@@ -4147,22 +4153,69 @@ impl GlauxServer {
         if !(0.0..=1.0).contains(&strength) {
             return Err(format!("strength は 0.0〜1.0(got: {strength})"));
         }
-        let (clip, len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
-        let (project, _) = self.handle.get_project().await?;
-        let start = project.clip(&clip).map(|(_, c)| c.start.0).unwrap_or(0);
-        let changes: Vec<_> =
-            glaux_core::rhythm::swing_positions(&notes, start, len.0, grid, p.swing, strength)
-                .into_iter()
-                .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(glaux_core::Tick(pos)))
-                .collect();
-        let label = format!(
-            "スウィング {:.0}%(1/{}、{} ノート)",
-            p.swing * 100.0,
-            3840 / grid,
-            changes.len()
+        let mut ids: Vec<String> = p.clip_id.clone().into_iter().collect();
+        for c in p.clip_ids.iter().flatten() {
+            if !ids.contains(c) {
+                ids.push(c.clone());
+            }
+        }
+        if ids.is_empty() {
+            return Err("clip_id か clip_ids を指定してください".to_owned());
+        }
+        if p.note_ids.is_some() && ids.len() > 1 {
+            return Err("note_ids は clip_id を 1 つだけ指定したときに使えます".to_owned());
+        }
+        let (project, version) = self.handle.get_project().await?;
+        let mut commands = Vec::new();
+        let mut total = 0usize;
+        for id in &ids {
+            let (clip, len, notes, _) = self.load_notes(id, &p.note_ids).await?;
+            let start = project.clip(&clip).map(|(_, c)| c.start.0).unwrap_or(0);
+            let changes: Vec<_> =
+                glaux_core::rhythm::swing_positions(&notes, start, len.0, grid, p.swing, strength)
+                    .into_iter()
+                    .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(glaux_core::Tick(pos)))
+                    .collect();
+            total += changes.len();
+            if !changes.is_empty() {
+                commands.push(Command::UpdateNotes { clip, changes });
+            }
+        }
+        if commands.is_empty() {
+            return Ok(JsonText(json!({
+                "project_version": version,
+                "changed": 0,
+                "note": "対象ノートはすべて変更不要でした",
+            })));
+        }
+        let label = if ids.len() == 1 {
+            format!(
+                "スウィング {:.0}%(1/{}、{total} ノート)",
+                p.swing * 100.0,
+                3840 / grid
+            )
+        } else {
+            format!(
+                "スウィング {:.0}%(1/{}、{} クリップ・{total} ノート)",
+                p.swing * 100.0,
+                3840 / grid,
+                ids.len()
+            )
+        };
+        let command = if commands.len() == 1 {
+            commands.pop().expect("1 つある")
+        } else {
+            Command::batch(label.clone(), commands)
+        };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(total);
+        v["next"] = json!(
+            "ハネだけでは音が同じ位置にそろって機械的。続けて apply_groove(style はジャンル、quantize 0、同じ clip_ids)で楽器ごとのずれと揺れを付ける"
         );
-        self.apply_note_changes(clip, changes, 0, label, version, &ctx)
-            .await
+        Ok(JsonText(v))
     }
 
     #[tool(description = "ノートの開始位置をグリッドに寄せる(クオンタイズ)。\

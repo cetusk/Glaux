@@ -319,6 +319,20 @@ pub fn critique(project: &Project) -> Critique {
             fix: "shape_automation でビルドアップ(フィルタを exp で開く)・区間の頭の音量の出し入れ・パッドのスウェルを書く".to_owned(),
         });
     }
+    // マスタリング
+    let mastered = project
+        .master
+        .effects
+        .iter()
+        .any(|e| !e.bypass && !e.ui.parked);
+    if song_bars >= 32 && !mastered && !project.tracks.is_empty() {
+        findings.push(Finding {
+            severity: "warn",
+            target: "マスター".to_owned(),
+            what: "マスターに何も掛かっていない(曲全体の音量・ピーク・帯域の釣り合いが整っていない)".to_owned(),
+            fix: "仕上げに master_mix(マスターの最後に EQ → コンプ → リミッター。target_lufs はジャンルの目安)".to_owned(),
+        });
+    }
     // 区間
     let mut sections = Vec::new();
     let mut marks: Vec<_> = project.sections.iter().collect();
@@ -380,9 +394,14 @@ pub fn critique(project: &Project) -> Critique {
     if sections.len() >= 3 {
         let peak = sections.iter().map(|s| s.energy).fold(0.0, f64::max);
         let first = &sections[0];
-        if peak > 0.0 && first.energy >= peak * 0.8 && first.bars >= 4 {
+        // 頭サビ(最初の区間がサビ・ドロップ)は厚くてよい
+        let lower = first.name.to_lowercase();
+        let starts_with_hook = ["サビ", "chorus", "drop", "hook", "ドロップ"]
+            .iter()
+            .any(|k| lower.contains(k));
+        if peak > 0.0 && first.energy >= peak * 0.8 && first.bars >= 4 && !starts_with_hook {
             findings.push(Finding {
-                severity: "info",
+                severity: "warn",
                 target: first.name.clone(),
                 what: format!(
                     "最初の区間がすでに山とほぼ同じ厚さ(energy {:.1} / 山 {:.1})。入りから全部鳴ると、山で広がりが出にくい",
@@ -423,10 +442,26 @@ pub fn critique(project: &Project) -> Critique {
                 });
             }
         }
+        // 抜き差しが無い: どの区間でも、鳴っているトラックが全部鳴っている
+        if sections.len() >= 4
+            && total_tracks >= 3
+            && sections.iter().all(|s| s.active_tracks >= total_tracks)
+        {
+            findings.push(Finding {
+                severity: "warn",
+                target: String::new(),
+                what: format!(
+                    "どの区間でも {total_tracks} トラックが全部鳴っていて、抜き差しが無い(区間が変わっても厚さが同じ)"
+                ),
+                fix: "区間ごとに鳴らすトラックを決める: イントロ・ブレイクは 1〜2 トラックに絞る、Aメロで足し、サビ・ドロップで全部。\
+                      抜くのはクリップを消す・分ける(split_clip)か、音量のオートメーション"
+                    .to_owned(),
+            });
+        }
         let es: Vec<f64> = sections.iter().map(|s| s.energy).collect();
         let spread = es.iter().cloned().fold(f64::MIN, f64::max)
             - es.iter().cloned().fold(f64::MAX, f64::min);
-        if spread < 1.5 {
+        if spread < 2.5 {
             findings.push(Finding {
                 severity: "warn",
                 target: String::new(),
@@ -514,6 +549,81 @@ mod tests {
             "{:?}",
             c.findings
         );
+    }
+
+    #[test]
+    fn a_song_that_never_drops_a_track_and_is_not_mastered_is_flagged() {
+        // 3 トラックが 4 つの区間でずっと鳴っている、マスターは空
+        let mut p = song(32, true);
+        let mut t = Track::new(TrackId::new(), "Lead", TrackKind::Midi);
+        let mut c = Clip::new_midi(ClipId::new(), "l", Tick(0), Tick(3840 * 32));
+        if let ClipContent::Midi { notes, .. } = &mut c.content {
+            for i in 0..32 * 4 {
+                notes.push(note(
+                    i * 960 + i % 5,
+                    72 + (i % 7) as u8,
+                    80 + (i % 30) as u8,
+                ));
+            }
+        }
+        t.clips.push(c);
+        p.tracks.push(t);
+        p.sections = ["intro", "verse", "chorus", "outro"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| SectionMarker {
+                tick: Tick(3840 * 8 * i as u64),
+                name: (*n).into(),
+            })
+            .collect();
+        let c = critique(&p);
+        let whats: Vec<&str> = c.findings.iter().map(|f| f.what.as_str()).collect();
+        assert!(
+            whats.iter().any(|w| w.contains("抜き差しが無い")),
+            "{whats:?}"
+        );
+        assert!(
+            whats.iter().any(|w| w.contains("マスターに何も")),
+            "{whats:?}"
+        );
+        assert!(c
+            .findings
+            .iter()
+            .any(|f| f.target == "intro" && f.severity == "warn"));
+        // イントロでトラックを抜き、マスターに処理を掛ければ消える
+        for t in &mut p.tracks[1..] {
+            if let ClipContent::Midi { notes, .. } = &mut t.clips[0].content {
+                notes.retain(|n| n.pos.0 >= 3840 * 8);
+            }
+        }
+        p.master.effects.push(crate::model::Effect::builtin(
+            crate::id::FxId::new(),
+            "limiter",
+        ));
+        let c = critique(&p);
+        let whats: Vec<&str> = c.findings.iter().map(|f| f.what.as_str()).collect();
+        assert!(
+            !whats.iter().any(|w| w.contains("抜き差しが無い")),
+            "{whats:?}"
+        );
+        assert!(
+            !whats.iter().any(|w| w.contains("マスターに何も")),
+            "{whats:?}"
+        );
+        // 頭サビ(最初の区間がサビ)は厚くてよい
+        let mut q = song(32, true);
+        q.sections = ["サビ", "Aメロ", "Bメロ", "サビ2"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| SectionMarker {
+                tick: Tick(3840 * 8 * i as u64),
+                name: (*n).into(),
+            })
+            .collect();
+        assert!(!critique(&q)
+            .findings
+            .iter()
+            .any(|f| f.what.contains("最初の区間")));
     }
 
     #[test]

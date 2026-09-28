@@ -2414,6 +2414,38 @@ async fn swing_notes_moves_offbeats_and_matches_analysis() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+    // 複数のクリップにまとめて掛け(1 回の undo で戻る)、続けて apply_groove を促す
+    let notes2: Vec<Value> = (0..8)
+        .map(|i| json!({ "pos": i * 480, "dur": 120, "pitch": 40, "vel": 90 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "2 つ目", "commands": [
+                { "op": "add_clip", "track": "trk_swg001", "clip": {
+                    "id": "clp_swg002", "name": "d", "start": 7680, "length": 3840, "kind": "midi", "notes": notes2 } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "swing_notes",
+            json!({ "clip_ids": ["clp_swg001", "clp_swg002"], "swing": 0.6 }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 12, "{v}");
+    assert!(v["next"].as_str().unwrap().contains("apply_groove"));
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(project.tracks[0]
+        .clips
+        .iter()
+        .flat_map(|c| c.notes().unwrap())
+        .all(|n| n.pos.0 % 480 == 0));
 }
 
 #[tokio::test]

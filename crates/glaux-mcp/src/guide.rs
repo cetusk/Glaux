@@ -15,6 +15,7 @@ apply_commands で編集(ノート・クリップの ID は省略可)。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track でトラック別)・analyze_sound。\
 人間も並行して編集する。project_version が最後に見た値より大きければ get_changes {since: 最後の entry_id} で確認する。\
 定石は get_guide {topic}(workflow / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
+ハネ(swing_notes)の後は apply_groove(quantize 0)を重ねる。仕上げは master_mix。\
 完了の報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを確かめ、\
 確認結果を一言添える。ミックスを変えたら compare_mix で前後を比べる。大きな試行錯誤の前は checkpoint。";
 
@@ -33,14 +34,17 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 3. 区間の差: 同じ繰り返しにしない。区間ごとにトラックを抜き差しし、区切りの前 1〜2 小節にフィル・ライザー、\n\
    ドロップ・サビの直前に 1 拍〜1 小節の無音。イントロは絞る(全部鳴らさない)。\n\
    1 つのトラックを同じ型のまま 3 区間以上続けない(ブレイクでは抜くか変える。フィルタを動かすだけでは差にならない)。\n\
+   抜き差しの例: ファンク・ポップ = イントロはドラムとギターだけ → A メロでベース → B メロでホーン・コード → サビで全部 →\n\
+   ブレイクはドラムかベースだけ / EDM = イントロはキックとハット → ビルドでスネアとライザー → ドロップで全部 → ブレイクはパッドと旋律。\n\
 4. 表情: ドラムに apply_groove(ジャンルの style。clip_ids で曲じゅうのクリップにまとめて)、必要ならファンク系に\n\
+   (ハネる曲は swing_notes の後に必ず apply_groove を quantize 0 で重ねる。ハネだけでは全部の音が同じ位置にそろう)\n\
    add_ghost_notes。ベースは apply_groove as_part: kick、コードの刻みは hat。リード・弦・管のつながったフレーズに legato / portamento、伸ばしに vibrato(topic: expression)。\n\
 5. 動き: shape_automation でビルドアップ(カットオフを exp で開く)、区間の頭の音量の出し入れ、パッドの swell、ポンピング(pump)。\n\
-6. 音作り・ミックス・仕上げ(topic: instruments / mix)。\n\
+6. 音作り・ミックス(topic: instruments / mix)→ 仕上げに必ず master_mix でマスタリング(音量・ピーク・帯域の釣り合い)。\n\
 7. 点検(完了の報告の前に必ず): critique_arrangement の warn を直す → analyze_harmony で調性 → analyze_audio でバランス。\n\
 点検表: 格子どおりが 95% を超えるトラックが無い / 強弱に幅がある / 3 分の曲でオートメーションが数本以上ある / \n\
 区間の energy に差がある(山と谷)/ 同じ型のまま 3 区間以上続くトラックが無い / 低い音域でトラックがぶつからない /\n\
-主旋律に山(一番高い音)と終止がある。",
+主旋律に山(一番高い音)と終止がある / マスターに master_mix の処理がある。",
     ),
     (
         "groove",
@@ -57,7 +61,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 - 楽器ごとの前ノリ・後ノリ: pocket_ms。レイドバック(ヒップホップ・ネオソウル)は {snare: 6〜10, hat: -3}、前のめり(パンク)は {snare: -5}。\n\
 - 小さな揺れ: humanize_ms 3〜8(1/f の相関がある揺れ。小節の頭は揺らさない)。電子音楽のドラムは 0〜3。\n\
 - スウィング: swing_notes(0.54 = ストレートのまま硬さが取れる、0.58 = 軽く、0.62 = はっきり、0.667 = 3 連)を先に掛け、\n\
-  apply_groove は quantize 0 のまま重ねる。\n\
+  apply_groove は quantize 0 のまま重ねる(ハネだけで終えない。ヒップホップ・ローファイは hiphop、ジャズは jazz の型)。\n\
 - ゴーストノート: add_ghost_notes(ファンク・ソウル・R&B・ヒップホップ。density 0.3〜0.7)。足した後に apply_groove。\n\
 - 動き(shape_automation): 位置は「小節:拍」、長さは bars。例:\n\
   ビルドアップ 8 小節 = {target: device/cutoff, shape: exp, from: 300, to: 12000} とスネアの連打、ドロップ直前に 1 拍〜1 小節の無音 /\n\
