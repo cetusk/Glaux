@@ -136,6 +136,7 @@ fn find_projects(dir: String) -> Value {
 /// 既定の作業フォルダ(新規プロジェクトの作成先)を変更する。
 #[tauri::command]
 fn set_projects_dir(path: String) -> Result<Value, String> {
+    glaux_mcp::store::check_project_parent(std::path::Path::new(&path))?;
     projects::set_projects_dir(&path)?;
     Ok(json!({ "default_dir": path }))
 }
@@ -1648,6 +1649,10 @@ async fn move_project(
         .map(glaux_mcp::store::folder_name)
         .unwrap_or_else(|| cur_stem.clone());
     let same_place = cur.parent() == Some(parent.as_path()) && folder == cur_stem;
+    if !same_place {
+        // 自分の中や、別の曲のフォルダの中へは移さない(自分の中へ移すと複製が止まらず入れ子になった)
+        glaux_mcp::store::check_project_parent(&parent)?;
+    }
     let dest = if same_place {
         cur.clone()
     } else {
@@ -1707,6 +1712,35 @@ async fn move_project(
     Ok(json!({ "path": dest_str, "title": title, "project_version": version, "moved": moved }))
 }
 
+/// 新しい曲(または移動)で作られるフォルダを前もって返す(画面で「-2 になります」「ここには作れません」を先に見せる)。
+/// `name` は曲名。`current` は移動のとき今の曲のフォルダ(同じ場所・同じ名前なら動かないので番号を付けない)。
+#[tauri::command]
+fn preview_project_dir(parent_dir: String, name: String, current: Option<String>) -> Value {
+    let parent = if parent_dir.trim().is_empty() {
+        projects::default_projects_dir()
+    } else {
+        parent_dir.trim().trim_end_matches(['/', '\\']).to_owned()
+    };
+    let parent = std::path::Path::new(&parent);
+    let folder = glaux_mcp::store::folder_name(name.trim());
+    let wanted = parent.join(format!("{folder}.glaux"));
+    if current.is_some_and(|c| std::path::Path::new(&c) == wanted) {
+        return json!({ "path": wanted.to_string_lossy(), "folder": format!("{folder}.glaux"), "renamed": false });
+    }
+    if let Err(e) = glaux_mcp::store::check_project_parent(parent) {
+        return json!({ "error": e });
+    }
+    if !parent.is_dir() {
+        return json!({ "error": format!("フォルダが見つかりません: {}", parent.display()) });
+    }
+    let dir = glaux_mcp::store::unique_project_dir(parent, &folder);
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    json!({ "path": dir.to_string_lossy(), "folder": name, "renamed": dir != wanted })
+}
+
 /// 新規プロジェクトを作成して開く。`parent_dir/name.glaux` に作られる。
 #[tauri::command]
 async fn create_project(
@@ -1724,6 +1758,7 @@ async fn create_project(
     } else {
         parent_dir.trim().to_owned()
     };
+    glaux_mcp::store::check_project_parent(std::path::Path::new(&parent))?;
     // 曲名はそのまま、フォルダ名だけファイル名として整える(空白は _ など。同じ名前があれば -2 …)
     let dir = glaux_mcp::store::unique_project_dir(
         std::path::Path::new(&parent),
@@ -2537,6 +2572,7 @@ fn main() -> Result<()> {
             list_soundfont_presets,
             add_soundfont,
             create_project,
+            preview_project_dir,
             apply_edit,
             preview_edit,
             revert_entry,

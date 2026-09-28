@@ -29,6 +29,38 @@
   let curStem = $state("");
   let moveName = $state("");
   let moveParent = $state("");
+  let curPath = $state("");
+
+  // 作られるフォルダの下見(同じ名前があると -2 が付く・曲のフォルダの中には作れない、を先に見せる)
+  let newPreview = $state<api.ProjectDirPreview | null>(null);
+  let movePreview = $state<api.ProjectDirPreview | null>(null);
+  $effect(() => {
+    const name = newName.trim();
+    const parent = soundLab ? soundLabDir() : parentDir || defaultDir;
+    if (!openMenu || !name) {
+      newPreview = null;
+      return;
+    }
+    const t = setTimeout(() => {
+      api.previewProjectDir(parent, name).then((p) => (newPreview = p)).catch(() => (newPreview = null));
+    }, 150);
+    return () => clearTimeout(t);
+  });
+  $effect(() => {
+    const name = moveName.trim() || title;
+    const parent = moveParent;
+    if (!openMenu || !moveDirty || !parent) {
+      movePreview = null;
+      return;
+    }
+    const t = setTimeout(() => {
+      api
+        .previewProjectDir(parent, name, curPath)
+        .then((p) => (movePreview = p))
+        .catch(() => (movePreview = null));
+    }, 150);
+    return () => clearTimeout(t);
+  });
 
   function splitProjectPath(path: string) {
     const parts = path.split(/[\\/]/).filter((p) => p.length > 0);
@@ -59,6 +91,7 @@
         defaultDir = r.default_dir;
         if (!parentDir) parentDir = r.default_dir;
         const cur = splitProjectPath(info.project_dir);
+        curPath = info.project_dir;
         curParent = cur.parent;
         curStem = cur.stem;
         moveName = title;
@@ -79,7 +112,7 @@
   );
 
   async function applyMove() {
-    if (busy || !moveDirty) return;
+    if (busy || !moveDirty || movePreview?.error) return;
     busy = true;
     menuError = null;
     try {
@@ -177,7 +210,7 @@
   }
 
   async function createNew() {
-    if (busy || !newName.trim()) return;
+    if (busy || !newName.trim() || newPreview?.error) return;
     busy = true;
     menuError = null;
     try {
@@ -260,20 +293,37 @@
             onkeydown={onNameKeydown}
             disabled={busy}
           />
-          <button onclick={createNew} disabled={busy || !newName.trim()}>作成</button>
+          <button onclick={createNew} disabled={busy || !newName.trim() || !!newPreview?.error}>作成</button>
         </div>
-        {#if newName.trim()}
-          <div class="move-note" title="曲名はそのまま。フォルダ名だけ、空白や使えない記号を _ にして付けます(同じ名前があれば -2 …)">
-            フォルダ: {folderName(newName)}.glaux
-          </div>
+        <div class="loc-row">
+          <span class="loc-label">場所</span>
+          <span class="loc-path" title={soundLab ? soundLabDir() : parentDir || defaultDir}
+            >{soundLab ? soundLabDir() : parentDir || defaultDir}</span
+          >
+          <button
+            class="loc-btn"
+            onclick={browseParentDir}
+            disabled={busy}
+            title="新しい曲を作る場所を選ぶ(次からもこの場所が既定になります)"><Icon name="folder-open" size={13} />変更…</button
+          >
+        </div>
+        {#if newName.trim() && newPreview}
+          {#if newPreview.error}
+            <div class="move-warn">{newPreview.error}</div>
+          {:else if newPreview.renamed}
+            <div class="move-warn">
+              同じ名前のフォルダ({folderName(newName)}.glaux)があるので「{newPreview.folder}」になります。曲名か場所を変えると避けられます
+            </div>
+          {:else}
+            <div class="move-note" title="曲名はそのまま。フォルダ名だけ、空白や使えない記号を _ にして付けます">
+              フォルダ: {newPreview.folder}
+            </div>
+          {/if}
         {/if}
-        <label class="lab-check" title="1 トラック + 試聴フレーズ + ループ ON + 音作りビューを開いた状態で作成(作業フォルダ内の SoundLab/ に置かれます)">
+        <label class="lab-check" title="1 トラック + 試聴フレーズ + ループ ON + 音作りビューを開いた状態で作成(場所の中の SoundLab/ に置かれます)">
           <input type="checkbox" bind:checked={soundLab} disabled={busy} />
           音作り用テンプレートで作成
         </label>
-        <button class="loc" onclick={browseParentDir} title="クリックで作業フォルダを変更(既定として保存されます)">
-          {soundLab ? "場所" : "作業フォルダ"}: {soundLab ? soundLabDir() : parentDir || defaultDir}
-        </button>
       </div>
 
       <div class="section">
@@ -305,13 +355,22 @@
             disabled={busy}
             title="曲名(フォルダ名は曲名から自動で付けます)"
           />
-          <button onclick={applyMove} disabled={busy || !moveDirty}>適用</button>
+          <button onclick={applyMove} disabled={busy || !moveDirty || !!movePreview?.error}>適用</button>
         </div>
         <button class="loc" onclick={browseMoveParent} title="クリックで移動先フォルダを選択">
           移動先: {moveParent}
         </button>
+        {#if movePreview?.error}
+          <div class="move-warn">{movePreview.error}</div>
+        {:else if movePreview?.renamed}
+          <div class="move-warn">同じ名前のフォルダがあるので「{movePreview.folder}」になります</div>
+        {/if}
         <div class="move-note">
-          フォルダ: {moveName.trim() && moveName.trim() !== title ? `${folderName(moveName)}.glaux` : `${curStem}.glaux`}<br />
+          フォルダ: {movePreview?.folder && !movePreview.error
+            ? movePreview.folder
+            : moveName.trim() && moveName.trim() !== title
+              ? `${folderName(moveName)}.glaux`
+              : `${curStem}.glaux`}<br />
           履歴・AI との会話ごとフォルダを移動します(元に戻すには再度移動)。
         </div>
       </div>
@@ -494,6 +553,46 @@
   .move-note {
     font-size: 10px;
     color: var(--text-dim);
+  }
+
+  .move-warn {
+    font-size: 11px;
+    color: var(--warn, #e0a030);
+    line-height: 1.5;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+  /* 新しい曲の場所: 名前・パス(長ければ省略)・変更ボタン */
+  .loc-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+    min-width: 0;
+  }
+
+  .loc-label {
+    flex-shrink: 0;
+  }
+
+  .loc-path {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .loc-btn {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 2px 8px;
   }
 
   .menu-error {

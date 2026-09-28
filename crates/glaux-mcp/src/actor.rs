@@ -359,8 +359,13 @@ fn move_dir(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> 
 
 fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
+    // 写し先が写し元の中にあるとき、写し先そのものは写さない(写すたびに増えて終わらなくなる)
+    let to_real = std::fs::canonicalize(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
+        if std::fs::canonicalize(entry.path()).is_ok_and(|p| p == to_real) {
+            continue;
+        }
         let dest = to.join(entry.file_name());
         if entry.file_type()?.is_dir() {
             copy_dir_recursive(&entry.path(), &dest)?;
@@ -571,6 +576,8 @@ fn handle(
                             parent.display()
                         ));
                     }
+                    // 自分の中や、別の曲のフォルダの中へは移さない
+                    crate::store::check_project_parent(parent)?;
                 }
                 let previous = version(session, store);
                 // 開いているロックファイルを含むフォルダは Windows では動かせない
@@ -733,5 +740,48 @@ mod tests {
         handle.undo(1).await.unwrap().unwrap();
         let (project, _) = handle.get_project().await.unwrap();
         assert!(project.track(&tid).is_none());
+    }
+
+    #[tokio::test]
+    async fn moving_a_song_into_itself_is_refused_and_leaves_nothing_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("Song.glaux");
+        let (store, session) = Store::open_or_create(dir.to_str().unwrap()).unwrap();
+        let handle = SessionHandle::spawn(session, store);
+        // 自分の中へ(以前は複製が止まらず、同じ名前のフォルダが何百段も入れ子になった)
+        let inner = dir.join("Song.glaux");
+        let err = handle
+            .move_project(inner.to_string_lossy().into_owned())
+            .await
+            .unwrap_err();
+        assert!(err.contains("曲のフォルダ"), "{err}");
+        assert!(!inner.exists());
+        // 別の曲の中へも移さない
+        let other = tmp.path().join("Other.glaux");
+        crate::store::create_project(&other, "Other").unwrap();
+        let err = handle
+            .move_project(other.join("Song.glaux").to_string_lossy().into_owned())
+            .await
+            .unwrap_err();
+        assert!(err.contains("曲のフォルダ"), "{err}");
+        // 外へは移せる
+        let outside = tmp.path().join("Moved.glaux");
+        handle
+            .move_project(outside.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert!(outside.join("project.json").exists() && !dir.exists());
+    }
+
+    #[test]
+    fn copying_a_folder_into_itself_stops() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("a");
+        std::fs::create_dir_all(from.join("sub")).unwrap();
+        std::fs::write(from.join("x.txt"), "x").unwrap();
+        let to = from.join("copy");
+        copy_dir_recursive(&from, &to).unwrap();
+        assert!(to.join("x.txt").exists() && to.join("sub").is_dir());
+        assert!(!to.join("copy").exists());
     }
 }

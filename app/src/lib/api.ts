@@ -148,12 +148,23 @@ export function openProject(
   return invoke("open_project", { path, create });
 }
 
-/** `parentDir/name.glaux` に新規プロジェクトを作成して開く。 */
 /** フォルダの中の Glaux の曲を探す(フォルダ自体が曲ならそれ 1 つ。2 段下まで)。 */
 export function findProjects(dir: string): Promise<{ projects: { path: string; title: string }[] }> {
   return invoke("find_projects", { dir });
 }
 
+/** 新しい曲(または移動)で作られるフォルダを前もって調べる。
+ *  renamed: 同じ名前があって -2 … が付く / error: そこには作れない(曲のフォルダの中など) */
+export type ProjectDirPreview = { path?: string; folder?: string; renamed?: boolean; error?: string };
+export function previewProjectDir(
+  parentDir: string,
+  name: string,
+  current: string | null = null,
+): Promise<ProjectDirPreview> {
+  return invoke("preview_project_dir", { parentDir, name, current });
+}
+
+/** `parentDir/name.glaux` に新規プロジェクトを作成して開く。 */
 export function createProject(
   parentDir: string,
   name: string,

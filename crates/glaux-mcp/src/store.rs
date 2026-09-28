@@ -88,6 +88,45 @@ pub fn unique_project_dir(parent: &Path, name: &str) -> PathBuf {
         .expect("空いている名前は必ず見つかる")
 }
 
+/// Glaux の曲のフォルダか(`project.json` の先頭に `"format": "glaux"` がある、または名前が `.glaux` で終わる)
+pub fn is_project_folder(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    if dir
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("glaux"))
+    {
+        return true;
+    }
+    let mut head = [0u8; 256];
+    let n = fs::File::open(dir.join("project.json"))
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+        .unwrap_or(0);
+    let head = String::from_utf8_lossy(&head[..n]);
+    head.contains("\"format\"") && head.contains("\"glaux\"")
+}
+
+/// `dir`(まだ無くてもよい)自身か、その上のどこかが曲のフォルダなら、その曲のフォルダ。
+/// 曲の中に別の曲を作ったり移したりすると入れ子になり、曲のフォルダを動かしたときに壊れるので、作る・移す前に断る
+pub fn enclosing_project(dir: &Path) -> Option<PathBuf> {
+    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    dir.ancestors()
+        .find(|a| is_project_folder(a))
+        .map(Path::to_path_buf)
+}
+
+/// 新しい曲を置けない場所なら、その理由(曲のフォルダの中)
+pub fn check_project_parent(parent: &Path) -> std::result::Result<(), String> {
+    match enclosing_project(parent) {
+        Some(p) => Err(format!(
+            "曲のフォルダ({})の中には、別の曲を作ったり移したりできません。曲のフォルダの外を選んでください",
+            p.display()
+        )),
+        None => Ok(()),
+    }
+}
+
 /// 新しい曲を、曲名を付けて作る(project.json と空の履歴)。開くのは呼び出し側
 pub fn create_project(dir: &Path, title: &str) -> Result<()> {
     if dir.join("project.json").exists() {
@@ -594,5 +633,31 @@ mod tests {
             unique_project_dir(tmp.path(), "My_Song"),
             tmp.path().join("My_Song-2.glaux")
         );
+    }
+
+    #[test]
+    fn a_song_folder_cannot_hold_another_song() {
+        let tmp = tempfile::tempdir().unwrap();
+        let song = tmp.path().join("My_Song.glaux");
+        create_project(&song, "My Song").unwrap();
+        assert!(is_project_folder(&song));
+        assert!(!is_project_folder(tmp.path()));
+        // 曲のフォルダ自身・その中(まだ無いフォルダも)は断る。外は良い
+        assert_eq!(enclosing_project(&song), Some(song.clone()));
+        assert_eq!(
+            enclosing_project(&song.join("sub").join("x")),
+            Some(song.clone())
+        );
+        assert!(check_project_parent(&song).is_err());
+        assert!(check_project_parent(tmp.path()).is_ok());
+        // 名前が .glaux でなくても、中身が Glaux の曲なら曲のフォルダ
+        let plain = tmp.path().join("plain");
+        create_project(&plain, "Plain").unwrap();
+        assert!(is_project_folder(&plain));
+        // ほかの道具の project.json は曲とみなさない
+        let other = tmp.path().join("other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("project.json"), r#"{"name": "web"}"#).unwrap();
+        assert!(!is_project_folder(&other));
     }
 }
