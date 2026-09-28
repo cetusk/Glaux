@@ -782,6 +782,48 @@ pub struct WriteDrumsParams {
     pub name: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct WriteTransitionParams {
+    /// つなぐ先: 区間の名前("ドロップ1" など。set_song_plan の名前)か小節番号("25")。その小節の頭が区切り。
+    pub to: String,
+    /// 区切りの直前の何拍を全トラック無音にするか(ドロップ・サビの前の「溜め」。0.5〜4。既定 0)。
+    /// その範囲で始まる音は消し、かかる音は手前で切る(ループのクリップは書き出してから)。
+    #[serde(default)]
+    pub gap_beats: Option<f64>,
+    /// 無音にしないトラックの名前(ライザー・FX など)。
+    #[serde(default)]
+    pub keep_tracks: Option<Vec<String>>,
+    /// ドラムのトラック ID。渡すと、区切りに向けたリバースクラッシュ・スネアのロール・区切りのクラッシュを置く。
+    #[serde(default)]
+    pub drum_track_id: Option<String>,
+    /// リバースクラッシュ(55)を、区切り(無音があればその手前)でちょうど鳴り終わるように置く(既定 true)。
+    #[serde(default)]
+    pub reverse_crash: Option<bool>,
+    /// 区切りの頭にクラッシュとキック(既定 true)。
+    #[serde(default)]
+    pub crash: Option<bool>,
+    /// 区切りの前の何小節をスネアのロールにするか(既定 0。1〜8)。
+    #[serde(default)]
+    pub roll_bars: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SuggestProgressionParams {
+    /// ジャンル(jpop / pop / rock / edm / trance / house / futurebass / trap / hiphop / lofi / jazz / citypop / neosoul /
+    /// funk / disco / blues / ballad / cinematic / latin / metal など)。
+    #[serde(default)]
+    pub genre: Option<String>,
+    /// 雰囲気(bright / emotional / sad / dark / chill / epic / dramatic / groovy / dreamy / tense / nostalgic など)。
+    #[serde(default)]
+    pub mood: Option<String>,
+    /// キー("C major" / "A minor" / "F#m")。進行の長短と違えば平行調に読み替える。既定 C major / A minor。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 候補の数(既定 5)。
+    #[serde(default)]
+    pub count: Option<usize>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -4693,6 +4735,223 @@ impl GlauxServer {
         out["notes"] = json!(hits.len());
         out["style"] = json!({ "name": style.name, "bpm": style.bpm, "note": style.note });
         out["fill_bars"] = json!(fills);
+        Ok(JsonText(out))
+    }
+
+    #[tool(
+        description = "区間のつなぎを置く(ドロップ・サビ・区間の頭に向けて)。to に区間の名前か小節番号。\
+        gap_beats で区切りの直前を全トラック無音にする(その範囲で始まる音を消し、かかる音は手前で切る。keep_tracks は除く)。\
+        drum_track_id を渡すと、区切りでちょうど鳴り終わるリバースクラッシュ・roll_bars 小節のスネアのロール\
+        (だんだん細かく強く)・区切りのクラッシュとキックを新しいクリップで置く。フィルタを開くライザーは shape_automation。\
+        1 回の undo で戻る。"
+    )]
+    async fn write_transition(
+        &self,
+        params: Parameters<WriteTransitionParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("write_transition");
+        let p = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        // 区切りの小節
+        let to = p.to.trim();
+        let bar: u32 = match to.parse::<u32>() {
+            Ok(b) if b >= 1 => b,
+            _ => {
+                let lower = to.to_lowercase();
+                let sec = project
+                    .sections
+                    .iter()
+                    .find(|s| s.name.to_lowercase() == lower)
+                    .or_else(|| {
+                        project
+                            .sections
+                            .iter()
+                            .find(|s| s.name.to_lowercase().contains(&lower))
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "区間「{to}」が見つかりません(ある区間: {})",
+                            project
+                                .sections
+                                .iter()
+                                .map(|s| s.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" / ")
+                        )
+                    })?;
+                let grid = glaux_core::arrange::bar_grid(&project, sec.tick.0 + 1);
+                grid.partition_point(|(s, _)| *s <= sec.tick.0) as u32
+            }
+        };
+        let (boundary, _) =
+            glaux_core::arrange::bar_range(&project, bar, 1).ok_or("小節を数えられません")?;
+        let beat_ticks = |beats: f64| (beats * glaux_core::PPQ as f64).round() as u64;
+        let gap = beat_ticks(p.gap_beats.unwrap_or(0.0).clamp(0.0, 16.0));
+        let gap_start = boundary.saturating_sub(gap);
+        let mut commands = Vec::new();
+        let mut silenced = 0usize;
+        let mut skipped_audio = Vec::new();
+        if gap > 0 {
+            let keep_names: Vec<String> = p
+                .keep_tracks
+                .iter()
+                .flatten()
+                .map(|n| n.trim().to_lowercase())
+                .collect();
+            let keep: Vec<glaux_core::TrackId> = project
+                .tracks
+                .iter()
+                .filter(|t| keep_names.contains(&t.name.to_lowercase()))
+                .map(|t| t.id.clone())
+                .collect();
+            let (cmds, n, audio) =
+                glaux_core::arrange::silence_range(&project, gap_start, boundary, &keep);
+            commands.extend(cmds);
+            silenced = n;
+            skipped_audio = audio;
+        }
+        // ドラムのつなぎ
+        let mut drum_clip_id = None;
+        if let Some(did) = &p.drum_track_id {
+            let tid = glaux_core::TrackId::parse(did).map_err(|e| e.to_string())?;
+            let track = project
+                .track(&tid)
+                .ok_or("ドラムのトラックが見つかりません")?;
+            if !is_drum_track(track) {
+                return Err("drum_track_id にはドラムのトラックを指定してください".to_owned());
+            }
+            let roll_bars = p.roll_bars.unwrap_or(0).min(8);
+            let first_bar = bar.saturating_sub(roll_bars.max(1)).max(1);
+            let (clip_start, _) = glaux_core::arrange::bar_range(&project, first_bar, 1)
+                .ok_or("小節を数えられません")?;
+            let (_, after_len) =
+                glaux_core::arrange::bar_range(&project, bar, 1).ok_or("小節を数えられません")?;
+            let mut hits: Vec<glaux_core::drums::Hit> = Vec::new();
+            if roll_bars > 0 {
+                let rel: Vec<(u64, u64)> = (0..roll_bars)
+                    .filter_map(|i| {
+                        glaux_core::arrange::bar_range(&project, bar - roll_bars + i, 1)
+                            .map(|(s, l)| (s - clip_start, l))
+                    })
+                    .collect();
+                hits.extend(
+                    glaux_core::drums::snare_roll(&rel)
+                        .into_iter()
+                        .filter(|h| clip_start + h.pos < gap_start),
+                );
+            }
+            if p.reverse_crash.unwrap_or(true) {
+                // 1.6 秒 × ドラムの減衰の倍率で鳴り終わる
+                let decay = match track.device.as_ref().and_then(|d| d.params.get("decay")) {
+                    Some(glaux_core::ParamValue::Float(v)) => *v,
+                    _ => 1.0,
+                };
+                let secs = 1.6 * decay.clamp(0.25, 4.0);
+                let bpm = project.tempo_map.bpm_at(glaux_core::Tick(gap_start));
+                let len = (secs * bpm / 60.0 * glaux_core::PPQ as f64).round() as u64;
+                let pos = gap_start.saturating_sub(len).max(clip_start);
+                hits.push(glaux_core::drums::Hit {
+                    pos: pos - clip_start,
+                    dur: gap_start - pos,
+                    pitch: 55,
+                    vel: 100,
+                });
+            }
+            if p.crash.unwrap_or(true) {
+                for (pitch, vel) in [(49u8, 110u8), (36, 115)] {
+                    hits.push(glaux_core::drums::Hit {
+                        pos: boundary - clip_start,
+                        dur: glaux_core::PPQ,
+                        pitch,
+                        vel,
+                    });
+                }
+            }
+            if !hits.is_empty() {
+                let mut clip = glaux_core::Clip::new_midi(
+                    glaux_core::ClipId::new(),
+                    "つなぎ",
+                    glaux_core::Tick(clip_start),
+                    glaux_core::Tick(boundary + after_len - clip_start),
+                );
+                if let Some(ns) = clip.notes_mut() {
+                    *ns = hits
+                        .iter()
+                        .map(|h| glaux_core::Note {
+                            id: glaux_core::NoteId::new(),
+                            pos: glaux_core::Tick(h.pos),
+                            dur: glaux_core::Tick(h.dur.max(1)),
+                            pitch: h.pitch,
+                            vel: h.vel,
+                            articulation: Default::default(),
+                            pitch_curve: vec![],
+                            glide_ms: None,
+                        })
+                        .collect();
+                    ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+                }
+                drum_clip_id = Some(clip.id.clone());
+                commands.push(Command::AddClip { track: tid, clip });
+            }
+        }
+        if commands.is_empty() {
+            return Err("置くものがありません(gap_beats か drum_track_id を指定)".to_owned());
+        }
+        let label = format!("{bar} 小節目へのつなぎ");
+        let command = if commands.len() == 1 {
+            commands.pop().expect("1 つある")
+        } else {
+            Command::batch(label.clone(), commands)
+        };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut out = mutated_json(&m);
+        out["entry_id"] = json!(entry_id);
+        out["bar"] = json!(bar);
+        out["silenced_notes"] = json!(silenced);
+        out["drum_clip_id"] = json!(drum_clip_id);
+        if !skipped_audio.is_empty() {
+            out["note"] = json!(format!(
+                "音声のクリップ({})は無音にできませんでした。split_clip で分けて消すか、音量のオートメーションで",
+                skipped_audio.join(", ")
+            ));
+        }
+        Ok(JsonText(out))
+    }
+
+    #[tool(
+        description = "定番のコード進行の候補を返す(読むだけ)。ジャンルと雰囲気で選び、キーに当てたコード名を返す\
+        (王道進行・丸サ進行・カノン・小室進行・I–V–vi–IV・ii–V–I・ブルース・短調の EDM 進行・アンダルシア終止など)。\
+        返り値の chords は write_chords / write_bassline にそのまま渡せる。区間ごとに違う進行を選ぶと展開が付く\
+        (サビは王道進行、A メロは I–vi–IV–V など)。"
+    )]
+    async fn suggest_progression(
+        &self,
+        params: Parameters<SuggestProgressionParams>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("suggest_progression");
+        let p = params.0;
+        let key = match &p.key {
+            Some(k) => Some(glaux_core::chord::Key::parse(k).ok_or_else(|| {
+                format!("key は \"C major\" / \"A minor\" / \"F#m\" の形(got: {k})")
+            })?),
+            None => None,
+        };
+        let list = glaux_core::progressions::suggest(
+            p.genre.as_deref(),
+            p.mood.as_deref(),
+            key,
+            p.count.unwrap_or(5),
+        )?;
+        let mut out = json!({ "progressions": list });
+        if list.is_empty() {
+            let (g, m) = glaux_core::progressions::vocabulary();
+            out["note"] =
+                json!("当てはまる進行がありません。genre / mood を次から選ぶか、省略してください");
+            out["genres"] = json!(g);
+            out["moods"] = json!(m);
+        }
         Ok(JsonText(out))
     }
 

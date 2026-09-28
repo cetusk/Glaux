@@ -9,9 +9,9 @@
 pub const CORE: &str = "Glaux(AI と共同作業できる DAW)のプロジェクト編集サーバー。\
 進め方: get_project(include_notes: false)で構造を把握 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
 apply_commands で編集(ノート・クリップの ID は省略可)。\
-ドラムは write_drums、伴奏は write_chords、ベースは write_bassline。相対編集は専用ツール: 移調 transpose_notes / 時間移動 shift_notes / クオンタイズ quantize_notes / ハネ swing_notes / \
-強さ scale_velocity / 旋律の変形 transform_notes。構成は duplicate_clips / insert_bars / delete_bars。\
-曲を作る・大きく直すときは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 → 表情 → 点検)に沿う。\
+相対編集は専用ツール: transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity / transform_notes。構成は duplicate_clips / insert_bars / delete_bars。\
+曲を作る・大きく直すときは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
+write_drums・write_chords・write_bassline・write_transition → 表情 → 点検)に沿う。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track でトラック別)・analyze_sound。\
 人間も並行して編集する。project_version が最後に見た値より大きければ get_changes {since: 最後の entry_id} で確認する。\
 定石は get_guide {topic}(workflow / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
@@ -29,6 +29,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    (動かすもの = ビルドのフィルタ等も note に)。マーカーが置かれ、曲の長さ(秒)が返るので依頼の長さに合わせる。\n\
    critique_arrangement が計画と実際(盛り上がりの上がり下がり・鳴らすトラック)を突き合わせる。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
+   コード進行は suggest_progression で定番から選ぶ(区間ごとに変える)。\n\
    ドラムは write_drums(ジャンルの型・区間ごとに intensity を変える・区切りのフィル・ビルドのロールと gap_beats)。\n\
    コード楽器は write_chords で置く(和音の積み方と声部のつながりを計算する。暗算で MIDI 番号を書かない)。\n\
    進行は記号か、key を付けてローマ数字。積み方はジャンルで: ポップのピアノ = drop2 か close + eighth、\n\
@@ -40,7 +41,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    繰り返すドラム・リフは add_clip の clip に \"loop\": true, \"loop_len\": 3840(1 小節)を入れ、length を区間の長さにする\n\
    (1 回で済む。試しの編集は要らない)。区間ごとに別のクリップにしておくと、区間の差を付けやすい。\n\
 3. 区間の差: 同じ繰り返しにしない。区間ごとにトラックを抜き差しし、区切りの前 1〜2 小節にフィル・ライザー、\n\
-   ドロップ・サビの直前に 1 拍〜1 小節の無音。イントロは絞る(全部鳴らさない)。\n\
+   ドロップ・サビの直前に 1 拍〜1 小節の無音(write_transition: gap_beats・リバースクラッシュ・ロール・クラッシュ)。イントロは絞る(全部鳴らさない)。\n\
    1 つのトラックを同じ型のまま 3 区間以上続けない(ブレイクでは抜くか変える。フィルタを動かすだけでは差にならない)。\n\
    抜き差しの例: ファンク・ポップ = イントロはドラムとギターだけ → A メロでベース → B メロでホーン・コード → サビで全部 →\n\
    ブレイクはドラムかベースだけ / EDM = イントロはキックとハット → ビルドでスネアとライザー → ドロップで全部 → ブレイクはパッドと旋律。\n\

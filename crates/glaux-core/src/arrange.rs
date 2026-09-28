@@ -303,6 +303,58 @@ pub fn duplicate_clips(
     Ok(out)
 }
 
+/// `from`〜`to`(絶対 tick)を無音にするコマンド(ドロップ・サビの直前の無音)。その範囲で始まる音は消し、
+/// かかる音は手前で切る。ループのクリップは繰り返しを書き出してから切る。`keep` のトラックは触らない。
+/// 返り値: (コマンド, 消した・切った音の数, 切れなかった音声のクリップの名前)
+pub fn silence_range(
+    project: &Project,
+    from: u64,
+    to: u64,
+    keep: &[crate::id::TrackId],
+) -> (Vec<Command>, usize, Vec<String>) {
+    let mut cmds = Vec::new();
+    let mut touched = 0usize;
+    let mut audio = Vec::new();
+    for t in project.tracks.iter().filter(|t| !keep.contains(&t.id)) {
+        for c in &t.clips {
+            if c.start.0 >= to || c.end().0 <= from {
+                continue;
+            }
+            if !c.is_midi() {
+                audio.push(c.name.clone());
+                continue;
+            }
+            let base = unroll_loop(c).unwrap_or_else(|| c.clone());
+            let mut out = base.clone();
+            let mut changed = base.loop_len() != c.loop_len();
+            if let Some(ns) = out.notes_mut() {
+                let before = ns.len();
+                ns.retain(|n| {
+                    let at = c.start.0 + n.pos.0;
+                    !(from..to).contains(&at)
+                });
+                let mut cut = before - ns.len();
+                for n in ns.iter_mut() {
+                    let at = c.start.0 + n.pos.0;
+                    if at < from && at + n.dur.0 > from {
+                        n.dur = Tick(from - at);
+                        cut += 1;
+                    }
+                }
+                touched += cut;
+                changed |= cut > 0;
+            }
+            if changed {
+                cmds.push(Command::ReplaceClip {
+                    id: c.id.clone(),
+                    clip: out,
+                });
+            }
+        }
+    }
+    (cmds, touched, audio)
+}
+
 /// 曲の計画書の 1 区間(MCP の set_song_plan の引数)
 #[derive(Clone, Debug, Default)]
 pub struct PlanSection {
@@ -575,6 +627,62 @@ mod tests {
             .unwrap();
         assert_ne!(copy.id, id);
         assert!(duplicate_clips(&p, &[id], -1, None).is_err());
+    }
+
+    #[test]
+    fn silence_range_cuts_and_removes_notes_and_unrolls_loops() {
+        let mut p = song();
+        // 1 小節のループ(4 分)を 4 小節ぶんのクリップも足す
+        let tid = p.tracks[0].id.clone();
+        let mut c = Clip::new_midi(ClipId::new(), "loop", Tick(0), Tick(BAR * 4));
+        if let ClipContent::Midi {
+            notes,
+            looped,
+            loop_len,
+        } = &mut c.content
+        {
+            for k in 0..4 {
+                notes.push(Note {
+                    id: NoteId::new(),
+                    pos: Tick(k * 960),
+                    dur: Tick(900),
+                    pitch: 42,
+                    vel: 90,
+                    articulation: Articulation::Normal,
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                });
+            }
+            *looped = true;
+            *loop_len = Some(Tick(BAR));
+        }
+        p.apply(&Command::AddClip {
+            track: tid.clone(),
+            clip: c,
+        })
+        .unwrap();
+        // 4 小節目の最後の 1 拍(+ その前から伸びる音の切り詰め)
+        let from = BAR * 4 - 960;
+        let (cmds, touched, audio) = silence_range(&p, from, BAR * 4, &[]);
+        assert!(audio.is_empty());
+        assert!(touched >= 1);
+        apply_all(&mut p, cmds);
+        for c in &p.tracks[0].clips {
+            for n in c.playback_notes() {
+                let at = c.start.0 + n.pos.0;
+                assert!(!(from..BAR * 4).contains(&at), "{at}");
+                if at < from {
+                    assert!(at + n.dur.0 <= from, "{at} {}", n.dur.0);
+                }
+            }
+        }
+        // ほかの範囲の音は残る(ループは書き出されて 3 小節分 + 4 小節目の 3 拍)
+        let lp = p.tracks[0].clips.iter().find(|c| c.name == "loop").unwrap();
+        assert!(lp.loop_len().is_none());
+        assert_eq!(lp.notes().unwrap().len(), 15);
+        // keep のトラックは触らない
+        let (cmds, _, _) = silence_range(&p, 0, BAR * 4, &[tid]);
+        assert!(cmds.is_empty());
     }
 
     #[test]

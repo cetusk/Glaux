@@ -278,21 +278,6 @@ pub fn render(style: &Style, bars: &[(u64, u64)], opts: &Options) -> Vec<Hit> {
             if fill_here { 0..12 } else { 0..16 },
         );
         if in_build {
-            // ビルド: スネアのロール(小節ごとに細かく、だんだん強く)
-            let step = i - build_from;
-            let divs = [4u64, 8, 16, 32];
-            let div = divs[(divs.len() - opts.build_bars.min(4) as usize + step.min(3)).min(3)];
-            for k in 0..div {
-                let pos = bar + k * len / div;
-                let progress = (i - build_from) as f64 + k as f64 / div as f64;
-                let vel = 50.0 + 70.0 * progress / opts.build_bars as f64;
-                out.push(Hit {
-                    pos,
-                    dur: (len / div / 2).max(20),
-                    pitch: 38,
-                    vel: vel.round().clamp(1.0, 127.0) as u8,
-                });
-            }
             continue;
         }
         for &(pitch, pat) in style.snare {
@@ -350,6 +335,10 @@ pub fn render(style: &Style, bars: &[(u64, u64)], opts: &Options) -> Vec<Hit> {
             }
         }
     }
+    // ビルド: スネアのロール
+    if opts.build_bars > 0 {
+        out.extend(snare_roll(&bars[build_from..]));
+    }
     // クラッシュ: 最初と、フィルの次の小節の頭
     if opts.crash {
         for (i, &(bar, len)) in bars.iter().enumerate() {
@@ -383,6 +372,29 @@ pub fn render(style: &Style, bars: &[(u64, u64)], opts: &Options) -> Vec<Hit> {
     }
     out.sort_by_key(|h| (h.pos, h.pitch));
     out.dedup_by(|a, b| a.pos == b.pos && a.pitch == b.pitch);
+    out
+}
+
+/// スネアのロール(ビルド・区間のつなぎ)。小節ごとに細かく(最後の 4 小節が 4 分 → 8 分 → 16 分 → 32 分)、
+/// だんだん強く。`bars` はロールにする小節(クリップの頭から)
+pub fn snare_roll(bars: &[(u64, u64)]) -> Vec<Hit> {
+    let n = bars.len();
+    let divs = [4u64, 8, 16, 32];
+    let mut out = Vec::new();
+    for (i, &(bar, len)) in bars.iter().enumerate() {
+        // 最後の小節が 32 分になるように、後ろからそろえる
+        let div = divs[(divs.len() + i).saturating_sub(n).min(3)];
+        for k in 0..div {
+            let progress = i as f64 + k as f64 / div as f64;
+            let vel = 50.0 + 70.0 * progress / n.max(1) as f64;
+            out.push(Hit {
+                pos: bar + k * len / div,
+                dur: (len / div / 2).max(20),
+                pitch: 38,
+                vel: vel.round().clamp(1.0, 127.0) as u8,
+            });
+        }
+    }
     out
 }
 

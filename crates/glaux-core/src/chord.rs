@@ -14,6 +14,21 @@ use serde::Serialize;
 const NOTE_NAMES: [&str; 12] = [
     "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
 ];
+const SHARP_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+const FLAT_NAMES: [&str; 12] = [
+    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+];
+
+/// ピッチクラスの綴り(♭ 系か ♯ 系)
+fn spell(pc: u8, flats: bool) -> &'static str {
+    if flats {
+        FLAT_NAMES[pc as usize % 12]
+    } else {
+        SHARP_NAMES[pc as usize % 12]
+    }
+}
 
 /// 構成音の役割(積み方で、省いてよいか・重ねてよいかを決める)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -151,6 +166,15 @@ impl Key {
         Some(Key { tonic, minor })
     }
 
+    /// ♭ 系のキーか(F・Bb・Eb・Ab・Db・Gb の長調、D・G・C・F・Bb・Eb の短調)
+    pub fn uses_flats(&self) -> bool {
+        if self.minor {
+            matches!(self.tonic, 2 | 7 | 0 | 5 | 10 | 3)
+        } else {
+            matches!(self.tonic, 5 | 10 | 3 | 8 | 1 | 6)
+        }
+    }
+
     /// 音階の度数(1〜7)の音の、トニックからの半音(短調は自然短音階)
     fn degree(&self, d: u8) -> u8 {
         let steps: [u8; 7] = if self.minor {
@@ -190,8 +214,12 @@ pub fn parse(symbol: &str) -> Result<Option<Chord>, String> {
     let rest = &s[used..];
     let (quality, bass) = split_bass(rest).map_err(|e| format!("{e}: {symbol}"))?;
     let tones = parse_quality(quality).map_err(|e| format!("{e}: {symbol}"))?;
+    // 書かれた綴りのまま(Db は Db、C# は C#)。音名の 2 文字目以降の b / ♭ を見る
+    let has_flat = |t: &str| t.chars().skip(1).any(|c| c == 'b' || c == '♭');
+    let bass_text = rest.rsplit_once('/').map_or("", |(_, b)| b);
+    let flats = has_flat(&s[..used]) || has_flat(bass_text);
     Ok(Some(Chord {
-        name: display_name(root, quality, bass),
+        name: display_name(root, quality, bass, flats),
         root,
         bass,
         tones,
@@ -271,7 +299,7 @@ fn parse_roman(s: &str, key: Key) -> Result<Option<Chord>, String> {
     };
     let tones = parse_quality(&q).map_err(|e| format!("{e}: {s}"))?;
     Ok(Some(Chord {
-        name: display_name(root, &q, bass),
+        name: display_name(root, &q, bass, key.uses_flats() || acc < 0),
         root,
         bass,
         tones,
@@ -294,14 +322,11 @@ fn split_bass(rest: &str) -> Result<(&str, Option<u8>), String> {
     Ok((rest, None))
 }
 
-fn display_name(root: u8, quality: &str, bass: Option<u8>) -> String {
+fn display_name(root: u8, quality: &str, bass: Option<u8>, flats: bool) -> String {
     let q = normalize(quality);
     match bass {
-        Some(b) => format!(
-            "{}{q}/{}",
-            NOTE_NAMES[root as usize], NOTE_NAMES[b as usize]
-        ),
-        None => format!("{}{q}", NOTE_NAMES[root as usize]),
+        Some(b) => format!("{}{q}/{}", spell(root, flats), spell(b, flats)),
+        None => format!("{}{q}", spell(root, flats)),
     }
 }
 
@@ -659,6 +684,10 @@ mod tests {
         let g = parse("G7/B").unwrap().unwrap();
         assert_eq!(g.bass, Some(11));
         assert_eq!(parse("Bb/D").unwrap().unwrap().name, "Bb/D");
+        // 書かれた綴りのまま
+        assert_eq!(parse("Dbmaj7").unwrap().unwrap().name, "Dbmaj7");
+        assert_eq!(parse("C#m7").unwrap().unwrap().name, "C#m7");
+        assert_eq!(parse("Ab/Eb").unwrap().unwrap().name, "Ab/Eb");
         assert_eq!(parse("N.C.").unwrap(), None);
         assert!(parse("H7").is_err());
         assert!(parse("Cxyz").is_err());
@@ -676,6 +705,9 @@ mod tests {
         assert_eq!(get("ii7", c).name, "Dm7");
         assert_eq!(get("IVmaj7", c).name, "Fmaj7");
         assert_eq!(get("bVII", c).name, "Bb");
+        // ♭ 系のキーは ♭ で(F minor の VI = Db)、♯ 系は ♯ で(E major の iii = G#m)
+        assert_eq!(get("VI", Key::parse("F minor").unwrap()).name, "Db");
+        assert_eq!(get("iii", Key::parse("E major").unwrap()).name, "G#m");
         assert_eq!(get("viiø7", c).name, "Bm7b5");
         assert_eq!(get("iii7", c).name, "Em7");
         // 借用: V/V = D、V7/ii = A7

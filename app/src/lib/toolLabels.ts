@@ -54,6 +54,8 @@ const LABELS: Record<string, ToolLabel> = {
   write_chords: { short: "コードの伴奏", doing: "コード進行から伴奏を書いています" },
   write_bassline: { short: "ベースライン", doing: "ベースラインを書いています" },
   write_drums: { short: "ドラムの型", doing: "ドラムを置いています" },
+  write_transition: { short: "区間のつなぎ", doing: "区間のつなぎを置いています" },
+  suggest_progression: { short: "進行の候補", doing: "コード進行の候補を探しています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

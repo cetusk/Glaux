@@ -3293,6 +3293,119 @@ async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
 }
 
 #[tokio::test]
+async fn write_transition_leaves_a_gap_and_rolls_into_the_drop() {
+    let fx = setup().await;
+    // 120 BPM。build 4 小節 → drop。鍵盤が 2 分音符でずっと鳴っている
+    ok_json(
+        &call(
+            &fx,
+            "set_song_plan",
+            json!({ "sections": [ { "name": "build", "bars": 4 }, { "name": "drop", "bars": 4 } ] }),
+        )
+        .await,
+    );
+    let keys: Vec<Value> = (0..16u64)
+        .map(|i| json!({ "pos": i * 1920, "dur": 1900, "pitch": 60, "vel": 90 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_track", "track": { "id": "trk_trn001", "name": "Keys", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_trn001", "clip": {
+                    "id": "clp_trn001", "name": "k", "start": 0, "length": 30720, "kind": "midi", "notes": keys } },
+                { "op": "add_track", "track": { "id": "trk_trn002", "name": "Drums", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_transition",
+            json!({ "to": "drop", "gap_beats": 1, "drum_track_id": "trk_trn002", "roll_bars": 2 }),
+        )
+        .await,
+    );
+    assert_eq!(v["bar"], 5, "{v}");
+    let boundary = 3840 * 4u64;
+    let gap_start = boundary - 960;
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    // 鍵盤: 無音の範囲で始まる音は無く、かかっていた音は手前で切れている
+    let ks = project.tracks[0].clips[0].notes().unwrap();
+    assert!(ks.iter().all(|n| !(gap_start..boundary).contains(&n.pos.0)));
+    assert!(ks
+        .iter()
+        .filter(|n| n.pos.0 < gap_start)
+        .all(|n| n.pos.0 + n.dur.0 <= gap_start));
+    assert!(v["silenced_notes"].as_u64().unwrap() >= 1);
+    // ドラム: ロール(無音の手前まで)・リバースクラッシュ(無音の手前で鳴り終わる)・区切りのクラッシュ
+    let d = &project.tracks[1].clips[0];
+    let abs = |n: &glaux_core::Note| d.start.0 + n.pos.0;
+    let ns = d.notes().unwrap();
+    let rev = ns
+        .iter()
+        .find(|n| n.pitch == 55)
+        .expect("リバースクラッシュ");
+    assert_eq!(abs(rev) + rev.dur.0, gap_start);
+    // 1.6 秒 = 120 BPM で 3.2 拍
+    assert_eq!(rev.dur.0, 3072);
+    assert!(ns.iter().any(|n| n.pitch == 49 && abs(n) == boundary));
+    let rolls: Vec<u64> = ns.iter().filter(|n| n.pitch == 38).map(abs).collect();
+    assert!(
+        rolls.len() >= 16
+            && rolls
+                .iter()
+                .all(|p| *p < gap_start && *p >= boundary - 7680)
+    );
+    // 1 回の undo で両方戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tracks[0].clips[0].notes().unwrap().len(), 16);
+    assert!(project.tracks[1].clips.is_empty());
+    // 無い区間はエラー
+    let r = call(
+        &fx,
+        "write_transition",
+        json!({ "to": "chorus", "gap_beats": 1 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn suggest_progression_returns_chords_ready_for_write_chords() {
+    let fx = setup().await;
+    let v = ok_json(
+        &call(
+            &fx,
+            "suggest_progression",
+            json!({ "genre": "jpop", "mood": "emotional", "key": "D major", "count": 3 }),
+        )
+        .await,
+    );
+    let first = &v["progressions"][0];
+    assert_eq!(first["name"], "王道進行", "{v}");
+    assert_eq!(first["chords"], "Gmaj7 | A7 | F#m7 | Bm");
+    // そのまま write_chords に渡せる
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_sug001", "Keys")).await);
+    ok_json(
+        &call(
+            &fx,
+            "write_chords",
+            json!({ "track_id": "trk_sug001", "chords": first["chords"] }),
+        )
+        .await,
+    );
+    // 当てはまらなければ語彙を返す
+    let v = ok_json(&call(&fx, "suggest_progression", json!({ "genre": "polka" })).await);
+    assert!(v["progressions"].as_array().unwrap().is_empty());
+    assert!(v["genres"].as_array().unwrap().iter().any(|g| g == "lofi"));
+}
+
+#[tokio::test]
 async fn set_song_plan_places_sections_and_critique_checks_the_plan() {
     let fx = setup().await;
     // 120 BPM: intro 4 + verse 8 + chorus 8 = 20 小節 = 40 秒

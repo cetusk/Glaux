@@ -25,6 +25,7 @@ pub mod harmony;
 pub mod history;
 pub mod id;
 pub mod model;
+pub mod progressions;
 pub mod rhythm;
 pub mod shape;
 pub mod time;
