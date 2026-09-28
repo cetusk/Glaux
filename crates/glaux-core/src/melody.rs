@@ -494,11 +494,23 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
             .count();
         m.rhythm_reuse = reused as f64 / bars_with.len() as f64;
     }
-    // 動機の反復率: 4 音の形(3 つの音程と長さの比)が 2 回以上出る部分
+    // 動機の反復率: 4 音の形(3 つの音程と長さの比)が 2 回以上出る部分。
+    // 音程は向きと大きさの段階(同音・順次・3 度・4〜5 度・それ以上)で比べ、音階でずらした繰り返しや
+    // 和音に合わせて音を変えた繰り返し(長 2 度 ↔ 短 2 度など)も同じ形とみなす
+    let class = |d: i32| {
+        d.signum()
+            * match d.abs() {
+                0 => 0,
+                1 | 2 => 1,
+                3 | 4 => 2,
+                5..=7 => 3,
+                _ => 4,
+            }
+    };
     let tokens: Vec<(i32, i32)> = notes
         .windows(2)
         .map(|w| {
-            let iv = (w[1].pitch as i32 - w[0].pitch as i32).clamp(-12, 12);
+            let iv = class(w[1].pitch as i32 - w[0].pitch as i32);
             let r = ((w[1].dur.max(1) as f64 / w[0].dur.max(1) as f64).log2() * 2.0).round() as i32;
             (iv, r.clamp(-4, 4))
         })
@@ -519,7 +531,8 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
         }
     }
     m.motif_coverage = covered.iter().filter(|c| **c).count() as f64 / notes.len() as f64;
-    // シンコペーション: 8 分の裏で始まり、次の拍の頭まで次の音が無い
+    // シンコペーション: 8 分の裏で始まり、次の拍の頭に次の音が無い(拍をまたいで伸ばすか、拍の頭が休み)。
+    // 8 分の連続の裏の音(次の拍に音がある)は数えない
     let mut sync = 0usize;
     let mut antic = 0usize;
     for (i, n) in notes.iter().enumerate() {
@@ -531,7 +544,7 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
             continue;
         }
         let next_beat = n.pos + beat / 2;
-        let held = notes.get(i + 1).map_or(true, |nx| nx.pos + 60 >= next_beat);
+        let held = notes.get(i + 1).map_or(true, |nx| nx.pos > next_beat + 60);
         if held && n.dur + 60 >= beat / 2 {
             sync += 1;
             let nb = idx + 1;
@@ -641,7 +654,9 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
                 .partial_cmp(&b.energy)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-    if let Some(ps) = peak_sec {
+    // 旋律が山の区間まで届かないとき(ヴァースだけ書いたとき)は比べられないので見ない
+    let mel_end = notes.iter().map(|n| n.pos + n.dur).max().unwrap_or(0);
+    if let Some(ps) = peak_sec.filter(|ps| mel_end > ps.start) {
         if first_peak < ps.start {
             let sec = ctx
                 .sections

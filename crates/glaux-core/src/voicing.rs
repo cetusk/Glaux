@@ -346,7 +346,19 @@ fn candidates(chord: &Chord, opts: &Options, voices: usize) -> Vec<Vec<u8>> {
                 tones[last] = b;
             }
         }
-        add_candidates(&tones, opts, slash_low, has_b9, &mut out);
+        add_candidates(&tones, opts, opts.style, slash_low, has_b9, &mut out);
+    }
+    // spread が音域に入らないとき(三和音の 4 声は 2 オクターブに広がる)は open の形で積む
+    if out.is_empty() && opts.style == Style::Spread {
+        for mut tones in pick_tones(chord, opts.style, voices) {
+            if let Some(b) = slash_low {
+                if !tones.contains(&b) {
+                    let last = tones.len() - 1;
+                    tones[last] = b;
+                }
+            }
+            add_candidates(&tones, opts, Style::Open, slash_low, has_b9, &mut out);
+        }
     }
     out.sort();
     out
@@ -355,6 +367,7 @@ fn candidates(chord: &Chord, opts: &Options, voices: usize) -> Vec<Vec<u8>> {
 fn add_candidates(
     tones: &[u8],
     opts: &Options,
+    style: Style,
     slash_low: Option<u8>,
     has_b9: bool,
     out: &mut Vec<Vec<u8>>,
@@ -377,7 +390,7 @@ fn add_candidates(
         if ds.windows(2).any(|w| w[1] - w[0] > 7) {
             continue;
         }
-        let shapes = shapes_for(&ds, opts.style);
+        let shapes = shapes_for(&ds, style);
         for shape in shapes {
             let lowest = *shape.iter().min().expect("空ではない");
             let highest = *shape.iter().max().expect("空ではない");
@@ -541,6 +554,12 @@ mod tests {
             }
             assert!(total_motion(&v) <= 14, "{style:?} {v:?}");
         }
+        // 三和音の 4 声の spread は 2 オクターブに広がり既定の音域に入らないので、open の形で積む
+        let v =
+            voice_progression(&chords(&["C", "G", "Am", "F"]), &opts(Style::Spread, 4)).unwrap();
+        assert!(v.iter().all(|x| x.upper.len() == 4
+            && x.upper.iter().all(|p| (52..=76).contains(p))
+            && x.upper.last().unwrap() - x.upper[0] > 12));
         // ドロップ 2 は上 3 声の中に 1 オクターブを越える幅がある(密集より広い)
         let d2 = voice_progression(&cs, &opts(Style::Drop2, 4)).unwrap();
         assert!(d2.iter().all(|x| x.upper.last().unwrap() - x.upper[0] > 12));

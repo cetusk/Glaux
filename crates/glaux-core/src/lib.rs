@@ -24,6 +24,7 @@ pub mod groove;
 pub mod harmony;
 pub mod history;
 pub mod id;
+pub mod melgen;
 pub mod melody;
 pub mod model;
 pub mod motif;

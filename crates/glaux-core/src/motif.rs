@@ -561,10 +561,14 @@ fn vary(notes: &mut Vec<MotifNote>, scale: &Scale, beat: u64, seed: u64) {
         }
         let last = notes.len() - 1;
         let applied = match k {
-            // 長い音(4 分以上、最後以外)を 2 つに割り、後ろは次の音へ向かう隣の音
+            // 長い音(4 分以上、最後以外)を 2 つに割り、後ろは次の音へ向かう隣の音。
+            // 後ろが休みの音(句の終わりの伸ばし。息継ぎの前)は割らない
             0 => {
                 let pick = (0..last)
-                    .filter(|&i| notes[i].dur >= beat)
+                    .filter(|&i| {
+                        notes[i].dur >= beat
+                            && notes[i].offset + notes[i].dur >= notes[i + 1].offset
+                    })
                     .max_by_key(|&i| (notes[i].dur, std::cmp::Reverse(i)));
                 pick.map(|i| {
                     let n = notes[i];
@@ -586,8 +590,9 @@ fn vary(notes: &mut Vec<MotifNote>, scale: &Scale, beat: u64, seed: u64) {
             1 => {
                 let pick = (0..last).find(|&i| {
                     let (a, b) = (notes[i], notes[i + 1]);
+                    // 8 分か 4 分の音だけ(付点 8 分を付点にすると 32 分の細かさになる)
                     a.dur == b.dur
-                        && a.dur >= beat / 2
+                        && (a.dur == beat / 2 || a.dur == beat)
                         && a.offset % beat == 0
                         && a.offset + a.dur == b.offset
                 });

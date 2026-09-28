@@ -3577,6 +3577,91 @@ async fn develop_motif_turns_a_motif_into_a_shaped_phrase() {
 }
 
 #[tokio::test]
+async fn write_melody_picks_the_best_of_several_candidates() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_wml001", "Vocal")).await);
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_melody",
+            json!({ "track_id": "trk_wml001", "role": "chorus", "chords": "IV | V | iii | vi",
+                    "key": "C major", "bar": 3, "bars": 8, "candidates": 5, "place": 2, "seed": 7 }),
+        )
+        .await,
+    );
+    assert_eq!(v["bars"], 8, "{v}");
+    let cands = v["candidates"].as_array().unwrap();
+    assert_eq!(cands.len(), 5);
+    // 点数の高い順。置いたのは 1 番目
+    let scores: Vec<u64> = cands.iter().map(|c| c["score"].as_u64().unwrap()).collect();
+    assert!(scores.windows(2).all(|w| w[0] >= w[1]), "{scores:?}");
+    assert_eq!(v["score"], cands[0]["score"]);
+    assert_eq!(v["seed"], cands[0]["seed"]);
+    assert!(v["score"].as_u64().unwrap() >= 70, "{v}");
+    // 返る動機は develop_motif にそのまま渡せる
+    let motif = v["motif"].as_str().unwrap().to_owned();
+    assert!(glaux_core::motif::parse_motif(&motif).is_ok(), "{motif}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    // 2 番目の案は同じ音色の複製トラック(ミュート)に
+    assert_eq!(project.tracks.len(), 2);
+    let copy = &project.tracks[1];
+    assert!(copy.mute && copy.name.contains("案2"), "{}", copy.name);
+    assert_eq!(copy.device, project.tracks[0].device);
+    let clip = &project.tracks[0].clips[0];
+    assert_eq!((clip.start.0, clip.length.0), (3840 * 2, 3840 * 8));
+    let ns = clip.notes().unwrap();
+    assert!(ns.len() >= 16);
+    // 最後は主音
+    assert_eq!(ns.last().unwrap().pitch % 12, 0);
+    // リズムが小節ごとに全部同じではない
+    let bar_rhythm = |b: u64| -> Vec<u64> {
+        ns.iter()
+            .filter(|n| n.pos.0 / 3840 == b)
+            .map(|n| n.pos.0 % 3840)
+            .collect()
+    };
+    let rhythms: Vec<Vec<u64>> = (0..8).map(bar_rhythm).collect();
+    assert!(rhythms.iter().any(|r| r != &rhythms[0]), "{rhythms:?}");
+    // 同じ seed で 1 案だけ作ると、同じ旋律になる
+    let seed = v["seed"].as_u64().unwrap();
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tracks.len(), 1);
+    assert!(project.tracks[0].clips.is_empty());
+    let again = ok_json(
+        &call(
+            &fx,
+            "write_melody",
+            json!({ "track_id": "trk_wml001", "role": "chorus", "chords": "IV | V | iii | vi",
+                    "key": "C major", "bar": 3, "bars": 8, "candidates": 1, "seed": seed }),
+        )
+        .await,
+    );
+    assert_eq!(again["motif"], v["motif"]);
+    assert_eq!(again["score"], v["score"]);
+    // リズムを固定できる。エラー
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_melody",
+            json!({ "track_id": "trk_wml001", "role": "verse", "genre": "lofi", "chords": "ii7 | V7 | Imaj7 | vi7",
+                    "key": "F major", "bar": 20, "bars": 4, "rhythm": "x-x-x---x-------" }),
+        )
+        .await,
+    );
+    assert_eq!(v["rhythm"], "x-x-x---x-------", "{v}");
+    for bad in [
+        json!({ "track_id": "trk_wml001", "role": "bridge", "key": "C major" }),
+        json!({ "track_id": "trk_wml001", "genre": "polka", "key": "C major" }),
+        json!({ "track_id": "trk_wml001", "rhythm": "x-q", "key": "C major" }),
+        json!({ "track_id": "trk_wml001", "contour": "zigzag", "key": "C major" }),
+    ] {
+        let r = call(&fx, "write_melody", bad.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad}");
+    }
+}
+
+#[tokio::test]
 async fn set_song_plan_places_sections_and_critique_checks_the_plan() {
     let fx = setup().await;
     // 120 BPM: intro 4 + verse 8 + chorus 8 = 20 小節 = 40 秒

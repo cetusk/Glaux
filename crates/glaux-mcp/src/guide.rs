@@ -10,15 +10,15 @@ pub const CORE: &str = "Glaux(AI と共同作業できる DAW)のプロジェク
 進め方: get_project(include_notes: false)で構造を把握 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
 apply_commands で編集。\
 相対編集: transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity / transform_notes。構成: duplicate_clips / insert_bars / delete_bars。\
-曲を作るときは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
+曲作りは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
 write_drums・write_chords・write_bassline・write_transition → 旋律 → 表情 → 点検)に沿う。\
-旋律は動機だけ書いて develop_motif で展開、critique_melody で点検。\
+旋律は write_melody か develop_motif(動機を展開)、critique_melody で点検。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track)・analyze_sound。\
-人間も並行して編集する。project_version が進んでいたら get_changes {since: 最後の entry_id} で確認する。\
+人も並行して編集する。project_version が進んでいたら get_changes {since: 最後の entry_id} で確認する。\
 定石は get_guide {topic}(workflow / melody / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
 ハネ(swing_notes)の後は apply_groove(quantize 0)を重ねる。仕上げは master_mix。\
 完了の報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを確かめ、\
-確認結果を一言添える。ミックスを変えたら compare_mix で前後を比べる。大きな試行錯誤の前は checkpoint。";
+結果を一言添える。ミックスを変えたら compare_mix で前後を比べる。大きな試行の前は checkpoint。";
 
 /// (トピック名, 見出し, 本文)
 pub const TOPICS: &[(&str, &str, &str)] = &[
@@ -38,7 +38,8 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    ギター = open + strum_ms 15。区間ごとに rhythm・range・voices を変えると区間の差になる。\n\
    ベースは write_bassline(伴奏と同じ進行の文字列を渡す): ハウス・ポップ = root8 か offbeat、ディスコ = octave、\n\
    トラップ = 808(C1〜C3)、ファンク = funk か follow_kick(キックと同じ位置)、ジャズ・ローファイ = walking、バラード = root。\n\
-   主旋律は短い動機だけ書き、develop_motif で形式に沿って展開して critique_melody で点検する(topic: melody)。\n\
+   主旋律は write_melody(役割とジャンルから複数案を作り点検で選ぶ)か、短い動機を書いて develop_motif で展開し、\n\
+   critique_melody で点検する(topic: melody)。\n\
    繰り返すドラム・リフは add_clip の clip に \"loop\": true, \"loop_len\": 3840(1 小節)を入れ、length を区間の長さにする\n\
    (1 回で済む。試しの編集は要らない)。区間ごとに別のクリップにしておくと、区間の差を付けやすい。\n\
 3. 区間の差: 同じ繰り返しにしない。区間ごとにトラックを抜き差しし、区切りの前 1〜2 小節にフィル・ライザー、\n\
@@ -61,6 +62,9 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         "旋律の作り方と点検",
         "旋律の「センス」の多くは数えられる性質。LLM は音符を全部書くと、動機を写すだけ・リズムが単調・形式が崩れる、に\n\
 なりやすい。意図(動機・形式・山の位置)だけ決め、展開と点検は道具に任せる。\n\
+手早く: write_melody に役割(verse / pre / chorus / hook / lead)・ジャンル・進行を渡すと、ジャンルのリズムの型と輪郭から\n\
+動機を作って展開し、点検の点数で選ぶ(candidates 案、place: 2 で 2 案目も複製トラックに置いて聴き比べ)。\n\
+返る motif を手で直して develop_motif に渡せば、動機だけ変えて展開し直せる。rhythm でリズムの型を固定できる。\n\
 工程: 1. 計画書で山(サビ・ドロップ)の区間を決める → 2. 山のフック(1〜2 小節の動機)を先に書く。書く前に言葉で\n\
 「リズムの型・輪郭(弧 / 上昇 / 下降)・一番高い音の位置」を決める → 3. develop_motif で展開(サビは sentence、\n\
 A メロ・ヴァースは period、EDM・トラップは loop)→ 4. ヴァースはフックのリズムの頭から、低く・音を少なく\n\
