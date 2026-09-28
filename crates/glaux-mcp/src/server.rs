@@ -742,6 +742,46 @@ pub struct WriteBasslineParams {
     pub name: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct WriteDrumsParams {
+    /// 置くドラムのトラックの ID(内蔵 drum か SoundFont のドラム)。新しいクリップを作って置く。
+    pub track_id: String,
+    /// 小節数(1〜512)。
+    pub bars: u32,
+    /// 始まりの小節(既定 1)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+    /// 型: house / techno / trap / hiphop / lofi / funk / rock / pop / dnb / disco / reggaeton / halftime / 2step。
+    pub style: String,
+    /// 音の多さ 0〜1(既定 0.6)。ハットの細かさ(4 分 → 8 分 → 16 分)とオープンハット。静かな区間は 0.3、山は 0.8〜1。
+    #[serde(default)]
+    pub intensity: Option<f64>,
+    /// 小節ごとの変化 0〜1(既定 0.3)。キックの型を入れ替える割合と、裏のオープンハット。
+    #[serde(default)]
+    pub variation: Option<f64>,
+    /// フィル: snare(既定)/ toms / none。fill_every 小節ごとの最後の小節の 3・4 拍目に入れる。
+    #[serde(default)]
+    pub fill: Option<String>,
+    /// 何小節ごとにフィルを入れるか(既定 8。0 で入れない)。
+    #[serde(default)]
+    pub fill_every: Option<u32>,
+    /// 最初の小節の頭と、フィルの次の小節の頭にクラッシュ(既定 true)。
+    #[serde(default)]
+    pub crash: Option<bool>,
+    /// 最後の何小節をスネアのロールのビルド(4 分 → 8 分 → 16 分 → 32 分でだんだん強く)にするか(既定 0)。
+    #[serde(default)]
+    pub build_bars: Option<u32>,
+    /// 最後の何拍を無音にするか(ドロップ・サビの直前の無音。既定 0)。
+    #[serde(default)]
+    pub gap_beats: Option<u32>,
+    /// 乱数の種(既定 1。同じ値なら同じ結果)。
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// クリップの名前(既定 "Drums")。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -4545,6 +4585,114 @@ impl GlauxServer {
         out["bars"] = json!(n_bars);
         out["notes"] = json!(notes.len());
         out["chords"] = json!(summary);
+        Ok(JsonText(out))
+    }
+
+    #[tool(
+        description = "ドラムの型を置く。ジャンルの型(house / techno / trap / hiphop / lofi / funk / rock / pop / dnb / disco / \
+        reggaeton / halftime / 2step)を、音の多さ(intensity: ハットの細かさ)・小節ごとの変化(variation)・フィル\
+        (fill_every 小節ごとの最後の 3・4 拍にスネアかタム)・クラッシュ(区切りの頭)と一緒に置く。ビルドは build_bars\
+        (スネアのロールがだんだん細かく強く)と gap_beats(直前の無音)。区間ごとに呼び分けると区間の差になる\
+        (イントロは intensity 0.3、山は 0.9 など)。音程は GM(36 キック・38 スネア・39 クラップ・42 / 46 ハット・49 クラッシュ)。\
+        ドラムのトラックに新しいクリップを作る(返り値 clip_id)。ずれ・強弱は後から apply_groove。1 回の undo で戻る。"
+    )]
+    async fn write_drums(
+        &self,
+        params: Parameters<WriteDrumsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::drums;
+        let _activity = self.handle.begin_activity("write_drums");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if !is_drum_track(track) {
+            return Err("ドラムのトラック(音源が内蔵の drum か、SoundFont のドラム(bank 128))を指定してください".to_owned());
+        }
+        let style = drums::style(&p.style).ok_or_else(|| {
+            format!(
+                "style が不明です({})。使えるもの: {}",
+                p.style,
+                drums::STYLES
+                    .iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            )
+        })?;
+        if p.bars == 0 || p.bars > 512 {
+            return Err("bars は 1〜512".to_owned());
+        }
+        let fill = match p.fill.as_deref().unwrap_or("snare") {
+            "snare" => drums::Fill::Snare,
+            "toms" => drums::Fill::Toms,
+            "none" => drums::Fill::None,
+            other => return Err(format!("fill は snare / toms / none(got: {other})")),
+        };
+        let first_bar = p.bar.unwrap_or(1).max(1);
+        let (clip_start, clip_len) = glaux_core::arrange::bar_range(&project, first_bar, p.bars)
+            .ok_or("小節を数えられません")?;
+        let bar_list: Vec<(u64, u64)> = (0..p.bars)
+            .map(|i| {
+                glaux_core::arrange::bar_range(&project, first_bar + i, 1)
+                    .map(|(s, l)| (s - clip_start, l))
+                    .ok_or("小節を数えられません")
+            })
+            .collect::<Result<_, _>>()?;
+        let opts = drums::Options {
+            intensity: p.intensity.unwrap_or(0.6).clamp(0.0, 1.0),
+            variation: p.variation.unwrap_or(0.3).clamp(0.0, 1.0),
+            fill,
+            fill_every: p.fill_every.unwrap_or(8),
+            crash: p.crash.unwrap_or(true),
+            build_bars: p.build_bars.unwrap_or(0).min(p.bars),
+            gap_beats: p.gap_beats.unwrap_or(0).min(8),
+            seed: p.seed.unwrap_or(1),
+        };
+        let hits = drums::render(style, &bar_list, &opts);
+        let mut clip = glaux_core::Clip::new_midi(
+            glaux_core::ClipId::new(),
+            p.name.clone().unwrap_or_else(|| "Drums".to_owned()),
+            glaux_core::Tick(clip_start),
+            glaux_core::Tick(clip_len),
+        );
+        let clip_id = clip.id.clone();
+        if let Some(ns) = clip.notes_mut() {
+            *ns = hits
+                .iter()
+                .map(|h| glaux_core::Note {
+                    id: glaux_core::NoteId::new(),
+                    pos: glaux_core::Tick(h.pos),
+                    dur: glaux_core::Tick(h.dur),
+                    pitch: h.pitch,
+                    vel: h.vel,
+                    articulation: Default::default(),
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                })
+                .collect();
+            ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+        }
+        let fills: Vec<u32> = if fill == drums::Fill::None || opts.fill_every == 0 {
+            vec![]
+        } else {
+            (1..=p.bars)
+                .filter(|b| b % opts.fill_every == 0 && *b <= p.bars - opts.build_bars)
+                .map(|b| first_bar + b - 1)
+                .collect()
+        };
+        let label = format!("ドラム({} の型・{} 小節)", style.name, p.bars);
+        let command = Command::AddClip { track: tid, clip };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut out = mutated_json(&m);
+        out["entry_id"] = json!(entry_id);
+        out["clip_id"] = json!(clip_id);
+        out["bars"] = json!(p.bars);
+        out["notes"] = json!(hits.len());
+        out["style"] = json!({ "name": style.name, "bpm": style.bpm, "note": style.note });
+        out["fill_bars"] = json!(fills);
         Ok(JsonText(out))
     }
 

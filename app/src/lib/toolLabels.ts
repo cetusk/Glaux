@@ -53,6 +53,7 @@ const LABELS: Record<string, ToolLabel> = {
   set_song_plan: { short: "曲の計画書", doing: "曲の計画を立てています" },
   write_chords: { short: "コードの伴奏", doing: "コード進行から伴奏を書いています" },
   write_bassline: { short: "ベースライン", doing: "ベースラインを書いています" },
+  write_drums: { short: "ドラムの型", doing: "ドラムを置いています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

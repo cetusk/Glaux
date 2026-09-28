@@ -18,6 +18,7 @@ pub mod chord;
 pub mod command;
 pub mod comp;
 pub mod critique;
+pub mod drums;
 pub mod error;
 pub mod groove;
 pub mod harmony;

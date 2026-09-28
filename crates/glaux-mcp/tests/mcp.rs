@@ -3229,6 +3229,70 @@ async fn write_bassline_follows_the_chords_the_kick_and_slides() {
 }
 
 #[tokio::test]
+async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "ドラム", "commands": [
+                { "op": "add_track", "track": { "id": "trk_drm001", "name": "Drums", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } },
+                { "op": "add_track", "track": { "id": "trk_drm002", "name": "Keys", "kind": "midi" } }
+            ] }),
+        )
+        .await,
+    );
+    // ハウス 8 小節(3 小節目から)、8 小節目にフィル
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_drums",
+            json!({ "track_id": "trk_drm001", "style": "house", "bars": 8, "bar": 3 }),
+        )
+        .await,
+    );
+    assert_eq!(v["fill_bars"], json!([10]), "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let clip = &project.tracks[0].clips[0];
+    assert_eq!((clip.start.0, clip.length.0), (3840 * 2, 3840 * 8));
+    let ns = clip.notes().unwrap();
+    // 4 つ打ち(フィルの小節は 3 拍目まで)
+    assert_eq!(ns.iter().filter(|n| n.pitch == 36).count(), 4 * 7 + 3);
+    assert!(ns.iter().any(|n| n.pitch == 49 && n.pos.0 == 0));
+    // ビルド 4 小節 + 最後の 1 拍は無音
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_drums",
+            json!({ "track_id": "trk_drm001", "style": "techno", "bars": 4, "bar": 11,
+                    "build_bars": 4, "gap_beats": 1, "fill": "none" }),
+        )
+        .await,
+    );
+    assert_eq!(v["fill_bars"], json!([]), "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let b = project.tracks[0].clips[1].notes().unwrap();
+    assert!(b.iter().filter(|n| n.pitch == 38).count() >= 4 + 8 + 16);
+    assert!(b.iter().all(|n| n.pos.0 < 3840 * 4 - 960));
+    // ドラムでないトラック・不明な型はエラー
+    let r = call(
+        &fx,
+        "write_drums",
+        json!({ "track_id": "trk_drm002", "style": "house", "bars": 4 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let r = call(
+        &fx,
+        "write_drums",
+        json!({ "track_id": "trk_drm001", "style": "polka", "bars": 4 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn set_song_plan_places_sections_and_critique_checks_the_plan() {
     let fx = setup().await;
     // 120 BPM: intro 4 + verse 8 + chorus 8 = 20 小節 = 40 秒

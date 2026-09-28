@@ -9,7 +9,7 @@
 pub const CORE: &str = "Glaux(AI と共同作業できる DAW)のプロジェクト編集サーバー。\
 進め方: get_project(include_notes: false)で構造を把握 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
 apply_commands で編集(ノート・クリップの ID は省略可)。\
-伴奏は write_chords、ベースは write_bassline(コード進行から計算)。相対編集は専用ツール: 移調 transpose_notes / 時間移動 shift_notes / クオンタイズ quantize_notes / ハネ swing_notes / \
+ドラムは write_drums、伴奏は write_chords、ベースは write_bassline。相対編集は専用ツール: 移調 transpose_notes / 時間移動 shift_notes / クオンタイズ quantize_notes / ハネ swing_notes / \
 強さ scale_velocity / 旋律の変形 transform_notes。構成は duplicate_clips / insert_bars / delete_bars。\
 曲を作る・大きく直すときは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 → 表情 → 点検)に沿う。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track でトラック別)・analyze_sound。\
@@ -29,6 +29,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    (動かすもの = ビルドのフィルタ等も note に)。マーカーが置かれ、曲の長さ(秒)が返るので依頼の長さに合わせる。\n\
    critique_arrangement が計画と実際(盛り上がりの上がり下がり・鳴らすトラック)を突き合わせる。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
+   ドラムは write_drums(ジャンルの型・区間ごとに intensity を変える・区切りのフィル・ビルドのロールと gap_beats)。\n\
    コード楽器は write_chords で置く(和音の積み方と声部のつながりを計算する。暗算で MIDI 番号を書かない)。\n\
    進行は記号か、key を付けてローマ数字。積み方はジャンルで: ポップのピアノ = drop2 か close + eighth、\n\
    ハウスのスタブ = close + offbeat(gate 0.4)、パッド・ストリングス = spread + sustain、ジャズ = shell か rootless + charleston、\n\
