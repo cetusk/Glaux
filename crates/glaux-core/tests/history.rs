@@ -459,6 +459,14 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                     .map(|i| SectionMarker {
                         tick: Tick(rng.gen_range(0..8) * 3840),
                         name: format!("sec{i}"),
+                        // 計画書の項目(set_song_plan)も付けたり付けなかったり
+                        energy: rng.gen_bool(0.5).then(|| rng.gen_range(0..=10) as f32),
+                        tracks: if rng.gen_bool(0.5) {
+                            vec![format!("t{}", rng.gen_range(0..3))]
+                        } else {
+                            vec![]
+                        },
+                        note: rng.gen_bool(0.3).then(|| format!("note{i}")),
                     })
                     .collect();
                 return Command::SetSections { sections };

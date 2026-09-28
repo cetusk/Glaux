@@ -11,7 +11,7 @@ pub const CORE: &str = "Glaux(AI と共同作業できる DAW)のプロジェク
 apply_commands で編集(ノート・クリップの ID は省略可)。\
 相対編集は専用ツール: 移調 transpose_notes / 時間移動 shift_notes / クオンタイズ quantize_notes / ハネ swing_notes / \
 強さ scale_velocity / 旋律の変形 transform_notes。構成は duplicate_clips / insert_bars / delete_bars。\
-曲を作る・大きく直すときは get_guide {topic: \"workflow\"} の工程(計画 → 骨格 → 表情 → 点検)に沿う。\
+曲を作る・大きく直すときは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 → 表情 → 点検)に沿う。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track でトラック別)・analyze_sound。\
 人間も並行して編集する。project_version が最後に見た値より大きければ get_changes {since: 最後の entry_id} で確認する。\
 定石は get_guide {topic}(workflow / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
@@ -25,8 +25,9 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         "workflow",
         "曲を作る工程と点検表",
         "打ち込みの機械っぽさ・平板さは、AI が作った曲で実際に多かった弱点。次の工程で作る。\n\
-1. 計画: 構成(区間の名前・小節数)・各区間の盛り上がり(0〜10)・役割(何が鳴るか)・動かすもの(ビルドのフィルタ等)を決め、\n\
-   set_sections でマーカーを置く。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
+1. 計画: set_song_plan で計画書を書く。区間の名前・小節数・盛り上がり(energy 0〜10)・鳴らすトラックの名前・役割\n\
+   (動かすもの = ビルドのフィルタ等も note に)。マーカーが置かれ、曲の長さ(秒)が返るので依頼の長さに合わせる。\n\
+   critique_arrangement が計画と実際(盛り上がりの上がり下がり・鳴らすトラック)を突き合わせる。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
    主旋律は短い動機を作り、transform_notes(sequence・transpose・invert)で展開すると統一感が出る。\n\
    繰り返すドラム・リフは add_clip の clip に \"loop\": true, \"loop_len\": 3840(1 小節)を入れ、length を区間の長さにする\n\

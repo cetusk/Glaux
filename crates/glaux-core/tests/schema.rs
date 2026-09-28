@@ -92,7 +92,11 @@ const FIXTURE: &str = r##"{
   },
   "assets": {
     "sha256:ab12cd34": { "path": "audio/vocal_take1.wav", "sample_rate": 48000, "channels": 1, "frames": 480000 }
-  }
+  },
+  "sections": [
+    { "tick": 0, "name": "intro", "energy": 3.0, "tracks": ["Bass"], "note": "ベースだけで始める" },
+    { "tick": 7680, "name": "サビ" }
+  ]
 }"##;
 
 #[test]
@@ -115,6 +119,12 @@ fn fixture_parses_and_roundtrips() {
 
     let (_, vocal_clip) = p.clip(&"clp_7w6v5u".parse().unwrap()).unwrap();
     assert!(!vocal_clip.is_midi());
+
+    // 曲の計画書の項目(無い区間は今までどおり tick と name だけ)
+    assert_eq!(p.sections[0].energy, Some(3.0));
+    assert_eq!(p.sections[0].tracks, vec!["Bass".to_owned()]);
+    assert_eq!(p.sections[1].energy, None);
+    assert!(!p.to_json().unwrap().contains(r#""tracks": []"#));
 
     let json = p.to_json().unwrap();
     let back = Project::from_json(&json).unwrap();
@@ -209,10 +219,12 @@ fn sections_serialize_and_apply() {
             SectionMarker {
                 tick: Tick(3840 * 8),
                 name: "サビ".into(),
+                ..Default::default()
             },
             SectionMarker {
                 tick: Tick(0),
                 name: "intro".into(),
+                ..Default::default()
             },
         ],
     })

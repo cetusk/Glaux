@@ -42,6 +42,9 @@ pub struct SectionMetrics {
     pub notes_per_bar: f64,
     /// 盛り上がりの目安 0〜10(鳴っているトラックの割合・音の密度・音域の広さ)
     pub energy: f64,
+    /// 計画書(set_song_plan)の盛り上がり
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_energy: Option<f32>,
 }
 
 /// 指摘 1 つ
@@ -139,6 +142,111 @@ fn sounding(clip: &Clip) -> Vec<(u64, u64, u8, u8, bool)> {
         }
     }
     out
+}
+
+/// 計画書(set_song_plan)と実際の突き合わせ: 盛り上がりの順番と、鳴らすトラック
+fn check_plan(
+    project: &Project,
+    marks: &[&crate::model::SectionMarker],
+    sections: &[SectionMetrics],
+    spans: &[(usize, usize)],
+    per_bar: &[BarStats],
+    findings: &mut Vec<Finding>,
+) {
+    // 盛り上がり: 計画で 2 以上の差を付けた隣り合う区間が、実際には同じくらいか逆になっている
+    let planned: Vec<(&SectionMetrics, f32)> = sections
+        .iter()
+        .filter_map(|s| s.planned_energy.map(|e| (s, e)))
+        .collect();
+    for w in planned.windows(2) {
+        let ((a, pa), (b, pb)) = (w[0], w[1]);
+        let plan_diff = pb - pa;
+        if plan_diff.abs() < 2.0 {
+            continue;
+        }
+        let real_diff = b.energy - a.energy;
+        if real_diff * plan_diff as f64 <= 0.0 || real_diff.abs() < 0.3 {
+            let way = if plan_diff > 0.0 {
+                "上がる"
+            } else {
+                "下がる"
+            };
+            findings.push(Finding {
+                severity: "warn",
+                target: format!("{} → {}", a.name, b.name),
+                what: format!(
+                    "計画では「{}」から「{}」で盛り上がりが{way}はず({pa} → {pb})が、実際は {:.1} → {:.1}",
+                    a.name, b.name, a.energy, b.energy
+                ),
+                fix: "計画に合わせてトラックの抜き差し・音の密度・音域を変える(または set_song_plan で計画を直す)".to_owned(),
+            });
+        }
+    }
+    // 鳴らすトラック: 計画のトラック名を、音のあるトラックと突き合わせる(名前は大文字小文字・前後の空白を無視)
+    let norm = |s: &str| s.trim().to_lowercase();
+    let sounding_somewhere: Vec<(String, &BarStats)> = project
+        .tracks
+        .iter()
+        .zip(per_bar)
+        .filter(|(_, p)| p.1.iter().any(|c| *c > 0))
+        .map(|(t, p)| (t.name.clone(), p))
+        .collect();
+    for ((m, sec), (b0, b1)) in marks.iter().zip(sections).zip(spans) {
+        if m.tracks.is_empty() {
+            continue;
+        }
+        let want: Vec<String> = m.tracks.iter().map(|t| norm(t)).collect();
+        let mut missing = Vec::new();
+        let mut extra = Vec::new();
+        for (name, (_, counts, _)) in &sounding_somewhere {
+            let here: usize = counts
+                .get(*b0..(*b1).min(counts.len()))
+                .map_or(0, |s| s.iter().sum());
+            let planned = want.contains(&norm(name));
+            if planned && here == 0 {
+                missing.push(name.as_str());
+            } else if !planned && here > 0 {
+                extra.push(name.as_str());
+            }
+        }
+        let unknown: Vec<&str> = m
+            .tracks
+            .iter()
+            .filter(|t| !project.tracks.iter().any(|x| norm(&x.name) == norm(t)))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() || !extra.is_empty() {
+            let mut parts = Vec::new();
+            if !missing.is_empty() {
+                parts.push(format!(
+                    "鳴らすはずの {} が鳴っていない",
+                    missing.join("・")
+                ));
+            }
+            if !extra.is_empty() {
+                parts.push(format!(
+                    "鳴らさないはずの {} が鳴っている",
+                    extra.join("・")
+                ));
+            }
+            findings.push(Finding {
+                severity: "warn",
+                target: sec.name.clone(),
+                what: format!("計画と違う: {}", parts.join("、")),
+                fix: "区間のクリップを置く・消す・分ける(split_clip)か、set_song_plan で計画を直す"
+                    .to_owned(),
+            });
+        }
+        if !unknown.is_empty() {
+            findings.push(Finding {
+                severity: "info",
+                target: sec.name.clone(),
+                what: format!("計画のトラック名 {} が見つからない", unknown.join("・")),
+                fix: "トラックの名前を計画と合わせる(set_track_prop の name)か、計画を直す"
+                    .to_owned(),
+            });
+        }
+    }
 }
 
 pub fn critique(project: &Project) -> Critique {
@@ -342,6 +450,8 @@ pub fn critique(project: &Project) -> Critique {
         .filter(|p| p.1.iter().any(|c| *c > 0))
         .count()
         .max(1);
+    // 区間ごとの小節の範囲 [b0, b1)(計画との突き合わせに使う)
+    let mut spans: Vec<(usize, usize)> = Vec::new();
     for (i, m) in marks.iter().enumerate() {
         let b0 = bar_of(m.tick.0);
         let b1 = marks
@@ -381,8 +491,11 @@ pub fn critique(project: &Project) -> Critique {
             active_tracks: active,
             notes_per_bar: (npb * 10.0).round() / 10.0,
             energy: (energy * 10.0).round() / 10.0,
+            planned_energy: m.energy,
         });
+        spans.push((b0, b1));
     }
+    check_plan(project, &marks, &sections, &spans, &per_bar, &mut findings);
     if sections.is_empty() && song_bars >= 32 {
         findings.push(Finding {
             severity: "info",
@@ -574,6 +687,7 @@ mod tests {
             .map(|(i, n)| SectionMarker {
                 tick: Tick(3840 * 8 * i as u64),
                 name: (*n).into(),
+                ..Default::default()
             })
             .collect();
         let c = critique(&p);
@@ -618,12 +732,53 @@ mod tests {
             .map(|(i, n)| SectionMarker {
                 tick: Tick(3840 * 8 * i as u64),
                 name: (*n).into(),
+                ..Default::default()
             })
             .collect();
         assert!(!critique(&q)
             .findings
             .iter()
             .any(|f| f.what.contains("最初の区間")));
+    }
+
+    #[test]
+    fn the_plan_is_checked_against_what_sounds() {
+        // Bass と Keys が 16 小節ずっと鳴っている。計画: intro は Bass だけで静か、drop は全部で盛り上がる
+        let mut p = song(16, true);
+        p.sections = vec![
+            SectionMarker {
+                tick: Tick(0),
+                name: "intro".into(),
+                energy: Some(3.0),
+                tracks: vec!["bass".into(), "Pad".into()],
+                ..Default::default()
+            },
+            SectionMarker {
+                tick: Tick(3840 * 8),
+                name: "drop".into(),
+                energy: Some(9.0),
+                tracks: vec!["Bass".into(), "Keys".into()],
+                ..Default::default()
+            },
+        ];
+        let c = critique(&p);
+        let whats: Vec<&str> = c.findings.iter().map(|f| f.what.as_str()).collect();
+        // intro で Keys が鳴っている(計画に無い)、盛り上がりが計画どおり上がっていない、Pad が無い
+        assert!(
+            whats.iter().any(|w| w.contains("鳴らさないはずの Keys")),
+            "{whats:?}"
+        );
+        assert!(whats.iter().any(|w| w.contains("上がるはず")), "{whats:?}");
+        assert!(whats.iter().any(|w| w.contains("Pad が見つからない")));
+        assert_eq!(c.sections[0].planned_energy, Some(3.0));
+        // intro から Keys を抜けば、トラックの食い違いと盛り上がりの食い違いは消える
+        if let ClipContent::Midi { notes, .. } = &mut p.tracks[1].clips[0].content {
+            notes.retain(|n| n.pos.0 >= 3840 * 8);
+        }
+        let c = critique(&p);
+        let whats: Vec<&str> = c.findings.iter().map(|f| f.what.as_str()).collect();
+        assert!(!whats.iter().any(|w| w.contains("計画と違う")), "{whats:?}");
+        assert!(!whats.iter().any(|w| w.contains("上がるはず")), "{whats:?}");
     }
 
     #[test]
@@ -663,14 +818,17 @@ mod tests {
             SectionMarker {
                 tick: Tick(0),
                 name: "intro".into(),
+                ..Default::default()
             },
             SectionMarker {
                 tick: Tick(3840 * 8),
                 name: "verse".into(),
+                ..Default::default()
             },
             SectionMarker {
                 tick: Tick(3840 * 16),
                 name: "chorus".into(),
+                ..Default::default()
             },
         ];
         let c = critique(&p);

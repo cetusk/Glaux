@@ -347,10 +347,12 @@ mod tests {
             SectionMarker {
                 tick: Tick(0),
                 name: "intro".into(),
+                ..Default::default()
             },
             SectionMarker {
                 tick: Tick(7680),
                 name: "サビ".into(),
+                ..Default::default()
             },
         ];
         p

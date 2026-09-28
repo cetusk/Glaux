@@ -294,6 +294,19 @@
   interface Marker {
     tick: number;
     name: string;
+    /// 曲の計画書(set_song_plan)の中身。マーカーを動かしても名前を変えても残す
+    energy?: number;
+    tracks?: string[];
+    note?: string;
+  }
+
+  /// マーカーに乗せたときに出す、計画書の中身(無ければ空)
+  function planText(m: Marker): string {
+    const lines: string[] = [];
+    if (m.energy !== undefined && m.energy !== null) lines.push(`計画の盛り上がり: ${m.energy} / 10`);
+    if (m.tracks && m.tracks.length > 0) lines.push(`鳴らすトラック: ${m.tracks.join("・")}`);
+    if (m.note) lines.push(`役割: ${m.note}`);
+    return lines.length > 0 ? `\n${lines.join("\n")}` : "";
   }
 
   const MARKER_PRESETS = ["intro", "Aメロ", "Bメロ", "サビ", "間奏", "outro"];
@@ -320,7 +333,7 @@
   }
 
   function markers(): Marker[] {
-    return (project.sections ?? []).map((m) => ({ tick: m.tick, name: m.name }));
+    return (project.sections ?? []).map((m) => ({ ...m }));
   }
 
   /// 小節の頭にマーカーを置く(既にあれば名前を変える)
@@ -352,6 +365,8 @@
   let renamingMarker = $state<number | null>(null);
 
   function renameMarker(tick: number, name: string) {
+    // Enter の後に入力欄が消えてフォーカスが外れても、Escape で取り消した後でも、2 回目は確定しない
+    if (renamingMarker !== tick) return;
     renamingMarker = null;
     const list = markers();
     const hit = list.find((m) => m.tick === tick);
@@ -1662,7 +1677,7 @@
               : at === sec.tick
                 ? `right:0`
                 : `width:120px`}"
-            title={`${sec.name}(${barAtTick(barList, sec.tick).index + 1} 小節目〜)\nクリックでこの区間を選択 / ドラッグで移動 / ダブルクリックで名前を変更 / 右クリックで削除`}
+            title={`${sec.name}(${barAtTick(barList, sec.tick).index + 1} 小節目〜)${planText(sec)}\nクリックでこの区間を選択 / ドラッグで移動 / ダブルクリックで名前を変更 / 右クリックで削除`}
             onpointerdown={(e) => onMarkerDown(e, sec)}
             onpointermove={onMarkerMove}
             onpointerup={(e) => onMarkerUp(e, sec, next)}
@@ -1679,7 +1694,7 @@
                 use:focusSelect
                 onpointerdown={(e) => e.stopPropagation()}
                 onkeydown={(e) => {
-                  if (e.key === "Enter") renameMarker(sec.tick, e.currentTarget.value);
+                  if (e.key === "Enter" && !e.isComposing) renameMarker(sec.tick, e.currentTarget.value);
                   else if (e.key === "Escape") renamingMarker = null;
                 }}
                 onblur={(e) => renameMarker(sec.tick, e.currentTarget.value)}

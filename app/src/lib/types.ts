@@ -129,7 +129,8 @@ export interface Project {
   master: { volume_db: number; effects: ProjectEffect[]; fx_links?: FxLink[] | null; fx_io_pos?: FxIoPos | null; automation?: AutomationLane[] };
   assets: Record<string, unknown>;
   /** 曲の構成マーカー(tick 昇順)。省略 = なし */
-  sections?: { tick: number; name: string }[];
+  /** 区間のマーカー。energy・tracks・note は曲の計画書(set_song_plan)の中身 */
+  sections?: { tick: number; name: string; energy?: number; tracks?: string[]; note?: string }[];
 }
 
 export type Author =

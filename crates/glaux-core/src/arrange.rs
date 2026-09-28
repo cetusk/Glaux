@@ -303,6 +303,72 @@ pub fn duplicate_clips(
     Ok(out)
 }
 
+/// 曲の計画書の 1 区間(MCP の set_song_plan の引数)
+#[derive(Clone, Debug, Default)]
+pub struct PlanSection {
+    pub name: String,
+    /// 小節数
+    pub bars: u32,
+    /// 盛り上がり 0〜10
+    pub energy: Option<f32>,
+    /// この区間で鳴らすトラックの名前
+    pub tracks: Vec<String>,
+    /// 役割・意図
+    pub note: Option<String>,
+}
+
+/// 計画書の区間を、小節の頭に置く区間のマーカーにする(拍子の変化に沿って小節を数える)。
+/// 返り値は (マーカー, 始まりの小節, 終わりの tick) の並び。`start_bar` は最初の区間の小節(1 始まり)
+pub fn plan_markers(
+    project: &Project,
+    start_bar: u32,
+    plan: &[PlanSection],
+) -> Result<Vec<(SectionMarker, u32, u64)>, String> {
+    if plan.is_empty() || plan.len() > 64 {
+        return Err("区間は 1〜64 個".to_owned());
+    }
+    let mut bar = start_bar.max(1);
+    let mut out = Vec::with_capacity(plan.len());
+    for s in plan {
+        let name = s.name.trim();
+        if name.is_empty() {
+            return Err("区間の名前が空です".to_owned());
+        }
+        if s.bars == 0 || s.bars > 512 {
+            return Err(format!("「{name}」の小節数は 1〜512"));
+        }
+        if let Some(e) = s.energy {
+            if !(0.0..=10.0).contains(&e) {
+                return Err(format!("「{name}」の energy は 0〜10"));
+            }
+        }
+        let (at, len) = bar_range(project, bar, s.bars)
+            .ok_or_else(|| format!("「{name}」の小節を数えられません"))?;
+        out.push((
+            SectionMarker {
+                tick: Tick(at),
+                name: name.to_owned(),
+                energy: s.energy,
+                tracks: s
+                    .tracks
+                    .iter()
+                    .map(|t| t.trim().to_owned())
+                    .filter(|t| !t.is_empty())
+                    .collect(),
+                note: s
+                    .note
+                    .as_ref()
+                    .map(|n| n.trim().to_owned())
+                    .filter(|n| !n.is_empty()),
+            },
+            bar,
+            at + len,
+        ));
+        bar += s.bars;
+    }
+    Ok(out)
+}
+
 /// ループのクリップを、繰り返しを書き出した普通のクリップにする(`ReplaceClip` に渡す)。ループでなければ None。
 /// 1 回目のノートは元の ID のまま、2 回目以降は新しい ID。ループの境目・クリップの終わりをまたぐ音は切り詰める
 /// (鳴り方は変わらない。ループの長さより後ろにある鳴らない音は消える)。
@@ -374,10 +440,12 @@ mod tests {
                 SectionMarker {
                     tick: Tick(0),
                     name: "A".into(),
+                    ..Default::default()
                 },
                 SectionMarker {
                     tick: Tick(BAR * 2),
                     name: "B".into(),
+                    ..Default::default()
                 },
             ],
         })
@@ -507,6 +575,46 @@ mod tests {
             .unwrap();
         assert_ne!(copy.id, id);
         assert!(duplicate_clips(&p, &[id], -1, None).is_err());
+    }
+
+    #[test]
+    fn plan_markers_count_bars_across_time_signature_changes() {
+        let mut p = Project::new("p");
+        // 9 小節目から 3/4
+        p.time_sig_map.push(TimeSigEvent {
+            tick: Tick(BAR * 8),
+            num: 3,
+            den: 4,
+        });
+        let plan = vec![
+            PlanSection {
+                name: "intro".into(),
+                bars: 8,
+                energy: Some(3.0),
+                tracks: vec!["Kick".into(), " ".into()],
+                note: Some("  ".into()),
+            },
+            PlanSection {
+                name: "waltz".into(),
+                bars: 4,
+                ..Default::default()
+            },
+        ];
+        let m = plan_markers(&p, 1, &plan).unwrap();
+        assert_eq!(m[0].0.tick.0, 0);
+        assert_eq!(m[0].0.tracks, vec!["Kick".to_owned()]);
+        assert_eq!(m[0].0.note, None);
+        assert_eq!((m[1].0.tick.0, m[1].1), (BAR * 8, 9));
+        // 3/4 の小節 4 つ
+        assert_eq!(m[1].2, BAR * 8 + 2880 * 4);
+        // 範囲の外はエラー
+        let bad = vec![PlanSection {
+            name: "x".into(),
+            bars: 4,
+            energy: Some(11.0),
+            ..Default::default()
+        }];
+        assert!(plan_markers(&p, 1, &bad).is_err());
     }
 
     #[test]

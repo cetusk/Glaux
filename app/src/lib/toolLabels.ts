@@ -50,6 +50,7 @@ const LABELS: Record<string, ToolLabel> = {
   transform_notes: { short: "旋律の変形", doing: "旋律を展開しています" },
   shape_automation: { short: "動きを付ける", doing: "オートメーションを書いています" },
   critique_arrangement: { short: "編曲の点検", doing: "編曲を点検しています" },
+  set_song_plan: { short: "曲の計画書", doing: "曲の計画を立てています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

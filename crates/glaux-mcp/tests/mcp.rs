@@ -3060,6 +3060,72 @@ async fn apply_groove_takes_many_clips_keeps_the_kick_and_unrolls_loops() {
 }
 
 #[tokio::test]
+async fn set_song_plan_places_sections_and_critique_checks_the_plan() {
+    let fx = setup().await;
+    // 120 BPM: intro 4 + verse 8 + chorus 8 = 20 小節 = 40 秒
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_song_plan",
+            json!({ "sections": [
+                { "name": "intro", "bars": 4, "energy": 3, "tracks": ["Keys"], "note": "鍵盤だけ" },
+                { "name": "verse", "bars": 8, "energy": 5, "tracks": ["Keys", "Bass"] },
+                { "name": "chorus", "bars": 8, "energy": 8, "tracks": ["Keys", "Bass"] }
+            ] }),
+        )
+        .await,
+    );
+    assert_eq!(v["total_bars"], 20, "{v}");
+    assert_eq!(v["end_bar"], 20);
+    assert_eq!(v["duration"], "0:40");
+    assert_eq!(v["sections"][1]["start_bar"], 5);
+    assert_eq!(v["sections"][2]["tick"], 3840 * 12);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.sections.len(), 3);
+    assert_eq!(project.sections[0].note.as_deref(), Some("鍵盤だけ"));
+    assert_eq!(project.sections[2].energy, Some(8.0));
+    // 計画と違う曲: Bass が intro から鳴っている
+    let bass: Vec<Value> = (0..80u64)
+        .map(|i| json!({ "pos": i * 960, "dur": 480, "pitch": 40 + (i % 5) as u8, "vel": 90 + (i % 20) as u8 }))
+        .collect();
+    let keys: Vec<Value> = (0..80u64)
+        .map(|i| json!({ "pos": i * 960 + 7, "dur": 900, "pitch": 64 + (i % 7) as u8, "vel": 70 + (i % 25) as u8 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_track", "track": { "id": "trk_pln001", "name": "Bass", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_pln001", "clip": {
+                    "id": "clp_pln001", "name": "b", "start": 0, "length": 76800, "kind": "midi", "notes": bass } },
+                { "op": "add_track", "track": { "id": "trk_pln002", "name": "Keys", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_pln002", "clip": {
+                    "id": "clp_pln002", "name": "k", "start": 0, "length": 76800, "kind": "midi", "notes": keys } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(&call(&fx, "critique_arrangement", json!({})).await);
+    let text = v.to_string();
+    assert!(text.contains("鳴らさないはずの Bass"), "{text}");
+    assert_eq!(v["sections"][0]["planned_energy"], 3.0);
+    // 1 回の undo で計画(マーカー)も戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(project.sections.is_empty());
+    // 小節数 0 はエラー
+    let r = call(
+        &fx,
+        "set_song_plan",
+        json!({ "sections": [ { "name": "x", "bars": 0 } ] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn transform_notes_develops_a_motif_in_the_key() {
     let fx = setup().await;
     ok_json(&call(&fx, "apply_commands", add_track_args("trk_trf001", "Lead")).await);

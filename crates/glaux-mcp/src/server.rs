@@ -649,6 +649,32 @@ pub struct AddGhostNotesParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct SongPlanSection {
+    /// 区間の名前(intro / Aメロ / ビルド / ドロップ など)。
+    pub name: String,
+    /// 小節数(4 / 8 / 16 が基本)。
+    pub bars: u32,
+    /// 盛り上がり 0〜10(critique_arrangement の区間の energy と同じ目盛り。山は 8〜10、静かな区間は 2〜5)。
+    #[serde(default)]
+    pub energy: Option<f32>,
+    /// この区間で鳴らすトラックの名前(トラックを作る前でもよい。critique が実際と突き合わせる)。
+    #[serde(default)]
+    pub tracks: Option<Vec<String>>,
+    /// 役割・意図(例「キックとベースを抜いてパッドと旋律だけ」「フィルタを開いて次のドロップを予告」)。
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SetSongPlanParams {
+    /// 区間の並び(曲の頭から順に。区間のマーカーはこれで置き直す)。
+    pub sections: Vec<SongPlanSection>,
+    /// 最初の区間の小節(既定 1)。
+    #[serde(default)]
+    pub start_bar: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct TransformNotesParams {
     /// 対象クリップ ID(`clp_xxxxxx`)。
     pub clip_id: String,
@@ -3985,9 +4011,74 @@ impl GlauxServer {
     }
 
     #[tool(
+        description = "曲の計画書を書く(曲を作るときの最初の一手)。区間ごとに名前・小節数・盛り上がり(energy 0〜10)・\
+        鳴らすトラックの名前・役割を渡すと、小節の頭に区間のマーカーを置き直し、各区間の始まりの小節と曲の長さ(秒)を返す\
+        (「3 分の曲」の長さ合わせに使う)。拍子の変化も考慮して小節を数える。critique_arrangement は、計画の盛り上がりの\
+        上がり下がりと鳴らすトラックが実際と合っているかも点検する。計画を変えたら書き直す。1 回の undo で戻る。"
+    )]
+    async fn set_song_plan(
+        &self,
+        params: Parameters<SetSongPlanParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("set_song_plan");
+        let p = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        let plan: Vec<glaux_core::arrange::PlanSection> = p
+            .sections
+            .into_iter()
+            .map(|s| glaux_core::arrange::PlanSection {
+                name: s.name,
+                bars: s.bars,
+                energy: s.energy,
+                tracks: s.tracks.unwrap_or_default(),
+                note: s.note,
+            })
+            .collect();
+        let bars_of: Vec<u32> = plan.iter().map(|s| s.bars).collect();
+        let start_bar = p.start_bar.unwrap_or(1);
+        let made = glaux_core::arrange::plan_markers(&project, start_bar, &plan)?;
+        let end_tick = made.last().map_or(0, |m| m.2);
+        let total_bars: u32 = bars_of.iter().sum();
+        let seconds = project
+            .tempo_map
+            .tick_to_seconds(glaux_core::Tick(end_tick));
+        let sections_json: Vec<Value> = made
+            .iter()
+            .zip(&bars_of)
+            .map(|((m, bar, _), bars)| {
+                json!({ "name": m.name, "start_bar": bar, "bars": bars, "tick": m.tick,
+                    "energy": m.energy, "tracks": m.tracks, "note": m.note })
+            })
+            .collect();
+        // 今の曲の中身の終わり(計画より長い・短いを知らせる)
+        let content_end = project.end().0;
+        let content_bars = glaux_core::arrange::bar_grid(&project, content_end.max(1))
+            .iter()
+            .filter(|(s, _)| *s < content_end)
+            .count();
+        let label = format!("曲の計画書({} 区間・{total_bars} 小節)", made.len());
+        let command = Command::SetSections {
+            sections: made.into_iter().map(|(m, _, _)| m).collect(),
+        };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["sections"] = json!(sections_json);
+        v["total_bars"] = json!(total_bars);
+        v["end_bar"] = json!(start_bar + total_bars - 1);
+        let whole = seconds.round() as u64;
+        v["duration"] = json!(format!("{}:{:02}", whole / 60, whole % 60));
+        v["duration_sec"] = json!((seconds * 10.0).round() / 10.0);
+        v["content_bars"] = json!(content_bars);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
         description = "編曲を点検する(完了を報告する前に必ず使う)。楽譜だけで分かる「機械的すぎる(16 分の格子どおり・強弱が平ら)」\
         「動きが無い(オートメーションが無い)」「変化が無い(同じ小節の繰り返し)」「区間ごとの起伏が小さい」「低い音域の濁り」\
-        「音域の端」を見つけ、直し方(使う道具)と一緒に返す。warn は直してから報告する。トラックごと・区間ごとの数値\
+        「音域の端」「計画書(set_song_plan)と違う(盛り上がりの上がり下がり・鳴らすトラック)」を見つけ、直し方(使う道具)と一緒に返す。warn は直してから報告する。トラックごと・区間ごとの数値\
         (格子どおりの割合・ベロシティの幅・違う小節の数・区間の energy 0〜10)も返す。音の点検は analyze_audio。"
     )]
     async fn critique_arrangement(&self) -> ToolResult {

@@ -123,6 +123,7 @@ pub fn parse(bytes: &[u8]) -> Result<MidiSong, String> {
                     song.markers.push(SectionMarker {
                         tick: Tick(conv(abs)),
                         name: text(b),
+                        ..Default::default()
                     });
                 }
                 TrackEventKind::Meta(MetaMessage::TrackName(b))
@@ -352,6 +353,7 @@ pub fn import_commands(
             sections.push(SectionMarker {
                 tick,
                 name: m.name.clone(),
+                ..Default::default()
             });
         }
         sections.sort_by_key(|m| m.tick);
@@ -861,6 +863,7 @@ mod tests {
         p.sections = vec![SectionMarker {
             tick: Tick(2880),
             name: "サビ".into(),
+            ..Default::default()
         }];
         // ドラム(内蔵)
         let mut d = Track::new(TrackId::new(), "Drums", TrackKind::Midi);

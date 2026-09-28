@@ -58,10 +58,20 @@ pub struct Project {
 }
 
 /// 曲構成のマーカー。「サビだけ盛り上げて」のような構造単位の指示に使う。
-#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+/// 曲の計画書(MCP の set_song_plan)の中身(盛り上がり・鳴らすトラック・役割)も持つ。点検が計画と実際を比べる
+#[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SectionMarker {
     pub tick: Tick,
     pub name: String,
+    /// 計画の盛り上がり 0〜10(critique_arrangement の区間の energy と同じ目盛り)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy: Option<f32>,
+    /// 計画で、この区間に鳴らすトラックの名前(空 = 決めていない)。トラックを作る前に書けるよう名前で持つ
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<String>,
+    /// 計画の役割・意図のメモ(例「キックとベースを抜いてパッドだけ」)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 fn default_time_sig() -> Vec<TimeSigEvent> {
