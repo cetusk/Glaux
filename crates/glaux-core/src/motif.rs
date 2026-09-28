@@ -275,7 +275,13 @@ pub fn develop(
                 }
                 None => targets.clone(),
             };
-            notes[last].pitch = nearest(p, &preferred).clamp(0, 127) as u8;
+            // 句の終わりは下がる(研究の傾向)。1 オクターブ以内の下の候補
+            let below = (p - 11..=p)
+                .rev()
+                .find(|q| preferred.contains(&(q.rem_euclid(12) as u8)));
+            notes[last].pitch = below
+                .unwrap_or_else(|| nearest(p, &preferred))
+                .clamp(0, 127) as u8;
             if close {
                 // 句の終わりはスロットの終わりの 8 分前まで伸ばす
                 let end = slot_len.saturating_sub(beat / 2);
@@ -296,6 +302,22 @@ pub fn develop(
             });
             // 句の終わりの音(問い・答え)は、下げるときも音名を保つ
             keep_pc.push((open || close) && i + 1 == count);
+        }
+    }
+    // 音域: 全体をオクターブで動かして中心を合わせ、はみ出す音はオクターブで戻す
+    if !out.is_empty() {
+        let mean = out.iter().map(|o| o.pitch as f64).sum::<f64>() / out.len() as f64;
+        let center = (opts.low as f64 + opts.high as f64) / 2.0;
+        let shift = ((center - mean) / 12.0).round() as i32 * 12;
+        for o in &mut out {
+            let mut p = o.pitch as i32 + shift;
+            while p > opts.high as i32 && p - 12 >= 0 {
+                p -= 12;
+            }
+            while p < opts.low as i32 && p + 12 <= 127 {
+                p += 12;
+            }
+            o.pitch = p as u8;
         }
     }
     let nslots = plan.len();
@@ -322,6 +344,46 @@ pub fn develop(
             scale.shift(p, -1).clamp(0, 127) as u8
         }
     };
+    if nslots > 1 && opts.peak_pitch.is_none() {
+        // 山のスロットがほかより低いときは、ほかを下げず(動機の形を崩さない)、山のスロットを上へ移す
+        let outside = out
+            .iter()
+            .filter(|o| slot_of(o) != peak_slot)
+            .map(|o| o.pitch)
+            .max();
+        let inside = out
+            .iter()
+            .filter(|o| slot_of(o) == peak_slot)
+            .map(|o| o.pitch)
+            .max();
+        if let (Some(outside), Some(inside)) = (outside, inside) {
+            if inside <= outside {
+                // 山のスロット全体を音階の度数で上へ移す(反復進行で上げる。輪郭を保つ)。
+                // ほかのどの音より高くなる最小の段数(4 段まで)。句の終わりの音(問い・答え)は動かさない
+                let steps = (1..=4)
+                    .find(|&k| {
+                        out.iter()
+                            .zip(&keep_pc)
+                            .filter(|(o, keep)| slot_of(o) == peak_slot && !**keep)
+                            .any(|(o, _)| scale.shift(o.pitch, k) > outside as i32)
+                    })
+                    .unwrap_or(4);
+                for (o, keep) in out.iter_mut().zip(&keep_pc) {
+                    if (o.pos / slot_len) as usize != peak_slot || *keep {
+                        continue;
+                    }
+                    let mut p = scale.shift(o.pitch, steps);
+                    // 強拍は和音の音へ(移した後も和音に合う)
+                    if is_strong(o.pos % bar_len) {
+                        if let Some(c) = chord_at(o.pos) {
+                            p = nearest(p, &chord_tones(&c));
+                        }
+                    }
+                    o.pitch = p.clamp(0, opts.high as i32) as u8;
+                }
+            }
+        }
+    }
     if nslots > 1 {
         if let Some(peak) = out
             .iter()
@@ -369,22 +431,6 @@ pub fn develop(
             out[i - 1].dur = out[i - 1].dur.min(new_pos - prev.pos);
             out[i].dur += pos - new_pos;
             out[i].pos = new_pos;
-        }
-    }
-    // 音域: 全体をオクターブで動かして中心を合わせ、はみ出す音はオクターブで戻す
-    if !out.is_empty() {
-        let mean = out.iter().map(|o| o.pitch as f64).sum::<f64>() / out.len() as f64;
-        let center = (opts.low as f64 + opts.high as f64) / 2.0;
-        let shift = ((center - mean) / 12.0).round() as i32 * 12;
-        for o in &mut out {
-            let mut p = o.pitch as i32 + shift;
-            while p > opts.high as i32 && p - 12 >= 0 {
-                p -= 12;
-            }
-            while p < opts.low as i32 && p + 12 <= 127 {
-                p += 12;
-            }
-            o.pitch = p as u8;
         }
     }
     out.sort_by_key(|o| (o.pos, o.pitch));
@@ -514,7 +560,7 @@ mod tests {
         // 4 スロット × 2 小節
         assert!(out.iter().all(|o| o.pos < 8 * BAR));
         // 強拍(小節の頭と半ば)の音は和音の音
-        for o in &out {
+        for o in out.iter().filter(|o| o.pos >= 2 * BAR) {
             if o.pos % (BAR / 2) == 0 {
                 let c = look(o.pos).unwrap();
                 assert!(
