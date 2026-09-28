@@ -5601,22 +5601,27 @@ impl GlauxServer {
             None => role.contours.to_vec(),
         };
         let bars = p.bars.unwrap_or(8).clamp(1, 64);
-        // 動機の長さ: 4 小節以下の区間は 1 小節(2 小節の動機だと繰り返しが無くなる)
-        let motif_bars = match &fixed {
-            Some((_, b, _)) => *b,
-            None => p.motif_bars.map_or_else(
-                || {
-                    if bars <= 4 || (!genre.breath && forms.iter().all(|f| f == "loop")) {
-                        1
+        // 動機の長さ(案ごとに選ぶ候補)。4 小節以下の偶数小節の区間は 1 小節と 2 小節を案ごとに混ぜる
+        // (1 小節の動機は全部同じリズムに、2 小節の動機は繰り返しが無くなりやすい。点検の点数で選ぶ)
+        let motif_bar_choices: Vec<u64> = match (&fixed, p.motif_bars) {
+            (Some((_, b, _)), _) => vec![*b],
+            (None, Some(b)) => vec![b.clamp(1, 2) as u64],
+            (None, None) => {
+                if bars <= 4 {
+                    if bars.is_multiple_of(2) {
+                        vec![1, 2]
                     } else {
-                        2
+                        vec![1]
                     }
-                },
-                |b| b.clamp(1, 2) as u64,
-            ),
+                } else if !genre.breath && forms.iter().all(|f| f == "loop") {
+                    vec![1]
+                } else {
+                    vec![2]
+                }
+            }
         };
-        let slots = (bars as u64).div_ceil(motif_bars) as usize;
-        let total_bars = slots as u32 * motif_bars as u32;
+        let unit = *motif_bar_choices.iter().max().unwrap_or(&1);
+        let total_bars = (bars as u64).div_ceil(unit) as u32 * unit as u32;
         let (clip_start, clip_len) =
             glaux_core::arrange::bar_range(&project, first_bar, total_bars)
                 .ok_or("小節を数えられません")?;
@@ -5659,9 +5664,6 @@ impl GlauxServer {
             Some(r) => parse_range(Some(r))?,
             None => role.range,
         };
-        let peak_slot = p
-            .peak_bar
-            .map(|b| (b.saturating_sub(first_bar) as u64 / motif_bars) as usize);
         let peak_pitch = match &p.peak {
             Some(pk) => Some(
                 chord::parse_note(pk).ok_or_else(|| format!("peak の音名が読めません: {pk}"))?,
@@ -5686,6 +5688,13 @@ impl GlauxServer {
             let seed = base_seed.wrapping_add(k);
             let form = forms[(seed % forms.len() as u64) as usize].clone();
             let contour = contours[((seed / forms.len() as u64) % contours.len() as u64) as usize];
+            let motif_bars = motif_bar_choices[((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33)
+                % motif_bar_choices.len() as u64)
+                as usize];
+            let slots = (total_bars as u64 / motif_bars) as usize;
+            let peak_slot = p
+                .peak_bar
+                .map(|b| (b.saturating_sub(first_bar) as u64 / motif_bars) as usize);
             let (rhythm, rhythm_name) = match &fixed {
                 Some((r, _, name)) => (r.clone(), name.clone()),
                 None => melgen::pick_rhythm(vocab, role, motif_bars, bar_len, genre.breath, seed),

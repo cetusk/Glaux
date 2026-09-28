@@ -338,6 +338,21 @@ pub fn develop(
         // 句の終わり: 問い(開く)は 2 度か 5 度、答え(閉じる)は主音。答えは伸ばす
         let open = ops.contains(&Op::Tail);
         let close = ops.contains(&Op::Cadence);
+        // 答えは、スロットの後半の強拍(小節の頭・半ば)で始まる最後の音で止め、その後の音を落として伸ばす
+        // (句の終わりの小節が動機と同じリズムのままにならない。1 小節の動機なら 3 拍目で止める)
+        if close {
+            let half = (bar_len / 2).max(1);
+            let cut = notes
+                .iter()
+                .map(|n| n.offset)
+                .filter(|&o| o >= slot_len / 2 && o % half < 60 && o + beat <= slot_len)
+                .max();
+            if let Some(c) = cut {
+                if notes.iter().any(|n| n.offset > c) {
+                    notes.retain(|n| n.offset <= c);
+                }
+            }
+        }
         if (open || close) && !notes.is_empty() {
             let last = notes.len() - 1;
             let targets: Vec<u8> = if close {
