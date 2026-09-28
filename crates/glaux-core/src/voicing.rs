@@ -101,6 +101,12 @@ pub fn voice_progression(chords: &[Chord], opts: &Options) -> Result<Vec<Voiced>
         if let Some(t) = opts.top {
             c += (top - t as f64).abs() * 0.8;
         }
+        // 隣どうしの半音(短 2 度)はぶつかって濁る。一番下の 2 声なら特に
+        for (i, w) in v.windows(2).enumerate() {
+            if w[1] - w[0] == 1 {
+                c += if i == 0 { 5.0 } else { 3.0 };
+            }
+        }
         c
     };
     let mut cost: Vec<f64> = cands[0].iter().map(|v| unary(v)).collect();
@@ -265,6 +271,17 @@ fn pick_tones(chord: &Chord, style: Style, voices: usize) -> Vec<Vec<u8>> {
     }
     for t in by(Role::Fifth).filter(|t| !t.optional) {
         push(pc(t.interval), &mut order);
+    }
+    // テンションのある和音は、根音より 5 度を先に(Am9 の 4 声 = C E G B。根音はベースに任せる定番の形)。
+    // テンションが無ければ根音が先(三和音・7th)
+    let has_tension = chord
+        .tones
+        .iter()
+        .any(|t| t.role == Role::Tension && !t.optional);
+    if has_tension {
+        for t in by(Role::Fifth).filter(|t| t.optional) {
+            push(pc(t.interval), &mut order);
+        }
     }
     if style != Style::Rootless {
         push(chord.root, &mut order);
@@ -575,6 +592,25 @@ mod tests {
         // 低音を置かないときは、分数コードの音を一番下に
         let v = voice_progression(&chords(&["C/E"]), &opts(Style::Close, 3)).unwrap();
         assert_eq!(v[0].upper[0] % 12, 4);
+    }
+
+    #[test]
+    fn ninth_chords_drop_the_fifth_before_the_root_and_avoid_clusters() {
+        // 4 声の close: 根音を省いて 3・5・7・9(Am9 = C E G B)。半音のぶつかりが無い
+        let v = voice_progression(
+            &chords(&["Am9", "Fmaj9", "Cmaj9", "G6"]),
+            &opts(Style::Close, 4),
+        )
+        .unwrap();
+        let mut am9: Vec<u8> = v[0].upper.iter().map(|p| p % 12).collect();
+        am9.sort_unstable();
+        assert_eq!(am9, vec![0, 4, 7, 11]);
+        for x in &v[..3] {
+            assert!(x.upper.windows(2).all(|w| w[1] - w[0] > 1), "{v:?}");
+        }
+        // 5 声なら根音も入る
+        let v = voice_progression(&chords(&["Am9"]), &opts(Style::Close, 5)).unwrap();
+        assert!(v[0].upper.iter().any(|p| p % 12 == 9));
     }
 
     #[test]

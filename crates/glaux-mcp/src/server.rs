@@ -4147,7 +4147,11 @@ impl GlauxServer {
             })?,
             None => voicing::Style::Close,
         };
-        let (low, high) = parse_range(p.range.as_deref())?;
+        // シェルは左手の音域(上の声部 D3〜G4、低音 E2〜G3)を既定に
+        let (low, high) = match (&p.range, style) {
+            (None, voicing::Style::Shell) => (50, 67),
+            _ => parse_range(p.range.as_deref())?,
+        };
         let top = match &p.top {
             Some(t) => {
                 Some(chord::parse_note(t).ok_or_else(|| format!("top の音名が読めません: {t}"))?)
@@ -4211,7 +4215,13 @@ impl GlauxServer {
             low,
             high,
             top,
-            bass: (p.bass.unwrap_or(false) || style == voicing::Style::Shell).then_some((36, 52)),
+            bass: (p.bass.unwrap_or(false) || style == voicing::Style::Shell).then_some(
+                if style == voicing::Style::Shell {
+                    (40, 55)
+                } else {
+                    (36, 52)
+                },
+            ),
         };
         let voiced = voicing::voice_progression(&chords_list, &opts)?;
         let notes_per_chord: Vec<Vec<u8>> = voiced
