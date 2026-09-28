@@ -8,13 +8,14 @@
 /// 共通の指示(MCP サーバーの instructions。アプリ内チャットのシステムプロンプトにも同じ骨子を入れる)
 pub const CORE: &str = "Glaux(AI と共同作業できる DAW)のプロジェクト編集サーバー。\
 進め方: get_project(include_notes: false)で構造を把握 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
-apply_commands で編集(ノート・クリップの ID は省略可)。\
-相対編集は専用ツール: transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity / transform_notes。構成は duplicate_clips / insert_bars / delete_bars。\
-曲を作る・大きく直すときは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
-write_drums・write_chords・write_bassline・write_transition → 表情 → 点検)に沿う。\
-感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track でトラック別)・analyze_sound。\
-人間も並行して編集する。project_version が最後に見た値より大きければ get_changes {since: 最後の entry_id} で確認する。\
-定石は get_guide {topic}(workflow / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
+apply_commands で編集。\
+相対編集: transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity / transform_notes。構成: duplicate_clips / insert_bars / delete_bars。\
+曲を作るときは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
+write_drums・write_chords・write_bassline・write_transition → 旋律 → 表情 → 点検)に沿う。\
+旋律は動機だけ書いて develop_motif で展開、critique_melody で点検。\
+感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track)・analyze_sound。\
+人間も並行して編集する。project_version が進んでいたら get_changes {since: 最後の entry_id} で確認する。\
+定石は get_guide {topic}(workflow / melody / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
 ハネ(swing_notes)の後は apply_groove(quantize 0)を重ねる。仕上げは master_mix。\
 完了の報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを確かめ、\
 確認結果を一言添える。ミックスを変えたら compare_mix で前後を比べる。大きな試行錯誤の前は checkpoint。";
@@ -37,7 +38,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    ギター = open + strum_ms 15。区間ごとに rhythm・range・voices を変えると区間の差になる。\n\
    ベースは write_bassline(伴奏と同じ進行の文字列を渡す): ハウス・ポップ = root8 か offbeat、ディスコ = octave、\n\
    トラップ = 808(C1〜C3)、ファンク = funk か follow_kick(キックと同じ位置)、ジャズ・ローファイ = walking、バラード = root。\n\
-   主旋律は短い動機を作り、transform_notes(sequence・transpose・invert)で展開すると統一感が出る。\n\
+   主旋律は短い動機だけ書き、develop_motif で形式に沿って展開して critique_melody で点検する(topic: melody)。\n\
    繰り返すドラム・リフは add_clip の clip に \"loop\": true, \"loop_len\": 3840(1 小節)を入れ、length を区間の長さにする\n\
    (1 回で済む。試しの編集は要らない)。区間ごとに別のクリップにしておくと、区間の差を付けやすい。\n\
 3. 区間の差: 同じ繰り返しにしない。区間ごとにトラックを抜き差しし、区切りの前 1〜2 小節にフィル・ライザー、\n\
@@ -53,7 +54,28 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 7. 点検(完了の報告の前に必ず): critique_arrangement の warn を直す → analyze_harmony で調性 → analyze_audio でバランス。\n\
 点検表: 格子どおりが 95% を超えるトラックが無い / 強弱に幅がある / 3 分の曲でオートメーションが数本以上ある / \n\
 区間の energy に差がある(山と谷)/ 同じ型のまま 3 区間以上続くトラックが無い / 低い音域でトラックがぶつからない /\n\
-主旋律に山(一番高い音)と終止がある / マスターに master_mix の処理がある。",
+主旋律の critique_melody に warn が無い / マスターに master_mix の処理がある。",
+    ),
+    (
+        "melody",
+        "旋律の作り方と点検",
+        "旋律の「センス」の多くは数えられる性質。LLM は音符を全部書くと、動機を写すだけ・リズムが単調・形式が崩れる、に\n\
+なりやすい。意図(動機・形式・山の位置)だけ決め、展開と点検は道具に任せる。\n\
+工程: 1. 計画書で山(サビ・ドロップ)の区間を決める → 2. 山のフック(1〜2 小節の動機)を先に書く。書く前に言葉で\n\
+「リズムの型・輪郭(弧 / 上昇 / 下降)・一番高い音の位置」を決める → 3. develop_motif で展開(サビは sentence、\n\
+A メロ・ヴァースは period、EDM・トラップは loop)→ 4. ヴァースはフックのリズムの頭から、低く・音を少なく\n\
+(同じ動機を seq(-2) や別の形式で)→ 5. critique_melody の warn を直す → 6. seed や form を変えた 2〜3 案を\n\
+別のクリップに作り、score と聴いた印象で選ぶ(使わない案は消す)。\n\
+良い旋律の性質(研究): 順次進行が多く、7 半音以上の跳躍の後は約 72% が逆向きに戻る。句は上がって下がる弧。\n\
+最高音は山の区間で初めて出し、1 回か、フックとして同じ音を叩く。句の終わりは長く伸ばし下がる。強拍は和音の音\n\
+(外すなら次の音で 2 度で解決)。ロックの歌では約 23% の音が 8 分前に食う(1・3 拍の直前が多い)。\n\
+覚えやすいのは「ありふれた輪郭 + 局所に 1〜2 か所の驚き(跳躍・和音の外の音・食い)」と反復の多さ。\n\
+2〜4 小節ごとに息継ぎ(8 分以上の休符)。音域は歌で 19 半音以内、サビの中心はヴァースより 2〜5 半音高く。\n\
+ジャンル: ポップ・J-POP = A メロ(低く語る)→ B メロ(上昇・溜め)→ サビ(最高音・伸ばし・リフレイン)/\n\
+EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、16 分の裏に食う、音域は狭く / トラップ = 短音階・\n\
+和声的短音階・フリギアの短いループ、休符多め / ローファイ = ペンタトニック + 7 度・9 度、少ない音 /\n\
+ジャズ = 強拍に 3 度・7 度、半音で近づく・上下から挟む / ファンクのホーン = 16 分の短いキメ、休符が多い。\n\
+トランスのフックはブレイクの前に単純化した形で予告する。",
     ),
     (
         "groove",

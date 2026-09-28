@@ -824,6 +824,78 @@ pub struct SuggestProgressionParams {
     pub count: Option<usize>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct CritiqueMelodyParams {
+    /// 旋律のトラック ID(トラックのすべてのクリップ)。clip_id でクリップ 1 つだけでもよい。
+    #[serde(default)]
+    pub track_id: Option<String>,
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// しきい値の組: pop(既定。jpop・rock・ballad も)/ edm(house・trance)/ trap(hiphop)/ lofi / jazz / funk(disco)。
+    #[serde(default)]
+    pub genre: Option<String>,
+    /// キー("C major" など)。省略で旋律から推定。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 下の和音の進行(write_chords と同じ書き方)。省略でほかのトラックから小節ごとに推定する。
+    #[serde(default)]
+    pub chords: Option<String>,
+    /// chords の始まりの小節(既定 1)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DevelopMotifParams {
+    /// 置く MIDI トラックの ID。新しいクリップを作る。
+    pub track_id: String,
+    /// 動機(1〜2 小節)。"音名:長さ" を空白で並べる。長さ: w 全 / h 2 分 / q 4 分 / e 8 分 / s 16 分 / t 32 分、
+    /// 後ろの . で付点、3 で 3 連。r は休み。例 "E5:q D5:e C5:e E5:q G5:q | G5:w"(| は読み飛ばす)。
+    /// または motif_clip_id で既存のクリップの音を動機にする。
+    #[serde(default)]
+    pub motif: Option<String>,
+    #[serde(default)]
+    pub motif_clip_id: Option<String>,
+    /// 形式: sentence(既定。提示 → 反復 → 断片化 → 終止。サビ・フック)/ period(問い → 答え。A メロ)/ aaba / aab /
+    /// call_response / loop(EDM・トラップ。繰り返して最後だけ変える)。または動機の長さごとの操作の並び
+    /// "a | adapt | frag seq(-1) | adapt cadence"(a / adapt / seq(n) / frag / invert / retro / tail / cadence / fill)。
+    #[serde(default)]
+    pub form: Option<String>,
+    /// 下の和音の進行(write_chords と同じ書き方。足りなければ繰り返す)。省略でほかのトラックから推定。
+    #[serde(default)]
+    pub chords: Option<String>,
+    /// キー。省略で進行か動機から推定。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 始まりの小節(既定 1)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+    /// 最高音を置く小節(曲の小節番号)。省略で全体の 60〜75% の位置。
+    #[serde(default)]
+    pub peak_bar: Option<u32>,
+    /// 最高音の高さ("A5" など)。省略で展開したままの高さ。
+    #[serde(default)]
+    pub peak: Option<String>,
+    /// 強拍の音を 8 分前へ食わせる割合 0〜1(既定 0.2。ロックの歌の実測 約 0.23 に合わせた値。EDM は 0.3〜0.5)。
+    #[serde(default)]
+    pub anticipate: Option<f64>,
+    /// 音域(既定は動機の中心から ±10 半音くらい。例 "C4-G5")。
+    #[serde(default)]
+    pub range: Option<String>,
+    /// 点検のしきい値の組(critique_melody の genre)。
+    #[serde(default)]
+    pub genre: Option<String>,
+    /// 強さ(既定 92。強拍は少し強く)。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    /// 乱数の種(食わせる音の選び方。既定 1)。
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// クリップの名前(既定 "Melody")。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -1099,7 +1171,7 @@ fn find_param_range(v: &Value, path: &str) -> Option<(f64, f64)> {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct GetGuideParams {
-    /// workflow / groove / instruments / genres / expression / mix / audio / sound_match / clap。省略で一覧。
+    /// workflow / melody / groove / instruments / genres / expression / mix / audio / sound_match / clap。省略で一覧。
     #[serde(default)]
     pub topic: Option<String>,
 }
@@ -3620,8 +3692,8 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "曲の作り方の工程・グルーブ・音作り・ジャンル・奏法・ミックス・音声素材・似た音作り・CLAP の定石を読む。\
-        topic: workflow(曲を作る工程と点検表。曲を作るときは最初に読む)/ groove(グルーブの型・前ノリ後ノリ・ゴースト・オートメーションの形)/\
+        description = "曲の作り方の工程・旋律・グルーブ・音作り・ジャンル・奏法・ミックス・音声素材・似た音作り・CLAP の定石を読む。\
+        topic: workflow(曲を作る工程と点検表。曲を作るときは最初に読む)/ melody(旋律の工程・良い旋律の性質・ジャンルの語法)/ groove(グルーブの型・前ノリ後ノリ・ゴースト・オートメーションの形)/\
         instruments(音源の選び方・エレキギター・SoundFont)/ genres(テンポ・ドラムの型・進行・ベース・構成・EDM の音作り)/\
         expression(奏法・レガート・ポルタメント・ピッチカーブ)/ mix(エフェクト・バス・バランス・オートメーション)/\
         audio(音声素材・分離・譜起こし・テンポ追従)/ sound_match(似た音を作る)/ clap(プラグイン)。\
@@ -4953,6 +5025,372 @@ impl GlauxServer {
             out["moods"] = json!(m);
         }
         Ok(JsonText(out))
+    }
+
+    #[tool(
+        description = "旋律を点検する(旋律を書いたら必ず)。旋律の「センス」のうち数えられる性質を測り、直し方と一緒に返す: \
+        跳躍の多さ(5 半音以上の割合)・跳躍の後に戻るか(研究では約 72% が戻る)・区間の中の音域・最高音が計画書の山の区間で\
+        初めて出るか・強拍が和音の音か・リズムの単調さと小節の型の使い回し・動機の反復率(覚えやすさ。多すぎも指摘)・\
+        食い(8 分の裏で始まる音)・句と息継ぎ・句の終わりが伸びるか・音ごとの驚き(Temperley の式)。genre でしきい値を切り替える。\
+        score(0〜100)は複数の案を比べるのに使う。和音は chords(進行)か、ほかのトラックから推定。"
+    )]
+    async fn critique_melody(&self, params: Parameters<CritiqueMelodyParams>) -> ToolResult {
+        use glaux_core::melody;
+        let _activity = self.handle.begin_activity("critique_melody");
+        let p = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        // 旋律の音
+        let (track, clips): (&glaux_core::Track, Vec<&glaux_core::Clip>) =
+            match (&p.clip_id, &p.track_id) {
+                (Some(c), _) => {
+                    let cid = glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?;
+                    let (t, clip) = project.clip(&cid).ok_or("クリップが見つかりません")?;
+                    (t, vec![clip])
+                }
+                (None, Some(t)) => {
+                    let tid = glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?;
+                    let t = project.track(&tid).ok_or("トラックが見つかりません")?;
+                    (t, t.clips.iter().collect())
+                }
+                (None, None) => return Err("track_id か clip_id を指定してください".to_owned()),
+            };
+        let notes: Vec<melody::MelNote> = clips
+            .iter()
+            .flat_map(|c| {
+                c.playback_notes()
+                    .into_iter()
+                    .map(move |n| melody::MelNote {
+                        pos: c.start.0 + n.pos.0,
+                        dur: n.dur.0,
+                        pitch: n.pitch,
+                    })
+            })
+            .collect();
+        let genre_name = p.genre.as_deref().unwrap_or("pop");
+        let genre = melody::genre(genre_name).ok_or_else(|| {
+            format!(
+                "genre が不明です({genre_name})。使えるもの: {}",
+                melody::GENRES
+                    .iter()
+                    .map(|g| g.name)
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            )
+        })?;
+        let key = match &p.key {
+            Some(k) => Some(
+                glaux_core::chord::Key::parse(k)
+                    .ok_or_else(|| format!("key は \"C major\" / \"A minor\" の形(got: {k})"))?,
+            ),
+            None => None,
+        };
+        // 和音: 進行が渡されればそれ、無ければほかのトラック(ドラム以外)から小節ごとに推定
+        let chord_spans: Vec<(u64, u64, Vec<u8>)> = match &p.chords {
+            Some(ch) => {
+                let l = progression_layout(&project, ch, p.key.as_deref(), None, p.bar, false)?;
+                l.spans
+                    .iter()
+                    .filter_map(|s| {
+                        s.chord.map(|c| {
+                            (
+                                l.clip_start + s.start,
+                                l.clip_start + s.start + s.len,
+                                l.chords[c].pitch_classes(),
+                            )
+                        })
+                    })
+                    .collect()
+            }
+            None => {
+                let others: Vec<glaux_core::TrackId> = project
+                    .tracks
+                    .iter()
+                    .filter(|t| t.id != track.id && !is_drum_track(t))
+                    .map(|t| t.id.clone())
+                    .collect();
+                let h = glaux_core::harmony::analyze(&project, Some(&others), None);
+                let mut v: Vec<(u64, u64, Vec<u8>)> = Vec::new();
+                for (i, c) in h.chords.iter().enumerate() {
+                    let end = h.chords.get(i + 1).map_or(u64::MAX, |n| n.tick);
+                    if let Some(pcs) = glaux_core::harmony::chord_pitch_classes(&c.chord) {
+                        v.push((c.tick, end, pcs));
+                    }
+                }
+                v
+            }
+        };
+        let chord_at = move |t: u64| {
+            chord_spans
+                .iter()
+                .find(|(a, b, _)| *a <= t && t < *b)
+                .map(|(_, _, p)| p.clone())
+        };
+        let mut marks = project.sections.clone();
+        marks.sort_by_key(|m| m.tick);
+        let end = project.end().0;
+        let sections = marks
+            .iter()
+            .enumerate()
+            .map(|(i, m)| melody::SectionSpan {
+                name: m.name.clone(),
+                start: m.tick.0,
+                end: marks.get(i + 1).map_or(end, |n| n.tick.0),
+                energy: m.energy,
+            })
+            .collect();
+        let ctx = melody::Context {
+            project: &project,
+            chord_at: &chord_at,
+            key,
+            genre,
+            sections,
+            target: track.name.clone(),
+        };
+        let c = melody::critique(&notes, &ctx);
+        Ok(JsonText(
+            serde_json::to_value(&c).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    #[tool(
+        description = "動機を形式に沿って展開して旋律にする(旋律は LLM が全部の音を書くより、動機だけ書いてこれで展開する)。\
+        form: sentence(提示 → 反復 → 断片化 → 終止)/ period(問い → 答え)/ aaba / aab / call_response / loop か操作の並び。\
+        動機のリズムと輪郭を保ったまま、強拍の音を和音の音に合わせ(adapt)、音階の度数で移し、問いは 2 度・5 度で開き、\
+        答えは主音で閉じて伸ばす。最高音は全体の 60〜75% の位置(peak_bar)に 1 回だけ置き、anticipate の割合で強拍の音を\
+        8 分前へ食わせる。新しいクリップを作り、critique_melody の結果(score と指摘)も返す。seed と form を変えて\
+        2〜3 案を作り、点検と聴き比べで選ぶとよい。1 回の undo で戻る。"
+    )]
+    async fn develop_motif(
+        &self,
+        params: Parameters<DevelopMotifParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::{chord, melody, motif};
+        let _activity = self.handle.begin_activity("develop_motif");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err("MIDI トラックを指定してください".to_owned());
+        }
+        let first_bar = p.bar.unwrap_or(1).max(1);
+        let (clip_start, bar_len) =
+            glaux_core::arrange::bar_range(&project, first_bar, 1).ok_or("小節を数えられません")?;
+        // 動機
+        let notes: Vec<motif::MotifNote> = match (&p.motif, &p.motif_clip_id) {
+            (Some(m), _) => motif::parse_motif(&m.replace('|', " "))?,
+            (None, Some(c)) => {
+                let cid = glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?;
+                let (_, clip) = project.clip(&cid).ok_or("動機のクリップが見つかりません")?;
+                let ns = clip.playback_notes();
+                let first = ns
+                    .iter()
+                    .map(|n| clip.start.0 + n.pos.0)
+                    .min()
+                    .ok_or("動機のクリップに音がありません")?;
+                let grid = glaux_core::arrange::bar_grid(&project, first + 1);
+                let bar0 = grid
+                    .iter()
+                    .rev()
+                    .find(|(s, _)| *s <= first)
+                    .map_or(0, |g| g.0);
+                ns.iter()
+                    .map(|n| motif::MotifNote {
+                        offset: clip.start.0 + n.pos.0 - bar0,
+                        dur: n.dur.0,
+                        pitch: n.pitch,
+                    })
+                    .collect()
+            }
+            (None, None) => return Err("motif か motif_clip_id を指定してください".to_owned()),
+        };
+        let plan = motif::parse_plan(p.form.as_deref().unwrap_or("sentence"))?;
+        let motif_end = notes.iter().map(|n| n.offset + n.dur).max().unwrap_or(0);
+        let slot_bars = motif_end.div_ceil(bar_len).clamp(1, 4);
+        let total_bars = slot_bars as u32 * plan.len() as u32;
+        let clip_len = glaux_core::arrange::bar_range(&project, first_bar, total_bars)
+            .ok_or("小節を数えられません")?
+            .1;
+        // 和音(クリップの頭からの tick → 和音)
+        let (spans, chords_list): (Vec<glaux_core::comp::Span>, Vec<chord::Chord>) = match &p.chords
+        {
+            Some(ch) => {
+                let prog_bars = chord::split_progression(ch)?.len() as u32;
+                let repeat = total_bars.div_ceil(prog_bars.max(1));
+                let l = progression_layout(
+                    &project,
+                    ch,
+                    p.key.as_deref(),
+                    Some(repeat),
+                    Some(first_bar),
+                    false,
+                )?;
+                (l.spans, l.chords)
+            }
+            None => {
+                let others: Vec<glaux_core::TrackId> = project
+                    .tracks
+                    .iter()
+                    .filter(|t| t.id != tid && !is_drum_track(t))
+                    .map(|t| t.id.clone())
+                    .collect();
+                let h = glaux_core::harmony::analyze(&project, Some(&others), None);
+                let mut spans = Vec::new();
+                let mut list = Vec::new();
+                for (i, c) in h.chords.iter().enumerate() {
+                    let end = h.chords.get(i + 1).map_or(u64::MAX, |n| n.tick);
+                    if end <= clip_start || c.tick >= clip_start + clip_len {
+                        continue;
+                    }
+                    if let Ok(Some(ch)) = chord::parse(&c.chord) {
+                        let s0 = c.tick.max(clip_start) - clip_start;
+                        let s1 = end.min(clip_start + clip_len) - clip_start;
+                        list.push(ch);
+                        spans.push(glaux_core::comp::Span {
+                            start: s0,
+                            len: s1 - s0,
+                            chord: Some(list.len() - 1),
+                        });
+                    }
+                }
+                (spans, list)
+            }
+        };
+        let look = motif::chord_lookup(&spans, &chords_list);
+        // キー: 指定 → 進行の最初の和音と動機から推定
+        let key = match &p.key {
+            Some(k) => {
+                chord::Key::parse(k).ok_or_else(|| format!("key は \"C major\" の形(got: {k})"))?
+            }
+            None => melody::guess_key(
+                &notes
+                    .iter()
+                    .map(|n| melody::MelNote {
+                        pos: n.offset,
+                        dur: n.dur,
+                        pitch: n.pitch,
+                    })
+                    .chain(chords_list.iter().flat_map(|c| {
+                        c.pitch_classes().into_iter().map(|pc| melody::MelNote {
+                            pos: 0,
+                            dur: 240,
+                            pitch: 60 + pc,
+                        })
+                    }))
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        let center = notes.iter().map(|n| n.pitch as i32).sum::<i32>() / notes.len() as i32;
+        let (low, high) = match &p.range {
+            Some(r) => parse_range(Some(r))?,
+            None => (
+                (center - 10).clamp(0, 117) as u8,
+                (center + 10).clamp(10, 127) as u8,
+            ),
+        };
+        let peak_slot = p
+            .peak_bar
+            .map(|b| (b.saturating_sub(first_bar) / slot_bars as u32) as usize);
+        let peak_pitch = match &p.peak {
+            Some(pk) => Some(
+                chord::parse_note(pk).ok_or_else(|| format!("peak の音名が読めません: {pk}"))?,
+            ),
+            None => None,
+        };
+        let opts = motif::Options {
+            key,
+            low,
+            high,
+            peak_slot,
+            peak_pitch,
+            anticipate: p.anticipate.unwrap_or(0.2).clamp(0.0, 1.0),
+            seed: p.seed.unwrap_or(1),
+        };
+        let out = motif::develop(&notes, &plan, bar_len, &look, &opts)?;
+        let vel = p.velocity.unwrap_or(92).clamp(1, 127);
+        let mut clip = glaux_core::Clip::new_midi(
+            glaux_core::ClipId::new(),
+            p.name.clone().unwrap_or_else(|| "Melody".to_owned()),
+            glaux_core::Tick(clip_start),
+            glaux_core::Tick(clip_len),
+        );
+        let clip_id = clip.id.clone();
+        if let Some(ns) = clip.notes_mut() {
+            *ns = out
+                .iter()
+                .filter(|o| o.pos < clip_len)
+                .map(|o| glaux_core::Note {
+                    id: glaux_core::NoteId::new(),
+                    pos: glaux_core::Tick(o.pos),
+                    dur: glaux_core::Tick(o.dur.min(clip_len - o.pos)),
+                    pitch: o.pitch,
+                    vel: if o.pos % (bar_len / 2).max(1) == 0 {
+                        (vel as u16 + 6).min(127) as u8
+                    } else {
+                        vel
+                    },
+                    articulation: Default::default(),
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                })
+                .collect();
+            ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+        }
+        // 点検(展開した旋律に)
+        let mel: Vec<melody::MelNote> = out
+            .iter()
+            .map(|o| melody::MelNote {
+                pos: clip_start + o.pos,
+                dur: o.dur,
+                pitch: o.pitch,
+            })
+            .collect();
+        let abs_look = |t: u64| {
+            t.checked_sub(clip_start)
+                .and_then(&look)
+                .map(|c| c.pitch_classes())
+        };
+        let mut marks = project.sections.clone();
+        marks.sort_by_key(|m| m.tick);
+        let end = project.end().0.max(clip_start + clip_len);
+        let sections = marks
+            .iter()
+            .enumerate()
+            .map(|(i, m)| melody::SectionSpan {
+                name: m.name.clone(),
+                start: m.tick.0,
+                end: marks.get(i + 1).map_or(end, |n| n.tick.0),
+                energy: m.energy,
+            })
+            .collect();
+        let genre =
+            melody::genre(p.genre.as_deref().unwrap_or("pop")).unwrap_or(&melody::GENRES[0]);
+        let crit = melody::critique(
+            &mel,
+            &melody::Context {
+                project: &project,
+                chord_at: &abs_look,
+                key: Some(key),
+                genre,
+                sections,
+                target: track.name.clone(),
+            },
+        );
+        let label = format!("旋律の展開({} 小節)", total_bars);
+        let command = Command::AddClip { track: tid, clip };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["clip_id"] = json!(clip_id);
+        v["bars"] = json!(total_bars);
+        v["notes"] = json!(out.len());
+        v["key"] = json!(crit.key);
+        v["score"] = json!(crit.score);
+        v["findings"] = json!(crit.findings);
+        v["metrics"] = json!(crit.metrics);
+        Ok(JsonText(v))
     }
 
     #[tool(

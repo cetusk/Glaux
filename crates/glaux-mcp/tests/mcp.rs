@@ -3406,6 +3406,177 @@ async fn suggest_progression_returns_chords_ready_for_write_chords() {
 }
 
 #[tokio::test]
+async fn critique_melody_scores_a_shaped_line_above_a_random_one() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_mel001", "Lead")).await);
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_mel002", "Keys")).await);
+    // 形のある 8 小節(C | F | G | C の上): 動機の繰り返し、強拍は和音の音、句の終わりを伸ばす
+    let q = 960u64;
+    let e = 480u64;
+    let bars: [&[(u64, u64, u8)]; 8] = [
+        &[
+            (0, q, 64),
+            (q, e, 62),
+            (q + e, e, 60),
+            (2 * q, q, 64),
+            (3 * q, q, 67),
+        ],
+        &[(0, 3 * q, 69)],
+        &[
+            (0, q, 62),
+            (q, e, 60),
+            (q + e, e, 59),
+            (2 * q, q, 62),
+            (3 * q, q, 67),
+        ],
+        &[(0, 3 * q, 64)],
+        &[
+            (0, q, 64),
+            (q, e, 62),
+            (q + e, e, 60),
+            (2 * q, q, 64),
+            (3 * q, q, 67),
+        ],
+        &[(0, q, 72), (q, q, 69), (2 * q, 2 * q, 65)],
+        &[
+            (0, q, 71),
+            (q, e, 69),
+            (q + e, e, 67),
+            (2 * q, q, 62),
+            (3 * q, q, 59),
+        ],
+        &[(0, 4 * q, 60)],
+    ];
+    let good: Vec<Value> = bars
+        .iter()
+        .enumerate()
+        .flat_map(|(b, ns)| {
+            ns.iter().map(move |&(p, d, pitch)| {
+                json!({ "pos": b as u64 * 3840 + p, "dur": d, "pitch": pitch, "vel": 90 })
+            })
+        })
+        .collect();
+    // でたらめな 8 分の列(跳び回り、戻らず、休み無し)
+    let pitches = [
+        60u8, 71, 62, 74, 64, 76, 57, 69, 59, 72, 61, 75, 58, 70, 63, 77,
+    ];
+    let bad: Vec<Value> = (0..64u64)
+        .map(|i| json!({ "pos": i * 480, "dur": 480, "pitch": pitches[(i as usize * 7) % 16], "vel": 90 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "旋律", "commands": [
+                { "op": "add_clip", "track": "trk_mel001", "clip": {
+                    "id": "clp_mel001", "name": "good", "start": 0, "length": 30720, "kind": "midi", "notes": good } },
+                { "op": "add_clip", "track": "trk_mel002", "clip": {
+                    "id": "clp_mel002", "name": "bad", "start": 0, "length": 30720, "kind": "midi", "notes": bad } }
+            ] }),
+        )
+        .await,
+    );
+    let g = ok_json(
+        &call(
+            &fx,
+            "critique_melody",
+            json!({ "clip_id": "clp_mel001", "chords": "C | F | G | C | C | F | G | C", "key": "C major" }),
+        )
+        .await,
+    );
+    let b = ok_json(
+        &call(
+            &fx,
+            "critique_melody",
+            json!({ "track_id": "trk_mel002", "chords": "C | F | G | C | C | F | G | C", "genre": "jpop" }),
+        )
+        .await,
+    );
+    assert_eq!(g["metrics"]["strong_chord_tone"], 1.0, "{g}");
+    assert!(g["score"].as_u64().unwrap() >= 80, "{g}");
+    assert!(b["score"].as_u64().unwrap() < 60, "{b}");
+    assert_eq!(b["genre"], "pop");
+    assert!(b["findings"].to_string().contains("跳躍が多すぎる"));
+    // 和音を渡さなければ、ほかのトラックから推定する(エラーにならない)
+    ok_json(&call(&fx, "critique_melody", json!({ "track_id": "trk_mel001" })).await);
+    let r = call(
+        &fx,
+        "critique_melody",
+        json!({ "track_id": "trk_mel001", "genre": "polka" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn develop_motif_turns_a_motif_into_a_shaped_phrase() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_mot001", "Lead")).await);
+    // 2 小節の動機を sentence で 8 小節に
+    let v = ok_json(
+        &call(
+            &fx,
+            "develop_motif",
+            json!({ "track_id": "trk_mot001", "motif": "E5:q D5:e C5:e E5:q G5:q | G5:w",
+                    "chords": "C | F | G | C | Am | F | G | C", "key": "C major", "bar": 5 }),
+        )
+        .await,
+    );
+    assert_eq!(v["bars"], 8, "{v}");
+    assert!(v["score"].as_u64().unwrap() >= 70, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let clip = &project.tracks[0].clips[0];
+    assert_eq!((clip.start.0, clip.length.0), (3840 * 4, 3840 * 8));
+    let ns = clip.notes().unwrap();
+    // 最後は主音で伸ばす。最高音は 1 回
+    assert_eq!(ns.last().unwrap().pitch % 12, 0);
+    let hi = ns.iter().map(|n| n.pitch).max().unwrap();
+    assert_eq!(ns.iter().filter(|n| n.pitch == hi).count(), 1);
+    // 既存のクリップ(1 小節の動機)を period で(進行は足りなければ繰り返す)
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "動機", "commands": [
+                { "op": "add_clip", "track": "trk_mot001", "clip": {
+                    "id": "clp_mot009", "name": "m", "start": 3840 * 30, "length": 3840, "kind": "midi", "notes": [
+                        { "pos": 0, "dur": 960, "pitch": 69, "vel": 90 },
+                        { "pos": 960, "dur": 480, "pitch": 72, "vel": 90 },
+                        { "pos": 1440, "dur": 480, "pitch": 71, "vel": 90 },
+                        { "pos": 1920, "dur": 1920, "pitch": 69, "vel": 90 } ] } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "develop_motif",
+            json!({ "track_id": "trk_mot001", "motif_clip_id": "clp_mot009", "form": "period",
+                    "chords": "Am | F", "bar": 20, "anticipate": 0.0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["bars"], 4, "{v}");
+    assert_eq!(v["key"], "A minor", "{v}");
+    // 読めない形式・動機はエラー
+    let r = call(
+        &fx,
+        "develop_motif",
+        json!({ "track_id": "trk_mot001", "motif": "E5:q", "form": "rondo xyz" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let r = call(
+        &fx,
+        "develop_motif",
+        json!({ "track_id": "trk_mot001", "motif": "Q9:q" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn set_song_plan_places_sections_and_critique_checks_the_plan() {
     let fx = setup().await;
     // 120 BPM: intro 4 + verse 8 + chorus 8 = 20 小節 = 40 秒
