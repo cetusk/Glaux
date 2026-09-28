@@ -3060,6 +3060,86 @@ async fn apply_groove_takes_many_clips_keeps_the_kick_and_unrolls_loops() {
 }
 
 #[tokio::test]
+async fn write_chords_voices_a_progression_with_a_rhythm() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_chd001", "Keys")).await);
+    // 王道進行(C)をドロップ 2・裏拍の刻みで、2 回
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_chords",
+            json!({ "track_id": "trk_chd001", "chords": "IVmaj7 | V7 | iii7 | vi", "key": "C major",
+                    "style": "drop2", "rhythm": "offbeat", "repeat": 2, "bar": 3 }),
+        )
+        .await,
+    );
+    assert_eq!(v["bars"], 8, "{v}");
+    let names: Vec<&str> = v["chords"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["chord"].as_str().unwrap())
+        .take(4)
+        .collect();
+    assert_eq!(names, vec!["Fmaj7", "G7", "Em7", "Am"]);
+    assert_eq!(v["chords"][0]["bar"], 3);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let clip = &project.tracks[0].clips[0];
+    // 3 小節目から 8 小節
+    assert_eq!((clip.start.0, clip.length.0), (3840 * 2, 3840 * 8));
+    let notes = clip.notes().unwrap();
+    // 裏拍に 4 回 × 4 声 × 8 小節
+    assert_eq!(notes.len(), 4 * 4 * 8, "{}", notes.len());
+    // 各小節の音は和音の構成音だけ(Fmaj7 = F A C E)
+    let pcs = |bar: u64| -> Vec<u8> {
+        let mut v: Vec<u8> = notes
+            .iter()
+            .filter(|n| n.pos.0 / 3840 == bar)
+            .map(|n| n.pitch % 12)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    assert_eq!(pcs(0), vec![0, 4, 5, 9]);
+    assert_eq!(pcs(1), vec![2, 5, 7, 11]);
+    assert!(notes.iter().all(|n| n.pos.0 % 960 == 480));
+    assert!(v["mean_motion"].as_f64().unwrap() < 8.0, "{v}");
+    // 伸ばし(既定): 同じ和音が続く小節は 1 つにまとめる。低音を足す
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_chd002", "Pad")).await);
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_chords",
+            json!({ "track_id": "trk_chd002", "chords": "Am7 | % | Dm9 G13 | Cmaj9", "style": "spread", "bass": true }),
+        )
+        .await,
+    );
+    assert_eq!(v["chords"].as_array().unwrap().len(), 4, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let pad = project.tracks[1].clips[0].notes().unwrap();
+    let first: Vec<_> = pad.iter().filter(|n| n.pos.0 == 0).collect();
+    assert_eq!(first.len(), 5);
+    assert!(first.iter().all(|n| n.dur.0 == 3840 * 2));
+    // 低音は A(根音)
+    assert_eq!(first.iter().map(|n| n.pitch).min().unwrap() % 12, 9);
+    // 1 回の undo で消える
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(project.tracks[1].clips.is_empty());
+    // 読めないコードはまとめて知らせる
+    let r = call(
+        &fx,
+        "write_chords",
+        json!({ "track_id": "trk_chd002", "chords": "Am7 | Hx | Cq" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let text = format!("{r:?}");
+    assert!(text.contains("Hx") && text.contains("Cq"), "{text}");
+}
+
+#[tokio::test]
 async fn set_song_plan_places_sections_and_critique_checks_the_plan() {
     let fx = setup().await;
     // 120 BPM: intro 4 + verse 8 + chorus 8 = 20 小節 = 40 秒

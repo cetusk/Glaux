@@ -13,7 +13,9 @@
 
 pub mod apply;
 pub mod arrange;
+pub mod chord;
 pub mod command;
+pub mod comp;
 pub mod critique;
 pub mod error;
 pub mod groove;
@@ -26,6 +28,7 @@ pub mod shape;
 pub mod time;
 pub mod transform;
 pub mod validate;
+pub mod voicing;
 
 pub use apply::{Applied, Change};
 pub use command::{Command, EffectProp, NoteChange, Target, TrackProp};

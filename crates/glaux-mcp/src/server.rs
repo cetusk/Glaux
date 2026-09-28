@@ -649,6 +649,74 @@ pub struct AddGhostNotesParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct WriteChordsParams {
+    /// 置く MIDI トラックの ID(`trk_xxxxxx`)。新しいクリップを作って置く。
+    pub track_id: String,
+    /// コード進行。`|` で小節を区切り、小節の中は空白で区切って均等に分ける。`%` は前の小節をもう一度、N.C. は休み。
+    /// 記号(Am7 / Fmaj7 / G7(b9) / Bbmaj9 / C/E / F#m7b5)か、key を指定すればローマ数字(vi7 / IVmaj7 / V7/V / bVII)。
+    /// 例: "Am7 | Fmaj7 | C G/B | %"
+    pub chords: String,
+    /// 始まりの小節(既定 1)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+    /// 進行を何回繰り返すか(既定 1)。
+    #[serde(default)]
+    pub repeat: Option<u32>,
+    /// ローマ数字を読むキー("C major" / "A minor" / "F#m")。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 積み方: close(密集)/ open(開離)/ drop2(ピアノ・ギターの定番)/ drop3 / spread(広い。パッド・ストリングス)/
+    /// shell(3 度と 7 度だけ。低音は根音)/ rootless(根音を省く。ベースが別にあるジャズ)。既定 close。
+    #[serde(default)]
+    pub style: Option<String>,
+    /// 上の声部の数 2〜6(既定 4。shell は 2)。
+    #[serde(default)]
+    pub voices: Option<u8>,
+    /// 上の声部の音域: "low"(A2〜A4)/ "mid"(E3〜E5、既定)/ "high"(C4〜C6)か "E3-C5" の形。
+    #[serde(default)]
+    pub range: Option<String>,
+    /// 一番上の声部を寄せる高さ("E5" など)。旋律の線をそろえたいとき。
+    #[serde(default)]
+    pub top: Option<String>,
+    /// true で低音(根音か分数コードの最低音)を C2〜E3 に足す(ピアノの左手)。ベースのトラックが別にあるなら false(既定)。
+    #[serde(default)]
+    pub bass: Option<bool>,
+    /// リズム: sustain(和音ごとに伸ばす。既定)/ whole / half / quarter / eighth / offbeat(ハウスのスタブ)/
+    /// charleston / backbeat / syncopated か、1 小節を等分した文字列(x = 打つ、- = 伸ばす、. = 休み。例 "x..x..x...x..x..")。
+    #[serde(default)]
+    pub rhythm: Option<String>,
+    /// 伸ばさない音の長さの割合 0.1〜1(既定 0.9。スタブを短く切るなら 0.3〜0.5)。
+    #[serde(default)]
+    pub gate: Option<f64>,
+    /// 強さ 1〜127(既定 88。拍の頭は少し強くなる)。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    /// 下の音から順に遅らせる(ms。ギターのストローク 10〜25、既定 0)。
+    #[serde(default)]
+    pub strum_ms: Option<f64>,
+    /// クリップの名前(既定 "Chords")。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// "E3-C5" / "low" / "mid" / "high" を音域に
+fn parse_range(s: Option<&str>) -> Result<(u8, u8), String> {
+    let s = s.unwrap_or("mid").trim();
+    match s.to_ascii_lowercase().as_str() {
+        "low" => return Ok((45, 69)),
+        "mid" => return Ok((52, 76)),
+        "high" => return Ok((60, 84)),
+        _ => {}
+    }
+    let (a, b) = s
+        .split_once(['-', '~', '〜'])
+        .ok_or_else(|| format!("range は low / mid / high か \"E3-C5\" の形(got: {s})"))?;
+    let lo = glaux_core::chord::parse_note(a).ok_or_else(|| format!("音名が読めません: {a}"))?;
+    let hi = glaux_core::chord::parse_note(b).ok_or_else(|| format!("音名が読めません: {b}"))?;
+    Ok((lo.min(hi), lo.max(hi)))
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SongPlanSection {
     /// 区間の名前(intro / Aメロ / ビルド / ドロップ など)。
     pub name: String,
@@ -4008,6 +4076,226 @@ impl GlauxServer {
         v["added"] = json!(n_added);
         v["key"] = json!(key_name);
         Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "コード進行から伴奏を書く(和音の積み方と声部のつながりを計算して、指定のリズムで置く)。\
+        進行は記号(Am7 / G7(b9) / C/E)か、key を付けてローマ数字(IVmaj7 V7 iii7 vi)。`|` で小節、空白で小節内を均等に分ける。\
+        積み方(style: close / open / drop2 / drop3 / spread / shell / rootless)と声の数・音域に沿って、各声部の動きが最も小さく、\
+        平行 5 度・8 度を避け、低音域で濁らない並びを選ぶ。top で一番上の声部の高さをそろえる。リズムは名前\
+        (sustain / whole / half / quarter / eighth / offbeat / charleston / backbeat / syncopated)か \"x..x-...\" の文字列。\
+        トラックに新しいクリップを作る(返り値 clip_id)。返り値の chords に各和音の実際の音。ずれ・強弱は後から apply_groove。\
+        1 回の undo で戻る。"
+    )]
+    async fn write_chords(
+        &self,
+        params: Parameters<WriteChordsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::{chord, comp, voicing};
+        let _activity = self.handle.begin_activity("write_chords");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err("MIDI トラックを指定してください".to_owned());
+        }
+        let key = match &p.key {
+            Some(k) => Some(chord::Key::parse(k).ok_or_else(|| {
+                format!("key は \"C major\" / \"A minor\" / \"F#m\" の形(got: {k})")
+            })?),
+            None => None,
+        };
+        let mut bars_sym = chord::split_progression(&p.chords)?;
+        let repeat = p.repeat.unwrap_or(1).clamp(1, 64) as usize;
+        bars_sym = bars_sym
+            .iter()
+            .cloned()
+            .cycle()
+            .take(bars_sym.len() * repeat)
+            .collect();
+        if bars_sym.len() > 512 {
+            return Err("小節が多すぎます(512 まで)".to_owned());
+        }
+        // 記号を読む(読めないものはまとめて知らせる)
+        let mut errors = Vec::new();
+        let parsed: Vec<Vec<Option<chord::Chord>>> = bars_sym
+            .iter()
+            .map(|bar| {
+                bar.iter()
+                    .map(|sym| match chord::parse_in_key(sym, key) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            errors.push(e);
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        if !errors.is_empty() {
+            errors.dedup();
+            return Err(format!("コードが読めません: {}", errors.join(" / ")));
+        }
+        let rhythm = comp::parse_rhythm(p.rhythm.as_deref().unwrap_or("sustain"))?;
+        let style = match &p.style {
+            Some(s) => voicing::Style::parse(s).ok_or_else(|| {
+                format!(
+                    "style は close / open / drop2 / drop3 / spread / shell / rootless(got: {s})"
+                )
+            })?,
+            None => voicing::Style::Close,
+        };
+        let (low, high) = parse_range(p.range.as_deref())?;
+        let top = match &p.top {
+            Some(t) => {
+                Some(chord::parse_note(t).ok_or_else(|| format!("top の音名が読めません: {t}"))?)
+            }
+            None => None,
+        };
+        // 小節の位置
+        let first_bar = p.bar.unwrap_or(1).max(1);
+        let n_bars = bars_sym.len() as u32;
+        let (clip_start, clip_len) = glaux_core::arrange::bar_range(&project, first_bar, n_bars)
+            .ok_or("小節を数えられません")?;
+        let bar_list: Vec<(u64, u64)> = (0..n_bars)
+            .map(|i| {
+                glaux_core::arrange::bar_range(&project, first_bar + i, 1)
+                    .map(|(s, l)| (s - clip_start, l))
+                    .ok_or("小節を数えられません")
+            })
+            .collect::<Result<_, _>>()?;
+        // 区間(小節の中を均等に分ける)。sustain は同じ和音が続けば 1 つにまとめる
+        let mut chords_list: Vec<chord::Chord> = Vec::new();
+        let mut spans: Vec<comp::Span> = Vec::new();
+        let mut span_bar: Vec<u32> = Vec::new();
+        for (bi, (bar_chords, &(bstart, blen))) in parsed.iter().zip(&bar_list).enumerate() {
+            let k = bar_chords.len() as u64;
+            for (ci, c) in bar_chords.iter().enumerate() {
+                let start = bstart + blen * ci as u64 / k;
+                let end = bstart + blen * (ci as u64 + 1) / k;
+                let same_as_prev = rhythm.is_none()
+                    && spans.last().is_some_and(|last: &comp::Span| {
+                        last.start + last.len == start
+                            && match (last.chord, c) {
+                                (Some(i), Some(c)) => chords_list[i].name == c.name,
+                                (None, None) => true,
+                                _ => false,
+                            }
+                    });
+                if same_as_prev {
+                    let last = spans.last_mut().expect("直前がある");
+                    last.len = end - last.start;
+                    continue;
+                }
+                let idx = c.as_ref().map(|c| {
+                    chords_list.push(c.clone());
+                    chords_list.len() - 1
+                });
+                spans.push(comp::Span {
+                    start,
+                    len: end - start,
+                    chord: idx,
+                });
+                span_bar.push(first_bar + bi as u32);
+            }
+        }
+        if chords_list.is_empty() {
+            return Err("鳴らすコードがありません(すべて N.C.)".to_owned());
+        }
+        let voices = p.voices.map_or(4, |v| v as usize);
+        let opts = voicing::Options {
+            style,
+            voices,
+            low,
+            high,
+            top,
+            bass: (p.bass.unwrap_or(false) || style == voicing::Style::Shell).then_some((36, 52)),
+        };
+        let voiced = voicing::voice_progression(&chords_list, &opts)?;
+        let notes_per_chord: Vec<Vec<u8>> = voiced
+            .iter()
+            .map(|v| v.bass.into_iter().chain(v.upper.iter().copied()).collect())
+            .collect();
+        let ticks_per_ms = glaux_core::PPQ as f64
+            * project.tempo_map.bpm_at(glaux_core::Tick(clip_start))
+            / 60_000.0;
+        let comp_opts = comp::CompOptions {
+            gate: p.gate.unwrap_or(0.9).clamp(0.1, 1.0),
+            velocity: p.velocity.unwrap_or(88).clamp(1, 127),
+            strum_ticks: (p.strum_ms.unwrap_or(0.0).clamp(0.0, 80.0) * ticks_per_ms).round() as u64,
+        };
+        let rendered = comp::render(
+            &spans,
+            &notes_per_chord,
+            rhythm.as_deref(),
+            &bar_list,
+            &comp_opts,
+        );
+        let mut clip = glaux_core::Clip::new_midi(
+            glaux_core::ClipId::new(),
+            p.name.clone().unwrap_or_else(|| "Chords".to_owned()),
+            glaux_core::Tick(clip_start),
+            glaux_core::Tick(clip_len),
+        );
+        let clip_id = clip.id.clone();
+        if let Some(ns) = clip.notes_mut() {
+            *ns = rendered
+                .iter()
+                .map(|n| glaux_core::Note {
+                    id: glaux_core::NoteId::new(),
+                    pos: glaux_core::Tick(n.pos),
+                    dur: glaux_core::Tick(n.dur),
+                    pitch: n.pitch,
+                    vel: n.vel,
+                    articulation: Default::default(),
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                })
+                .collect();
+            ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+        }
+        // 返り値: 各和音の実際の音
+        let mut summary = Vec::new();
+        let mut motion = 0i32;
+        let mut changes = 0i32;
+        for (si, s) in spans.iter().enumerate() {
+            let Some(ci) = s.chord else { continue };
+            let v = &voiced[ci];
+            if ci > 0 {
+                let prev = &voiced[ci - 1];
+                motion += prev
+                    .upper
+                    .iter()
+                    .zip(&v.upper)
+                    .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                    .sum::<i32>();
+                changes += 1;
+            }
+            summary.push(json!({
+                "bar": span_bar[si],
+                "chord": chords_list[ci].name,
+                "notes": v.upper.iter().map(|p| chord::note_name(*p)).collect::<Vec<_>>(),
+                "bass": v.bass.map(chord::note_name),
+            }));
+        }
+        let label = format!("コード進行({} 小節・{} 和音)", n_bars, chords_list.len());
+        let command = Command::AddClip { track: tid, clip };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut out = mutated_json(&m);
+        out["entry_id"] = json!(entry_id);
+        out["clip_id"] = json!(clip_id);
+        out["bars"] = json!(n_bars);
+        out["notes"] = json!(rendered.len());
+        out["chords"] = json!(summary);
+        out["mean_motion"] = json!(if changes == 0 {
+            0.0
+        } else {
+            (motion as f64 / changes as f64 * 10.0).round() / 10.0
+        });
+        Ok(JsonText(out))
     }
 
     #[tool(
