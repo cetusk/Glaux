@@ -73,7 +73,8 @@ The AI can only use Glaux's tools — it cannot read or write files on your PC o
 
 ## Connect from an MCP client
 
-While the app is running, an HTTP MCP server listens at `http://127.0.0.1:41920/mcp`.
+While the app is running, an HTTP MCP server listens at `http://127.0.0.1:41920/mcp`
+(when several Glaux windows run at once, the later ones take the next free port, 41921 and up; the "MCP" item in the status bar shows it).
 
 ```bat
 claude mcp add --transport http glaux http://127.0.0.1:41920/mcp

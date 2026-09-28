@@ -163,6 +163,8 @@ export interface HistorySnapshot {
 export interface AppInfo {
   project_dir: string;
   mcp_url: string;
+  /** 起動時に知らせること(開こうとした曲が別の Glaux で開かれていた・窓口のポートを変えた。行ごとに 1 つ) */
+  startup_notice?: string | null;
 }
 
 export interface RecentProject {

@@ -31,12 +31,16 @@ use std::sync::Arc;
 use tauri::{Emitter, State};
 
 const DEFAULT_MCP_PORT: u16 = 41920;
+/// 窓口のポートが使われていたら、この数だけ次のポートを試す(Glaux を複数起動したとき)
+const MCP_PORT_TRIES: u16 = 20;
 
 struct AppState {
     handle: SessionHandle,
     /// 現在のプロジェクトフォルダ(プロジェクト切り替えで変わる)
     project_dir: std::sync::Mutex<String>,
     mcp_url: String,
+    /// 起動時に知らせること(開こうとした曲が別の Glaux で開かれていた、窓口のポートを変えた、など)
+    startup_notice: Option<String>,
     chat: Arc<ChatManager>,
     /// オーディオデバイスが無い環境では None(再生なしで動作を続ける)
     engine: Option<EngineHandle>,
@@ -103,7 +107,11 @@ async fn redo(state: State<'_, AppState>) -> Result<Value, String> {
 
 #[tauri::command]
 fn app_info(state: State<'_, AppState>) -> Value {
-    json!({ "project_dir": state.project_dir(), "mcp_url": state.mcp_url })
+    json!({
+        "project_dir": state.project_dir(),
+        "mcp_url": state.mcp_url,
+        "startup_notice": state.startup_notice,
+    })
 }
 
 // ---- プロジェクト管理 ------------------------------------------------------
@@ -2363,8 +2371,16 @@ fn mcp_port() -> u16 {
         .unwrap_or(DEFAULT_MCP_PORT)
 }
 
+/// 窓口のポートを開く。使われていたら(Glaux を複数起動したとき)次のポートを順に試す。
+/// 開けたポートをチャットと画面の表示に使うので、後から起動した Glaux の AI が先の Glaux の曲を編集することはない
+fn bind_mcp(preferred: u16) -> Option<std::net::TcpListener> {
+    (0..MCP_PORT_TRIES)
+        .filter_map(|i| preferred.checked_add(i))
+        .find_map(|p| std::net::TcpListener::bind(("127.0.0.1", p)).ok())
+}
+
 /// アプリ内 MCP サーバー(streamable HTTP)。UI と同じ SessionHandle を共有する。
-async fn serve_mcp(handle: SessionHandle, port: u16) -> Result<()> {
+async fn serve_mcp(handle: SessionHandle, listener: std::net::TcpListener) -> Result<()> {
     let service: StreamableHttpService<GlauxServer, LocalSessionManager> =
         StreamableHttpService::new(
             move || Ok(GlauxServer::new(handle.clone())),
@@ -2372,9 +2388,9 @@ async fn serve_mcp(handle: SessionHandle, port: u16) -> Result<()> {
             Default::default(),
         );
     let router = axum::Router::new().nest_service("/mcp", service);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-        .await
-        .with_context(|| format!("MCP ポート {port} を bind できません(既に起動中?)"))?;
+    listener.set_nonblocking(true)?;
+    let port = listener.local_addr()?.port();
+    let listener = tokio::net::TcpListener::from_std(listener)?;
     tracing::info!("MCP サーバー: http://127.0.0.1:{port}/mcp");
     axum::serve(listener, router).await?;
     Ok(())
@@ -2389,17 +2405,55 @@ fn main() -> Result<()> {
         )
         .init();
 
-    let project_dir = resolve_project_dir();
-    let port = mcp_port();
-    let (store, session) =
-        Store::open_or_create(&project_dir).context("プロジェクトを開けません")?;
+    let mut project_dir = resolve_project_dir();
+    let mut notices = Vec::new();
+    let (store, session) = match Store::open_or_create(&project_dir) {
+        Ok(x) => x,
+        // 別の Glaux が開いている曲なら、終了せずに一時的な空の曲で起動する(ユーザーが曲を選び直す)
+        Err(e) if glaux_mcp::store::ProjectLocked::is(&e) => {
+            tracing::warn!("{e:#}");
+            let temp = glaux_mcp::store::unique_project_dir(&std::env::temp_dir(), "Glaux_temp");
+            let opened = Store::open_or_create(&temp).context("一時的な曲を作れません")?;
+            notices.push(format!(
+                "「{}」は別の Glaux で開かれているので、一時的な空の曲で起動しました。上の曲名のメニューから、別の曲を開くか新しく作ってください",
+                std::path::Path::new(&project_dir)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| project_dir.clone())
+            ));
+            project_dir = temp.to_string_lossy().into_owned();
+            opened
+        }
+        Err(e) => return Err(e.context("プロジェクトを開けません")),
+    };
+    let temp_project = !notices.is_empty();
+    let preferred_port = mcp_port();
+    let mcp_listener = bind_mcp(preferred_port);
+    let port = match &mcp_listener {
+        Some(l) => l.local_addr().map(|a| a.port()).unwrap_or(preferred_port),
+        None => {
+            tracing::error!(
+                "MCP ポート {preferred_port}〜 がすべて使われています。AI とつなぐ窓口を開けません"
+            );
+            notices.push("AI とつなぐ窓口(MCP)を開けませんでした。Glaux をいくつも起動していないか確かめてください".to_owned());
+            // 別の Glaux の窓口につながないよう、つながらない URL にしておく
+            0
+        }
+    };
+    if port != preferred_port && port != 0 {
+        notices.push(format!(
+            "ほかの Glaux が起動しているため、AI とつなぐ窓口(MCP)は http://127.0.0.1:{port}/mcp です(アプリ内のチャットはそのまま使えます)"
+        ));
+    }
     tracing::info!(
         "プロジェクトを開きました: {}(履歴 {} エントリ)",
         store.dir().display(),
         session.history().len()
     );
     let project_title = session.project().meta.title.clone();
-    projects::push_recent(&project_dir, &project_title);
+    if !temp_project {
+        projects::push_recent(&project_dir, &project_title);
+    }
     // 出荷時プリセット(ギター系など)を初回のみ導入
     glaux_mcp::presets::ensure_factory(&glaux_mcp::presets::default_dir());
     let handle = SessionHandle::spawn(session, store);
@@ -2417,6 +2471,7 @@ fn main() -> Result<()> {
         handle: handle.clone(),
         project_dir: std::sync::Mutex::new(project_dir.clone()),
         mcp_url: mcp_url.clone(),
+        startup_notice: (!notices.is_empty()).then(|| notices.join("\n")),
         chat: Arc::new(ChatManager::new(mcp_url, project_dir.clone())),
         engine: engine.clone(),
         calib: std::sync::Mutex::new(None),
@@ -2437,7 +2492,10 @@ fn main() -> Result<()> {
             // アプリ内 MCP サーバー
             let mcp_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = serve_mcp(mcp_handle, port).await {
+                let Some(listener) = mcp_listener else {
+                    return;
+                };
+                if let Err(e) = serve_mcp(mcp_handle, listener).await {
                     tracing::error!("MCP サーバーが停止しました: {e:#}");
                 }
             });
@@ -2685,5 +2743,21 @@ mod taskbar_icon_tests {
             .device
             .as_ref()
             .is_none_or(|d| matches!(d.source, glaux_core::PluginSource::Builtin { .. }))));
+    }
+}
+
+#[cfg(test)]
+mod mcp_port_tests {
+    use super::*;
+
+    /// 窓口のポートが使われていたら、次の空いているポートを開く(Glaux を複数起動したとき)
+    #[test]
+    fn a_taken_port_moves_to_the_next_free_one() {
+        let first = bind_mcp(47_310).expect("開ける");
+        let taken = first.local_addr().unwrap().port();
+        let second = bind_mcp(taken).expect("次を開ける");
+        let next = second.local_addr().unwrap().port();
+        assert_ne!(next, taken);
+        assert!(next > taken && next < taken + MCP_PORT_TRIES);
     }
 }

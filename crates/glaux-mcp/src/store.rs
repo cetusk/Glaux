@@ -500,6 +500,24 @@ fn lock_key(dir: &Path) -> PathBuf {
 
 /// 同じ曲を別のプロセス(アプリと stdio の MCP サーバーなど)で同時に開くと、後から保存した側が
 /// 相手の編集を上書きしてしまう。OS の排他ロックで、別のプロセスが開いていれば断る
+/// 曲が別の Glaux(アプリか MCP サーバー)で開かれていて、ロックを取れない。
+/// 起動時はこれを見分けて、終了せずに一時的な曲で立ち上げる
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "このプロジェクトは別の Glaux(アプリか MCP サーバー)で開かれています。\
+     同じ曲を 2 か所で同時に開くと編集が失われるので、もう一方を閉じてください: {}",
+    .0.display()
+)]
+pub struct ProjectLocked(pub PathBuf);
+
+impl ProjectLocked {
+    /// エラーの連なりのどこかが「別の Glaux で開かれている」か
+    pub fn is(e: &anyhow::Error) -> bool {
+        e.chain()
+            .any(|c| c.downcast_ref::<ProjectLocked>().is_some())
+    }
+}
+
 pub fn acquire_lock(dir: &Path) -> Result<()> {
     let key = lock_key(dir);
     let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
@@ -515,11 +533,7 @@ pub fn acquire_lock(dir: &Path) -> Result<()> {
         .with_context(|| format!("ロックファイルを作れません: {}", path.display()))?;
     match file.try_lock() {
         Ok(()) => {}
-        Err(fs::TryLockError::WouldBlock) => anyhow::bail!(
-            "このプロジェクトは別の Glaux(アプリか MCP サーバー)で開かれています。\
-             同じ曲を 2 か所で同時に開くと編集が失われるので、もう一方を閉じてください: {}",
-            dir.display()
-        ),
+        Err(fs::TryLockError::WouldBlock) => return Err(ProjectLocked(dir.to_path_buf()).into()),
         // ロックに対応しないファイルシステム(一部のネットワークドライブ)では、防げないが開く
         Err(fs::TryLockError::Error(e)) => {
             tracing::warn!("ロックできません({e})。二重に開くことは防げません")
@@ -633,6 +647,26 @@ mod tests {
             unique_project_dir(tmp.path(), "My_Song"),
             tmp.path().join("My_Song-2.glaux")
         );
+    }
+
+    #[test]
+    fn a_song_held_by_another_glaux_is_reported_as_locked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("Held.glaux");
+        create_project(&dir, "Held").unwrap();
+        // 別のプロセスが持っているロックの代わりに、ここでファイルをロックしておく
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(LOCK_FILE))
+            .unwrap();
+        f.try_lock().unwrap();
+        let e = Store::open_or_create(&dir).err().expect("開けない");
+        assert!(ProjectLocked::is(&e), "{e:#}");
+        assert!(format!("{e:#}").contains("別の Glaux"));
+        // ほかの失敗はロックとみなさない
+        assert!(!ProjectLocked::is(&anyhow::anyhow!("x")));
     }
 
     #[test]

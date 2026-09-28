@@ -307,9 +307,21 @@
     if (id && project && !project.tracks.some((t) => t.id === id)) midiArmStore.trackId = null;
   });
 
+  /// 窓口のポートが既定(41920)と違うとき(Glaux を複数起動したとき)は、表示にポートを添える
+  function mcpLabel(url: string): string {
+    const port = url.match(/:(\d+)\//)?.[1];
+    return port && port !== "41920" ? `MCP :${port}` : "MCP";
+  }
+
   onMount(() => {
     applyTheme();
-    api.appInfo().then((i) => (info = i));
+    api.appInfo().then((i) => {
+      info = i;
+      // 別の Glaux と重なったときの知らせ(曲を開けなかった・窓口のポートを変えた)は長めに出す
+      for (const line of (i.startup_notice ?? "").split("\n").filter((l) => l.trim())) {
+        showToast("warn", line, { ms: 20000 });
+      }
+    });
     refresh();
     // 前回選んだオーディオデバイスに戻す(抜かれていたら既定のまま)
     (async () => {
@@ -1226,7 +1238,7 @@
       {/if}
       {#if info}
         <button class="it" onclick={copyMcpUrl} title={`MCP サーバー ${info.mcp_url}\nクリックで Claude Code への登録コマンドをコピー`}
-          ><Icon name={mcpCopied ? "check" : "link"} size={12} />{mcpCopied ? "コピーしました" : "MCP"}</button
+          ><Icon name={mcpCopied ? "check" : "link"} size={12} />{mcpCopied ? "コピーしました" : mcpLabel(info.mcp_url)}</button
         >
       {/if}
       <span class="it" title="版数(編集・取り消し・やり直しのたびに増える)">v{projectVersion}</span>
