@@ -32,6 +32,14 @@ pub enum Op {
     Tail,
     Cadence,
     Fill,
+    /// リズムの変奏(長い音を割る・短い音をまとめる・付点・弱拍を休みに。seed で決まる 1〜2 種類)
+    Vary,
+    /// 前半を倍の長さに(ゆっくり)
+    Augment,
+    /// 倍の速さで 2 回
+    Diminish,
+    /// 8 分 n 個ぶんずらして入る(正 = 遅れて、負 = 食って)
+    Displace(i32),
 }
 
 /// 形式の型 → スロットの操作の並び
@@ -39,26 +47,40 @@ pub fn form(name: &str) -> Option<Vec<Vec<Op>>> {
     use Op::*;
     Some(match name.trim().to_lowercase().as_str() {
         // 提示 → 反復(和音に合わせる)→ 断片化 → 終止
-        "sentence" => vec![vec![], vec![Adapt], vec![Frag, Adapt], vec![Adapt, Cadence]],
+        "sentence" => vec![
+            vec![],
+            vec![Adapt, Vary],
+            vec![Frag, Adapt],
+            vec![Adapt, Vary, Cadence],
+        ],
         // 前楽節(開いて終わる)+ 後楽節(同じ頭で閉じる)
-        "period" => vec![vec![], vec![Adapt, Tail], vec![Adapt], vec![Adapt, Cadence]],
+        "period" => vec![
+            vec![],
+            vec![Adapt, Tail],
+            vec![Adapt, Vary],
+            vec![Adapt, Cadence],
+        ],
         // 同じ句 2 回 → 対比(反行して上へ)→ 戻る
         "aaba" => vec![
             vec![],
-            vec![Adapt],
-            vec![Invert, Seq(2), Adapt, Fill],
+            vec![Adapt, Vary],
+            vec![Invert, Seq(2), Displace(1), Adapt, Fill],
             vec![Adapt, Cadence],
         ],
-        "aab" => vec![vec![], vec![Adapt], vec![Frag, Seq(1), Adapt, Cadence]],
+        "aab" => vec![
+            vec![],
+            vec![Adapt, Vary],
+            vec![Frag, Seq(1), Adapt, Cadence],
+        ],
         // 問いと答え(答えは逆行)
         "call_response" => vec![
             vec![],
             vec![Retro, Adapt, Tail],
-            vec![Adapt],
+            vec![Adapt, Vary],
             vec![Retro, Adapt, Cadence],
         ],
         // EDM・トラップのループ: 同じ動機を和音に合わせて繰り返し、最後だけ変える
-        "loop" => vec![vec![], vec![Adapt], vec![Adapt], vec![Adapt, Tail]],
+        "loop" => vec![vec![], vec![Adapt], vec![Adapt, Vary], vec![Adapt, Tail]],
         _ => return None,
     })
 }
@@ -82,13 +104,25 @@ pub fn parse_plan(s: &str) -> Result<Vec<Vec<Op>>, String> {
                 "tail" => Op::Tail,
                 "cadence" => Op::Cadence,
                 "fill" => Op::Fill,
+                "vary" => Op::Vary,
+                "augment" => Op::Augment,
+                "diminish" => Op::Diminish,
                 _ => {
-                    let n = t
-                        .strip_prefix("seq(")
-                        .and_then(|r| r.strip_suffix(')'))
-                        .and_then(|n| n.parse::<i32>().ok())
-                        .ok_or_else(|| format!("読めない操作「{tok}」(a / adapt / seq(n) / frag / invert / retro / tail / cadence / fill)"))?;
-                    Op::Seq(n.clamp(-7, 7))
+                    let arg = |name: &str| {
+                        t.strip_prefix(name)
+                            .and_then(|r| r.strip_suffix(')'))
+                            .and_then(|n| n.parse::<i32>().ok())
+                    };
+                    if let Some(n) = arg("seq(") {
+                        Op::Seq(n.clamp(-7, 7))
+                    } else if let Some(n) = arg("displace(") {
+                        Op::Displace(n.clamp(-4, 4))
+                    } else {
+                        return Err(format!(
+                            "読めない操作「{tok}」(a / adapt / seq(n) / frag / invert / retro / tail / cadence / fill / \
+                             vary / augment / diminish / displace(n))"
+                        ));
+                    }
                 }
             };
             ops.push(op);
@@ -199,6 +233,60 @@ pub fn develop(
                     }));
                     notes = v;
                 }
+                Op::Augment => {
+                    // 前半を倍の長さに
+                    let half = slot_len / 2;
+                    notes = notes
+                        .iter()
+                        .filter(|n| n.offset < half)
+                        .map(|n| MotifNote {
+                            offset: n.offset * 2,
+                            dur: (n.dur * 2).min(slot_len - n.offset * 2),
+                            pitch: n.pitch,
+                        })
+                        .collect();
+                }
+                Op::Diminish => {
+                    // 倍の速さで 2 回(2 回目は 1 度上)
+                    let half = slot_len / 2;
+                    let fast: Vec<MotifNote> = notes
+                        .iter()
+                        .map(|n| MotifNote {
+                            offset: n.offset / 2,
+                            dur: (n.dur / 2).max(60),
+                            pitch: n.pitch,
+                        })
+                        .filter(|n| n.offset < half)
+                        .collect();
+                    let mut v = fast.clone();
+                    v.extend(fast.iter().map(|n| MotifNote {
+                        offset: n.offset + half,
+                        pitch: scale.shift(n.pitch, 1).clamp(0, 127) as u8,
+                        dur: n.dur,
+                    }));
+                    notes = v;
+                }
+                Op::Displace(n) => {
+                    // 8 分 n 個ぶんずらす(はみ出す音は落とす)
+                    let d = *n as i64 * (beat as i64 / 2);
+                    notes = notes
+                        .iter()
+                        .filter_map(|x| {
+                            let o = x.offset as i64 + d;
+                            (o >= 0 && (o as u64) < slot_len).then(|| MotifNote {
+                                offset: o as u64,
+                                dur: x.dur.min(slot_len - o as u64),
+                                pitch: x.pitch,
+                            })
+                        })
+                        .collect();
+                }
+                Op::Vary => vary(
+                    &mut notes,
+                    &scale,
+                    beat,
+                    opts.seed.wrapping_add(si as u64 * 31),
+                ),
                 _ => {}
             }
         }
@@ -437,6 +525,109 @@ pub fn develop(
     Ok(out)
 }
 
+fn next_unit(state: &mut u64) -> f64 {
+    let mut x = (*state).max(1);
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// リズムの変奏: 長い音を割る / 同じ長さの 2 音を付点に / 短い 2 音をまとめる / 弱拍の短い音を休みに、から
+/// seed で 1〜2 種類を選んで当てる(当てられないものは飛ばす)。音程の輪郭は保つ
+fn vary(notes: &mut Vec<MotifNote>, scale: &Scale, beat: u64, seed: u64) {
+    if notes.len() < 2 {
+        return;
+    }
+    let mut st = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x5EED;
+    let mut kinds = [0usize, 1, 2, 3];
+    // 選ぶ順を seed で並べ替える
+    for i in (1..kinds.len()).rev() {
+        let j = (next_unit(&mut st) * (i + 1) as f64) as usize;
+        kinds.swap(i, j.min(i));
+    }
+    let want = 1 + (next_unit(&mut st) < 0.5) as usize;
+    let mut done = 0;
+    let mut used: Vec<usize> = Vec::new();
+    for k in kinds {
+        if done >= want {
+            break;
+        }
+        // 割る(0)と、まとめる(2)・休みにする(3)は打ち消し合うので、片方だけ
+        let clash = |a: usize, b: usize| (a == 0 && b >= 2) || (b == 0 && a >= 2);
+        if used.iter().any(|&u| clash(u, k)) {
+            continue;
+        }
+        let last = notes.len() - 1;
+        let applied = match k {
+            // 長い音(4 分以上、最後以外)を 2 つに割り、後ろは次の音へ向かう隣の音
+            0 => {
+                let pick = (0..last)
+                    .filter(|&i| notes[i].dur >= beat)
+                    .max_by_key(|&i| (notes[i].dur, std::cmp::Reverse(i)));
+                pick.map(|i| {
+                    let n = notes[i];
+                    let half = n.dur / 2;
+                    let dir = if notes[i + 1].pitch >= n.pitch { 1 } else { -1 };
+                    notes[i].dur = half;
+                    notes.insert(
+                        i + 1,
+                        MotifNote {
+                            offset: n.offset + half,
+                            dur: n.dur - half,
+                            pitch: scale.shift(n.pitch, dir).clamp(0, 127) as u8,
+                        },
+                    );
+                })
+                .is_some()
+            }
+            // 拍の頭で始まる同じ長さの 2 音を、付点 + 短い音に
+            1 => {
+                let pick = (0..last).find(|&i| {
+                    let (a, b) = (notes[i], notes[i + 1]);
+                    a.dur == b.dur
+                        && a.dur >= beat / 2
+                        && a.offset % beat == 0
+                        && a.offset + a.dur == b.offset
+                });
+                pick.map(|i| {
+                    let d = notes[i].dur;
+                    notes[i].dur = d + d / 2;
+                    notes[i + 1].offset += d / 2;
+                    notes[i + 1].dur = d / 2;
+                })
+                .is_some()
+            }
+            // 続く短い 2 音(8 分以下)を 1 つにまとめる
+            2 => {
+                let pick = (0..last).find(|&i| {
+                    let (a, b) = (notes[i], notes[i + 1]);
+                    a.dur <= beat / 2 && b.dur <= beat / 2 && a.offset + a.dur == b.offset
+                });
+                pick.map(|i| {
+                    notes[i].dur += notes[i + 1].dur;
+                    notes.remove(i + 1);
+                })
+                .is_some()
+            }
+            // 弱拍で始まる短い音(最初と最後以外)を休みに
+            _ => {
+                let pick =
+                    (1..last).find(|&i| notes[i].offset % beat != 0 && notes[i].dur <= beat / 2);
+                pick.map(|i| {
+                    notes.remove(i);
+                })
+                .is_some()
+            }
+        };
+        if applied {
+            done += 1;
+            used.push(k);
+        }
+    }
+}
+
 /// 区間(comp::Span)と和音の列から、tick → 和音 を引く関数を作る
 pub fn chord_lookup<'a>(
     spans: &'a [Span],
@@ -604,6 +795,55 @@ mod tests {
         assert!(a.iter().any(|x| x.pos % 960 == 480), "{a:?}");
         // 重ならない
         assert!(a.windows(2).all(|w| w[0].pos + w[0].dur <= w[1].pos));
+    }
+
+    #[test]
+    fn rhythm_ops_change_the_rhythm_but_keep_the_contour() {
+        let (spans, chords) = chords_c_f_g_c();
+        let look = chord_lookup(&spans, &chords);
+        let m = parse_motif("E5:q D5:q C5:q D5:q").unwrap();
+        let onsets = |plan: &str| -> Vec<u64> {
+            develop(&m, &parse_plan(plan).unwrap(), BAR, &look, &opts())
+                .unwrap()
+                .iter()
+                .map(|o| o.pos)
+                .collect()
+        };
+        // 変奏: 同じ seed なら同じ、元とはリズムが違う。いくつかの seed で必ず変わる
+        let base = onsets("a");
+        let mut changed = 0;
+        for seed in 1..6 {
+            let mut o = opts();
+            o.seed = seed;
+            let v: Vec<u64> = develop(&m, &parse_plan("vary").unwrap(), BAR, &look, &o)
+                .unwrap()
+                .iter()
+                .map(|x| x.pos)
+                .collect();
+            changed += (v != base) as usize;
+        }
+        assert_eq!(changed, 5);
+        // 拡大: 前半 2 音を倍に(0 と 2 拍目)
+        assert_eq!(onsets("augment"), vec![0, 1920]);
+        // 縮小: 8 分で 4 音を 2 回
+        assert_eq!(
+            onsets("diminish"),
+            (0..8).map(|k| k * 480).collect::<Vec<_>>()
+        );
+        // ずらし: 8 分遅れて入る(最後の音は小節からはみ出して落ちる)
+        assert_eq!(onsets("displace(1)"), vec![480, 1440, 2400, 3360]);
+        let d = develop(&m, &parse_plan("displace(1)").unwrap(), BAR, &look, &opts()).unwrap();
+        assert!(d.iter().all(|x| x.pos + x.dur <= BAR));
+        // 形式の型にも入っている(sentence の 2 回目はリズムが変わる)
+        let s = develop(&m, &form("sentence").unwrap(), BAR, &look, &opts()).unwrap();
+        let bar = |b: u64| -> Vec<u64> {
+            s.iter()
+                .filter(|x| x.pos / BAR == b)
+                .map(|x| x.pos % BAR)
+                .collect()
+        };
+        assert_ne!(bar(0), bar(1));
+        assert!(parse_plan("displace(x)").is_err());
     }
 
     #[test]

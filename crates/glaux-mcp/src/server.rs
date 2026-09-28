@@ -858,7 +858,9 @@ pub struct DevelopMotifParams {
     pub motif_clip_id: Option<String>,
     /// 形式: sentence(既定。提示 → 反復 → 断片化 → 終止。サビ・フック)/ period(問い → 答え。A メロ)/ aaba / aab /
     /// call_response / loop(EDM・トラップ。繰り返して最後だけ変える)。または動機の長さごとの操作の並び
-    /// "a | adapt | frag seq(-1) | adapt cadence"(a / adapt / seq(n) / frag / invert / retro / tail / cadence / fill)。
+    /// "a | adapt vary | frag seq(-1) | adapt cadence"(音: a / adapt / seq(n) / frag / invert / retro / tail / cadence / fill、
+    /// リズム: vary(割る・付点・まとめる・休む)/ augment(前半をゆっくり)/ diminish(速く 2 回)/ displace(n)(8 分 n 個ずらす))。
+    /// 型にはリズムの変化も入っている(繰り返しの 2 回目以降は vary)。
     #[serde(default)]
     pub form: Option<String>,
     /// 下の和音の進行(write_chords と同じ書き方。足りなければ繰り返す)。省略でほかのトラックから推定。
@@ -5155,7 +5157,7 @@ impl GlauxServer {
     #[tool(
         description = "動機を形式に沿って展開して旋律にする(旋律は LLM が全部の音を書くより、動機だけ書いてこれで展開する)。\
         form: sentence(提示 → 反復 → 断片化 → 終止)/ period(問い → 答え)/ aaba / aab / call_response / loop か操作の並び。\
-        動機のリズムと輪郭を保ったまま、強拍の音を和音の音に合わせ(adapt)、音階の度数で移し、問いは 2 度・5 度で開き、\
+        動機の輪郭を保ったまま、繰り返しの 2 回目以降はリズムを変え(vary / diminish / augment / displace)、強拍の音を和音の音に合わせ(adapt)、音階の度数で移し、問いは 2 度・5 度で開き、\
         答えは主音で閉じて伸ばす。最高音は全体の 60〜75% の位置(peak_bar)に 1 回だけ置き、anticipate の割合で強拍の音を\
         8 分前へ食わせる。新しいクリップを作り、critique_melody の結果(score と指摘)も返す。seed と form を変えて\
         2〜3 案を作り、点検と聴き比べで選ぶとよい。1 回の undo で戻る。"

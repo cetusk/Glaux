@@ -707,11 +707,19 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
                 ),
                 "動機のリズムを決めて使い回す(develop_motif は動機のリズムを保って展開する)",
             );
-        } else if m.rhythm_reuse > 0.95 && g.repeat_max < 0.9 {
+        } else if g.breath && m.rhythm_reuse >= 0.85 {
+            // 歌・管の旋律: 小節のリズムがほぼ同じだと単調(ループが基本の EDM・トラップは除く)
+            warn(
+                "warn",
+                format!("小節のリズムがほぼ同じ(同じ型の小節 {}%)。単調に聞こえやすい", pct(m.rhythm_reuse)),
+                "繰り返しの 2 回目以降のリズムを変える: develop_motif の vary(割る・付点・まとめる・休む)・\
+                 diminish(速く 2 回)・augment(ゆっくり)・displace(n)(ずらして入る)。句の終わりは伸ばす",
+            );
+        } else if m.rhythm_reuse > 0.95 {
             warn(
                 "info",
                 "すべての小節が同じリズム".to_owned(),
-                "句の終わりの小節だけリズムを変える(伸ばす・休む)",
+                "区切りの前の小節だけリズムを変える(develop_motif の vary・displace)",
             );
         }
     }
