@@ -69,6 +69,8 @@ pub struct NoteEvent {
     pub curve: glaux_dsp::PitchCurve,
     /// ノートのビブラート(サンプル単位。深さ 0 なら無し。あれば奏法のビブラートの代わり)
     pub vibrato: glaux_dsp::VibratoSpec,
+    /// ノートの音量・明るさの曲線(サンプル単位。空なら無し)
+    pub shape: glaux_dsp::NoteShape,
     /// レガートのつなぎ: 鳴り始めをこのサンプル数かけて立ち上げる(0 = そのまま)
     pub fade_in: u32,
     /// レガートのつなぎ: end で離さずにこのサンプル数かけて消す(0 = 通常のリリース)。
@@ -1294,6 +1296,17 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                         (at, p.cents, p.shape)
                     })
                     .collect();
+                // 音量・明るさの曲線: 相対 tick → ノート先頭からのサンプル数
+                let expr_curve = |c: &[glaux_core::CurvePoint]| {
+                    let pts: Vec<(f32, f32, glaux_core::CurveShape)> = c
+                        .iter()
+                        .map(|p| {
+                            let at = to_sample(start_tick + p.tick).saturating_sub(start) as f32;
+                            (at, p.value, p.shape)
+                        })
+                        .collect();
+                    glaux_dsp::PitchCurve::from_shaped(&pts)
+                };
                 // ビブラート: ms → サンプル
                 let ms = |x: f32| (x as f64 * 0.001 * sample_rate) as f32;
                 let vibrato = note
@@ -1317,6 +1330,10 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     articulation: note.articulation,
                     curve: glaux_dsp::PitchCurve::from_shaped(&curve_pts),
                     vibrato,
+                    shape: glaux_dsp::NoteShape::new(
+                        expr_curve(&note.volume_curve),
+                        expr_curve(&note.brightness_curve),
+                    ),
                     fade_in: 0,
                     fade_out: 0,
                     glide: note.glide_ms.map_or(0.0, |ms| ms / 1000.0),
@@ -1451,6 +1468,8 @@ mod tests {
             vel,
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         }
     }
 

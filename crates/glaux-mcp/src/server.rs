@@ -49,7 +49,7 @@ pub struct GetProjectParams {
     #[serde(default)]
     pub end_tick: Option<u64>,
     /// "compact" にするとノートを配列 `[id, pos, dur, pitch, vel]` で返す(量が約半分)。
-    /// 奏法・ピッチカーブ・glide_ms・ビブラートがあるノートだけ 6 番目に `{articulation, pitch_curve, glide_ms, vibrato}` が付く。
+    /// 奏法・ピッチカーブ・glide_ms・ビブラート・音量と明るさの曲線があるノートだけ 6 番目にそれらをまとめたオブジェクトが付く。
     /// 既定 "full"(オブジェクト)。
     #[serde(default)]
     pub note_format: Option<String>,
@@ -1086,6 +1086,9 @@ pub struct PitchGestureParams {
     /// 長さ(ms)。省略で表情ごとの既定(しゃくり 120、フォール 250 など)。音の長さの半分までに縮める。
     #[serde(default)]
     pub time_ms: Option<f32>,
+    /// fall・doit で音量も下げるか(既定 true。音の終わりで −18 dB。音量の曲線がある音はそのまま)。
+    #[serde(default)]
+    pub fade_volume: Option<bool>,
     /// 乱数の種(既定 1)。
     #[serde(default)]
     pub seed: Option<u64>,
@@ -1191,6 +1194,39 @@ pub struct MelodyLeadParams {
     /// fixed(既定。一定)/ by_velocity(上の音と他の音の強さの差に比例。差 20 で lead_ms、最大 2 倍)。
     #[serde(default)]
     pub mode: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct NoteDynamicsParams {
+    /// 対象クリップ ID。1 つなら clip_id、まとめて掛けるなら clip_ids(1 回の undo で戻る)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
+    /// 動き: swell(音の中でふくらむ)/ fade(終わりへ消える)/ sfz(頭を強く打って落とす)/ fp(強く入ってすぐ弱く)/
+    /// pulse(音量の揺れ)/ open(暗くから開く。明るさ)/ close(明るくから閉じる。明るさ)。
+    pub kind: String,
+    /// 付ける音のノート ID。省略で target の規則で選ぶ。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+    /// 規則(pitch_gesture と同じ)。省略で long(1 拍以上の音)。
+    #[serde(default)]
+    pub target: Option<String>,
+    /// 規則で選んだ音のうち付ける割合 0〜1(既定 1)。
+    #[serde(default)]
+    pub probability: Option<f64>,
+    /// 深さ: 音量なら dB(swell 12・fade 24・sfz 9・fp 12・pulse 9)、明るさなら 0〜1(既定 0.7)。
+    #[serde(default)]
+    pub amount: Option<f32>,
+    /// sfz・fp の落ちる長さ・pulse の半周期(ms。既定 150・120・100)。
+    #[serde(default)]
+    pub time_ms: Option<f32>,
+    /// true で音量・明るさの曲線を外す(kind の側だけ)。
+    #[serde(default)]
+    pub remove: Option<bool>,
+    /// 乱数の種(既定 1)。
+    #[serde(default)]
+    pub seed: Option<u64>,
 }
 
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
@@ -1432,6 +1468,8 @@ fn melody_clip(
                 pitch_curve: vec![],
                 glide_ms: None,
                 vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
             })
             .collect();
         ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -1589,6 +1627,8 @@ fn simple_clip(
                 pitch_curve: vec![],
                 glide_ms: None,
                 vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
             })
             .collect();
         ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -1966,7 +2006,14 @@ fn compact_note(n: &Value) -> Value {
         n["vel"].clone(),
     ];
     let mut extra = serde_json::Map::new();
-    for key in ["articulation", "pitch_curve", "glide_ms", "vibrato"] {
+    for key in [
+        "articulation",
+        "pitch_curve",
+        "glide_ms",
+        "vibrato",
+        "volume_curve",
+        "brightness_curve",
+    ] {
         match n.get(key) {
             None | Some(Value::Null) => {}
             Some(Value::String(s)) if key == "articulation" && s == "normal" => {}
@@ -4879,6 +4926,8 @@ impl GlauxServer {
                 pitch_curve: vec![],
                 glide_ms: None,
                 vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
             })
             .collect();
         let command = Command::AddNotes {
@@ -5110,6 +5159,8 @@ impl GlauxServer {
                     pitch_curve: vec![],
                     glide_ms: None,
                     vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -5285,6 +5336,8 @@ impl GlauxServer {
                     pitch_curve: vec![],
                     glide_ms: n.slide.then_some(glide),
                     vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -5402,6 +5455,8 @@ impl GlauxServer {
                     pitch_curve: vec![],
                     glide_ms: None,
                     vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -5578,6 +5633,8 @@ impl GlauxServer {
                             pitch_curve: vec![],
                             glide_ms: None,
                             vibrato: None,
+                            volume_curve: vec![],
+                            brightness_curve: vec![],
                         })
                         .collect();
                     ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -6634,7 +6691,27 @@ impl GlauxServer {
                 let pts = gesture::curve(g, n.dur.0, time, amount);
                 let curve = gesture::merge(&n.pitch_curve, &pts);
                 if curve != n.pitch_curve {
-                    changes.push(glaux_core::NoteChange::new(n.id.clone()).pitch_curve(curve));
+                    let mut ch = glaux_core::NoteChange::new(n.id.clone()).pitch_curve(curve);
+                    // フォール・ドイトは抜けながら消える(音量の曲線が無い音だけ)
+                    if matches!(g, gesture::Gesture::Fall | gesture::Gesture::Doit)
+                        && p.fade_volume.unwrap_or(true)
+                        && n.volume_curve.is_empty()
+                    {
+                        let start = pts.first().map_or(0, |x| x.0);
+                        ch = ch.volume_curve(vec![
+                            glaux_core::CurvePoint::new(
+                                glaux_core::Tick(start),
+                                0.0,
+                                glaux_core::CurveShape::EaseIn,
+                            ),
+                            glaux_core::CurvePoint::new(
+                                n.dur,
+                                -18.0,
+                                glaux_core::CurveShape::Linear,
+                            ),
+                        ]);
+                    }
+                    changes.push(ch);
                 }
             }
             total += changes.len();
@@ -6920,6 +6997,8 @@ impl GlauxServer {
                         pitch_curve: vec![],
                         glide_ms: None,
                         vibrato: None,
+                        volume_curve: vec![],
+                        brightness_curve: vec![],
                     });
                 }
             }
@@ -7018,6 +7097,132 @@ impl GlauxServer {
             ));
         }
         let label = format!("旋律を {lead_ms:.0}ms 先に({total} ノート)");
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(total);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "音の中の強弱・明るさの動きを付ける(ノートごとの音量・明るさの曲線): swell(ふくらむ。弦・管・パッド)/ \
+        fade(消える)/ sfz(頭を強く打って落とす)/ fp(強く入ってすぐ弱く)/ pulse(音量の揺れ)/ open(暗くから開く)/ \
+        close(明るくから閉じる)。note_ids か target の規則(既定 long = 1 拍以上)で選ぶ。内蔵音源は出口で音量と\
+        明るさ(低域を通す・高域を足す)を変え、CLAP 音源には 1 音ごとの VOLUME・BRIGHTNESS として送る。\
+        トラック全体の動きはオートメーション(shape_automation)、1 音の中の動きはこれ。1 回の undo で戻る。"
+    )]
+    async fn note_dynamics(
+        &self,
+        params: Parameters<NoteDynamicsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::gesture;
+        let _activity = self.handle.begin_activity("note_dynamics");
+        let p = params.0;
+        let d = gesture::Dynamic::parse(&p.kind).ok_or_else(|| {
+            format!(
+                "kind は swell / fade / sfz / fp / pulse / open / close(got: {})",
+                p.kind
+            )
+        })?;
+        let target = match &p.target {
+            Some(t) => gesture::Target::parse(t).ok_or_else(|| {
+                format!("target は phrase_start / phrase_end / leap_up / long / all(got: {t})")
+            })?,
+            None => gesture::Target::Long,
+        };
+        let (def_amount, def_ms) = d.defaults();
+        let amount = if d.is_brightness() {
+            p.amount.unwrap_or(def_amount).clamp(0.0, 1.0)
+        } else {
+            p.amount.unwrap_or(def_amount).clamp(0.0, 60.0)
+        };
+        let ms = p.time_ms.unwrap_or(def_ms.max(1.0)).clamp(10.0, 3000.0);
+        let prob = if p.note_ids.is_some() {
+            1.0
+        } else {
+            p.probability.unwrap_or(1.0).clamp(0.0, 1.0)
+        };
+        let remove = p.remove.unwrap_or(false);
+        let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
+        let (project, version) = self.handle.get_project().await?;
+        let mut rng = p.seed.unwrap_or(1).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut unit = || {
+            rng ^= rng >> 12;
+            rng ^= rng << 25;
+            rng ^= rng >> 27;
+            (rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut commands = Vec::new();
+        let mut total = 0usize;
+        for id in &ids {
+            let cid = glaux_core::ClipId::parse(id).map_err(|e| e.to_string())?;
+            let (_, clip) = project
+                .clip(&cid)
+                .ok_or_else(|| format!("クリップが見つかりません: {id}"))?;
+            let notes = clip
+                .notes()
+                .ok_or_else(|| format!("MIDI クリップではありません: {id}"))?;
+            let chosen: Vec<usize> = match &p.note_ids {
+                Some(want) => notes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, n)| want.iter().any(|w| w == n.id.as_str()))
+                    .map(|(i, _)| i)
+                    .collect(),
+                None if remove => (0..notes.len()).collect(),
+                None => gesture::select(notes, target, glaux_core::PPQ)
+                    .into_iter()
+                    .filter(|_| unit() < prob)
+                    .collect(),
+            };
+            let bpm = project.tempo_map.bpm_at(clip.start);
+            let time = (ms as f64 * glaux_core::PPQ as f64 * bpm / 60_000.0).round() as u64;
+            let mut changes = Vec::new();
+            for i in chosen {
+                let n = &notes[i];
+                let curve: Vec<glaux_core::CurvePoint> = if remove {
+                    vec![]
+                } else {
+                    d.curve(n.dur.0, time, amount)
+                        .into_iter()
+                        .map(|(t, v, sh)| glaux_core::CurvePoint::new(glaux_core::Tick(t), v, sh))
+                        .collect()
+                };
+                let current = if d.is_brightness() {
+                    &n.brightness_curve
+                } else {
+                    &n.volume_curve
+                };
+                if &curve == current {
+                    continue;
+                }
+                let ch = glaux_core::NoteChange::new(n.id.clone());
+                changes.push(if d.is_brightness() {
+                    ch.brightness_curve(curve)
+                } else {
+                    ch.volume_curve(curve)
+                });
+            }
+            total += changes.len();
+            if !changes.is_empty() {
+                commands.push(Command::UpdateNotes { clip: cid, changes });
+            }
+        }
+        if commands.is_empty() {
+            return Ok(JsonText(json!({
+                "project_version": version,
+                "changed": 0,
+                "note": "変わる音がありませんでした(target・note_ids を確かめる)",
+            })));
+        }
+        let label = if remove {
+            format!("音の中の動きを外す {}({total} ノート)", p.kind)
+        } else {
+            format!("音の中の動き {}({total} ノート)", p.kind)
+        };
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;

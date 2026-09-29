@@ -43,7 +43,7 @@ pub use effects::{
     bake_effect, convolution_length, effect_catalog, effect_params_spec, ConvParams, EffectParams,
     EffectState, SvfCoeffs, SvfState,
 };
-pub use expr::{articulation_cents, articulation_moves_pitch, PitchCurve, VibratoSpec};
+pub use expr::{articulation_cents, articulation_moves_pitch, NoteShape, PitchCurve, VibratoSpec};
 pub use fm::{FmParams, FmVoice};
 pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, ZoneMod, MAX_LAYERS};
 pub use params::{

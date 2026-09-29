@@ -443,6 +443,7 @@ impl Project {
                         )));
                     }
                     check_note_extras(&n.id, &n.pitch_curve, n.glide_ms, n.vibrato.as_ref())?;
+                    check_note_curves(&n.id, &n.volume_curve, &n.brightness_curve)?;
                     if !ids.insert(&n.id) {
                         return Err(CoreError::DuplicateId(n.id.to_string()));
                     }
@@ -521,6 +522,11 @@ impl Project {
                         ch.glide_ms.filter(|g| *g > 0.0),
                         ch.vibrato.as_ref().filter(|v| v.depth_cents > 0.0),
                     )?;
+                    check_note_curves(
+                        &ch.id,
+                        ch.volume_curve.as_deref().unwrap_or(&[]),
+                        ch.brightness_curve.as_deref().unwrap_or(&[]),
+                    )?;
                 }
                 let mut inverse_changes = Vec::with_capacity(changes.len());
                 for ch in changes {
@@ -557,6 +563,13 @@ impl Project {
                                 ..v
                             },
                         ));
+                    }
+                    if let Some(v) = &ch.volume_curve {
+                        inv.volume_curve = Some(std::mem::replace(&mut n.volume_curve, v.clone()));
+                    }
+                    if let Some(v) = &ch.brightness_curve {
+                        inv.brightness_curve =
+                            Some(std::mem::replace(&mut n.brightness_curve, v.clone()));
                     }
                     inverse_changes.push(inv);
                 }
@@ -1281,6 +1294,23 @@ fn insert_lane(
             points,
         },
     );
+}
+
+/// ノートの音量・明るさの曲線の検証。
+fn check_note_curves(
+    id: &crate::NoteId,
+    volume: &[crate::model::CurvePoint],
+    brightness: &[crate::model::CurvePoint],
+) -> Result<()> {
+    crate::model::check_expr_curve("volume_curve", volume, crate::model::VOLUME_CURVE_DB)
+        .and_then(|_| {
+            crate::model::check_expr_curve(
+                "brightness_curve",
+                brightness,
+                crate::model::BRIGHTNESS_RANGE,
+            )
+        })
+        .map_err(|e| CoreError::OutOfRange(format!("note {id}: {e}")))
 }
 
 /// ノートのピッチカーブ・滑る時間・ビブラートの検証。

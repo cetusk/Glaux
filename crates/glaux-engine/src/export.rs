@@ -227,6 +227,8 @@ pub fn render_track_note(
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         });
     }
     t.clips = vec![clip];
@@ -958,6 +960,8 @@ mod tests {
                 vel: 100,
                 glide_ms: None,
                 vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
             });
         }
         track.clips.push(clip);
@@ -973,6 +977,40 @@ mod tests {
         assert!(samples.len() as f64 / 2.0 / 48_000.0 > 0.5);
         let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
         assert!(rms > 0.01, "音が入っているはず");
+    }
+
+    #[test]
+    fn note_volume_and_brightness_curves_change_the_sound() {
+        let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len().max(1) as f32).sqrt();
+        // 0.25〜0.5 秒(音の後半)の大きさ
+        let late = |p: &Project| {
+            let s = render_project(p, 48_000.0, &Default::default()).unwrap();
+            rms(&s[24_000..48_000])
+        };
+        let plain = test_project();
+        let mut faded = test_project();
+        let mut dark = test_project();
+        let set = |p: &mut Project, f: &dyn Fn(&mut Note)| {
+            if let ClipContent::Midi { notes, .. } = &mut p.tracks[0].clips[0].content {
+                f(&mut notes[0]);
+            }
+        };
+        set(&mut faded, &|n| {
+            n.volume_curve = vec![
+                glaux_core::CurvePoint::new(Tick(0), 0.0, Default::default()),
+                glaux_core::CurvePoint::new(Tick(480), -30.0, Default::default()),
+            ]
+        });
+        set(&mut dark, &|n| {
+            n.brightness_curve = vec![glaux_core::CurvePoint::new(
+                Tick(0),
+                -0.9,
+                Default::default(),
+            )]
+        });
+        let base = late(&plain);
+        assert!(late(&faded) < base * 0.1, "音量の曲線で後半が小さくなる");
+        assert!(late(&dark) < base, "暗くすると高い成分が減って小さくなる");
     }
 
     #[test]

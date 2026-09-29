@@ -341,6 +341,8 @@ pub fn take_to_notes(notes: &[RecordedNote], clip_start: Tick, quantize_ticks: u
                 pitch_curve: vec![],
                 glide_ms: None,
                 vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
             })
         })
         .collect();

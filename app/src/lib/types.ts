@@ -31,6 +31,10 @@ export interface Note {
     fade_out_ms?: number;
     rate_end_hz?: number;
   };
+  /** 音量の曲線(dB)。省略 = なし */
+  volume_curve?: { tick: number; value: number; shape?: CurveShape }[];
+  /** 明るさの曲線(−1〜1)。省略 = なし */
+  brightness_curve?: { tick: number; value: number; shape?: CurveShape }[];
 }
 
 /** ピッチカーブの区間の曲がり方(glaux-core の CurveShape と同じ) */

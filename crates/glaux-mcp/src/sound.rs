@@ -724,6 +724,8 @@ pub fn match_clip_commands(
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         });
     }
     let commands = vec![

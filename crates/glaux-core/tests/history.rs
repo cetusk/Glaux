@@ -51,6 +51,8 @@ fn seed_project() -> Project {
                     pitch_curve: vec![],
                     glide_ms: None,
                     vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
                 });
             }
             p.apply(&Command::AddClip {
@@ -232,6 +234,8 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         pitch_curve: vec![],
                         glide_ms: None,
                         vibrato: None,
+                        volume_curve: vec![],
+                        brightness_curve: vec![],
                     })
                     .collect();
                 return Command::AddNotes {
@@ -321,6 +325,32 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         if rng.gen_bool(0.3) {
                             // 0 は個別指定の解除
                             ch = ch.glide_ms(*[0.0, 40.0, 150.0, 800.0].choose(rng).unwrap());
+                        }
+                        if rng.gen_bool(0.3) {
+                            // 音量・明るさの曲線(空は削除)
+                            let n = rng.gen_range(0..4u64);
+                            let curve: Vec<CurvePoint> = (0..n)
+                                .map(|i| {
+                                    CurvePoint::new(
+                                        Tick(i * 240),
+                                        rng.gen_range(-1.0..1.0),
+                                        CurveShape::EaseOut,
+                                    )
+                                })
+                                .collect();
+                            ch = if rng.gen() {
+                                ch.volume_curve(
+                                    curve
+                                        .iter()
+                                        .map(|p| CurvePoint {
+                                            value: p.value * 12.0,
+                                            ..*p
+                                        })
+                                        .collect(),
+                                )
+                            } else {
+                                ch.brightness_curve(curve)
+                            };
                         }
                         if rng.gen_bool(0.3) {
                             // 深さ 0 はビブラートの解除
@@ -839,6 +869,8 @@ fn loop_clip_expands_notes_for_playback() {
         pitch_curve: vec![],
         glide_ms: None,
         vibrato: None,
+        volume_curve: vec![],
+        brightness_curve: vec![],
     };
     // 1 小節パターン: 頭と、ループ境界をまたぐ音と、ループ外の音
     *clip.notes_mut().unwrap() = vec![n(0, 480), n(3600, 480), n(5000, 480)];
@@ -1047,6 +1079,8 @@ fn split_midi_clip_moves_and_truncates_notes() {
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         }, // 左に残る
         Note {
             id: ids[1].clone(),
@@ -1058,6 +1092,8 @@ fn split_midi_clip_moves_and_truncates_notes() {
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         }, // 分割点(1920)をまたぐ → 切り詰め
         Note {
             id: ids[2].clone(),
@@ -1069,6 +1105,8 @@ fn split_midi_clip_moves_and_truncates_notes() {
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         }, // 右へ移動
     ]);
     p.apply(&Command::AddClip { track: tid, clip }).unwrap();
@@ -1231,6 +1269,35 @@ fn update_notes_changes_curve_and_glide_and_track_legato_settings() {
     assert_eq!(vib_of(&p), Some(vib));
     p.apply(&inv).unwrap();
     assert_eq!(vib_of(&p), None);
+    // 音量の曲線: 範囲外・点が多すぎるのは拒否、差し替えは undo で戻る
+    let fade = vec![
+        CurvePoint::new(Tick(0), 0.0, CurveShape::Linear),
+        CurvePoint::new(Tick(480), -24.0, CurveShape::EaseIn),
+    ];
+    assert!(p
+        .apply(&bad(NoteChange::new(nid.clone()).volume_curve(vec![
+            CurvePoint::new(Tick(0), 40.0, CurveShape::Linear)
+        ])))
+        .is_err());
+    assert!(p
+        .apply(&bad(NoteChange::new(nid.clone()).brightness_curve(
+            (0..9)
+                .map(|i| CurvePoint::new(Tick(i * 10), 0.0, CurveShape::Linear))
+                .collect()
+        )))
+        .is_err());
+    let inv = p
+        .apply(&bad(NoteChange::new(nid.clone()).volume_curve(fade.clone())))
+        .unwrap()
+        .inverse;
+    assert_eq!(
+        p.clip(&cid).unwrap().1.notes().unwrap()[1].volume_curve,
+        fade
+    );
+    p.apply(&inv).unwrap();
+    assert!(p.clip(&cid).unwrap().1.notes().unwrap()[1]
+        .volume_curve
+        .is_empty());
 
     // トラックのつなぎの設定: 設定 → 取り消しで未設定に戻る。範囲外は拒否
     let set = p

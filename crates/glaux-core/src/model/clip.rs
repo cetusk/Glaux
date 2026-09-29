@@ -115,6 +115,53 @@ impl PitchPoint {
     }
 }
 
+/// ノートの表情の曲線(音量・明るさ)の 1 点。ノート先頭からの相対 tick と値、次の点までの曲がり方
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct CurvePoint {
+    pub tick: Tick,
+    pub value: f32,
+    #[serde(default, skip_serializing_if = "CurveShape::is_linear")]
+    pub shape: CurveShape,
+}
+
+impl CurvePoint {
+    pub fn new(tick: Tick, value: f32, shape: CurveShape) -> Self {
+        CurvePoint { tick, value, shape }
+    }
+}
+
+/// 音量・明るさの曲線の点数上限(ボイス側が固定長で持つため)
+pub const MAX_EXPR_POINTS: usize = 8;
+/// 音量の曲線の範囲(dB。ノートの強さに対する増減)
+pub const VOLUME_CURVE_DB: std::ops::RangeInclusive<f32> = -60.0..=12.0;
+/// 明るさの曲線の範囲(−1 = 暗く、0 = そのまま、1 = 明るく)
+pub const BRIGHTNESS_RANGE: std::ops::RangeInclusive<f32> = -1.0..=1.0;
+
+/// 表情の曲線の検証(点数・tick の昇順・値の範囲)
+pub fn check_expr_curve(
+    what: &str,
+    curve: &[CurvePoint],
+    range: std::ops::RangeInclusive<f32>,
+) -> Result<(), String> {
+    if curve.len() > MAX_EXPR_POINTS {
+        return Err(format!("{what} は最大 {MAX_EXPR_POINTS} 点"));
+    }
+    if curve.windows(2).any(|w| w[1].tick < w[0].tick) {
+        return Err(format!("{what} の tick は昇順に"));
+    }
+    if curve
+        .iter()
+        .any(|p| !p.value.is_finite() || !range.contains(&p.value))
+    {
+        return Err(format!(
+            "{what} の value は {}〜{}",
+            range.start(),
+            range.end()
+        ));
+    }
+    Ok(())
+}
+
 /// ノートのビブラート(音源の側で正弦波として作る)。`Articulation::Vibrato` はこの既定値
 /// (5.5Hz・±30 セント・0.12 秒後から 0.25 秒で全深度)と同じ意味。両方あればこちらが優先
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
@@ -183,6 +230,12 @@ pub struct Note {
     /// ビブラート(速さ・深さ・始まり・フェード)。省略で無し(奏法の vibrato は既定値のビブラート)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vibrato: Option<Vibrato>,
+    /// 音量の曲線(dB。音の中でのクレッシェンド・スフォルツァンド・フォールで消える等)。空なら無し
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_curve: Vec<CurvePoint>,
+    /// 明るさの曲線(−1〜1。音の中で暗く・明るく)。空なら無し
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub brightness_curve: Vec<CurvePoint>,
 }
 
 /// ポルタメントで滑る時間の範囲(ms)

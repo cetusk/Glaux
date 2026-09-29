@@ -108,6 +108,71 @@ impl VibratoSpec {
     }
 }
 
+/// ノートの音量・明るさの曲線(サンプル位置に換算済み)を、ボイスの出口にかける。
+/// 音量は dB の曲線、明るさは −1〜1(負は 1 次の低域通過で暗く、正は 1.5kHz より上を足して明るく)。
+/// どの音源にも同じように効く。状態は低域通過の 1 つだけ(固定長。オーディオスレッドで確保しない)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NoteShape {
+    /// 音量(dB)
+    pub volume: PitchCurve,
+    /// 明るさ(−1〜1)
+    pub bright: PitchCurve,
+    lp: f32,
+}
+
+impl NoteShape {
+    pub fn new(volume: PitchCurve, bright: PitchCurve) -> NoteShape {
+        NoteShape {
+            volume,
+            bright,
+            lp: 0.0,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        !self.volume.is_empty() || !self.bright.is_empty()
+    }
+
+    /// `age`(サンプル)での音量の倍率
+    pub fn gain_at(&self, age: f32) -> f32 {
+        if self.volume.is_empty() {
+            1.0
+        } else {
+            (self.volume.cents_at(age) * (std::f32::consts::LN_10 / 20.0)).exp()
+        }
+    }
+
+    /// `age` での明るさ(−1〜1)
+    pub fn brightness_at(&self, age: f32) -> f32 {
+        if self.bright.is_empty() {
+            0.0
+        } else {
+            self.bright.cents_at(age).clamp(-1.0, 1.0)
+        }
+    }
+
+    /// 1 サンプルを通す
+    pub fn process(&mut self, x: f32, age: f32, sample_rate: f32) -> f32 {
+        let mut y = x;
+        if !self.bright.is_empty() {
+            let b = self.brightness_at(age);
+            let tau = std::f32::consts::TAU;
+            if b < 0.0 {
+                // 18kHz(b = 0)から 280Hz(b = −1)まで
+                let fc = 18_000.0 * (b * 6.0).exp2();
+                let a = 1.0 - (-tau * fc / sample_rate).exp();
+                self.lp += a * (y - self.lp);
+                y = self.lp;
+            } else {
+                let a = 1.0 - (-tau * 1500.0 / sample_rate).exp();
+                self.lp += a * (y - self.lp);
+                y += b * 1.5 * (y - self.lp);
+            }
+        }
+        y * self.gain_at(age)
+    }
+}
+
 /// 奏法による音程の変化(セント)を、ノート先頭からの経過 `age`(サンプル)で求める。
 /// 内蔵音源の [`PitchExpr`] と同じ形(ビブラート: 5.5Hz・±30 セント、0.12 秒後から 0.25 秒で全深度 /
 /// ベンド: 全音下から約 0.22 秒で到達)。CLAP 音源へ 1 音ごとの音程変化として送るのに使う。
@@ -305,6 +370,32 @@ mod tests {
                 assert!((c - v.cents_at(i as f32, sr)).abs() < 0.5, "{i}");
             }
         }
+    }
+
+    #[test]
+    fn note_shape_scales_and_darkens() {
+        let sr = 48_000.0;
+        // 0 dB → −20 dB に下がる音量
+        let vol = PitchCurve::from_points(&[(0.0, 0.0), (1000.0, -20.0)]);
+        let mut s = NoteShape::new(vol, PitchCurve::default());
+        assert!((s.process(1.0, 0.0, sr) - 1.0).abs() < 1e-4);
+        assert!((s.process(1.0, 1000.0, sr) - 0.1).abs() < 1e-3);
+        // 暗くすると高い周波数(交互の ±1)が弱まる、明るくすると強まる
+        let energy = |b: f32| {
+            let mut n = NoteShape::new(PitchCurve::default(), PitchCurve::from_points(&[(0.0, b)]));
+            let mut e = 0.0;
+            for i in 0..4800 {
+                let x = if i % 2 == 0 { 1.0 } else { -1.0 };
+                let y = n.process(x, i as f32, sr);
+                if i > 100 {
+                    e += y * y;
+                }
+            }
+            e
+        };
+        assert!(energy(-0.8) < energy(0.0) * 0.1);
+        assert!(energy(0.8) > energy(0.0));
+        assert!(!NoteShape::default().is_active());
     }
 
     #[test]

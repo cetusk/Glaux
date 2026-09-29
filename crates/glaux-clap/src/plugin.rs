@@ -67,6 +67,20 @@ pub enum NoteMsg {
         note_id: u32,
         semitones: f64,
     },
+    /// 1 音だけの音量(倍率。0〜4、1 = そのまま)
+    Volume {
+        time: u32,
+        key: u8,
+        note_id: u32,
+        gain: f64,
+    },
+    /// 1 音だけの明るさ(0〜1。0.5 = そのまま)
+    Brightness {
+        time: u32,
+        key: u8,
+        note_id: u32,
+        value: f64,
+    },
 }
 
 impl NoteMsg {
@@ -78,7 +92,9 @@ impl NoteMsg {
             | NoteMsg::AllOff { time }
             | NoteMsg::Param { time, .. }
             | NoteMsg::Midi { time, .. }
-            | NoteMsg::Tuning { time, .. } => time,
+            | NoteMsg::Tuning { time, .. }
+            | NoteMsg::Volume { time, .. }
+            | NoteMsg::Brightness { time, .. } => time,
         }
     }
 
@@ -88,7 +104,7 @@ impl NoteMsg {
             NoteMsg::Off { .. } | NoteMsg::Choke { .. } | NoteMsg::AllOff { .. } => 0,
             NoteMsg::Param { .. } | NoteMsg::Midi { .. } => 1,
             NoteMsg::On { .. } => 2,
-            NoteMsg::Tuning { .. } => 3,
+            NoteMsg::Tuning { .. } | NoteMsg::Volume { .. } | NoteMsg::Brightness { .. } => 3,
         }
     }
 }
@@ -741,6 +757,31 @@ impl ClapProcessor {
                 Pckn::new(0u16, 0u16, key as u16, note_id),
                 NoteExpressionType::Tuning,
                 semitones,
+            )),
+            (
+                NoteDialect::Clap,
+                NoteMsg::Volume {
+                    key, note_id, gain, ..
+                },
+            ) => self.events.push(&NoteExpressionEvent::new(
+                t,
+                Pckn::new(0u16, 0u16, key as u16, note_id),
+                NoteExpressionType::Volume,
+                gain,
+            )),
+            (
+                NoteDialect::Clap,
+                NoteMsg::Brightness {
+                    key,
+                    note_id,
+                    value,
+                    ..
+                },
+            ) => self.events.push(&NoteExpressionEvent::new(
+                t,
+                Pckn::new(0u16, 0u16, key as u16, note_id),
+                NoteExpressionType::Brightness,
+                value,
             )),
             (_, NoteMsg::On { key, velocity, .. }) => {
                 let v = (velocity * 127.0).round().clamp(1.0, 127.0) as u8;

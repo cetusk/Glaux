@@ -410,6 +410,8 @@ pub fn import_commands(
                 pitch_curve: vec![],
                 glide_ms: None,
                 vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
             }));
             notes.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
         }
@@ -834,6 +836,8 @@ mod tests {
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         }
     }
 

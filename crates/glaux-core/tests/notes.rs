@@ -17,6 +17,8 @@ fn note(i: u64) -> Note {
         pitch_curve: vec![],
         glide_ms: None,
         vibrato: None,
+        volume_curve: vec![],
+        brightness_curve: vec![],
     }
 }
 

@@ -2608,6 +2608,8 @@ async fn midi_file_round_trips_through_the_tools() {
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         });
         t.clips.push(c);
         src.tracks.push(t);
@@ -3534,6 +3536,9 @@ async fn pitch_gestures_and_vibrato_shape_the_melody() {
         .any(|p| p.tick.0 == 1440 && p.cents == 0.0));
     let d4 = ns.iter().find(|n| n.pitch == 62).unwrap();
     assert!(d4.pitch_curve.is_empty(), "跳躍でも句の端でもない");
+    // フォールは音量も下げる
+    assert_eq!(e4.volume_curve.last().unwrap().value, -18.0);
+    assert_eq!(e4.volume_curve[0].tick.0, 1440);
     // ビブラート: 1 拍以上の音(G4・E4)
     let v = ok_json(
         &call(
@@ -3588,8 +3593,50 @@ async fn pitch_gestures_and_vibrato_shape_the_melody() {
             .count()
             == 2
     );
+    // 音の中の動き: 長い音(G4・E4)を暗くから開く、音量をふくらませる(E4 のフォールの音量は置き換わる)
+    let v = ok_json(
+        &call(
+            &fx,
+            "note_dynamics",
+            json!({ "clip_id": "clp_ges001", "kind": "open" }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 2, "{v}");
+    let v = ok_json(
+        &call(
+            &fx,
+            "note_dynamics",
+            json!({ "clip_id": "clp_ges001", "kind": "swell", "amount": 10 }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 2, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let e4 = project.tracks[0].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .find(|n| n.pitch == 64)
+        .unwrap()
+        .clone();
+    assert_eq!(e4.volume_curve[0].value, -10.0);
+    assert_eq!(e4.brightness_curve[0].value, -0.7);
+    let v = ok_json(
+        &call(
+            &fx,
+            "note_dynamics",
+            json!({ "clip_id": "clp_ges001", "kind": "open", "remove": true }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 2, "{v}");
     // エラー
     for bad in [
+        (
+            "note_dynamics",
+            json!({ "clip_id": "clp_ges001", "kind": "wah" }),
+        ),
         (
             "pitch_gesture",
             json!({ "clip_id": "clp_ges001", "kind": "wobble" }),

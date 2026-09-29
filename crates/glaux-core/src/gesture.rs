@@ -198,6 +198,81 @@ pub fn merge(existing: &[PitchPoint], pts: &[(u64, f32, CurveShape)]) -> Vec<Pit
     out
 }
 
+/// 音の中の強弱・明るさの動き
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dynamic {
+    /// 音の中でふくらむ(弦・管・パッドのクレッシェンド)
+    Swell,
+    /// 音の終わりへ消える
+    Fade,
+    /// スフォルツァンド(頭を強く打って落とし、そのまま)
+    Sfz,
+    /// フォルテピアノ(強く入ってすぐ弱く)
+    Fp,
+    /// 音量の揺れ(トレモロ。点の上限まで)
+    Pulse,
+    /// 暗くから開く(明るさ)
+    Open,
+    /// 明るくから閉じる(明るさ)
+    Close,
+}
+
+impl Dynamic {
+    pub fn parse(s: &str) -> Option<Dynamic> {
+        Some(match s.trim().to_lowercase().as_str() {
+            "swell" | "crescendo" => Dynamic::Swell,
+            "fade" | "decrescendo" => Dynamic::Fade,
+            "sfz" | "sforzando" => Dynamic::Sfz,
+            "fp" => Dynamic::Fp,
+            "pulse" | "tremolo" => Dynamic::Pulse,
+            "open" => Dynamic::Open,
+            "close" => Dynamic::Close,
+            _ => return None,
+        })
+    }
+
+    /// 明るさの曲線か(でなければ音量)
+    pub fn is_brightness(self) -> bool {
+        matches!(self, Dynamic::Open | Dynamic::Close)
+    }
+
+    /// 既定の (深さ, 長さ ms)。深さは音量なら dB、明るさなら 0〜1
+    pub fn defaults(self) -> (f32, f32) {
+        match self {
+            Dynamic::Swell => (12.0, 0.0),
+            Dynamic::Fade => (24.0, 0.0),
+            Dynamic::Sfz => (9.0, 150.0),
+            Dynamic::Fp => (12.0, 120.0),
+            Dynamic::Pulse => (9.0, 100.0),
+            Dynamic::Open => (0.7, 0.0),
+            Dynamic::Close => (0.7, 0.0),
+        }
+    }
+
+    /// 曲線 (tick, 値, 曲がり方)。`len` は音の長さ、`time` は sfz・fp の落ちる長さ・pulse の半周期(tick)
+    pub fn curve(self, len: u64, time: u64, amount: f32) -> Vec<(u64, f32, CurveShape)> {
+        use CurveShape::*;
+        let t = time.min(len / 2).max(1);
+        match self {
+            Dynamic::Swell => vec![(0, -amount, EaseIn), (len * 7 / 10, 0.0, Linear)],
+            Dynamic::Fade => vec![(len * 2 / 5, 0.0, EaseIn), (len, -amount, Linear)],
+            Dynamic::Sfz => vec![(0, 3.0, EaseOut), (t, -amount, Linear)],
+            Dynamic::Fp => vec![(0, 0.0, EaseOut), (t, -amount, Linear)],
+            Dynamic::Pulse => {
+                let mut v = Vec::new();
+                let mut k = 0u64;
+                while k * t < len && v.len() < crate::model::MAX_EXPR_POINTS {
+                    v.push((k * t, if k % 2 == 0 { 0.0 } else { -amount }, EaseInOut));
+                    k += 1;
+                }
+                v
+            }
+            Dynamic::Open => vec![(0, -amount, EaseOut), (len * 3 / 5, 0.2, Linear)],
+            Dynamic::Close => vec![(0, 0.2, EaseIn), (len, -amount, Linear)],
+        }
+    }
+}
+
 /// ビブラートの型 (名前, 速さ Hz, 深さ セント, 始まり ms, フェードイン ms, 説明)
 pub const VIBRATO_STYLES: &[(&str, f32, f32, f32, f32, &str)] = &[
     (
@@ -273,6 +348,8 @@ mod tests {
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         }
     }
 
@@ -325,6 +402,36 @@ mod tests {
         assert_eq!(both.len(), head.len() + 2);
         assert!(both.windows(2).all(|w| w[0].tick < w[1].tick));
         assert!(crate::model::check_pitch_curve(&both).is_ok());
+    }
+
+    #[test]
+    fn dynamics_stay_in_range() {
+        for d in [
+            Dynamic::Swell,
+            Dynamic::Fade,
+            Dynamic::Sfz,
+            Dynamic::Fp,
+            Dynamic::Pulse,
+            Dynamic::Open,
+            Dynamic::Close,
+        ] {
+            let (amount, ms) = d.defaults();
+            let c: Vec<crate::model::CurvePoint> = d
+                .curve(1920, (ms * 1.92) as u64, amount)
+                .into_iter()
+                .map(|(t, v, s)| crate::model::CurvePoint::new(Tick(t), v, s))
+                .collect();
+            let range = if d.is_brightness() {
+                crate::model::BRIGHTNESS_RANGE
+            } else {
+                crate::model::VOLUME_CURVE_DB
+            };
+            assert!(
+                crate::model::check_expr_curve("x", &c, range).is_ok(),
+                "{d:?} {c:?}"
+            );
+        }
+        assert_eq!(Dynamic::parse("sforzando"), Some(Dynamic::Sfz));
     }
 
     #[test]

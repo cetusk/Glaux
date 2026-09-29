@@ -65,6 +65,12 @@ pub struct NoteChange {
     /// ビブラートの差し替え。depth_cents が 0 以下なら消す
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vibrato: Option<crate::model::Vibrato>,
+    /// 音量の曲線の差し替え。空配列で削除
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_curve: Option<Vec<crate::model::CurvePoint>>,
+    /// 明るさの曲線の差し替え。空配列で削除
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness_curve: Option<Vec<crate::model::CurvePoint>>,
 }
 
 impl NoteChange {
@@ -79,6 +85,8 @@ impl NoteChange {
             pitch_curve: None,
             glide_ms: None,
             vibrato: None,
+            volume_curve: None,
+            brightness_curve: None,
         }
     }
     pub fn pos(mut self, v: Tick) -> Self {
@@ -111,6 +119,14 @@ impl NoteChange {
     }
     pub fn vibrato(mut self, v: crate::model::Vibrato) -> Self {
         self.vibrato = Some(v);
+        self
+    }
+    pub fn volume_curve(mut self, v: Vec<crate::model::CurvePoint>) -> Self {
+        self.volume_curve = Some(v);
+        self
+    }
+    pub fn brightness_curve(mut self, v: Vec<crate::model::CurvePoint>) -> Self {
+        self.brightness_curve = Some(v);
         self
     }
 }

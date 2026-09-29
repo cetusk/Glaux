@@ -427,6 +427,8 @@ struct Voice {
     ident: u64,
     content: u64,
     state: VoiceState,
+    /// ノートの音量・明るさの曲線(出口にかける)
+    shape: glaux_dsp::NoteShape,
 }
 
 /// 同時発音数の上限に達したとき、奪うボイスを選ぶ(奪われ中のものは除く)。
@@ -517,6 +519,9 @@ struct PendingOff {
     ev: u32,
     note_id: u32,
     last_semi: f32,
+    /// 最後に送った音量(倍率)・明るさ(0〜1)
+    last_gain: f32,
+    last_bright: f32,
 }
 
 impl PendingOff {
@@ -529,6 +534,8 @@ impl PendingOff {
             ev: u32::MAX,
             note_id: 0,
             last_semi: 0.0,
+            last_gain: f32::NAN,
+            last_bright: f32::NAN,
         }
     }
 }
@@ -1402,6 +1409,7 @@ impl Renderer {
                             ident: mix.ident,
                             content: mix.content,
                             state,
+                            shape: e.shape,
                         });
                     }
                 }
@@ -1451,7 +1459,10 @@ impl Renderer {
                     self.voices.swap_remove(i);
                     continue;
                 }
-                let sample = v.state.next(inst) * fade;
+                let mut sample = v.state.next(inst) * fade;
+                if v.shape.is_active() {
+                    sample = v.shape.process(sample, v.age as f32, sr);
+                }
                 if let Some(c) = self.voice_samples.get_mut(v.track as usize) {
                     *c += 1;
                 }
@@ -2445,6 +2456,7 @@ impl Renderer {
                 };
                 if e.curve.is_empty()
                     && !e.vibrato.is_active()
+                    && !e.shape.is_active()
                     && !glaux_dsp::articulation_moves_pitch(e.articulation)
                 {
                     self.plugin_note_on(slot, e.pitch, amp, t, None);
@@ -2463,6 +2475,8 @@ impl Renderer {
                         ev: (cursor - 1) as u32,
                         note_id,
                         last_semi: f32::NAN,
+                        last_gain: f32::NAN,
+                        last_bright: f32::NAN,
                     });
                 }
             }
@@ -2487,6 +2501,36 @@ impl Renderer {
                         glaux_dsp::articulation_cents(e.articulation, age, sr)
                     };
                     let semi = (e.curve.cents_at(age) + art + e.vibrato.cents_at(age, sr)) / 100.0;
+                    // 音量・明るさの曲線(変わったときだけ)
+                    if e.shape.is_active() {
+                        let gain = e.shape.gain_at(age).min(4.0);
+                        let bright = 0.5 + 0.5 * e.shape.brightness_at(age);
+                        let notes = &mut self.plugin_notes[p.slot as usize];
+                        if !e.shape.volume.is_empty()
+                            && (p.last_gain.is_nan() || (gain - p.last_gain).abs() > 0.002)
+                            && notes.len() < MAX_EVENTS
+                        {
+                            self.plugin_pending[i].last_gain = gain;
+                            notes.push(NoteMsg::Volume {
+                                time: t,
+                                key: p.key,
+                                note_id: p.note_id,
+                                gain: gain as f64,
+                            });
+                        }
+                        if !e.shape.bright.is_empty()
+                            && (p.last_bright.is_nan() || (bright - p.last_bright).abs() > 0.002)
+                            && notes.len() < MAX_EVENTS
+                        {
+                            self.plugin_pending[i].last_bright = bright;
+                            notes.push(NoteMsg::Brightness {
+                                time: t,
+                                key: p.key,
+                                note_id: p.note_id,
+                                value: bright as f64,
+                            });
+                        }
+                    }
                     if p.last_semi.is_nan() || (semi - p.last_semi).abs() > 0.005 {
                         self.plugin_pending[i].last_semi = semi;
                         let notes = &mut self.plugin_notes[p.slot as usize];
@@ -2773,6 +2817,7 @@ mod tests {
                 articulation: Default::default(),
                 curve: Default::default(),
                 vibrato: Default::default(),
+                shape: Default::default(),
                 fade_in: 0,
                 fade_out: 0,
                 glide: 0.0,
@@ -2892,6 +2937,8 @@ mod tests {
                     pitch_curve: vec![],
                     glide_ms: None,
                     vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
                 });
             }
             let mut d = glaux_core::Device::builtin("subtractive");

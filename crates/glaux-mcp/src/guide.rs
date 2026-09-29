@@ -174,7 +174,9 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   歌は 250ms ほど後から揺らし始め、サビの最後の伸ばしは vocal_strong や rate_end_hz で終わりを速めると盛り上がる。\n\
 - 装飾音は add_ornament(acciaccatura・appoggiatura・mordent・turn・trill・schleifer)。クラシック・バロックは trill と turn、\n\
   ケルト・和風の笛は acciaccatura と schleifer、ジャズは acciaccatura を半音で(interval 1)。付けすぎない(probability 0.3〜0.5)。\n\
-- ピアノや伴奏と重なる旋律は melody_lead で 20〜30ms 先に鳴らすと浮き上がる(和音はいちばん上の音だけ動く)。",
+- ピアノや伴奏と重なる旋律は melody_lead で 20〜30ms 先に鳴らすと浮き上がる(和音はいちばん上の音だけ動く)。\n\
+- 1 音の中の強弱・明るさは note_dynamics: 弦・管・パッドの伸ばしに swell、ブラスのキメに sfz・fp、長い音の終わりに fade、\n\
+  シンセのリードの伸ばしに open(暗くから開く)。ノートの volume_curve(dB)・brightness_curve(−1〜1)に展開される。",
     ),
     (
         "mix",

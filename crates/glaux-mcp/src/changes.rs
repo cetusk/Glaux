@@ -275,6 +275,8 @@ mod tests {
             pitch_curve: vec![],
             glide_ms: None,
             vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
         };
         let nid = n.id.clone();
         s.apply(

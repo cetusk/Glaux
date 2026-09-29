@@ -575,6 +575,8 @@ mod tests {
                     pitch_curve: vec![],
                     glide_ms: None,
                     vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
                 });
             }
         }
@@ -756,6 +758,8 @@ mod tests {
                     pitch_curve: vec![],
                     glide_ms: None,
                     vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
                 });
             }
             *looped = true;
@@ -882,6 +886,8 @@ mod tests {
                 pitch_curve: vec![],
                 glide_ms: None,
                 vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
             });
         }
         p.apply(&Command::AddClip {
