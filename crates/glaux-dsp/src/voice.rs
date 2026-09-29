@@ -185,20 +185,21 @@ impl VoiceState {
         }
     }
 
-    /// チョークのグループ(SF2/SFZ のみ。0 = 無し)
+    /// チョークのグループ(SF2/SFZ・ドラムのハイハット。0 = 無し)
     pub fn choke_group(&self) -> u32 {
         match self {
             VoiceState::Sf2(v) => v.group(),
+            VoiceState::Drum(v) => v.group(),
             _ => 0,
         }
     }
 
     /// グループ `g` が鳴ったら止まる音なら、すばやく止める
     pub fn choke_if(&mut self, g: u32) {
-        if let VoiceState::Sf2(v) = self {
-            if v.stopped_by(g) {
-                v.choke();
-            }
+        match self {
+            VoiceState::Sf2(v) if v.stopped_by(g) => v.choke(),
+            VoiceState::Drum(v) if v.stopped_by(g) => v.choke(),
+            _ => {}
         }
     }
 

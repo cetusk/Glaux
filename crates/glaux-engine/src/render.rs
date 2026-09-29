@@ -3449,9 +3449,7 @@ mod tests {
         let mut data = data_with_note(0, 480_000, true); // 10 秒のノート
         data.tracks[0].instrument = InstrumentParams::Drum(glaux_dsp::DrumParams {
             gain: 1.0,
-            decay: 1.0,
-            tone: 0.5,
-            tune: 0.0,
+            ..Default::default()
         });
         data.events[0].pitch = 42; // クローズドハット(短い)
         let shared = Arc::new(Shared::new(data));

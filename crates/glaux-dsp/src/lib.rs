@@ -39,7 +39,7 @@ mod voice;
 mod wavetable;
 mod width;
 
-pub use drum::DrumParams;
+pub use drum::{DrumKit, DrumParams};
 pub use effects::{
     bake_effect, convolution_length, effect_catalog, effect_params_spec, ConvParams, EffectParams,
     EffectState, SvfCoeffs, SvfState,

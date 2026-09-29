@@ -136,6 +136,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   position か subtractive の cutoff を 1/8〜1/16 の sine、うねるパッド = cutoff を 2/1 の triangle、ランダムに動く音色 = random。\n\
 - wavetable: position を LFO やオートメーションで動かすウォブルベース・うねるパッド・母音のような音・sync のギラついたリード。\n\
 - drum: ドラムキット(GM 配置)。**ドラムのトラックには必ず drum**。55 はリバースクラッシュ(ビルドアップ用)。\n\
+  kit: トラップ・ヒップホップは 808(kick_decay を伸ばしてベースの役も)、ハウス・テクノは 909、その他は modern。\n\
+  キックの音程(kick_tune)は曲の主音に合わせる。スネアは snare_tune・snare_snappy、ハットの長さは hat_decay。\n\
 - pluck: ギター・ベース・ハープなど弾く弦の物理モデル。\n\
 - エレキギター: pluck だけでは「アンプに繋いでいない生弦」なので、必ず amp エフェクトを後ろに挿す。amp の gain_db は\n\
   〜10 でクリーン、15〜25 でクランチ、30 前後でオーバードライブ、40 以上でメタル。メタルの刻みはノートに articulation: \"palm_mute\"。\n\

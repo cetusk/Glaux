@@ -264,7 +264,92 @@ pub static DRUM_SPECS: &[ParamSpec] = &[
             default: 0.0,
             skew: None,
         },
-        description: "キック・タムなど音程を持つパーツのピッチを半音単位でずらす。",
+        description: "キット全体の音程(キック・スネア・タム・パーカッション)を半音単位でずらす。",
+    },
+    ParamSpec {
+        name: "kit",
+        display_name: "キット",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["modern", "808", "909"],
+            default: "modern",
+        },
+        description: "キットの種類。modern は今どきの打ち込み(太く歪んだキック・張ったスネア・明るいハット。\
+            ポップス・EDM・ロックの打ち込み全般)、808 は TR-808 風(長く伸びる低いキック〈トラップ・ヒップホップの 808〉・\
+            細いスネア・金属的なハットとカウベル)、909 は TR-909 風(アタックの強いキック・ノイズの多いスネア・\
+            明るいハット。ハウス・テクノ)。",
+    },
+    ParamSpec {
+        name: "kick_tune",
+        display_name: "キックの音程",
+        unit: Some("semitones"),
+        range: ParamRange::Float {
+            min: -12.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "キックの音程を半音単位で。上げると締まって軽く、下げると重く深い。曲のキーの主音に合わせるとベースとぶつからない(modern の 0 は約 52Hz ≒ G#1、808 は約 48Hz)。",
+    },
+    ParamSpec {
+        name: "kick_decay",
+        display_name: "キックの長さ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.25,
+            max: 4.0,
+            default: 1.0,
+            skew: Some(0.5),
+        },
+        description: "キックの胴鳴りの長さの倍率。短くするとタイトで速い曲向き、長くすると 808 のように伸びてベースの役も担う。",
+    },
+    ParamSpec {
+        name: "kick_punch",
+        display_name: "キックのパンチ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            skew: None,
+        },
+        description: "アタックのクリックと歪みの量。上げると小さなスピーカーでも聞こえる硬い立ち上がり、下げると丸く柔らかい。",
+    },
+    ParamSpec {
+        name: "snare_tune",
+        display_name: "スネアの音程",
+        unit: Some("semitones"),
+        range: ParamRange::Float {
+            min: -12.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "スネアの胴の音程を半音単位で。上げると皮を張った締まった音(ファンク・ポップス)、下げると太く緩い音(ロックのバラード・ローファイ)。",
+    },
+    ParamSpec {
+        name: "snare_snappy",
+        display_name: "スネアの響き線",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.6,
+            skew: None,
+        },
+        description: "スネアの響き線(ザーッという成分)の量。上げると明るく派手、下げると胴の音が前に出てタムに近づく。",
+    },
+    ParamSpec {
+        name: "hat_decay",
+        display_name: "ハイハットの長さ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.25,
+            max: 4.0,
+            default: 1.0,
+            skew: Some(0.5),
+        },
+        description: "ハイハットの減衰の倍率。短くするとチッという締まった刻み、長くするとシャーッと開いた音。",
     },
 ];
 
@@ -900,10 +985,14 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
         },
         InstrumentInfo {
             name: "drum",
-            description: "ドラムシンセ。MIDI ノート番号(GM 配置)で音色が決まる: \
-                36=キック, 38=スネア, 39=クラップ, 42=クローズドハット, 46=オープンハット, \
-                41〜50=タム, 49/51=シンバル, 55=リバースクラッシュ(盛り上がり前の\
-                ビルドアップに。ノートの開始位置から立ち上がり、鳴り終わりをドロップ頭に合わせる)。\
+            description: "ドラムシンセ(アナログのドラムマシンの作り方。kit で modern / 808 / 909)。\
+                MIDI ノート番号(GM 配置)で音色が決まる: 35/36=キック, 37=サイドスティック, 38/40=スネア, \
+                39=クラップ, 42=クローズドハット, 44=ペダルハット, 46=オープンハット(42・44 で止まる), \
+                41〜50=タム, 49/57=クラッシュ, 51/59=ライド, 53=ライドのベル, 52=チャイナ, \
+                55=リバースクラッシュ(盛り上がり前のビルドアップに。ノートの開始位置から立ち上がり、\
+                鳴り終わりをドロップ頭に合わせる), 54=タンバリン, 56=カウベル, 60/61=ボンゴ, 62〜64=コンガ, \
+                65/66=ティンバレス, 67/68=アゴゴ, 69=カバサ, 70/82=マラカス・シェイカー, 75=クラベス, \
+                76/77=ウッドブロック, 80/81=トライアングル。強く叩くほど明るい。\
                 ドラムトラックには set_device でこれを設定する。",
             params: DRUM_SPECS,
             articulations: DRUM_ARTS,
@@ -1187,6 +1276,13 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 decay: get_f32(map, s, "decay").clamp(0.25, 4.0),
                 tone: get_f32(map, s, "tone").clamp(0.0, 1.0),
                 tune: get_f32(map, s, "tune").clamp(-12.0, 12.0),
+                kit: crate::drum::DrumKit::parse(get_enum(map, s, "kit")),
+                kick_tune: get_f32(map, s, "kick_tune").clamp(-12.0, 12.0),
+                kick_decay: get_f32(map, s, "kick_decay").clamp(0.25, 4.0),
+                kick_punch: get_f32(map, s, "kick_punch").clamp(0.0, 1.0),
+                snare_tune: get_f32(map, s, "snare_tune").clamp(-12.0, 12.0),
+                snare_snappy: get_f32(map, s, "snare_snappy").clamp(0.0, 1.0),
+                hat_decay: get_f32(map, s, "hat_decay").clamp(0.25, 4.0),
             };
             (InstrumentKind::Drum, InstrumentParams::Drum(p))
         }
