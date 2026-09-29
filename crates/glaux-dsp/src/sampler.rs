@@ -31,7 +31,7 @@ const MIP_LEVELS: usize = 4;
 const MIP_HALF: usize = 16;
 
 /// 帯域を半分にしてから 1 つおきに間引く(窓付き sinc、Blackman 窓。遅れは中央合わせで 0)
-fn halve(x: &[f32]) -> Vec<f32> {
+pub(crate) fn halve(x: &[f32]) -> Vec<f32> {
     let taps: Vec<f32> = (0..=2 * MIP_HALF)
         .map(|k| {
             let n = k as f32 - MIP_HALF as f32;

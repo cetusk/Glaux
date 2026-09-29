@@ -1094,23 +1094,35 @@ pub fn bake_sf2(
     zones: std::sync::Arc<Vec<crate::multi::Zone>>,
 ) -> crate::multi::MultiSamplerParams {
     let s = SF2_SPECS;
-    // 高く鳴らすときの縮小版(ゾーンごとに 1 回だけ作る。オーディオスレッドの外のここで)。
-    // 波形が多い音源(SFZ・SF2)は重いので、コアの数だけ並列に作る(同じ波形は OnceLock が 1 回にまとめる)
+    // 高く鳴らすときの縮小版(オーディオスレッドの外のここで)。波形ごとに、それを使うゾーンが要る段数の
+    // いちばん多い分だけ作る(作ってある段は作り直さない)。波形が多い音源(SFZ・SF2)は重いので並列に
+    let mut need: std::collections::HashMap<*const crate::Wave, (&crate::Wave, usize)> =
+        Default::default();
+    for z in zones.iter() {
+        let e = need
+            .entry(std::sync::Arc::as_ptr(&z.data))
+            .or_insert((&*z.data, 0));
+        e.1 = e.1.max(z.mip_levels());
+    }
+    let todo: Vec<(&crate::Wave, usize)> = need
+        .into_values()
+        .filter(|(w, n)| w.mip_levels() < *n)
+        .collect();
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
         .clamp(1, 8);
-    if zones.len() < 8 || threads == 1 {
-        for z in zones.iter() {
-            z.data.prepare_mips();
+    if todo.len() < 8 || threads == 1 {
+        for (w, n) in &todo {
+            w.prepare_mips(*n);
         }
     } else {
-        let chunk = zones.len().div_ceil(threads);
+        let chunk = todo.len().div_ceil(threads);
         std::thread::scope(|s| {
-            for part in zones.chunks(chunk) {
+            for part in todo.chunks(chunk) {
                 s.spawn(move || {
-                    for z in part {
-                        z.data.prepare_mips();
+                    for (w, n) in part {
+                        w.prepare_mips(*n);
                     }
                 });
             }

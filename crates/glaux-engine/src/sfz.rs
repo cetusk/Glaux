@@ -17,7 +17,7 @@
 //! - フィルタ: `cutoff` `resonance`(ローパスのみ)
 //! - 読み飛ばす region: `trigger=release` / `legato`、CC の条件(`locc` が 0 より上)、既定以外のキースイッチ
 
-use glaux_dsp::{SampleData, Zone, ZoneEnv, ZoneMod, ZonePlay};
+use glaux_dsp::{Zone, ZoneEnv, ZoneMod, ZonePlay};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -425,7 +425,7 @@ fn note(r: &Region, k: &str) -> Option<i32> {
 
 /// 読んだ音声ファイルの使い回し(パス → 波形とループ点)。ゾーンはファイル丸ごとを共有し、範囲で切り分ける。
 /// 楽器が使っている間は残す([`retain_used`])ので、調整つまみを変えて組み直すときも読み直さない
-pub type WaveCache = HashMap<PathBuf, (Arc<SampleData>, Option<(usize, usize)>)>;
+pub type WaveCache = HashMap<PathBuf, (Arc<glaux_dsp::Wave>, Option<(usize, usize)>)>;
 
 /// どの楽器(ゾーン)からも使われなくなったファイルを捨てる
 pub fn retain_used(cache: &mut WaveCache) {
@@ -434,7 +434,8 @@ pub fn retain_used(cache: &mut WaveCache) {
 
 /// 読んだ波形と、そのループ点(ファイルに書かれていれば)
 pub struct Loaded {
-    pub data: Arc<SampleData>,
+    /// 16bit にした波形(マルチサンプラーは中央成分だけを読むので、左右差成分は持たない)
+    pub data: Arc<glaux_dsp::Wave>,
     pub loop_points: Option<(usize, usize)>,
 }
 
@@ -603,7 +604,7 @@ pub fn build_zones(
     let mut zones = Vec::new();
     let mut errors = Vec::new();
     // *silence の波形(10ms の無音)
-    let silent = Arc::new(SampleData::mono(vec![0.0; 480], 48_000.0));
+    let silent = Arc::new(glaux_dsp::Wave::from_f32(&[0.0; 480], 48_000.0));
 
     for r in regions {
         if !region_plays(r, sw_default) {
@@ -615,7 +616,7 @@ pub fn build_zones(
             .is_some_and(|s| s.trim().eq_ignore_ascii_case("*silence"));
         let (data, file_loop, off, end) = if silence {
             let d = silent.clone();
-            let n = d.frames.len();
+            let n = d.len();
             (d, None, 0usize, n)
         } else {
             let Some(rel) = sample_path(r) else {
@@ -636,7 +637,7 @@ pub fn build_zones(
             let Some((data, loop_points)) = cache.get(&path) else {
                 continue;
             };
-            let len = data.frames.len();
+            let len = data.len();
             // 壊れた値(1e30 など)でも溢れないように、波形の長さに収めてから整数にする
             let off = (num(r, "offset").unwrap_or(0.0) + by_cc(r, "offset", |v, x| v * x))
                 .clamp(0.0, len as f64) as usize;
@@ -831,11 +832,9 @@ pub fn load_instrument(
         }
     }
     let zones = build_zones(&regions, &dir, cache, &mut |p| {
-        let mut data = crate::data::load_audio_file(p)?;
-        // 左右差成分は鳴らさない(マルチサンプラーは中央成分だけを読む)ので持たない
-        data.side = None;
+        let data = crate::data::load_audio_file(p)?;
         Ok(Loaded {
-            data: Arc::new(data),
+            data: Arc::new(glaux_dsp::Wave::from_f32(&data.frames, data.sample_rate)),
             loop_points: wav_loop_points(p),
         })
     })?;
@@ -884,12 +883,9 @@ pub fn controls(library: &Path, name: &str) -> Result<Vec<Control>, String> {
 /// ファイルを並列に読む(左右差成分は持たない)。戻り値の順は `paths` と同じとは限らない
 fn load_parallel(paths: &[PathBuf]) -> Vec<(PathBuf, Result<Loaded, String>)> {
     let load = |p: &PathBuf| {
-        let r = crate::data::load_audio_file(p).map(|mut d| {
-            d.side = None;
-            Loaded {
-                data: Arc::new(d),
-                loop_points: wav_loop_points(p),
-            }
+        let r = crate::data::load_audio_file(p).map(|d| Loaded {
+            data: Arc::new(glaux_dsp::Wave::from_f32(&d.frames, d.sample_rate)),
+            loop_points: wav_loop_points(p),
         });
         (p.clone(), r)
     };
@@ -1001,7 +997,7 @@ mod tests {
 
     fn fake(_: &Path) -> Result<Loaded, String> {
         Ok(Loaded {
-            data: Arc::new(SampleData::mono(vec![0.1; 1000], 48_000.0)),
+            data: Arc::new(glaux_dsp::Wave::from_f32(&[0.1; 1000], 48_000.0)),
             loop_points: None,
         })
     }
@@ -1191,7 +1187,8 @@ mod tests {
         )
         .unwrap();
         assert!(Arc::ptr_eq(&zones[0].data, &again[0].data));
-        assert!(zones[0].data.side.is_none(), "左右差成分は持たない");
+        // 16bit で持つ(縮小版を含めても f32 の波形 1 本より小さい。左右差成分は持たない)
+        assert!(zones[0].data.bytes() < zones[0].data.len() * 4);
         drop(again);
         let p = glaux_dsp::MultiSamplerParams { zones, gain: 1.0 };
         let crossings = |variant: u32| {

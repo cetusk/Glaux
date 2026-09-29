@@ -37,6 +37,7 @@ pub mod stretch;
 pub mod string_pool;
 mod subtractive;
 mod voice;
+mod wave;
 mod wavetable;
 mod width;
 
@@ -56,6 +57,7 @@ pub use pluck::PluckParams;
 pub use sampler::{hermite, SampleData, SamplerParams, SamplerVoice};
 pub use subtractive::{NoiseColor, SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
+pub use wave::Wave;
 pub use wavetable::{WavetableParams, WavetableVoice};
 
 /// device 未設定トラックに使う既定の楽器名。

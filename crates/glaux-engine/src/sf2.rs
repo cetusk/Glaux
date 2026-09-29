@@ -8,7 +8,7 @@
 //! (`<設定ディレクトリ>/glaux/soundfonts/`)から名前で参照する
 //! (FluidR3 などは 100MB 級で、プロジェクトごとの複製は現実的でないため)。
 
-use glaux_dsp::{SampleData, Zone, ZoneEnv, ZonePlay};
+use glaux_dsp::{Zone, ZoneEnv, ZonePlay};
 use rustysynth::SoundFont;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -85,7 +85,7 @@ pub fn list_presets(font: &SoundFont) -> Vec<PresetMeta> {
 
 /// フォント内の波形の切り出し(開始, 終了)→ f32 に変換した波形。
 /// 同じ波形を複数のゾーン・プリセットが使うので共有する(複製するとピアノ 1 つで 140MB → 16MB)
-pub type WaveCache = std::collections::HashMap<(usize, usize), Arc<SampleData>>;
+pub type WaveCache = std::collections::HashMap<(usize, usize), Arc<glaux_dsp::Wave>>;
 
 /// 指定プリセットのゾーン列を構築する。見つからなければ None。
 pub fn build_zones(font: &SoundFont, bank: u16, preset: u16) -> Option<Arc<Vec<Zone>>> {
@@ -136,14 +136,9 @@ pub fn build_zones_shared(
                 .unwrap_or(44_100.0);
             let data = cache
                 .entry((start, end))
+                // SoundFont はもともと 16bit なので、そのまま写す
                 .or_insert_with(|| {
-                    Arc::new(SampleData::mono(
-                        wave[start..end]
-                            .iter()
-                            .map(|&s| s as f32 / 32768.0)
-                            .collect(),
-                        sample_rate,
-                    ))
+                    Arc::new(glaux_dsp::Wave::from_i16(&wave[start..end], sample_rate))
                 })
                 .clone();
 
@@ -242,7 +237,7 @@ pub fn build_zones_shared(
                 vel_lo: vel_lo.clamp(0, 127) as u8,
                 vel_hi: vel_hi.clamp(0, 127) as u8,
                 start: 0,
-                end: data.frames.len(),
+                end: data.len(),
                 data,
                 loop_range,
                 loop_until_release,
@@ -413,7 +408,7 @@ mod tests {
         assert_eq!(zones.len(), 1);
         let z = &zones[0];
         assert_eq!((z.key_lo, z.key_hi), (0, 127));
-        assert_eq!(z.data.frames.len(), 100);
+        assert_eq!(z.data.len(), 100);
         assert!((z.data.sample_rate - 48_000.0).abs() < 1.0);
         assert!((z.root - 60.0).abs() < 0.01);
         assert_eq!(z.loop_range, Some((10.0, 90.0)));

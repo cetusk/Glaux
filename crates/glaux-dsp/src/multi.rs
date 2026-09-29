@@ -12,7 +12,6 @@
 //! CC 経由のモジュレータ(モジュレーションホイール等)は未対応。
 
 use crate::expr::PitchExpr;
-use crate::sampler::SampleData;
 use glaux_core::Articulation;
 use std::sync::Arc;
 
@@ -105,8 +104,8 @@ pub struct Zone {
     pub key_hi: u8,
     pub vel_lo: u8,
     pub vel_hi: u8,
-    /// 波形。`start..end` がこのゾーンの鳴らす範囲(SFZ はファイル丸ごとを複数のゾーンで共有し、範囲で切り分ける)
-    pub data: Arc<SampleData>,
+    /// 波形(16bit)。`start..end` がこのゾーンの鳴らす範囲(SFZ はファイル丸ごとを複数のゾーンで共有し、範囲で切り分ける)
+    pub data: Arc<crate::Wave>,
     pub start: usize,
     pub end: usize,
     /// `data` 内のループ区間(開始, 終了。`data` の頭からの位置)。None ならワンショット
@@ -209,6 +208,26 @@ impl Default for ZonePlay {
 impl Zone {
     pub fn contains(&self, key: u8, vel: u8) -> bool {
         self.key_lo <= key && key <= self.key_hi && self.vel_lo <= vel && vel <= self.vel_hi
+    }
+
+    /// このゾーンを鳴らすのに要る縮小版の段数。いちばん高い鍵盤(と音程を上げる変調・ベンドの余裕 2 半音)で
+    /// 鳴らすときの速さから決める。出力のサンプルレートは 44.1kHz 以上とみなす。
+    /// これより高く鳴らすと(ノートのピッチカーブで大きく上げたときなど)、作ってある段で読む
+    pub fn mip_levels(&self) -> usize {
+        let up_mod = (self.modu.vib_to_pitch.max(0.0)
+            + self.modu.mod_to_pitch.max(0.0)
+            + self.modu.env_to_pitch.max(0.0))
+            / 100.0;
+        let semis = (self.key_hi as f32 - self.root) * self.play.keytrack
+            + self.play.tune_semis
+            + up_mod
+            + 2.0;
+        let ratio = self.data.sample_rate / 44_100.0 * (semis / 12.0).exp2();
+        if ratio <= 1.0 {
+            0
+        } else {
+            (ratio.log2().ceil() as usize).min(crate::wave::MIP_LEVELS)
+        }
     }
 }
 
@@ -566,7 +585,7 @@ impl MultiVoice {
                 pl.active = false;
                 continue;
             };
-            let frames = &z.data.frames;
+            let len = z.data.len();
 
             // ループ処理(mode 3 はリリース後にループを抜ける)
             if let Some((ls, le)) = z.loop_range {
@@ -576,7 +595,7 @@ impl MultiVoice {
                 }
             }
             let i = pl.pos as usize;
-            if i + 1 >= z.end.min(frames.len()) {
+            if i + 1 >= z.end.min(len) {
                 pl.active = false;
                 continue;
             }
@@ -633,11 +652,11 @@ impl MultiVoice {
 mod tests {
     use super::*;
 
-    fn sine_data(freq: f32, secs: f32, sr: f32) -> Arc<SampleData> {
-        let frames = (0..(sr * secs) as usize)
+    fn sine_data(freq: f32, secs: f32, sr: f32) -> Arc<crate::Wave> {
+        let frames: Vec<f32> = (0..(sr * secs) as usize)
             .map(|i| (i as f32 * freq * std::f32::consts::TAU / sr).sin() * 0.5)
             .collect();
-        Arc::new(SampleData::mono(frames, sr))
+        Arc::new(crate::Wave::from_f32(&frames, sr))
     }
 
     fn env() -> ZoneEnv {
@@ -650,14 +669,14 @@ mod tests {
         }
     }
 
-    fn zone(key_lo: u8, key_hi: u8, root: f32, data: Arc<SampleData>) -> Zone {
+    fn zone(key_lo: u8, key_hi: u8, root: f32, data: Arc<crate::Wave>) -> Zone {
         Zone {
             key_lo,
             key_hi,
             vel_lo: 0,
             vel_hi: 127,
             start: 0,
-            end: data.frames.len(),
+            end: data.len(),
             data,
             loop_range: None,
             loop_until_release: false,
@@ -777,8 +796,8 @@ mod tests {
     }
 
     /// 倍音を含む波形(矩形波)のサンプル
-    fn square_data(freq: f32, secs: f32, sr: f32) -> Arc<SampleData> {
-        let frames = (0..(sr * secs) as usize)
+    fn square_data(freq: f32, secs: f32, sr: f32) -> Arc<crate::Wave> {
+        let frames: Vec<f32> = (0..(sr * secs) as usize)
             .map(|i| {
                 if ((i as f32 * freq / sr).fract()) < 0.5 {
                     0.5
@@ -787,7 +806,7 @@ mod tests {
                 }
             })
             .collect();
-        Arc::new(SampleData::mono(frames, sr))
+        Arc::new(crate::Wave::from_f32(&frames, sr))
     }
 
     #[test]
@@ -977,8 +996,8 @@ mod tests {
     #[test]
     fn zone_plays_only_its_range_of_a_shared_wave() {
         let sr = 48_000.0;
-        let data = Arc::new(SampleData::mono(
-            (0..1000).map(|i| i as f32 / 1000.0).collect(),
+        let data = Arc::new(crate::Wave::from_f32(
+            &(0..1000).map(|i| i as f32 / 1000.0).collect::<Vec<_>>(),
             sr,
         ));
         let mut z = zone(60, 60, 60.0, data);
