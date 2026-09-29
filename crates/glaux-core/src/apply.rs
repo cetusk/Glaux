@@ -135,6 +135,10 @@ impl Project {
                         }
                         TrackProp::Pan(std::mem::replace(&mut t.pan, *v))
                     }
+                    TrackProp::Modulators(v) => {
+                        crate::model::check_modulators(v).map_err(CoreError::OutOfRange)?;
+                        TrackProp::Modulators(std::mem::replace(&mut t.modulators, v.clone()))
+                    }
                 };
                 Ok(Applied {
                     inverse: SetTrackProp {

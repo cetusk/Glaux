@@ -16,7 +16,10 @@ pub use clip::{
 };
 pub use param::{ParamMap, ParamPath, ParamRange, ParamSpec, ParamValue};
 pub use routing::{FxIoPos, FxLink, FxNode};
-pub use track::{Device, Effect, EffectUi, MasterBus, PluginSource, Send, Track, TrackKind};
+pub use track::{
+    check_modulators, Device, Effect, EffectUi, LfoShape, MasterBus, Modulator, PluginSource, Send,
+    Track, TrackKind, MAX_MODULATORS,
+};
 
 pub(crate) use clip::sort_notes;
 

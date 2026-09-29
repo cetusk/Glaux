@@ -4352,6 +4352,79 @@ async fn meter_extras_and_musicxml_export() {
 }
 
 #[tokio::test]
+async fn modulate_track_params_with_lfos() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "準備", "commands": [
+                { "op": "add_track", "track": { "id": "trk_mod001", "name": "Bass", "kind": "midi",
+                  "device": { "type": "builtin", "name": "subtractive" },
+                  "effects": [ { "id": "fx_mod001", "type": "builtin", "name": "auto_filter" } ] } }
+            ] }),
+        )
+        .await,
+    );
+    // 音源のカットオフを 8 分の sine で(depth 省略 = 範囲の 1/4)
+    let v = ok_json(
+        &call(
+            &fx,
+            "modulate",
+            json!({ "track_id": "trk_mod001", "target": "cutoff", "sync": "1/8" }),
+        )
+        .await,
+    );
+    assert_eq!(v["modulators"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["target"]["path"], "device/cutoff");
+    // エフェクトのつまみ("種類.つまみ")を 1 小節の saw_down で
+    let v = ok_json(
+        &call(
+            &fx,
+            "modulate",
+            json!({ "track_id": "trk_mod001", "target": "auto_filter.cutoff", "sync": "1/1", "shape": "saw_down", "depth": 2000 }),
+        )
+        .await,
+    );
+    assert_eq!(v["modulators"].as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(v["target"]["path"], "fx/fx_mod001/cutoff");
+    // 同じつまみは置き換える
+    let v = ok_json(
+        &call(&fx, "modulate", json!({ "track_id": "trk_mod001", "target": "cutoff", "rate_hz": 0.5, "shape": "random" })).await,
+    );
+    assert_eq!(v["modulators"].as_array().unwrap().len(), 2);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let m = &project.tracks[0].modulators;
+    assert!(m
+        .iter()
+        .any(|x| x.shape == glaux_core::LfoShape::Random && x.sync.is_none()));
+    // 外す → undo で戻る
+    ok_json(
+        &call(
+            &fx,
+            "modulate",
+            json!({ "track_id": "trk_mod001", "remove": true }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(project.tracks[0].modulators.is_empty());
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tracks[0].modulators.len(), 2);
+    for bad in [
+        json!({ "track_id": "trk_mod001", "target": "nope" }),
+        json!({ "track_id": "trk_mod001", "target": "waveform" }),
+        json!({ "track_id": "trk_mod001", "target": "delay.mix" }),
+        json!({ "track_id": "trk_mod001", "target": "cutoff", "sync": "1/0" }),
+        json!({ "track_id": "trk_mod001", "target": "cutoff", "shape": "wobble" }),
+    ] {
+        let r = call(&fx, "modulate", bad.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad}");
+    }
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(

@@ -127,10 +127,28 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 }
                 return Command::SetTrackProp {
                     id: pick_track(rng),
-                    prop: match rng.gen_range(0..4) {
+                    prop: match rng.gen_range(0..5) {
                         0 => TrackProp::Mute(rng.gen()),
                         1 => TrackProp::VolumeDb(rng.gen_range(-30.0..6.0)),
                         2 => TrackProp::Name(format!("name{}", rng.gen_range(0..100))),
+                        3 => TrackProp::Modulators(
+                            (0..rng.gen_range(0..3))
+                                .map(|i| Modulator {
+                                    target: ParamPath::device(if i == 0 {
+                                        "cutoff"
+                                    } else {
+                                        "resonance"
+                                    }),
+                                    shape: *[LfoShape::Sine, LfoShape::SawDown, LfoShape::Random]
+                                        .choose(rng)
+                                        .unwrap(),
+                                    sync: rng.gen_bool(0.5).then(|| "1/8".to_owned()),
+                                    rate_hz: 2.0,
+                                    depth: rng.gen_range(0.0..500.0),
+                                    phase: 0.0,
+                                })
+                                .collect(),
+                        ),
                         _ => TrackProp::Pan(rng.gen_range(-1.0..1.0)),
                     },
                 };

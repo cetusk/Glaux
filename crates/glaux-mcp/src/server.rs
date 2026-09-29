@@ -1473,6 +1473,34 @@ pub struct WriteTihaiParams {
     pub velocity: Option<u8>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ModulateParams {
+    /// トラックの ID。
+    pub track_id: String,
+    /// 揺らすつまみ: 音源のつまみの名前("cutoff"・"position"・"index" など)、エフェクトの "種類.つまみ"
+    /// ("auto_filter.cutoff"・"delay.mix"。そのトラックの最初のその種類)か "fx/<id>/<名前>"。remove のときは省略で全部外す。
+    #[serde(default)]
+    pub target: Option<String>,
+    /// 形: sine(既定)/ triangle / square / saw_up / saw_down / random(周期ごとに跳ぶ S&H)。
+    #[serde(default)]
+    pub shape: Option<String>,
+    /// テンポに合わせた周期("1/4"・"1/8d"・"1/8t"・"1/1"・"4/1" = 4 小節)。省略で rate_hz。
+    #[serde(default)]
+    pub sync: Option<String>,
+    /// 周期(Hz。sync が無いとき。既定 1)。
+    #[serde(default)]
+    pub rate_hz: Option<f32>,
+    /// 揺らす幅(つまみの単位で ±。cutoff なら Hz)。省略でつまみの範囲の 1/4。
+    #[serde(default)]
+    pub depth: Option<f64>,
+    /// 始まりの位相 0〜1(0.25 で頂点から)。
+    #[serde(default)]
+    pub phase: Option<f32>,
+    /// true で外す。
+    #[serde(default)]
+    pub remove: Option<bool>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -1626,6 +1654,14 @@ fn copy_track_shell(track: &glaux_core::Track, name: String) -> glaux_core::Trac
         for l in links.iter_mut() {
             remap(&mut l.from);
             remap(&mut l.to);
+        }
+    }
+    // 変調のエフェクトの先も新しい ID に
+    for m in &mut t.modulators {
+        if let glaux_core::ParamPath::Effect { id, .. } = &mut m.target {
+            if let Some(new) = map.get(id) {
+                *id = new.clone();
+            }
         }
     }
     t
@@ -8709,6 +8745,138 @@ impl GlauxServer {
         v["notes"] = json!(notes.len());
         v["start_tick"] = json!(clip_start);
         v["length_steps"] = json!((land - clip_start) / unit + 1);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "トラックに変調(LFO)を付けて、内蔵の音源・エフェクトのつまみを揺らす(動きのある音色): target につまみ\
+        (\"cutoff\"・\"auto_filter.cutoff\"・\"fx/<id>/mix\")、sync でテンポに合わせた周期(\"1/4\"・\"1/8d\"・\"1/1\")か rate_hz、\
+        shape(sine / triangle / square / saw_up / saw_down / random)、depth(つまみの単位で ±)。同じつまみのオートメーションが\
+        あればその値を中心に揺らす。ワブルベース = wavetable の position か subtractive の cutoff を 1/8 の sine、うねるパッド = cutoff を\
+        2/1 の triangle、ランダムに動くアルペジオ = random。1 トラック 8 個まで。同じつまみは置き換える。remove で外す。1 回の undo で戻る。"
+    )]
+    async fn modulate(
+        &self,
+        params: Parameters<ModulateParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("modulate");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        // つまみの場所
+        let resolve = |t: &str| -> Result<glaux_core::ParamPath, String> {
+            if t.starts_with("fx/") || t.starts_with("device/") {
+                return glaux_core::ParamPath::parse(t).map_err(|e| e.to_string());
+            }
+            if let Some((kind, name)) = t.split_once('.') {
+                let fx = track
+                    .effects
+                    .iter()
+                    .find(|e| matches!(&e.source, glaux_core::PluginSource::Builtin { name: n } if n == kind))
+                    .ok_or_else(|| format!("このトラックに {kind} のエフェクトがありません"))?;
+                return Ok(glaux_core::ParamPath::effect(fx.id.clone(), name));
+            }
+            Ok(glaux_core::ParamPath::device(t))
+        };
+        let mut mods = track.modulators.clone();
+        let label;
+        let mut target_json = Value::Null;
+        if p.remove.unwrap_or(false) {
+            match &p.target {
+                Some(t) => {
+                    let path = resolve(t)?;
+                    let before = mods.len();
+                    mods.retain(|m| m.target != path);
+                    if mods.len() == before {
+                        return Err(format!("{t} の変調はありません"));
+                    }
+                    label = format!("変調を外す({t})");
+                }
+                None => {
+                    if mods.is_empty() {
+                        return Err("変調はありません".to_owned());
+                    }
+                    mods.clear();
+                    label = "変調をすべて外す".to_owned();
+                }
+            }
+        } else {
+            let t = p.target.as_deref().ok_or("target を指定してください")?;
+            let path = resolve(t)?;
+            // つまみの範囲(depth の既定と確認)
+            let spec = match &path {
+                glaux_core::ParamPath::Device { name } => {
+                    let dev = track
+                        .device
+                        .as_ref()
+                        .and_then(|d| match &d.source {
+                            glaux_core::PluginSource::Builtin { name } => Some(name.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| glaux_dsp::DEFAULT_INSTRUMENT.to_owned());
+                    glaux_dsp::instrument_params(&dev)
+                        .and_then(|ss| ss.iter().find(|s| s.name == name.as_str()))
+                }
+                glaux_core::ParamPath::Effect { id, name } => track
+                    .effects
+                    .iter()
+                    .find(|e| &e.id == id)
+                    .and_then(|e| match &e.source {
+                        glaux_core::PluginSource::Builtin { name } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .and_then(|n| glaux_dsp::effect_params_spec(&n))
+                    .and_then(|ss| ss.iter().find(|s| s.name == name.as_str())),
+                _ => None,
+            };
+            let Some(spec) = spec else {
+                return Err(format!(
+                    "{t} は揺らせるつまみではありません(list_params で名前を確かめる)"
+                ));
+            };
+            let (lo, hi) = match spec.range {
+                glaux_core::ParamRange::Float { min, max, .. } => (min, max),
+                glaux_core::ParamRange::Int { min, max, .. } => (min as f64, max as f64),
+                _ => {
+                    return Err(format!(
+                        "{t} は数のつまみではありません(選択肢は揺らせない)"
+                    ))
+                }
+            };
+            let shape: glaux_core::LfoShape = match &p.shape {
+                Some(sh) => serde_json::from_value(json!(sh)).map_err(|_| {
+                    format!(
+                        "shape は sine / triangle / square / saw_up / saw_down / random(got: {sh})"
+                    )
+                })?,
+                None => Default::default(),
+            };
+            let m = glaux_core::Modulator {
+                target: path.clone(),
+                shape,
+                sync: p.sync.clone(),
+                rate_hz: p.rate_hz.unwrap_or(1.0),
+                depth: p.depth.unwrap_or((hi - lo) / 4.0),
+                phase: p.phase.unwrap_or(0.0),
+            };
+            mods.retain(|x| x.target != path);
+            mods.push(m);
+            glaux_core::check_modulators(&mods)?;
+            label = format!("変調 {t}");
+            target_json = json!({ "path": path.to_string(), "min": lo, "max": hi });
+        }
+        let command = Command::SetTrackProp {
+            id: tid,
+            prop: glaux_core::TrackProp::Modulators(mods.clone()),
+        };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["modulators"] = json!(mods);
+        v["target"] = target_json;
         Ok(JsonText(v))
     }
 

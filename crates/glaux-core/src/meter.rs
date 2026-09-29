@@ -465,6 +465,26 @@ pub fn feel_map(segs: &[FeelSegment], rel: u64) -> u64 {
     nh + ((rel - h) as f64 * nl as f64 / l.max(1) as f64).round() as u64
 }
 
+/// テンポに合わせた周期の文字列 → tick("1/4" = 960、"1/8d" = 720、"1/8t" = 320、"2/1" = 2 小節ぶん)。読めなければ 0
+pub fn sync_ticks(s: &str) -> f64 {
+    let q = crate::time::PPQ as f64 * 4.0;
+    let s = s.trim();
+    let (base, mul) = if let Some(b) = s.strip_suffix('d') {
+        (b, 1.5)
+    } else if let Some(b) = s.strip_suffix('t') {
+        (b, 2.0 / 3.0)
+    } else {
+        (s, 1.0)
+    };
+    let Some((n, d)) = base.split_once('/') else {
+        return 0.0;
+    };
+    match (n.trim().parse::<f64>(), d.trim().parse::<f64>()) {
+        (Ok(n), Ok(d)) if n > 0.0 && d > 0.0 => q * n / d * mul,
+        _ => 0.0,
+    }
+}
+
 /// 音価の名前 → 4 分音符いくつぶんか(quarter / 8th / 16th / half / whole、dotted_ と triplet_ を前に付けられる)
 pub fn note_value(name: &str) -> Option<f64> {
     let n = name.trim().to_lowercase();

@@ -20,21 +20,7 @@ const SYNC_CHOICES: &[&str] = &[
 ];
 
 fn sync_ticks(s: &str) -> f64 {
-    let q = glaux_core::PPQ as f64 * 4.0;
-    let (base, mul) = if let Some(b) = s.strip_suffix('d') {
-        (b, 1.5)
-    } else if let Some(b) = s.strip_suffix('t') {
-        (b, 2.0 / 3.0)
-    } else {
-        (s, 1.0)
-    };
-    let Some((n, d)) = base.split_once('/') else {
-        return 0.0;
-    };
-    let (Ok(n), Ok(d)) = (n.parse::<f64>(), d.parse::<f64>()) else {
-        return 0.0;
-    };
-    q * n / d * mul
+    glaux_core::meter::sync_ticks(s)
 }
 
 /// LFO の形

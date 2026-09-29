@@ -151,6 +151,109 @@ pub struct Track {
     /// レガートのつなぎ目の長さ(ms)。省略時 30ms。`track/legato_ms` で設定
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legato_ms: Option<f32>,
+    /// 変調(LFO)。内蔵の音源・エフェクトのつまみを揺らす(再生データを作るときにオートメーションに焼き込む)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modulators: Vec<Modulator>,
+}
+
+/// LFO の形
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LfoShape {
+    #[default]
+    Sine,
+    Triangle,
+    Square,
+    SawUp,
+    SawDown,
+    /// 周期ごとに乱数の値へ跳ぶ(サンプル & ホールド)
+    Random,
+}
+
+impl LfoShape {
+    /// 位相 0〜1 → −1〜1。`cycle` は何周目か(random の種)
+    pub fn at(self, ph: f64, cycle: i64) -> f64 {
+        let ph = ph.rem_euclid(1.0);
+        match self {
+            LfoShape::Sine => (std::f64::consts::TAU * ph).sin(),
+            LfoShape::Triangle => 1.0 - 4.0 * ((ph + 0.25).rem_euclid(1.0) - 0.5).abs(),
+            LfoShape::Square => {
+                if ph < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            LfoShape::SawUp => 2.0 * ph - 1.0,
+            LfoShape::SawDown => 1.0 - 2.0 * ph,
+            LfoShape::Random => {
+                let mut x = (cycle as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x5DEE_CE66;
+                x ^= x >> 31;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                x ^= x >> 29;
+                (x >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+            }
+        }
+    }
+}
+
+/// 変調(LFO)1 つ。`target` のつまみを `元の値 + depth × LFO` にする(範囲に収める)
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Modulator {
+    /// 揺らすつまみ(`device/<名前>` か `fx/<id>/<名前>`)
+    pub target: super::ParamPath,
+    #[serde(default)]
+    pub shape: LfoShape,
+    /// テンポに合わせた周期("1/4"・"1/8d"・"1/8t"・"2/1" など)。無ければ rate_hz
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<String>,
+    /// 周期が Hz のとき(sync が無いとき)
+    #[serde(default)]
+    pub rate_hz: f32,
+    /// 揺らす幅(つまみの単位。±)
+    pub depth: f64,
+    /// 始まりの位相 0〜1
+    #[serde(default)]
+    pub phase: f32,
+}
+
+/// 1 トラックの変調の上限
+pub const MAX_MODULATORS: usize = 8;
+
+/// 変調の検証
+pub fn check_modulators(mods: &[Modulator]) -> Result<(), String> {
+    if mods.len() > MAX_MODULATORS {
+        return Err(format!("modulators は {MAX_MODULATORS} 個まで"));
+    }
+    for m in mods {
+        match &m.target {
+            super::ParamPath::Device { name } if name.starts_with("clap:") => {
+                return Err("CLAP のつまみは変調できません(内蔵の音源・エフェクトだけ)".to_owned());
+            }
+            super::ParamPath::Device { .. } | super::ParamPath::Effect { .. } => {}
+            super::ParamPath::Track { .. } => {
+                return Err("変調の先は device/<名前> か fx/<id>/<名前>".to_owned());
+            }
+        }
+        match &m.sync {
+            Some(s) => {
+                if crate::meter::sync_ticks(s) <= 0.0 {
+                    return Err(format!(
+                        "sync が読めません: {s}(\"1/4\"・\"1/8d\"・\"1/8t\" など)"
+                    ));
+                }
+            }
+            None => {
+                if !(0.01..=40.0).contains(&m.rate_hz) {
+                    return Err("rate_hz は 0.01〜40(sync が無いとき)".to_owned());
+                }
+            }
+        }
+        if !m.depth.is_finite() || !(0.0..=1.0).contains(&m.phase) {
+            return Err("depth は数、phase は 0〜1".to_owned());
+        }
+    }
+    Ok(())
 }
 
 impl Track {
@@ -173,6 +276,7 @@ impl Track {
             sends: vec![],
             glide_ms: None,
             legato_ms: None,
+            modulators: vec![],
         }
     }
 

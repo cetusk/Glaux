@@ -1028,6 +1028,110 @@ fn bake_fx_plan(
 }
 
 /// プロジェクト全体を再生データに展開する。
+/// トラックの変調(LFO)を、オートメーションのレーンに焼き込む(同じつまみのレーンがあればその値を中心に揺らす)。
+/// 1 周期 16 点以上の直線のレーンにし、つまみの範囲に収める。範囲の分からないつまみの変調は飛ばす
+pub fn modulated_lanes(
+    t: &glaux_core::Track,
+    project: &Project,
+) -> Vec<glaux_core::AutomationLane> {
+    use glaux_core::{AutomationLane, AutomationPoint, Curve, ParamRange, ParamValue};
+    let mut lanes = t.automation.clone();
+    let end = project.end().0 + glaux_core::PPQ * 8;
+    let bpm0 = project.tempo_map.bpm_at(glaux_core::Tick(0));
+    let mut targets: Vec<&ParamPath> = t.modulators.iter().map(|m| &m.target).collect();
+    targets.dedup();
+    let mut seen: Vec<&ParamPath> = Vec::new();
+    for target in targets {
+        if seen.contains(&target) {
+            continue;
+        }
+        seen.push(target);
+        // つまみの説明(範囲・既定値)と、置いた値
+        let (spec, set) = match target {
+            ParamPath::Device { name } => {
+                let dev = t
+                    .device
+                    .as_ref()
+                    .and_then(|d| match &d.source {
+                        glaux_core::PluginSource::Builtin { name } => Some(name.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or(glaux_dsp::DEFAULT_INSTRUMENT);
+                let spec = glaux_dsp::instrument_params(dev)
+                    .and_then(|ss| ss.iter().find(|s| s.name == name.as_str()));
+                (spec, t.device.as_ref().and_then(|d| d.params.get(name)))
+            }
+            ParamPath::Effect { id, name } => {
+                let Some(fx) = t.effects.iter().find(|e| &e.id == id) else {
+                    continue;
+                };
+                let glaux_core::PluginSource::Builtin { name: fx_name } = &fx.source else {
+                    continue;
+                };
+                let spec = glaux_dsp::effect_params_spec(fx_name)
+                    .and_then(|ss| ss.iter().find(|s| s.name == name.as_str()));
+                (spec, fx.params.get(name))
+            }
+            ParamPath::Track { .. } => continue,
+        };
+        let Some(spec) = spec else { continue };
+        let (lo, hi, default) = match spec.range {
+            ParamRange::Float {
+                min, max, default, ..
+            } => (min, max, default),
+            ParamRange::Int { min, max, default } => (min as f64, max as f64, default as f64),
+            _ => continue,
+        };
+        let fixed = set.and_then(ParamValue::as_f64).unwrap_or(default);
+        let lane = lanes.iter().find(|l| &l.target == target).cloned();
+        let base = |tick: u64| {
+            lane.as_ref()
+                .and_then(|l| l.value_at(glaux_core::Tick(tick)))
+                .unwrap_or(fixed)
+        };
+        let mods: Vec<&glaux_core::Modulator> = t
+            .modulators
+            .iter()
+            .filter(|m| &m.target == target)
+            .collect();
+        // 周期(tick)。Hz は曲の頭のテンポで
+        let period = |m: &glaux_core::Modulator| match &m.sync {
+            Some(s) => glaux_core::meter::sync_ticks(s),
+            None => glaux_core::PPQ as f64 * bpm0 / 60.0 / (m.rate_hz as f64).max(0.01),
+        };
+        let step = mods
+            .iter()
+            .map(|m| (period(m) / 16.0).max(10.0))
+            .fold(f64::MAX, f64::min)
+            .min(glaux_core::PPQ as f64) as u64;
+        let mut points = Vec::new();
+        let mut tick = 0u64;
+        while tick <= end {
+            let secs = project.tempo_map.tick_to_seconds(glaux_core::Tick(tick));
+            let mut v = base(tick);
+            for m in &mods {
+                let cycles = match &m.sync {
+                    Some(_) => tick as f64 / period(m),
+                    None => secs * m.rate_hz as f64,
+                } + m.phase as f64;
+                v += m.depth * m.shape.at(cycles.fract(), cycles.floor() as i64);
+            }
+            points.push(AutomationPoint {
+                tick: glaux_core::Tick(tick),
+                value: v.clamp(lo, hi),
+                curve: Curve::Linear,
+            });
+            tick += step.max(1);
+        }
+        lanes.retain(|l| &l.target != target);
+        lanes.push(AutomationLane {
+            target: target.clone(),
+            points,
+        });
+    }
+    lanes
+}
+
 pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBank) -> PlaybackData {
     let any_solo = project.tracks.iter().any(|t| t.solo);
     let to_sample =
@@ -1129,6 +1233,17 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         .tracks
         .iter()
         .map(|t| {
+            // 変調(LFO)をオートメーションのレーンに焼き込んだトラック(無ければそのまま)
+            let modulated;
+            let t = if t.modulators.is_empty() {
+                t
+            } else {
+                modulated = glaux_core::Track {
+                    automation: modulated_lanes(t, project),
+                    ..t.clone()
+                };
+                &modulated
+            };
             let (pl, pr) = pan_gains(t.pan);
             let gain = db_to_amp(t.volume_db);
             let instrument = bake_track_instrument(t, bank, sample_rate as f32);
@@ -2095,6 +2210,50 @@ mod tests {
         assert_eq!(name, "cutoff");
         assert_eq!(points[0].sample, 24_000); // 120bpm: 960 tick = 0.5s
         assert!((points[0].value - 200.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn modulators_bake_into_automation_lanes() {
+        use glaux_core::{LfoShape, Modulator, ParamPath};
+        let mut project = project_with_notes(vec![note(0, 3840, 60, 100)]);
+        project.tracks[0].modulators.push(Modulator {
+            target: ParamPath::device("cutoff"),
+            shape: LfoShape::Sine,
+            sync: Some("1/4".into()),
+            rate_hz: 0.0,
+            depth: 2000.0,
+            phase: 0.0,
+        });
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let (name, points) = &data.tracks[0].device_auto[0];
+        assert_eq!(name, "cutoff");
+        // 既定 8000Hz を中心に ±2000、4 分(0.5 秒 = 24000 サンプル)の周期
+        let at = |sample: u64| points.iter().find(|p| p.sample >= sample).unwrap().value;
+        assert!((at(0) - 8000.0).abs() < 1.0);
+        assert!((at(6_000) - 10_000.0).abs() < 50.0, "{}", at(6_000));
+        assert!((at(18_000) - 6_000.0).abs() < 50.0, "{}", at(18_000));
+        assert!((at(30_000) - 10_000.0).abs() < 50.0);
+        // 範囲(40〜12000)に収める
+        project.tracks[0].modulators[0].depth = 9000.0;
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let (_, points) = &data.tracks[0].device_auto[0];
+        assert!(points.iter().all(|p| (40.0..=12000.0).contains(&p.value)));
+        // 既存のオートメーションがあれば、その値を中心に揺らす
+        project.tracks[0].modulators[0].depth = 100.0;
+        project.tracks[0]
+            .automation
+            .push(glaux_core::AutomationLane {
+                target: ParamPath::device("cutoff"),
+                points: vec![glaux_core::AutomationPoint {
+                    tick: Tick(0),
+                    value: 1000.0,
+                    curve: Default::default(),
+                }],
+            });
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        assert_eq!(data.tracks[0].device_auto.len(), 1);
+        let (_, points) = &data.tracks[0].device_auto[0];
+        assert!(points.iter().all(|p| (900.0..=1100.0).contains(&p.value)));
     }
 
     #[test]

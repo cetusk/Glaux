@@ -78,6 +78,7 @@ const LABELS: Record<string, ToolLabel> = {
   hemiola: { short: "ヘミオラ", doing: "3 拍子を 2 拍ずつに聞かせています" },
   write_tihai: { short: "ティハイ", doing: "3 回繰り返して着地する句を置いています" },
   export_musicxml: { short: "譜面の書き出し", doing: "MusicXML に書き出しています" },
+  modulate: { short: "変調(LFO)", doing: "つまみを LFO で揺らしています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

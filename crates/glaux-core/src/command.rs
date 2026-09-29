@@ -39,6 +39,8 @@ pub enum TrackProp {
     Solo(bool),
     VolumeDb(f32),
     Pan(f32),
+    /// 変調(LFO)を丸ごと差し替える(空で外す)
+    Modulators(Vec<crate::model::Modulator>),
 }
 
 /// ノートの部分更新。`None` のフィールドは変更しない。
