@@ -58,6 +58,35 @@ fn index_path(plugin_id: &str) -> PathBuf {
         .join(format!("{safe}.json"))
 }
 
+/// 読み込んだ索引(プラグイン → (ファイルの更新時刻, 索引))。検索のたびに JSON を解析し直さない
+#[allow(clippy::type_complexity)]
+static LOADED: std::sync::Mutex<
+    BTreeMap<String, (std::time::SystemTime, std::sync::Arc<IndexFile>)>,
+> = std::sync::Mutex::new(BTreeMap::new());
+
+/// 読むだけの索引(ファイルが変わっていなければ前に読んだものを返す)
+fn load_index_shared(plugin_id: &str) -> std::sync::Arc<IndexFile> {
+    let mtime = std::fs::metadata(index_path(plugin_id))
+        .and_then(|m| m.modified())
+        .ok();
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    if let (Some(t), Some((at, f))) = (mtime, loaded.get(plugin_id)) {
+        if *at == t {
+            return f.clone();
+        }
+    }
+    let f = std::sync::Arc::new(load_index(plugin_id));
+    match mtime {
+        Some(t) => {
+            loaded.insert(plugin_id.to_owned(), (t, f.clone()));
+        }
+        None => {
+            loaded.remove(plugin_id);
+        }
+    }
+    f
+}
+
 fn load_index(plugin_id: &str) -> IndexFile {
     std::fs::read(index_path(plugin_id))
         .ok()
@@ -258,7 +287,7 @@ pub fn find_similar(
     limit: usize,
     shortlist: usize,
 ) -> Result<Vec<Candidate>, String> {
-    let index = load_index(plugin_id);
+    let index = load_index_shared(plugin_id);
     let list = glaux_engine::plugins::presets(plugin_id, false)?;
     let d = crate::sound::describe(target);
     let pitch = d
@@ -337,14 +366,12 @@ pub fn find_similar(
         sample_rate: RENDER_RATE,
     };
     let mut out = Vec::new();
+    // 目標の特徴は 1 回だけ求める(候補ごとに作り直さない)
+    let reference =
+        sound_match::Reference::new(&target.frames, target.sample_rate, RENDER_RATE as f32);
     render_presets(plugin_id, &presets, spec, |i, r| {
         if let Ok(frames) = r {
-            let dist = sound_match::compare(
-                &target.frames,
-                target.sample_rate,
-                &frames,
-                RENDER_RATE as f32,
-            );
+            let dist = reference.compare(&frames);
             let row = rows[picked[i]];
             let clap_similarity = match (&target_clap, &by_clap) {
                 (Some(_), Some(c)) if c[picked[i]] < 2.0 => Some(1.0 - c[picked[i]]),

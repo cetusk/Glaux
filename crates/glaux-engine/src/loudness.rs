@@ -10,53 +10,107 @@ use serde::Serialize;
 // 補間の半分の幅と係数は、リアルタイムのリミッタと共通(glaux_dsp::limiter)
 use glaux_dsp::limiter::{true_peak_kernel as kernel, TP_HALF as HALF};
 
+/// フレーム `i` の True Peak(左右の大きい方、リニア)。
+/// そのサンプルと、次のサンプルまでの間の補間点(1/4・2/4・3/4)の絶対値の最大
+#[inline]
+fn peak_at(stereo: &[f32], k: &[[f32; 2 * HALF]; 3], i: usize) -> f32 {
+    let n = stereo.len() / 2;
+    let mut peak = stereo[i * 2].abs().max(stereo[i * 2 + 1].abs());
+    let lo = i as isize - HALF as isize + 1;
+    let interior = lo >= 0 && lo as usize + 2 * HALF <= n;
+    for c in 0..2 {
+        for phase in k {
+            let mut acc = 0.0f32;
+            if interior {
+                // 端に掛からない所は境界の判定なしで(ほとんどのフレーム)
+                let base = lo as usize;
+                for (t, coef) in phase.iter().enumerate() {
+                    acc += coef * stereo[(base + t) * 2 + c];
+                }
+            } else {
+                for (t, coef) in phase.iter().enumerate() {
+                    let j = lo + t as isize;
+                    if j >= 0 && (j as usize) < n {
+                        acc += coef * stereo[j as usize * 2 + c];
+                    }
+                }
+            }
+            peak = peak.max(acc.abs());
+        }
+    }
+    peak
+}
+
+/// フレームの範囲 `0..n` を区間に分けて並列に `f` を呼び、区間の順に結果を返す(解析・書き出し用)
+fn par_ranges<T: Send>(n: usize, f: impl Fn(std::ops::Range<usize>) -> T + Sync) -> Vec<T> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |w| w.get())
+        .clamp(1, 8)
+        .min(n.div_ceil(48_000).max(1));
+    let chunk = n.div_ceil(workers).max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..n)
+            .step_by(chunk)
+            .map(|lo| {
+                let f = &f;
+                scope.spawn(move || f(lo..(lo + chunk).min(n)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    })
+}
+
 /// フレームごとの True Peak(左右の大きい方、リニア)。
 /// フレーム i の値は、そのサンプルと、次のサンプルまでの間の補間点(1/4・2/4・3/4)の絶対値の最大
 pub fn true_peak_frames(stereo: &[f32]) -> Vec<f32> {
-    let n = stereo.len() / 2;
     let k = kernel();
-    let at = |c: usize, i: isize| -> f32 {
-        if i < 0 || i as usize >= n {
-            0.0
-        } else {
-            stereo[i as usize * 2 + c]
-        }
-    };
-    (0..n)
-        .map(|i| {
-            let mut peak = stereo[i * 2].abs().max(stereo[i * 2 + 1].abs());
-            for c in 0..2 {
-                for phase in &k {
-                    let mut acc = 0.0f32;
-                    for (t, coef) in phase.iter().enumerate() {
-                        acc += coef * at(c, i as isize + t as isize - HALF as isize + 1);
-                    }
-                    peak = peak.max(acc.abs());
-                }
-            }
-            peak
+    par_ranges(stereo.len() / 2, |r| {
+        r.map(|i| peak_at(stereo, &k, i)).collect::<Vec<_>>()
+    })
+    .concat()
+}
+
+/// `block` フレームごとの True Peak の最大(リニア。最後の区間は短いことがある)
+pub fn true_peak_blocks(stereo: &[f32], block: usize) -> Vec<f32> {
+    let k = kernel();
+    let n = stereo.len() / 2;
+    let block = block.max(1);
+    par_ranges(n.div_ceil(block), |r| {
+        r.map(|b| {
+            (b * block..((b + 1) * block).min(n))
+                .map(|i| peak_at(stereo, &k, i))
+                .fold(0.0f32, f32::max)
         })
-        .collect()
+        .collect::<Vec<_>>()
+    })
+    .concat()
 }
 
 /// 全体の True Peak(dBTP)
 pub fn true_peak_db(stereo: &[f32]) -> f64 {
-    let p = true_peak_frames(stereo).into_iter().fold(0.0f32, f32::max);
+    let k = kernel();
+    let p = par_ranges(stereo.len() / 2, |r| {
+        r.map(|i| peak_at(stereo, &k, i)).fold(0.0f32, f32::max)
+    })
+    .into_iter()
+    .fold(0.0f32, f32::max);
     20.0 * (p as f64).max(1e-9).log10()
 }
 
 /// PSR(ピークと短期ラウドネスの差)の最小値(dB)。短期ラウドネスは 1 秒ごと(3 秒窓)の値、
-/// ピークは同じ 3 秒窓の True Peak。無音に近い所(-60 LUFS 未満)は除く。測れなければ None
+/// ピークは同じ 3 秒窓(1 秒ごとの区間 3 つ)の True Peak。無音に近い所(-60 LUFS 未満)は除く。測れなければ None
 pub fn psr_min_db(stereo: &[f32], sample_rate: f64, short_term_lufs: &[f64]) -> Option<f64> {
-    let tp = true_peak_frames(stereo);
-    let sec = sample_rate as usize;
+    let tp = true_peak_blocks(stereo, (sample_rate as usize).max(1));
     short_term_lufs
         .iter()
         .enumerate()
         .filter(|(_, st)| **st > -60.0)
         .filter_map(|(k, st)| {
-            let end = ((k + 1) * sec).min(tp.len());
-            let start = end.saturating_sub(3 * sec);
+            let end = (k + 1).min(tp.len());
+            let start = end.saturating_sub(3);
             let p = tp[start..end].iter().copied().fold(0.0f32, f32::max);
             (p > 0.0).then(|| 20.0 * (p as f64).log10() - st)
         })

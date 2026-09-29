@@ -135,10 +135,9 @@ pub fn infer(audio: &[f32]) -> Result<Activations, MlError> {
     let mut padded = vec![0.0f32; overlap_len / 2];
     padded.extend_from_slice(audio);
     let n_trim = N_OVERLAP_FRAMES / 2;
-    let mut note = Vec::new();
-    let mut onset = Vec::new();
-    let mut start = 0;
-    while start < padded.len() {
+    type Rows = Vec<[f32; N_PITCHES]>;
+    // 窓 1 つ分の (note, onset)(重なりの両端を落とした行)
+    let run = |start: usize| -> Result<(Rows, Rows), MlError> {
         let mut window = vec![0.0f32; AUDIO_N_SAMPLES];
         let end = (start + AUDIO_N_SAMPLES).min(padded.len());
         window[..end - start].copy_from_slice(&padded[start..end]);
@@ -149,20 +148,47 @@ pub fn infer(audio: &[f32]) -> Result<Activations, MlError> {
             .plan
             .run(tvec!(input.into()))
             .map_err(|e| MlError::Inference(e.to_string()))?;
-        for (idx, dest) in [(m.note_idx, &mut note), (m.onset_idx, &mut onset)] {
+        let rows = |idx: usize| -> Result<Rows, MlError> {
             let view = out[idx]
                 .to_plain_array_view::<f32>()
                 .map_err(|e| MlError::Inference(e.to_string()))?;
             let frames = view.shape()[1];
-            for f in n_trim..frames.saturating_sub(n_trim) {
-                let mut row = [0.0f32; N_PITCHES];
-                for (p, v) in row.iter_mut().enumerate() {
-                    *v = view[[0, f, p]];
-                }
-                dest.push(row);
-            }
+            Ok((n_trim..frames.saturating_sub(n_trim))
+                .map(|f| std::array::from_fn(|p| view[[0, f, p]]))
+                .collect())
+        };
+        Ok((rows(m.note_idx)?, rows(m.onset_idx)?))
+    };
+    // 窓は互いに独立なので並列に推論する(tract は 1 つの推論を 1 スレッドで回す)
+    let starts: Vec<usize> = (0..padded.len()).step_by(hop).collect();
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 8);
+    let mut note = Vec::new();
+    let mut onset = Vec::new();
+    for group in starts.chunks(threads) {
+        let part: Vec<Result<(Rows, Rows), MlError>> = std::thread::scope(|sc| {
+            let handles: Vec<_> = group
+                .iter()
+                .map(|&st| {
+                    let run = &run;
+                    sc.spawn(move || run(st))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(MlError::Inference("推論が中断しました".into())))
+                })
+                .collect()
+        });
+        for r in part {
+            let (n, o) = r?;
+            note.extend(n);
+            onset.extend(o);
         }
-        start += hop;
     }
     let n_frames = (audio.len() as f64 * ANNOTATIONS_FPS / MODEL_SAMPLE_RATE as f64) as usize;
     note.truncate(n_frames);

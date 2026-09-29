@@ -147,7 +147,9 @@ fn load_plan(frames: usize) -> TractResult<Plan> {
         .into_runnable()
 }
 
-/// 長さごとの推論計画。30 秒の窓は使い回し、それより短い窓(短い音声・最後の窓)はその都度作る。
+/// 長さごとの推論計画。30 秒の窓は使い回す。それより短い窓(短い音声・最後の窓)は長さごとに作り、
+/// 直近の 2 つを覚えておく(同じ音声を続けて解析するときに最適化をやり直さない。1 回数百 ms)。
+/// 長さを記号の次元にする手もあるが、最適化の効きが変わるので長さを決めて作る
 fn plan(frames: usize) -> Result<Plan, crate::MlError> {
     if frames == CHUNK {
         static FULL: OnceLock<Result<Plan, String>> = OnceLock::new();
@@ -156,7 +158,22 @@ fn plan(frames: usize) -> Result<Plan, crate::MlError> {
             .clone()
             .map_err(crate::MlError::Model);
     }
-    load_plan(frames).map_err(|e| crate::MlError::Model(e.to_string()))
+    static RECENT: std::sync::Mutex<Vec<(usize, Plan)>> = std::sync::Mutex::new(Vec::new());
+    if let Some(p) = RECENT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(n, _)| *n == frames)
+        .map(|(_, p)| p.clone())
+    {
+        return Ok(p);
+    }
+    let p = load_plan(frames).map_err(|e| crate::MlError::Model(e.to_string()))?;
+    let mut recent = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+    recent.retain(|(n, _)| *n != frames);
+    recent.insert(0, (frames, p.clone()));
+    recent.truncate(2);
+    Ok(p)
 }
 
 /// 任意のサンプルレートのモノラル音声のビート・小節頭を推定する。

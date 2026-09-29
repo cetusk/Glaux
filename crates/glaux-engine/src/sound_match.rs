@@ -226,6 +226,32 @@ pub fn compare(a: &[f32], sr_a: f32, b: &[f32], sr_b: f32) -> Distance {
     distance(&fa, &fb)
 }
 
+/// 同じ音と何度も比べるときの、前もって求めた特徴(プリセットの候補を 1 つずつ比べるときなど)。
+/// 帯域の上限は両方のサンプルレートで決まるので、比べる相手のサンプルレートは作るときに決める
+pub struct Reference {
+    sr_b: f32,
+    f_max: f32,
+    features: Features,
+}
+
+impl Reference {
+    /// `a`(サンプルレート `sr_a`)を、サンプルレート `sr_b` の音と比べる用意をする
+    pub fn new(a: &[f32], sr_a: f32, sr_b: f32) -> Reference {
+        let f_max = (sr_a.min(sr_b) / 2.0 * 0.9).min(16_000.0);
+        Reference {
+            sr_b,
+            f_max,
+            features: features(trim_onset(a, sr_a), sr_a, f_max),
+        }
+    }
+
+    /// `b`(作るときに決めたサンプルレート)と比べる。[`compare`] と同じ距離
+    pub fn compare(&self, b: &[f32]) -> Distance {
+        let fb = features(trim_onset(b, self.sr_b), self.sr_b, self.f_max);
+        distance(&self.features, &fb)
+    }
+}
+
 // ---- 小さな要約(プリセット検索の索引用) ----
 
 /// 要約の時間区間(秒。鳴り始めから)

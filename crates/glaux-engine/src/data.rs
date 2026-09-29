@@ -801,8 +801,10 @@ impl SampleBank {
             }
         }
 
-        // テンポ追従クリップ: 条件(テンポ・位置・長さ・元テンポ等)が変わったものだけ伸縮し直す
+        // テンポ追従クリップ: 条件(テンポ・位置・長さ・元テンポ等)が変わったものだけ伸縮し直す。
+        // クリップごとの伸縮は互いに独立なので並列に(最大 8 スレッド)
         let mut used_clips = std::collections::HashSet::new();
+        let mut todo: Vec<(&glaux_core::Clip, u64, &SampleData)> = Vec::new();
         for clip in project.tracks.iter().flat_map(|t| t.clips.iter()) {
             let Some(key) = stretch_key(project, clip) else {
                 continue;
@@ -811,21 +813,46 @@ impl SampleBank {
             if self.stretched.get(&clip.id).is_some_and(|(k, _)| *k == key) {
                 continue;
             }
-            let ClipContent::Audio {
-                asset,
-                offset_samples,
-                stretch,
-                ..
-            } = &clip.content
-            else {
+            let ClipContent::Audio { asset, .. } = &clip.content else {
                 continue;
             };
             let Some(src) = self.map.get(asset) else {
                 continue;
             };
-            let data = render_follow(project, clip, src, *offset_samples, stretch);
-            self.stretched
-                .insert(clip.id.clone(), (key, Arc::new(data)));
+            todo.push((clip, key, src));
+        }
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, 8);
+        let mut done: Vec<(glaux_core::ClipId, u64, SampleData)> = Vec::new();
+        for group in todo.chunks(workers) {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = group
+                    .iter()
+                    .map(|&(clip, key, src)| {
+                        scope.spawn(move || {
+                            let ClipContent::Audio {
+                                offset_samples,
+                                stretch,
+                                ..
+                            } = &clip.content
+                            else {
+                                return None;
+                            };
+                            let data = render_follow(project, clip, src, *offset_samples, stretch);
+                            Some((clip.id.clone(), key, data))
+                        })
+                    })
+                    .collect();
+                for h in handles {
+                    if let Some(r) = h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)) {
+                        done.push(r);
+                    }
+                }
+            });
+        }
+        for (id, key, data) in done {
+            self.stretched.insert(id, (key, Arc::new(data)));
         }
         if self.evict {
             self.stretched.retain(|id, _| used_clips.contains(id));

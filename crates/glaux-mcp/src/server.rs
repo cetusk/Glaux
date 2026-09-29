@@ -3593,13 +3593,25 @@ impl GlauxServer {
             // サンプラー音源の WAV を読み込む(オフライン解析なのでキャッシュなしでよい)
             let bank =
                 glaux_engine::SampleBank::for_offline(&project, std::path::Path::new(&project_dir));
-            let a = glaux_engine::analyze_project(&project, track_ids.as_deref(), range, &bank);
-            let t = if per_track {
-                Some(glaux_engine::analyze_mix(&project, range, &bank))
-            } else {
-                None
-            };
-            (a, t)
+            let whole =
+                || glaux_engine::analyze_project(&project, track_ids.as_deref(), range, &bank);
+            if !per_track {
+                return (whole(), None);
+            }
+            // 全体とトラックごとの解析は互いに独立なので並列に
+            // (CLAP を含む曲はプラグインのインスタンスを作るので 1 つずつ)
+            if !glaux_engine::plugins::project_plugins(&project).is_empty() {
+                let a = whole();
+                return (a, Some(glaux_engine::analyze_mix(&project, range, &bank)));
+            }
+            std::thread::scope(|scope| {
+                let h = scope.spawn(whole);
+                let t = glaux_engine::analyze_mix(&project, range, &bank);
+                (
+                    h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
+                    Some(t),
+                )
+            })
         })
         .await
         .map_err(|e| e.to_string())?;

@@ -150,7 +150,15 @@ fn render_inner(
         }
     };
 
-    let mut out: Vec<f32> = Vec::new();
+    // 見込みの長さを先に確保する(伸ばすたびの写し直しを避ける。曲の終わり + 余韻 2 秒)
+    let expected = match (range, start) {
+        (Some(_), Some(_)) => cap,
+        _ => {
+            let d = shared.data.load();
+            ((d.end_sample + (2.0 * sample_rate) as u64) as usize).min(cap)
+        }
+    };
+    let mut out: Vec<f32> = Vec::with_capacity((expected + BLOCK) * 2);
     let mut buf = [0.0f32; BLOCK * 2];
     while shared.playing.load(Ordering::Acquire) && out.len() / 2 < cap {
         renderer.process(&mut buf, 2);
@@ -346,12 +354,24 @@ pub fn render(
 /// サンプルの間の山がわずかに残ることがあるので、測り直して超えていればもう一度かける。
 /// 最後にサンプル値でも上限でクリップして保証する。最も下げた量(dB、正の値)を返す
 pub fn limit_peaks(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) -> f64 {
+    limit_peaks_measured(stereo, sample_rate, ceiling_db).0
+}
+
+/// [`limit_peaks`] と、かけ終わった後の True Peak(dBTP。途中で測った値が最後の状態のものなら
+/// それを返し、測り直しを省けるようにする。2 回かけたときは None)
+fn limit_peaks_measured(
+    stereo: &mut [f32],
+    sample_rate: f64,
+    ceiling_db: f64,
+) -> (f64, Option<f64>) {
     let mut reduced = limit_once(stereo, sample_rate, ceiling_db);
-    let over = crate::loudness::true_peak_db(stereo) - ceiling_db;
+    let tp = crate::loudness::true_peak_db(stereo);
+    let over = tp - ceiling_db;
     if over > 0.02 {
         reduced += limit_once(stereo, sample_rate, ceiling_db - over - 0.05);
+        return (reduced, None);
     }
-    reduced
+    (reduced, Some(tp))
 }
 
 fn limit_once(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) -> f64 {
@@ -431,6 +451,7 @@ pub fn export_audio(
     )?;
     let mut gain_db = 0.0;
     let mut limiter_db = 0.0;
+    let mut measured_tp = None;
     if let Some(target) = opts.target_lufs {
         // ラウドネスは 48kHz なら既存の測り方、それ以外は ebur128(そのサンプルレートの K 特性)で測る
         // (以前は測るためだけに 48kHz で曲をもう一度描き出していた)
@@ -440,7 +461,7 @@ pub fn export_audio(
             let g = 10f32.powf(gain_db as f32 / 20.0);
             stereo.iter_mut().for_each(|v| *v *= g);
         }
-        limiter_db = limit_peaks(&mut stereo, sr, opts.ceiling_db);
+        (limiter_db, measured_tp) = limit_peaks_measured(&mut stereo, sr, opts.ceiling_db);
     }
     write_audio(
         path,
@@ -452,7 +473,7 @@ pub fn export_audio(
     )?;
     let lufs = lufs_at(&stereo, opts.sample_rate);
     let peak = stereo.iter().fold(0.0f32, |m, v| m.max(v.abs())) as f64;
-    let true_peak = crate::loudness::true_peak_db(&stereo);
+    let true_peak = measured_tp.unwrap_or_else(|| crate::loudness::true_peak_db(&stereo));
     let round = |v: f64| (v * 10.0).round() / 10.0;
     Ok(ExportReport {
         seconds: stereo.len() as f64 / 2.0 / sr,

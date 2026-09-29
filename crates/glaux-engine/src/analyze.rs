@@ -183,6 +183,16 @@ fn analyze_stereo(
     range: Option<(Tick, Tick)>,
     stereo: &[f32],
 ) -> Result<Analysis, ExportError> {
+    analyze_stereo_with_power(project, range, stereo).map(|(a, _)| a)
+}
+
+/// [`analyze_stereo`] と、音色の釣り合いに使ったパワースペクトル([`welch_power`]、`BALANCE_N`)。
+/// 比べるとき([`compare_projects`])にオクターブ帯域をもう一度 FFT せずに求めるため
+fn analyze_stereo_with_power(
+    project: &Project,
+    range: Option<(Tick, Tick)>,
+    stereo: &[f32],
+) -> Result<(Analysis, Vec<f64>), ExportError> {
     let offset_seconds = range.map_or(0.0, |(start, _)| project.tempo_map.tick_to_seconds(start));
     let sliced: &[f32] = stereo;
     if sliced.len() < 4096 {
@@ -208,23 +218,15 @@ fn analyze_stereo(
     let r128 = r128_stats(sliced);
     let mut stereo = stereo_info(sliced);
     if loudness_lufs.is_finite() {
-        let mono_dup: Vec<f32> = sliced
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .flat_map(|c| {
-                let m = (c[0] + c[1]) * 0.5;
-                [m, m]
-            })
-            .collect();
-        let mono_lufs = integrated_lufs(&mono_dup);
+        let mono_lufs = integrated_lufs_mono(&mono);
         stereo.mono_loudness_change_db = if mono_lufs.is_finite() {
             ((mono_lufs - loudness_lufs) * 10.0).round() / 10.0
         } else {
             -70.0
         };
     }
-    let tonal_balance = tonal_balance(&mono);
+    let balance_power = welch_power(&mono, BALANCE_N);
+    let tonal_balance = tonal_balance_of(&balance_power);
 
     // ---- スペクトル系(Welch 平均) ----
     let (spectral_centroid_hz, band_energy) = spectrum_stats(&mono);
@@ -233,7 +235,7 @@ fn analyze_stereo(
     let onsets_ticks = detect_onsets(&mono, offset_seconds, &project.tempo_map);
     let onset_count = onsets_ticks.len();
 
-    Ok(Analysis {
+    let analysis = Analysis {
         duration_seconds: frames as f64 / SAMPLE_RATE,
         loudness_lufs,
         peak_db,
@@ -257,7 +259,8 @@ fn analyze_stereo(
         streaming: crate::loudness::streaming_previews(loudness_lufs, r128.1),
         stereo,
         tonal_balance,
-    })
+    };
+    Ok((analysis, balance_power))
 }
 
 /// オクターブ帯域ごとの音の量(全体に対する dB)。音量に左右されない「音色の釣り合い」
@@ -335,17 +338,24 @@ pub fn compare_projects(
             }
         }
         let stereo = render_for_analysis(&target, range, bank)?;
-        let a = analyze_stereo(p, range, &stereo)?;
-        let mono: Vec<f32> = stereo
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| (c[0] + c[1]) * 0.5)
-            .collect();
-        Ok((a, octave_levels(&mono)))
+        let (a, power) = analyze_stereo_with_power(p, range, &stereo)?;
+        Ok((a, octave_levels_of(&power)))
     };
-    let (a0, o0) = render(before, bank_before)?;
-    let (a1, o1) = render(after, bank_after)?;
+    // 前と後のレンダは互いに独立なので並列に(CLAP を含むものはプラグインのインスタンスを作るので 1 つずつ)
+    let plugins = |p: &Project| !crate::plugins::project_plugins(p).is_empty();
+    let ((a0, o0), (a1, o1)) = if plugins(before) || plugins(after) {
+        (render(before, bank_before)?, render(after, bank_after)?)
+    } else {
+        let (r0, r1) = std::thread::scope(|scope| {
+            let h = scope.spawn(|| render(before, bank_before));
+            let r1 = render(after, bank_after);
+            (
+                h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
+                r1,
+            )
+        });
+        (r0?, r1?)
+    };
     let r1 = |v: f64| (v * 10.0).round() / 10.0;
     let diff = if a0.loudness_lufs.is_finite() && a1.loudness_lufs.is_finite() {
         r1(a1.loudness_lufs - a0.loudness_lufs)
@@ -453,28 +463,68 @@ fn compare_notes(a0: &Analysis, a1: &Analysis, diff: f64, tonal: &[OctaveLevel])
 /// オクターブ帯域の中心周波数
 const OCTAVES: [u32; 10] = [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 
-/// オクターブ帯域ごとの音の量(全体に対する dB)。Welch 平均のパワースペクトルから
-fn octave_levels(mono: &[f32]) -> Vec<f64> {
-    const N: usize = 8192;
-    const HOP: usize = 4096;
-    let mut planner = FftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(N);
-    let hann: Vec<f64> = (0..N)
-        .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / N as f64).cos())
+/// 音色の釣り合い(tonal_balance・オクターブ帯域)の FFT の長さ
+const BALANCE_N: usize = 8192;
+
+/// Welch 法のパワースペクトル(長さ `n` のハン窓、半分ずつ重ねる。0〜n/2 未満のビンの和)。
+/// 窓は互いに独立なので区間に分けて並列に求め、最後に足す
+fn welch_power(mono: &[f32], n: usize) -> Vec<f64> {
+    let hop = n / 2;
+    let windows = if mono.len() >= n {
+        (mono.len() - n) / hop + 1
+    } else {
+        0
+    };
+    let hann: Vec<f64> = (0..n)
+        .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n as f64).cos())
         .collect();
-    let mut power = vec![0.0f64; N / 2];
-    let mut buf = vec![Complex::new(0.0, 0.0); N];
-    let mut pos = 0;
-    while pos + N <= mono.len() {
-        for i in 0..N {
-            buf[i] = Complex::new(mono[pos + i] as f64 * hann[i], 0.0);
+    let fft = FftPlanner::<f64>::new().plan_fft_forward(n);
+    let part = |range: std::ops::Range<usize>| {
+        let mut power = vec![0.0f64; n / 2];
+        let mut buf = vec![Complex::new(0.0, 0.0); n];
+        let mut scratch = vec![Complex::new(0.0, 0.0); fft.get_inplace_scratch_len()];
+        for w in range {
+            let pos = w * hop;
+            for i in 0..n {
+                buf[i] = Complex::new(mono[pos + i] as f64 * hann[i], 0.0);
+            }
+            fft.process_with_scratch(&mut buf, &mut scratch);
+            for (i, p) in power.iter_mut().enumerate() {
+                *p += buf[i].norm_sqr();
+            }
         }
-        fft.process(&mut buf);
-        for (i, p) in power.iter_mut().enumerate() {
-            *p += buf[i].norm_sqr();
+        power
+    };
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |w| w.get())
+        .clamp(1, 8)
+        .min(windows.div_ceil(16).max(1));
+    let chunk = windows.div_ceil(workers).max(1);
+    let parts: Vec<Vec<f64>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..windows)
+            .step_by(chunk)
+            .map(|lo| {
+                let part = &part;
+                scope.spawn(move || part(lo..(lo + chunk).min(windows)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    let mut power = vec![0.0f64; n / 2];
+    for p in parts {
+        for (a, b) in power.iter_mut().zip(p) {
+            *a += b;
         }
-        pos += HOP;
     }
+    power
+}
+
+/// オクターブ帯域ごとの音の量(全体に対する dB)。[`welch_power`](`BALANCE_N`)の結果から
+fn octave_levels_of(power: &[f64]) -> Vec<f64> {
+    const N: usize = BALANCE_N;
     let bin_hz = SAMPLE_RATE / N as f64;
     let total: f64 = power.iter().sum::<f64>().max(1e-20);
     OCTAVES
@@ -570,26 +620,12 @@ const THIRD_OCTAVES: [u32; 30] = [
 
 /// 音色の釣り合い(1/3 オクターブの長時間平均、傾き、直線からのずれ)
 pub(crate) fn tonal_balance(mono: &[f32]) -> TonalBalance {
-    const N: usize = 8192;
-    const HOP: usize = 4096;
-    let mut planner = FftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(N);
-    let hann: Vec<f64> = (0..N)
-        .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / N as f64).cos())
-        .collect();
-    let mut power = vec![0.0f64; N / 2];
-    let mut buf = vec![Complex::new(0.0, 0.0); N];
-    let mut pos = 0;
-    while pos + N <= mono.len() {
-        for i in 0..N {
-            buf[i] = Complex::new(mono[pos + i] as f64 * hann[i], 0.0);
-        }
-        fft.process(&mut buf);
-        for (i, p) in power.iter_mut().enumerate() {
-            *p += buf[i].norm_sqr();
-        }
-        pos += HOP;
-    }
+    tonal_balance_of(&welch_power(mono, BALANCE_N))
+}
+
+/// [`welch_power`](`BALANCE_N`)の結果から音色の釣り合い
+fn tonal_balance_of(power: &[f64]) -> TonalBalance {
+    const N: usize = BALANCE_N;
     let bin_hz = SAMPLE_RATE / N as f64;
     let total: f64 = power.iter().sum::<f64>().max(1e-20);
     let edge = 2f64.powf(1.0 / 6.0);
@@ -1063,6 +1099,17 @@ impl Biquad {
 
 /// ITU-R BS.1770-4 の統合ラウドネス(48kHz 固定係数)。
 pub(crate) fn integrated_lufs(stereo: &[f32]) -> f64 {
+    integrated_lufs_of(stereo.len() / 2, |i| (stereo[i * 2], stereo[i * 2 + 1]))
+}
+
+/// モノラルを左右に同じく鳴らしたときの統合ラウドネス(左右に複製した列を作らずに測る)
+fn integrated_lufs_mono(mono: &[f32]) -> f64 {
+    integrated_lufs_of(mono.len(), |i| (mono[i], mono[i]))
+}
+
+/// 統合ラウドネスの本体。`frame(i)` がフレーム i の (左, 右)。
+/// 重み付けした 2 乗は 100ms ごとの和だけを持つ(全長の列を作らない。ブロックは 400ms = 100ms × 4)
+fn integrated_lufs_of(frames: usize, frame: impl Fn(usize) -> (f32, f32)) -> f64 {
     // K 特性: 高域シェルフ + ハイパス(チャンネルごと)
     let mut filters: Vec<(Biquad, Biquad)> = (0..2)
         .map(|_| {
@@ -1076,29 +1123,36 @@ pub(crate) fn integrated_lufs(stereo: &[f32]) -> f64 {
         })
         .collect();
 
-    let frames = stereo.len() / 2;
-    let mut weighted = vec![0.0f64; frames]; // チャンネル合算の 2 乗値
-    for i in 0..frames {
-        let mut sum = 0.0;
-        for (ch, (shelf, hp)) in filters.iter_mut().enumerate() {
-            let v = hp.next(shelf.next(stereo[i * 2 + ch] as f64));
-            sum += v * v;
-        }
-        weighted[i] = sum;
-    }
-
     // 400ms ブロック、100ms ホップでゲーティング
     let block = (0.4 * SAMPLE_RATE) as usize;
     let hop = (0.1 * SAMPLE_RATE) as usize;
+    // 100ms ごとの、チャンネル合算の 2 乗値の和(最後の端数は total にだけ入る)
+    let mut hops: Vec<f64> = Vec::with_capacity(frames / hop + 1);
+    let mut total = 0.0f64;
+    let mut acc = 0.0f64;
+    for i in 0..frames {
+        let (l, r) = frame(i);
+        let mut sum = 0.0;
+        for ((shelf, hp), x) in filters.iter_mut().zip([l, r]) {
+            let v = hp.next(shelf.next(x as f64));
+            sum += v * v;
+        }
+        acc += sum;
+        if (i + 1) % hop == 0 {
+            hops.push(acc);
+            total += acc;
+            acc = 0.0;
+        }
+    }
+    total += acc;
     if frames < block {
-        let mean = weighted.iter().sum::<f64>() / frames as f64;
+        let mean = total / frames as f64;
         return -0.691 + 10.0 * mean.max(1e-12).log10();
     }
-    let block_powers: Vec<f64> = (0..=(frames - block) / hop)
-        .map(|k| {
-            let s = k * hop;
-            weighted[s..s + block].iter().sum::<f64>() / block as f64
-        })
+    let per_block = block / hop;
+    let block_powers: Vec<f64> = hops
+        .windows(per_block)
+        .map(|w| w.iter().sum::<f64>() / block as f64)
         .collect();
     let block_lufs = |p: f64| -0.691 + 10.0 * p.max(1e-12).log10();
 
@@ -1127,30 +1181,8 @@ pub(crate) fn integrated_lufs(stereo: &[f32]) -> f64 {
 /// Welch 平均パワースペクトルから重心と帯域比を求める。
 fn spectrum_stats(mono: &[f32]) -> (f64, BandEnergy) {
     const N: usize = 4096;
-    const HOP: usize = 2048;
-    let mut planner = FftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(N);
-
-    let hann: Vec<f64> = (0..N)
-        .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / N as f64).cos())
-        .collect();
-
-    let mut power = vec![0.0f64; N / 2];
-    let mut windows = 0usize;
-    let mut buf = vec![Complex::new(0.0, 0.0); N];
-    let mut pos = 0;
-    while pos + N <= mono.len() {
-        for i in 0..N {
-            buf[i] = Complex::new(mono[pos + i] as f64 * hann[i], 0.0);
-        }
-        fft.process(&mut buf);
-        for (i, p) in power.iter_mut().enumerate() {
-            *p += buf[i].norm_sqr();
-        }
-        windows += 1;
-        pos += HOP;
-    }
-    if windows == 0 {
+    let power = welch_power(mono, N);
+    if mono.len() < N {
         return (
             0.0,
             BandEnergy {

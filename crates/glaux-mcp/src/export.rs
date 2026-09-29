@@ -115,6 +115,9 @@ fn options(project: &Project, req: &ExportRequest) -> Result<ExportOptions, Stri
     })
 }
 
+/// ステム 1 本の結果(鳴る音が無ければ None)
+type StemResult = Result<Option<Value>, String>;
+
 /// 書き出す(時間がかかるので、呼び出し側でブロッキングのスレッドに載せる)。結果は書いたファイルと測定値
 pub fn run(
     project: &Project,
@@ -131,11 +134,14 @@ pub fn run(
                 .join("export")
                 .join(format!("{title}_{stamp}_stems"))
         });
-        let mut files = Vec::new();
-        for (i, t) in project.tracks.iter().enumerate() {
-            if t.kind == TrackKind::Bus || t.clips.is_empty() {
-                continue;
-            }
+        // 書き出すトラック(バスと空のトラックは除く)
+        let targets: Vec<(usize, &glaux_core::Track)> = project
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.kind != TrackKind::Bus && !t.clips.is_empty())
+            .collect();
+        let one = |i: usize, t: &glaux_core::Track| -> StemResult {
             let stem = crate::bounce::stem_project(project, t);
             let stereo = match glaux_engine::render(
                 &stem,
@@ -145,7 +151,7 @@ pub fn run(
                 false,
             ) {
                 Ok(s) => s,
-                Err(glaux_engine::ExportError::Empty) => continue, // 鳴る音が無いトラック
+                Err(glaux_engine::ExportError::Empty) => return Ok(None), // 鳴る音が無いトラック
                 Err(e) => return Err(format!("「{}」を描き出せません: {e}", t.name)),
             };
             let path = dir.join(format!(
@@ -163,7 +169,51 @@ pub fn run(
                 opts.format,
             )
             .map_err(|e| e.to_string())?;
-            files.push(json!({ "track": t.name, "path": path.to_string_lossy() }));
+            Ok(Some(
+                json!({ "track": t.name, "path": path.to_string_lossy() }),
+            ))
+        };
+        // トラックごとのレンダは互いに独立なので並列に(CLAP を含む曲はプラグインのインスタンスを
+        // 作るので 1 つずつ)。再生スレッドと競合しないよう、コア数より少し少なくする
+        let results: Vec<StemResult> =
+            if !glaux_engine::plugins::project_plugins(project).is_empty() {
+                targets.iter().map(|(i, t)| one(*i, t)).collect()
+            } else {
+                let workers = std::thread::available_parallelism()
+                    .map_or(1, |p| p.get())
+                    .saturating_sub(2)
+                    .clamp(1, targets.len().max(1));
+                let next = std::sync::atomic::AtomicUsize::new(0);
+                let slots: Vec<std::sync::Mutex<Option<StemResult>>> = targets
+                    .iter()
+                    .map(|_| std::sync::Mutex::new(None))
+                    .collect();
+                std::thread::scope(|scope| {
+                    for _ in 0..workers {
+                        scope.spawn(|| loop {
+                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((i, t)) = targets.get(k) else {
+                                break;
+                            };
+                            let r = one(*i, t);
+                            *slots[k].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                        });
+                    }
+                });
+                slots
+                    .into_iter()
+                    .map(|m| {
+                        m.into_inner()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .unwrap_or(Ok(None))
+                    })
+                    .collect()
+            };
+        let mut files = Vec::new();
+        for r in results {
+            if let Some(f) = r? {
+                files.push(f);
+            }
         }
         if files.is_empty() {
             return Err("書き出せるトラックがありません".to_owned());

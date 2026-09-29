@@ -58,6 +58,55 @@ struct Frame {
 const HOP_SEC: f32 = 0.010;
 const YIN_THRESHOLD: f32 = 0.15;
 
+/// YIN の差分関数 d(τ) = Σ_{j<n} (x_j − x_{j+τ})²(τ = 0..=tau_max)。
+/// 展開した Σx_j² + Σx_{j+τ}² − 2Σx_j·x_{j+τ} の相関の項を FFT で求める
+/// (時間領域でそのまま足すと 1 フレーム n × tau_max 回の積和で、48kHz・下限 70Hz なら約 280 万回)。
+/// 近い τ で d は小さな差になるので f64 で計算する
+fn difference(buf: &[f32], n: usize, tau_max: usize) -> Vec<f32> {
+    use rustfft::num_complex::Complex;
+    thread_local! {
+        static PLANNER: std::cell::RefCell<rustfft::FftPlanner<f64>> =
+            std::cell::RefCell::new(rustfft::FftPlanner::new());
+    }
+    let len = n + tau_max;
+    // 巡回相関で τ ≤ tau_max が折り返さない長さ
+    let size = len.next_power_of_two();
+    let (fft, ifft) = PLANNER.with(|p| {
+        let mut p = p.borrow_mut();
+        (p.plan_fft_forward(size), p.plan_fft_inverse(size))
+    });
+    let zero = Complex::new(0.0f64, 0.0);
+    let mut a = vec![zero; size];
+    let mut b = vec![zero; size];
+    for (j, x) in buf[..len].iter().enumerate() {
+        b[j] = Complex::new(*x as f64, 0.0);
+        if j < n {
+            a[j] = b[j];
+        }
+    }
+    fft.process(&mut a);
+    fft.process(&mut b);
+    for (x, y) in a.iter_mut().zip(&b) {
+        *x = x.conj() * y;
+    }
+    ifft.process(&mut a);
+    // 2 乗の累積和(sq[i] = Σ_{j<i} x_j²)
+    let mut sq = Vec::with_capacity(len + 1);
+    let mut acc = 0.0f64;
+    sq.push(0.0);
+    for x in &buf[..len] {
+        acc += *x as f64 * *x as f64;
+        sq.push(acc);
+    }
+    let norm = 1.0 / size as f64;
+    let mut d = vec![0.0f32; tau_max + 1];
+    for (tau, dt) in d.iter_mut().enumerate().skip(1) {
+        let r = a[tau].re * norm;
+        *dt = (sq[n] + (sq[n + tau] - sq[tau]) - 2.0 * r).max(0.0) as f32;
+    }
+    d
+}
+
 /// YIN で 1 フレームの基本周波数を推定する。戻り値は (周波数, 明瞭度)。
 pub(crate) fn yin_pitch(
     buf: &[f32],
@@ -69,16 +118,7 @@ pub(crate) fn yin_pitch(
     if n < 64 || tau_max <= tau_min {
         return None;
     }
-    // 差分関数 d(tau)
-    let mut d = vec![0.0f32; tau_max + 1];
-    for (tau, dt) in d.iter_mut().enumerate().skip(1) {
-        let mut acc = 0.0f32;
-        for j in 0..n {
-            let diff = buf[j] - buf[j + tau];
-            acc += diff * diff;
-        }
-        *dt = acc;
-    }
+    let d = difference(buf, n, tau_max);
     // 累積平均正規化差分 d'(tau)
     let mut cmnd = vec![1.0f32; tau_max + 1];
     let mut running = 0.0f32;
@@ -156,14 +196,16 @@ fn analyze_frames(data: &SampleData, opts: &TranscribeOptions) -> (Vec<Frame>, f
     let win = (tau_max * 2).clamp(1024, 4096);
     let need = win + tau_max;
     let x = &data.frames;
-    let mut frames = Vec::new();
-    let mut peak_db = -120.0f32;
-    let mut pos = 0usize;
-    while pos + need <= x.len() {
+    let count = if x.len() >= need {
+        (x.len() - need) / hop + 1
+    } else {
+        0
+    };
+    let frame_at = |k: usize| {
+        let pos = k * hop;
         let buf = &x[pos..pos + need];
         let rms = (buf[..win].iter().map(|s| s * s).sum::<f32>() / win as f32).sqrt();
         let rms_db = 20.0 * rms.max(1e-9).log10();
-        peak_db = peak_db.max(rms_db);
         let midi = yin_pitch(buf, sr, tau_min, tau_max).and_then(|(f, clarity)| {
             if clarity >= opts.min_clarity && f >= opts.pitch_lo_hz && f <= opts.pitch_hi_hz {
                 Some(69.0 + 12.0 * (f / 440.0).log2())
@@ -171,9 +213,32 @@ fn analyze_frames(data: &SampleData, opts: &TranscribeOptions) -> (Vec<Frame>, f
                 None
             }
         });
-        frames.push(Frame { midi, rms_db });
-        pos += hop;
-    }
+        Frame { midi, rms_db }
+    };
+    // フレームは互いに独立なので、区間に分けて並列に(結果の順番は元のまま)
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 8)
+        .min(count.div_ceil(64).max(1));
+    let chunk = count.div_ceil(workers).max(1);
+    let frames: Vec<Frame> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..count)
+            .step_by(chunk)
+            .map(|lo| {
+                let frame_at = &frame_at;
+                scope.spawn(move || {
+                    (lo..(lo + chunk).min(count))
+                        .map(frame_at)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    let peak_db = frames.iter().fold(-120.0f32, |m, f| m.max(f.rms_db));
     (frames, peak_db)
 }
 
@@ -739,6 +804,32 @@ pub fn to_clip_notes_poly(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fft_difference_matches_the_direct_sum() {
+        // 和音っぽい信号 + 雑音。時間領域でそのまま足したものと比べる
+        let sr = 48_000.0f32;
+        let buf: Vec<f32> = (0..3000)
+            .map(|i| {
+                let t = i as f32 / sr;
+                (std::f32::consts::TAU * 220.0 * t).sin()
+                    + 0.5 * (std::f32::consts::TAU * 331.0 * t).sin()
+                    + 0.05 * (((i * 7919) % 1000) as f32 / 1000.0 - 0.5)
+            })
+            .collect();
+        let tau_max = 700;
+        let n = buf.len() - tau_max;
+        let d = super::difference(&buf, n, tau_max);
+        let scale = buf[..n].iter().map(|x| x * x).sum::<f32>();
+        for tau in 1..=tau_max {
+            let direct: f32 = (0..n).map(|j| (buf[j] - buf[j + tau]).powi(2)).sum();
+            assert!(
+                (d[tau] - direct).abs() <= scale * 1e-5,
+                "tau {tau}: {} / {direct}",
+                d[tau]
+            );
+        }
+    }
+
     use super::*;
 
     /// 鼻歌っぽい信号: 倍音入り + 軽いビブラート + 緩い立ち上がり/減衰 + 微小ノイズ
