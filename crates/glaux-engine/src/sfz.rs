@@ -85,6 +85,7 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
         Master,
         Group,
         Region,
+        Curve,
         Ignore,
     }
     let mut level = Level::Ignore;
@@ -93,6 +94,8 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
     let mut master = Region::new();
     let mut group = Region::new();
     let mut region: Option<Region> = None;
+    // <curve> の定義(curve_index と vNNN)。region の CC の評価に使う
+    let mut curves: Vec<Region> = Vec::new();
     let mut out = Vec::new();
 
     let finish = |region: &mut Option<Region>,
@@ -141,6 +144,10 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
                             region = Some(Region::new());
                             Level::Region
                         }
+                        "curve" => {
+                            curves.push(Region::new());
+                            Level::Curve
+                        }
                         _ => Level::Ignore,
                     };
                 }
@@ -154,6 +161,10 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
                             Some(r) => r,
                             None => continue,
                         },
+                        Level::Curve => match curves.last_mut() {
+                            Some(c) => c,
+                            None => continue,
+                        },
                         Level::Ignore => continue,
                     };
                     map.insert(k, v);
@@ -162,6 +173,41 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
         }
     }
     finish(&mut region, &mut out, &control, [&global, &master, &group]);
+    // 使っているカーブの点を region に写す(カーブは region より後に書かれることが多い)
+    let curves: HashMap<i64, String> = curves
+        .iter()
+        .filter_map(|c| {
+            let idx = num(c, "curve_index")? as i64;
+            let mut pts: Vec<(u32, f64)> = c
+                .iter()
+                .filter_map(|(k, v)| {
+                    let i: u32 = k.strip_prefix('v')?.parse().ok()?;
+                    Some((i.min(127), v.trim().parse().ok()?))
+                })
+                .collect();
+            pts.sort_by_key(|p| p.0);
+            let text = pts
+                .iter()
+                .map(|(i, v)| format!("{i}:{v}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            Some((idx, text))
+        })
+        .collect();
+    if !curves.is_empty() {
+        for r in out.iter_mut() {
+            let used: Vec<i64> = r
+                .iter()
+                .filter(|(k, _)| k.contains("_curvecc"))
+                .filter_map(|(_, v)| v.trim().parse::<f64>().ok().map(|x| x as i64))
+                .collect();
+            for i in used {
+                if let Some(t) = curves.get(&i) {
+                    r.insert(format!("#curve{i}"), t.clone());
+                }
+            }
+        }
+    }
     Ok(out)
 }
 
@@ -424,12 +470,53 @@ fn cc_default(r: &Region, n: u32) -> f64 {
     }
 }
 
-/// opcode の値に、CC で足す分(`<name>_onccN` × CC の既定値 / 127)を足したもの
+/// opcode の値に、CC で足す分(`<name>_onccN` × カーブを通した CC の既定値)を足したもの
 fn val(r: &Region, name: &str, default: f64) -> f64 {
-    num(r, name).unwrap_or(default) + by_cc(r, name, |v, cc| v * cc / 127.0)
+    num(r, name).unwrap_or(default) + by_cc(r, name, |v, x| v * x)
 }
 
-/// `<name>_ccN` / `<name>_onccN` を CC の既定値で評価した和
+/// カーブ `idx` に CC の値(0〜127)を通す。`<curve>` の定義(点の間は直線、v000 の既定 0・v127 の既定 1)か、
+/// 決まったカーブ(0 = 0〜1、1 = −1〜1、2 = 1〜0、3 = 1〜−1、4 = 2 乗、5 = 平方根)。知らない番号は 0 番
+fn curve_value(r: &Region, idx: i64, cc: f64) -> f64 {
+    let x = (cc / 127.0).clamp(0.0, 1.0);
+    if let Some(text) = r.get(&format!("#curve{idx}")) {
+        let mut pts: Vec<(f64, f64)> = text
+            .split(',')
+            .filter_map(|p| {
+                let (i, v) = p.split_once(':')?;
+                Some((i.parse::<f64>().ok()?, v.parse::<f64>().ok()?))
+            })
+            .collect();
+        if pts.first().is_none_or(|p| p.0 > 0.0) {
+            pts.insert(0, (0.0, 0.0));
+        }
+        if pts.last().is_none_or(|p| p.0 < 127.0) {
+            pts.push((127.0, 1.0));
+        }
+        let c = cc.clamp(0.0, 127.0);
+        let i = pts
+            .iter()
+            .position(|p| p.0 >= c)
+            .unwrap_or(pts.len() - 1)
+            .max(1);
+        let (a, b) = (pts[i - 1], pts[i]);
+        return if b.0 > a.0 {
+            a.1 + (b.1 - a.1) * (c - a.0) / (b.0 - a.0)
+        } else {
+            b.1
+        };
+    }
+    match idx {
+        1 => x * 2.0 - 1.0,
+        2 => 1.0 - x,
+        3 => 1.0 - x * 2.0,
+        4 => x * x,
+        5 => x.sqrt(),
+        _ => x,
+    }
+}
+
+/// `<name>_ccN` / `<name>_onccN` を CC の既定値で評価した和(`f(値, カーブを通した CC)`)
 fn by_cc(r: &Region, name: &str, f: impl Fn(f64, f64) -> f64) -> f64 {
     cc_terms(r, name).map(|(v, cc)| f(v, cc)).sum()
 }
@@ -448,7 +535,11 @@ fn cc_terms<'a>(r: &'a Region, name: &'a str) -> impl Iterator<Item = (f64, f64)
             .or_else(|| rest.strip_prefix("_cc"))
             .or_else(|| rest.strip_prefix("cc"))?;
         let n: u32 = n.parse().ok()?;
-        Some((v.trim().parse::<f64>().ok()?, cc_default(r, n)))
+        let curve = num(r, &format!("{name}_curvecc{n}")).map_or(0, |c| c as i64);
+        Some((
+            v.trim().parse::<f64>().ok()?,
+            curve_value(r, curve, cc_default(r, n)),
+        ))
     })
 }
 
@@ -510,8 +601,8 @@ pub fn build_zones(
             continue;
         };
         let len = file.data.frames.len();
-        let off = (num(r, "offset").unwrap_or(0.0) + by_cc(r, "offset", |v, cc| v * cc / 127.0))
-            .max(0.0) as usize;
+        let off =
+            (num(r, "offset").unwrap_or(0.0) + by_cc(r, "offset", |v, x| v * x)).max(0.0) as usize;
         let end = num(r, "end").map_or(len, |e| (e.max(0.0) as usize + 1).min(len));
         if end <= off + 1 {
             continue;
@@ -570,8 +661,7 @@ pub fn build_zones(
             .clamp(-144.0, 24.0) as f32;
         // amplitude_ccN は CC の値に比例して掛かる(既定値で評価。音量 cc7 の既定 100 なら約 -2dB)
         let amplitude = (num(r, "amplitude").unwrap_or(100.0).clamp(0.0, 100.0) / 100.0
-            * by_cc_product(r, "amplitude", |v, cc| v / 100.0 * cc / 127.0))
-            as f32;
+            * by_cc_product(r, "amplitude", |v, x| v / 100.0 * x)) as f32;
         let env = ZoneEnv {
             attack: (val(r, "ampeg_attack", 0.0) as f32).clamp(0.001, 10.0),
             hold: (val(r, "ampeg_hold", 0.0) as f32).clamp(0.0, 10.0),
@@ -810,20 +900,31 @@ mod tests {
             <region> sample=ks2.wav key=50 sw_last=25
             <region> sample=cc_on.wav key=51 locc74=1 offset_cc74=127 amplitude_oncc7=100
             <region> sample=env.wav key=52 ampeg_sustain=0 ampeg_sustain_oncc103=100 ampeg_releasecc64=5 amp_veltrack=0
+            <region> sample=tune.wav key=53 tune_cc89=1200 tune_curvecc89=9 amplitude_cc15=70 amplitude_curvecc15=33
+            <curve>curve_index=9 v000=-1 v063=0 v127=1
+            <curve>curve_index=33 v000=0.13 v037=0.8 v077=1 v127=1
         ";
         // CC の既定値は <control> の set_cc(先頭に足す)
-        let text = format!("<control> set_cc74=100 set_cc103=127\n{text}");
+        let text = format!("<control> set_cc74=100 set_cc103=127 set_cc89=63 set_cc15=100\n{text}");
         let rs = parse(&text, &mut no_include).unwrap();
         let mut cache = WaveCache::new();
         let zs = build_zones(&rs, Path::new("lib"), &mut cache, &mut fake).unwrap();
         assert_eq!(
             zs.len(),
-            6,
+            7,
             "release・既定値で外れる CC 条件・既定以外のキースイッチは除く"
         );
         assert_eq!(
             used_samples(&rs),
-            ["a.wav", "b.wav", "e.wav", "ks1.wav", "cc_on.wav", "env.wav"]
+            [
+                "a.wav",
+                "b.wav",
+                "e.wav",
+                "ks1.wav",
+                "cc_on.wav",
+                "env.wav",
+                "tune.wav"
+            ]
         );
         let a = &zs[0];
         assert_eq!((a.key_lo, a.key_hi, a.root), (60, 60, 60.0));
@@ -848,6 +949,14 @@ mod tests {
         assert!((env.play.vel_gain(0.5) * 0.5 - 1.0).abs() < 1e-6);
         // 既定(amp_veltrack=100)はベロシティの 2 乗
         assert!((zs[0].play.vel_gain(0.5) * 0.5 - 0.25).abs() < 1e-6);
+        // カーブ: 真ん中(63)で音程が変わらない。音量は 100 の位置で 1(カーブ 33)× 70%
+        let tune = &zs[6];
+        assert!(
+            tune.play.tune_semis.abs() < 1e-6,
+            "{}",
+            tune.play.tune_semis
+        );
+        assert!((tune.gain - 0.7).abs() < 1e-6, "{}", tune.gain);
     }
 
     #[test]

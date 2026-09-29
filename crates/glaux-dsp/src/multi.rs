@@ -446,7 +446,15 @@ impl MultiVoice {
         }
         MultiVoice {
             players,
-            layer_norm: 1.0 / (n.max(1) as f32).sqrt(),
+            // SoundFont の重ねは数で割って大きさをそろえる。SFZ はマイクの重ね(近く + 部屋など)を
+            // 足し合わせる前提で作られているので割らない
+            layer_norm: 1.0
+                / (players[..n]
+                    .iter()
+                    .filter(|pl| p.zones[pl.zone as usize].play.veltrack.is_none())
+                    .count()
+                    .max(1) as f32)
+                    .sqrt(),
             amp: vel * amp_mul,
             released: false,
             expr: PitchExpr::new(articulation, sample_rate),
