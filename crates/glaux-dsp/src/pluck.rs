@@ -5,12 +5,12 @@
 //! 「弾いた瞬間だけ倍音が豊かで、そこから不均一に減衰する」弦の挙動が物理として出る。
 //! ギター(+distortion でエレキ)・ベース・ハープ系が守備範囲。
 //!
-//! RT セーフ: 固定長バッファ(`Copy`)のみでアロケーションなし。
+//! RT セーフ: 弦のバッファは起動時に確保した置き場([`crate::string_pool`])から借りる(アロケーションなし)。
 
 use glaux_core::Articulation;
 
 /// ディレイラインの最大長。48kHz で約 23Hz(MIDI 16 相当)まで対応
-const DELAY_MAX: usize = 2048;
+const DELAY_MAX: usize = crate::string_pool::STRING_LEN;
 
 /// 焼き込み済みパラメータ(1 トラック分)。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,10 +25,10 @@ pub struct PluckParams {
     pub gain: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct PluckVoice {
-    /// 弦(リングバッファ)
-    buf: [f32; DELAY_MAX],
+    /// 弦(リングバッファ。置き場から借りる。借りられなければ None で鳴らない)
+    buf: Option<crate::string_pool::StringBuf>,
     write: usize,
     /// 周期(サンプル、小数)
     period: f32,
@@ -71,8 +71,13 @@ impl PluckVoice {
         let pick = (p.pick * pick_mul).clamp(0.0, 1.0);
 
         // 励起: ピッキングの硬さでフィルタしたノイズバーストを 1 周期分注入
-        let mut buf = [0.0f32; DELAY_MAX];
-        let n = (period.ceil() as usize).min(DELAY_MAX);
+        let mut string = crate::string_pool::StringBuf::alloc();
+        let mut none = [0.0f32; 0];
+        let buf: &mut [f32] = match string.as_mut() {
+            Some(b) => b.as_mut_slice(),
+            None => &mut none,
+        };
+        let n = (period.ceil() as usize).min(buf.len());
         let mut rng: u32 = (freq.to_bits() | 1).wrapping_mul(0x9e37_79b9);
         let coef = 0.08 + 0.92 * pick * pick; // 硬い = 生ノイズに近い(明るい)
         let mut lp = 0.0f32;
@@ -92,8 +97,9 @@ impl PluckVoice {
             *slot -= mean;
         }
 
+        let silent = string.is_none();
         PluckVoice {
-            buf,
+            buf: string,
             write: n % DELAY_MAX,
             period,
             loop_gain,
@@ -101,8 +107,9 @@ impl PluckVoice {
             amp: vel * amp_mul,
             expr: crate::expr::PitchExpr::new(articulation, sample_rate),
             release_env: 1.0,
-            released: false,
-            env: 0.5,
+            // 弦を借りられなかったら鳴らさない(すぐ終わる)
+            released: silent,
+            env: if silent { 0.0 } else { 0.5 },
             sample_rate: sr,
         }
     }
@@ -117,16 +124,16 @@ impl PluckVoice {
 
     /// `delay` サンプル前の値(4 点の 3 次 Hermite 補間)。
     /// 線形補間は小数部分によって高域の減り方が変わり、音程ごとに明るさがばらつくので 4 点で読む
-    fn read_at(&self, delay: f32) -> f32 {
+    fn read_at(buf: &[f32], write: usize, delay: f32) -> f32 {
         let delay = delay.clamp(2.0, (DELAY_MAX - 3) as f32);
         let d0 = delay.floor();
         let t = delay - d0;
         // y1 = d0 サンプル前、y0 はその 1 つ新しい方、y2・y3 は古い方
-        let i1 = (self.write + DELAY_MAX - d0 as usize) % DELAY_MAX;
-        let y0 = self.buf[(i1 + 1) % DELAY_MAX];
-        let y1 = self.buf[i1];
-        let y2 = self.buf[(i1 + DELAY_MAX - 1) % DELAY_MAX];
-        let y3 = self.buf[(i1 + DELAY_MAX - 2) % DELAY_MAX];
+        let i1 = (write + DELAY_MAX - d0 as usize) % DELAY_MAX;
+        let y0 = buf[(i1 + 1) % DELAY_MAX];
+        let y1 = buf[i1];
+        let y2 = buf[(i1 + DELAY_MAX - 1) % DELAY_MAX];
+        let y3 = buf[(i1 + DELAY_MAX - 2) % DELAY_MAX];
         let c1 = 0.5 * (y2 - y0);
         let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
         let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
@@ -134,6 +141,9 @@ impl PluckVoice {
     }
 
     pub fn next(&mut self, p: &PluckParams) -> f32 {
+        let Some(string) = self.buf.as_mut() else {
+            return 0.0;
+        };
         // ピッチ表現(ビブラート / チョーキング): 実効周期を比で割る
         let period = if self.expr.is_active() {
             (self.period / self.expr.next_ratio(self.sample_rate))
@@ -145,12 +155,13 @@ impl PluckVoice {
         // (引かないと高い音ほど低くずれる。1760Hz・明るさ 0 で約 30 セント)
         let period = period - 0.5 * (1.0 - self.bright);
         // 弦の 1 サンプル: 周期前の 2 点の平均(ローパス)と生値を明るさでブレンド
-        let s0 = self.read_at(period);
-        let s1 = self.read_at(period + 1.0);
+        let buf = string.as_mut_slice();
+        let s0 = Self::read_at(buf, self.write, period);
+        let s1 = Self::read_at(buf, self.write, period + 1.0);
         let avg = 0.5 * (s0 + s1);
         let filtered = avg + self.bright * (s0 - avg);
         let new = filtered * self.loop_gain;
-        self.buf[self.write] = new;
+        buf[self.write] = new;
         self.write = (self.write + 1) % DELAY_MAX;
 
         // note_off 後は指で止めるように短く(約 60ms)フェード

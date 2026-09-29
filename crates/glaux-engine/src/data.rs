@@ -514,6 +514,9 @@ pub struct SampleBank {
     pub plugin_slots: HashMap<crate::plugins::PluginOwner, (u32, u64)>,
     /// 畳み込みリバーブの本体の使い回し(複製には渡さない)
     conv: ConvCache,
+    /// 同期のとき、使われなくなったものを捨てるか。書き出し・解析の読み込み([`Self::for_offline`])では
+    /// 捨てない(エンジンが再生中の曲の音源を追い出して読み直しにさせないため)
+    evict: bool,
 }
 
 /// 再生エンジンの bank([`SampleBank::for_offline`] 用。エンジンが終われば無効になる)
@@ -536,6 +539,7 @@ impl Default for SampleBank {
             stretched: HashMap::new(),
             plugin_slots: HashMap::new(),
             conv: ConvCache::default(),
+            evict: true,
         }
     }
 }
@@ -593,7 +597,9 @@ impl SampleBank {
                 _ => None,
             })
             .collect();
-        self.sfz.retain(|k, _| used.contains(k));
+        if self.evict {
+            self.sfz.retain(|k, _| used.contains(k));
+        }
         for key in used {
             let name = key.0.as_str();
             let mtime = std::fs::metadata(self.sfz_dir.join(name))
@@ -616,7 +622,9 @@ impl SampleBank {
             self.sfz.insert(key, zones);
         }
         // どの楽器からも使われなくなった切り出しを捨てる
-        crate::sfz::retain_used(&mut self.sfz_waves);
+        if self.evict {
+            crate::sfz::retain_used(&mut self.sfz_waves);
+        }
     }
 
     pub fn get_multi(
@@ -631,6 +639,44 @@ impl SampleBank {
     /// プロジェクトの全アセットと SoundFont プリセットを読み込む
     /// (読み込み済みは再利用、使われなくなったものは破棄)。
     pub fn sync(&mut self, project: &Project, project_dir: &Path) {
+        // まだ読んでいない使う素材を先に並列で読む(sync_with は読み込み済みを飛ばす)
+        let used = used_assets(project);
+        let missing: Vec<(AssetId, String)> = project
+            .assets
+            .iter()
+            .filter(|(id, _)| used.contains(*id) && !self.map.contains_key(*id))
+            .map(|(id, a)| (id.clone(), a.path.clone()))
+            .collect();
+        if missing.len() >= 2 {
+            let threads = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .clamp(1, 8);
+            let chunk = missing.len().div_ceil(threads);
+            let loaded: Vec<(AssetId, SampleData)> = std::thread::scope(|s| {
+                let handles: Vec<_> = missing
+                    .chunks(chunk)
+                    .map(|part| {
+                        s.spawn(move || {
+                            part.iter()
+                                .filter_map(|(id, rel)| {
+                                    load_wav(&project_dir.join(rel))
+                                        .ok()
+                                        .map(|d| (id.clone(), d))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().unwrap_or_default())
+                    .collect()
+            });
+            for (id, d) in loaded {
+                self.map.insert(id, Arc::new(d));
+            }
+        }
         let sf2_dir = self.sf2_dir.clone();
         self.sync_with(
             project,
@@ -651,8 +697,10 @@ impl SampleBank {
         // 使われている素材だけを読む(消したクリップの録音・分離の stems なども assets には残るため。
         // undo で戻せば、その時に読み込む)
         let used = used_assets(project);
-        self.map
-            .retain(|id, _| project.assets.contains_key(id) && used.contains(id));
+        if self.evict {
+            self.map
+                .retain(|id, _| project.assets.contains_key(id) && used.contains(id));
+        }
         for (id, asset) in &project.assets {
             if self.map.contains_key(id) || !used.contains(id) {
                 continue;
@@ -693,7 +741,9 @@ impl SampleBank {
             self.stretched
                 .insert(clip.id.clone(), (key, Arc::new(data)));
         }
-        self.stretched.retain(|id, _| used_clips.contains(id));
+        if self.evict {
+            self.stretched.retain(|id, _| used_clips.contains(id));
+        }
 
         // SoundFont: プロジェクトが参照しているプリセットのゾーンを構築
         let mut used: std::collections::HashSet<(String, u16, u16)> =
@@ -714,14 +764,18 @@ impl SampleBank {
                 }
             }
         }
-        self.multis.retain(|k, _| used.contains(k));
-        let used_fonts: std::collections::HashSet<&String> =
-            used.iter().map(|(f, _, _)| f).collect();
-        self.fonts.retain(|f, _| used_fonts.contains(f));
-        // 使われなくなったフォントの波形と、どのゾーンからも参照されなくなった波形を捨てる
-        self.waves.retain(|f, _| used_fonts.contains(f));
-        for cache in self.waves.values_mut() {
-            cache.retain(|_, d| Arc::strong_count(d) > 1);
+        if self.evict {
+            self.multis.retain(|k, _| used.contains(k));
+        }
+        if self.evict {
+            let used_fonts: std::collections::HashSet<&String> =
+                used.iter().map(|(f, _, _)| f).collect();
+            self.fonts.retain(|f, _| used_fonts.contains(f));
+            // 使われなくなったフォントの波形と、どのゾーンからも参照されなくなった波形を捨てる
+            self.waves.retain(|f, _| used_fonts.contains(f));
+            for cache in self.waves.values_mut() {
+                cache.retain(|_, d| Arc::strong_count(d) > 1);
+            }
         }
         for (file, bank, preset) in used {
             if self.multis.contains_key(&(file.clone(), bank, preset)) {
@@ -772,7 +826,10 @@ impl SampleBank {
             .and_then(std::sync::Weak::upgrade);
         if let Some(bank) = engine {
             let mut bank = bank.lock().unwrap_or_else(|e| e.into_inner());
+            // 読み足すだけにする(再生中の曲の音源を捨てさせない。次のエンジンの同期で片付く)
+            bank.evict = false;
             bank.sync(project, project_dir);
+            bank.evict = true;
             return bank.clone();
         }
         let mut cache = OFFLINE_BANK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1387,25 +1444,6 @@ pub fn modulated_lanes(
 }
 
 pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBank) -> PlaybackData {
-    // マクロを焼き込む(マクロのあるトラックが無ければ元のまま)
-    let with_macros;
-    let project = if project.tracks.iter().any(|t| {
-        !t.macros.is_empty()
-            || t.automation
-                .iter()
-                .any(|l| matches!(l.target, ParamPath::Macro { .. }))
-    }) {
-        let mut p = project.clone();
-        for (dst, src) in p.tracks.iter_mut().zip(&project.tracks) {
-            if let std::borrow::Cow::Owned(t) = src.with_macros_applied() {
-                *dst = t;
-            }
-        }
-        with_macros = p;
-        &with_macros
-    } else {
-        project
-    };
     let any_solo = project.tracks.iter().any(|t| t.solo);
     let to_sample =
         |tick: Tick| -> u64 { (project.tempo_map.tick_to_seconds(tick) * sample_rate) as u64 };
@@ -1506,14 +1544,17 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
         .tracks
         .iter()
         .map(|t| {
-            // 変調(LFO)をオートメーションのレーンに焼き込んだトラック(無ければそのまま)
+            // マクロを焼き込み、変調(LFO)をオートメーションのレーンに焼き込んだトラック(無ければそのまま)。
+            // ここ(設定側)ではノートを使わないので、クリップは写さない
+            let with_macros = t.with_macros_applied();
+            let t: &glaux_core::Track = &with_macros;
             let modulated;
             let t = if t.modulators.is_empty() {
                 t
             } else {
                 modulated = glaux_core::Track {
                     automation: modulated_lanes(t, project),
-                    ..t.clone()
+                    ..t.shell()
                 };
                 &modulated
             };

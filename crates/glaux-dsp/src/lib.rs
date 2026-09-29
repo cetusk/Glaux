@@ -34,6 +34,7 @@ pub mod resonance;
 mod reverb;
 mod sampler;
 pub mod stretch;
+pub mod string_pool;
 mod subtractive;
 mod voice;
 mod wavetable;

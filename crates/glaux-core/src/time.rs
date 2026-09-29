@@ -103,6 +103,8 @@ impl TimeSigEvent {
 #[serde(try_from = "Vec<TempoEvent>", into = "Vec<TempoEvent>")]
 pub struct TempoMap {
     events: Vec<TempoEvent>,
+    /// 各イベントの時刻(秒)。変換を二分探索にするための前計算(イベントから決まるのでファイルには書かない)
+    starts: Vec<f64>,
 }
 
 impl Default for TempoMap {
@@ -112,6 +114,7 @@ impl Default for TempoMap {
                 tick: Tick::ZERO,
                 bpm: 120.0,
             }],
+            starts: vec![0.0],
         }
     }
 }
@@ -133,7 +136,16 @@ impl TempoMap {
                 return Err(TimeError::InvalidBpm(e.bpm));
             }
         }
-        Ok(TempoMap { events })
+        // 各イベントの時刻(秒)。以前の線形の足し上げと同じ順序で足す(値がそろう)
+        let mut starts = Vec::with_capacity(events.len());
+        let mut secs = 0.0;
+        for (i, ev) in events.iter().enumerate() {
+            starts.push(secs);
+            if let Some(next) = events.get(i + 1) {
+                secs += (next.tick.0 - ev.tick.0) as f64 * Self::seconds_per_tick(ev.bpm);
+            }
+        }
+        Ok(TempoMap { events, starts })
     }
 
     pub fn constant(bpm: f64) -> Result<Self, TimeError> {
@@ -156,56 +168,37 @@ impl TempoMap {
         60.0 / (bpm * PPQ as f64)
     }
 
+    /// tick → 秒(テンポの変化の数によらず二分探索)
     pub fn tick_to_seconds(&self, tick: Tick) -> f64 {
-        let mut secs = 0.0;
-        for (i, ev) in self.events.iter().enumerate() {
-            if tick <= ev.tick {
-                break;
-            }
-            let end = match self.events.get(i + 1) {
-                Some(next) if next.tick < tick => next.tick,
-                _ => tick,
-            };
-            secs += (end.0 - ev.tick.0) as f64 * Self::seconds_per_tick(ev.bpm);
+        // tick より前に始まるイベントのうち最後のもの
+        let idx = self.events.partition_point(|e| e.tick < tick);
+        if idx == 0 {
+            return 0.0;
         }
-        secs
+        let ev = &self.events[idx - 1];
+        self.starts[idx - 1] + (tick.0 - ev.tick.0) as f64 * Self::seconds_per_tick(ev.bpm)
+    }
+
+    /// 秒が入るイベント(その時刻 <= 秒 の最後のもの)
+    fn segment_at(&self, seconds: f64) -> usize {
+        self.starts
+            .partition_point(|s| *s <= seconds)
+            .saturating_sub(1)
     }
 
     /// [`seconds_to_tick`](Self::seconds_to_tick) の小数版(丸めない)。
     pub fn seconds_to_tick_f64(&self, seconds: f64) -> f64 {
-        let mut remaining = seconds.max(0.0);
-        for (i, ev) in self.events.iter().enumerate() {
-            let spt = Self::seconds_per_tick(ev.bpm);
-            match self.events.get(i + 1) {
-                Some(next) => {
-                    let seg_secs = (next.tick.0 - ev.tick.0) as f64 * spt;
-                    if remaining < seg_secs {
-                        return ev.tick.0 as f64 + remaining / spt;
-                    }
-                    remaining -= seg_secs;
-                }
-                None => return ev.tick.0 as f64 + remaining / spt,
-            }
-        }
-        0.0
+        let secs = seconds.max(0.0);
+        let i = self.segment_at(secs);
+        let ev = &self.events[i];
+        ev.tick.0 as f64 + (secs - self.starts[i]) / Self::seconds_per_tick(ev.bpm)
     }
 
     pub fn seconds_to_tick(&self, seconds: f64) -> Tick {
-        let mut remaining = seconds.max(0.0);
-        for (i, ev) in self.events.iter().enumerate() {
-            let spt = Self::seconds_per_tick(ev.bpm);
-            match self.events.get(i + 1) {
-                Some(next) => {
-                    let seg_secs = (next.tick.0 - ev.tick.0) as f64 * spt;
-                    if remaining < seg_secs {
-                        return Tick(ev.tick.0 + (remaining / spt).round() as u64);
-                    }
-                    remaining -= seg_secs;
-                }
-                None => return Tick(ev.tick.0 + (remaining / spt).round() as u64),
-            }
-        }
-        Tick::ZERO
+        let secs = seconds.max(0.0);
+        let i = self.segment_at(secs);
+        let ev = &self.events[i];
+        Tick(ev.tick.0 + ((secs - self.starts[i]) / Self::seconds_per_tick(ev.bpm)).round() as u64)
     }
 }
 
@@ -266,5 +259,51 @@ mod tests {
             bpm: -1.0
         }])
         .is_err());
+    }
+
+    #[test]
+    fn binary_search_matches_linear_conversion() {
+        let tm = TempoMap::new(vec![
+            TempoEvent {
+                tick: Tick(0),
+                bpm: 120.0,
+            },
+            TempoEvent {
+                tick: Tick(3840),
+                bpm: 90.0,
+            },
+            TempoEvent {
+                tick: Tick(9600),
+                bpm: 174.0,
+            },
+            TempoEvent {
+                tick: Tick(9601),
+                bpm: 60.0,
+            },
+        ])
+        .unwrap();
+        // 線形の足し上げ(以前の実装)
+        let linear = |tick: u64| {
+            let ev = tm.events();
+            let mut secs = 0.0;
+            for (i, e) in ev.iter().enumerate() {
+                if tick <= e.tick.0 {
+                    break;
+                }
+                let end = match ev.get(i + 1) {
+                    Some(n) if n.tick.0 < tick => n.tick.0,
+                    _ => tick,
+                };
+                secs += (end - e.tick.0) as f64 * 60.0 / (e.bpm * PPQ as f64);
+            }
+            secs
+        };
+        for t in [0u64, 1, 3839, 3840, 3841, 9600, 9601, 9602, 20000] {
+            let s = tm.tick_to_seconds(Tick(t));
+            assert_eq!(s, linear(t), "tick {t}");
+            assert_eq!(tm.seconds_to_tick(s), Tick(t), "往復 {t}");
+            assert!((tm.seconds_to_tick_f64(s) - t as f64).abs() < 1e-6);
+        }
+        assert_eq!(tm.seconds_to_tick(-1.0), Tick(0));
     }
 }

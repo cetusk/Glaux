@@ -48,7 +48,9 @@ fn halve(x: &[f32]) -> Vec<f32> {
             sinc * w
         })
         .collect();
+    // 係数は先に正規化しておく(1 点ごとの割り算を省く)
     let sum: f32 = taps.iter().sum();
+    let taps: Vec<f32> = taps.iter().map(|t| t / sum).collect();
     let at = |i: isize| -> f32 {
         if i < 0 || i as usize >= x.len() {
             0.0
@@ -58,12 +60,20 @@ fn halve(x: &[f32]) -> Vec<f32> {
     };
     (0..x.len().div_ceil(2))
         .map(|n| {
-            let c = (2 * n) as isize;
-            taps.iter()
-                .enumerate()
-                .map(|(k, t)| t * at(c + k as isize - MIP_HALF as isize))
-                .sum::<f32>()
-                / sum
+            let c = 2 * n;
+            if c >= MIP_HALF && c + MIP_HALF < x.len() {
+                // 内側: 範囲チェックなしのスライスの内積(自動でベクトル化される)
+                x[c - MIP_HALF..=c + MIP_HALF]
+                    .iter()
+                    .zip(&taps)
+                    .map(|(v, t)| v * t)
+                    .sum::<f32>()
+            } else {
+                taps.iter()
+                    .enumerate()
+                    .map(|(k, t)| t * at(c as isize + k as isize - MIP_HALF as isize))
+                    .sum::<f32>()
+            }
         })
         .collect()
 }

@@ -1094,9 +1094,27 @@ pub fn bake_sf2(
     zones: std::sync::Arc<Vec<crate::multi::Zone>>,
 ) -> crate::multi::MultiSamplerParams {
     let s = SF2_SPECS;
-    // 高く鳴らすときの縮小版(ゾーンごとに 1 回だけ作る。オーディオスレッドの外のここで)
-    for z in zones.iter() {
-        z.data.prepare_mips();
+    // 高く鳴らすときの縮小版(ゾーンごとに 1 回だけ作る。オーディオスレッドの外のここで)。
+    // 波形が多い音源(SFZ・SF2)は重いので、コアの数だけ並列に作る(同じ波形は OnceLock が 1 回にまとめる)
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 8);
+    if zones.len() < 8 || threads == 1 {
+        for z in zones.iter() {
+            z.data.prepare_mips();
+        }
+    } else {
+        let chunk = zones.len().div_ceil(threads);
+        std::thread::scope(|s| {
+            for part in zones.chunks(chunk) {
+                s.spawn(move || {
+                    for z in part {
+                        z.data.prepare_mips();
+                    }
+                });
+            }
+        });
     }
     crate::multi::MultiSamplerParams {
         zones,

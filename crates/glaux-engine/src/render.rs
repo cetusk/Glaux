@@ -409,7 +409,6 @@ impl Shared {
     }
 }
 
-#[derive(Clone, Copy)]
 struct Voice {
     end: u64,
     track: u32,
@@ -480,8 +479,6 @@ impl Click {
 }
 
 /// UI からの試聴用ボイス。停止中でも鳴り、トラックエフェクトは通さない。
-/// instrument はサンプラーで Arc を含むため Copy ではない(clone は参照カウントのみ)。
-#[derive(Clone)]
 struct PreviewVoice {
     /// note_off までの残りサンプル数
     remaining: u32,
@@ -494,7 +491,6 @@ struct PreviewVoice {
 
 /// MIDI キーボードのライブ発音ボイス。送り先トラックの楽器で鳴らし、
 /// トラックのエフェクト・音量・パンを通す(停止中でも鳴る)。
-#[derive(Clone)]
 struct LiveVoice {
     /// 送り先トラック index(`LIVE_NO_TRACK` なら既定音色でマスター直行)
     track: u32,
@@ -742,6 +738,8 @@ impl Renderer {
     }
 
     pub fn new(shared: Arc<Shared>) -> Self {
+        // 撥弦の弦の置き場(最初の 1 回だけ確保する。オーディオスレッドより前のここで)
+        glaux_dsp::string_pool::init();
         Renderer {
             shared,
             voices: Vec::with_capacity(MAX_VOICES + STEAL_RESERVE),
@@ -1349,7 +1347,9 @@ impl Renderer {
                 }
             }
 
-            // このサンプル位置で始まるノートを発音(上限を超えたら古い音を奪う)
+            // このサンプル位置で始まるノートを発音(上限を超えたら古い音を奪う)。
+            // 生きている声の数は、このサンプルで最初に鳴らすときに 1 回だけ数え、以後は足し引きで追う
+            let mut live_count: Option<usize> = None;
             while playing
                 && !click_only
                 && self.next_event < data.events.len()
@@ -1373,7 +1373,9 @@ impl Renderer {
                         .iter()
                         .filter(|l| l.plays(e.pitch, vel_midi))
                         .count();
-                    let mut live = self.voices.iter().filter(|v| !v.stolen).count();
+                    let mut live = *live_count
+                        .get_or_insert_with(|| self.voices.iter().filter(|v| !v.stolen).count());
+                    let before = self.voices.len();
                     while live + needed > MAX_VOICES {
                         let Some(i) = steal_victim(&self.voices) else {
                             break;
@@ -1509,6 +1511,8 @@ impl Renderer {
                             });
                         }
                     }
+                    // 鳴らした分を足す(奪った分は live から引いてある)
+                    live_count = Some(live + (self.voices.len() - before));
                 }
             }
 

@@ -180,6 +180,10 @@ pub struct SvfState {
     cur: SvfCoeffs,
     /// 最初の 1 サンプルは目標にそろえる
     primed: bool,
+    /// `cur` から求めた a1・a2・a3(係数が落ち着いている間は求め直さない)
+    a: [f32; 3],
+    /// 係数が目標に落ち着いている
+    settled: bool,
 }
 
 impl Default for SvfState {
@@ -189,6 +193,8 @@ impl Default for SvfState {
             ic2: 0.0,
             cur: SvfCoeffs::identity(),
             primed: false,
+            a: [0.0; 3],
+            settled: false,
         }
     }
 }
@@ -197,26 +203,42 @@ impl SvfState {
     /// 1 サンプル処理する。`smooth` は係数を目標に寄せる 1 サンプルあたりの割合(0..1)
     #[inline]
     pub fn process(&mut self, target: &SvfCoeffs, smooth: f32, v0: f32) -> f32 {
-        if self.primed {
-            let c = &mut self.cur;
-            c.g += (target.g - c.g) * smooth;
-            c.k += (target.k - c.k) * smooth;
-            c.m0 += (target.m0 - c.m0) * smooth;
-            c.m1 += (target.m1 - c.m1) * smooth;
-            c.m2 += (target.m2 - c.m2) * smooth;
-        } else {
-            self.cur = *target;
-            self.primed = true;
+        // 係数が目標に落ち着いていて目標も変わらなければ、平滑化と a の計算(割り算)を省く
+        if !(self.settled && self.cur == *target) {
+            if self.primed {
+                let c = &mut self.cur;
+                c.g += (target.g - c.g) * smooth;
+                c.k += (target.k - c.k) * smooth;
+                c.m0 += (target.m0 - c.m0) * smooth;
+                c.m1 += (target.m1 - c.m1) * smooth;
+                c.m2 += (target.m2 - c.m2) * smooth;
+                // 十分近づいたら目標にそろえる(以後は省ける)
+                let close = |a: f32, b: f32| (a - b).abs() <= 1e-6 * (1.0 + b.abs());
+                self.settled = close(c.g, target.g)
+                    && close(c.k, target.k)
+                    && close(c.m0, target.m0)
+                    && close(c.m1, target.m1)
+                    && close(c.m2, target.m2);
+                if self.settled {
+                    *c = *target;
+                }
+            } else {
+                self.cur = *target;
+                self.primed = true;
+                self.settled = true;
+            }
+            let c = &self.cur;
+            let a1 = 1.0 / (1.0 + c.g * (c.g + c.k));
+            let a2 = c.g * a1;
+            self.a = [a1, a2, c.g * a2];
         }
-        let c = &self.cur;
-        let a1 = 1.0 / (1.0 + c.g * (c.g + c.k));
-        let a2 = c.g * a1;
-        let a3 = c.g * a2;
+        let [a1, a2, a3] = self.a;
         let v3 = v0 - self.ic2;
         let v1 = a1 * self.ic1 + a2 * v3;
         let v2 = self.ic2 + a2 * self.ic1 + a3 * v3;
         self.ic1 = 2.0 * v1 - self.ic1;
         self.ic2 = 2.0 * v2 - self.ic2;
+        let c = &self.cur;
         c.m0 * v0 + c.m1 * v1 + c.m2 * v2
     }
 }

@@ -817,6 +817,19 @@ pub fn load_instrument(
             r.insert(format!("set_cc{n}"), v.min(&127).to_string());
         }
     }
+    // 使う波形のうち、まだ読んでいないものを先に並列で読む(大きな音源は数百ファイルある)
+    let missing: Vec<PathBuf> = used_samples(&regions)
+        .into_iter()
+        .map(|rel| dir.join(rel))
+        .filter(|p| !cache.contains_key(p))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    for (path, loaded) in load_parallel(&missing) {
+        if let Ok(l) = loaded {
+            cache.insert(path, (l.data, l.loop_points));
+        }
+    }
     let zones = build_zones(&regions, &dir, cache, &mut |p| {
         let mut data = crate::data::load_audio_file(p)?;
         // 左右差成分は鳴らさない(マルチサンプラーは中央成分だけを読む)ので持たない
@@ -866,6 +879,38 @@ pub fn controls(library: &Path, name: &str) -> Result<Vec<Control>, String> {
         .collect();
     out.sort_by_key(|c| c.cc);
     Ok(out)
+}
+
+/// ファイルを並列に読む(左右差成分は持たない)。戻り値の順は `paths` と同じとは限らない
+fn load_parallel(paths: &[PathBuf]) -> Vec<(PathBuf, Result<Loaded, String>)> {
+    let load = |p: &PathBuf| {
+        let r = crate::data::load_audio_file(p).map(|mut d| {
+            d.side = None;
+            Loaded {
+                data: Arc::new(d),
+                loop_points: wav_loop_points(p),
+            }
+        });
+        (p.clone(), r)
+    };
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 8);
+    if paths.len() < 4 || threads == 1 {
+        return paths.iter().map(load).collect();
+    }
+    let chunk = paths.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        let handles: Vec<_> = paths
+            .chunks(chunk)
+            .map(|part| s.spawn(move || part.iter().map(load).collect::<Vec<_>>()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    })
 }
 
 fn read_text(path: &Path) -> Result<String, String> {

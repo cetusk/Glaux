@@ -43,11 +43,10 @@ impl Default for InstrumentParams {
 }
 
 /// 発音中の 1 ボイス。
-/// PluckVoice はディレイライン(固定長バッファ)を内包するため他より大きいが、
-/// ボイス起動はオーディオスレッド上なので Box(アロケーション)にはできない。
-/// プールは起動時に固定容量で確保されるためメモリ増は既知・有限。
+/// 撥弦の弦のバッファは起動時に確保した置き場([`crate::string_pool`])から借りるので、ボイス自体は小さい
+/// (借りたバッファを返すため、コピーはできない)。
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum VoiceState {
     Subtractive(SubtractiveVoice),
     Drum(DrumVoice),

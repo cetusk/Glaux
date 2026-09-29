@@ -360,7 +360,35 @@ pub fn check_macros(macros: &[Macro]) -> Result<(), String> {
 }
 
 impl Track {
-    /// マクロを焼き込んだトラック(マクロが無ければ借りたまま)。
+    /// クリップを写さない複製(音源・エフェクト・オートメーションなど設定だけ)。
+    /// 再生データの設定側を作るときに、ノートまで複製しないように使う
+    pub fn shell(&self) -> Track {
+        Track {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            kind: self.kind,
+            color: self.color.clone(),
+            mute: self.mute,
+            solo: self.solo,
+            volume_db: self.volume_db,
+            pan: self.pan,
+            device: self.device.clone(),
+            effects: self.effects.clone(),
+            fx_links: self.fx_links.clone(),
+            fx_io_pos: self.fx_io_pos,
+            clips: Vec::new(),
+            automation: self.automation.clone(),
+            sends: self.sends.clone(),
+            glide_ms: self.glide_ms,
+            legato_ms: self.legato_ms,
+            modulators: self.modulators.clone(),
+            layers: self.layers.clone(),
+            macros: self.macros.clone(),
+        }
+    }
+
+    /// マクロを焼き込んだトラック(マクロが無ければ借りたまま)。焼き込むときはクリップを写さない
+    /// ([`Track::shell`]。再生データの設定側だけで使う)。
     /// - `macro/N` のオートメーションがあれば、割り当て先ごとに値を写したオートメーションにする
     ///   (1/32 音符ごとに取り直すので曲線も写る)
     /// - 無ければマクロの今の値を写した値を、割り当て先のつまみに置く
@@ -376,7 +404,7 @@ impl Track {
         {
             return std::borrow::Cow::Borrowed(self);
         }
-        let mut t = self.clone();
+        let mut t = self.shell();
         for (i, m) in self.macros.iter().enumerate() {
             let lane = self
                 .automation
