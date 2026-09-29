@@ -316,6 +316,70 @@ pub fn beats(sound: &LoadedSound) -> Result<BeatReport, String> {
     })
 }
 
+/// 参考曲の構成を解析する(拍の推定で小節に区切ってから)。結果は JSON
+pub fn reference_structure(sound: &LoadedSound) -> Result<serde_json::Value, String> {
+    let t = glaux_ml::beats::track(&sound.frames, sound.sample_rate).map_err(|e| e.to_string())?;
+    let dur = sound.frames.len() as f64 / sound.sample_rate as f64;
+    let beats: Vec<f64> = t.beats.iter().map(|&b| b as f64).collect();
+    let bpb = t.beats_per_bar();
+    // 小節頭が取れなければビート 4 つごと、ビートも無ければ 2 秒ごと
+    let downbeats: Vec<f64> = if t.downbeats.len() >= 4 {
+        t.downbeats.iter().map(|&b| b as f64).collect()
+    } else if beats.len() >= 16 {
+        beats
+            .iter()
+            .step_by(bpb.unwrap_or(4).max(1) as usize)
+            .copied()
+            .collect()
+    } else {
+        (0..(dur / 2.0) as usize).map(|i| i as f64 * 2.0).collect()
+    };
+    let st = glaux_engine::structure::analyze(&sound.frames, sound.sample_rate, &downbeats)?;
+    let bpm = t.bpm().map(|b| (b as f64 * 10.0).round() / 10.0);
+    let loudest = st
+        .sections
+        .iter()
+        .find(|s| s.energy_db == 0.0)
+        .map(|s| {
+            if s.role_ja.is_empty() {
+                s.label.clone()
+            } else {
+                s.role_ja.to_owned()
+            }
+        })
+        .unwrap_or_default();
+    let quiet = st
+        .sections
+        .iter()
+        .min_by(|a, b| a.energy_db.total_cmp(&b.energy_db))
+        .map(|s| s.energy_db)
+        .unwrap_or(0.0);
+    let summary = format!(
+        "{}{}{}。構成: {}。全 {} 小節({:.0} 秒)。いちばん大きいのは{}(静かな区間との差 {:.0} dB)",
+        bpm.map(|b| format!("約 {b} BPM"))
+            .unwrap_or_else(|| "テンポ不明".to_owned()),
+        bpb.map(|n| format!("・1 小節 {n} 拍")).unwrap_or_default(),
+        st.key
+            .as_ref()
+            .map(|k| format!("・{}(確からしさ {:.0}%)", k.name, k.confidence * 100.0))
+            .unwrap_or_default(),
+        st.form_ja,
+        st.bars,
+        dur,
+        loudest,
+        -quiet,
+    );
+    let mut v = serde_json::to_value(&st).map_err(|e| e.to_string())?;
+    v["source"] = serde_json::json!(sound.label);
+    v["duration_sec"] = serde_json::json!((dur * 100.0).round() / 100.0);
+    v["bpm"] = serde_json::json!(bpm);
+    v["beats_per_bar"] = serde_json::json!(bpb);
+    v["first_downbeat_sec"] =
+        serde_json::json!(downbeats.first().map(|d| (d * 1000.0).round() / 1000.0));
+    v["summary"] = serde_json::json!(summary);
+    Ok(v)
+}
+
 /// 音色語のカテゴリ(表示順)。
 pub const WORD_CATEGORIES: [&str; 7] = [
     "instrument",

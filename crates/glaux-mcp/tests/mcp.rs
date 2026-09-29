@@ -5236,3 +5236,29 @@ async fn set_soundfont_instrument_accepts_sfz() {
         assert_eq!(r.is_error, Some(true));
     }
 }
+
+#[tokio::test]
+async fn analyze_reference_reads_structure_of_file() {
+    let fx = setup().await;
+    let path = fx.dir.join("ref.wav");
+    write_drum_wav(&path, 120.0, 16, 44_100);
+    let v = ok_json(
+        &call(
+            &fx,
+            "analyze_reference",
+            json!({ "file": path.to_string_lossy() }),
+        )
+        .await,
+    );
+    let bpm = v["bpm"].as_f64().unwrap();
+    assert!((bpm - 120.0).abs() < 1.0, "{v}");
+    assert!(v["bars"].as_u64().unwrap() >= 12, "{v}");
+    assert!(!v["sections"].as_array().unwrap().is_empty());
+    assert!(v["summary"].as_str().unwrap().contains("構成"));
+    assert_eq!(
+        v["bar_energy_db"].as_array().unwrap().len() as u64,
+        v["bars"].as_u64().unwrap()
+    );
+    let r = call(&fx, "analyze_reference", json!({})).await;
+    assert_eq!(r.is_error, Some(true));
+}

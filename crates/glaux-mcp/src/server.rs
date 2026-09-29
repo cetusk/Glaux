@@ -4155,6 +4155,37 @@ impl GlauxServer {
     }
 
     #[tool(
+        description = "参考曲(音声ファイル・音声クリップ)の構成を解析する。拍の推定で小節に区切り、小節どうしの似かた\
+        (和音の色・音色・音量)から区間の境目と繰り返し(A・B・C…)を見つけ、役割(イントロ・A メロ・B メロ・サビ・\
+        C メロ・間奏・アウトロ)を推し量る。返り値: sections(label・role_ja・start_bar・bars・start_sec・end_sec・\
+        energy_db〈いちばん大きい区間が 0〉・level・brightness_hz・chords〈小節ごと、先頭 8 小節。音声からの目安〉・\
+        similarity)、form(記号の並び)、form_ja、bpm、beats_per_bar、key、bar_energy_db(小節ごとの音量)、summary。\
+        対象は clip_id か file のどちらか 1 つ。使いどころ: 「この曲みたいな構成で」と言われたとき、小節数と並びと\
+        盛り上がりの差を写して曲の骨組み(マーカー・セクション)を作る。役割は推定なので、ユーザーの言葉を優先する。\
+        メロディや音そのものは写さない(構成・長さ・音量の起伏だけを参考にする)。"
+    )]
+    async fn analyze_reference(&self, params: Parameters<AnalyzeBeatsParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("analyze_reference");
+        let p = params.0;
+        let source = match (&p.clip_id, &p.file) {
+            (Some(c), None) => crate::sound::SoundSource::Clip(
+                glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?,
+            ),
+            (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
+            _ => return Err("clip_id / file のどちらか 1 つを指定してください".to_owned()),
+        };
+        let (project, _) = self.handle.get_project().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
+            crate::sound::reference_structure(&sound)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(JsonText(v))
+    }
+
+    #[tool(
         description = "CLAP プラグイン(例 Surge XT。音源なら track_id、エフェクトなら fx_id)のプリセット(作り込まれた音色)を一覧する。\
         プリセットを公開していないプラグインもある(例 Surge XT Effects は 0 件)。そのときは人間にプラグインの画面の\
         プリセットメニューから選んでもらうか、list_params のつまみで作る。\

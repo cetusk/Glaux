@@ -35,6 +35,7 @@ const LABELS: Record<string, ToolLabel> = {
   analyze_harmony: { short: "キーとコードを確認", doing: "キーとコードを調べています" },
   analyze_rhythm: { short: "リズムを確認", doing: "リズムを調べています" },
   analyze_beats: { short: "テンポを測定", doing: "テンポを測っています" },
+  analyze_reference: { short: "参考曲の構成を解析", doing: "参考曲の構成を読んでいます" },
   analyze_sound: { short: "音色を確認", doing: "音色を調べています" },
   compare_sounds: { short: "音を比較", doing: "音を比べています" },
   compare_mix: { short: "編集の前後を聴き比べ", doing: "編集の前後を聴き比べています" },

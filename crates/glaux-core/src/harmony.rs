@@ -161,36 +161,8 @@ pub fn analyze(
     for (start, end, pitch) in &events {
         hist[(*pitch % 12) as usize] += end.saturating_sub(*start) as f64;
     }
-    let mut best = (0u8, "major", f64::MIN);
-    let mut second = f64::MIN;
-    for tonic in 0..12u8 {
-        for (mode, profile) in [("major", &MAJOR_PROFILE), ("minor", &MINOR_PROFILE)] {
-            // プロファイルをトニックに合わせて回転
-            let mut rotated = [0.0f64; 12];
-            for (i, r) in rotated.iter_mut().enumerate() {
-                *r = profile[(i + 12 - tonic as usize) % 12];
-            }
-            let corr = correlate(&hist, &rotated);
-            if corr > best.2 {
-                second = best.2;
-                best = (tonic, mode, corr);
-            } else if corr > second {
-                second = corr;
-            }
-        }
-    }
-    let (tonic, mode, corr) = best;
-    let confidence = ((corr - second.max(0.0)) * 3.0).clamp(0.05, 1.0);
-    let key = KeyEstimate {
-        name: format!(
-            "{} {}",
-            NOTE_NAMES[tonic as usize],
-            if mode == "major" { "major" } else { "minor" }
-        ),
-        tonic,
-        mode,
-        confidence,
-    };
+    let key = key_from_histogram(&hist);
+    let (tonic, mode) = (key.tonic, key.mode);
 
     // スケール外音の割合(音価重み)
     let in_scale = scale_pcs(tonic, mode);
@@ -238,45 +210,7 @@ pub fn analyze(
             });
             continue;
         }
-        // 全ルート × 全品質でスコアリング
-        let mut best_score = f64::MIN;
-        let mut second_score = f64::MIN;
-        let mut best_name = String::new();
-        for root in 0..12usize {
-            for (suffix, tmpl) in CHORD_TEMPLATES {
-                let mut score = 0.0;
-                for (offset, weight) in tmpl.iter() {
-                    score += w[(root + offset) % 12] * weight;
-                }
-                // テンプレート外の音はペナルティ
-                let tmpl_pcs: Vec<usize> = tmpl.iter().map(|(o, _)| (root + o) % 12).collect();
-                let outside: f64 = w
-                    .iter()
-                    .enumerate()
-                    .filter(|(pc, _)| !tmpl_pcs.contains(pc))
-                    .map(|(_, x)| *x)
-                    .sum();
-                score -= outside * 0.35;
-                // 最低音がルートなら加点(転回形の誤判定を減らす)
-                if let Some((bp, _)) = bass {
-                    if (bp % 12) as usize == root {
-                        score += total * 0.08;
-                    }
-                }
-                if score > best_score {
-                    second_score = best_score;
-                    best_score = score;
-                    best_name = format!("{}{}", NOTE_NAMES[root], suffix);
-                } else if score > second_score {
-                    second_score = score;
-                }
-            }
-        }
-        let conf = if best_score <= 0.0 {
-            0.1
-        } else {
-            (((best_score - second_score.max(0.0)) / best_score) + 0.3).clamp(0.1, 1.0)
-        };
+        let (best_name, conf) = chord_from_histogram(&w, bass.map(|(p, _)| p % 12), true);
         chords.push(BarChord {
             bar: bar_idx + 1,
             tick: bs,
@@ -291,6 +225,88 @@ pub fn analyze(
         out_of_key_ratio,
         note_count,
     }
+}
+
+/// ピッチクラスの分布(C=0..B=11 の重み)からキーを推定する(Krumhansl-Schmuckler 法)。
+/// 音声のクロマからも使う。
+pub fn key_from_histogram(hist: &[f64; 12]) -> KeyEstimate {
+    let mut best = (0u8, "major", f64::MIN);
+    let mut second = f64::MIN;
+    for tonic in 0..12u8 {
+        for (mode, profile) in [("major", &MAJOR_PROFILE), ("minor", &MINOR_PROFILE)] {
+            // プロファイルをトニックに合わせて回転
+            let mut rotated = [0.0f64; 12];
+            for (i, r) in rotated.iter_mut().enumerate() {
+                *r = profile[(i + 12 - tonic as usize) % 12];
+            }
+            let corr = correlate(hist, &rotated);
+            if corr > best.2 {
+                second = best.2;
+                best = (tonic, mode, corr);
+            } else if corr > second {
+                second = corr;
+            }
+        }
+    }
+    let (tonic, mode, corr) = best;
+    let confidence = ((corr - second.max(0.0)) * 3.0).clamp(0.05, 1.0);
+    KeyEstimate {
+        name: format!(
+            "{} {}",
+            NOTE_NAMES[tonic as usize],
+            if mode == "major" { "major" } else { "minor" }
+        ),
+        tonic,
+        mode,
+        confidence,
+    }
+}
+
+/// ピッチクラスの分布(と最低音のピッチクラス)から、いちばん当てはまるコード名と確からしさ(0.1〜1)。
+/// 音声のクロマからも使う(`sevenths` = false で三和音だけ。音声は倍音で 7th に読み違えやすい)。
+pub fn chord_from_histogram(w: &[f64; 12], bass: Option<u8>, sevenths: bool) -> (String, f64) {
+    let total: f64 = w.iter().sum();
+    // 全ルート × 全品質でスコアリング
+    let mut best_score = f64::MIN;
+    let mut second_score = f64::MIN;
+    let mut best_name = String::new();
+    for root in 0..12usize {
+        for (suffix, tmpl) in CHORD_TEMPLATES {
+            if !sevenths && tmpl.len() > 3 {
+                continue;
+            }
+            let mut score = 0.0;
+            for (offset, weight) in tmpl.iter() {
+                score += w[(root + offset) % 12] * weight;
+            }
+            // テンプレート外の音はペナルティ
+            let tmpl_pcs: Vec<usize> = tmpl.iter().map(|(o, _)| (root + o) % 12).collect();
+            let outside: f64 = w
+                .iter()
+                .enumerate()
+                .filter(|(pc, _)| !tmpl_pcs.contains(pc))
+                .map(|(_, x)| *x)
+                .sum();
+            score -= outside * 0.35;
+            // 最低音がルートなら加点(転回形の誤判定を減らす)
+            if bass.is_some_and(|bp| bp as usize % 12 == root) {
+                score += total * 0.08;
+            }
+            if score > best_score {
+                second_score = best_score;
+                best_score = score;
+                best_name = format!("{}{}", NOTE_NAMES[root], suffix);
+            } else if score > second_score {
+                second_score = score;
+            }
+        }
+    }
+    let conf = if best_score <= 0.0 {
+        0.1
+    } else {
+        (((best_score - second_score.max(0.0)) / best_score) + 0.3).clamp(0.1, 1.0)
+    };
+    (best_name, conf)
 }
 
 /// コード名(例 "Am" / "G7" / "C#maj7" / "Bdim")の構成音のピッチクラス(C=0..B=11)。ルートが先頭で、
