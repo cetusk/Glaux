@@ -73,6 +73,7 @@ const LABELS: Record<string, ToolLabel> = {
   articulate_notes: { short: "音の切り方", doing: "音の切り方をそろえています" },
   tremolo: { short: "トレモロ", doing: "トレモロにしています" },
   glissando: { short: "グリッサンド", doing: "グリッサンドを付けています" },
+  shape_phrase: { short: "句の呼吸", doing: "句にテンポの揺れを付けています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

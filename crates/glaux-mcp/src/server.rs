@@ -1379,6 +1379,28 @@ pub struct GlissandoParams {
     pub portion: Option<f64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ShapePhraseParams {
+    /// 句の始まりの小節(曲の小節番号)と小節数(既定 4)。
+    pub bar: u32,
+    #[serde(default)]
+    pub bars: Option<u32>,
+    /// 弧の大きさ 0〜1(句の半ばへ最大 6% 速く、また戻す。既定 0.5。0 で無し)。
+    #[serde(default)]
+    pub arc: Option<f64>,
+    /// 終わりのリタルダンドの拍数(既定 4。0 で無し)と、最後のテンポの倍率 w(0.2〜1、既定 0.7。曲の終わりなら 0.5〜0.6)。
+    #[serde(default)]
+    pub ritard_beats: Option<f64>,
+    #[serde(default)]
+    pub final_tempo: Option<f64>,
+    /// 緩み方の形 q(0.5〜5、既定 2。Friberg らの式 v(x) = [1 + (w^q − 1)x]^(1/q)。大きいほど最後に急に緩む)。
+    #[serde(default)]
+    pub curve: Option<f64>,
+    /// 強さもテンポに連動させる(速い所は強く、緩む所は弱く。既定 true。ドラムのトラックも含む)。
+    #[serde(default)]
+    pub couple_dynamics: Option<bool>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -2040,7 +2062,13 @@ pub struct SwingNotesParams {
     #[serde(default)]
     pub grid_ticks: Option<u64>,
     /// スウィング率 0.5〜0.8。0.5 = ストレート、0.58 ≈ 軽め、0.667 ≈ 3 連(シャッフル)、0.75 = 付点(ハネ強め)。
-    pub swing: f64,
+    /// mode: jazz_tempo のときは省略できる。
+    #[serde(default)]
+    pub swing: Option<f64>,
+    /// jazz_tempo: テンポから量を決める(短い方の音 = max(100ms, 3 連の 8 分)。遅い曲は 3 連、速い曲ほどまっすぐ。
+    /// Friberg & Sundström の実測)。
+    #[serde(default)]
+    pub mode: Option<String>,
     /// 掛かり具合 0.0〜1.0(省略時 1.0)。
     #[serde(default)]
     pub strength: Option<f64>,
@@ -8123,6 +8151,104 @@ impl GlauxServer {
     }
 
     #[tool(
+        description = "句に呼吸を付ける(テンポの変化として書く): 句の半ばへ少し速く(arc)、終わりをリタルダンドで緩める\
+        (Friberg らの式。final_tempo 倍まで、ritard_beats 拍かけて)。強さもテンポに連動させる(速い所は強く、緩む所は弱く。\
+        Todd のモデル)。曲の終わり・バラードの句の切れ目・サビ前の溜めに。区間の中のテンポの変更は置き換え、区間の後は元のテンポに\
+        戻す。ノートの位置(tick)は変わらず、秒の長さだけ変わる。1 回の undo で戻る。"
+    )]
+    async fn shape_phrase(
+        &self,
+        params: Parameters<ShapePhraseParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("shape_phrase");
+        let p = params.0;
+        let bars = p.bars.unwrap_or(4).clamp(1, 64);
+        let (project, _) = self.handle.get_project().await?;
+        let (start, len) = glaux_core::arrange::bar_range(&project, p.bar.max(1), bars)
+            .ok_or("小節を数えられません")?;
+        let arc = p.arc.unwrap_or(0.5).clamp(0.0, 1.0);
+        let ritard = ((p.ritard_beats.unwrap_or(4.0).clamp(0.0, 64.0)) * glaux_core::PPQ as f64)
+            .round() as u64;
+        let w = p.final_tempo.unwrap_or(0.7).clamp(0.2, 1.0);
+        let q = p.curve.unwrap_or(2.0).clamp(0.5, 5.0);
+        let shape =
+            glaux_core::technique::phrase_tempo(start, len, arc, ritard, w, q, glaux_core::PPQ / 2);
+        let end = start + len;
+        // テンポ: 区間の中の変更は置き換え、区間の後は元のテンポ
+        let events = project.tempo_map.events();
+        let base_at = |t: u64| project.tempo_map.bpm_at(glaux_core::Tick(t));
+        let mut out: Vec<glaux_core::TempoEvent> = events
+            .iter()
+            .filter(|e| e.tick.0 < start || e.tick.0 >= end)
+            .copied()
+            .collect();
+        for &(t, m) in &shape {
+            out.push(glaux_core::TempoEvent {
+                tick: glaux_core::Tick(t),
+                bpm: ((base_at(t) * m) * 100.0).round() / 100.0,
+            });
+        }
+        if !events.iter().any(|e| e.tick.0 == end) {
+            out.push(glaux_core::TempoEvent {
+                tick: glaux_core::Tick(end),
+                bpm: base_at(end),
+            });
+        }
+        out.sort_by_key(|e| e.tick);
+        out.dedup_by(|b, a| a.bpm == b.bpm);
+        let mut commands = vec![Command::SetTempo { events: out }];
+        // 強さ: 速い所は強く、緩む所は弱く
+        let mut touched = 0usize;
+        if p.couple_dynamics.unwrap_or(true) {
+            let mult_at = |t: u64| shape.iter().rev().find(|x| x.0 <= t).map_or(1.0, |x| x.1);
+            for track in &project.tracks {
+                for clip in &track.clips {
+                    let Some(notes) = clip.notes() else { continue };
+                    if clip.loop_len().is_some() {
+                        continue;
+                    }
+                    let changes: Vec<glaux_core::NoteChange> = notes
+                        .iter()
+                        .filter_map(|n| {
+                            let abs = clip.start.0 + n.pos.0;
+                            if abs < start || abs >= end {
+                                return None;
+                            }
+                            let k = 1.0 + 1.5 * (mult_at(abs) - 1.0);
+                            let v = ((n.vel as f64 * k).round()).clamp(1.0, 127.0) as u8;
+                            (v != n.vel).then(|| glaux_core::NoteChange::new(n.id.clone()).vel(v))
+                        })
+                        .collect();
+                    touched += changes.len();
+                    if !changes.is_empty() {
+                        commands.push(Command::UpdateNotes {
+                            clip: clip.id.clone(),
+                            changes,
+                        });
+                    }
+                }
+            }
+        }
+        let label = format!("句の呼吸({} 小節目から {bars} 小節)", p.bar);
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (after, _) = self.handle.get_project().await?;
+        let secs = |t: u64| after.tempo_map.tick_to_seconds(glaux_core::Tick(t));
+        let before_secs = |t: u64| project.tempo_map.tick_to_seconds(glaux_core::Tick(t));
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["tempo_events"] = json!(shape.len());
+        v["notes_reweighted"] = json!(touched);
+        v["seconds"] = json!({
+            "before": ((before_secs(end) - before_secs(start)) * 100.0).round() / 100.0,
+            "after": ((secs(end) - secs(start)) * 100.0).round() / 100.0,
+        });
+        Ok(JsonText(v))
+    }
+
+    #[tool(
         description = "曲の計画書を書く(曲を作るときの最初の一手)。区間ごとに名前・小節数・盛り上がり(energy 0〜10)・\
         鳴らすトラックの名前・役割を渡すと、小節の頭に区間のマーカーを置き直し、各区間の始まりの小節と曲の長さ(秒)を返す\
         (「3 分の曲」の長さ合わせに使う)。拍子の変化も考慮して小節を数える。critique_arrangement は、計画の盛り上がりの\
@@ -8349,9 +8475,20 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("swing_notes");
         let p = params.0;
-        if !(0.5..=0.8).contains(&p.swing) {
-            return Err(format!("swing は 0.5〜0.8(got: {})", p.swing));
-        }
+        let jazz = match p.mode.as_deref() {
+            None => false,
+            Some("jazz_tempo") => true,
+            Some(other) => return Err(format!("mode は jazz_tempo(got: {other})")),
+        };
+        let fixed = match (jazz, p.swing) {
+            (true, _) => None,
+            (false, Some(sw)) if (0.5..=0.8).contains(&sw) => Some(sw),
+            (false, Some(sw)) => return Err(format!("swing は 0.5〜0.8(got: {sw})")),
+            (false, None) => {
+                return Err("swing(0.5〜0.8)か mode: jazz_tempo を指定してください".to_owned())
+            }
+        };
+        let mut used_swing = fixed.unwrap_or(0.5);
         let grid = p.grid_ticks.unwrap_or(480);
         if grid < 60 {
             return Err("grid_ticks は 60 以上にすること".to_owned());
@@ -8383,7 +8520,15 @@ impl GlauxServer {
                 start,
                 len.0,
                 grid,
-                p.swing,
+                {
+                    let sw = fixed.unwrap_or_else(|| {
+                        glaux_core::technique::jazz_swing_ratio(
+                            project.tempo_map.bpm_at(glaux_core::Tick(start)),
+                        )
+                    });
+                    used_swing = sw;
+                    sw
+                },
                 strength,
                 &glaux_core::meter::bar_meters(&project, start + len.0),
             )
@@ -8405,13 +8550,13 @@ impl GlauxServer {
         let label = if ids.len() == 1 {
             format!(
                 "スウィング {:.0}%(1/{}、{total} ノート)",
-                p.swing * 100.0,
+                used_swing * 100.0,
                 3840 / grid
             )
         } else {
             format!(
                 "スウィング {:.0}%(1/{}、{} クリップ・{total} ノート)",
-                p.swing * 100.0,
+                used_swing * 100.0,
                 3840 / grid,
                 ids.len()
             )

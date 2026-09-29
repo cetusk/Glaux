@@ -348,8 +348,17 @@ fn candidates(chord: &Chord, opts: &Options, voices: usize) -> Vec<Vec<u8>> {
         }
         add_candidates(&tones, opts, opts.style, slash_low, has_b9, &mut out);
     }
-    // spread が音域に入らないとき(三和音の 4 声は 2 オクターブに広がる)は open の形で積む
-    if out.is_empty() && opts.style == Style::Spread {
+    // 広げた形が音域に入らないとき(三和音の 4 声の spread は 2 オクターブに広がる)は、
+    // spread → open → close の順に狭めて積む
+    let narrower: &[Style] = match opts.style {
+        Style::Spread => &[Style::Open, Style::Close],
+        Style::Open | Style::Drop2 | Style::Drop3 => &[Style::Close],
+        _ => &[],
+    };
+    for &fallback in narrower {
+        if !out.is_empty() {
+            break;
+        }
         for mut tones in pick_tones(chord, opts.style, voices) {
             if let Some(b) = slash_low {
                 if !tones.contains(&b) {
@@ -357,7 +366,7 @@ fn candidates(chord: &Chord, opts: &Options, voices: usize) -> Vec<Vec<u8>> {
                     tones[last] = b;
                 }
             }
-            add_candidates(&tones, opts, Style::Open, slash_low, has_b9, &mut out);
+            add_candidates(&tones, opts, fallback, slash_low, has_b9, &mut out);
         }
     }
     out.sort();
@@ -386,8 +395,10 @@ fn add_candidates(
             ds.push(d);
         }
         ds.sort_unstable();
-        // 密集形は、隣どうしの間が 5 度以内(重ねた音だけ 1 オクターブ上に離れた形は密集ではない)
-        if ds.windows(2).any(|w| w[1] - w[0] > 7) {
+        // 密集形は、隣どうしの間が 5 度以内(重ねた音だけ 1 オクターブ上に離れた形は密集ではない)。
+        // 5 声以上の三和音は根音・5 度を何度も重ねるので、1 オクターブまでの隙間は許す(ギターの 6 弦の和音など)
+        let max_gap = if ds.len() >= 5 { 12 } else { 7 };
+        if ds.windows(2).any(|w| w[1] - w[0] > max_gap) {
             continue;
         }
         let shapes = shapes_for(&ds, style);
@@ -422,9 +433,14 @@ fn shapes_for(close: &[i32], style: Style) -> Vec<Vec<i32>> {
     let drop = |idxs: &[usize]| -> Vec<i32> {
         let mut v = close.to_vec();
         for &k in idxs {
-            // 上から k 番目(1 始まり)を 1 オクターブ下げる
+            // 上から k 番目(1 始まり)を 1 オクターブ下げる。オクターブで重ねた音があると下の音と同じ高さに
+            // なるので、そのときはもう 1 オクターブ下げる(三和音の 5〜6 声)
             if k <= n {
-                v[n - k] -= 12;
+                let i = n - k;
+                v[i] -= 12;
+                while (0..n).any(|j| j != i && v[j] == v[i]) {
+                    v[i] -= 12;
+                }
             }
         }
         v.sort_unstable();
@@ -465,7 +481,9 @@ fn clean(v: &[u8], has_b9: bool) -> bool {
         if gap == 0 {
             return false;
         }
-        if a < 45 && gap < 7 {
+        // 低い音域の 3 度は濁るので避ける。ただし 5 声以上(ギターの 6 弦の和音など)は 2 度だけ避ける
+        let low_min = if v.len() >= 5 { 3 } else { 7 };
+        if a < 45 && gap < low_min {
             return false;
         }
         if a < 52 && gap < 3 {
@@ -553,6 +571,15 @@ mod tests {
                 );
             }
             assert!(total_motion(&v) <= 14, "{style:?} {v:?}");
+        }
+        // ギターのような 6 声の open(オクターブで重ねた音を下げても同音にならない)
+        let mut g = opts(Style::Open, 6);
+        g.low = 40;
+        g.high = 72;
+        let v = voice_progression(&chords(&["G", "D", "Em", "C"]), &g).unwrap();
+        for x in &v {
+            assert_eq!(x.upper.len(), 6);
+            assert!(x.upper.windows(2).all(|w| w[1] > w[0]), "{v:?}");
         }
         // 三和音の 4 声の spread は 2 オクターブに広がり既定の音域に入らないので、open の形で積む
         let v =

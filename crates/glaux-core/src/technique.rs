@@ -357,6 +357,46 @@ pub fn glissando_pitches(from: u8, to: u8, pcs: &[u8]) -> Vec<u8> {
     v
 }
 
+/// 句のテンポの形(倍率)。区間 `[start, start + len)` を `step` ごとに、
+/// 弧(句の半ばへ最大 `arc` × 6% 速く)と終わりのリタルダンド(最後の `ritard_len` を Friberg らの式
+/// v(x) = [1 + (w^q − 1)x]^(1/q) で `w` 倍まで緩める)を掛けた倍率。戻り値は (tick, 倍率)
+pub fn phrase_tempo(
+    start: u64,
+    len: u64,
+    arc: f64,
+    ritard_len: u64,
+    w: f64,
+    q: f64,
+    step: u64,
+) -> Vec<(u64, f64)> {
+    let step = step.max(1);
+    let len = len.max(1);
+    let rit_from = start + len - ritard_len.min(len);
+    let mut out = Vec::new();
+    let mut t = start;
+    while t < start + len {
+        let x = (t - start) as f64 / len as f64;
+        let mut m = 1.0 + arc.clamp(0.0, 1.0) * 0.06 * (std::f64::consts::PI * x).sin();
+        if ritard_len > 0 && t >= rit_from {
+            let y = ((t - rit_from) as f64 + step as f64 / 2.0) / ritard_len.max(1) as f64;
+            let q = q.clamp(0.5, 5.0);
+            let v = (1.0 + (w.clamp(0.2, 1.0).powf(q) - 1.0) * y.min(1.0)).powf(1.0 / q);
+            m *= v;
+        }
+        out.push((t, m));
+        t += step;
+    }
+    out
+}
+
+/// ジャズのスウィングの量(組の頭からの裏の位置の割合)をテンポから決める(Friberg & Sundström):
+/// 短い方の音 = max(100ms, 3 連の 8 分)。遅い曲は 3 連(0.667)、速い曲ほどまっすぐに近づく
+pub fn jazz_swing_ratio(bpm: f64) -> f64 {
+    let beat_ms = 60_000.0 / bpm.max(1.0);
+    let short = (beat_ms / 3.0).max(100.0).min(beat_ms / 2.0);
+    ((beat_ms - short) / beat_ms).clamp(0.5, 0.75)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,6 +505,29 @@ mod tests {
         assert_eq!(glissando_pitches(60, 63, &[]), vec![61, 62, 63]);
         assert_eq!(ArticStyle::parse("portato"), Some(ArticStyle::Portato));
         assert_eq!(Tremolo::parse("chord"), Some(Tremolo::Chord));
+    }
+
+    #[test]
+    fn phrase_shapes_and_jazz_swing() {
+        // 4 小節の句: 半ばで少し速く、最後の 1 小節で 0.6 倍へ緩む
+        let t = phrase_tempo(0, 15360, 1.0, 3840, 0.6, 2.0, 480);
+        assert_eq!(t.len(), 32);
+        let mid = t[12].1;
+        assert!(mid > 1.03 && mid <= 1.06, "{mid}");
+        let last = t.last().unwrap().1;
+        assert!(last < 0.7 && last > 0.55, "{last}");
+        assert!(
+            t.windows(2).skip(25).all(|w| w[1].1 <= w[0].1),
+            "終わりは緩み続ける"
+        );
+        // 弧なし・リタルダンドなしは 1
+        assert!(phrase_tempo(0, 3840, 0.0, 0, 0.6, 2.0, 480)
+            .iter()
+            .all(|x| x.1 == 1.0));
+        // 遅い曲は 3 連、速い曲はまっすぐに近い
+        assert!((jazz_swing_ratio(80.0) - 2.0 / 3.0).abs() < 1e-9);
+        let fast = jazz_swing_ratio(300.0);
+        assert!((0.5..0.6).contains(&fast), "{fast}");
     }
 
     #[test]

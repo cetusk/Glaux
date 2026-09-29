@@ -4022,6 +4022,79 @@ async fn articulation_tremolo_and_glissando_tools() {
 }
 
 #[tokio::test]
+async fn shape_phrase_and_jazz_tempo_swing() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_phr001", "Piano")).await);
+    // 8 小節の 8 分の刻み
+    let notes: Vec<Value> = (0..64u64)
+        .map(|k| json!({ "pos": k * 480, "dur": 400, "pitch": 60 + (k % 5) as u8, "vel": 80 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_clip", "track": "trk_phr001", "clip": {
+                    "id": "clp_phr001", "name": "p", "start": 0, "length": 30720, "kind": "midi", "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    // 5〜8 小節を句にして、最後の 1 小節で 0.6 倍へ緩める
+    let v = ok_json(
+        &call(
+            &fx,
+            "shape_phrase",
+            json!({ "bar": 5, "bars": 4, "final_tempo": 0.6 }),
+        )
+        .await,
+    );
+    let before = v["seconds"]["before"].as_f64().unwrap();
+    let after = v["seconds"]["after"].as_f64().unwrap();
+    assert!((before - 8.0).abs() < 0.01 && after > before, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ev = project.tempo_map.events();
+    assert!(
+        ev.iter().any(|e| e.tick.0 == 15360 + 7680 && e.bpm > 120.0),
+        "半ばで少し速い"
+    );
+    assert!(
+        ev.iter().any(|e| e.tick.0 > 26880 && e.bpm < 80.0),
+        "終わりで緩む"
+    );
+    assert_eq!(
+        project.tempo_map.bpm_at(glaux_core::Tick(30720)),
+        120.0,
+        "区間の後は元に戻る"
+    );
+    assert_eq!(
+        project.tempo_map.bpm_at(glaux_core::Tick(3840)),
+        120.0,
+        "区間の前は変えない"
+    );
+    // 緩む所の音は弱く
+    let ns = project.tracks[0].clips[0].notes().unwrap();
+    assert!(ns.last().unwrap().vel < 80);
+    assert_eq!(ns[0].vel, 80);
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tempo_map.events().len(), 1);
+    // ジャズのハネをテンポから: 120 BPM は 3 連(裏の 480 → 640)
+    ok_json(
+        &call(
+            &fx,
+            "swing_notes",
+            json!({ "clip_id": "clp_phr001", "mode": "jazz_tempo" }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tracks[0].clips[0].notes().unwrap()[1].pos.0, 640);
+    let r = call(&fx, "swing_notes", json!({ "clip_id": "clp_phr001" })).await;
+    assert_eq!(r.is_error, Some(true), "swing も mode も無い");
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(
