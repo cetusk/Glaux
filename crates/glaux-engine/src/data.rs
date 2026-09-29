@@ -2546,6 +2546,32 @@ mod tests {
     }
 
     #[test]
+    fn layers_work_on_a_drum_track() {
+        use crate::export::render_project;
+        use glaux_core::{Device, Layer, ParamValue};
+        let mut project = project_with_notes(vec![note(0, 120, 36, 112)]);
+        project.tracks[0].device = Some(Device::builtin("drum"));
+        let lvl = |p: &Project| {
+            let st = render_project(p, 48_000.0, &SampleBank::default()).unwrap();
+            let l: Vec<f32> = st.iter().step_by(2).take(12_000).copied().collect();
+            tone_level(&l, 48_000.0, 49.0)
+        };
+        let before = lvl(&project);
+        let mut sub = Layer::new({
+            let mut d = Device::builtin("subtractive");
+            d.params
+                .insert("waveform".into(), ParamValue::Enum("sine".into()));
+            d
+        });
+        sub.transpose = -5;
+        sub.key_lo = 35;
+        sub.key_hi = 36;
+        project.tracks[0].layers = vec![sub];
+        let after = lvl(&project);
+        assert!(after > before * 1.5, "before={before} after={after}");
+    }
+
+    #[test]
     fn macros_move_their_targets() {
         use glaux_core::{AutomationLane, AutomationPoint, Curve, Macro, MacroTarget, ParamPath};
         let mut project = project_with_notes(vec![note(0, 3840, 60, 100)]);

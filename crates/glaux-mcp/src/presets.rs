@@ -597,7 +597,7 @@ fn factory_presets() -> Vec<Preset> {
             });
             sub.name = "サブ".to_owned();
             sub.transpose = -12;
-            sub.volume_db = -4.0;
+            sub.volume_db = -9.0;
             p.layers = vec![sub];
             p.macros = vec![
                 glaux_core::Macro {
@@ -633,7 +633,7 @@ fn factory_presets() -> Vec<Preset> {
             let mut sub = glaux_core::Layer::new({
                 let mut d = device(
                     "subtractive",
-                    &[("attack", 0.002), ("decay", 0.35), ("sustain", 0.0), ("release", 0.08), ("gain_db", -8.0)],
+                    &[("attack", 0.002), ("decay", 0.35), ("sustain", 0.0), ("release", 0.08), ("gain_db", -4.0)],
                 );
                 d.params.insert(
                     "waveform".to_owned(),
