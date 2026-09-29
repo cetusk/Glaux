@@ -1152,6 +1152,12 @@ impl crate::InstrumentParams {
                 "decay" => p.decay = value.clamp(0.25, 4.0),
                 "tone" => p.tone = value.clamp(0.0, 1.0),
                 "tune" => p.tune = value.clamp(-12.0, 12.0),
+                "kick_tune" => p.kick_tune = value.clamp(-12.0, 12.0),
+                "kick_decay" => p.kick_decay = value.clamp(0.25, 4.0),
+                "kick_punch" => p.kick_punch = value.clamp(0.0, 1.0),
+                "snare_tune" => p.snare_tune = value.clamp(-12.0, 12.0),
+                "snare_snappy" => p.snare_snappy = value.clamp(0.0, 1.0),
+                "hat_decay" => p.hat_decay = value.clamp(0.25, 4.0),
                 _ => return false,
             },
             I::Pluck(p) => match name {

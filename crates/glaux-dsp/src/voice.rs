@@ -187,10 +187,22 @@ impl VoiceState {
 
     /// チョークのグループ(SF2/SFZ・ドラムのハイハット。0 = 無し)
     pub fn choke_group(&self) -> u32 {
+        self.choke_groups()
+            .into_iter()
+            .find(|g| *g != 0)
+            .unwrap_or(0)
+    }
+
+    /// チョークのグループすべて(0 = 無し)。鳴らした直後に、これらで止まる音を止める
+    pub fn choke_groups(&self) -> [u32; crate::multi::MAX_LAYERS] {
         match self {
-            VoiceState::Sf2(v) => v.group(),
-            VoiceState::Drum(v) => v.group(),
-            _ => 0,
+            VoiceState::Sf2(v) => v.groups(),
+            VoiceState::Drum(v) => {
+                let mut out = [0u32; crate::multi::MAX_LAYERS];
+                out[0] = v.group();
+                out
+            }
+            _ => [0; crate::multi::MAX_LAYERS],
         }
     }
 

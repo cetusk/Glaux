@@ -57,8 +57,9 @@ fn has_block_automation(data: &PlaybackData) -> bool {
 
 /// 同時発音数(全トラック合計)。超えると古い音を短いフェードで奪う(ボイススティール)
 pub const MAX_VOICES: usize = 256;
-/// 奪われてフェードアウト中のボイスのための予備枠(この分も起動時に確保しておく)
-const STEAL_RESERVE: usize = 32;
+/// 奪われてフェードアウト中のボイスのための予備枠(この分も起動時に確保しておく)。
+/// 層のある音色は 1 音で 4 つ奪うことがあるので、同じ瞬間の 32 音 × 4 層ぶん
+const STEAL_RESERVE: usize = 128;
 /// 奪うときのフェードの長さ(秒)。短すぎるとクリック、長すぎると予備枠を食う
 const STEAL_FADE_SECS: f32 = 0.003;
 /// 同時に再生する音声クリップ数
@@ -1365,15 +1366,24 @@ impl Renderer {
                 let mix = data.tracks.get(e.track as usize);
                 // プラグインのトラックは collect_plugin_notes で送る
                 if let Some(mix) = mix.filter(|m| m.audible && m.plugin.is_none()) {
-                    let live = self.voices.iter().filter(|v| !v.stolen).count();
-                    if live >= MAX_VOICES {
-                        if let Some(i) = steal_victim(&self.voices) {
-                            let v = &mut self.voices[i];
-                            v.stolen = true;
-                            v.released = false;
-                            v.end = self.pos;
-                            v.fade_out = ((sr * STEAL_FADE_SECS) as u32).max(1);
-                        }
+                    // 本体と、範囲に合う層の数だけ空きを作る(上限を超えたら古い音を奪う)
+                    let vel_midi = (e.amp * 127.0).round().clamp(1.0, 127.0) as u8;
+                    let needed = 1 + mix
+                        .layers
+                        .iter()
+                        .filter(|l| l.plays(e.pitch, vel_midi))
+                        .count();
+                    let mut live = self.voices.iter().filter(|v| !v.stolen).count();
+                    while live + needed > MAX_VOICES {
+                        let Some(i) = steal_victim(&self.voices) else {
+                            break;
+                        };
+                        let v = &mut self.voices[i];
+                        v.stolen = true;
+                        v.released = false;
+                        v.end = self.pos;
+                        v.fade_out = ((sr * STEAL_FADE_SECS) as u32).max(1);
+                        live -= 1;
                     }
                     if self.voices.len() < MAX_VOICES + STEAL_RESERVE {
                         // 発音時パラメータ(pluck 等)にもスイープ中の値を反映する
@@ -1393,8 +1403,10 @@ impl Renderer {
                             e.variant,
                         );
                         // チョーク: 同じトラック・同じ層の、このグループで止まる音(オープンハイハットなど)を止める
-                        let group = state.choke_group();
-                        if group != 0 {
+                        for group in state.choke_groups() {
+                            if group == 0 {
+                                continue;
+                            }
                             for v in self.voices.iter_mut() {
                                 if v.track == e.track && v.layer == 0 {
                                     v.state.choke_if(group);
@@ -1443,7 +1455,6 @@ impl Renderer {
                             layer: 0,
                         });
                         // 重ねる音源: 元のノートの音程・強さで範囲を判定し、移調して鳴らす
-                        let vel_midi = (e.amp * 127.0).round().clamp(1.0, 127.0) as u8;
                         for (li, layer) in mix.layers.iter().enumerate() {
                             if !layer.plays(e.pitch, vel_midi)
                                 || self.voices.len() >= MAX_VOICES + STEAL_RESERVE
@@ -1462,8 +1473,10 @@ impl Renderer {
                                 sr,
                                 e.variant,
                             );
-                            let group = state.choke_group();
-                            if group != 0 {
+                            for group in state.choke_groups() {
+                                if group == 0 {
+                                    continue;
+                                }
                                 for v in self.voices.iter_mut() {
                                     if v.track == e.track && v.layer == li as u8 + 1 {
                                         v.state.choke_if(group);
@@ -3481,6 +3494,47 @@ mod tests {
             prev = y;
         }
         assert_eq!(soft_clip(-3.0), -soft_clip(3.0));
+    }
+
+    #[test]
+    fn layered_voices_stay_within_the_limit() {
+        // 本体 + 3 層の音色で 300 音: 生きている声は上限を超えず、新しいノートは捨てられない
+        let mut data = data_with_note(0, 96_000, true);
+        let layer = crate::data::LayerMix {
+            instrument: test_instrument(),
+            mid: 1.0,
+            side: 0.0,
+            transpose: 0,
+            key: (0, 127),
+            vel: (1, 127),
+        };
+        data.tracks[0].layers = vec![layer.clone(), layer.clone(), layer];
+        let base = data.events[0];
+        data.events = (0..300u64)
+            .map(|i| NoteEvent {
+                start: i * 10,
+                pitch: 40 + (i % 40) as u8,
+                ..base
+            })
+            .collect();
+        let shared = Arc::new(Shared::new(data));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let capacity = r.voices.capacity();
+        let _ = render_block(&mut r, 3000);
+        let live = r.voices.iter().filter(|v| !v.stolen).count();
+        assert!(live <= MAX_VOICES, "live={live}");
+        assert!(live >= MAX_VOICES - 3, "live={live}");
+        // 最後のノートは 4 声とも鳴っている
+        assert_eq!(
+            r.voices.iter().filter(|v| !v.stolen && v.age < 15).count(),
+            4
+        );
+        assert_eq!(
+            r.voices.capacity(),
+            capacity,
+            "オーディオスレッドで確保しない"
+        );
     }
 
     #[test]

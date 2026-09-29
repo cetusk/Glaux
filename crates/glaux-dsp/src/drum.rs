@@ -308,7 +308,8 @@ impl DrumVoice {
             len += v.burst_gap * 3;
         }
         if v.shape != Shape::Swell {
-            v.len = len.min((sr * 8.0) as u32);
+            // 長いキック(808 で decay・kick_decay を上げたもの)やシンバルが途中で切れないよう、上限は 30 秒
+            v.len = len.min((sr * 30.0) as u32);
         }
         v
     }
@@ -800,7 +801,8 @@ mod tests {
                     "{kit:?} pitch {pitch} が暴れない"
                 );
                 let mut v = DrumVoice::start(&p, pitch, 1.0, 48_000.0);
-                for _ in 0..48_000 * 8 {
+                // シンバルは -66dB まで 9 秒ほどかかる(全長の上限は 30 秒)
+                for _ in 0..48_000 * 30 {
                     v.next(&p);
                     if v.finished(&p) {
                         break;

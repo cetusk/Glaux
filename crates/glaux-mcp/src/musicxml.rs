@@ -182,7 +182,10 @@ fn clef(notes: &[RawNote]) -> (&'static str, u8) {
 }
 
 fn time_xml(m: &BarMeter) -> String {
-    let beats = if m.grouping.iter().all(|&g| g == 1) {
+    // まとまりが全部等しい(4/4 = 1+1+1+1、6/8 = 3+3、12/8 = 3+3+3+3)なら分子のまま。
+    // 等しくない変拍子(7/8 = 2+2+3、5/4 = 3+2)は、奏者に拍のまとまりが分かるよう足し算で書く
+    let usual = m.grouping.windows(2).all(|w| w[0] == w[1]);
+    let beats = if usual {
         m.num.to_string()
     } else {
         glaux_core::meter::grouping_text(&m.grouping)
@@ -418,5 +421,28 @@ mod tests {
         assert_eq!(spell(61, 2), ("C", 1, 4));
         assert_eq!(spell(61, -3), ("D", -1, 4));
         assert_eq!(spell(60, 0), ("C", 0, 4));
+    }
+
+    #[test]
+    fn usual_meters_are_written_plainly() {
+        for (num, den, text) in [
+            (6u8, 8u8, "6"),
+            (9, 8, "9"),
+            (12, 8, "12"),
+            (4, 4, "4"),
+            (5, 4, "3+2"),
+        ] {
+            let sig = glaux_core::TimeSigEvent::new(glaux_core::Tick(0), num, den);
+            let m = BarMeter::from_sig(&sig, 0, 3840);
+            assert!(
+                time_xml(&m).contains(&format!("<beats>{text}</beats>")),
+                "{num}/{den}: {}",
+                time_xml(&m)
+            );
+        }
+        let mut sig = glaux_core::TimeSigEvent::new(glaux_core::Tick(0), 7, 8);
+        sig.grouping = Some(vec![2, 2, 3]);
+        let m = BarMeter::from_sig(&sig, 0, 3360);
+        assert!(time_xml(&m).contains("<beats>2+2+3</beats>"));
     }
 }

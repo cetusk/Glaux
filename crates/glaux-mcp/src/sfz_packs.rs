@@ -193,6 +193,9 @@ pub fn status(lib: &Path) -> Vec<PackStatus> {
 pub fn normalize(path: &str) -> Option<String> {
     let mut out: Vec<&str> = Vec::new();
     for c in path.split(['/', '\\']) {
+        if c.contains(':') {
+            return None; // Windows のドライブ(C:)でライブラリの外へ出ない
+        }
         match c {
             "" | "." => {}
             ".." => {
@@ -472,6 +475,7 @@ mod tests {
         assert_eq!(normalize("a/b/../c").as_deref(), Some("a/c"));
         assert_eq!(normalize("a\\b/./c.wav").as_deref(), Some("a/b/c.wav"));
         assert_eq!(normalize("../x"), None);
+        assert_eq!(normalize("C:/x"), None);
         assert_eq!(
             join("Programs", "../Samples/k.flac").as_deref(),
             Some("Samples/k.flac")

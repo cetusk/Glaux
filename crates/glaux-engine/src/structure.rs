@@ -193,18 +193,50 @@ pub fn analyze(frames: &[f32], sample_rate: f32, downbeats: &[f64]) -> Result<St
     })
 }
 
-/// 小節の (開始, 終了) 秒。最後の小節頭の後ろは、小節の長さの半分以上残っていれば 1 小節に数える
+/// 小節の (開始, 終了) 秒。小節頭の間に大きな隙間(中央値の 1.5 倍超。ブレイクで拍が取れなかった所など)があれば
+/// 中央値の長さの小節で埋め、小節頭が曲の一部しか覆っていなければ前後も中央値の長さで延ばす
+/// (途中で拍を見失っても、小節の番号と数がずれないように)
 fn bar_bounds(downbeats: &[f64], dur: f64) -> Vec<(f64, f64)> {
-    let mut v: Vec<(f64, f64)> = downbeats
-        .windows(2)
-        .filter(|w| w[1] > w[0])
-        .map(|w| (w[0], w[1]))
+    let mut beats: Vec<f64> = downbeats
+        .iter()
+        .copied()
+        .filter(|t| t.is_finite() && *t >= 0.0 && *t < dur)
         .collect();
-    if let (Some(&last), Some(len)) = (downbeats.last(), median_len(&v)) {
-        let end = (last + len).min(dur);
-        if end - last >= len * 0.5 {
-            v.push((last, end));
+    beats.sort_by(|a, b| a.total_cmp(b));
+    beats.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    let raw: Vec<(f64, f64)> = beats.windows(2).map(|w| (w[0], w[1])).collect();
+    let Some(len) = median_len(&raw) else {
+        return raw;
+    };
+    let mut v: Vec<(f64, f64)> = Vec::new();
+    // 前: 最初の小節頭より前を中央値の長さで(半分以上残る所まで)
+    let first = beats[0];
+    let mut t = first;
+    let mut before = Vec::new();
+    while t - len >= -len * 0.5 {
+        let s = (t - len).max(0.0);
+        before.push((s, t));
+        t -= len;
+    }
+    before.reverse();
+    v.extend(before);
+    // 間: 大きな隙間は中央値の長さの小節に分ける
+    for &(a, b) in &raw {
+        let gap = b - a;
+        if gap > len * 1.5 {
+            let k = (gap / len).round().max(1.0) as usize;
+            let step = gap / k as f64;
+            v.extend((0..k).map(|i| (a + step * i as f64, a + step * (i + 1) as f64)));
+        } else {
+            v.push((a, b));
         }
+    }
+    // 後: 最後の小節頭から曲の終わりまで
+    let mut t = *beats.last().unwrap_or(&0.0);
+    while dur - t >= len * 0.5 {
+        let e = (t + len).min(dur);
+        v.push((t, e));
+        t += len;
     }
     v
 }
@@ -717,5 +749,18 @@ mod tests {
     #[test]
     fn too_short_is_an_error() {
         assert!(analyze(&vec![0.0; 16_000], 16_000.0, &[0.0, 0.5]).is_err());
+    }
+
+    #[test]
+    fn bars_fill_gaps_and_cover_the_song() {
+        // 2 秒の小節で、10〜16 秒しか小節頭が取れなかった 30 秒の曲
+        let b = bar_bounds(&[10.0, 12.0, 14.0, 16.0], 30.0);
+        assert_eq!(b.len(), 15, "{b:?}");
+        assert_eq!(b[0], (0.0, 2.0));
+        assert_eq!(b.last().unwrap().1, 30.0);
+        // 途中の 8 秒の隙間(ブレイク)は 4 小節
+        let b = bar_bounds(&[0.0, 2.0, 4.0, 12.0, 14.0, 16.0], 18.0);
+        assert_eq!(b.len(), 9, "{b:?}");
+        assert!(b.iter().all(|(s, e)| ((e - s) - 2.0).abs() < 1e-9));
     }
 }

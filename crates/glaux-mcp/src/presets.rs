@@ -775,6 +775,16 @@ pub fn apply_commands(track: &Track, preset: &Preset) -> Vec<Command> {
             id: track.id.clone(),
             prop: glaux_core::TrackProp::Macros(macros),
         });
+        // 前のマクロのオートメーション(macro/N)は意味が変わるので消す
+        for lane in &track.automation {
+            if matches!(lane.target, glaux_core::ParamPath::Macro { .. }) {
+                cmds.push(Command::SetAutomationPoints {
+                    track: track.id.clone(),
+                    target: lane.target.clone(),
+                    points: vec![],
+                });
+            }
+        }
     }
     cmds
 }

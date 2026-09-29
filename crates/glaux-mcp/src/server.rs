@@ -1765,21 +1765,27 @@ fn param_range(track: &glaux_core::Track, path: &glaux_core::ParamPath) -> Optio
     }
 }
 
-/// "C1-B3" / "36-59" の形の範囲
+/// "C1-B3" / "36-59" / "C-1-G9" / "C1〜B3" の形の範囲(オクターブ -1 の "-" があっても、両側が読める区切りを探す)
 fn parse_note_range(s: &str) -> Result<(u8, u8), String> {
-    let (a, b) = s
-        .split_once(['-', '~', '〜'])
-        .ok_or_else(|| format!("範囲は \"C1-B3\" か \"36-59\" の形(got: {s})"))?;
-    let one = |x: &str| -> Result<u8, String> {
+    let one = |x: &str| -> Option<u8> {
         let x = x.trim();
         x.parse::<u8>()
             .ok()
             .filter(|v| *v <= 127)
             .or_else(|| glaux_core::chord::parse_note(x))
-            .ok_or_else(|| format!("音名・番号が読めません: {x}"))
     };
-    let (lo, hi) = (one(a)?, one(b)?);
-    Ok((lo.min(hi), lo.max(hi)))
+    let seps: Vec<usize> = s
+        .char_indices()
+        .filter(|(_, c)| matches!(c, '-' | '~' | '〜'))
+        .map(|(i, _)| i)
+        .collect();
+    for i in seps {
+        let c = s[i..].chars().next().map_or(1, char::len_utf8);
+        if let (Some(lo), Some(hi)) = (one(&s[..i]), one(&s[i + c..])) {
+            return Ok((lo.min(hi), lo.max(hi)));
+        }
+    }
+    Err(format!("範囲は \"C1-B3\" か \"36-59\" の形(got: {s})"))
 }
 
 fn layers_json(layers: &[glaux_core::Layer]) -> Value {
@@ -6091,6 +6097,22 @@ impl GlauxServer {
             octaves: p.octaves.unwrap_or(1).clamp(1, 4),
             accents,
             velocity: p.velocity.unwrap_or(85).clamp(1, 127),
+            // 拍の頭(変拍子は拍のまとまりの頭)。小節ごとの拍子から
+            accent_ticks: {
+                let mut v: Vec<u64> = Vec::new();
+                for m in bar_meters_in(&project, clip_start, clip_len) {
+                    let base = m.start - clip_start;
+                    if m.grouping.iter().all(|&g| g == 1) {
+                        let unit = glaux_core::PPQ * 4 / m.den.max(1) as u64;
+                        v.extend((0..m.num as u64).map(|k| base + k * unit));
+                    } else {
+                        v.extend(m.groups().iter().map(|g| base + g.0));
+                    }
+                }
+                v.sort_unstable();
+                v.dedup();
+                v
+            },
             rhythm,
             retrigger: p.retrigger.unwrap_or(true),
             shift: p.shift.unwrap_or(0).clamp(-24, 24),
@@ -9238,11 +9260,8 @@ impl GlauxServer {
                 tick: glaux_core::Tick(start),
                 num: m0.num * 2,
                 den: m0.den,
-                grouping: Some(if m0.den == 8 {
-                    vec![4, 4, 4]
-                } else {
-                    vec![2, 2, 2]
-                }),
+                // 2 小節を 3 つに等分(3/4 → 6/4 = 2+2+2、3/8 → 6/8 = 2+2+2、6/8 → 12/8 = 4+4+4)
+                grouping: Some(vec![(m0.num * 2 / 3) as u8; 3]),
             });
             if !project.time_sig_map.iter().any(|e| e.tick.0 == start + len) {
                 sigs.push(glaux_core::TimeSigEvent {
@@ -9373,6 +9392,15 @@ impl GlauxServer {
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
+        }
+        let removing = p.remove.unwrap_or(false);
+        if !removing
+            && track
+                .device
+                .as_ref()
+                .is_some_and(|d| matches!(d.source, glaux_core::PluginSource::Clap { .. }))
+        {
+            return Err("本体が CLAP プラグインのトラックには層を重ねられません(層は内蔵の音源で鳴らすため)".to_owned());
         }
         let mut layers = track.layers.clone();
         let idx = p.index.map(|i| i as usize);
@@ -9527,6 +9555,7 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         let mut macros = track.macros.clone();
+        let mut clear_macro_lane: Option<u8> = None;
         let idx = p.index.map(|i| i as usize);
         if let Some(i) = idx {
             if i == 0 || i > macros.len() {
@@ -9545,6 +9574,14 @@ impl GlauxServer {
             }
             macros.pop();
             label = format!("{} のマクロ {i} を外す", track.name);
+            // 外したマクロのオートメーション(macro/N)も消す(後から足したマクロを動かさないように)
+            if track
+                .automation
+                .iter()
+                .any(|l| l.target == glaux_core::ParamPath::Macro { index: i as u8 })
+            {
+                clear_macro_lane = Some(i as u8);
+            }
         } else {
             let targets = match &p.targets {
                 Some(ts) => Some(
@@ -9609,10 +9646,18 @@ impl GlauxServer {
             label = format!("{} のマクロ {n}(macro/{n})", track.name);
             glaux_core::check_macros(&macros)?;
         }
-        let command = Command::SetTrackProp {
-            id: tid,
+        let mut cmds = vec![Command::SetTrackProp {
+            id: tid.clone(),
             prop: glaux_core::TrackProp::Macros(macros.clone()),
-        };
+        }];
+        if let Some(n) = clear_macro_lane {
+            cmds.push(Command::SetAutomationPoints {
+                track: tid,
+                target: glaux_core::ParamPath::Macro { index: n },
+                points: vec![],
+            });
+        }
+        let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
         let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
         let mut v = mutated_json(&m);

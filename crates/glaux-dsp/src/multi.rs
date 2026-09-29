@@ -490,12 +490,18 @@ impl MultiVoice {
 
     /// 鳴っているゾーンのチョークのグループ(最初の 1 つ。0 = 無し)
     pub fn group(&self) -> u32 {
-        self.players
-            .iter()
-            .filter(|pl| pl.active)
-            .map(|pl| pl.group)
-            .find(|g| *g != 0)
-            .unwrap_or(0)
+        self.groups().into_iter().find(|g| *g != 0).unwrap_or(0)
+    }
+
+    /// 鳴っているゾーンのチョークのグループすべて(0 = 無し。1 打鍵で複数のグループが鳴る音源がある)
+    pub fn groups(&self) -> [u32; MAX_LAYERS] {
+        let mut out = [0u32; MAX_LAYERS];
+        for (o, pl) in out.iter_mut().zip(&self.players) {
+            if pl.active {
+                *o = pl.group;
+            }
+        }
+        out
     }
 
     /// グループ `g` の音が鳴ったら止まるか

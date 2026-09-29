@@ -246,6 +246,9 @@ pub struct Options {
     /// 強弱の列(ステップごとに回る)。空なら `velocity` と拍の頭の強調
     pub accents: Vec<u8>,
     pub velocity: u8,
+    /// 強弱の列が無いときに少し強くする位置(クリップの頭からの tick、昇順。拍・拍のまとまりの頭)。
+    /// 空なら 4 分ごと
+    pub accent_ticks: Vec<u64>,
     /// リズムの列(ステップごとに回る)。空ならすべて鳴らす
     pub rhythm: Vec<Step>,
     /// 和音が変わるたびに並びを頭からやり直す
@@ -313,9 +316,13 @@ pub fn render(spans: &[Span], chords: &[Vec<u8>], order: &[Vec<u8>], o: &Options
                 o.rhythm[global % o.rhythm.len()]
             };
             let vel = if o.accents.is_empty() {
-                // 拍の頭(4 分)を少し強く
-                let beat = crate::PPQ;
-                if t % beat == 0 {
+                // 拍の頭(変拍子はまとまりの頭)を少し強く
+                let on_beat = if o.accent_ticks.is_empty() {
+                    t % crate::PPQ == 0
+                } else {
+                    o.accent_ticks.binary_search(&t).is_ok()
+                };
+                if on_beat {
                     o.velocity.saturating_add(10).min(127)
                 } else {
                     o.velocity
@@ -393,6 +400,16 @@ pub fn render(spans: &[Span], chords: &[Vec<u8>], order: &[Vec<u8>], o: &Options
             t += step;
         }
     }
+    // 同じ音程が重なると、多くの音源(CLAP・MIDI の受け手)で前の音の note off が後の音まで止めるので、
+    // 前の音を次の同じ音程の頭で切る(gate が 1 を超えるとき・chord の型・両端を繰り返す型で起きる)
+    let mut order: Vec<usize> = (0..out.len()).collect();
+    order.sort_by_key(|&i| (out[i].pitch, out[i].pos));
+    for w in order.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if out[a].pitch == out[b].pitch && out[a].pos + out[a].dur > out[b].pos {
+            out[a].dur = (out[b].pos - out[a].pos).max(1);
+        }
+    }
     out
 }
 
@@ -434,6 +451,7 @@ mod tests {
             octaves: 1,
             accents: vec![],
             velocity: 80,
+            accent_ticks: vec![],
             rhythm: vec![],
             retrigger: true,
             shift: 0,
@@ -600,5 +618,47 @@ mod tests {
         // 区間の途中(600)は格子(720)から始まる
         assert!(n.iter().any(|x| x.pos == 720));
         assert!(!n.iter().any(|x| x.pos == 600));
+    }
+
+    #[test]
+    fn same_pitches_do_not_overlap_with_long_gate() {
+        let (spans, chords) = one_bar_c();
+        for style in [Style::Chord, Style::UpAndDown, Style::Random] {
+            let o = Options {
+                gate: 1.8,
+                ..opts(style)
+            };
+            let n = render(&spans, &chords, &chords, &o);
+            for a in &n {
+                for b in &n {
+                    if a.pitch == b.pitch && a.pos < b.pos {
+                        assert!(a.pos + a.dur <= b.pos, "{style:?}: {a:?} と {b:?} が重なる");
+                    }
+                }
+            }
+            // 違う音程どうしは重なってよい(なめらかにつながる)
+            if style == Style::UpAndDown {
+                assert!(n[0].dur > 240);
+            }
+        }
+    }
+
+    #[test]
+    fn accents_follow_given_beat_heads() {
+        // 7/8(2+2+3)の 2 小節目の頭は 3360。4 分ごとの 3840 ではなくそこを強く
+        let spans = vec![Span {
+            start: 0,
+            len: 6720,
+            chord: Some(0),
+        }];
+        let chords = vec![vec![60, 64, 67]];
+        let o = Options {
+            accent_ticks: vec![0, 960, 1920, 3360, 4320, 5280],
+            ..opts(Style::Up)
+        };
+        let n = render(&spans, &chords, &chords, &o);
+        let vel_at = |t: u64| n.iter().find(|x| x.pos == t).unwrap().vel;
+        assert_eq!(vel_at(3360), 90);
+        assert_eq!(vel_at(3840), 80);
     }
 }

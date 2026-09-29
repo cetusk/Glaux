@@ -1446,10 +1446,18 @@
     if (copy.fx_links) {
       copy.fx_links = copy.fx_links.map((l) => ({ ...l, from: fxIds.get(l.from) ?? l.from, to: fxIds.get(l.to) ?? l.to }));
     }
-    for (const lane of copy.automation) {
-      const m = lane.target.match(/^fx\/([^/]+)\/(.*)$/);
-      if (m && fxIds.has(m[1])) lane.target = `fx/${fxIds.get(m[1])}/${m[2]}`;
-    }
+    const remap = (path: string) => {
+      const m = path.match(/^fx\/([^/]+)\/(.*)$/);
+      return m && fxIds.has(m[1]) ? `fx/${fxIds.get(m[1])}/${m[2]}` : path;
+    };
+    for (const lane of copy.automation) lane.target = remap(lane.target);
+    // 変調(LFO)とマクロのエフェクトの先も新しい ID に(型に無い項目なので素のオブジェクトとして扱う)
+    const extra = copy as unknown as {
+      modulators?: { target: string }[];
+      macros?: { targets: { target: string }[] }[];
+    };
+    for (const m of extra.modulators ?? []) m.target = remap(m.target);
+    for (const m of extra.macros ?? []) for (const t of m.targets) t.target = remap(t.target);
     for (const c of copy.clips) {
       c.id = newClipId();
       if (c.kind === "midi") for (const n of c.notes) n.id = newNoteId();

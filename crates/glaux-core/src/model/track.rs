@@ -415,9 +415,12 @@ impl Track {
                         let v = tg.map(m.value);
                         match &tg.target {
                             ParamPath::Device { name } => {
-                                if let Some(d) = t.device.as_mut() {
-                                    d.params.insert(name.clone(), ParamValue::Float(v));
-                                }
+                                // 音源が未設定のトラックは既定の音源(エンジンの既定 = subtractive)で鳴るので、
+                                // それに値を置く
+                                let d = t
+                                    .device
+                                    .get_or_insert_with(|| Device::builtin("subtractive"));
+                                d.params.insert(name.clone(), ParamValue::Float(v));
                             }
                             ParamPath::Effect { id, name } => {
                                 if let Some(e) = t.effects.iter_mut().find(|e| &e.id == id) {
@@ -695,6 +698,14 @@ mod layer_macro_tests {
         assert!(
             t.automation.is_empty(),
             "元のオートメーションはマクロが上書き"
+        );
+        // 音源が未設定のトラックでも効く(既定の音源に値を置く)
+        let mut bare = track.clone();
+        bare.device = None;
+        let t2 = bare.with_macros_applied();
+        assert_eq!(
+            t2.device.as_ref().unwrap().params.get("cutoff"),
+            Some(&ParamValue::Float(3000.0))
         );
         // 検証
         assert!(check_macros(&track.macros).is_ok());

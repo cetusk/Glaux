@@ -339,7 +339,7 @@ pub fn reference_structure(sound: &LoadedSound) -> Result<serde_json::Value, Str
     let loudest = st
         .sections
         .iter()
-        .find(|s| s.energy_db == 0.0)
+        .max_by(|a, b| a.energy_db.total_cmp(&b.energy_db))
         .map(|s| {
             if s.role_ja.is_empty() {
                 s.label.clone()

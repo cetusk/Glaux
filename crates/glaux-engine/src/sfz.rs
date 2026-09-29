@@ -31,8 +31,9 @@ pub fn default_dir() -> PathBuf {
 /// 別の場所に置いた大きな音源のための絶対パス。拡張子は .sfz
 pub fn valid_name(name: &str) -> bool {
     let p = Path::new(name);
+    // 相対の名前に ":" があると Windows ではドライブの指定(C:x.sfz)になりライブラリの外を指す
     !name.is_empty()
-        && (p.is_absolute() || !name.split(['/', '\\']).any(|c| c == ".."))
+        && (p.is_absolute() || (!name.split(['/', '\\']).any(|c| c == "..") && !name.contains(':')))
         && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sfz"))
 }
 
@@ -409,7 +410,8 @@ pub fn parse_note(s: &str) -> Option<i32> {
     } else {
         (0, rest.as_str())
     };
-    let oct: i32 = oct.parse().ok()?;
+    // 壊れた値(c999999999)でも溢れないように、鍵盤のあるオクターブだけ
+    let oct: i32 = oct.parse().ok().filter(|o| (-2..=10).contains(o))?;
     Some((oct + 1) * 12 + pc + acc)
 }
 
@@ -593,51 +595,69 @@ pub fn build_zones(
     let mut files: HashMap<PathBuf, Option<Loaded>> = HashMap::new();
     let mut zones = Vec::new();
     let mut errors = Vec::new();
+    // *silence の波形(10ms の無音)
+    let silent = Arc::new(SampleData::mono(vec![0.0; 480], 48_000.0));
 
     for r in regions {
         if !region_plays(r, sw_default) {
             continue;
         }
-        let Some(rel) = sample_path(r) else {
-            continue;
-        };
-        let path = dir.join(&rel);
-
-        if !files.contains_key(&path) {
-            let loaded = match load(&path) {
-                Ok(l) => Some(l),
-                Err(e) => {
-                    errors.push(e);
-                    None
-                }
-            };
-            files.insert(path.clone(), loaded);
-        }
-        let Some(Some(file)) = files.get(&path) else {
-            continue;
-        };
-        let len = file.data.frames.len();
-        let off =
-            (num(r, "offset").unwrap_or(0.0) + by_cc(r, "offset", |v, x| v * x)).max(0.0) as usize;
-        let end = num(r, "end").map_or(len, |e| (e.max(0.0) as usize + 1).min(len));
-        if end <= off + 1 {
-            continue;
-        }
-        let data = if off == 0 && end == len {
-            file.data.clone()
+        // *silence は音の出ない短いゾーンにする(ハイハットのチョークを無音の region で組む音源がある)
+        let silence = r
+            .get("sample")
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("*silence"));
+        let (data, file_loop, off, end) = if silence {
+            let d = silent.clone();
+            let n = d.frames.len();
+            (d, None, 0usize, n)
         } else {
-            cache
-                .entry((path.clone(), off, end))
-                .or_insert_with(|| {
-                    let d = &file.data;
-                    Arc::new(SampleData {
-                        frames: d.frames[off..end].to_vec(),
-                        sample_rate: d.sample_rate,
-                        side: d.side.as_ref().map(|s| s[off..end].to_vec()),
-                        mips: Default::default(),
+            let Some(rel) = sample_path(r) else {
+                continue;
+            };
+            let path = dir.join(&rel);
+
+            if !files.contains_key(&path) {
+                let loaded = match load(&path) {
+                    Ok(l) => Some(l),
+                    Err(e) => {
+                        errors.push(e);
+                        None
+                    }
+                };
+                files.insert(path.clone(), loaded);
+            }
+            let Some(Some(file)) = files.get(&path) else {
+                continue;
+            };
+            let len = file.data.frames.len();
+            // 壊れた値(1e30 など)でも溢れないように、波形の長さに収めてから整数にする
+            let off = (num(r, "offset").unwrap_or(0.0) + by_cc(r, "offset", |v, x| v * x))
+                .clamp(0.0, len as f64) as usize;
+            let end = num(r, "end").map_or(len, |e| {
+                (e.clamp(0.0, len as f64) as usize)
+                    .saturating_add(1)
+                    .min(len)
+            });
+            if end <= off.saturating_add(1) {
+                continue;
+            }
+            let data = if off == 0 && end == len {
+                file.data.clone()
+            } else {
+                cache
+                    .entry((path.clone(), off, end))
+                    .or_insert_with(|| {
+                        let d = &file.data;
+                        Arc::new(SampleData {
+                            frames: d.frames[off..end].to_vec(),
+                            sample_rate: d.sample_rate,
+                            side: d.side.as_ref().map(|s| s[off..end].to_vec()),
+                            mips: Default::default(),
+                        })
                     })
-                })
-                .clone()
+                    .clone()
+            };
+            (data, file.loop_points, off, end)
         };
 
         let key = note(r, "key");
@@ -653,7 +673,7 @@ pub fn build_zones(
         // ループ: 指定が無ければファイルのループ点があるときだけループする
         let points = match (num(r, "loop_start"), num(r, "loop_end")) {
             (Some(s), Some(e)) => Some((s.max(0.0) as usize, e.max(0.0) as usize)),
-            _ => file.loop_points,
+            _ => file_loop,
         };
         let mode = r
             .get("loop_mode")
@@ -1017,6 +1037,43 @@ mod tests {
     }
 
     #[test]
+    fn silence_regions_carry_choke_groups() {
+        // Big Rusty Drums の形: クローズの鍵盤に、音のあるゾーン(group 11)と無音のゾーン(group 15)。
+        // オープン(46)は 15 で止まる
+        let text = "
+            <region> sample=closed.wav key=42 group=11
+            <region> sample=*silence key=42 group=15
+            <region> sample=open.wav key=46 group=16 off_by=15 loop_mode=one_shot
+            <region> sample=*sine key=50
+        ";
+        let rs = parse(text, &mut no_include).unwrap();
+        let zs = build_zones(&rs, Path::new("lib"), &mut WaveCache::new(), &mut fake).unwrap();
+        assert_eq!(zs.len(), 3, "*silence は残し、*sine は除く");
+        assert_eq!(used_samples(&rs), ["closed.wav", "open.wav"]);
+        let p = glaux_dsp::MultiSamplerParams {
+            zones: Arc::new(zs),
+            gain: 1.0,
+        };
+        let open = glaux_dsp::MultiVoice::start(&p, 46, 1.0, Default::default(), 48_000.0);
+        let closed = glaux_dsp::MultiVoice::start(&p, 42, 1.0, Default::default(), 48_000.0);
+        let groups = closed.groups();
+        assert!(groups.contains(&11) && groups.contains(&15), "{groups:?}");
+        assert!(
+            groups.iter().any(|g| open.stopped_by(*g)),
+            "オープンが止まる"
+        );
+    }
+
+    #[test]
+    fn broken_numbers_do_not_overflow() {
+        let text = "<region> sample=a.wav key=c999999999 end=1e30 offset=1e30
+                    <region> sample=b.wav key=60 end=1e30";
+        let rs = parse(text, &mut no_include).unwrap();
+        let zs = build_zones(&rs, Path::new("lib"), &mut WaveCache::new(), &mut fake).unwrap();
+        assert_eq!(zs.len(), 1, "壊れた region は捨て、残りは鳴る");
+    }
+
+    #[test]
     fn names_stay_inside_the_library() {
         assert!(valid_name("Piano/piano.sfz"));
         assert!(!valid_name("../x.sfz"));
@@ -1026,6 +1083,7 @@ mod tests {
             "別の場所の音源は絶対パスで"
         );
         assert!(!valid_name("x.wav"));
+        assert!(!valid_name("C:x.sfz"), "Windows のドライブ指定");
         assert!(!valid_name(""));
     }
 

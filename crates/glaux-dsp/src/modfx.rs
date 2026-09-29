@@ -10,7 +10,8 @@ use glaux_core::{ParamMap, ParamRange, ParamSpec, ParamValue};
 
 const TAU: f32 = std::f32::consts::TAU;
 /// flanger のディレイの長さ(1ch、2 のべき乗。96kHz で約 21ms)
-const FL_LEN: usize = 2048;
+// 192kHz で 18ms(delay_ms 10 + depth_ms 8 = 3456 サンプル)まで入る長さ
+const FL_LEN: usize = 4096;
 const FL_MASK: usize = FL_LEN - 1;
 
 /// テンポに合わせる周期の選択肢(tick。0 = 合わせない)
@@ -70,7 +71,8 @@ impl Rate {
     fn from(map: &ParamMap, specs: &[ParamSpec], sr: f32) -> Rate {
         Rate {
             sync_ticks: sync_ticks(choice(map, specs, "sync")),
-            inc: get(map, specs, "rate_hz") / sr,
+            // 範囲外(負など)の値でも位相が逆に回って音量が上がらないよう、正の速さに収める
+            inc: get(map, specs, "rate_hz").clamp(0.01, 40.0) / sr,
         }
     }
 }
@@ -745,7 +747,11 @@ pub fn bake(name: &str, map: &ParamMap, sr: f32) -> Option<ModFxParams> {
             rate: Rate::from(map, s, sr),
             depth: get(map, s, "depth").clamp(0.0, 1.0),
             feedback: get(map, s, "feedback").clamp(0.0, 0.9),
-            stages: choice(map, s, "stages").parse().unwrap_or(6),
+            // 選択肢(4 / 6 / 8)以外の値でも処理の配列(8 段)を越えないように
+            stages: choice(map, s, "stages")
+                .parse::<u8>()
+                .unwrap_or(6)
+                .clamp(2, 8),
             center: get(map, s, "center_hz").clamp(200.0, 4000.0),
             mix: get(map, s, "mix").clamp(0.0, 1.0),
             sr,
@@ -1037,5 +1043,18 @@ mod tests {
         let p = bake("flanger", &ParamMap::new(), SR).unwrap();
         let mut st = ModFxState::light();
         assert_eq!(st.process(&p, 0.5, 0.25), (0.5, 0.25));
+    }
+
+    #[test]
+    fn phaser_stages_out_of_choices_do_not_overrun() {
+        let mut map = ParamMap::new();
+        map.insert("stages".into(), ParamValue::Enum("12".into()));
+        let p = bake("phaser", &map, 48_000.0).unwrap();
+        let mut st = ModFxState::default();
+        for i in 0..4800 {
+            let x = (i as f32 * 0.05).sin();
+            let (l, r) = st.process(&p, x, x);
+            assert!(l.is_finite() && r.is_finite());
+        }
     }
 }

@@ -497,9 +497,13 @@ pub struct SampleBank {
     /// SFZ ライブラリフォルダ(既定は `sfz::default_dir()`)
     sfz_dir: PathBuf,
     /// 構築済みの SFZ 楽器(ライブラリからの相対パス → zones。読めなかったものは None)
-    /// (楽器, 調整つまみの上書き) → zones
+    /// (楽器, 調整つまみの上書き) → zones。読めなかったものは、その時の .sfz の更新時刻(無ければ None)を覚え、
+    /// ファイルが現れた・変わったときに読み直す(音源を後から取得した場合など)
     #[allow(clippy::type_complexity)]
-    sfz: HashMap<(String, std::collections::BTreeMap<u8, u8>), Option<Arc<Vec<glaux_dsp::Zone>>>>,
+    sfz: HashMap<
+        (String, std::collections::BTreeMap<u8, u8>),
+        Result<Arc<Vec<glaux_dsp::Zone>>, Option<std::time::SystemTime>>,
+    >,
     /// SFZ の切り出した波形(楽器の間で共有する)
     sfz_waves: crate::sfz::WaveCache,
     /// テンポ追従クリップの伸縮済み波形(クリップ ID → (条件のハッシュ, 波形))。
@@ -572,7 +576,7 @@ impl SampleBank {
     ) -> Option<&Arc<Vec<glaux_dsp::Zone>>> {
         self.sfz
             .get(&(instrument.to_owned(), cc.clone()))
-            .and_then(|z| z.as_ref())
+            .and_then(|z| z.as_ref().ok())
     }
 
     /// プロジェクトが使っている SFZ の楽器を読み込む(読み込み済み・読めなかったものは読み直さない)
@@ -590,17 +594,22 @@ impl SampleBank {
             .collect();
         self.sfz.retain(|k, _| used.contains(k));
         for key in used {
-            if self.sfz.contains_key(&key) {
-                continue;
-            }
             let name = key.0.as_str();
+            let mtime = std::fs::metadata(self.sfz_dir.join(name))
+                .and_then(|m| m.modified())
+                .ok();
+            match self.sfz.get(&key) {
+                Some(Ok(_)) => continue,
+                Some(Err(t)) if *t == mtime => continue,
+                _ => {}
+            }
             let zones =
                 match crate::sfz::load_instrument(&self.sfz_dir, name, &key.1, &mut self.sfz_waves)
                 {
-                    Ok(z) => Some(z),
+                    Ok(z) => Ok(z),
                     Err(e) => {
                         tracing::warn!("SFZ を読み込めません({name}): {e}");
-                        None
+                        Err(mtime)
                     }
                 };
             self.sfz.insert(key, zones);
@@ -2569,6 +2578,45 @@ mod tests {
         project.tracks[0].layers = vec![sub];
         let after = lvl(&project);
         assert!(after > before * 1.5, "before={before} after={after}");
+    }
+
+    #[test]
+    fn sfz_that_failed_is_retried_when_the_file_appears() {
+        use glaux_core::{Device, PluginSource};
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = project_with_notes(vec![note(0, 960, 60, 100)]);
+        project.tracks[0].device = Some(Device {
+            source: PluginSource::Sfz {
+                instrument: "later/inst.sfz".into(),
+                cc: Default::default(),
+            },
+            params: Default::default(),
+        });
+        let mut bank = SampleBank::default().with_sfz_dir(dir.path());
+        bank.sync(&project, dir.path());
+        assert!(bank
+            .get_sfz("later/inst.sfz", &Default::default())
+            .is_none());
+        // 後から音源を入れる
+        std::fs::create_dir_all(dir.path().join("later")).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(dir.path().join("later/a.wav"), spec).unwrap();
+        for i in 0..4800 {
+            w.write_sample(((i % 100) as i16 - 50) * 200).unwrap();
+        }
+        w.finalize().unwrap();
+        std::fs::write(dir.path().join("later/inst.sfz"), "<region> sample=a.wav").unwrap();
+        bank.sync(&project, dir.path());
+        assert!(
+            bank.get_sfz("later/inst.sfz", &Default::default())
+                .is_some(),
+            "読み直す"
+        );
     }
 
     #[test]

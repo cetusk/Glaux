@@ -5410,6 +5410,24 @@ async fn set_layer_stacks_sounds_on_a_track() {
     let (p2, _) = fx.handle.get_project().await.unwrap();
     let ranged = glaux_mcp::sound::render_note(&p2, &fx.dir, &t, 60, 100, 0.5).unwrap();
     assert!(c3_level(&ranged) < c3_level(&after) * 0.2);
+    // 出力した範囲(オクターブ -1 を含む)をそのまま渡しても読める
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_layer",
+            json!({ "track_id": "trk_lyr001", "index": 1, "key_range": "C-1-G9" }),
+        )
+        .await,
+    );
+    assert_eq!(v["layers"][0]["key_range"], "C-1-G9", "{v}");
+    ok_json(
+        &call(
+            &fx,
+            "set_layer",
+            json!({ "track_id": "trk_lyr001", "index": 1, "key_range": "C5-C8" }),
+        )
+        .await,
+    );
     // 4 層目は作れない
     for _ in 0..2 {
         ok_json(
@@ -5447,6 +5465,31 @@ async fn set_layer_stacks_sounds_on_a_track() {
         .await,
     );
     assert_eq!(v["layers"].as_array().unwrap().len(), 2);
+    // 本体が CLAP のトラックには重ねられない(外すのはできる)
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "clap", "commands": [ { "op": "set_device", "track": "trk_lyr001",
+                    "device": { "type": "clap", "plugin_id": "org.example.synth" } } ] }),
+        )
+        .await,
+    );
+    let r = call(
+        &fx,
+        "set_layer",
+        json!({ "track_id": "trk_lyr001", "instrument": "fm" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    ok_json(
+        &call(
+            &fx,
+            "set_layer",
+            json!({ "track_id": "trk_lyr001", "index": 1, "remove": true }),
+        )
+        .await,
+    );
 }
 
 #[tokio::test]
@@ -5508,6 +5551,16 @@ async fn set_macro_moves_several_knobs() {
         let r = call(&fx, "set_macro", bad).await;
         assert_eq!(r.is_error, Some(true), "{:?}", r.content);
     }
+    // 外したマクロのオートメーション(macro/2)も消える
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "揺れ", "commands": [ { "op": "set_automation_points", "track": "trk_mac001", "target": "macro/2",
+                    "points": [ { "tick": 0, "value": 0.0 }, { "tick": 3840, "value": 1.0 } ] } ] }),
+        )
+        .await,
+    );
     let v = ok_json(
         &call(
             &fx,
@@ -5517,4 +5570,35 @@ async fn set_macro_moves_several_knobs() {
         .await,
     );
     assert_eq!(v["macros"].as_array().unwrap().len(), 1);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let t = project
+        .track(&glaux_core::TrackId::parse("trk_mac001").unwrap())
+        .unwrap();
+    assert!(
+        !t.automation
+            .iter()
+            .any(|l| l.target == glaux_core::ParamPath::Macro { index: 2 }),
+        "macro/2 のオートメーションが残っている"
+    );
+}
+
+#[tokio::test]
+async fn hemiola_rebars_three_eight() {
+    // 3/8 の 2 小節は 6/8 の 2+2+2 に組み直す(以前は 4+4+4 で拍子と合わず失敗した)
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "3/8", "commands": [
+                { "op": "set_time_sig", "events": [ { "tick": 0, "num": 3, "den": 8 } ] }
+            ] }),
+        )
+        .await,
+    );
+    ok_json(&call(&fx, "hemiola", json!({ "bar": 1, "rebar": true })).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.time_sig_map[0].num, 6);
+    assert_eq!(project.time_sig_map[0].den, 8);
+    assert_eq!(project.time_sig_map[0].grouping, Some(vec![2, 2, 2]));
 }
