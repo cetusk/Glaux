@@ -74,6 +74,10 @@ const LABELS: Record<string, ToolLabel> = {
   tremolo: { short: "トレモロ", doing: "トレモロにしています" },
   glissando: { short: "グリッサンド", doing: "グリッサンドを付けています" },
   shape_phrase: { short: "句の呼吸", doing: "句にテンポの揺れを付けています" },
+  metric_modulation: { short: "テンポの読み替え", doing: "音価を読み替えてテンポを変えています" },
+  hemiola: { short: "ヘミオラ", doing: "3 拍子を 2 拍ずつに聞かせています" },
+  write_tihai: { short: "ティハイ", doing: "3 回繰り返して着地する句を置いています" },
+  export_musicxml: { short: "譜面の書き出し", doing: "MusicXML に書き出しています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

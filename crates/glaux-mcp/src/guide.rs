@@ -104,6 +104,9 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   1 小節だけ拍を足す・抜く(サビ前の 2/4)は change_meter。ポリリズム(3:2)は write_polyrhythm、周期の違う型の重ね\n\
   (ユークリッドリズム E(5,16) など)は write_polymeter。バルカン風の 7/8・9/8 は set_meter_feel で長い拍を 1.4〜1.45 倍に\n\
   (ちょうど 1.5 倍より少し詰めると前へ転がる。8 分のハネとは別)。4/4 の中の 3+3+2 は write_bassline の tresillo などで。\n\
+  音価の読み替えでテンポを変えるのは metric_modulation(3 連の 8 分 = 8 分で 1.5 倍)、3 拍子の終止前は hemiola、\n\
+  区間の終わりのキメは write_tihai(同じ句を 3 回で小節の頭に着地)、リフを裏から聞かせるのは shift_notes の wrap_in_bar。\n\
+  譜面に書き出すなら export_musicxml(拍のまとまりも残る。SMF の export_midi では分子と分母だけ)。\n\
 - まとめて当てる: clip_ids に曲じゅうのクリップ(ドラム・ベース・コード)を渡す。1 回の undo で戻り、クリップごとに揺れは変わる。\n\
 - ループのクリップは中身に当たるので、揺れも毎回同じ(ドラムマシンらしさ。電子音楽ならそれで良い)。\n\
   生演奏らしさが要るジャンル(funk / soul / jazz / hiphop・ローファイ)で humanize_ms を使うなら unroll_loop: true。\n\

@@ -4187,6 +4187,171 @@ async fn drum_parts_chord_articulation_and_noise_presets() {
 }
 
 #[tokio::test]
+async fn meter_extras_and_musicxml_export() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "準備", "commands": [
+                { "op": "set_time_sig", "events": [ { "tick": 0, "num": 3, "den": 4 } ] },
+                { "op": "add_track", "track": { "id": "trk_mx0001", "name": "Piano & Voice", "kind": "midi" } },
+                { "op": "add_track", "track": { "id": "trk_mx0002", "name": "Drums", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } }
+            ] }),
+        )
+        .await,
+    );
+    // 3/4 の 4 小節に 4 分の音(1 小節目は和音)
+    let notes: Vec<Value> = (0..12u64)
+        .map(|k| json!({ "pos": k * 960, "dur": 900, "pitch": 60 + (k % 7) as u8, "vel": 80 }))
+        .chain(std::iter::once(
+            json!({ "pos": 0, "dur": 900, "pitch": 64, "vel": 80 }),
+        ))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_clip", "track": "trk_mx0001", "clip": {
+                    "id": "clp_mx0001", "name": "p", "start": 0, "length": 11520, "kind": "midi", "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    // ヘミオラ: 1〜2 小節目の 2 拍ごとの頭(0, 1920, 3840)を強く、2 小節目の頭(2880)を弱く
+    let v = ok_json(&call(&fx, "hemiola", json!({ "bar": 1, "rebar": true })).await);
+    assert!(v["accented"].as_u64().unwrap() >= 4, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap();
+    let vel_at = |t: u64| {
+        ns.iter()
+            .find(|n| n.pos.0 == t && n.pitch != 64)
+            .unwrap()
+            .vel
+    };
+    assert!(
+        vel_at(1920) > 80 && vel_at(2880) < 80,
+        "{} {}",
+        vel_at(1920),
+        vel_at(2880)
+    );
+    assert_eq!(project.time_sig_map[0].num, 6);
+    assert_eq!(project.time_sig_map[0].grouping, Some(vec![2, 2, 2]));
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // 拍の置き換え: 小節の中で 4 分ずつ回す(3/4 の 3 拍目 → 1 拍目)
+    ok_json(
+        &call(
+            &fx,
+            "shift_notes",
+            json!({ "clip_id": "clp_mx0001", "delta_ticks": 960, "wrap_in_bar": true }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap();
+    assert!(ns.iter().all(|n| n.pos.0 < 11520));
+    assert!(
+        ns.iter().any(|n| n.pos.0 == 0 && n.pitch == 62),
+        "3 拍目の D が頭へ"
+    );
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // メトリック・モジュレーション: 3 小節目から 3 連の 8 分 = 8 分(120 → 180)、拍子も 6/8 に
+    let v = ok_json(
+        &call(
+            &fx,
+            "metric_modulation",
+            json!({ "bar": 3, "from": "triplet_8th", "to": "8th", "time_sig": "6/8" }),
+        )
+        .await,
+    );
+    assert_eq!(v["bpm_after"], 180.0, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tempo_map.bpm_at(glaux_core::Tick(5760)), 180.0);
+    assert!(project
+        .time_sig_map
+        .iter()
+        .any(|e| e.tick.0 == 5760 && e.num == 6 && e.den == 8));
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // ティハイ: 3 回目の最後の音が 4 小節目の頭(8640)に着地
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_tihai",
+            json!({ "track_id": "trk_mx0002", "phrase": "x.x.xx", "gap_steps": 2, "land_bar": 4 }),
+        )
+        .await,
+    );
+    assert_eq!(v["notes"], 12, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let t = &project.tracks[1].clips[0];
+    let last = t
+        .notes()
+        .unwrap()
+        .iter()
+        .map(|n| t.start.0 + n.pos.0)
+        .max()
+        .unwrap();
+    assert_eq!(last, 8640);
+    assert!(t.notes().unwrap().iter().all(|n| n.pitch == 38));
+    // MusicXML: 7/8(2+2+3)の小節を足して書き出す
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "7/8", "commands": [
+                { "op": "set_time_sig", "events": [ { "tick": 0, "num": 3, "den": 4 },
+                    { "tick": 11520, "num": 7, "den": 8, "grouping": [2, 2, 3] } ] },
+                { "op": "add_clip", "track": "trk_mx0001", "clip": {
+                    "id": "clp_mx0002", "name": "q", "start": 11520, "length": 3360, "kind": "midi", "notes": [
+                        { "pos": 0, "dur": 1500, "pitch": 61, "vel": 80 } ] } }
+            ] }),
+        )
+        .await,
+    );
+    let path = std::env::temp_dir().join(format!("glaux-mx-{}.musicxml", std::process::id()));
+    let v = ok_json(
+        &call(
+            &fx,
+            "export_musicxml",
+            json!({ "path": path.to_string_lossy() }),
+        )
+        .await,
+    );
+    assert_eq!(v["parts"], 2, "{v}");
+    let xml = std::fs::read_to_string(&path).unwrap();
+    assert!(xml.contains("<beats>2+2+3</beats><beat-type>8</beat-type>"));
+    assert!(xml.contains("<beats>3</beats><beat-type>4</beat-type>"));
+    assert!(xml.contains("<part-name>Piano &amp; Voice</part-name>"));
+    assert!(xml.contains("<chord/>"));
+    assert!(
+        xml.contains("<tie type=\"start\"/>"),
+        "1500 tick の音は付点 4 分 + 32 分… にタイで分かれる"
+    );
+    assert!(xml.contains("<per-minute>120</per-minute>"));
+    let _ = std::fs::remove_file(&path);
+    for bad in [
+        (
+            "metric_modulation",
+            json!({ "bar": 2, "from": "triplet_8th" }),
+        ),
+        ("metric_modulation", json!({ "bar": 2, "ratio": "100:1" })),
+        (
+            "write_tihai",
+            json!({ "track_id": "trk_mx0002", "phrase": "....", "land_bar": 4 }),
+        ),
+        (
+            "write_tihai",
+            json!({ "track_id": "trk_mx0002", "phrase": "xxxxxxxx", "land_bar": 1 }),
+        ),
+    ] {
+        let r = call(&fx, bad.0, bad.1.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad:?}");
+    }
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(

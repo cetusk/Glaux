@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// ノート: (開始, 長さ か 終了, 音高, ベロシティ)
-type RawNote = (u64, u64, u8, u8);
+pub(crate) type RawNote = (u64, u64, u8, u8);
 
 /// ドラムのチャンネル(0 始まり。GM の 10ch)
 const DRUM_CH: u8 = 9;
@@ -484,7 +484,7 @@ fn program_for(track: &Track, avg_pitch: f64) -> Option<u8> {
 }
 
 /// トラックの鳴るノート(ループを展開し、クリップの終わりで切る)。(開始, 終了, 音高, ベロシティ)
-fn played_notes(track: &Track) -> Vec<RawNote> {
+pub(crate) fn played_notes(track: &Track) -> Vec<RawNote> {
     let mut out = Vec::new();
     for clip in &track.clips {
         let Some(notes) = clip.notes() else { continue };

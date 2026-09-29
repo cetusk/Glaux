@@ -17,6 +17,7 @@ pub mod fx_presets;
 pub mod guide;
 pub mod midi;
 pub mod models;
+pub mod musicxml;
 pub mod preset_index;
 pub mod presets;
 pub mod server;

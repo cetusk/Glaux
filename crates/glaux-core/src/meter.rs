@@ -465,6 +465,59 @@ pub fn feel_map(segs: &[FeelSegment], rel: u64) -> u64 {
     nh + ((rel - h) as f64 * nl as f64 / l.max(1) as f64).round() as u64
 }
 
+/// 音価の名前 → 4 分音符いくつぶんか(quarter / 8th / 16th / half / whole、dotted_ と triplet_ を前に付けられる)
+pub fn note_value(name: &str) -> Option<f64> {
+    let n = name.trim().to_lowercase();
+    let (mul, base) = if let Some(b) = n.strip_prefix("dotted_") {
+        (1.5, b)
+    } else if let Some(b) = n.strip_prefix("triplet_") {
+        (2.0 / 3.0, b)
+    } else {
+        (1.0, n.as_str())
+    };
+    let q = match base {
+        "whole" => 4.0,
+        "half" => 2.0,
+        "quarter" => 1.0,
+        "8th" | "eighth" => 0.5,
+        "16th" => 0.25,
+        "32nd" => 0.125,
+        _ => return None,
+    };
+    Some(q * mul)
+}
+
+/// メトリック・モジュレーション: 前のテンポの `from` の音価 = 新しいテンポの `to` の音価 になる新しい BPM
+/// (3 連の 8 分 = 8 分 なら 1.5 倍)
+pub fn metric_modulation(bpm: f64, from_q: f64, to_q: f64) -> f64 {
+    bpm * to_q / from_q.max(1e-9)
+}
+
+/// ティハイ: 同じ句を 3 回、間に `gap` ステップの休みを挟んで並べ、3 回目の最後の音が `land`(ステップ 0 = 着地点)に
+/// ちょうど来るように置く。`phrase` は 16 分などの格子の文字列(x = 音、- = 伸ばす、. = 休み)。
+/// 戻り値は (着地点からのステップ(負 = 前), 長さのステップ, 何回目か 0〜2, 句の頭か)
+pub fn tihai(phrase: &[char], gap: u64) -> Option<Vec<(i64, u64, u8, bool)>> {
+    let onsets: Vec<usize> = (0..phrase.len())
+        .filter(|&i| phrase[i] == 'x' || phrase[i] == 'X')
+        .collect();
+    let last = *onsets.last()?;
+    let len = phrase.len() as i64;
+    // 1 回目の頭から 3 回目の最後の音まで
+    let total = 2 * (len + gap as i64) + last as i64;
+    let mut out = Vec::new();
+    for rep in 0..3i64 {
+        let base = rep * (len + gap as i64) - total;
+        for &o in &onsets {
+            let mut d = 1u64;
+            while o + (d as usize) < phrase.len() && phrase[o + d as usize] == '-' {
+                d += 1;
+            }
+            out.push((base + o as i64, d, rep as u8, o == onsets[0]));
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,6 +684,26 @@ mod tests {
         assert!(same.iter().all(|s| s.0 == s.1));
         // 4/4 は対象外
         assert!(feel_segments(&BarMeter::common(0), 1.4, 1.0).is_none());
+    }
+
+    #[test]
+    fn note_values_modulation_and_tihai() {
+        assert_eq!(note_value("triplet_8th"), Some(1.0 / 3.0));
+        assert_eq!(note_value("dotted_quarter"), Some(1.5));
+        assert!(note_value("breve").is_none());
+        // 3 連の 8 分 = 8 分 → 1.5 倍、付点 4 分 = 4 分 → 2/3 倍
+        assert!((metric_modulation(120.0, 1.0 / 3.0, 0.5) - 180.0).abs() < 1e-9);
+        assert!((metric_modulation(120.0, 1.5, 1.0) - 80.0).abs() < 1e-9);
+        // "x-x." を 3 回、間に 1 休み: 最後の音(2 番目の x、句の 2 ステップ目)が 0 に着地
+        let p: Vec<char> = "x-x.".chars().collect();
+        let t = tihai(&p, 1).unwrap();
+        assert_eq!(t.len(), 6);
+        assert_eq!(t.last().unwrap().0, 0);
+        assert_eq!(t[0].0, -12);
+        assert_eq!(t[0].1, 2);
+        assert!(t[0].3 && !t[1].3);
+        assert_eq!(t[2].2, 1);
+        assert!(tihai(&"....".chars().collect::<Vec<_>>(), 1).is_none());
     }
 
     #[test]
