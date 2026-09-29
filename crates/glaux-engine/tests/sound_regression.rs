@@ -49,6 +49,7 @@ fn phrase(device: &str) -> Track {
                 vibrato: None,
                 volume_curve: vec![],
                 brightness_curve: vec![],
+                condition: None,
             });
         }
     }

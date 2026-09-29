@@ -412,6 +412,7 @@ pub fn import_commands(
                 vibrato: None,
                 volume_curve: vec![],
                 brightness_curve: vec![],
+                condition: None,
             }));
             notes.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
         }
@@ -495,7 +496,8 @@ pub(crate) fn played_notes(track: &Track) -> Vec<RawNote> {
         };
         for k in 0..reps {
             let base = k * period;
-            for n in notes.iter().filter(|n| n.pos.0 < period) {
+            // 条件付きの発音はループの回ごとに(再生と同じ判定)
+            for n in notes.iter().filter(|n| n.pos.0 < period && n.plays(k)) {
                 let pos = base + n.pos.0;
                 if pos >= len {
                     continue;
@@ -838,6 +840,7 @@ mod tests {
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         }
     }
 

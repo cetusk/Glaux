@@ -2610,6 +2610,7 @@ async fn midi_file_round_trips_through_the_tools() {
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         });
         t.clips.push(c);
         src.tracks.push(t);
@@ -4461,6 +4462,78 @@ async fn sustain_pedal_lengthens_arpeggios_to_chord_changes() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn note_conditions_vary_loop_repetitions() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_cnd001", "Drums")).await);
+    // 1 小節のループを 8 小節: スネア(38)とハット(42)の 8 分
+    let notes: Vec<Value> = (0..8u64)
+        .map(|k| json!({ "pos": k * 480, "dur": 120, "pitch": 42, "vel": 80 }))
+        .chain(std::iter::once(
+            json!({ "pos": 3360, "dur": 120, "pitch": 38, "vel": 100 }),
+        ))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_clip", "track": "trk_cnd001", "clip": {
+                    "id": "clp_cnd001", "name": "d", "start": 0, "length": 30720, "kind": "midi",
+                    "loop": true, "loop_len": 3840, "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    // 最後の 8 分のスネアは 4 小節目・8 小節目だけ、ハットは 7 割
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_note_condition",
+            json!({ "clip_id": "clp_cnd001", "pitch": 38, "every": "4:4" }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 1, "{v}");
+    ok_json(
+        &call(
+            &fx,
+            "set_note_condition",
+            json!({ "clip_id": "clp_cnd001", "pitch": 42, "probability": 0.7 }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let played = project.tracks[0].clips[0].playback_notes();
+    let snares: Vec<u64> = played
+        .iter()
+        .filter(|n| n.pitch == 38)
+        .map(|n| n.pos.0)
+        .collect();
+    assert_eq!(snares, vec![3840 * 3 + 3360, 3840 * 7 + 3360]);
+    let hats = played.iter().filter(|n| n.pitch == 42).count();
+    assert!(hats > 30 && hats < 60, "{hats}");
+    // 外す
+    ok_json(
+        &call(
+            &fx,
+            "set_note_condition",
+            json!({ "clip_id": "clp_cnd001", "clear": true }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tracks[0].clips[0].playback_notes().len(), 72);
+    for bad in [
+        json!({ "clip_id": "clp_cnd001", "every": "5:4" }),
+        json!({ "clip_id": "clp_cnd001", "probability": 1.5 }),
+        json!({ "clip_id": "clp_cnd001" }),
+    ] {
+        let r = call(&fx, "set_note_condition", bad.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad}");
+    }
 }
 
 #[tokio::test]

@@ -73,6 +73,9 @@ pub struct NoteChange {
     /// 明るさの曲線の差し替え。空配列で削除
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brightness_curve: Option<Vec<crate::model::CurvePoint>>,
+    /// 条件付きの発音の差し替え。いつも鳴る条件(probability 1・every 無し)で外す
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<crate::model::NoteCondition>,
 }
 
 impl NoteChange {
@@ -89,6 +92,7 @@ impl NoteChange {
             vibrato: None,
             volume_curve: None,
             brightness_curve: None,
+            condition: None,
         }
     }
     pub fn pos(mut self, v: Tick) -> Self {
@@ -129,6 +133,10 @@ impl NoteChange {
     }
     pub fn brightness_curve(mut self, v: Vec<crate::model::CurvePoint>) -> Self {
         self.brightness_curve = Some(v);
+        self
+    }
+    pub fn condition(mut self, v: crate::model::NoteCondition) -> Self {
+        self.condition = Some(v);
         self
     }
 }

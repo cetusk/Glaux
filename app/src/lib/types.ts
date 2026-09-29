@@ -35,6 +35,8 @@ export interface Note {
   volume_curve?: { tick: number; value: number; shape?: CurveShape }[];
   /** 明るさの曲線(−1〜1)。省略 = なし */
   brightness_curve?: { tick: number; value: number; shape?: CurveShape }[];
+  /** 条件付きの発音(確率・b 回に 1 回 a 回目)。省略 = いつも鳴る */
+  condition?: { probability?: number; every?: [number, number] };
 }
 
 /** ピッチカーブの区間の曲がり方(glaux-core の CurveShape と同じ) */

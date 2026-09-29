@@ -10,9 +10,10 @@ mod track;
 pub use asset::Asset;
 pub use automation::{AutomationLane, AutomationPoint, Curve};
 pub use clip::{
-    check_expr_curve, check_pitch_curve, check_vibrato, Articulation, Clip, ClipContent,
-    CurvePoint, CurveShape, Note, PitchPoint, Stretch, Vibrato, BRIGHTNESS_RANGE, GLIDE_MS_RANGE,
-    LEGATO_MS_RANGE, MAX_EXPR_POINTS, MAX_PITCH_CENTS, MAX_PITCH_POINTS, VOLUME_CURVE_DB,
+    check_condition, check_expr_curve, check_pitch_curve, check_vibrato, Articulation, Clip,
+    ClipContent, CurvePoint, CurveShape, Note, NoteCondition, PitchPoint, Stretch, Vibrato,
+    BRIGHTNESS_RANGE, GLIDE_MS_RANGE, LEGATO_MS_RANGE, MAX_EXPR_POINTS, MAX_PITCH_CENTS,
+    MAX_PITCH_POINTS, VOLUME_CURVE_DB,
 };
 pub use param::{ParamMap, ParamPath, ParamRange, ParamSpec, ParamValue};
 pub use routing::{FxIoPos, FxLink, FxNode};

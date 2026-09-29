@@ -94,6 +94,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   ハウス・テクノ・トランス・EDM → house / techno(タイミングはほぼ格子、強弱で揺らす)/ トラップ → trap /\n\
   ヒップホップ・ローファイ → hiphop(+ swing_notes 0.54〜0.62 を先に。ジャズは swing_notes の mode: jazz_tempo でテンポから)/ ファンク・ディスコ・R&B → funk か soul / ポップス・ロック → pop か rock。\n\
 - 電子音楽の型(house / techno / trap)では 4 つ打ちのキックは動かさない(位置も強さも一定が土台。キックに手で強弱を付けない)。\n\
+- ループのクリップを毎回同じにしないなら set_note_condition: ハットやゴーストに probability 0.6〜0.8、\n\
+  4 小節目だけのフィル・スネアの足しに every \"4:4\"(再生と書き出しで同じ結果)。\n\
 - ドラムの細部は drum_rudiment: スネアのキメに flam、フィルの頭に drag・ruff、ビルドに roll(vel_curve で強く)、\n\
   トラップのハットの連打は hat_roll(rate 1/32・1/16t)か ratchet(音を 2〜4 回に割る)、ジャズのブラシ風は buzz。\n\
 - 変拍子: 拍子に拍のまとまりを持たせる(apply_commands の set_time_sig で {\"num\": 7, \"den\": 8, \"grouping\": [2, 2, 3]}。\n\

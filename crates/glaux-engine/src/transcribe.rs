@@ -669,6 +669,7 @@ pub fn to_clip_notes(
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         });
     }
     out
@@ -714,6 +715,7 @@ pub fn to_clip_notes_poly(
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         });
     }
     out.sort_by_key(|n| (n.pos, n.pitch));

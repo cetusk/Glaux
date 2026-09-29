@@ -236,6 +236,49 @@ pub struct Note {
     /// 明るさの曲線(−1〜1。音の中で暗く・明るく)。空なら無し
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub brightness_curve: Vec<CurvePoint>,
+    /// 条件付きの発音(確率・ループの何回目か)。省略でいつも鳴る
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<NoteCondition>,
+}
+
+/// 条件付きの発音(Elektron の条件と同じ考え方)。ループの何回目か(`rep`、0 始まり)とノートの ID から決まるので、
+/// 何度鳴らしても・書き出しても同じ結果
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct NoteCondition {
+    /// 鳴る確率 0〜1(既定 1)
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub probability: f32,
+    /// [a, b]: b 回の繰り返しのうち a 回目だけ鳴る(1 始まり。[4, 4] = 4 回に 1 回、最後だけ)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<[u8; 2]>,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn is_one(x: &f32) -> bool {
+    *x >= 1.0
+}
+
+impl NoteCondition {
+    /// 何もしない条件(いつも鳴る)か
+    pub fn is_always(&self) -> bool {
+        self.probability >= 1.0 && self.every.is_none()
+    }
+}
+
+/// 条件の検証
+pub fn check_condition(c: &NoteCondition) -> Result<(), String> {
+    if !(0.0..=1.0).contains(&c.probability) {
+        return Err("condition の probability は 0〜1".to_owned());
+    }
+    if let Some([a, b]) = c.every {
+        if b == 0 || a == 0 || a > b || b > 16 {
+            return Err("condition の every は [a, b](1 ≤ a ≤ b ≤ 16)".to_owned());
+        }
+    }
+    Ok(())
 }
 
 /// ポルタメントで滑る時間の範囲(ms)
@@ -263,6 +306,33 @@ pub fn check_pitch_curve(curve: &[PitchPoint]) -> Result<(), String> {
 impl Note {
     pub fn end(&self) -> Tick {
         self.pos + self.dur
+    }
+
+    /// ループの `rep` 回目(0 始まり。ループでなければ 0)に鳴るか
+    pub fn plays(&self, rep: u64) -> bool {
+        let Some(c) = &self.condition else {
+            return true;
+        };
+        if let Some([a, b]) = c.every {
+            if (rep % b.max(1) as u64) + 1 != a as u64 {
+                return false;
+            }
+        }
+        if c.probability < 1.0 {
+            // ノートの ID と繰り返しの回から決まる乱数
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for b in self.id.as_str().bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+            h ^= rep.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            h ^= h >> 33;
+            h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+            h ^= h >> 33;
+            let u = (h >> 11) as f64 / (1u64 << 53) as f64;
+            return u < c.probability as f64;
+        }
+        true
     }
 }
 
@@ -428,20 +498,23 @@ impl Clip {
         match self.loop_len() {
             None => notes
                 .iter()
+                .filter(|n| n.plays(0))
                 .filter_map(|n| clip_to(n, 0, u64::MAX))
                 .collect(),
             Some(l) => {
                 let l = l.0;
                 let mut out = Vec::new();
                 let mut offset = 0;
+                let mut rep = 0u64;
                 while offset < len {
                     out.extend(
                         notes
                             .iter()
-                            .filter(|n| n.pos.0 < l)
+                            .filter(|n| n.pos.0 < l && n.plays(rep))
                             .filter_map(|n| clip_to(n, offset, l)),
                     );
                     offset += l;
+                    rep += 1;
                 }
                 out
             }
@@ -451,4 +524,62 @@ impl Clip {
 
 pub(crate) fn sort_notes(notes: &mut [Note]) {
     notes.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn looped_clip(cond: Option<NoteCondition>) -> Clip {
+        let mut c = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840 * 8));
+        if let ClipContent::Midi {
+            notes,
+            looped,
+            loop_len,
+        } = &mut c.content
+        {
+            *looped = true;
+            *loop_len = Some(Tick(3840));
+            notes.push(Note {
+                id: NoteId::new(),
+                pos: Tick(0),
+                dur: Tick(240),
+                pitch: 38,
+                vel: 100,
+                articulation: Default::default(),
+                pitch_curve: vec![],
+                glide_ms: None,
+                vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
+                condition: cond,
+            });
+        }
+        c
+    }
+
+    #[test]
+    fn conditions_pick_loop_repetitions() {
+        // 8 回の繰り返し: 条件なしは 8 回、4 回に 1 回(4 回目)は 2 回
+        assert_eq!(looped_clip(None).playback_notes().len(), 8);
+        let every = looped_clip(Some(NoteCondition {
+            probability: 1.0,
+            every: Some([4, 4]),
+        }));
+        let pos: Vec<u64> = every.playback_notes().iter().map(|n| n.pos.0).collect();
+        assert_eq!(pos, vec![3840 * 3, 3840 * 7]);
+        // 確率は決まった乱数(何度でも同じ)
+        let half = looped_clip(Some(NoteCondition {
+            probability: 0.5,
+            every: None,
+        }));
+        let a = half.playback_notes();
+        assert_eq!(a, half.playback_notes());
+        assert!(a.len() < 8);
+        assert!(check_condition(&NoteCondition {
+            probability: 1.0,
+            every: Some([3, 2]),
+        })
+        .is_err());
+    }
 }

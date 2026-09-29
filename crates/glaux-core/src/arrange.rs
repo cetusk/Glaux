@@ -577,6 +577,7 @@ mod tests {
                     vibrato: None,
                     volume_curve: vec![],
                     brightness_curve: vec![],
+                    condition: None,
                 });
             }
         }
@@ -760,6 +761,7 @@ mod tests {
                     vibrato: None,
                     volume_curve: vec![],
                     brightness_curve: vec![],
+                    condition: None,
                 });
             }
             *looped = true;
@@ -888,6 +890,7 @@ mod tests {
                 vibrato: None,
                 volume_curve: vec![],
                 brightness_curve: vec![],
+                condition: None,
             });
         }
         p.apply(&Command::AddClip {

@@ -53,6 +53,7 @@ fn seed_project() -> Project {
                     vibrato: None,
                     volume_curve: vec![],
                     brightness_curve: vec![],
+                    condition: None,
                 });
             }
             p.apply(&Command::AddClip {
@@ -254,6 +255,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         vibrato: None,
                         volume_curve: vec![],
                         brightness_curve: vec![],
+                        condition: None,
                     })
                     .collect();
                 return Command::AddNotes {
@@ -369,6 +371,13 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                             } else {
                                 ch.brightness_curve(curve)
                             };
+                        }
+                        if rng.gen_bool(0.2) {
+                            // いつも鳴る条件は外す
+                            ch = ch.condition(NoteCondition {
+                                probability: *[1.0, 0.5, 0.25].choose(rng).unwrap(),
+                                every: rng.gen_bool(0.5).then_some([1, 2]),
+                            });
                         }
                         if rng.gen_bool(0.3) {
                             // 深さ 0 はビブラートの解除
@@ -889,6 +898,7 @@ fn loop_clip_expands_notes_for_playback() {
         vibrato: None,
         volume_curve: vec![],
         brightness_curve: vec![],
+        condition: None,
     };
     // 1 小節パターン: 頭と、ループ境界をまたぐ音と、ループ外の音
     *clip.notes_mut().unwrap() = vec![n(0, 480), n(3600, 480), n(5000, 480)];
@@ -1099,6 +1109,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         }, // 左に残る
         Note {
             id: ids[1].clone(),
@@ -1112,6 +1123,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         }, // 分割点(1920)をまたぐ → 切り詰め
         Note {
             id: ids[2].clone(),
@@ -1125,6 +1137,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         }, // 右へ移動
     ]);
     p.apply(&Command::AddClip { track: tid, clip }).unwrap();

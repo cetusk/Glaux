@@ -448,6 +448,10 @@ impl Project {
                     }
                     check_note_extras(&n.id, &n.pitch_curve, n.glide_ms, n.vibrato.as_ref())?;
                     check_note_curves(&n.id, &n.volume_curve, &n.brightness_curve)?;
+                    if let Some(c) = &n.condition {
+                        crate::model::check_condition(c)
+                            .map_err(|e| CoreError::OutOfRange(format!("note {}: {e}", n.id)))?;
+                    }
                     if !ids.insert(&n.id) {
                         return Err(CoreError::DuplicateId(n.id.to_string()));
                     }
@@ -531,6 +535,10 @@ impl Project {
                         ch.volume_curve.as_deref().unwrap_or(&[]),
                         ch.brightness_curve.as_deref().unwrap_or(&[]),
                     )?;
+                    if let Some(c) = &ch.condition {
+                        crate::model::check_condition(c)
+                            .map_err(|e| CoreError::OutOfRange(format!("note {}: {e}", ch.id)))?;
+                    }
                 }
                 let mut inverse_changes = Vec::with_capacity(changes.len());
                 for ch in changes {
@@ -574,6 +582,16 @@ impl Project {
                     if let Some(v) = &ch.brightness_curve {
                         inv.brightness_curve =
                             Some(std::mem::replace(&mut n.brightness_curve, v.clone()));
+                    }
+                    if let Some(c) = ch.condition {
+                        let new = (!c.is_always()).then_some(c);
+                        // 無かったなら「いつも鳴る = 外す」を逆コマンドに
+                        inv.condition = Some(std::mem::replace(&mut n.condition, new).unwrap_or(
+                            crate::model::NoteCondition {
+                                probability: 1.0,
+                                every: None,
+                            },
+                        ));
                     }
                     inverse_changes.push(inv);
                 }

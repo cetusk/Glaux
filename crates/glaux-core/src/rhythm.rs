@@ -214,6 +214,7 @@ mod tests {
                 vibrato: None,
                 volume_curve: vec![],
                 brightness_curve: vec![],
+                condition: None,
             });
         }
         p.apply(&Command::AddClip { track: tid, clip }).unwrap();
@@ -300,6 +301,7 @@ mod tests {
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         };
         // ストレートの 8 分(0, 480, 960, 1440)
         let notes = vec![n(0), n(480), n(960), n(1440)];

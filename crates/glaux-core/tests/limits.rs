@@ -28,6 +28,7 @@ fn note(pos: u64, dur: u64) -> Note {
         vibrato: None,
         volume_curve: vec![],
         brightness_curve: vec![],
+        condition: None,
     }
 }
 

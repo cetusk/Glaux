@@ -277,6 +277,7 @@ mod tests {
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         };
         let nid = n.id.clone();
         s.apply(

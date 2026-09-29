@@ -1516,6 +1516,30 @@ pub struct SustainPedalParams {
     pub lift_ms: Option<f64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct SetNoteConditionParams {
+    /// 対象クリップ ID。1 つなら clip_id、まとめて掛けるなら clip_ids(1 回の undo で戻る)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
+    /// 対象のノート ID。省略で pitch の音(pitch も省略ならクリップ内の全ノート)。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+    /// 対象の音程(ドラムの 42 = ハットなど)。
+    #[serde(default)]
+    pub pitch: Option<u8>,
+    /// 鳴る確率 0〜1(既定 1)。ノートとループの回から決まるので、何度鳴らしても・書き出しても同じ。
+    #[serde(default)]
+    pub probability: Option<f32>,
+    /// "a:b" = b 回の繰り返しのうち a 回目だけ鳴る("4:4" = 4 回に 1 回・最後だけ、"2:2" = 1 回おき)。
+    #[serde(default)]
+    pub every: Option<String>,
+    /// true で条件を外す(いつも鳴る)。
+    #[serde(default)]
+    pub clear: Option<bool>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -1765,6 +1789,7 @@ fn melody_clip(
                 vibrato: None,
                 volume_curve: vec![],
                 brightness_curve: vec![],
+                condition: None,
             })
             .collect();
         ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -1936,6 +1961,7 @@ fn simple_clip(
                 vibrato: None,
                 volume_curve: vec![],
                 brightness_curve: vec![],
+                condition: None,
             })
             .collect();
         ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -2330,6 +2356,7 @@ fn compact_note(n: &Value) -> Value {
         "vibrato",
         "volume_curve",
         "brightness_curve",
+        "condition",
     ] {
         match n.get(key) {
             None | Some(Value::Null) => {}
@@ -5288,6 +5315,7 @@ impl GlauxServer {
                 vibrato: None,
                 volume_curve: vec![],
                 brightness_curve: vec![],
+                condition: None,
             })
             .collect();
         let command = Command::AddNotes {
@@ -5529,6 +5557,7 @@ impl GlauxServer {
                     vibrato: None,
                     volume_curve: vec![],
                     brightness_curve: vec![],
+                    condition: None,
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -5706,6 +5735,7 @@ impl GlauxServer {
                     vibrato: None,
                     volume_curve: vec![],
                     brightness_curve: vec![],
+                    condition: None,
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -5838,6 +5868,7 @@ impl GlauxServer {
                     vibrato: None,
                     volume_curve: vec![],
                     brightness_curve: vec![],
+                    condition: None,
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -6016,6 +6047,7 @@ impl GlauxServer {
                             vibrato: None,
                             volume_curve: vec![],
                             brightness_curve: vec![],
+                            condition: None,
                         })
                         .collect();
                     ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
@@ -7380,6 +7412,7 @@ impl GlauxServer {
                         vibrato: None,
                         volume_curve: vec![],
                         brightness_curve: vec![],
+                        condition: None,
                     });
                 }
             }
@@ -7766,6 +7799,7 @@ impl GlauxServer {
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         };
         let mut added: Vec<glaux_core::Note> = Vec::new();
         let mut changes: Vec<glaux_core::NoteChange> = Vec::new();
@@ -8148,6 +8182,7 @@ impl GlauxServer {
                     vibrato: None,
                     volume_curve: vec![],
                     brightness_curve: vec![],
+                    condition: None,
                 });
             }
         }
@@ -8330,6 +8365,7 @@ impl GlauxServer {
                         vibrato: None,
                         volume_curve: vec![],
                         brightness_curve: vec![],
+                        condition: None,
                     });
                 }
             }
@@ -8973,6 +9009,95 @@ impl GlauxServer {
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
         v["pedal_changes"] = json!(changes_at);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "条件付きの発音(ループの繰り返しに変化を付ける。Elektron の条件と同じ考え方): probability(鳴る確率)と\
+        every(\"4:4\" = 4 回に 1 回・最後だけ、\"2:2\" = 1 回おき、\"1:4\" = 4 回に 1 回・最初だけ)。ノートとループの回から決まるので\
+        再生と書き出しで同じ。ループのクリップのハットに probability 0.7、4 小節目だけのフィルに every 4:4 など。\
+        note_ids か pitch で選ぶ(省略でクリップ内の全ノート)。clear で外す。1 回の undo で戻る。"
+    )]
+    async fn set_note_condition(
+        &self,
+        params: Parameters<SetNoteConditionParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("set_note_condition");
+        let p = params.0;
+        let cond = if p.clear.unwrap_or(false) {
+            glaux_core::NoteCondition {
+                probability: 1.0,
+                every: None,
+            }
+        } else {
+            let every = match &p.every {
+                Some(e) => {
+                    let (a, b) = e
+                        .split_once(':')
+                        .and_then(|(a, b)| {
+                            Some((a.trim().parse::<u8>().ok()?, b.trim().parse::<u8>().ok()?))
+                        })
+                        .ok_or_else(|| format!("every は \"4:4\" の形(got: {e})"))?;
+                    Some([a, b])
+                }
+                None => None,
+            };
+            let c = glaux_core::NoteCondition {
+                probability: p.probability.unwrap_or(1.0),
+                every,
+            };
+            glaux_core::check_condition(&c)?;
+            if c.is_always() {
+                return Err(
+                    "probability か every を指定してください(外すなら clear: true)".to_owned(),
+                );
+            }
+            c
+        };
+        let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
+        let (project, version) = self.handle.get_project().await?;
+        let mut commands = Vec::new();
+        let mut total = 0usize;
+        for id in &ids {
+            let cid = glaux_core::ClipId::parse(id).map_err(|e| e.to_string())?;
+            let (_, clip) = project
+                .clip(&cid)
+                .ok_or_else(|| format!("クリップが見つかりません: {id}"))?;
+            let notes = clip
+                .notes()
+                .ok_or_else(|| format!("MIDI クリップではありません: {id}"))?;
+            let changes: Vec<glaux_core::NoteChange> = notes
+                .iter()
+                .filter(|n| match (&p.note_ids, p.pitch) {
+                    (Some(want), _) => want.iter().any(|w| w == n.id.as_str()),
+                    (None, Some(pt)) => n.pitch == pt,
+                    (None, None) => true,
+                })
+                .filter(|n| n.condition != (!cond.is_always()).then_some(cond))
+                .map(|n| glaux_core::NoteChange::new(n.id.clone()).condition(cond))
+                .collect();
+            total += changes.len();
+            if !changes.is_empty() {
+                commands.push(Command::UpdateNotes { clip: cid, changes });
+            }
+        }
+        if commands.is_empty() {
+            return Ok(JsonText(
+                json!({ "project_version": version, "changed": 0 }),
+            ));
+        }
+        let label = if cond.is_always() {
+            format!("条件を外す({total} ノート)")
+        } else {
+            format!("条件付きの発音({total} ノート)")
+        };
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(total);
         Ok(JsonText(v))
     }
 

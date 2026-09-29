@@ -2955,6 +2955,7 @@ mod tests {
                     vibrato: None,
                     volume_curve: vec![],
                     brightness_curve: vec![],
+                    condition: None,
                 });
             }
             let mut d = glaux_core::Device::builtin("subtractive");

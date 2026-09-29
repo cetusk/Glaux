@@ -229,6 +229,7 @@ pub fn render_track_note(
             vibrato: None,
             volume_curve: vec![],
             brightness_curve: vec![],
+            condition: None,
         });
     }
     t.clips = vec![clip];
@@ -962,6 +963,7 @@ mod tests {
                 vibrato: None,
                 volume_curve: vec![],
                 brightness_curve: vec![],
+                condition: None,
             });
         }
         track.clips.push(clip);

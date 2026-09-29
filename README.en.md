@@ -84,14 +84,14 @@ For Codex, add `[mcp_servers.glaux]` with `url = "http://127.0.0.1:41920/mcp"` t
 To use it without the app, run the stdio server: `scripts\glaux-mcp.bat <song folder>` (the same song can't be open in the app at the same time).
 
 <details>
-<summary>Tools (88)</summary>
+<summary>Tools (89)</summary>
 
 | Group | Tools |
 |---|---|
 | Basics | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
 | Arrangement | `set_song_plan` `suggest_progression` `write_transition` `duplicate_clips` `insert_bars` `delete_bars` `change_meter` `metric_modulation` `hemiola` `shape_automation` `bounce_track` `export_audio` `export_midi` `export_musicxml` |
 | Analysis | `critique_arrangement` `critique_melody` `analyze_audio` `compare_mix` `master_mix` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` `refine_by_words` |
-| Notes | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` `transform_notes` `develop_motif` `write_melody` `write_drums` `write_chords` `write_bassline` `apply_groove` `add_ghost_notes` `write_polyrhythm` `write_polymeter` `set_meter_feel` `pitch_gesture` `set_vibrato` `add_ornament` `melody_lead` `note_dynamics` `strum_chord` `drum_rudiment` `articulate_notes` `tremolo` `glissando` `shape_phrase` `write_tihai` `sustain_pedal` |
+| Notes | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` `transform_notes` `develop_motif` `write_melody` `write_drums` `write_chords` `write_bassline` `apply_groove` `add_ghost_notes` `write_polyrhythm` `write_polymeter` `set_meter_feel` `pitch_gesture` `set_vibrato` `add_ornament` `melody_lead` `note_dynamics` `strum_chord` `drum_rudiment` `articulate_notes` `tremolo` `glissando` `shape_phrase` `write_tihai` `sustain_pedal` `set_note_condition` |
 | Sounds | `modulate` `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | Effect presets | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |
 | CLAP | `list_plugins` `list_plugin_presets` `load_plugin_preset` `refine_plugin_params` |
