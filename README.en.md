@@ -136,6 +136,7 @@ The source code and documentation are dual-licensed under **MIT or Apache-2.0** 
 | LAION-CLAP audio model | Downloaded on first use | Apache-2.0 |
 | UI icons (Lucide) | Bundled ([full text](app/LICENSE-lucide.txt)) | ISC (partly MIT) |
 | General MIDI SoundFont (GeneralUser GS v2.0.3 by S. Christian Collins) | Not bundled; can be downloaded from the setup check | GeneralUser GS License v2.0 |
+| Free SFZ instruments (8 from [sfzinstruments](https://github.com/sfzinstruments): Osiris Piano by Versilian Studios and Karoryfer Samples, E-Pianos by Greg Sullivan, Big Rusty Drums / Swagbass / Emilyguitar by Karoryfer Samples, Cello by Karoryfer Samples and Bigcat Instruments, MTG Solo Saxophones by MTG, Ixox Flute by Xavier Hosxe) | Not bundled; can be downloaded from the instrument picker (authors and licenses in each folder's `CREDITS.txt`) | CC0-1.0 / CC-BY-3.0 / CC-BY-4.0 |
 | Demo song (CyberNeon) | Bundled (made only with the built-in instruments and effects) | Same as above (MIT / Apache-2.0) |
 | Other SoundFonts, CLAP plugins, Demucs | Not bundled (get them yourself) | Their own licenses |
 | **Logos and icons** | `assets/` and others | **Not covered by the license above** |

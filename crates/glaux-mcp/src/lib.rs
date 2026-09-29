@@ -21,6 +21,7 @@ pub mod musicxml;
 pub mod preset_index;
 pub mod presets;
 pub mod server;
+pub mod sfz_packs;
 pub mod sound;
 pub mod stems;
 pub mod store;

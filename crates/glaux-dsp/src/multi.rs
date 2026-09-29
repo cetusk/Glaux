@@ -140,6 +140,49 @@ pub struct ZonePlay {
     pub keytrack: f32,
     /// 追従とは別に足す音程(半音。SFZ の transpose・tune)
     pub tune_semis: f32,
+    /// SFZ のベロシティへの追従(0〜1。amp_veltrack / 100)。None なら SoundFont と同じ(ベロシティに比例)
+    pub veltrack: Option<f32>,
+    /// SFZ のベロシティ曲線(amp_velcurve_N。ベロシティ, 振幅)。先頭 `velcurve_len` 個が有効
+    pub velcurve: [(u8, f32); 4],
+    pub velcurve_len: u8,
+}
+
+impl ZonePlay {
+    /// ベロシティ(0〜1)に掛ける音量の補正。SoundFont はベロシティに比例した音量が別に掛かるので 1、
+    /// SFZ は (1 − 追従) + 追従 × 曲線(既定は 2 乗)にして、比例の分を割り戻す
+    pub fn vel_gain(&self, vel: f32) -> f32 {
+        let Some(t) = self.veltrack else {
+            return 1.0;
+        };
+        let v = vel.clamp(1.0 / 127.0, 1.0);
+        let curve = if self.velcurve_len > 0 {
+            // (0, 0) と (127, 1) を端に、指定の点を直線で結ぶ
+            let mut pts = [(0.0f32, 0.0f32); 6];
+            let mut n = 0;
+            pts[n] = (0.0, 0.0);
+            n += 1;
+            for &(k, a) in &self.velcurve[..self.velcurve_len as usize] {
+                pts[n] = (k as f32 / 127.0, a);
+                n += 1;
+            }
+            if pts[n - 1].0 < 1.0 {
+                pts[n] = (1.0, 1.0);
+                n += 1;
+            }
+            let pts = &pts[..n];
+            let i = pts.iter().position(|p| p.0 >= v).unwrap_or(n - 1).max(1);
+            let (a, b) = (pts[i - 1], pts[i]);
+            if b.0 > a.0 {
+                a.1 + (b.1 - a.1) * (v - a.0) / (b.0 - a.0)
+            } else {
+                b.1
+            }
+        } else {
+            v * v
+        };
+        let t = t.clamp(0.0, 1.0);
+        ((1.0 - t) + t * curve) / v
+    }
 }
 
 impl Default for ZonePlay {
@@ -154,6 +197,9 @@ impl Default for ZonePlay {
             one_shot: false,
             keytrack: 1.0,
             tune_semis: 0.0,
+            veltrack: None,
+            velcurve: [(0, 0.0); 4],
+            velcurve_len: 0,
         }
     }
 }
@@ -203,6 +249,8 @@ struct ZonePlayer {
     /// 音量エンベロープの 1 サンプルあたりの係数(減衰・リリース。発音時に計算)
     decay_coef: f32,
     release_coef: f32,
+    /// ゾーンの音量(ゾーンのゲイン × ベロシティ曲線の補正)
+    gain: f32,
     /// ワンショット・チョーク(ゾーンの `ZonePlay` から写す)
     one_shot: bool,
     group: u32,
@@ -383,6 +431,7 @@ impl MultiVoice {
                 decay_coef: sf2_env_coef(z.env.decay.max(0.005), sample_rate),
                 release_coef: sf2_env_coef(z.env.release.max(0.005), sample_rate),
                 pitch_mul: 1.0,
+                gain: z.gain * z.play.vel_gain(vel),
                 one_shot: z.play.one_shot,
                 group: z.play.group,
                 off_by: z.play.off_by,
@@ -546,7 +595,7 @@ impl MultiVoice {
                 }
             }
 
-            out += s * pl.env * z.gain;
+            out += s * pl.env * pl.gain;
         }
         out * self.layer_norm * self.amp * p.gain
     }
@@ -874,5 +923,24 @@ mod tests {
             v.next(&p3);
         }
         assert!(v.finished(), "チョークで止まる");
+    }
+
+    #[test]
+    fn sfz_velocity_curve() {
+        let mut play = ZonePlay::default();
+        assert_eq!(
+            play.vel_gain(0.3),
+            1.0,
+            "SoundFont はそのまま(比例は別に掛かる)"
+        );
+        play.veltrack = Some(1.0);
+        // 2 乗の曲線: 半分の強さで 1/4
+        assert!((play.vel_gain(0.5) * 0.5 - 0.25).abs() < 1e-6);
+        // amp_velcurve_63=1: 63 で最大になり、そこから上は 1 のまま
+        play.velcurve = [(63, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)];
+        play.velcurve_len = 1;
+        assert!((play.vel_gain(63.0 / 127.0) * 63.0 / 127.0 - 1.0).abs() < 1e-5);
+        assert!((play.vel_gain(0.25) * 0.25 - 0.25 / (63.0 / 127.0)).abs() < 1e-3);
+        assert!((play.vel_gain(1.0) - 1.0).abs() < 1e-6);
     }
 }

@@ -136,6 +136,7 @@ godot/          Godot のデモとアドオンのビルド
 | LAION-CLAP の音声側モデル | 初めて使うときに取得 | Apache-2.0 |
 | 画面のアイコン(Lucide) | 同梱([全文](app/LICENSE-lucide.txt)) | ISC(一部 MIT) |
 | GM 音源の SoundFont(GeneralUser GS v2.0.3、S. Christian Collins 作) | 同梱しない。はじめの確認で取得できる | GeneralUser GS License v2.0 |
+| 無料の SFZ 音源([sfzinstruments](https://github.com/sfzinstruments) の 8 つ: Osiris Piano〈Versilian Studios・Karoryfer Samples〉、E-Pianos〈Greg Sullivan〉、Big Rusty Drums・Swagbass・Emilyguitar〈Karoryfer Samples〉、Cello〈Karoryfer Samples・Bigcat Instruments〉、MTG Solo Saxophones〈MTG〉、Ixox Flute〈Xavier Hosxe〉) | 同梱しない。音源の選択から取得できる(作者とライセンスは各フォルダの `CREDITS.txt`) | CC0-1.0 / CC-BY-3.0 / CC-BY-4.0 |
 | デモ曲(CyberNeon) | 同梱(内蔵の音源とエフェクトだけで作った曲) | 上と同じ(MIT / Apache-2.0) |
 | そのほかの SoundFont・CLAP プラグイン・Demucs | 同梱しない(各自で入手) | それぞれによる |
 | **ロゴ・アイコン** | `assets/` ほか | **上のライセンスの対象外** |

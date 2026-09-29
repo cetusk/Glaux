@@ -568,7 +568,23 @@ export function calibrateStop(): Promise<{
 
 // ---- SoundFont ----
 
-export function listSoundfonts(): Promise<{ dir: string; files: string[]; sfz_dir?: string; sfz?: string[] }> {
+export interface SfzPack {
+  id: string;
+  name: string;
+  kind: string;
+  author: string;
+  license: string;
+  approx_mb: number;
+  installed: boolean;
+  instruments: string[];
+}
+
+/** 無料の SFZ 音源を取得する。進捗は `sfz-download` イベント({id, got, total}) */
+export function downloadSfzPack(id: string): Promise<{ instruments: string[] }> {
+  return invoke("download_sfz_pack", { id });
+}
+
+export function listSoundfonts(): Promise<{ dir: string; files: string[]; sfz_dir?: string; sfz?: string[]; packs?: SfzPack[] }> {
   return invoke("list_soundfonts");
 }
 
@@ -597,6 +613,10 @@ export function downloadSoundFont(): Promise<{ path: string }> {
 
 export function onSoundFontDownload(cb: (p: { got: number; total: number }) => void): Promise<UnlistenFn> {
   return listen<{ got: number; total: number }>("soundfont-download", (e) => cb(e.payload));
+}
+
+export function onSfzDownload(cb: (p: { id: string; got: number; total: number }) => void): Promise<UnlistenFn> {
+  return listen<{ id: string; got: number; total: number }>("sfz-download", (e) => cb(e.payload));
 }
 
 /** 同梱のデモ曲を曲のフォルダに写して開く */

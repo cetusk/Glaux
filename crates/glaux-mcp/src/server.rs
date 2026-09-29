@@ -4216,7 +4216,9 @@ impl GlauxServer {
         file を指定するとそのフォントのプリセット一覧(bank / preset / 名前)。\
         ピアノ・ストリングス・ブラスなど本物っぽい楽器一式が欲しいときは、まずここを確認して\
         set_soundfont_instrument で設定する。ライブラリフォルダに .sf2 が無い場合は、\
-        ユーザーに、アプリの設定 → 表示 →「はじめの確認」の「GM 音源を取得」(GeneralUser GS)で入れられることを案内する。        引数なしの結果には SFZ の楽器(`sfz`。SFZ ライブラリフォルダ内の .sfz。サブフォルダ込みの相対パス)も入る。"
+        ユーザーに、アプリの設定 → 表示 →「はじめの確認」の「GM 音源を取得」(GeneralUser GS)で入れられることを案内する。        引数なしの結果には SFZ の楽器(`sfz`。SFZ ライブラリフォルダ内の .sfz。サブフォルダ込みの相対パス)と、\
+        取得できる無料の SFZ 音源(`packs`。ピアノ・エレピ・ドラム・ベース・ギター・チェロ・サックス・フルート)も入る。\
+        installed が false の音源が欲しいときは、ユーザーに「音源を選ぶ →『SoundFont・SFZ』の無料の音源から取得」を案内する(AI からは取得しない)。"
     )]
     async fn list_soundfonts(&self, params: Parameters<ListSoundfontsParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("list_soundfonts");
@@ -4229,6 +4231,7 @@ impl GlauxServer {
                     "files": glaux_engine::sf2::list_files(&dir),
                     "sfz_dir": sfz_dir.to_string_lossy(),
                     "sfz": glaux_engine::sfz::list_files(&sfz_dir),
+                    "packs": crate::sfz_packs::status(&sfz_dir),
                 })))
             }
             Some(file) => {

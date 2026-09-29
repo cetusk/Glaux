@@ -74,9 +74,9 @@ pub type IncludeFn<'a> = dyn FnMut(&str) -> Result<String, String> + 'a;
 
 /// SFZ の本文を region の列にする。
 pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String> {
-    let mut lines = Vec::new();
+    let mut text_out = String::new();
     let mut defines: Vec<(String, String)> = Vec::new();
-    preprocess(text, include, &mut defines, 0, &mut lines)?;
+    preprocess(text, include, &mut defines, 0, &mut text_out)?;
 
     #[derive(PartialEq)]
     enum Level {
@@ -101,8 +101,11 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
                   layers: [&Region; 3]| {
         if let Some(r) = region.take() {
             let mut merged = Region::new();
-            if let Some(dp) = control.get("default_path") {
-                merged.insert("default_path".to_owned(), dp.clone());
+            // default_path と、CC の既定値(set_cc / set_hdcc。CC の条件を判定するのに使う)
+            for (k, v) in control {
+                if k == "default_path" || k.starts_with("set_cc") || k.starts_with("set_hdcc") {
+                    merged.insert(k.clone(), v.clone());
+                }
             }
             for l in layers {
                 merged.extend(l.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -112,7 +115,7 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
         }
     };
 
-    for line in &lines {
+    for line in text_out.lines() {
         for tok in tokenize(line) {
             match tok {
                 Tok::Header(h) => {
@@ -162,59 +165,99 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
     Ok(out)
 }
 
-/// コメントを除き、`#define` を置き換え、`#include` を展開して行の列にする
+/// コメントを除き、`#define` を置き換え、`#include` を展開する。どちらも行の途中に書いてよい
+/// (`<region> #define $KEY 21 lokey=21 #include "Data/sample.txt"` のように region ごとに定義し直す音源がある)。
+/// `#define` の値は次の空白まで。取り込んだ中身は前後で改行を入れてつなぐ(値が混ざらないように)
 fn preprocess(
     text: &str,
     include: &mut IncludeFn,
     defines: &mut Vec<(String, String)>,
     depth: u32,
-    out: &mut Vec<String>,
+    out: &mut String,
 ) -> Result<(), String> {
     if depth > 8 {
         return Err("#include が深すぎます(循環していませんか)".to_owned());
     }
-    // ブロックコメント /* ... */
-    let mut plain = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(i) = rest.find("/*") {
-        plain.push_str(&rest[..i]);
-        rest = match rest[i + 2..].find("*/") {
-            Some(j) => &rest[i + 2 + j + 2..],
-            None => "",
-        };
-    }
-    plain.push_str(rest);
-
-    for raw in plain.lines() {
-        let line = match raw.find("//") {
-            Some(i) => &raw[..i],
-            None => raw,
-        };
-        let t = line.trim();
-        if t.is_empty() {
+    let text = strip_comments(text);
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find('#') {
+        let after = &rest[i + 1..];
+        let (is_define, is_include) = (after.starts_with("define"), after.starts_with("include"));
+        if !is_define && !is_include {
+            // 音名(c#4)やファイル名の # はそのまま
+            out.push_str(&substitute(&rest[..i + 1], defines));
+            rest = after;
             continue;
         }
-        if let Some(d) = t.strip_prefix("#define") {
-            let mut it = d.split_whitespace();
-            if let (Some(name), Some(_)) = (it.next(), d.split_whitespace().nth(1)) {
-                let value = d.trim_start()[name.len()..].trim().to_owned();
+        out.push_str(&substitute(&rest[..i], defines));
+        if is_define {
+            let (name, r) = next_word(&after["define".len()..]);
+            let (value, r) = next_word(r);
+            if !name.is_empty() {
                 defines.retain(|(n, _)| n != name);
-                defines.push((name.to_owned(), value));
+                defines.push((name.to_owned(), value.to_owned()));
                 // 長い名前から置き換える($A と $AB の取り違えを防ぐ)
                 defines.sort_by_key(|(n, _)| std::cmp::Reverse(n.len()));
             }
-            continue;
-        }
-        let t = substitute(t, defines);
-        if let Some(inc) = t.strip_prefix("#include") {
-            let name = inc.trim().trim_matches('"');
-            let body = include(&name.replace('\\', "/"))?;
+            rest = r;
+        } else {
+            let r = after["include".len()..].trim_start_matches([' ', '\t']);
+            let (name, r) = match r.strip_prefix('"') {
+                Some(q) => match q.find('"') {
+                    Some(j) => (&q[..j], &q[j + 1..]),
+                    None => (q.lines().next().unwrap_or(""), ""),
+                },
+                None => next_word(r),
+            };
+            let name = substitute(name, defines).replace('\\', "/");
+            let body = include(&name)?;
+            out.push('\n');
             preprocess(&body, include, defines, depth + 1, out)?;
-            continue;
+            out.push('\n');
+            rest = r;
         }
-        out.push(t);
     }
+    out.push_str(&substitute(rest, defines));
     Ok(())
+}
+
+/// 空白を飛ばして次の語と、その後ろを返す
+fn next_word(s: &str) -> (&str, &str) {
+    let s = s.trim_start();
+    let end = s.find(char::is_whitespace).unwrap_or(s.len());
+    (&s[..end], &s[end..])
+}
+
+/// `// 行コメント` と `/* ブロックコメント */` を除く(`//****` のような行の中の `/*` は行コメントの一部)
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let line = rest.find("//");
+        let block = rest.find("/*");
+        match (line, block) {
+            (Some(l), b) if b.is_none_or(|b| l <= b) => {
+                out.push_str(&rest[..l]);
+                rest = match rest[l..].find('\n') {
+                    Some(n) => &rest[l + n..],
+                    None => "",
+                };
+            }
+            (_, Some(b)) => {
+                out.push_str(&rest[..b]);
+                rest = match rest[b + 2..].find("*/") {
+                    Some(j) => &rest[b + 2 + j + 2..],
+                    None => "",
+                };
+                // ブロックコメントは空白 1 つに(前後の opcode がつながらないように)
+                out.push(' ');
+            }
+            _ => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
 }
 
 fn substitute(line: &str, defines: &[(String, String)]) -> String {
@@ -325,6 +368,112 @@ pub struct Loaded {
     pub loop_points: Option<(usize, usize)>,
 }
 
+/// キースイッチの既定(sw_default、無ければ最も低い sw_last)
+fn default_switch(regions: &[Region]) -> Option<i32> {
+    regions
+        .iter()
+        .find_map(|r| note(r, "sw_default"))
+        .or_else(|| regions.iter().filter_map(|r| note(r, "sw_last")).min())
+}
+
+/// 普通にノートを弾いたときに鳴る region か(release・CC の条件付き・既定以外のキースイッチは鳴らない)
+fn region_plays(r: &Region, sw_default: Option<i32>) -> bool {
+    if matches!(
+        r.get("trigger").map(|s| s.as_str()),
+        Some("release" | "release_key" | "legato")
+    ) {
+        return false;
+    }
+    // CC で鳴らす region は弾いても鳴らない。CC の範囲の条件は、CC の既定値で満たすものだけ
+    for (k, v) in r {
+        if k.starts_with("on_locc") || k.starts_with("on_hicc") {
+            return false;
+        }
+        let (lo, n) = match (k.strip_prefix("locc"), k.strip_prefix("hicc")) {
+            (Some(n), _) => (true, n),
+            (_, Some(n)) => (false, n),
+            _ => continue,
+        };
+        let (Ok(n), Ok(x)) = (n.parse::<u32>(), v.trim().parse::<f64>()) else {
+            continue;
+        };
+        let cc = cc_default(r, n);
+        if (lo && cc < x) || (!lo && cc > x) {
+            return false;
+        }
+    }
+    match (note(r, "sw_last"), sw_default) {
+        (Some(sw), Some(def)) => sw == def,
+        _ => true,
+    }
+}
+
+/// CC の既定値(0〜127)。`<control>` の set_cc / set_hdcc、無ければ音量 100・パン 64・エクスプレッション 127・ほかは 0
+fn cc_default(r: &Region, n: u32) -> f64 {
+    if let Some(v) = num(r, &format!("set_cc{n}")) {
+        return v;
+    }
+    if let Some(v) = num(r, &format!("set_hdcc{n}")) {
+        return v * 127.0;
+    }
+    match n {
+        7 => 100.0,
+        10 => 64.0,
+        11 => 127.0,
+        _ => 0.0,
+    }
+}
+
+/// opcode の値に、CC で足す分(`<name>_onccN` × CC の既定値 / 127)を足したもの
+fn val(r: &Region, name: &str, default: f64) -> f64 {
+    num(r, name).unwrap_or(default) + by_cc(r, name, |v, cc| v * cc / 127.0)
+}
+
+/// `<name>_ccN` / `<name>_onccN` を CC の既定値で評価した和
+fn by_cc(r: &Region, name: &str, f: impl Fn(f64, f64) -> f64) -> f64 {
+    cc_terms(r, name).map(|(v, cc)| f(v, cc)).sum()
+}
+
+/// `<name>_ccN` / `<name>_onccN` を CC の既定値で評価した積(無ければ 1)
+fn by_cc_product(r: &Region, name: &str, f: impl Fn(f64, f64) -> f64) -> f64 {
+    cc_terms(r, name).map(|(v, cc)| f(v, cc)).product()
+}
+
+fn cc_terms<'a>(r: &'a Region, name: &'a str) -> impl Iterator<Item = (f64, f64)> + 'a {
+    r.iter().filter_map(move |(k, v)| {
+        let rest = k.strip_prefix(name)?;
+        // 書き方は _onccN / _ccN / ccN(SFZ 1 の ampeg_releasecc64 など)
+        let n = rest
+            .strip_prefix("_oncc")
+            .or_else(|| rest.strip_prefix("_cc"))
+            .or_else(|| rest.strip_prefix("cc"))?;
+        let n: u32 = n.parse().ok()?;
+        Some((v.trim().parse::<f64>().ok()?, cc_default(r, n)))
+    })
+}
+
+/// region の波形の、.sfz のあるフォルダからの相対パス(区切りは `/`。*sine などの内蔵の発音器は None)
+fn sample_path(r: &Region) -> Option<String> {
+    let sample = r.get("sample")?.trim();
+    if sample.starts_with('*') {
+        return None;
+    }
+    let dp = r.get("default_path").map(|d| d.trim()).unwrap_or("");
+    Some(format!("{dp}{sample}").replace('\\', "/"))
+}
+
+/// 鳴る region が使う波形(.sfz のあるフォルダからの相対パス、重複なし、出てきた順)。音源の取得で使う
+pub fn used_samples(regions: &[Region]) -> Vec<String> {
+    let sw_default = default_switch(regions);
+    let mut seen = std::collections::HashSet::new();
+    regions
+        .iter()
+        .filter(|r| region_plays(r, sw_default))
+        .filter_map(sample_path)
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
+}
+
 /// region の列をゾーンにする。`dir` は .sfz のあるフォルダ、`load` は波形の読み込み。
 /// 波形を 1 つも読めなければ Err。
 pub fn build_zones(
@@ -333,45 +482,19 @@ pub fn build_zones(
     cache: &mut WaveCache,
     load: &mut dyn FnMut(&Path) -> Result<Loaded, String>,
 ) -> Result<Vec<Zone>, String> {
-    // キースイッチ: 既定(sw_default、無ければ最も低い sw_last)の region だけを使う
-    let sw_default = regions
-        .iter()
-        .find_map(|r| note(r, "sw_default"))
-        .or_else(|| regions.iter().filter_map(|r| note(r, "sw_last")).min());
+    let sw_default = default_switch(regions);
     let mut files: HashMap<PathBuf, Option<Loaded>> = HashMap::new();
     let mut zones = Vec::new();
     let mut errors = Vec::new();
 
     for r in regions {
-        if matches!(
-            r.get("trigger").map(|s| s.as_str()),
-            Some("release" | "release_key" | "legato")
-        ) {
+        if !region_plays(r, sw_default) {
             continue;
         }
-        if r.iter().any(|(k, v)| {
-            (k.starts_with("locc") && v.trim().parse::<f64>().is_ok_and(|x| x > 0.0))
-                || k.starts_with("on_locc")
-                || k.starts_with("on_hicc")
-        }) {
-            continue;
-        }
-        if let (Some(sw), Some(def)) = (note(r, "sw_last"), sw_default) {
-            if sw != def {
-                continue;
-            }
-        }
-        let Some(sample) = r.get("sample") else {
+        let Some(rel) = sample_path(r) else {
             continue;
         };
-        if sample.starts_with('*') {
-            continue; // *sine などの内蔵の発音器は扱わない
-        }
-        let mut path = dir.to_path_buf();
-        if let Some(dp) = r.get("default_path") {
-            path.push(dp.replace('\\', "/"));
-        }
-        path.push(sample.trim().replace('\\', "/"));
+        let path = dir.join(&rel);
 
         if !files.contains_key(&path) {
             let loaded = match load(&path) {
@@ -387,7 +510,8 @@ pub fn build_zones(
             continue;
         };
         let len = file.data.frames.len();
-        let off = num(r, "offset").unwrap_or(0.0).max(0.0) as usize;
+        let off = (num(r, "offset").unwrap_or(0.0) + by_cc(r, "offset", |v, cc| v * cc / 127.0))
+            .max(0.0) as usize;
         let end = num(r, "end").map_or(len, |e| (e.max(0.0) as usize + 1).min(len));
         if end <= off + 1 {
             continue;
@@ -442,14 +566,18 @@ pub fn build_zones(
             _ => None,
         };
 
-        let volume = num(r, "volume").unwrap_or(0.0).clamp(-144.0, 24.0) as f32;
-        let amplitude = num(r, "amplitude").unwrap_or(100.0).clamp(0.0, 100.0) as f32 / 100.0;
+        let volume = (val(r, "volume", 0.0) + num(r, "group_volume").unwrap_or(0.0))
+            .clamp(-144.0, 24.0) as f32;
+        // amplitude_ccN は CC の値に比例して掛かる(既定値で評価。音量 cc7 の既定 100 なら約 -2dB)
+        let amplitude = (num(r, "amplitude").unwrap_or(100.0).clamp(0.0, 100.0) / 100.0
+            * by_cc_product(r, "amplitude", |v, cc| v / 100.0 * cc / 127.0))
+            as f32;
         let env = ZoneEnv {
-            attack: (num(r, "ampeg_attack").unwrap_or(0.0) as f32).clamp(0.001, 10.0),
-            hold: (num(r, "ampeg_hold").unwrap_or(0.0) as f32).clamp(0.0, 10.0),
-            decay: (num(r, "ampeg_decay").unwrap_or(0.0) as f32).clamp(0.005, 30.0),
-            sustain: (num(r, "ampeg_sustain").unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0),
-            release: (num(r, "ampeg_release").unwrap_or(0.001) as f32).clamp(0.01, 10.0),
+            attack: (val(r, "ampeg_attack", 0.0) as f32).clamp(0.001, 10.0),
+            hold: (val(r, "ampeg_hold", 0.0) as f32).clamp(0.0, 10.0),
+            decay: (val(r, "ampeg_decay", 0.0) as f32).clamp(0.005, 30.0),
+            sustain: (val(r, "ampeg_sustain", 100.0) as f32 / 100.0).clamp(0.0, 1.0),
+            release: (val(r, "ampeg_release", 0.001) as f32).clamp(0.01, 10.0),
         };
         let mut modu = ZoneMod::default();
         let lowpass = r
@@ -460,6 +588,19 @@ pub fn build_zones(
             modu.q_db = (num(r, "resonance").unwrap_or(0.0) as f32).clamp(0.0, 40.0);
         }
         let int = |k: &str| num(r, k).map(|v| v as i64);
+        // ベロシティ曲線(amp_velcurve_N。最大 4 点、ベロシティ順)
+        let mut points: Vec<(u8, f32)> = r
+            .iter()
+            .filter_map(|(k, v)| {
+                let n: u8 = k.strip_prefix("amp_velcurve_")?.parse().ok()?;
+                Some((n.min(127), v.trim().parse::<f32>().ok()?.clamp(0.0, 1.0)))
+            })
+            .collect();
+        points.sort_by_key(|p| p.0);
+        points.truncate(4);
+        let mut velcurve = [(0u8, 0.0f32); 4];
+        velcurve[..points.len()].copy_from_slice(&points);
+        let velcurve_len = points.len() as u8;
         let play = ZonePlay {
             seq_length: int("seq_length").unwrap_or(1).clamp(1, 255) as u8,
             seq_position: int("seq_position").unwrap_or(1).clamp(1, 255) as u8,
@@ -469,8 +610,16 @@ pub fn build_zones(
             off_by: int("off_by").unwrap_or(0) as u32,
             one_shot: mode == "one_shot",
             keytrack: (num(r, "pitch_keytrack").unwrap_or(100.0) / 100.0) as f32,
-            tune_semis: (num(r, "transpose").unwrap_or(0.0) + num(r, "tune").unwrap_or(0.0) / 100.0)
+            tune_semis: (num(r, "transpose").unwrap_or(0.0)
+                + (val(r, "tune", 0.0) + val(r, "pitch", 0.0)) / 100.0)
                 as f32,
+            veltrack: Some(
+                (val(r, "amp_veltrack", 100.0) / 100.0)
+                    .clamp(-1.0, 1.0)
+                    .abs() as f32,
+            ),
+            velcurve,
+            velcurve_len,
         };
         zones.push(Zone {
             key_lo: lo as u8,
@@ -589,6 +738,8 @@ mod tests {
         let text = r#"
             /* ブロック
                コメント */
+            //*********************************
+            //--- /* 行コメントの中の開き */
             #define $VEL 100
             <control> default_path=Samples/
             <global> ampeg_release=0.5 // 行コメント
@@ -609,6 +760,22 @@ mod tests {
         assert!(!rs[2].contains_key("hivel"));
         assert_eq!(rs[2]["lovel"], "101");
         assert_eq!(rs[2]["ampeg_release"], "0.5");
+    }
+
+    #[test]
+    fn inline_define_and_include_per_region() {
+        let text = "#define $EXT flac\n<region> #define $KEY 21 lokey=21 hikey=22 #include \"Data/s.txt\"\n\
+                    <region> #define $KEY 24 lokey=23 hikey=25 #include \"Data/s.txt\"";
+        let rs = parse(text, &mut |name| {
+            assert_eq!(name, "Data/s.txt");
+            Ok("sample=PIANO $KEY.$EXT\npitch_keycenter=$KEY".to_owned())
+        })
+        .unwrap();
+        assert_eq!(rs.len(), 2);
+        assert_eq!(rs[0]["sample"], "PIANO 21.flac");
+        assert_eq!(rs[1]["sample"], "PIANO 24.flac");
+        assert_eq!(rs[1]["pitch_keycenter"], "24");
+        assert_eq!(rs[1]["hikey"], "25");
     }
 
     #[test]
@@ -641,14 +808,22 @@ mod tests {
             <region> sample=e.wav key=42 offset=200 end=599 lorand=0.5 hirand=1
             <region> sample=ks1.wav key=50 sw_last=24 sw_default=24
             <region> sample=ks2.wav key=50 sw_last=25
+            <region> sample=cc_on.wav key=51 locc74=1 offset_cc74=127 amplitude_oncc7=100
+            <region> sample=env.wav key=52 ampeg_sustain=0 ampeg_sustain_oncc103=100 ampeg_releasecc64=5 amp_veltrack=0
         ";
-        let rs = parse(text, &mut no_include).unwrap();
+        // CC の既定値は <control> の set_cc(先頭に足す)
+        let text = format!("<control> set_cc74=100 set_cc103=127\n{text}");
+        let rs = parse(&text, &mut no_include).unwrap();
         let mut cache = WaveCache::new();
         let zs = build_zones(&rs, Path::new("lib"), &mut cache, &mut fake).unwrap();
         assert_eq!(
             zs.len(),
-            4,
-            "release・CC 条件・既定以外のキースイッチは除く"
+            6,
+            "release・既定値で外れる CC 条件・既定以外のキースイッチは除く"
+        );
+        assert_eq!(
+            used_samples(&rs),
+            ["a.wav", "b.wav", "e.wav", "ks1.wav", "cc_on.wav", "env.wav"]
         );
         let a = &zs[0];
         assert_eq!((a.key_lo, a.key_hi, a.root), (60, 60, 60.0));
@@ -663,6 +838,16 @@ mod tests {
         assert_eq!(e.data.frames.len(), 400);
         assert_eq!(e.play.rand_lo, 0.5);
         assert_eq!(zs[3].key_lo, 50);
+        // CC の既定値で評価: offset は 127 × 100/127、amplitude は cc7 の既定 100 で 100/127
+        assert_eq!(zs[4].data.frames.len(), 900);
+        assert!((zs[4].gain - 100.0 / 127.0).abs() < 1e-3);
+        // エンベロープも CC の既定値で足す(ペダル cc64 の既定は 0)。amp_veltrack=0 はベロシティで音量が変わらない
+        let env = &zs[5];
+        assert_eq!(env.env.sustain, 1.0);
+        assert_eq!(env.env.release, 0.01);
+        assert!((env.play.vel_gain(0.5) * 0.5 - 1.0).abs() < 1e-6);
+        // 既定(amp_veltrack=100)はベロシティの 2 乗
+        assert!((zs[0].play.vel_gain(0.5) * 0.5 - 0.25).abs() < 1e-6);
     }
 
     #[test]

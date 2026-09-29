@@ -142,6 +142,7 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 本物っぽい楽器一式(ピアノ・ストリングス・ブラス等): SoundFont。list_soundfonts で .sf2 とプリセットを見て\n\
   set_soundfont_instrument。.sf2 が無ければ「アプリの設定 → 表示 →『はじめの確認』の『GM 音源を取得』で入れられる(手持ちの .sf2 の追加も可)」と案内する。\n\
   SFZ の楽器(list_soundfonts の sfz。ラウンドロビン・ハイハットのチョーク付きの実録音源)は set_soundfont_instrument の sfz で。\n\
+  無料の SFZ 音源(packs)は installed=false ならユーザーに「音源を選ぶ →『SoundFont・SFZ』から取得」を案内する。\n\
 - 実録の音を鳴らす: import_sample(WAV の絶対パス。root にサンプルの実音)でトラックの音源を sampler にする。\n\
 - 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。\n\
 - エフェクトのプリセット: エフェクト 1 つ分(list_effect_presets → load_effect_preset)。エフェクトを足す前に使える設定がないか見る。\n\

@@ -32,6 +32,9 @@
   let sfFiles = $state<string[] | null>(null);
   let sfFile = $state("");
   let sfzFiles = $state<string[]>([]);
+  let packs = $state<api.SfzPack[]>([]);
+  // 取得中の音源(id と進み具合 0〜1)。取得は 1 つずつ
+  let packBusy = $state<{ id: string; ratio: number } | null>(null);
   let sfPresets = $state<{ bank: number; preset: number; name: string }[]>([]);
   let sfBusy = $state(false);
   let clapList = $state<api.ClapPluginInfo[] | null>(null);
@@ -65,6 +68,7 @@
         .then((r) => {
           sfFiles = r.files;
           sfzFiles = r.sfz ?? [];
+          packs = r.packs ?? [];
         })
         .catch(() => (sfFiles = []));
     if (tab === "clap" && clapList === null) loadClap(false);
@@ -148,6 +152,28 @@
       ),
       "SFZ にできませんでした",
     );
+  }
+
+  async function getPack(p: api.SfzPack) {
+    if (packBusy) return;
+    packBusy = { id: p.id, ratio: 0 };
+    const un = await api
+      .onSfzDownload((e) => {
+        if (packBusy && e.id === packBusy.id && e.total > 0) packBusy = { id: e.id, ratio: e.got / e.total };
+      })
+      .catch(() => undefined);
+    try {
+      await api.downloadSfzPack(p.id);
+      const r = await api.listSoundfonts();
+      sfzFiles = r.sfz ?? [];
+      packs = r.packs ?? [];
+      showToast("ok", `「${p.name}」を入れました。SFZ の楽器の一覧から選べます`);
+    } catch (e) {
+      showError(`「${p.name}」を取得できませんでした`, e);
+    } finally {
+      un?.();
+      packBusy = null;
+    }
   }
 
   async function addSf() {
@@ -261,15 +287,31 @@
                 <code>{p.bank}:{String(p.preset).padStart(3, "0")}</code><span><b>{p.name}</b></span>
               </button>
             {/each}
-          {:else if sfzFiles.length > 0}
-            <div class="note">SFZ の楽器</div>
-            {#each sfzFiles.filter((f) => hit(f)) as f (f)}
-              <button class="item compact" class:sel={track.device?.type === "sfz" && track.device.instrument === f} onclick={() => setSfz(f)}>
-                <code>SFZ</code><span><b>{f.replace(/\.sfz$/i, "")}</b></span>
-              </button>
-            {/each}
-          {:else if (sfFiles ?? []).length === 0}
-            <div class="note">まだ .sf2 がありません。設定 → 表示 →「はじめの確認」の「GM 音源を取得」か、手持ちの .sf2 を「追加」から登録すると、ピアノ・ストリングス等の GM 音源一式が使えます。</div>
+          {:else}
+            {#if (sfFiles ?? []).length === 0}
+              <div class="note">まだ .sf2 がありません。設定 → 表示 →「はじめの確認」の「GM 音源を取得」か、手持ちの .sf2 を「追加」から登録すると、ピアノ・ストリングス等の GM 音源一式が使えます。</div>
+            {/if}
+            {#if sfzFiles.length > 0}
+              <div class="note">SFZ の楽器</div>
+              {#each sfzFiles.filter((f) => hit(f)) as f (f)}
+                <button class="item compact" class:sel={track.device?.type === "sfz" && track.device.instrument === f} onclick={() => setSfz(f)}>
+                  <code>SFZ</code><span><b>{f.replace(/\.sfz$/i, "")}</b></span>
+                </button>
+              {/each}
+            {/if}
+            {#if packs.some((p) => !p.installed)}
+              <div class="note">無料の音源(取得して使う。CC-BY の音源は、曲を公開するときに作者名を書いてください)</div>
+              {#each packs.filter((p) => !p.installed && (hit(p.name) || hit(p.kind))) as p (p.id)}
+                <div class="pack">
+                  <span class="grow"><b>{p.name}</b><small>{p.kind}・{p.author}・{p.license}・約 {p.approx_mb} MB</small></span>
+                  {#if packBusy?.id === p.id}
+                    <span class="pct">{Math.round(packBusy.ratio * 100)}%</span>
+                  {:else}
+                    <button class="btn sm" disabled={packBusy !== null} onclick={() => getPack(p)} title="sfzinstruments(GitHub)から取得して SFZ ライブラリに入れる"><Icon name="download" />取得</button>
+                  {/if}
+                </div>
+              {/each}
+            {/if}
           {/if}
         {:else if tab === "clap"}
           <div class="row">
@@ -466,6 +508,36 @@
 
   .grow {
     flex: 1;
+  }
+
+  .pack {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+  }
+
+  .pack span {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .pack b {
+    color: var(--text);
+    font-size: var(--fs-md);
+    font-weight: 600;
+  }
+
+  .pack small {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+  }
+
+  .pack .pct {
+    font-size: var(--fs-sm);
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
   }
 
   .note {

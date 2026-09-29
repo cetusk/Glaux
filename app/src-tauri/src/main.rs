@@ -1410,7 +1410,26 @@ fn list_soundfonts() -> Value {
         "files": glaux_engine::sf2::list_files(&dir),
         "sfz_dir": sfz_dir.to_string_lossy(),
         "sfz": glaux_engine::sfz::list_files(&sfz_dir),
+        "packs": glaux_mcp::sfz_packs::status(&sfz_dir),
     })
+}
+
+/// 無料の SFZ 音源を取得して SFZ ライブラリに入れる(利用者の操作で)。
+/// 進捗は `sfz-download` イベント({id, got, total})で届く。
+#[tauri::command]
+async fn download_sfz_pack(app: tauri::AppHandle, id: String) -> Result<Value, String> {
+    let instruments = tokio::task::spawn_blocking(move || {
+        let lib = glaux_engine::sfz::default_dir();
+        glaux_mcp::sfz_packs::download(&id, &lib, &mut |got, total| {
+            let _ = app.emit(
+                "sfz-download",
+                json!({ "id": id, "got": got, "total": total }),
+            );
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(json!({ "instruments": instruments }))
 }
 
 /// .sf2 のプリセット一覧(重いのでブロッキングスレッドで)。
@@ -2631,6 +2650,7 @@ fn main() -> Result<()> {
             import_sample,
             import_ir,
             list_soundfonts,
+            download_sfz_pack,
             list_soundfont_presets,
             add_soundfont,
             create_project,
