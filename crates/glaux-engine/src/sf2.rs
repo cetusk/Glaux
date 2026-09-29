@@ -8,7 +8,7 @@
 //! (`<設定ディレクトリ>/glaux/soundfonts/`)から名前で参照する
 //! (FluidR3 などは 100MB 級で、プロジェクトごとの複製は現実的でないため)。
 
-use glaux_dsp::{SampleData, Zone, ZoneEnv};
+use glaux_dsp::{SampleData, Zone, ZoneEnv, ZonePlay};
 use rustysynth::SoundFont;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -248,6 +248,7 @@ pub fn build_zones_shared(
                 gain,
                 env,
                 modu,
+                play: ZonePlay::default(),
             });
         }
     }

@@ -32,6 +32,7 @@ pub mod record;
 pub mod render;
 pub mod separate;
 pub mod sf2;
+pub mod sfz;
 pub mod sound_match;
 pub mod timbre;
 pub mod timeline;

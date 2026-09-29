@@ -49,6 +49,25 @@ pub enum PluginSource {
         bank: u16,
         preset: u16,
     },
+    /// SFZ の楽器。`instrument` はライブラリフォルダ(`~/.config/glaux/sfz/`)からの
+    /// 相対パス(`Piano/piano.sfz` など。区切りは `/`)
+    Sfz { instrument: String },
+}
+
+impl PluginSource {
+    /// ドラムの楽器(音程でなく鍵盤で打楽器を選ぶ)か。内蔵 drum・SoundFont の bank 128・
+    /// 名前に drum / kit / perc を含む SFZ
+    pub fn is_drum_kit(&self) -> bool {
+        match self {
+            PluginSource::Builtin { name } => name == "drum",
+            PluginSource::Sf2 { bank, .. } => *bank == 128,
+            PluginSource::Sfz { instrument } => {
+                let s = instrument.to_ascii_lowercase();
+                ["drum", "kit", "perc"].iter().any(|w| s.contains(w))
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]

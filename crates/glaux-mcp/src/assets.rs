@@ -76,70 +76,7 @@ pub fn import_audio(project_dir: &Path, src: &Path) -> Result<ImportedSample, St
     })
 }
 
-/// symphonia で音声をデコードする。戻り値は (インターリーブ f32, チャンネル数, サンプルレート)。
-pub fn decode_audio(bytes: Vec<u8>, ext: &str) -> Result<(Vec<f32>, u16, u32), String> {
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
-    use symphonia::core::errors::Error;
-    use symphonia::core::formats::FormatOptions;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
-
-    let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
-    let mut hint = Hint::new();
-    hint.with_extension(ext);
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(|e| format!("この形式は読めません({ext}): {e}"))?;
-    let mut format = probed.format;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or("音声トラックがありません")?;
-    let track_id = track.id;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("デコーダを作れません: {e}"))?;
-
-    let mut out = Vec::new();
-    let mut channels = 0u16;
-    let mut rate = 0u32;
-    loop {
-        let packet = match format.next_packet() {
-            Ok(p) => p,
-            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(Error::ResetRequired) => break,
-            Err(e) => return Err(format!("読み込み中にエラー: {e}")),
-        };
-        if packet.track_id() != track_id {
-            continue;
-        }
-        match decoder.decode(&packet) {
-            Ok(buf) => {
-                let spec = *buf.spec();
-                channels = spec.channels.count() as u16;
-                rate = spec.rate;
-                let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
-                sb.copy_interleaved_ref(buf);
-                out.extend_from_slice(sb.samples());
-            }
-            // 壊れたフレームは飛ばして続ける(mp3 の先頭などでよくある)
-            Err(Error::DecodeError(_)) => continue,
-            Err(e) => return Err(format!("デコードに失敗: {e}")),
-        }
-    }
-    if channels == 0 || rate == 0 {
-        return Err("音声データが空です".to_owned());
-    }
-    Ok((out, channels, rate))
-}
+pub use glaux_engine::data::decode_audio;
 
 /// 一時ファイルに書いて確定させてから rename する(途中で落ちても最終名に壊れたファイルを残さない)。
 fn write_file_atomic(dest: &Path, bytes: &[u8]) -> Result<(), String> {

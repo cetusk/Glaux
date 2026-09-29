@@ -246,12 +246,19 @@ pub struct ListSoundfontsParams {
 pub struct SetSoundfontParams {
     /// 音源を設定するトラック ID(`trk_xxxxxx`)。
     pub track_id: String,
-    /// ライブラリフォルダ内の .sf2 ファイル名(list_soundfonts で確認)。
-    pub soundfont: String,
+    /// ライブラリフォルダ内の .sf2 ファイル名(list_soundfonts で確認)。sfz を使うときは省く。
+    #[serde(default)]
+    pub soundfont: Option<String>,
     /// バンク番号(GM 音色は 0、GM ドラムキットは 128 が慣例)。
-    pub bank: u16,
+    #[serde(default)]
+    pub bank: Option<u16>,
     /// プリセット(プログラム)番号。
-    pub preset: u16,
+    #[serde(default)]
+    pub preset: Option<u16>,
+    /// SoundFont の代わりに SFZ の楽器を使う: SFZ ライブラリフォルダからの相対パス
+    /// (list_soundfonts の `sfz` にある名前。例 "Piano/piano.sfz")。
+    #[serde(default)]
+    pub sfz: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -2095,11 +2102,10 @@ fn bar_start_fn(project: &glaux_core::Project, end: u64) -> impl Fn(u64) -> u64 
 
 /// トラックがドラム(音程で楽器を分ける)か
 fn is_drum_track(track: &glaux_core::Track) -> bool {
-    match track.device.as_ref().map(|d| &d.source) {
-        Some(glaux_core::PluginSource::Builtin { name }) => name == "drum",
-        Some(glaux_core::PluginSource::Sf2 { bank, .. }) => *bank == 128,
-        _ => false,
-    }
+    track
+        .device
+        .as_ref()
+        .is_some_and(|d| d.source.is_drum_kit())
 }
 
 /// つまみの一覧(JSON)から、path が一致するつまみの (最小, 最大) を探す
@@ -2645,7 +2651,9 @@ pub fn track_params_json_filtered(
             glaux_core::PluginSource::Sampler { .. } => {
                 ("sampler".to_owned(), d.params.clone(), false)
             }
-            glaux_core::PluginSource::Sf2 { .. } => ("sf2".to_owned(), d.params.clone(), false),
+            glaux_core::PluginSource::Sf2 { .. } | glaux_core::PluginSource::Sfz { .. } => {
+                ("sf2".to_owned(), d.params.clone(), false)
+            }
             other => return Err(format!("このトラックのデバイスは対応外です({other:?})")),
         },
         None => (
@@ -4208,16 +4216,21 @@ impl GlauxServer {
         file を指定するとそのフォントのプリセット一覧(bank / preset / 名前)。\
         ピアノ・ストリングス・ブラスなど本物っぽい楽器一式が欲しいときは、まずここを確認して\
         set_soundfont_instrument で設定する。ライブラリフォルダに .sf2 が無い場合は、\
-        ユーザーに、アプリの設定 → 表示 →「はじめの確認」の「GM 音源を取得」(GeneralUser GS)で入れられることを案内する。"
+        ユーザーに、アプリの設定 → 表示 →「はじめの確認」の「GM 音源を取得」(GeneralUser GS)で入れられることを案内する。        引数なしの結果には SFZ の楽器(`sfz`。SFZ ライブラリフォルダ内の .sfz。サブフォルダ込みの相対パス)も入る。"
     )]
     async fn list_soundfonts(&self, params: Parameters<ListSoundfontsParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("list_soundfonts");
         let dir = glaux_engine::sf2::default_dir();
         match params.0.file {
-            None => Ok(JsonText(json!({
-                "dir": dir.to_string_lossy(),
-                "files": glaux_engine::sf2::list_files(&dir),
-            }))),
+            None => {
+                let sfz_dir = glaux_engine::sfz::default_dir();
+                Ok(JsonText(json!({
+                    "dir": dir.to_string_lossy(),
+                    "files": glaux_engine::sf2::list_files(&dir),
+                    "sfz_dir": sfz_dir.to_string_lossy(),
+                    "sfz": glaux_engine::sfz::list_files(&sfz_dir),
+                })))
+            }
             Some(file) => {
                 let font = tokio::task::spawn_blocking({
                     let path = dir.join(&file);
@@ -4238,7 +4251,7 @@ impl GlauxServer {
         soundfont / bank / preset は list_soundfonts で確認したものを渡す。\
         GM 配列の目安: 0=ピアノ, 24=ギター(ナイロン), 25(スチール), 30(歪みギター), \
         32〜39=ベース, 40=バイオリン, 48=ストリングス, 56=トランペット, 73=フルート。\
-        ドラムは bank 128。設定は undo で戻せる。"
+        ドラムは bank 128。SFZ の楽器にするときは soundfont / bank / preset の代わりに sfz を渡す        (ラウンドロビン・ハイハットのチョークも鳴る)。設定は undo で戻せる。"
     )]
     async fn set_soundfont_instrument(
         &self,
@@ -4253,11 +4266,44 @@ impl GlauxServer {
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
 
+        if let Some(sfz) = p.sfz {
+            // 事前検証: 読み込めて、鳴らせるゾーンがあること
+            let dir = glaux_engine::sfz::default_dir();
+            let zones = tokio::task::spawn_blocking({
+                let sfz = sfz.clone();
+                move || {
+                    glaux_engine::sfz::load_instrument(&dir, &sfz, &mut Default::default())
+                        .map(|z| z.len())
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            let label = format!("{} の音源を「{sfz}」(SFZ)に変更", track.name);
+            let command = Command::SetDevice {
+                track: track_id,
+                device: Some(glaux_core::Device {
+                    source: glaux_core::PluginSource::Sfz {
+                        instrument: sfz.clone(),
+                    },
+                    params: glaux_core::ParamMap::new(),
+                }),
+            };
+            let author = self.author(&ctx);
+            let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+            let mut v = mutated_json(&m);
+            v["entry_id"] = json!(entry_id);
+            v["sfz"] = json!(sfz);
+            v["zones"] = json!(zones);
+            return Ok(JsonText(v));
+        }
+        let (Some(soundfont), Some(bank), Some(preset)) = (p.soundfont, p.bank, p.preset) else {
+            return Err("soundfont・bank・preset の 3 つ(または sfz)を指定してください".into());
+        };
+
         // 事前検証: フォントとプリセットの存在(音が出ない設定を防ぐ)
         let dir = glaux_engine::sf2::default_dir();
-        let (bank, preset) = (p.bank, p.preset);
         let preset_name = tokio::task::spawn_blocking({
-            let path = dir.join(&p.soundfont);
+            let path = dir.join(&soundfont);
             move || -> Result<String, String> {
                 let font = glaux_engine::sf2::load_font(&path)?;
                 glaux_engine::sf2::list_presets(&font)
@@ -4275,9 +4321,9 @@ impl GlauxServer {
             track: track_id,
             device: Some(glaux_core::Device {
                 source: glaux_core::PluginSource::Sf2 {
-                    soundfont: p.soundfont,
-                    bank: p.bank,
-                    preset: p.preset,
+                    soundfont,
+                    bank,
+                    preset,
                 },
                 params: glaux_core::ParamMap::new(),
             }),

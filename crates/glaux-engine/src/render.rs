@@ -1381,8 +1381,24 @@ impl Renderer {
                         } else {
                             &mix.instrument
                         };
-                        let mut state =
-                            VoiceState::start(inst, e.freq, e.pitch, e.amp, e.articulation, sr);
+                        let mut state = VoiceState::start_variant(
+                            inst,
+                            e.freq,
+                            e.pitch,
+                            e.amp,
+                            e.articulation,
+                            sr,
+                            e.variant,
+                        );
+                        // チョーク: 同じトラックの、このグループで止まる音(オープンハイハットなど)を止める
+                        let group = state.choke_group();
+                        if group != 0 {
+                            for v in self.voices.iter_mut() {
+                                if v.track == e.track {
+                                    v.state.choke_if(group);
+                                }
+                            }
+                        }
                         if !e.curve.is_empty() {
                             state.set_curve(&e.curve);
                         }
@@ -2838,6 +2854,7 @@ mod tests {
                 fade_out: 0,
                 glide: 0.0,
                 choke: 0,
+                variant: 0,
                 start,
                 end,
                 freq: 440.0,

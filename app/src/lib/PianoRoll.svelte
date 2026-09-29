@@ -153,14 +153,15 @@
   });
 
   const deviceRaw = $derived(found?.track.device as Record<string, unknown> | null | undefined);
-  // ドラム: 内蔵 drum、または SoundFont の bank 128(GM ドラムキット)
+  // ドラム: 内蔵 drum、SoundFont の bank 128(GM ドラムキット)、名前に drum / kit / perc を含む SFZ
   const isDrum = $derived(
     found?.track.device?.name === "drum" ||
-      (deviceRaw?.type === "sf2" && deviceRaw?.bank === 128),
+      (deviceRaw?.type === "sf2" && deviceRaw?.bank === 128) ||
+      (deviceRaw?.type === "sfz" && /drum|kit|perc/i.test(String(deviceRaw?.instrument ?? ""))),
   );
   // フレット盤: 撥弦(pluck)と SoundFont(ドラムキット以外)のトラックで使える
   const isFrettable = $derived(
-    found?.track.device?.name === "pluck" || (deviceRaw?.type === "sf2" && !isDrum),
+    found?.track.device?.name === "pluck" || ((deviceRaw?.type === "sf2" || deviceRaw?.type === "sfz") && !isDrum),
   );
   // SoundFont のベース系プリセット(GM 32〜39)は既定でベース指板にする
   const defaultTuning = $derived.by((): "guitar" | "bass" => {
@@ -240,7 +241,7 @@
     ],
   };
   const instrumentName = $derived(
-    deviceRaw?.type === "sf2"
+    deviceRaw?.type === "sf2" || deviceRaw?.type === "sfz"
       ? isDrum
         ? "drum" // SF2 ドラムキットは奏法もドラム扱い(アクセントのみ)
         : "sf2"

@@ -473,7 +473,7 @@ pub fn import_file(project: &Project, req: &ImportMidiRequest) -> Result<Importe
 /// 書き出すときの GM の音色(チャンネル 10 のドラムなら None)
 fn program_for(track: &Track, avg_pitch: f64) -> Option<u8> {
     match track.device.as_ref().map(|d| &d.source) {
-        Some(PluginSource::Sf2 { bank: 128, .. }) => None,
+        Some(s) if s.is_drum_kit() => None,
         Some(PluginSource::Sf2 { preset, .. }) => Some((*preset).min(127) as u8),
         Some(PluginSource::Builtin { name }) if name == "drum" => None,
         Some(PluginSource::Builtin { name }) if name == "pluck" => Some(25),

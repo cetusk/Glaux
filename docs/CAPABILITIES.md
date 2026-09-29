@@ -63,7 +63,7 @@ AI(チャットのヘッドレス Claude、または外部の MCP クライア�
 | **音作り(内蔵)** | apply_commands(set_device / set_param / add_effect) | 音源 6 種の選択とつまみ、エフェクトの追加・つまみ・バイパス |
 | **音作り(外部プラグイン)** | list_plugins / list_plugin_presets / load_plugin_preset / list_params | CLAP 音源(Surge XT 等)の選択、プリセット選び、公開されたつまみの操作。CLAP エフェクト(Surge XT Effects・Dragonfly Reverb・LSP 等)をトラック・マスターに挿してつまみ・オートメーションで動かす |
 | **似た音を作る** | match_sound / find_similar_presets / refine_plugin_params | サンプルに合わせて内蔵シンセ(subtractive / fm / wavetable を自動で選ぶ、リバーブ込みも)のつまみを自動で探す(約 30 秒)。CLAP プラグインのプリセットから近いものを探し(初回は索引作りに数分)、主要なつまみを自動で詰める。UI からは音声クリップのメニュー「この音に似せた内蔵シンセのトラックを作る」「この音に近い CLAP 音源のプリセットを探す」(候補を読み込み → つまみを自動で詰める、まで画面で完結) |
-| **音色の道具箱** | list_presets / save_preset / load_preset / delete_preset、list_effect_presets / save_effect_preset / load_effect_preset / delete_effect_preset、list_soundfonts / set_soundfont_instrument | 音色のプリセット(音源 + エフェクト一式)とエフェクトのプリセット(エフェクト 1 つ分。名前とメモ付き)。どちらも全プロジェクト共通。SoundFont の GM 楽器一式 |
+| **音色の道具箱** | list_presets / save_preset / load_preset / delete_preset、list_effect_presets / save_effect_preset / load_effect_preset / delete_effect_preset、list_soundfonts / set_soundfont_instrument | 音色のプリセット(音源 + エフェクト一式)とエフェクトのプリセット(エフェクト 1 つ分。名前とメモ付き)。どちらも全プロジェクト共通。SoundFont の GM 楽器一式と SFZ の楽器(ライブラリフォルダか絶対パス) |
 | **ミックス** | apply_commands | 音量・パン・ミュート・ソロ、EQ・コンプ・サイドチェイン、マスターのエフェクト、バス(リターン)とセンドで共有のリバーブ・ディレイ。エフェクトの並べ替え(move_effect)、つながり(set_fx_links。分岐・合流・線ごとの音量で並列のリバーブやパラレル・コンプ。入力から出口までたどれるものだけ鳴る)、表示名・メモ(set_effect_prop) |
 | **時間変化** | shape_automation、apply_commands(set_automation_points / set_master_automation_points) | 音量・パン・音色・エフェクト・CLAP のつまみ・マスターを動かす。shape_automation は「区間と形」(ビルドアップの exp・フェード・スウェル・4 分ごとのポンピング・LFO のような揺れ)で書けて、点は道具が並べる |
 | **音声素材** | import_sample / import_audio_clip / transcribe_audio / separate_audio | 音声の取り込み、譜起こし(単旋律・和音)、パート分離。テンポ追従は set_clip_stretch |
@@ -115,7 +115,7 @@ CLAP の列: ビブラート・ベンドは内蔵音源と同じ形の音程変�
 
 | 分類 | 内容 |
 |---|---|
-| 音源 | subtractive(シンセ全般。unison でスーパーソウ。波形を消して雑音だけの音源にもなる: ホワイト / ピンク / ブラウン、レコードのパチパチ)、fm(FM シンセ: エレピ・ベル・マレット・FM ベース)、wavetable(ウェーブテーブル: position を動かすウォブルベース・うねるパッド・母音・シンクリード)、drum(ドラムシンセ、GM 配置)、pluck(ギター・ベース・ハープの撥弦モデル)、sampler(WAV のワンショット)、SoundFont(FluidR3 で GM 128 音色: ピアノ・ストリングス・ブラス等)、CLAP プラグイン(Surge XT はプリセット 2,944 個) |
+| 音源 | subtractive(シンセ全般。unison でスーパーソウ。波形を消して雑音だけの音源にもなる: ホワイト / ピンク / ブラウン、レコードのパチパチ)、fm(FM シンセ: エレピ・ベル・マレット・FM ベース)、wavetable(ウェーブテーブル: position を動かすウォブルベース・うねるパッド・母音・シンクリード)、drum(ドラムシンセ、GM 配置)、pluck(ギター・ベース・ハープの撥弦モデル)、sampler(WAV のワンショット)、SoundFont(FluidR3 で GM 128 音色: ピアノ・ストリングス・ブラス等)、SFZ(自前のパーサ。ベロシティの層・ラウンドロビン・ランダム・ハイハットのチョーク・ワンショット・キースイッチの既定・WAV / FLAC / Ogg の波形)、CLAP プラグイン(Surge XT はプリセット 2,944 個) |
 | エフェクト | eq(3 バンド)、compressor、reverb、distortion、amp(ギターアンプ)、sidechain(ポンピング)、delay(ピンポン対応)、chorus、tape(Lo-fi: 回転むら・飽和・ヒス・レコードのパチパチ・ビット落とし)。トラックにもマスターにも挿せる。CLAP エフェクト(Surge XT Effects 等)も同じチェーンに挿せる |
 | 音声 | 録音(鼻歌・楽器。ステレオ録音も可)、WAV / MP3 等の取り込み(ステレオのまま)、テンポ追従(タイムストレッチ。元のテンポは自動検出できる)、パート分離(内蔵: 打楽器 / 音程楽器、Demucs: 4 パート)、譜起こし(単旋律・和音) |
 | 入力 | MIDI キーボード(サステインペダル・ピッチベンド込み)、MIDI 録音 |

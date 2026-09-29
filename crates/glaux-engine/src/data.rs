@@ -81,6 +81,9 @@ pub struct NoteEvent {
     /// レガート・ポルタメント: 同じトラックで先に離された音の余韻を、このサンプル数で消す(0 = 消さない)。
     /// 押さえたままの音(和音の伴奏など)には触れない
     pub choke: u32,
+    /// SF2/SFZ のゾーン選び: 下位 16 ビット = 同じトラック・同じ音高の何回目か(ラウンドロビン)、
+    /// 上位 16 ビット = ノートごとに決まった乱数
+    pub variant: u32,
 }
 
 /// トラックごとのつなぎの設定(秒)。
@@ -471,6 +474,12 @@ pub struct SampleBank {
     multis: HashMap<(String, u16, u16), Arc<Vec<glaux_dsp::Zone>>>,
     /// フォントごとの変換済み波形(ゾーン・プリセットの間で共有する)
     waves: HashMap<String, crate::sf2::WaveCache>,
+    /// SFZ ライブラリフォルダ(既定は `sfz::default_dir()`)
+    sfz_dir: PathBuf,
+    /// 構築済みの SFZ 楽器(ライブラリからの相対パス → zones。読めなかったものは None)
+    sfz: HashMap<String, Option<Arc<Vec<glaux_dsp::Zone>>>>,
+    /// SFZ の切り出した波形(楽器の間で共有する)
+    sfz_waves: crate::sfz::WaveCache,
     /// テンポ追従クリップの伸縮済み波形(クリップ ID → (条件のハッシュ, 波形))。
     /// 波形はクリップ先頭から末尾までで、素材のサンプルレートのまま
     stretched: HashMap<glaux_core::ClipId, (u64, Arc<SampleData>)>,
@@ -494,6 +503,9 @@ impl Default for SampleBank {
             fonts: HashMap::new(),
             multis: HashMap::new(),
             waves: HashMap::new(),
+            sfz_dir: crate::sfz::default_dir(),
+            sfz: HashMap::new(),
+            sfz_waves: Default::default(),
             stretched: HashMap::new(),
             plugin_slots: HashMap::new(),
             conv: ConvCache::default(),
@@ -523,6 +535,45 @@ impl SampleBank {
     pub fn with_sf2_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.sf2_dir = dir.into();
         self
+    }
+
+    /// テスト・特殊環境用: SFZ ライブラリフォルダを差し替える。
+    pub fn with_sfz_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.sfz_dir = dir.into();
+        self
+    }
+
+    pub fn get_sfz(&self, instrument: &str) -> Option<&Arc<Vec<glaux_dsp::Zone>>> {
+        self.sfz.get(instrument).and_then(|z| z.as_ref())
+    }
+
+    /// プロジェクトが使っている SFZ の楽器を読み込む(読み込み済み・読めなかったものは読み直さない)
+    fn sync_sfz(&mut self, project: &Project) {
+        let used: std::collections::HashSet<&str> = project
+            .tracks
+            .iter()
+            .filter_map(|t| match &t.device.as_ref()?.source {
+                glaux_core::PluginSource::Sfz { instrument } => Some(instrument.as_str()),
+                _ => None,
+            })
+            .collect();
+        self.sfz.retain(|k, _| used.contains(k.as_str()));
+        for name in used {
+            if self.sfz.contains_key(name) {
+                continue;
+            }
+            let zones = match crate::sfz::load_instrument(&self.sfz_dir, name, &mut self.sfz_waves)
+            {
+                Ok(z) => Some(z),
+                Err(e) => {
+                    tracing::warn!("SFZ を読み込めません({name}): {e}");
+                    None
+                }
+            };
+            self.sfz.insert(name.to_owned(), zones);
+        }
+        // どの楽器からも使われなくなった切り出しを捨てる
+        self.sfz_waves.retain(|_, d| Arc::strong_count(d) > 1);
     }
 
     pub fn get_multi(
@@ -650,6 +701,7 @@ impl SampleBank {
                 }
             }
         }
+        self.sync_sfz(project);
     }
 
     /// 再生エンジンが使っている bank を登録する([`Self::for_offline`] で使い回す)。
@@ -836,6 +888,111 @@ fn decode_wav<R: std::io::Read>(mut reader: hound::WavReader<R>) -> Result<Sampl
     Ok(SampleData::mono(frames, sr))
 }
 
+/// symphonia で音声をデコードする。戻り値は (インターリーブ f32, チャンネル数, サンプルレート)。
+pub fn decode_audio(bytes: Vec<u8>, ext: &str) -> Result<(Vec<f32>, u16, u32), String> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+    use symphonia::core::errors::Error;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension(ext);
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| format!("この形式は読めません({ext}): {e}"))?;
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or("音声トラックがありません")?;
+    let track_id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| format!("デコーダを作れません: {e}"))?;
+
+    let mut out = Vec::new();
+    let mut channels = 0u16;
+    let mut rate = 0u32;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(Error::ResetRequired) => break,
+            Err(e) => return Err(format!("読み込み中にエラー: {e}")),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(buf) => {
+                let spec = *buf.spec();
+                channels = spec.channels.count() as u16;
+                rate = spec.rate;
+                let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
+                sb.copy_interleaved_ref(buf);
+                out.extend_from_slice(sb.samples());
+            }
+            // 壊れたフレームは飛ばして続ける(mp3 の先頭などでよくある)
+            Err(Error::DecodeError(_)) => continue,
+            Err(e) => return Err(format!("デコードに失敗: {e}")),
+        }
+    }
+    if channels == 0 || rate == 0 {
+        return Err("音声データが空です".to_owned());
+    }
+    Ok((out, channels, rate))
+}
+
+/// 音声ファイルを読む。WAV は hound、それ以外(FLAC・Ogg など)は symphonia で。
+pub fn load_audio_file(path: &Path) -> Result<SampleData, String> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if ext == "wav" {
+        if let Ok(d) = load_wav(path) {
+            return Ok(d);
+        }
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (inter, ch, sr) = decode_audio(bytes, &ext)?;
+    let ch = ch.max(1) as usize;
+    if ch == 2 {
+        let (l, r): (Vec<f32>, Vec<f32>) = inter
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| (c[0], c[1]))
+            .unzip();
+        return Ok(SampleData::stereo(&l, &r, sr as f32));
+    }
+    let frames = inter
+        .chunks_exact(ch)
+        .map(|c| c.iter().sum::<f32>() / ch as f32)
+        .collect();
+    Ok(SampleData::mono(frames, sr as f32))
+}
+
+/// ノートごとに決まった乱数(上位 16 ビット。SFZ の lorand / hirand で使う)
+fn variant_hash(id: &glaux_core::NoteId, start: u64) -> u32 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in id.as_str().bytes().chain(start.to_le_bytes()) {
+        h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h ^= h >> 29;
+    ((h as u32) >> 16) << 16
+}
+
 /// トラックの音源を焼き込む(サンプラーは SampleBank から波形を解決)。
 fn bake_track_instrument(
     t: &glaux_core::Track,
@@ -853,6 +1010,12 @@ fn bake_track_instrument(
                     ));
                 }
                 tracing::warn!("サンプル未読込のため subtractive で代用: {asset}");
+            }
+            glaux_core::PluginSource::Sfz { instrument } => {
+                if let Some(zones) = bank.get_sfz(instrument) {
+                    return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
+                }
+                tracing::warn!("SFZ 未読込のため subtractive で代用: {instrument}");
             }
             glaux_core::PluginSource::Sf2 {
                 soundfont,
@@ -1453,11 +1616,21 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     fade_out: 0,
                     glide: note.glide_ms.map_or(0.0, |ms| ms / 1000.0),
                     choke: 0,
+                    variant: variant_hash(&note.id, start),
                 });
             }
         }
     }
     events.sort_by_key(|e| e.start);
+    // ラウンドロビン: 同じトラック・同じ音高の何回目か(曲の頭から数える。書き出しでも同じになる)
+    {
+        let mut count: HashMap<(u32, u8), u32> = HashMap::new();
+        for e in events.iter_mut() {
+            let c = count.entry((e.track, e.pitch)).or_insert(0);
+            e.variant = (e.variant & 0xFFFF_0000) | (*c & 0xFFFF);
+            *c += 1;
+        }
+    }
     link_legato(&mut events, sample_rate, &|t| {
         let drum = tracks
             .get(t as usize)

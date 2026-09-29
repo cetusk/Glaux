@@ -126,6 +126,8 @@ export interface Track {
   device?: {
     type?: string;
     name?: string;
+    /** type: "sfz" のときの楽器(SFZ ライブラリからの相対パス、または絶対パス) */
+    instrument?: string;
     /** type: "clap" のときのプラグイン ID と状態(base64) */
     plugin_id?: string;
     state?: string;

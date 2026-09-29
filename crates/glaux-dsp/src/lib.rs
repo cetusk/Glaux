@@ -46,7 +46,7 @@ pub use effects::{
 };
 pub use expr::{articulation_cents, articulation_moves_pitch, NoteShape, PitchCurve, VibratoSpec};
 pub use fm::{FmParams, FmVoice};
-pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, ZoneMod, MAX_LAYERS};
+pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, ZoneMod, ZonePlay, MAX_LAYERS};
 pub use params::{
     articulations_for, bake_instrument, bake_sampler, bake_sf2, instrument_catalog,
     instrument_params, ArticulationInfo, InstrumentInfo,

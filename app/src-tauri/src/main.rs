@@ -1404,9 +1404,12 @@ async fn get_master_params(state: State<'_, AppState>) -> Result<Value, String> 
 #[tauri::command]
 fn list_soundfonts() -> Value {
     let dir = glaux_engine::sf2::default_dir();
+    let sfz_dir = glaux_engine::sfz::default_dir();
     json!({
         "dir": dir.to_string_lossy(),
         "files": glaux_engine::sf2::list_files(&dir),
+        "sfz_dir": sfz_dir.to_string_lossy(),
+        "sfz": glaux_engine::sfz::list_files(&sfz_dir),
     })
 }
 

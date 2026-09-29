@@ -568,7 +568,7 @@ export function calibrateStop(): Promise<{
 
 // ---- SoundFont ----
 
-export function listSoundfonts(): Promise<{ dir: string; files: string[] }> {
+export function listSoundfonts(): Promise<{ dir: string; files: string[]; sfz_dir?: string; sfz?: string[] }> {
   return invoke("list_soundfonts");
 }
 

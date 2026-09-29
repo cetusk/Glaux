@@ -16,7 +16,7 @@ type Device = Track["device"];
 export function deviceIcon(device: Device): IconName {
   if (!device) return "audio-waveform";
   if (device.type === "clap") return "plug";
-  if (device.type === "sf2") return "library";
+  if (device.type === "sf2" || device.type === "sfz") return "library";
   if (device.type === "sampler") return "file-audio";
   return BUILTIN_INSTRUMENTS.find((b) => b.name === device.name)?.icon ?? "audio-waveform";
 }
@@ -32,6 +32,10 @@ export function deviceName(device: Device, clapNames?: Map<string, string>): str
     const d = device as { soundfont?: string; bank?: number; preset?: number };
     return `${(d.soundfont ?? "SoundFont").replace(/\.sf2$/i, "")} ${d.bank ?? 0}:${d.preset ?? 0}`;
   }
+  if (device.type === "sfz") {
+    const file = (device.instrument ?? "SFZ").split(/[\\/]/).pop() ?? "SFZ";
+    return file.replace(/\.sfz$/i, "");
+  }
   if (device.type === "sampler") return "sampler";
   return device.name ?? "subtractive";
 }
@@ -41,6 +45,7 @@ export function deviceKind(device: Device): string {
   if (!device) return "内蔵シンセ(既定)";
   if (device.type === "clap") return "CLAP プラグイン";
   if (device.type === "sf2") return "SoundFont";
+  if (device.type === "sfz") return "SFZ";
   if (device.type === "sampler") return "サンプル(WAV)";
   return "内蔵";
 }

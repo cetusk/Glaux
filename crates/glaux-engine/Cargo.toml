@@ -19,6 +19,8 @@ arc-swap.workspace = true
 hound.workspace = true
 flacenc.workspace = true
 rustysynth.workspace = true
+# 音声ファイルの読み込み(取り込み・SFZ の FLAC / Ogg の波形)
+symphonia.workspace = true
 rustfft.workspace = true
 cmaes.workspace = true
 serde.workspace = true
@@ -30,5 +32,4 @@ windows-sys.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
-symphonia.workspace = true
 tempfile.workspace = true

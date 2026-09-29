@@ -162,6 +162,46 @@ impl VoiceState {
         }
     }
 
+    /// SF2/SFZ のゾーン選び(ラウンドロビン・乱数)付きで鳴らす。他の楽器は `start` と同じ
+    pub fn start_variant(
+        params: &InstrumentParams,
+        freq: f32,
+        pitch: u8,
+        vel: f32,
+        articulation: glaux_core::Articulation,
+        sample_rate: f32,
+        variant: u32,
+    ) -> VoiceState {
+        match params {
+            InstrumentParams::Sf2(p) => VoiceState::Sf2(MultiVoice::start_variant(
+                p,
+                pitch,
+                vel,
+                articulation,
+                sample_rate,
+                variant,
+            )),
+            _ => Self::start(params, freq, pitch, vel, articulation, sample_rate),
+        }
+    }
+
+    /// チョークのグループ(SF2/SFZ のみ。0 = 無し)
+    pub fn choke_group(&self) -> u32 {
+        match self {
+            VoiceState::Sf2(v) => v.group(),
+            _ => 0,
+        }
+    }
+
+    /// グループ `g` が鳴ったら止まる音なら、すばやく止める
+    pub fn choke_if(&mut self, g: u32) {
+        if let VoiceState::Sf2(v) = self {
+            if v.stopped_by(g) {
+                v.choke();
+            }
+        }
+    }
+
     pub fn note_off(&mut self) {
         match self {
             VoiceState::Subtractive(v) => v.note_off(),

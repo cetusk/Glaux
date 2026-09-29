@@ -123,13 +123,8 @@ pub fn analyze(
         }
         // ドラム(音程情報がない)は和声分析から除く
         if let Some(d) = &t.device {
-            if matches!(&d.source, crate::model::PluginSource::Builtin { name } if name == "drum") {
+            if d.source.is_drum_kit() {
                 continue;
-            }
-            if let crate::model::PluginSource::Sf2 { bank, .. } = &d.source {
-                if *bank == 128 {
-                    continue;
-                }
             }
         }
         for c in &t.clips {

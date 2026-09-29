@@ -18,7 +18,7 @@
   const TABS: { key: Tab; label: string; icon: IconName }[] = [
     { key: "builtin", label: "内蔵", icon: "audio-waveform" },
     { key: "preset", label: "音色のプリセット", icon: "save" },
-    { key: "sf2", label: "SoundFont", icon: "library" },
+    { key: "sf2", label: "SoundFont・SFZ", icon: "library" },
     { key: "clap", label: "CLAP", icon: "plug" },
     { key: "sample", label: "サンプル(WAV)", icon: "file-audio" },
   ];
@@ -31,6 +31,7 @@
   let presets = $state<PresetInfo[] | null>(null);
   let sfFiles = $state<string[] | null>(null);
   let sfFile = $state("");
+  let sfzFiles = $state<string[]>([]);
   let sfPresets = $state<{ bank: number; preset: number; name: string }[]>([]);
   let sfBusy = $state(false);
   let clapList = $state<api.ClapPluginInfo[] | null>(null);
@@ -47,7 +48,7 @@
     openedFor = key;
     query = "";
     const type = t.device?.type;
-    tab = open.tab ?? (type === "clap" ? "clap" : type === "sf2" ? "sf2" : type === "sampler" ? "sample" : "builtin");
+    tab = open.tab ?? (type === "clap" ? "clap" : type === "sf2" || type === "sfz" ? "sf2" : type === "sampler" ? "sample" : "builtin");
     if (type === "sf2") {
       const d = t.device as { soundfont?: string };
       if (d.soundfont) pickSf(d.soundfont);
@@ -59,7 +60,13 @@
     if (tab === "preset" && presets === null)
       api.listPresets().then((r) => (presets = r.presets)).catch(() => (presets = []));
     if (tab === "sf2" && sfFiles === null)
-      api.listSoundfonts().then((r) => (sfFiles = r.files)).catch(() => (sfFiles = []));
+      api
+        .listSoundfonts()
+        .then((r) => {
+          sfFiles = r.files;
+          sfzFiles = r.sfz ?? [];
+        })
+        .catch(() => (sfFiles = []));
     if (tab === "clap" && clapList === null) loadClap(false);
   });
 
@@ -127,6 +134,19 @@
         `${t.name} の音源を「${name}」(SoundFont)に変更`,
       ),
       "SoundFont にできませんでした",
+    );
+  }
+
+  function setSfz(instrument: string) {
+    const t = track;
+    if (!t) return;
+    if (t.device?.type === "sfz" && t.device.instrument === instrument) return close();
+    run(
+      api.applyEdit(
+        [{ op: "set_device", track: t.id, device: { type: "sfz", instrument } }],
+        `${t.name} の音源を「${instrument}」(SFZ)に変更`,
+      ),
+      "SFZ にできませんでした",
     );
   }
 
@@ -239,6 +259,13 @@
             {#each sfPresets.filter((p) => hit(p.name)) as p (`${p.bank}:${p.preset}`)}
               <button class="item compact" onclick={() => setSf(p.bank, p.preset, p.name)}>
                 <code>{p.bank}:{String(p.preset).padStart(3, "0")}</code><span><b>{p.name}</b></span>
+              </button>
+            {/each}
+          {:else if sfzFiles.length > 0}
+            <div class="note">SFZ の楽器</div>
+            {#each sfzFiles.filter((f) => hit(f)) as f (f)}
+              <button class="item compact" class:sel={track.device?.type === "sfz" && track.device.instrument === f} onclick={() => setSfz(f)}>
+                <code>SFZ</code><span><b>{f.replace(/\.sfz$/i, "")}</b></span>
               </button>
             {/each}
           {:else if (sfFiles ?? []).length === 0}

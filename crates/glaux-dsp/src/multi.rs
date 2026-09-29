@@ -118,6 +118,44 @@ pub struct Zone {
     pub env: ZoneEnv,
     /// フィルタ・LFO・モジュレーションエンベロープ
     pub modu: ZoneMod,
+    /// 鳴らす条件と鳴り方(SFZ の opcode 由来。SoundFont は既定のまま)
+    pub play: ZonePlay,
+}
+
+/// ゾーンを鳴らす条件と鳴り方(SFZ の seq・rand・group・off_by・one_shot・pitch_keytrack)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZonePlay {
+    /// ラウンドロビン: 何回に 1 回(seq_length)の何回目(seq_position、1 始まり)。(1, 1) で毎回
+    pub seq_length: u8,
+    pub seq_position: u8,
+    /// 乱数(0〜1)がこの範囲 [lo, hi) のときだけ鳴る
+    pub rand_lo: f32,
+    pub rand_hi: f32,
+    /// チョークのグループ(0 = 無し)と、鳴ったら自分を止めるグループ(0 = 無し。ハイハットのオープンを閉じる)
+    pub group: u32,
+    pub off_by: u32,
+    /// 離しても最後まで鳴らす(ドラム)
+    pub one_shot: bool,
+    /// キーへの追従(1 = 鍵盤どおりに音程が動く、0 = 動かない)
+    pub keytrack: f32,
+    /// 追従とは別に足す音程(半音。SFZ の transpose・tune)
+    pub tune_semis: f32,
+}
+
+impl Default for ZonePlay {
+    fn default() -> Self {
+        ZonePlay {
+            seq_length: 1,
+            seq_position: 1,
+            rand_lo: 0.0,
+            rand_hi: 1.0,
+            group: 0,
+            off_by: 0,
+            one_shot: false,
+            keytrack: 1.0,
+            tune_semis: 0.0,
+        }
+    }
 }
 
 impl Zone {
@@ -165,6 +203,10 @@ struct ZonePlayer {
     /// 音量エンベロープの 1 サンプルあたりの係数(減衰・リリース。発音時に計算)
     decay_coef: f32,
     release_coef: f32,
+    /// ワンショット・チョーク(ゾーンの `ZonePlay` から写す)
+    one_shot: bool,
+    group: u32,
+    off_by: u32,
     /// ---- 変調(制御レートで更新)----
     /// LFO / エンベロープ由来のピッチ倍率
     pitch_mul: f64,
@@ -288,6 +330,20 @@ impl MultiVoice {
         articulation: Articulation,
         sample_rate: f32,
     ) -> Self {
+        Self::start_variant(p, pitch, vel, articulation, sample_rate, 0)
+    }
+
+    /// `variant` の下位 16 ビットは同じ音の何回目か(ラウンドロビン)、上位 16 ビットは決まった乱数(lorand / hirand)
+    pub fn start_variant(
+        p: &MultiSamplerParams,
+        pitch: u8,
+        vel: f32,
+        articulation: Articulation,
+        sample_rate: f32,
+        variant: u32,
+    ) -> Self {
+        let rr = variant & 0xFFFF;
+        let rand = (variant >> 16) as f32 / 65_536.0;
         let amp_mul = if articulation == Articulation::Accent {
             1.3
         } else {
@@ -304,7 +360,17 @@ impl MultiVoice {
             if !z.contains(pitch, vel_midi) {
                 continue;
             }
-            let semis = pitch as f64 - z.root as f64;
+            let pl_cond = &z.play;
+            if pl_cond.seq_length > 1
+                && (rr % pl_cond.seq_length as u32) + 1 != pl_cond.seq_position as u32
+            {
+                continue;
+            }
+            if rand < pl_cond.rand_lo || rand >= pl_cond.rand_hi {
+                continue;
+            }
+            let semis =
+                (pitch as f64 - z.root as f64) * z.play.keytrack as f64 + z.play.tune_semis as f64;
             let mut pl = ZonePlayer {
                 active: true,
                 zone: i as u16,
@@ -317,6 +383,9 @@ impl MultiVoice {
                 decay_coef: sf2_env_coef(z.env.decay.max(0.005), sample_rate),
                 release_coef: sf2_env_coef(z.env.release.max(0.005), sample_rate),
                 pitch_mul: 1.0,
+                one_shot: z.play.one_shot,
+                group: z.play.group,
+                off_by: z.play.off_by,
                 ..ZonePlayer::default()
             };
             if !z.modu.is_inert() {
@@ -340,13 +409,41 @@ impl MultiVoice {
         }
     }
 
+    /// 離す。ワンショットのゾーンはそのまま最後まで鳴らす
     pub fn note_off(&mut self) {
         self.released = true;
         for pl in &mut self.players {
-            if pl.active {
+            if pl.active && !pl.one_shot {
                 pl.stage = STAGE_RELEASE;
             }
         }
+    }
+
+    /// チョーク: すばやく(約 10ms で)止める。ワンショットも止まる
+    pub fn choke(&mut self) {
+        self.released = true;
+        let coef = sf2_env_coef(0.01, self.sample_rate);
+        for pl in &mut self.players {
+            if pl.active {
+                pl.stage = STAGE_RELEASE;
+                pl.release_coef = coef;
+            }
+        }
+    }
+
+    /// 鳴っているゾーンのチョークのグループ(最初の 1 つ。0 = 無し)
+    pub fn group(&self) -> u32 {
+        self.players
+            .iter()
+            .filter(|pl| pl.active)
+            .map(|pl| pl.group)
+            .find(|g| *g != 0)
+            .unwrap_or(0)
+    }
+
+    /// グループ `g` の音が鳴ったら止まるか
+    pub fn stopped_by(&self, g: u32) -> bool {
+        g != 0 && self.players.iter().any(|pl| pl.active && pl.off_by == g)
     }
 
     pub fn finished(&self) -> bool {
@@ -489,6 +586,7 @@ mod tests {
             gain: 1.0,
             env: env(),
             modu: ZoneMod::default(),
+            play: ZonePlay::default(),
         }
     }
 
@@ -711,5 +809,70 @@ mod tests {
             (1.2..1.6).contains(&r),
             "2 レイヤーは √2 倍程度になるはず: {r}"
         );
+    }
+
+    #[test]
+    fn round_robin_random_one_shot_and_choke() {
+        let sr = 48_000.0;
+        let a = sine_data(220.0, 0.5, sr);
+        let b = sine_data(880.0, 0.5, sr);
+        // 同じ鍵盤に 2 つ(ラウンドロビン 1 回目・2 回目)
+        let mut z1 = zone(60, 60, 60.0, a.clone());
+        z1.play.seq_length = 2;
+        z1.play.seq_position = 1;
+        let mut z2 = zone(60, 60, 60.0, b.clone());
+        z2.play.seq_length = 2;
+        z2.play.seq_position = 2;
+        let p = MultiSamplerParams {
+            zones: Arc::new(vec![z1, z2]),
+            gain: 1.0,
+        };
+        let freq = |variant: u32| {
+            let mut v = MultiVoice::start_variant(&p, 60, 1.0, Articulation::Normal, sr, variant);
+            let x: Vec<f32> = (0..4_800).map(|_| v.next(&p)).collect();
+            x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count()
+        };
+        assert!(freq(0) < 30 && freq(1) > 60, "{} {}", freq(0), freq(1));
+        assert_eq!(freq(0), freq(2));
+        // 乱数で選ぶ(下半分と上半分)
+        let mut r1 = zone(62, 62, 62.0, a.clone());
+        r1.play.rand_hi = 0.5;
+        let mut r2 = zone(62, 62, 62.0, b.clone());
+        r2.play.rand_lo = 0.5;
+        let p2 = MultiSamplerParams {
+            zones: Arc::new(vec![r1, r2]),
+            gain: 1.0,
+        };
+        let v_low = MultiVoice::start_variant(&p2, 62, 1.0, Articulation::Normal, sr, 0);
+        let v_high = MultiVoice::start_variant(&p2, 62, 1.0, Articulation::Normal, sr, 0xC000_0000);
+        assert_eq!(v_low.players.iter().filter(|pl| pl.active).count(), 1);
+        assert_eq!(v_high.players[0].zone, 1);
+        // ワンショットは離しても鳴り続け、チョークのグループで止まる
+        let mut open = zone(46, 46, 46.0, a.clone());
+        open.play.one_shot = true;
+        open.play.off_by = 1;
+        let mut closed = zone(42, 42, 42.0, b.clone());
+        closed.play.group = 1;
+        let p3 = MultiSamplerParams {
+            zones: Arc::new(vec![open, closed]),
+            gain: 1.0,
+        };
+        let mut v = MultiVoice::start(&p3, 46, 1.0, Articulation::Normal, sr);
+        for _ in 0..100 {
+            v.next(&p3);
+        }
+        v.note_off();
+        for _ in 0..4_800 {
+            v.next(&p3);
+        }
+        assert!(!v.finished(), "ワンショットは最後まで");
+        let c = MultiVoice::start(&p3, 42, 1.0, Articulation::Normal, sr);
+        assert_eq!(c.group(), 1);
+        assert!(v.stopped_by(1));
+        v.choke();
+        for _ in 0..2_400 {
+            v.next(&p3);
+        }
+        assert!(v.finished(), "チョークで止まる");
     }
 }

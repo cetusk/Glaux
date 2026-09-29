@@ -5180,3 +5180,59 @@ async fn critique_arrangement_points_out_what_to_fix_and_clears_after_fixing() {
         "{v}"
     );
 }
+
+#[tokio::test]
+async fn set_soundfont_instrument_accepts_sfz() {
+    let fx = setup().await;
+    // 別の場所に置いた SFZ(絶対パス)。ハイハットのオープンとクローズ(チョーク)
+    let lib = fx.dir.parent().unwrap().join("sfzlib");
+    std::fs::create_dir_all(&lib).unwrap();
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 48_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(lib.join("hat.wav"), spec).unwrap();
+    for i in 0..24_000u32 {
+        let v = ((i * 7919) % 200) as i16 * 100 - 10_000;
+        w.write_sample(v).unwrap();
+    }
+    w.finalize().unwrap();
+    std::fs::write(
+        lib.join("hats kit.sfz"),
+        "<group> pitch_keytrack=0 loop_mode=one_shot\n\
+         <region> sample=hat.wav key=42 group=1\n\
+         <region> sample=hat.wav key=46 off_by=1\n",
+    )
+    .unwrap();
+    let sfz = lib.join("hats kit.sfz").to_string_lossy().into_owned();
+
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_sfz001", "Hats")).await);
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_soundfont_instrument",
+            json!({"track_id": "trk_sfz001", "sfz": sfz}),
+        )
+        .await,
+    );
+    assert_eq!(v["zones"], 2);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let t = glaux_core::TrackId::parse("trk_sfz001").unwrap();
+    let dev = &project.track(&t).unwrap().device.as_ref().unwrap().source;
+    assert!(matches!(dev, glaux_core::PluginSource::Sfz { .. }));
+    assert!(dev.is_drum_kit(), "名前に kit を含むのでドラム扱い");
+    let s = glaux_mcp::sound::render_note(&project, &fx.dir, &t, 42, 100, 0.2).unwrap();
+    assert!(s.frames.iter().any(|x| x.abs() > 0.05), "SFZ の波形が鳴る");
+
+    // 外へ出る名前・引数の不足はエラー
+    for args in [
+        json!({"track_id": "trk_sfz001", "sfz": "../x.sfz"}),
+        json!({"track_id": "trk_sfz001", "sfz": "none/missing.sfz"}),
+        json!({"track_id": "trk_sfz001", "soundfont": "a.sf2"}),
+    ] {
+        let r = call(&fx, "set_soundfont_instrument", args).await;
+        assert_eq!(r.is_error, Some(true));
+    }
+}

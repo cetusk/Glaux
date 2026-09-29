@@ -100,12 +100,10 @@ fn longest_repeat(shapes: &[BarShape]) -> Option<(usize, usize, usize)> {
 }
 
 fn is_drum(track: &Track) -> bool {
-    use crate::model::PluginSource;
-    match track.device.as_ref().map(|d| &d.source) {
-        Some(PluginSource::Builtin { name }) => name == "drum",
-        Some(PluginSource::Sf2 { bank, .. }) => *bank == 128,
-        _ => false,
-    }
+    track
+        .device
+        .as_ref()
+        .is_some_and(|d| d.source.is_drum_kit())
 }
 
 /// クリップの鳴る音を (絶対 tick, 長さ, 音程, 強さ, 表情の有無) で(ループは繰り返しを展開)
