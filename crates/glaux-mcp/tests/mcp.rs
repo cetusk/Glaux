@@ -4425,6 +4425,45 @@ async fn modulate_track_params_with_lfos() {
 }
 
 #[tokio::test]
+async fn sustain_pedal_lengthens_arpeggios_to_chord_changes() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_ped001", "Piano")).await);
+    // C の分散和音 1 小節 → F の分散和音 1 小節(8 分ずつ、短く切った音)
+    let notes: Vec<Value> = [
+        60u8, 64, 67, 72, 67, 64, 60, 64, 65, 69, 72, 77, 72, 69, 65, 69,
+    ]
+    .iter()
+    .enumerate()
+    .map(|(k, &p)| json!({ "pos": k as u64 * 480, "dur": 200, "pitch": p, "vel": 80 }))
+    .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_clip", "track": "trk_ped001", "clip": {
+                    "id": "clp_ped001", "name": "p", "start": 0, "length": 7680, "kind": "midi", "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(&call(&fx, "sustain_pedal", json!({ "clip_id": "clp_ped001" })).await);
+    assert_eq!(v["pedal_changes"], 2, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap();
+    // 1 小節目の音は 2 小節目の頭の手前(120BPM で 60ms = 115 tick 前)まで、2 小節目の音はクリップの終わりの手前まで
+    assert_eq!(ns[0].pos.0 + ns[0].dur.0, 3840 - 115);
+    assert_eq!(ns[8].pos.0 + ns[8].dur.0, 7680 - 115);
+    let r = call(
+        &fx,
+        "sustain_pedal",
+        json!({ "clip_id": "clp_ped001", "mode": "sometimes" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(

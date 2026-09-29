@@ -440,12 +440,95 @@ fn factory_presets() -> Vec<Preset> {
             ),
             vec![fx("reverb", &[("mix", 0.35), ("size", 0.9)])],
         ),
+        preset(
+            "ポンピングパッド",
+            "厚いのこぎり波のパッドを 4 分ごとに沈める(volume_shaper。サイドチェイン無しで 4 つ打ちに合わせて呼吸する)。EDM・ハウスのコードに",
+            device(
+                "subtractive",
+                &[
+                    ("unison", 5.0),
+                    ("detune", 22.0),
+                    ("cutoff", 3500.0),
+                    ("attack", 0.05),
+                    ("sustain", 0.9),
+                    ("release", 0.4),
+                    ("filter_env", 0.1),
+                    ("gain_db", -12.0),
+                ],
+            ),
+            vec![
+                fx("volume_shaper", &[("depth_db", 14.0), ("release", 0.55)]),
+                fx("reverb", &[("mix", 0.25), ("size", 0.7)]),
+            ],
+        ),
+        preset(
+            "トランスゲートのパッド",
+            "パッドを 16 分の型(trance)で刻む。伸ばしのコードを置くだけでトランスのリズムになる",
+            device(
+                "subtractive",
+                &[
+                    ("unison", 5.0),
+                    ("detune", 18.0),
+                    ("cutoff", 5000.0),
+                    ("attack", 0.01),
+                    ("sustain", 1.0),
+                    ("release", 0.3),
+                    ("filter_env", 0.0),
+                    ("gain_db", -12.0),
+                ],
+            ),
+            vec![
+                fx("trance_gate", &[("depth", 1.0), ("smooth_ms", 3.0)]),
+                fx("delay", &[("time_ms", 375.0), ("feedback", 0.3), ("mix", 0.2), ("duck_db", 4.0)]),
+                fx("reverb", &[("mix", 0.2), ("size", 0.6)]),
+            ],
+        ),
+        preset(
+            "80 年代のドラム",
+            "ドラムに大きく短く切ったリバーブ(ゲートリバーブ)とクリッパー。80 年代のスネアの「バシャッ」",
+            device("drum", &[]),
+            vec![
+                fx("reverb", &[("mix", 0.35), ("size", 0.85), ("gate_ms", 220.0)]),
+                fx("clipper", &[("drive_db", 4.0)]),
+            ],
+        ),
+        preset(
+            "オートワウ・ギター",
+            "pluck のギター + アンプ + 弾いた強さで開くバンドパス(auto_filter の env_amount)。ファンクのカッティングに",
+            device(
+                "pluck",
+                &[("decay", 1.2), ("brightness", 0.7), ("pick", 0.8)],
+            ),
+            vec![
+                fx("amp", &[("gain_db", 14.0), ("tone", 0.6), ("level_db", -9.0)]),
+                fx(
+                    "auto_filter",
+                    &[("cutoff", 500.0), ("resonance", 0.6), ("depth", 0.0), ("env_amount", 2.5)],
+                ),
+            ],
+        ),
+        preset(
+            "ビットクラッシュ・リード",
+            "矩形波のリードをビットとサンプルレートで荒らしたゲーム機風の音",
+            {
+                let mut d = device(
+                    "subtractive",
+                    &[("cutoff", 9000.0), ("sustain", 0.8), ("release", 0.1), ("filter_env", 0.2), ("gain_db", -12.0)],
+                );
+                d.params.insert(
+                    "waveform".to_owned(),
+                    glaux_core::ParamValue::Enum("square".to_owned()),
+                );
+                d
+            },
+            vec![fx("bitcrush", &[("bits", 6.0), ("downsample", 4.0), ("mix", 1.0)])],
+        ),
     ]
 }
 
 /// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
 /// (ユーザーが独自に作った別名のプリセットには触れない)。
-const FACTORY_VERSION: &str = "v5";
+const FACTORY_VERSION: &str = "v6";
 
 /// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
 /// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)
@@ -624,5 +707,35 @@ mod tests {
             unreachable!()
         };
         assert_eq!(sp.attack, 4.0);
+    }
+
+    #[test]
+    fn factory_presets_use_known_effects_and_params() {
+        for p in factory_presets() {
+            for fx in &p.effects {
+                let PluginSource::Builtin { name } = &fx.source else {
+                    continue;
+                };
+                let specs = glaux_dsp::effect_params_spec(name)
+                    .unwrap_or_else(|| panic!("{}: 知らないエフェクト {name}", p.name));
+                for key in fx.params.keys() {
+                    assert!(
+                        specs.iter().any(|s| s.name == key.as_str()),
+                        "{}: {name} に {key} は無い",
+                        p.name
+                    );
+                }
+            }
+            if let PluginSource::Builtin { name } = &p.device.source {
+                let specs = glaux_dsp::instrument_params(name).expect("音源");
+                for key in p.device.params.keys() {
+                    assert!(
+                        specs.iter().any(|s| s.name == key.as_str()),
+                        "{}: {name} に {key} は無い",
+                        p.name
+                    );
+                }
+            }
+        }
     }
 }

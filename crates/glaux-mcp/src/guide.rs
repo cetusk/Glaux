@@ -186,6 +186,7 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 装飾音は add_ornament(acciaccatura・appoggiatura・mordent・turn・trill・schleifer)。クラシック・バロックは trill と turn、\n\
   ケルト・和風の笛は acciaccatura と schleifer、ジャズは acciaccatura を半音で(interval 1)。付けすぎない(probability 0.3〜0.5)。\n\
 - ピアノや伴奏と重なる旋律は melody_lead で 20〜30ms 先に鳴らすと浮き上がる(和音はいちばん上の音だけ動く)。\n\
+- ピアノの分散和音・バラードは sustain_pedal(和音が変わる所で踏み替えて響きをつなぐ)。\n\
 - 1 音の中の強弱・明るさは note_dynamics: 弦・管・パッドの伸ばしに swell、ブラスのキメに sfz・fp、長い音の終わりに fade、\n\
   シンセのリードの伸ばしに open(暗くから開く)。ノートの volume_curve(dB)・brightness_curve(−1〜1)に展開される。\n\
 - 和音が一度に「ジャーン」と鳴るのは機械っぽさの筆頭。ギターのコードは strum_chord(style guitar: 拍の頭は下げ・裏は上げ。\n\

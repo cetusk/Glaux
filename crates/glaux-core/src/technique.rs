@@ -408,6 +408,90 @@ pub fn jazz_swing_ratio(bpm: f64) -> f64 {
     ((beat_ms - short) / beat_ms).clamp(0.5, 0.75)
 }
 
+/// ペダルを踏み替える位置の決め方
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PedalMode {
+    /// 和音が変わる所(今までに鳴った音に無い音名が出た所)
+    Chord,
+    /// 小節の頭
+    Bar,
+    /// 小節の頭と半ば
+    HalfBar,
+}
+
+impl PedalMode {
+    pub fn parse(s: &str) -> Option<PedalMode> {
+        Some(match s.trim().to_lowercase().as_str() {
+            "chord" => PedalMode::Chord,
+            "bar" => PedalMode::Bar,
+            "half_bar" | "half" => PedalMode::HalfBar,
+            _ => return None,
+        })
+    }
+}
+
+/// サステインペダルを音の長さに焼き込む: 踏み替えの位置で区切り、区切りの中で始まる音を区切りの終わり − `lift`
+/// まで伸ばす(短くはしない)。`bar_heads` はクリップの頭からの小節の頭(Bar・HalfBar と、Chord の区切りの補助)。
+/// 戻り値は (音の番号, 新しい長さ) と、踏み替えの位置
+pub fn sustain_pedal(
+    notes: &[Note],
+    mode: PedalMode,
+    bar_heads: &[(u64, u64)],
+    lift: u64,
+    clip_len: u64,
+) -> (Vec<(usize, u64)>, Vec<u64>) {
+    let mut cuts: Vec<u64> = match mode {
+        PedalMode::Bar => bar_heads.iter().map(|b| b.0).collect(),
+        PedalMode::HalfBar => bar_heads
+            .iter()
+            .flat_map(|b| [b.0, b.0 + b.1 / 2])
+            .collect(),
+        PedalMode::Chord => {
+            // 小節の半分ずつの窓で音名の組を前の窓と比べ、新しい音名が 2 つ以上なら和音が変わったとみなして
+            // その窓の頭で踏み替える(分散和音でも 1 音ずつでは切らない)
+            let mut windows: Vec<(u64, u64)> = bar_heads
+                .iter()
+                .flat_map(|&(s, l)| [(s, l / 2), (s + l / 2, l - l / 2)])
+                .collect();
+            windows.retain(|w| w.1 > 0);
+            let mut cuts = vec![0u64];
+            let mut prev: Vec<u8> = Vec::new();
+            for (ws, wl) in windows {
+                let mut pcs: Vec<u8> = notes
+                    .iter()
+                    .filter(|n| n.pos.0 >= ws && n.pos.0 < ws + wl)
+                    .map(|n| n.pitch % 12)
+                    .collect();
+                pcs.sort_unstable();
+                pcs.dedup();
+                if pcs.is_empty() {
+                    continue;
+                }
+                let new = pcs.iter().filter(|p| !prev.contains(p)).count();
+                if !prev.is_empty() && new >= 2 {
+                    cuts.push(ws);
+                }
+                prev = pcs;
+            }
+            cuts
+        }
+    };
+    cuts.push(clip_len);
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out = Vec::new();
+    for (i, n) in notes.iter().enumerate() {
+        let k = cuts.partition_point(|&c| c <= n.pos.0);
+        let seg_end = cuts.get(k).copied().unwrap_or(clip_len);
+        let target = seg_end.saturating_sub(lift).max(n.pos.0 + 1);
+        if target > n.pos.0 + n.dur.0 {
+            out.push((i, target - n.pos.0));
+        }
+    }
+    cuts.pop();
+    (out, cuts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,6 +638,30 @@ mod tests {
         assert!((jazz_swing_ratio(80.0) - 2.0 / 3.0).abs() < 1e-9);
         let fast = jazz_swing_ratio(300.0);
         assert!((0.5..0.6).contains(&fast), "{fast}");
+    }
+
+    #[test]
+    fn sustain_pedal_extends_notes_to_the_next_change() {
+        // C の分散和音(C E G)→ F の分散和音(F A C)、8 分ずつ
+        let mut ns = Vec::new();
+        for (k, p) in [60u8, 64, 67, 64, 65, 69, 72, 69].iter().enumerate() {
+            ns.push(note(k as u64 * 480, 240, *p, 80));
+        }
+        let (ext, cuts) = sustain_pedal(&ns, PedalMode::Chord, &[(0, 3840)], 60, 3840);
+        assert_eq!(cuts, vec![0, 1920]);
+        // 最初の C は F の手前(1920 − 60)まで伸びる
+        assert!(ext.contains(&(0, 1860)), "{ext:?}");
+        // F の和音の音はクリップの終わりの手前まで
+        assert!(ext.contains(&(4, 3840 - 60 - 1920)));
+        // 小節ごと
+        let (_, cuts) = sustain_pedal(&ns, PedalMode::HalfBar, &[(0, 3840)], 60, 3840);
+        assert_eq!(cuts, vec![0, 1920]);
+        // 長い音は短くしない
+        let long = vec![note(0, 3840, 60, 80)];
+        assert!(sustain_pedal(&long, PedalMode::Bar, &[(0, 3840)], 60, 3840)
+            .0
+            .is_empty());
+        assert_eq!(PedalMode::parse("half_bar"), Some(PedalMode::HalfBar));
     }
 
     #[test]

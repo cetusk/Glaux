@@ -1501,6 +1501,21 @@ pub struct ModulateParams {
     pub remove: Option<bool>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct SustainPedalParams {
+    /// 対象クリップ ID。1 つなら clip_id、まとめて掛けるなら clip_ids(1 回の undo で戻る)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
+    /// 踏み替えの位置: chord(既定。和音が変わる所 = 小節の半分ずつで新しい音名が 2 つ以上)/ bar(小節の頭)/ half_bar。
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// 踏み替えで離しておく長さ(ms、既定 60。短いほど前の響きが次に残る)。
+    #[serde(default)]
+    pub lift_ms: Option<f64>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -8877,6 +8892,87 @@ impl GlauxServer {
         v["entry_id"] = json!(entry_id);
         v["modulators"] = json!(mods);
         v["target"] = target_json;
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ピアノのサステインペダルを音の長さに焼き込む: 踏み替えの位置(chord = 和音が変わる所 / bar / half_bar)で区切り、\
+        区切りの中で始まる音を区切りの終わりの少し手前(lift_ms)まで伸ばす(短くはしない)。分散和音・アルペジオ・バラードの\
+        ピアノの響きがつながる。ループのクリップは飛ばす(書き出してから)。1 回の undo で戻る。"
+    )]
+    async fn sustain_pedal(
+        &self,
+        params: Parameters<SustainPedalParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::technique::{sustain_pedal, PedalMode};
+        let _activity = self.handle.begin_activity("sustain_pedal");
+        let p = params.0;
+        let mode = match p.mode.as_deref() {
+            None => PedalMode::Chord,
+            Some(m) => PedalMode::parse(m)
+                .ok_or_else(|| format!("mode は chord / bar / half_bar(got: {m})"))?,
+        };
+        let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
+        let (project, version) = self.handle.get_project().await?;
+        let mut commands = Vec::new();
+        let mut total = 0usize;
+        let mut changes_at = 0usize;
+        for id in &ids {
+            let cid = glaux_core::ClipId::parse(id).map_err(|e| e.to_string())?;
+            let (_, clip) = project
+                .clip(&cid)
+                .ok_or_else(|| format!("クリップが見つかりません: {id}"))?;
+            if clip.loop_len().is_some() {
+                continue;
+            }
+            let notes = clip
+                .notes()
+                .ok_or_else(|| format!("MIDI クリップではありません: {id}"))?;
+            let (start, len) = (clip.start.0, clip.length.0);
+            let bars: Vec<(u64, u64)> = glaux_core::meter::bar_meters(&project, start + len)
+                .into_iter()
+                .filter(|m| m.start + m.len > start && m.start < start + len)
+                .map(|m| {
+                    let s = m.start.max(start);
+                    (s - start, m.start + m.len - s)
+                })
+                .collect();
+            let bpm = project.tempo_map.bpm_at(clip.start);
+            let lift = (p.lift_ms.unwrap_or(60.0).clamp(0.0, 500.0) * glaux_core::PPQ as f64 * bpm
+                / 60_000.0)
+                .round() as u64;
+            let (ext, cuts) = sustain_pedal(notes, mode, &bars, lift, len);
+            changes_at += cuts.len();
+            total += ext.len();
+            if !ext.is_empty() {
+                commands.push(Command::UpdateNotes {
+                    clip: cid,
+                    changes: ext
+                        .into_iter()
+                        .map(|(i, d)| {
+                            glaux_core::NoteChange::new(notes[i].id.clone())
+                                .dur(glaux_core::Tick(d))
+                        })
+                        .collect(),
+                });
+            }
+        }
+        if commands.is_empty() {
+            return Ok(JsonText(json!({
+                "project_version": version,
+                "changed": 0,
+                "note": "伸ばす音がありませんでした(もう十分長いか、ループのクリップ)",
+            })));
+        }
+        let label = format!("サステインペダル({total} ノート)");
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(total);
+        v["pedal_changes"] = json!(changes_at);
         Ok(JsonText(v))
     }
 
