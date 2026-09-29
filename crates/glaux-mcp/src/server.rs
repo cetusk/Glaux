@@ -1229,6 +1229,83 @@ pub struct NoteDynamicsParams {
     pub seed: Option<u64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct StrumChordParams {
+    /// 対象クリップ ID。1 つなら clip_id、まとめて掛けるなら clip_ids(1 回の undo で戻る)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
+    /// 型: guitar(既定。35ms、拍の手前に 2 割、後の弦ほど弱く、上げは低い弦を省く)/ piano(ばらし 120ms、下から)/
+    /// harp(200ms、下から)。
+    #[serde(default)]
+    pub style: Option<String>,
+    /// 向き: down(低い音から)/ up(高い音から)/ alternate(拍の頭は下げ、裏は上げ。guitar の既定)。
+    #[serde(default)]
+    pub direction: Option<String>,
+    /// 型の値を上書き: 幅(ms)・拍の手前に出す割合 0〜1・並びの曲がり −1〜1・後の音の強さの変化(1 音ごと)・
+    /// 上げで低い弦を省くか・揺れ(ms)。
+    #[serde(default)]
+    pub span_ms: Option<f64>,
+    #[serde(default)]
+    pub anchor: Option<f64>,
+    #[serde(default)]
+    pub tension: Option<f64>,
+    #[serde(default)]
+    pub vel_slope: Option<f64>,
+    #[serde(default)]
+    pub up_skip_low: Option<bool>,
+    #[serde(default)]
+    pub jitter_ms: Option<f64>,
+    /// 乱数の種(既定 1)。
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DrumRudimentParams {
+    /// 対象のクリップ ID(ドラムのクリップ)。
+    pub clip_id: String,
+    /// 種類: flam(装飾音 1 つ)/ drag(2 つ)/ ruff(3 つ)/ ratchet(音の長さを count 回に割る)/
+    /// roll(区間を rate で埋める。スネアのロール)/ hat_roll(同じくハット。トラップ)/ buzz(バズロール。ごく細かく弱く)。
+    pub kind: String,
+    /// flam・drag・ruff・ratchet を付ける音のノート ID。省略で pitch の音すべて(probability で間引く)。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+    /// 対象の音程(flam 等: この音程の音に付ける。roll 等: 置く音程。既定 38 スネア、hat_roll は 42)。
+    #[serde(default)]
+    pub pitch: Option<u8>,
+    /// 付ける割合 0〜1(既定 1。note_ids を渡したときは全部)。
+    #[serde(default)]
+    pub probability: Option<f64>,
+    /// 装飾音の間隔(ms。既定 flam 25・drag 20・ruff 18)と強さの割合(既定 0.5)。
+    #[serde(default)]
+    pub grace_ms: Option<f64>,
+    #[serde(default)]
+    pub grace_vel: Option<f64>,
+    /// ratchet の回数 2〜8(既定 3)。
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// roll・hat_roll・buzz の区間: 小節(曲の小節番号)・拍(1 始まり、小数可。既定 1)・拍数(既定 1)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+    #[serde(default)]
+    pub beat: Option<f64>,
+    #[serde(default)]
+    pub length_beats: Option<f64>,
+    /// 刻み: 1/16 / 1/32(roll・hat_roll の既定)/ 1/64(buzz の既定)/ 1/16t / 1/32t、または Hz("24hz")。
+    #[serde(default)]
+    pub rate: Option<String>,
+    /// 強さ(既定: roll 70、buzz 45)と、区間の中での変化 −128〜127(正でだんだん強く。既定 roll 64、ほか 0)。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    #[serde(default)]
+    pub vel_curve: Option<i32>,
+    /// 乱数の種(既定 1)。
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -7229,6 +7306,329 @@ impl GlauxServer {
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "和音をストロークにする(同時に鳴る音を少しずつずらす): style guitar(35ms。拍の頭は下げ・裏は上げ、\
+        拍の手前に幅の 2 割、後の弦ほど弱く、上げは低い弦を省く)/ piano(ばらし 120ms)/ harp(200ms)。個々の値で上書きできる。\
+        終わりの位置は変えない。write_chords の strum_ms より細かく、既存のクリップ(打ち込み・読み込んだ MIDI)にも掛けられる。\
+        1 回の undo で戻る。"
+    )]
+    async fn strum_chord(
+        &self,
+        params: Parameters<StrumChordParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::technique::{strum, StrumDir, StrumOptions};
+        let _activity = self.handle.begin_activity("strum_chord");
+        let p = params.0;
+        let style = p.style.as_deref().unwrap_or("guitar");
+        // (向き, 幅 ms, 手前の割合, 強さの変化, 上げで低い弦を省く)
+        let (dir0, span0, anchor0, slope0, skip0) = match style {
+            "guitar" => (StrumDir::Alternate, 35.0, 0.2, -0.08, true),
+            "piano" => (StrumDir::Down, 120.0, 0.0, 0.0, false),
+            "harp" => (StrumDir::Down, 200.0, 0.0, 0.0, false),
+            other => return Err(format!("style は guitar / piano / harp(got: {other})")),
+        };
+        let dir = match &p.direction {
+            Some(d) => StrumDir::parse(d)
+                .ok_or_else(|| format!("direction は down / up / alternate(got: {d})"))?,
+            None => dir0,
+        };
+        let span_ms = p.span_ms.unwrap_or(span0).clamp(1.0, 1000.0);
+        let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
+        let (project, version) = self.handle.get_project().await?;
+        let mut commands = Vec::new();
+        let (mut chords, mut moved, mut removed) = (0usize, 0usize, 0usize);
+        for id in &ids {
+            let cid = glaux_core::ClipId::parse(id).map_err(|e| e.to_string())?;
+            let (_, clip) = project
+                .clip(&cid)
+                .ok_or_else(|| format!("クリップが見つかりません: {id}"))?;
+            let notes = clip
+                .notes()
+                .ok_or_else(|| format!("MIDI クリップではありません: {id}"))?;
+            let bpm = project.tempo_map.bpm_at(clip.start);
+            let tick = |ms: f64| (ms * glaux_core::PPQ as f64 * bpm / 60_000.0).round() as u64;
+            let o = StrumOptions {
+                dir,
+                span: tick(span_ms),
+                anchor: p.anchor.unwrap_or(anchor0).clamp(0.0, 1.0),
+                tension: p.tension.unwrap_or(0.0).clamp(-1.0, 1.0),
+                vel_slope: p.vel_slope.unwrap_or(slope0).clamp(-0.3, 0.3),
+                up_skip_low: p.up_skip_low.unwrap_or(skip0),
+                jitter: tick(p.jitter_ms.unwrap_or(2.0).clamp(0.0, 30.0)),
+                beat: glaux_core::PPQ,
+                tol: 10,
+                seed: p.seed.unwrap_or(1),
+            };
+            let r = strum(notes, clip.start.0, &o);
+            chords += r.chords;
+            moved += r.moved.len();
+            removed += r.removed.len();
+            if !r.moved.is_empty() {
+                commands.push(Command::UpdateNotes {
+                    clip: cid.clone(),
+                    changes: r
+                        .moved
+                        .iter()
+                        .map(|&(i, pos, dur, vel)| {
+                            glaux_core::NoteChange::new(notes[i].id.clone())
+                                .pos(glaux_core::Tick(pos))
+                                .dur(glaux_core::Tick(dur))
+                                .vel(vel)
+                        })
+                        .collect(),
+                });
+            }
+            if !r.removed.is_empty() {
+                commands.push(Command::RemoveNotes {
+                    clip: cid,
+                    ids: r.removed.iter().map(|&i| notes[i].id.clone()).collect(),
+                });
+            }
+        }
+        if commands.is_empty() {
+            return Ok(JsonText(json!({
+                "project_version": version,
+                "chords": chords,
+                "changed": 0,
+                "note": "同時に鳴る和音がありませんでした",
+            })));
+        }
+        let label = format!("ストローク {style}({chords} 和音)");
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["chords"] = json!(chords);
+        v["changed"] = json!(moved);
+        v["removed"] = json!(removed);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ドラムのルーディメントを付ける: flam(装飾音 1 つ。25ms 前、強さ半分)/ drag(2 つ)/ ruff(3 つ)/\
+        ratchet(音の長さを count 回に割る)は音に付け(note_ids か pitch の音すべて)、roll(スネアのロール)/ hat_roll\
+        (トラップのハットの連打)/ buzz(バズロール)は bar・beat・length_beats の区間を rate で埋める(区間の同じ音程の\
+        音は置き換える)。vel_curve で強さを傾ける(正でだんだん強く)。1 秒 22 打を超えると warning。1 回の undo で戻る。"
+    )]
+    async fn drum_rudiment(
+        &self,
+        params: Parameters<DrumRudimentParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::technique::{fill, grace_notes, Rudiment};
+        let _activity = self.handle.begin_activity("drum_rudiment");
+        let p = params.0;
+        let kind_name = p.kind.trim().to_lowercase();
+        let kind = Rudiment::parse(&kind_name).ok_or_else(|| {
+            format!(
+                "kind は flam / drag / ruff / ratchet / roll / hat_roll / buzz(got: {})",
+                p.kind
+            )
+        })?;
+        let cid = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let (_, clip) = project.clip(&cid).ok_or("クリップが見つかりません")?;
+        let notes = clip.notes().ok_or("MIDI クリップではありません")?;
+        let bpm = project.tempo_map.bpm_at(clip.start);
+        let tick = |ms: f64| (ms * glaux_core::PPQ as f64 * bpm / 60_000.0).round() as u64;
+        let new_note = |pos: u64, dur: u64, pitch: u8, vel: u8| glaux_core::Note {
+            id: glaux_core::NoteId::new(),
+            pos: glaux_core::Tick(pos),
+            dur: glaux_core::Tick(dur.max(1)),
+            pitch,
+            vel,
+            articulation: Default::default(),
+            pitch_curve: vec![],
+            glide_ms: None,
+            vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
+        };
+        let mut added: Vec<glaux_core::Note> = Vec::new();
+        let mut changes: Vec<glaux_core::NoteChange> = Vec::new();
+        let mut remove_ids: Vec<glaux_core::NoteId> = Vec::new();
+        let mut warning = None;
+        let mut rng = p.seed.unwrap_or(1).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut unit = || {
+            rng ^= rng >> 12;
+            rng ^= rng << 25;
+            rng ^= rng >> 27;
+            (rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut count_done = 0usize;
+        if kind.on_notes() {
+            let pitch = p.pitch.unwrap_or(38);
+            let prob = if p.note_ids.is_some() {
+                1.0
+            } else {
+                p.probability.unwrap_or(1.0).clamp(0.0, 1.0)
+            };
+            let targets: Vec<&glaux_core::Note> = match &p.note_ids {
+                Some(want) => notes
+                    .iter()
+                    .filter(|n| want.iter().any(|w| w == n.id.as_str()))
+                    .collect(),
+                None => notes.iter().filter(|n| n.pitch == pitch).collect(),
+            };
+            let targets: Vec<&glaux_core::Note> =
+                targets.into_iter().filter(|_| unit() < prob).collect();
+            for n in targets {
+                if kind == Rudiment::Ratchet {
+                    let count = p.count.unwrap_or(3).clamp(2, 8) as u64;
+                    let slot = n.dur.0 / count;
+                    if slot < 15 {
+                        continue;
+                    }
+                    let hits = fill(n.dur.0, slot, n.vel, p.vel_curve.unwrap_or(0), 0.0, 1);
+                    changes.push(
+                        glaux_core::NoteChange::new(n.id.clone())
+                            .dur(glaux_core::Tick((slot * 4 / 5).max(1))),
+                    );
+                    for &(off, v) in hits.iter().skip(1).take(count as usize - 1) {
+                        added.push(new_note(n.pos.0 + off, slot * 4 / 5, n.pitch, v));
+                    }
+                } else {
+                    let default_ms = match kind {
+                        Rudiment::Flam => 25.0,
+                        Rudiment::Drag => 20.0,
+                        _ => 18.0,
+                    };
+                    let g = tick(p.grace_ms.unwrap_or(default_ms).clamp(5.0, 80.0)).max(1);
+                    for (back, v) in
+                        grace_notes(kind, n.vel, g, p.grace_vel.unwrap_or(0.5).clamp(0.1, 1.0))
+                    {
+                        if back > n.pos.0 {
+                            continue; // クリップの頭より前には置けない
+                        }
+                        added.push(new_note(n.pos.0 - back, g.min(120), n.pitch, v));
+                    }
+                }
+                count_done += 1;
+            }
+        } else {
+            let bar = p.bar.ok_or(
+                "roll・hat_roll・buzz は bar(と beat・length_beats)で区間を指定してください",
+            )?;
+            let (bar_start, _) = glaux_core::arrange::bar_range(&project, bar.max(1), 1)
+                .ok_or("小節を数えられません")?;
+            let start_abs = bar_start
+                + ((p.beat.unwrap_or(1.0).max(1.0) - 1.0) * glaux_core::PPQ as f64).round() as u64;
+            let len = ((p.length_beats.unwrap_or(1.0).clamp(0.125, 64.0)) * glaux_core::PPQ as f64)
+                .round() as u64;
+            let (cs, ce) = (clip.start.0, clip.start.0 + clip.length.0);
+            if start_abs < cs || start_abs >= ce {
+                return Err("区間がクリップの外です(クリップの範囲の小節・拍を指定する)".to_owned());
+            }
+            let len = len.min(ce - start_abs);
+            let pitch = p
+                .pitch
+                .unwrap_or(if kind_name == "hat_roll" { 42 } else { 38 });
+            let default_rate = if kind == Rudiment::Buzz {
+                "1/64"
+            } else {
+                "1/32"
+            };
+            let rate = p
+                .rate
+                .as_deref()
+                .unwrap_or(default_rate)
+                .trim()
+                .to_lowercase();
+            let step = match rate.as_str() {
+                "1/16" => 240,
+                "1/32" => 120,
+                "1/64" => 60,
+                "1/16t" => 160,
+                "1/32t" => 80,
+                "1/8" => 480,
+                r if r.ends_with("hz") => {
+                    let hz: f64 = r
+                        .trim_end_matches("hz")
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("rate が読めません: {r}"))?;
+                    tick(1000.0 / hz.clamp(1.0, 60.0)).max(10)
+                }
+                r => {
+                    return Err(format!(
+                        "rate は 1/16 / 1/32 / 1/64 / 1/16t / 1/32t / 1/8 か \"24hz\"(got: {r})"
+                    ))
+                }
+            };
+            let per_sec = 1000.0 / (step as f64 * 60_000.0 / (glaux_core::PPQ as f64 * bpm));
+            if per_sec > 22.0 && kind != Rudiment::Buzz {
+                warning = Some(format!(
+                    "1 秒に {per_sec:.0} 打(人間の叩ける目安 22 打を超える)。機械的に聞かせたいならそのままでよい"
+                ));
+            }
+            let (vel, curve, jitter) = if kind == Rudiment::Buzz {
+                (p.velocity.unwrap_or(45), p.vel_curve.unwrap_or(0), 0.15)
+            } else {
+                (p.velocity.unwrap_or(70), p.vel_curve.unwrap_or(64), 0.05)
+            };
+            let rel = start_abs - cs;
+            // 区間の同じ音程の音は置き換える
+            for n in notes {
+                if n.pitch == pitch && n.pos.0 >= rel && n.pos.0 < rel + len {
+                    remove_ids.push(n.id.clone());
+                }
+            }
+            let dur = if kind == Rudiment::Buzz {
+                step
+            } else {
+                (step / 2).max(10)
+            };
+            for (off, v) in fill(
+                len,
+                step,
+                vel.clamp(1, 127),
+                curve,
+                jitter,
+                p.seed.unwrap_or(1),
+            ) {
+                added.push(new_note(rel + off, dur, pitch, v));
+            }
+            count_done = added.len();
+        }
+        let mut commands = Vec::new();
+        if !remove_ids.is_empty() {
+            commands.push(Command::RemoveNotes {
+                clip: cid.clone(),
+                ids: remove_ids.clone(),
+            });
+        }
+        if !changes.is_empty() {
+            commands.push(Command::UpdateNotes {
+                clip: cid.clone(),
+                changes,
+            });
+        }
+        if !added.is_empty() {
+            commands.push(Command::AddNotes {
+                clip: cid.clone(),
+                notes: added.clone(),
+            });
+        }
+        if commands.is_empty() {
+            return Err("付ける音がありません(pitch・note_ids・区間を確かめる)".to_owned());
+        }
+        let label = format!("ルーディメント {kind_name}");
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["added"] = json!(added.len());
+        v["replaced"] = json!(remove_ids.len());
+        v["targets"] = json!(count_done);
+        if let Some(w) = warning {
+            v["warning"] = json!(w);
+        }
         Ok(JsonText(v))
     }
 

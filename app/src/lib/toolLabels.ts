@@ -68,6 +68,8 @@ const LABELS: Record<string, ToolLabel> = {
   add_ornament: { short: "装飾音", doing: "装飾音を付けています" },
   melody_lead: { short: "旋律のリード", doing: "旋律を少し先に鳴らしています" },
   note_dynamics: { short: "音の中の強弱", doing: "音の中の強弱・明るさを付けています" },
+  strum_chord: { short: "ストローク", doing: "和音をストロークにしています" },
+  drum_rudiment: { short: "ルーディメント", doing: "フラム・ロールなどを付けています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

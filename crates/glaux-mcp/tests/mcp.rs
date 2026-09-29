@@ -3764,6 +3764,150 @@ async fn ornaments_and_melody_lead() {
 }
 
 #[tokio::test]
+async fn strums_and_drum_rudiments() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "トラック", "commands": [
+                { "op": "add_track", "track": { "id": "trk_tec001", "name": "Guitar", "kind": "midi" } },
+                { "op": "add_track", "track": { "id": "trk_tec002", "name": "Drums", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } }
+            ] }),
+        )
+        .await,
+    );
+    // 拍の頭と裏に 6 弦の和音
+    let mut notes = Vec::new();
+    for pos in [0u64, 480] {
+        for p in [40u8, 45, 50, 55, 59, 64] {
+            notes.push(json!({ "pos": pos, "dur": 400, "pitch": p, "vel": 100 }));
+        }
+    }
+    let snares: Vec<Value> = [960u64, 2880]
+        .iter()
+        .map(|&pos| json!({ "pos": pos, "dur": 120, "pitch": 38, "vel": 110 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_clip", "track": "trk_tec001", "clip": {
+                    "id": "clp_tec001", "name": "g", "start": 3840, "length": 3840, "kind": "midi", "notes": notes } },
+                { "op": "add_clip", "track": "trk_tec002", "clip": {
+                    "id": "clp_tec002", "name": "d", "start": 0, "length": 7680, "kind": "midi", "notes": snares } }
+            ] }),
+        )
+        .await,
+    );
+    // ギターのストローク: 頭は下げ(低い弦から)、裏は上げ(高い弦から・一番低い弦を省く)
+    let v = ok_json(
+        &call(
+            &fx,
+            "strum_chord",
+            json!({ "clip_id": "clp_tec001", "jitter_ms": 0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["chords"], 2, "{v}");
+    assert_eq!(v["removed"], 1);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap().to_vec();
+    assert_eq!(ns.len(), 11);
+    let at = |pitch: u8, near: u64| {
+        ns.iter()
+            .find(|n| n.pitch == pitch && n.pos.0.abs_diff(near) < 200)
+            .unwrap()
+            .pos
+            .0
+    };
+    assert!(at(40, 0) < at(64, 0), "下げは低い弦が先");
+    assert!(at(64, 480) < at(45, 480), "上げは高い弦が先");
+    assert!(
+        at(40, 0) < 3840,
+        "拍の手前に出る(前の小節に食い込まないよう 0 で止まる)"
+    );
+    // 終わりは同じ
+    assert!(ns
+        .iter()
+        .filter(|n| n.pos.0 < 400)
+        .all(|n| n.pos.0 + n.dur.0 == 400));
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // ピアノのばらし
+    let v = ok_json(
+        &call(
+            &fx,
+            "strum_chord",
+            json!({ "clip_id": "clp_tec001", "style": "piano" }),
+        )
+        .await,
+    );
+    assert_eq!(v["removed"], 0, "{v}");
+    // フラム: スネア 2 つに装飾音(120 BPM で 25ms = 48 tick 前、強さ半分)
+    let v = ok_json(
+        &call(
+            &fx,
+            "drum_rudiment",
+            json!({ "clip_id": "clp_tec002", "kind": "flam" }),
+        )
+        .await,
+    );
+    assert_eq!(v["added"], 2, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let d = project.tracks[1].clips[0].notes().unwrap().to_vec();
+    assert!(d.iter().any(|n| n.pos.0 == 912 && n.vel == 55), "{d:?}");
+    // ロール: 2 小節目の 3 拍目から 2 拍を 32 分で、だんだん強く(区間の同じ音程の音は置き換え)
+    let v = ok_json(
+        &call(
+            &fx,
+            "drum_rudiment",
+            json!({ "clip_id": "clp_tec002", "kind": "roll", "bar": 2, "beat": 3, "length_beats": 2 }),
+        )
+        .await,
+    );
+    assert_eq!(v["added"], 16, "{v}");
+    assert_eq!(v["replaced"], 0);
+    // ラチェット: 3 回に割る
+    let v = ok_json(
+        &call(&fx, "drum_rudiment", json!({ "clip_id": "clp_tec002", "kind": "ratchet", "note_ids": [d.iter().find(|n| n.pos.0 == 960).unwrap().id.to_string()] })).await,
+    );
+    assert_eq!(v["added"], 2, "{v}");
+    // 速すぎる連打は warning
+    let v = ok_json(
+        &call(
+            &fx,
+            "drum_rudiment",
+            json!({ "clip_id": "clp_tec002", "kind": "hat_roll", "bar": 1, "beat": 1, "length_beats": 1, "rate": "1/64" }),
+        )
+        .await,
+    );
+    assert!(v["warning"].is_string(), "{v}");
+    for bad in [
+        (
+            "drum_rudiment",
+            json!({ "clip_id": "clp_tec002", "kind": "paradiddle" }),
+        ),
+        (
+            "drum_rudiment",
+            json!({ "clip_id": "clp_tec002", "kind": "roll" }),
+        ),
+        (
+            "drum_rudiment",
+            json!({ "clip_id": "clp_tec002", "kind": "roll", "bar": 9 }),
+        ),
+        (
+            "strum_chord",
+            json!({ "clip_id": "clp_tec001", "style": "banjo" }),
+        ),
+    ] {
+        let r = call(&fx, bad.0, bad.1.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad:?}");
+    }
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(

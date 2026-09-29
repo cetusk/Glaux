@@ -92,6 +92,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   ハウス・テクノ・トランス・EDM → house / techno(タイミングはほぼ格子、強弱で揺らす)/ トラップ → trap /\n\
   ヒップホップ・ローファイ → hiphop(+ swing_notes 0.54〜0.62 を先に)/ ファンク・ディスコ・R&B → funk か soul / ポップス・ロック → pop か rock。\n\
 - 電子音楽の型(house / techno / trap)では 4 つ打ちのキックは動かさない(位置も強さも一定が土台。キックに手で強弱を付けない)。\n\
+- ドラムの細部は drum_rudiment: スネアのキメに flam、フィルの頭に drag・ruff、ビルドに roll(vel_curve で強く)、\n\
+  トラップのハットの連打は hat_roll(rate 1/32・1/16t)か ratchet(音を 2〜4 回に割る)、ジャズのブラシ風は buzz。\n\
 - 変拍子: 拍子に拍のまとまりを持たせる(apply_commands の set_time_sig で {\"num\": 7, \"den\": 8, \"grouping\": [2, 2, 3]}。\n\
   省略すると 7/8 = 2+2+3、5/8 = 2+3、9/8 = 3+3+3、11/8 = 2+2+2+2+3、5/4 = 3+2)。get_project の time_sig_map の meter・bar_ticks・\n\
   steps_16th で 1 小節の長さと 16 分の数を確かめる(7/8 = 3360 tick = 14 ステップ)。write_drums・write_chords・write_bassline・\n\
@@ -176,7 +178,9 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   ケルト・和風の笛は acciaccatura と schleifer、ジャズは acciaccatura を半音で(interval 1)。付けすぎない(probability 0.3〜0.5)。\n\
 - ピアノや伴奏と重なる旋律は melody_lead で 20〜30ms 先に鳴らすと浮き上がる(和音はいちばん上の音だけ動く)。\n\
 - 1 音の中の強弱・明るさは note_dynamics: 弦・管・パッドの伸ばしに swell、ブラスのキメに sfz・fp、長い音の終わりに fade、\n\
-  シンセのリードの伸ばしに open(暗くから開く)。ノートの volume_curve(dB)・brightness_curve(−1〜1)に展開される。",
+  シンセのリードの伸ばしに open(暗くから開く)。ノートの volume_curve(dB)・brightness_curve(−1〜1)に展開される。\n\
+- 和音が一度に「ジャーン」と鳴るのは機械っぽさの筆頭。ギターのコードは strum_chord(style guitar: 拍の頭は下げ・裏は上げ)、\n\
+  ピアノのアルペジオ風のばらしは style piano、ハープは harp。読み込んだ MIDI や打ち込みにも後から掛けられる。",
     ),
     (
         "mix",

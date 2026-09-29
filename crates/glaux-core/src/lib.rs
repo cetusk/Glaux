@@ -34,6 +34,7 @@ pub mod ornament;
 pub mod progressions;
 pub mod rhythm;
 pub mod shape;
+pub mod technique;
 pub mod time;
 pub mod transform;
 pub mod validate;
