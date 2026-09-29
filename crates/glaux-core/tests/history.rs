@@ -128,7 +128,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 }
                 return Command::SetTrackProp {
                     id: pick_track(rng),
-                    prop: match rng.gen_range(0..5) {
+                    prop: match rng.gen_range(0..7) {
                         0 => TrackProp::Mute(rng.gen()),
                         1 => TrackProp::VolumeDb(rng.gen_range(-30.0..6.0)),
                         2 => TrackProp::Name(format!("name{}", rng.gen_range(0..100))),
@@ -147,6 +147,34 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                                     rate_hz: 2.0,
                                     depth: rng.gen_range(0.0..500.0),
                                     phase: 0.0,
+                                })
+                                .collect(),
+                        ),
+                        4 => TrackProp::Layers(
+                            (0..rng.gen_range(0..3))
+                                .map(|i| {
+                                    let mut l =
+                                        glaux_core::Layer::new(glaux_core::Device::builtin(
+                                            if i == 0 { "fm" } else { "subtractive" },
+                                        ));
+                                    l.transpose = rng.gen_range(-12..=12);
+                                    l.volume_db = rng.gen_range(-12.0..0.0);
+                                    l.key_hi = rng.gen_range(60..=127);
+                                    l
+                                })
+                                .collect(),
+                        ),
+                        5 => TrackProp::Macros(
+                            (0..rng.gen_range(0..3))
+                                .map(|i| glaux_core::Macro {
+                                    name: format!("m{i}"),
+                                    value: rng.gen_range(0.0..1.0),
+                                    targets: vec![glaux_core::MacroTarget {
+                                        target: ParamPath::device("cutoff"),
+                                        min: 200.0,
+                                        max: rng.gen_range(500.0..5000.0),
+                                        curve: rng.gen_range(-1.0..1.0),
+                                    }],
                                 })
                                 .collect(),
                         ),

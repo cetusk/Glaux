@@ -268,6 +268,8 @@ pub struct TrackMix {
     pub fx_auto: Vec<(u32, String, Vec<AutoPoint>)>,
     /// 焼き込み済みの楽器パラメータ(glaux-dsp)
     pub instrument: InstrumentParams,
+    /// 重ねる音源(焼き込み済み。本体と同じノートで範囲に合うものが鳴る)
+    pub layers: Vec<LayerMix>,
     /// エフェクトチェーン(鳴るものだけ・焼き込み済み・処理の順)。楽器 → チェーン → 音量/パン の順
     pub effects: Vec<BakedEffect>,
     /// エフェクトのつながりに分岐・合流・線の音量があるとき。`None` なら `effects` を順に通す
@@ -289,6 +291,24 @@ pub struct TrackMix {
     /// 発音内容(このトラックのノートイベントと楽器の種類)のハッシュ。差し替えの前後で同じなら、
     /// 鳴っている音を切らずにそのまま鳴らし続ける
     pub content: u64,
+}
+
+/// 焼き込み済みの層(重ねる音源)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerMix {
+    pub instrument: InstrumentParams,
+    /// 層の出口の中央成分と左右差成分の倍率(音量とパンから)
+    pub mid: f32,
+    pub side: f32,
+    pub transpose: i8,
+    pub key: (u8, u8),
+    pub vel: (u8, u8),
+}
+
+impl LayerMix {
+    pub fn plays(&self, pitch: u8, vel: u8) -> bool {
+        (self.key.0..=self.key.1).contains(&pitch) && (self.vel.0..=self.vel.1).contains(&vel)
+    }
 }
 
 /// 焼き込み済みのセンド。
@@ -560,7 +580,8 @@ impl SampleBank {
         let used: std::collections::HashSet<(String, std::collections::BTreeMap<u8, u8>)> = project
             .tracks
             .iter()
-            .filter_map(|t| match &t.device.as_ref()?.source {
+            .flat_map(|t| t.device.iter().chain(t.layers.iter().map(|l| &l.device)))
+            .filter_map(|d| match &d.source {
                 glaux_core::PluginSource::Sfz { instrument, cc } => {
                     Some((instrument.clone(), cc.clone()))
                 }
@@ -663,8 +684,12 @@ impl SampleBank {
         // SoundFont: プロジェクトが参照しているプリセットのゾーンを構築
         let mut used: std::collections::HashSet<(String, u16, u16)> =
             std::collections::HashSet::new();
-        for t in &project.tracks {
-            if let Some(d) = &t.device {
+        for d in project
+            .tracks
+            .iter()
+            .flat_map(|t| t.device.iter().chain(t.layers.iter().map(|l| &l.device)))
+        {
+            {
                 if let glaux_core::PluginSource::Sf2 {
                     soundfont,
                     bank,
@@ -1011,38 +1036,48 @@ fn bake_track_instrument(
     bank: &SampleBank,
     sample_rate: f32,
 ) -> InstrumentParams {
-    if let Some(d) = &t.device {
-        match &d.source {
-            glaux_core::PluginSource::Sampler { asset } => {
-                if let Some(data) = bank.get(asset) {
-                    return InstrumentParams::Sampler(glaux_dsp::bake_sampler(
-                        &d.params,
-                        data.clone(),
-                        sample_rate,
-                    ));
-                }
-                tracing::warn!("サンプル未読込のため subtractive で代用: {asset}");
-            }
-            glaux_core::PluginSource::Sfz { instrument, cc } => {
-                if let Some(zones) = bank.get_sfz(instrument, cc) {
-                    return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
-                }
-                tracing::warn!("SFZ 未読込のため subtractive で代用: {instrument}");
-            }
-            glaux_core::PluginSource::Sf2 {
-                soundfont,
-                bank: b,
-                preset,
-            } => {
-                if let Some(zones) = bank.get_multi(soundfont, *b, *preset) {
-                    return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
-                }
-                tracing::warn!("SoundFont 未読込のため subtractive で代用: {soundfont}");
-            }
-            _ => {}
-        }
+    match &t.device {
+        Some(d) => bake_device_instrument(d, bank, sample_rate),
+        None => glaux_dsp::bake_instrument(None).1,
     }
-    glaux_dsp::bake_instrument(t.device.as_ref()).1
+}
+
+/// 音源 1 つを焼き込む(サンプラー・SoundFont・SFZ は SampleBank から波形を解決)。
+fn bake_device_instrument(
+    d: &glaux_core::Device,
+    bank: &SampleBank,
+    sample_rate: f32,
+) -> InstrumentParams {
+    match &d.source {
+        glaux_core::PluginSource::Sampler { asset } => {
+            if let Some(data) = bank.get(asset) {
+                return InstrumentParams::Sampler(glaux_dsp::bake_sampler(
+                    &d.params,
+                    data.clone(),
+                    sample_rate,
+                ));
+            }
+            tracing::warn!("サンプル未読込のため subtractive で代用: {asset}");
+        }
+        glaux_core::PluginSource::Sfz { instrument, cc } => {
+            if let Some(zones) = bank.get_sfz(instrument, cc) {
+                return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
+            }
+            tracing::warn!("SFZ 未読込のため subtractive で代用: {instrument}");
+        }
+        glaux_core::PluginSource::Sf2 {
+            soundfont,
+            bank: b,
+            preset,
+        } => {
+            if let Some(zones) = bank.get_multi(soundfont, *b, *preset) {
+                return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
+            }
+            tracing::warn!("SoundFont 未読込のため subtractive で代用: {soundfont}");
+        }
+        _ => {}
+    }
+    glaux_dsp::bake_instrument(Some(d)).1
 }
 
 pub fn db_to_amp(db: f32) -> f32 {
@@ -1247,7 +1282,7 @@ pub fn modulated_lanes(
                     .and_then(|ss| ss.iter().find(|s| s.name == name.as_str()));
                 (spec, fx.params.get(name))
             }
-            ParamPath::Track { .. } => continue,
+            ParamPath::Track { .. } | ParamPath::Macro { .. } => continue,
         };
         let Some(spec) = spec else { continue };
         let (lo, hi, default) = match spec.range {
@@ -1308,6 +1343,25 @@ pub fn modulated_lanes(
 }
 
 pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBank) -> PlaybackData {
+    // マクロを焼き込む(マクロのあるトラックが無ければ元のまま)
+    let with_macros;
+    let project = if project.tracks.iter().any(|t| {
+        !t.macros.is_empty()
+            || t.automation
+                .iter()
+                .any(|l| matches!(l.target, ParamPath::Macro { .. }))
+    }) {
+        let mut p = project.clone();
+        for (dst, src) in p.tracks.iter_mut().zip(&project.tracks) {
+            if let std::borrow::Cow::Owned(t) = src.with_macros_applied() {
+                *dst = t;
+            }
+        }
+        with_macros = p;
+        &with_macros
+    } else {
+        project
+    };
     let any_solo = project.tracks.iter().any(|t| t.solo);
     let to_sample =
         |tick: Tick| -> u64 { (project.tempo_map.tick_to_seconds(tick) * sample_rate) as u64 };
@@ -1422,6 +1476,23 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
             let (pl, pr) = pan_gains(t.pan);
             let gain = db_to_amp(t.volume_db);
             let instrument = bake_track_instrument(t, bank, sample_rate as f32);
+            let layers: Vec<LayerMix> = t
+                .layers
+                .iter()
+                .filter(|l| !l.mute)
+                .map(|l| {
+                    let g = db_to_amp(l.volume_db);
+                    let (bl, br) = balance_gains(l.pan);
+                    LayerMix {
+                        instrument: bake_device_instrument(&l.device, bank, sample_rate as f32),
+                        mid: g * (bl + br) * 0.5,
+                        side: g * (bl - br) * 0.5,
+                        transpose: l.transpose,
+                        key: (l.key_lo, l.key_hi),
+                        vel: (l.vel_lo, l.vel_hi),
+                    }
+                })
+                .collect();
             let (chain, fx_graph) = bake_fx_plan(
                 &t.effects,
                 &t.links(),
@@ -1444,6 +1515,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                 device_auto: bake_device_lanes(t),
                 fx_auto,
                 instrument,
+                layers,
                 effects: chain.into_iter().map(|(_, b)| b).collect(),
                 fx_graph,
                 is_bus: t.kind == glaux_core::TrackKind::Bus,
@@ -1684,6 +1756,16 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
             (&t.id, kind).hash(&mut h);
             m.ident = h.finish();
             kind.hash(&mut c);
+            // 層が変われば鳴らし直す(鳴っている層のボイスは層の番号で楽器を引くため)
+            for l in &m.layers {
+                (
+                    std::mem::discriminant(&l.instrument),
+                    l.transpose,
+                    l.key,
+                    l.vel,
+                )
+                    .hash(&mut c);
+            }
             m.content = c.finish();
         }
     }
@@ -2396,6 +2478,132 @@ mod tests {
         assert_eq!(name, "cutoff");
         assert_eq!(points[0].sample, 24_000); // 120bpm: 960 tick = 0.5s
         assert!((points[0].value - 200.0).abs() < 1e-6);
+    }
+
+    /// ゲルツェルで周波数 `f` の大きさ
+    fn tone_level(x: &[f32], sr: f32, f: f32) -> f32 {
+        let w = 2.0 * std::f32::consts::PI * f / sr;
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &v in x {
+            let s0 = v + 2.0 * w.cos() * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2).sqrt() / x.len() as f32
+    }
+
+    #[test]
+    fn layers_sound_with_transpose_range_and_pan() {
+        use crate::export::render_project;
+        use glaux_core::{Device, Layer, ParamValue};
+        let sine = || {
+            let mut d = Device::builtin("subtractive");
+            d.params
+                .insert("waveform".into(), ParamValue::Enum("sine".into()));
+            d
+        };
+        let mut project = project_with_notes(vec![note(0, 1920, 60, 100)]);
+        project.tracks[0].device = Some(sine());
+        let render = |p: &Project| {
+            let st = render_project(p, 48_000.0, &SampleBank::default()).unwrap();
+            let l: Vec<f32> = st.iter().step_by(2).take(24_000).copied().collect();
+            let r: Vec<f32> = st.iter().skip(1).step_by(2).take(24_000).copied().collect();
+            (l, r)
+        };
+        let c3 = 130.81;
+        let (l0, r0) = render(&project);
+        assert!(
+            tone_level(&l0, 48_000.0, c3) < 0.002,
+            "層が無ければ C3 は無い"
+        );
+        // 1 オクターブ下を重ねる
+        let mut sub = Layer::new(sine());
+        sub.transpose = -12;
+        project.tracks[0].layers = vec![sub.clone()];
+        let (l1, r1) = render(&project);
+        assert!(tone_level(&l1, 48_000.0, c3) > 0.02, "C3 が鳴る");
+        assert!(tone_level(&l1, 48_000.0, 261.63) > 0.02, "本体の C4 も鳴る");
+        // 範囲外(鍵盤 0〜59)なら鳴らない
+        project.tracks[0].layers[0].key_hi = 59;
+        let (l2, _) = render(&project);
+        assert!(tone_level(&l2, 48_000.0, c3) < 0.002);
+        // 左に振ると、層の音は左だけ
+        project.tracks[0].layers[0].key_hi = 127;
+        project.tracks[0].layers[0].pan = -1.0;
+        let (l3, r3) = render(&project);
+        assert!(tone_level(&l3, 48_000.0, c3) > tone_level(&r3, 48_000.0, c3) * 10.0);
+        // 本体は左右同じ(層なし・層ありとも)
+        assert!(
+            (tone_level(&l0, 48_000.0, 261.63) - tone_level(&r0, 48_000.0, 261.63)).abs() < 1e-3
+        );
+        assert!(
+            (tone_level(&l1, 48_000.0, 261.63) - tone_level(&r1, 48_000.0, 261.63)).abs() < 1e-3
+        );
+        // 消音した層は鳴らない
+        project.tracks[0].layers[0].mute = true;
+        let (l4, _) = render(&project);
+        assert!(tone_level(&l4, 48_000.0, c3) < 0.002);
+    }
+
+    #[test]
+    fn macros_move_their_targets() {
+        use glaux_core::{AutomationLane, AutomationPoint, Curve, Macro, MacroTarget, ParamPath};
+        let mut project = project_with_notes(vec![note(0, 3840, 60, 100)]);
+        project.tracks[0].device = Some(glaux_core::Device::builtin("subtractive"));
+        project.tracks[0].macros = vec![Macro {
+            name: "明るさ".into(),
+            value: 0.5,
+            targets: vec![
+                MacroTarget {
+                    target: ParamPath::device("cutoff"),
+                    min: 200.0,
+                    max: 2200.0,
+                    curve: 0.0,
+                },
+                MacroTarget {
+                    target: ParamPath::track("volume_db"),
+                    min: -12.0,
+                    max: 0.0,
+                    curve: 0.0,
+                },
+            ],
+        }];
+        // 今の値(0.5)がつまみに写る
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        match &data.tracks[0].instrument {
+            InstrumentParams::Subtractive(p) => {
+                assert!((p.cutoff - 1200.0).abs() < 1.0, "{}", p.cutoff)
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!((data.tracks[0].base_amp - db_to_amp(-6.0)).abs() < 1e-3);
+        // macro/1 のオートメーションは、割り当て先のオートメーションになる
+        project.tracks[0].automation.push(AutomationLane {
+            target: ParamPath::Macro { index: 1 },
+            points: vec![
+                AutomationPoint {
+                    tick: Tick(0),
+                    value: 0.0,
+                    curve: Curve::Linear,
+                },
+                AutomationPoint {
+                    tick: Tick(1920),
+                    value: 1.0,
+                    curve: Curve::Linear,
+                },
+            ],
+        });
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let (name, points) = &data.tracks[0].device_auto[0];
+        assert_eq!(name, "cutoff");
+        assert!((points[0].value - 200.0).abs() < 1e-6);
+        assert!((points.last().unwrap().value - 2200.0).abs() < 1e-6);
+        let mid = points.iter().find(|p| p.sample >= 24_000).unwrap();
+        assert!((mid.value - 1200.0).abs() < 20.0, "{}", mid.value);
+        assert!(
+            !data.tracks[0].vol_db_auto.is_empty(),
+            "音量もオートメーションになる"
+        );
     }
 
     #[test]

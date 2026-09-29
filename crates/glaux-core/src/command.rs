@@ -41,6 +41,10 @@ pub enum TrackProp {
     Pan(f32),
     /// 変調(LFO)を丸ごと差し替える(空で外す)
     Modulators(Vec<crate::model::Modulator>),
+    /// 重ねる音源(丸ごと置き換え)
+    Layers(Vec<crate::model::Layer>),
+    /// マクロ(丸ごと置き換え)
+    Macros(Vec<crate::model::Macro>),
 }
 
 /// ノートの部分更新。`None` のフィールドは変更しない。

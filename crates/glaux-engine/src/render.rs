@@ -429,6 +429,8 @@ struct Voice {
     state: VoiceState,
     /// ノートの音量・明るさの曲線(出口にかける)
     shape: glaux_dsp::NoteShape,
+    /// 0 = 本体の音源、1 以上 = `TrackMix::layers` の番号 + 1
+    layer: u8,
 }
 
 /// 同時発音数の上限に達したとき、奪うボイスを選ぶ(奪われ中のものは除く)。
@@ -1390,11 +1392,11 @@ impl Renderer {
                             sr,
                             e.variant,
                         );
-                        // チョーク: 同じトラックの、このグループで止まる音(オープンハイハットなど)を止める
+                        // チョーク: 同じトラック・同じ層の、このグループで止まる音(オープンハイハットなど)を止める
                         let group = state.choke_group();
                         if group != 0 {
                             for v in self.voices.iter_mut() {
-                                if v.track == e.track {
+                                if v.track == e.track && v.layer == 0 {
                                     v.state.choke_if(group);
                                 }
                             }
@@ -1438,7 +1440,61 @@ impl Renderer {
                             content: mix.content,
                             state,
                             shape: e.shape,
+                            layer: 0,
                         });
+                        // 重ねる音源: 元のノートの音程・強さで範囲を判定し、移調して鳴らす
+                        let vel_midi = (e.amp * 127.0).round().clamp(1.0, 127.0) as u8;
+                        for (li, layer) in mix.layers.iter().enumerate() {
+                            if !layer.plays(e.pitch, vel_midi)
+                                || self.voices.len() >= MAX_VOICES + STEAL_RESERVE
+                            {
+                                continue;
+                            }
+                            let pitch =
+                                (e.pitch as i32 + layer.transpose as i32).clamp(0, 127) as u8;
+                            let freq = e.freq * 2f32.powf(layer.transpose as f32 / 12.0);
+                            let mut state = VoiceState::start_variant(
+                                &layer.instrument,
+                                freq,
+                                pitch,
+                                e.amp,
+                                e.articulation,
+                                sr,
+                                e.variant,
+                            );
+                            let group = state.choke_group();
+                            if group != 0 {
+                                for v in self.voices.iter_mut() {
+                                    if v.track == e.track && v.layer == li as u8 + 1 {
+                                        v.state.choke_if(group);
+                                    }
+                                }
+                            }
+                            if !e.curve.is_empty() {
+                                state.set_curve(&e.curve);
+                            }
+                            if e.vibrato.is_active() {
+                                state.set_vibrato(&e.vibrato);
+                            }
+                            if fade_in > 0 {
+                                state.skip_attack(&layer.instrument);
+                            }
+                            self.voices.push(Voice {
+                                end: e.end,
+                                track: e.track,
+                                released: false,
+                                wraps: 0,
+                                fade_in,
+                                fade_out: e.fade_out,
+                                age: 0,
+                                stolen: false,
+                                ident: mix.ident,
+                                content: mix.content,
+                                state,
+                                shape: e.shape,
+                                layer: li as u8 + 1,
+                            });
+                        }
                     }
                 }
             }
@@ -1473,12 +1529,24 @@ impl Renderer {
                     fade *= v.age as f32 / v.fade_in as f32;
                 }
                 v.age = v.age.saturating_add(1);
-                // device オートメーションのあるトラックはスクラッチ(適用済み)を読む
+                // device オートメーションのあるトラックはスクラッチ(適用済み)を読む。層は層の音源
                 let ti = v.track as usize;
-                let inst = if !mix.device_auto.is_empty() && ti < MAX_TRACKS {
-                    &self.inst_scratch[ti]
-                } else {
-                    &mix.instrument
+                let layer = match v.layer {
+                    0 => None,
+                    n => match mix.layers.get(n as usize - 1) {
+                        Some(l) => Some(l),
+                        None => {
+                            self.voices.swap_remove(i);
+                            continue;
+                        }
+                    },
+                };
+                let inst = match layer {
+                    Some(l) => &l.instrument,
+                    None if !mix.device_auto.is_empty() && ti < MAX_TRACKS => {
+                        &self.inst_scratch[ti]
+                    }
+                    None => &mix.instrument,
                 };
                 // 鳴り終わったボイスはノート終了を待たずに解放する
                 // (減衰しきったピアノ・読み切ったワンショット等が
@@ -1494,11 +1562,19 @@ impl Renderer {
                 if let Some(c) = self.voice_samples.get_mut(v.track as usize) {
                     *c += 1;
                 }
+                // 層は層の音量・パン(中央成分と左右差成分)を掛ける
+                let (mid, side) = match layer {
+                    Some(l) => (sample * l.mid, sample * l.side),
+                    None => (sample, 0.0),
+                };
                 match track_mono.get_mut(v.track as usize) {
-                    Some(acc) => *acc += sample,
+                    Some(acc) => {
+                        *acc += mid;
+                        track_side[v.track as usize] += side;
+                    }
                     None => {
-                        direct_l += sample * mix.gain_l;
-                        direct_r += sample * mix.gain_r;
+                        direct_l += (mid + side) * mix.gain_l;
+                        direct_r += (mid - side) * mix.gain_r;
                     }
                 }
                 i += 1;
@@ -2873,6 +2949,7 @@ mod tests {
                 device_auto: vec![],
                 fx_auto: vec![],
                 instrument: test_instrument(),
+                layers: vec![],
                 effects: vec![],
                 fx_graph: None,
                 plugin: None,

@@ -5358,3 +5358,163 @@ async fn write_arpeggio_plays_chords_one_note_at_a_time() {
         assert_eq!(r.is_error, Some(true));
     }
 }
+
+#[tokio::test]
+async fn set_layer_stacks_sounds_on_a_track() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_lyr001", "Lead")).await);
+    let t = glaux_core::TrackId::parse("trk_lyr001").unwrap();
+    let c3_level = |snd: &glaux_mcp::sound::LoadedSound| {
+        // 130.8Hz の大きさ(ゲルツェル)
+        let n = (snd.sample_rate as usize / 2).min(snd.frames.len());
+        let w = 2.0 * std::f32::consts::PI * 130.81 / snd.sample_rate;
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &v in &snd.frames[..n] {
+            let s0 = v + 2.0 * w.cos() * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2).sqrt() / n as f32
+    };
+    let (p0, _) = fx.handle.get_project().await.unwrap();
+    let before = glaux_mcp::sound::render_note(&p0, &fx.dir, &t, 60, 100, 0.5).unwrap();
+    // 1 オクターブ下のサインを重ねる
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_layer",
+            json!({ "track_id": "trk_lyr001", "instrument": "subtractive", "params": { "waveform": "sine" },
+                    "transpose": -12, "name": "サブ", "volume_db": -3.0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["layers"][0]["index"], 1, "{v}");
+    assert_eq!(v["layers"][0]["transpose"], -12);
+    let (p1, _) = fx.handle.get_project().await.unwrap();
+    let after = glaux_mcp::sound::render_note(&p1, &fx.dir, &t, 60, 100, 0.5).unwrap();
+    assert!(
+        c3_level(&after) > c3_level(&before) * 5.0,
+        "サブの C3 が鳴る"
+    );
+    // 置き換え: 高い鍵盤だけにすると C4 では鳴らない
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_layer",
+            json!({ "track_id": "trk_lyr001", "index": 1, "key_range": "C5-C8", "vel_range": "90-127" }),
+        )
+        .await,
+    );
+    assert_eq!(v["layers"][0]["key_range"], "C5-C8", "{v}");
+    assert_eq!(v["layers"][0]["vel_range"], "90-127");
+    let (p2, _) = fx.handle.get_project().await.unwrap();
+    let ranged = glaux_mcp::sound::render_note(&p2, &fx.dir, &t, 60, 100, 0.5).unwrap();
+    assert!(c3_level(&ranged) < c3_level(&after) * 0.2);
+    // 4 層目は作れない
+    for _ in 0..2 {
+        ok_json(
+            &call(
+                &fx,
+                "set_layer",
+                json!({ "track_id": "trk_lyr001", "instrument": "fm" }),
+            )
+            .await,
+        );
+    }
+    let r = call(
+        &fx,
+        "set_layer",
+        json!({ "track_id": "trk_lyr001", "instrument": "fm" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    // 音源の指定がおかしい・音源無しの新しい層・範囲外の index はエラー
+    for bad in [
+        json!({ "track_id": "trk_lyr001", "index": 1, "instrument": "clap" }),
+        json!({ "track_id": "trk_lyr001", "index": 1, "instrument": "fm", "sfz": "x.sfz" }),
+        json!({ "track_id": "trk_lyr001", "index": 7, "volume_db": -6.0 }),
+    ] {
+        let r = call(&fx, "set_layer", bad).await;
+        assert_eq!(r.is_error, Some(true));
+    }
+    // 外す
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_layer",
+            json!({ "track_id": "trk_lyr001", "index": 2, "remove": true }),
+        )
+        .await,
+    );
+    assert_eq!(v["layers"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn set_macro_moves_several_knobs() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_mac001", "Pad")).await);
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_macro",
+            json!({ "track_id": "trk_mac001", "name": "明るさ", "value": 0.25,
+                    "targets": [ { "path": "cutoff", "min": 300.0, "max": 6300.0 },
+                                 { "path": "track/volume_db", "min": -12.0, "max": 0.0, "curve": -0.5 } ] }),
+        )
+        .await,
+    );
+    assert_eq!(v["macros"][0]["path"], "macro/1", "{v}");
+    assert_eq!(v["macros"][0]["targets"][0]["now"], 1800.0);
+    // 値は apply_commands の set_param でも(macro/1)
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "マクロ", "commands": [ { "op": "set_param", "track": "trk_mac001", "path": "macro/1", "value": 1.0 } ] }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let t = project
+        .track(&glaux_core::TrackId::parse("trk_mac001").unwrap())
+        .unwrap();
+    assert_eq!(t.macros[0].value, 1.0);
+    // 値だけ変える
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_macro",
+            json!({ "track_id": "trk_mac001", "index": 1, "value": 0.0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["macros"][0]["targets"][0]["now"], 300.0);
+    // 範囲外の値・知らないつまみ・targets 無しの新しいマクロ・途中のマクロの削除はエラー
+    ok_json(
+        &call(
+            &fx,
+            "set_macro",
+            json!({ "track_id": "trk_mac001", "name": "揺れ", "targets": [ { "path": "resonance", "min": 0.0, "max": 0.5 } ] }),
+        )
+        .await,
+    );
+    for bad in [
+        json!({ "track_id": "trk_mac001", "targets": [ { "path": "cutoff", "min": 0.0, "max": 99999.0 } ] }),
+        json!({ "track_id": "trk_mac001", "targets": [ { "path": "nothing", "min": 0.0, "max": 1.0 } ] }),
+        json!({ "track_id": "trk_mac001", "name": "x" }),
+        json!({ "track_id": "trk_mac001", "index": 1, "remove": true }),
+        json!({ "track_id": "trk_mac001", "index": 1, "value": 2.0 }),
+    ] {
+        let r = call(&fx, "set_macro", bad).await;
+        assert_eq!(r.is_error, Some(true), "{:?}", r.content);
+    }
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_macro",
+            json!({ "track_id": "trk_mac001", "index": 2, "remove": true }),
+        )
+        .await,
+    );
+    assert_eq!(v["macros"].as_array().unwrap().len(), 1);
+}

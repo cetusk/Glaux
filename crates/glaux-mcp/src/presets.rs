@@ -6,7 +6,9 @@
 //!
 //! - エフェクトの `FxId` はプロジェクト固有なので保存しない。適用時に新しい ID を
 //!   生成する(コマンドは決定的: ID は呼び出し側 = ここで生成して Command に渡す)。
-//! - 適用は 1 つの `Batch`(set_device + 既存エフェクト削除 + 追加)= 1 回の undo。
+//! - 適用は 1 つの `Batch`(set_device + 既存エフェクト削除 + 追加 + 層 + マクロ)= 1 回の undo。
+//! - 層(重ねる音源)とマクロも持つ。マクロがエフェクトを指すときは、保存時に `fx_slot<番号>`
+//!   (プリセットのエフェクトの並びの番号)に置き換え、適用時に新しい ID に戻す。
 
 use glaux_core::{Command, Device, Effect, FxId, ParamMap, PluginSource, Track};
 use serde::{Deserialize, Serialize};
@@ -28,8 +30,19 @@ pub struct Preset {
     /// エフェクトチェーン(ID なし。適用時に採番)
     #[serde(default)]
     pub effects: Vec<PresetEffect>,
+    /// 重ねる音源
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<glaux_core::Layer>,
+    /// マクロ(エフェクトの先は `fx_slot<番号>`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub macros: Vec<glaux_core::Macro>,
     /// RFC3339
     pub created: String,
+}
+
+/// プリセットの中のエフェクトの番号を表す仮の ID
+fn slot_id(i: usize) -> FxId {
+    FxId::parse(&format!("fx_slot{i}")).unwrap_or_else(|_| FxId::new())
 }
 
 /// プリセット内のエフェクト(`FxId` を持たない以外は `Effect` と同じ)。
@@ -114,23 +127,52 @@ pub fn save(
     if !matches!(device.source, PluginSource::Builtin { .. }) {
         return Err("内蔵音源のトラックのみプリセット保存できます".to_owned());
     }
+    // 鳴っているエフェクトだけを処理の順に(線から外したもの・つながっていないものは音に入らない)。
+    // 分岐・合流のつながりは持たず、処理の順の直列として保存する
+    let order: Vec<&Effect> =
+        glaux_core::model::routing::processing_order(&track.effects, &track.links())
+            .iter()
+            .filter_map(|id| track.effects.iter().find(|e| &e.id == id))
+            .collect();
+    // マクロのエフェクトの先は並びの番号に。保存しないエフェクトを指す割り当ては落とす
+    let macros: Vec<glaux_core::Macro> = track
+        .macros
+        .iter()
+        .filter_map(|m| {
+            let targets: Vec<glaux_core::MacroTarget> = m
+                .targets
+                .iter()
+                .filter_map(|t| {
+                    let mut t = t.clone();
+                    if let glaux_core::ParamPath::Effect { id, .. } = &mut t.target {
+                        let i = order.iter().position(|e| &e.id == id)?;
+                        *id = slot_id(i);
+                    }
+                    Some(t)
+                })
+                .collect();
+            (!targets.is_empty()).then(|| glaux_core::Macro {
+                targets,
+                ..m.clone()
+            })
+        })
+        .collect();
     let preset = Preset {
         format: PRESET_FORMAT.to_owned(),
         version: PRESET_VERSION,
         name: name.to_owned(),
         description,
         device,
-        // 鳴っているエフェクトだけを処理の順に(線から外したもの・つながっていないものは音に入らない)。
-        // 分岐・合流のつながりは持たず、処理の順の直列として保存する
-        effects: glaux_core::model::routing::processing_order(&track.effects, &track.links())
+        effects: order
             .iter()
-            .filter_map(|id| track.effects.iter().find(|e| &e.id == id))
             .map(|e| PresetEffect {
                 source: e.source.clone(),
                 bypass: e.bypass,
                 params: e.params.clone(),
             })
             .collect(),
+        layers: track.layers.clone(),
+        macros,
         created: chrono::Local::now().to_rfc3339(),
     };
 
@@ -229,6 +271,8 @@ fn factory_presets() -> Vec<Preset> {
         description: Some(desc.to_owned()),
         device,
         effects,
+        layers: vec![],
+        macros: vec![],
         created: chrono::Local::now().to_rfc3339(),
     };
 
@@ -523,12 +567,127 @@ fn factory_presets() -> Vec<Preset> {
             },
             vec![fx("bitcrush", &[("bits", 6.0), ("downsample", 4.0), ("mix", 1.0)])],
         ),
+        // ---- 層とマクロの手本 ----
+        {
+            let mut p = preset(
+                "スーパーソウ + サブ",
+                "7 声のスーパーソウに 1 オクターブ下のサインを重ねる(層)。サビのリード・コードを太く。マクロ 1「明るさ」でフィルタ、2「厚み」で声の広がり",
+                device(
+                    "subtractive",
+                    &[
+                        ("unison", 7.0),
+                        ("detune", 25.0),
+                        ("cutoff", 5000.0),
+                        ("attack", 0.005),
+                        ("sustain", 0.85),
+                        ("release", 0.3),
+                        ("filter_env", 0.15),
+                        ("gain_db", -14.0),
+                    ],
+                ),
+                vec![fx("reverb", &[("mix", 0.18), ("size", 0.6)])],
+            );
+            let mut sub = glaux_core::Layer::new({
+                let mut d = device("subtractive", &[("sustain", 1.0), ("release", 0.2), ("gain_db", -12.0)]);
+                d.params.insert(
+                    "waveform".to_owned(),
+                    glaux_core::ParamValue::Enum("sine".to_owned()),
+                );
+                d
+            });
+            sub.name = "サブ".to_owned();
+            sub.transpose = -12;
+            sub.volume_db = -4.0;
+            p.layers = vec![sub];
+            p.macros = vec![
+                glaux_core::Macro {
+                    name: "明るさ".to_owned(),
+                    value: 0.6,
+                    targets: vec![glaux_core::MacroTarget {
+                        target: glaux_core::ParamPath::device("cutoff"),
+                        min: 800.0,
+                        max: 9000.0,
+                        curve: 0.4,
+                    }],
+                },
+                glaux_core::Macro {
+                    name: "厚み".to_owned(),
+                    value: 0.6,
+                    targets: vec![glaux_core::MacroTarget {
+                        target: glaux_core::ParamPath::device("detune"),
+                        min: 5.0,
+                        max: 40.0,
+                        curve: 0.0,
+                    }],
+                },
+            ];
+            p
+        },
+        {
+            let mut p = preset(
+                "キックにサブ",
+                "ドラムのキック(35・36)にだけ、短いサインのサブ(約 49Hz)を重ねる(層)。クラブの低域を足したいときに。マクロ 1「サブの量」",
+                device("drum", &[("gain_db", -6.0), ("kick_decay", 0.8)]),
+                vec![],
+            );
+            let mut sub = glaux_core::Layer::new({
+                let mut d = device(
+                    "subtractive",
+                    &[("attack", 0.002), ("decay", 0.35), ("sustain", 0.0), ("release", 0.08), ("gain_db", -8.0)],
+                );
+                d.params.insert(
+                    "waveform".to_owned(),
+                    glaux_core::ParamValue::Enum("sine".to_owned()),
+                );
+                d
+            });
+            sub.name = "サブ".to_owned();
+            sub.transpose = -5;
+            sub.key_lo = 35;
+            sub.key_hi = 36;
+            p.layers = vec![sub];
+            p.macros = vec![glaux_core::Macro {
+                name: "キックの長さ".to_owned(),
+                value: 0.4,
+                targets: vec![glaux_core::MacroTarget {
+                    target: glaux_core::ParamPath::device("kick_decay"),
+                    min: 0.4,
+                    max: 2.0,
+                    curve: 0.3,
+                }],
+            }];
+            p
+        },
+        {
+            let mut p = preset(
+                "エレピ + パッド",
+                "FM のエレピに、ゆっくり立ち上がるパッドを薄く重ねる(層)。バラード・チルの伴奏に。強く弾いたときだけ明るい鐘の音も鳴る",
+                device("fm", &[("ratio", 1.0), ("index", 2.0), ("index_decay", 0.6), ("gain_db", -10.0)]),
+                vec![fx("chorus", &[("mix", 0.3)]), fx("reverb", &[("mix", 0.2)])],
+            );
+            let mut pad = glaux_core::Layer::new(device(
+                "subtractive",
+                &[("unison", 3.0), ("detune", 12.0), ("cutoff", 1800.0), ("attack", 0.6), ("sustain", 0.8), ("release", 0.8), ("gain_db", -14.0)],
+            ));
+            pad.name = "パッド".to_owned();
+            pad.volume_db = -8.0;
+            let mut bell = glaux_core::Layer::new(device(
+                "fm",
+                &[("ratio", 3.5), ("index", 3.0), ("index_decay", 0.3), ("decay", 0.8), ("sustain", 0.0), ("gain_db", -16.0)],
+            ));
+            bell.name = "鐘(強いときだけ)".to_owned();
+            bell.transpose = 12;
+            bell.vel_lo = 100;
+            bell.volume_db = -6.0;
+            p.layers = vec![pad, bell];
+            p
+        },
     ]
 }
 
 /// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
 /// (ユーザーが独自に作った別名のプリセットには触れない)。
-const FACTORY_VERSION: &str = "v6";
+const FACTORY_VERSION: &str = "v7";
 
 /// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
 /// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)
@@ -573,17 +732,48 @@ pub fn apply_commands(track: &Track, preset: &Preset) -> Vec<Command> {
     for e in &track.effects {
         cmds.push(Command::RemoveEffect { id: e.id.clone() });
     }
+    let mut new_ids = Vec::new();
     for f in &preset.effects {
+        let id = FxId::new();
+        new_ids.push(id.clone());
         cmds.push(Command::AddEffect {
             track: track.id.clone(),
             effect: Effect {
-                id: FxId::new(),
+                id,
                 source: f.source.clone(),
                 bypass: f.bypass,
                 params: f.params.clone(),
                 ui: Default::default(),
             },
             index: None,
+        });
+    }
+    // 層とマクロも丸ごと入れ替える(プリセットに無ければ外す)
+    if preset.layers != track.layers {
+        cmds.push(Command::SetTrackProp {
+            id: track.id.clone(),
+            prop: glaux_core::TrackProp::Layers(preset.layers.clone()),
+        });
+    }
+    let macros: Vec<glaux_core::Macro> = preset
+        .macros
+        .iter()
+        .map(|m| {
+            let mut m = m.clone();
+            for t in &mut m.targets {
+                if let glaux_core::ParamPath::Effect { id, .. } = &mut t.target {
+                    if let Some(i) = (0..new_ids.len()).find(|&i| *id == slot_id(i)) {
+                        *id = new_ids[i].clone();
+                    }
+                }
+            }
+            m
+        })
+        .collect();
+    if macros != track.macros {
+        cmds.push(Command::SetTrackProp {
+            id: track.id.clone(),
+            prop: glaux_core::TrackProp::Macros(macros),
         });
     }
     cmds
@@ -726,16 +916,117 @@ mod tests {
                     );
                 }
             }
-            if let PluginSource::Builtin { name } = &p.device.source {
-                let specs = glaux_dsp::instrument_params(name).expect("音源");
-                for key in p.device.params.keys() {
-                    assert!(
-                        specs.iter().any(|s| s.name == key.as_str()),
-                        "{}: {name} に {key} は無い",
-                        p.name
-                    );
+            // 本体と層の音源のつまみ
+            for d in std::iter::once(&p.device).chain(p.layers.iter().map(|l| &l.device)) {
+                if let PluginSource::Builtin { name } = &d.source {
+                    let specs = glaux_dsp::instrument_params(name).expect("音源");
+                    for key in d.params.keys() {
+                        assert!(
+                            specs.iter().any(|s| s.name == key.as_str()),
+                            "{}: {name} に {key} は無い",
+                            p.name
+                        );
+                    }
+                }
+            }
+            glaux_core::check_layers(&p.layers).unwrap_or_else(|e| panic!("{}: {e}", p.name));
+            if !p.macros.is_empty() {
+                glaux_core::check_macros(&p.macros).unwrap_or_else(|e| panic!("{}: {e}", p.name));
+            }
+            // マクロの先は本体の音源のつまみ
+            for m in &p.macros {
+                for t in &m.targets {
+                    if let glaux_core::ParamPath::Device { name: key } = &t.target {
+                        let PluginSource::Builtin { name } = &p.device.source else {
+                            panic!("{}", p.name)
+                        };
+                        let specs = glaux_dsp::instrument_params(name).unwrap();
+                        assert!(
+                            specs.iter().any(|s| s.name == key.as_str()),
+                            "{}: マクロの先 {key} は {name} に無い",
+                            p.name
+                        );
+                    }
                 }
             }
         }
+    }
+
+    #[test]
+    fn layers_and_macros_travel_with_presets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut t = track_with_patch();
+        let fx_id = t.effects[0].id.clone();
+        t.layers = vec![glaux_core::Layer::new(Device::builtin("fm"))];
+        t.macros = vec![glaux_core::Macro {
+            name: "歪み".into(),
+            value: 0.3,
+            targets: vec![
+                glaux_core::MacroTarget {
+                    target: glaux_core::ParamPath::effect(fx_id.clone(), "drive"),
+                    min: 0.0,
+                    max: 1.0,
+                    curve: 0.0,
+                },
+                glaux_core::MacroTarget {
+                    target: glaux_core::ParamPath::device("cutoff"),
+                    min: 500.0,
+                    max: 5000.0,
+                    curve: 0.0,
+                },
+            ],
+        }];
+        let saved = save(tmp.path(), &t, "層つき", None, false).unwrap();
+        // エフェクトの先は並びの番号に
+        assert_eq!(
+            saved.macros[0].targets[0].target.to_string(),
+            "fx/fx_slot0/drive"
+        );
+        let loaded = load(tmp.path(), "層つき").unwrap();
+        let other = Track::new(
+            glaux_core::TrackId::new(),
+            "Other",
+            glaux_core::TrackKind::Midi,
+        );
+        let cmds = apply_commands(&other, &loaded);
+        let new_fx = cmds
+            .iter()
+            .find_map(|c| match c {
+                Command::AddEffect { effect, .. } => Some(effect.id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let macros = cmds
+            .iter()
+            .find_map(|c| match c {
+                Command::SetTrackProp {
+                    prop: glaux_core::TrackProp::Macros(m),
+                    ..
+                } => Some(m.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            macros[0].targets[0].target,
+            glaux_core::ParamPath::effect(new_fx, "drive"),
+            "新しいエフェクトの ID に戻る"
+        );
+        assert!(cmds.iter().any(|c| matches!(
+            c,
+            Command::SetTrackProp {
+                prop: glaux_core::TrackProp::Layers(l),
+                ..
+            } if l.len() == 1
+        )));
+        // 層もマクロも無いプリセットを、層のあるトラックに当てると外れる
+        let plain = save(tmp.path(), &track_with_patch(), "素", None, false).unwrap();
+        let cmds = apply_commands(&t, &plain);
+        assert!(cmds.iter().any(|c| matches!(
+            c,
+            Command::SetTrackProp {
+                prop: glaux_core::TrackProp::Layers(l),
+                ..
+            } if l.is_empty()
+        )));
     }
 }

@@ -81,6 +81,8 @@ const LABELS: Record<string, ToolLabel> = {
   write_tihai: { short: "ティハイ", doing: "3 回繰り返して着地する句を置いています" },
   export_musicxml: { short: "譜面の書き出し", doing: "MusicXML に書き出しています" },
   modulate: { short: "変調(LFO)", doing: "つまみを LFO で揺らしています" },
+  set_layer: { short: "音源の重ね", doing: "音源を重ねています" },
+  set_macro: { short: "マクロ", doing: "マクロを設定しています" },
   sustain_pedal: { short: "ペダル", doing: "サステインペダルを焼き込んでいます" },
   set_note_condition: { short: "条件付きの発音", doing: "ループの回ごとの鳴り方を決めています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },

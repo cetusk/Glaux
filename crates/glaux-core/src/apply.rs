@@ -139,6 +139,14 @@ impl Project {
                         crate::model::check_modulators(v).map_err(CoreError::OutOfRange)?;
                         TrackProp::Modulators(std::mem::replace(&mut t.modulators, v.clone()))
                     }
+                    TrackProp::Layers(v) => {
+                        crate::model::check_layers(v).map_err(CoreError::OutOfRange)?;
+                        TrackProp::Layers(std::mem::replace(&mut t.layers, v.clone()))
+                    }
+                    TrackProp::Macros(v) => {
+                        crate::model::check_macros(v).map_err(CoreError::OutOfRange)?;
+                        TrackProp::Macros(std::mem::replace(&mut t.macros, v.clone()))
+                    }
                 };
                 Ok(Applied {
                     inverse: SetTrackProp {
@@ -1263,6 +1271,19 @@ impl Project {
                     .effect_index(id)
                     .ok_or_else(|| CoreError::EffectNotFound(id.clone()))?;
                 Ok(set_in_map(&mut t.effects[ei].params, name, value))
+            }
+            ParamPath::Macro { index } => {
+                let m = t
+                    .macros
+                    .get_mut(*index as usize - 1)
+                    .ok_or_else(|| CoreError::UnknownParam(path.clone()))?;
+                let v = value.and_then(ParamValue::as_f64).ok_or_else(|| {
+                    CoreError::OutOfRange(format!("{path} は 0〜1 の数(外せない)"))
+                })?;
+                if !(0.0..=1.0).contains(&v) {
+                    return Err(CoreError::OutOfRange(format!("{path} {v}(0〜1)")));
+                }
+                Ok(Some(ParamValue::Float(std::mem::replace(&mut m.value, v))))
             }
         }
     }

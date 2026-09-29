@@ -133,6 +133,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   osc_level 0 で雑音だけの音源(noise_color white / pink / brown、crackle でレコードのパチパチ)。プリセット「レコードノイズ」\n\
   (ローファイの地の音。長い音を 1 つ曲の長さぶん)・「ノイズのライザー」(ビルドのシューッ)・「風」。\n\
 - fm: エレピ・ベル・マレット・FM ベースなど金属的・打鍵的な音。\n\
+- 音を重ねるなら set_layer(本体 + 3 層。キックにサブ〈key_range 35-36〉、リード・コードに 1 オクターブ下のサイン、\n\
+  強く弾いたときだけ鳴る層〈vel_range〉)。意味の取っ手は set_macro(「明るさ」= cutoff と reverb.mix など。値は macro/N)。\n\
 - 動きのある音色は modulate(トラックの LFO。音源・エフェクトのつまみをテンポに合わせて揺らす): ワブルベース = wavetable の\n\
   position か subtractive の cutoff を 1/8〜1/16 の sine、うねるパッド = cutoff を 2/1 の triangle、ランダムに動く音色 = random。\n\
 - wavetable: position を LFO やオートメーションで動かすウォブルベース・うねるパッド・母音のような音・sync のギラついたリード。\n\

@@ -34,6 +34,15 @@ const FIXTURE: &str = r##"{
           "bypass": false,
           "params": { "threshold_db": -18.0, "ratio": 4.0 } }
       ],
+      "layers": [
+        { "name": "サブ", "device": { "type": "builtin", "name": "subtractive", "params": { "waveform": "sine" } },
+          "volume_db": -3.0, "transpose": -12, "key_lo": 0, "key_hi": 59, "vel_lo": 1, "vel_hi": 127 }
+      ],
+      "macros": [
+        { "name": "明るさ", "value": 0.4,
+          "targets": [ { "target": "device/filter.cutoff", "min": 300.0, "max": 4000.0, "curve": 0.5 },
+                       { "target": "fx/fx_e5f6g7/threshold_db", "min": -6.0, "max": -24.0 } ] }
+      ],
       "clips": [
         {
           "id": "clp_c3d4e5",
@@ -118,6 +127,18 @@ fn fixture_parses_and_roundtrips() {
         ParamPath::device("filter.cutoff")
     );
     assert_eq!(bass.automation[0].points[1].curve, Curve::Hold);
+    // 層とマクロ
+    assert_eq!(bass.layers[0].transpose, -12);
+    assert_eq!(bass.layers[0].key_hi, 59);
+    assert_eq!(
+        bass.macros[0].targets[1].target.to_string(),
+        "fx/fx_e5f6g7/threshold_db"
+    );
+    assert_eq!(bass.macros[0].targets[1].curve, 0.0);
+    assert_eq!(
+        ParamPath::parse("macro/2").unwrap(),
+        ParamPath::Macro { index: 2 }
+    );
 
     let (_, vocal_clip) = p.clip(&"clp_7w6v5u".parse().unwrap()).unwrap();
     assert!(!vocal_clip.is_midi());

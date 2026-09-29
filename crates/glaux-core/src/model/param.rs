@@ -59,9 +59,20 @@ impl From<&str> for ParamValue {
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum ParamPath {
-    Device { name: String },
-    Effect { id: FxId, name: String },
-    Track { name: String },
+    Device {
+        name: String,
+    },
+    Effect {
+        id: FxId,
+        name: String,
+    },
+    Track {
+        name: String,
+    },
+    /// トラックのマクロ(1 始まり。`macro/1` 〜 `macro/8`)。値は 0〜1
+    Macro {
+        index: u8,
+    },
 }
 
 impl ParamPath {
@@ -81,12 +92,16 @@ impl ParamPath {
     pub fn parse(s: &str) -> Result<Self, IdError> {
         let err = || IdError {
             id: s.to_owned(),
-            expected: "device/<name> | fx/<fx_id>/<name> | track/<name>",
+            expected: "device/<name> | fx/<fx_id>/<name> | track/<name> | macro/<1..8>",
         };
         let mut parts = s.splitn(3, '/');
         match (parts.next(), parts.next(), parts.next()) {
             (Some("device"), Some(name), None) if !name.is_empty() => Ok(Self::device(name)),
             (Some("track"), Some(name), None) if !name.is_empty() => Ok(Self::track(name)),
+            (Some("macro"), Some(n), None) => match n.parse::<u8>() {
+                Ok(index) if (1..=8).contains(&index) => Ok(ParamPath::Macro { index }),
+                _ => Err(err()),
+            },
             (Some("fx"), Some(id), Some(name)) if !name.is_empty() => {
                 Ok(Self::effect(FxId::parse(id)?, name))
             }
@@ -101,6 +116,7 @@ impl fmt::Display for ParamPath {
             ParamPath::Device { name } => write!(f, "device/{name}"),
             ParamPath::Effect { id, name } => write!(f, "fx/{id}/{name}"),
             ParamPath::Track { name } => write!(f, "track/{name}"),
+            ParamPath::Macro { index } => write!(f, "macro/{index}"),
         }
     }
 }

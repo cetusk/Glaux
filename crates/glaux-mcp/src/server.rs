@@ -1545,6 +1545,89 @@ pub struct WriteTihaiParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct SetLayerParams {
+    /// 層を重ねる MIDI トラックの ID(`trk_xxxxxx`)。
+    pub track_id: String,
+    /// 層の番号 1〜3(置き換え・外すとき)。省くと新しい層を足す。
+    #[serde(default)]
+    pub index: Option<u8>,
+    /// true でこの層を外す(index が必要)。
+    #[serde(default)]
+    pub remove: Option<bool>,
+    /// 音源: 内蔵の名前(subtractive / fm / wavetable / pluck / drum)。preset・sfz・soundfont のどれかでもよい。
+    #[serde(default)]
+    pub instrument: Option<String>,
+    /// 内蔵の音源のつまみ(list_params の名前 → 値。例 {"waveform": "sine", "cutoff": 800})。
+    #[serde(default)]
+    pub params: Option<std::collections::BTreeMap<String, Value>>,
+    /// 音色のプリセット(list_presets の名前)の音源部分を使う(エフェクトは使わない)。
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// SFZ の楽器(list_soundfonts の sfz)。
+    #[serde(default)]
+    pub sfz: Option<String>,
+    /// SoundFont(.sf2)と bank / preset 番号。
+    #[serde(default)]
+    pub soundfont: Option<String>,
+    #[serde(default)]
+    pub bank: Option<u16>,
+    #[serde(default)]
+    pub program: Option<u16>,
+    /// 層の名前(例 "サブ"・"アタック")。
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 層の音量(dB、-60〜12。既定 0)とパン(-1〜1)。
+    #[serde(default)]
+    pub volume_db: Option<f32>,
+    #[serde(default)]
+    pub pan: Option<f32>,
+    /// 移調(半音。1 オクターブ下のサブなら -12)。
+    #[serde(default)]
+    pub transpose: Option<i8>,
+    /// 鳴らす鍵盤の範囲("C1-B3" の形。既定は全域)とベロシティの範囲("1-80" の形)。
+    #[serde(default)]
+    pub key_range: Option<String>,
+    #[serde(default)]
+    pub vel_range: Option<String>,
+    /// true で消音(層を残したまま鳴らさない)。
+    #[serde(default)]
+    pub mute: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct MacroTargetArg {
+    /// つまみ: 音源のつまみの名前(cutoff)・エフェクトの種類.つまみ(reverb.mix)・fx/<id>/<名前>・track/volume_db・track/pan。
+    pub path: String,
+    /// マクロが 0 のときと 1 のときの値(逆向きでもよい)。
+    pub min: f64,
+    pub max: f64,
+    /// 曲線 -1〜1(0 = 直線、正 = はじめはゆっくり、負 = はじめに急に)。
+    #[serde(default)]
+    pub curve: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SetMacroParams {
+    /// トラックの ID(`trk_xxxxxx`)。
+    pub track_id: String,
+    /// マクロの番号 1〜8。省くと新しいマクロを足す。
+    #[serde(default)]
+    pub index: Option<u8>,
+    /// true でこのマクロを外す(index が必要)。
+    #[serde(default)]
+    pub remove: Option<bool>,
+    /// 名前(「明るさ」「広がり」「迫力」のような意味の名前)。
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 値 0〜1(既定: 新しいマクロは 0.5、既存は今のまま)。値だけ変えるなら index と value だけ。
+    #[serde(default)]
+    pub value: Option<f64>,
+    /// 割り当て(1〜16 個。渡すと丸ごと置き換え)。
+    #[serde(default)]
+    pub targets: Option<Vec<MacroTargetArg>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ModulateParams {
     /// トラックの ID。
     pub track_id: String,
@@ -1624,6 +1707,97 @@ struct Layout {
     clip_start: u64,
     clip_len: u64,
     n_bars: u32,
+}
+
+/// トラックのつまみの場所を読む: "cutoff"(音源)/ "reverb.mix"(エフェクトの種類.つまみ)/ "fx/<id>/<名前>" /
+/// "device/<名前>" / "track/<名前>"
+fn resolve_param_path(track: &glaux_core::Track, t: &str) -> Result<glaux_core::ParamPath, String> {
+    if t.starts_with("fx/") || t.starts_with("device/") || t.starts_with("track/") {
+        return glaux_core::ParamPath::parse(t).map_err(|e| e.to_string());
+    }
+    if let Some((kind, name)) = t.split_once('.') {
+        let fx = track
+            .effects
+            .iter()
+            .find(
+                |e| matches!(&e.source, glaux_core::PluginSource::Builtin { name: n } if n == kind),
+            )
+            .ok_or_else(|| format!("このトラックに {kind} のエフェクトがありません"))?;
+        return Ok(glaux_core::ParamPath::effect(fx.id.clone(), name));
+    }
+    Ok(glaux_core::ParamPath::device(t))
+}
+
+/// 内蔵の音源・エフェクトの数のつまみの範囲(最小, 最大)。track/volume_db・track/pan も
+fn param_range(track: &glaux_core::Track, path: &glaux_core::ParamPath) -> Option<(f64, f64)> {
+    use glaux_core::ParamPath;
+    let spec = match path {
+        ParamPath::Track { name } if name == "volume_db" => return Some((-60.0, 12.0)),
+        ParamPath::Track { name } if name == "pan" => return Some((-1.0, 1.0)),
+        ParamPath::Device { name } => {
+            let dev = track
+                .device
+                .as_ref()
+                .and_then(|d| match &d.source {
+                    glaux_core::PluginSource::Builtin { name } => Some(name.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| glaux_dsp::DEFAULT_INSTRUMENT.to_owned());
+            glaux_dsp::instrument_params(&dev)
+                .and_then(|ss| ss.iter().find(|s| s.name == name.as_str()))
+        }
+        ParamPath::Effect { id, name } => track
+            .effects
+            .iter()
+            .find(|e| &e.id == id)
+            .and_then(|e| match &e.source {
+                glaux_core::PluginSource::Builtin { name } => Some(name.clone()),
+                _ => None,
+            })
+            .and_then(|n| glaux_dsp::effect_params_spec(&n))
+            .and_then(|ss| ss.iter().find(|s| s.name == name.as_str())),
+        _ => None,
+    }?;
+    match spec.range {
+        glaux_core::ParamRange::Float { min, max, .. } => Some((min, max)),
+        glaux_core::ParamRange::Int { min, max, .. } => Some((min as f64, max as f64)),
+        _ => None,
+    }
+}
+
+/// "C1-B3" / "36-59" の形の範囲
+fn parse_note_range(s: &str) -> Result<(u8, u8), String> {
+    let (a, b) = s
+        .split_once(['-', '~', '〜'])
+        .ok_or_else(|| format!("範囲は \"C1-B3\" か \"36-59\" の形(got: {s})"))?;
+    let one = |x: &str| -> Result<u8, String> {
+        let x = x.trim();
+        x.parse::<u8>()
+            .ok()
+            .filter(|v| *v <= 127)
+            .or_else(|| glaux_core::chord::parse_note(x))
+            .ok_or_else(|| format!("音名・番号が読めません: {x}"))
+    };
+    let (lo, hi) = (one(a)?, one(b)?);
+    Ok((lo.min(hi), lo.max(hi)))
+}
+
+fn layers_json(layers: &[glaux_core::Layer]) -> Value {
+    json!(layers
+        .iter()
+        .enumerate()
+        .map(|(i, l)| json!({
+            "index": i + 1,
+            "name": l.name,
+            "device": l.device,
+            "volume_db": l.volume_db,
+            "pan": l.pan,
+            "transpose": l.transpose,
+            "key_range": format!("{}-{}", glaux_core::chord::note_name(l.key_lo), glaux_core::chord::note_name(l.key_hi)),
+            "vel_range": format!("{}-{}", l.vel_lo, l.vel_hi),
+            "mute": l.mute,
+        }))
+        .collect::<Vec<_>>())
 }
 
 /// アルペジオの刻み(4 分音符を 1 とした長さ)。"16th" / "triplet_8th" / "dotted_8th" か "1/16" "1/8t" "1/8d" の形
@@ -1783,12 +1957,20 @@ fn copy_track_shell(track: &glaux_core::Track, name: String) -> glaux_core::Trac
             remap(&mut l.to);
         }
     }
-    // 変調のエフェクトの先も新しい ID に
-    for m in &mut t.modulators {
-        if let glaux_core::ParamPath::Effect { id, .. } = &mut m.target {
+    // 変調・マクロのエフェクトの先も新しい ID に
+    let remap_path = |p: &mut glaux_core::ParamPath| {
+        if let glaux_core::ParamPath::Effect { id, .. } = p {
             if let Some(new) = map.get(id) {
                 *id = new.clone();
             }
+        }
+    };
+    for m in &mut t.modulators {
+        remap_path(&mut m.target);
+    }
+    for m in &mut t.macros {
+        for tg in &mut m.targets {
+            remap_path(&mut tg.target);
         }
     }
     t
@@ -4727,7 +4909,7 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "トラックの現在の音(音源のパラメータ + エフェクトチェーン)を\
+        description = "トラックの現在の音(音源のパラメータ + エフェクトチェーン + 重ねた層 + マクロ)を\
         名前を付けてプリセット保存する。良い音ができたら保存しておくと、別の曲でも\
         load_preset で呼び出せる。description には用途と音の特徴を書くこと\
         (後で一覧から選ぶときの手掛かりになる)。"
@@ -9169,6 +9351,286 @@ impl GlauxServer {
         v["notes"] = json!(notes.len());
         v["start_tick"] = json!(clip_start);
         v["length_steps"] = json!((land - clip_start) / unit + 1);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "トラックの音源に別の音源を重ねる(層。本体と合わせて最大 4 層)。1 つのノートで、鍵盤・ベロシティの\
+        範囲に合う層がすべて鳴る。層ごとに音量・パン・移調。定石: キックにサブ(sine、-12)やクリックを重ねる、\
+        スーパーソウに 1 オクターブ下のサイン(ベースの芯)、ピアノに弦のパッドを薄く、強く弾いたときだけ鳴る層(vel_range 90-127)。\
+        音源は instrument(内蔵の名前と params)・preset(音色のプリセットの音源部分)・sfz・soundfont(+ bank・program)の\
+        どれか。index を渡すと置き換え、remove で外す。CLAP は層にできない。1 回の undo で戻る。"
+    )]
+    async fn set_layer(
+        &self,
+        params: Parameters<SetLayerParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("set_layer");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err("MIDI トラックを指定してください".to_owned());
+        }
+        let mut layers = track.layers.clone();
+        let idx = p.index.map(|i| i as usize);
+        if let Some(i) = idx {
+            if i == 0 || i > layers.len() {
+                return Err(format!("index は 1〜{}(今の層の数)", layers.len()));
+            }
+        }
+        let label;
+        if p.remove.unwrap_or(false) {
+            let i = idx.ok_or("外す層の index を指定してください")?;
+            layers.remove(i - 1);
+            label = format!("{} の層 {i} を外す", track.name);
+        } else {
+            // 音源(新しい層は必須、置き換えは省けば今のまま)
+            let chosen = [
+                p.instrument.is_some(),
+                p.preset.is_some(),
+                p.sfz.is_some(),
+                p.soundfont.is_some(),
+            ]
+            .iter()
+            .filter(|b| **b)
+            .count();
+            if chosen > 1 {
+                return Err("音源は instrument・preset・sfz・soundfont のどれか 1 つ".to_owned());
+            }
+            let device = if let Some(name) = &p.instrument {
+                if glaux_dsp::instrument_params(name).is_none()
+                    || name == "sf2"
+                    || name == "sampler"
+                {
+                    return Err(format!(
+                        "instrument は subtractive / fm / wavetable / pluck / drum(got: {name})"
+                    ));
+                }
+                let mut d = glaux_core::Device::builtin(name.clone());
+                for (k, v) in p.params.clone().unwrap_or_default() {
+                    let pv: glaux_core::ParamValue = serde_json::from_value(v.clone())
+                        .map_err(|_| format!("params.{k} の値が読めません: {v}"))?;
+                    d.params.insert(k, pv);
+                }
+                Some(d)
+            } else if let Some(pr) = &p.preset {
+                let preset = crate::presets::load(&crate::presets::default_dir(), pr)?;
+                Some(preset.device)
+            } else if let Some(sfz) = &p.sfz {
+                if !glaux_engine::sfz::valid_name(sfz) {
+                    return Err(format!("SFZ の名前が正しくありません: {sfz}"));
+                }
+                Some(glaux_core::Device {
+                    source: glaux_core::PluginSource::Sfz {
+                        instrument: sfz.clone(),
+                        cc: crate::sfz_packs::default_cc(sfz),
+                    },
+                    params: Default::default(),
+                })
+            } else if let Some(sf) = &p.soundfont {
+                Some(glaux_core::Device {
+                    source: glaux_core::PluginSource::Sf2 {
+                        soundfont: sf.clone(),
+                        bank: p.bank.unwrap_or(0),
+                        preset: p.program.unwrap_or(0),
+                    },
+                    params: Default::default(),
+                })
+            } else {
+                None
+            };
+            let mut layer =
+                match (idx, device) {
+                    (Some(i), d) => {
+                        let mut l = layers[i - 1].clone();
+                        if let Some(d) = d {
+                            l.device = d;
+                        }
+                        l
+                    }
+                    (None, Some(d)) => glaux_core::Layer::new(d),
+                    (None, None) => return Err(
+                        "新しい層には音源(instrument・preset・sfz・soundfont)を指定してください"
+                            .to_owned(),
+                    ),
+                };
+            if let Some(n) = &p.name {
+                layer.name = n.clone();
+            }
+            if let Some(v) = p.volume_db {
+                layer.volume_db = v;
+            }
+            if let Some(v) = p.pan {
+                layer.pan = v;
+            }
+            if let Some(v) = p.transpose {
+                layer.transpose = v;
+            }
+            if let Some(r) = &p.key_range {
+                (layer.key_lo, layer.key_hi) = parse_note_range(r)?;
+            }
+            if let Some(r) = &p.vel_range {
+                let (a, b) = r
+                    .split_once(['-', '~', '〜'])
+                    .and_then(|(a, b)| {
+                        Some((a.trim().parse::<u8>().ok()?, b.trim().parse::<u8>().ok()?))
+                    })
+                    .ok_or_else(|| format!("vel_range は \"1-80\" の形(got: {r})"))?;
+                (layer.vel_lo, layer.vel_hi) = (a.min(b).max(1), a.max(b).min(127));
+            }
+            if let Some(m) = p.mute {
+                layer.mute = m;
+            }
+            match idx {
+                Some(i) => {
+                    layers[i - 1] = layer;
+                    label = format!("{} の層 {i} を変える", track.name);
+                }
+                None => {
+                    layers.push(layer);
+                    label = format!("{} に層を重ねる", track.name);
+                }
+            }
+            glaux_core::check_layers(&layers)?;
+        }
+        let command = Command::SetTrackProp {
+            id: tid,
+            prop: glaux_core::TrackProp::Layers(layers.clone()),
+        };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["layers"] = layers_json(&layers);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "トラックのマクロ(最大 8 個)を作る・変える。1 つの値(0〜1)で、割り当てた複数のつまみを\
+        それぞれの最小〜最大の間で動かす(曲線付き)。「明るさ」= cutoff と reverb.mix、「迫力」= drive と volume など、\
+        意味の単位の取っ手にする。値は macro/N として set_param・オートメーション(shape_automation など)でも動かせ、\
+        オートメーションがあれば割り当て先のオートメーションになる。割り当て先は内蔵の音源・エフェクトのつまみと\
+        track/volume_db・track/pan(CLAP は不可)。割り当てたつまみはマクロが上書きする(元のオートメーションより優先)。\
+        index で既存を変える(値だけなら index と value)、remove で外す。1 回の undo で戻る。"
+    )]
+    async fn set_macro(
+        &self,
+        params: Parameters<SetMacroParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("set_macro");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        let mut macros = track.macros.clone();
+        let idx = p.index.map(|i| i as usize);
+        if let Some(i) = idx {
+            if i == 0 || i > macros.len() {
+                return Err(format!("index は 1〜{}(今のマクロの数)", macros.len()));
+            }
+        }
+        let label;
+        if p.remove.unwrap_or(false) {
+            let i = idx.ok_or("外すマクロの index を指定してください")?;
+            if i != macros.len() {
+                // 後ろのマクロの番号(macro/N のオートメーション)がずれるので、最後のものだけ外せる
+                return Err(format!(
+                    "外せるのは最後のマクロ(macro/{})だけです(番号がずれるため)。値の割り当てを変えるなら targets で置き換える",
+                    macros.len()
+                ));
+            }
+            macros.pop();
+            label = format!("{} のマクロ {i} を外す", track.name);
+        } else {
+            let targets = match &p.targets {
+                Some(ts) => Some(
+                    ts.iter()
+                        .map(|t| {
+                            let path = resolve_param_path(track, &t.path)?;
+                            let (lo, hi) = param_range(track, &path).ok_or_else(|| {
+                                format!(
+                                    "{} は数のつまみではありません(list_params で名前を確かめる)",
+                                    t.path
+                                )
+                            })?;
+                            if !(lo..=hi).contains(&t.min) || !(lo..=hi).contains(&t.max) {
+                                return Err(format!(
+                                    "{} の min・max は {lo}〜{hi} の範囲で",
+                                    t.path
+                                ));
+                            }
+                            Ok(glaux_core::MacroTarget {
+                                target: path,
+                                min: t.min,
+                                max: t.max,
+                                curve: t.curve.unwrap_or(0.0),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                ),
+                None => None,
+            };
+            let mut m = match idx {
+                Some(i) => macros[i - 1].clone(),
+                None => glaux_core::Macro {
+                    name: p
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("マクロ {}", macros.len() + 1)),
+                    value: 0.5,
+                    targets: targets
+                        .clone()
+                        .ok_or("新しいマクロには targets を指定してください")?,
+                },
+            };
+            if let Some(n) = &p.name {
+                m.name = n.clone();
+            }
+            if let Some(v) = p.value {
+                m.value = v;
+            }
+            if let Some(ts) = targets {
+                m.targets = ts;
+            }
+            let n = match idx {
+                Some(i) => {
+                    macros[i - 1] = m;
+                    i
+                }
+                None => {
+                    macros.push(m);
+                    macros.len()
+                }
+            };
+            label = format!("{} のマクロ {n}(macro/{n})", track.name);
+            glaux_core::check_macros(&macros)?;
+        }
+        let command = Command::SetTrackProp {
+            id: tid,
+            prop: glaux_core::TrackProp::Macros(macros.clone()),
+        };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["macros"] = json!(macros
+            .iter()
+            .enumerate()
+            .map(|(i, m)| json!({
+                "index": i + 1,
+                "path": format!("macro/{}", i + 1),
+                "name": m.name,
+                "value": m.value,
+                "targets": m.targets.iter().map(|t| json!({
+                    "path": t.target.to_string(), "min": t.min, "max": t.max, "curve": t.curve,
+                    "now": (t.map(m.value) * 1000.0).round() / 1000.0,
+                })).collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>());
         Ok(JsonText(v))
     }
 
