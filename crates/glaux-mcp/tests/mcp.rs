@@ -3339,6 +3339,147 @@ async fn odd_meter_tools_follow_the_beat_groups() {
 }
 
 #[tokio::test]
+async fn meter_tools_change_bars_layer_cycles_and_bend_long_beats() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_mtr001", "Keys")).await);
+    // 4 小節の 4 分の刻み
+    let notes: Vec<Value> = (0..16u64)
+        .map(|k| json!({ "pos": k * 960, "dur": 480, "pitch": 60, "vel": 90 }))
+        .collect();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "音", "commands": [
+                { "op": "add_clip", "track": "trk_mtr001", "clip": {
+                    "id": "clp_mtr001", "name": "k", "start": 0, "length": 15360, "kind": "midi", "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    // 2 小節目を 2/4 に(2 拍抜く)
+    let v = ok_json(&call(&fx, "change_meter", json!({ "bar": 2, "beats": -2 })).await);
+    assert_eq!(v["meter"], "2/4", "{v}");
+    assert_eq!(v["removed_notes"], 2);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let sigs: Vec<(u64, u8)> = project
+        .time_sig_map
+        .iter()
+        .map(|e| (e.tick.0, e.num))
+        .collect();
+    assert_eq!(sigs, vec![(0, 4), (3840, 2), (5760, 4)]);
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // 1 小節目を 7/8 3+2+2 に
+    let v = ok_json(&call(&fx, "change_meter", json!({ "bar": 1, "to": "7/8 3+2+2" })).await);
+    assert_eq!(v["meter"], "7/8 (3+2+2)", "{v}");
+    assert_eq!(v["bar_ticks"], 3360);
+    let r = call(&fx, "change_meter", json!({ "bar": 1 })).await;
+    assert_eq!(r.is_error, Some(true));
+    let r = call(&fx, "change_meter", json!({ "bar": 1, "to": "7/8 3+3" })).await;
+    assert_eq!(r.is_error, Some(true));
+    ok_json(&call(&fx, "undo", json!({})).await);
+
+    // ポリリズム 3:2 を 1 小節: 2 拍に 3 つ × 2 組 = 6 音、640 ごと。b の側も置く
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_polyrhythm",
+            json!({ "track_id": "trk_mtr001", "ratio": "3:2", "bar": 6, "pitch": "C5", "pitch2": "C4" }),
+        )
+        .await,
+    );
+    assert_eq!(v["notes"], 6 + 4, "{v}");
+    assert_eq!(v["rounding_error_ticks"], 0.0);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let clip = project.tracks[0]
+        .clips
+        .iter()
+        .find(|c| c.id.as_str() == v["clip_id"])
+        .unwrap();
+    let a: Vec<u64> = clip
+        .notes()
+        .unwrap()
+        .iter()
+        .filter(|n| n.pitch == 72)
+        .map(|n| n.pos.0)
+        .collect();
+    assert_eq!(a, vec![0, 640, 1280, 1920, 2560, 3200]);
+    let r = call(
+        &fx,
+        "write_polyrhythm",
+        json!({ "track_id": "trk_mtr001", "ratio": "3-2" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+
+    // ポリメーター: 3 ステップの型を 16 分で 4/4 に = 3 小節で元に戻る
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_polymeter",
+            json!({ "track_id": "trk_mtr001", "pattern": "X..", "bar": 8, "bars": 3 }),
+        )
+        .await,
+    );
+    assert_eq!(v["cycle_steps"], 3, "{v}");
+    assert_eq!(v["realign_bars"], 3);
+    assert_eq!(v["notes"], 16);
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_polymeter",
+            json!({ "track_id": "trk_mtr001", "pattern": "E(3,8)", "unit": "8th", "bar": 12, "bars": 2,
+                    "reset_every_bars": 1 }),
+        )
+        .await,
+    );
+    assert_eq!(v["cycle"], "X..x..x.", "{v}");
+    assert_eq!(v["notes"], 6);
+
+    // アクサクの揺れ: 7/8 (2+2+3) の小節で長い拍を詰める
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "7/8", "commands": [
+                { "op": "set_time_sig", "events": [ { "tick": 0, "num": 4, "den": 4 },
+                    { "tick": 61440, "num": 7, "den": 8 } ] },
+                { "op": "add_clip", "track": "trk_mtr001", "clip": {
+                    "id": "clp_mtr009", "name": "a", "start": 61440, "length": 3360, "kind": "midi", "notes": [
+                        { "pos": 0, "dur": 480, "pitch": 60, "vel": 90 },
+                        { "pos": 960, "dur": 480, "pitch": 60, "vel": 90 },
+                        { "pos": 1920, "dur": 480, "pitch": 60, "vel": 90 },
+                        { "pos": 2880, "dur": 480, "pitch": 60, "vel": 90 } ] } }
+            ] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_meter_feel",
+            json!({ "clip_id": "clp_mtr009", "long_ratio": 1.4 }),
+        )
+        .await,
+    );
+    assert!(v["changed"].as_u64().unwrap() >= 3, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let (_, c) = project.clip(&"clp_mtr009".parse().unwrap()).unwrap();
+    let pos: Vec<u64> = c.notes().unwrap().iter().map(|n| n.pos.0).collect();
+    assert_eq!(pos[0], 0);
+    // 短い拍が長くなり、長い拍の中の音は前へ詰まる(小節の長さは同じ)
+    assert!(pos[1] > 960 && pos[2] > 1920, "{pos:?}");
+    assert!(pos[3] < 3360);
+    let r = call(
+        &fx,
+        "set_meter_feel",
+        json!({ "clip_id": "clp_mtr009", "long_ratio": 3.0 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(

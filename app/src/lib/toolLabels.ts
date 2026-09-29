@@ -24,6 +24,7 @@ const LABELS: Record<string, ToolLabel> = {
   // 構成
   duplicate_clips: { short: "クリップを複製", doing: "クリップを複製しています" },
   insert_bars: { short: "小節を挿入", doing: "小節を挿入しています" },
+  change_meter: { short: "拍子を変える", doing: "小節の拍子を変えています" },
   delete_bars: { short: "小節を削除", doing: "小節を削除しています" },
   bounce_track: { short: "トラックを音声にする", doing: "トラックを音声に描き出しています" },
   export_audio: { short: "書き出し", doing: "WAV に書き出しています" },
@@ -59,6 +60,9 @@ const LABELS: Record<string, ToolLabel> = {
   critique_melody: { short: "旋律の点検", doing: "旋律を点検しています" },
   develop_motif: { short: "動機の展開", doing: "動機から旋律を展開しています" },
   write_melody: { short: "旋律を作る", doing: "旋律の案を作って選んでいます" },
+  write_polyrhythm: { short: "ポリリズム", doing: "ポリリズムを置いています" },
+  write_polymeter: { short: "ポリメーター", doing: "ポリメーターを置いています" },
+  set_meter_feel: { short: "拍の揺れ", doing: "長い拍と短い拍の比を変えています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

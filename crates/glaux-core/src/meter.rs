@@ -216,8 +216,11 @@ impl BarMeter {
         (ps + pair <= h + l).then_some(ps)
     }
 
-    /// "7/8 (2+2+3)" の形
+    /// "7/8 (2+2+3)" の形(4 分ずつの拍子は "4/4" だけ)
     pub fn label(&self) -> String {
+        if self.grouping.iter().all(|&g| g == 1) {
+            return format!("{}/{}", self.num, self.den);
+        }
         format!(
             "{}/{} ({})",
             self.num,
@@ -351,6 +354,115 @@ pub fn parse_euclid(s: &str) -> Option<Vec<bool>> {
         [k, n, r] if *n >= 1 && *n <= 128 => Some(euclid(*k, *n, *r)),
         _ => None,
     }
+}
+
+/// ポリリズム: 長さ `span` を `count` 等分した位置(tick に丸める)と、丸めの誤差の最大(tick、小数)。
+/// 3 連の 4 分(2 拍 = 1920 を 3 等分)= 640 は割り切れる
+pub fn polyrhythm(span: u64, count: u32) -> (Vec<u64>, f64) {
+    let count = count.max(1) as u64;
+    let mut err = 0.0f64;
+    let pos = (0..count)
+        .map(|k| {
+            let exact = k as f64 * span as f64 / count as f64;
+            let r = exact.round() as u64;
+            err = err.max((exact - r as f64).abs());
+            r
+        })
+        .collect();
+    (pos, err)
+}
+
+/// ポリメーターの型("X..x.." か "E(5,16)")を読む。'X' = 強く、'x' = 普通、'.' = 休み
+pub fn parse_cycle(s: &str) -> Result<Vec<char>, String> {
+    if let Some(v) = parse_euclid(s) {
+        return Ok(v
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| match (b, i) {
+                (true, 0) => 'X',
+                (true, _) => 'x',
+                _ => '.',
+            })
+            .collect());
+    }
+    let v: Vec<char> = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '|')
+        .collect();
+    if v.is_empty() || v.len() > 64 {
+        return Err("pattern は X x . の 1〜64 文字か \"E(5,16)\"".to_owned());
+    }
+    if let Some(c) = v.iter().find(|c| !matches!(c, 'X' | 'x' | '.')) {
+        return Err(format!("pattern に使えない文字「{c}」(X x . だけ)"));
+    }
+    if !v.iter().any(|c| *c != '.') {
+        return Err("pattern に打つ所(X か x)がありません".to_owned());
+    }
+    Ok(v)
+}
+
+/// 最大公約数・最小公倍数
+pub fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+pub fn lcm(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        0
+    } else {
+        a / gcd(a, b) * b
+    }
+}
+
+/// まとまり 1 つの写し方: ((元の頭, 元の長さ), (新しい頭, 新しい長さ))。小節の頭からの tick
+pub type FeelSegment = ((u64, u64), (u64, u64));
+
+/// アクサクの揺れ: まとまり 2 と 3 の長さの比を変えた、小節の中の区間の写し方
+/// (元の頭・長さ → 新しい頭・長さ)。`long_ratio` = 3 のまとまりの長さ ÷ 2 のまとまりの長さ(1.5 で変えない)、
+/// `short_skew` = 小節の 2 つ目以降の 2 のまとまりの長さ ÷ 最初の 2 のまとまりの長さ(1.0 で変えない)。
+/// 小節の長さは変えない。まとまりが 2 と 3 だけで、両方あるか 2 が 2 つ以上ある小節だけ(ほかは None)
+pub fn feel_segments(m: &BarMeter, long_ratio: f64, short_skew: f64) -> Option<Vec<FeelSegment>> {
+    let groups = m.groups();
+    if groups.len() < 2 || m.grouping.iter().any(|&g| g != 2 && g != 3) {
+        return None;
+    }
+    let mut seen_short = false;
+    let weights: Vec<f64> = m
+        .grouping
+        .iter()
+        .map(|&g| {
+            if g == 3 {
+                long_ratio
+            } else if seen_short {
+                short_skew
+            } else {
+                seen_short = true;
+                1.0
+            }
+        })
+        .collect();
+    let total: f64 = weights.iter().sum();
+    let mut t = 0.0f64;
+    let mut out = Vec::new();
+    for (g, w) in groups.iter().zip(&weights) {
+        let a = t.round() as u64;
+        t += w / total * m.len as f64;
+        let b = (t.round() as u64).min(m.len);
+        out.push((*g, (a, b - a)));
+    }
+    Some(out)
+}
+
+/// `feel_segments` で小節の中の位置 `rel` を写す(区間の中は比例で)
+pub fn feel_map(segs: &[FeelSegment], rel: u64) -> u64 {
+    let Some(&((h, l), (nh, nl))) = segs.iter().rev().find(|s| s.0 .0 <= rel) else {
+        return rel;
+    };
+    nh + ((rel - h) as f64 * nl as f64 / l.max(1) as f64).round() as u64
 }
 
 #[cfg(test)]
@@ -489,6 +601,36 @@ mod tests {
         assert_eq!(seven.pair_start(2400, 960), Some(1920));
         assert_eq!(seven.pair_start(2880, 960), None);
         assert_eq!(c.pair_start(2400, 960), Some(1920));
+    }
+
+    #[test]
+    fn polyrhythm_polymeter_and_feel() {
+        // 2 拍に 3 つ = 640 ごと(割り切れる)。1 小節に 5 つは割り切れず誤差が出る
+        assert_eq!(polyrhythm(1920, 3), (vec![0, 640, 1280], 0.0));
+        let (p, e) = polyrhythm(3840, 7);
+        assert_eq!(p.len(), 7);
+        assert!(e > 0.0 && e <= 0.5);
+        assert_eq!(parse_cycle("X..x..").unwrap().len(), 6);
+        assert_eq!(
+            parse_cycle("E(3,8)").unwrap().iter().collect::<String>(),
+            "X..x..x."
+        );
+        assert!(parse_cycle("x-q").is_err());
+        assert!(parse_cycle("....").is_err());
+        assert_eq!(lcm(3, 16), 48);
+        // 7/8 (2+2+3) の長い拍を 1.4 倍に(1.5 より短く): 小節の長さは同じ、3 のまとまりが縮む
+        let m = BarMeter::from_sig(&TimeSigEvent::new(Tick(0), 7, 8), 0, 3360);
+        let segs = feel_segments(&m, 1.4, 1.0).unwrap();
+        let total: u64 = segs.iter().map(|s| s.1 .1).sum();
+        assert_eq!(total, 3360);
+        assert!(segs[2].1 .1 < 1440);
+        assert_eq!(feel_map(&segs, 0), 0);
+        assert!(feel_map(&segs, 960) > 960);
+        // 1.5・1.0 なら変わらない
+        let same = feel_segments(&m, 1.5, 1.0).unwrap();
+        assert!(same.iter().all(|s| s.0 == s.1));
+        // 4/4 は対象外
+        assert!(feel_segments(&BarMeter::common(0), 1.4, 1.0).is_none());
     }
 
     #[test]

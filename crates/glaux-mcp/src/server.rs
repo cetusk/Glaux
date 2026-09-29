@@ -956,7 +956,8 @@ pub struct WriteMelodyParams {
     /// 置く案の数 1〜2(既定 1)。2 なら 2 番目の案を、同じ音色のトラックを複製して(ミュートで)置き、聴き比べられるようにする。
     #[serde(default)]
     pub place: Option<usize>,
-    /// 乱数の種(既定 1)。案 k は seed + k で作るので、返った seed を candidates: 1 で渡すとその案だけを作り直せる。
+    /// 乱数の種(既定は始まりの小節番号。区間ごとに違う案になる)。案 k は seed + k で作るので、返った seed を
+    /// candidates: 1 で渡すとその案だけを作り直せる。
     #[serde(default)]
     pub seed: Option<u64>,
     /// 強さ(既定 92)。
@@ -965,6 +966,97 @@ pub struct WriteMelodyParams {
     /// クリップの名前(既定 "Melody")。
     #[serde(default)]
     pub name: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ChangeMeterParams {
+    /// 拍子を変える小節(1 始まり)。
+    pub bar: u32,
+    /// 何小節続けて変えるか(既定 1)。その後は元の拍子に戻る。
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// 新しい拍子("2/4"・"7/8"・"7/8 3+2+2")。beats とどちらか。
+    #[serde(default)]
+    pub to: Option<String>,
+    /// 今の拍子から分母の音符をいくつ足すか(+1 で 1 拍足す、-2 で 2 拍抜く。4/4 の -2 = 2/4)。to とどちらか。
+    #[serde(default)]
+    pub beats: Option<i32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WritePolyrhythmParams {
+    /// 置く MIDI トラックの ID。新しいクリップを作る。
+    pub track_id: String,
+    /// "a:b" = 4 分 b 個の長さに a 個を等間隔に(3:2 = 2 拍に 3 つ = 3 連の 4 分、4:3 = 3 拍に 4 つ、5:4 = 1 小節に 5 つ)。
+    pub ratio: String,
+    /// 始まりの小節(既定 1)と小節数(既定 1)。この範囲に a:b の組を並べる(小節線にはそろえない)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+    #[serde(default)]
+    pub bars: Option<u32>,
+    /// a の側の音(音名 "C5" か MIDI 番号。既定: ドラムのトラックは 37 リム、ほかは C5)。
+    #[serde(default)]
+    pub pitch: Option<String>,
+    /// b の側(4 分の刻み)も置くならその音。省略で置かない。
+    #[serde(default)]
+    pub pitch2: Option<String>,
+    /// 強さ(既定 90)。組の頭は少し強く。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    /// 音の長さ(間隔に対する割合 0.1〜1、既定 0.5)。
+    #[serde(default)]
+    pub gate: Option<f64>,
+    /// クリップの名前(既定 "Poly a:b")。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WritePolymeterParams {
+    /// 置く MIDI トラックの ID。新しいクリップを作る。
+    pub track_id: String,
+    /// 周期の型: X = 強く、x = 普通、. = 休み(1〜64 文字)。またはユークリッドリズム "E(5,16)" / "E(3,8,2)"(2 = 回す数)。
+    /// 小節線を無視して周期のまま並べるので、小節と長さが違うとずれていき、最小公倍数で元に戻る。
+    pub pattern: String,
+    /// 1 文字の長さ: 16th(既定)/ 8th / quarter / 8t(3 連の 8 分)/ 16t、または tick の数。
+    #[serde(default)]
+    pub unit: Option<String>,
+    /// 始まりの小節(既定 1)と小節数(既定 4)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+    #[serde(default)]
+    pub bars: Option<u32>,
+    /// 何小節ごとに型の頭へ戻すか(0 = 戻さない。既定 0)。
+    #[serde(default)]
+    pub reset_every_bars: Option<u32>,
+    /// 音(音名か MIDI 番号。既定: ドラムのトラックは 37 リム、ほかは C5)。
+    #[serde(default)]
+    pub pitch: Option<String>,
+    /// 強さ(既定 90。X は +20)。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    /// 音の長さ(1 文字に対する割合 0.1〜1、既定 0.5)。
+    #[serde(default)]
+    pub gate: Option<f64>,
+    /// クリップの名前(既定 "Polymeter")。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SetMeterFeelParams {
+    /// 対象クリップ ID。1 つなら clip_id、まとめて掛けるなら clip_ids(1 回の undo で戻る)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
+    /// 長い拍(3 のまとまり)の長さ ÷ 短い拍(2 のまとまり)の長さ 1.2〜1.8(既定 1.5 = 変えない)。
+    /// 実測は 1.43〜1.54 くらい(遅いトランシルヴァニアの舞曲で平均 1.52 = S:L 0.656)。1.4 で長い拍が詰まり、前へ転がる感じ。
+    #[serde(default)]
+    pub long_ratio: Option<f64>,
+    /// 小節の 2 つ目以降の短い拍 ÷ 最初の短い拍 0.85〜1.0(既定 1.0。バルカンの打楽器の実測は約 0.92)。
+    #[serde(default)]
+    pub short_skew: Option<f64>,
 }
 
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
@@ -1307,6 +1399,51 @@ fn chord_cuts(meter: Option<&glaux_core::meter::BarMeter>, blen: u64, k: u64) ->
     }
     cuts.push(blen);
     cuts
+}
+
+/// 音名("C5")か MIDI 番号("37")。省略なら `default`
+fn parse_pitch(s: Option<&str>, default: u8) -> Result<u8, String> {
+    match s.map(str::trim) {
+        None | Some("") => Ok(default),
+        Some(x) => x
+            .parse::<u8>()
+            .ok()
+            .filter(|n| *n <= 127)
+            .or_else(|| glaux_core::chord::parse_note(x))
+            .ok_or_else(|| format!("音が読めません: {x}(\"C5\" か 0〜127)")),
+    }
+}
+
+/// (位置, 長さ, 音, 強さ) の列から MIDI クリップを作る
+fn simple_clip(
+    name: String,
+    start: u64,
+    len: u64,
+    notes: &[(u64, u64, u8, u8)],
+) -> glaux_core::Clip {
+    let mut clip = glaux_core::Clip::new_midi(
+        glaux_core::ClipId::new(),
+        name,
+        glaux_core::Tick(start),
+        glaux_core::Tick(len),
+    );
+    if let Some(ns) = clip.notes_mut() {
+        *ns = notes
+            .iter()
+            .map(|&(pos, dur, pitch, vel)| glaux_core::Note {
+                id: glaux_core::NoteId::new(),
+                pos: glaux_core::Tick(pos),
+                dur: glaux_core::Tick(dur.min(len - pos).max(1)),
+                pitch,
+                vel,
+                articulation: Default::default(),
+                pitch_curve: vec![],
+                glide_ms: None,
+            })
+            .collect();
+        ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+    }
+    clip
 }
 
 /// "E3-C5" / "low" / "mid" / "high" を音域に
@@ -5762,7 +5899,8 @@ impl GlauxServer {
         };
         let anticipate = p.anticipate.unwrap_or(vocab.anticipate).clamp(0.0, 1.0);
         let n = p.candidates.unwrap_or(4).clamp(1, 12);
-        let base_seed = p.seed.unwrap_or(1);
+        // 既定は始まりの小節番号(区間ごとに違う案になる)
+        let base_seed = p.seed.unwrap_or(first_bar as u64);
         let start = (low as f64 + (high as f64 - low as f64) * role.start).round() as u8;
         struct Cand {
             seed: u64,
@@ -5891,6 +6029,377 @@ impl GlauxServer {
         v["findings"] = json!(best.crit.findings);
         v["metrics"] = json!(best.crit.metrics);
         v["candidates"] = json!(cands.iter().map(summary).collect::<Vec<_>>());
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "小節 1 つ(count で数小節)だけ拍子を変える: 1 拍足す・抜く(J-POP のサビ前の 2/4、プログレの 1 拍足し、\
+        7/8 を 1 小節だけ挟む)。to(\"2/4\"・\"7/8 3+2+2\")か beats(+1 / -2 など)で指定。延ばすときは小節の終わりに空白を入れ、\
+        縮めるときは小節の後ろを削る(その範囲の音は消える。消えた数を removed_notes で返す)。後ろのクリップ・テンポ・拍子・\
+        マーカー・オートメーションはずらし、次の小節で元の拍子に戻す。1 回の undo で戻る。"
+    )]
+    async fn change_meter(
+        &self,
+        params: Parameters<ChangeMeterParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("change_meter");
+        let p = params.0;
+        let (project, _) = self.handle.get_project().await?;
+        let (start, _) = glaux_core::arrange::bar_range(&project, p.bar.max(1), 1)
+            .ok_or("小節を数えられません")?;
+        let cur = glaux_core::meter::meter_at(&project, start);
+        let (num, den, grouping) = match (&p.to, p.beats) {
+            (Some(t), _) => {
+                let t = t.trim();
+                let (sig, g) = match t.split_once([' ', '(']) {
+                    Some((a, b)) => (a, Some(b.trim_end_matches(')'))),
+                    None => (t, None),
+                };
+                let (n, d) = sig
+                    .split_once('/')
+                    .ok_or_else(|| format!("to は \"7/8\" の形(got: {t})"))?;
+                let n: u8 = n
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("拍子が読めません: {t}"))?;
+                let d: u8 = d
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("拍子が読めません: {t}"))?;
+                let g = match g.map(str::trim).filter(|g| !g.is_empty()) {
+                    Some(g) => Some(glaux_core::meter::parse_grouping(g)?),
+                    None => None,
+                };
+                (n, d, g)
+            }
+            (None, Some(b)) => {
+                let n = cur.num as i32 + b;
+                if !(1..=64).contains(&n) {
+                    return Err(format!("{}/{} に {b} 拍は足せません", cur.num, cur.den));
+                }
+                (n as u8, cur.den, None)
+            }
+            (None, None) => return Err("to か beats を指定してください".to_owned()),
+        };
+        let count = p.count.unwrap_or(1);
+        let (cmds, removed) = glaux_core::arrange::change_bar_meter(
+            &project,
+            p.bar.max(1),
+            count,
+            num,
+            den,
+            grouping.clone(),
+        )?;
+        if cmds.is_empty() {
+            return Err("変更がありません".to_owned());
+        }
+        let label = format!(
+            "{} 小節目{}を {}/{}{} に",
+            p.bar,
+            if count > 1 {
+                format!("から {count} 小節")
+            } else {
+                String::new()
+            },
+            num,
+            den,
+            grouping
+                .as_ref()
+                .map(|g| format!("({})", glaux_core::meter::grouping_text(g)))
+                .unwrap_or_default()
+        );
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (after, _) = self.handle.get_project().await?;
+        let meter = glaux_core::meter::meter_at(&after, start);
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["meter"] = json!(meter.label());
+        v["was"] = json!(cur.label());
+        v["bar_ticks"] = json!(meter.len);
+        v["removed_notes"] = json!(removed);
+        if removed > 0 {
+            v["warning"] = json!(format!(
+                "縮めた範囲の音 {removed} 個が消えました(戻すなら undo)"
+            ));
+        }
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ポリリズムを置く: ratio \"a:b\" = 4 分 b 個の長さに a 個を等間隔に(3:2 = 2 拍に 3 つ、4:3、5:4 など)。\
+        bar から bars 小節に a:b の組を並べる。pitch2 を渡すと b の側(4 分の刻み)も置く。tick で割り切れないときは丸め、\
+        誤差(rounding_error_ticks)を返す。新しいクリップを作る。1 回の undo で戻る。"
+    )]
+    async fn write_polyrhythm(
+        &self,
+        params: Parameters<WritePolyrhythmParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("write_polyrhythm");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err("MIDI トラックを指定してください".to_owned());
+        }
+        let (a, b) = p
+            .ratio
+            .split_once(':')
+            .and_then(|(a, b)| Some((a.trim().parse::<u32>().ok()?, b.trim().parse::<u32>().ok()?)))
+            .filter(|(a, b)| (1..=32).contains(a) && (1..=32).contains(b))
+            .ok_or_else(|| format!("ratio は \"3:2\" の形(1〜32。got: {})", p.ratio))?;
+        let first_bar = p.bar.unwrap_or(1).max(1);
+        let bars = p.bars.unwrap_or(1).clamp(1, 256);
+        let (clip_start, clip_len) = glaux_core::arrange::bar_range(&project, first_bar, bars)
+            .ok_or("小節を数えられません")?;
+        let span = glaux_core::PPQ * b as u64;
+        let (pos, err) = glaux_core::meter::polyrhythm(span, a);
+        let drum = is_drum_track(track);
+        let pitch = parse_pitch(p.pitch.as_deref(), if drum { 37 } else { 72 })?;
+        let pitch2 = match &p.pitch2 {
+            Some(x) => Some(parse_pitch(Some(x), 42)?),
+            None => None,
+        };
+        let vel = p.velocity.unwrap_or(90).clamp(1, 127);
+        let gate = p.gate.unwrap_or(0.5).clamp(0.1, 1.0);
+        let spacing = span as f64 / a as f64;
+        let mut notes: Vec<(u64, u64, u8, u8)> = Vec::new();
+        let mut t = 0u64;
+        while t < clip_len {
+            for (k, &o) in pos.iter().enumerate() {
+                let at = t + o;
+                if at >= clip_len {
+                    break;
+                }
+                let v = if k == 0 {
+                    (vel as u16 + 12).min(127) as u8
+                } else {
+                    vel
+                };
+                notes.push((at, ((spacing * gate).round() as u64).max(1), pitch, v));
+            }
+            if let Some(p2) = pitch2 {
+                for k in 0..b as u64 {
+                    let at = t + k * glaux_core::PPQ;
+                    if at < clip_len {
+                        let v = if k == 0 {
+                            vel
+                        } else {
+                            vel.saturating_sub(12).max(1)
+                        };
+                        notes.push((at, (glaux_core::PPQ as f64 * gate).round() as u64, p2, v));
+                    }
+                }
+            }
+            t += span;
+        }
+        let name = p.name.clone().unwrap_or_else(|| format!("Poly {a}:{b}"));
+        let clip = simple_clip(name, clip_start, clip_len, &notes);
+        let clip_id = clip.id.clone();
+        let label = format!("ポリリズム {a}:{b}({bars} 小節)");
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(
+            self.handle
+                .apply(Command::AddClip { track: tid, clip }, author, label)
+                .await,
+        )?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["clip_id"] = json!(clip_id);
+        v["notes"] = json!(notes.len());
+        v["spacing_ticks"] = json!((spacing * 100.0).round() / 100.0);
+        v["rounding_error_ticks"] = json!((err * 100.0).round() / 100.0);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ポリメーターを置く: 周期の型(\"X..x..x.\" や ユークリッドリズム \"E(5,16)\")を小節線を無視して\
+        周期のまま並べる(3 ステップの型を 16 分で並べると 4/4 の上でずれていき、3 小節で元に戻る)。unit で 1 文字の長さ\
+        (16th / 8th / quarter / 8t / 16t)、reset_every_bars で何小節ごとに頭へ戻すか。返り値に元に戻るまでの小節数\
+        (realign_bars)。ハットやパーカッションを周期の違う型で重ねると、繰り返しでも同じに聞こえにくい。1 回の undo で戻る。"
+    )]
+    async fn write_polymeter(
+        &self,
+        params: Parameters<WritePolymeterParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("write_polymeter");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err("MIDI トラックを指定してください".to_owned());
+        }
+        let cycle = glaux_core::meter::parse_cycle(&p.pattern)?;
+        let unit: u64 = match p.unit.as_deref().unwrap_or("16th").trim() {
+            "16th" | "16" => 240,
+            "8th" | "8" => 480,
+            "quarter" | "4" => 960,
+            "8t" => 320,
+            "16t" => 160,
+            other => other
+                .parse::<u64>()
+                .ok()
+                .filter(|u| (30..=3840).contains(u))
+                .ok_or_else(|| {
+                    format!("unit は 16th / 8th / quarter / 8t / 16t か tick の数(got: {other})")
+                })?,
+        };
+        let first_bar = p.bar.unwrap_or(1).max(1);
+        let bars = p.bars.unwrap_or(4).clamp(1, 256);
+        let (clip_start, clip_len) = glaux_core::arrange::bar_range(&project, first_bar, bars)
+            .ok_or("小節を数えられません")?;
+        let reset = p.reset_every_bars.unwrap_or(0);
+        // 頭へ戻す位置(クリップの頭から)
+        let mut resets: Vec<u64> = vec![0];
+        if reset > 0 {
+            let mut b = reset;
+            while b < bars {
+                if let Some((s, _)) = glaux_core::arrange::bar_range(&project, first_bar + b, 1) {
+                    resets.push(s - clip_start);
+                }
+                b += reset;
+            }
+        }
+        let drum = is_drum_track(track);
+        let pitch = parse_pitch(p.pitch.as_deref(), if drum { 37 } else { 72 })?;
+        let vel = p.velocity.unwrap_or(90).clamp(1, 107);
+        let gate = p.gate.unwrap_or(0.5).clamp(0.1, 1.0);
+        let dur = ((unit as f64 * gate).round() as u64).max(1);
+        let mut notes: Vec<(u64, u64, u8, u8)> = Vec::new();
+        for (ri, &r0) in resets.iter().enumerate() {
+            let r1 = resets.get(ri + 1).copied().unwrap_or(clip_len);
+            let mut k = 0u64;
+            while r0 + k * unit < r1 {
+                let c = cycle[(k % cycle.len() as u64) as usize];
+                if c != '.' {
+                    let v = if c == 'X' { vel + 20 } else { vel };
+                    notes.push((r0 + k * unit, dur.min(r1 - (r0 + k * unit)), pitch, v));
+                }
+                k += 1;
+            }
+        }
+        let cycle_ticks = cycle.len() as u64 * unit;
+        let bar_len = glaux_core::meter::meter_at(&project, clip_start).len;
+        let realign = glaux_core::meter::lcm(cycle_ticks, bar_len) / bar_len.max(1);
+        let name = p.name.clone().unwrap_or_else(|| "Polymeter".to_owned());
+        let clip = simple_clip(name, clip_start, clip_len, &notes);
+        let clip_id = clip.id.clone();
+        let label = format!("ポリメーター({} ステップの周期、{bars} 小節)", cycle.len());
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(
+            self.handle
+                .apply(Command::AddClip { track: tid, clip }, author, label)
+                .await,
+        )?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["clip_id"] = json!(clip_id);
+        v["notes"] = json!(notes.len());
+        v["cycle_steps"] = json!(cycle.len());
+        v["cycle"] = json!(cycle.iter().collect::<String>());
+        v["realign_bars"] = json!(realign);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "変拍子の「長い拍・短い拍」の比を揺らす(アクサクの揺れ): 7/8 の 2+2+3 などで、3 のまとまりを 2 のまとまりの\
+        long_ratio 倍に(1.5 = 変えない。1.4 で長い拍が詰まり前へ転がる、1.55 で溜める)、short_skew で 2 つ目以降の短い拍を\
+        少し短く。小節の長さは変えず、まとまりの中の音は比例で動かす(8 分のスウィングとは別のつまみ)。拍のまとまりが 2 と 3 の\
+        小節だけが対象(4/4 は変わらない)。今の位置から計算するので 2 回かけると重なる。1 回の undo で戻る。"
+    )]
+    async fn set_meter_feel(
+        &self,
+        params: Parameters<SetMeterFeelParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("set_meter_feel");
+        let p = params.0;
+        let long_ratio = p.long_ratio.unwrap_or(1.5);
+        let short_skew = p.short_skew.unwrap_or(1.0);
+        if !(1.2..=1.8).contains(&long_ratio) {
+            return Err(format!("long_ratio は 1.2〜1.8(got: {long_ratio})"));
+        }
+        if !(0.85..=1.0).contains(&short_skew) {
+            return Err(format!("short_skew は 0.85〜1.0(got: {short_skew})"));
+        }
+        let mut ids: Vec<String> = p.clip_ids.clone().unwrap_or_default();
+        if let Some(c) = &p.clip_id {
+            if !ids.contains(c) {
+                ids.push(c.clone());
+            }
+        }
+        if ids.is_empty() {
+            return Err("clip_id か clip_ids を指定してください".to_owned());
+        }
+        let (project, version) = self.handle.get_project().await?;
+        let mut commands = Vec::new();
+        let mut total = 0usize;
+        let mut touched_bars = std::collections::BTreeSet::new();
+        for id in &ids {
+            let cid = glaux_core::ClipId::parse(id).map_err(|e| e.to_string())?;
+            let (_, clip) = project
+                .clip(&cid)
+                .ok_or_else(|| format!("クリップが見つかりません: {id}"))?;
+            let Some(notes) = clip.notes() else {
+                return Err(format!("MIDI クリップではありません: {id}"));
+            };
+            let start = clip.start.0;
+            let meters = glaux_core::meter::bar_meters(&project, start + clip.length.0 + 1);
+            let find = |t: u64| {
+                let i = meters.partition_point(|m| m.start <= t).checked_sub(1)?;
+                meters.get(i)
+            };
+            let mut changes = Vec::new();
+            for n in notes {
+                let abs = start + n.pos.0;
+                let Some(m) = find(abs) else { continue };
+                let Some(segs) = glaux_core::meter::feel_segments(m, long_ratio, short_skew) else {
+                    continue;
+                };
+                let new_abs = m.start + glaux_core::meter::feel_map(&segs, abs - m.start);
+                let end = abs + n.dur.0;
+                let new_end = if end <= m.start + m.len {
+                    m.start + glaux_core::meter::feel_map(&segs, end - m.start)
+                } else {
+                    end
+                };
+                let new_pos = new_abs.saturating_sub(start);
+                let new_dur = new_end.saturating_sub(new_abs).max(1);
+                if new_pos != n.pos.0 || new_dur != n.dur.0 {
+                    touched_bars.insert(m.start);
+                    changes.push(
+                        glaux_core::NoteChange::new(n.id.clone())
+                            .pos(glaux_core::Tick(new_pos))
+                            .dur(glaux_core::Tick(new_dur)),
+                    );
+                }
+            }
+            total += changes.len();
+            if !changes.is_empty() {
+                commands.push(Command::UpdateNotes { clip: cid, changes });
+            }
+        }
+        if commands.is_empty() {
+            return Ok(JsonText(json!({
+                "project_version": version,
+                "changed": 0,
+                "note": "変わる音がありません(拍のまとまりが 2 と 3 の小節が無いか、比が 1.5・1.0)",
+            })));
+        }
+        let label = format!("拍の揺れ(長い拍 ×{long_ratio:.2}、{total} ノート)");
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(total);
+        v["bars"] = json!(touched_bars.len());
         Ok(JsonText(v))
     }
 

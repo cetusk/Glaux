@@ -266,6 +266,106 @@ pub fn delete_time(project: &Project, from: u64, len: u64) -> Vec<Command> {
     out
 }
 
+/// 小節 `bar`(1 始まり)から `count` 小節だけ拍子を変える(1 拍足す・抜く。J-POP のサビ前の 2/4 など)。
+/// 延ばすときは小節の終わりに空白を挿入し、縮めるときは小節の後ろを削る(その範囲の音は消える)。
+/// それより後ろのクリップ・テンポ・拍子・マーカー・オートメーションはずらし、次の小節で元の拍子に戻す。
+/// 返り値は (コマンド列, 消える音の数)
+pub fn change_bar_meter(
+    project: &Project,
+    bar: u32,
+    count: u32,
+    num: u8,
+    den: u8,
+    grouping: Option<Vec<u8>>,
+) -> Result<(Vec<Command>, usize), String> {
+    if num == 0 || num > 64 || den == 0 || !den.is_power_of_two() || den > 64 {
+        return Err(format!("拍子が不正です: {num}/{den}"));
+    }
+    if let Some(g) = &grouping {
+        crate::meter::check_grouping(num, g)?;
+    }
+    if count == 0 || count > 64 {
+        return Err("count は 1〜64".to_owned());
+    }
+    let new_len = crate::time::PPQ * 4 * num as u64 / den as u64;
+    let mut work = project.clone();
+    let mut out: Vec<Command> = Vec::new();
+    let mut removed = 0usize;
+    for i in 0..count {
+        let b = bar + i;
+        let (start, len) = bar_range(&work, b, 1).ok_or("小節を数えられません")?;
+        // この小節の元の拍子(次の小節で戻す)
+        let mut sigs = work.time_sig_map.clone();
+        sigs.sort_by_key(|s| s.tick);
+        let orig = sigs
+            .iter()
+            .rev()
+            .find(|s| s.tick.0 <= start)
+            .cloned()
+            .unwrap_or_else(|| TimeSigEvent::new(Tick(0), 4, 4));
+        let next_has_sig = sigs.iter().any(|s| s.tick.0 == start + len);
+        let mut cmds = if new_len > len {
+            insert_time(&work, start + len, new_len - len)
+        } else if new_len < len {
+            let from = start + new_len;
+            let to = start + len;
+            removed += work
+                .tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .filter_map(|c| c.notes().map(|ns| (c.start.0, ns)))
+                .flat_map(|(cs, ns)| ns.iter().map(move |n| cs + n.pos.0))
+                .filter(|&t| t >= from && t < to)
+                .count();
+            delete_time(&work, from, len - new_len)
+        } else {
+            Vec::new()
+        };
+        for c in &cmds {
+            work.apply(c).map_err(|e| e.to_string())?;
+        }
+        // 拍子: この小節を新しい拍子に、次の小節の頭で元の拍子に戻す
+        let mut ev: Vec<TimeSigEvent> = work
+            .time_sig_map
+            .iter()
+            .filter(|e| e.tick.0 != start)
+            .cloned()
+            .collect();
+        ev.push(TimeSigEvent {
+            tick: Tick(start),
+            num,
+            den,
+            grouping: grouping.clone(),
+        });
+        if !next_has_sig {
+            ev.retain(|e| e.tick.0 != start + new_len);
+            ev.push(TimeSigEvent {
+                tick: Tick(start + new_len),
+                ..orig
+            });
+        }
+        ev.sort_by_key(|e| e.tick);
+        // 直前と同じ拍子の変更は取り除く(先頭は残す)
+        let mut norm: Vec<TimeSigEvent> = Vec::new();
+        for e in ev {
+            if let Some(p) = norm.last() {
+                if p.num == e.num && p.den == e.den && p.grouping == e.grouping {
+                    continue;
+                }
+            }
+            norm.push(e);
+        }
+        if norm.first().map_or(true, |e| e.tick.0 != 0) {
+            norm.insert(0, TimeSigEvent::new(Tick(0), 4, 4));
+        }
+        let sig_cmd = Command::SetTimeSig { events: norm };
+        work.apply(&sig_cmd).map_err(|e| e.to_string())?;
+        cmds.push(sig_cmd);
+        out.extend(cmds);
+    }
+    Ok((out, removed))
+}
+
 /// クリップを複製する(新しい ID。ノートの ID も振り直す)。`offset` だけ後ろ(負で前)に置く。
 /// `track` を指定するとそのトラックへ(種類が違うとエラーは apply で返る)。
 pub fn duplicate_clips(
@@ -757,5 +857,84 @@ mod tests {
         assert_eq!(played(&p), before);
         // ループでなければ None
         assert!(unroll_loop(&p.tracks[0].clips[0]).is_none());
+    }
+
+    #[test]
+    fn change_bar_meter_adds_and_removes_beats() {
+        let mut p = Project::new("t");
+        let tid = TrackId::new();
+        p.apply(&Command::AddTrack {
+            track: Track::new(tid.clone(), "Keys", TrackKind::Midi),
+            index: None,
+        })
+        .unwrap();
+        let mut clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840 * 4));
+        for k in 0..16u64 {
+            clip.notes_mut().unwrap().push(Note {
+                id: NoteId::new(),
+                pos: Tick(k * 960),
+                dur: Tick(480),
+                pitch: 60,
+                vel: 90,
+                articulation: Default::default(),
+                pitch_curve: vec![],
+                glide_ms: None,
+            });
+        }
+        p.apply(&Command::AddClip {
+            track: tid.clone(),
+            clip,
+        })
+        .unwrap();
+        p.apply(&Command::SetSections {
+            sections: vec![SectionMarker {
+                tick: Tick(3840 * 3),
+                name: "サビ".into(),
+                ..Default::default()
+            }],
+        })
+        .unwrap();
+        // 2 小節目を 2/4 に(2 拍抜く): 後ろが 1920 前へ、2 拍ぶんの音(2 つ)が消える
+        let (cmds, removed) = change_bar_meter(&p, 2, 1, 2, 4, None).unwrap();
+        assert_eq!(removed, 2);
+        let mut q = p.clone();
+        for c in &cmds {
+            q.apply(c).unwrap();
+        }
+        let sigs: Vec<(u64, u8, u8)> = q
+            .time_sig_map
+            .iter()
+            .map(|e| (e.tick.0, e.num, e.den))
+            .collect();
+        assert_eq!(sigs, vec![(0, 4, 4), (3840, 2, 4), (5760, 4, 4)]);
+        assert_eq!(q.sections[0].tick.0, 3840 * 3 - 1920);
+        let notes: usize = q.tracks[0]
+            .clips
+            .iter()
+            .map(|c| c.notes().unwrap().len())
+            .sum();
+        assert_eq!(notes, 14);
+        // 3 小節目(元の 3 小節目)の頭は 5760
+        assert_eq!(bar_range(&q, 3, 1).unwrap(), (5760, 3840));
+        // 1 小節目を 5/4 に(1 拍足す): 後ろが 960 後ろへ、音は消えない
+        let (cmds, removed) = change_bar_meter(&p, 1, 1, 5, 4, None).unwrap();
+        assert_eq!(removed, 0);
+        let mut q = p.clone();
+        for c in &cmds {
+            q.apply(c).unwrap();
+        }
+        assert_eq!(bar_range(&q, 2, 1).unwrap(), (4800, 3840));
+        assert_eq!(q.sections[0].tick.0, 3840 * 3 + 960);
+        // 7/8 のまとまり付き、2 小節続けて
+        let (cmds, _) = change_bar_meter(&p, 1, 2, 7, 8, Some(vec![3, 2, 2])).unwrap();
+        let mut q = p.clone();
+        for c in &cmds {
+            q.apply(c).unwrap();
+        }
+        assert_eq!(q.time_sig_map.len(), 2);
+        assert_eq!(q.time_sig_map[0].grouping, Some(vec![3, 2, 2]));
+        assert_eq!(q.time_sig_map[1].tick.0, 3360 * 2);
+        assert!(change_bar_meter(&p, 1, 1, 7, 8, Some(vec![3, 3])).is_err());
+        assert!(change_bar_meter(&p, 1, 1, 3, 3, None).is_err());
     }
 }
