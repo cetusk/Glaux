@@ -44,7 +44,8 @@ pub use analyze::{
     MaskingIssue, MixAnalysis, TrackAnalysis,
 };
 pub use data::{
-    build_playback_data, load_wav, load_wav_mono, wave_peaks, PlaybackData, SampleBank,
+    build_playback_data, build_playback_data_cached, load_wav, load_wav_mono, wave_peaks,
+    PlaybackData, SampleBank,
 };
 pub use export::{
     export_audio, export_wav, limit_peaks, render, render_project, render_project_range,

@@ -65,12 +65,9 @@ pub struct NoteEvent {
     pub track: u32,
     /// 奏法(パームミュート等)。ボイス起動時に音色へ反映する
     pub articulation: glaux_core::Articulation,
-    /// 連続ピッチカーブ(ノート先頭からのサンプル数, セント)。空なら無し
-    pub curve: glaux_dsp::PitchCurve,
-    /// ノートのビブラート(サンプル単位。深さ 0 なら無し。あれば奏法のビブラートの代わり)
-    pub vibrato: glaux_dsp::VibratoSpec,
-    /// ノートの音量・明るさの曲線(サンプル単位。空なら無し)
-    pub shape: glaux_dsp::NoteShape,
+    /// ノートの表情(`PlaybackData::exprs` の添字。無ければ [`NO_EXPR`])。
+    /// 引くときは [`PlaybackData::expr`]
+    pub expr: u32,
     /// レガートのつなぎ: 鳴り始めをこのサンプル数かけて立ち上げる(0 = そのまま)
     pub fade_in: u32,
     /// レガートのつなぎ: end で離さずにこのサンプル数かけて消す(0 = 通常のリリース)。
@@ -85,6 +82,36 @@ pub struct NoteEvent {
     /// 上位 16 ビット = ノートごとに決まった乱数
     pub variant: u32,
 }
+
+/// 表情を持たないノートの `NoteEvent::expr`
+pub const NO_EXPR: u32 = u32::MAX;
+
+/// ノートの表情(ピッチカーブ・ビブラート・音量と明るさの曲線)。1 つで約 500 バイトあり、
+/// ほとんどのノートは持たないので、イベントの外に置いて添字で引く(イベントを小さく保つ)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoteExpr {
+    /// 連続ピッチカーブ(ノート先頭からのサンプル数, セント)。空なら無し
+    pub curve: glaux_dsp::PitchCurve,
+    /// ノートのビブラート(サンプル単位。深さ 0 なら無し。あれば奏法のビブラートの代わり)
+    pub vibrato: glaux_dsp::VibratoSpec,
+    /// ノートの音量・明るさの曲線(サンプル単位。空なら無し)
+    pub shape: glaux_dsp::NoteShape,
+}
+
+impl NoteExpr {
+    /// 何もしない表情
+    pub const NONE: NoteExpr = NoteExpr {
+        curve: glaux_dsp::PitchCurve::EMPTY,
+        vibrato: glaux_dsp::VibratoSpec::NONE,
+        shape: glaux_dsp::NoteShape::NONE,
+    };
+
+    fn is_none(&self) -> bool {
+        self.curve.is_empty() && !self.vibrato.is_active() && !self.shape.is_active()
+    }
+}
+
+static EMPTY_EXPR: NoteExpr = NoteExpr::NONE;
 
 /// トラックごとのつなぎの設定(秒)。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -123,6 +150,7 @@ pub const PORTAMENTO_SEC: f64 = 0.15;
 /// 滑る時間はノート個別の `glide` があればそちらを使う。
 pub fn link_legato(
     events: &mut [NoteEvent],
+    exprs: &mut Vec<NoteExpr>,
     sample_rate: f64,
     settings: &dyn Fn(u32) -> Option<LegatoSettings>,
 ) {
@@ -196,8 +224,10 @@ pub fn link_legato(
             };
             // 先に離された音の余韻(リリースの長いパッド・弦など)がつながった音に重ならないよう消す
             events[i].choke = xf as u32;
-            if e.articulation == A::Portamento && e.curve.is_empty() && from_pitch != e.pitch as f32
-            {
+            let has_curve = exprs
+                .get(e.expr as usize)
+                .is_some_and(|x| !x.curve.is_empty());
+            if e.articulation == A::Portamento && !has_curve && from_pitch != e.pitch as f32 {
                 let secs = if e.glide > 0.0 {
                     e.glide as f64
                 } else {
@@ -206,11 +236,21 @@ pub fn link_legato(
                 let glide = ((secs * sample_rate) as u64).min(e.end - e.start).max(1) as f32;
                 let cents = (from_pitch - e.pitch as f32) * 100.0;
                 // 減速しながら到達する形(前半で 7 割進む)
-                events[i].curve = glaux_dsp::PitchCurve::from_points(&[
+                let curve = glaux_dsp::PitchCurve::from_points(&[
                     (0.0, cents),
                     (glide * 0.4, cents * 0.3),
                     (glide, 0.0),
                 ]);
+                match exprs.get_mut(e.expr as usize) {
+                    Some(x) => x.curve = curve,
+                    None => {
+                        events[i].expr = exprs.len() as u32;
+                        exprs.push(NoteExpr {
+                            curve,
+                            ..NoteExpr::NONE
+                        });
+                    }
+                }
             }
         }
     }
@@ -332,8 +372,10 @@ pub struct TempoSeg {
 /// オーディオスレッドが読む再生データ一式。イミュータブル。
 #[derive(Clone, Debug, Default)]
 pub struct PlaybackData {
-    /// `start` 昇順
-    pub events: Vec<NoteEvent>,
+    /// `start` 昇順。ノートに関わらない作り直しでは前のものを共有する([`NoteCache`])
+    pub events: Arc<Vec<NoteEvent>>,
+    /// ノートの表情(`NoteEvent::expr` で引く)
+    pub exprs: Arc<Vec<NoteExpr>>,
     /// 音声クリップ。`start` 昇順
     pub audio_events: Vec<AudioEvent>,
     pub tracks: Vec<TrackMix>,
@@ -360,16 +402,23 @@ pub struct PlaybackData {
 }
 
 /// 畳み込みリバーブの本体の使い回し(エフェクト ID → (条件のハッシュ, 本体))。
-/// 再生エンジンの bank だけが持つ: 複製(オフラインの描き出し用)には渡さない
-/// (同じ本体を 2 つのレンダラが同時に回さないように)
+/// 再生エンジンの bank では同じ本体を作り直しの間で使い回す(響きが途切れない)。
+/// 複製(書き出し・解析用)では、渡すたびに IR のスペクトルだけ共有した状態がまっさらな本体を作る
+/// (同じ本体を 2 つのレンダラが同時に回さないように。IR の FFT はやり直さない)
 #[derive(Default)]
-pub struct ConvCache(
-    std::sync::Mutex<HashMap<glaux_core::FxId, (u64, Arc<glaux_dsp::convolver::ConvEngine>)>>,
-);
+pub struct ConvCache {
+    #[allow(clippy::type_complexity)]
+    map: std::sync::Mutex<HashMap<glaux_core::FxId, (u64, Arc<glaux_dsp::convolver::ConvEngine>)>>,
+    fresh: bool,
+}
 
 impl Clone for ConvCache {
     fn clone(&self) -> Self {
-        ConvCache::default()
+        let map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        ConvCache {
+            map: std::sync::Mutex::new(map.clone()),
+            fresh: true,
+        }
     }
 }
 
@@ -396,8 +445,9 @@ impl ConvBuild<'_> {
             sample_rate.to_bits().hash(&mut h);
             h.finish()
         };
-        let mut cache = self.bank.conv.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut cache = self.bank.conv.map.lock().unwrap_or_else(|p| p.into_inner());
         let eng = match cache.get(&e.id) {
+            Some((k, eng)) if *k == key && self.bank.conv.fresh => Arc::new(eng.fresh()),
             Some((k, eng)) if *k == key => eng.clone(),
             _ => {
                 let (l, r) = data.left_right();
@@ -431,6 +481,11 @@ pub struct Beat {
 }
 
 impl PlaybackData {
+    /// ノートの表情(持たないノートは何もしない表情)
+    pub fn expr(&self, e: &NoteEvent) -> &NoteExpr {
+        self.exprs.get(e.expr as usize).unwrap_or(&EMPTY_EXPR)
+    }
+
     /// サンプル位置 → tick(小数)。区分線形。
     pub fn sample_to_tick(&self, sample: u64) -> f64 {
         let idx = self.tempo.partition_point(|s| s.sample <= sample);
@@ -491,6 +546,9 @@ pub struct SampleBank {
     sf2_dir: PathBuf,
     /// パース済み SoundFont(ファイル名 → フォント)
     fonts: HashMap<String, Arc<rustysynth::SoundFont>>,
+    /// 使われなくなったフォントのうち最近の 2 つ(新しい順)。プリセットを戻したときにパースし直さない
+    /// (パースだけで約 0.3 秒)。変換済みの波形は持たない
+    recent_fonts: Vec<(String, Arc<rustysynth::SoundFont>)>,
     /// 構築済みゾーン列((ファイル名, bank, preset) → zones)
     multis: HashMap<(String, u16, u16), Arc<Vec<glaux_dsp::Zone>>>,
     /// フォントごとの変換済み波形(ゾーン・プリセットの間で共有する)
@@ -519,11 +577,38 @@ pub struct SampleBank {
     evict: bool,
 }
 
+/// 使われなくなっても残しておく SoundFont の数
+const RECENT_FONTS: usize = 2;
+
 /// 再生エンジンの bank([`SampleBank::for_offline`] 用。エンジンが終われば無効になる)
 static ENGINE_BANK: std::sync::Mutex<Option<std::sync::Weak<std::sync::Mutex<SampleBank>>>> =
     std::sync::Mutex::new(None);
-/// エンジンが無いときの使い回しの bank(プロジェクトフォルダ, bank)
-static OFFLINE_BANK: std::sync::Mutex<Option<(PathBuf, SampleBank)>> = std::sync::Mutex::new(None);
+/// エンジンが無いときの使い回しの bank(プロジェクトフォルダ, bank, 最後に使った時刻)
+#[allow(clippy::type_complexity)]
+static OFFLINE_BANK: std::sync::Mutex<Option<(PathBuf, SampleBank, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+/// 使い回しの bank を、使わないまま過ぎたら解放するまでの時間(SFZ・SoundFont で数百 MB になりうる)
+const OFFLINE_BANK_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// 使い回しの bank の見張りを(1 回だけ)立てる: 1 分ごとに、しばらく使っていなければ解放する
+/// (使っている最中のレンダは自分の複製を持つので影響しない)
+fn watch_offline_bank() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("glaux-bank-release".into())
+            .spawn(|| loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                let mut cache = OFFLINE_BANK.lock().unwrap_or_else(|e| e.into_inner());
+                if cache
+                    .as_ref()
+                    .is_some_and(|(_, _, t)| t.elapsed() > OFFLINE_BANK_IDLE)
+                {
+                    *cache = None;
+                }
+            });
+    });
+}
 
 impl Default for SampleBank {
     fn default() -> Self {
@@ -531,6 +616,7 @@ impl Default for SampleBank {
             map: HashMap::new(),
             sf2_dir: crate::sf2::default_dir(),
             fonts: HashMap::new(),
+            recent_fonts: Vec::new(),
             multis: HashMap::new(),
             waves: HashMap::new(),
             sfz_dir: crate::sfz::default_dir(),
@@ -770,7 +856,16 @@ impl SampleBank {
         if self.evict {
             let used_fonts: std::collections::HashSet<&String> =
                 used.iter().map(|(f, _, _)| f).collect();
-            self.fonts.retain(|f, _| used_fonts.contains(f));
+            let recent = &mut self.recent_fonts;
+            self.fonts.retain(|f, font| {
+                let keep = used_fonts.contains(f);
+                if !keep {
+                    recent.retain(|(g, _)| g != f);
+                    recent.insert(0, (f.clone(), font.clone()));
+                }
+                keep
+            });
+            recent.truncate(RECENT_FONTS);
             // 使われなくなったフォントの波形と、どのゾーンからも参照されなくなった波形を捨てる
             self.waves.retain(|f, _| used_fonts.contains(f));
             for cache in self.waves.values_mut() {
@@ -781,8 +876,16 @@ impl SampleBank {
             if self.multis.contains_key(&(file.clone(), bank, preset)) {
                 continue;
             }
-            let font = match self.fonts.get(&file) {
-                Some(f) => f.clone(),
+            let recent = self
+                .recent_fonts
+                .iter()
+                .position(|(f, _)| *f == file)
+                .map(|i| self.recent_fonts.remove(i).1);
+            let font = match self.fonts.get(&file).cloned().or(recent) {
+                Some(f) => {
+                    self.fonts.insert(file.clone(), f.clone());
+                    f
+                }
                 None => match font(&file) {
                     Ok(f) => {
                         self.fonts.insert(file.clone(), f.clone());
@@ -832,15 +935,23 @@ impl SampleBank {
             bank.evict = true;
             return bank.clone();
         }
+        watch_offline_bank();
         let mut cache = OFFLINE_BANK.lock().unwrap_or_else(|e| e.into_inner());
         match cache.as_mut() {
-            Some((dir, bank)) if dir == project_dir => {
+            Some((dir, bank, used)) if dir == project_dir => {
+                *used = std::time::Instant::now();
                 bank.sync(project, project_dir);
                 bank.clone()
             }
             _ => {
+                // 前のプロジェクトのものは先に手放す(読み込みの間に 2 つ分を抱えない)
+                *cache = None;
                 let bank = SampleBank::load(project, project_dir);
-                *cache = Some((project_dir.to_path_buf(), bank.clone()));
+                *cache = Some((
+                    project_dir.to_path_buf(),
+                    bank.clone(),
+                    std::time::Instant::now(),
+                ));
                 bank
             }
         }
@@ -1443,7 +1554,252 @@ pub fn modulated_lanes(
     lanes
 }
 
+/// MIDI クリップのノートを再生イベントに展開する(開始順・ラウンドロビン・レガートのつなぎまで)。
+/// 返すのは (イベント, 表情, トラックごとの発音内容のハッシュの途中経過)
+fn build_notes(
+    project: &Project,
+    sample_rate: f64,
+    tracks: &[TrackMix],
+) -> (
+    Vec<NoteEvent>,
+    Vec<NoteExpr>,
+    Vec<std::collections::hash_map::DefaultHasher>,
+) {
+    let to_sample =
+        |tick: Tick| -> u64 { (project.tempo_map.tick_to_seconds(tick) * sample_rate) as u64 };
+    let mut events = Vec::new();
+    let mut exprs: Vec<NoteExpr> = Vec::new();
+    for (ti, track) in project.tracks.iter().enumerate() {
+        for clip in &track.clips {
+            if !matches!(clip.content, ClipContent::Midi { .. }) {
+                continue;
+            }
+            // クリップ外の切り捨て・ループの繰り返し展開は core の playback_notes に任せる
+            for note in &clip.playback_notes() {
+                let dur = note.dur;
+                let start_tick = clip.start + note.pos;
+                let start = to_sample(start_tick);
+                let mut end = to_sample(start_tick + dur).max(start + 1);
+                // スタッカートは音価の半分で切る(歯切れの表現)
+                if note.articulation == glaux_core::Articulation::Staccato {
+                    end = start + ((end - start) / 2).max(1);
+                }
+                // ピッチカーブ: 相対 tick → ノート先頭からのサンプル数(テンポ考慮)
+                let curve_pts: Vec<(f32, f32, glaux_core::CurveShape)> = note
+                    .pitch_curve
+                    .iter()
+                    .map(|p| {
+                        let at = to_sample(start_tick + p.tick).saturating_sub(start) as f32;
+                        (at, p.cents, p.shape)
+                    })
+                    .collect();
+                // 音量・明るさの曲線: 相対 tick → ノート先頭からのサンプル数
+                let expr_curve = |c: &[glaux_core::CurvePoint]| {
+                    let pts: Vec<(f32, f32, glaux_core::CurveShape)> = c
+                        .iter()
+                        .map(|p| {
+                            let at = to_sample(start_tick + p.tick).saturating_sub(start) as f32;
+                            (at, p.value, p.shape)
+                        })
+                        .collect();
+                    glaux_dsp::PitchCurve::from_shaped(&pts)
+                };
+                // ビブラート: ms → サンプル
+                let ms = |x: f32| (x as f64 * 0.001 * sample_rate) as f32;
+                let vibrato = note
+                    .vibrato
+                    .map_or(Default::default(), |v| glaux_dsp::VibratoSpec {
+                        cents: v.depth_cents,
+                        rate: v.rate_hz,
+                        rate_end: v.rate_end_hz.unwrap_or(v.rate_hz),
+                        delay: ms(v.delay_ms),
+                        fade_in: ms(v.fade_in_ms),
+                        fade_out: ms(v.fade_out_ms),
+                        len: (end - start) as f32,
+                    });
+                let x = NoteExpr {
+                    curve: glaux_dsp::PitchCurve::from_shaped(&curve_pts),
+                    vibrato,
+                    shape: glaux_dsp::NoteShape::new(
+                        expr_curve(&note.volume_curve),
+                        expr_curve(&note.brightness_curve),
+                    ),
+                };
+                let expr = if x.is_none() {
+                    NO_EXPR
+                } else {
+                    exprs.push(x);
+                    (exprs.len() - 1) as u32
+                };
+                events.push(NoteEvent {
+                    start,
+                    end,
+                    freq: pitch_to_freq(note.pitch),
+                    pitch: note.pitch,
+                    amp: note.vel as f32 / 127.0,
+                    track: ti as u32,
+                    articulation: note.articulation,
+                    expr,
+                    fade_in: 0,
+                    fade_out: 0,
+                    glide: note.glide_ms.map_or(0.0, |ms| ms / 1000.0),
+                    choke: 0,
+                    variant: variant_hash(&note.id, start),
+                });
+            }
+        }
+    }
+    events.sort_by_key(|e| e.start);
+    // ラウンドロビン: 同じトラック・同じ音高の何回目か(曲の頭から数える。書き出しでも同じになる)
+    {
+        let mut count: HashMap<(u32, u8), u32> = HashMap::new();
+        for e in events.iter_mut() {
+            let c = count.entry((e.track, e.pitch)).or_insert(0);
+            e.variant = (e.variant & 0xFFFF_0000) | (*c & 0xFFFF);
+            *c += 1;
+        }
+    }
+    link_legato(&mut events, &mut exprs, sample_rate, &|t| {
+        let drum = tracks
+            .get(t as usize)
+            .is_some_and(|m| matches!(m.instrument, glaux_dsp::InstrumentParams::Drum(_)));
+        let track = project.tracks.get(t as usize)?;
+        (!drum).then(|| LegatoSettings {
+            xfade: track
+                .legato_ms
+                .map_or(LEGATO_XFADE_SEC, |ms| ms as f64 / 1000.0),
+            glide: track
+                .glide_ms
+                .map_or(PORTAMENTO_SEC, |ms| ms as f64 / 1000.0),
+        })
+    });
+    // トラックの識別子と発音内容のハッシュ(再生中の編集で、変わっていないトラックの音を切らないため)
+    {
+        use std::hash::Hash;
+        let mut content: Vec<std::collections::hash_map::DefaultHasher> =
+            tracks.iter().map(|_| Default::default()).collect();
+        for e in &events {
+            if let Some(h) = content.get_mut(e.track as usize) {
+                (e.start, e.end, e.pitch, e.freq.to_bits(), e.amp.to_bits()).hash(h);
+                (
+                    e.articulation as u8,
+                    e.fade_in,
+                    e.fade_out,
+                    e.glide.to_bits(),
+                    e.choke,
+                )
+                    .hash(h);
+                let curve = &exprs.get(e.expr as usize).unwrap_or(&EMPTY_EXPR).curve;
+                for (t, c) in &curve.pts[..curve.len as usize] {
+                    (t.to_bits(), c.to_bits()).hash(h);
+                }
+            }
+        }
+        (events, exprs, content)
+    }
+}
+
+type ContentHashers = Vec<std::collections::hash_map::DefaultHasher>;
+
+/// ノートの展開結果の使い回し。フェーダー・パン・エフェクトなど、ノートに関わらない変更では
+/// 展開(テンポの換算・曲線・レガートのつなぎ)をやり直さず、同じイベント列を共有する。
+/// 再生エンジンが 1 つ持つ([`build_playback_data_cached`])
+#[derive(Default)]
+pub struct NoteCache {
+    key: Option<NoteKey>,
+    events: Arc<Vec<NoteEvent>>,
+    exprs: Arc<Vec<NoteExpr>>,
+    content: ContentHashers,
+}
+
+type TrackNotesKey = (Vec<glaux_core::Clip>, Option<f32>, Option<f32>, bool);
+
+/// 展開の結果を決めるもの
+struct NoteKey {
+    sample_rate: f64,
+    ppq: u64,
+    tempo: glaux_core::TempoMap,
+    /// トラックごとの (クリップ, つなぎ目の長さ, ポルタメントの長さ, ドラムか)
+    tracks: Vec<TrackNotesKey>,
+}
+
+fn is_drum(m: &TrackMix) -> bool {
+    matches!(m.instrument, glaux_dsp::InstrumentParams::Drum(_))
+}
+
+impl NoteKey {
+    fn matches(&self, project: &Project, sample_rate: f64, tracks: &[TrackMix]) -> bool {
+        self.sample_rate == sample_rate
+            && self.ppq == project.ppq
+            && self.tempo == project.tempo_map
+            && self.tracks.len() == project.tracks.len()
+            && self
+                .tracks
+                .iter()
+                .zip(&project.tracks)
+                .zip(tracks)
+                .all(|((k, t), m)| {
+                    k.0 == t.clips && k.1 == t.legato_ms && k.2 == t.glide_ms && k.3 == is_drum(m)
+                })
+    }
+}
+
+impl NoteCache {
+    fn get(
+        &mut self,
+        project: &Project,
+        sample_rate: f64,
+        tracks: &[TrackMix],
+    ) -> (Arc<Vec<NoteEvent>>, Arc<Vec<NoteExpr>>, ContentHashers) {
+        if !self
+            .key
+            .as_ref()
+            .is_some_and(|k| k.matches(project, sample_rate, tracks))
+        {
+            let (events, exprs, content) = build_notes(project, sample_rate, tracks);
+            self.events = Arc::new(events);
+            self.exprs = Arc::new(exprs);
+            self.content = content;
+            self.key = Some(NoteKey {
+                sample_rate,
+                ppq: project.ppq,
+                tempo: project.tempo_map.clone(),
+                tracks: project
+                    .tracks
+                    .iter()
+                    .zip(tracks)
+                    .map(|(t, m)| (t.clips.clone(), t.legato_ms, t.glide_ms, is_drum(m)))
+                    .collect(),
+            });
+        }
+        (
+            self.events.clone(),
+            self.exprs.clone(),
+            self.content.clone(),
+        )
+    }
+}
+
 pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBank) -> PlaybackData {
+    build_inner(project, sample_rate, bank, None)
+}
+
+/// [`build_playback_data`] の、ノートの展開結果を `cache` と使い回す版(再生エンジン用)
+pub fn build_playback_data_cached(
+    project: &Project,
+    sample_rate: f64,
+    bank: &SampleBank,
+    cache: &mut NoteCache,
+) -> PlaybackData {
+    build_inner(project, sample_rate, bank, Some(cache))
+}
+
+fn build_inner(
+    project: &Project,
+    sample_rate: f64,
+    bank: &SampleBank,
+    note_cache: Option<&mut NoteCache>,
+) -> PlaybackData {
     let any_solo = project.tracks.iter().any(|t| t.solo);
     let to_sample =
         |tick: Tick| -> u64 { (project.tempo_map.tick_to_seconds(tick) * sample_rate) as u64 };
@@ -1685,156 +2041,53 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
     };
     let master_effects: Vec<BakedEffect> = master_chain.into_iter().map(|(_, b)| b).collect();
 
-    let mut events = Vec::new();
     let mut audio_events = Vec::new();
     for (ti, track) in project.tracks.iter().enumerate() {
         for clip in &track.clips {
-            let ClipContent::Midi { .. } = &clip.content else {
-                if let ClipContent::Audio {
-                    asset,
-                    offset_samples,
-                    gain_db,
-                    fade_in_ms,
-                    fade_out_ms,
-                    ..
-                } = &clip.content
-                {
-                    let Some(data) = bank.get(asset) else {
-                        tracing::warn!("音声クリップの波形が未読込のため鳴らしません: {asset}");
-                        continue;
-                    };
-                    // テンポ追従: 伸縮済み波形をクリップ先頭から鳴らす
-                    let (data, offset) = match bank.get_stretched(project, clip) {
-                        Some(stretched) => (stretched, 0.0),
-                        None => (data, *offset_samples as f64),
-                    };
-                    let start = to_sample(clip.start);
-                    let end = to_sample(clip.start + clip.length).max(start + 1);
-                    audio_events.push(AudioEvent {
-                        start,
-                        end,
-                        track: ti as u32,
-                        data: data.clone(),
-                        offset,
-                        rate: data.sample_rate as f64 / sample_rate,
-                        gain: db_to_amp(*gain_db),
-                        fade_in: (*fade_in_ms as f64 * 0.001 * sample_rate) as u64,
-                        fade_out: (*fade_out_ms as f64 * 0.001 * sample_rate) as u64,
-                    });
-                }
-                continue;
-            };
-            // クリップ外の切り捨て・ループの繰り返し展開は core の playback_notes に任せる
-            for note in &clip.playback_notes() {
-                let dur = note.dur;
-                let start_tick = clip.start + note.pos;
-                let start = to_sample(start_tick);
-                let mut end = to_sample(start_tick + dur).max(start + 1);
-                // スタッカートは音価の半分で切る(歯切れの表現)
-                if note.articulation == glaux_core::Articulation::Staccato {
-                    end = start + ((end - start) / 2).max(1);
-                }
-                // ピッチカーブ: 相対 tick → ノート先頭からのサンプル数(テンポ考慮)
-                let curve_pts: Vec<(f32, f32, glaux_core::CurveShape)> = note
-                    .pitch_curve
-                    .iter()
-                    .map(|p| {
-                        let at = to_sample(start_tick + p.tick).saturating_sub(start) as f32;
-                        (at, p.cents, p.shape)
-                    })
-                    .collect();
-                // 音量・明るさの曲線: 相対 tick → ノート先頭からのサンプル数
-                let expr_curve = |c: &[glaux_core::CurvePoint]| {
-                    let pts: Vec<(f32, f32, glaux_core::CurveShape)> = c
-                        .iter()
-                        .map(|p| {
-                            let at = to_sample(start_tick + p.tick).saturating_sub(start) as f32;
-                            (at, p.value, p.shape)
-                        })
-                        .collect();
-                    glaux_dsp::PitchCurve::from_shaped(&pts)
+            if let ClipContent::Audio {
+                asset,
+                offset_samples,
+                gain_db,
+                fade_in_ms,
+                fade_out_ms,
+                ..
+            } = &clip.content
+            {
+                let Some(data) = bank.get(asset) else {
+                    tracing::warn!("音声クリップの波形が未読込のため鳴らしません: {asset}");
+                    continue;
                 };
-                // ビブラート: ms → サンプル
-                let ms = |x: f32| (x as f64 * 0.001 * sample_rate) as f32;
-                let vibrato = note
-                    .vibrato
-                    .map_or(Default::default(), |v| glaux_dsp::VibratoSpec {
-                        cents: v.depth_cents,
-                        rate: v.rate_hz,
-                        rate_end: v.rate_end_hz.unwrap_or(v.rate_hz),
-                        delay: ms(v.delay_ms),
-                        fade_in: ms(v.fade_in_ms),
-                        fade_out: ms(v.fade_out_ms),
-                        len: (end - start) as f32,
-                    });
-                events.push(NoteEvent {
+                // テンポ追従: 伸縮済み波形をクリップ先頭から鳴らす
+                let (data, offset) = match bank.get_stretched(project, clip) {
+                    Some(stretched) => (stretched, 0.0),
+                    None => (data, *offset_samples as f64),
+                };
+                let start = to_sample(clip.start);
+                let end = to_sample(clip.start + clip.length).max(start + 1);
+                audio_events.push(AudioEvent {
                     start,
                     end,
-                    freq: pitch_to_freq(note.pitch),
-                    pitch: note.pitch,
-                    amp: note.vel as f32 / 127.0,
                     track: ti as u32,
-                    articulation: note.articulation,
-                    curve: glaux_dsp::PitchCurve::from_shaped(&curve_pts),
-                    vibrato,
-                    shape: glaux_dsp::NoteShape::new(
-                        expr_curve(&note.volume_curve),
-                        expr_curve(&note.brightness_curve),
-                    ),
-                    fade_in: 0,
-                    fade_out: 0,
-                    glide: note.glide_ms.map_or(0.0, |ms| ms / 1000.0),
-                    choke: 0,
-                    variant: variant_hash(&note.id, start),
+                    data: data.clone(),
+                    offset,
+                    rate: data.sample_rate as f64 / sample_rate,
+                    gain: db_to_amp(*gain_db),
+                    fade_in: (*fade_in_ms as f64 * 0.001 * sample_rate) as u64,
+                    fade_out: (*fade_out_ms as f64 * 0.001 * sample_rate) as u64,
                 });
             }
         }
     }
-    events.sort_by_key(|e| e.start);
-    // ラウンドロビン: 同じトラック・同じ音高の何回目か(曲の頭から数える。書き出しでも同じになる)
-    {
-        let mut count: HashMap<(u32, u8), u32> = HashMap::new();
-        for e in events.iter_mut() {
-            let c = count.entry((e.track, e.pitch)).or_insert(0);
-            e.variant = (e.variant & 0xFFFF_0000) | (*c & 0xFFFF);
-            *c += 1;
+    let (events, exprs, content) = match note_cache {
+        Some(cache) => cache.get(project, sample_rate, &tracks),
+        None => {
+            let (events, exprs, content) = build_notes(project, sample_rate, &tracks);
+            (Arc::new(events), Arc::new(exprs), content)
         }
-    }
-    link_legato(&mut events, sample_rate, &|t| {
-        let drum = tracks
-            .get(t as usize)
-            .is_some_and(|m| matches!(m.instrument, glaux_dsp::InstrumentParams::Drum(_)));
-        let track = project.tracks.get(t as usize)?;
-        (!drum).then(|| LegatoSettings {
-            xfade: track
-                .legato_ms
-                .map_or(LEGATO_XFADE_SEC, |ms| ms as f64 / 1000.0),
-            glide: track
-                .glide_ms
-                .map_or(PORTAMENTO_SEC, |ms| ms as f64 / 1000.0),
-        })
-    });
+    };
     // トラックの識別子と発音内容のハッシュ(再生中の編集で、変わっていないトラックの音を切らないため)
     {
         use std::hash::{Hash, Hasher};
-        let mut content: Vec<std::collections::hash_map::DefaultHasher> =
-            tracks.iter().map(|_| Default::default()).collect();
-        for e in &events {
-            if let Some(h) = content.get_mut(e.track as usize) {
-                (e.start, e.end, e.pitch, e.freq.to_bits(), e.amp.to_bits()).hash(h);
-                (
-                    e.articulation as u8,
-                    e.fade_in,
-                    e.fade_out,
-                    e.glide.to_bits(),
-                    e.choke,
-                )
-                    .hash(h);
-                for (t, c) in &e.curve.pts[..e.curve.len as usize] {
-                    (t.to_bits(), c.to_bits()).hash(h);
-                }
-            }
-        }
         for ((m, t), mut c) in tracks.iter_mut().zip(&project.tracks).zip(content) {
             let kind = std::mem::discriminant(&m.instrument);
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1888,6 +2141,7 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
 
     PlaybackData {
         events,
+        exprs,
         audio_events,
         tracks,
         master_effects,
@@ -2214,11 +2468,55 @@ mod tests {
         assert_eq!(e[0].fade_out as u64, xf);
         assert_eq!(e[1].fade_in as u64, xf);
         // ポルタメント: 4 半音下(-400 セント)から滑る
-        assert_eq!(e[1].curve.cents_at(0.0), -400.0);
-        assert_eq!(e[1].curve.cents_at(48_000.0), 0.0);
+        assert_eq!(data.expr(&e[1]).curve.cents_at(0.0), -400.0);
+        assert_eq!(data.expr(&e[1]).curve.cents_at(48_000.0), 0.0);
         // 2 つ目(1.5 秒で終わる)と 3 つ目(1.75 秒から)は 0.25 秒差なのでつながる
         assert_eq!(e[2].fade_in as u64, xf);
-        assert!(e[2].curve.is_empty(), "レガートは音程を滑らせない");
+        assert!(
+            data.expr(&e[2]).curve.is_empty(),
+            "レガートは音程を滑らせない"
+        );
+    }
+
+    #[test]
+    fn note_cache_is_shared_until_notes_or_tempo_change() {
+        use glaux_core::Articulation as A;
+        let mut project = project_with_notes(vec![
+            note(0, 960, 60, 100),
+            with_art(note(960, 960, 64, 100), A::Portamento),
+        ]);
+        let bank = SampleBank::default();
+        let mut cache = NoteCache::default();
+        let a = build_playback_data_cached(&project, 48_000.0, &bank, &mut cache);
+        // 音量だけ変えた: 同じイベント列を共有し、発音内容のハッシュも同じ(鳴っている音を切らない)
+        project.tracks[0].volume_db = -6.0;
+        let b = build_playback_data_cached(&project, 48_000.0, &bank, &mut cache);
+        assert!(Arc::ptr_eq(&a.events, &b.events));
+        assert!(Arc::ptr_eq(&a.exprs, &b.exprs));
+        assert_eq!(a.tracks[0].content, b.tracks[0].content);
+        assert_ne!(a.tracks[0].gain_l, b.tracks[0].gain_l);
+        // 使い回さないときと同じ結果
+        let fresh = build_playback_data(&project, 48_000.0, &bank);
+        assert_eq!(*b.events, *fresh.events);
+        assert_eq!(*b.exprs, *fresh.exprs);
+        assert_eq!(b.tracks[0].content, fresh.tracks[0].content);
+        // テンポ・ノート・ポルタメントの長さが変われば作り直す
+        project.tempo_map = glaux_core::TempoMap::constant(90.0).unwrap();
+        let c = build_playback_data_cached(&project, 48_000.0, &bank, &mut cache);
+        assert!(!Arc::ptr_eq(&b.events, &c.events));
+        assert_eq!(
+            *c.events,
+            *build_playback_data(&project, 48_000.0, &bank).events
+        );
+        project.tracks[0].clips[0].notes_mut().unwrap()[0].pitch = 62;
+        let d = build_playback_data_cached(&project, 48_000.0, &bank, &mut cache);
+        assert_eq!(d.events[0].pitch, 62);
+        project.tracks[0].glide_ms = Some(400.0);
+        let e = build_playback_data_cached(&project, 48_000.0, &bank, &mut cache);
+        assert_ne!(*d.exprs, *e.exprs);
+        // 表情を持つのはポルタメントの 1 音だけ(持たないノートは場所を取らない)
+        assert_eq!(e.exprs.len(), 1);
+        assert_eq!(e.events[0].expr, NO_EXPR);
     }
 
     #[test]
@@ -2236,13 +2534,17 @@ mod tests {
         let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         let e = &data.events;
         let head = e.iter().find(|x| x.pitch == 64).unwrap();
-        assert_eq!(head.curve.cents_at(0.0), -200.0, "全音下から");
-        assert_eq!(head.curve.cents_at(7200.0), 0.0, "既定 0.15 秒で到達");
+        assert_eq!(data.expr(head).curve.cents_at(0.0), -200.0, "全音下から");
+        assert_eq!(
+            data.expr(head).curve.cents_at(7200.0),
+            0.0,
+            "既定 0.15 秒で到達"
+        );
         assert_eq!(head.fade_in, 0, "フレーズの頭は普通に立ち上がる");
         let late = e.iter().find(|x| x.pitch == 67).unwrap();
-        assert_eq!(late.curve.cents_at(0.0), -200.0);
+        assert_eq!(data.expr(late).curve.cents_at(0.0), -200.0);
         let leg = e.iter().find(|x| x.pitch == 60).unwrap();
-        assert!(leg.curve.is_empty());
+        assert!(data.expr(leg).curve.is_empty());
         assert_eq!(leg.fade_in, 0);
     }
 
@@ -2312,11 +2614,11 @@ mod tests {
         let e = &data.events;
         assert_eq!(e[1].fade_in, 2880, "つなぎ目 60ms");
         // トラックの 80ms で到達(その手前ではまだ滑っている)
-        assert_eq!(e[1].curve.cents_at(3840.0), 0.0);
-        assert!(e[1].curve.cents_at(3000.0) < 0.0);
+        assert_eq!(data.expr(&e[1]).curve.cents_at(3840.0), 0.0);
+        assert!(data.expr(&e[1]).curve.cents_at(3000.0) < 0.0);
         // ノート個別の 400ms が優先
-        assert!(e[2].curve.cents_at(3840.0) < 0.0);
-        assert_eq!(e[2].curve.cents_at(19_200.0), 0.0);
+        assert!(data.expr(&e[2]).curve.cents_at(3840.0) < 0.0);
+        assert_eq!(data.expr(&e[2]).curve.cents_at(19_200.0), 0.0);
     }
 
     /// 8 分音符(0.25 秒)の上行ポルタメントで、つなぎ目から `at` 秒後の高さ(Hz)

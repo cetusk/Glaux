@@ -123,6 +123,13 @@ impl SampleData {
     /// 呼び出し側が `pos as usize + 1 < frames.len()` を保証する
     #[inline]
     pub fn read(&self, pos: f64, step: f64) -> f32 {
+        self.read_cached(pos, step, &mut (f64::NAN, 0.0))
+    }
+
+    /// [`Self::read`] の、段の計算(`step` の対数)を `level` に覚えておく版。`step` が前と同じなら
+    /// 対数を取らない(ボイスごとに `level` を持ち、1 サンプルごとに呼ぶ)
+    #[inline]
+    pub fn read_cached(&self, pos: f64, step: f64, level: &mut (f64, f64)) -> f32 {
         let base = |pos: f64| {
             let i = pos as usize;
             hermite(&self.frames, i, (pos - i as f64) as f32)
@@ -133,7 +140,10 @@ impl SampleData {
         if step <= 1.0 {
             return base(pos);
         }
-        let level = step.log2().min(mips.len() as f64);
+        if level.0 != step {
+            *level = (step, step.log2());
+        }
+        let level = level.1.min(mips.len() as f64);
         let lo = level.floor() as usize;
         let t = (level - lo as f64) as f32;
         let at = |k: usize| -> f32 {
@@ -201,6 +211,8 @@ pub struct SamplerVoice {
     done: bool,
     pub(crate) expr: PitchExpr,
     sample_rate: f32,
+    /// 縮小版の段の計算の覚え([`SampleData::read_cached`])
+    level: (f64, f64),
 }
 
 impl SamplerVoice {
@@ -229,6 +241,7 @@ impl SamplerVoice {
             done: false,
             expr: PitchExpr::new(articulation, sample_rate),
             sample_rate,
+            level: (f64::NAN, 0.0),
         }
     }
 
@@ -258,7 +271,7 @@ impl SamplerVoice {
         };
         let step = self.rate * ratio;
         // 高く鳴らすときは帯域を制限した縮小版から読む(折り返し雑音を出さない)
-        let s = p.data.read(self.pos, step);
+        let s = p.data.read_cached(self.pos, step, &mut self.level);
         self.pos += step;
 
         if self.attack_env < 1.0 {

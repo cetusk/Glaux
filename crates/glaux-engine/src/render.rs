@@ -1254,6 +1254,10 @@ impl Renderer {
 
         // 1. フレームごとに発音し、トラックごとの合算(エフェクト前)をブロック用のバッファに溜める
         let ntracks = data.tracks.len().min(MAX_TRACKS);
+        // トラックごとのモノ合算(エフェクト前)。毎フレーム消すのは使っているトラックの分だけ
+        // (それより後ろのトラックの値は写さないので消さなくてよい)
+        let mut track_mono = [0.0f32; MAX_TRACKS];
+        let mut track_side = [0.0f32; MAX_TRACKS];
         let t_voices = std::time::Instant::now();
         self.voice_samples = [0; MAX_TRACKS];
         for frame in 0..frames {
@@ -1415,11 +1419,12 @@ impl Renderer {
                                 }
                             }
                         }
-                        if !e.curve.is_empty() {
-                            state.set_curve(&e.curve);
+                        let x = data.expr(&e);
+                        if !x.curve.is_empty() {
+                            state.set_curve(&x.curve);
                         }
-                        if e.vibrato.is_active() {
-                            state.set_vibrato(&e.vibrato);
+                        if x.vibrato.is_active() {
+                            state.set_vibrato(&x.vibrato);
                         }
                         // 鳴らし直す音は途中からなので、立ち上がりを飛ばして短くフェードイン
                         let fade_in = if replay {
@@ -1453,7 +1458,7 @@ impl Renderer {
                             ident: mix.ident,
                             content: mix.content,
                             state,
-                            shape: e.shape,
+                            shape: data.expr(&e).shape,
                             layer: 0,
                         });
                         // 重ねる音源: 元のノートの音程・強さで範囲を判定し、移調して鳴らす
@@ -1485,11 +1490,12 @@ impl Renderer {
                                     }
                                 }
                             }
-                            if !e.curve.is_empty() {
-                                state.set_curve(&e.curve);
+                            let x = data.expr(&e);
+                            if !x.curve.is_empty() {
+                                state.set_curve(&x.curve);
                             }
-                            if e.vibrato.is_active() {
-                                state.set_vibrato(&e.vibrato);
+                            if x.vibrato.is_active() {
+                                state.set_vibrato(&x.vibrato);
                             }
                             if fade_in > 0 {
                                 state.skip_attack(&layer.instrument);
@@ -1506,7 +1512,7 @@ impl Renderer {
                                 ident: mix.ident,
                                 content: mix.content,
                                 state,
-                                shape: e.shape,
+                                shape: data.expr(&e).shape,
                                 layer: li as u8 + 1,
                             });
                         }
@@ -1516,9 +1522,8 @@ impl Renderer {
                 }
             }
 
-            // トラックごとのモノ合算(エフェクト前)
-            let mut track_mono = [0.0f32; MAX_TRACKS];
-            let mut track_side = [0.0f32; MAX_TRACKS];
+            track_mono[..ntracks].fill(0.0);
+            track_side[..ntracks].fill(0.0);
             let mut direct_l = 0.0f32; // MAX_TRACKS 超のトラックはエフェクトなしで直行
             let mut direct_r = 0.0f32;
             let mut i = 0;
@@ -2490,12 +2495,30 @@ impl Renderer {
         let mut pos = self.pos;
         let mut cursor = self.next_event;
         let mut curve_started = false;
+        // 次に離す音・次に余韻を切るスロットの位置(これより手前のフレームでは保留の一覧を見ない)。
+        // どちらも「これより前には来ない」下限で、見たときに求め直す
+        let min_off = |pending: &[PendingOff]| {
+            pending
+                .iter()
+                .filter(|p| p.seq)
+                .map(|p| p.end)
+                .min()
+                .unwrap_or(u64::MAX)
+        };
+        let mut next_off = min_off(&self.plugin_pending);
+        let mut next_choke = self
+            .plugin_choke_at
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(u64::MAX);
         for f in 0..frames {
             let t = f as u32;
             if looping && pos >= loop_end {
                 pos = loop_start;
                 cursor = data.events.partition_point(|e| e.start < pos);
                 self.plugin_choke_at = [u64::MAX; MAX_PLUGINS];
+                next_choke = u64::MAX;
                 self.plugin_released.clear();
                 let mut i = 0;
                 while i < self.plugin_pending.len() {
@@ -2507,9 +2530,10 @@ impl Renderer {
                         i += 1;
                     }
                 }
+                next_off = u64::MAX;
             }
             // 先に離してから鳴らす(同じ音の連打で新しい音を消さないように)
-            if !self.plugin_pending.is_empty() {
+            if pos >= next_off {
                 let mut i = 0;
                 while i < self.plugin_pending.len() {
                     let p = self.plugin_pending[i];
@@ -2525,9 +2549,13 @@ impl Renderer {
                         i += 1;
                     }
                 }
+                next_off = min_off(&self.plugin_pending);
             }
             // レガート・ポルタメントの余韻切り: 予定の位置に来たスロットで、離した鍵盤(押さえ直していないもの)を止める
             for slot in 0..MAX_PLUGINS {
+                if next_choke > pos {
+                    break;
+                }
                 if self.plugin_choke_at[slot] > pos {
                     continue;
                 }
@@ -2552,6 +2580,14 @@ impl Renderer {
                     self.plugin_released.swap_remove(i);
                 }
             }
+            if next_choke <= pos {
+                next_choke = self
+                    .plugin_choke_at
+                    .iter()
+                    .copied()
+                    .min()
+                    .unwrap_or(u64::MAX);
+            }
             while cursor < data.events.len() && data.events[cursor].start <= pos {
                 let e = data.events[cursor];
                 cursor += 1;
@@ -2565,6 +2601,7 @@ impl Renderer {
                 // レガート・ポルタメント: つなぎ目の後で、先に離した音の余韻を切る
                 if e.choke > 0 {
                     self.plugin_choke_at[slot] = pos + e.choke as u64;
+                    next_choke = next_choke.min(pos + e.choke as u64);
                 }
                 // 奏法をプラグインで近づける: アクセントは強く、パームミュートは短く弱く
                 // (ビブラート・ベンドは下で音程の変化として送る。スタッカートは長さに反映済み)
@@ -2576,13 +2613,15 @@ impl Renderer {
                     // レガートでつながれた音は次の音と重ねて離す
                     _ => (e.amp, e.end + e.fade_out as u64),
                 };
-                if e.curve.is_empty()
-                    && !e.vibrato.is_active()
-                    && !e.shape.is_active()
+                let x = data.expr(&e);
+                if x.curve.is_empty()
+                    && !x.vibrato.is_active()
+                    && !x.shape.is_active()
                     && !glaux_dsp::articulation_moves_pitch(e.articulation)
                 {
                     self.plugin_note_on(slot, e.pitch, amp, t, None);
                     self.push_pending(PendingOff::simple(slot, e.pitch, end.max(pos + 1), true));
+                    next_off = next_off.min(end.max(pos + 1));
                 } else {
                     // ピッチカーブ・ビブラート・ベンド: ノート ID を付けて鳴らし、音程の変化を後から送る
                     curve_started = true;
@@ -2600,6 +2639,7 @@ impl Renderer {
                         last_gain: f32::NAN,
                         last_bright: f32::NAN,
                     });
+                    next_off = next_off.min(end.max(pos + 1));
                 }
             }
             // ピッチカーブの音程を一定間隔で送る(変わったときだけ。鳴らした瞬間にも送る)
@@ -2614,21 +2654,22 @@ impl Renderer {
                         continue;
                     };
                     let age = pos.saturating_sub(e.start) as f32;
+                    let x = data.expr(e);
                     // ノートのビブラートがあれば奏法のビブラートの代わりに(内蔵音源と同じ)
-                    let art = if e.vibrato.is_active()
+                    let art = if x.vibrato.is_active()
                         && e.articulation == glaux_core::Articulation::Vibrato
                     {
                         0.0
                     } else {
                         glaux_dsp::articulation_cents(e.articulation, age, sr)
                     };
-                    let semi = (e.curve.cents_at(age) + art + e.vibrato.cents_at(age, sr)) / 100.0;
+                    let semi = (x.curve.cents_at(age) + art + x.vibrato.cents_at(age, sr)) / 100.0;
                     // 音量・明るさの曲線(変わったときだけ)
-                    if e.shape.is_active() {
-                        let gain = e.shape.gain_at(age).min(4.0);
-                        let bright = 0.5 + 0.5 * e.shape.brightness_at(age);
+                    if x.shape.is_active() {
+                        let gain = x.shape.gain_at(age).min(4.0);
+                        let bright = 0.5 + 0.5 * x.shape.brightness_at(age);
                         let notes = &mut self.plugin_notes[p.slot as usize];
-                        if !e.shape.volume.is_empty()
+                        if !x.shape.volume.is_empty()
                             && (p.last_gain.is_nan() || (gain - p.last_gain).abs() > 0.002)
                             && notes.len() < MAX_EVENTS
                         {
@@ -2640,7 +2681,7 @@ impl Renderer {
                                 gain: gain as f64,
                             });
                         }
-                        if !e.shape.bright.is_empty()
+                        if !x.shape.bright.is_empty()
                             && (p.last_bright.is_nan() || (bright - p.last_bright).abs() > 0.002)
                             && notes.len() < MAX_EVENTS
                         {
@@ -2938,11 +2979,9 @@ mod tests {
 
     fn data_with_note(start: u64, end: u64, audible: bool) -> PlaybackData {
         PlaybackData {
-            events: vec![NoteEvent {
+            events: Arc::new(vec![NoteEvent {
                 articulation: Default::default(),
-                curve: Default::default(),
-                vibrato: Default::default(),
-                shape: Default::default(),
+                expr: crate::data::NO_EXPR,
                 fade_in: 0,
                 fade_out: 0,
                 glide: 0.0,
@@ -2954,7 +2993,7 @@ mod tests {
                 pitch: 69,
                 amp: 1.0,
                 track: 0,
-            }],
+            }]),
             tracks: vec![TrackMix {
                 gain_l: 1.0,
                 gain_r: 1.0,
@@ -2978,6 +3017,7 @@ mod tests {
                 // 実際の構築(build_playback_data)と同じく、ノートが違えば発音内容も違う
                 content: start.wrapping_mul(31) ^ end,
             }],
+            exprs: Default::default(),
             audio_events: vec![],
             master_effects: vec![],
             master_fx_graph: None,
@@ -3514,13 +3554,15 @@ mod tests {
         };
         data.tracks[0].layers = vec![layer.clone(), layer.clone(), layer];
         let base = data.events[0];
-        data.events = (0..300u64)
-            .map(|i| NoteEvent {
-                start: i * 10,
-                pitch: 40 + (i % 40) as u8,
-                ..base
-            })
-            .collect();
+        data.events = Arc::new(
+            (0..300u64)
+                .map(|i| NoteEvent {
+                    start: i * 10,
+                    pitch: 40 + (i % 40) as u8,
+                    ..base
+                })
+                .collect(),
+        );
         let shared = Arc::new(Shared::new(data));
         shared.playing.store(true, Ordering::Release);
         let mut r = Renderer::new(shared.clone());
@@ -3547,13 +3589,15 @@ mod tests {
         // (20 トラック × 4 声で後ろの 4 トラックが無音)
         let mut data = data_with_note(0, 96_000, true);
         let base = data.events[0];
-        data.events = (0..300u64)
-            .map(|i| NoteEvent {
-                start: i * 10,
-                pitch: 40 + (i % 40) as u8,
-                ..base
-            })
-            .collect();
+        data.events = Arc::new(
+            (0..300u64)
+                .map(|i| NoteEvent {
+                    start: i * 10,
+                    pitch: 40 + (i % 40) as u8,
+                    ..base
+                })
+                .collect(),
+        );
         let shared = Arc::new(Shared::new(data));
         shared.playing.store(true, Ordering::Release);
         let mut r = Renderer::new(shared.clone());
@@ -3586,7 +3630,7 @@ mod tests {
             gain: 1.0,
             ..Default::default()
         });
-        data.events[0].pitch = 42; // クローズドハット(短い)
+        Arc::make_mut(&mut data.events)[0].pitch = 42; // クローズドハット(短い)
         let shared = Arc::new(Shared::new(data));
         shared.playing.store(true, Ordering::Release);
         let mut r = Renderer::new(shared.clone());

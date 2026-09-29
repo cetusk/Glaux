@@ -611,6 +611,8 @@ pub struct EffectState {
     comp_y1: f32,
     comp_ms: f32,
     comp_hp: [SvfState; 2],
+    // Compressor: ニーの下端(dB)と、そのリニアの値(下端が変わったときだけ求め直す)
+    comp_floor: (f32, f32),
     // Sidechain(ダッカー)のトリガー状態
     duck_pos: f32,
     duck_active: bool,
@@ -677,6 +679,7 @@ impl EffectState {
             comp_y1: 0.0,
             comp_ms: 0.0,
             comp_hp: Default::default(),
+            comp_floor: (f32::MAX, 0.0),
             duck_pos: 0.0,
             duck_active: false,
             key_was_above: false,
@@ -756,7 +759,11 @@ impl EffectState {
             self.adaa = Default::default();
             self.tape_os = Default::default();
             self.amp = Default::default();
-            self.reverb.reset();
+            // 大きなバッファは、その種類に切り替わるときだけ消す(使わない種類の領域に触れて
+            // 実メモリにしない。戻ってきたときにはここで消える)
+            if kind == EffectKind::Reverb {
+                self.reverb.reset();
+            }
             if matches!(
                 kind,
                 EffectKind::Delay | EffectKind::Chorus | EffectKind::Tape
@@ -774,9 +781,13 @@ impl EffectState {
             self.limiter = Default::default();
             self.width = Default::default();
             self.dyn_eq = Default::default();
-            self.resonance.reset();
+            if kind == EffectKind::Resonance {
+                self.resonance.reset();
+            }
             self.virtual_bass = Default::default();
-            self.modfx.reset();
+            if kind == EffectKind::Mod {
+                self.modfx.reset();
+            }
         }
     }
 
@@ -821,14 +832,27 @@ impl EffectState {
                 } else {
                     dl.abs().max(dr.abs())
                 };
-                let level_db = 20.0 * level.max(1e-6).log10();
+                // ニーより十分小さければ減衰は 0(対数を取らずに判定する)
+                let floor_db = c.threshold_db - 0.5 * c.knee_db;
+                if self.comp_floor.0 != floor_db {
+                    self.comp_floor = (floor_db, 10.0_f32.powf(floor_db / 20.0) * 0.999);
+                }
+                let want = if level < self.comp_floor.1 {
+                    0.0
+                } else {
+                    -c.gain_db(20.0 * level.max(1e-6).log10())
+                };
                 // 減衰量(dB、正)をなめらかで分離したピーク検出で追う
-                let want = -c.gain_db(level_db);
                 self.comp_y1 =
                     want.max(c.release_coef * self.comp_y1 + (1.0 - c.release_coef) * want);
                 self.envelope =
                     c.attack_coef * self.envelope + (1.0 - c.attack_coef) * self.comp_y1;
-                let gain = 10.0_f32.powf(-self.envelope / 20.0) * c.makeup;
+                // 減衰がほぼ 0(-100dB 未満の差)なら累乗を省く
+                let gain = if self.envelope < 1e-5 {
+                    c.makeup
+                } else {
+                    10.0_f32.powf(-self.envelope / 20.0) * c.makeup
+                };
                 (l * gain, r * gain)
             }
             EffectParams::Reverb(rv) => {

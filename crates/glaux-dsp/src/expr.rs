@@ -17,6 +17,13 @@ pub struct PitchCurve {
 }
 
 impl PitchCurve {
+    /// 点の無い曲線
+    pub const EMPTY: PitchCurve = PitchCurve {
+        pts: [(0.0, 0.0); glaux_core::MAX_PITCH_POINTS],
+        shapes: [0; glaux_core::MAX_PITCH_POINTS],
+        len: 0,
+    };
+
     /// (ノート先頭からのサンプル数, セント) の列から作る(区間は直線)。上限を超えた分は捨てる。
     pub fn from_points(points: &[(f32, f32)]) -> PitchCurve {
         let mut c = PitchCurve::default();
@@ -83,6 +90,17 @@ pub struct VibratoSpec {
 }
 
 impl VibratoSpec {
+    /// ビブラート無し
+    pub const NONE: VibratoSpec = VibratoSpec {
+        cents: 0.0,
+        rate: 0.0,
+        rate_end: 0.0,
+        delay: 0.0,
+        fade_in: 0.0,
+        fade_out: 0.0,
+        len: 0.0,
+    };
+
     pub fn is_active(&self) -> bool {
         self.cents != 0.0
     }
@@ -118,14 +136,27 @@ pub struct NoteShape {
     /// 明るさ(−1〜1)
     pub bright: PitchCurve,
     lp: f32,
+    /// 前のサンプルの (明るさ, 低域通過の係数) と (音量 dB, 倍率)。曲線の平らな所では `exp` を省く
+    /// (未計算は f32::MAX)
+    lp_coef: (f32, f32),
+    gain: (f32, f32),
 }
 
 impl NoteShape {
+    /// 曲線の無い(何もしない)もの
+    pub const NONE: NoteShape = NoteShape {
+        volume: PitchCurve::EMPTY,
+        bright: PitchCurve::EMPTY,
+        lp: 0.0,
+        lp_coef: (f32::MAX, 0.0),
+        gain: (f32::MAX, 1.0),
+    };
+
     pub fn new(volume: PitchCurve, bright: PitchCurve) -> NoteShape {
         NoteShape {
             volume,
             bright,
-            lp: 0.0,
+            ..NoteShape::NONE
         }
     }
 
@@ -156,20 +187,32 @@ impl NoteShape {
         let mut y = x;
         if !self.bright.is_empty() {
             let b = self.brightness_at(age);
-            let tau = std::f32::consts::TAU;
+            if self.lp_coef.0 != b {
+                let tau = std::f32::consts::TAU;
+                // 暗く: 18kHz(b = 0)から 280Hz(b = −1)まで / 明るく: 1.5kHz より上を足す
+                let fc = if b < 0.0 {
+                    18_000.0 * (b * 6.0).exp2()
+                } else {
+                    1500.0
+                };
+                self.lp_coef = (b, 1.0 - (-tau * fc / sample_rate).exp());
+            }
+            let a = self.lp_coef.1;
+            self.lp += a * (y - self.lp);
             if b < 0.0 {
-                // 18kHz(b = 0)から 280Hz(b = −1)まで
-                let fc = 18_000.0 * (b * 6.0).exp2();
-                let a = 1.0 - (-tau * fc / sample_rate).exp();
-                self.lp += a * (y - self.lp);
                 y = self.lp;
             } else {
-                let a = 1.0 - (-tau * 1500.0 / sample_rate).exp();
-                self.lp += a * (y - self.lp);
                 y += b * 1.5 * (y - self.lp);
             }
         }
-        y * self.gain_at(age)
+        if !self.volume.is_empty() {
+            let db = self.volume.cents_at(age);
+            if self.gain.0 != db {
+                self.gain = (db, (db * (std::f32::consts::LN_10 / 20.0)).exp());
+            }
+            y *= self.gain.1;
+        }
+        y
     }
 }
 
@@ -227,20 +270,8 @@ const INERT: PitchExpr = PitchExpr {
     bend_samples: 1.0,
     phase: 0.0,
     age: 0.0,
-    curve: PitchCurve {
-        pts: [(0.0, 0.0); glaux_core::MAX_PITCH_POINTS],
-        shapes: [0; glaux_core::MAX_PITCH_POINTS],
-        len: 0,
-    },
-    vib: VibratoSpec {
-        cents: 0.0,
-        rate: 0.0,
-        rate_end: 0.0,
-        delay: 0.0,
-        fade_in: 0.0,
-        fade_out: 0.0,
-        len: 0.0,
-    },
+    curve: PitchCurve::EMPTY,
+    vib: VibratoSpec::NONE,
 };
 
 impl PitchExpr {

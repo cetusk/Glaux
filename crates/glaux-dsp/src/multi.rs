@@ -257,6 +257,8 @@ struct ZonePlayer {
     one_shot: bool,
     group: u32,
     off_by: u32,
+    /// 縮小版の段の計算の覚え(`SampleData::read_cached`)
+    level: (f64, f64),
     /// ---- 変調(制御レートで更新)----
     /// LFO / エンベロープ由来のピッチ倍率
     pitch_mul: f64,
@@ -357,6 +359,9 @@ impl ZonePlayer {
 #[derive(Clone, Copy, Debug)]
 pub struct MultiVoice {
     players: [ZonePlayer; MAX_LAYERS],
+    /// 鳴っているゾーンは `players[..live]` の中にある(後ろから鳴り終わった分を縮める。
+    /// 1 サンプルごとに空の枠を見ない)
+    live: u8,
     /// レイヤー数に応じた等パワー正規化
     layer_norm: f32,
     amp: f32,
@@ -448,6 +453,7 @@ impl MultiVoice {
         }
         MultiVoice {
             players,
+            live: n as u8,
             // SoundFont の重ねは数で割って大きさをそろえる。SFZ はマイクの重ね(近く + 部屋など)を
             // 足し合わせる前提で作られているので割らない
             layer_norm: 1.0
@@ -512,7 +518,9 @@ impl MultiVoice {
     }
 
     pub fn finished(&self) -> bool {
-        self.players.iter().all(|pl| !pl.active)
+        self.players[..self.live as usize]
+            .iter()
+            .all(|pl| !pl.active)
     }
 
     pub fn next(&mut self, p: &MultiSamplerParams) -> f32 {
@@ -529,7 +537,7 @@ impl MultiVoice {
             let vib = (self.vib_phase * std::f32::consts::TAU).sin();
             let lfo = (self.mod_phase * std::f32::consts::TAU).sin();
             let (mut vib_freq, mut mod_freq) = (0.0f32, 0.0f32);
-            for pl in &mut self.players {
+            for pl in &mut self.players[..self.live as usize] {
                 if !pl.active {
                     continue;
                 }
@@ -549,7 +557,8 @@ impl MultiVoice {
         self.age = self.age.wrapping_add(1);
 
         let mut out = 0.0f32;
-        for pl in &mut self.players {
+        let live = self.live as usize;
+        for pl in &mut self.players[..live] {
             if !pl.active {
                 continue;
             }
@@ -573,7 +582,7 @@ impl MultiVoice {
             }
             let step = pl.rate * ratio * pl.pitch_mul;
             // 高く鳴らすときは帯域を制限した縮小版から読む(折り返し雑音を出さない)
-            let mut s = z.data.read(pl.pos, step);
+            let mut s = z.data.read_cached(pl.pos, step, &mut pl.level);
             pl.pos += step;
             if pl.filter_on {
                 s = pl.filter(s);
@@ -612,6 +621,9 @@ impl MultiVoice {
             }
 
             out += s * pl.env * pl.gain;
+        }
+        while self.live > 0 && !self.players[self.live as usize - 1].active {
+            self.live -= 1;
         }
         out * self.layer_norm * self.amp * p.gain
     }

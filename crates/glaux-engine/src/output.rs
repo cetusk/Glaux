@@ -3,7 +3,7 @@
 //! `cpal::Stream` は `Send` ではないので、専用スレッドを立ててそこでストリームを
 //! 生成・保持する。UI 側には Send + Sync な [`EngineHandle`] だけを渡す。
 
-use crate::data::{build_playback_data, PlaybackData, SampleBank};
+use crate::data::{PlaybackData, SampleBank};
 use crate::midi::{MidiConnection, MidiSink, MidiTake, RecordedNote, LIVE_NO_TRACK};
 use crate::plugins::PluginOwner;
 use crate::render::{Renderer, Shared, NO_SEEK};
@@ -46,6 +46,8 @@ pub struct EngineHandle {
     loop_ticks: Arc<Mutex<Option<(Tick, Tick)>>>,
     /// 差し替えた旧データの解放をオーディオスレッドで起こさないための退避場所
     graveyard: Arc<Mutex<Vec<Arc<PlaybackData>>>>,
+    /// ノートの展開結果(ミキサーの操作などでは作り直さない)
+    notes: Arc<Mutex<crate::data::NoteCache>>,
     /// デコード済みサンプルのキャッシュ(サンプラー音源用)
     bank: Arc<Mutex<SampleBank>>,
     /// 進行中の録音(あれば)
@@ -115,7 +117,13 @@ impl EngineHandle {
             let mut bank = self.bank.lock().expect("bank lock");
             bank.sync(project, project_dir);
             bank.plugin_slots = self.plugins.sync(project, self.sample_rate());
-            Arc::new(build_playback_data(project, self.sample_rate(), &bank))
+            let mut notes = self.notes.lock().expect("notes lock");
+            Arc::new(crate::data::build_playback_data_cached(
+                project,
+                self.sample_rate(),
+                &bank,
+                &mut notes,
+            ))
         };
         let old = self.shared.data.swap(data);
         *self.tempo.lock().expect("tempo lock") = project.tempo_map.clone();
@@ -772,6 +780,7 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                 tempo: Arc::new(Mutex::new(TempoMap::default())),
                 loop_ticks: Arc::new(Mutex::new(None)),
                 graveyard: Arc::new(Mutex::new(Vec::new())),
+                notes: Arc::new(Mutex::new(Default::default())),
                 bank: {
                     let bank = Arc::new(Mutex::new(SampleBank::default()));
                     SampleBank::register_engine_bank(&bank);

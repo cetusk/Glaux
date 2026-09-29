@@ -393,12 +393,17 @@ pub struct MonitorState {
     /// クロスフィードのローパス(左, 右)
     lp: (f32, f32),
     speaker: SpeakerSim,
+    /// 相関の平滑化の係数(サンプルレート, 係数)。サンプルレートが変わったときだけ求め直す
+    corr_coef: (f32, f32),
 }
 
 impl MonitorState {
     /// マスターの音を 1 サンプル測る(相関とゴニオメーター)
     pub fn measure(&mut self, shared: &MonitorShared, l: f32, r: f32, sr: f32) {
-        let a = 1.0 - (-1.0 / (CORR_SECS * sr.max(1.0))).exp();
+        if self.corr_coef.0 != sr {
+            self.corr_coef = (sr, 1.0 - (-1.0 / (CORR_SECS * sr.max(1.0))).exp());
+        }
+        let a = self.corr_coef.1;
         self.lr += (l * r - self.lr) * a;
         self.ll += (l * l - self.ll) * a;
         self.rr += (r * r - self.rr) * a;

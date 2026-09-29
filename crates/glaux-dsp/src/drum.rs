@@ -252,6 +252,8 @@ pub struct DrumVoice {
     len: u32,
     /// チョークの減衰(1 = 通常)
     choke_gain: f32,
+    /// チョーク中の 1 サンプルあたりの減衰(止め始めに 1 回だけ求める)
+    choke_mul: f32,
     choking: bool,
     /// チョーク: このグループに属する(0 = なし)/ このグループが鳴ったら止まる
     group: u8,
@@ -291,6 +293,7 @@ impl DrumVoice {
             t: 0,
             len: 0,
             choke_gain: 1.0,
+            choke_mul: 1.0,
             choking: false,
             group: 0,
             off_by: 0,
@@ -667,6 +670,7 @@ impl DrumVoice {
     /// すばやく(約 10ms で)止める
     pub fn choke(&mut self) {
         self.choking = true;
+        self.choke_mul = (-1.0 / (0.004 * self.sample_rate)).exp();
     }
 
     fn noise(&mut self) -> f32 {
@@ -751,7 +755,7 @@ impl DrumVoice {
             out *= progress * progress * progress;
         }
         if self.choking {
-            self.choke_gain *= (-1.0 / (0.004 * sr)).exp();
+            self.choke_gain *= self.choke_mul;
             out *= self.choke_gain;
         }
         out * self.amp * p.gain
