@@ -12,7 +12,8 @@
   import { drumName } from "./drumMap";
   import { newNoteId } from "./ids";
   import { noteClipboard, pianoRollStore } from "./selection.svelte";
-  import type { Articulation, MidiClip, Note, Project, Track } from "./types";
+  import type { Articulation, CurveShape, MidiClip, Note, Project, Track } from "./types";
+  import { applyCurveShape } from "./types";
 
   let {
     project,
@@ -490,18 +491,32 @@
         const cy = y + rowH / 2;
         g.beginPath();
         let first = true;
-        const pts = [...curve];
+        const pts: { tick: number; cents: number; shape?: CurveShape }[] = [...curve];
         if (pts[0].tick > 0) pts.unshift({ tick: 0, cents: pts[0].cents });
         const last = pts[pts.length - 1];
         if (last.tick < n.dur) pts.push({ tick: n.dur, cents: last.cents });
-        for (const p of pts) {
-          const px = x + Math.min(p.tick, n.dur) * pxPerTick;
-          const py = cy - (p.cents / 100) * rowH;
+        const at = (tick: number, cents: number) => {
+          const px = x + Math.min(tick, n.dur) * pxPerTick;
+          const py = cy - (cents / 100) * rowH;
           if (first) {
             g.moveTo(px, py);
             first = false;
           } else {
             g.lineTo(px, py);
+          }
+        };
+        for (let k = 0; k < pts.length; k++) {
+          const p = pts[k];
+          const next = pts[k + 1];
+          at(p.tick, p.cents);
+          // 曲がり方のある区間は細かく刻んで描く(直線はそのまま次の点へ)
+          if (next && p.shape && p.shape !== "linear") {
+            const steps = 8;
+            for (let j = 1; j < steps; j++) {
+              const x01 = j / steps;
+              at(p.tick + (next.tick - p.tick) * x01, p.cents + (next.cents - p.cents) * applyCurveShape(p.shape, x01));
+            }
+            if (p.shape === "hold") at(next.tick, p.cents);
           }
         }
         g.strokeStyle = "rgba(255, 120, 200, 0.95)";

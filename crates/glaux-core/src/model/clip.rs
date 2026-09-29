@@ -40,17 +40,123 @@ impl Articulation {
     }
 }
 
+/// ピッチカーブの区間の曲がり方(その点から次の点まで)
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurveShape {
+    /// 直線(既定)
+    #[default]
+    Linear,
+    /// ゆっくり動き出して速く着く
+    EaseIn,
+    /// 速く動き出してゆっくり着く(しゃくり・スクープの着地)
+    EaseOut,
+    /// ゆっくり動き出してゆっくり着く
+    EaseInOut,
+    /// 次の点まで今の値のまま、次の点で跳ぶ
+    Hold,
+}
+
+impl CurveShape {
+    pub fn is_linear(&self) -> bool {
+        *self == CurveShape::Linear
+    }
+
+    /// 区間の中の割合 `x`(0〜1)を曲げる
+    pub fn apply(self, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        match self {
+            CurveShape::Linear => x,
+            CurveShape::EaseIn => x * x,
+            CurveShape::EaseOut => x * (2.0 - x),
+            CurveShape::EaseInOut => x * x * (3.0 - 2.0 * x),
+            CurveShape::Hold => 0.0,
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(c: u8) -> CurveShape {
+        match c {
+            1 => CurveShape::EaseIn,
+            2 => CurveShape::EaseOut,
+            3 => CurveShape::EaseInOut,
+            4 => CurveShape::Hold,
+            _ => CurveShape::Linear,
+        }
+    }
+}
+
 /// 連続ピッチカーブの 1 点。ノート先頭からの相対 tick と、書かれた音程からの
-/// ずれ(セント。100 = 半音)。点の間は線形補間、最初の点より前 / 最後の点より後は
-/// その値を保持する。
+/// ずれ(セント。100 = 半音)。点の間は `shape` の曲がり方で補間(既定は直線)、
+/// 最初の点より前 / 最後の点より後はその値を保持する。
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PitchPoint {
     pub tick: Tick,
     pub cents: f32,
+    /// この点から次の点までの曲がり方。省略で直線
+    #[serde(default, skip_serializing_if = "CurveShape::is_linear")]
+    pub shape: CurveShape,
+}
+
+impl PitchPoint {
+    pub fn new(tick: Tick, cents: f32) -> Self {
+        PitchPoint {
+            tick,
+            cents,
+            shape: CurveShape::Linear,
+        }
+    }
+
+    pub fn shaped(tick: Tick, cents: f32, shape: CurveShape) -> Self {
+        PitchPoint { tick, cents, shape }
+    }
+}
+
+/// ノートのビブラート(音源の側で正弦波として作る)。`Articulation::Vibrato` はこの既定値
+/// (5.5Hz・±30 セント・0.12 秒後から 0.25 秒で全深度)と同じ意味。両方あればこちらが優先
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Vibrato {
+    /// 速さ(Hz)
+    pub rate_hz: f32,
+    /// 深さ(セント、片側)。歌は 30〜60、強いものは 90
+    pub depth_cents: f32,
+    /// 揺れ始めるまで(ms。ノートの頭から)
+    #[serde(default)]
+    pub delay_ms: f32,
+    /// 全深度になるまで(ms)
+    #[serde(default)]
+    pub fade_in_ms: f32,
+    /// 音の終わりの何 ms で揺れを消すか(0 = 消さない)
+    #[serde(default)]
+    pub fade_out_ms: f32,
+    /// 音の終わりでの速さ(Hz。省略で rate_hz のまま。終わりで速める歌い方)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_end_hz: Option<f32>,
+}
+
+/// ビブラートの検証
+pub fn check_vibrato(v: &Vibrato) -> Result<(), String> {
+    let ok = |x: f32, lo: f32, hi: f32| x.is_finite() && (lo..=hi).contains(&x);
+    if !ok(v.rate_hz, 0.5, 12.0) || !v.rate_end_hz.map_or(true, |r| ok(r, 0.5, 12.0)) {
+        return Err("vibrato の rate_hz は 0.5〜12".to_owned());
+    }
+    if !ok(v.depth_cents, 0.0, 300.0) {
+        return Err("vibrato の depth_cents は 0〜300".to_owned());
+    }
+    if !ok(v.delay_ms, 0.0, 5000.0)
+        || !ok(v.fade_in_ms, 0.0, 5000.0)
+        || !ok(v.fade_out_ms, 0.0, 5000.0)
+    {
+        return Err("vibrato の delay_ms・fade_in_ms・fade_out_ms は 0〜5000".to_owned());
+    }
+    Ok(())
 }
 
 /// ピッチカーブの点数上限(ボイス側が固定長で持つため)
-pub const MAX_PITCH_POINTS: usize = 8;
+pub const MAX_PITCH_POINTS: usize = 16;
 /// ピッチカーブの振れ幅の上限(セント)
 pub const MAX_PITCH_CENTS: f32 = 2400.0;
 
@@ -74,6 +180,9 @@ pub struct Note {
     /// ポルタメントで滑る時間(ms)。省略時はトラックの `glide_ms`(それも無ければ 150ms)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glide_ms: Option<f32>,
+    /// ビブラート(速さ・深さ・始まり・フェード)。省略で無し(奏法の vibrato は既定値のビブラート)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vibrato: Option<Vibrato>,
 }
 
 /// ポルタメントで滑る時間の範囲(ms)

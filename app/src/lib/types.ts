@@ -18,10 +18,39 @@ export interface Note {
   vel: number;
   /** 奏法。省略 = normal */
   articulation?: Articulation;
-  /** 連続ピッチカーブ(ノート先頭からの相対 tick, セント)。省略 = なし */
-  pitch_curve?: { tick: number; cents: number }[];
+  /** 連続ピッチカーブ(ノート先頭からの相対 tick, セント, 次の点までの曲がり方)。省略 = なし */
+  pitch_curve?: { tick: number; cents: number; shape?: CurveShape }[];
   /** ポルタメントで滑る時間(ms)。省略 = トラックの glide_ms */
   glide_ms?: number;
+  /** ビブラート(速さ・深さ・始まり・フェード)。省略 = なし */
+  vibrato?: {
+    rate_hz: number;
+    depth_cents: number;
+    delay_ms?: number;
+    fade_in_ms?: number;
+    fade_out_ms?: number;
+    rate_end_hz?: number;
+  };
+}
+
+/** ピッチカーブの区間の曲がり方(glaux-core の CurveShape と同じ) */
+export type CurveShape = "linear" | "ease_in" | "ease_out" | "ease_in_out" | "hold";
+
+/** 区間の中の割合 x(0〜1)を曲げる(glaux-core の CurveShape::apply と同じ) */
+export function applyCurveShape(shape: CurveShape | undefined, x: number): number {
+  const t = Math.min(1, Math.max(0, x));
+  switch (shape) {
+    case "ease_in":
+      return t * t;
+    case "ease_out":
+      return t * (2 - t);
+    case "ease_in_out":
+      return t * t * (3 - 2 * t);
+    case "hold":
+      return 0;
+    default:
+      return t;
+  }
 }
 
 export interface MidiClip {

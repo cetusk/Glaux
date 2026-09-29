@@ -226,6 +226,7 @@ pub fn render_track_note(
             articulation: Default::default(),
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         });
     }
     t.clips = vec![clip];
@@ -956,6 +957,7 @@ mod tests {
                 pitch: 60,
                 vel: 100,
                 glide_ms: None,
+                vibrato: None,
             });
         }
         track.clips.push(clip);

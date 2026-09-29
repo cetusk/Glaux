@@ -312,6 +312,7 @@ mod tests {
             articulation: Default::default(),
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         }
     }
 

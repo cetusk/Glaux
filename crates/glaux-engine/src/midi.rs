@@ -340,6 +340,7 @@ pub fn take_to_notes(notes: &[RecordedNote], clip_start: Tick, quantize_ticks: u
                 articulation: Articulation::Normal,
                 pitch_curve: vec![],
                 glide_ms: None,
+                vibrato: None,
             })
         })
         .collect();

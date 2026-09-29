@@ -2607,6 +2607,7 @@ async fn midi_file_round_trips_through_the_tools() {
             articulation: Default::default(),
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         });
         t.clips.push(c);
         src.tracks.push(t);
@@ -3477,6 +3478,139 @@ async fn meter_tools_change_bars_layer_cycles_and_bend_long_beats() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn pitch_gestures_and_vibrato_shape_the_melody() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_ges001", "Vocal")).await);
+    // 句 1: C4 D4 G4(跳躍)、休み、句 2: E4(2 拍)
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "歌", "commands": [
+                { "op": "add_clip", "track": "trk_ges001", "clip": {
+                    "id": "clp_ges001", "name": "v", "start": 0, "length": 7680, "kind": "midi", "notes": [
+                        { "id": "nt_ges001", "pos": 0, "dur": 480, "pitch": 60, "vel": 90 },
+                        { "id": "nt_ges002", "pos": 480, "dur": 480, "pitch": 62, "vel": 90 },
+                        { "id": "nt_ges003", "pos": 960, "dur": 960, "pitch": 67, "vel": 90 },
+                        { "id": "nt_ges004", "pos": 2880, "dur": 1920, "pitch": 64, "vel": 90 } ] } }
+            ] }),
+        )
+        .await,
+    );
+    // しゃくり: 跳躍と句の頭(全部に付ける)
+    let v = ok_json(
+        &call(
+            &fx,
+            "pitch_gesture",
+            json!({ "clip_id": "clp_ges001", "kind": "shakuri", "probability": 1.0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 3, "{v}");
+    // フォール: 句の終わり(G4 と E4)。しゃくりの点は残る
+    let v = ok_json(
+        &call(
+            &fx,
+            "pitch_gesture",
+            json!({ "clip_id": "clp_ges001", "kind": "fall", "probability": 1.0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 2, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap().to_vec();
+    let e4 = ns.iter().find(|n| n.pitch == 64).unwrap();
+    assert_eq!(e4.pitch_curve[0].cents, -150.0);
+    assert_eq!(e4.pitch_curve[0].shape, glaux_core::CurveShape::EaseOut);
+    assert_eq!(e4.pitch_curve.last().unwrap().cents, -700.0);
+    assert_eq!(e4.pitch_curve.last().unwrap().tick.0, 1920);
+    // 120 BPM で 250ms = 480 tick のフォール
+    assert!(e4
+        .pitch_curve
+        .iter()
+        .any(|p| p.tick.0 == 1440 && p.cents == 0.0));
+    let d4 = ns.iter().find(|n| n.pitch == 62).unwrap();
+    assert!(d4.pitch_curve.is_empty(), "跳躍でも句の端でもない");
+    // ビブラート: 1 拍以上の音(G4・E4)
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_vibrato",
+            json!({ "clip_id": "clp_ges001", "style": "vocal", "depth_cents": 50, "humanize": 0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 2, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let e4 = project.tracks[0].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .find(|n| n.pitch == 64)
+        .unwrap()
+        .clone();
+    let vib = e4.vibrato.unwrap();
+    assert_eq!(
+        (vib.rate_hz, vib.depth_cents, vib.delay_ms),
+        (5.5, 50.0, 250.0)
+    );
+    // compact 表記に vibrato が載る
+    let g = ok_json(
+        &call(
+            &fx,
+            "get_project",
+            json!({ "clip_ids": ["clp_ges001"], "note_format": "compact" }),
+        )
+        .await,
+    );
+    assert!(g.to_string().contains("depth_cents"), "{g}");
+    // 外す → undo で戻る
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_vibrato",
+            json!({ "clip_id": "clp_ges001", "remove": true }),
+        )
+        .await,
+    );
+    assert_eq!(v["changed"], 2);
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(
+        project.tracks[0].clips[0]
+            .notes()
+            .unwrap()
+            .iter()
+            .filter(|n| n.vibrato.is_some())
+            .count()
+            == 2
+    );
+    // エラー
+    for bad in [
+        (
+            "pitch_gesture",
+            json!({ "clip_id": "clp_ges001", "kind": "wobble" }),
+        ),
+        (
+            "pitch_gesture",
+            json!({ "clip_id": "clp_ges001", "kind": "fall", "target": "middle" }),
+        ),
+        (
+            "set_vibrato",
+            json!({ "clip_id": "clp_ges001", "style": "theremin" }),
+        ),
+        (
+            "set_vibrato",
+            json!({ "clip_id": "clp_ges001", "rate_hz": 30 }),
+        ),
+        ("set_vibrato", json!({})),
+    ] {
+        let r = call(&fx, bad.0, bad.1.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad:?}");
+    }
 }
 
 #[tokio::test]

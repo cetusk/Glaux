@@ -25,6 +25,7 @@ fn note(pos: u64, dur: u64) -> Note {
         articulation: Articulation::Normal,
         pitch_curve: vec![],
         glide_ms: None,
+        vibrato: None,
     }
 }
 

@@ -20,6 +20,7 @@ pub mod comp;
 pub mod critique;
 pub mod drums;
 pub mod error;
+pub mod gesture;
 pub mod groove;
 pub mod harmony;
 pub mod history;

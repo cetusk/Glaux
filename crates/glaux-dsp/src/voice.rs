@@ -123,6 +123,19 @@ impl VoiceState {
         }
     }
 
+    /// ノートのビブラートの引数を付ける(奏法のビブラートの代わり)
+    pub fn set_vibrato(&mut self, spec: &crate::expr::VibratoSpec) {
+        match self {
+            VoiceState::Subtractive(v) => v.expr.set_vibrato(spec),
+            VoiceState::Pluck(v) => v.expr.set_vibrato(spec),
+            VoiceState::Fm(v) => v.expr.set_vibrato(spec),
+            VoiceState::Wavetable(v) => v.expr.set_vibrato(spec),
+            VoiceState::Sampler(v) => v.expr.set_vibrato(spec),
+            VoiceState::Sf2(v) => v.expr.set_vibrato(spec),
+            VoiceState::Drum(_) => {}
+        }
+    }
+
     /// 1 サンプル生成。`params` はボイス生成時と同じ楽器種であること
     /// (種別が変わるデータ差し替え時はエンジンがボイスを作り直す)。
     pub fn next(&mut self, params: &InstrumentParams) -> f32 {

@@ -46,6 +46,7 @@ fn phrase(device: &str) -> Track {
                 articulation: Default::default(),
                 pitch_curve: vec![],
                 glide_ms: None,
+                vibrato: None,
             });
         }
     }

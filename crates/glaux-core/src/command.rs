@@ -62,6 +62,9 @@ pub struct NoteChange {
     /// ポルタメントで滑る時間(ms)。0 以下でノート個別の指定を消す(トラックの値に戻る)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glide_ms: Option<f32>,
+    /// ビブラートの差し替え。depth_cents が 0 以下なら消す
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vibrato: Option<crate::model::Vibrato>,
 }
 
 impl NoteChange {
@@ -75,6 +78,7 @@ impl NoteChange {
             articulation: None,
             pitch_curve: None,
             glide_ms: None,
+            vibrato: None,
         }
     }
     pub fn pos(mut self, v: Tick) -> Self {
@@ -103,6 +107,10 @@ impl NoteChange {
     }
     pub fn glide_ms(mut self, v: f32) -> Self {
         self.glide_ms = Some(v);
+        self
+    }
+    pub fn vibrato(mut self, v: crate::model::Vibrato) -> Self {
+        self.vibrato = Some(v);
         self
     }
 }

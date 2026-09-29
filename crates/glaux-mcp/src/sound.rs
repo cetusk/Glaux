@@ -723,6 +723,7 @@ pub fn match_clip_commands(
             articulation: Default::default(),
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         });
     }
     let commands = vec![

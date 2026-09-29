@@ -67,6 +67,8 @@ pub struct NoteEvent {
     pub articulation: glaux_core::Articulation,
     /// 連続ピッチカーブ(ノート先頭からのサンプル数, セント)。空なら無し
     pub curve: glaux_dsp::PitchCurve,
+    /// ノートのビブラート(サンプル単位。深さ 0 なら無し。あれば奏法のビブラートの代わり)
+    pub vibrato: glaux_dsp::VibratoSpec,
     /// レガートのつなぎ: 鳴り始めをこのサンプル数かけて立ち上げる(0 = そのまま)
     pub fade_in: u32,
     /// レガートのつなぎ: end で離さずにこのサンプル数かけて消す(0 = 通常のリリース)。
@@ -1284,14 +1286,27 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     end = start + ((end - start) / 2).max(1);
                 }
                 // ピッチカーブ: 相対 tick → ノート先頭からのサンプル数(テンポ考慮)
-                let curve_pts: Vec<(f32, f32)> = note
+                let curve_pts: Vec<(f32, f32, glaux_core::CurveShape)> = note
                     .pitch_curve
                     .iter()
                     .map(|p| {
                         let at = to_sample(start_tick + p.tick).saturating_sub(start) as f32;
-                        (at, p.cents)
+                        (at, p.cents, p.shape)
                     })
                     .collect();
+                // ビブラート: ms → サンプル
+                let ms = |x: f32| (x as f64 * 0.001 * sample_rate) as f32;
+                let vibrato = note
+                    .vibrato
+                    .map_or(Default::default(), |v| glaux_dsp::VibratoSpec {
+                        cents: v.depth_cents,
+                        rate: v.rate_hz,
+                        rate_end: v.rate_end_hz.unwrap_or(v.rate_hz),
+                        delay: ms(v.delay_ms),
+                        fade_in: ms(v.fade_in_ms),
+                        fade_out: ms(v.fade_out_ms),
+                        len: (end - start) as f32,
+                    });
                 events.push(NoteEvent {
                     start,
                     end,
@@ -1300,7 +1315,8 @@ pub fn build_playback_data(project: &Project, sample_rate: f64, bank: &SampleBan
                     amp: note.vel as f32 / 127.0,
                     track: ti as u32,
                     articulation: note.articulation,
-                    curve: glaux_dsp::PitchCurve::from_points(&curve_pts),
+                    curve: glaux_dsp::PitchCurve::from_shaped(&curve_pts),
+                    vibrato,
                     fade_in: 0,
                     fade_out: 0,
                     glide: note.glide_ms.map_or(0.0, |ms| ms / 1000.0),
@@ -1434,6 +1450,7 @@ mod tests {
             pitch,
             vel,
             glide_ms: None,
+            vibrato: None,
         }
     }
 

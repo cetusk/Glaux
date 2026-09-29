@@ -409,6 +409,7 @@ pub fn import_commands(
                 articulation: Default::default(),
                 pitch_curve: vec![],
                 glide_ms: None,
+                vibrato: None,
             }));
             notes.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
         }
@@ -832,6 +833,7 @@ mod tests {
             articulation: Default::default(),
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         }
     }
 

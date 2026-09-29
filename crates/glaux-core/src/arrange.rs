@@ -574,6 +574,7 @@ mod tests {
                     articulation: Articulation::Normal,
                     pitch_curve: vec![],
                     glide_ms: None,
+                    vibrato: None,
                 });
             }
         }
@@ -754,6 +755,7 @@ mod tests {
                     articulation: Articulation::Normal,
                     pitch_curve: vec![],
                     glide_ms: None,
+                    vibrato: None,
                 });
             }
             *looped = true;
@@ -879,6 +881,7 @@ mod tests {
                 articulation: Default::default(),
                 pitch_curve: vec![],
                 glide_ms: None,
+                vibrato: None,
             });
         }
         p.apply(&Command::AddClip {

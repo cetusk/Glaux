@@ -1250,6 +1250,7 @@ mod tests {
                     pitch,
                     vel,
                     glide_ms: None,
+                    vibrato: None,
                 });
             }
         }

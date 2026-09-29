@@ -1236,6 +1236,7 @@ mod tests {
                 articulation: Default::default(),
                 pitch_curve: vec![],
                 glide_ms: None,
+                vibrato: None,
             });
         }
         track.clips.push(clip);
@@ -1477,14 +1478,17 @@ mod tests {
                 glaux_core::PitchPoint {
                     tick: Tick(0),
                     cents: 0.0,
+                    shape: Default::default(),
                 },
                 glaux_core::PitchPoint {
                     tick: Tick(1800),
                     cents: 0.0,
+                    shape: Default::default(),
                 },
                 glaux_core::PitchPoint {
                     tick: Tick(1920),
                     cents: 1200.0,
+                    shape: Default::default(),
                 },
             ];
         }
@@ -1781,6 +1785,7 @@ mod tests {
                 articulation: Default::default(),
                 pitch_curve: vec![],
                 glide_ms: None,
+                vibrato: None,
             });
         }
         track.clips.push(clip);
@@ -2055,6 +2060,7 @@ mod tests {
                     articulation: Default::default(),
                     pitch_curve: vec![],
                     glide_ms: None,
+                    vibrato: None,
                 });
             }
             t.clips.push(clip);

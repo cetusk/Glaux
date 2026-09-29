@@ -50,6 +50,7 @@ fn seed_project() -> Project {
                     articulation: Articulation::Normal,
                     pitch_curve: vec![],
                     glide_ms: None,
+                    vibrato: None,
                 });
             }
             p.apply(&Command::AddClip {
@@ -230,6 +231,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         .unwrap(),
                         pitch_curve: vec![],
                         glide_ms: None,
+                        vibrato: None,
                     })
                     .collect();
                 return Command::AddNotes {
@@ -305,6 +307,13 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                                 .map(|i| PitchPoint {
                                     tick: Tick(i * 120),
                                     cents: rng.gen_range(-200.0..200.0),
+                                    shape: *[
+                                        CurveShape::Linear,
+                                        CurveShape::EaseOut,
+                                        CurveShape::Hold,
+                                    ]
+                                    .choose(rng)
+                                    .unwrap(),
                                 })
                                 .collect();
                             ch = ch.pitch_curve(curve);
@@ -312,6 +321,17 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         if rng.gen_bool(0.3) {
                             // 0 は個別指定の解除
                             ch = ch.glide_ms(*[0.0, 40.0, 150.0, 800.0].choose(rng).unwrap());
+                        }
+                        if rng.gen_bool(0.3) {
+                            // 深さ 0 はビブラートの解除
+                            ch = ch.vibrato(Vibrato {
+                                rate_hz: rng.gen_range(4.0..7.0),
+                                depth_cents: *[0.0, 30.0, 60.0].choose(rng).unwrap(),
+                                delay_ms: 200.0,
+                                fade_in_ms: 150.0,
+                                fade_out_ms: if rng.gen() { 0.0 } else { 100.0 },
+                                rate_end_hz: rng.gen_bool(0.3).then_some(7.0),
+                            });
                         }
                         ch
                     })
@@ -818,6 +838,7 @@ fn loop_clip_expands_notes_for_playback() {
         articulation: Articulation::Normal,
         pitch_curve: vec![],
         glide_ms: None,
+        vibrato: None,
     };
     // 1 小節パターン: 頭と、ループ境界をまたぐ音と、ループ外の音
     *clip.notes_mut().unwrap() = vec![n(0, 480), n(3600, 480), n(5000, 480)];
@@ -1025,6 +1046,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             articulation: Articulation::Normal,
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         }, // 左に残る
         Note {
             id: ids[1].clone(),
@@ -1035,6 +1057,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             articulation: Articulation::Normal,
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         }, // 分割点(1920)をまたぐ → 切り詰め
         Note {
             id: ids[2].clone(),
@@ -1045,6 +1068,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             articulation: Articulation::Normal,
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         }, // 右へ移動
     ]);
     p.apply(&Command::AddClip { track: tid, clip }).unwrap();
@@ -1136,10 +1160,12 @@ fn update_notes_changes_curve_and_glide_and_track_legato_settings() {
         PitchPoint {
             tick: Tick(0),
             cents: -300.0,
+            shape: Default::default(),
         },
         PitchPoint {
             tick: Tick(240),
             cents: 0.0,
+            shape: Default::default(),
         },
     ];
     let applied = p
@@ -1164,14 +1190,16 @@ fn update_notes_changes_curve_and_glide_and_track_legato_settings() {
     let too_far = vec![PitchPoint {
         tick: Tick(0),
         cents: 3000.0,
+        shape: Default::default(),
     }];
     assert!(p
         .apply(&bad(NoteChange::new(nid.clone()).pitch_curve(too_far)))
         .is_err());
-    let too_many = (0..9)
+    let too_many = (0..17)
         .map(|i| PitchPoint {
             tick: Tick(i * 10),
             cents: 0.0,
+            shape: Default::default(),
         })
         .collect();
     assert!(p
@@ -1180,6 +1208,29 @@ fn update_notes_changes_curve_and_glide_and_track_legato_settings() {
     assert!(p
         .apply(&bad(NoteChange::new(nid.clone()).glide_ms(5000.0)))
         .is_err());
+    let vib = Vibrato {
+        rate_hz: 5.5,
+        depth_cents: 40.0,
+        delay_ms: 200.0,
+        fade_in_ms: 200.0,
+        fade_out_ms: 0.0,
+        rate_end_hz: None,
+    };
+    assert!(p
+        .apply(&bad(NoteChange::new(nid.clone()).vibrato(Vibrato {
+            rate_hz: 40.0,
+            ..vib
+        })))
+        .is_err());
+    // ビブラートを付けて、深さ 0 で消す(どちらも undo で戻る)
+    let inv = p
+        .apply(&bad(NoteChange::new(nid.clone()).vibrato(vib)))
+        .unwrap()
+        .inverse;
+    let vib_of = |p: &Project| p.clip(&cid).unwrap().1.notes().unwrap()[1].vibrato;
+    assert_eq!(vib_of(&p), Some(vib));
+    p.apply(&inv).unwrap();
+    assert_eq!(vib_of(&p), None);
 
     // トラックのつなぎの設定: 設定 → 取り消しで未設定に戻る。範囲外は拒否
     let set = p

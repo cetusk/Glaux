@@ -274,6 +274,7 @@ mod tests {
             articulation: Articulation::Normal,
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         };
         let nid = n.id.clone();
         s.apply(

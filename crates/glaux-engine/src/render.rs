@@ -1367,6 +1367,9 @@ impl Renderer {
                         if !e.curve.is_empty() {
                             state.set_curve(&e.curve);
                         }
+                        if e.vibrato.is_active() {
+                            state.set_vibrato(&e.vibrato);
+                        }
                         // 鳴らし直す音は途中からなので、立ち上がりを飛ばして短くフェードイン
                         let fade_in = if replay {
                             e.fade_in.max(((sr * SWAP_FADE_SECS) as u32).max(1))
@@ -2440,7 +2443,10 @@ impl Renderer {
                     // レガートでつながれた音は次の音と重ねて離す
                     _ => (e.amp, e.end + e.fade_out as u64),
                 };
-                if e.curve.is_empty() && !glaux_dsp::articulation_moves_pitch(e.articulation) {
+                if e.curve.is_empty()
+                    && !e.vibrato.is_active()
+                    && !glaux_dsp::articulation_moves_pitch(e.articulation)
+                {
                     self.plugin_note_on(slot, e.pitch, amp, t, None);
                     self.push_pending(PendingOff::simple(slot, e.pitch, end.max(pos + 1), true));
                 } else {
@@ -2472,9 +2478,15 @@ impl Renderer {
                         continue;
                     };
                     let age = pos.saturating_sub(e.start) as f32;
-                    let semi = (e.curve.cents_at(age)
-                        + glaux_dsp::articulation_cents(e.articulation, age, sr))
-                        / 100.0;
+                    // ノートのビブラートがあれば奏法のビブラートの代わりに(内蔵音源と同じ)
+                    let art = if e.vibrato.is_active()
+                        && e.articulation == glaux_core::Articulation::Vibrato
+                    {
+                        0.0
+                    } else {
+                        glaux_dsp::articulation_cents(e.articulation, age, sr)
+                    };
+                    let semi = (e.curve.cents_at(age) + art + e.vibrato.cents_at(age, sr)) / 100.0;
                     if p.last_semi.is_nan() || (semi - p.last_semi).abs() > 0.005 {
                         self.plugin_pending[i].last_semi = semi;
                         let notes = &mut self.plugin_notes[p.slot as usize];
@@ -2760,6 +2772,7 @@ mod tests {
             events: vec![NoteEvent {
                 articulation: Default::default(),
                 curve: Default::default(),
+                vibrato: Default::default(),
                 fade_in: 0,
                 fade_out: 0,
                 glide: 0.0,
@@ -2878,6 +2891,7 @@ mod tests {
                     articulation: Articulation::Normal,
                     pitch_curve: vec![],
                     glide_ms: None,
+                    vibrato: None,
                 });
             }
             let mut d = glaux_core::Device::builtin("subtractive");

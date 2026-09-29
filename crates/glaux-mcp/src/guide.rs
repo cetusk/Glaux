@@ -165,8 +165,13 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - ストリングス・管・歌・シンセリードのつながったフレーズは、2 音目以降に legato、音程を滑らせたい所に portamento を付けると打ち込みっぽさが減る。\n\
 - 滑る時間はトラック全体なら set_param track/glide_ms(ゆったりした弦 250〜400、速いリード 50〜80)、1 音だけならノートの glide_ms。\n\
   つなぎ目の長さは track/legato_ms(既定 30、パッド的にふんわりなら 80〜150)。\n\
-- 自由なピッチの動き(ゆっくりしたチョーキング・ダイブ・うねり)はノートの pitch_curve([{tick, cents}]。tick はノート先頭からの相対、\n\
-  100 cents = 半音、最大 8 点)。",
+- 自由なピッチの動き(ゆっくりしたチョーキング・ダイブ・うねり)はノートの pitch_curve([{tick, cents, shape?}]。tick はノート先頭からの相対、\n\
+  100 cents = 半音、最大 16 点、shape は次の点までの曲がり方 linear / ease_in / ease_out / ease_in_out / hold)。\n\
+- 定番の音程の表情は pitch_gesture: 歌メロ = 上への跳躍に shakuri(しゃくり)、伸ばしに kobushi を少し、句の終わりに fall を少し /\n\
+  ジャズの管 = 句の頭に scoop・plop、句の終わりに fall・doit、伸ばしに shake / ギター = bend・prebend_release・slide_in。\n\
+  全部の音に付けるとくどいので、規則(target)と probability(既定 0.7)で選ぶ。\n\
+- ビブラートは set_vibrato(style: vocal / vocal_strong / strings / guitar / wind / synth)で伸ばしの音にだけ付ける。\n\
+  歌は 250ms ほど後から揺らし始め、サビの最後の伸ばしは vocal_strong や rate_end_hz で終わりを速めると盛り上がる。",
     ),
     (
         "mix",

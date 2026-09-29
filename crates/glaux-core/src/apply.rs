@@ -442,7 +442,7 @@ impl Project {
                             n.id
                         )));
                     }
-                    check_note_extras(&n.id, &n.pitch_curve, n.glide_ms)?;
+                    check_note_extras(&n.id, &n.pitch_curve, n.glide_ms, n.vibrato.as_ref())?;
                     if !ids.insert(&n.id) {
                         return Err(CoreError::DuplicateId(n.id.to_string()));
                     }
@@ -519,6 +519,7 @@ impl Project {
                         &ch.id,
                         ch.pitch_curve.as_deref().unwrap_or(&[]),
                         ch.glide_ms.filter(|g| *g > 0.0),
+                        ch.vibrato.as_ref().filter(|v| v.depth_cents > 0.0),
                     )?;
                 }
                 let mut inverse_changes = Vec::with_capacity(changes.len());
@@ -546,6 +547,16 @@ impl Project {
                     if let Some(v) = ch.glide_ms {
                         let new = (v > 0.0).then_some(v);
                         inv.glide_ms = Some(std::mem::replace(&mut n.glide_ms, new).unwrap_or(0.0));
+                    }
+                    if let Some(v) = ch.vibrato {
+                        let new = (v.depth_cents > 0.0).then_some(v);
+                        // 無かったなら「深さ 0 = 消す」を逆コマンドに
+                        inv.vibrato = Some(std::mem::replace(&mut n.vibrato, new).unwrap_or(
+                            crate::model::Vibrato {
+                                depth_cents: 0.0,
+                                ..v
+                            },
+                        ));
                     }
                     inverse_changes.push(inv);
                 }
@@ -1272,12 +1283,17 @@ fn insert_lane(
     );
 }
 
-/// ノートのピッチカーブと滑る時間の検証。
+/// ノートのピッチカーブ・滑る時間・ビブラートの検証。
 fn check_note_extras(
     id: &crate::NoteId,
     curve: &[crate::model::PitchPoint],
     glide_ms: Option<f32>,
+    vibrato: Option<&crate::model::Vibrato>,
 ) -> Result<()> {
+    if let Some(v) = vibrato {
+        crate::model::check_vibrato(v)
+            .map_err(|e| CoreError::OutOfRange(format!("note {id}: {e}")))?;
+    }
     crate::model::check_pitch_curve(curve)
         .map_err(|e| CoreError::OutOfRange(format!("note {id}: {e}")))?;
     if let Some(g) = glide_ms {

@@ -320,6 +320,7 @@ mod tests {
             articulation: Articulation::Normal,
             pitch_curve: vec![],
             glide_ms: None,
+            vibrato: None,
         }
     }
 

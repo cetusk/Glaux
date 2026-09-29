@@ -6,16 +6,18 @@
 
 use glaux_core::Articulation;
 
-/// ボイスが持つ固定長のピッチカーブ(サンプル位置, セント)。
+/// ボイスが持つ固定長のピッチカーブ(サンプル位置, セント)と区間の曲がり方。
 /// `glaux_core::Note::pitch_curve` をエンジンがサンプル位置に換算したもの。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PitchCurve {
     pub pts: [(f32, f32); glaux_core::MAX_PITCH_POINTS],
+    /// 点 i から次の点までの曲がり方(`glaux_core::CurveShape::code`)
+    pub shapes: [u8; glaux_core::MAX_PITCH_POINTS],
     pub len: u8,
 }
 
 impl PitchCurve {
-    /// (ノート先頭からのサンプル数, セント) の列から作る。上限を超えた分は捨てる。
+    /// (ノート先頭からのサンプル数, セント) の列から作る(区間は直線)。上限を超えた分は捨てる。
     pub fn from_points(points: &[(f32, f32)]) -> PitchCurve {
         let mut c = PitchCurve::default();
         for (i, p) in points.iter().take(glaux_core::MAX_PITCH_POINTS).enumerate() {
@@ -25,11 +27,22 @@ impl PitchCurve {
         c
     }
 
+    /// (サンプル数, セント, 曲がり方) の列から作る。
+    pub fn from_shaped(points: &[(f32, f32, glaux_core::CurveShape)]) -> PitchCurve {
+        let mut c = PitchCurve::default();
+        for (i, p) in points.iter().take(glaux_core::MAX_PITCH_POINTS).enumerate() {
+            c.pts[i] = (p.0, p.1);
+            c.shapes[i] = p.2.code();
+            c.len = (i + 1) as u8;
+        }
+        c
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// `age`(サンプル)でのセント値。区分線形、両端は保持。
+    /// `age`(サンプル)でのセント値。区間は点の曲がり方で補間、両端は保持。
     pub fn cents_at(&self, age: f32) -> f32 {
         let n = self.len as usize;
         if n == 0 {
@@ -39,15 +52,59 @@ impl PitchCurve {
         if age <= pts[0].0 {
             return pts[0].1;
         }
-        for w in pts.windows(2) {
-            let (t0, c0) = w[0];
-            let (t1, c1) = w[1];
+        for i in 0..n - 1 {
+            let (t0, c0) = pts[i];
+            let (t1, c1) = pts[i + 1];
             if age < t1 {
                 let span = (t1 - t0).max(1.0);
-                return c0 + (c1 - c0) * ((age - t0) / span);
+                let x = glaux_core::CurveShape::from_code(self.shapes[i]).apply((age - t0) / span);
+                return c0 + (c1 - c0) * x;
             }
         }
         pts[n - 1].1
+    }
+}
+
+/// ノートのビブラート(サンプル単位に換算済み)。深さ 0 なら無効。
+/// 位相はノートの頭で 0。速さは頭の `rate` から終わりの `rate_end` へ直線で変わる
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VibratoSpec {
+    /// 深さ(セント、片側)
+    pub cents: f32,
+    /// 速さ(Hz)の頭と終わり
+    pub rate: f32,
+    pub rate_end: f32,
+    /// 揺れ始めるまで・全深度になるまで・終わりで消す長さ(サンプル)
+    pub delay: f32,
+    pub fade_in: f32,
+    pub fade_out: f32,
+    /// ノートの長さ(サンプル)
+    pub len: f32,
+}
+
+impl VibratoSpec {
+    pub fn is_active(&self) -> bool {
+        self.cents != 0.0
+    }
+
+    /// `age`(サンプル)でのセント値
+    pub fn cents_at(&self, age: f32, sample_rate: f32) -> f32 {
+        if self.cents == 0.0 || age < self.delay {
+            return 0.0;
+        }
+        let t = age / sample_rate;
+        let len_s = (self.len / sample_rate).max(1e-3);
+        // 速さを直線で変えたときの位相(速さの積分)
+        let phase = self.rate * t + (self.rate_end - self.rate) * t * t / (2.0 * len_s);
+        let mut env = if self.fade_in > 0.0 {
+            ((age - self.delay) / self.fade_in).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if self.fade_out > 0.0 && self.len > 0.0 {
+            env *= ((self.len - age) / self.fade_out).clamp(0.0, 1.0);
+        }
+        self.cents * env * (std::f32::consts::TAU * phase).sin()
     }
 }
 
@@ -94,6 +151,8 @@ pub(crate) struct PitchExpr {
     age: f32,
     /// ノートに描かれた連続ピッチカーブ(空なら無効)
     curve: PitchCurve,
+    /// ノートのビブラートの引数(深さ 0 なら無効。あれば奏法のビブラートの代わり)
+    vib: VibratoSpec,
 }
 
 const INERT: PitchExpr = PitchExpr {
@@ -105,7 +164,17 @@ const INERT: PitchExpr = PitchExpr {
     age: 0.0,
     curve: PitchCurve {
         pts: [(0.0, 0.0); glaux_core::MAX_PITCH_POINTS],
+        shapes: [0; glaux_core::MAX_PITCH_POINTS],
         len: 0,
+    },
+    vib: VibratoSpec {
+        cents: 0.0,
+        rate: 0.0,
+        rate_end: 0.0,
+        delay: 0.0,
+        fade_in: 0.0,
+        fade_out: 0.0,
+        len: 0.0,
     },
 };
 
@@ -133,9 +202,20 @@ impl PitchExpr {
         self.curve = *curve;
     }
 
+    /// ノートのビブラートを付ける(奏法のビブラートの代わりになる)。
+    pub(crate) fn set_vibrato(&mut self, v: &VibratoSpec) {
+        if v.is_active() {
+            self.vib = *v;
+            self.vib_cents = 0.0;
+        }
+    }
+
     /// 効果を持つか(持たないボイスは呼び出しを省ける)。
     pub(crate) fn is_active(&self) -> bool {
-        self.vib_cents != 0.0 || self.bend_start != 1.0 || !self.curve.is_empty()
+        self.vib_cents != 0.0
+            || self.bend_start != 1.0
+            || !self.curve.is_empty()
+            || self.vib.is_active()
     }
 
     /// 現在の周波数比を返し、時間を 1 サンプル進める。
@@ -157,6 +237,10 @@ impl PitchExpr {
             let cents = self.vib_cents * onset * (self.phase * std::f32::consts::TAU).sin();
             // 小さい cents に対する 2^(c/1200) の一次近似(±30 セントで誤差は無視できる)
             ratio *= 1.0 + cents * (std::f32::consts::LN_2 / 1200.0);
+        }
+        if self.vib.is_active() {
+            let cents = self.vib.cents_at(self.age, sample_rate);
+            ratio *= (cents * (std::f32::consts::LN_2 / 1200.0)).exp();
         }
         if !self.curve.is_empty() {
             let cents = self.curve.cents_at(self.age);
@@ -181,6 +265,46 @@ mod tests {
         assert_eq!(c.cents_at(999.0), 100.0, "最後の点より後は保持");
         let late = PitchCurve::from_points(&[(100.0, 50.0)]);
         assert_eq!(late.cents_at(0.0), 50.0, "最初の点より前は保持");
+    }
+
+    #[test]
+    fn shaped_curves_and_vibrato_params() {
+        use glaux_core::CurveShape;
+        let c = PitchCurve::from_shaped(&[
+            (0.0, -200.0, CurveShape::EaseOut),
+            (100.0, 0.0, CurveShape::Hold),
+            (200.0, 100.0, CurveShape::Linear),
+        ]);
+        // ease_out は前半で多く進む、hold は次の点まで保持
+        assert!(c.cents_at(50.0) > -100.0 + 20.0);
+        assert_eq!(c.cents_at(150.0), 0.0);
+        assert_eq!(c.cents_at(200.0), 100.0);
+        let sr = 48_000.0;
+        let v = VibratoSpec {
+            cents: 60.0,
+            rate: 5.0,
+            rate_end: 5.0,
+            delay: 0.25 * sr,
+            fade_in: 0.2 * sr,
+            fade_out: 0.1 * sr,
+            len: 2.0 * sr,
+        };
+        assert_eq!(v.cents_at(0.1 * sr, sr), 0.0, "始まるまでは揺らさない");
+        let peak = (0..(2.0 * sr) as u32)
+            .map(|i| v.cents_at(i as f32, sr).abs())
+            .fold(0.0f32, f32::max);
+        assert!(peak > 55.0 && peak <= 60.0, "{peak}");
+        assert!(v.cents_at(1.999 * sr, sr).abs() < 2.0, "終わりで消える");
+        // ボイスでは奏法のビブラートの代わりになる
+        let mut e = PitchExpr::new(Articulation::Vibrato, sr);
+        e.set_vibrato(&v);
+        for i in 1..(sr as u32) {
+            let r = e.next_ratio(sr);
+            if i % 1009 == 0 {
+                let c = 1200.0 * r.log2();
+                assert!((c - v.cents_at(i as f32, sr)).abs() < 0.5, "{i}");
+            }
+        }
     }
 
     #[test]
