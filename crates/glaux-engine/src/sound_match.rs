@@ -87,32 +87,64 @@ pub fn features(x: &[f32], sr: f32, f_max: f32) -> Features {
     Features { mels, env_db: env }
 }
 
+/// 窓の長さごとの前計算(FFT の計画・窓・メルフィルタ)。音色合わせは同じ長さで何千回も求めるので使い回す
+struct MelSetup {
+    fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
+    window: Vec<f32>,
+    wsum: f32,
+    fb: Vec<(usize, Vec<f32>)>,
+}
+
+fn mel_setup(n: usize, sr: f32, f_max: f32) -> std::rc::Rc<MelSetup> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<std::collections::HashMap<(usize, u32, u32), std::rc::Rc<MelSetup>>> =
+            Default::default();
+    }
+    CACHE.with(|c| {
+        c.borrow_mut()
+            .entry((n, sr.to_bits(), f_max.to_bits()))
+            .or_insert_with(|| {
+                let window: Vec<f32> = (0..n)
+                    .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos())
+                    .collect();
+                std::rc::Rc::new(MelSetup {
+                    fft: FftPlanner::<f32>::new().plan_fft_forward(n),
+                    // 振幅を窓の和で割り、窓の長さによらない大きさにする
+                    wsum: window.iter().sum(),
+                    window,
+                    fb: mel_bank(n, sr, f_max),
+                })
+            })
+            .clone()
+    })
+}
+
 fn mel_frames(x: &[f32], gain: f32, n: usize, sr: f32, f_max: f32) -> Vec<[f32; N_MELS]> {
     let hop = n / 4;
-    let fft = FftPlanner::<f32>::new().plan_fft_forward(n);
-    let window: Vec<f32> = (0..n)
-        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos())
-        .collect();
-    // 振幅を窓の和で割り、窓の長さによらない大きさにする
-    let wsum: f32 = window.iter().sum();
-    let fb = mel_bank(n, sr, f_max);
+    let setup = mel_setup(n, sr, f_max);
     let mut buf = vec![Complex::new(0.0f32, 0.0); n];
+    let mut scratch = vec![Complex::new(0.0f32, 0.0); setup.fft.get_inplace_scratch_len()];
+    let mut mag = vec![0.0f32; n / 2 + 1];
     let frames = x.len().div_ceil(hop).max(1);
     (0..frames)
         .map(|t| {
             for (i, b) in buf.iter_mut().enumerate() {
                 let v = x.get(t * hop + i).copied().unwrap_or(0.0) * gain;
-                *b = Complex::new(v * window[i], 0.0);
+                *b = Complex::new(v * setup.window[i], 0.0);
             }
-            fft.process(&mut buf);
+            setup.fft.process_with_scratch(&mut buf, &mut scratch);
+            // 振幅はビンごとに 1 回だけ(以前は重みごとに求め直していた)
+            for (m, c) in mag.iter_mut().zip(&buf) {
+                *m = c.norm();
+            }
             let mut row = [0.0f32; N_MELS];
-            for (r, (lo, w)) in row.iter_mut().zip(&fb) {
+            for (r, (lo, w)) in row.iter_mut().zip(&setup.fb) {
                 *r = w
                     .iter()
-                    .zip(&buf[*lo..])
-                    .map(|(w, c)| w * c.norm())
+                    .zip(mag.get(*lo..).unwrap_or(&[]))
+                    .map(|(w, m)| w * m)
                     .sum::<f32>()
-                    / wsum;
+                    / setup.wsum;
             }
             row
         })

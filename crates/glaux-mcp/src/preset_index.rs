@@ -142,12 +142,15 @@ pub fn build_index(
     let mut indexed = total - missing.len();
     let mut added = 0;
     // 鳴らした音は別スレッドで要約・埋め込みにする(CLAP の推論が鳴らすより遅いため)
-    let (tx, rx) = std::sync::mpsc::channel::<(glaux_clap::PresetEntry, Vec<f32>)>();
-    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    // 推論は 1 つあたり中間データで大きくメモリを使うので並列は 4 まで。待ちの音も上限付き
+    // (推論が遅いと鳴らした音が溜まり続け、プリセットが多いと数百 MB になっていた)
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2)
-        .clamp(1, 8);
+        .clamp(1, 4);
+    let (tx, rx) =
+        std::sync::mpsc::sync_channel::<(glaux_clap::PresetEntry, Vec<f32>)>(workers * 2);
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let results = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, Entry)>::new()));
     let handles: Vec<_> = (0..workers)
         .map(|_| {

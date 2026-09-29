@@ -20,6 +20,9 @@ pub struct ProjectChanged {
     /// 保存に失敗したときのエラー(状態はメモリ上では反映済み)。UI が警告を出すのに使う
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save_error: Option<String>,
+    /// 曲の中身は変わらず、履歴だけが変わった(チェックポイント)。保存・再生データの作り直し・画面の全体取得は要らない
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub history_only: bool,
 }
 
 /// AI(MCP クライアント)のツール呼び出し状況。UI の「AI 作業中」表示に使う。
@@ -402,6 +405,7 @@ fn actor_loop(
                         project_version: version(&session, &store),
                         changes: vec![],
                         save_error: None,
+                        history_only: false,
                     });
                 }
                 Err(e) => {
@@ -434,6 +438,7 @@ fn mutated(
         project_version: version(session, store),
         changes: changes.clone(),
         save_error: save_error.clone(),
+        history_only: false,
     });
     Mutated {
         changes,
@@ -489,7 +494,19 @@ fn handle(
         }
         Request::Checkpoint { label, reply } => {
             session.checkpoint(label);
-            let _ = reply.send(mutated(session, store, events, vec![]));
+            // 曲の中身は変わらないので保存しない(チェックポイントは保存の対象でもない)。版だけ進めて履歴の表示を更新させる
+            store.bump_revision(session);
+            let _ = events.send(ProjectChanged {
+                project_version: version(session, store),
+                changes: vec![],
+                save_error: None,
+                history_only: true,
+            });
+            let _ = reply.send(Mutated {
+                changes: vec![],
+                project_version: version(session, store),
+                save_error: None,
+            });
         }
         Request::RevertTo { label, reply } => {
             let result = session
@@ -551,6 +568,7 @@ fn handle(
                         project_version: version,
                         changes: vec![],
                         save_error: None,
+                        history_only: false,
                     });
                     tracing::info!("プロジェクトを切り替えました: {dir}");
                     Ok((session.project().meta.title.clone(), version))
@@ -596,6 +614,7 @@ fn handle(
                             project_version: version,
                             changes: vec![],
                             save_error: None,
+                            history_only: false,
                         });
                         tracing::info!("プロジェクトを移動しました: {} → {dest}", from.display());
                         Ok((session.project().meta.title.clone(), version))

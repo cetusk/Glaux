@@ -233,6 +233,14 @@ pub struct WavetableVoice {
     ic1: f32,
     ic2: f32,
     pub(crate) expr: crate::expr::PitchExpr,
+    /// ユニゾンの声部ごとの倍率・いちばん高い声部の倍率と、それを作ったときの (声部数, デチューン)
+    ratios: [f32; MAX_UNISON],
+    top_ratio: f32,
+    ratio_key: (usize, u32),
+    /// SVF の係数と、それを作ったときの (カットオフ, レゾナンス)。つまみが動いたときだけ求め直す
+    g: f32,
+    a1: f32,
+    filter_key: (u32, u32),
     sample_rate: f32,
 }
 
@@ -288,6 +296,12 @@ impl WavetableVoice {
             ic1: 0.0,
             ic2: 0.0,
             expr: crate::expr::PitchExpr::new(articulation, sample_rate),
+            ratios: [1.0; MAX_UNISON],
+            top_ratio: 1.0,
+            ratio_key: (0, u32::MAX),
+            g: 0.0,
+            a1: 0.0,
+            filter_key: (u32::MAX, u32::MAX),
             sample_rate,
         }
     }
@@ -354,20 +368,29 @@ impl WavetableVoice {
             self.freq
         };
         let n = (p.unison as usize).clamp(1, MAX_UNISON);
+        // 声部ごとの倍率は、声部数かデチューンが変わったときだけ求め直す(毎サンプルの powf を避ける)
+        let key = (n, p.detune_cents.to_bits());
+        if self.ratio_key != key {
+            self.ratio_key = key;
+            for (i, r) in self.ratios.iter_mut().enumerate().take(n) {
+                let spread = if n == 1 {
+                    0.0
+                } else {
+                    (i as f32 / (n - 1) as f32) * 2.0 - 1.0
+                };
+                *r = 2.0f32.powf(spread * p.detune_cents / 1200.0);
+            }
+            self.top_ratio = 2.0f32.powf(p.detune_cents / 1200.0);
+        }
         // いちばん高い声部で段を選ぶ(折り返しを出さない側に寄せる)
-        let top = base * 2.0f32.powf(p.detune_cents / 1200.0);
+        let top = base * self.top_ratio;
         let level = level_for(top, sr);
         let row0 = bank.row(table, f0, level);
         let row1 = bank.row(table, f0 + 1, level);
 
         let mut osc = 0.0f32;
         for i in 0..n {
-            let spread = if n == 1 {
-                0.0
-            } else {
-                (i as f32 / (n - 1) as f32) * 2.0 - 1.0
-            };
-            let dt = base * 2.0f32.powf(spread * p.detune_cents / 1200.0) / sr;
+            let dt = base * self.ratios[i] / sr;
             let ph = self.phases[i];
             let a = read(row0, ph);
             let b = read(row1, ph);
@@ -377,10 +400,15 @@ impl WavetableVoice {
         osc /= (n as f32).sqrt();
 
         // ---- SVF ローパス(TPT) ----
-        let fc = (p.cutoff * self.cutoff_mul).clamp(40.0, sr * 0.45);
-        let g = (std::f32::consts::PI * fc / sr).tan();
-        let k = 2.0 * (1.0 - p.resonance.min(0.95));
-        let a1 = 1.0 / (1.0 + g * (g + k));
+        let fkey = (p.cutoff.to_bits(), p.resonance.to_bits());
+        if self.filter_key != fkey {
+            self.filter_key = fkey;
+            let fc = (p.cutoff * self.cutoff_mul).clamp(40.0, sr * 0.45);
+            self.g = (std::f32::consts::PI * fc / sr).tan();
+            let k = 2.0 * (1.0 - p.resonance.min(0.95));
+            self.a1 = 1.0 / (1.0 + self.g * (self.g + k));
+        }
+        let (g, a1) = (self.g, self.a1);
         let v1 = a1 * (self.ic1 + g * (osc - self.ic2));
         let v2 = self.ic2 + g * v1;
         self.ic1 = 2.0 * v1 - self.ic1;

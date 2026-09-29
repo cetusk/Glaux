@@ -64,10 +64,57 @@ impl AppState {
 
 // ---- Tauri コマンド(UI からの読み取り・操作) ---------------------------
 
+/// 画面へ送るトラックから CLAP の状態(プラグインの設定の base64。大きい)を省く。画面は使わない
+/// (トラックの複製はバックエンドの duplicate_track で行うので、送り返されることもない)
+fn strip_plugin_state(track: &mut Value) {
+    if let Some(d) = track.get_mut("device").and_then(|d| d.as_object_mut()) {
+        d.remove("state");
+    }
+    if let Some(fx) = track.get_mut("effects").and_then(|f| f.as_array_mut()) {
+        for e in fx {
+            if let Some(o) = e.as_object_mut() {
+                o.remove("state");
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn get_project(state: State<'_, AppState>) -> Result<Value, String> {
     let (project, version) = state.handle.get_project().await?;
-    Ok(json!({ "project_version": version, "project": project }))
+    let mut p = serde_json::to_value(&project).map_err(|e| e.to_string())?;
+    if let Some(ts) = p.get_mut("tracks").and_then(|t| t.as_array_mut()) {
+        ts.iter_mut().for_each(strip_plugin_state);
+    }
+    if let Some(m) = p.get_mut("master") {
+        strip_plugin_state(m);
+    }
+    Ok(json!({ "project_version": version, "project": p }))
+}
+
+/// トラックを複製して、元のすぐ下に置く(CLAP の状態・エフェクトのつながり・変調・マクロも写す)
+#[tauri::command]
+async fn duplicate_track(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
+    let (project, _) = state.handle.get_project().await?;
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let index = project
+        .tracks
+        .iter()
+        .position(|t| t.id == tid)
+        .ok_or("トラックが見つかりません")?;
+    let src = &project.tracks[index];
+    let copy = glaux_mcp::server::duplicate_track(src, format!("{} のコピー", src.name));
+    let label = format!("{} を複製", src.name);
+    let command = Command::AddTrack {
+        track: copy,
+        index: Some(index + 1),
+    };
+    let (entry_id, m) = state
+        .handle
+        .apply(command, Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "entry_id": entry_id, "project_version": m.project_version }))
 }
 
 /// 指定したトラックだけを返す(変更がトラックの中だけのとき、画面が全体を取り直さずに済むように)。
@@ -75,10 +122,15 @@ async fn get_project(state: State<'_, AppState>) -> Result<Value, String> {
 #[tauri::command]
 async fn get_tracks(state: State<'_, AppState>, ids: Vec<String>) -> Result<Value, String> {
     let (project, version) = state.handle.get_project().await?;
-    let tracks: Vec<&glaux_core::Track> = project
+    let tracks: Vec<Value> = project
         .tracks
         .iter()
         .filter(|t| ids.iter().any(|i| i == t.id.as_str()))
+        .filter_map(|t| serde_json::to_value(t).ok())
+        .map(|mut v| {
+            strip_plugin_state(&mut v);
+            v
+        })
         .collect();
     Ok(json!({ "project_version": version, "tracks": tracks }))
 }
@@ -2592,8 +2644,28 @@ fn main() -> Result<()> {
                     loop {
                         use tokio::sync::broadcast::error::{RecvError, TryRecvError};
                         match rx.recv().await {
-                            Ok(_) | Err(RecvError::Lagged(_)) => {
-                                // 40ms 待って、その間に来たイベントをまとめて捨てる
+                            Ok(first) => {
+                                // 40ms 待って、その間に来たイベントをまとめる。曲の中身が変わらない
+                                // (チェックポイントだけの)ときは作り直さない
+                                let mut changed = !first.history_only;
+                                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                                loop {
+                                    match rx.try_recv() {
+                                        Ok(ev) => changed |= !ev.history_only,
+                                        Err(TryRecvError::Lagged(_)) => changed = true,
+                                        Err(_) => break,
+                                    }
+                                }
+                                if !changed {
+                                    continue;
+                                }
+                                if let (Ok((project, _)), Ok(dir)) =
+                                    (session.get_project().await, session.project_dir().await)
+                                {
+                                    sync(project, dir).await;
+                                }
+                            }
+                            Err(RecvError::Lagged(_)) => {
                                 tokio::time::sleep(std::time::Duration::from_millis(40)).await;
                                 while matches!(rx.try_recv(), Ok(_) | Err(TryRecvError::Lagged(_)))
                                 {
@@ -2656,6 +2728,7 @@ fn main() -> Result<()> {
             create_project,
             preview_project_dir,
             apply_edit,
+            duplicate_track,
             preview_edit,
             revert_entry,
             turn_changes,

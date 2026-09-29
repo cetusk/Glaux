@@ -217,6 +217,21 @@
   async function sync() {
     const evs = pendingChanges;
     pendingChanges = [];
+    // 履歴だけの変更(チェックポイント)なら曲は取り直さず、履歴の表示だけを更新する
+    if (evs.length > 0 && evs.every((e) => e.history_only) && evs[0].project_version === projectVersion + 1) {
+      const seq = ++syncSeq;
+      try {
+        const h = await api.getHistory();
+        if (seq !== syncSeq) return;
+        projectVersion = evs[evs.length - 1].project_version;
+        entries = h.entries;
+        historyTotal = h.total;
+        redoable = h.redoable ?? [];
+      } catch {
+        refresh();
+      }
+      return;
+    }
     const partial = changedTracks(evs);
     if (!partial) return refresh();
     const seq = ++syncSeq;

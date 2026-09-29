@@ -105,9 +105,11 @@ pub struct Zone {
     pub key_hi: u8,
     pub vel_lo: u8,
     pub vel_hi: u8,
-    /// スライス済みサンプル(ゾーンの start..end)
+    /// 波形。`start..end` がこのゾーンの鳴らす範囲(SFZ はファイル丸ごとを複数のゾーンで共有し、範囲で切り分ける)
     pub data: Arc<SampleData>,
-    /// `data` 内のループ区間(開始, 終了)。None ならワンショット
+    pub start: usize,
+    pub end: usize,
+    /// `data` 内のループ区間(開始, 終了。`data` の頭からの位置)。None ならワンショット
     pub loop_range: Option<(f64, f64)>,
     /// true なら note_off 後はループを抜けて末尾まで再生(SF2 mode 3)
     pub loop_until_release: bool,
@@ -422,7 +424,7 @@ impl MultiVoice {
             let mut pl = ZonePlayer {
                 active: true,
                 zone: i as u16,
-                pos: 0.0,
+                pos: z.start as f64,
                 rate: (z.data.sample_rate as f64 / sample_rate as f64)
                     * (2.0_f64).powf(semis / 12.0),
                 env: 0.0,
@@ -565,7 +567,7 @@ impl MultiVoice {
                 }
             }
             let i = pl.pos as usize;
-            if i + 1 >= frames.len() {
+            if i + 1 >= z.end.min(frames.len()) {
                 pl.active = false;
                 continue;
             }
@@ -642,6 +644,8 @@ mod tests {
             key_hi,
             vel_lo: 0,
             vel_hi: 127,
+            start: 0,
+            end: data.frames.len(),
             data,
             loop_range: None,
             loop_until_release: false,
@@ -956,5 +960,28 @@ mod tests {
         assert!((play.vel_gain(63.0 / 127.0) * 63.0 / 127.0 - 1.0).abs() < 1e-5);
         assert!((play.vel_gain(0.25) * 0.25 - 0.25 / (63.0 / 127.0)).abs() < 1e-3);
         assert!((play.vel_gain(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zone_plays_only_its_range_of_a_shared_wave() {
+        let sr = 48_000.0;
+        let data = Arc::new(SampleData::mono(
+            (0..1000).map(|i| i as f32 / 1000.0).collect(),
+            sr,
+        ));
+        let mut z = zone(60, 60, 60.0, data);
+        z.start = 200;
+        z.end = 600;
+        let p = MultiSamplerParams {
+            zones: Arc::new(vec![z]),
+            gain: 1.0,
+        };
+        let mut v = MultiVoice::start(&p, 60, 1.0, Articulation::Normal, sr);
+        let mut n = 0;
+        while !v.finished() && n < 2000 {
+            v.next(&p);
+            n += 1;
+        }
+        assert!((395..=405).contains(&n), "範囲の 400 サンプルだけ鳴る: {n}");
     }
 }

@@ -1432,39 +1432,8 @@
     if (!menu) return;
     const src = project.tracks[menu.index];
     if (!src) return;
-    const copy: Track = JSON.parse(JSON.stringify(src));
-    copy.id = newTrackId();
-    copy.name = `${src.name} のコピー`;
-    copy.solo = false;
-    const fxIds = new Map<string, string>();
-    for (const fx of copy.effects) {
-      const id = newFxId();
-      fxIds.set(fx.id, id);
-      fx.id = id;
-    }
-    // エフェクトのつながり(ノード表示の線)も新しい ID に
-    if (copy.fx_links) {
-      copy.fx_links = copy.fx_links.map((l) => ({ ...l, from: fxIds.get(l.from) ?? l.from, to: fxIds.get(l.to) ?? l.to }));
-    }
-    const remap = (path: string) => {
-      const m = path.match(/^fx\/([^/]+)\/(.*)$/);
-      return m && fxIds.has(m[1]) ? `fx/${fxIds.get(m[1])}/${m[2]}` : path;
-    };
-    for (const lane of copy.automation) lane.target = remap(lane.target);
-    // 変調(LFO)とマクロのエフェクトの先も新しい ID に(型に無い項目なので素のオブジェクトとして扱う)
-    const extra = copy as unknown as {
-      modulators?: { target: string }[];
-      macros?: { targets: { target: string }[] }[];
-    };
-    for (const m of extra.modulators ?? []) m.target = remap(m.target);
-    for (const m of extra.macros ?? []) for (const t of m.targets) t.target = remap(t.target);
-    for (const c of copy.clips) {
-      c.id = newClipId();
-      if (c.kind === "midi") for (const n of c.notes) n.id = newNoteId();
-    }
-    api
-      .applyEdit([{ op: "add_track", track: copy, index: menu.index + 1 }], `${src.name} を複製`)
-      .catch(() => {});
+    // 複製はバックエンドで(画面が受け取るトラックには CLAP の状態が入っていないため)
+    api.duplicateTrack(src.id).catch(() => {});
   }
 
   /// トラックを音声にする(描き出しに曲の長さの数分の 1 かかる)

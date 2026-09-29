@@ -241,6 +241,8 @@ pub fn build_zones_shared(
                 key_hi: key_hi.clamp(0, 127) as u8,
                 vel_lo: vel_lo.clamp(0, 127) as u8,
                 vel_hi: vel_hi.clamp(0, 127) as u8,
+                start: 0,
+                end: data.frames.len(),
                 data,
                 loop_range,
                 loop_until_release,

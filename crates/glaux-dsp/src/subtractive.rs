@@ -156,8 +156,19 @@ pub struct SubtractiveVoice {
     // SVF 状態
     ic1: f32,
     ic2: f32,
+    /// SVF の係数(制御レートで更新)と、次の更新までのサンプル数
+    g: f32,
+    k: f32,
+    a1: f32,
+    ctrl: u32,
+    /// ユニゾンの声部ごとの周波数の倍率と、それを作ったときの (声部数, デチューン)
+    ratios: [f32; MAX_UNISON],
+    ratio_key: (usize, u32),
     sample_rate: f32,
 }
+
+/// フィルタ係数を更新する間隔(サンプル)。エンベロープによるカットオフの動きはこの粒度で十分なめらか
+const CTRL_RATE: u32 = 32;
 
 /// t ∈ [0,1) の位相不連続を滑らかにする PolyBLEP 補正。
 fn poly_blep(t: f32, dt: f32) -> f32 {
@@ -212,6 +223,12 @@ impl SubtractiveVoice {
             env: 0.0,
             ic1: 0.0,
             ic2: 0.0,
+            g: 0.0,
+            k: 0.0,
+            a1: 0.0,
+            ctrl: 0,
+            ratios: [1.0; MAX_UNISON],
+            ratio_key: (0, u32::MAX),
             sample_rate,
         }
     }
@@ -269,16 +286,23 @@ impl SubtractiveVoice {
 
         // ---- オシレータ(ユニゾン対応) ----
         let n = (p.unison as usize).clamp(1, MAX_UNISON);
+        // 声部ごとの倍率は、声部数かデチューンが変わったときだけ求め直す(毎サンプルの powf を避ける)
+        let key = (n, p.detune_cents.to_bits());
+        if self.ratio_key != key {
+            self.ratio_key = key;
+            for (i, r) in self.ratios.iter_mut().enumerate().take(n) {
+                // 声部を中心対称にデチューン(-1..+1)
+                let spread = if n == 1 {
+                    0.0
+                } else {
+                    (i as f32 / (n - 1) as f32) * 2.0 - 1.0
+                };
+                *r = (2.0f32).powf(spread * p.detune_cents / 1200.0);
+            }
+        }
         let mut osc = 0.0f32;
         for i in 0..n {
-            // 声部を中心対称にデチューン(-1..+1)
-            let spread = if n == 1 {
-                0.0
-            } else {
-                (i as f32 / (n - 1) as f32) * 2.0 - 1.0
-            };
-            let ratio = (2.0f32).powf(spread * p.detune_cents / 1200.0);
-            let dt = base_freq * ratio / sr;
+            let dt = base_freq * self.ratios[i] / sr;
             let t = self.phases[i];
             osc += match p.waveform {
                 Waveform::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
@@ -341,11 +365,18 @@ impl SubtractiveVoice {
         }
 
         // ---- SVF ローパス(TPT)。エンベロープでカットオフを開く ----
-        let fc = (p.cutoff * self.art.cutoff_mul * (2.0_f32).powf(p.filter_env * self.env * 3.0))
-            .clamp(40.0, sr * 0.45);
-        let g = (std::f32::consts::PI * fc / sr).tan();
-        let k = 2.0 * (1.0 - p.resonance.min(0.95));
-        let a1 = 1.0 / (1.0 + g * (g + k));
+        // 係数(powf と tan)は制御レートで更新する
+        if self.ctrl == 0 {
+            let fc =
+                (p.cutoff * self.art.cutoff_mul * (2.0_f32).powf(p.filter_env * self.env * 3.0))
+                    .clamp(40.0, sr * 0.45);
+            self.g = (std::f32::consts::PI * fc / sr).tan();
+            self.k = 2.0 * (1.0 - p.resonance.min(0.95));
+            self.a1 = 1.0 / (1.0 + self.g * (self.g + self.k));
+            self.ctrl = CTRL_RATE;
+        }
+        self.ctrl -= 1;
+        let (g, a1) = (self.g, self.a1);
         let v1 = a1 * (self.ic1 + g * (osc - self.ic2));
         let v2 = self.ic2 + g * v1;
         self.ic1 = 2.0 * v1 - self.ic1;

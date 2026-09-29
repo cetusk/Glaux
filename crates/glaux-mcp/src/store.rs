@@ -330,7 +330,7 @@ impl Store {
     pub fn save(&self, session: &Session) -> Result<()> {
         let project_json = session
             .project()
-            .to_json()
+            .to_json_compact()
             .context("project.json のシリアライズに失敗")?;
         let history_jsonl = session
             .history()
@@ -374,7 +374,7 @@ impl Store {
                     self.saved_entries.set(n);
                     let project_json = session
                         .project()
-                        .to_json()
+                        .to_json_compact()
                         .context("project.json のシリアライズに失敗")?;
                     write_atomic(&self.project_path(), project_json.as_bytes())?;
                     return Ok(());
@@ -386,7 +386,7 @@ impl Store {
         } else if n == saved {
             let project_json = session
                 .project()
-                .to_json()
+                .to_json_compact()
                 .context("project.json のシリアライズに失敗")?;
             write_atomic(&self.project_path(), project_json.as_bytes())?;
             return Ok(());
@@ -565,7 +565,7 @@ struct BaseFile {
 fn write_base(base: &Project, first_entry: Option<&str>) -> Result<String> {
     let project: serde_json::Value = serde_json::from_str(
         &base
-            .to_json()
+            .to_json_compact()
             .context("history.base.json のシリアライズに失敗")?,
     )?;
     Ok(serde_json::to_string(&BaseFile {

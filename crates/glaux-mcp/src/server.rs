@@ -1936,14 +1936,21 @@ fn progression_layout(
 
 /// 同じ音色・エフェクト・音量のトラックの器(クリップ・オートメーションは空。エフェクトは新しい ID で、つながりも付け替える)
 fn copy_track_shell(track: &glaux_core::Track, name: String) -> glaux_core::Track {
+    let mut t = duplicate_track(track, name);
+    t.mute = true;
+    t.clips.clear();
+    t.automation.clear();
+    t
+}
+
+/// トラックの複製(新しい ID。エフェクトの ID を付け替え、つながり・オートメーション・変調・マクロの先もそろえる。
+/// クリップとノートも新しい ID で写す)。CLAP の状態もそのまま写す
+pub fn duplicate_track(track: &glaux_core::Track, name: String) -> glaux_core::Track {
     use glaux_core::model::routing::FxNode;
     let mut t = track.clone();
     t.id = glaux_core::TrackId::new();
     t.name = name;
-    t.mute = true;
     t.solo = false;
-    t.clips.clear();
-    t.automation.clear();
     let mut map = std::collections::HashMap::new();
     for e in &mut t.effects {
         let new = glaux_core::FxId::new();
@@ -1963,7 +1970,7 @@ fn copy_track_shell(track: &glaux_core::Track, name: String) -> glaux_core::Trac
             remap(&mut l.to);
         }
     }
-    // 変調・マクロのエフェクトの先も新しい ID に
+    // オートメーション・変調・マクロのエフェクトの先も新しい ID に
     let remap_path = |p: &mut glaux_core::ParamPath| {
         if let glaux_core::ParamPath::Effect { id, .. } = p {
             if let Some(new) = map.get(id) {
@@ -1971,12 +1978,25 @@ fn copy_track_shell(track: &glaux_core::Track, name: String) -> glaux_core::Trac
             }
         }
     };
+    for lane in &mut t.automation {
+        remap_path(&mut lane.target);
+    }
     for m in &mut t.modulators {
         remap_path(&mut m.target);
     }
     for m in &mut t.macros {
         for tg in &mut m.targets {
             remap_path(&mut tg.target);
+        }
+    }
+    for c in &mut t.clips {
+        c.id = glaux_core::ClipId::new();
+        if let Some(ns) = c.notes_mut() {
+            for n in ns.iter_mut() {
+                n.id = glaux_core::NoteId::new();
+            }
+            // 並び (位置, 音程, ID) を保つ
+            ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
         }
     }
     t
@@ -4830,15 +4850,22 @@ impl GlauxServer {
         if let Some(ms) = p.min_note_ms {
             opts.min_note_ms = ms.clamp(20.0, 2000.0);
         }
-        let t = crate::transcribe::transcribe_clip_commands(
-            &project,
-            std::path::Path::new(&dir),
-            &clip_id,
-            dest.as_ref(),
-            p.quantize_ticks.unwrap_or(240),
-            &opts,
-            crate::transcribe::TranscribeMode::parse(p.mode.as_deref())?,
-        )?;
+        // 推論(basic-pitch)は数秒かかるので、非同期の作業スレッドを占有しないよう別スレッドで
+        let mode = crate::transcribe::TranscribeMode::parse(p.mode.as_deref())?;
+        let quantize = p.quantize_ticks.unwrap_or(240);
+        let t = tokio::task::spawn_blocking(move || {
+            crate::transcribe::transcribe_clip_commands(
+                &project,
+                std::path::Path::new(&dir),
+                &clip_id,
+                dest.as_ref(),
+                quantize,
+                &opts,
+                mode,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         let label = format!("音声クリップを譜起こし({} ノート)", t.note_count);
         let command = Command::batch(label.clone(), t.commands);
         let author = self.author(&ctx);

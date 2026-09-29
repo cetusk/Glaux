@@ -151,6 +151,11 @@ pub fn link_legato(
             let mut prev: Option<usize> = None;
             for &j in idx[..k].iter().rev() {
                 let p = &events[j];
+                // 開始順に並んでいるので、十分前(1 分以上)まで遡ったら打ち切る
+                // (下の「つながない音」の判定より前に見ないと、遠い過去の音で打ち切りに届かず O(n²) になる)
+                if e.start.saturating_sub(p.start) > (60.0 * sample_rate) as u64 {
+                    break;
+                }
                 // 直前の音 = 開始の手前 gap 以内に終わる音か、少しだけ重なって終わる音(次の音の半分まで)。
                 // それより長く鳴り続ける音(押さえたままの伴奏など)はつながない
                 let overlap_limit = e.start + (e.end - e.start) / 2;
@@ -170,10 +175,6 @@ pub fn link_legato(
                         }
                     }
                 };
-                // 開始順に並んでいるので、十分前(1 分以上)まで遡ったら打ち切る
-                if e.start.saturating_sub(p.start) > (60.0 * sample_rate) as u64 {
-                    break;
-                }
             }
             // 滑り始めの高さ: 直前の音があればその音程、無ければ(フレーズの頭のポルタメント)全音下から
             let from_pitch = match prev {
@@ -615,7 +616,7 @@ impl SampleBank {
             self.sfz.insert(key, zones);
         }
         // どの楽器からも使われなくなった切り出しを捨てる
-        self.sfz_waves.retain(|_, d| Arc::strong_count(d) > 1);
+        crate::sfz::retain_used(&mut self.sfz_waves);
     }
 
     pub fn get_multi(
@@ -647,9 +648,13 @@ impl SampleBank {
         wav: &mut dyn FnMut(&str) -> Result<SampleData, String>,
         font: &mut dyn FnMut(&str) -> Result<Arc<rustysynth::SoundFont>, String>,
     ) {
-        self.map.retain(|id, _| project.assets.contains_key(id));
+        // 使われている素材だけを読む(消したクリップの録音・分離の stems なども assets には残るため。
+        // undo で戻せば、その時に読み込む)
+        let used = used_assets(project);
+        self.map
+            .retain(|id, _| project.assets.contains_key(id) && used.contains(id));
         for (id, asset) in &project.assets {
-            if self.map.contains_key(id) {
+            if self.map.contains_key(id) || !used.contains(id) {
                 continue;
             }
             match wav(&asset.path) {
@@ -822,7 +827,13 @@ fn stretch_key(project: &Project, clip: &glaux_core::Clip) -> Option<u64> {
     clip.start.0.hash(&mut h);
     clip.length.0.hash(&mut h);
     original_bpm.to_bits().hash(&mut h);
-    for e in tm.events() {
+    // 伸縮した波形が依存するのは、クリップの頭のテンポと範囲内の変化だけ(範囲外のテンポを変えても伸縮し直さない)
+    tm.bpm_at(clip.start).to_bits().hash(&mut h);
+    for e in tm
+        .events()
+        .iter()
+        .filter(|e| e.tick > clip.start && e.tick < end)
+    {
         e.tick.0.hash(&mut h);
         e.bpm.to_bits().hash(&mut h);
     }
@@ -1037,6 +1048,30 @@ fn variant_hash(id: &glaux_core::NoteId, start: u64) -> u32 {
     }
     h ^= h >> 29;
     ((h as u32) >> 16) << 16
+}
+
+/// 再生に使われている素材(音声クリップ・サンプラーの音源〈層を含む〉・畳み込みリバーブの残響)
+fn used_assets(project: &Project) -> std::collections::HashSet<AssetId> {
+    let mut used = std::collections::HashSet::new();
+    let ir_of = |e: &Effect| match e.params.get("ir") {
+        Some(glaux_core::ParamValue::Enum(ir)) => AssetId::parse(ir).ok(),
+        _ => None,
+    };
+    for t in &project.tracks {
+        for c in &t.clips {
+            if let ClipContent::Audio { asset, .. } = &c.content {
+                used.insert(asset.clone());
+            }
+        }
+        for d in t.device.iter().chain(t.layers.iter().map(|l| &l.device)) {
+            if let glaux_core::PluginSource::Sampler { asset } = &d.source {
+                used.insert(asset.clone());
+            }
+        }
+        used.extend(t.effects.iter().filter_map(ir_of));
+    }
+    used.extend(project.master.effects.iter().filter_map(ir_of));
+    used
 }
 
 /// トラックの音源を焼き込む(サンプラーは SampleBank から波形を解決)。
@@ -2617,6 +2652,21 @@ mod tests {
                 .is_some(),
             "読み直す"
         );
+    }
+
+    #[test]
+    fn only_used_assets_are_loaded() {
+        use glaux_core::{AssetId, Device, PluginSource};
+        let mut project = project_with_notes(vec![]);
+        let a = AssetId::from_sha256_hex(&"aa".repeat(32)).unwrap();
+        let b = AssetId::from_sha256_hex(&"bb".repeat(32)).unwrap();
+        project.tracks[0].device = Some(Device {
+            source: PluginSource::Sampler { asset: a.clone() },
+            params: Default::default(),
+        });
+        let used = used_assets(&project);
+        assert!(used.contains(&a), "サンプラーの音源は使っている");
+        assert!(!used.contains(&b), "どこからも参照されない素材は読まない");
     }
 
     #[test]

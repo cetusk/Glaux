@@ -109,17 +109,26 @@ struct Ring {
 }
 
 impl Ring {
+    // 長さは 2 のべき乗ではないので、割り算(%)の代わりに 1 回の比較で折り返す(1 サンプルに 26 回呼ばれる)
     #[inline]
     fn write(&mut self, buf: &mut [f32], v: f32) {
         buf[self.off + self.w] = v;
-        self.w = (self.w + 1) % self.cap;
+        self.w += 1;
+        if self.w >= self.cap {
+            self.w = 0;
+        }
     }
 
     /// `d` サンプル前(1 = いちばん新しい)
     #[inline]
     fn read(&self, buf: &[f32], d: usize) -> f32 {
         let d = d.clamp(1, self.cap);
-        buf[self.off + (self.w + self.cap - d) % self.cap]
+        let i = if self.w >= d {
+            self.w - d
+        } else {
+            self.w + self.cap - d
+        };
+        buf[self.off + i]
     }
 }
 

@@ -75,7 +75,15 @@ export function startTransportPolling(): () => void {
       // 起動直後など。次の問い合わせで回復する
     }
     if (stopped) return;
-    const ms = transportStore.fast > 0 ? 80 : transportStore.state.playing ? 100 : 400;
+    // 画面を隠している間(最小化・別のタブ)は 1 秒おきに落とす(表示しないものを取りに行かない)
+    const ms =
+      typeof document !== "undefined" && document.hidden
+        ? 1000
+        : transportStore.fast > 0
+          ? 80
+          : transportStore.state.playing
+            ? 100
+            : 400;
     timer = setTimeout(loop, ms);
   };
   loop();

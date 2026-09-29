@@ -398,6 +398,22 @@ fn limit_once(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) -> f64 {
     -20.0 * (min as f64).max(1e-9).log10()
 }
 
+/// 曲の統合ラウドネス(LUFS)。48kHz は既存の測り方、それ以外は ebur128(サンプルレートに合わせた K 特性)
+fn lufs_at(stereo: &[f32], sample_rate: u32) -> f64 {
+    if sample_rate == 48_000 {
+        crate::analyze::integrated_lufs(stereo)
+    } else {
+        ebur128::EbuR128::new(2, sample_rate, ebur128::Mode::I)
+            .ok()
+            .and_then(|mut m| {
+                m.add_frames_f32(stereo).ok()?;
+                m.loudness_global().ok()
+            })
+            .filter(|v| v.is_finite())
+            .unwrap_or(f64::NAN)
+    }
+}
+
 /// 設定に従って描き出し、音量を合わせて(指定があれば)WAV に書く。
 pub fn export_audio(
     project: &Project,
@@ -416,13 +432,9 @@ pub fn export_audio(
     let mut gain_db = 0.0;
     let mut limiter_db = 0.0;
     if let Some(target) = opts.target_lufs {
-        // ラウドネスは 48kHz の係数で測る(サンプルレートが違えば 48kHz で描き出して測る)
-        let measured = if opts.sample_rate == 48_000 {
-            crate::analyze::integrated_lufs(&stereo)
-        } else {
-            let m = render(project, 48_000.0, bank, opts.range_secs, false)?;
-            crate::analyze::integrated_lufs(&m)
-        };
+        // ラウドネスは 48kHz なら既存の測り方、それ以外は ebur128(そのサンプルレートの K 特性)で測る
+        // (以前は測るためだけに 48kHz で曲をもう一度描き出していた)
+        let measured = lufs_at(&stereo, opts.sample_rate);
         if measured.is_finite() {
             gain_db = target - measured;
             let g = 10f32.powf(gain_db as f32 / 20.0);
@@ -438,19 +450,7 @@ pub fn export_audio(
         opts.noise_shaping,
         opts.format,
     )?;
-    let lufs = if opts.sample_rate == 48_000 {
-        crate::analyze::integrated_lufs(&stereo)
-    } else {
-        // 48kHz 以外は ebur128(サンプルレートに合わせた K 特性)で測る
-        ebur128::EbuR128::new(2, opts.sample_rate, ebur128::Mode::I)
-            .ok()
-            .and_then(|mut m| {
-                m.add_frames_f32(&stereo).ok()?;
-                m.loudness_global().ok()
-            })
-            .filter(|v| v.is_finite())
-            .unwrap_or(f64::NAN)
-    };
+    let lufs = lufs_at(&stereo, opts.sample_rate);
     let peak = stereo.iter().fold(0.0f32, |m, v| m.max(v.abs())) as f64;
     let true_peak = crate::loudness::true_peak_db(&stereo);
     let round = |v: f64| (v * 10.0).round() / 10.0;

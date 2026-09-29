@@ -5602,3 +5602,85 @@ async fn hemiola_rebars_three_eight() {
     assert_eq!(project.time_sig_map[0].den, 8);
     assert_eq!(project.time_sig_map[0].grouping, Some(vec![2, 2, 2]));
 }
+
+#[test]
+fn duplicate_track_remaps_effects_and_keeps_plugin_state() {
+    use glaux_core::{
+        Clip, ClipId, Device, Effect, FxId, Macro, MacroTarget, ParamPath, PluginSource, Track,
+        TrackId, TrackKind,
+    };
+    let mut t = Track::new(TrackId::new(), "Lead", TrackKind::Midi);
+    t.device = Some(Device {
+        source: PluginSource::Clap {
+            plugin_id: "org.example.synth".into(),
+            state: Some("QUJD".into()),
+        },
+        params: Default::default(),
+    });
+    let fx = FxId::new();
+    t.effects.push(Effect {
+        id: fx.clone(),
+        source: PluginSource::Builtin {
+            name: "reverb".into(),
+        },
+        bypass: false,
+        params: Default::default(),
+        ui: Default::default(),
+    });
+    t.macros.push(Macro {
+        name: "広がり".into(),
+        value: 0.5,
+        targets: vec![MacroTarget {
+            target: ParamPath::effect(fx.clone(), "mix"),
+            min: 0.0,
+            max: 1.0,
+            curve: 0.0,
+        }],
+    });
+    t.automation.push(glaux_core::AutomationLane {
+        target: ParamPath::effect(fx.clone(), "mix"),
+        points: vec![],
+    });
+    let mut clip = Clip::new_midi(
+        ClipId::new(),
+        "c",
+        glaux_core::Tick(0),
+        glaux_core::Tick(960),
+    );
+    if let Some(ns) = clip.notes_mut() {
+        for p in [60u8, 64, 67] {
+            ns.push(glaux_core::Note {
+                id: glaux_core::NoteId::new(),
+                pos: glaux_core::Tick(0),
+                dur: glaux_core::Tick(480),
+                pitch: p,
+                vel: 100,
+                articulation: Default::default(),
+                pitch_curve: vec![],
+                glide_ms: None,
+                vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
+                condition: None,
+            });
+        }
+    }
+    t.clips.push(clip);
+    let d = glaux_mcp::server::duplicate_track(&t, "Lead のコピー".into());
+    assert_ne!(d.id, t.id);
+    let new_fx = d.effects[0].id.clone();
+    assert_ne!(new_fx, fx);
+    assert_eq!(
+        d.macros[0].targets[0].target,
+        ParamPath::effect(new_fx.clone(), "mix")
+    );
+    assert_eq!(d.automation[0].target, ParamPath::effect(new_fx, "mix"));
+    assert_ne!(d.clips[0].id, t.clips[0].id);
+    let ns = d.clips[0].notes().unwrap();
+    assert!(ns
+        .windows(2)
+        .all(|w| (w[0].pos, w[0].pitch, &w[0].id) <= (w[1].pos, w[1].pitch, &w[1].id)));
+    assert!(
+        matches!(&d.device.as_ref().unwrap().source, PluginSource::Clap { state: Some(s), .. } if s == "QUJD")
+    );
+}

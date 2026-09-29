@@ -346,35 +346,52 @@ pub fn notes_from_activations(act: &Activations, opts: &PolyOptions) -> Vec<Poly
 
 /// 窓付き sinc 補間によるリサンプル(オフライン用)。下げるときは折り返しを防ぐため
 /// 低い方のナイキストで帯域制限する。
+/// 窓付き sinc の値は、1 サンプルを 512 に刻んだ表から線形補間で引く(毎タップの sin・cos を避ける。
+/// 直接計算との差は 1e-5 程度)
 pub fn resample(input: &[f32], from: f32, to: f32) -> Vec<f32> {
     if (from - to).abs() < 0.5 || input.is_empty() {
         return input.to_vec();
     }
     const ZEROS: f64 = 16.0;
+    const OS: usize = 512;
     let ratio = to as f64 / from as f64;
     let cutoff = ratio.min(1.0) * 0.95;
     let half = (ZEROS / cutoff).ceil() as isize;
+    // 表: 入力サンプルの間隔で d ∈ [-half, half] を OS 分割
+    let kernel = |d: f64| -> f64 {
+        let x = d * cutoff;
+        if x.abs() >= ZEROS {
+            return 0.0;
+        }
+        let sinc = if x.abs() < 1e-9 {
+            1.0
+        } else {
+            (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+        };
+        // ハン窓(±ZEROS 零交差)
+        let w = 0.5 + 0.5 * (std::f64::consts::PI * x / ZEROS).cos();
+        sinc * w * cutoff
+    };
+    let tlen = 2 * half as usize * OS + 2;
+    let table: Vec<f64> = (0..tlen)
+        .map(|k| kernel(k as f64 / OS as f64 - half as f64))
+        .collect();
     let out_len = (input.len() as f64 * ratio).floor() as usize;
     let mut out = Vec::with_capacity(out_len);
     for j in 0..out_len {
         let center = j as f64 / ratio;
         let c = center.floor() as isize;
+        let frac = center - c as f64;
+        let lo = (c - half + 1).max(0);
+        let hi = (c + half).min(input.len() as isize - 1);
         let mut acc = 0.0f64;
-        for i in (c - half + 1)..=(c + half) {
-            if i < 0 || i as usize >= input.len() {
-                continue;
-            }
-            let x = (i as f64 - center) * cutoff;
-            let sinc = if x.abs() < 1e-9 {
-                1.0
-            } else {
-                (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-            };
-            // ハン窓(±ZEROS 零交差)
-            let w = 0.5 + 0.5 * (std::f64::consts::PI * x / ZEROS).cos();
-            if x.abs() < ZEROS {
-                acc += input[i as usize] as f64 * sinc * w * cutoff;
-            }
+        for i in lo..=hi {
+            // d = i - center を表の位置へ
+            let pos = ((i - c) as f64 - frac + half as f64) * OS as f64;
+            let k = pos as usize;
+            let t = pos - k as f64;
+            let h = table[k] + (table[k + 1] - table[k]) * t;
+            acc += input[i as usize] as f64 * h;
         }
         out.push(acc as f32);
     }
@@ -448,5 +465,66 @@ mod tests {
             notes.iter().all(|n| n.pitch == 69 || n.start_sec < 1.3),
             "余計な音: {notes:?}"
         );
+    }
+
+    // 以前の直接計算(表を引く版との比較用)
+    /// 窓付き sinc 補間によるリサンプル(オフライン用)。下げるときは折り返しを防ぐため
+    /// 低い方のナイキストで帯域制限する。
+    fn resample_direct(input: &[f32], from: f32, to: f32) -> Vec<f32> {
+        if (from - to).abs() < 0.5 || input.is_empty() {
+            return input.to_vec();
+        }
+        const ZEROS: f64 = 16.0;
+        let ratio = to as f64 / from as f64;
+        let cutoff = ratio.min(1.0) * 0.95;
+        let half = (ZEROS / cutoff).ceil() as isize;
+        let out_len = (input.len() as f64 * ratio).floor() as usize;
+        let mut out = Vec::with_capacity(out_len);
+        for j in 0..out_len {
+            let center = j as f64 / ratio;
+            let c = center.floor() as isize;
+            let mut acc = 0.0f64;
+            for i in (c - half + 1)..=(c + half) {
+                if i < 0 || i as usize >= input.len() {
+                    continue;
+                }
+                let x = (i as f64 - center) * cutoff;
+                let sinc = if x.abs() < 1e-9 {
+                    1.0
+                } else {
+                    (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+                };
+                // ハン窓(±ZEROS 零交差)
+                let w = 0.5 + 0.5 * (std::f64::consts::PI * x / ZEROS).cos();
+                if x.abs() < ZEROS {
+                    acc += input[i as usize] as f64 * sinc * w * cutoff;
+                }
+            }
+            out.push(acc as f32);
+        }
+        out
+    }
+
+    #[test]
+    fn table_resample_matches_direct() {
+        let sr = 48_000.0;
+        let x: Vec<f32> = (0..9_600)
+            .map(|i| {
+                let t = i as f32 / sr;
+                (t * 440.0 * std::f32::consts::TAU).sin() * 0.5
+                    + (t * 3_100.0 * std::f32::consts::TAU).sin() * 0.3
+            })
+            .collect();
+        for to in [22_050.0f32, 16_000.0, 44_100.0, 96_000.0] {
+            let a = resample(&x, sr, to);
+            let b = resample_direct(&x, sr, to);
+            assert_eq!(a.len(), b.len());
+            let err = a
+                .iter()
+                .zip(&b)
+                .map(|(p, q)| (p - q).abs())
+                .fold(0.0f32, f32::max);
+            assert!(err < 1e-4, "{to}: {err}");
+        }
     }
 }

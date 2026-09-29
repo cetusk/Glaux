@@ -183,6 +183,11 @@ impl Project {
         serde_json::to_string_pretty(self)
     }
 
+    /// 整形しない JSON(保存用。整形の約半分の大きさで速い。読み込みは同じ `from_json`)
+    pub fn to_json_compact(&self) -> serde_json::Result<String> {
+        serde_json::to_string(self)
+    }
+
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
         serde_json::from_str(s)
     }

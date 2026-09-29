@@ -423,8 +423,14 @@ fn note(r: &Region, k: &str) -> Option<i32> {
     r.get(k).and_then(|v| parse_note(v))
 }
 
-/// 波形の読み込みの使い回し(パス・切り出し → 波形)
-pub type WaveCache = HashMap<(PathBuf, usize, usize), Arc<SampleData>>;
+/// 読んだ音声ファイルの使い回し(パス → 波形とループ点)。ゾーンはファイル丸ごとを共有し、範囲で切り分ける。
+/// 楽器が使っている間は残す([`retain_used`])ので、調整つまみを変えて組み直すときも読み直さない
+pub type WaveCache = HashMap<PathBuf, (Arc<SampleData>, Option<(usize, usize)>)>;
+
+/// どの楽器(ゾーン)からも使われなくなったファイルを捨てる
+pub fn retain_used(cache: &mut WaveCache) {
+    cache.retain(|_, (d, _)| Arc::strong_count(d) > 1);
+}
 
 /// 読んだ波形と、そのループ点(ファイルに書かれていれば)
 pub struct Loaded {
@@ -592,7 +598,8 @@ pub fn build_zones(
     load: &mut dyn FnMut(&Path) -> Result<Loaded, String>,
 ) -> Result<Vec<Zone>, String> {
     let sw_default = default_switch(regions);
-    let mut files: HashMap<PathBuf, Option<Loaded>> = HashMap::new();
+    // 読めなかったファイル(同じファイルを何度も試さない)
+    let mut failed: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut zones = Vec::new();
     let mut errors = Vec::new();
     // *silence の波形(10ms の無音)
@@ -615,21 +622,21 @@ pub fn build_zones(
                 continue;
             };
             let path = dir.join(&rel);
-
-            if !files.contains_key(&path) {
-                let loaded = match load(&path) {
-                    Ok(l) => Some(l),
+            if !cache.contains_key(&path) && !failed.contains(&path) {
+                match load(&path) {
+                    Ok(l) => {
+                        cache.insert(path.clone(), (l.data, l.loop_points));
+                    }
                     Err(e) => {
                         errors.push(e);
-                        None
+                        failed.insert(path.clone());
                     }
-                };
-                files.insert(path.clone(), loaded);
+                }
             }
-            let Some(Some(file)) = files.get(&path) else {
+            let Some((data, loop_points)) = cache.get(&path) else {
                 continue;
             };
-            let len = file.data.frames.len();
+            let len = data.frames.len();
             // 壊れた値(1e30 など)でも溢れないように、波形の長さに収めてから整数にする
             let off = (num(r, "offset").unwrap_or(0.0) + by_cc(r, "offset", |v, x| v * x))
                 .clamp(0.0, len as f64) as usize;
@@ -641,23 +648,7 @@ pub fn build_zones(
             if end <= off.saturating_add(1) {
                 continue;
             }
-            let data = if off == 0 && end == len {
-                file.data.clone()
-            } else {
-                cache
-                    .entry((path.clone(), off, end))
-                    .or_insert_with(|| {
-                        let d = &file.data;
-                        Arc::new(SampleData {
-                            frames: d.frames[off..end].to_vec(),
-                            sample_rate: d.sample_rate,
-                            side: d.side.as_ref().map(|s| s[off..end].to_vec()),
-                            mips: Default::default(),
-                        })
-                    })
-                    .clone()
-            };
-            (data, file.loop_points, off, end)
+            (data.clone(), *loop_points, off, end)
         };
 
         let key = note(r, "key");
@@ -686,9 +677,10 @@ pub fn build_zones(
                     "no_loop".to_owned()
                 }
             });
+        // ループ点は波形の頭からの位置のまま(ゾーンは波形を切り出さず、範囲 off..end で鳴らす)
         let loop_range = match (mode.as_str(), points) {
             ("loop_continuous" | "loop_sustain", Some((s, e))) if s >= off && e < end && e > s => {
-                Some(((s - off) as f64, (e + 1 - off) as f64))
+                Some((s as f64, (e + 1) as f64))
             }
             _ => None,
         };
@@ -752,6 +744,8 @@ pub fn build_zones(
             key_hi: hi as u8,
             vel_lo: vlo as u8,
             vel_hi: vhi as u8,
+            start: off,
+            end,
             data,
             loop_range,
             loop_until_release: mode == "loop_sustain",
@@ -824,7 +818,9 @@ pub fn load_instrument(
         }
     }
     let zones = build_zones(&regions, &dir, cache, &mut |p| {
-        let data = crate::data::load_audio_file(p)?;
+        let mut data = crate::data::load_audio_file(p)?;
+        // 左右差成分は鳴らさない(マルチサンプラーは中央成分だけを読む)ので持たない
+        data.side = None;
         Ok(Loaded {
             data: Arc::new(data),
             loop_points: wav_loop_points(p),
@@ -1013,11 +1009,15 @@ mod tests {
         assert_eq!(b.play.keytrack, 0.0);
         assert!((b.play.tune_semis - 2.5).abs() < 1e-6);
         let e = &zs[2];
-        assert_eq!(e.data.frames.len(), 400);
+        assert_eq!(
+            (e.start, e.end),
+            (200, 600),
+            "offset〜end の範囲(波形は切り出さず共有)"
+        );
         assert_eq!(e.play.rand_lo, 0.5);
         assert_eq!(zs[3].key_lo, 50);
         // CC の既定値で評価: offset は 127 × 100/127、amplitude は cc7 の既定 100 で 100/127
-        assert_eq!(zs[4].data.frames.len(), 900);
+        assert_eq!(zs[4].start, 100);
         assert!((zs[4].gain - 100.0 / 127.0).abs() < 1e-3);
         // エンベロープも CC の既定値で足す(ペダル cc64 の既定は 0)。amp_veltrack=0 はベロシティで音量が変わらない
         let env = &zs[5];
@@ -1137,6 +1137,17 @@ mod tests {
         assert_eq!(zones[0].loop_range, Some((1000.0, 21_000.0)));
         assert!(zones[1].loop_range.is_none());
 
+        // 調整つまみを変えて組み直しても、使っている間はファイルを読み直さない(キャッシュの波形を共有する)
+        let again = load_instrument(
+            &dir,
+            "inst/snare.sfz",
+            &[(7u8, 90u8)].into_iter().collect(),
+            &mut cache,
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&zones[0].data, &again[0].data));
+        assert!(zones[0].data.side.is_none(), "左右差成分は持たない");
+        drop(again);
         let p = glaux_dsp::MultiSamplerParams { zones, gain: 1.0 };
         let crossings = |variant: u32| {
             let mut v = glaux_dsp::MultiVoice::start_variant(

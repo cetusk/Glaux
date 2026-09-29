@@ -52,6 +52,8 @@ export interface ProjectChangedEvent {
   /** 何が変わったか(`kind` と対象の ID)。空 = 全体が変わった(切り替え・読み直し)か、本体は変わらない操作 */
   changes?: { kind: string; track?: string; clip?: string; id?: string }[];
   save_error?: string;
+  /** 曲の中身は変わらず履歴だけが変わった(チェックポイント) */
+  history_only?: boolean;
 }
 
 /** 指定したトラックだけを取得する(見つからない ID は含まれない) */
@@ -584,6 +586,11 @@ export interface SfzPack {
 /** 無料の SFZ 音源を取得する。進捗は `sfz-download` イベント({id, got, total}) */
 export function downloadSfzPack(id: string): Promise<{ instruments: string[] }> {
   return invoke("download_sfz_pack", { id });
+}
+
+/** トラックを複製して元のすぐ下に置く(CLAP の状態・エフェクトのつながり・変調・マクロも写す) */
+export function duplicateTrack(trackId: string): Promise<{ entry_id: string; project_version: number }> {
+  return invoke("duplicate_track", { trackId });
 }
 
 export function listSoundfonts(): Promise<{ dir: string; files: string[]; sfz_dir?: string; sfz?: string[]; packs?: SfzPack[] }> {

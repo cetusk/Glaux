@@ -157,7 +157,8 @@
     let last = performance.now();
     const loop = async () => {
       try {
-        if (transportStore.state.available) {
+        // 画面を隠している間は描かない(取りに行かない)
+        if (transportStore.state.available && !document.hidden) {
           draw(await api.transportScope());
           if (transportStore.state.playing) {
             const sp = await api.transportSpectrum();
@@ -170,7 +171,7 @@
         // 起動直後など
       }
       if (stopped) return;
-      timer = setTimeout(loop, transportStore.state.playing ? 50 : 400);
+      timer = setTimeout(loop, document.hidden ? 1000 : transportStore.state.playing ? 50 : 400);
     };
     loop();
     return () => {

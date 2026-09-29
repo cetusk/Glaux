@@ -58,16 +58,40 @@ pub fn available() -> bool {
     model_path().is_file()
 }
 
+/// 使わないまま過ぎたら解放するまでの時間(モデルは約 280MB あるので常駐させない)
+const IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+type Cached = Option<(PathBuf, Plan, std::time::Instant)>;
+
+fn cache() -> &'static Mutex<Cached> {
+    static CACHE: OnceLock<Mutex<Cached>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        // 見張り: 1 分ごとに、しばらく使っていなければ解放する(使っている最中の計算は自分の複製を持つので影響しない)
+        let _ = std::thread::Builder::new()
+            .name("glaux-clap-release".into())
+            .spawn(|| loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if let Ok(mut c) = cache().lock() {
+                    if c.as_ref()
+                        .is_some_and(|(_, _, t)| t.elapsed() > IDLE_RELEASE)
+                    {
+                        *c = None;
+                    }
+                }
+            });
+        Mutex::new(None)
+    })
+}
+
 fn plan() -> Result<Plan, crate::MlError> {
     // 置き場所が変わったら(テストで環境変数を切り替えた等)読み直す
-    static CACHE: OnceLock<Mutex<Option<(PathBuf, Plan)>>> = OnceLock::new();
     let path = model_path();
-    let mut cache = CACHE
-        .get_or_init(|| Mutex::new(None))
+    let mut cache = cache()
         .lock()
         .map_err(|_| crate::MlError::Model("CLAP モデルの読み込み中に失敗しました".into()))?;
-    if let Some((p, plan)) = cache.as_ref() {
+    if let Some((p, plan, used)) = cache.as_mut() {
         if *p == path {
+            *used = std::time::Instant::now();
             return Ok(plan.clone());
         }
     }
@@ -78,7 +102,7 @@ fn plan() -> Result<Plan, crate::MlError> {
         )));
     }
     let plan = load_plan(&path).map_err(|e| crate::MlError::Model(e.to_string()))?;
-    *cache = Some((path, plan.clone()));
+    *cache = Some((path, plan.clone(), std::time::Instant::now()));
     Ok(plan)
 }
 
