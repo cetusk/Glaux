@@ -12,6 +12,7 @@
 //! - ID は生成側が決める(コマンドは決定的)。
 
 pub mod apply;
+pub mod arp;
 pub mod arrange;
 pub mod bassline;
 pub mod chord;

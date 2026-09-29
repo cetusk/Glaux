@@ -35,6 +35,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    ドラムは write_drums(ジャンルの型・区間ごとに intensity を変える・区切りのフィル・ビルドのロールと gap_beats)。\n\
    キック・スネア・ハットを別トラックにするなら parts(kick / snare / hat / tom / cymbal / perc)で呼び分ける(同じ style・seed)。\n\
    コード楽器は write_chords で置く(和音の積み方と声部のつながりを計算する。暗算で MIDI 番号を書かない)。\n\
+   シンセのアルペジオ・ハープ・ピアノの分散和音は write_arpeggio(同じ進行の文字列。型・刻み・オクターブ・強弱の列)。\n\
    進行は記号か、key を付けてローマ数字。積み方はジャンルで: ポップのピアノ = drop2 か close + eighth、\n\
    ハウスのスタブ = close + offbeat(gate 0.4)、パッド・ストリングス = spread + sustain、ジャズ = shell か rootless + charleston、\n\
    ギター = open + voices 6 + range E2-C5 の後に strum_chord(カッティングは rhythm 16 分 + articulation staccato、\n\

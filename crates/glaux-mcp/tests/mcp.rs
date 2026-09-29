@@ -5298,3 +5298,63 @@ async fn analyze_reference_reads_structure_of_file() {
     let r = call(&fx, "analyze_reference", json!({})).await;
     assert_eq!(r.is_error, Some(true));
 }
+
+#[tokio::test]
+async fn write_arpeggio_plays_chords_one_note_at_a_time() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_arp001", "Arp")).await);
+    // 2 小節(C、Am)を 16 分の up、2 オクターブ
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_arpeggio",
+            json!({ "track_id": "trk_arp001", "chords": "C | Am", "style": "up", "octaves": 2, "voices": 3 }),
+        )
+        .await,
+    );
+    assert_eq!(v["bars"], 2, "{v}");
+    assert_eq!(v["notes"], 32, "{v}");
+    assert_eq!(v["step_ticks"], 240);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let clip = &project.tracks[0].clips[0];
+    let notes = clip.notes().unwrap();
+    // 1 小節目は C の構成音だけ、上がっていく(6 音で 1 回り)
+    let bar1: Vec<u8> = notes
+        .iter()
+        .filter(|n| n.pos.0 < 3840)
+        .map(|n| n.pitch)
+        .collect();
+    assert!(
+        bar1.iter().all(|p| [0, 4, 7].contains(&(p % 12))),
+        "{bar1:?}"
+    );
+    assert!(bar1[..6].windows(2).all(|w| w[0] < w[1]), "{bar1:?}");
+    assert_eq!(bar1[0], bar1[6], "6 音で 1 回り");
+    assert!(notes
+        .iter()
+        .filter(|n| n.pos.0 >= 3840)
+        .all(|n| [9, 0, 4].contains(&(n.pitch % 12))));
+
+    // 8 分の 3 連、強弱の列とリズムの列(ポリメーター)
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_arpeggio",
+            json!({ "track_id": "trk_arp001", "chords": "Am7", "style": "pinky_up", "rate": "1/8t",
+                    "accents": "110 70 90", "rhythm": "x x .", "bar": 3 }),
+        )
+        .await,
+    );
+    assert_eq!(v["step_ticks"], 320, "{v}");
+    assert_eq!(v["notes"], 8, "12 ステップのうち 8 つ鳴る: {v}");
+
+    for bad in [
+        json!({ "track_id": "trk_arp001", "chords": "C", "style": "sideways" }),
+        json!({ "track_id": "trk_arp001", "chords": "C", "rate": "fast" }),
+        json!({ "track_id": "trk_arp001", "chords": "C", "rhythm": "...." }),
+        json!({ "track_id": "trk_arp001", "chords": "C", "accents": "200" }),
+    ] {
+        let r = call(&fx, "write_arpeggio", bad).await;
+        assert_eq!(r.is_error, Some(true));
+    }
+}

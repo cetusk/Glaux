@@ -715,6 +715,66 @@ pub struct WriteChordsParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct WriteArpeggioParams {
+    /// 置く MIDI トラックの ID(`trk_xxxxxx`)。新しいクリップを作って置く。
+    pub track_id: String,
+    /// コード進行(write_chords と同じ書き方)。例 "Am7 | Fmaj7 | C G/B | %"
+    pub chords: String,
+    /// 始まりの小節(既定 1)。
+    #[serde(default)]
+    pub bar: Option<u32>,
+    /// 進行を何回繰り返すか(既定 1)。
+    #[serde(default)]
+    pub repeat: Option<u32>,
+    /// ローマ数字を読むキー。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 並べ方(Live のアルペジエーターの 18 の型): up / down / up_down / down_up / up_and_down / down_and_up /
+    /// converge / diverge / con_diverge / pinky_up / pinky_up_down / thumb_up / thumb_up_down / play_order / chord /
+    /// random / random_other / random_once。既定 up。
+    #[serde(default)]
+    pub style: Option<String>,
+    /// 刻み: 16th(既定)/ 8th / 32nd / quarter / triplet_16th / triplet_8th / dotted_8th か "1/16" "1/8t" "1/8d" の形。
+    #[serde(default)]
+    pub rate: Option<String>,
+    /// 何オクターブに広げるか 1〜4(既定 1)。
+    #[serde(default)]
+    pub octaves: Option<u8>,
+    /// 音の長さ(刻みに対する割合 0.05〜2。既定 0.8。1 を超えると重なってなめらか)。
+    #[serde(default)]
+    pub gate: Option<f64>,
+    /// 強さ 1〜127(既定 85。拍の頭は少し強い)。accents を渡すとそちらを使う。
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    /// 強弱の列(空白区切り。例 "110 70 90 70")。刻みごとに回る。音の並びと長さが違えばポリメーター。
+    #[serde(default)]
+    pub accents: Option<String>,
+    /// リズムの列(x = 鳴らす、. = 休む、- = 前の音を伸ばす。例 "x x . x x . x -")。刻みごとに回る。
+    #[serde(default)]
+    pub rhythm: Option<String>,
+    /// 和音が変わるたびに並びを頭からやり直す(既定 true)。false で位置を持ち越す(流れが続く)。
+    #[serde(default)]
+    pub retrigger: Option<bool>,
+    /// 1 回りするごとに音程をずらす半音(例 12 = 1 回りごとに 1 オクターブ上)と、その段数(shift_steps。既定 0 = ずらさない)。
+    #[serde(default)]
+    pub shift: Option<i32>,
+    #[serde(default)]
+    pub shift_steps: Option<u8>,
+    /// 和音を積む音域("low" / "mid" / "high" か "C4-C5" の形。既定 mid = E3〜E5)。
+    #[serde(default)]
+    pub range: Option<String>,
+    /// 和音の音の数 3〜6(既定 4。3 和音は根音が重なる)。
+    #[serde(default)]
+    pub voices: Option<u8>,
+    /// random 系の種(同じ種で同じ並び。既定 1)。
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// クリップの名前(既定 "Arp")。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct WriteBasslineParams {
     /// 置く MIDI トラックの ID(`trk_xxxxxx`)。新しいクリップを作って置く。
     pub track_id: String,
@@ -1564,6 +1624,23 @@ struct Layout {
     clip_start: u64,
     clip_len: u64,
     n_bars: u32,
+}
+
+/// アルペジオの刻み(4 分音符を 1 とした長さ)。"16th" / "triplet_8th" / "dotted_8th" か "1/16" "1/8t" "1/8d" の形
+fn arp_rate(s: &str) -> Option<f64> {
+    if let Some(v) = glaux_core::meter::note_value(s) {
+        return Some(v);
+    }
+    let t = s.trim().to_ascii_lowercase();
+    let (body, mul) = if let Some(b) = t.strip_suffix('t') {
+        (b, 2.0 / 3.0)
+    } else if let Some(b) = t.strip_suffix('d') {
+        (b, 1.5)
+    } else {
+        (t.as_str(), 1.0)
+    };
+    let den: f64 = body.strip_prefix("1/")?.parse().ok()?;
+    (den > 0.0 && den <= 64.0).then(|| 4.0 / den * mul)
 }
 
 /// コード進行の文字列を読み、小節の中を均等に分けて区間にする。`merge_same` なら同じ和音が続く区間を 1 つにまとめる
@@ -5735,6 +5812,168 @@ impl GlauxServer {
         } else {
             (motion as f64 / changes as f64 * 10.0).round() / 10.0
         });
+        Ok(JsonText(out))
+    }
+
+    #[tool(
+        description = "コード進行からアルペジオを書く(和音の音を決まった刻みで 1 つずつ鳴らす)。並べ方は Live の 18 の型\
+        (up / down / up_down / down_up / up_and_down / down_and_up / converge / diverge / con_diverge / pinky_up / pinky_up_down /\
+        thumb_up / thumb_up_down / play_order / chord / random / random_other / random_once)。rate で刻み、octaves で広げ、\
+        gate で音の長さ、accents(強弱の列)と rhythm(x . - の列)は音の並びと別の長さで回る(3 音の並びを 4 つの強弱で = \
+        ポリメーター)。shift と shift_steps で 1 回りごとに音程をずらす。進行は write_chords と同じ書き方。\
+        トラックに新しいクリップを作る(返り値 clip_id)。シンセのアルペジオ・ハープ・ピアノの分散和音に。1 回の undo で戻る。"
+    )]
+    async fn write_arpeggio(
+        &self,
+        params: Parameters<WriteArpeggioParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::{arp, chord, voicing};
+        let _activity = self.handle.begin_activity("write_arpeggio");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err("MIDI トラックを指定してください".to_owned());
+        }
+        let style_name = p.style.clone().unwrap_or_else(|| "up".to_owned());
+        let style = arp::Style::parse(&style_name).ok_or_else(|| {
+            format!(
+                "style は {} のどれか(got: {style_name})",
+                arp::STYLE_NAMES.join(" / ")
+            )
+        })?;
+        let rate_name = p.rate.clone().unwrap_or_else(|| "16th".to_owned());
+        let quarters = arp_rate(&rate_name).ok_or_else(|| {
+            format!("rate が読めません: {rate_name}(16th / 8th / triplet_16th / \"1/8t\" など)")
+        })?;
+        let step = (quarters * glaux_core::PPQ as f64).round().max(1.0) as u64;
+        let accents: Vec<u8> = match &p.accents {
+            Some(a) => a
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|w| !w.is_empty())
+                .map(|w| {
+                    w.parse::<u8>()
+                        .ok()
+                        .filter(|v| (1..=127).contains(v))
+                        .ok_or_else(|| format!("accents は 1〜127 の数の列です: {w}"))
+                })
+                .collect::<Result<_, _>>()?,
+            None => Vec::new(),
+        };
+        let rhythm = match &p.rhythm {
+            Some(r) => arp::parse_rhythm(r)?,
+            None => Vec::new(),
+        };
+        let (low, high) = parse_range(p.range.as_deref())?;
+        let Layout {
+            chords: chords_list,
+            spans,
+            span_bar,
+            clip_start,
+            clip_len,
+            n_bars,
+            ..
+        } = progression_layout(&project, &p.chords, p.key.as_deref(), p.repeat, p.bar, true)?;
+        let opts = voicing::Options {
+            style: voicing::Style::Close,
+            voices: p.voices.map_or(4, |v| v.clamp(3, 6) as usize),
+            low,
+            high,
+            top: None,
+            bass: None,
+        };
+        let voiced = voicing::voice_progression(&chords_list, &opts)?;
+        let notes: Vec<Vec<u8>> = voiced.iter().map(|v| v.upper.clone()).collect();
+        // 役割の順(根音・3 度・5 度・7 度 …、同じ役割は低い順)
+        let order: Vec<Vec<u8>> = notes
+            .iter()
+            .zip(&chords_list)
+            .map(|(ns, c)| {
+                let pcs = c.pitch_classes();
+                let mut v = ns.clone();
+                v.sort_by_key(|p| {
+                    (
+                        pcs.iter().position(|pc| *pc == p % 12).unwrap_or(pcs.len()),
+                        *p,
+                    )
+                });
+                v
+            })
+            .collect();
+        let o = arp::Options {
+            style,
+            step,
+            gate: p.gate.unwrap_or(0.8).clamp(0.05, 2.0),
+            octaves: p.octaves.unwrap_or(1).clamp(1, 4),
+            accents,
+            velocity: p.velocity.unwrap_or(85).clamp(1, 127),
+            rhythm,
+            retrigger: p.retrigger.unwrap_or(true),
+            shift: p.shift.unwrap_or(0).clamp(-24, 24),
+            shift_steps: p.shift_steps.unwrap_or(0).min(8),
+            seed: p.seed.unwrap_or(1),
+        };
+        let rendered = arp::render(&spans, &notes, &order, &o);
+        if rendered.is_empty() {
+            return Err(
+                "鳴らす音がありません(進行が休みだけか、rhythm に x がありません)".to_owned(),
+            );
+        }
+        let mut clip = glaux_core::Clip::new_midi(
+            glaux_core::ClipId::new(),
+            p.name.clone().unwrap_or_else(|| "Arp".to_owned()),
+            glaux_core::Tick(clip_start),
+            glaux_core::Tick(clip_len),
+        );
+        let clip_id = clip.id.clone();
+        if let Some(ns) = clip.notes_mut() {
+            *ns = rendered
+                .iter()
+                .map(|n| glaux_core::Note {
+                    id: glaux_core::NoteId::new(),
+                    pos: glaux_core::Tick(n.pos),
+                    dur: glaux_core::Tick(n.dur),
+                    pitch: n.pitch,
+                    vel: n.vel,
+                    articulation: Default::default(),
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                    vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
+                    condition: None,
+                })
+                .collect();
+            ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+        }
+        // 返り値: 和音ごとの最初の 8 音
+        let summary: Vec<Value> = spans
+            .iter()
+            .enumerate()
+            .filter_map(|(si, s)| {
+                let ci = s.chord?;
+                let first: Vec<String> = rendered
+                    .iter()
+                    .filter(|n| n.pos >= s.start && n.pos < s.start + s.len)
+                    .take(8)
+                    .map(|n| chord::note_name(n.pitch))
+                    .collect();
+                Some(json!({"bar": span_bar[si], "chord": chords_list[ci].name, "first_notes": first}))
+            })
+            .collect();
+        let label = format!("アルペジオ({}・{} 小節)", style_name, n_bars);
+        let command = Command::AddClip { track: tid, clip };
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut out = mutated_json(&m);
+        out["entry_id"] = json!(entry_id);
+        out["clip_id"] = json!(clip_id);
+        out["bars"] = json!(n_bars);
+        out["notes"] = json!(rendered.len());
+        out["step_ticks"] = json!(step);
+        out["chords"] = json!(summary);
         Ok(JsonText(out))
     }
 
