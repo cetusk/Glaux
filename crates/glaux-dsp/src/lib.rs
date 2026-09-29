@@ -25,6 +25,7 @@ mod effects;
 mod expr;
 mod fm;
 pub mod limiter;
+mod modfx;
 mod multi;
 mod oversample;
 mod params;

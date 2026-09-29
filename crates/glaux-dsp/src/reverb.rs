@@ -60,6 +60,8 @@ pub struct ReverbParams {
     pre: usize,
     out_gain: f32,
     pub raw: ReverbRaw,
+    /// ゲートリバーブ: 入ってくる音が途切れてから残響を切るまで(サンプル。0 = 切らない)
+    pub gate: f32,
 }
 
 /// サイズ(0..1)→ 残響時間(秒)。以前のリバーブ(コムの帰還 0.7〜0.98)と同じ伸び方にしてある
@@ -93,6 +95,7 @@ impl ReverbParams {
                 ROOM_OUT_GAIN
             },
             raw,
+            gate: 0.0,
         }
     }
 }

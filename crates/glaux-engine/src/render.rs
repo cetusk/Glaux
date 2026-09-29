@@ -608,6 +608,9 @@ pub struct Renderer {
     plugin_choke_at: [u64; MAX_PLUGINS],
     /// エフェクト状態プール(リバーブのバッファ込みで起動時に確保)
     effect_states: Vec<EffectState>,
+    /// このブロックの頭の曲の位置(tick)と 1 サンプルあたりの tick(停止中は 0)。テンポに合わせるエフェクト用
+    blk_tick: f64,
+    blk_tps: f64,
     /// このブロックで CLAP エフェクトとして使うプラグインのスロット(音源と分けて処理する)
     slot_is_fx: [bool; MAX_PLUGINS],
     /// このブロックで処理したエフェクトのスロット(処理しなかったものは最後に無音で処理する)
@@ -763,6 +766,8 @@ impl Renderer {
             plugin_choke_at: [u64::MAX; MAX_PLUGINS],
             // clone で複製すると 0 のバッファを実際に書き写してしまう(64 × 512KB)。1 つずつ確保すれば
             // ディレイ系を使うまでページは実体化しない
+            blk_tick: 0.0,
+            blk_tps: 0.0,
             effect_states: (0..MAX_EFFECT_SLOTS)
                 .map(|_| EffectState::default())
                 .collect(),
@@ -1114,6 +1119,13 @@ impl Renderer {
 
         let hard_limit = (VOICE_HARD_LIMIT_SECS * sr) as u64;
         let frames = out.len() / channels;
+        // テンポに合わせるエフェクト(トランスゲート・音量シェイパーなど)に渡す曲の位置
+        self.blk_tick = data.sample_to_tick(self.pos);
+        self.blk_tps = if playing && frames > 0 {
+            (data.sample_to_tick(self.pos + frames as u64) - self.blk_tick) / frames as f64
+        } else {
+            0.0
+        };
 
         // ループ区間(このブロックの間は固定値として扱う。予約した飛びでだけ替わる)
         let mut loop_start = self.shared.loop_start.load(Ordering::Acquire);
@@ -1983,6 +1995,7 @@ impl Renderer {
             // サイドチェイン・ダイナミック EQ の検出信号: ソーストラックの生ミックス(エフェクト前)
             let key_track = params.key_source().map(|t| t as usize);
             let state = &mut self.effect_states[slot];
+            state.set_clock(self.blk_tick, self.blk_tps);
             for f in 0..frames {
                 let key = key_track
                     .filter(|t| *t < data.tracks.len().min(MAX_TRACKS))

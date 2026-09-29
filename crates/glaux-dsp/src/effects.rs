@@ -125,6 +125,41 @@ impl SvfCoeffs {
         }
     }
 
+    /// Q を指定した 12 dB/oct のローパス(Q を上げるとカットオフ付近が持ち上がる)
+    pub fn low_pass_q(sr: f32, freq: f32, q: f32) -> Self {
+        SvfCoeffs {
+            g: Self::g_of(sr, freq),
+            k: 1.0 / q.max(0.1),
+            m0: 0.0,
+            m1: 0.0,
+            m2: 1.0,
+        }
+    }
+
+    /// Q を指定した 12 dB/oct のハイパス
+    pub fn high_pass_q(sr: f32, freq: f32, q: f32) -> Self {
+        let k = 1.0 / q.max(0.1);
+        SvfCoeffs {
+            g: Self::g_of(sr, freq),
+            k,
+            m0: 1.0,
+            m1: -k,
+            m2: -1.0,
+        }
+    }
+
+    /// Q を指定したバンドパス(中心で 0dB)
+    pub fn band_pass_q(sr: f32, freq: f32, q: f32) -> Self {
+        let k = 1.0 / q.max(0.1);
+        SvfCoeffs {
+            g: Self::g_of(sr, freq),
+            k,
+            m0: 0.0,
+            m1: k,
+            m2: 0.0,
+        }
+    }
+
     /// 12 dB/oct のローパス(バターワース)
     pub fn low_pass(sr: f32, freq: f32) -> Self {
         SvfCoeffs {
@@ -417,6 +452,8 @@ pub struct DelayParams {
     pub tone_coef: f32,
     /// 左右交互に跳ねる
     pub ping_pong: bool,
+    /// ダッキング: 原音が鳴っている間にやまびこを沈める量(dB。0 = しない)
+    pub duck_db: f32,
 }
 
 // ============================ Chorus ===================================
@@ -511,6 +548,8 @@ pub enum EffectParams {
     Convolution(ConvParams),
     Resonance(crate::resonance::ResonanceParams),
     VirtualBass(crate::dynamics::VirtualBassParams),
+    /// 変調系・質感系(clipper / bitcrush / tremolo / phaser / flanger / trance_gate / auto_filter / volume_shaper)
+    Mod(crate::modfx::ModFxParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -535,6 +574,7 @@ enum EffectKind {
     Convolution,
     Resonance,
     VirtualBass,
+    Mod,
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -581,6 +621,8 @@ pub struct EffectState {
     dyn_eq: crate::dynamics::DynEqState,
     resonance: crate::resonance::ResonanceState,
     virtual_bass: crate::dynamics::VirtualBassState,
+    /// 変調系・質感系の状態
+    modfx: crate::modfx::ModFxState,
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -589,6 +631,7 @@ impl Default for EffectState {
     fn default() -> Self {
         EffectState {
             dly: [vec![0.0; DLY_LEN], vec![0.0; DLY_LEN]],
+            modfx: crate::modfx::ModFxState::default(),
             ..Self::light()
         }
     }
@@ -633,7 +676,13 @@ impl EffectState {
             dyn_eq: Default::default(),
             resonance: Default::default(),
             virtual_bass: Default::default(),
+            modfx: crate::modfx::ModFxState::light(),
         }
+    }
+
+    /// このブロックの頭の曲の位置(tick)と 1 サンプルあたりの tick(テンポに合わせるエフェクト用。停止中は 0)
+    pub fn set_clock(&mut self, tick: f64, ticks_per_sample: f64) {
+        self.modfx.set_clock(tick, ticks_per_sample);
     }
 
     /// 0..1 の一様乱数(xorshift32)
@@ -663,6 +712,7 @@ impl EffectState {
             EffectParams::Convolution(_) => EffectKind::Convolution,
             EffectParams::Resonance(_) => EffectKind::Resonance,
             EffectParams::VirtualBass(_) => EffectKind::VirtualBass,
+            EffectParams::Mod(_) => EffectKind::Mod,
             EffectParams::External => EffectKind::None,
         }
     }
@@ -704,6 +754,7 @@ impl EffectState {
             self.dyn_eq = Default::default();
             self.resonance.reset();
             self.virtual_bass = Default::default();
+            self.modfx.reset();
         }
     }
 
@@ -759,7 +810,19 @@ impl EffectState {
                 (l * gain, r * gain)
             }
             EffectParams::Reverb(rv) => {
-                let (wl, wr) = self.reverb.process(rv, l, r);
+                let (mut wl, mut wr) = self.reverb.process(rv, l, r);
+                if rv.gate > 0.0 {
+                    // ゲートリバーブ: 入ってくる音が -34dB を下回ってから gate サンプルで残響を閉じる(約 5ms で開閉)
+                    if l.abs().max(r.abs()) > 0.02 {
+                        self.duck_pos = 0.0;
+                    } else {
+                        self.duck_pos += 1.0;
+                    }
+                    let target = if self.duck_pos < rv.gate { 1.0 } else { 0.0 };
+                    self.envelope += (target - self.envelope) * 0.004;
+                    wl *= self.envelope;
+                    wr *= self.envelope;
+                }
                 (
                     l * (1.0 - rv.mix) + wl * rv.mix,
                     r * (1.0 - rv.mix) + wr * rv.mix,
@@ -868,9 +931,17 @@ impl EffectState {
                 self.dly[0][idx] = wl;
                 self.dly[1][idx] = wr;
                 self.dly_idx = (idx + 1) & DLY_MASK;
+                // ダッキング: 原音の大きさ(速く上がって約 40ms で下がる)でやまびこを沈める
+                let duck = if d.duck_db > 0.0 {
+                    let lvl = l.abs().max(r.abs());
+                    self.envelope = lvl.max(self.envelope * 0.9995);
+                    10.0_f32.powf(-d.duck_db * (self.envelope / 0.25).min(1.0) / 20.0)
+                } else {
+                    1.0
+                };
                 (
-                    l * (1.0 - d.mix) + el * d.mix,
-                    r * (1.0 - d.mix) + er * d.mix,
+                    l * (1.0 - d.mix) + el * d.mix * duck,
+                    r * (1.0 - d.mix) + er * d.mix * duck,
                 )
             }
             EffectParams::Chorus(c) => {
@@ -900,6 +971,7 @@ impl EffectState {
             EffectParams::Convolution(_) => (l, r),
             EffectParams::Resonance(rp) => self.resonance.process(rp, l, r),
             EffectParams::VirtualBass(vb) => self.virtual_bass.process(vb, l, r),
+            EffectParams::Mod(m) => self.modfx.process(m, l, r),
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1772,6 +1844,20 @@ pub static REVERB_SPECS: &[ParamSpec] = &[
             前に出る。大きいほど広い空間の印象。",
     },
     ParamSpec {
+        name: "gate_ms",
+        display_name: "ゲート",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 600.0,
+            default: 0.0,
+            skew: None,
+        },
+        description:
+            "ゲートリバーブ: 入ってくる音が途切れてからこの時間で残響を切る(0 で切らない)。\
+            80 年代のスネアは size 0.8 以上 + gate 150〜300 で「バシャッ」と大きく短い響き。",
+    },
+    ParamSpec {
         name: "character",
         display_name: "種類",
         unit: None,
@@ -2024,6 +2110,19 @@ pub static DELAY_SPECS: &[ParamSpec] = &[
         range: ParamRange::Bool { default: false },
         description: "やまびこを左右交互に跳ねさせる。広がりが大きく出る。",
     },
+    ParamSpec {
+        name: "duck_db",
+        display_name: "ダッキング",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 24.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "原音が鳴っている間にやまびこを沈める量(ダッキングディレイ)。歌・リードの言葉を濁さず、\
+            伸ばしや句の切れ目でだけやまびこが聞こえる。3〜6 が定番。",
+    },
 ];
 
 pub static CHORUS_SPECS: &[ParamSpec] = &[
@@ -2189,7 +2288,7 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "convolution" => Some(CONVOLUTION_SPECS),
         "resonance" => Some(RESONANCE_SPECS),
         "virtual_bass" => Some(VIRTUAL_BASS_SPECS),
-        _ => None,
+        other => crate::modfx::specs(other),
     }
 }
 
@@ -2324,6 +2423,9 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
             articulations: &[],
         },
     ]
+    .into_iter()
+    .chain(crate::modfx::catalog())
+    .collect()
 }
 
 /// 畳み込みリバーブのつまみ(本体の番号は再生データの中の位置)
@@ -2446,9 +2548,15 @@ impl EffectParams {
                     "size" => raw.size = v.clamp(0.0, 1.0),
                     "damping" => raw.damping = v.clamp(0.0, 1.0),
                     "predelay_ms" => raw.predelay_ms = v.clamp(0.0, crate::reverb::PREDELAY_MAX_MS),
+                    "gate_ms" => {
+                        p.gate = v.clamp(0.0, 600.0) * 0.001 * sample_rate;
+                        return true;
+                    }
                     _ => return false,
                 }
+                let gate = p.gate;
                 *p = ReverbParams::new(p.mix, raw);
+                p.gate = gate;
             }
             EffectParams::Distortion(p) => match name {
                 "drive_db" => p.drive = db(v.clamp(0.0, 40.0)),
@@ -2477,6 +2585,7 @@ impl EffectParams {
                 "time_ms" => p.time = delay_samples(v, sample_rate),
                 "feedback" => p.feedback = v.clamp(0.0, 0.95),
                 "mix" => p.mix = v.clamp(0.0, 1.0),
+                "duck_db" => p.duck_db = v.clamp(0.0, 24.0),
                 "tone" => p.tone_coef = (-tau * v.clamp(1000.0, 16000.0) / sample_rate).exp(),
                 _ => return false,
             },
@@ -2517,6 +2626,7 @@ impl EffectParams {
                 }
                 *p = crate::dynamics::MultibandParams::new(r);
             }
+            EffectParams::Mod(m) => return m.set_continuous(name, v, sample_rate),
             EffectParams::VirtualBass(p) => {
                 let (mut f, mut a, mut rl) = (p.freq, p.amount, p.remove_lows);
                 match name {
@@ -2699,7 +2809,7 @@ pub fn bake_effect(
         }
         "reverb" => {
             let s = REVERB_SPECS;
-            Some(EffectParams::Reverb(ReverbParams::new(
+            let mut rp = ReverbParams::new(
                 get(map, s, "mix"),
                 crate::reverb::ReverbRaw {
                     size: get(map, s, "size").clamp(0.0, 1.0),
@@ -2709,7 +2819,9 @@ pub fn bake_effect(
                     plate: get_choice(map, s, "character") == "plate",
                     sample_rate,
                 },
-            )))
+            );
+            rp.gate = get(map, s, "gate_ms").clamp(0.0, 600.0) * 0.001 * sample_rate;
+            Some(EffectParams::Reverb(rp))
         }
         "distortion" => {
             let s = DISTORTION_SPECS;
@@ -2774,6 +2886,7 @@ pub fn bake_effect(
                     / sample_rate)
                     .exp(),
                 ping_pong,
+                duck_db: get(map, s, "duck_db").clamp(0.0, 24.0),
             }))
         }
         "chorus" => {
@@ -2824,6 +2937,9 @@ pub fn bake_effect(
                 },
                 source_track,
             )))
+        }
+        other if crate::modfx::specs(other).is_some() => {
+            crate::modfx::bake(other, map, sample_rate).map(EffectParams::Mod)
         }
         "virtual_bass" => {
             let s = VIRTUAL_BASS_SPECS;
@@ -3411,6 +3527,80 @@ mod tests {
         let (l2, r2) = side(9600);
         assert!(l1 > 0.1 && r1 < 0.01, "1 回目は左: {l1} {r1}");
         assert!(r2 > 0.05 && l2 < 0.01, "2 回目は右: {l2} {r2}");
+    }
+
+    #[test]
+    fn gated_reverb_and_ducking_delay() {
+        // ゲート: 短い音の後、ゲートの時間(100ms)を過ぎると残響が消える
+        let p = bake(&effect(
+            "reverb",
+            &[("size", 0.9), ("mix", 1.0), ("gate_ms", 100.0)],
+        ))
+        .unwrap();
+        let mut st = EffectState::default();
+        let out: Vec<f32> = (0..48_000)
+            .map(|i| st.process(&p, if i < 480 { 0.5 } else { 0.0 }, 0.0, 0.0).0)
+            .collect();
+        let tail = |a: usize, b: usize| out[a..b].iter().map(|x| x * x).sum::<f32>();
+        let open = bake(&effect("reverb", &[("size", 0.9), ("mix", 1.0)])).unwrap();
+        let mut st2 = EffectState::default();
+        let free: Vec<f32> = (0..48_000)
+            .map(|i| {
+                st2.process(&open, if i < 480 { 0.5 } else { 0.0 }, 0.0, 0.0)
+                    .0
+            })
+            .collect();
+        let free_tail: f32 = free[12_000..24_000].iter().map(|x| x * x).sum();
+        assert!(
+            tail(12_000, 24_000) < free_tail * 0.01,
+            "ゲートの後は残響が消える"
+        );
+        assert!(tail(1_000, 4_000) > 0.0, "ゲートの間は鳴る");
+        // ダッキング: 原音が鳴っている間はやまびこが小さい
+        let run = |duck: f64| {
+            let p = bake(&effect(
+                "delay",
+                &[
+                    ("time_ms", 100.0),
+                    ("mix", 1.0),
+                    ("feedback", 0.0),
+                    ("duck_db", duck),
+                ],
+            ))
+            .unwrap();
+            let mut st = EffectState::default();
+            // 原音は鳴り続け、やまびこだけを見る(100ms 後から)
+            (0..24_000)
+                .map(|_| st.process(&p, 0.5, 0.5, 0.0).0)
+                .skip(10_000)
+                .map(|x| x.abs())
+                .sum::<f32>()
+        };
+        assert!(run(12.0) < run(0.0) * 0.5);
+    }
+
+    #[test]
+    fn mod_effects_are_listed_and_baked() {
+        let names: Vec<&str> = effect_catalog().iter().map(|i| i.name).collect();
+        for n in [
+            "clipper",
+            "bitcrush",
+            "tremolo",
+            "phaser",
+            "flanger",
+            "trance_gate",
+            "auto_filter",
+            "volume_shaper",
+        ] {
+            assert!(names.contains(&n), "{n}");
+            assert!(effect_params_spec(n).is_some());
+            let p = bake(&effect(n, &[])).unwrap();
+            assert!(matches!(p, EffectParams::Mod(_)));
+        }
+        // オートメーション
+        let mut p = bake(&effect("auto_filter", &[])).unwrap();
+        assert!(p.set_continuous("cutoff", 400.0, 48_000.0));
+        assert!(!p.set_continuous("nope", 1.0, 48_000.0));
     }
 
     #[test]

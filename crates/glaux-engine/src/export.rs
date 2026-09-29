@@ -980,6 +980,35 @@ mod tests {
     }
 
     #[test]
+    fn tempo_synced_effects_follow_the_song_position() {
+        // 2 秒の持続音にトランスゲート(halftime: 1 拍目と 3 拍目の 16 分だけ開く)。120 BPM の 16 分 = 0.125 秒
+        let mut p = test_project();
+        if let ClipContent::Midi { notes, .. } = &mut p.tracks[0].clips[0].content {
+            notes[0].dur = Tick(3840);
+        }
+        p.tracks[0].clips[0].length = Tick(3840);
+        let mut fx = glaux_core::Effect::builtin(glaux_core::FxId::new(), "trance_gate");
+        fx.params.insert(
+            "pattern".into(),
+            glaux_core::ParamValue::Enum("halftime".into()),
+        );
+        p.tracks[0].effects.push(fx);
+        let s = render_project(&p, 48_000.0, &Default::default()).unwrap();
+        let rms = |a: usize, b: usize| {
+            let x = &s[a * 2..b * 2];
+            (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+        };
+        // 1 拍目の 16 分(0〜0.125 秒)は開き、2 拍目の頭(0.5〜0.625 秒)は閉じ、3 拍目の頭(1.0〜1.125 秒)は開く
+        let open1 = rms(1_000, 5_500);
+        let closed = rms(24_500, 29_500);
+        let open3 = rms(48_500, 53_500);
+        assert!(
+            open1 > closed * 10.0 && open3 > closed * 10.0,
+            "{open1} {closed} {open3}"
+        );
+    }
+
+    #[test]
     fn note_volume_and_brightness_curves_change_the_sound() {
         let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len().max(1) as f32).sqrt();
         // 0.25〜0.5 秒(音の後半)の大きさ

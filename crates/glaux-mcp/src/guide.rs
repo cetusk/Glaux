@@ -198,12 +198,18 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
     (
         "mix",
         "ミックスとエフェクト",
-        "- エフェクト: add_effect(eq / dynamic_eq / resonance / compressor / multiband / transient / limiter / width / virtual_bass / reverb / convolution(import_ir で) / distortion / amp / sidechain / delay / chorus / tape)→\n\
+        "- エフェクト: add_effect(eq / dynamic_eq / resonance / compressor / multiband / transient / limiter / width / virtual_bass / reverb / convolution(import_ir で) / distortion / amp / sidechain / delay / chorus / tape /\n\
+  clipper / bitcrush / tremolo / phaser / flanger / trance_gate / auto_filter / volume_shaper)→\n\
   set_param(fx/<id>/<名前>)。マスターは add_master_effect / set_master_param。\n\
 - distortion はシンセ・ドラム等の歪み。エレキギターの歪みは amp(instruments を参照)。\n\
 - 空間: 複数のトラックに同じリバーブ・ディレイを掛けるなら、バス(add_track kind: \"bus\" + リバーブ mix 1.0)を作り、\n\
   各トラックから set_send で送る(トラックごとに挿すより空間がまとまり軽い)。\n\
-- delay の time_ms: 4 分 = 60000/BPM、付点 8 分 = 45000/BPM。厚みと広がりは chorus。\n\
+- delay の time_ms: 4 分 = 60000/BPM、付点 8 分 = 45000/BPM。厚みと広がりは chorus。歌・リードには duck_db 3〜6(ダッキングディレイ)。\n\
+- テンポに合わせて動かす(sync = 1/4・1/8d・1/8t など): ポンピングは volume_shaper(サイドチェイン無しで 4 分ごとに沈める。\n\
+  ベース・パッド・コード)、パッドを刻むのは trance_gate、ビルドのハイパスや うねるベースは auto_filter(highpass で cutoff を\n\
+  オートメーション、LFO は depth)、ファンクのオートワウは auto_filter bandpass + env_amount 2〜3、エレピの揺れは tremolo\n\
+  (stereo 1 でオートパン)・phaser。質感: 音圧は clipper(ドラムバス・マスターの前に drive 2〜6)、ローファイ・ゲーム機は bitcrush、\n\
+  80 年代のスネアは reverb の gate_ms 150〜300。\n\
 - エフェクトのつながり(ノード表示の線): 並列(原音 + リバーブ、パラレル・コンプ)にしたいときは set_fx_links で\n\
   [in→eq, eq→out, eq→rev(gain_db で混ぜる量), rev→out] のように分けて合流させる。鳴るのは入力から出口までたどれるものだけ\n\
   (list_params の sounding)。ユーザーがつないだ表は読んでから、必要な線だけを足し引きする。\n\
