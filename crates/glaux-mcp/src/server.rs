@@ -1243,8 +1243,8 @@ pub struct StrumChordParams {
     /// 向き: down(低い音から)/ up(高い音から)/ alternate(拍の頭は下げ、裏は上げ。guitar の既定)。
     #[serde(default)]
     pub direction: Option<String>,
-    /// 型の値を上書き: 幅(ms)・拍の手前に出す割合 0〜1・並びの曲がり −1〜1・後の音の強さの変化(1 音ごと)・
-    /// 上げで低い弦を省くか・揺れ(ms)。
+    /// 型の値を上書き: 幅(ms。下げで一番低い弦から一番高い弦まで)・拍の手前に出す割合 0〜1・並びの曲がり −1〜1・
+    /// 後の音の強さの変化(1 音ごと)・揺れ(ms)。up_skip_low: false は up_strings: 0 と同じ(以前の引数)。
     #[serde(default)]
     pub span_ms: Option<f64>,
     #[serde(default)]
@@ -1255,6 +1255,14 @@ pub struct StrumChordParams {
     pub vel_slope: Option<f64>,
     #[serde(default)]
     pub up_skip_low: Option<bool>,
+    /// 上げのストローク: 鳴らす弦の数(上から。0 で全部。guitar の既定 4)・強さの倍率(既定 0.8)・
+    /// 弦ごとの間隔の倍率(既定 0.75。振りが速いので短い)。piano・harp は全部の音・1・1。
+    #[serde(default)]
+    pub up_strings: Option<usize>,
+    #[serde(default)]
+    pub up_velocity: Option<f64>,
+    #[serde(default)]
+    pub up_span: Option<f64>,
     #[serde(default)]
     pub jitter_ms: Option<f64>,
     /// 乱数の種(既定 1)。
@@ -7412,7 +7420,8 @@ impl GlauxServer {
 
     #[tool(
         description = "和音をストロークにする(同時に鳴る音を少しずつずらす): style guitar(35ms。拍の頭は下げ・裏は上げ、\
-        拍の手前に幅の 2 割、後の弦ほど弱く、上げは低い弦を省く)/ piano(ばらし 120ms)/ harp(200ms)。個々の値で上書きできる。\
+        拍の手前に幅の 2 割、後の弦ほど弱く。上げは上の 4 本だけを 0.8 倍の強さで、弦ごとの間隔 0.75 倍の速い振りで鳴らし、\
+        ダウンとアップの差を出す)/ piano(ばらし 120ms)/ harp(200ms)。個々の値で上書きできる。\
         終わりの位置は変えない。write_chords の strum_ms より細かく、既存のクリップ(打ち込み・読み込んだ MIDI)にも掛けられる。\
         1 回の undo で戻る。"
     )]
@@ -7458,7 +7467,20 @@ impl GlauxServer {
                 anchor: p.anchor.unwrap_or(anchor0).clamp(0.0, 1.0),
                 tension: p.tension.unwrap_or(0.0).clamp(-1.0, 1.0),
                 vel_slope: p.vel_slope.unwrap_or(slope0).clamp(-0.3, 0.3),
-                up_skip_low: p.up_skip_low.unwrap_or(skip0),
+                // up_skip_low: false(以前の引数)は全部の弦
+                up_strings: match (p.up_strings, p.up_skip_low) {
+                    (Some(n), _) => n.min(12),
+                    (None, Some(false)) => 0,
+                    _ => {
+                        if skip0 {
+                            4
+                        } else {
+                            0
+                        }
+                    }
+                },
+                up_vel: p.up_velocity.unwrap_or(if skip0 { 0.8 } else { 1.0 }),
+                up_span: p.up_span.unwrap_or(if skip0 { 0.75 } else { 1.0 }),
                 jitter: tick(p.jitter_ms.unwrap_or(2.0).clamp(0.0, 30.0)),
                 beat: glaux_core::PPQ,
                 tol: 10,

@@ -40,8 +40,12 @@ pub struct StrumOptions {
     pub tension: f64,
     /// 後の音ほど強さを変える割合(1 音ごと。−0.08 で 8% ずつ弱く)
     pub vel_slope: f64,
-    /// 上げのストロークで一番低い音を省く(4 音以上の和音)
-    pub up_skip_low: bool,
+    /// 上げのストロークで鳴らす弦の数(上から。0 で全部)。実際のギターの上げは主に上の 3〜4 本
+    pub up_strings: usize,
+    /// 上げのストロークの強さの倍率(軽く振るので下げより弱い)
+    pub up_vel: f64,
+    /// 上げのストロークの弦ごとの間隔の倍率(振りが速いのでばらけ方が短い)
+    pub up_span: f64,
     /// 揺れ(tick、±)
     pub jitter: u64,
     /// 拍の長さ(tick。alternate の表裏の判定)
@@ -102,23 +106,30 @@ pub fn strum(notes: &[Note], clip_start: u64, o: &StrumOptions) -> StrumResult {
             StrumDir::Alternate => on_beat,
         };
         let mut order: Vec<usize> = g.clone();
+        // 弦ごとの間隔は和音全体の幅から(上げで弦を省いても 1 本あたりの速さは同じ)
+        let total = g.len();
+        let (mut span, mut vel_k) = (o.span as f64, 1.0);
         if !down {
             order.reverse();
-            // 上げは低い弦に届かない
-            if o.up_skip_low && order.len() >= 4 {
-                res.removed.push(order.pop().expect("4 音以上"));
+            // 上げは低い弦に届かない(上から up_strings 本。少なくとも 2 本は鳴らす)
+            if o.up_strings > 0 {
+                let keep = o.up_strings.max(2).min(order.len());
+                res.removed.extend(order.drain(keep..));
             }
+            span *= o.up_span.clamp(0.2, 1.5);
+            vel_k = o.up_vel.clamp(0.2, 1.2);
         }
         let n = order.len();
+        let span = span * (n.saturating_sub(1)) as f64 / (total.saturating_sub(1)).max(1) as f64;
         let e = 2f64.powf(o.tension.clamp(-1.0, 1.0));
-        let early = (o.span as f64 * o.anchor.clamp(0.0, 1.0)).round() as i64;
+        let early = (span * o.anchor.clamp(0.0, 1.0)).round() as i64;
         for (k, &i) in order.iter().enumerate() {
             let x = if n > 1 {
                 k as f64 / (n - 1) as f64
             } else {
                 0.0
             };
-            let mut off = (o.span as f64 * x.powf(e)).round() as i64 - early;
+            let mut off = (span * x.powf(e)).round() as i64 - early;
             if o.jitter > 0 && k > 0 {
                 off += ((unit(&mut st) * 2.0 - 1.0) * o.jitter as f64).round() as i64;
             }
@@ -126,7 +137,7 @@ pub fn strum(notes: &[Note], clip_start: u64, o: &StrumOptions) -> StrumResult {
             let end = nt.pos.0 + nt.dur.0;
             let pos = (head as i64 + off).max(0) as u64;
             let pos = pos.min(end.saturating_sub(1));
-            let vel = (nt.vel as f64 * (1.0 + o.vel_slope * k as f64))
+            let vel = (nt.vel as f64 * vel_k * (1.0 + o.vel_slope * k as f64))
                 .round()
                 .clamp(1.0, 127.0) as u8;
             if pos != nt.pos.0 || vel != nt.vel {
@@ -426,7 +437,9 @@ mod tests {
             anchor: 0.0,
             tension: 0.0,
             vel_slope: -0.08,
-            up_skip_low: true,
+            up_strings: 4,
+            up_vel: 0.8,
+            up_span: 0.75,
             jitter: 0,
             beat: 960,
             tol: 10,
@@ -453,17 +466,30 @@ mod tests {
         assert_eq!(top.1, 1020);
         assert!(top.3 < low.3);
         assert!(r.removed.is_empty());
-        // 上げ: 高い音から、一番低い音は省く
+        // 上げ: 上の 4 本だけ(低い 2 本は省く)、高い音から、弱く、弦ごとの間隔は 0.75 倍(12 → 9)
         let r = strum(&ns, 0, &opts(StrumDir::Up));
-        assert_eq!(r.removed, vec![0]);
-        let top = r.moved.iter().find(|m| m.0 == 5);
-        assert!(top.is_none() || top.unwrap().1 == 960, "上げは高い音が先");
+        let mut removed = r.removed.clone();
+        removed.sort_unstable();
+        assert_eq!(removed, vec![0, 1]);
+        let top = r.moved.iter().find(|m| m.0 == 5).unwrap();
+        assert_eq!(
+            (top.1, top.3),
+            (960, 80),
+            "上げは高い音が先で、下げより弱い"
+        );
+        // 上から 3 本目は 9 × 2 = 18 後
+        let third = r.moved.iter().find(|m| m.0 == 3).unwrap();
+        assert_eq!(third.1, 978);
+        // 0 なら全部の弦
+        let mut all = opts(StrumDir::Up);
+        all.up_strings = 0;
+        assert!(strum(&ns, 0, &all).removed.is_empty());
         // 交互: 拍の頭は下げ、裏は上げ
         let mut two = chord(0);
         two.extend(chord(480));
         let r = strum(&two, 0, &opts(StrumDir::Alternate));
         assert_eq!(r.chords, 2);
-        assert_eq!(r.removed.len(), 1);
+        assert_eq!(r.removed.len(), 2, "裏の上げだけ弦を省く");
         // 拍の手前に出す
         let mut o = opts(StrumDir::Down);
         o.anchor = 0.2;

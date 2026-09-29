@@ -179,7 +179,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - ピアノや伴奏と重なる旋律は melody_lead で 20〜30ms 先に鳴らすと浮き上がる(和音はいちばん上の音だけ動く)。\n\
 - 1 音の中の強弱・明るさは note_dynamics: 弦・管・パッドの伸ばしに swell、ブラスのキメに sfz・fp、長い音の終わりに fade、\n\
   シンセのリードの伸ばしに open(暗くから開く)。ノートの volume_curve(dB)・brightness_curve(−1〜1)に展開される。\n\
-- 和音が一度に「ジャーン」と鳴るのは機械っぽさの筆頭。ギターのコードは strum_chord(style guitar: 拍の頭は下げ・裏は上げ)、\n\
+- 和音が一度に「ジャーン」と鳴るのは機械っぽさの筆頭。ギターのコードは strum_chord(style guitar: 拍の頭は下げ・裏は上げ。\n\
+  上げは上の 4 本を弱く速く = up_strings・up_velocity・up_span。16 分のカッティングは 16 分の刻みの和音に掛ける)、\n\
   ピアノのアルペジオ風のばらしは style piano、ハープは harp。読み込んだ MIDI や打ち込みにも後から掛けられる。\n\
 - 音の長さがそろいすぎているときは articulate_notes(弦・管のつながりは legato + slur、刻みは staccato、ほどよく切るなら portato)。\n\
   弦の刻み・マンドリンは tremolo single、ピアノ・弦の揺れは alternating、盛り上げの和音は chord。\n\

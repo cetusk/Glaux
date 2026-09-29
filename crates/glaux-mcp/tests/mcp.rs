@@ -3812,10 +3812,11 @@ async fn strums_and_drum_rudiments() {
         .await,
     );
     assert_eq!(v["chords"], 2, "{v}");
-    assert_eq!(v["removed"], 1);
+    // 上げは上の 4 本だけ(低い 2 本を省く)
+    assert_eq!(v["removed"], 2);
     let (project, _) = fx.handle.get_project().await.unwrap();
     let ns = project.tracks[0].clips[0].notes().unwrap().to_vec();
-    assert_eq!(ns.len(), 11);
+    assert_eq!(ns.len(), 10);
     let at = |pitch: u8, near: u64| {
         ns.iter()
             .find(|n| n.pitch == pitch && n.pos.0.abs_diff(near) < 200)
@@ -3824,7 +3825,19 @@ async fn strums_and_drum_rudiments() {
             .0
     };
     assert!(at(40, 0) < at(64, 0), "下げは低い弦が先");
-    assert!(at(64, 480) < at(45, 480), "上げは高い弦が先");
+    assert!(at(64, 480) < at(50, 480), "上げは高い弦が先");
+    assert!(
+        !ns.iter().any(|n| n.pitch == 45 && n.pos.0 > 300),
+        "上げは A 弦を鳴らさない"
+    );
+    // 上げは下げより弱い(最初に当たる弦どうし)
+    let vel = |pitch: u8, near: u64| {
+        ns.iter()
+            .find(|n| n.pitch == pitch && n.pos.0.abs_diff(near) < 200)
+            .unwrap()
+            .vel
+    };
+    assert!(vel(64, 480) < vel(40, 0), "{} {}", vel(64, 480), vel(40, 0));
     assert!(
         at(40, 0) < 3840,
         "拍の手前に出る(前の小節に食い込まないよう 0 で止まる)"
@@ -3834,6 +3847,17 @@ async fn strums_and_drum_rudiments() {
         .iter()
         .filter(|n| n.pos.0 < 400)
         .all(|n| n.pos.0 + n.dur.0 == 400));
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // 全部の弦で上げる
+    let v = ok_json(
+        &call(
+            &fx,
+            "strum_chord",
+            json!({ "clip_id": "clp_tec001", "up_strings": 0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["removed"], 0, "{v}");
     ok_json(&call(&fx, "undo", json!({})).await);
     // ピアノのばらし
     let v = ok_json(
