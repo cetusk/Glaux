@@ -69,6 +69,15 @@
   // 拍子イベントを考慮した小節列(グリッド・ルーラー・範囲選択の共通ソース)
   const barList = $derived(buildBars(project, endTick));
   const totalPx = $derived(barsEndTick(barList) * pxPerTick);
+  // レーンの小節線: トラックごとに小節の数だけ要素を作らず、全レーン共通の背景画像(SVG)1 枚にする
+  const gridImage = $derived.by(() => {
+    const w = Math.max(1, Math.ceil(totalPx));
+    const lines = barList
+      .map((b) => `<rect x='${Math.round(b.tick * pxPerTick)}' width='1' height='1'/>`)
+      .join("");
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='1' viewBox='0 0 ${w} 1' preserveAspectRatio='none' shape-rendering='crispEdges'><g fill='rgba(255,255,255,0.05)'>${lines}</g></svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  });
 
   function clipStyle(clip: Clip): string {
     let start = clip.start;
@@ -1640,7 +1649,7 @@
   }
 </script>
 
-<div class="timeline" class:w-hot={wGripHot} bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{defaultTrackH}px">
+<div class="timeline" class:w-hot={wGripHot} bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{defaultTrackH}px;--grid:{gridImage};--grid-w:{Math.max(1, Math.ceil(totalPx))}px">
   <!-- 再生ヘッド -->
   <div class="playhead" class:under-head={playheadPx < scrollX + HEAD_W} style="left:{playheadPx}px"></div>
 
@@ -2007,9 +2016,6 @@
             ? "ダブルクリックでクリップを作成してピアノロールを開く"
             : ""}
       >
-        {#each barList as bar (bar.index)}
-          <div class="grid-line" style="left:{bar.tick * pxPerTick}px"></div>
-        {/each}
         {#each track.clips as clip (clip.id)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
@@ -2753,6 +2759,10 @@
 
   .track-row .lane {
     position: relative;
+    background: var(--grid) 0 0 / var(--grid-w) 100% no-repeat, var(--bg-lane);
+  }
+
+  .track-row.master-row .lane {
     background: var(--bg-lane);
   }
 
@@ -2862,13 +2872,6 @@
 
   .track-row.alt .lane {
     background: var(--bg-lane-alt);
-  }
-
-  .grid-line {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.05);
   }
 
   .track-name {

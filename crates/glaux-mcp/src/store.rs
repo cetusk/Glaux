@@ -6,7 +6,7 @@
 //!
 //! 起動時は `history.jsonl` からの再構築を試みる(過去セッションの履歴の上で
 //! undo / revert ができる)。保存の途中で落ちたときの食い違い(末尾の切れた行、
-//! 履歴が 1〜2 手先にある、compaction の途中)は直して読み込む(`try_replay`)。
+//! 履歴が数手先にある、compaction の途中)は直して読み込む(`try_replay`)。
 //! それでも再構築結果が `project.json` と一致しないときは `project.json` を正として採用し、
 //! 既存の履歴は `history.jsonl.orphan` に退避する。
 //!
@@ -14,14 +14,20 @@
 //! 「履歴 → project.json」、全書き換えでは「project.json → 履歴」なので、どこで落ちても
 //! 履歴は project.json と同じか、数手先にある。
 //!
+//! アプリ・MCP サーバー(アクター)から使うときは、`project.json` は専用のスレッドで最新の状態だけを書く
+//! (編集の応答を書き込みで待たせない)。履歴への追記は応答の前に fsync するので、落ちたときに
+//! project.json が数手遅れていても、読み込みで上のとおり直す。undo・全書き換え・compaction の前と
+//! 終了時には、裏の書き込みを書き終えてから進める(履歴が project.json より遅れないように)。
+//!
 //! 履歴が [`COMPACT_AT`] 件を超えたら compaction する: 直近 [`COMPACT_KEEP`] 件だけ
 //! `history.jsonl` に残し、その起点となる状態を `history.base.json` に書く
 //! (再構築は base + history)。捨てた分は `history.archive.jsonl` に追記して
-//! 記録としては残す(undo の対象からは外れる)。
+//! 記録としては残す(undo の対象からは外れる)。件数が少なくても、`history.jsonl` が
+//! [`COMPACT_BYTES`] を超えたら同じように compaction する。
 
 use anyhow::{Context, Result};
 use glaux_core::{History, Project, Session};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,12 +36,23 @@ use std::path::{Path, PathBuf};
 pub const COMPACT_AT: usize = 3000;
 /// compaction 後に残す直近の件数(= 起動後に undo できる上限)
 pub const COMPACT_KEEP: usize = 1500;
+/// 件数に関わらず、`history.jsonl` がこの大きさを超えたら compaction する
+/// (トラックやクリップを消した逆コマンドは中身を丸ごと持つので、大きな編集が続くと件数の割に大きくなる)。
+/// 残すのは後ろからこの半分の大きさまで
+pub const COMPACT_BYTES: u64 = 64 << 20;
 
 pub struct Store {
     dir: PathBuf,
     /// `history.jsonl` に書き込み済みの適用エントリ数。
     /// 追記高速パス(apply 1 回 = 1 行 append)の判定に使う。
     saved_entries: Cell<usize>,
+    /// 書き込み済みの各行の (エントリ ID, 行の終わりのバイト位置)。undo のときにファイルを切り詰めるだけで
+    /// 済ませるのに使う(開いた直後など、分からなければ None で、そのときは全書き換え)
+    saved_lines: RefCell<Option<Vec<(glaux_core::EntryId, u64)>>>,
+    /// `project.json` を裏で書く係(アクターが使うときだけ。無ければその場で書く)
+    writer: Option<ProjectWriter>,
+    /// 今の状態の読み取り用の複製(変更のたびに 1 回だけ作り、読み手と裏の書き込みで共有する)
+    snapshot: RefCell<Option<std::sync::Arc<Project>>>,
     /// 版数(`project_version`)。編集・undo・redo のたびに増え、undo でも戻らない
     /// (AI が「自分の把握は古いか」を判断するため)。開いた時点の履歴の件数から始める
     revision: Cell<Option<usize>>,
@@ -137,6 +154,9 @@ pub fn create_project(dir: &Path, title: &str) -> Result<()> {
     let store = Store {
         dir: dir.to_path_buf(),
         saved_entries: Cell::new(0),
+        saved_lines: RefCell::new(None),
+        writer: None,
+        snapshot: RefCell::new(None),
         revision: Cell::new(None),
     };
     store.save(&Session::new(Project::new(title.trim())))
@@ -152,6 +172,9 @@ pub fn create_project_from(dir: &Path, project: Project) -> Result<()> {
     let store = Store {
         dir: dir.to_path_buf(),
         saved_entries: Cell::new(0),
+        saved_lines: RefCell::new(None),
+        writer: None,
+        snapshot: RefCell::new(None),
         revision: Cell::new(None),
     };
     store.save(&Session::new(project))
@@ -173,6 +196,9 @@ impl Store {
         let store = Store {
             dir,
             saved_entries: Cell::new(0),
+            saved_lines: RefCell::new(None),
+            writer: None,
+            snapshot: RefCell::new(None),
             revision: Cell::new(None),
         };
         let project_path = store.project_path();
@@ -214,7 +240,34 @@ impl Store {
             None => Session::new(project),
         };
         store.saved_entries.set(session.history().len());
+        if store.saved_lines.borrow().is_none() {
+            *store.saved_lines.borrow_mut() = store.scan_lines(&session);
+        }
         Ok((store, session))
+    }
+
+    /// 読み込んだ `history.jsonl` の各行の終わりの位置を、適用済みのエントリと対応づける
+    /// (行の数が合わなければ None。そのときの undo は全書き換えになる)
+    fn scan_lines(&self, session: &Session) -> Option<Vec<(glaux_core::EntryId, u64)>> {
+        let bytes = fs::read(self.history_path()).ok()?;
+        let mut ends = Vec::new();
+        let mut start = 0usize;
+        for (i, b) in bytes.iter().enumerate() {
+            if *b == b'\n' {
+                if !bytes[start..i].iter().all(u8::is_ascii_whitespace) {
+                    ends.push(i as u64 + 1);
+                }
+                start = i + 1;
+            }
+        }
+        let applied = session.history().applied();
+        (start == bytes.len() && ends.len() == applied.len()).then(|| {
+            applied
+                .iter()
+                .zip(ends)
+                .map(|(e, end)| (e.id.clone(), end))
+                .collect()
+        })
     }
 
     /// `history.jsonl` から Session を再構築する。
@@ -328,28 +381,92 @@ impl Store {
 
     /// `project.json` と `history.jsonl` を保存する(temp + rename で原子的に)。
     pub fn save(&self, session: &Session) -> Result<()> {
+        // 裏で書きかけの project.json を先に済ませる(後から古い状態で上書きされないように)
+        self.flush()?;
         let project_json = session
             .project()
             .to_json_compact()
             .context("project.json のシリアライズに失敗")?;
-        let history_jsonl = session
-            .history()
-            .to_jsonl()
-            .context("history.jsonl のシリアライズに失敗")?;
+        // History::to_jsonl と同じ形(1 行 1 エントリ)。行の終わりの位置も覚える
+        let mut history_jsonl = String::new();
+        let mut lines = Vec::with_capacity(session.history().len());
+        for e in session.history().applied() {
+            history_jsonl
+                .push_str(&serde_json::to_string(e).context("history.jsonl のシリアライズに失敗")?);
+            history_jsonl.push('\n');
+            lines.push((e.id.clone(), history_jsonl.len() as u64));
+        }
         write_atomic(&self.project_path(), project_json.as_bytes())?;
         write_atomic(&self.history_path(), history_jsonl.as_bytes())?;
         self.saved_entries.set(session.history().len());
+        *self.saved_lines.borrow_mut() = Some(lines);
         Ok(())
+    }
+
+    /// undo(適用済みが書き込み済みの先頭の一部に減った)なら、`history.jsonl` を切り詰めるだけで保存する。
+    /// project.json を先に書く(途中で落ちても、履歴は project.json と同じか先にある)。できなければ false
+    fn save_truncated(&self, session: &Session) -> Result<bool> {
+        let n = session.history().len();
+        let end = {
+            let lines = self.saved_lines.borrow();
+            let Some(lines) = lines.as_ref() else {
+                return Ok(false);
+            };
+            let applied = session.history().applied();
+            if n >= lines.len()
+                || lines[..n]
+                    .iter()
+                    .zip(applied)
+                    .any(|((id, _), e)| *id != e.id)
+            {
+                return Ok(false);
+            }
+            n.checked_sub(1).map_or(0, |i| lines[i].1)
+        };
+        self.flush()?;
+        let project_json = session
+            .project()
+            .to_json_compact()
+            .context("project.json のシリアライズに失敗")?;
+        write_atomic(&self.project_path(), project_json.as_bytes())?;
+        let cut = fs::OpenOptions::new()
+            .write(true)
+            .open(self.history_path())
+            .and_then(|f| {
+                f.set_len(end)?;
+                f.sync_data()
+            });
+        if let Err(e) = cut {
+            tracing::warn!("history.jsonl の切り詰めに失敗({e})。全書き換えにフォールバック");
+            return Ok(false);
+        }
+        self.saved_entries.set(n);
+        if let Some(lines) = self.saved_lines.borrow_mut().as_mut() {
+            lines.truncate(n);
+        }
+        Ok(true)
     }
 
     /// 変更後の保存。可能なら `history.jsonl` へ追記だけで済ませる高速パス。
     ///
     /// - apply 直後(エントリが 1 つ増えただけ)→ 末尾 1 行を append
     /// - エントリ数が変わらない(checkpoint 等)→ project.json のみ
-    /// - それ以外(undo / redo / revert_to / 再構築)→ 全書き換え
+    /// - undo(書き込み済みの先頭の一部に減った)→ 切り詰めるだけ
+    /// - それ以外(再構築など)→ 全書き換え
     ///
     /// 履歴が長くなると全書き換えは O(履歴長) なので、編集のたびに払うのを避ける。
     pub fn save_after_change(&self, session: &Session) -> Result<()> {
+        self.save_after_change_shared(session, None)
+    }
+
+    /// [`Self::save_after_change`] の、今の状態の複製(`snapshot`)を渡せる版。裏で書く係があれば、
+    /// 追記・チェックポイントの後の `project.json` はその複製を裏で書く(応答を待たせない。
+    /// 正本は fsync 済みの履歴。落ちたときに project.json が遅れていても、読み込みで履歴から直す)
+    pub fn save_after_change_shared(
+        &self,
+        session: &Session,
+        snapshot: Option<&std::sync::Arc<Project>>,
+    ) -> Result<()> {
         let n = session.history().len();
         let saved = self.saved_entries.get();
 
@@ -372,33 +489,119 @@ impl Store {
             match append {
                 Ok(()) => {
                     self.saved_entries.set(n);
-                    let project_json = session
-                        .project()
-                        .to_json_compact()
-                        .context("project.json のシリアライズに失敗")?;
-                    write_atomic(&self.project_path(), project_json.as_bytes())?;
-                    return Ok(());
+                    if let Some(v) = self.saved_lines.borrow_mut().as_mut() {
+                        let prev = v.last().map_or(0, |(_, end)| *end);
+                        v.push((last.id.clone(), prev + line.len() as u64 + 1));
+                    }
+                    return self.write_project(session, snapshot);
                 }
                 Err(e) => {
                     tracing::warn!("history.jsonl への追記に失敗({e})。全書き換えにフォールバック");
                 }
             }
         } else if n == saved {
-            let project_json = session
-                .project()
-                .to_json_compact()
-                .context("project.json のシリアライズに失敗")?;
-            write_atomic(&self.project_path(), project_json.as_bytes())?;
+            return self.write_project(session, snapshot);
+        } else if n < saved && self.save_truncated(session)? {
             return Ok(());
         }
 
         self.save(session)
     }
 
+    /// `project.json` を書く。裏で書く係と複製があれば裏へ渡し、無ければその場で書く。
+    /// 裏で前に失敗した書き込みがあれば、そのエラーを返す(次の書き込みは渡してある)
+    fn write_project(
+        &self,
+        session: &Session,
+        snapshot: Option<&std::sync::Arc<Project>>,
+    ) -> Result<()> {
+        if let (Some(w), Some(snap)) = (&self.writer, snapshot) {
+            w.enqueue(self.project_path(), snap.clone());
+            return match w.take_error() {
+                Some(e) => Err(anyhow::anyhow!(e)),
+                None => Ok(()),
+            };
+        }
+        self.flush()?;
+        let project_json = session
+            .project()
+            .to_json_compact()
+            .context("project.json のシリアライズに失敗")?;
+        write_atomic(&self.project_path(), project_json.as_bytes())
+    }
+
+    /// 今の状態の読み取り用の複製。変わっていなければ前に作ったものを返す
+    /// (変わったら [`Self::save_after_change_snapshot`] か [`Self::clear_snapshot`] で作り直させる)
+    pub fn snapshot(&self, session: &Session) -> std::sync::Arc<Project> {
+        self.snapshot
+            .borrow_mut()
+            .get_or_insert_with(|| std::sync::Arc::new(session.project().clone()))
+            .clone()
+    }
+
+    /// 読み取り用の複製を捨てる(状態が変わったかもしれないとき)
+    pub fn clear_snapshot(&self) {
+        *self.snapshot.borrow_mut() = None;
+    }
+
+    /// 変更後の保存を、新しい読み取り用の複製を作って行う(複製は裏の書き込みと読み手で共有する)
+    pub fn save_after_change_snapshot(&self, session: &Session) -> Result<()> {
+        let snap = std::sync::Arc::new(session.project().clone());
+        *self.snapshot.borrow_mut() = Some(snap.clone());
+        self.save_after_change_shared(session, Some(&snap))
+    }
+
+    /// `project.json` を裏で書くようにする(アクターが使う)
+    pub fn enable_background_writes(&mut self) {
+        if self.writer.is_none() {
+            self.writer = Some(ProjectWriter::spawn());
+        }
+    }
+
+    /// 裏で書きかけの `project.json` を書き終えるまで待つ(フォルダの移動・読み直しの前など)。
+    /// 裏での書き込みの失敗があれば返す
+    pub fn flush(&self) -> Result<()> {
+        match self.writer.as_ref().and_then(ProjectWriter::flush) {
+            Some(e) => Err(anyhow::anyhow!(e)),
+            None => Ok(()),
+        }
+    }
+
     /// 履歴が長くなりすぎていれば compaction する(既定のしきい値)。
     /// 戻り値は compaction したかどうか。
     pub fn maybe_compact(&self, session: &mut Session) -> Result<bool> {
+        if let Some(keep) = self.keep_for_bytes(COMPACT_BYTES) {
+            if keep < session.history().len() {
+                return self.maybe_compact_with(session, keep, keep);
+            }
+        }
         self.maybe_compact_with(session, COMPACT_AT, COMPACT_KEEP)
+    }
+
+    /// `history.jsonl` が `limit` バイトを超えていれば、後ろから `limit / 2` バイトまでに収まる件数
+    /// (1 件以上、[`COMPACT_KEEP`] 以下)。超えていない・大きさが分からなければ None
+    fn keep_for_bytes(&self, limit: u64) -> Option<usize> {
+        let lines = self.saved_lines.borrow();
+        let lines = lines.as_ref()?;
+        let total = lines.last()?.1;
+        if total <= limit {
+            return None;
+        }
+        // 終わりの位置が cut 以下の行(= 前の方)を捨てる
+        let cut = total - limit / 2;
+        let first_kept = lines.partition_point(|(_, end)| *end <= cut);
+        Some((lines.len() - first_kept).clamp(1, COMPACT_KEEP))
+    }
+
+    /// 大きさのしきい値を指定して compaction する(テスト用)。
+    #[doc(hidden)]
+    pub fn maybe_compact_by_bytes(&self, session: &mut Session, limit: u64) -> Result<bool> {
+        match self.keep_for_bytes(limit) {
+            Some(keep) if keep < session.history().len() => {
+                self.maybe_compact_with(session, keep, keep)
+            }
+            _ => Ok(false),
+        }
     }
 
     /// しきい値を指定して compaction する(テスト用にも公開)。
@@ -551,8 +754,114 @@ pub fn release_lock(dir: &Path) {
 }
 
 /// 読み込み時に食い違いを直す、履歴の末尾からの手数の上限。
-/// 保存は 1 回の変更ごとなので、落ちて食い違うのは 1 手ぶんまでのはず
-const RECOVER_STEPS: usize = 2;
+/// 履歴は変更ごとに書くが、`project.json` は裏で最新の状態だけを書くので、落ちたときには
+/// 書いている間に進んだ数手ぶん遅れていることがある
+const RECOVER_STEPS: usize = 32;
+
+/// `project.json` を裏で書く係。最新の状態だけを書く(書いている間に来た古い状態は飛ばす)
+struct ProjectWriter {
+    shared: std::sync::Arc<(std::sync::Mutex<WriterState>, std::sync::Condvar)>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct WriterState {
+    pending: Option<(PathBuf, std::sync::Arc<Project>)>,
+    busy: bool,
+    stop: bool,
+    error: Option<String>,
+}
+
+impl ProjectWriter {
+    fn spawn() -> ProjectWriter {
+        let shared: std::sync::Arc<(std::sync::Mutex<WriterState>, std::sync::Condvar)> =
+            Default::default();
+        let s = shared.clone();
+        let thread = std::thread::Builder::new()
+            .name("glaux-project-writer".into())
+            .spawn(move || {
+                let (lock, cv) = &*s;
+                loop {
+                    let job = {
+                        let mut st = lock.lock().unwrap_or_else(|e| e.into_inner());
+                        while st.pending.is_none() && !st.stop {
+                            st = cv.wait(st).unwrap_or_else(|e| e.into_inner());
+                        }
+                        let Some(job) = st.pending.take() else {
+                            return; // 止める合図で、書くものも残っていない
+                        };
+                        st.busy = true;
+                        job
+                    };
+                    let (path, project) = job;
+                    let result = project
+                        .to_json_compact()
+                        .context("project.json のシリアライズに失敗")
+                        .and_then(|json| write_atomic(&path, json.as_bytes()));
+                    let mut st = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    st.busy = false;
+                    if let Err(e) = result {
+                        tracing::error!("project.json の保存に失敗しました: {e:#}");
+                        st.error = Some(format!("{e:#}"));
+                    }
+                    cv.notify_all();
+                }
+            })
+            .ok();
+        ProjectWriter { shared, thread }
+    }
+
+    fn enqueue(&self, path: PathBuf, project: std::sync::Arc<Project>) {
+        let (lock, cv) = &*self.shared;
+        lock.lock().unwrap_or_else(|e| e.into_inner()).pending = Some((path, project));
+        cv.notify_all();
+    }
+
+    fn take_error(&self) -> Option<String> {
+        self.shared
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .error
+            .take()
+    }
+
+    /// 書きかけ・未着手のものを書き終えるまで待つ。失敗があれば返す
+    fn flush(&self) -> Option<String> {
+        let (lock, cv) = &*self.shared;
+        let mut st = lock.lock().unwrap_or_else(|e| e.into_inner());
+        // 係のスレッドが起動できなかったときは、ここで書く
+        if self.thread.is_none() {
+            if let Some((path, project)) = st.pending.take() {
+                if let Err(e) = project
+                    .to_json_compact()
+                    .context("project.json のシリアライズに失敗")
+                    .and_then(|json| write_atomic(&path, json.as_bytes()))
+                {
+                    st.error = Some(format!("{e:#}"));
+                }
+            }
+        }
+        while st.pending.is_some() || st.busy {
+            st = cv.wait(st).unwrap_or_else(|e| e.into_inner());
+        }
+        st.error.take()
+    }
+}
+
+impl Drop for ProjectWriter {
+    fn drop(&mut self) {
+        // 残っているものを書き終えてから止める
+        {
+            let (lock, cv) = &*self.shared;
+            lock.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
+            cv.notify_all();
+        }
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
 
 /// `history.base.json` の中身(起点の Project と、最初に残すエントリの ID)。
 /// 以前は Project そのものを書いていたので、その形式も読む

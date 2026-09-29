@@ -131,29 +131,59 @@ pub fn load(dir: &Path, name: &str) -> Result<FxPreset, String> {
 }
 
 /// 一覧(新しい順)。壊れたファイルは飛ばす。
+/// 読んだプリセットの要約(ファイル → (更新時刻, 要約。読めなければ None))。一覧のたびに
+/// 全ファイル(CLAP の状態を含む大きな JSON)を解析し直さない
+#[allow(clippy::type_complexity)]
+static LISTED: std::sync::Mutex<
+    Option<
+        std::collections::HashMap<
+            std::path::PathBuf,
+            (std::time::SystemTime, Option<FxPresetInfo>),
+        >,
+    >,
+> = std::sync::Mutex::new(None);
+
 pub fn list(dir: &Path) -> Vec<FxPresetInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
+    let read = |path: &Path| -> Option<FxPresetInfo> {
+        let p: FxPreset = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        (p.format == FX_PRESET_FORMAT).then(|| {
+            let (kind, plugin_id) = kind_of(&p.effect.source);
+            FxPresetInfo {
+                name: p.name,
+                kind,
+                plugin_id,
+                note: p.note,
+                origin: p.origin,
+                created: p.created,
+            }
+        })
+    };
+    let mut cache = LISTED.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(Default::default);
+    let mut seen = std::collections::HashSet::new();
     let mut out: Vec<FxPresetInfo> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| {
-            let p: FxPreset =
-                serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
-            (p.format == FX_PRESET_FORMAT).then(|| {
-                let (kind, plugin_id) = kind_of(&p.effect.source);
-                FxPresetInfo {
-                    name: p.name,
-                    kind,
-                    plugin_id,
-                    note: p.note,
-                    origin: p.origin,
-                    created: p.created,
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter_map(|path| {
+            seen.insert(path.clone());
+            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            match (mtime, cache.get(&path)) {
+                (Some(t), Some((at, info))) if *at == t => info.clone(),
+                (Some(t), _) => {
+                    let info = read(&path);
+                    cache.insert(path, (t, info.clone()));
+                    info
                 }
-            })
+                (None, _) => read(&path),
+            }
         })
         .collect();
+    // 消えたファイルの分は忘れる(同じフォルダのものだけ)
+    cache.retain(|p, _| p.parent() != Some(dir) || seen.contains(p));
     out.sort_by(|a, b| b.created.cmp(&a.created));
     out
 }

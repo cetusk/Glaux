@@ -106,7 +106,8 @@ async fn full_editing_flow() {
     assert!(entry_id.starts_with("hst_"));
     assert!(v["save_error"].is_null());
 
-    // 保存もされている
+    // 保存もされている(project.json は裏で書くので、書き終えるのを待ってから読む)
+    fx.handle.flush().await.unwrap();
     let saved = std::fs::read_to_string(fx.dir.join("project.json")).unwrap();
     assert!(saved.contains("trk_bass01"));
 
@@ -681,6 +682,7 @@ async fn switch_project_swaps_session_for_all_handles() {
 
     // 新プロジェクトへの編集は新しいフォルダに保存される
     call(&fx, "apply_commands", add_track_args("trk_new001", "New")).await;
+    fx.handle.flush().await.unwrap();
     assert!(dir_b.join("project.json").exists());
     let saved = std::fs::read_to_string(dir_b.join("project.json")).unwrap();
     assert!(saved.contains("trk_new001"));

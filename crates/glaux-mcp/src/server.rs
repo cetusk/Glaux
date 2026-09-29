@@ -3018,7 +3018,7 @@ impl GlauxServer {
         String,
     > {
         let id = glaux_core::ClipId::parse(clip_id).map_err(|e| e.to_string())?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let (_track, clip) = project
             .clip(&id)
             .ok_or_else(|| format!("clip not found: {id}"))?;
@@ -3494,7 +3494,7 @@ impl GlauxServer {
     )]
     async fn list_params(&self, params: Parameters<ListParamsParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("list_params");
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
 
         let Some(track_id) = params.0.track_id else {
             // カタログモード(+ 今のマスターのエフェクトチェーン)
@@ -3564,7 +3564,7 @@ impl GlauxServer {
     async fn analyze_audio(&self, params: Parameters<AnalyzeAudioParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("analyze_audio");
         let p = params.0;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
 
         let track_ids: Option<Vec<glaux_core::TrackId>> = match &p.track_ids {
             None => None,
@@ -3646,7 +3646,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("import_ir");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = match &p.track_id {
             Some(t) => {
                 let id = glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?;
@@ -3725,7 +3725,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("refine_by_words");
         let p = params.0;
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let outcome = tokio::task::spawn_blocking({
             let project = project.clone();
@@ -3820,14 +3820,14 @@ impl GlauxServer {
                 ))
             }
         };
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let before_volume = project.master.volume_db as f64;
         let plan = tokio::task::spawn_blocking({
             let project = project.clone();
             move || -> Result<glaux_engine::mastering::MasterPlan, String> {
                 // 足すエフェクトは今のマスターのエフェクトの後、マスター音量の前に入るので、音量 0dB で描き出す
-                let mut p = project;
+                let mut p = std::sync::Arc::unwrap_or_clone(project);
                 p.master.volume_db = 0.0;
                 let bank = glaux_engine::SampleBank::for_offline(&p, std::path::Path::new(&dir));
                 let mix = glaux_engine::render_project(&p, 48_000.0, &bank)
@@ -3983,7 +3983,7 @@ impl GlauxServer {
     async fn analyze_harmony(&self, params: Parameters<AnalyzeHarmonyParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("analyze_harmony");
         let p = params.0;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let track_ids: Option<Vec<glaux_core::TrackId>> = match &p.track_ids {
             None => None,
             Some(ids) => Some(
@@ -4017,7 +4017,7 @@ impl GlauxServer {
     async fn analyze_rhythm(&self, params: Parameters<AnalyzeRhythmParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("analyze_rhythm");
         let p = params.0;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let track_ids: Option<Vec<glaux_core::TrackId>> = match &p.track_ids {
             None => None,
             Some(ids) => Some(
@@ -4130,7 +4130,7 @@ impl GlauxServer {
     async fn analyze_sound(&self, params: Parameters<AnalyzeSoundParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("analyze_sound");
         let source = params.0.source.to_source()?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
             let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
@@ -4164,7 +4164,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("compare_sounds");
         let p = params.0;
         let (sa, sb) = (p.a.to_source()?, p.b.to_source()?);
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
             let dir = std::path::Path::new(&dir);
@@ -4210,7 +4210,7 @@ impl GlauxServer {
             }
         };
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project
             .track(&track_id)
             .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
@@ -4282,7 +4282,7 @@ impl GlauxServer {
         let author = self.author(&ctx);
         let (entry_id, m) = flatten(self.handle.apply(command, author, edit_label).await)?;
         // トラックのエフェクトも通して鳴らし、目標とどれだけ近いか確かめる
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (pitch, hold) = (outcome.pitch, outcome.hold);
         let verified = tokio::task::spawn_blocking(move || -> Result<f32, String> {
             let dirp = std::path::Path::new(&dir);
@@ -4339,7 +4339,7 @@ impl GlauxServer {
             }
         };
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let v = tokio::task::spawn_blocking(move || {
             crate::preset_index::similar_json(
@@ -4385,7 +4385,7 @@ impl GlauxServer {
             }
         };
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let wanted = p.params.unwrap_or_default();
         let max_seconds = p.max_seconds.unwrap_or(20.0);
@@ -4443,7 +4443,7 @@ impl GlauxServer {
             (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
             _ => return Err("clip_id / file のどちらか 1 つを指定してください".to_owned()),
         };
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
             let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
@@ -4475,7 +4475,7 @@ impl GlauxServer {
             (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
             _ => return Err("clip_id / file のどちらか 1 つを指定してください".to_owned()),
         };
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
             let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
@@ -4500,7 +4500,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("list_plugin_presets");
         let p = params.0;
         let track_id = plugin_owner(p.track_id.as_deref(), p.fx_id.as_deref())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let v = tokio::task::spawn_blocking(move || {
             crate::clap_presets::list(
                 &project,
@@ -4529,7 +4529,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("load_plugin_preset");
         let p = params.0;
         let track_id = plugin_owner(p.track_id.as_deref(), p.fx_id.as_deref())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (command, label, name) = tokio::task::spawn_blocking(move || {
             crate::clap_presets::load_command(&project, &track_id, &p.preset)
         })
@@ -4599,7 +4599,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("set_soundfont_instrument");
         let p = params.0;
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
@@ -4736,7 +4736,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("import_sample");
         let p = params.0;
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
@@ -4800,7 +4800,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("import_audio_clip");
         let p = params.0;
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let imported =
             crate::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
@@ -4856,7 +4856,7 @@ impl GlauxServer {
             Some(id) => Some(glaux_core::TrackId::parse(id).map_err(|e| e.to_string())?),
             None => None,
         };
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let mut opts = glaux_engine::transcribe::TranscribeOptions::default();
         if let Some(ms) = p.min_note_ms {
@@ -4908,7 +4908,7 @@ impl GlauxServer {
         let p = params.0;
         let clip_id = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
         let method = crate::stems::SeparateMethod::parse(p.method.as_deref())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let s = tokio::task::spawn_blocking(move || {
             crate::stems::separate_clip_commands(
@@ -4963,7 +4963,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("save_preset");
         let p = params.0;
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let track = project
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
@@ -4998,7 +4998,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("load_preset");
         let p = params.0;
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
@@ -5049,7 +5049,7 @@ impl GlauxServer {
         let p = params.0;
         let target = crate::fx_presets::Target::parse(&p.target)?;
         let fx_id = glaux_core::FxId::parse(&p.fx_id).map_err(|e| e.to_string())?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let (effect, owner) = crate::fx_presets::find_effect(&project, &target, &fx_id)?;
         let preset = crate::fx_presets::save(
             &crate::fx_presets::default_dir(),
@@ -5078,7 +5078,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("load_effect_preset");
         let p = params.0;
         let target = crate::fx_presets::Target::parse(&p.target)?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let preset = crate::fx_presets::load(&crate::fx_presets::default_dir(), &p.name)?;
         let (command, fx_id) = crate::fx_presets::add_command(
             &project,
@@ -5166,7 +5166,7 @@ impl GlauxServer {
                 Some(_) => matches!(e.author, Author::System),
             })
             .collect();
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut v = crate::changes::summarize(&entries, &project);
         v["project_version"] = json!(version);
         Ok(JsonText(v))
@@ -5200,7 +5200,7 @@ impl GlauxServer {
             Some(t) => Some(glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?),
             None => None,
         };
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let clips: Vec<_> = project
             .tracks
             .iter()
@@ -5241,7 +5241,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("insert_bars");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (at, len) = glaux_core::arrange::bar_range(&project, p.bar, p.count)
             .ok_or("bar と count は 1 以上")?;
         let cmds = glaux_core::arrange::insert_time(&project, at, len);
@@ -5261,7 +5261,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("delete_bars");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (from, len) = glaux_core::arrange::bar_range(&project, p.bar, p.count)
             .ok_or("bar と count は 1 以上")?;
         let cmds = glaux_core::arrange::delete_time(&project, from, len);
@@ -5282,7 +5282,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("bounce_track");
         let track_id = glaux_core::TrackId::parse(&params.0.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let b = tokio::task::spawn_blocking(move || {
             let dir = std::path::Path::new(&dir);
@@ -5312,7 +5312,7 @@ impl GlauxServer {
     async fn export_audio(&self, params: Parameters<crate::export::ExportRequest>) -> ToolResult {
         let _activity = self.handle.begin_activity("export_audio");
         let req = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let v = tokio::task::spawn_blocking(move || {
             let dir = std::path::Path::new(&dir);
@@ -5337,7 +5337,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("import_midi");
         let req = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let imp = tokio::task::spawn_blocking(move || crate::midi::import_file(&project, &req))
             .await
             .map_err(|e| e.to_string())??;
@@ -5363,7 +5363,7 @@ impl GlauxServer {
     )]
     async fn export_musicxml(&self, params: Parameters<ExportMidiParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("export_musicxml");
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let path = params.0.path.map(|p| {
             if p.ends_with(".mid") {
@@ -5384,7 +5384,7 @@ impl GlauxServer {
     )]
     async fn export_midi(&self, params: Parameters<ExportMidiParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("export_midi");
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let v = crate::midi::export_file(
             &project,
@@ -5479,7 +5479,7 @@ impl GlauxServer {
         // 小節の中で回す(拍の置き換え)
         let wrap = if p.wrap_in_bar.unwrap_or(false) {
             let cid = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
-            let (project, _) = self.handle.get_project().await?;
+            let (project, _) = self.handle.get_project_shared().await?;
             let start = project.clip(&cid).map_or(0, |(_, c)| c.start.0);
             Some((
                 start,
@@ -5556,7 +5556,7 @@ impl GlauxServer {
         }
         let unroll = p.unroll_loop.unwrap_or(false);
         let humanize = p.humanize_ms.unwrap_or(0.0).clamp(0.0, 20.0);
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut commands = Vec::new();
         let mut clips_out = Vec::new();
         let mut total = 0usize;
@@ -5718,7 +5718,7 @@ impl GlauxServer {
         let style =
             glaux_core::groove::style(&name).ok_or_else(|| format!("style が不明です({name})"))?;
         let (clip_id, len, notes, version) = self.load_notes(&p.clip_id, &None).await?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (_, clip) = project.clip(&clip_id).ok_or("clip not found")?;
         let start = clip.start.0;
         let pitch = p.pitch.unwrap_or(38);
@@ -5807,7 +5807,7 @@ impl GlauxServer {
             }
         };
         let (clip_id, len, notes, version) = self.load_notes(&p.clip_id, &p.note_ids).await?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (scale, key_name) = match &p.key {
             Some(k) => (parse_key(k)?, k.clone()),
             None => match glaux_core::harmony::analyze(&project, None, None).key {
@@ -5887,7 +5887,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("write_chords");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -6059,7 +6059,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("write_arpeggio");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -6237,7 +6237,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("write_bassline");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -6396,7 +6396,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("write_drums");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if !is_drum_track(track) {
             return Err("ドラムのトラック(音源が内蔵の drum か、SoundFont のドラム(bank 128))を指定してください".to_owned());
@@ -6525,7 +6525,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("write_transition");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         // 区切りの小節
         let to = p.to.trim();
         let bar: u32 = match to.parse::<u32>() {
@@ -6743,7 +6743,7 @@ impl GlauxServer {
         use glaux_core::melody;
         let _activity = self.handle.begin_activity("critique_melody");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         // 旋律の音
         let (track, clips): (&glaux_core::Track, Vec<&glaux_core::Clip>) =
             match (&p.clip_id, &p.track_id) {
@@ -6874,7 +6874,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("develop_motif");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -7025,7 +7025,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("write_melody");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -7287,7 +7287,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("change_meter");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (start, _) = glaux_core::arrange::bar_range(&project, p.bar.max(1), 1)
             .ok_or("小節を数えられません")?;
         let cur = glaux_core::meter::meter_at(&project, start);
@@ -7383,7 +7383,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("write_polyrhythm");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -7472,7 +7472,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("write_polymeter");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -7579,7 +7579,7 @@ impl GlauxServer {
         if ids.is_empty() {
             return Err("clip_id か clip_ids を指定してください".to_owned());
         }
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut commands = Vec::new();
         let mut total = 0usize;
         let mut touched_bars = std::collections::BTreeSet::new();
@@ -7681,7 +7681,7 @@ impl GlauxServer {
             p.probability.unwrap_or(0.7).clamp(0.0, 1.0)
         };
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut rng = p.seed.unwrap_or(1).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut unit = || {
             rng ^= rng >> 12;
@@ -7809,7 +7809,7 @@ impl GlauxServer {
         let humanize = p.humanize.unwrap_or(0.1).clamp(0.0, 0.3) as f32;
         let min_len = (p.min_beats.unwrap_or(1.0).max(0.0) * glaux_core::PPQ as f64) as u64;
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut rng = p.seed.unwrap_or(1).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut unit = || {
             rng ^= rng >> 12;
@@ -7924,7 +7924,7 @@ impl GlauxServer {
             p.probability.unwrap_or(0.5).clamp(0.0, 1.0)
         };
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut rng = p.seed.unwrap_or(1).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut unit = || {
             rng ^= rng >> 12;
@@ -8093,7 +8093,7 @@ impl GlauxServer {
             other => return Err(format!("mode は fixed / by_velocity(got: {other})")),
         };
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut commands = Vec::new();
         let mut total = 0usize;
         for id in &ids {
@@ -8177,7 +8177,7 @@ impl GlauxServer {
         };
         let remove = p.remove.unwrap_or(false);
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut rng = p.seed.unwrap_or(1).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut unit = || {
             rng ^= rng >> 12;
@@ -8292,7 +8292,7 @@ impl GlauxServer {
         };
         let span_ms = p.span_ms.unwrap_or(span0).clamp(1.0, 1000.0);
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut commands = Vec::new();
         let (mut chords, mut moved, mut removed) = (0usize, 0usize, 0usize);
         for id in &ids {
@@ -8398,7 +8398,7 @@ impl GlauxServer {
             )
         })?;
         let cid = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (_, clip) = project.clip(&cid).ok_or("クリップが見つかりません")?;
         let notes = clip.notes().ok_or("MIDI クリップではありません")?;
         let bpm = project.tempo_map.bpm_at(clip.start);
@@ -8622,7 +8622,7 @@ impl GlauxServer {
         let ratio = p.ratio.unwrap_or(style.default_ratio()).clamp(0.1, 1.0);
         let slur = p.slur.unwrap_or(false) && style == ArticStyle::Legato;
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut commands = Vec::new();
         let mut total = 0usize;
         for id in &ids {
@@ -8717,7 +8717,7 @@ impl GlauxServer {
         let kind = Tremolo::parse(&p.kind)
             .ok_or_else(|| format!("kind は single / alternating / chord(got: {})", p.kind))?;
         let cid = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (_, clip) = project.clip(&cid).ok_or("クリップが見つかりません")?;
         let notes = clip.notes().ok_or("MIDI クリップではありません")?;
         let bpm = project.tempo_map.bpm_at(clip.start);
@@ -8853,7 +8853,7 @@ impl GlauxServer {
             other => return Err(format!("mode は steps / continuous(got: {other})")),
         };
         let cid = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (_, clip) = project.clip(&cid).ok_or("クリップが見つかりません")?;
         let notes = clip.notes().ok_or("MIDI クリップではありません")?;
         let key = match &p.key {
@@ -9033,7 +9033,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("shape_phrase");
         let p = params.0;
         let bars = p.bars.unwrap_or(4).clamp(1, 64);
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (start, len) = glaux_core::arrange::bar_range(&project, p.bar.max(1), bars)
             .ok_or("小節を数えられません")?;
         let arc = p.arc.unwrap_or(0.5).clamp(0.0, 1.0);
@@ -9130,7 +9130,7 @@ impl GlauxServer {
         use glaux_core::meter;
         let _activity = self.handle.begin_activity("metric_modulation");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (at, _) = glaux_core::arrange::bar_range(&project, p.bar.max(1), 1)
             .ok_or("小節を数えられません")?;
         let old = project
@@ -9227,7 +9227,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("hemiola");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let (start, len) = glaux_core::arrange::bar_range(&project, p.bar.max(1), 2)
             .ok_or("小節を数えられません")?;
         let m0 = glaux_core::meter::meter_at(&project, start);
@@ -9340,7 +9340,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("write_tihai");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -9427,7 +9427,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("set_layer");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -9591,7 +9591,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("set_macro");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         let mut macros = track.macros.clone();
         let mut clear_macro_lane: Option<u8> = None;
@@ -9733,7 +9733,7 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("modulate");
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         // つまみの場所
         let resolve = |t: &str| -> Result<glaux_core::ParamPath, String> {
@@ -9869,7 +9869,7 @@ impl GlauxServer {
                 .ok_or_else(|| format!("mode は chord / bar / half_bar(got: {m})"))?,
         };
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut commands = Vec::new();
         let mut total = 0usize;
         let mut changes_at = 0usize;
@@ -9975,7 +9975,7 @@ impl GlauxServer {
             c
         };
         let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut commands = Vec::new();
         let mut total = 0usize;
         for id in &ids {
@@ -10033,7 +10033,7 @@ impl GlauxServer {
     ) -> ToolResult {
         let _activity = self.handle.begin_activity("set_song_plan");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let plan: Vec<glaux_core::arrange::PlanSection> = p
             .sections
             .into_iter()
@@ -10093,7 +10093,7 @@ impl GlauxServer {
     )]
     async fn critique_arrangement(&self) -> ToolResult {
         let _activity = self.handle.begin_activity("critique_arrangement");
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let c = glaux_core::critique::critique(&project);
         let warns = c.findings.iter().filter(|f| f.severity == "warn").count();
         let mut v = serde_json::to_value(&c).map_err(|e| e.to_string())?;
@@ -10124,7 +10124,7 @@ impl GlauxServer {
         use glaux_core::shape::{merge_points, position_to_tick, shape_points, Shape};
         let _activity = self.handle.begin_activity("shape_automation");
         let p = params.0;
-        let (project, _) = self.handle.get_project().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
         let shape = Shape::parse(&p.shape).ok_or_else(|| {
             format!(
                 "shape が不正です({})。linear / exp / log / s_curve / swell / dip / step / sine / triangle / saw_up / saw_down / pump / square",
@@ -10281,7 +10281,7 @@ impl GlauxServer {
         if p.note_ids.is_some() && ids.len() > 1 {
             return Err("note_ids は clip_id を 1 つだけ指定したときに使えます".to_owned());
         }
-        let (project, version) = self.handle.get_project().await?;
+        let (project, version) = self.handle.get_project_shared().await?;
         let mut commands = Vec::new();
         let mut total = 0usize;
         for id in &ids {

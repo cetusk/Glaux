@@ -84,7 +84,7 @@ pub type RevertOutcome = (EntryId, Vec<EntryId>, Mutated);
 
 pub enum Request {
     GetProject {
-        reply: oneshot::Sender<(Project, usize)>,
+        reply: oneshot::Sender<(std::sync::Arc<Project>, usize)>,
     },
     /// テスト用: 処理中に panic させる(アクターが止まらずに復帰することの確認)
     #[cfg(test)]
@@ -149,6 +149,10 @@ pub enum Request {
     },
     /// 現在のプロジェクトフォルダの絶対パスを返す。
     ProjectDir { reply: oneshot::Sender<String> },
+    /// 裏で書きかけの `project.json` を書き終えるまで待つ(アプリ・サーバーの終了時)
+    Flush {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// 現在のプロジェクトフォルダを別の場所へ移動して開き直す。
     /// フォルダ移動をアクター内で行うことで、進行中の保存と直列化される
     /// (移動中に古い場所へ書き込まれる競合が起きない)。成功時は (タイトル, バージョン)。
@@ -198,7 +202,11 @@ impl SessionHandle {
         let events_tx = events.clone();
         std::thread::Builder::new()
             .name("glaux-session".into())
-            .spawn(move || actor_loop(session, store, rx, events_tx))
+            .spawn(move || {
+                let mut store = store;
+                store.enable_background_writes();
+                actor_loop(session, store, rx, events_tx)
+            })
             .expect("session actor spawn");
         SessionHandle {
             tx,
@@ -246,7 +254,14 @@ impl SessionHandle {
         rx.await.map_err(|_| ACTOR_GONE.to_owned())
     }
 
+    /// 今のプロジェクトの複製(書き換えて使う用。読むだけなら [`Self::get_project_shared`])
     pub async fn get_project(&self) -> Result<(Project, usize), String> {
+        let (p, v) = self.get_project_shared().await?;
+        Ok((std::sync::Arc::unwrap_or_clone(p), v))
+    }
+
+    /// 今のプロジェクト(読み取り用。変更のたびに 1 回だけ作られた複製を共有する)
+    pub async fn get_project_shared(&self) -> Result<(std::sync::Arc<Project>, usize), String> {
         self.request(|reply| Request::GetProject { reply }).await
     }
 
@@ -338,6 +353,11 @@ impl SessionHandle {
     }
 
     /// 現在のプロジェクトフォルダの絶対パス。
+    /// 裏で書きかけの `project.json` を書き終えるまで待つ(終了の前に呼ぶ)
+    pub async fn flush(&self) -> Result<(), String> {
+        self.request(|reply| Request::Flush { reply }).await?
+    }
+
     pub async fn project_dir(&self) -> Result<String, String> {
         self.request(|reply| Request::ProjectDir { reply }).await
     }
@@ -396,8 +416,13 @@ fn actor_loop(
         if result.is_err() {
             tracing::error!("要求の処理中に panic しました。保存済みの状態から読み直します");
             let previous = version(&session, &store);
+            // 裏で書きかけの project.json を済ませてから読み直す
+            if let Err(e) = store.flush() {
+                tracing::error!("読み直しの前の保存に失敗しました: {e:#}");
+            }
             match Store::open_or_create(store.dir()) {
-                Ok((new_store, new_session)) => {
+                Ok((mut new_store, new_session)) => {
+                    new_store.enable_background_writes();
                     new_store.continue_revision_after(previous);
                     store = new_store;
                     session = new_session;
@@ -429,7 +454,7 @@ fn mutated(
     changes: Vec<Change>,
 ) -> Mutated {
     store.bump_revision(session);
-    let save_error = store.save_after_change(session).err().map(|e| {
+    let save_error = store.save_after_change_snapshot(session).err().map(|e| {
         tracing::error!("保存に失敗しました: {e:#}");
         format!("{e:#}")
     });
@@ -453,9 +478,21 @@ fn handle(
     events: &broadcast::Sender<ProjectChanged>,
     req: Request,
 ) {
+    // 状態を変えうる要求の前に、読み取り用の複製を捨てる(変えたら作り直す)
+    if !matches!(
+        req,
+        Request::GetProject { .. }
+            | Request::GetEntries { .. }
+            | Request::ProjectAt { .. }
+            | Request::GetHistory { .. }
+            | Request::ProjectDir { .. }
+            | Request::Flush { .. }
+    ) {
+        store.clear_snapshot();
+    }
     match req {
         Request::GetProject { reply } => {
-            let _ = reply.send((session.project().clone(), version(session, store)));
+            let _ = reply.send((store.snapshot(session), version(session, store)));
         }
         #[cfg(test)]
         Request::Panic { reply } => {
@@ -558,8 +595,12 @@ fn handle(
             let _ = reply.send(history_view(session, store, author_kind, since, limit));
         }
         Request::SwitchProject { dir, reply } => {
+            if let Err(e) = store.flush() {
+                tracing::error!("切り替えの前の保存に失敗しました: {e:#}");
+            }
             let result = match Store::open_or_create(&dir) {
-                Ok((new_store, new_session)) => {
+                Ok((mut new_store, new_session)) => {
+                    new_store.enable_background_writes();
                     *store = new_store;
                     *session = new_session;
                     let version = version(session, store);
@@ -580,6 +621,9 @@ fn handle(
         Request::ProjectDir { reply } => {
             let _ = reply.send(store.dir().to_string_lossy().into_owned());
         }
+        Request::Flush { reply } => {
+            let _ = reply.send(store.flush().map_err(|e| format!("{e:#}")));
+        }
         Request::MoveProject { dest, reply } => {
             let from = store.dir().to_path_buf();
             let to = std::path::PathBuf::from(&dest);
@@ -598,6 +642,10 @@ fn handle(
                     crate::store::check_project_parent(parent)?;
                 }
                 let previous = version(session, store);
+                // 裏で書きかけの project.json を元の場所で済ませてから動かす
+                store
+                    .flush()
+                    .map_err(|e| format!("移動の前の保存に失敗しました: {e:#}"))?;
                 // 開いているロックファイルを含むフォルダは Windows では動かせない
                 crate::store::release_lock(&from);
                 if let Err(e) = move_dir(&from, &to) {
@@ -605,7 +653,8 @@ fn handle(
                     return Err(e);
                 }
                 match Store::open_or_create(&dest) {
-                    Ok((new_store, new_session)) => {
+                    Ok((mut new_store, new_session)) => {
+                        new_store.enable_background_writes();
                         new_store.continue_revision_after(previous);
                         *store = new_store;
                         *session = new_session;

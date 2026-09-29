@@ -42,10 +42,14 @@ async fn main() -> Result<()> {
     );
 
     let handle = SessionHandle::spawn(session, store);
-    let service = GlauxServer::new(handle)
+    let service = GlauxServer::new(handle.clone())
         .serve(stdio())
         .await
         .context("MCP サーバーの起動に失敗")?;
     service.waiting().await?;
+    // 裏で書きかけの project.json を書き終えてから終わる
+    if let Err(e) = handle.flush().await {
+        tracing::error!("終了時の保存に失敗しました: {e}");
+    }
     Ok(())
 }

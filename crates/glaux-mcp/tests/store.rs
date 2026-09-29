@@ -85,13 +85,65 @@ fn incremental_save_appends_and_falls_back_on_undo() {
     assert!(reopened.project().track(&id2).is_some());
     drop(reopened);
 
-    // undo 後は全書き換えにフォールバックし、整合が保たれる
+    // undo 後は履歴を切り詰め、整合が保たれる
     session.undo().unwrap().unwrap();
     store.save_after_change(&session).unwrap();
     let (_s3, reopened) = Store::open_or_create(dir_s).unwrap();
     assert_eq!(reopened.history().len(), 1);
     assert!(reopened.project().track(&id1).is_some());
     assert!(reopened.project().track(&id2).is_none());
+}
+
+#[test]
+fn undo_truncates_history_and_redo_appends_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Song.glaux");
+    let dir_s = dir.to_str().unwrap();
+    let lines = || {
+        fs::read_to_string(dir.join("history.jsonl"))
+            .unwrap()
+            .lines()
+            .count()
+    };
+
+    let (store, mut session) = Store::open_or_create(dir_s).unwrap();
+    let mut ids = Vec::new();
+    for name in ["A", "B", "C"] {
+        let (id, cmd) = add_track_cmd(name);
+        session.apply(cmd, Author::Human, name).unwrap();
+        store.save_after_change(&session).unwrap();
+        ids.push(id);
+    }
+    let full = fs::read_to_string(dir.join("history.jsonl")).unwrap();
+    // undo 2 回: 行を切り詰めるだけ(残る行は元の先頭と同じ)
+    session.undo().unwrap().unwrap();
+    store.save_after_change(&session).unwrap();
+    session.undo().unwrap().unwrap();
+    store.save_after_change(&session).unwrap();
+    assert_eq!(lines(), 1);
+    let now = fs::read_to_string(dir.join("history.jsonl")).unwrap();
+    assert!(full.starts_with(&now));
+    // redo は追記、その後の undo も切り詰め
+    session.redo().unwrap().unwrap();
+    store.save_after_change(&session).unwrap();
+    assert_eq!(lines(), 2);
+    session.undo().unwrap().unwrap();
+    store.save_after_change(&session).unwrap();
+    assert_eq!(lines(), 1);
+    drop(store);
+
+    // 開き直しても整合し、開いた後の undo も切り詰めで済む
+    let (store, mut reopened) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(reopened.history().len(), 1);
+    assert!(reopened.project().track(&ids[0]).is_some());
+    assert!(reopened.project().track(&ids[1]).is_none());
+    reopened.undo().unwrap().unwrap();
+    store.save_after_change(&reopened).unwrap();
+    assert_eq!(lines(), 0);
+    drop(store);
+    let (_s, again) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(again.history().len(), 0);
+    assert!(again.project().track(&ids[0]).is_none());
 }
 
 #[test]
@@ -310,4 +362,92 @@ fn another_process_cannot_open_the_same_project() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("別の Glaux"), "{stderr}");
+}
+
+#[test]
+fn background_writes_finish_on_flush_and_drop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Song.glaux");
+    let dir_s = dir.to_str().unwrap();
+    let (mut store, mut session) = Store::open_or_create(dir_s).unwrap();
+    store.enable_background_writes();
+    let mut ids = Vec::new();
+    for i in 0..20 {
+        let (id, cmd) = add_track_cmd(&format!("T{i}"));
+        session.apply(cmd, Author::Human, format!("T{i}")).unwrap();
+        store.save_after_change_snapshot(&session).unwrap();
+        ids.push(id);
+    }
+    // 書き終えるのを待てば、project.json は最新
+    store.flush().unwrap();
+    let saved = fs::read_to_string(dir.join("project.json")).unwrap();
+    assert!(saved.contains(ids[19].as_str()));
+    // undo は裏の書き込みを待ってから、その場で書く(履歴が project.json より遅れない)
+    session.undo().unwrap().unwrap();
+    store.save_after_change_snapshot(&session).unwrap();
+    let saved = fs::read_to_string(dir.join("project.json")).unwrap();
+    assert!(!saved.contains(ids[19].as_str()));
+    // 捨てる(= 終了)ときも書き終える
+    let (id, cmd) = add_track_cmd("last");
+    session.apply(cmd, Author::Human, "last").unwrap();
+    store.save_after_change_snapshot(&session).unwrap();
+    drop(store);
+    let (_s, reopened) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(reopened.history().len(), 20);
+    assert!(reopened.project().track(&id).is_some());
+}
+
+#[test]
+fn project_json_several_steps_behind_is_recovered_from_history() {
+    // 裏の書き込みが数手遅れているうちに落ちた: 履歴は先にあり、その手は「やり直し」で戻せる
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Song.glaux");
+    let dir_s = dir.to_str().unwrap();
+    let ids = project_with_tracks(dir_s, 2);
+    let stale = fs::read_to_string(dir.join("project.json")).unwrap();
+    {
+        let (store, mut session) = Store::open_or_create(dir_s).unwrap();
+        for i in 0..6 {
+            let (_, cmd) = add_track_cmd(&format!("U{i}"));
+            session.apply(cmd, Author::Human, format!("U{i}")).unwrap();
+            store.save_after_change(&session).unwrap();
+        }
+    }
+    fs::write(dir.join("project.json"), stale).unwrap();
+    let (_s, mut reopened) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(reopened.history().len(), 2);
+    assert!(reopened.project().track(&ids[1]).is_some());
+    for _ in 0..6 {
+        reopened.redo().unwrap().unwrap();
+    }
+    assert_eq!(reopened.project().tracks.len(), 8);
+}
+
+#[test]
+fn large_history_is_compacted_by_size() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Song.glaux");
+    let dir_s = dir.to_str().unwrap();
+    let (store, mut session) = Store::open_or_create(dir_s).unwrap();
+    let mut ids = Vec::new();
+    for i in 0..40 {
+        let (id, cmd) = add_track_cmd(&format!("T{i}"));
+        session.apply(cmd, Author::Human, format!("T{i}")).unwrap();
+        store.save_after_change(&session).unwrap();
+        ids.push(id);
+    }
+    let size = fs::metadata(dir.join("history.jsonl")).unwrap().len();
+    // 件数は少ないが、大きさのしきい値(今の半分)を超えている → 後ろから 1/4 の大きさ分だけ残す
+    assert!(store
+        .maybe_compact_by_bytes(&mut session, size / 2)
+        .unwrap());
+    let kept = session.history().len();
+    assert!((8..=12).contains(&kept), "{kept}");
+    let after = fs::metadata(dir.join("history.jsonl")).unwrap().len();
+    assert!(after <= size / 4 + size / 40, "{after} / {size}");
+    drop(store);
+    let (_s, reopened) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(reopened.history().len(), kept);
+    assert!(reopened.project().track(&ids[0]).is_some());
+    assert!(reopened.project().track(&ids[39]).is_some());
 }

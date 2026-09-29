@@ -176,13 +176,33 @@ export function createProject(
 
 // ---- 音作りビュー ----
 
-export function getTrackParams(trackId: string): Promise<import("./types").TrackParams> {
-  return invoke("get_track_params", { trackId });
+// 追加できるエフェクトのカタログは変わらないので、1 回だけ取って使い回す
+let effectCatalog: Promise<import("./types").EffectCatalogEntry[]> | null = null;
+function getEffectCatalog(): Promise<import("./types").EffectCatalogEntry[]> {
+  effectCatalog ??= invoke<import("./types").EffectCatalogEntry[]>("get_effect_catalog").catch((e) => {
+    effectCatalog = null; // 失敗したら次にまた取りにいく
+    throw e;
+  });
+  return effectCatalog;
+}
+
+type ParamsWithoutCatalog = Omit<import("./types").TrackParams, "available_effects">;
+
+export async function getTrackParams(trackId: string): Promise<import("./types").TrackParams> {
+  const [p, available_effects] = await Promise.all([
+    invoke<ParamsWithoutCatalog>("get_track_params", { trackId }),
+    getEffectCatalog(),
+  ]);
+  return { ...p, available_effects };
 }
 
 /** マスターバスのエフェクトチェーン(音作りビューのマスターモード用)。 */
-export function getMasterParams(): Promise<import("./types").TrackParams> {
-  return invoke("get_master_params");
+export async function getMasterParams(): Promise<import("./types").TrackParams> {
+  const [p, available_effects] = await Promise.all([
+    invoke<ParamsWithoutCatalog>("get_master_params"),
+    getEffectCatalog(),
+  ]);
+  return { ...p, available_effects };
 }
 
 /** WAV を取り込んでトラックの音源を sampler にする(1 undo)。 */

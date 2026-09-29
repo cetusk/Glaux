@@ -41,7 +41,9 @@
     viewStore,
   } from "./lib/selection.svelte";
 
-  let project = $state<Project | null>(null);
+  // 曲は丸ごと差し替えて更新する(深いリアクティブにすると、全体を取り直すたびに全ノートがプロキシになる)。
+  // 中を直接書き換えても画面は変わらないので、変えるときは新しいオブジェクトを代入する
+  let project = $state.raw<Project | null>(null);
   let projectVersion = $state(0);
   let entries = $state<EntrySummary[]>([]);
   let historyTotal = $state(0);
@@ -240,11 +242,14 @@
       if (seq !== syncSeq) return;
       const p = project;
       if (!p || t.project_version !== partial.version || t.tracks.length !== partial.ids.size) return refresh();
+      const tracks = [...p.tracks];
       for (const nt of t.tracks) {
-        const i = p.tracks.findIndex((x) => x.id === nt.id);
+        const i = tracks.findIndex((x) => x.id === nt.id);
         if (i < 0) return refresh();
-        p.tracks[i] = nt;
+        tracks[i] = nt;
       }
+      // 変わらないトラックは同じオブジェクトのまま(描き直しの判定がそのまま効く)
+      project = { ...p, tracks };
       projectVersion = t.project_version;
       projectRev.value += 1;
       entries = h.entries;
