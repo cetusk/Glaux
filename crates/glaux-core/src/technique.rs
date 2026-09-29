@@ -230,6 +230,133 @@ pub fn fill(
         .collect()
 }
 
+/// 音の切り方
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArticStyle {
+    /// 次の音に少し重ねる
+    Legato,
+    /// 次の音まで目いっぱい
+    Tenuto,
+    /// 次の音までの 75%(KTH の規則の既定の量と同じ)
+    Portato,
+    /// 次の音までの 50%
+    Staccato,
+}
+
+impl ArticStyle {
+    pub fn parse(s: &str) -> Option<ArticStyle> {
+        Some(match s.trim().to_lowercase().as_str() {
+            "legato" => ArticStyle::Legato,
+            "tenuto" => ArticStyle::Tenuto,
+            "portato" => ArticStyle::Portato,
+            "staccato" => ArticStyle::Staccato,
+            _ => return None,
+        })
+    }
+
+    pub fn default_ratio(self) -> f64 {
+        match self {
+            ArticStyle::Legato | ArticStyle::Tenuto => 1.0,
+            ArticStyle::Portato => 0.75,
+            ArticStyle::Staccato => 0.5,
+        }
+    }
+}
+
+/// 音の長さを切り方に合わせる。次の音の頭(和音は同じ位置のまとまり)までの間隔で決め、
+/// 同じ音程が続くときは `repeat_gap` 空ける。戻り値は (音の番号, 新しい長さ)
+pub fn articulate(
+    notes: &[Note],
+    targets: &[usize],
+    style: ArticStyle,
+    ratio: f64,
+    overlap: u64,
+    repeat_gap: u64,
+) -> Vec<(usize, u64)> {
+    let mut onsets: Vec<u64> = notes.iter().map(|n| n.pos.0).collect();
+    onsets.sort_unstable();
+    onsets.dedup();
+    let mut out = Vec::new();
+    for &i in targets {
+        let n = &notes[i];
+        let next = onsets.iter().find(|&&t| t > n.pos.0 + 10).copied();
+        let ioi = next.map_or(n.dur.0, |t| t - n.pos.0);
+        let same_next =
+            next.is_some_and(|t| notes.iter().any(|m| m.pos.0 == t && m.pitch == n.pitch));
+        let gap = if same_next { repeat_gap } else { 0 };
+        let dur = match style {
+            ArticStyle::Legato if !same_next && next.is_some() => ioi + overlap,
+            ArticStyle::Legato | ArticStyle::Tenuto => ioi.saturating_sub(gap),
+            ArticStyle::Portato | ArticStyle::Staccato => {
+                ((ioi as f64 * ratio).round() as u64).min(ioi.saturating_sub(gap))
+            }
+        };
+        let dur = dur.max(10);
+        if dur != n.dur.0 {
+            out.push((i, dur));
+        }
+    }
+    out
+}
+
+/// トレモロの種類
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tremolo {
+    /// 同じ音の連打(弦の刻み・マンドリン)
+    Single,
+    /// 2 音を交互(ピアノ・弦のフィンガートレモロ)
+    Alternating,
+    /// 和音の連打
+    Chord,
+}
+
+impl Tremolo {
+    pub fn parse(s: &str) -> Option<Tremolo> {
+        Some(match s.trim().to_lowercase().as_str() {
+            "single" => Tremolo::Single,
+            "alternating" | "fingered" => Tremolo::Alternating,
+            "chord" => Tremolo::Chord,
+            _ => return None,
+        })
+    }
+}
+
+/// 1 音(か和音)を `step` ごとの連打にする: (頭からのずれ, 長さ, 強さの割合, 交互の上の音か)。
+/// 1 打目の強さはそのまま、あとは 0.8〜0.9 を交互に(拍の頭を少し強く)
+pub fn tremolo_hits(len: u64, step: u64, alternating: bool) -> Vec<(u64, u64, f64, bool)> {
+    let step = step.max(10);
+    let n = (len / step).max(1);
+    (0..n)
+        .map(|k| {
+            let v = if k == 0 {
+                1.0
+            } else if k % 2 == 0 {
+                0.9
+            } else {
+                0.8
+            };
+            let d = if k + 1 == n { len - k * step } else { step };
+            (k * step, (d * 9 / 10).max(1), v, alternating && k % 2 == 1)
+        })
+        .collect()
+}
+
+/// グリッサンドの音の並び(`from` の次から `to` まで。`to` は含む)
+pub fn glissando_pitches(from: u8, to: u8, pcs: &[u8]) -> Vec<u8> {
+    let (lo, hi) = (from.min(to), from.max(to));
+    let mut v: Vec<u8> = (lo..=hi)
+        .filter(|p| *p != from && (pcs.is_empty() || pcs.contains(&(p % 12))))
+        .collect();
+    if from > to {
+        v.reverse();
+    }
+    if v.last() != Some(&to) {
+        v.retain(|&p| p != to);
+        v.push(to);
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +431,40 @@ mod tests {
         assert_eq!(r.moved.iter().find(|m| m.0 == 0).unwrap().1, 948);
         // 単音は触らない
         assert_eq!(strum(&[note(0, 480, 60, 90)], 0, &o).chords, 0);
+    }
+
+    #[test]
+    fn articulation_tremolo_and_glissando() {
+        // 4 分の C D D E(D の連打)
+        let ns = vec![
+            note(0, 900, 60, 90),
+            note(960, 900, 62, 90),
+            note(1920, 900, 62, 90),
+            note(2880, 900, 64, 90),
+        ];
+        let all = [0, 1, 2, 3];
+        let leg = articulate(&ns, &all, ArticStyle::Legato, 1.0, 29, 58);
+        assert!(leg.contains(&(0, 989)), "{leg:?}");
+        assert!(leg.contains(&(1, 902)), "同じ音の連打は空ける: {leg:?}");
+        let st = articulate(&ns, &all, ArticStyle::Staccato, 0.5, 29, 58);
+        assert!(st.contains(&(0, 480)));
+        let pt = articulate(&ns, &all, ArticStyle::Portato, 0.75, 29, 58);
+        assert!(pt.contains(&(0, 720)));
+        // トレモロ: 1 拍を 32 分で = 8 打、交互は裏が上の音
+        let t = tremolo_hits(960, 120, true);
+        assert_eq!(t.len(), 8);
+        assert!(t[1].3 && !t[2].3);
+        assert_eq!(t[0].2, 1.0);
+        // グリッサンド: C4 → C5 の白鍵、下がるときは逆順
+        let white = [0, 2, 4, 5, 7, 9, 11];
+        assert_eq!(
+            glissando_pitches(60, 72, &white),
+            vec![62, 64, 65, 67, 69, 71, 72]
+        );
+        assert_eq!(glissando_pitches(67, 60, &white), vec![65, 64, 62, 60]);
+        assert_eq!(glissando_pitches(60, 63, &[]), vec![61, 62, 63]);
+        assert_eq!(ArticStyle::parse("portato"), Some(ArticStyle::Portato));
+        assert_eq!(Tremolo::parse("chord"), Some(Tremolo::Chord));
     }
 
     #[test]

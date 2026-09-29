@@ -70,6 +70,9 @@ const LABELS: Record<string, ToolLabel> = {
   note_dynamics: { short: "音の中の強弱", doing: "音の中の強弱・明るさを付けています" },
   strum_chord: { short: "ストローク", doing: "和音をストロークにしています" },
   drum_rudiment: { short: "ルーディメント", doing: "フラム・ロールなどを付けています" },
+  articulate_notes: { short: "音の切り方", doing: "音の切り方をそろえています" },
+  tremolo: { short: "トレモロ", doing: "トレモロにしています" },
+  glissando: { short: "グリッサンド", doing: "グリッサンドを付けています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

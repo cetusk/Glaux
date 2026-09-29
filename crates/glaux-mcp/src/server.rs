@@ -1306,6 +1306,79 @@ pub struct DrumRudimentParams {
     pub seed: Option<u64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ArticulateNotesParams {
+    /// 対象クリップ ID。1 つなら clip_id、まとめて掛けるなら clip_ids(1 回の undo で戻る)。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    #[serde(default)]
+    pub clip_ids: Option<Vec<String>>,
+    /// 切り方: legato(次の音に少し重ねる)/ tenuto(次の音まで目いっぱい)/ portato(次の音までの 75%)/ staccato(50%)。
+    pub style: String,
+    /// 対象のノート ID。省略でクリップ内の全ノート。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+    /// 次の音までの間隔に対する長さの割合(portato・staccato の上書き。0.1〜1)。
+    #[serde(default)]
+    pub ratio: Option<f64>,
+    /// legato で重ねる長さ(ms、既定 15)と、同じ音が続くときに空ける長さ(ms、既定 30)。
+    #[serde(default)]
+    pub overlap_ms: Option<f64>,
+    #[serde(default)]
+    pub repeat_gap_ms: Option<f64>,
+    /// legato のとき、句の 2 音目以降に奏法 legato も付ける(弾き直さずにつなぐ。弦・管・シンセのリード)。既定 false。
+    #[serde(default)]
+    pub slur: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct TremoloParams {
+    /// 対象クリップ ID。
+    pub clip_id: String,
+    /// 種類: single(同じ音の連打。弦の刻み・マンドリン)/ alternating(上の音と交互。フィンガートレモロ)/ chord(和音の連打)。
+    pub kind: String,
+    /// 対象のノート ID。省略で min_beats 拍以上の音。
+    #[serde(default)]
+    pub note_ids: Option<Vec<String>>,
+    /// 刻み: 1/16 / 1/32(既定)/ 1/64 / 1/16t / 1/32t。rate_hz を渡すとそれに近い刻み(数えないトレモロ)。
+    #[serde(default)]
+    pub division: Option<String>,
+    #[serde(default)]
+    pub rate_hz: Option<f64>,
+    /// alternating の上の音: 半音の数(省略でキーの音階の 3 度上)。
+    #[serde(default)]
+    pub interval: Option<i32>,
+    /// キー(省略でクリップから推定)。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// note_ids 省略時の対象の長さ(拍、既定 1)。
+    #[serde(default)]
+    pub min_beats: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct GlissandoParams {
+    /// 対象クリップ ID。
+    pub clip_id: String,
+    /// グリッサンドを始める音のノート ID(その音から to へ)。
+    pub note_ids: Vec<String>,
+    /// 行き先の音("C6" か MIDI 番号)。省略で旋律の次の音。
+    #[serde(default)]
+    pub to: Option<String>,
+    /// steps(既定。音を並べる。ピアノ・ハープ)/ continuous(音程の曲線で滑らかに。弦・トロンボーン・シンセ)。
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// 音の選び方(steps): key(既定。キーの音階)/ white(白鍵)/ black(黒鍵)/ chromatic(半音)。
+    #[serde(default)]
+    pub scale: Option<String>,
+    /// キー(省略でクリップから推定)。
+    #[serde(default)]
+    pub key: Option<String>,
+    /// 始める音の長さのうち、グリッサンドに使う後ろの割合 0.1〜1(既定 steps 1、continuous 0.5)。
+    #[serde(default)]
+    pub portion: Option<f64>,
+}
+
 /// コード進行を小節と区間に並べたもの(write_chords・write_bassline で共通)
 struct Layout {
     /// 鳴らす和音(休みを除く)の並び
@@ -7629,6 +7702,423 @@ impl GlauxServer {
         if let Some(w) = warning {
             v["warning"] = json!(w);
         }
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "音の切り方をそろえる(次の音までの間隔で長さを決める): legato(15ms 重ねる)/ tenuto(目いっぱい)/ \
+        portato(75%)/ staccato(50%)。同じ音が続くときは 30ms 空けて弾き直しを聞かせる。legato + slur で奏法 legato も付けて\
+        弾き直さずにつなぐ。打ち込みの長さがばらばら・全部同じで機械っぽいときに。1 回の undo で戻る。"
+    )]
+    async fn articulate_notes(
+        &self,
+        params: Parameters<ArticulateNotesParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::technique::{articulate, ArticStyle};
+        let _activity = self.handle.begin_activity("articulate_notes");
+        let p = params.0;
+        let style = ArticStyle::parse(&p.style).ok_or_else(|| {
+            format!(
+                "style は legato / tenuto / portato / staccato(got: {})",
+                p.style
+            )
+        })?;
+        let ratio = p.ratio.unwrap_or(style.default_ratio()).clamp(0.1, 1.0);
+        let slur = p.slur.unwrap_or(false) && style == ArticStyle::Legato;
+        let ids = clip_id_list(&p.clip_id, &p.clip_ids)?;
+        let (project, version) = self.handle.get_project().await?;
+        let mut commands = Vec::new();
+        let mut total = 0usize;
+        for id in &ids {
+            let cid = glaux_core::ClipId::parse(id).map_err(|e| e.to_string())?;
+            let (_, clip) = project
+                .clip(&cid)
+                .ok_or_else(|| format!("クリップが見つかりません: {id}"))?;
+            let notes = clip
+                .notes()
+                .ok_or_else(|| format!("MIDI クリップではありません: {id}"))?;
+            let bpm = project.tempo_map.bpm_at(clip.start);
+            let tick = |ms: f64| (ms * glaux_core::PPQ as f64 * bpm / 60_000.0).round() as u64;
+            let targets: Vec<usize> = match &p.note_ids {
+                Some(want) => (0..notes.len())
+                    .filter(|&i| want.iter().any(|w| w == notes[i].id.as_str()))
+                    .collect(),
+                None => (0..notes.len()).collect(),
+            };
+            let lens = articulate(
+                notes,
+                &targets,
+                style,
+                ratio,
+                tick(p.overlap_ms.unwrap_or(15.0).clamp(0.0, 200.0)),
+                tick(p.repeat_gap_ms.unwrap_or(30.0).clamp(0.0, 200.0)),
+            );
+            let mut changes: std::collections::BTreeMap<usize, glaux_core::NoteChange> = lens
+                .into_iter()
+                .map(|(i, d)| {
+                    (
+                        i,
+                        glaux_core::NoteChange::new(notes[i].id.clone()).dur(glaux_core::Tick(d)),
+                    )
+                })
+                .collect();
+            if slur {
+                let starts = glaux_core::gesture::select(
+                    notes,
+                    glaux_core::gesture::Target::PhraseStart,
+                    glaux_core::PPQ,
+                );
+                for &i in &targets {
+                    if starts.contains(&i)
+                        || notes[i].articulation == glaux_core::Articulation::Legato
+                    {
+                        continue;
+                    }
+                    let ch = changes
+                        .remove(&i)
+                        .unwrap_or_else(|| glaux_core::NoteChange::new(notes[i].id.clone()));
+                    let mut ch = ch;
+                    ch.articulation = Some(glaux_core::Articulation::Legato);
+                    changes.insert(i, ch);
+                }
+            }
+            total += changes.len();
+            if !changes.is_empty() {
+                commands.push(Command::UpdateNotes {
+                    clip: cid,
+                    changes: changes.into_values().collect(),
+                });
+            }
+        }
+        if commands.is_empty() {
+            return Ok(JsonText(
+                json!({ "project_version": version, "changed": 0 }),
+            ));
+        }
+        let label = format!("音の切り方 {}({total} ノート)", p.style);
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["changed"] = json!(total);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "トレモロにする(音を細かく連打する): single(同じ音。弦の刻み・マンドリン)/ alternating(上の音と交互。\
+        キーの 3 度上か interval)/ chord(和音の連打)。division(既定 1/32)か rate_hz(数えないトレモロ。12Hz 前後)。\
+        note_ids 省略で 1 拍以上の音。1 打目はそのままの強さ、あとは少し弱く交互に。1 回の undo で戻る。"
+    )]
+    async fn tremolo(
+        &self,
+        params: Parameters<TremoloParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::technique::{chord_groups, tremolo_hits, Tremolo};
+        let _activity = self.handle.begin_activity("tremolo");
+        let p = params.0;
+        let kind = Tremolo::parse(&p.kind)
+            .ok_or_else(|| format!("kind は single / alternating / chord(got: {})", p.kind))?;
+        let cid = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let (_, clip) = project.clip(&cid).ok_or("クリップが見つかりません")?;
+        let notes = clip.notes().ok_or("MIDI クリップではありません")?;
+        let bpm = project.tempo_map.bpm_at(clip.start);
+        let step = match (&p.division, p.rate_hz) {
+            (_, Some(hz)) => {
+                let hz = hz.clamp(4.0, 40.0);
+                (glaux_core::PPQ as f64 * bpm / 60.0 / hz).round() as u64
+            }
+            (d, None) => match d.as_deref().unwrap_or("1/32") {
+                "1/16" => 240,
+                "1/32" => 120,
+                "1/64" => 60,
+                "1/16t" => 160,
+                "1/32t" => 80,
+                other => {
+                    return Err(format!(
+                        "division は 1/16 / 1/32 / 1/64 / 1/16t / 1/32t(got: {other})"
+                    ))
+                }
+            },
+        }
+        .max(20);
+        let key = match &p.key {
+            Some(k) => glaux_core::chord::Key::parse(k)
+                .ok_or_else(|| format!("key は \"C major\" の形(got: {k})"))?,
+            None => glaux_core::melody::guess_key(
+                &notes
+                    .iter()
+                    .map(|n| glaux_core::melody::MelNote {
+                        pos: n.pos.0,
+                        dur: n.dur.0,
+                        pitch: n.pitch,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        let scale = glaux_core::transform::Scale::new(glaux_core::harmony::scale_pitch_classes(
+            key.tonic,
+            if key.minor { "minor" } else { "major" },
+        ));
+        let min_len = (p.min_beats.unwrap_or(1.0).max(0.0) * glaux_core::PPQ as f64) as u64;
+        let chosen = |n: &glaux_core::Note| match &p.note_ids {
+            Some(want) => want.iter().any(|w| w == n.id.as_str()),
+            None => n.dur.0 >= min_len,
+        };
+        let targets: Vec<usize> = match kind {
+            Tremolo::Chord => chord_groups(notes, 10)
+                .into_iter()
+                .filter(|g| g.iter().any(|&i| chosen(&notes[i])))
+                .flatten()
+                .collect(),
+            _ => (0..notes.len()).filter(|&i| chosen(&notes[i])).collect(),
+        };
+        let mut changes = Vec::new();
+        let mut added = Vec::new();
+        for i in targets {
+            let n = &notes[i];
+            let hits = tremolo_hits(n.dur.0, step, kind == Tremolo::Alternating);
+            if hits.len() < 2 {
+                continue;
+            }
+            let upper = match p.interval {
+                Some(iv) => (n.pitch as i32 + iv).clamp(0, 127) as u8,
+                None => scale.shift(n.pitch, 2).clamp(0, 127) as u8,
+            };
+            changes
+                .push(glaux_core::NoteChange::new(n.id.clone()).dur(glaux_core::Tick(hits[0].1)));
+            for &(off, dur, vr, up) in hits.iter().skip(1) {
+                added.push(glaux_core::Note {
+                    id: glaux_core::NoteId::new(),
+                    pos: glaux_core::Tick(n.pos.0 + off),
+                    dur: glaux_core::Tick(dur),
+                    pitch: if up { upper } else { n.pitch },
+                    vel: ((n.vel as f64 * vr).round() as u8).max(1),
+                    articulation: Default::default(),
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                    vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
+                });
+            }
+        }
+        if changes.is_empty() {
+            return Err(
+                "トレモロにできる音がありません(音が短いか、note_ids・min_beats を確かめる)"
+                    .to_owned(),
+            );
+        }
+        let count = changes.len();
+        let added_n = added.len();
+        let label = format!("トレモロ {}({count} ノート)", p.kind);
+        let command = Command::batch(
+            label.clone(),
+            vec![
+                Command::UpdateNotes {
+                    clip: cid.clone(),
+                    changes,
+                },
+                Command::AddNotes {
+                    clip: cid,
+                    notes: added,
+                },
+            ],
+        );
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["notes"] = json!(count);
+        v["added"] = json!(added_n);
+        v["step_ticks"] = json!(step);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "グリッサンドを付ける(note_ids の音から to へ。省略で旋律の次の音): mode steps(音を並べる。ピアノ・ハープ。\
+        scale: key / white / black / chromatic)/ continuous(音程の曲線で滑らかに。弦・トロンボーン・シンセ)。\
+        portion で始める音の後ろのどれだけを使うか。1 回の undo で戻る。"
+    )]
+    async fn glissando(
+        &self,
+        params: Parameters<GlissandoParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::technique::glissando_pitches;
+        let _activity = self.handle.begin_activity("glissando");
+        let p = params.0;
+        let continuous = match p.mode.as_deref().unwrap_or("steps") {
+            "steps" => false,
+            "continuous" => true,
+            other => return Err(format!("mode は steps / continuous(got: {other})")),
+        };
+        let cid = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project().await?;
+        let (_, clip) = project.clip(&cid).ok_or("クリップが見つかりません")?;
+        let notes = clip.notes().ok_or("MIDI クリップではありません")?;
+        let key = match &p.key {
+            Some(k) => glaux_core::chord::Key::parse(k)
+                .ok_or_else(|| format!("key は \"C major\" の形(got: {k})"))?,
+            None => glaux_core::melody::guess_key(
+                &notes
+                    .iter()
+                    .map(|n| glaux_core::melody::MelNote {
+                        pos: n.pos.0,
+                        dur: n.dur.0,
+                        pitch: n.pitch,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        let pcs: Vec<u8> = match p.scale.as_deref().unwrap_or("key") {
+            "key" => glaux_core::harmony::scale_pitch_classes(
+                key.tonic,
+                if key.minor { "minor" } else { "major" },
+            ),
+            "white" => vec![0, 2, 4, 5, 7, 9, 11],
+            "black" => vec![1, 3, 6, 8, 10],
+            "chromatic" => vec![],
+            other => {
+                return Err(format!(
+                    "scale は key / white / black / chromatic(got: {other})"
+                ))
+            }
+        };
+        let portion = p
+            .portion
+            .unwrap_or(if continuous { 0.5 } else { 1.0 })
+            .clamp(0.1, 1.0);
+        let to_fixed = match &p.to {
+            Some(t) => Some(parse_pitch(Some(t), 60)?),
+            None => None,
+        };
+        let prev_next = {
+            // 旋律の次の音(同じ位置は一番上)
+            let mut order: Vec<usize> = (0..notes.len()).collect();
+            order.sort_by_key(|&i| (notes[i].pos, std::cmp::Reverse(notes[i].pitch)));
+            order.dedup_by_key(|i| notes[*i].pos);
+            order
+        };
+        let mut changes = Vec::new();
+        let mut added = Vec::new();
+        for id in &p.note_ids {
+            let Some(i) = notes.iter().position(|n| n.id.as_str() == id) else {
+                return Err(format!("ノートが見つかりません: {id}"));
+            };
+            let n = &notes[i];
+            let to = match to_fixed {
+                Some(t) => t,
+                None => {
+                    let k = prev_next.iter().position(|&j| notes[j].pos == n.pos);
+                    let nx = k
+                        .and_then(|k| prev_next.get(k + 1))
+                        .map(|&j| notes[j].pitch);
+                    nx.ok_or_else(|| format!("{id} の次の音がありません(to を指定する)"))?
+                }
+            };
+            if to == n.pitch {
+                continue;
+            }
+            let run_len = ((n.dur.0 as f64 * portion).round() as u64).max(1);
+            let run_start = n.pos.0 + n.dur.0 - run_len;
+            if continuous {
+                let cents = ((to as f32 - n.pitch as f32) * 100.0).clamp(-2400.0, 2400.0);
+                let mut curve: Vec<glaux_core::PitchPoint> = n
+                    .pitch_curve
+                    .iter()
+                    .filter(|q| q.tick.0 < run_start - n.pos.0)
+                    .copied()
+                    .collect();
+                curve.push(glaux_core::PitchPoint::shaped(
+                    glaux_core::Tick(run_start - n.pos.0),
+                    0.0,
+                    glaux_core::CurveShape::EaseIn,
+                ));
+                curve.push(glaux_core::PitchPoint::new(n.dur, cents));
+                curve.truncate(glaux_core::MAX_PITCH_POINTS);
+                changes.push(glaux_core::NoteChange::new(n.id.clone()).pitch_curve(curve));
+            } else {
+                let ps: Vec<u8> = glissando_pitches(n.pitch, to, &pcs)
+                    .into_iter()
+                    .filter(|&q| q != to)
+                    .collect();
+                if ps.is_empty() {
+                    continue;
+                }
+                // 始める音は run_start まで(portion 1 なら 1 音ぶん)、残りを並べる
+                let slots = ps.len() as u64 + if portion >= 1.0 { 1 } else { 0 };
+                let step = (run_len / slots).max(10);
+                let first_len = if portion >= 1.0 {
+                    step
+                } else {
+                    run_start - n.pos.0
+                };
+                changes.push(
+                    glaux_core::NoteChange::new(n.id.clone())
+                        .dur(glaux_core::Tick(first_len.max(1))),
+                );
+                let base = if portion >= 1.0 {
+                    n.pos.0 + step
+                } else {
+                    run_start
+                };
+                for (k, &q) in ps.iter().enumerate() {
+                    let pos = base + k as u64 * step;
+                    if pos >= n.pos.0 + n.dur.0 {
+                        break;
+                    }
+                    added.push(glaux_core::Note {
+                        id: glaux_core::NoteId::new(),
+                        pos: glaux_core::Tick(pos),
+                        dur: glaux_core::Tick(step.min(n.pos.0 + n.dur.0 - pos)),
+                        pitch: q,
+                        vel: ((n.vel as f64 * (0.85 + 0.15 * k as f64 / ps.len() as f64)).round()
+                            as u8)
+                            .max(1),
+                        articulation: Default::default(),
+                        pitch_curve: vec![],
+                        glide_ms: None,
+                        vibrato: None,
+                        volume_curve: vec![],
+                        brightness_curve: vec![],
+                    });
+                }
+            }
+        }
+        if changes.is_empty() {
+            return Err(
+                "グリッサンドにできる音がありません(行き先が同じ音か、音が見つからない)".to_owned(),
+            );
+        }
+        let mut commands = vec![Command::UpdateNotes {
+            clip: cid.clone(),
+            changes,
+        }];
+        let added_n = added.len();
+        if !added.is_empty() {
+            commands.push(Command::AddNotes {
+                clip: cid,
+                notes: added,
+            });
+        }
+        let label = format!(
+            "グリッサンド({})",
+            if continuous {
+                "滑らか"
+            } else {
+                "音を並べる"
+            }
+        );
+        let command = Command::batch(label.clone(), commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["added"] = json!(added_n);
         Ok(JsonText(v))
     }
 

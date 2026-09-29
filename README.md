@@ -84,14 +84,14 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 アプリなしで使う stdio 版は `scripts\glaux-mcp.bat <曲のフォルダ>` です(同じ曲をアプリと同時には開けません)。
 
 <details>
-<summary>ツールの一覧(78 個)</summary>
+<summary>ツールの一覧(81 個)</summary>
 
 | 分類 | ツール |
 |---|---|
 | 基本 | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
 | 構成 | `set_song_plan` `suggest_progression` `write_transition` `duplicate_clips` `insert_bars` `delete_bars` `change_meter` `shape_automation` `bounce_track` `export_audio` `export_midi` |
 | 分析 | `critique_arrangement` `critique_melody` `analyze_audio` `compare_mix` `master_mix` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_sound` `compare_sounds` `match_sound` `refine_by_words` |
-| ノート | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` `transform_notes` `develop_motif` `write_melody` `write_drums` `write_chords` `write_bassline` `apply_groove` `add_ghost_notes` `write_polyrhythm` `write_polymeter` `set_meter_feel` `pitch_gesture` `set_vibrato` `add_ornament` `melody_lead` `note_dynamics` `strum_chord` `drum_rudiment` |
+| ノート | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` `transform_notes` `develop_motif` `write_melody` `write_drums` `write_chords` `write_bassline` `apply_groove` `add_ghost_notes` `write_polyrhythm` `write_polymeter` `set_meter_feel` `pitch_gesture` `set_vibrato` `add_ornament` `melody_lead` `note_dynamics` `strum_chord` `drum_rudiment` `articulate_notes` `tremolo` `glissando` |
 | 音色 | `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | エフェクトのプリセット | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |
 | CLAP | `list_plugins` `list_plugin_presets` `load_plugin_preset` `refine_plugin_params` |

@@ -3908,6 +3908,120 @@ async fn strums_and_drum_rudiments() {
 }
 
 #[tokio::test]
+async fn articulation_tremolo_and_glissando_tools() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            add_track_args("trk_art001", "Strings"),
+        )
+        .await,
+    );
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "弦", "commands": [
+                { "op": "add_clip", "track": "trk_art001", "clip": {
+                    "id": "clp_art001", "name": "s", "start": 0, "length": 7680, "kind": "midi", "notes": [
+                        { "id": "nt_art001", "pos": 0, "dur": 600, "pitch": 60, "vel": 90 },
+                        { "id": "nt_art002", "pos": 960, "dur": 600, "pitch": 62, "vel": 90 },
+                        { "id": "nt_art003", "pos": 1920, "dur": 1920, "pitch": 64, "vel": 90 },
+                        { "id": "nt_art004", "pos": 3840, "dur": 960, "pitch": 72, "vel": 90 } ] } }
+            ] }),
+        )
+        .await,
+    );
+    // レガート + スラー: 次の音へ 15ms(29 tick)重ね、2 音目以降に奏法 legato
+    let v = ok_json(
+        &call(
+            &fx,
+            "articulate_notes",
+            json!({ "clip_id": "clp_art001", "style": "legato", "slur": true }),
+        )
+        .await,
+    );
+    assert!(v["changed"].as_u64().unwrap() >= 3, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap().to_vec();
+    assert_eq!(ns[0].dur.0, 989);
+    assert_eq!(ns[1].articulation, glaux_core::Articulation::Legato);
+    assert_eq!(ns[0].articulation, glaux_core::Articulation::Normal);
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // スタッカート
+    ok_json(
+        &call(
+            &fx,
+            "articulate_notes",
+            json!({ "clip_id": "clp_art001", "style": "staccato" }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tracks[0].clips[0].notes().unwrap()[0].dur.0, 480);
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // トレモロ: 2 拍の E4 を 32 分の交互に(16 打、裏は 3 度上の G4)
+    let v = ok_json(
+        &call(&fx, "tremolo", json!({ "clip_id": "clp_art001", "kind": "alternating", "note_ids": ["nt_art003"], "key": "C major" })).await,
+    );
+    assert_eq!(v["added"], 15, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap().to_vec();
+    assert!(
+        ns.iter().any(|n| n.pos.0 == 2040 && n.pitch == 67),
+        "{ns:?}"
+    );
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // グリッサンド: E4 → 次の C5 を白鍵で
+    let v = ok_json(
+        &call(
+            &fx,
+            "glissando",
+            json!({ "clip_id": "clp_art001", "note_ids": ["nt_art003"], "scale": "white" }),
+        )
+        .await,
+    );
+    // E4 から C5: F G A B の 4 音
+    assert_eq!(v["added"], 4, "{v}");
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // 滑らか: 音程の曲線で +800 セントへ
+    ok_json(
+        &call(
+            &fx,
+            "glissando",
+            json!({ "clip_id": "clp_art001", "note_ids": ["nt_art003"], "mode": "continuous" }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let e4 = project.tracks[0].clips[0].notes().unwrap()[2].clone();
+    assert_eq!(e4.pitch_curve.last().unwrap().cents, 800.0);
+    assert_eq!(e4.pitch_curve[0].tick.0, 960);
+    for bad in [
+        (
+            "articulate_notes",
+            json!({ "clip_id": "clp_art001", "style": "marcatissimo" }),
+        ),
+        (
+            "tremolo",
+            json!({ "clip_id": "clp_art001", "kind": "chord", "note_ids": ["nt_art001"], "division": "1/7" }),
+        ),
+        (
+            "glissando",
+            json!({ "clip_id": "clp_art001", "note_ids": ["nt_art004"] }),
+        ),
+        (
+            "glissando",
+            json!({ "clip_id": "clp_art001", "note_ids": ["nt_art003"], "mode": "wobble" }),
+        ),
+    ] {
+        let r = call(&fx, bad.0, bad.1.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad:?}");
+    }
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(
