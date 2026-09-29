@@ -30,6 +30,7 @@ pub mod melody;
 pub mod meter;
 pub mod model;
 pub mod motif;
+pub mod ornament;
 pub mod progressions;
 pub mod rhythm;
 pub mod shape;

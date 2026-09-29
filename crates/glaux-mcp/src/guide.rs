@@ -171,7 +171,10 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   ジャズの管 = 句の頭に scoop・plop、句の終わりに fall・doit、伸ばしに shake / ギター = bend・prebend_release・slide_in。\n\
   全部の音に付けるとくどいので、規則(target)と probability(既定 0.7)で選ぶ。\n\
 - ビブラートは set_vibrato(style: vocal / vocal_strong / strings / guitar / wind / synth)で伸ばしの音にだけ付ける。\n\
-  歌は 250ms ほど後から揺らし始め、サビの最後の伸ばしは vocal_strong や rate_end_hz で終わりを速めると盛り上がる。",
+  歌は 250ms ほど後から揺らし始め、サビの最後の伸ばしは vocal_strong や rate_end_hz で終わりを速めると盛り上がる。\n\
+- 装飾音は add_ornament(acciaccatura・appoggiatura・mordent・turn・trill・schleifer)。クラシック・バロックは trill と turn、\n\
+  ケルト・和風の笛は acciaccatura と schleifer、ジャズは acciaccatura を半音で(interval 1)。付けすぎない(probability 0.3〜0.5)。\n\
+- ピアノや伴奏と重なる旋律は melody_lead で 20〜30ms 先に鳴らすと浮き上がる(和音はいちばん上の音だけ動く)。",
     ),
     (
         "mix",

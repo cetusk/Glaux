@@ -65,6 +65,8 @@ const LABELS: Record<string, ToolLabel> = {
   set_meter_feel: { short: "拍の揺れ", doing: "長い拍と短い拍の比を変えています" },
   pitch_gesture: { short: "音程の表情", doing: "しゃくり・フォールなどを付けています" },
   set_vibrato: { short: "ビブラート", doing: "ビブラートを付けています" },
+  add_ornament: { short: "装飾音", doing: "装飾音を付けています" },
+  melody_lead: { short: "旋律のリード", doing: "旋律を少し先に鳴らしています" },
   quantize_notes: { short: "クオンタイズ", doing: "タイミングを揃えています" },
   scale_velocity: { short: "強さを調整", doing: "音の強さを調整しています" },
   // 音色

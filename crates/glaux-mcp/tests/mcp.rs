@@ -3614,6 +3614,109 @@ async fn pitch_gestures_and_vibrato_shape_the_melody() {
 }
 
 #[tokio::test]
+async fn ornaments_and_melody_lead() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_orn001", "Flute")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "笛", "commands": [
+                { "op": "add_clip", "track": "trk_orn001", "clip": {
+                    "id": "clp_orn001", "name": "f", "start": 0, "length": 7680, "kind": "midi", "notes": [
+                        { "id": "nt_orn001", "pos": 0, "dur": 960, "pitch": 62, "vel": 90 },
+                        { "id": "nt_orn002", "pos": 960, "dur": 960, "pitch": 69, "vel": 90 },
+                        { "id": "nt_orn003", "pos": 1920, "dur": 1920, "pitch": 65, "vel": 90 } ] } }
+            ] }),
+        )
+        .await,
+    );
+    // 短前打音を A4 に: 前の D4 が短くなり、装飾の音(D minor の上の隣 = Bb4)が前に入る
+    let v = ok_json(
+        &call(
+            &fx,
+            "add_ornament",
+            json!({ "clip_id": "clp_orn001", "kind": "acciaccatura", "note_ids": ["nt_orn002"], "key": "D minor" }),
+        )
+        .await,
+    );
+    assert_eq!(v["decorated"], 1, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap().to_vec();
+    assert_eq!(ns.len(), 4);
+    let grace = ns.iter().find(|n| n.pitch == 70).expect("Bb4");
+    assert!(
+        grace.pos.0 < 960 && grace.pos.0 + grace.dur.0 <= 960,
+        "{ns:?}"
+    );
+    let d4 = ns.iter().find(|n| n.pitch == 62).unwrap();
+    assert_eq!(d4.pos.0 + d4.dur.0, grace.pos.0);
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // トリル: 長い F4 を音の長さいっぱいに(合計の長さは同じ)
+    let v = ok_json(
+        &call(
+            &fx,
+            "add_ornament",
+            json!({ "clip_id": "clp_orn001", "kind": "trill", "note_ids": ["nt_orn003"], "key": "D minor", "trill_end": "turn" }),
+        )
+        .await,
+    );
+    assert_eq!(v["decorated"], 1, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let ns = project.tracks[0].clips[0].notes().unwrap().to_vec();
+    let trill: Vec<_> = ns.iter().filter(|n| n.pos.0 >= 1920).collect();
+    assert!(trill.len() >= 10, "{}", trill.len());
+    let end = trill.iter().map(|n| n.pos.0 + n.dur.0).max().unwrap();
+    assert_eq!(end, 3840);
+    assert_eq!(
+        trill.last().unwrap().pitch,
+        65,
+        "ターンで本音に戻って終わる"
+    );
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // 規則で選ぶ(1 拍以上の音にモルデント)
+    let v = ok_json(
+        &call(
+            &fx,
+            "add_ornament",
+            json!({ "clip_id": "clp_orn001", "kind": "mordent", "probability": 1.0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["decorated"], 3, "{v}");
+    ok_json(&call(&fx, "undo", json!({})).await);
+    // メロディーのリード: 単音なので頭以外が 20ms(120BPM で 38 tick)前へ、終わりは同じ
+    let v = ok_json(&call(&fx, "melody_lead", json!({ "clip_id": "clp_orn001" })).await);
+    assert_eq!(v["changed"], 2, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let a4 = project.tracks[0].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .find(|n| n.pitch == 69)
+        .unwrap()
+        .clone();
+    assert_eq!((a4.pos.0, a4.pos.0 + a4.dur.0), (960 - 38, 1920));
+    for bad in [
+        (
+            "add_ornament",
+            json!({ "clip_id": "clp_orn001", "kind": "glissando" }),
+        ),
+        (
+            "melody_lead",
+            json!({ "clip_id": "clp_orn001", "lead_ms": 200 }),
+        ),
+        (
+            "melody_lead",
+            json!({ "clip_id": "clp_orn001", "mode": "x" }),
+        ),
+    ] {
+        let r = call(&fx, bad.0, bad.1.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad:?}");
+    }
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(
