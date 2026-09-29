@@ -2329,11 +2329,13 @@ mod tests {
                 tick: Tick(0),
                 num: 4,
                 den: 4,
+                grouping: None,
             },
             TimeSigEvent {
                 tick: Tick(3840),
                 num: 7,
                 den: 8,
+                grouping: None,
             },
         ];
         let data = build_playback_data(&project, 48_000.0, &SampleBank::default());

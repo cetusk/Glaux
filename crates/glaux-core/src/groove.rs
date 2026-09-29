@@ -156,14 +156,15 @@ pub struct NoteEdit {
     pub vel: u8,
 }
 
-/// `bar_start_of(絶対 tick)` はその位置を含む小節の頭(tick)を返す関数(拍子に沿う)
+/// `meter_of(絶対 tick)` はその位置を含む小節の拍子(頭の tick と拍のまとまり)を返す関数。
+/// 4/4 以外の小節は、16 分の位置を [`crate::meter::BarMeter::slot16`] で型の位置に当てる
 pub fn apply(
     notes: &[Note],
     clip_start: u64,
     clip_len: u64,
     style: &Style,
     opts: &GrooveOptions,
-    bar_start_of: &dyn Fn(u64) -> u64,
+    meter_of: &dyn Fn(u64) -> crate::meter::BarMeter,
 ) -> Vec<NoteEdit> {
     // 楽器ごとの最大の強さ(強弱の比の基準)
     let max_vel: HashMap<&str, f64> = style
@@ -195,14 +196,15 @@ pub fn apply(
         // ドラムの音だけ(as_part でキックに合わせるベースなどは動かす)
         let locked = opts.as_part.is_none() && style.locked.iter().any(|l| l == part);
         let abs = clip_start + n.pos.0;
-        let bar = bar_start_of(abs);
+        let meter = meter_of(abs);
+        let bar = meter.start;
         let x = (abs - bar) as f64 / SIXTEENTH;
         let idx = x.round();
         let grid_abs = bar as f64 + idx * SIXTEENTH;
         let slot = style
             .parts
             .get(part)
-            .and_then(|v| v.get((idx as i64).rem_euclid(16) as usize))
+            .and_then(|v| v.get(meter.slot16(idx as i64)))
             .copied();
         let mut pos = abs as f64 + (grid_abs - abs as f64) * opts.quantize.clamp(0.0, 1.0);
         let slot = slot.filter(|_| !locked);
@@ -215,7 +217,8 @@ pub fn apply(
             pos += opts.pocket_ticks.get(part).copied().unwrap_or(0.0);
         }
         // 小節の頭の音は揺らさない(拍の土台)
-        let on_downbeat = (idx as i64).rem_euclid(16) == 0 && (x - idx).abs() < 0.25;
+        let on_downbeat =
+            (idx as i64).rem_euclid(meter.steps().max(1) as i64) == 0 && (x - idx).abs() < 0.25;
         if opts.humanize_ticks > 0.0 && !on_downbeat && !locked {
             let salt = part
                 .bytes()
@@ -321,8 +324,8 @@ mod tests {
     }
 
     /// 4/4 の 1 小節 = 3840
-    fn bars(t: u64) -> u64 {
-        t / 3840 * 3840
+    fn bars(t: u64) -> crate::meter::BarMeter {
+        crate::meter::BarMeter::common(t / 3840 * 3840)
     }
 
     fn opts() -> GrooveOptions {
@@ -475,7 +478,7 @@ mod tests {
             1.0,
             None,
             3,
-            &bars,
+            &|t| t / 3840 * 3840,
         );
         assert!(!g.is_empty());
         for (t, v) in &g {
@@ -494,7 +497,7 @@ mod tests {
             0.0,
             None,
             3,
-            &bars
+            &|t| t / 3840 * 3840
         )
         .is_empty());
     }

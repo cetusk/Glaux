@@ -75,11 +75,26 @@ pub struct TempoEvent {
     pub bpm: f64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct TimeSigEvent {
     pub tick: Tick,
     pub num: u8,
     pub den: u8,
+    /// 拍のまとまり(分母の音符の数。和は `num`)。7/8 の [2, 2, 3] など。
+    /// 無ければ [`crate::meter::default_grouping`] の規則で決まる
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grouping: Option<Vec<u8>>,
+}
+
+impl TimeSigEvent {
+    pub fn new(tick: Tick, num: u8, den: u8) -> Self {
+        TimeSigEvent {
+            tick,
+            num,
+            den,
+            grouping: None,
+        }
+    }
 }
 
 /// テンポマップ。イベントは tick 昇順で先頭は tick 0 であることを保証する。

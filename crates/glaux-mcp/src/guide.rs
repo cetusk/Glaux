@@ -92,6 +92,11 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   ハウス・テクノ・トランス・EDM → house / techno(タイミングはほぼ格子、強弱で揺らす)/ トラップ → trap /\n\
   ヒップホップ・ローファイ → hiphop(+ swing_notes 0.54〜0.62 を先に)/ ファンク・ディスコ・R&B → funk か soul / ポップス・ロック → pop か rock。\n\
 - 電子音楽の型(house / techno / trap)では 4 つ打ちのキックは動かさない(位置も強さも一定が土台。キックに手で強弱を付けない)。\n\
+- 変拍子: 拍子に拍のまとまりを持たせる(apply_commands の set_time_sig で {\"num\": 7, \"den\": 8, \"grouping\": [2, 2, 3]}。\n\
+  省略すると 7/8 = 2+2+3、5/8 = 2+3、9/8 = 3+3+3、11/8 = 2+2+2+2+3、5/4 = 3+2)。get_project の time_sig_map の meter・bar_ticks・\n\
+  steps_16th で 1 小節の長さと 16 分の数を確かめる(7/8 = 3360 tick = 14 ステップ)。write_drums・write_chords・write_bassline・\n\
+  write_melody・apply_groove・swing_notes はまとまりに沿う(キックとスネアはまとまりの頭に交互、和音はまとまりの頭で変わる、\n\
+  ハネは 3 のまとまりの最後の 8 分を動かさない)。リズムの文字列は 1 小節のステップ数(7/8 なら 14 文字)で書いてもよい。\n\
 - まとめて当てる: clip_ids に曲じゅうのクリップ(ドラム・ベース・コード)を渡す。1 回の undo で戻り、クリップごとに揺れは変わる。\n\
 - ループのクリップは中身に当たるので、揺れも毎回同じ(ドラムマシンらしさ。電子音楽ならそれで良い)。\n\
   生演奏らしさが要るジャンル(funk / soul / jazz / hiphop・ローファイ)で humanize_ms を使うなら unroll_loop: true。\n\

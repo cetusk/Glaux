@@ -113,11 +113,8 @@ pub fn parse(bytes: &[u8]) -> Result<MidiSong, String> {
                 TrackEventKind::Meta(MetaMessage::TimeSignature(num, pow, _, _))
                     if num > 0 && pow <= 6 =>
                 {
-                    song.sigs.push(TimeSigEvent {
-                        tick: Tick(conv(abs)),
-                        num,
-                        den: 1 << pow,
-                    });
+                    song.sigs
+                        .push(TimeSigEvent::new(Tick(conv(abs)), num, 1 << pow));
                 }
                 TrackEventKind::Meta(MetaMessage::Marker(b)) if !text(b).is_empty() => {
                     song.markers.push(SectionMarker {
@@ -243,6 +240,7 @@ pub fn parse(bytes: &[u8]) -> Result<MidiSong, String> {
                 tick: Tick::ZERO,
                 num: 4,
                 den: 4,
+                grouping: None,
             },
         );
     }
@@ -335,7 +333,7 @@ pub fn import_commands(
             .collect();
         sigs.extend(song.sigs.iter().map(|e| TimeSigEvent {
             tick: Tick(e.tick.0 + offset),
-            ..*e
+            ..e.clone()
         }));
         for c in [
             Command::SetTempo { events: tempos },
@@ -857,6 +855,7 @@ mod tests {
                 tick: Tick(0),
                 num: 3,
                 den: 4,
+                grouping: None,
             }],
         })
         .unwrap();

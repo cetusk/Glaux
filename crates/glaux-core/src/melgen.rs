@@ -294,8 +294,23 @@ pub fn parse_grid(s: &str, step: u64) -> Result<(Vec<(u64, u64)>, u64), String> 
     Ok((out, chars.len() as u64 * step))
 }
 
-/// 小節の長さに合わせる(4/4 以外は、はみ出す音を落として長さを切る。足りなければ最後の音を伸ばす)
-fn fit_cell(cell: &str, bar_len: u64, step: u64) -> Vec<(u64, u64)> {
+/// 小節に合わせる。4/4 以外は拍のまとまりに当てる([`crate::meter::fit_pattern`]。息継ぎの休みは残す)。
+/// 当てられない長さの小節は、はみ出す音を落として長さを切る(足りなければ最後の音を伸ばす)
+fn fit_cell(cell: &str, meter: &crate::meter::BarMeter) -> Vec<(u64, u64)> {
+    let src: Vec<char> = cell.chars().collect();
+    if let Some(mut v) = crate::meter::fit_pattern(&src, Some(meter)) {
+        let n = v.len();
+        if n >= 2 && src.ends_with(&['.', '.']) {
+            v[n - 2] = '.';
+            v[n - 1] = '.';
+        }
+        let text: String = v.into_iter().collect();
+        if let Ok((notes, _)) = parse_grid(&text, crate::meter::STEP) {
+            return notes;
+        }
+    }
+    let bar_len = meter.len;
+    let step = bar_len.min(3840) / 16;
     let (mut notes, len) = parse_grid(cell, step).unwrap_or_default();
     notes.retain(|n| n.0 < bar_len);
     for n in &mut notes {
@@ -314,11 +329,11 @@ pub fn pick_rhythm(
     vocab: &Vocab,
     role: &Role,
     bars: u64,
-    bar_len: u64,
+    meter: &crate::meter::BarMeter,
     vocal: bool,
     seed: u64,
 ) -> (Vec<(u64, u64)>, String) {
-    let step = bar_len.min(3840) / 16;
+    let bar_len = meter.len;
     let mut st = mix(seed ^ 0x2B);
     let onsets = |c: &Cell| c.steps.chars().filter(|&ch| ch == 'x').count();
     let busy: Vec<&Cell> = vocab
@@ -354,7 +369,7 @@ pub fn pick_rhythm(
         prev = Some(cell.steps);
         names.push(cell.steps);
         out.extend(
-            fit_cell(cell.steps, bar_len, step)
+            fit_cell(cell.steps, meter)
                 .into_iter()
                 .map(|(o, d)| (b * bar_len + o, d)),
         );
@@ -374,6 +389,8 @@ pub struct MotifSpec<'a> {
     /// 振れ幅(半音)
     pub span: f64,
     pub bar_len: u64,
+    /// 強拍(小節の頭からの tick)。空なら小節の頭と半ば
+    pub strong: Vec<u64>,
     /// 動機の頭からの tick → 和音
     pub chord_at: &'a dyn Fn(u64) -> Option<Chord>,
     pub seed: u64,
@@ -398,7 +415,11 @@ pub fn make_motif(rhythm: &[(u64, u64)], spec: &MotifSpec) -> Vec<MotifNote> {
         let tones = (spec.chord_at)(off).map_or_else(|| tonic_triad.clone(), |c| c.pitch_classes());
         let t = off as f64 / end as f64;
         let target = spec.start as f64 + spec.span * spec.contour.at(t);
-        let strong = off % half == 0;
+        let strong = if spec.strong.is_empty() {
+            off % half == 0
+        } else {
+            spec.strong.contains(&(off % spec.bar_len.max(1)))
+        };
         let on_beat = off % beat == 0;
         let last = i + 1 == rhythm.len();
         let prev = out.last().map(|n| n.pitch as i32);
@@ -593,16 +614,36 @@ mod tests {
     fn two_bar_rhythm_contrasts() {
         let r = role("chorus").unwrap();
         for seed in 1..10 {
-            let (notes, name) = pick_rhythm(vocab("pop"), r, 2, 3840, true, seed);
+            let (notes, name) = pick_rhythm(
+                vocab("pop"),
+                r,
+                2,
+                &crate::meter::BarMeter::common(0),
+                true,
+                seed,
+            );
             let (a, b) = name.split_once('|').unwrap();
             assert_ne!(a, b);
             let first = notes.iter().filter(|n| n.0 < 3840).count();
             let second = notes.len() - first;
             assert!(first > second, "{name}");
         }
-        // 3/4 の小節でもはみ出さない
-        let (notes, _) = pick_rhythm(vocab("pop"), r, 2, 2880, true, 3);
-        assert!(notes.iter().all(|n| (n.0 % 2880) + n.1 <= 2880));
+        // 3/4・7/8 の小節でもはみ出さず、16 分の格子の上
+        for (num, den) in [(3u8, 4u8), (7, 8), (5, 8)] {
+            let sig = crate::time::TimeSigEvent::new(crate::time::Tick(0), num, den);
+            let len = 3840 * num as u64 / den as u64;
+            let m = crate::meter::BarMeter::from_sig(&sig, 0, len);
+            for seed in 1..6 {
+                let (notes, _) = pick_rhythm(vocab("pop"), r, 2, &m, true, seed);
+                assert!(!notes.is_empty());
+                assert!(
+                    notes
+                        .iter()
+                        .all(|n| (n.0 % len) + n.1 <= len && n.0 % 240 == 0),
+                    "{num}/{den} {notes:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -611,7 +652,14 @@ mod tests {
         let at = |t: u64| Some(chords[(t / 3840).min(1) as usize].clone());
         let r = role("chorus").unwrap();
         for seed in 1..8 {
-            let (rhythm, _) = pick_rhythm(vocab("pop"), r, 2, 3840, true, seed);
+            let (rhythm, _) = pick_rhythm(
+                vocab("pop"),
+                r,
+                2,
+                &crate::meter::BarMeter::common(0),
+                true,
+                seed,
+            );
             let spec = MotifSpec {
                 key: Key {
                     tonic: 0,
@@ -623,6 +671,7 @@ mod tests {
                 start: 72,
                 span: 7.0,
                 bar_len: 3840,
+                strong: vec![],
                 chord_at: &at,
                 seed,
             };

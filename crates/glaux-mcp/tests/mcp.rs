@@ -3229,6 +3229,116 @@ async fn write_bassline_follows_the_chords_the_kick_and_slides() {
 }
 
 #[tokio::test]
+async fn odd_meter_tools_follow_the_beat_groups() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "7/8", "commands": [
+                { "op": "set_time_sig", "events": [ { "tick": 0, "num": 7, "den": 8, "grouping": [2, 2, 3] } ] },
+                { "op": "add_track", "track": { "id": "trk_odd001", "name": "Drums", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } },
+                { "op": "add_track", "track": { "id": "trk_odd002", "name": "Keys", "kind": "midi" } },
+                { "op": "add_track", "track": { "id": "trk_odd003", "name": "Bass", "kind": "midi" } },
+                { "op": "add_track", "track": { "id": "trk_odd004", "name": "Lead", "kind": "midi" } }
+            ] }),
+        )
+        .await,
+    );
+    // まとまりの和が合わない拍子はエラー
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "label": "x", "commands": [
+            { "op": "set_time_sig", "events": [ { "tick": 0, "num": 7, "den": 8, "grouping": [3, 3] } ] }
+        ] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    // get_project は拍子の説明を添える
+    let v = ok_json(&call(&fx, "get_project", json!({ "include_notes": false })).await);
+    assert_eq!(
+        v["project"]["time_sig_map"][0]["meter"], "7/8 (2+2+3)",
+        "{v}"
+    );
+    assert_eq!(v["project"]["time_sig_map"][0]["bar_ticks"], 3360);
+    assert_eq!(v["project"]["time_sig_map"][0]["steps_16th"], 14);
+    const BAR: u64 = 3360;
+    ok_json(
+        &call(
+            &fx,
+            "write_drums",
+            json!({ "track_id": "trk_odd001", "style": "rock", "bars": 4, "fill": "none",
+                    "crash": false, "variation": 0.0 }),
+        )
+        .await,
+    );
+    ok_json(
+        &call(
+            &fx,
+            "write_chords",
+            json!({ "track_id": "trk_odd002", "chords": "Am G | F | Dm | E", "rhythm": "eighth" }),
+        )
+        .await,
+    );
+    ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_odd003", "chords": "Am G | F | Dm | E", "pattern": "root8" }),
+        )
+        .await,
+    );
+    let mel = ok_json(
+        &call(
+            &fx,
+            "write_melody",
+            json!({ "track_id": "trk_odd004", "chords": "Am G | F | Dm | E", "key": "A minor",
+                    "bars": 4, "role": "verse" }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let notes_of = |i: usize| -> Vec<(u64, u8)> {
+        let c = &project.tracks[i].clips[0];
+        c.notes()
+            .unwrap()
+            .iter()
+            .map(|n| (c.start.0 + n.pos.0, n.pitch))
+            .collect()
+    };
+    // すべて 16 分の格子の上(1 小節を 16 等分した 210 tick の端数が無い)
+    for i in 0..4 {
+        for (t, _) in notes_of(i) {
+            assert_eq!(t % 240, 0, "track {i}: {t}");
+        }
+    }
+    // キックは 1・3 番目のまとまりの頭、スネアは 2 番目の頭
+    let drums = notes_of(0);
+    let kicks: Vec<u64> = drums
+        .iter()
+        .filter(|n| n.1 == 36 && n.0 < BAR)
+        .map(|n| n.0)
+        .collect();
+    let snares: Vec<u64> = drums
+        .iter()
+        .filter(|n| n.1 == 38 && n.0 < BAR)
+        .map(|n| n.0)
+        .collect();
+    assert_eq!(kicks, vec![0, 1920]);
+    assert_eq!(snares, vec![960]);
+    // 1 小節目の 2 つ目の和音(G)はまとまりの頭(1920)から
+    let keys = notes_of(1);
+    assert!(
+        keys.iter().any(|n| n.0 == 1920 && n.1 % 12 == 7),
+        "{keys:?}"
+    );
+    assert!(!keys.iter().any(|n| n.0 == 1680));
+    assert!(mel["score"].as_u64().is_some(), "{mel}");
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(

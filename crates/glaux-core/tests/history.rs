@@ -450,9 +450,33 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 }
             }
             17 => {
+                if rng.gen_bool(0.5) {
+                    // 拍子(変拍子のまとまりも付けたり付けなかったり)
+                    let (num, den, grouping) = [
+                        (4u8, 4u8, None),
+                        (3, 4, None),
+                        (7, 8, None),
+                        (7, 8, Some(vec![3u8, 2, 2])),
+                        (5, 4, Some(vec![2, 3])),
+                        (6, 8, None),
+                    ]
+                    .choose(rng)
+                    .unwrap()
+                    .clone();
+                    let mut events = vec![TimeSigEvent {
+                        tick: Tick(0),
+                        num,
+                        den,
+                        grouping: grouping.clone(),
+                    }];
+                    if rng.gen_bool(0.5) {
+                        events.push(TimeSigEvent::new(Tick(rng.gen_range(1..8) * 3840), 4, 4));
+                    }
+                    return Command::SetTimeSig { events };
+                }
                 return Command::SetTitle {
                     title: format!("title{}", rng.gen_range(0..100)),
-                }
+                };
             }
             18 => {
                 let sections = (0..rng.gen_range(0..4))

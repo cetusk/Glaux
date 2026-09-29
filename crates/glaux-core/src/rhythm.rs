@@ -142,7 +142,8 @@ pub fn analyze(
 /// (組の頭から grid/2 以上 3/2·grid 未満)にある音を、組の頭から `2·grid·swing` の位置へ
 /// `strength`(0〜1)だけ寄せる。`swing` は 0.5 = ストレート、0.667 ≈ 3 連、0.75 = 付点。
 /// 表の音は動かさない。寄せ先は絶対値なので、同じ設定で何度掛けても結果は同じ。
-/// 位置は曲頭からの拍で判定する(`clip_start` を足してから測る)。
+/// 位置は曲頭からの拍で判定する(`clip_start` を足してから測る)。`meters`(曲の頭からの小節ごとの拍子)を渡すと、
+/// 組は小節の拍のまとまりの頭から数え、まとまりに収まらない余り(7/8 の 3 のまとまりの最後の 8 分など)は動かさない。
 /// 戻り値は (ノート ID, 新しい位置)。位置が変わらない音は含めない。
 pub fn swing_positions(
     notes: &[crate::Note],
@@ -151,6 +152,7 @@ pub fn swing_positions(
     grid: u64,
     swing: f64,
     strength: f64,
+    meters: &[crate::meter::BarMeter],
 ) -> Vec<(crate::NoteId, u64)> {
     let grid = grid.max(2);
     let pair = grid * 2;
@@ -161,7 +163,14 @@ pub fn swing_positions(
         .iter()
         .filter_map(|n| {
             let abs = clip_start + n.pos.0;
-            let off = (abs % pair) as i64;
+            let off = if meters.is_empty() {
+                (abs % pair) as i64
+            } else {
+                let i = meters.partition_point(|m| m.start <= abs).checked_sub(1)?;
+                let m = &meters[i];
+                let rel = abs - m.start;
+                (rel - m.pair_start(rel, pair)?) as i64
+            };
             if off < (grid / 2) as i64 || off >= (grid * 3 / 2) as i64 {
                 return None; // 表の音
             }
@@ -288,7 +297,7 @@ mod tests {
         };
         // ストレートの 8 分(0, 480, 960, 1440)
         let notes = vec![n(0), n(480), n(960), n(1440)];
-        let moved = super::swing_positions(&notes, 0, 3840, 480, 2.0 / 3.0, 1.0);
+        let moved = super::swing_positions(&notes, 0, 3840, 480, 2.0 / 3.0, 1.0, &[]);
         let pos: Vec<u64> = moved.iter().map(|(_, p)| *p).collect();
         assert_eq!(pos, vec![640, 1600], "裏だけ 3 連の位置へ");
         // 同じ設定で掛け直しても変わらない
@@ -302,20 +311,29 @@ mod tests {
                 y
             })
             .collect();
-        assert!(super::swing_positions(&again, 0, 3840, 480, 2.0 / 3.0, 1.0).is_empty());
+        assert!(super::swing_positions(&again, 0, 3840, 480, 2.0 / 3.0, 1.0, &[]).is_empty());
         // ストレートに戻す・半分だけ寄せる・クリップの位置を考慮
-        let back = super::swing_positions(&again, 0, 3840, 480, 0.5, 1.0);
+        let back = super::swing_positions(&again, 0, 3840, 480, 0.5, 1.0, &[]);
         assert_eq!(
             back.iter().map(|(_, p)| *p).collect::<Vec<_>>(),
             vec![480, 1440]
         );
-        let half = super::swing_positions(&notes, 0, 3840, 480, 0.75, 0.5);
+        let half = super::swing_positions(&notes, 0, 3840, 480, 0.75, 0.5, &[]);
         assert_eq!(half[0].1, 480 + 120);
         // クリップが 1 拍ずれた所(960)から始まっても、曲の拍で判定する
-        let shifted = super::swing_positions(&[n(480)], 960, 3840, 480, 2.0 / 3.0, 1.0);
+        let shifted = super::swing_positions(&[n(480)], 960, 3840, 480, 2.0 / 3.0, 1.0, &[]);
         assert_eq!(shifted[0].1, 640);
         // 16 分
-        let s16 = super::swing_positions(&[n(0), n(240)], 0, 3840, 240, 2.0 / 3.0, 1.0);
+        // 7/8 (2+2+3): 組はまとまりの頭から。2 小節目の頭(3360)は表のまま、3 のまとまりの最後の 8 分も動かさない
+        let sig = crate::time::TimeSigEvent::new(Tick(0), 7, 8);
+        let meters: Vec<crate::meter::BarMeter> = (0..2)
+            .map(|b| crate::meter::BarMeter::from_sig(&sig, b * 3360, 3360))
+            .collect();
+        let odd = [n(480), n(2400), n(2880), n(3360), n(3840)];
+        let moved = super::swing_positions(&odd, 0, 6720, 480, 2.0 / 3.0, 1.0, &meters);
+        let got: Vec<u64> = moved.iter().map(|m| m.1).collect();
+        assert_eq!(got, vec![640, 2560, 4000]);
+        let s16 = super::swing_positions(&[n(0), n(240)], 0, 3840, 240, 2.0 / 3.0, 1.0, &[]);
         assert_eq!(s16[0].1, 320);
     }
 }

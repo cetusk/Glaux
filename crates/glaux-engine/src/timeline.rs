@@ -118,6 +118,7 @@ impl Timeline {
                     tick: Tick::ZERO,
                     num: 4,
                     den: 4,
+                    grouping: None,
                 },
             );
         }
@@ -322,11 +323,13 @@ mod tests {
                 tick: Tick::ZERO,
                 num: 4,
                 den: 4,
+                grouping: None,
             },
             TimeSigEvent {
                 tick: Tick(7680),
                 num: 3,
                 den: 4,
+                grouping: None,
             },
         ];
         let mut t = Track::new(TrackId::new(), "Kick", TrackKind::Midi);

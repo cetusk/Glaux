@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const FORMAT_NAME: &str = "glaux";
-pub const FORMAT_VERSION: u32 = 1;
+/// 形式の版。2: 拍子の拍のまとまり(`TimeSigEvent.grouping`)。1 の曲はそのまま読める
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Meta {
@@ -79,6 +80,7 @@ fn default_time_sig() -> Vec<TimeSigEvent> {
         tick: Tick::ZERO,
         num: 4,
         den: 4,
+        grouping: None,
     }]
 }
 

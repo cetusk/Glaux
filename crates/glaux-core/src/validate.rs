@@ -39,6 +39,13 @@ impl Project {
         if self.format != FORMAT_NAME {
             issues.push(Issue::error(format!("unknown format `{}`", self.format)));
         }
+        if self.version > crate::model::FORMAT_VERSION {
+            issues.push(Issue::warn(format!(
+                "format version {} is newer than this Glaux ({}); unknown fields may be lost on save",
+                self.version,
+                crate::model::FORMAT_VERSION
+            )));
+        }
         if self.ppq != PPQ {
             issues.push(Issue::error(format!(
                 "unsupported ppq {} (expected {PPQ})",
@@ -51,6 +58,13 @@ impl Project {
             .map_or(true, |e| e.tick != Tick::ZERO)
         {
             issues.push(Issue::error("time_sig_map must start at tick 0"));
+        }
+        for e in &self.time_sig_map {
+            if let Some(g) = &e.grouping {
+                if let Err(msg) = crate::meter::check_grouping(e.num, g) {
+                    issues.push(Issue::error(format!("time_sig_map @{}: {msg}", e.tick.0)));
+                }
+            }
         }
 
         let mut track_ids = HashSet::new();

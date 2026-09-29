@@ -319,11 +319,13 @@ mod tests {
                 tick: Tick(0),
                 num: 4,
                 den: 4,
+                grouping: None,
             },
             crate::time::TimeSigEvent {
                 tick: Tick(7680),
                 num: 6,
                 den: 8,
+                grouping: None,
             },
         ];
         assert_eq!(position_to_tick(&p, "3:4").unwrap(), 7680 + 3 * 480);

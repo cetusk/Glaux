@@ -26,6 +26,7 @@ pub mod history;
 pub mod id;
 pub mod melgen;
 pub mod melody;
+pub mod meter;
 pub mod model;
 pub mod motif;
 pub mod progressions;

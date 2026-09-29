@@ -521,6 +521,7 @@ async fn swing_clip(
         grid.max(60),
         swing,
         1.0,
+        &glaux_core::meter::bar_meters(&project, clip.start.0 + clip.length.0),
     )
     .into_iter()
     .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(Tick(pos)))

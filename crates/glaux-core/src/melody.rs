@@ -433,13 +433,25 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
         .find(|n| n.pitch == m.highest)
         .map_or(0, |n| n.pos);
     m.peak_bar = bar_of(first_peak) + 1;
-    // 強拍の和音の音
+    // 強拍の和音の音(変拍子はまとまりの頭も強拍)
+    let meters = crate::meter::bar_meters(ctx.project, end.max(1));
+    let group_head = |t: u64| {
+        meters
+            .get(bar_of(t))
+            .filter(|m| m.grouping.iter().any(|&g| g != 1))
+            .is_some_and(|m| {
+                m.strong_ticks()
+                    .iter()
+                    .any(|&s| (t - m.start.min(t)).abs_diff(s) < 60)
+            })
+    };
     let mut strong = 0usize;
     let mut strong_ct = 0usize;
     let mut unresolved = Vec::new();
     for (i, n) in notes.iter().enumerate() {
         let (b, idx, on, _, num) = beat_info(n.pos);
-        let is_strong = on && (idx == 0 || (num % 2 == 0 && num >= 4 && idx == num as u64 / 2));
+        let is_strong = (on && (idx == 0 || (num % 2 == 0 && num >= 4 && idx == num as u64 / 2)))
+            || group_head(n.pos);
         if !is_strong {
             continue;
         }

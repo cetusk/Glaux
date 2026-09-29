@@ -792,9 +792,10 @@
     const cur = project.time_sig_map;
     const first = cur[0] ?? { tick: 0, num: 4, den: 4 };
     if (first.num === num && first.den === den) return;
+    // 分子・分母を変えたら拍のまとまりは既定に戻す(和が合わなくなるため)
     const events =
       cur.length > 0
-        ? cur.map((e, i) => (i === 0 ? { ...e, num, den } : e))
+        ? cur.map((e, i) => (i === 0 ? { tick: e.tick, num, den } : e))
         : [{ tick: 0, num, den }];
     try {
       await api.applyEdit(

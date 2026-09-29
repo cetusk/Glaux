@@ -97,12 +97,14 @@ pub struct CompOptions {
 }
 
 /// 積んだ和音(`notes[i]` = i 番目の和音の音。低い順)を、区間とリズムに沿ってノートにする。
-/// `bars` はクリップの頭からの (小節の頭, 小節の長さ)
+/// `bars` はクリップの頭からの (小節の頭, 小節の長さ)、`meters` は小節ごとの拍子(同じ順。4/4 以外の小節は
+/// 型を 16 分の格子と拍のまとまりに当てる。[`crate::meter::fit_pattern`])
 pub fn render(
     spans: &[Span],
     notes: &[Vec<u8>],
     rhythm: Option<&[char]>,
     bars: &[(u64, u64)],
+    meters: &[crate::meter::BarMeter],
     opts: &CompOptions,
 ) -> Vec<CompNote> {
     // 打つ位置と長さ(クリップの頭から)
@@ -113,11 +115,18 @@ pub fn render(
                 hits.push((s.start, s.len, 0));
             }
         }
-        Some(pat) => {
-            let n = pat.len() as u64;
-            for &(bar, len) in bars {
-                let step = len as f64 / n as f64;
-                let at = |k: u64| bar + (k as f64 * step).round() as u64;
+        Some(pat0) => {
+            for (bi, &(bar, len)) in bars.iter().enumerate() {
+                let meter = meters.get(bi);
+                let fitted = crate::meter::fit_pattern(pat0, meter);
+                let pat: &[char] = fitted.as_deref().unwrap_or(pat0);
+                let n = pat.len() as u64;
+                let step = if fitted.is_some() {
+                    crate::meter::STEP as f64
+                } else {
+                    len as f64 / n as f64
+                };
+                let at = |k: u64| bar + ((k as f64 * step).round() as u64).min(len);
                 let mut k = 0u64;
                 while k < n {
                     if pat[k as usize] != 'x' {
@@ -135,10 +144,15 @@ pub fn render(
                     } else {
                         ((full as f64) * opts.gate).round().max(1.0) as u64
                     };
-                    // 拍の頭は少し強く、裏は少し弱く
+                    // 拍の頭(変拍子はまとまりの頭)は少し強く、裏は少し弱く
                     let beat = n / 4;
                     let accent = if k == 0 {
                         8
+                    } else if fitted.is_some() {
+                        match meter.map(|m| m.level(k * crate::meter::STEP)) {
+                            Some(1) => 3,
+                            _ => 0,
+                        }
                     } else if beat > 0 && k % beat == 0 {
                         3
                     } else {
@@ -244,7 +258,7 @@ mod tests {
         ];
         let notes = vec![vec![60, 64, 67], vec![62, 65, 69]];
         let bars: Vec<(u64, u64)> = (0..4).map(|b| (b * BAR, BAR)).collect();
-        let out = render(&spans, &notes, None, &bars, &opts());
+        let out = render(&spans, &notes, None, &bars, &[], &opts());
         assert_eq!(out.len(), 6);
         assert!(out.iter().take(3).all(|n| n.pos == 0 && n.dur == BAR * 2));
         assert!(out.iter().skip(3).all(|n| n.pos == BAR * 3));
@@ -268,7 +282,7 @@ mod tests {
         let notes = vec![vec![60, 64, 67], vec![59, 62, 67]];
         let bars = vec![(0, BAR)];
         let pat = parse_rhythm("whole").unwrap().unwrap();
-        let out = render(&spans, &notes, Some(&pat), &bars, &opts());
+        let out = render(&spans, &notes, Some(&pat), &bars, &[], &opts());
         assert_eq!(out.len(), 6);
         assert!(out.iter().any(|n| n.pos == BAR / 2 && n.pitch == 59));
         assert!(out.iter().all(|n| n.dur == BAR / 2));
@@ -279,7 +293,7 @@ mod tests {
             len: BAR,
             chord: Some(0),
         }];
-        let out = render(&spans, &notes, Some(&pat), &bars, &opts());
+        let out = render(&spans, &notes, Some(&pat), &bars, &[], &opts());
         let starts: Vec<u64> = out
             .iter()
             .filter(|n| n.pitch == 60)
@@ -295,6 +309,7 @@ mod tests {
             &notes,
             Some(&parse_rhythm("whole").unwrap().unwrap()),
             &bars,
+            &[],
             &o,
         );
         let first: Vec<u64> = out.iter().take(3).map(|n| n.pos).collect();
@@ -305,6 +320,7 @@ mod tests {
             &notes,
             Some(&parse_rhythm("quarter").unwrap().unwrap()),
             &bars,
+            &[],
             &opts(),
         );
         assert!(
@@ -323,7 +339,7 @@ mod tests {
         }];
         let notes = vec![vec![60]];
         let pat = parse_rhythm("eighth").unwrap().unwrap();
-        let out = render(&spans, &notes, Some(&pat), &[(0, 2880)], &opts());
+        let out = render(&spans, &notes, Some(&pat), &[(0, 2880)], &[], &opts());
         assert_eq!(out.len(), 8);
         assert_eq!(out[1].pos, 360);
     }

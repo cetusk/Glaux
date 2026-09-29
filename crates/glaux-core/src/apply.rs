@@ -1074,6 +1074,9 @@ impl Project {
                     if e.num == 0 || e.den == 0 || !e.den.is_power_of_two() {
                         return Err(crate::time::TimeError::InvalidTimeSig(e.den).into());
                     }
+                    if let Some(g) = &e.grouping {
+                        crate::meter::check_grouping(e.num, g).map_err(CoreError::OutOfRange)?;
+                    }
                 }
                 let old = std::mem::replace(&mut self.time_sig_map, ev);
                 Ok(Applied {

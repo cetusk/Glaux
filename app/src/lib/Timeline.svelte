@@ -8,7 +8,7 @@
   import { harmonyStore } from "./harmony.svelte";
   import { showError, showToast } from "./toast.svelte";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
-  import { barAtTick, barsEndTick, buildBars } from "./barMap";
+  import { barAtTick, barsEndTick, buildBars, defaultGrouping, meterLabel } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
   import SimilarPresetDialog from "./SimilarPresetDialog.svelte";
@@ -284,7 +284,15 @@
 
   // ---- 拍子の変更(ルーラー右クリック / 拍子チップのクリック) ----
 
-  let sigMenu = $state<{ x: number; y: number; barIndex: number; num: string; den: string; bpm: string } | null>(
+  let sigMenu = $state<{
+    x: number;
+    y: number;
+    barIndex: number;
+    num: string;
+    den: string;
+    grouping: string;
+    bpm: string;
+  } | null>(
     null,
   );
   const DENS = [1, 2, 4, 8, 16, 32];
@@ -431,6 +439,7 @@
       barIndex: bar.index,
       num: String(bar.num),
       den: String(bar.den),
+      grouping: bar.grouping.join("+"),
       bpm: String(bpmAt(bar.tick)),
     };
   }
@@ -480,12 +489,13 @@
   }
 
   /// 拍子イベント列を整える: tick 順に並べ、直前と同じ拍子の変更は取り除く
-  function normalizeSigs(events: { tick: number; num: number; den: number }[]) {
+  function normalizeSigs(events: { tick: number; num: number; den: number; grouping?: number[] }[]) {
     const sorted = [...events].sort((a, b) => a.tick - b.tick);
     const out: typeof sorted = [];
+    const same = (a?: number[], b?: number[]) => (a ?? []).join("+") === (b ?? []).join("+");
     for (const ev of sorted) {
       const prev = out[out.length - 1];
-      if (prev && prev.num === ev.num && prev.den === ev.den) continue;
+      if (prev && prev.num === ev.num && prev.den === ev.den && same(prev.grouping, ev.grouping)) continue;
       out.push(ev);
     }
     if (out.length === 0 || out[0].tick !== 0) out.unshift({ tick: 0, num: 4, den: 4 });
@@ -499,15 +509,22 @@
     const den = Number(m.den);
     if (!(num >= 1 && num <= 32) || !DENS.includes(den)) return;
     const bar = barList[m.barIndex];
+    // まとまり("2+2+3")。和が分子と合わないか既定と同じなら持たない
+    const parts = m.grouping
+      .split(/[+, ]+/)
+      .filter((x) => x !== "")
+      .map(Number);
+    const valid = parts.length > 0 && parts.every((x) => Number.isInteger(x) && x >= 1) && parts.reduce((a, b) => a + b, 0) === num;
+    const grouping = valid && parts.join("+") !== defaultGrouping(num, den).join("+") ? parts : undefined;
     const events = normalizeSigs([
       ...project.time_sig_map.filter((e) => e.tick !== bar.tick),
-      { tick: bar.tick, num, den },
+      grouping ? { tick: bar.tick, num, den, grouping } : { tick: bar.tick, num, den },
     ]);
     sigMenu = null;
     api
       .applyEdit(
         [{ op: "set_time_sig", events }],
-        `${bar.index + 1} 小節目から拍子を ${num}/${den} に変更`,
+        `${bar.index + 1} 小節目から拍子を ${num}/${den}${grouping ? `(${grouping.join("+")})` : ""} に変更`,
       )
       .catch(() => {});
   }
@@ -1797,7 +1814,7 @@
               title="クリックで拍子を編集・削除"
               onpointerdown={(e) => e.stopPropagation()}
               onpointerup={(e) => e.stopPropagation()}
-              onclick={(e) => openSigMenu(e, bar.index)}>{bar.num}/{bar.den}</span
+              onclick={(e) => openSigMenu(e, bar.index)}>{meterLabel(bar)}</span
             >{/if}
         </div>
       {/each}
@@ -2179,15 +2196,28 @@
         </select>
         <button class="sig-apply" onclick={applySig}>適用</button>
       </div>
+      <div class="sig-form">
+        <span class="sig-group-label">拍のまとまり</span>
+        <input
+          class="sig-group"
+          type="text"
+          placeholder={defaultGrouping(Number(sigMenu.num) || 4, Number(sigMenu.den) || 4).join("+")}
+          bind:value={sigMenu.grouping}
+          onkeydown={(e) => e.key === "Enter" && applySig()}
+          aria-label="拍のまとまり(例 2+2+3)"
+        />
+      </div>
       <div class="sig-presets">
-        {#each ["4/4", "3/4", "6/8", "7/8", "5/4", "12/8"] as p (p)}
+        {#each ["4/4", "3/4", "6/8", "7/8", "5/4", "12/8", "7/8 3+2+2", "9/8 2+2+2+3"] as p (p)}
           <button
             class="sig-preset"
             onclick={() => {
               if (!sigMenu) return;
-              const [n, d] = p.split("/");
+              const [sig, g] = p.split(" ");
+              const [n, d] = sig.split("/");
               sigMenu.num = n;
               sigMenu.den = d;
+              sigMenu.grouping = g ?? "";
               applySig();
             }}>{p}</button
           >
@@ -2983,6 +3013,17 @@
 
   .sig-num {
     width: 52px;
+  }
+
+  .sig-group-label {
+    font-size: 12px;
+    opacity: 0.8;
+    white-space: nowrap;
+  }
+
+  .sig-group {
+    width: 96px;
+    margin-left: auto;
   }
 
   .sig-apply {

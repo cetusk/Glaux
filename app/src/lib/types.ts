@@ -124,7 +124,8 @@ export interface Project {
   ppq: number;
   meta: { title: string; created: string };
   tempo_map: { tick: number; bpm: number }[];
-  time_sig_map: { tick: number; num: number; den: number }[];
+  /** grouping: 拍のまとまり(分母の音符の数。7/8 の [2, 2, 3] など)。無ければ既定の規則(barMap の defaultGrouping) */
+  time_sig_map: { tick: number; num: number; den: number; grouping?: number[] }[];
   tracks: Track[];
   master: { volume_db: number; effects: ProjectEffect[]; fx_links?: FxLink[] | null; fx_io_pos?: FxIoPos | null; automation?: AutomationLane[] };
   assets: Record<string, unknown>;

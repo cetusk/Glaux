@@ -148,6 +148,8 @@ pub struct Options {
     /// 強拍の音を 8 分前へ食わせる割合 0〜1
     pub anticipate: f64,
     pub seed: u64,
+    /// 強拍(小節の頭からの tick。`meter::BarMeter::strong_ticks`)。空なら小節の頭と半ば
+    pub strong: Vec<u64>,
 }
 
 /// 展開した旋律の 1 音(クリップの頭から)
@@ -187,7 +189,14 @@ pub fn develop(
     let motif_end = motif.iter().map(|n| n.offset + n.dur).max().unwrap_or(0);
     let slot_len = motif_end.div_ceil(bar_len).clamp(1, 4) * bar_len;
     let beat = crate::time::PPQ;
-    let is_strong = |rel_in_bar: u64| rel_in_bar % (bar_len / 2).max(1) < 60;
+    let is_strong = |rel_in_bar: u64| {
+        if opts.strong.is_empty() {
+            rel_in_bar % (bar_len / 2).max(1) < 60
+        } else {
+            let r = rel_in_bar % bar_len.max(1);
+            opts.strong.iter().any(|&s| r.abs_diff(s) < 60)
+        }
+    };
     let mut out: Vec<Out> = Vec::new();
     let mut keep_pc: Vec<bool> = Vec::new();
     for (si, ops) in plan.iter().enumerate() {
@@ -743,6 +752,7 @@ mod tests {
             peak_pitch: None,
             anticipate: 0.0,
             seed: 1,
+            strong: vec![],
         }
     }
 

@@ -5,11 +5,11 @@ use glaux_core::*;
 
 const FIXTURE: &str = r##"{
   "format": "glaux",
-  "version": 1,
+  "version": 2,
   "ppq": 960,
   "meta": { "title": "Fixture", "created": "2026-09-21T10:00:00Z" },
   "tempo_map": [ { "tick": 0, "bpm": 120.0 }, { "tick": 7680, "bpm": 90.0 } ],
-  "time_sig_map": [ { "tick": 0, "num": 4, "den": 4 } ],
+  "time_sig_map": [ { "tick": 0, "num": 4, "den": 4 }, { "tick": 15360, "num": 7, "den": 8, "grouping": [3, 2, 2] } ],
   "tracks": [
     {
       "id": "trk_a1b2c3",
@@ -105,6 +105,8 @@ fn fixture_parses_and_roundtrips() {
     assert!(p.is_valid(), "{:?}", p.validate());
     assert_eq!(p.tracks.len(), 2);
     assert_eq!(p.tempo_map.events().len(), 2);
+    assert_eq!(p.time_sig_map[0].grouping, None);
+    assert_eq!(p.time_sig_map[1].grouping, Some(vec![3, 2, 2]));
 
     let bass = p.track(&"trk_a1b2c3".parse().unwrap()).unwrap();
     assert_eq!(bass.kind, TrackKind::Midi);

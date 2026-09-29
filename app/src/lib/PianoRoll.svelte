@@ -6,7 +6,7 @@
   import { settings } from "./settings.svelte";
   import { aiHighlight } from "./aiHighlight.svelte";
   import { harmonyStore } from "./harmony.svelte";
-  import { buildBars } from "./barMap";
+  import { buildBars, groupHeads } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
   import Fretboard from "./Fretboard.svelte";
   import { drumName } from "./drumMap";
@@ -451,11 +451,12 @@
         g.fillStyle = "#4a4a4a";
         g.fillRect((bar.tick - clipStart) * pxPerTick, 0, 1, contentH);
       }
-      // 拍線(分母の音価 = 1 拍)
+      // 拍線(分母の音価 = 1 拍)。変拍子のまとまりの頭(7/8 の 2+2+3 など)は少し明るく
       const beatLen = (project.ppq * 4) / bar.den;
-      g.fillStyle = "#333333";
+      const heads = bar.grouping.some((x) => x !== 1) ? new Set(groupHeads(bar, project.ppq)) : null;
       for (let t = bar.tick + beatLen; t < bar.tick + bar.len; t += beatLen) {
         if (t <= clipStart || t >= clipEnd) continue;
+        g.fillStyle = heads?.has(t - bar.tick) ? "#404040" : "#333333";
         g.fillRect((t - clipStart) * pxPerTick, 0, 1, contentH);
       }
     }

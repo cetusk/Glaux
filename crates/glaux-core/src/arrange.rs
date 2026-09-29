@@ -19,6 +19,7 @@ pub fn bar_grid(project: &Project, end_tick: u64) -> Vec<(u64, u64)> {
             tick: Tick(0),
             num: 4,
             den: 4,
+            grouping: None,
         });
     }
     let mut out = Vec::new();
@@ -105,7 +106,7 @@ fn shift_global(project: &Project, f: &dyn Fn(u64) -> Option<u64>) -> Vec<Comman
         .filter_map(|e| {
             keep0(e.tick.0).map(|t| TimeSigEvent {
                 tick: Tick(t),
-                ..*e
+                ..e.clone()
             })
         })
         .collect();
@@ -551,11 +552,13 @@ mod tests {
                     tick: Tick(0),
                     num: 4,
                     den: 4,
+                    grouping: None,
                 },
                 TimeSigEvent {
                     tick: Tick(BAR * 2),
                     num: 3,
                     den: 4,
+                    grouping: None,
                 },
             ],
         })
@@ -693,6 +696,7 @@ mod tests {
             tick: Tick(BAR * 8),
             num: 3,
             den: 4,
+            grouping: None,
         });
         let plan = vec![
             PlanSection {

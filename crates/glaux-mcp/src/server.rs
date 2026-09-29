@@ -777,6 +777,11 @@ pub struct WriteDrumsParams {
     /// 乱数の種(既定 1。同じ値なら同じ結果)。
     #[serde(default)]
     pub seed: Option<u64>,
+    /// 4/4 以外の小節の組み立て方: auto(既定。7/8・6/8 など分母 8 以上は group、3/4・5/4 など分母 4 以下は cut)/
+    /// group(拍のまとまりの頭にキックとスネアを交互、ハットはまとまりごとに刻み直す)/
+    /// cut(4/4 の型を 16 分の格子で切るか延ばす。7/8 = 4/4 から最後の 8 分を抜く)/ stretch(1 小節を 16 等分。以前の動き)。
+    #[serde(default)]
+    pub odd_meter: Option<String>,
     /// クリップの名前(既定 "Drums")。
     #[serde(default)]
     pub name: Option<String>,
@@ -926,7 +931,8 @@ pub struct WriteMelodyParams {
     /// 動機の輪郭: arch(弧)/ rise / fall / valley / flat_hook(同じ音を叩く)。省略で役割から(案ごとに変える)。
     #[serde(default)]
     pub contour: Option<String>,
-    /// 動機のリズムを固定する(16 分 1 つが 1 文字: x 音の頭 / - 伸ばす / . 休み。| は読み飛ばす。1〜2 小節)。
+    /// 動機のリズムを固定する(16 分 1 つが 1 文字: x 音の頭 / - 伸ばす / . 休み。| は読み飛ばす。1〜2 小節。
+    /// 7/8 なら 1 小節 14 文字)。
     /// 例 "x-x-x-x-x---x---|x-------x-------"。省略でジャンルのリズムの型から選ぶ(1 小節目は動く型、2 小節目は伸ばす型)。
     #[serde(default)]
     pub rhythm: Option<String>,
@@ -1039,11 +1045,14 @@ fn progression_layout(
     let mut chords_list: Vec<chord::Chord> = Vec::new();
     let mut spans: Vec<comp::Span> = Vec::new();
     let mut span_bar: Vec<u32> = Vec::new();
+    let meters = bar_meters_in(project, clip_start, clip_len);
     for (bi, (bar_chords, &(bstart, blen))) in parsed.iter().zip(&bar_list).enumerate() {
         let k = bar_chords.len() as u64;
+        // 小節の中の和音の変わり目: 4/4 は等分、変拍子はまとまりの頭(足りなければ 16 分の格子)
+        let cuts = chord_cuts(meters.get(bi), blen, k);
         for (ci, c) in bar_chords.iter().enumerate() {
-            let start = bstart + blen * ci as u64 / k;
-            let end = bstart + blen * (ci as u64 + 1) / k;
+            let start = bstart + cuts[ci];
+            let end = bstart + cuts[ci + 1];
             let same_as_prev = merge_same
                 && spans.last().is_some_and(|last: &comp::Span| {
                     last.start + last.len == start
@@ -1256,6 +1265,48 @@ fn melody_critique(
             target: target.to_owned(),
         },
     )
+}
+
+/// `start` から `len` の範囲の小節の拍子(小節の頭は曲の頭からの tick のまま)
+fn bar_meters_in(
+    project: &glaux_core::Project,
+    start: u64,
+    len: u64,
+) -> Vec<glaux_core::meter::BarMeter> {
+    glaux_core::meter::bar_meters(project, start + len)
+        .into_iter()
+        .filter(|m| m.start >= start && m.start < start + len)
+        .collect()
+}
+
+/// 小節の中の和音の変わり目(小節の頭からの tick。先頭 0・末尾 `blen` を含む `k + 1` 個)。
+/// 4/4 は等分、変拍子はまとまりの頭のうち等分に近いもの(足りなければ 16 分の格子に丸める)
+fn chord_cuts(meter: Option<&glaux_core::meter::BarMeter>, blen: u64, k: u64) -> Vec<u64> {
+    let k = k.max(1);
+    let even: Vec<u64> = (0..=k).map(|i| blen * i / k).collect();
+    let Some(m) = meter.filter(|m| !m.is_common()) else {
+        return even;
+    };
+    let heads: Vec<u64> = m.groups().iter().map(|g| g.0).filter(|&h| h > 0).collect();
+    let mut cuts = vec![0u64];
+    for i in 1..k {
+        let target = even[i as usize];
+        let prev = *cuts.last().unwrap_or(&0);
+        let pick = heads
+            .iter()
+            .copied()
+            .filter(|&h| h > prev)
+            .min_by_key(|&h| h.abs_diff(target));
+        let step = glaux_core::meter::STEP;
+        let snapped = (target + step / 2) / step * step;
+        cuts.push(match pick {
+            // 残りの和音の数だけ頭が残っているときだけ使う
+            Some(h) if heads.iter().filter(|&&x| x > h).count() as u64 >= k - 1 - i => h,
+            _ => snapped.max(prev + step),
+        });
+    }
+    cuts.push(blen);
+    cuts
 }
 
 /// "E3-C5" / "low" / "mid" / "high" を音域に
@@ -2130,6 +2181,16 @@ impl GlauxServer {
             }
         }
         let mut v = serde_json::to_value(&project).map_err(|e| e.to_string())?;
+        // 拍子: まとまり(省略時は既定値)・1 小節の tick・16 分の数を添える(AI が拍を数え間違えないように)
+        if let Some(arr) = v.get_mut("time_sig_map").and_then(Value::as_array_mut) {
+            for (e, sig) in arr.iter_mut().zip(&project.time_sig_map) {
+                let len = glaux_core::PPQ * 4 * sig.num as u64 / sig.den.max(1) as u64;
+                let m = glaux_core::meter::BarMeter::from_sig(sig, sig.tick.0, len);
+                e["meter"] = json!(m.label());
+                e["bar_ticks"] = json!(m.len);
+                e["steps_16th"] = json!(m.steps());
+            }
+        }
         let include_notes = p.include_notes.unwrap_or(true);
         let include_automation = p.include_automation.unwrap_or(true);
         // CLAP プラグインの状態は巨大な不透明データなので省略して見せる
@@ -4396,8 +4457,15 @@ impl GlauxServer {
                 // クリップごとに揺れの列を変える(同じ型のクリップが並んでも同じ揺れにならない)
                 seed: p.seed.unwrap_or(1).wrapping_add(i as u64 * 7919),
             };
-            let bar_of = bar_start_fn(&project, start + len);
-            let edits = glaux_core::groove::apply(&notes, start, len, style, &opts, &bar_of);
+            let meters = glaux_core::meter::bar_meters(&project, start + len + 3840);
+            let meter_of = |t: u64| {
+                let i = meters.partition_point(|m| m.start <= t).saturating_sub(1);
+                meters
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| glaux_core::meter::BarMeter::common(0))
+            };
+            let edits = glaux_core::groove::apply(&notes, start, len, style, &opts, &meter_of);
             for e in &edits {
                 if let Some(n) = notes.iter().find(|n| n.id == e.id) {
                     shift_sum += (e.pos as f64 - n.pos.0 as f64).abs() / ticks_per_ms;
@@ -4724,11 +4792,13 @@ impl GlauxServer {
             velocity: p.velocity.unwrap_or(88).clamp(1, 127),
             strum_ticks: (p.strum_ms.unwrap_or(0.0).clamp(0.0, 80.0) * ticks_per_ms).round() as u64,
         };
+        let meters = bar_meters_in(&project, clip_start, clip_len);
         let rendered = comp::render(
             &spans,
             &notes_per_chord,
             rhythm.as_deref(),
             &bar_list,
+            &meters,
             &comp_opts,
         );
         let mut clip = glaux_core::Clip::new_midi(
@@ -4890,7 +4960,16 @@ impl GlauxServer {
             slide,
             beat: glaux_core::PPQ,
         };
-        let notes = bassline::render(&spans, &chords, &bar_list, &pattern, &opts, kick.as_deref())?;
+        let meters = bar_meters_in(&project, clip_start, clip_len);
+        let notes = bassline::render(
+            &spans,
+            &chords,
+            &bar_list,
+            &meters,
+            &pattern,
+            &opts,
+            kick.as_deref(),
+        )?;
         let glide = p.glide_ms.unwrap_or(60.0).clamp(5.0, 500.0);
         let mut clip = glaux_core::Clip::new_midi(
             glaux_core::ClipId::new(),
@@ -4947,6 +5026,7 @@ impl GlauxServer {
         (fill_every 小節ごとの最後の 3・4 拍にスネアかタム)・クラッシュ(区切りの頭)と一緒に置く。ビルドは build_bars\
         (スネアのロールがだんだん細かく強く)と gap_beats(直前の無音)。区間ごとに呼び分けると区間の差になる\
         (イントロは intensity 0.3、山は 0.9 など)。音程は GM(36 キック・38 スネア・39 クラップ・42 / 46 ハット・49 クラッシュ)。\
+        変拍子(7/8 など)は拍子の拍のまとまり(time_sig_map の grouping)の頭にキックとスネアを置く(odd_meter)。\
         ドラムのトラックに新しいクリップを作る(返り値 clip_id)。ずれ・強弱は後から apply_groove。1 回の undo で戻る。"
     )]
     async fn write_drums(
@@ -5002,8 +5082,15 @@ impl GlauxServer {
             build_bars: p.build_bars.unwrap_or(0).min(p.bars),
             gap_beats: p.gap_beats.unwrap_or(0).min(8),
             seed: p.seed.unwrap_or(1),
+            odd_meter: match p.odd_meter.as_deref() {
+                None => drums::OddMeter::Auto,
+                Some(s) => drums::OddMeter::parse(s).ok_or_else(|| {
+                    format!("odd_meter は auto / group / cut / stretch(got: {s})")
+                })?,
+            },
         };
-        let hits = drums::render(style, &bar_list, &opts);
+        let meters = bar_meters_in(&project, clip_start, clip_len);
+        let hits = drums::render(style, &bar_list, &meters, &opts);
         let mut clip = glaux_core::Clip::new_midi(
             glaux_core::ClipId::new(),
             p.name.clone().unwrap_or_else(|| "Drums".to_owned()),
@@ -5511,6 +5598,7 @@ impl GlauxServer {
             peak_pitch,
             anticipate: p.anticipate.unwrap_or(0.2).clamp(0.0, 1.0),
             seed: p.seed.unwrap_or(1),
+            strong: glaux_core::meter::meter_at(&project, clip_start).strong_ticks(),
         };
         let out = motif::develop(&notes, &plan, bar_len, &look, &opts)?;
         let clip = melody_clip(
@@ -5573,9 +5661,11 @@ impl GlauxServer {
         })?;
         let vocab = melgen::vocab(genre_name);
         let first_bar = p.bar.unwrap_or(1).max(1);
-        let (_, bar_len) =
+        let (bar0, bar_len) =
             glaux_core::arrange::bar_range(&project, first_bar, 1).ok_or("小節を数えられません")?;
-        let step = bar_len.min(3840) / 16;
+        // 拍子(区間の最初の小節。変拍子はまとまりの頭が強拍)
+        let meter = glaux_core::meter::meter_at(&project, bar0);
+        let step = glaux_core::meter::STEP;
         // 動機のリズム(固定するとき)
         let fixed = match &p.rhythm {
             Some(r) => {
@@ -5697,7 +5787,7 @@ impl GlauxServer {
                 .map(|b| (b.saturating_sub(first_bar) as u64 / motif_bars) as usize);
             let (rhythm, rhythm_name) = match &fixed {
                 Some((r, _, name)) => (r.clone(), name.clone()),
-                None => melgen::pick_rhythm(vocab, role, motif_bars, bar_len, genre.breath, seed),
+                None => melgen::pick_rhythm(vocab, role, motif_bars, &meter, genre.breath, seed),
             };
             let spec = melgen::MotifSpec {
                 key,
@@ -5707,6 +5797,7 @@ impl GlauxServer {
                 start,
                 span: role.span,
                 bar_len,
+                strong: meter.strong_ticks(),
                 chord_at: &look,
                 seed,
             };
@@ -5720,6 +5811,7 @@ impl GlauxServer {
                 peak_pitch,
                 anticipate,
                 seed,
+                strong: meter.strong_ticks(),
             };
             let out = motif::develop(&m, &plan, bar_len, &look, &opts)?;
             let crit = melody_critique(&project, &track.name, &out, clip_start, &look, key, genre);
@@ -6058,11 +6150,18 @@ impl GlauxServer {
         for id in &ids {
             let (clip, len, notes, _) = self.load_notes(id, &p.note_ids).await?;
             let start = project.clip(&clip).map(|(_, c)| c.start.0).unwrap_or(0);
-            let changes: Vec<_> =
-                glaux_core::rhythm::swing_positions(&notes, start, len.0, grid, p.swing, strength)
-                    .into_iter()
-                    .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(glaux_core::Tick(pos)))
-                    .collect();
+            let changes: Vec<_> = glaux_core::rhythm::swing_positions(
+                &notes,
+                start,
+                len.0,
+                grid,
+                p.swing,
+                strength,
+                &glaux_core::meter::bar_meters(&project, start + len.0),
+            )
+            .into_iter()
+            .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(glaux_core::Tick(pos)))
+            .collect();
             total += changes.len();
             if !changes.is_empty() {
                 commands.push(Command::UpdateNotes { clip, changes });

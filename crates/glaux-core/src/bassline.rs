@@ -183,6 +183,7 @@ pub fn render(
     spans: &[Span],
     chords: &[Chord],
     bars: &[(u64, u64)],
+    meters: &[crate::meter::BarMeter],
     pattern: &Pattern,
     opts: &Options,
     kick: Option<&[u64]>,
@@ -297,11 +298,19 @@ pub fn render(
                 }
             }
         }
-        (Pattern::Steps(pat), None) => {
-            let n = pat.len() as u64;
-            for &(bar, len) in bars {
-                let step = len as f64 / n as f64;
-                let at = |k: u64| bar + (k as f64 * step).round() as u64;
+        (Pattern::Steps(pat0), None) => {
+            for (bi, &(bar, len)) in bars.iter().enumerate() {
+                // 4/4 以外の小節は、型を 16 分の格子と拍のまとまりに当てる
+                let meter = meters.get(bi);
+                let fitted = crate::meter::fit_pattern(pat0, meter);
+                let pat: &[char] = fitted.as_deref().unwrap_or(pat0);
+                let n = pat.len() as u64;
+                let step = if fitted.is_some() {
+                    crate::meter::STEP as f64
+                } else {
+                    len as f64 / n as f64
+                };
+                let at = |k: u64| bar + ((k as f64 * step).round() as u64).min(len);
                 let mut k = 0u64;
                 while k < n {
                     let c = pat[k as usize];
@@ -332,9 +341,13 @@ pub fn render(
                     };
                     dur = dur.min(span_end - pos);
                     let beat = (n / 4).max(1);
+                    let group_head = match (fitted.is_some(), meter) {
+                        (true, Some(m)) => m.level(k * crate::meter::STEP) == 1,
+                        _ => k % beat == 0,
+                    };
                     let accent = if k == 0 {
                         8
-                    } else if k % beat == 0 {
+                    } else if group_head {
                         3
                     } else if c == 'o' {
                         -4
@@ -445,7 +458,7 @@ mod tests {
     fn root_eighths_follow_the_chords_in_a_smooth_register() {
         let (spans, chords, bars) = setup(&["Am", "F", "C", "G"]);
         let (pat, _) = parse_pattern("root8").unwrap();
-        let out = render(&spans, &chords, &bars, &pat, &opts(), None).unwrap();
+        let out = render(&spans, &chords, &bars, &[], &pat, &opts(), None).unwrap();
         assert_eq!(out.len(), 32);
         let roots: Vec<u8> = (0..4)
             .map(|b| out.iter().find(|n| n.pos == b * BAR).unwrap().pitch)
@@ -470,7 +483,7 @@ mod tests {
     fn octaves_fifths_and_slash_chords() {
         let (spans, chords, bars) = setup(&["C/E", "G7"]);
         let (pat, _) = parse_pattern("x.o.5.7.").unwrap();
-        let out = render(&spans, &chords, &bars, &pat, &opts(), None).unwrap();
+        let out = render(&spans, &chords, &bars, &[], &pat, &opts(), None).unwrap();
         // C/E: 最低音は E、1 オクターブ上も E、5 度は G(C の 5 度)
         let bar0: Vec<u8> = out
             .iter()
@@ -492,7 +505,16 @@ mod tests {
     #[test]
     fn walking_approaches_the_next_root_chromatically() {
         let (spans, chords, bars) = setup(&["Dm7", "G7", "Cmaj7"]);
-        let out = render(&spans, &chords, &bars, &Pattern::Walking, &opts(), None).unwrap();
+        let out = render(
+            &spans,
+            &chords,
+            &bars,
+            &[],
+            &Pattern::Walking,
+            &opts(),
+            None,
+        )
+        .unwrap();
         assert_eq!(out.len(), 12);
         // 1 小節目の 4 拍目は、次の根音 G の半音隣
         let g = out.iter().find(|n| n.pos == BAR).unwrap().pitch;
@@ -508,7 +530,7 @@ mod tests {
         let mut o = opts();
         o.approach = Approach::Chromatic;
         let (pat, _) = parse_pattern("root8").unwrap();
-        let out = render(&spans, &chords, &bars, &pat, &o, None).unwrap();
+        let out = render(&spans, &chords, &bars, &[], &pat, &o, None).unwrap();
         let last = out.iter().rfind(|n| n.pos < BAR).unwrap();
         let f = out.iter().find(|n| n.pos == BAR).unwrap().pitch;
         assert_eq!((last.pitch as i32 - f as i32).abs(), 1, "{out:?}");
@@ -517,7 +539,7 @@ mod tests {
         let (pat, slide) = parse_pattern("808").unwrap();
         let mut o = opts();
         o.slide = slide;
-        let out = render(&spans, &chords, &bars, &pat, &o, None).unwrap();
+        let out = render(&spans, &chords, &bars, &[], &pat, &o, None).unwrap();
         assert!(out.iter().any(|n| n.slide && n.pitch % 12 == 5), "{out:?}");
         assert!(out.windows(2).all(|w| w[0].pos + w[0].dur >= w[1].pos));
         // キックに合わせる: キックの位置で根音
@@ -527,6 +549,7 @@ mod tests {
             &spans,
             &chords,
             &bars,
+            &[],
             &Pattern::Sustain,
             &opts(),
             Some(&kicks),
