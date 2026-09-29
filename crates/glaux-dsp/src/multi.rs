@@ -17,7 +17,7 @@ use glaux_core::Articulation;
 use std::sync::Arc;
 
 /// 同時に鳴らすレイヤー数の上限(ステレオペア + 重ね録りを想定)。
-pub const MAX_LAYERS: usize = 4;
+pub const MAX_LAYERS: usize = 8;
 
 /// 音量エンベロープ(SF2 の DAHDSR から delay を除いた形)。
 #[derive(Clone, Copy, Debug, PartialEq)]

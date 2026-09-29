@@ -18,7 +18,7 @@
 //! - 読み飛ばす region: `trigger=release` / `legato`、CC の条件(`locc` が 0 より上)、既定以外のキースイッチ
 
 use glaux_dsp::{SampleData, Zone, ZoneEnv, ZoneMod, ZonePlay};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -74,6 +74,22 @@ pub type IncludeFn<'a> = dyn FnMut(&str) -> Result<String, String> + 'a;
 
 /// SFZ の本文を region の列にする。
 pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String> {
+    parse_with_control(text, include).map(|(r, _)| r)
+}
+
+/// 音源の調整つまみ(`<control>` の label_ccN と set_ccN)。CC 番号・名前・既定値
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Control {
+    pub cc: u8,
+    pub label: String,
+    pub default: u8,
+}
+
+/// [`parse`] の、`<control>` の opcode も返す版
+pub fn parse_with_control(
+    text: &str,
+    include: &mut IncludeFn,
+) -> Result<(Vec<Region>, Region), String> {
     let mut text_out = String::new();
     let mut defines: Vec<(String, String)> = Vec::new();
     preprocess(text, include, &mut defines, 0, &mut text_out)?;
@@ -208,7 +224,7 @@ pub fn parse(text: &str, include: &mut IncludeFn) -> Result<Vec<Region>, String>
             }
         }
     }
-    Ok(out)
+    Ok((out, control))
 }
 
 /// コメントを除き、`#define` を置き換え、`#include` を展開する。どちらも行の途中に書いてよい
@@ -773,18 +789,20 @@ pub fn wav_loop_points(path: &Path) -> Option<(usize, usize)> {
 }
 
 /// ライブラリの .sfz を開いてゾーンを作る(`#include` と波形は .sfz のあるフォルダから)。
+/// `cc` は調整つまみの上書き(CC 番号 → 0〜127。音源の set_cc の代わりに使う)
 pub fn load_instrument(
     library: &Path,
     name: &str,
+    cc: &BTreeMap<u8, u8>,
     cache: &mut WaveCache,
 ) -> Result<Arc<Vec<Zone>>, String> {
-    if !valid_name(name) {
-        return Err(format!("SFZ の名前が正しくありません: {name}"));
+    let (dir, mut regions, _) = read_instrument(library, name)?;
+    for r in regions.iter_mut() {
+        for (n, v) in cc {
+            r.remove(&format!("set_hdcc{n}"));
+            r.insert(format!("set_cc{n}"), v.min(&127).to_string());
+        }
     }
-    let path = library.join(name);
-    let dir = path.parent().unwrap_or(library).to_path_buf();
-    let text = read_text(&path)?;
-    let regions = parse(&text, &mut |inc| read_text(&dir.join(inc)))?;
     let zones = build_zones(&regions, &dir, cache, &mut |p| {
         let data = crate::data::load_audio_file(p)?;
         Ok(Loaded {
@@ -793,6 +811,45 @@ pub fn load_instrument(
         })
     })?;
     Ok(Arc::new(zones))
+}
+
+fn read_instrument(library: &Path, name: &str) -> Result<(PathBuf, Vec<Region>, Region), String> {
+    if !valid_name(name) {
+        return Err(format!("SFZ の名前が正しくありません: {name}"));
+    }
+    let path = library.join(name);
+    let dir = path.parent().unwrap_or(library).to_path_buf();
+    let text = read_text(&path)?;
+    let (regions, control) = parse_with_control(&text, &mut |inc| read_text(&dir.join(inc)))?;
+    Ok((dir, regions, control))
+}
+
+/// 音源の調整つまみの一覧(名前の付いた CC。CC 番号順)。波形は読まない
+pub fn controls(library: &Path, name: &str) -> Result<Vec<Control>, String> {
+    let (_, _, control) = read_instrument(library, name)?;
+    let mut out: Vec<Control> = control
+        .iter()
+        .filter_map(|(k, v)| {
+            let n: u8 = k.strip_prefix("label_cc")?.parse().ok()?;
+            (n < 128).then(|| {
+                let default = num(&control, &format!("set_cc{n}"))
+                    .or_else(|| num(&control, &format!("set_hdcc{n}")).map(|x| x * 127.0))
+                    .unwrap_or(match n {
+                        7 => 100.0,
+                        10 => 64.0,
+                        11 => 127.0,
+                        _ => 0.0,
+                    });
+                Control {
+                    cc: n,
+                    label: v.trim().to_owned(),
+                    default: default.round().clamp(0.0, 127.0) as u8,
+                }
+            })
+        })
+        .collect();
+    out.sort_by_key(|c| c.cc);
+    Ok(out)
 }
 
 fn read_text(path: &Path) -> Result<String, String> {
@@ -1016,7 +1073,8 @@ mod tests {
         .unwrap();
         assert_eq!(list_files(&dir), vec!["inst/snare.sfz".to_owned()]);
         let mut cache = WaveCache::new();
-        let zones = load_instrument(&dir, "inst/snare.sfz", &mut cache).unwrap();
+        let zones =
+            load_instrument(&dir, "inst/snare.sfz", &Default::default(), &mut cache).unwrap();
         assert_eq!(zones.len(), 2);
         assert_eq!(zones[0].loop_range, Some((1000.0, 21_000.0)));
         assert!(zones[1].loop_range.is_none());

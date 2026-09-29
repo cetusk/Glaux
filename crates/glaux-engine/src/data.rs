@@ -477,7 +477,9 @@ pub struct SampleBank {
     /// SFZ ライブラリフォルダ(既定は `sfz::default_dir()`)
     sfz_dir: PathBuf,
     /// 構築済みの SFZ 楽器(ライブラリからの相対パス → zones。読めなかったものは None)
-    sfz: HashMap<String, Option<Arc<Vec<glaux_dsp::Zone>>>>,
+    /// (楽器, 調整つまみの上書き) → zones
+    #[allow(clippy::type_complexity)]
+    sfz: HashMap<(String, std::collections::BTreeMap<u8, u8>), Option<Arc<Vec<glaux_dsp::Zone>>>>,
     /// SFZ の切り出した波形(楽器の間で共有する)
     sfz_waves: crate::sfz::WaveCache,
     /// テンポ追従クリップの伸縮済み波形(クリップ ID → (条件のハッシュ, 波形))。
@@ -543,34 +545,44 @@ impl SampleBank {
         self
     }
 
-    pub fn get_sfz(&self, instrument: &str) -> Option<&Arc<Vec<glaux_dsp::Zone>>> {
-        self.sfz.get(instrument).and_then(|z| z.as_ref())
+    pub fn get_sfz(
+        &self,
+        instrument: &str,
+        cc: &std::collections::BTreeMap<u8, u8>,
+    ) -> Option<&Arc<Vec<glaux_dsp::Zone>>> {
+        self.sfz
+            .get(&(instrument.to_owned(), cc.clone()))
+            .and_then(|z| z.as_ref())
     }
 
     /// プロジェクトが使っている SFZ の楽器を読み込む(読み込み済み・読めなかったものは読み直さない)
     fn sync_sfz(&mut self, project: &Project) {
-        let used: std::collections::HashSet<&str> = project
+        let used: std::collections::HashSet<(String, std::collections::BTreeMap<u8, u8>)> = project
             .tracks
             .iter()
             .filter_map(|t| match &t.device.as_ref()?.source {
-                glaux_core::PluginSource::Sfz { instrument } => Some(instrument.as_str()),
+                glaux_core::PluginSource::Sfz { instrument, cc } => {
+                    Some((instrument.clone(), cc.clone()))
+                }
                 _ => None,
             })
             .collect();
-        self.sfz.retain(|k, _| used.contains(k.as_str()));
-        for name in used {
-            if self.sfz.contains_key(name) {
+        self.sfz.retain(|k, _| used.contains(k));
+        for key in used {
+            if self.sfz.contains_key(&key) {
                 continue;
             }
-            let zones = match crate::sfz::load_instrument(&self.sfz_dir, name, &mut self.sfz_waves)
-            {
-                Ok(z) => Some(z),
-                Err(e) => {
-                    tracing::warn!("SFZ を読み込めません({name}): {e}");
-                    None
-                }
-            };
-            self.sfz.insert(name.to_owned(), zones);
+            let name = key.0.as_str();
+            let zones =
+                match crate::sfz::load_instrument(&self.sfz_dir, name, &key.1, &mut self.sfz_waves)
+                {
+                    Ok(z) => Some(z),
+                    Err(e) => {
+                        tracing::warn!("SFZ を読み込めません({name}): {e}");
+                        None
+                    }
+                };
+            self.sfz.insert(key, zones);
         }
         // どの楽器からも使われなくなった切り出しを捨てる
         self.sfz_waves.retain(|_, d| Arc::strong_count(d) > 1);
@@ -1011,8 +1023,8 @@ fn bake_track_instrument(
                 }
                 tracing::warn!("サンプル未読込のため subtractive で代用: {asset}");
             }
-            glaux_core::PluginSource::Sfz { instrument } => {
-                if let Some(zones) = bank.get_sfz(instrument) {
+            glaux_core::PluginSource::Sfz { instrument, cc } => {
+                if let Some(zones) = bank.get_sfz(instrument, cc) {
                     return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
                 }
                 tracing::warn!("SFZ 未読込のため subtractive で代用: {instrument}");

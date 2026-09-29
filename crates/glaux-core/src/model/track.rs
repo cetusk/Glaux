@@ -50,8 +50,13 @@ pub enum PluginSource {
         preset: u16,
     },
     /// SFZ の楽器。`instrument` はライブラリフォルダ(`~/.config/glaux/sfz/`)からの
-    /// 相対パス(`Piano/piano.sfz` など。区切りは `/`)
-    Sfz { instrument: String },
+    /// 相対パス(`Piano/piano.sfz` など。区切りは `/`)。`cc` は音源の調整つまみ(CC 番号 → 0〜127)の
+    /// 上書き(音源の `<control>` の set_cc の代わり。マイクの混ぜ方・スネアの snap など)
+    Sfz {
+        instrument: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        cc: std::collections::BTreeMap<u8, u8>,
+    },
 }
 
 impl PluginSource {
@@ -61,7 +66,7 @@ impl PluginSource {
         match self {
             PluginSource::Builtin { name } => name == "drum",
             PluginSource::Sf2 { bank, .. } => *bank == 128,
-            PluginSource::Sfz { instrument } => {
+            PluginSource::Sfz { instrument, .. } => {
                 let s = instrument.to_ascii_lowercase();
                 ["drum", "kit", "perc"].iter().any(|w| s.contains(w))
             }

@@ -259,6 +259,10 @@ pub struct SetSoundfontParams {
     /// (list_soundfonts の `sfz` にある名前。例 "Piano/piano.sfz")。
     #[serde(default)]
     pub sfz: Option<String>,
+    /// SFZ の調整つまみの上書き(CC 番号 → 0〜127。例 {"83": 64, "81": 100})。
+    /// 返り値の controls で番号と名前を確かめる。空の {} で音源の既定に戻す
+    #[serde(default)]
+    pub sfz_cc: Option<std::collections::BTreeMap<String, u8>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -4285,7 +4289,10 @@ impl GlauxServer {
         soundfont / bank / preset は list_soundfonts で確認したものを渡す。\
         GM 配列の目安: 0=ピアノ, 24=ギター(ナイロン), 25(スチール), 30(歪みギター), \
         32〜39=ベース, 40=バイオリン, 48=ストリングス, 56=トランペット, 73=フルート。\
-        ドラムは bank 128。SFZ の楽器にするときは soundfont / bank / preset の代わりに sfz を渡す        (ラウンドロビン・ハイハットのチョークも鳴る)。設定は undo で戻せる。"
+        ドラムは bank 128。SFZ の楽器にするときは soundfont / bank / preset の代わりに sfz を渡す\
+        (ラウンドロビン・ハイハットのチョークも鳴る)。SFZ の音源の調整つまみ(マイクの混ぜ方・スネアの snap など。\
+        返り値の controls に CC 番号・名前・既定値)は sfz_cc で上書きする(sfz を省くと今の SFZ のつまみだけ変える)。\
+        設定は undo で戻せる。"
     )]
     async fn set_soundfont_instrument(
         &self,
@@ -4300,26 +4307,67 @@ impl GlauxServer {
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
 
-        if let Some(sfz) = p.sfz {
+        // 今の SFZ(sfz を省いて sfz_cc だけ変えるとき)
+        let current = track.device.as_ref().and_then(|d| match &d.source {
+            glaux_core::PluginSource::Sfz { instrument, cc } => {
+                Some((instrument.clone(), cc.clone(), d.params.clone()))
+            }
+            _ => None,
+        });
+        let sfz_target = match (p.sfz, &p.sfz_cc, &current) {
+            (Some(s), _, _) => Some((s, Default::default(), glaux_core::ParamMap::new())),
+            (None, Some(_), Some(c)) => Some(c.clone()),
+            (None, Some(_), None) => {
+                return Err(
+                    "sfz_cc は SFZ の音源のトラックにだけ使えます(sfz も渡してください)".into(),
+                )
+            }
+            _ => None,
+        };
+        if let Some((sfz, old_cc, params)) = sfz_target {
+            let cc: std::collections::BTreeMap<u8, u8> = match &p.sfz_cc {
+                Some(m) => m
+                    .iter()
+                    .map(|(k, v)| {
+                        k.trim()
+                            .parse::<u8>()
+                            .ok()
+                            .filter(|n| *n < 128)
+                            .map(|n| (n, (*v).min(127)))
+                            .ok_or_else(|| format!("sfz_cc の CC 番号が正しくありません: {k}"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                None => old_cc,
+            };
             // 事前検証: 読み込めて、鳴らせるゾーンがあること
             let dir = glaux_engine::sfz::default_dir();
-            let zones = tokio::task::spawn_blocking({
-                let sfz = sfz.clone();
-                move || {
-                    glaux_engine::sfz::load_instrument(&dir, &sfz, &mut Default::default())
-                        .map(|z| z.len())
+            let (zones, controls) = tokio::task::spawn_blocking({
+                let (sfz, cc) = (sfz.clone(), cc.clone());
+                move || -> Result<_, String> {
+                    let z = glaux_engine::sfz::load_instrument(
+                        &dir,
+                        &sfz,
+                        &cc,
+                        &mut Default::default(),
+                    )?;
+                    Ok((z.len(), glaux_engine::sfz::controls(&dir, &sfz)?))
                 }
             })
             .await
             .map_err(|e| e.to_string())??;
-            let label = format!("{} の音源を「{sfz}」(SFZ)に変更", track.name);
+            let label = if current.as_ref().is_some_and(|c| c.0 == sfz) {
+                format!("{} の SFZ「{sfz}」の調整つまみを変更", track.name)
+            } else {
+                format!("{} の音源を「{sfz}」(SFZ)に変更", track.name)
+            };
             let command = Command::SetDevice {
                 track: track_id,
                 device: Some(glaux_core::Device {
                     source: glaux_core::PluginSource::Sfz {
                         instrument: sfz.clone(),
+                        cc: cc.clone(),
                     },
-                    params: glaux_core::ParamMap::new(),
+                    params,
                 }),
             };
             let author = self.author(&ctx);
@@ -4328,6 +4376,8 @@ impl GlauxServer {
             v["entry_id"] = json!(entry_id);
             v["sfz"] = json!(sfz);
             v["zones"] = json!(zones);
+            v["sfz_cc"] = json!(cc);
+            v["controls"] = json!(controls);
             return Ok(JsonText(v));
         }
         let (Some(soundfont), Some(bank), Some(preset)) = (p.soundfont, p.bank, p.preset) else {

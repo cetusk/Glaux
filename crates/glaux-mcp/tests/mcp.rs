@@ -5201,8 +5201,10 @@ async fn set_soundfont_instrument_accepts_sfz() {
     w.finalize().unwrap();
     std::fs::write(
         lib.join("hats kit.sfz"),
-        "<group> pitch_keytrack=0 loop_mode=one_shot\n\
+        "<control> label_cc30=Hat vol set_cc30=100\n\
+         <group> pitch_keytrack=0 loop_mode=one_shot\n\
          <region> sample=hat.wav key=42 group=1\n\
+         <region> sample=hat.wav key=44 locc30=110\n\
          <region> sample=hat.wav key=46 off_by=1\n",
     )
     .unwrap();
@@ -5214,6 +5216,40 @@ async fn set_soundfont_instrument_accepts_sfz() {
             &fx,
             "set_soundfont_instrument",
             json!({"track_id": "trk_sfz001", "sfz": sfz}),
+        )
+        .await,
+    );
+    assert_eq!(v["zones"], 2, "locc30=110 は既定の 100 では鳴らない");
+    assert_eq!(v["controls"][0]["cc"], 30);
+    assert_eq!(v["controls"][0]["label"], "Hat vol");
+    assert_eq!(v["controls"][0]["default"], 100);
+    // つまみだけ上書き(sfz を省く)。CC30 を 120 にすると key 44 も鳴る
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_soundfont_instrument",
+            json!({"track_id": "trk_sfz001", "sfz_cc": {"30": 120}}),
+        )
+        .await,
+    );
+    assert_eq!(v["zones"], 3);
+    let (p2, _) = fx.handle.get_project().await.unwrap();
+    let t2 = glaux_core::TrackId::parse("trk_sfz001").unwrap();
+    match &p2.track(&t2).unwrap().device.as_ref().unwrap().source {
+        glaux_core::PluginSource::Sfz { cc, .. } => assert_eq!(cc.get(&30), Some(&120)),
+        other => panic!("{other:?}"),
+    }
+    let s44 = glaux_mcp::sound::render_note(&p2, &fx.dir, &t2, 44, 100, 0.2).unwrap();
+    assert!(
+        s44.frames.iter().any(|x| x.abs() > 0.05),
+        "上書きした CC で鳴る"
+    );
+    // 戻す
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_soundfont_instrument",
+            json!({"track_id": "trk_sfz001", "sfz_cc": {}}),
         )
         .await,
     );
