@@ -23,6 +23,27 @@ impl Waveform {
     }
 }
 
+/// 雑音の色
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NoiseColor {
+    /// 全帯域が同じ強さ(シャーッ)
+    White,
+    /// 高い方ほど弱い(-3dB/オクターブ。雨・テープのヒス)
+    Pink,
+    /// さらに低い方に寄る(-6dB/オクターブ。風・ゴー)
+    Brown,
+}
+
+impl NoiseColor {
+    pub fn parse(s: &str) -> NoiseColor {
+        match s {
+            "pink" => NoiseColor::Pink,
+            "brown" => NoiseColor::Brown,
+            _ => NoiseColor::White,
+        }
+    }
+}
+
 /// 焼き込み済みパラメータ(1 トラック分)。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SubtractiveParams {
@@ -47,6 +68,12 @@ pub struct SubtractiveParams {
     pub sub: f32,
     /// ノイズ量 0..=1
     pub noise: f32,
+    /// ノイズの色
+    pub noise_color: NoiseColor,
+    /// 元の波形の量 0..=1(0 で雑音とサブだけ。レコードノイズ・風・ライザー)
+    pub osc_level: f32,
+    /// レコードのパチパチ(まれな短いクリック)の多さ 0..=1
+    pub crackle: f32,
     /// リニアゲイン(dB から変換済み)
     pub gain: f32,
 }
@@ -118,6 +145,11 @@ pub struct SubtractiveVoice {
     sub_phase: f32,
     /// ノイズ用 xorshift 状態
     rng: u32,
+    /// ピンク(3 段の 1 次フィルタ)・ブラウン(積分)の状態
+    pink: [f32; 3],
+    brown: f32,
+    /// パチパチの残り(短く減衰するクリック)
+    click: f32,
     // ADSR
     stage: EnvStage,
     env: f32,
@@ -141,6 +173,16 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
 }
 
 impl SubtractiveVoice {
+    /// −1〜1 の白色雑音(xorshift32)
+    fn white(&mut self) -> f32 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+
     pub fn start(
         p: &SubtractiveParams,
         freq: f32,
@@ -163,6 +205,9 @@ impl SubtractiveVoice {
             phases,
             sub_phase: 0.0,
             rng: (freq.to_bits() | 1).wrapping_mul(0x9e37_79b9),
+            pink: [0.0; 3],
+            brown: 0.0,
+            click: 0.0,
             stage: EnvStage::Attack,
             env: 0.0,
             ic1: 0.0,
@@ -252,6 +297,9 @@ impl SubtractiveVoice {
         }
         // 本数で音量が膨らみすぎないよう等パワー正規化
         osc /= (n as f32).sqrt();
+        if p.osc_level != 1.0 {
+            osc *= p.osc_level;
+        }
 
         // サブオシレータ(1 オクターブ下のサイン。ベースの土台)
         if p.sub > 0.0 {
@@ -262,14 +310,34 @@ impl SubtractiveVoice {
             osc += (self.sub_phase * std::f32::consts::TAU).sin() * p.sub;
         }
 
-        // ノイズ(息・ざらつき)
+        // ノイズ(息・ざらつき)。ピンクは Paul Kellet の 3 段の近似、ブラウンは漏れのある積分
         if p.noise > 0.0 {
-            let mut x = self.rng;
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            self.rng = x;
-            osc += ((x as f32 / u32::MAX as f32) * 2.0 - 1.0) * p.noise;
+            let w = self.white();
+            let v = match p.noise_color {
+                NoiseColor::White => w,
+                NoiseColor::Pink => {
+                    let b = &mut self.pink;
+                    b[0] = 0.99765 * b[0] + w * 0.099_046;
+                    b[1] = 0.963 * b[1] + w * 0.296_516_4;
+                    b[2] = 0.57 * b[2] + w * 1.052_691_3;
+                    (b[0] + b[1] + b[2] + w * 0.1848) * 0.3
+                }
+                NoiseColor::Brown => {
+                    self.brown = (self.brown + 0.02 * w) / 1.02;
+                    self.brown * 3.5
+                }
+            };
+            osc += v * p.noise;
+        }
+        // レコードのパチパチ: 1 秒に最大約 40 回のまれなクリック(強さはばらばら、数サンプルで消える)
+        if p.crackle > 0.0 {
+            let rate = p.crackle * p.crackle * 40.0 / sr;
+            if (self.white() * 0.5 + 0.5) < rate {
+                let a = self.white();
+                self.click = a.signum() * (0.3 + 0.7 * a.abs()) * (0.5 + p.crackle * 0.5);
+            }
+            osc += self.click;
+            self.click *= 0.55;
         }
 
         // ---- SVF ローパス(TPT)。エンベロープでカットオフを開く ----
@@ -306,6 +374,9 @@ mod tests {
             detune_cents: 12.0,
             sub: 0.0,
             noise: 0.0,
+            noise_color: NoiseColor::White,
+            osc_level: 1.0,
+            crackle: 0.0,
             gain: 0.35,
         }
     }
@@ -488,5 +559,44 @@ mod tests {
         let sine = render(Waveform::Sine);
         let diff: f32 = saw.iter().zip(&sine).map(|(a, b)| (a - b).abs()).sum();
         assert!(diff > 10.0, "波形で音が変わるはず");
+    }
+
+    #[test]
+    fn noise_colors_and_crackle_without_the_oscillator() {
+        let render = |color: NoiseColor, crackle: f32, noise: f32| {
+            let mut p = default_params();
+            p.osc_level = 0.0;
+            p.noise = noise;
+            p.noise_color = color;
+            p.crackle = crackle;
+            p.cutoff = 12000.0;
+            p.filter_env = 0.0;
+            p.sustain = 1.0;
+            let mut v = SubtractiveVoice::start(&p, 440.0, 1.0, Default::default(), 48_000.0);
+            (0..48_000).map(|_| v.next(&p)).collect::<Vec<f32>>()
+        };
+        // 高い成分の割合(隣どうしの差の大きさ ÷ 大きさ): ホワイト > ピンク > ブラウン
+        let hf = |x: &[f32]| {
+            let d: f32 = x.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+            let a: f32 = x.iter().map(|v| v.abs()).sum();
+            d / a.max(1e-9)
+        };
+        let w = render(NoiseColor::White, 0.0, 1.0);
+        let pk = render(NoiseColor::Pink, 0.0, 1.0);
+        let br = render(NoiseColor::Brown, 0.0, 1.0);
+        assert!(
+            hf(&w) > hf(&pk) && hf(&pk) > hf(&br),
+            "{} {} {}",
+            hf(&w),
+            hf(&pk),
+            hf(&br)
+        );
+        assert!(rms(&br) > 0.01 && rms(&pk) > 0.01);
+        // パチパチだけ: まれなクリック(ほとんどの時間は無音に近い)
+        let c = render(NoiseColor::White, 0.5, 0.0);
+        let loud = c.iter().filter(|v| v.abs() > 0.05).count();
+        assert!(loud > 5 && loud < 2000, "{loud}");
+        // 波形の量 0 で雑音も無ければ無音
+        assert!(rms(&render(NoiseColor::White, 0.0, 0.0)) < 1e-6);
     }
 }

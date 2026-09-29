@@ -697,6 +697,10 @@ pub struct WriteChordsParams {
     /// クリップの名前(既定 "Chords")。
     #[serde(default)]
     pub name: Option<String>,
+    /// 和音の音すべてに付ける奏法: palm_mute(ブリッジミュートの刻み)/ staccato(歯切れよく。カッティング)/ accent /
+    /// legato / portamento / vibrato / bend。省略で通常。SoundFont のギター・ベースの奏法の音色もこれで切り替わる。
+    #[serde(default)]
+    pub articulation: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -777,6 +781,11 @@ pub struct WriteDrumsParams {
     /// 乱数の種(既定 1。同じ値なら同じ結果)。
     #[serde(default)]
     pub seed: Option<u64>,
+    /// 置く楽器(省略で全部): kick / snare(スネア・クラップ・リム)/ hat(クローズ・ペダル・オープン)/ tom /
+    /// cymbal(クラッシュ・ライド)/ perc(それ以外)。ドラムを楽器ごとの別トラックにした曲では、トラックごとに
+    /// parts を変えて同じ style・seed で呼ぶ(型がそろう)。
+    #[serde(default)]
+    pub parts: Option<Vec<String>>,
     /// 4/4 以外の小節の組み立て方: auto(既定。7/8・6/8 など分母 8 以上は group、3/4・5/4 など分母 4 以下は cut)/
     /// group(拍のまとまりの頭にキックとスネアを交互、ハットはまとまりごとに刻み直す)/
     /// cut(4/4 の型を 16 分の格子で切るか延ばす。7/8 = 4/4 から最後の 8 分を抜く)/ stretch(1 小節を 16 等分。以前の動き)。
@@ -1752,6 +1761,18 @@ fn chord_cuts(meter: Option<&glaux_core::meter::BarMeter>, blen: u64, k: u64) ->
     }
     cuts.push(blen);
     cuts
+}
+
+/// GM のドラムの音程を楽器の分け方に(write_drums の parts)
+fn drum_part_of(pitch: u8) -> &'static str {
+    match pitch {
+        35 | 36 => "kick",
+        37..=40 => "snare",
+        42 | 44 | 46 => "hat",
+        41 | 43 | 45 | 47 | 48 | 50 => "tom",
+        49 | 51 | 52 | 53 | 55 | 57 | 59 => "cymbal",
+        _ => "perc",
+    }
 }
 
 /// clip_id と clip_ids をまとめる(重複は除く。どちらも無ければエラー)
@@ -5316,6 +5337,14 @@ impl GlauxServer {
             velocity: p.velocity.unwrap_or(88).clamp(1, 127),
             strum_ticks: (p.strum_ms.unwrap_or(0.0).clamp(0.0, 80.0) * ticks_per_ms).round() as u64,
         };
+        let articulation: glaux_core::Articulation = match &p.articulation {
+            Some(a) => serde_json::from_value(json!(a)).map_err(|_| {
+                format!(
+                    "articulation は palm_mute / staccato / accent / legato / portamento / vibrato / bend / normal(got: {a})"
+                )
+            })?,
+            None => Default::default(),
+        };
         let meters = bar_meters_in(&project, clip_start, clip_len);
         let rendered = comp::render(
             &spans,
@@ -5341,7 +5370,7 @@ impl GlauxServer {
                     dur: glaux_core::Tick(n.dur),
                     pitch: n.pitch,
                     vel: n.vel,
-                    articulation: Default::default(),
+                    articulation,
                     pitch_curve: vec![],
                     glide_ms: None,
                     vibrato: None,
@@ -5620,7 +5649,20 @@ impl GlauxServer {
             },
         };
         let meters = bar_meters_in(&project, clip_start, clip_len);
-        let hits = drums::render(style, &bar_list, &meters, &opts);
+        let mut hits = drums::render(style, &bar_list, &meters, &opts);
+        if let Some(parts) = &p.parts {
+            for part in parts {
+                if !["kick", "snare", "hat", "tom", "cymbal", "perc"].contains(&part.as_str()) {
+                    return Err(format!(
+                        "parts は kick / snare / hat / tom / cymbal / perc(got: {part})"
+                    ));
+                }
+            }
+            hits.retain(|h| parts.iter().any(|x| x == drum_part_of(h.pitch)));
+            if hits.is_empty() {
+                return Err("その parts の音がこの型にはありません".to_owned());
+            }
+        }
         let mut clip = glaux_core::Clip::new_midi(
             glaux_core::ClipId::new(),
             p.name.clone().unwrap_or_else(|| "Drums".to_owned()),

@@ -52,7 +52,7 @@ pub use params::{
 };
 pub use pluck::PluckParams;
 pub use sampler::{hermite, SampleData, SamplerParams, SamplerVoice};
-pub use subtractive::{SubtractiveParams, Waveform};
+pub use subtractive::{NoiseColor, SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
 pub use wavetable::{WavetableParams, WavetableVoice};
 

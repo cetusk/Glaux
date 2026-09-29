@@ -4119,6 +4119,74 @@ async fn shape_phrase_and_jazz_tempo_swing() {
 }
 
 #[tokio::test]
+async fn drum_parts_chord_articulation_and_noise_presets() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "トラック", "commands": [
+                { "op": "add_track", "track": { "id": "trk_prt001", "name": "Kick", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } },
+                { "op": "add_track", "track": { "id": "trk_prt002", "name": "Top", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } },
+                { "op": "add_track", "track": { "id": "trk_prt003", "name": "Gtr", "kind": "midi" } },
+                { "op": "add_track", "track": { "id": "trk_prt004", "name": "Vinyl", "kind": "midi" } }
+            ] }),
+        )
+        .await,
+    );
+    // キックだけ・スネアとハットだけを別トラックに(同じ型)
+    ok_json(
+        &call(
+            &fx,
+            "write_drums",
+            json!({ "track_id": "trk_prt001", "style": "rock", "bars": 2, "parts": ["kick"] }),
+        )
+        .await,
+    );
+    ok_json(&call(&fx, "write_drums", json!({ "track_id": "trk_prt002", "style": "rock", "bars": 2, "parts": ["snare", "hat"] })).await);
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let kick = project.tracks[0].clips[0].notes().unwrap();
+    assert!(!kick.is_empty() && kick.iter().all(|n| n.pitch == 36));
+    let top = project.tracks[1].clips[0].notes().unwrap();
+    assert!(top.iter().any(|n| n.pitch == 38) && top.iter().any(|n| n.pitch == 42));
+    assert!(top.iter().all(|n| n.pitch != 36 && n.pitch != 49));
+    let r = call(
+        &fx,
+        "write_drums",
+        json!({ "track_id": "trk_prt001", "style": "rock", "bars": 2, "parts": ["cowbell"] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    // ギターのブリッジミュートの刻み
+    ok_json(
+        &call(
+            &fx,
+            "write_chords",
+            json!({ "track_id": "trk_prt003", "chords": "E5 | G5", "rhythm": "eighth", "articulation": "palm_mute" }),
+        )
+        .await,
+    );
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert!(project.tracks[2].clips[0]
+        .notes()
+        .unwrap()
+        .iter()
+        .all(|n| n.articulation == glaux_core::Articulation::PalmMute));
+    let r = call(
+        &fx,
+        "write_chords",
+        json!({ "track_id": "trk_prt003", "chords": "E5", "articulation": "tapping" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    // 雑音の音源のつまみ
+    let params = ok_json(&call(&fx, "list_params", json!({ "instrument": "subtractive" })).await);
+    assert!(params.to_string().contains("crackle"), "{params}");
+}
+
+#[tokio::test]
 async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     let fx = setup().await;
     ok_json(

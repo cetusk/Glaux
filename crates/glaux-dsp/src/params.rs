@@ -54,7 +54,7 @@ pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
         unit: Some("s"),
         range: ParamRange::Float {
             min: 0.001,
-            max: 2.0,
+            max: 10.0,
             default: 0.005,
             skew: Some(0.3),
         },
@@ -161,7 +161,44 @@ pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
             default: 0.0,
             skew: None,
         },
-        description: "ホワイトノイズを混ぜる量。息っぽさ・ざらつき・シュワッとした質感。",
+        description: "ノイズを混ぜる量。息っぽさ・ざらつき・シュワッとした質感。osc_level 0 と組み合わせると\
+            雑音だけの音源(レコードノイズ・風・波・ノイズのライザー)になる。",
+    },
+    ParamSpec {
+        name: "noise_color",
+        display_name: "ノイズの色",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["white", "pink", "brown"],
+            default: "white",
+        },
+        description: "white は全帯域が同じ強さ(シャーッ、ライザー・ハイハット風)、pink は高い方ほど弱い\
+            (雨・テープのヒス・レコードの地の音)、brown はさらに低い方に寄る(風・波・ゴーという響き)。",
+    },
+    ParamSpec {
+        name: "osc_level",
+        display_name: "波形の量",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "元の波形(saw など)の量。0 にすると雑音とサブだけが鳴る(音程の無い効果音・環境音)。",
+    },
+    ParamSpec {
+        name: "crackle",
+        display_name: "パチパチ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "レコードのパチパチ(まれな短いクリック)の多さ。0.2〜0.4 で古いレコード、0.7 以上で焚き火のよう。\
+            ローファイのレコードノイズは osc_level 0・noise 0.1・noise_color pink・crackle 0.3 が目安。",
     },
     ParamSpec {
         name: "gain_db",
@@ -1008,7 +1045,7 @@ impl crate::InstrumentParams {
             I::Subtractive(p) => match name {
                 "cutoff" => p.cutoff = value.clamp(40.0, 12000.0),
                 "resonance" => p.resonance = value.clamp(0.0, 0.95),
-                "attack" => p.attack = value.clamp(0.001, 2.0),
+                "attack" => p.attack = value.clamp(0.001, 10.0),
                 "decay" => p.decay = value.clamp(0.01, 3.0),
                 "sustain" => p.sustain = value.clamp(0.0, 1.0),
                 "release" => p.release = value.clamp(0.01, 8.0),
@@ -1016,6 +1053,8 @@ impl crate::InstrumentParams {
                 "detune" => p.detune_cents = value.clamp(0.0, 60.0),
                 "sub" => p.sub = value.clamp(0.0, 1.0),
                 "noise" => p.noise = value.clamp(0.0, 1.0),
+                "osc_level" => p.osc_level = value.clamp(0.0, 1.0),
+                "crackle" => p.crackle = value.clamp(0.0, 1.0),
                 "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
                 _ => return false,
             },
@@ -1157,7 +1196,7 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 waveform: Waveform::parse(get_enum(map, s, "waveform")),
                 cutoff: get_f32(map, s, "cutoff").clamp(40.0, 12000.0),
                 resonance: get_f32(map, s, "resonance").clamp(0.0, 0.95),
-                attack: get_f32(map, s, "attack").clamp(0.001, 2.0),
+                attack: get_f32(map, s, "attack").clamp(0.001, 10.0),
                 decay: get_f32(map, s, "decay").clamp(0.01, 3.0),
                 sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
                 release: get_f32(map, s, "release").clamp(0.01, 4.0),
@@ -1166,6 +1205,9 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 detune_cents: get_f32(map, s, "detune").clamp(0.0, 60.0),
                 sub: get_f32(map, s, "sub").clamp(0.0, 1.0),
                 noise: get_f32(map, s, "noise").clamp(0.0, 1.0),
+                noise_color: crate::NoiseColor::parse(get_enum(map, s, "noise_color")),
+                osc_level: get_f32(map, s, "osc_level").clamp(0.0, 1.0),
+                crackle: get_f32(map, s, "crackle").clamp(0.0, 1.0),
                 gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
             };
             (

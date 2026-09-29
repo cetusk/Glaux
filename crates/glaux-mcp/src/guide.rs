@@ -32,10 +32,12 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
    コード進行は suggest_progression で定番から選ぶ(区間ごとに変える)。\n\
    ドラムは write_drums(ジャンルの型・区間ごとに intensity を変える・区切りのフィル・ビルドのロールと gap_beats)。\n\
+   キック・スネア・ハットを別トラックにするなら parts(kick / snare / hat / tom / cymbal / perc)で呼び分ける(同じ style・seed)。\n\
    コード楽器は write_chords で置く(和音の積み方と声部のつながりを計算する。暗算で MIDI 番号を書かない)。\n\
    進行は記号か、key を付けてローマ数字。積み方はジャンルで: ポップのピアノ = drop2 か close + eighth、\n\
    ハウスのスタブ = close + offbeat(gate 0.4)、パッド・ストリングス = spread + sustain、ジャズ = shell か rootless + charleston、\n\
-   ギター = open + strum_ms 15。区間ごとに rhythm・range・voices を変えると区間の差になる。\n\
+   ギター = open + voices 6 + range E2-C5 の後に strum_chord(カッティングは rhythm 16 分 + articulation staccato、\n\
+   メタルの刻みは articulation palm_mute)。区間ごとに rhythm・range・voices を変えると区間の差になる。\n\
    ベースは write_bassline(伴奏と同じ進行の文字列を渡す): ハウス・ポップ = root8 か offbeat、ディスコ = octave、\n\
    トラップ = 808(C1〜C3)、ファンク = funk か follow_kick(キックと同じ位置)、ジャズ・ローファイ = walking、バラード = root。\n\
    主旋律は write_melody(役割とジャンルから複数案を作り点検で選ぶ)か、短い動機を書いて develop_motif で展開し、\n\
@@ -121,6 +123,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
         "音源の選び方",
         "- トラックの音源は set_device {track, device: {type: \"builtin\", name}}。つまみは list_params で意味・範囲・現在値を見て set_param。\n\
 - subtractive: シンセ全般(リード・ベース・パッド)。unison + detune で厚く(supersaw)。\n\
+  osc_level 0 で雑音だけの音源(noise_color white / pink / brown、crackle でレコードのパチパチ)。プリセット「レコードノイズ」\n\
+  (ローファイの地の音。長い音を 1 つ曲の長さぶん)・「ノイズのライザー」(ビルドのシューッ)・「風」。\n\
 - fm: エレピ・ベル・マレット・FM ベースなど金属的・打鍵的な音。\n\
 - wavetable: position を LFO やオートメーションで動かすウォブルベース・うねるパッド・母音のような音・sync のギラついたリード。\n\
 - drum: ドラムキット(GM 配置)。**ドラムのトラックには必ず drum**。55 はリバースクラッシュ(ビルドアップ用)。\n\

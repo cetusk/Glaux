@@ -202,6 +202,16 @@ fn factory_presets() -> Vec<Preset> {
         );
         d
     };
+    // 雑音だけの subtractive(波形を消して、雑音の色を選ぶ)
+    let noise_dev = |color: &str, params: &[(&str, f64)]| {
+        let mut d = device("subtractive", params);
+        d.params.insert("osc_level".to_owned(), float(0.0));
+        d.params.insert(
+            "noise_color".to_owned(),
+            glaux_core::ParamValue::Enum(color.to_owned()),
+        );
+        d
+    };
     let fx = |name: &str, params: &[(&str, f64)]| PresetEffect {
         source: PluginSource::Builtin {
             name: name.to_owned(),
@@ -372,12 +382,70 @@ fn factory_presets() -> Vec<Preset> {
                 ),
             ],
         ),
+        preset(
+            "レコードノイズ",
+            "雑音だけ(ピンクノイズを少し + パチパチ)。ローファイの地の音。1 つの長い音(C4 など)を曲の長さぶん置き、\
+             音量は -18〜-12dB。低いゴロゴロが要るなら noise_color を brown に",
+            noise_dev(
+                "pink",
+                &[
+                    ("noise", 0.12),
+                    ("crackle", 0.35),
+                    ("cutoff", 7000.0),
+                    ("resonance", 0.0),
+                    ("attack", 0.05),
+                    ("sustain", 1.0),
+                    ("release", 0.8),
+                    ("filter_env", 0.0),
+                    ("gain_db", -6.0),
+                ],
+            ),
+            vec![fx("tape", &[("wow", 0.2), ("saturation", 0.2), ("tone", 6000.0)])],
+        ),
+        preset(
+            "ノイズのライザー",
+            "ホワイトノイズの音が立ち上がるにつれてフィルタが開く(ビルドの「シューッ」)。ビルドの長さの音を 1 つ置く。\
+             長さに合わせて attack を 2〜8 秒に。止めるときはドロップの頭で切る",
+            noise_dev(
+                "white",
+                &[
+                    ("noise", 0.8),
+                    ("cutoff", 250.0),
+                    ("resonance", 0.35),
+                    ("attack", 4.0),
+                    ("decay", 3.0),
+                    ("sustain", 1.0),
+                    ("release", 0.3),
+                    ("filter_env", 1.0),
+                    ("gain_db", -6.0),
+                ],
+            ),
+            vec![fx("reverb", &[("mix", 0.3), ("size", 0.8)])],
+        ),
+        preset(
+            "風",
+            "ブラウンノイズ + 共振で、ヒューと鳴る風・波の環境音。cutoff をオートメーションで動かすと吹き方が変わる",
+            noise_dev(
+                "brown",
+                &[
+                    ("noise", 1.0),
+                    ("cutoff", 900.0),
+                    ("resonance", 0.7),
+                    ("attack", 1.5),
+                    ("sustain", 1.0),
+                    ("release", 2.0),
+                    ("filter_env", 0.0),
+                    ("gain_db", -3.0),
+                ],
+            ),
+            vec![fx("reverb", &[("mix", 0.35), ("size", 0.9)])],
+        ),
     ]
 }
 
 /// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
 /// (ユーザーが独自に作った別名のプリセットには触れない)。
-const FACTORY_VERSION: &str = "v4";
+const FACTORY_VERSION: &str = "v5";
 
 /// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
 /// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)
@@ -528,5 +596,33 @@ mod tests {
         assert!(matches!(cmds[1], Command::RemoveEffect { .. }));
         assert!(matches!(cmds[2], Command::RemoveEffect { .. }));
         assert!(matches!(cmds[3], Command::AddEffect { .. }));
+    }
+
+    #[test]
+    fn noise_presets_bake_to_noise_only_subtractive() {
+        let all = factory_presets();
+        for name in ["レコードノイズ", "ノイズのライザー", "風"] {
+            let p = all.iter().find(|p| p.name == name).expect(name);
+            let (_, params) = glaux_dsp::bake_instrument(Some(&p.device));
+            let glaux_dsp::InstrumentParams::Subtractive(sp) = params else {
+                panic!("{name} は subtractive");
+            };
+            assert_eq!(sp.osc_level, 0.0, "{name}");
+            assert!(sp.noise > 0.0);
+        }
+        let vinyl = all.iter().find(|p| p.name == "レコードノイズ").unwrap();
+        let (_, params) = glaux_dsp::bake_instrument(Some(&vinyl.device));
+        let glaux_dsp::InstrumentParams::Subtractive(sp) = params else {
+            unreachable!()
+        };
+        assert_eq!(sp.noise_color, glaux_dsp::NoiseColor::Pink);
+        assert!(sp.crackle > 0.2);
+        // ライザーは長い立ち上がり(上限 10 秒に広げた)
+        let riser = all.iter().find(|p| p.name == "ノイズのライザー").unwrap();
+        let (_, params) = glaux_dsp::bake_instrument(Some(&riser.device));
+        let glaux_dsp::InstrumentParams::Subtractive(sp) = params else {
+            unreachable!()
+        };
+        assert_eq!(sp.attack, 4.0);
     }
 }

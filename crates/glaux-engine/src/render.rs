@@ -2807,6 +2807,9 @@ mod tests {
             detune_cents: 0.0,
             sub: 0.0,
             noise: 0.0,
+            noise_color: glaux_dsp::NoiseColor::White,
+            osc_level: 1.0,
+            crackle: 0.0,
             gain: 1.0,
         })
     }
