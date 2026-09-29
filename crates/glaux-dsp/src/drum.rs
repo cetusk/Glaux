@@ -207,6 +207,20 @@ const METALS: usize = 6;
 /// 808 のハイハット・シンバルの 6 つの矩形波(Hz)
 const METAL_808: [f32; METALS] = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0];
 
+/// スネアの部品の値(キットごと)
+struct SnareRecipe {
+    f0: f32,
+    sweep: f32,
+    /// 胴の成分(基音に対する倍率, 大きさ, 減衰の秒)
+    modes: &'static [(f32, f32, f32)],
+    hp: f32,
+    lp: f32,
+    crack: f32,
+    tail: f32,
+    tail_tau: f32,
+    click: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DrumVoice {
     tones: [Tone; MAX_TONES],
@@ -358,21 +372,66 @@ impl DrumVoice {
             38 | 40 => {
                 let f = st(tune + p.snare_tune + if pitch == 40 { 1.5 } else { 0.0 });
                 let snappy = p.snare_snappy.clamp(0.0, 1.0) / 0.6;
-                let (t1, t2, sweep, hp, lp, crack, tail, tail_tau, tone_tau) = match kit {
-                    DrumKit::Modern => {
-                        (185.0, 330.0, 0.25, 1500.0, 11_000.0, 0.55, 0.8, 0.16, 0.07)
-                    }
-                    DrumKit::Tr808 => (238.0, 476.0, 0.0, 1800.0, 9_000.0, 0.3, 0.7, 0.11, 0.05),
-                    DrumKit::Tr909 => (190.0, 340.0, 0.3, 900.0, 12_000.0, 0.6, 0.95, 0.19, 0.06),
+                // 胴: 皮の振動の成分(基音の 1・1.59・2.14 倍。倍音関係にないので音程感が薄い)を短く。
+                // 音程を上から落とすとタムの「ドゥン」になるので、落とすのは 909 のごく短い分だけ
+                // (808 は実機どおり 2 音)
+                let r = match kit {
+                    DrumKit::Modern => SnareRecipe {
+                        f0: 200.0,
+                        sweep: 0.04,
+                        modes: &[(1.0, 0.45, 0.045), (1.59, 0.3, 0.035), (2.14, 0.2, 0.025)],
+                        hp: 1200.0,
+                        lp: 12_000.0,
+                        crack: 0.6,
+                        tail: 0.85,
+                        tail_tau: 0.17,
+                        click: 0.7,
+                    },
+                    DrumKit::Tr808 => SnareRecipe {
+                        f0: 238.0,
+                        sweep: 0.0,
+                        modes: &[(1.0, 0.5, 0.05), (2.0, 0.25, 0.035)],
+                        hp: 1800.0,
+                        lp: 9_000.0,
+                        crack: 0.4,
+                        tail: 0.75,
+                        tail_tau: 0.11,
+                        click: 0.5,
+                    },
+                    DrumKit::Tr909 => SnareRecipe {
+                        f0: 190.0,
+                        sweep: 0.12,
+                        modes: &[(1.0, 0.45, 0.05), (1.59, 0.3, 0.035), (2.14, 0.2, 0.025)],
+                        hp: 700.0,
+                        lp: 12_000.0,
+                        crack: 0.7,
+                        tail: 1.0,
+                        tail_tau: 0.19,
+                        click: 0.8,
+                    },
                 };
-                self.tone(t1 * f, 0.55, tone_tau * d, sweep, 0.012, 0.0);
-                self.tone(t2 * f, 0.3, tone_tau * 0.7 * d, sweep, 0.012, 0.0);
+                let SnareRecipe {
+                    f0,
+                    sweep,
+                    modes,
+                    hp,
+                    lp,
+                    crack,
+                    tail,
+                    tail_tau,
+                    click,
+                } = r;
+                for &(ratio, level, tau) in modes {
+                    self.tone(f0 * ratio * f, level, tau * d, sweep, 0.006, 0.0);
+                }
+                // 響き線: 初めの破裂と尾
                 self.noise_env = Env::new(tail * snappy, tail_tau * d, 0.0, sr);
-                self.noise_env2 = Env::new(crack * snappy, 0.012, 0.0, sr);
+                self.noise_env2 = Env::new(crack * snappy, 0.010, 0.0, sr);
                 self.noise_f1 = Svf::hp(sr, hp * bright, 0.7);
                 self.noise_f2 = Svf::lp(sr, lp * bright, 0.7);
-                self.click_env = Env::new(0.25 * vel, 0.0015, 0.0, sr);
-                self.click_f = Svf::hp(sr, 2500.0, 0.7);
+                // スティックが当たる「パン」: 帯域の広いクリック
+                self.click_env = Env::new(click * vel, 0.005, 0.0, sr);
+                self.click_f = Svf::bp(sr, 1500.0 * bright, 0.5);
                 self.drive = 0.25;
                 self.amp *= match kit {
                     DrumKit::Tr909 => 0.5,
@@ -787,6 +846,34 @@ mod tests {
             (up / late - 2.0).abs() < 0.2,
             "1 オクターブ上: {up} / {late}"
         );
+    }
+
+    /// 20〜120ms の区間の自己相関の最大(2〜12ms のずれ)。音程がはっきりするほど 1 に近い
+    fn periodicity(out: &[f32]) -> f32 {
+        let seg = &out[960..5760];
+        let e0: f32 = seg.iter().map(|x| x * x).sum();
+        (96..576)
+            .map(|lag| {
+                let c: f32 = seg[..seg.len() - lag]
+                    .iter()
+                    .zip(&seg[lag..])
+                    .map(|(a, b)| a * b)
+                    .sum();
+                c / e0.max(1e-12)
+            })
+            .fold(f32::MIN, f32::max)
+    }
+
+    #[test]
+    fn snare_is_not_a_tom() {
+        // タムは音程がはっきり、スネアは響き線が主で音程感が薄い
+        for kit in [DrumKit::Modern, DrumKit::Tr909] {
+            let p = DrumParams { kit, ..params() };
+            let snare = periodicity(&render_with(&p, 38, 1.0, 9600));
+            let tom = periodicity(&render_with(&p, 45, 1.0, 9600));
+            assert!(snare < 0.4, "{kit:?} snare={snare}");
+            assert!(tom > 0.6, "{kit:?} tom={tom}");
+        }
     }
 
     #[test]
