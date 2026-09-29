@@ -4315,7 +4315,11 @@ impl GlauxServer {
             _ => None,
         });
         let sfz_target = match (p.sfz, &p.sfz_cc, &current) {
-            (Some(s), _, _) => Some((s, Default::default(), glaux_core::ParamMap::new())),
+            // 新しく選ぶときは、カタログの音源なら推奨の調整つまみを付ける
+            (Some(s), _, _) => {
+                let cc = crate::sfz_packs::default_cc(&s);
+                Some((s, cc, glaux_core::ParamMap::new()))
+            }
             (None, Some(_), Some(c)) => Some(c.clone()),
             (None, Some(_), None) => {
                 return Err(

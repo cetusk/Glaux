@@ -577,6 +577,8 @@ export interface SfzPack {
   approx_mb: number;
   installed: boolean;
   instruments: string[];
+  /** 選んだときに付ける調整つまみ(CC 番号 → 値) */
+  cc?: Record<string, number>;
 }
 
 /** 無料の SFZ 音源を取得する。進捗は `sfz-download` イベント({id, got, total}) */

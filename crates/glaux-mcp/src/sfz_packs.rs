@@ -25,6 +25,8 @@ pub struct SfzPack {
     pub programs: &'static [&'static str],
     /// 取得するおおよその大きさ(MB)
     pub approx_mb: u32,
+    /// 選んだときに付ける調整つまみ(CC 番号, 値)。音源の既定より良く聞こえる設定
+    pub cc: &'static [(u8, u8)],
 }
 
 /// 取得できる音源の一覧。ライセンスは CC0 か CC-BY(作者名の表示が要る。CREDITS.txt と README に書く)
@@ -39,6 +41,7 @@ pub const PACKS: &[SfzPack] = &[
         commit: "18c6afccb60cff458edbf7c394571783e074e1e9",
         programs: &["Programs/01-natural.sfz"],
         approx_mb: 84,
+        cc: &[],
     },
     SfzPack {
         id: "e-pianos",
@@ -54,6 +57,7 @@ pub const PACKS: &[SfzPack] = &[
             "Wurlitzer EP200/Wurlitzer EP200.sfz",
         ],
         approx_mb: 21,
+        cc: &[],
     },
     SfzPack {
         id: "big-rusty-drums",
@@ -65,6 +69,9 @@ pub const PACKS: &[SfzPack] = &[
         commit: "f07ce00df34a46b6b08375be56fe116cf15782bc",
         programs: &["Programs/02-basic.sfz"],
         approx_mb: 153,
+        // スネアを 3 半音上げ(カーブ 9 で 80 ≒ +3 半音)、トップ・天井のマイクを上げて snap を足す。
+        // 既定のままだと生録りの緩いスネアに聞こえる(2026-09-29 に聞き比べて決めた)
+        cc: &[(81, 100), (82, 100), (83, 70), (89, 80)],
     },
     SfzPack {
         id: "swagbass",
@@ -76,6 +83,7 @@ pub const PACKS: &[SfzPack] = &[
         commit: "9d10fcae71af1975988ddecd5af1c95d372c7355",
         programs: &["swagbass_clean.sfz"],
         approx_mb: 146,
+        cc: &[],
     },
     SfzPack {
         id: "emilyguitar",
@@ -87,6 +95,7 @@ pub const PACKS: &[SfzPack] = &[
         commit: "b4920dc662fd9cad6dcaccdeecffdd91c8725d8c",
         programs: &["emily_clean.sfz"],
         approx_mb: 124,
+        cc: &[],
     },
     SfzPack {
         id: "cello",
@@ -98,6 +107,7 @@ pub const PACKS: &[SfzPack] = &[
         commit: "6fd75fbfc1dbb3109bf26220ba1adea46188a18b",
         programs: &["Programs/01- Bowed (velocity layer).sfz"],
         approx_mb: 95,
+        cc: &[],
     },
     SfzPack {
         id: "solo-sax",
@@ -112,6 +122,7 @@ pub const PACKS: &[SfzPack] = &[
             "MTG Solo Saxophones/MTG Tenor Sax.sfz",
         ],
         approx_mb: 58,
+        cc: &[],
     },
     SfzPack {
         id: "ixox-flute",
@@ -123,6 +134,7 @@ pub const PACKS: &[SfzPack] = &[
         commit: "0cc54468bb0d2d9b32921958585caad65ba8df21",
         programs: &["Ixox Flute.sfz"],
         approx_mb: 9,
+        cc: &[],
     },
 ];
 
@@ -139,6 +151,21 @@ pub struct PackStatus {
     pub installed: bool,
     /// 入れたときの楽器の名前(set_soundfont_instrument の sfz に渡すもの)
     pub instruments: Vec<String>,
+    /// 選んだときに付ける調整つまみ(CC 番号 → 値)
+    pub cc: std::collections::BTreeMap<u8, u8>,
+}
+
+/// 楽器(SFZ ライブラリからの名前)を選んだときに付ける調整つまみ。カタログの音源でなければ空
+pub fn default_cc(instrument: &str) -> std::collections::BTreeMap<u8, u8> {
+    PACKS
+        .iter()
+        .find(|p| {
+            instrument
+                .strip_prefix(p.id)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
+        .map(|p| p.cc.iter().copied().collect())
+        .unwrap_or_default()
 }
 
 pub fn status(lib: &Path) -> Vec<PackStatus> {
@@ -156,6 +183,7 @@ pub fn status(lib: &Path) -> Vec<PackStatus> {
                 approx_mb: p.approx_mb,
                 installed: instruments.iter().all(|i| lib.join(i).is_file()),
                 instruments,
+                cc: p.cc.iter().copied().collect(),
             }
         })
         .collect()
@@ -464,6 +492,7 @@ mod tests {
             commit: "c",
             programs: &["Programs/kit.sfz"],
             approx_mb: 1,
+            cc: &[],
         };
         let files: HashMap<&str, &str> = [
             (
@@ -539,6 +568,12 @@ mod tests {
                 assert!(glaux_engine::sfz::valid_name(&format!("{}/{prog}", p.id)));
             }
         }
+        assert_eq!(
+            default_cc("big-rusty-drums/Programs/02-basic.sfz").get(&89),
+            Some(&80)
+        );
+        assert!(default_cc("big-rusty-drums-x/a.sfz").is_empty());
+        assert!(default_cc("Mine/kit.sfz").is_empty());
         let st = status(Path::new("/nonexistent"));
         assert_eq!(st.len(), PACKS.len());
         assert!(st.iter().all(|s| !s.installed));

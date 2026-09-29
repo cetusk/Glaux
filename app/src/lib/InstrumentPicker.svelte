@@ -145,9 +145,12 @@
     const t = track;
     if (!t) return;
     if (t.device?.type === "sfz" && t.device.instrument === instrument) return close();
+    // カタログの音源なら推奨の調整つまみを付ける
+    const cc = packs.find((p) => p.instruments.includes(instrument))?.cc;
+    const device = cc && Object.keys(cc).length > 0 ? { type: "sfz", instrument, cc } : { type: "sfz", instrument };
     run(
       api.applyEdit(
-        [{ op: "set_device", track: t.id, device: { type: "sfz", instrument } }],
+        [{ op: "set_device", track: t.id, device }],
         `${t.name} の音源を「${instrument}」(SFZ)に変更`,
       ),
       "SFZ にできませんでした",
