@@ -79,17 +79,72 @@ fn strip_plugin_state(track: &mut Value) {
     }
 }
 
+/// CLAP の状態を持っているか(画面へ送る前に省く必要があるか)
+fn has_plugin_state(source: &glaux_core::PluginSource) -> bool {
+    matches!(
+        source,
+        glaux_core::PluginSource::Clap { state: Some(_), .. }
+    )
+}
+
+/// [`strip_plugin_state`] と同じことを型の上で(直列化の前に)
+fn strip_plugin_state_typed(
+    device: Option<&mut glaux_core::Device>,
+    effects: &mut [glaux_core::Effect],
+) {
+    let sources = device
+        .map(|d| &mut d.source)
+        .into_iter()
+        .chain(effects.iter_mut().map(|e| &mut e.source));
+    for source in sources {
+        if let glaux_core::PluginSource::Clap { state, .. } = source {
+            *state = None;
+        }
+    }
+}
+
+/// 曲の全体。`serde_json::Value` の木を作らずに直接 JSON の文字列にして返す(大きな曲で軽い)
 #[tauri::command]
-async fn get_project(state: State<'_, AppState>) -> Result<Value, String> {
+async fn get_project(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String> {
     let (project, version) = state.handle.get_project_shared().await?;
-    let mut p = serde_json::to_value(&project).map_err(|e| e.to_string())?;
-    if let Some(ts) = p.get_mut("tracks").and_then(|t| t.as_array_mut()) {
-        ts.iter_mut().for_each(strip_plugin_state);
-    }
-    if let Some(m) = p.get_mut("master") {
-        strip_plugin_state(m);
-    }
-    Ok(json!({ "project_version": version, "project": p }))
+    tokio::task::spawn_blocking(move || {
+        let has_state = project.tracks.iter().any(|t| {
+            t.device
+                .as_ref()
+                .is_some_and(|d| has_plugin_state(&d.source))
+                || t.effects.iter().any(|e| has_plugin_state(&e.source))
+        }) || project
+            .master
+            .effects
+            .iter()
+            .any(|e| has_plugin_state(&e.source));
+        // CLAP の状態があるときだけ複製して省く(無ければそのまま直列化する)
+        let stripped;
+        let p: &glaux_core::Project = if has_state {
+            let mut c = (*project).clone();
+            for t in &mut c.tracks {
+                strip_plugin_state_typed(t.device.as_mut(), &mut t.effects);
+            }
+            strip_plugin_state_typed(None, &mut c.master.effects);
+            stripped = c;
+            &stripped
+        } else {
+            &project
+        };
+        #[derive(serde::Serialize)]
+        struct Out<'a> {
+            project_version: usize,
+            project: &'a glaux_core::Project,
+        }
+        serde_json::to_string(&Out {
+            project_version: version,
+            project: p,
+        })
+        .map(tauri::ipc::Response::new)
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// トラックを複製して、元のすぐ下に置く(CLAP の状態・エフェクトのつながり・変調・マクロも写す)
@@ -2830,6 +2885,46 @@ fn main() -> Result<()> {
             }
         });
     Ok(())
+}
+
+#[cfg(test)]
+mod plugin_state_tests {
+    use super::*;
+
+    #[test]
+    fn typed_strip_matches_the_json_strip() {
+        use glaux_core::{Device, Effect, FxId, PluginSource, Project, Track, TrackId, TrackKind};
+        let clap = |state: &str| PluginSource::Clap {
+            plugin_id: "org.example.synth".into(),
+            state: Some(state.into()),
+        };
+        let mut p = Project::new("t");
+        let mut t = Track::new(TrackId::new(), "A", TrackKind::Midi);
+        t.device = Some(Device {
+            source: clap("AAAA"),
+            params: Default::default(),
+        });
+        let mut fx = Effect::builtin(FxId::new(), "eq");
+        fx.source = clap("BBBB");
+        t.effects.push(fx.clone());
+        t.effects.push(Effect::builtin(FxId::new(), "reverb"));
+        p.tracks.push(t);
+        p.master.effects.push(fx);
+        // JSON の木から消したもの
+        let mut want = serde_json::to_value(&p).unwrap();
+        for t in want["tracks"].as_array_mut().unwrap() {
+            strip_plugin_state(t);
+        }
+        strip_plugin_state(&mut want["master"]);
+        // 型の上で消してから直列化したもの
+        let mut c = p.clone();
+        for t in &mut c.tracks {
+            strip_plugin_state_typed(t.device.as_mut(), &mut t.effects);
+        }
+        strip_plugin_state_typed(None, &mut c.master.effects);
+        assert_eq!(serde_json::to_value(&c).unwrap(), want);
+        assert!(!serde_json::to_string(&c).unwrap().contains("AAAA"));
+    }
 }
 
 #[cfg(test)]
