@@ -89,6 +89,8 @@ pub struct SectionInfo {
     pub peak_count: usize,
     /// 新しい素材の割合(新しい名前の句 ÷ 句の数)
     pub novelty: f64,
+    /// 音が鳴っている所で、2 拍ごとの頭(小節の頭と半ば)に音の頭がある割合(参考の数値。4 分で歩く人の旋律でも 1 に近い)
+    pub half_bar_hits: f64,
 }
 
 /// 曲全体
@@ -627,6 +629,27 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
                 (!ps.is_empty()).then(|| median_u8(&mut ps))
             })
             .collect();
+        // 2 拍ごとの頭に音の頭がある割合(最初の音から最後の音までの間の頭だけ数える)
+        let half_bar_hits = {
+            let (lo, hi) = (inside[0].pos, inside[inside.len() - 1].pos);
+            let mut heads = 0usize;
+            let mut hits = 0usize;
+            for b in b_first..b_first + nbars {
+                let Some(&(bs, bl)) = grid.get(b) else {
+                    continue;
+                };
+                for h in [bs, bs + bl / 2] {
+                    if h < lo || h > hi {
+                        continue;
+                    }
+                    heads += 1;
+                    if inside.iter().any(|n| n.pos.abs_diff(h) <= 30) {
+                        hits += 1;
+                    }
+                }
+            }
+            round2(hits as f64 / heads.max(1) as f64)
+        };
         let register_travel =
             bar_centers.iter().max().unwrap_or(&0) - bar_centers.iter().min().unwrap_or(&0);
         let active: Vec<f64> = dens.iter().copied().filter(|&d| d > 0.0).collect();
@@ -697,6 +720,7 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
             ),
             peak_count: inside.iter().filter(|n| n.pitch == high).count(),
             novelty: round2(new as f64 / pidx.len().max(1) as f64),
+            half_bar_hits,
         });
     }
 

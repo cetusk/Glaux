@@ -136,6 +136,9 @@ pub struct MelodyPlan {
     /// 言葉での目標(作曲者の言葉をそのまま)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
+    /// 表情(強さ・切り方・ビブラート・グライド・ノリ)。省略で既定(量 0.6・tight)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<crate::melexpr::Expression>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<SectionPlan>,
 }
@@ -220,6 +223,20 @@ const CONTOURS: &[&str] = &["arch", "rise", "fall", "valley", "flat"];
 impl MelodyPlan {
     pub fn validate(&self) -> Result<()> {
         let bad = |s: String| Err(CoreError::InvalidPlan(s));
+        if let Some(e) = &self.expression {
+            if !(0.0..=1.0).contains(&e.amount) {
+                return bad("expression/amount は 0〜1".to_owned());
+            }
+            if !crate::melexpr::FEELS.contains(&e.feel.as_str()) {
+                return bad(format!(
+                    "expression/feel は {} のどれか",
+                    crate::melexpr::FEELS.join(" / ")
+                ));
+            }
+            if !(1..=127).contains(&e.velocity) {
+                return bad("expression/velocity は 1〜127".to_owned());
+            }
+        }
         for (i, s) in self.sections.iter().enumerate() {
             let at = format!("sections/{i}");
             if s.start_bar == 0 || s.bars == 0 {

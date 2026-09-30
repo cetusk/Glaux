@@ -492,9 +492,33 @@ pub struct Realized {
 pub struct PhraseSkeleton {
     pub section: usize,
     pub phrase: usize,
-    /// 句の最初の音(tick)
+    /// 句の最初の音(tick)と長さ(最後の音の終わりまで)
     pub first: u64,
+    pub len: u64,
     pub skeleton: Vec<String>,
+}
+
+impl Realized {
+    /// 句の (最初の音の頭, 終わり) の列
+    pub fn phrase_ranges(&self) -> Vec<(u64, u64)> {
+        self.skeletons
+            .iter()
+            .map(|s| (s.first, s.first + s.len))
+            .collect()
+    }
+
+    /// 骨格の音の位置(tick)
+    pub fn anchor_positions(&self) -> Vec<u64> {
+        self.skeletons
+            .iter()
+            .flat_map(|s| {
+                parse_skeleton(&s.skeleton)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |(t, _)| s.first + t)
+            })
+            .collect()
+    }
 }
 
 /// 句の骨格とリズム(A′ が写す元)
@@ -850,7 +874,7 @@ pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
                         } else {
                             &main_cell
                         };
-                        fill_cells(gap, cell)
+                        fill_cells(gap, cell, &mut rng)
                     }
                 };
                 let came = phrase_notes
@@ -926,6 +950,7 @@ pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
                 section: si,
                 phrase: k,
                 first,
+                len,
                 skeleton: format_skeleton(&anchors, len),
             });
             made.push((
@@ -972,8 +997,19 @@ fn anchor_times(
             }
         };
         let mut t = snapped.saturating_sub(first);
-        if family == "syncopated" && rng.unit() < 0.45 {
+        // 骨格の音をいつも拍の頭に置くと機械的(2 拍ごとの頭に必ず音がある)。系統ごとの割合で
+        // 8 分前に食う(前の拍から伸ばして入る)か、8 分遅らせる(頭を休む)
+        let (early, late) = match family {
+            "syncopated" => (0.45, 0.15),
+            "sustain" => (0.3, 0.15),
+            "sparse" => (0.2, 0.25),
+            _ => (0.25, 0.1),
+        };
+        let r = rng.unit();
+        if r < early {
             t = t.saturating_sub(PPQ / 2);
+        } else if r < early + late {
+            t += PPQ / 2;
         }
         v.push(t);
     }
@@ -1148,13 +1184,19 @@ fn pick_cells(family: &str, density: f64, step: u64, rng: &mut Rng) -> (Vec<u64>
     (main, alt)
 }
 
-/// 骨格の 2 音の間(`gap` tick)に型を敷く(2 拍ごとに繰り返し、次の骨格の音の 16 分手前まで)
-fn fill_cells(gap: u64, cell: &[u64]) -> Vec<u64> {
+/// 骨格の 2 音の間(`gap` tick)に型を敷く(2 拍ごとに繰り返し、次の骨格の音の 16 分手前まで)。
+/// 2 拍の区切りの頭には、いつも音を置かない(置く・8 分前に食う・休む を選ぶ)
+fn fill_cells(gap: u64, cell: &[u64], rng: &mut Rng) -> Vec<u64> {
     let mut v = Vec::new();
     let mut w = 0;
     while w < gap {
         if w > 0 && w + 240 <= gap {
-            v.push(w);
+            let r = rng.unit();
+            if r < 0.5 {
+                v.push(w);
+            } else if r < 0.8 && !cell.contains(&6) {
+                v.push(w - PPQ / 2);
+            }
         }
         for &o in cell {
             if w + o + 120 < gap {

@@ -26,6 +26,7 @@ pub mod groove;
 pub mod harmony;
 pub mod history;
 pub mod id;
+pub mod melexpr;
 pub mod melgen;
 pub mod melody;
 pub mod melplan;

@@ -2024,18 +2024,18 @@ fn arp_rate(s: &str) -> Option<f64> {
     (den > 0.0 && den <= 64.0).then(|| 4.0 / den * mul)
 }
 
-/// 計画から作った音をクリップのノートにする(小節の頭の音を少し強く)
-fn plan_note_of(pos: u64, dur: u64, pitch: u8, vel: u8) -> glaux_core::Note {
+/// 表情を付けた音をクリップのノートにする(`start` はクリップの頭、`end` はクリップの終わり)
+fn expr_note_of(e: &glaux_core::melexpr::ExprNote, start: u64, end: u64) -> glaux_core::Note {
     glaux_core::Note {
         id: glaux_core::NoteId::new(),
-        pos: glaux_core::Tick(pos),
-        dur: glaux_core::Tick(dur.max(1)),
-        pitch,
-        vel,
-        articulation: Default::default(),
+        pos: glaux_core::Tick(e.pos - start),
+        dur: glaux_core::Tick(e.dur.min(end.saturating_sub(e.pos)).max(1)),
+        pitch: e.pitch,
+        vel: e.vel,
+        articulation: e.articulation,
         pitch_curve: vec![],
-        glide_ms: None,
-        vibrato: None,
+        glide_ms: e.glide_ms,
+        vibrato: e.vibrato,
         volume_curve: vec![],
         brightness_curve: vec![],
         condition: None,
@@ -2296,6 +2296,8 @@ struct MelodyInputs {
     target: String,
     track_id: glaux_core::TrackId,
     notes: Vec<glaux_core::melody::MelNote>,
+    /// 表情の測定用のノート(位置は曲の頭から)
+    raw: Vec<glaux_core::Note>,
     genre: &'static glaux_core::melody::Genre,
     key: Option<glaux_core::chord::Key>,
     chord_spans: Vec<(u64, u64, Vec<u8>)>,
@@ -2341,6 +2343,20 @@ fn melody_inputs(
                     pos: c.start.0 + n.pos.0,
                     dur: n.dur.0,
                     pitch: n.pitch,
+                })
+        })
+        .collect();
+    let raw: Vec<glaux_core::Note> = clips
+        .iter()
+        .flat_map(|c| {
+            c.notes()
+                .unwrap_or_default()
+                .iter()
+                .filter(|n| n.pos < c.length)
+                .map(move |n| {
+                    let mut n = n.clone();
+                    n.pos = glaux_core::Tick(c.start.0 + n.pos.0);
+                    n
                 })
         })
         .collect();
@@ -2414,6 +2430,7 @@ fn melody_inputs(
         target: track.name.clone(),
         track_id: track.id.clone(),
         notes,
+        raw,
         genre,
         key,
         chord_spans,
@@ -7435,6 +7452,7 @@ impl GlauxServer {
             chords: p.chords.clone(),
             seed: Some(seed),
             intent: p.intent.clone(),
+            expression: None,
             sections: melplan::propose(
                 &sections,
                 low,
@@ -7494,6 +7512,9 @@ impl GlauxServer {
         句の終わりは伸ばし、句の間で息継ぎ。計画に骨格があればそれを使う(edit_plan で骨格だけ直して作り直せる)。\
         sections で一部の区間だけ作り直す(ほかの区間の音は残る)。seed はリズムと表面の選び方。作った骨格は計画に書き戻し\
         (keep_skeleton)、クリップに計画の版を記す(get_plan で作り直し待ちが分かる)。曲の 1 回の undo で戻る。\
+        表情は計画の expression(amount 0〜1・feel tight / laid_back / push・vibrato・glide・velocity。省略で量 0.6・tight):\
+        句の弧と拍の位置と高さで強さを変え、順次進行はレガート・連打と跳躍の前は短く、1 拍以上の音だけ遅らせたビブラート、\
+        山への跳躍にグライド、裏拍だけノリでずらす(全部の音に同じ表情を付けない)。\
         返り値に作った旋律の分析(analyze_melody と同じ粒度付きの指摘)と点検の点数。"
     )]
     async fn realize_melody(
@@ -7688,24 +7709,41 @@ impl GlauxServer {
             }
         }
         // 曲に置く: この計画から作ったクリップがこのトラックにあれば、作った区間だけ差し替える
-        let vel = p.velocity.unwrap_or(92).clamp(1, 127);
+        // 表情(強さ・切り方・ビブラート・グライド・ノリ)。計画の expression、無ければ既定
+        let mut expr = mp.expression.clone().unwrap_or_default();
+        if let Some(v) = p.velocity {
+            expr.velocity = v.clamp(1, 127);
+        }
+        let bar_of = |t: u64| {
+            let i = grid.partition_point(|g| g.0 <= t).saturating_sub(1);
+            grid.get(i)
+                .copied()
+                .unwrap_or((0, 4 * glaux_core::time::PPQ))
+        };
+        let expressed = glaux_core::melexpr::express(
+            &realized.notes,
+            &realized.phrase_ranges(),
+            &realized.anchor_positions(),
+            &bar_of,
+            project.tempo_map.bpm_at(glaux_core::Tick(span_start)),
+            &expr,
+            seed,
+        );
         let existing = track
             .clips
             .iter()
             .find(|c| project.plan_refs.get(&c.id).is_some_and(|r| r.id == pid));
         let inside = |t: u64| realized.ranges.iter().any(|&(a, b)| a <= t && t < b);
-        let new_abs: Vec<(u64, u64, u8)> = realized
-            .notes
-            .iter()
-            .map(|n| (n.pos, n.dur, n.pitch))
-            .collect();
+        let new_abs: Vec<(u64, u64, u8)> =
+            expressed.iter().map(|n| (n.pos, n.dur, n.pitch)).collect();
         let (clip_id, command) = match existing {
             Some(c) => {
-                let old: Vec<(u64, u64, u8, u8)> = c
+                // 作り直さない区間の音は、表情ごとそのまま残す
+                let old: Vec<(u64, glaux_core::Note)> = c
                     .notes()
                     .map(|ns| {
                         ns.iter()
-                            .map(|n| (c.start.0 + n.pos.0, n.dur.0, n.pitch, n.vel))
+                            .map(|n| (c.start.0 + n.pos.0, n.clone()))
                             .filter(|n| !inside(n.0))
                             .collect()
                     })
@@ -7721,12 +7759,11 @@ impl GlauxServer {
                 );
                 let mut notes: Vec<glaux_core::Note> = old
                     .into_iter()
-                    .map(|(t, d, pch, v)| plan_note_of(t - start, d, pch, v))
-                    .chain(
-                        new_abs
-                            .iter()
-                            .map(|&(t, d, pch)| plan_note_of(t - start, d, pch, vel)),
-                    )
+                    .map(|(t, mut n)| {
+                        n.pos = glaux_core::Tick(t - start);
+                        n
+                    })
+                    .chain(expressed.iter().map(|e| expr_note_of(e, start, u64::MAX)))
                     .collect();
                 notes.sort_by_key(|n| (n.pos, n.pitch));
                 if let Some(ns) = clip.notes_mut() {
@@ -7761,10 +7798,10 @@ impl GlauxServer {
                     glaux_core::Tick(end - start),
                 );
                 if let Some(ns) = clip.notes_mut() {
-                    *ns = new_abs
+                    *ns = expressed
                         .iter()
-                        .filter(|n| n.0 >= start && n.0 < end)
-                        .map(|&(t, d, pch)| plan_note_of(t - start, d.min(end - t), pch, vel))
+                        .filter(|n| n.pos >= start && n.pos < end)
+                        .map(|e| expr_note_of(e, start, end))
                         .collect();
                 }
                 (
@@ -7847,7 +7884,7 @@ impl GlauxServer {
     #[tool(
         description = "旋律の計画を保存する(新しく作る・丸ごと置き換える)。計画は曲とは別の文書(plans.json)で、\
         曲とは別の git ライクな履歴を持つ(曲の undo は計画を戻さず、計画の undo は音符を戻さない)。\
-        body は melody の形: key・chords・genre・role・track・intent(作曲者の言葉)と sections(区間ごとに name・\
+        body は melody の形: key・chords・genre・role・track・intent(作曲者の言葉)・expression(表情。amount・feel・vibrato・glide・velocity)と sections(区間ごとに name・\
         start_bar・bars・energy・register(区間の中の小節位置 at と中心の音 center・幅 span の点列)・density・\
         rhythm_family(sustain / pulse / syncopated / sparse)・phrases(label・bars・offset_beats(負で弱起)・like・\
         transform・cadence(open / closed)・ending_degree・contour・density・skeleton(\"E5:h\" の列))・handoff・like)。\
@@ -8205,7 +8242,8 @@ impl GlauxServer {
         description = "旋律の構造を読む(粒度ごとの分析)。critique_melody が音と小節の近くを見るのに対し、こちらは\
         区間 → 句 → 骨格の層に読み返す。骨格: 最短経路による旋律の還元(AMRA、ISMIR 2025)で残る音を 2 拍ごとに 1 つ。\
         句: 休み・長い音で区切り(区切れなければ 4 小節ごと)、始まり(弱起)・長さ・音域・骨格の輪郭(arch / rise / fall / \
-        valley / flat)・終わりの音度と伸び。繰り返しの地図: 句どうしの高さの形とリズムの似かたで A・A′・B と名付ける。\
+        valley / flat)・終わりの音度と伸び。expression は表情の一様さ(強さの散らばり・切り方の種類・格子どおりの割合・\
+        ビブラートが長い音だけか)で、[表情] の指摘になる。繰り返しの地図: 句どうしの高さの形とリズムの似かたで A・A′・B と名付ける。\
         区間(マーカー。無ければ全体): 2 小節ごとの音域の中心・幅・密度の曲線、小節どうし・句どうしのリズムの似かた、\
         山の位置、新しい素材の割合。曲: 句の終わりで伸びる割合、主音で終わる割合(句の終わり と ほか)。\
         findings は [曲] / [区間] / [句] の粒度付きの指摘(同じリズムの輪郭が続く・音域が動かない・密度が平ら・\
@@ -8230,6 +8268,14 @@ impl GlauxServer {
         };
         let s = glaux_core::melstruct::analyze(&m.notes, &ctx);
         let mut out = serde_json::to_value(&s).map_err(|e| e.to_string())?;
+        // 表情の一様さ(強さ・切り方・ビブラートなどが全部同じだと機械的に聞こえる)
+        let u = glaux_core::melexpr::uniformity(&m.raw, 0);
+        if let Some(f) = out["findings"].as_array_mut() {
+            for (sev, what, fix) in glaux_core::melexpr::uniformity_findings(&u) {
+                f.push(json!({ "severity": sev, "target": m.target, "what": format!("[表情] {what}"), "fix": fix }));
+            }
+        }
+        out["expression"] = json!(u);
         // 分析から推定した計画(save_plan の body にそのまま渡せる)
         let mut plan = s.to_plan();
         plan.track = Some(m.track_id.to_string());
