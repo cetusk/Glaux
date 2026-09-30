@@ -4,7 +4,8 @@
 //! リハーサルマーク・拍子のまとまり。読んだものは MIDI の読み込みと同じ形([`MidiSong`])に直し、
 //! トラックの作り方・音源の選び方・テンポと拍子の扱いを共通にする。
 //!
-//! - 1 パート = 1 トラック(段や声部は分けない)。`<backup>` / `<forward>` で声部の位置を戻す・進める
+//! - 1 パート = 1 トラック。段が複数あるパート(ピアノの右手・左手など)は段ごとに分ける(2 段なら上段・下段)。
+//!   声部は分けない。パート名が無ければ略称 → 楽器名 → 音色(GM)の名前。`<backup>` / `<forward>` で声部の位置を戻す・進める
 //! - 高さ: step + alter + octave に、移調楽器の `<transpose>`(chromatic・octave-change)を足して実音にする。
 //!   打楽器(unpitched)は、その音の楽器の `<midi-unpitched>`(GM のドラムの鍵盤)、無ければ表示の高さ
 //! - タイはつないで 1 音に。和音(`<chord/>`)は前の音と同じ位置
@@ -160,8 +161,20 @@ pub fn parse(xml: &str) -> Result<ScoreRead, String> {
     if let Some(pl) = child(root, "part-list") {
         for sp in pl.children().filter(|c| c.has_tag_name("score-part")) {
             let id = sp.attribute("id").unwrap_or_default().to_owned();
+            // 名前: パート名 → 略称 → 楽器名(空の名前は飛ばす)。どれも無ければ後で音色(GM)の名前
+            let named = |tag: &str| text_of(sp, tag).filter(|t| !t.is_empty());
+            let name = named("part-name")
+                .or_else(|| named("part-abbreviation"))
+                .or_else(|| {
+                    sp.descendants()
+                        .find(|c| c.has_tag_name("instrument-name"))
+                        .and_then(|c| c.text())
+                        .map(|t| t.trim().to_owned())
+                        .filter(|t| !t.is_empty())
+                })
+                .unwrap_or_default();
             let mut info = PartInfo {
-                name: text_of(sp, "part-name").unwrap_or_else(|| id.clone()),
+                name,
                 ..Default::default()
             };
             for mi in sp.children().filter(|c| c.has_tag_name("midi-instrument")) {
@@ -210,10 +223,11 @@ pub fn parse(xml: &str) -> Result<ScoreRead, String> {
         let mut sforzando = false;
         let mut pos: f64 = 0.0; // tick(小数のまま進め、音の頭で丸める)
         let mut measure_start: f64 = 0.0;
-        let mut notes: Vec<RawNote> = Vec::new();
-        let mut arts: BTreeMap<usize, Articulation> = BTreeMap::new();
-        // タイの途中の音(音高 → notes の番号)
-        let mut open_ties: HashMap<u8, usize> = HashMap::new();
+        // 段ごとの音(ピアノの右手・左手など。段が 1 つなら段 1 だけ)
+        let mut staves: BTreeMap<u32, (Vec<RawNote>, BTreeMap<usize, Articulation>)> =
+            BTreeMap::new();
+        // タイの途中の音((段, 音高) → その段の notes の番号)
+        let mut open_ties: HashMap<(u32, u8), usize> = HashMap::new();
         // スラーの中か(番号ごと)
         let mut slurs: HashMap<String, bool> = HashMap::new();
         let mut last_onset: f64 = 0.0;
@@ -382,6 +396,8 @@ pub fn parse(xml: &str) -> Result<ScoreRead, String> {
                         };
                         if let Some(p) = pitch.filter(|p| (0..=127).contains(p)) {
                             let p = p as u8;
+                            let staff: u32 = num(e, "staff").unwrap_or(1);
+                            let (notes, arts) = staves.entry(staff).or_default();
                             let ties: Vec<&str> = e
                                 .children()
                                 .filter(|c| c.has_tag_name("tie"))
@@ -389,14 +405,15 @@ pub fn parse(xml: &str) -> Result<ScoreRead, String> {
                                 .collect();
                             let start = onset.round() as u64;
                             let len = dur.round().max(1.0) as u64;
-                            let continued = ties.contains(&"stop") && open_ties.contains_key(&p);
+                            let continued =
+                                ties.contains(&"stop") && open_ties.contains_key(&(staff, p));
                             if continued {
                                 // タイでつなぐ: 前の音を伸ばす
-                                let i = open_ties[&p];
+                                let i = open_ties[&(staff, p)];
                                 let n = notes[i];
                                 notes[i] = (n.0, (start + len).saturating_sub(n.0), n.2, n.3);
                                 if !ties.contains(&"start") {
-                                    open_ties.remove(&p);
+                                    open_ties.remove(&(staff, p));
                                 }
                             } else {
                                 let v = if sforzando {
@@ -408,7 +425,7 @@ pub fn parse(xml: &str) -> Result<ScoreRead, String> {
                                 notes.push((start, len, p, v.max(1)));
                                 let i = notes.len() - 1;
                                 if ties.contains(&"start") {
-                                    open_ties.insert(p, i);
+                                    open_ties.insert((staff, p), i);
                                 }
                                 // 奏法とスラー
                                 let mut art = None;
@@ -460,44 +477,68 @@ pub fn parse(xml: &str) -> Result<ScoreRead, String> {
             pos = furthest.max(measure_start);
             measure_start = pos;
         }
-        if notes.is_empty() {
+        if staves.values().all(|(n, _)| n.is_empty()) {
             report.push(format!(
                 "パート「{}」には音がありません(読み込まない)",
-                info.name
+                if info.name.is_empty() { id } else { &info.name }
             ));
             continue;
         }
-        // 同じ名前のパートは番号を付ける
-        let count = names_seen.entry(info.name.clone()).or_insert(0);
-        *count += 1;
-        let name = if *count > 1 {
-            format!("{} {}", info.name, count)
+        let base_name = if info.name.is_empty() {
+            // パート名が無ければ音色(GM)の名前、それも無ければ番号
+            match info.program {
+                Some(pg) => crate::midi::GM_NAMES[pg as usize & 127].to_owned(),
+                None => format!("パート {}", pi + 1),
+            }
         } else {
             info.name.clone()
         };
         let drum = info.channel == Some(9) || (any_unpitched && info.channel.is_none());
-        // 位置でそろえる(奏法の番号も並べ替えに合わせる)
-        let mut order: Vec<usize> = (0..notes.len()).collect();
-        order.sort_by_key(|&i| (notes[i].0, notes[i].2));
-        let sorted: Vec<RawNote> = order.iter().map(|&i| notes[i]).collect();
-        let arts_sorted: BTreeMap<usize, Articulation> = order
-            .iter()
-            .enumerate()
-            .filter_map(|(new, &old)| arts.get(&old).map(|a| (new, *a)))
-            .collect();
-        song.parts.push(Part {
-            name,
-            channel: if drum {
-                9
+        let n_staves = staves.values().filter(|(n, _)| !n.is_empty()).count();
+        let mut k_staff = 0;
+        for (staff, (notes, arts)) in staves {
+            if notes.is_empty() {
+                continue;
+            }
+            k_staff += 1;
+            // 段が複数あれば段ごとにトラック(2 段なら上段・下段)
+            let label = match (n_staves, k_staff) {
+                (1, _) => base_name.clone(),
+                (2, 1) => format!("{base_name}(上段)"),
+                (2, _) => format!("{base_name}(下段)"),
+                _ => format!("{base_name}({staff} 段目)"),
+            };
+            // 同じ名前のトラックは番号を付ける
+            let count = names_seen.entry(label.clone()).or_insert(0);
+            *count += 1;
+            let name = if *count > 1 {
+                format!("{label} {count}")
             } else {
-                info.channel.filter(|&c| c != 9).unwrap_or(pi as u8 % 16)
-            },
-            program: info.program.unwrap_or(0),
-            notes: sorted,
-            volume: info.volume,
-            pan: info.pan,
-            articulations: arts_sorted,
-        });
+                label
+            };
+            // 位置でそろえる(奏法の番号も並べ替えに合わせる)
+            let mut order: Vec<usize> = (0..notes.len()).collect();
+            order.sort_by_key(|&i| (notes[i].0, notes[i].2));
+            let sorted: Vec<RawNote> = order.iter().map(|&i| notes[i]).collect();
+            let arts_sorted: BTreeMap<usize, Articulation> = order
+                .iter()
+                .enumerate()
+                .filter_map(|(new, &old)| arts.get(&old).map(|a| (new, *a)))
+                .collect();
+            song.parts.push(Part {
+                name,
+                channel: if drum {
+                    9
+                } else {
+                    info.channel.filter(|&c| c != 9).unwrap_or(pi as u8 % 16)
+                },
+                program: info.program.unwrap_or(0),
+                notes: sorted,
+                volume: info.volume,
+                pan: info.pan,
+                articulations: arts_sorted,
+            });
+        }
     }
     if graces > 0 {
         report.push(format!("装飾音符 {graces} 個は飛ばしました"));
@@ -776,5 +817,32 @@ mod tests {
             .map(|n| (n.0, n.1, n.2))
             .collect();
         assert_eq!(back, seq.to_vec());
+    }
+
+    #[test]
+    fn a_two_staff_part_without_a_name_becomes_two_tracks() {
+        let xml = r#"<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name print-object="no"></part-name>
+    <midi-instrument id="P1-I1"><midi-program>1</midi-program></midi-instrument></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions><staves>2</staves></attributes>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>2</duration><tie type="start"/><staff>1</staff></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>2</duration><tie type="stop"/><staff>1</staff></note>
+      <backup><duration>4</duration></backup>
+      <note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration><staff>2</staff></note>
+      <note><chord/><pitch><step>G</step><octave>3</octave></pitch><duration>4</duration><staff>2</staff></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+        let r = parse(xml).unwrap();
+        let names: Vec<&str> = r.song.parts.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Acoustic Grand Piano(上段)", "Acoustic Grand Piano(下段)"]
+        );
+        // 上段はタイで 1 音、下段は和音
+        assert_eq!(r.song.parts[0].notes, vec![(0, 3840, 76, 80)]);
+        assert_eq!(r.song.parts[1].notes.len(), 2);
     }
 }

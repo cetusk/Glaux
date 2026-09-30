@@ -699,7 +699,7 @@ pub fn export_file(
 }
 
 /// GM の音色名(トラック名に使う)
-const GM_NAMES: [&str; 128] = [
+pub(crate) const GM_NAMES: [&str; 128] = [
     "Acoustic Grand Piano",
     "Bright Acoustic Piano",
     "Electric Grand Piano",

@@ -6782,7 +6782,7 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "MusicXML(.musicxml / .xml、圧縮の .mxl)を読み込み、パートごとに新しいトラックを末尾に足す(1 回の undo で戻る)。\
+        description = "MusicXML(.musicxml / .xml、圧縮の .mxl)を読み込み、パートごとに新しいトラックを末尾に足す(段が複数あるパート=ピアノの右手・左手などは段ごと。1 回の undo で戻る)。\
         MIDI より情報が多い: パート名、強弱記号(pp〜ff・sound dynamics・sf 系)を強さに、スタッカート・アクセントを奏法に、\
         スラーの中の音をレガートに、移調楽器(B♭ クラリネットなど)を実音に、リハーサルマークを区間の目印に、拍子のまとまり\
         (3+2 など)も移す。和音・タイ・複数の声部(backup / forward)を扱う。音色は part-list の midi-program(無ければ\
