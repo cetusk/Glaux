@@ -62,6 +62,10 @@ pub struct Project {
     /// 各セクションはそのマーカーの tick から次のマーカーの手前まで
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<SectionMarker>,
+    /// クリップがどの計画の、どの版から作られたか(計画は曲とは別の文書 `plans.json` にあり、別の履歴を持つ)。
+    /// 消したクリップの参照は残っていても無視する
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plan_refs: BTreeMap<ClipId, crate::plan::PlanRef>,
 }
 
 /// 曲構成のマーカー。「サビだけ盛り上げて」のような構造単位の指示に使う。
@@ -112,6 +116,7 @@ impl Project {
             master: MasterBus::default(),
             assets: BTreeMap::new(),
             sections: vec![],
+            plan_refs: BTreeMap::new(),
         }
     }
 

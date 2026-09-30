@@ -8,6 +8,9 @@
 //!
 //! [`HistoryEntry`] は `author` を持つので「AI の変更だけ一覧して個別に却下」ができる。
 //! 1 行 1 エントリの JSONL(`history.jsonl`)としてそのまま保存できる。
+//!
+//! 履歴は文書の型([`Document`])について汎用。既定は曲([`Project`] と [`Command`])で、
+//! 旋律の計画([`crate::plan::PlanSet`] と [`crate::plan::PlanCommand`])も同じ仕組みで別の履歴を持つ。
 
 use crate::apply::Change;
 use crate::command::{Command, Target};
@@ -15,8 +18,70 @@ use crate::error::{CoreError, Result};
 use crate::id::EntryId;
 use crate::model::Project;
 use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Debug;
+
+/// 履歴に積めるコマンド。対象(revert の衝突判定に使う)を答える
+pub trait HistoryCommand: Clone + PartialEq + Debug + Serialize + DeserializeOwned {
+    type Target: Clone + Ord + Debug + Serialize + DeserializeOwned;
+    fn targets(&self) -> BTreeSet<Self::Target>;
+}
+
+/// 履歴で管理する文書。コマンドを適用して、逆コマンドと変更の通知を返す。
+/// 失敗したときは文書を変えない
+pub trait Document: Clone + Debug + Default {
+    type Command: HistoryCommand;
+    type Change: Clone + Debug;
+    fn apply_command(&mut self, cmd: &Self::Command) -> Result<(Self::Command, Vec<Self::Change>)>;
+}
+
+impl HistoryCommand for Command {
+    type Target = Target;
+    fn targets(&self) -> BTreeSet<Target> {
+        Command::targets(self)
+    }
+}
+
+impl Document for Project {
+    type Command = Command;
+    type Change = Change;
+    fn apply_command(&mut self, cmd: &Command) -> Result<(Command, Vec<Change>)> {
+        let a = self.apply(cmd)?;
+        Ok((a.inverse, a.changes))
+    }
+}
+
+/// 変更の経緯(コミットメッセージの本文)。件名は [`HistoryEntry::label`]
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct EntryNote {
+    /// なぜ変えたか
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+    /// きっかけ(作曲者の言葉・点検の指摘・聴き比べの結果)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Trigger>,
+    /// 変更の前後の測定(例: 区間の音域の幅 8 → 13 半音)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub measures: Vec<Measure>,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Trigger {
+    /// "user"(作曲者の言葉)/ "finding"(点検の指摘)/ "listening"(聴き比べ)/ "other"
+    pub kind: String,
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Measure {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<f64>,
+}
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -27,34 +92,48 @@ pub enum Author {
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-pub struct HistoryEntry {
+#[serde(bound = "")]
+pub struct HistoryEntry<C: HistoryCommand = Command> {
     pub id: EntryId,
     pub author: Author,
     pub timestamp: DateTime<Utc>,
     pub label: String,
-    pub forward: Command,
-    pub inverse: Command,
+    pub forward: C,
+    pub inverse: C,
     /// 触った対象。revert の衝突判定に使う。
-    pub targets: BTreeSet<Target>,
+    pub targets: BTreeSet<C::Target>,
     /// このエントリが `revert()` で作られたものなら、取り消した元エントリ
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverts: Option<EntryId>,
+    /// 変更の経緯(計画の履歴では必ず持つ。曲の履歴では今は持たない)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<EntryNote>,
 }
 
 /// 履歴本体。`entries[..cursor]` が適用済み、`entries[cursor..]` が redo 可能。
-#[derive(Clone, PartialEq, Debug, Default)]
-pub struct History {
-    entries: Vec<HistoryEntry>,
+#[derive(Clone, PartialEq, Debug)]
+pub struct History<C: HistoryCommand = Command> {
+    entries: Vec<HistoryEntry<C>>,
     cursor: usize,
     checkpoints: BTreeMap<String, usize>,
 }
 
-impl History {
-    pub fn applied(&self) -> &[HistoryEntry] {
+impl<C: HistoryCommand> Default for History<C> {
+    fn default() -> Self {
+        History {
+            entries: Vec::new(),
+            cursor: 0,
+            checkpoints: BTreeMap::new(),
+        }
+    }
+}
+
+impl<C: HistoryCommand> History<C> {
+    pub fn applied(&self) -> &[HistoryEntry<C>] {
         &self.entries[..self.cursor]
     }
 
-    pub fn redoable(&self) -> &[HistoryEntry] {
+    pub fn redoable(&self) -> &[HistoryEntry<C>] {
         &self.entries[self.cursor..]
     }
 
@@ -70,7 +149,7 @@ impl History {
         &self.checkpoints
     }
 
-    pub fn entry(&self, id: &EntryId) -> Option<&HistoryEntry> {
+    pub fn entry(&self, id: &EntryId) -> Option<&HistoryEntry<C>> {
         self.applied().iter().find(|e| &e.id == id)
     }
 
@@ -78,7 +157,7 @@ impl History {
     pub fn by_author<'a>(
         &'a self,
         pred: impl Fn(&Author) -> bool + 'a,
-    ) -> impl Iterator<Item = &'a HistoryEntry> + 'a {
+    ) -> impl Iterator<Item = &'a HistoryEntry<C>> + 'a {
         self.applied().iter().filter(move |e| pred(&e.author))
     }
 
@@ -92,14 +171,14 @@ impl History {
         Ok(out)
     }
 
-    pub fn entries_from_jsonl(s: &str) -> serde_json::Result<Vec<HistoryEntry>> {
+    pub fn entries_from_jsonl(s: &str) -> serde_json::Result<Vec<HistoryEntry<C>>> {
         s.lines()
             .filter(|l| !l.trim().is_empty())
             .map(serde_json::from_str)
             .collect()
     }
 
-    fn push(&mut self, entry: HistoryEntry) {
+    fn push(&mut self, entry: HistoryEntry<C>) {
         // 新しい操作で redo スタックと、その先のチェックポイントを捨てる
         self.entries.truncate(self.cursor);
         self.checkpoints.retain(|_, &mut idx| idx <= self.cursor);
@@ -110,10 +189,10 @@ impl History {
 
 /// `revert()` の結果。
 #[derive(Clone, Debug)]
-pub struct RevertResult {
+pub struct RevertResult<Ch = Change> {
     /// 新しく積まれた revert エントリ
     pub entry: EntryId,
-    pub changes: Vec<Change>,
+    pub changes: Vec<Ch>,
     /// 取り消したエントリより後で、同じ対象を触っている適用済みエントリ。
     /// 空でなければ「意図しない結果」になっている可能性がある。
     pub conflicts: Vec<EntryId>,
@@ -132,13 +211,16 @@ pub enum HistoryPoint {
 
 /// プロジェクトと履歴を束ねた編集セッション。UI も MCP もこれを通す。
 #[derive(Clone, Debug, Default)]
-pub struct Session {
-    project: Project,
-    history: History,
+pub struct Session<D: Document = Project> {
+    project: D,
+    history: History<D::Command>,
 }
 
-impl Session {
-    pub fn new(project: Project) -> Self {
+type Cmd<D> = <D as Document>::Command;
+type Ch<D> = <D as Document>::Change;
+
+impl<D: Document> Session<D> {
+    pub fn new(project: D) -> Self {
         Session {
             project,
             history: History::default(),
@@ -146,23 +228,26 @@ impl Session {
     }
 
     /// 空プロジェクトに履歴を順に適用して再構築する。
-    pub fn replay(base: Project, entries: Vec<HistoryEntry>) -> Result<Self> {
+    pub fn replay(base: D, entries: Vec<HistoryEntry<Cmd<D>>>) -> Result<Self> {
         let mut s = Session::new(base);
         for e in entries {
-            let applied = s.project.apply(&e.forward)?;
-            s.history.push(HistoryEntry {
-                inverse: applied.inverse,
-                ..e
-            });
+            let (inverse, _) = s.project.apply_command(&e.forward)?;
+            s.history.push(HistoryEntry { inverse, ..e });
         }
         Ok(s)
     }
 
-    pub fn project(&self) -> &Project {
+    /// 文書(曲なら [`Project`])
+    pub fn project(&self) -> &D {
         &self.project
     }
 
-    pub fn history(&self) -> &History {
+    /// [`Session::project`] と同じ(計画など、曲以外の文書で読みやすい名前)
+    pub fn doc(&self) -> &D {
+        &self.project
+    }
+
+    pub fn history(&self) -> &History<D::Command> {
         &self.history
     }
 
@@ -191,13 +276,13 @@ impl Session {
 
     /// 履歴の地点(適用済みのエントリ数)でのプロジェクトを、今のセッションを変えずに作る。
     /// 聴き比べ(編集の前後の比較)に使う
-    pub fn project_at(&self, at: usize) -> Result<Project> {
+    pub fn project_at(&self, at: usize) -> Result<D> {
         let mut p = self.project.clone();
         for e in self.history.applied()[at.min(self.history.cursor)..]
             .iter()
             .rev()
         {
-            p.apply(&e.inverse)?;
+            p.apply_command(&e.inverse)?;
         }
         Ok(p)
     }
@@ -205,21 +290,33 @@ impl Session {
     /// コマンドを適用して履歴に積む。
     pub fn apply(
         &mut self,
-        cmd: Command,
+        cmd: Cmd<D>,
         author: Author,
         label: impl Into<String>,
-    ) -> Result<(EntryId, Vec<Change>)> {
-        self.apply_inner(cmd, author, label.into(), None)
+    ) -> Result<(EntryId, Vec<Ch<D>>)> {
+        self.apply_inner(cmd, author, label.into(), None, None)
+    }
+
+    /// 経緯(なぜ・きっかけ・前後の測定)付きで適用して履歴に積む
+    pub fn apply_with_note(
+        &mut self,
+        cmd: Cmd<D>,
+        author: Author,
+        label: impl Into<String>,
+        note: EntryNote,
+    ) -> Result<(EntryId, Vec<Ch<D>>)> {
+        self.apply_inner(cmd, author, label.into(), None, Some(note))
     }
 
     fn apply_inner(
         &mut self,
-        cmd: Command,
+        cmd: Cmd<D>,
         author: Author,
         label: String,
         reverts: Option<EntryId>,
-    ) -> Result<(EntryId, Vec<Change>)> {
-        let applied = self.project.apply(&cmd)?;
+        note: Option<EntryNote>,
+    ) -> Result<(EntryId, Vec<Ch<D>>)> {
+        let (inverse, changes) = self.project.apply_command(&cmd)?;
         let id = EntryId::new();
         self.history.push(HistoryEntry {
             id: id.clone(),
@@ -228,10 +325,11 @@ impl Session {
             label,
             targets: cmd.targets(),
             forward: cmd,
-            inverse: applied.inverse,
+            inverse,
             reverts,
+            note,
         });
-        Ok((id, applied.changes))
+        Ok((id, changes))
     }
 
     pub fn can_undo(&self) -> bool {
@@ -242,26 +340,30 @@ impl Session {
         self.history.cursor < self.history.entries.len()
     }
 
-    pub fn undo(&mut self) -> Result<Option<Vec<Change>>> {
+    pub fn undo(&mut self) -> Result<Option<Vec<Ch<D>>>> {
         if !self.can_undo() {
             return Ok(None);
         }
         let idx = self.history.cursor - 1;
-        let applied = self.project.apply(&self.history.entries[idx].inverse)?;
+        let (_, changes) = self
+            .project
+            .apply_command(&self.history.entries[idx].inverse)?;
         self.history.cursor = idx;
-        Ok(Some(applied.changes))
+        Ok(Some(changes))
     }
 
-    pub fn redo(&mut self) -> Result<Option<Vec<Change>>> {
+    pub fn redo(&mut self) -> Result<Option<Vec<Ch<D>>>> {
         if !self.can_redo() {
             return Ok(None);
         }
         let idx = self.history.cursor;
-        let applied = self.project.apply(&self.history.entries[idx].forward)?;
+        let (inverse, changes) = self
+            .project
+            .apply_command(&self.history.entries[idx].forward)?;
         // 逆コマンドは再計算したものに更新しておく(内容は同じはず)
-        self.history.entries[idx].inverse = applied.inverse;
+        self.history.entries[idx].inverse = inverse;
         self.history.cursor = idx + 1;
-        Ok(Some(applied.changes))
+        Ok(Some(changes))
     }
 
     /// 現在位置に名前を付ける。
@@ -272,7 +374,7 @@ impl Session {
     }
 
     /// チェックポイントまで undo を繰り返す。
-    pub fn revert_to(&mut self, label: &str) -> Result<Vec<Change>> {
+    pub fn revert_to(&mut self, label: &str) -> Result<Vec<Ch<D>>> {
         let target = *self
             .history
             .checkpoints
@@ -289,7 +391,17 @@ impl Session {
 
     /// 履歴の途中のエントリを取り消す(`git revert`)。
     /// 逆コマンドを新しいエントリとして積むので、取り消した事実も履歴に残る。
-    pub fn revert(&mut self, id: &EntryId, author: Author) -> Result<RevertResult> {
+    pub fn revert(&mut self, id: &EntryId, author: Author) -> Result<RevertResult<Ch<D>>> {
+        self.revert_with_note(id, author, None)
+    }
+
+    /// 経緯付きの revert(計画の履歴で「なぜ戻したか」を残す)
+    pub fn revert_with_note(
+        &mut self,
+        id: &EntryId,
+        author: Author,
+        note: Option<EntryNote>,
+    ) -> Result<RevertResult<Ch<D>>> {
         let idx = self
             .history
             .applied()
@@ -309,6 +421,7 @@ impl Session {
             author,
             format!("revert: {}", entry.label),
             Some(id.clone()),
+            note,
         )?;
         Ok(RevertResult {
             entry: new_id,
@@ -324,7 +437,8 @@ impl Session {
     /// `Session::replay(起点, 残したエントリ)` が現在状態を再現する。
     /// redo スタックがある間・件数が `keep` 以下のときは何もしない(Ok(None))。
     /// 逆コマンドが適用できない(履歴が壊れている)場合はエラーで、状態は変えない。
-    pub fn compact(&mut self, keep: usize) -> Result<Option<(Project, Vec<HistoryEntry>)>> {
+    #[allow(clippy::type_complexity)]
+    pub fn compact(&mut self, keep: usize) -> Result<Option<(D, Vec<HistoryEntry<Cmd<D>>>)>> {
         let n = self.history.entries.len();
         if self.history.cursor != n || n <= keep {
             return Ok(None);
@@ -332,9 +446,9 @@ impl Session {
         let drop = n - keep;
         let mut base = self.project.clone();
         for e in self.history.entries[drop..].iter().rev() {
-            base.apply(&e.inverse)?;
+            base.apply_command(&e.inverse)?;
         }
-        let dropped: Vec<HistoryEntry> = self.history.entries.drain(..drop).collect();
+        let dropped: Vec<HistoryEntry<Cmd<D>>> = self.history.entries.drain(..drop).collect();
         self.history.cursor -= drop;
         self.history.checkpoints.retain(|_, idx| *idx >= drop);
         for idx in self.history.checkpoints.values_mut() {

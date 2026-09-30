@@ -105,7 +105,10 @@ const FIXTURE: &str = r##"{
   "sections": [
     { "tick": 0, "name": "intro", "energy": 3.0, "tracks": ["Bass"], "note": "ベースだけで始める" },
     { "tick": 7680, "name": "サビ" }
-  ]
+  ],
+  "plan_refs": {
+    "clp_7w6v5u": { "id": "pln_ab12cd", "rev": 3, "digest": "0123456789abcdef" }
+  }
 }"##;
 
 #[test]
@@ -148,6 +151,12 @@ fn fixture_parses_and_roundtrips() {
     assert_eq!(p.sections[0].tracks, vec!["Bass".to_owned()]);
     assert_eq!(p.sections[1].energy, None);
     assert!(!p.to_json().unwrap().contains(r#""tracks": []"#));
+
+    // クリップの計画の参照(計画の中身は plans.json。曲の側は版と指紋だけ)
+    let r = &p.plan_refs[&"clp_7w6v5u".parse().unwrap()];
+    assert_eq!(r.rev, 3);
+    assert_eq!(r.id.as_str(), "pln_ab12cd");
+    assert!(!Project::new("x").to_json().unwrap().contains("plan_refs"));
 
     let json = p.to_json().unwrap();
     let back = Project::from_json(&json).unwrap();

@@ -51,6 +51,11 @@ pub struct PhraseInfo {
     pub ending_degree: u8,
     /// 区切り方: "rest"(休み)/ "long"(長い音)/ "bars"(区切れず 4 小節ごと)/ "end"(最後)
     pub split: &'static str,
+    /// 最初の音の頭と、最後の音の終わり(tick)
+    #[serde(skip)]
+    pub start: u64,
+    #[serde(skip)]
+    pub end: u64,
 }
 
 /// 区間 1 つ
@@ -500,6 +505,8 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
             ending_ratio: round2(ioi(b) as f64 / med as f64),
             ending_degree: degree(seg[seg.len() - 1].pitch),
             split: why,
+            start: seg[0].pos,
+            end: seg[seg.len() - 1].pos + seg[seg.len() - 1].dur,
         });
         phrase_notes.push(seg.iter().map(|n| (n.pos, n.pitch)).collect());
     }
@@ -925,6 +932,109 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
     }
 }
 
+impl Structure {
+    /// 分析から旋律の計画(区間 → 句 → 骨格)を推定する。今の旋律を計画として保存し、計画を直して作り直す出発点
+    pub fn to_plan(&self) -> crate::plan::MelodyPlan {
+        use crate::plan::{MelodyPlan, PhrasePlan, RegisterPoint, SectionPlan};
+        let name = crate::chord::note_name;
+        let len = |d: u64| -> &'static str {
+            const L: [(u64, &str); 10] = [
+                (3840, "w"),
+                (2880, "h."),
+                (1920, "h"),
+                (1440, "q."),
+                (960, "q"),
+                (720, "e."),
+                (480, "e"),
+                (360, "s."),
+                (240, "s"),
+                (120, "t"),
+            ];
+            L.iter()
+                .min_by_key(|(t, _)| (*t as i64 - d as i64).abs())
+                .map_or("q", |x| x.1)
+        };
+        let half = |x: f64| (x * 2.0).round() / 2.0;
+        let sections = self
+            .sections
+            .iter()
+            .map(|sec| {
+                let register = sec
+                    .register_curve
+                    .iter()
+                    .zip(&sec.span_curve)
+                    .enumerate()
+                    .filter(|(_, (&c, _))| c > 0)
+                    .map(|(i, (&c, &w))| RegisterPoint {
+                        at: (2 * i) as f64,
+                        center: name(c),
+                        span: Some(w),
+                    })
+                    .collect();
+                let phrases: Vec<PhrasePlan> = sec
+                    .phrases
+                    .iter()
+                    .map(|&k| {
+                        let p = &self.phrases[k];
+                        let sk: Vec<(u64, u8)> = self
+                            .skeleton
+                            .iter()
+                            .copied()
+                            .filter(|&(t, _)| p.start <= t && t < p.end)
+                            .collect();
+                        let skeleton = sk
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &(t, pitch))| {
+                                let next = sk.get(i + 1).map_or(p.end, |x| x.0);
+                                format!("{}:{}", name(pitch), len(next.saturating_sub(t)))
+                            })
+                            .collect();
+                        PhrasePlan {
+                            label: p.label.clone(),
+                            bars: half(p.bars).max(0.5),
+                            offset_beats: p.offset_beats,
+                            like: p.like.map(|j| self.phrases[j].label.clone()),
+                            transform: vec![],
+                            cadence: Some(
+                                if p.ending_degree == 1 {
+                                    "closed"
+                                } else {
+                                    "open"
+                                }
+                                .to_owned(),
+                            ),
+                            ending_degree: (p.ending_degree > 0).then_some(p.ending_degree),
+                            contour: Some(p.contour.to_owned()),
+                            density: Some(p.density),
+                            skeleton,
+                            note: None,
+                        }
+                    })
+                    .collect();
+                SectionPlan {
+                    name: sec.name.clone(),
+                    start_bar: sec.start_bar as u32,
+                    bars: sec.bars as u32,
+                    energy: None,
+                    register,
+                    density: phrases.iter().filter_map(|p| p.density).collect(),
+                    rhythm_family: None,
+                    phrases,
+                    handoff: None,
+                    like: None,
+                    note: None,
+                }
+            })
+            .collect();
+        MelodyPlan {
+            key: Some(self.key.clone()),
+            sections,
+            ..Default::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,6 +1166,32 @@ mod tests {
             s.findings,
             s.summary
         );
+    }
+
+    #[test]
+    fn the_analysis_becomes_a_valid_plan() {
+        let p = Project::new("m");
+        let f = |_t: u64| None;
+        let s = analyze(&ode(), &ctx(&p, &f, "C major"));
+        let plan = s.to_plan();
+        plan.validate().unwrap();
+        let sec = &plan.sections[0];
+        let labels: Vec<&str> = sec.phrases.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["A", "A′", "B", "A′"]);
+        assert_eq!(sec.phrases[3].like.as_deref(), Some("A′"));
+        assert_eq!(sec.phrases[3].cadence.as_deref(), Some("closed"));
+        assert_eq!(sec.phrases[0].bars, 4.0);
+        // 骨格は句の頭の音から(歓喜の歌は E4 から)
+        assert!(
+            sec.phrases[0].skeleton[0].starts_with("E4:"),
+            "{:?}",
+            sec.phrases[0].skeleton
+        );
+        assert_eq!(sec.register.len(), 8);
+        // JSON を経ても計画として読める
+        let v = serde_json::to_value(&plan).unwrap();
+        let back: crate::plan::MelodyPlan = serde_json::from_value(v).unwrap();
+        assert_eq!(back, plan);
     }
 
     #[test]

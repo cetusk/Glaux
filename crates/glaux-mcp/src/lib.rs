@@ -2,6 +2,7 @@
 //!
 //! - [`store`]: `MySong.glaux/` フォルダの読み書き
 //! - [`actor`]: `Session` を所有するアクタースレッドとそのハンドル
+//! - [`plan_store`]: 旋律の計画 `plans.json` と、曲とは別の計画の履歴の読み書き
 //! - [`server`]: MCP ツール定義(rmcp)
 //!
 //! バイナリ(`main.rs`)はこれらを stdio トランスポートで束ねるだけ。
@@ -18,6 +19,7 @@ pub mod guide;
 pub mod midi;
 pub mod models;
 pub mod musicxml;
+pub mod plan_store;
 pub mod preset_index;
 pub mod presets;
 pub mod server;

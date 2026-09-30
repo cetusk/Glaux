@@ -5747,3 +5747,197 @@ fn duplicate_track_remaps_effects_and_keeps_plugin_state() {
         matches!(&d.device.as_ref().unwrap().source, PluginSource::Clap { state: Some(s), .. } if s == "QUJD")
     );
 }
+
+#[tokio::test]
+async fn melody_plans_have_their_own_history_with_reasons() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_pln001", "Lead")).await);
+    // 2 小節ごとに伸ばして終わる 8 小節
+    let mut notes = Vec::new();
+    for b in 0..8u64 {
+        let base = b * 3840;
+        if b % 2 == 0 {
+            for (k, p) in [64u8, 65, 67, 65].iter().enumerate() {
+                notes.push(
+                    json!({ "pos": base + k as u64 * 960, "dur": 960, "pitch": p, "vel": 90 }),
+                );
+            }
+        } else {
+            notes.push(json!({ "pos": base, "dur": 960, "pitch": 64, "vel": 90 }));
+            notes.push(
+                json!({ "pos": base + 960, "dur": 2400, "pitch": 60 + b as u8 % 3, "vel": 90 }),
+            );
+        }
+    }
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "旋律", "commands": [
+                { "op": "add_clip", "track": "trk_pln001", "clip": {
+                    "id": "clp_pln001", "name": "lead", "start": 0, "length": 30720, "kind": "midi", "notes": notes } }
+            ] }),
+        )
+        .await,
+    );
+    let a = ok_json(
+        &call(
+            &fx,
+            "analyze_melody",
+            json!({ "clip_id": "clp_pln001", "key": "C major" }),
+        )
+        .await,
+    );
+    assert_eq!(a["plan"]["track"], "trk_pln001", "{a}");
+    // why が無ければ保存しない
+    let r = call(
+        &fx,
+        "save_plan",
+        json!({ "name": "リード", "body": a["plan"], "why": " " }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    // 今の旋律を計画として保存
+    let s = ok_json(
+        &call(
+            &fx,
+            "save_plan",
+            json!({ "name": "リード", "body": a["plan"], "why": "今の旋律を出発点にする",
+                    "trigger": { "kind": "user", "text": "一定の範囲を出ない" } }),
+        )
+        .await,
+    );
+    let pid = s["plan"]["plan_id"].as_str().unwrap().to_owned();
+    assert_eq!(s["plan"]["rev"], 1);
+    let digest1 = s["plan"]["digest"].as_str().unwrap().to_owned();
+    // クリップにこの版を記す(曲の側の Command)
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "計画の参照", "commands": [
+                { "op": "set_clip_plan", "clip": "clp_pln001", "plan": { "id": pid, "rev": 1, "digest": digest1 } }
+            ] }),
+        )
+        .await,
+    );
+    let g = ok_json(&call(&fx, "get_plan", json!({})).await);
+    assert_eq!(g["plans"][0]["clips"][0]["status"], "up_to_date", "{g}");
+    // 一部を変える: 音域の軌跡の最後を上げる
+    let e = ok_json(
+        &call(
+            &fx,
+            "edit_plan",
+            json!({ "plan_id": pid, "why": "後半で山を作る",
+                    "ops": [{ "op": "set", "path": "/sections/0/register/3/center", "value": "C5" },
+                            { "op": "set", "path": "/intent", "value": "波に乗る" }],
+                    "measures": [{ "name": "音域の幅", "before": 7, "after": 12 }] }),
+        )
+        .await,
+    );
+    assert_eq!(e["plan"]["rev"], 2);
+    assert_eq!(e["plan"]["clips"][0]["status"], "plan_ahead", "{e}");
+    assert!(e["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["path"] == "/sections/0/register/3/center" && d["after"] == "C5"));
+    // 形に合わない編集は何も変えない
+    let r = call(
+        &fx,
+        "edit_plan",
+        json!({ "plan_id": pid, "why": "x", "ops": [{ "op": "set", "path": "/sections/0/register/0/center", "value": "高い" }] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    // 別案を派生
+    let d = ok_json(
+        &call(
+            &fx,
+            "save_plan",
+            json!({ "name": "リード(低め)", "body": a["plan"], "derived_from": pid, "why": "低い案と比べる" }),
+        )
+        .await,
+    );
+    assert_eq!(d["plan"]["derived_from"]["rev"], 2);
+    let pid2 = d["plan"]["plan_id"].as_str().unwrap().to_owned();
+    let cmp = ok_json(
+        &call(
+            &fx,
+            "get_plan",
+            json!({ "plan_id": pid, "compare_plan": pid2 }),
+        )
+        .await,
+    );
+    assert!(!cmp["diff"]["items"].as_array().unwrap().is_empty());
+    // 前の版と、その差
+    let old = ok_json(&call(&fx, "get_plan", json!({ "plan_id": pid, "rev": 1 })).await);
+    assert!(old["body"].get("intent").is_none());
+    let cmp = ok_json(&call(&fx, "get_plan", json!({ "plan_id": pid, "compare_rev": 1 })).await);
+    assert_eq!(cmp["diff"]["items"].as_array().unwrap().len(), 2, "{cmp}");
+    // log と blame
+    let log = ok_json(&call(&fx, "plan_log", json!({ "plan_id": pid })).await);
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["why"], "後半で山を作る");
+    assert_eq!(entries[0]["measures"][0]["after"], 12.0);
+    assert_eq!(entries[1]["trigger"]["kind"], "user");
+    let blame = ok_json(
+        &call(
+            &fx,
+            "plan_log",
+            json!({ "plan_id": pid, "path": "/sections/0/register" }),
+        )
+        .await,
+    );
+    // 作った時(全体)と、register/3 を変えた時
+    assert_eq!(blame["entries"].as_array().unwrap().len(), 2);
+    let blame = ok_json(
+        &call(
+            &fx,
+            "plan_log",
+            json!({ "plan_id": pid, "path": "/sections/0/phrases" }),
+        )
+        .await,
+    );
+    assert_eq!(blame["entries"].as_array().unwrap().len(), 1);
+    // 計画の undo は曲を変えない。曲の undo は計画を変えない
+    let (before, _) = fx.handle.get_project().await.unwrap();
+    // 別案を作ったことだけ戻す
+    let u = ok_json(&call(&fx, "undo_plan", json!({})).await);
+    assert_eq!(u["undone"], 1);
+    let (after, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(before, after);
+    let g = ok_json(&call(&fx, "get_plan", json!({ "plan_id": pid })).await);
+    assert_eq!(g["rev"], 2);
+    assert!(g["body"].get("intent").is_some());
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let g = ok_json(&call(&fx, "get_plan", json!({})).await);
+    assert_eq!(g["plans"].as_array().unwrap().len(), 1);
+    // revert: 途中の変更だけ取り消す(理由が要る)
+    let log = ok_json(&call(&fx, "plan_log", json!({ "plan_id": pid })).await);
+    let edit_entry = log["entries"][0]["entry_id"].as_str().unwrap().to_owned();
+    let r = call(
+        &fx,
+        "undo_plan",
+        json!({ "action": "revert", "entry_id": edit_entry }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    ok_json(
+        &call(
+            &fx,
+            "undo_plan",
+            json!({ "action": "revert", "entry_id": edit_entry, "why": "山が早すぎた" }),
+        )
+        .await,
+    );
+    let g = ok_json(&call(&fx, "get_plan", json!({ "plan_id": pid })).await);
+    assert!(g["body"].get("intent").is_none());
+    assert_eq!(g["rev"], 1);
+    // ファイルに残る(曲とは別のファイル)
+    assert!(fx.dir.join("plans.json").exists());
+    let saved = glaux_mcp::plan_store::read_entries(&fx.dir).unwrap();
+    assert_eq!(saved.len(), 3);
+    assert_eq!(saved[2].note.as_ref().unwrap().why, "山が早すぎた");
+}

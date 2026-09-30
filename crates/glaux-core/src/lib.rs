@@ -33,6 +33,7 @@ pub mod meter;
 pub mod model;
 pub mod motif;
 pub mod ornament;
+pub mod plan;
 pub mod progressions;
 pub mod rhythm;
 pub mod shape;
@@ -45,7 +46,10 @@ pub mod voicing;
 pub use apply::{Applied, Change};
 pub use command::{Command, EffectProp, NoteChange, Target, TrackProp};
 pub use error::CoreError;
-pub use history::{Author, History, HistoryEntry, HistoryPoint, RevertResult, Session};
-pub use id::{AssetId, ClipId, EntryId, FxId, NoteId, TrackId};
+pub use history::{
+    Author, Document, EntryNote, History, HistoryCommand, HistoryEntry, HistoryPoint, Measure,
+    RevertResult, Session, Trigger,
+};
+pub use id::{AssetId, ClipId, EntryId, FxId, NoteId, PlanId, TrackId};
 pub use model::*;
 pub use time::{TempoEvent, TempoMap, Tick, TimeSigEvent, MAX_TICK, PPQ};

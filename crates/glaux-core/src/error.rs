@@ -1,4 +1,4 @@
-use crate::id::{AssetId, ClipId, EntryId, FxId, NoteId, TrackId};
+use crate::id::{AssetId, ClipId, EntryId, FxId, NoteId, PlanId, TrackId};
 use crate::model::ParamPath;
 use crate::time::{Tick, TimeError};
 
@@ -14,6 +14,10 @@ pub enum CoreError {
     EffectNotFound(FxId),
     #[error("asset not found: {0}")]
     AssetNotFound(AssetId),
+    #[error("plan not found: {0}")]
+    PlanNotFound(PlanId),
+    #[error("invalid plan: {0}")]
+    InvalidPlan(String),
     #[error("history entry not found: {0}")]
     EntryNotFound(EntryId),
     #[error("checkpoint not found: {0}")]

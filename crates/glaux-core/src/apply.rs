@@ -1107,6 +1107,22 @@ impl Project {
                     changes: vec![Change::MetaChanged],
                 })
             }
+            SetClipPlan { clip, plan } => {
+                if self.clip(clip).is_none() {
+                    return Err(CoreError::ClipNotFound(clip.clone()));
+                }
+                let old = match plan {
+                    Some(r) => self.plan_refs.insert(clip.clone(), r.clone()),
+                    None => self.plan_refs.remove(clip),
+                };
+                Ok(Applied {
+                    inverse: SetClipPlan {
+                        clip: clip.clone(),
+                        plan: old,
+                    },
+                    changes: vec![Change::MetaChanged],
+                })
+            }
             SetSections { sections } => {
                 let mut new = sections.clone();
                 new.sort_by_key(|m| m.tick);

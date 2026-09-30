@@ -930,6 +930,125 @@ pub struct CritiqueMelodyParams {
     pub bar: Option<u32>,
 }
 
+/// 変更のきっかけ
+#[derive(Deserialize, JsonSchema)]
+pub struct PlanTriggerParam {
+    /// user(作曲者の言葉)/ finding(点検・分析の指摘)/ listening(聴き比べの結果)/ other
+    pub kind: String,
+    /// きっかけの中身(作曲者の言葉ならそのまま引用、指摘ならその文)
+    pub text: String,
+}
+
+/// 変更の前後の測定
+#[derive(Deserialize, JsonSchema)]
+pub struct PlanMeasureParam {
+    /// 測ったもの(例 "Drop 1 の音域の幅(半音)")
+    pub name: String,
+    #[serde(default)]
+    pub before: Option<f64>,
+    #[serde(default)]
+    pub after: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SavePlanParams {
+    /// 置き換える計画の ID(pln_xxxxxx)。省略で新しい計画を作る。
+    #[serde(default)]
+    pub plan_id: Option<String>,
+    /// 計画の名前(新しく作るときは必須。例 "Drop 1 のリード")。
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 計画の種類(既定 melody)。
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// 計画の中身(melody の形。analyze_melody の plan をそのまま渡せる)。
+    pub body: Value,
+    /// 別案として派生する元の計画の ID(その計画の今の版を派生元として記録する)。
+    #[serde(default)]
+    pub derived_from: Option<String>,
+    /// 件名(省略で自動)。
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// なぜ作る・変えるか(必須。計画の履歴に残り、後で経緯を読む)。
+    pub why: String,
+    #[serde(default)]
+    pub trigger: Option<PlanTriggerParam>,
+    #[serde(default)]
+    pub measures: Option<Vec<PlanMeasureParam>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct EditPlanParams {
+    pub plan_id: String,
+    /// 編集の列。{"op":"set","path":"/sections/0/register/1/center","value":"E5"} /
+    /// {"op":"insert","path":"/sections/0/phrases/2","value":{...}} / {"op":"remove","path":"/sections/0/note"}。
+    /// path は計画の中身(body)の中の JSON Pointer。set の path の最後が "-" なら配列の末尾に足す。
+    pub ops: Vec<Value>,
+    /// 件名(省略で自動)。
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// なぜ変えるか(必須)。
+    pub why: String,
+    #[serde(default)]
+    pub trigger: Option<PlanTriggerParam>,
+    #[serde(default)]
+    pub measures: Option<Vec<PlanMeasureParam>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DeletePlanParams {
+    pub plan_id: String,
+    /// なぜ消すか(必須)。
+    pub why: String,
+    #[serde(default)]
+    pub trigger: Option<PlanTriggerParam>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct GetPlanParams {
+    /// 計画の ID。省略で一覧。
+    #[serde(default)]
+    pub plan_id: Option<String>,
+    /// 前の版を見る(計画の履歴から取り出す)。
+    #[serde(default)]
+    pub rev: Option<u64>,
+    /// この版との差を返す(同じ計画の別の版)。
+    #[serde(default)]
+    pub compare_rev: Option<u64>,
+    /// この計画との差を返す(別案どうしの比較)。
+    #[serde(default)]
+    pub compare_plan: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PlanLogParams {
+    /// 計画の ID。省略で全部の計画。
+    #[serde(default)]
+    pub plan_id: Option<String>,
+    /// この道(JSON Pointer。例 "/sections/0/register")に触った変更だけ(blame)。plan_id と一緒に。
+    #[serde(default)]
+    pub path: Option<String>,
+    /// 最大件数(既定 20、新しい順)。
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct UndoPlanParams {
+    /// undo(既定)/ redo / revert(entry_id の変更だけを取り消す。後の変更は残る)。
+    #[serde(default)]
+    pub action: Option<String>,
+    /// undo / redo の回数(既定 1)。
+    #[serde(default)]
+    pub n: Option<u32>,
+    /// revert する計画の履歴のエントリ(plan_log の entry_id)。
+    #[serde(default)]
+    pub entry_id: Option<String>,
+    /// revert の理由(revert では必須)。
+    #[serde(default)]
+    pub why: Option<String>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct DevelopMotifParams {
     /// 置く MIDI トラックの ID。新しいクリップを作る。
@@ -1830,9 +1949,106 @@ fn arp_rate(s: &str) -> Option<f64> {
     (den > 0.0 && den <= 64.0).then(|| 4.0 / den * mul)
 }
 
+fn parse_plan_id(s: &str) -> Result<glaux_core::PlanId, String> {
+    glaux_core::PlanId::parse(s).map_err(|e| e.to_string())
+}
+
+/// 計画の履歴の経緯。why は必須
+fn plan_note(
+    why: &str,
+    trigger: Option<PlanTriggerParam>,
+    measures: Option<Vec<PlanMeasureParam>>,
+) -> Result<glaux_core::EntryNote, String> {
+    if why.trim().is_empty() {
+        return Err(
+            "why(なぜ変えるか)を書いてください。計画の履歴に残り、後で経緯を読むのに使います"
+                .to_owned(),
+        );
+    }
+    let trigger = match trigger {
+        Some(t) => {
+            if !["user", "finding", "listening", "other"].contains(&t.kind.as_str()) {
+                return Err(format!(
+                    "trigger.kind は user / finding / listening / other(got: {})",
+                    t.kind
+                ));
+            }
+            Some(glaux_core::Trigger {
+                kind: t.kind,
+                text: t.text,
+            })
+        }
+        None => None,
+    };
+    Ok(glaux_core::EntryNote {
+        why: why.trim().to_owned(),
+        trigger,
+        measures: measures
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| glaux_core::Measure {
+                name: m.name,
+                before: m.before,
+                after: m.after,
+            })
+            .collect(),
+    })
+}
+
+/// 計画の要約と、その計画から作ったクリップの状態
+fn plan_summary(plan: &glaux_core::plan::Plan, project: &glaux_core::Project) -> Value {
+    let digest = plan.digest();
+    let clips: Vec<Value> = project
+        .plan_refs
+        .iter()
+        .filter(|(_, r)| r.id == plan.id)
+        .filter_map(|(cid, r)| {
+            let (track, _) = project.clip(cid)?;
+            let status = if r.digest == digest || (r.digest.is_empty() && r.rev == plan.rev) {
+                "up_to_date"
+            } else {
+                "plan_ahead"
+            };
+            Some(json!({
+                "clip_id": cid,
+                "track": track.name,
+                "rev": r.rev,
+                "status": status,
+            }))
+        })
+        .collect();
+    let mut v = json!({
+        "plan_id": plan.id,
+        "name": plan.name,
+        "kind": plan.kind,
+        "rev": plan.rev,
+        "digest": digest,
+        "clips": clips,
+    });
+    if let Some(d) = &plan.derived_from {
+        v["derived_from"] = json!(d);
+    }
+    if let Some(secs) = plan.body.get("sections").and_then(|s| s.as_array()) {
+        v["sections"] = json!(secs
+            .iter()
+            .map(|s| format!(
+                "{}({} 小節目から {} 小節、句 {})",
+                s.get("name").and_then(|x| x.as_str()).unwrap_or("?"),
+                s.get("start_bar").and_then(|x| x.as_u64()).unwrap_or(0),
+                s.get("bars").and_then(|x| x.as_u64()).unwrap_or(0),
+                s.get("phrases")
+                    .and_then(|x| x.as_array())
+                    .map_or(0, |a| a.len())
+            ))
+            .collect::<Vec<_>>());
+    }
+    v
+}
+
 /// 旋律の点検・分析に渡すもの(critique_melody と analyze_melody で共通)
 struct MelodyInputs {
     target: String,
+    track_id: glaux_core::TrackId,
     notes: Vec<glaux_core::melody::MelNote>,
     genre: &'static glaux_core::melody::Genre,
     key: Option<glaux_core::chord::Key>,
@@ -1950,6 +2166,7 @@ fn melody_inputs(
         .collect();
     Ok(MelodyInputs {
         target: track.name.clone(),
+        track_id: track.id.clone(),
         notes,
         genre,
         key,
@@ -3393,6 +3610,8 @@ impl GlauxServer {
         set_sections {sections: [{tick, name}]}(曲の構成マーカーを丸ごと置換。\
         intro / Aメロ / サビ 等。各セクションはそのマーカーから次のマーカーの手前まで。\
         構成を決めたら早めに打っておくと「サビだけ〜して」の指示を tick 範囲に解決できる)/ \
+        set_clip_plan {clip, plan: {id, rev, digest} | null}(クリップがどの旋律の計画の版から作られたか。get_plan の \
+        plan の plan_id・rev・digest を渡す。計画が先に進むと get_plan で plan_ahead と出る)/ \
         ノートには articulation を付けられる: \"palm_mute\"(ブリッジミュート。減衰が速いこもった刻み)/ \
         \"staccato\"(音価半分で切る)/ \"accent\"(強く明るく)/ \
         \"vibrato\"(後半にかけて深くなるピッチの揺れ。ロングトーンの表情付け)/ \
@@ -6899,6 +7118,363 @@ impl GlauxServer {
     }
 
     #[tool(
+        description = "旋律の計画を保存する(新しく作る・丸ごと置き換える)。計画は曲とは別の文書(plans.json)で、\
+        曲とは別の git ライクな履歴を持つ(曲の undo は計画を戻さず、計画の undo は音符を戻さない)。\
+        body は melody の形: key・chords・genre・role・track・intent(作曲者の言葉)と sections(区間ごとに name・\
+        start_bar・bars・energy・register(区間の中の小節位置 at と中心の音 center・幅 span の点列)・density・\
+        rhythm_family(sustain / pulse / syncopated / sparse)・phrases(label・bars・offset_beats(負で弱起)・like・\
+        transform・cadence(open / closed)・ending_degree・contour・density・skeleton(\"E5:h\" の列))・handoff・like)。\
+        analyze_melody の plan をそのまま渡すと、今の旋律を計画として保存できる。why(なぜ)は必須で、trigger(きっかけ: \
+        user / finding / listening)と measures(前後の測定)と一緒に計画の履歴に残る。derived_from で別案として派生する。\
+        一部だけ変えるなら edit_plan。"
+    )]
+    async fn save_plan(
+        &self,
+        params: Parameters<SavePlanParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::plan::{Plan, PlanCommand};
+        let _activity = self.handle.begin_activity("save_plan");
+        let p = params.0;
+        let note = plan_note(&p.why, p.trigger, p.measures)?;
+        let plans = self.handle.get_plans().await?;
+        let kind = p.kind.unwrap_or_else(|| "melody".to_owned());
+        let derived_from = match &p.derived_from {
+            Some(d) => {
+                let id = parse_plan_id(d)?;
+                Some(
+                    plans
+                        .doc()
+                        .plans
+                        .get(&id)
+                        .ok_or_else(|| format!("派生元の計画が見つかりません: {d}"))?
+                        .reference(),
+                )
+            }
+            None => None,
+        };
+        let (command, subject) = match &p.plan_id {
+            Some(pid) => {
+                let id = parse_plan_id(pid)?;
+                let old = plans.doc().plans.get(&id).ok_or_else(|| {
+                    format!("計画が見つかりません: {pid}(新しく作るなら plan_id を省略)")
+                })?;
+                let plan = Plan {
+                    id,
+                    name: p.name.unwrap_or_else(|| old.name.clone()),
+                    kind,
+                    rev: old.rev + 1,
+                    derived_from: derived_from.or_else(|| old.derived_from.clone()),
+                    body: p.body,
+                };
+                let subject = format!("計画を置き換える: {}", plan.name);
+                (PlanCommand::Replace { plan }, subject)
+            }
+            None => {
+                let name = p
+                    .name
+                    .filter(|n| !n.trim().is_empty())
+                    .ok_or("新しい計画には name が要ります")?;
+                let plan = Plan {
+                    id: glaux_core::PlanId::new(),
+                    name,
+                    kind,
+                    rev: 1,
+                    derived_from,
+                    body: p.body,
+                };
+                let subject = format!("計画を作る: {}", plan.name);
+                (PlanCommand::Create { plan }, subject)
+            }
+        };
+        let id = command.plan_id().clone();
+        let entry = self
+            .handle
+            .apply_plan(
+                command,
+                self.author(&ctx),
+                p.subject.unwrap_or(subject),
+                note,
+            )
+            .await?;
+        let plans = self.handle.get_plans().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let plan = plans
+            .doc()
+            .plans
+            .get(&id)
+            .ok_or("保存した計画が見つかりません")?;
+        Ok(JsonText(json!({
+            "entry_id": entry,
+            "plan": plan_summary(plan, &project),
+        })))
+    }
+
+    #[tool(
+        description = "旋律の計画の一部を変える(JSON Pointer の道で set / insert / remove)。版が 1 つ上がり、\
+        変えた所の前後(changed)を返す。why(なぜ)は必須で、trigger(きっかけ)と measures(前後の測定。例: \
+        区間の音域の幅 8 → 13)と一緒に計画の履歴に残る。形に合わない値(音名でない center・範囲外の energy など)は\
+        全体を適用せずエラー。上の粒度から直す(区間の register・density・rhythm_family → 句の長さ・入り・終止 → 骨格)。"
+    )]
+    async fn edit_plan(
+        &self,
+        params: Parameters<EditPlanParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::plan::{PlanCommand, PlanOp};
+        let _activity = self.handle.begin_activity("edit_plan");
+        let p = params.0;
+        let note = plan_note(&p.why, p.trigger, p.measures)?;
+        let id = parse_plan_id(&p.plan_id)?;
+        if p.ops.is_empty() {
+            return Err("ops が空です".to_owned());
+        }
+        let ops: Vec<PlanOp> = p
+            .ops
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                serde_json::from_value(v).map_err(|e| {
+                    format!("ops[{i}]: {e}(形は {{\"op\":\"set\",\"path\":\"/..\",\"value\":..}} / insert / remove)")
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let plans = self.handle.get_plans().await?;
+        let old = plans
+            .doc()
+            .plans
+            .get(&id)
+            .ok_or_else(|| format!("計画が見つかりません: {id}"))?
+            .clone();
+        let subject = p.subject.unwrap_or_else(|| {
+            let paths: Vec<&str> = ops.iter().map(|o| o.path()).collect();
+            format!("計画を変える: {}", paths.join(", "))
+        });
+        let entry = self
+            .handle
+            .apply_plan(
+                PlanCommand::Edit {
+                    id: id.clone(),
+                    rev: old.rev + 1,
+                    ops,
+                },
+                self.author(&ctx),
+                subject,
+                note,
+            )
+            .await?;
+        let plans = self.handle.get_plans().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let plan = plans.doc().plans.get(&id).ok_or("計画が見つかりません")?;
+        Ok(JsonText(json!({
+            "entry_id": entry,
+            "plan": plan_summary(plan, &project),
+            "changed": glaux_core::plan::diff(&old.body, &plan.body),
+        })))
+    }
+
+    #[tool(
+        description = "旋律の計画を消す(計画の履歴に残り、undo_plan で戻せる)。why は必須。\
+        この計画から作ったクリップの参照は残る(get_plan で plan_missing と出る)。"
+    )]
+    async fn delete_plan(
+        &self,
+        params: Parameters<DeletePlanParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::plan::PlanCommand;
+        let _activity = self.handle.begin_activity("delete_plan");
+        let p = params.0;
+        let note = plan_note(&p.why, p.trigger, None)?;
+        let id = parse_plan_id(&p.plan_id)?;
+        let plans = self.handle.get_plans().await?;
+        let name = plans
+            .doc()
+            .plans
+            .get(&id)
+            .map(|p| p.name.clone())
+            .ok_or_else(|| format!("計画が見つかりません: {id}"))?;
+        let entry = self
+            .handle
+            .apply_plan(
+                PlanCommand::Delete { id: id.clone() },
+                self.author(&ctx),
+                format!("計画を消す: {name}"),
+                note,
+            )
+            .await?;
+        Ok(JsonText(json!({ "entry_id": entry, "deleted": id })))
+    }
+
+    #[tool(
+        description = "旋律の計画を読む。plan_id を省略すると一覧(名前・版・派生元・区間の数・その計画から作ったクリップと状態)。\
+        plan_id で中身。rev で前の版(計画の履歴から取り出す)。compare_rev(同じ計画の別の版)か compare_plan(別案)で\
+        差(道ごとの前後)。clips はこの計画から作ったクリップと状態: up_to_date(作った時の計画のまま)/ plan_ahead\
+        (計画が先に進んでいる。作り直し待ち)。"
+    )]
+    async fn get_plan(&self, params: Parameters<GetPlanParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("get_plan");
+        let p = params.0;
+        let plans = self.handle.get_plans().await?;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let Some(pid) = &p.plan_id else {
+            let list: Vec<Value> = plans
+                .doc()
+                .plans
+                .values()
+                .map(|plan| plan_summary(plan, &project))
+                .collect();
+            return Ok(JsonText(json!({
+                "plans": list,
+                "history": {
+                    "entries": plans.history().applied().len(),
+                    "redoable": plans.history().redoable().len(),
+                },
+            })));
+        };
+        let id = parse_plan_id(pid)?;
+        let pick = |rev: u64| {
+            glaux_core::plan::plan_at_rev(&plans, &id, rev)
+                .ok_or_else(|| format!("計画 {id} の版 {rev} が履歴に見つかりません"))
+        };
+        let plan = match p.rev {
+            Some(r) => pick(r)?,
+            None => plans
+                .doc()
+                .plans
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| format!("計画が見つかりません: {id}"))?,
+        };
+        let mut out = plan_summary(&plan, &project);
+        out["body"] = plan.body.clone();
+        if let Some(r) = p.compare_rev {
+            let other = pick(r)?;
+            out["diff"] = json!({
+                "from": { "plan_id": id, "rev": r },
+                "items": glaux_core::plan::diff(&other.body, &plan.body),
+            });
+        }
+        if let Some(o) = &p.compare_plan {
+            let oid = parse_plan_id(o)?;
+            let other = plans
+                .doc()
+                .plans
+                .get(&oid)
+                .ok_or_else(|| format!("比べる計画が見つかりません: {o}"))?;
+            out["diff"] = json!({
+                "from": { "plan_id": oid, "rev": other.rev },
+                "items": glaux_core::plan::diff(&other.body, &plan.body),
+            });
+        }
+        Ok(JsonText(out))
+    }
+
+    #[tool(
+        description = "旋律の計画の履歴を読む(git log)。新しい順に、件名・なぜ(why)・きっかけ(trigger)・前後の測定(measures)・\
+        作者・時刻・その変更の後の版・変えた道。path を渡すと、その道に触った変更だけ(git blame: 「この区間の音域は\
+        誰がなぜこの値にしたか」)。効果の無かった変更は undo_plan の revert で取り消せる。"
+    )]
+    async fn plan_log(&self, params: Parameters<PlanLogParams>) -> ToolResult {
+        use glaux_core::plan::PlanCommand;
+        let _activity = self.handle.begin_activity("plan_log");
+        let p = params.0;
+        let id = p.plan_id.as_deref().map(parse_plan_id).transpose()?;
+        if p.path.is_some() && id.is_none() {
+            return Err("path は plan_id と一緒に指定してください".to_owned());
+        }
+        let path = p.path.unwrap_or_default();
+        let plans = self.handle.get_plans().await?;
+        let limit = p.limit.unwrap_or(20).clamp(1, 200);
+        let entries: Vec<Value> = plans
+            .history()
+            .applied()
+            .iter()
+            .rev()
+            .filter(|e| id.as_ref().is_none_or(|id| e.forward.touches(id, &path)))
+            .take(limit)
+            .map(|e| {
+                let (op, rev, paths): (&str, Option<u64>, Vec<&str>) = match &e.forward {
+                    PlanCommand::Create { plan } => ("create", Some(plan.rev), vec![]),
+                    PlanCommand::Replace { plan } => ("replace", Some(plan.rev), vec![]),
+                    PlanCommand::Delete { .. } => ("delete", None, vec![]),
+                    PlanCommand::Edit { rev, ops, .. } => {
+                        ("edit", Some(*rev), ops.iter().map(|o| o.path()).collect())
+                    }
+                };
+                let mut v = json!({
+                    "entry_id": e.id,
+                    "time": e.timestamp,
+                    "author": e.author,
+                    "subject": e.label,
+                    "plan_id": e.forward.plan_id(),
+                    "op": op,
+                });
+                if let Some(r) = rev {
+                    v["rev"] = json!(r);
+                }
+                if !paths.is_empty() {
+                    v["paths"] = json!(paths);
+                }
+                if let Some(n) = &e.note {
+                    if !n.why.is_empty() {
+                        v["why"] = json!(n.why);
+                    }
+                    if let Some(t) = &n.trigger {
+                        v["trigger"] = json!(t);
+                    }
+                    if !n.measures.is_empty() {
+                        v["measures"] = json!(n.measures);
+                    }
+                }
+                if let Some(r) = &e.reverts {
+                    v["reverts"] = json!(r);
+                }
+                v
+            })
+            .collect();
+        Ok(JsonText(json!({
+            "entries": entries,
+            "redoable": plans.history().redoable().len(),
+        })))
+    }
+
+    #[tool(
+        description = "旋律の計画の履歴を動かす。action: undo(既定。n 回)/ redo / revert(entry_id の変更だけを取り消す\
+        git revert。後の変更は残り、取り消しも履歴に積まれる。why は必須)。曲(音符)は変わらない。"
+    )]
+    async fn undo_plan(
+        &self,
+        params: Parameters<UndoPlanParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("undo_plan");
+        let p = params.0;
+        let n = p.n.unwrap_or(1).max(1) as usize;
+        match p.action.as_deref().unwrap_or("undo") {
+            "undo" => Ok(JsonText(
+                json!({ "undone": self.handle.step_plan(n, false).await? }),
+            )),
+            "redo" => Ok(JsonText(
+                json!({ "redone": self.handle.step_plan(n, true).await? }),
+            )),
+            "revert" => {
+                let e = p
+                    .entry_id
+                    .ok_or("revert には entry_id が要ります(plan_log で確認)")?;
+                let id = EntryId::parse(&e).map_err(|e| e.to_string())?;
+                let note = plan_note(p.why.as_deref().unwrap_or(""), None, None)?;
+                let (entry, conflicts) =
+                    self.handle.revert_plan(id, self.author(&ctx), note).await?;
+                Ok(JsonText(
+                    json!({ "entry_id": entry, "conflicts": conflicts }),
+                ))
+            }
+            a => Err(format!("action は undo / redo / revert(got: {a})")),
+        }
+    }
+
+    #[tool(
         description = "旋律の構造を読む(粒度ごとの分析)。critique_melody が音と小節の近くを見るのに対し、こちらは\
         区間 → 句 → 骨格の層に読み返す。骨格: 最短経路による旋律の還元(AMRA、ISMIR 2025)で残る音を 2 拍ごとに 1 つ。\
         句: 休み・長い音で区切り(区切れなければ 4 小節ごと)、始まり(弱起)・長さ・音域・骨格の輪郭(arch / rise / fall / \
@@ -6907,7 +7483,9 @@ impl GlauxServer {
         山の位置、新しい素材の割合。曲: 句の終わりで伸びる割合、主音で終わる割合(句の終わり と ほか)。\
         findings は [曲] / [区間] / [句] の粒度付きの指摘(同じリズムの輪郭が続く・音域が動かない・密度が平ら・\
         区間どうしに対比が無い・句の終わりが伸びない・句の長さと入りが全部同じ)。summary は読み上げ用の要約。\
-        直すときは上の粒度から(区間の音域の軌跡・句の形 → リズム → 音)。引数は critique_melody と同じ。"
+        直すときは上の粒度から(区間の音域の軌跡・句の形 → リズム → 音)。plan は分析から推定した計画\
+        (区間の音域の点・句の名前と長さ・終止・骨格)で、save_plan の body にそのまま渡して保存・編集できる。\
+        引数は critique_melody と同じ。"
     )]
     async fn analyze_melody(&self, params: Parameters<CritiqueMelodyParams>) -> ToolResult {
         use glaux_core::melody;
@@ -6925,6 +7503,10 @@ impl GlauxServer {
         };
         let s = glaux_core::melstruct::analyze(&m.notes, &ctx);
         let mut out = serde_json::to_value(&s).map_err(|e| e.to_string())?;
+        // 分析から推定した計画(save_plan の body にそのまま渡せる)
+        let mut plan = s.to_plan();
+        plan.track = Some(m.track_id.to_string());
+        out["plan"] = serde_json::to_value(&plan).map_err(|e| e.to_string())?;
         // 骨格は小節・拍と音名で返す(tick より読みやすい)
         let grid = glaux_core::arrange::bar_grid(&project, project.end().0.max(1) + 1);
         out["skeleton"] = json!(s

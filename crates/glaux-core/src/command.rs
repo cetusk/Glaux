@@ -339,6 +339,11 @@ pub enum Command {
     SetSections {
         sections: Vec<SectionMarker>,
     },
+    /// クリップがどの計画の版から作られたかを記す(None で外す)
+    SetClipPlan {
+        clip: ClipId,
+        plan: Option<crate::plan::PlanRef>,
+    },
     AddAsset {
         id: AssetId,
         asset: Asset,
@@ -498,6 +503,9 @@ impl Command {
             }
             SetSections { .. } => {
                 out.insert(T::Sections);
+            }
+            SetClipPlan { clip, .. } => {
+                out.insert(T::Clip(clip.clone()));
             }
             AddAsset { id, .. } | RemoveAsset { id } => {
                 out.insert(T::Asset(id.clone()));

@@ -98,6 +98,8 @@ define_id!(/// エフェクト
     FxId, "fx");
 define_id!(/// 履歴エントリ
     EntryId, "hst");
+define_id!(/// 旋律などの計画(設計データ)
+    PlanId, "pln");
 
 /// 音声アセット。内容ハッシュで参照する: `sha256:<hex>`。
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]

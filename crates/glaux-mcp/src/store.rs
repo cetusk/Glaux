@@ -977,7 +977,7 @@ fn read_base(text: &str) -> Option<(Project, Option<String>)> {
 /// 一時ファイル名はプロセスごとに分ける(同じ曲を別プロセスで開いたときに混ざらないように)。
 /// Windows では OneDrive やウイルス対策がファイルを掴んでいて rename が一時的に失敗しがちなので、
 /// 少し待って何度か試す
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     {
         let mut f =

@@ -7,8 +7,12 @@
 //! 変更が成功するたびに [`Store`](crate::store::Store) へ保存する。保存失敗は
 //! メモリ上の状態を巻き戻さず、警告としてレスポンスに載せる。
 
+use crate::plan_store::{PlanSession, PlanStore};
 use crate::store::Store;
-use glaux_core::{Author, Change, Command, CoreError, EntryId, HistoryEntry, Project, Session};
+use glaux_core::plan::PlanCommand;
+use glaux_core::{
+    Author, Change, Command, CoreError, EntryId, EntryNote, HistoryEntry, Project, Session,
+};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 /// 状態が変わったことの通知。UI(Tauri)がこれを購読して画面を更新する。
@@ -81,6 +85,41 @@ pub struct Mutated {
 
 /// `RevertEntry` の返り値: (revert エントリ, 衝突エントリ一覧, Mutated)。
 pub type RevertOutcome = (EntryId, Vec<EntryId>, Mutated);
+
+/// 旋律の計画への要求(曲とは別の文書・別の履歴。曲のフォルダが変わったら開き直す)
+pub enum PlanRequest {
+    /// 計画のセッションの複製(計画と履歴。小さいので丸ごと渡し、読み取りはサーバー側で行う)
+    Get {
+        reply: oneshot::Sender<Result<PlanSession, String>>,
+    },
+    /// 経緯付きで適用して保存する
+    Apply {
+        command: Box<PlanCommand>,
+        author: Author,
+        label: String,
+        note: EntryNote,
+        reply: oneshot::Sender<Result<EntryId, String>>,
+    },
+    /// 計画の undo(`redo` なら redo)を n 回。返り値は実際に動かした数
+    Step {
+        n: usize,
+        redo: bool,
+        reply: oneshot::Sender<Result<usize, String>>,
+    },
+    /// 途中の変更の取り消し(git revert)。返り値は (新しいエントリ, 後で同じ計画を変えたエントリ)
+    Revert {
+        id: EntryId,
+        author: Author,
+        note: EntryNote,
+        reply: oneshot::Sender<Result<(EntryId, Vec<EntryId>), String>>,
+    },
+}
+
+/// アクターが持つ計画の状態(曲のフォルダごと)
+struct Plans {
+    store: PlanStore,
+    session: PlanSession,
+}
 
 pub enum Request {
     GetProject {
@@ -160,6 +199,8 @@ pub enum Request {
         dest: String,
         reply: oneshot::Sender<Result<(String, usize), String>>,
     },
+    /// 旋律の計画(曲とは別の履歴)
+    Plan(PlanRequest),
 }
 
 #[derive(Clone)]
@@ -358,6 +399,56 @@ impl SessionHandle {
         self.request(|reply| Request::Flush { reply }).await?
     }
 
+    /// 計画と計画の履歴(複製)
+    pub async fn get_plans(&self) -> Result<PlanSession, String> {
+        self.request(|reply| Request::Plan(PlanRequest::Get { reply }))
+            .await?
+    }
+
+    /// 計画のコマンドを経緯付きで適用して保存する
+    pub async fn apply_plan(
+        &self,
+        command: PlanCommand,
+        author: Author,
+        label: String,
+        note: EntryNote,
+    ) -> Result<EntryId, String> {
+        self.request(|reply| {
+            Request::Plan(PlanRequest::Apply {
+                command: Box::new(command),
+                author,
+                label,
+                note,
+                reply,
+            })
+        })
+        .await?
+    }
+
+    /// 計画の undo / redo を n 回
+    pub async fn step_plan(&self, n: usize, redo: bool) -> Result<usize, String> {
+        self.request(|reply| Request::Plan(PlanRequest::Step { n, redo, reply }))
+            .await?
+    }
+
+    /// 計画の途中の変更を取り消す
+    pub async fn revert_plan(
+        &self,
+        id: EntryId,
+        author: Author,
+        note: EntryNote,
+    ) -> Result<(EntryId, Vec<EntryId>), String> {
+        self.request(|reply| {
+            Request::Plan(PlanRequest::Revert {
+                id,
+                author,
+                note,
+                reply,
+            })
+        })
+        .await?
+    }
+
     pub async fn project_dir(&self) -> Result<String, String> {
         self.request(|reply| Request::ProjectDir { reply }).await
     }
@@ -405,7 +496,19 @@ fn actor_loop(
     mut rx: mpsc::UnboundedReceiver<Request>,
     events: broadcast::Sender<ProjectChanged>,
 ) {
+    let mut plans: Option<Plans> = None;
     while let Some(req) = rx.blocking_recv() {
+        if let Request::Plan(req) = req {
+            // 計画は曲とは別。曲のフォルダ(切り替え・移動・読み直しで変わる)に合わせて開く
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle_plan(&mut plans, store.dir(), req)
+            }));
+            if result.is_err() {
+                tracing::error!("計画の要求の処理中に panic しました。次の要求で読み直します");
+                plans = None;
+            }
+            continue;
+        }
         // 1 件の要求の panic(コマンドの不具合など)でアクターごと止まると、以後は再起動まで
         // 編集も保存もできなくなる。受け止めて、保存済みの状態から読み直して動き続ける
         // (適用の途中で止まったセッションは信用できないため)。要求の応答は届かず、
@@ -440,6 +543,91 @@ fn actor_loop(
         }
     }
     tracing::info!("session actor: 全ハンドルが閉じたので終了します");
+}
+
+/// 計画の要求を処理する。曲のフォルダと違うフォルダの計画を開いていたら開き直す
+fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanRequest) {
+    if plans.as_ref().is_some_and(|p| p.store.dir() != dir) {
+        *plans = None;
+    }
+    if plans.is_none() {
+        match PlanStore::open(dir) {
+            Ok((store, session)) => *plans = Some(Plans { store, session }),
+            Err(e) => {
+                let msg = format!("計画を開けません: {e:#}");
+                match req {
+                    PlanRequest::Get { reply } => drop(reply.send(Err(msg))),
+                    PlanRequest::Apply { reply, .. } => drop(reply.send(Err(msg))),
+                    PlanRequest::Step { reply, .. } => drop(reply.send(Err(msg))),
+                    PlanRequest::Revert { reply, .. } => drop(reply.send(Err(msg))),
+                }
+                return;
+            }
+        }
+    }
+    let Some(p) = plans.as_mut() else {
+        return;
+    };
+    let save = |p: &mut Plans| {
+        p.store
+            .save(&p.session)
+            .map_err(|e| format!("計画の保存に失敗しました(メモリ上は反映済み): {e:#}"))
+    };
+    match req {
+        PlanRequest::Get { reply } => {
+            let _ = reply.send(Ok(p.session.clone()));
+        }
+        PlanRequest::Apply {
+            command,
+            author,
+            label,
+            note,
+            reply,
+        } => {
+            let result = match p.session.apply_with_note(*command, author, label, note) {
+                Ok((id, _)) => save(p).map(|_| id),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = reply.send(result);
+        }
+        PlanRequest::Step { n, redo, reply } => {
+            let mut done = 0;
+            let mut err = None;
+            for _ in 0..n {
+                let r = if redo {
+                    p.session.redo()
+                } else {
+                    p.session.undo()
+                };
+                match r {
+                    Ok(Some(_)) => done += 1,
+                    Ok(None) => break,
+                    Err(e) => {
+                        err = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            let result = match (err, done) {
+                (Some(e), _) => Err(e),
+                (None, 0) => Ok(0),
+                (None, d) => save(p).map(|_| d),
+            };
+            let _ = reply.send(result);
+        }
+        PlanRequest::Revert {
+            id,
+            author,
+            note,
+            reply,
+        } => {
+            let result = match p.session.revert_with_note(&id, author, Some(note)) {
+                Ok(r) => save(p).map(|_| (r.entry, r.conflicts)),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = reply.send(result);
+        }
+    }
 }
 
 fn version(session: &Session, store: &Store) -> usize {
@@ -624,6 +812,8 @@ fn handle(
         Request::Flush { reply } => {
             let _ = reply.send(store.flush().map_err(|e| format!("{e:#}")));
         }
+        // 計画の要求は actor_loop で先に処理している
+        Request::Plan(_) => {}
         Request::MoveProject { dest, reply } => {
             let from = store.dir().to_path_buf();
             let to = std::path::PathBuf::from(&dest);

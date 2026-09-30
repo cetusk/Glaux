@@ -105,11 +105,11 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
     let pick_track = |rng: &mut StdRng| tracks.choose(rng).unwrap().id.clone();
 
     loop {
-        // 0..=28 は単体コマンド、29 以上は Batch(入れ子は 1 段まで)
+        // 0..=29 は単体コマンド、30 以上は Batch(入れ子は 1 段まで)
         let choice = if depth == 0 {
-            rng.gen_range(0..30)
+            rng.gen_range(0..31)
         } else {
-            rng.gen_range(0..29)
+            rng.gen_range(0..30)
         };
         match choice {
             0 => {
@@ -757,6 +757,25 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                     output: [rng.gen_range(300.0..1200.0), rng.gen_range(0.0..300.0)],
                 });
                 return Command::SetFxIoPos { track, pos };
+            }
+            29 => {
+                // クリップの計画の参照(付ける・外す)
+                let Some((_, c)) = all_clips.choose(rng) else {
+                    continue;
+                };
+                let plan = rng.gen_bool(0.7).then(|| glaux_core::plan::PlanRef {
+                    id: PlanId::new(),
+                    rev: rng.gen_range(1..10),
+                    digest: if rng.gen_bool(0.5) {
+                        format!("{:016x}", rng.gen::<u64>())
+                    } else {
+                        String::new()
+                    },
+                });
+                return Command::SetClipPlan {
+                    clip: c.id.clone(),
+                    plan,
+                };
             }
             19 => {
                 let Some(c) = midi_clips.choose(rng) else {
