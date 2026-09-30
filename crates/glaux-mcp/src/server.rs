@@ -6736,8 +6736,12 @@ impl GlauxServer {
         description = "旋律を点検する(旋律を書いたら必ず)。旋律の「センス」のうち数えられる性質を測り、直し方と一緒に返す: \
         跳躍の多さ(5 半音以上の割合)・跳躍の後に戻るか(研究では約 72% が戻る)・区間の中の音域・最高音が計画書の山の区間で\
         初めて出るか・強拍が和音の音か・リズムの単調さと小節の型の使い回し・動機の反復率(覚えやすさ。多すぎも指摘)・\
-        食い(8 分の裏で始まる音)・句と息継ぎ・句の終わりが伸びるか・音ごとの驚き(Temperley の式)。genre でしきい値を切り替える。\
-        score(0〜100)は複数の案を比べるのに使う。和音は chords(進行)か、ほかのトラックから推定。"
+        食い(8 分の裏で始まる音)・句と息継ぎ・句の終わりが伸びるか・音ごとの驚き(Temperley の式)。\
+        少なすぎも欠点として見る: 休みの割合と休まずに続く長さ(全ジャンル)・2 小節ごとの音域・隣の音の往復(A–B–A)・\
+        向きの転換・跳躍が無いこと・4 小節の型を変えずに繰り返すこと・移調しただけの繰り返し。休みで句が区切れなければ \
+        4 小節ごとに切って句の点検をする。genre でしきい値を切り替える。strengths は見つかった良さ(山が 1 回・句の終わり・\
+        問いと答え・驚きの一瞬・跳躍と戻り)。score(0〜100)は欠点が無いだけなら 70 で、良さ 1 つにつき +6(警告があると割り引く)。\
+        複数の案を比べる目安で、最大の点の案が最良とは限らない(聴いて選ぶ)。和音は chords(進行)か、ほかのトラックから推定。"
     )]
     async fn critique_melody(&self, params: Parameters<CritiqueMelodyParams>) -> ToolResult {
         use glaux_core::melody;
@@ -6978,6 +6982,13 @@ impl GlauxServer {
             anticipate: p.anticipate.unwrap_or(0.2).clamp(0.0, 1.0),
             seed: p.seed.unwrap_or(1),
             strong: glaux_core::meter::meter_at(&project, clip_start).strong_ticks(),
+            // 歌・管のジャンルは句の終わりに 4 分、それ以外(シンセのリード)は 8 分休む
+            breath: if melody::genre(p.genre.as_deref().unwrap_or("pop")).is_some_and(|g| g.breath)
+            {
+                glaux_core::time::PPQ
+            } else {
+                glaux_core::time::PPQ / 2
+            },
         };
         let out = motif::develop(&notes, &plan, bar_len, &look, &opts)?;
         let clip = melody_clip(
@@ -7004,6 +7015,7 @@ impl GlauxServer {
         v["key"] = json!(crit.key);
         v["score"] = json!(crit.score);
         v["findings"] = json!(crit.findings);
+        v["strengths"] = json!(crit.strengths);
         v["metrics"] = json!(crit.metrics);
         Ok(JsonText(v))
     }
@@ -7192,6 +7204,11 @@ impl GlauxServer {
                 anticipate,
                 seed,
                 strong: meter.strong_ticks(),
+                breath: if genre.breath {
+                    glaux_core::time::PPQ
+                } else {
+                    glaux_core::time::PPQ / 2
+                },
             };
             let out = motif::develop(&m, &plan, bar_len, &look, &opts)?;
             let crit = melody_critique(&project, &track.name, &out, clip_start, &look, key, genre);
@@ -7269,6 +7286,7 @@ impl GlauxServer {
         v["motif"] = json!(melgen::format_motif(&best.motif));
         v["score"] = json!(best.crit.score);
         v["findings"] = json!(best.crit.findings);
+        v["strengths"] = json!(best.crit.strengths);
         v["metrics"] = json!(best.crit.metrics);
         v["candidates"] = json!(cands.iter().map(summary).collect::<Vec<_>>());
         Ok(JsonText(v))

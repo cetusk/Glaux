@@ -150,6 +150,8 @@ pub struct Options {
     pub seed: u64,
     /// 強拍(小節の頭からの tick。`meter::BarMeter::strong_ticks`)。空なら小節の頭と半ば
     pub strong: Vec<u64>,
+    /// 句の終わり(と 4 小節ごと)に空ける休みの長さ(tick)。歌・管は 4 分、シンセのリードは 8 分が目安。0 で空けない
+    pub breath: u64,
 }
 
 /// 展開した旋律の 1 音(クリップの頭から)
@@ -546,6 +548,40 @@ pub fn develop(
         }
     }
     out.sort_by_key(|o| (o.pos, o.pitch));
+    // 息継ぎ: 句の終わり(問い・答え)か、それが無くても 4 小節ごとに、次の音の前へ `breath` 以上の休みを空ける
+    // (前の音を短くする。休みの無い旋律は句が聞こえず、器楽のリードでも息をつく所が要る)
+    let mut since = 0u64;
+    let breath_len = opts.breath;
+    for (si, ops) in plan
+        .iter()
+        .enumerate()
+        .take(nslots.saturating_sub(1))
+        .filter(|_| breath_len > 0)
+    {
+        since += slot_len;
+        let phrase_end = ops.contains(&Op::Tail) || ops.contains(&Op::Cadence);
+        if !phrase_end && since < 4 * bar_len {
+            continue;
+        }
+        let boundary = (si as u64 + 1) * slot_len;
+        let Some(li) = out.iter().rposition(|o| o.pos < boundary) else {
+            continue;
+        };
+        let Some(next) = out.get(li + 1).map(|o| o.pos) else {
+            continue;
+        };
+        let want_end = next.saturating_sub(breath_len);
+        let o = &mut out[li];
+        if o.pos + o.dur > want_end {
+            // 16 分より短くなるなら空けない(その音が句の最後の短い音のとき)
+            if want_end >= o.pos + beat / 4 {
+                o.dur = want_end - o.pos;
+                since = 0;
+            }
+        } else {
+            since = 0;
+        }
+    }
     Ok(out)
 }
 
@@ -753,6 +789,7 @@ mod tests {
             anticipate: 0.0,
             seed: 1,
             strong: vec![],
+            breath: crate::time::PPQ / 2,
         }
     }
 

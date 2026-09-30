@@ -8,6 +8,11 @@
 //! - 音ごとの驚き(情報量)は Temperley 2008 の式で、学習データ無しに計算できる
 //!   (音域の分散 29.0・前の音との近さの分散 7.2・キーの分布)
 //!
+//! - 好まれるのは中くらいの予測しやすさ(逆 U 字。Gold ら 2019、Cheung ら 2019)。「予測できすぎ」も欠点:
+//!   休みの無さ・2 小節の音域の狭さ・隣の音の往復・跳躍の無さ・変わらない繰り返しを数える
+//! - 「欠点が無い」と「良い」は別物(規則の点数で選ぶと無難になる。RL Tuner、ORGAN など)。点数は欠点が無くて 70、
+//!   良さ(山・句の終わり・問いと答え・驚きの一瞬・跳躍と戻り)で加点する
+//!
 //! ジャンルごとのしきい値は経験則の初期値(ベンチマークで調整する)。
 
 use crate::chord::Key;
@@ -39,8 +44,14 @@ pub struct Genre {
     pub repeat_max: f64,
     /// 強拍の和音の音の割合の下限
     pub strong_chord_tone: f64,
-    /// 息継ぎ(4 小節を超えて休みが無い句)を点検するか(歌・管の旋律。シンセのリードは続けてよい)
+    /// 歌・管の旋律か(生成で句の終わりに息継ぎを入れ、小節のリズムの使い回しを単調とみなす)
     pub breath: bool,
+    /// 休みの割合(旋律の始まりから終わりまでのうち音が鳴っていない時間)の下限
+    pub rest_min: f64,
+    /// 8 分以上の休みを挟まずに続けてよい長さ(小節)の上限
+    pub max_run_bars: f64,
+    /// 2 小節ごとの音域(半音)の平均の下限(これより狭いと動きが閉じている)
+    pub span2_min: u8,
     pub note: &'static str,
 }
 
@@ -54,6 +65,9 @@ pub const GENRES: &[Genre] = &[
         repeat_max: 0.85,
         strong_chord_tone: 0.5,
         breath: true,
+        rest_min: 0.06,
+        max_run_bars: 4.2,
+        span2_min: 5,
         note:
             "ポップス・J-POP: 8 分主体 + 伸ばし。サビで最高音、同じ高い音の連打はフックとしてよい",
     },
@@ -66,6 +80,9 @@ pub const GENRES: &[Genre] = &[
         repeat_max: 0.95,
         strong_chord_tone: 0.5,
         breath: false,
+        rest_min: 0.08,
+        max_run_bars: 8.2,
+        span2_min: 4,
         note:
             "EDM のリード: 1〜2 小節の動機を繰り返し、最後だけ変える。16 分の裏に食う。音域は狭く",
     },
@@ -78,6 +95,9 @@ pub const GENRES: &[Genre] = &[
         repeat_max: 0.95,
         strong_chord_tone: 0.4,
         breath: false,
+        rest_min: 0.12,
+        max_run_bars: 4.2,
+        span2_min: 3,
         note: "トラップ: 短音階・和声的短音階・フリギアの短いループ。休符多め",
     },
     Genre {
@@ -89,6 +109,9 @@ pub const GENRES: &[Genre] = &[
         repeat_max: 0.8,
         strong_chord_tone: 0.5,
         breath: true,
+        rest_min: 0.15,
+        max_run_bars: 4.2,
+        span2_min: 4,
         note: "ローファイ: 少ない音、ペンタトニック + 7 度・9 度、後ろにずらす",
     },
     Genre {
@@ -100,6 +123,9 @@ pub const GENRES: &[Genre] = &[
         repeat_max: 0.5,
         strong_chord_tone: 0.7,
         breath: true,
+        rest_min: 0.04,
+        max_run_bars: 8.2,
+        span2_min: 7,
         note: "ジャズ: 8 分の連続、強拍に和声音(3 度・7 度)、エンクロージャ・半音の接近",
     },
     Genre {
@@ -111,6 +137,9 @@ pub const GENRES: &[Genre] = &[
         repeat_max: 0.9,
         strong_chord_tone: 0.5,
         breath: true,
+        rest_min: 0.2,
+        max_run_bars: 4.2,
+        span2_min: 4,
         note: "ファンクのホーン・リフ: 16 分の短いキメ、休符が多い、1 拍目の強調",
     },
 ];
@@ -150,6 +179,8 @@ pub struct Phrase {
     /// 句の驚き(情報量、ビット)の平均と最大
     pub surprise_mean: f64,
     pub surprise_max: f64,
+    /// 区切り方: "rest"(休み・伸ばしで区切れた句)/ "bars"(休みで区切れないので 4 小節ごとに切ったもの)
+    pub split: &'static str,
 }
 
 /// 数値
@@ -186,6 +217,20 @@ pub struct Metrics {
     pub anticipation: f64,
     /// 音ごとの驚き(Temperley の式、ビット)の平均
     pub surprise_mean: f64,
+    /// 休みの割合(旋律の始まりから終わりまでのうち、音が鳴っていない時間)
+    pub rest_ratio: f64,
+    /// 8 分以上の休みを挟まずに続いた最長の長さ(小節)
+    pub longest_run_bars: f64,
+    /// 2 小節ごとの音域(半音)の平均
+    pub span2_mean: f64,
+    /// 向きの転換率(動く音程の向きが前と逆になる割合)
+    pub turn_ratio: f64,
+    /// 往復率(p[i] = p[i+2] ≠ p[i+1] の割合。隣の音を行き来するだけの動き)
+    pub oscillation: f64,
+    /// 4 度(5 半音)以上の跳躍の数
+    pub leaps4: usize,
+    /// 4 小節の塊のうち、前の塊とほぼ同じ(移調を除いて 80% 以上一致)ものが続いた最長の回数
+    pub block_repeats: usize,
 }
 
 /// 点検の結果
@@ -196,7 +241,10 @@ pub struct MelodyCritique {
     pub metrics: Metrics,
     pub phrases: Vec<Phrase>,
     pub findings: Vec<Finding>,
-    /// 0〜100(指摘が少ないほど高い。複数の案を比べるときに使う)
+    /// 良さ(山・句の終わり・繰り返しの変化・驚きの一瞬・跳躍と戻り)。見つかったものを文で
+    pub strengths: Vec<String>,
+    /// 0〜100。欠点が無いだけでは 70 点で、良さ 1 つにつき 6 点を足す(最大 30。警告があると割り引く)。
+    /// 警告は −12、情報は −4。複数の案を比べるときの目安(最大の点の案が最良とは限らない)
     pub score: u32,
 }
 
@@ -349,6 +397,7 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
                 what: "音が少なすぎて点検できない(4 音以上)".to_owned(),
                 fix: String::new(),
             }],
+            strengths: vec![],
             score: 0,
         };
     }
@@ -598,8 +647,173 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
                     / 100.0,
                 surprise_mean: (inf.iter().sum::<f64>() / inf.len() as f64 * 10.0).round() / 10.0,
                 surprise_max: (inf.iter().cloned().fold(0.0, f64::max) * 10.0).round() / 10.0,
+                split: "rest",
             });
             start = i + 1;
+        }
+    }
+    // 休みで区切れず、8 小節を超えて 1 つの句になっているときは、4 小節ごとに切って句の点検をする
+    // (休みが無い旋律ほど句の終わり・驚きの点検を逃れる抜け道をふさぐ)
+    let span_bars = (end - notes[0].pos) as f64 / (crate::time::PPQ * 4) as f64;
+    if phrases.iter().any(|p| p.bars > 8.2) {
+        let first_bar = bar_of(notes[0].pos);
+        let mut chunks: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        for (i, n) in notes.iter().enumerate() {
+            chunks
+                .entry((bar_of(n.pos) - first_bar) / 4)
+                .or_default()
+                .push(i);
+        }
+        phrases = chunks
+            .values()
+            .filter(|idx| !idx.is_empty())
+            .map(|idx| {
+                let seg: Vec<&MelNote> = idx.iter().map(|&i| &notes[i]).collect();
+                let mut durs: Vec<u64> = seg.iter().map(|n| n.dur).collect();
+                let med = median_u64(&mut durs).max(1);
+                let last = seg[seg.len() - 1];
+                let beats = (last.pos + last.dur - seg[0].pos) as f64 / crate::time::PPQ as f64;
+                let inf: Vec<f64> = idx.iter().map(|&i| info[i]).collect();
+                Phrase {
+                    start_bar: bar_of(seg[0].pos) + 1,
+                    bars: (beats / 4.0 * 10.0).round() / 10.0,
+                    notes: seg.len(),
+                    ending_ratio: ((last.dur as f64 / med as f64) * 100.0).round() / 100.0,
+                    surprise_mean: (inf.iter().sum::<f64>() / inf.len() as f64 * 10.0).round()
+                        / 10.0,
+                    surprise_max: (inf.iter().cloned().fold(0.0, f64::max) * 10.0).round() / 10.0,
+                    split: "bars",
+                }
+            })
+            .collect();
+    }
+    // 休み: 鳴っている時間の和(重なりは 1 回)と、8 分以上の休みを挟まずに続いた最長
+    {
+        let mut covered = 0u64;
+        let mut reach = notes[0].pos;
+        let mut run_start = notes[0].pos;
+        let mut longest = 0u64;
+        for (i, n) in notes.iter().enumerate() {
+            let s0 = n.pos.max(reach);
+            let e0 = n.pos + n.dur;
+            if e0 > s0 {
+                covered += e0 - s0;
+            }
+            if i > 0 && n.pos >= reach + crate::time::PPQ / 2 {
+                longest = longest.max(reach - run_start);
+                run_start = n.pos;
+            }
+            reach = reach.max(e0);
+        }
+        longest = longest.max(reach - run_start);
+        let span = (end - notes[0].pos).max(1);
+        m.rest_ratio = 1.0 - covered as f64 / span as f64;
+        m.longest_run_bars = (longest as f64 / (crate::time::PPQ * 4) as f64 * 10.0).round() / 10.0;
+    }
+    // 局所の動き: 2 小節ごとの音域・向きの転換・往復
+    {
+        let mut by_bar: std::collections::BTreeMap<usize, (u8, u8, usize)> = Default::default();
+        for n in &notes {
+            let e = by_bar.entry(bar_of(n.pos)).or_insert((u8::MAX, 0, 0));
+            e.0 = e.0.min(n.pitch);
+            e.1 = e.1.max(n.pitch);
+            e.2 += 1;
+        }
+        let bars: Vec<(usize, (u8, u8, usize))> = by_bar.into_iter().collect();
+        let spans: Vec<f64> = bars
+            .iter()
+            .filter_map(|(b, (lo, hi, c))| {
+                // 次の小節と合わせた 2 小節(音が 3 つ以上あるものだけ)
+                let (lo2, hi2, c2) = bars
+                    .iter()
+                    .find(|(b2, _)| *b2 == b + 1)
+                    .map_or((*lo, *hi, *c), |(_, (l, h, k))| {
+                        ((*lo).min(*l), (*hi).max(*h), c + k)
+                    });
+                (c2 >= 3).then_some((hi2 - lo2) as f64)
+            })
+            .collect();
+        m.span2_mean = if spans.is_empty() {
+            0.0
+        } else {
+            (spans.iter().sum::<f64>() / spans.len() as f64 * 10.0).round() / 10.0
+        };
+        let dirs: Vec<i32> = moving.iter().map(|d| d.signum()).collect();
+        m.turn_ratio = if dirs.len() < 2 {
+            0.0
+        } else {
+            dirs.windows(2).filter(|w| w[0] != w[1]).count() as f64 / (dirs.len() - 1) as f64
+        };
+        let p: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
+        m.oscillation = if p.len() < 3 {
+            0.0
+        } else {
+            p.windows(3)
+                .filter(|w| w[0] == w[2] && w[0] != w[1])
+                .count() as f64
+                / (p.len() - 2) as f64
+        };
+        m.leaps4 = moving.iter().filter(|d| d.abs() >= 5).count();
+    }
+    // 4 小節の塊の繰り返し: (塊の中の 16 分の位置, 塊の最初の音からの音程) の集合の一致の度合い
+    // (16 分の位置, 塊の最初の音からの音程) の列と、塊の最初の音
+    type Block = (Vec<(u64, i32)>, Option<u8>);
+    let block_sig = |b0: usize| -> Block {
+        let first_bar = bar_of(notes[0].pos);
+        let idx: Vec<&MelNote> = notes
+            .iter()
+            .filter(|n| (bar_of(n.pos) - first_bar) / 4 == b0)
+            .collect();
+        let Some(f) = idx.first() else {
+            return (vec![], None);
+        };
+        let start = grid.get(first_bar + b0 * 4).map_or(0, |g| g.0);
+        (
+            idx.iter()
+                .map(|n| {
+                    (
+                        (n.pos.saturating_sub(start) + 120) / 240,
+                        n.pitch as i32 - f.pitch as i32,
+                    )
+                })
+                .collect(),
+            Some(f.pitch),
+        )
+    };
+    let similarity = |a: &[(u64, i32)], b: &[(u64, i32)]| -> f64 {
+        if a.is_empty() || b.is_empty() {
+            return 0.0;
+        }
+        let same = a.iter().filter(|x| b.contains(x)).count();
+        same as f64 / a.len().max(b.len()) as f64
+    };
+    let n_blocks = ((span_bars / 4.0).ceil() as usize).max(1);
+    let blocks: Vec<Block> = (0..n_blocks).map(block_sig).collect();
+    let mut transposed = Vec::new();
+    {
+        let mut run = 1usize;
+        let mut best = 1usize;
+        for i in 1..blocks.len() {
+            let sim = similarity(&blocks[i].0, &blocks[i - 1].0);
+            if sim >= 0.8 {
+                run += 1;
+                best = best.max(run);
+            } else {
+                run = 1;
+            }
+        }
+        m.block_repeats = if blocks.len() >= 2 { best } else { 0 };
+        // 前のどれかの塊を移調しただけ(形は 80% 以上一致、高さが違う)
+        for i in 1..blocks.len() {
+            for j in 0..i {
+                if blocks[i].1 != blocks[j].1
+                    && blocks[i].1.is_some()
+                    && similarity(&blocks[i].0, &blocks[j].0) >= 0.8
+                {
+                    transposed.push(bar_of(notes[0].pos) + i * 4 + 1);
+                    break;
+                }
+            }
         }
     }
     // ---- 指摘 ----
@@ -783,24 +997,80 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
             "句の頭と終わりは表拍に置く",
         );
     }
-    let long_phrases: Vec<usize> = phrases
-        .iter()
-        .filter(|p| p.bars > 4.2)
-        .map(|p| p.start_bar)
-        .collect();
-    if g.breath && !long_phrases.is_empty() {
+    // 休み: 句の区切りの無さと、鳴りっぱなし(全ジャンル。シンセのリードでも 2〜8 小節に 1 回は空ける)
+    if m.longest_run_bars > g.max_run_bars {
         warn(
             "warn",
             format!(
-                "4 小節を超えて休み無しに続く句がある({} 小節目から)。息継ぎができない",
-                long_phrases
+                "{} 小節も休み無しに続いている({} の目安 {} 小節まで)。句が区切れず、息をつく所が無い",
+                m.longest_run_bars,
+                g.name,
+                g.max_run_bars.floor()
+            ),
+            "2〜4 小節ごとに 8 分以上の休符を置く。問いと答えの間を空ける",
+        );
+    }
+    if m.rest_ratio < g.rest_min && span_bars >= 4.0 {
+        warn(
+            "warn",
+            format!(
+                "休みがほとんど無い(鳴っていない時間 {}%、{} の目安 {}% 以上)。音が次の音までつながり、リズムが見えない",
+                pct(m.rest_ratio),
+                g.name,
+                pct(g.rest_min)
+            ),
+            "音を短く切る(音価の 50〜70%。プラック・スタブの語法)、句の終わりの後に 8 分〜1 拍休む",
+        );
+    }
+    // 局所の動きが閉じている: 2 小節の音域が狭い、または隣の音を行き来するだけ
+    let closed = m.notes >= 12
+        && (m.span2_mean < g.span2_min as f64
+            || m.oscillation > 0.2
+            || (m.turn_ratio > 0.75 && m.span2_mean < g.span2_min as f64 + 2.0));
+    if closed {
+        warn(
+            "warn",
+            format!(
+                "音の動きが閉じている(2 小節の音域 平均 {} 半音・往復 {}%・向きの転換 {}%)。同じ所を回っているだけに聞こえる",
+                m.span2_mean,
+                pct(m.oscillation),
+                pct(m.turn_ratio)
+            ),
+            "句ごとに行き先(山の音)を決めて、そこへ同じ向きに 3〜4 音進む。4 度以上の跳躍を 1 つ入れて逆向きに戻す",
+        );
+    }
+    if m.leaps4 == 0 && span_bars >= 8.0 && m.notes >= 16 {
+        warn(
+            "info",
+            format!("{:.0} 小節のあいだ 4 度以上の跳躍が 1 つも無い", span_bars),
+            "句の頭か山の直前に 5〜8 半音の跳躍を 1 つ入れ、その後は逆向きに戻す",
+        );
+    }
+    // 繰り返し: 4 小節の型を変えずに 3 回以上。移調しただけの繰り返し
+    if m.block_repeats >= 3 {
+        warn(
+            "warn",
+            format!(
+                "4 小節の型をほぼ変えずに {} 回続けて繰り返している。繰り返しの最後が変わらない",
+                m.block_repeats
+            ),
+            "2 回目は同じでよい。3 回目の後半か 4 回目を変える(AAAB)、最後は句を閉じる(develop_motif の sentence)",
+        );
+    }
+    if !transposed.is_empty() {
+        transposed.dedup();
+        warn(
+            "info",
+            format!(
+                "前の型を移調しただけの 4 小節がある({} 小節目から)。変化として弱い",
+                transposed
                     .iter()
                     .take(3)
                     .map(|b| b.to_string())
                     .collect::<Vec<_>>()
                     .join("・")
             ),
-            "2〜4 小節ごとに 8 分以上の休符を置く",
+            "和音に合わせて音を選び直す、リズムを変える、山の高さを変える。ドロップなら新しいリフにしてもよい",
         );
     }
     let real: Vec<&Phrase> = phrases.iter().filter(|p| p.notes >= 3).collect();
@@ -817,13 +1087,19 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
                 "句の最後の音を他の音の 1.5 倍以上に伸ばす(develop_motif の cadence)",
             );
         }
-        // 驚き: 8 小節以上の旋律で、どの句にも目立つ驚きが無い / 平均が高すぎる
+        // 驚き: 8 小節以上の旋律で、どの句にも目立つ驚き(句の平均より 1.5 ビット以上)が無い / 平均が高すぎる。
+        // 好まれるのは予測が固まった所での 1 回の驚き(Cheung ら 2019)
         let total_bars: f64 = phrases.iter().map(|p| p.bars).sum();
-        let max = real.iter().map(|p| p.surprise_max).fold(0.0, f64::max);
-        if total_bars >= 8.0 && max < 5.0 {
+        let contrast = real
+            .iter()
+            .map(|p| p.surprise_max - p.surprise_mean)
+            .fold(0.0, f64::max);
+        if total_bars >= 8.0 && contrast < 1.5 {
             warn(
                 "info",
-                format!("予想外の音が無い(驚きの最大 {max:.1} ビット)。無難だが印象に残りにくい"),
+                format!(
+                    "予想外の音が無い(句の中の驚きの山 {contrast:.1} ビット)。無難だが印象に残りにくい"
+                ),
                 "山の直前か句の頭に、跳躍・和音の外の音・シンコペーションを 1 つだけ置く",
             );
         }
@@ -850,15 +1126,98 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
     m.syncopation = round3(m.syncopation);
     m.anticipation = round3(m.anticipation);
     m.surprise_mean = (m.surprise_mean * 10.0).round() / 10.0;
+    m.rest_ratio = round3(m.rest_ratio);
+    m.turn_ratio = round3(m.turn_ratio);
+    m.oscillation = round3(m.oscillation);
+    // ---- 良さ ----
+    let mut strengths: Vec<String> = Vec::new();
+    // 山: 最高音が 1〜2 回で、旋律の後半(区間があれば、その区間の後半)に初めて出る
+    {
+        let (s0, s1) = ctx
+            .sections
+            .iter()
+            .find(|s| s.start <= first_peak && first_peak < s.end)
+            .map_or((notes[0].pos, end), |s| {
+                (s.start.max(notes[0].pos), s.end.min(end))
+            });
+        let at = (first_peak - s0.min(first_peak)) as f64 / (s1.saturating_sub(s0)).max(1) as f64;
+        if m.peak_count <= 2 && (0.4..=0.95).contains(&at) {
+            strengths.push(format!(
+                "山(最高音 {})が 1 回だけ、後半の {} 小節目に出る",
+                crate::chord::note_name(m.highest),
+                m.peak_bar
+            ));
+        }
+    }
+    // 句の終わり: 休みで区切れた句が 2 つ以上あり、半分以上が伸びて終わる
+    {
+        let real: Vec<&Phrase> = phrases
+            .iter()
+            .filter(|p| p.notes >= 3 && p.split == "rest")
+            .collect();
+        if real.len() >= 2
+            && real.iter().filter(|p| p.ending_ratio >= 1.5).count() * 2 >= real.len()
+        {
+            strengths.push(format!("{} 句に区切れ、句の終わりが伸びる", real.len()));
+        }
+    }
+    // 繰り返しの変化: 2 小節の塊どうしで、頭は同じで終わりが違う組がある(問いと答え・AA′)
+    {
+        let first_bar = bar_of(notes[0].pos);
+        let two: Vec<Vec<(u64, i32)>> = (0..((span_bars / 2.0).ceil() as usize))
+            .map(|k| {
+                let start = grid.get(first_bar + k * 2).map_or(0, |g| g.0);
+                let seg: Vec<&MelNote> = notes
+                    .iter()
+                    .filter(|n| (bar_of(n.pos) - first_bar) / 2 == k)
+                    .collect();
+                seg.first().map_or(vec![], |f| {
+                    seg.iter()
+                        .map(|n| {
+                            (
+                                (n.pos.saturating_sub(start) + 120) / 240,
+                                n.pitch as i32 - f.pitch as i32,
+                            )
+                        })
+                        .collect()
+                })
+            })
+            .collect();
+        let varied = two.windows(2).any(|w| {
+            let (a, b) = (&w[0], &w[1]);
+            let head = a.len().min(b.len()).min(3);
+            head >= 2 && a[..head] == b[..head] && similarity(a, b) < 0.9
+        });
+        if varied {
+            strengths.push("頭が同じで終わりの違う繰り返しがある(問いと答え・AA′)".to_owned());
+        }
+    }
+    // 驚きの一瞬: 平均は穏やかで(5.5 ビット以下)、句の中に 1.5 ビット以上飛び出す音がある
+    if m.surprise_mean <= 5.5
+        && phrases
+            .iter()
+            .any(|p| p.notes >= 3 && p.surprise_max - p.surprise_mean >= 1.5)
+    {
+        strengths.push("穏やかな流れの中に、予想外の音が出る所がある".to_owned());
+    }
+    // 跳躍と戻り: 4 度以上跳んだ後、逆向きに小さく動く所がある
+    if ivs.windows(2).any(|w| {
+        w[0].abs() >= 5 && w[1] != 0 && w[1].signum() != w[0].signum() && w[1].abs() < w[0].abs()
+    }) {
+        strengths.push("跳躍して逆向きに戻る動きがある".to_owned());
+    }
     let warns = findings.iter().filter(|f| f.severity == "warn").count() as i32;
     let infos = findings.len() as i32 - warns;
+    // 良さの加点は、警告が多いほど効かない(警告 1 つで 3/4、4 つで 0)。欠点の多い旋律が良さで持ち直さないように
+    let bonus = (strengths.len() as i32 * 6).min(30) * (4 - warns).max(0) / 4;
     MelodyCritique {
         genre: g.name,
         key: key_name,
         metrics: m,
         phrases,
         findings,
-        score: (100 - 12 * warns - 4 * infos).clamp(0, 100) as u32,
+        strengths,
+        score: ((70 - 12 * warns - 4 * infos).max(0) + bonus).clamp(0, 100) as u32,
     }
 }
 
@@ -965,6 +1324,31 @@ mod tests {
             c.findings
         );
         assert!(c.score >= 80, "{}", c.score);
+        // 欠点が無いだけでなく、良さ(山・句の終わり・問いと答え など)が見つかっている
+        assert!(c.strengths.len() >= 3, "{:?}", c.strengths);
+    }
+
+    #[test]
+    fn a_flawless_but_plain_line_does_not_get_full_marks() {
+        // 欠点の指摘には当たりにくいが、良さも無い: 4 分の順次進行の上り下りを 2 小節ごとに休みを入れて 8 小節
+        let line = [60u8, 62, 64, 65, 67, 65, 64];
+        let v: Vec<MelNote> = (0..4u64)
+            .flat_map(|k| {
+                line.iter()
+                    .enumerate()
+                    .map(move |(i, &p)| n(k * 2 * BAR + i as u64 * 960, 960, p))
+            })
+            .collect();
+        let p = Project::new("m");
+        let f = chords;
+        let c = critique(&v, &ctx(&p, &f));
+        assert!(
+            c.score <= 76,
+            "{} {:?} {:?}",
+            c.score,
+            c.findings,
+            c.strengths
+        );
     }
 
     #[test]
@@ -988,7 +1372,7 @@ mod tests {
             whats.iter().any(|w| w.contains("リズムが単調")),
             "{whats:?}"
         );
-        assert!(whats.iter().any(|w| w.contains("息継ぎ")), "{whats:?}");
+        assert!(whats.iter().any(|w| w.contains("休み無し")), "{whats:?}");
         assert!(c.score < 60, "{}", c.score);
     }
 
@@ -1058,6 +1442,144 @@ mod tests {
         let c = critique(&v, &ctx(&p, &f));
         assert!(c.metrics.syncopation > 0.0);
         assert_eq!(c.metrics.anticipation, 1.0);
+    }
+
+    /// 実際に AI が書き、「休符が無く、音階のひねりも無い」と言われたハウスのリード(House 124 のドロップ 1、
+    /// Am | F | C | G の上の 16 小節)。以前の点検はこれに 100 点・指摘 0 件を付けていた
+    const HOUSE_LEAD: &[(u64, u64, u8)] = &[
+        (0, 480, 72),
+        (469, 720, 72),
+        (1183, 720, 74),
+        (1899, 480, 72),
+        (2379, 720, 72),
+        (3108, 720, 74),
+        (3840, 720, 72),
+        (4551, 720, 76),
+        (5280, 960, 76),
+        (6234, 720, 77),
+        (6958, 720, 76),
+        (7680, 480, 71),
+        (8160, 720, 71),
+        (8874, 240, 72),
+        (9116, 960, 71),
+        (10072, 720, 71),
+        (10797, 720, 72),
+        (11520, 720, 71),
+        (12234, 720, 74),
+        (12955, 960, 74),
+        (13908, 720, 76),
+        (14617, 720, 74),
+        (15360, 480, 72),
+        (15824, 720, 72),
+        (16547, 720, 74),
+        (17265, 480, 72),
+        (17749, 720, 72),
+        (18471, 720, 74),
+        (19200, 720, 72),
+        (19911, 720, 76),
+        (20638, 480, 76),
+        (21113, 480, 77),
+        (21588, 720, 77),
+        (22310, 720, 76),
+        (23040, 480, 71),
+        (23507, 720, 71),
+        (24230, 720, 72),
+        (24954, 480, 71),
+        (25427, 720, 71),
+        (26153, 240, 72),
+        (26392, 1200, 71),
+        (27584, 720, 74),
+        (28315, 960, 74),
+        (29278, 720, 76),
+        (29987, 720, 71),
+        (30720, 480, 72),
+        (31198, 720, 72),
+        (31927, 720, 74),
+        (32641, 480, 72),
+        (33118, 720, 72),
+        (33828, 720, 74),
+        (34560, 720, 72),
+        (35273, 720, 76),
+        (35995, 480, 76),
+        (36466, 480, 77),
+        (36952, 720, 77),
+        (37678, 720, 76),
+        (38400, 480, 76),
+        (38884, 720, 74),
+        (39606, 720, 76),
+        (40323, 480, 76),
+        (40800, 720, 74),
+        (41517, 720, 76),
+        (42240, 720, 74),
+        (42960, 720, 77),
+        (43684, 960, 77),
+        (44639, 720, 79),
+        (45364, 720, 77),
+        (46080, 480, 72),
+        (46558, 720, 72),
+        (47280, 720, 74),
+        (48010, 480, 72),
+        (48496, 720, 72),
+        (49209, 720, 74),
+        (49920, 720, 72),
+        (50642, 720, 76),
+        (51368, 480, 76),
+        (51851, 480, 77),
+        (52329, 720, 77),
+        (53053, 720, 76),
+        (53760, 480, 71),
+        (54251, 720, 71),
+        (54967, 720, 72),
+        (55682, 480, 71),
+        (56161, 720, 71),
+        (56891, 240, 72),
+        (57130, 3840, 69),
+    ];
+
+    #[test]
+    fn the_house_lead_without_rests_or_twists_is_flagged() {
+        let p = Project::new("m");
+        // スタブが全部の和音に 7 度・9 度を積んでいた(強拍の和音の音はほぼ何でも当たる)
+        let f = |t: u64| {
+            let names = ["Am9", "Fmaj7", "Cmaj7", "G6"];
+            Some(
+                parse(names[((t / BAR) % 4) as usize])
+                    .unwrap()
+                    .unwrap()
+                    .pitch_classes(),
+            )
+        };
+        let mut cx = ctx(&p, &f);
+        cx.key = Key::parse("A minor");
+        cx.genre = genre("house").unwrap();
+        let v: Vec<MelNote> = HOUSE_LEAD.iter().map(|&(a, b, c)| n(a, b, c)).collect();
+        let c = critique(&v, &cx);
+        let whats: Vec<&str> = c.findings.iter().map(|f| f.what.as_str()).collect();
+        assert!(
+            whats.iter().any(|w| w.contains("休みがほとんど無い")),
+            "{whats:?}"
+        );
+        assert!(
+            whats.iter().any(|w| w.contains("休み無しに続いている")),
+            "{whats:?}"
+        );
+        assert!(
+            whats.iter().any(|w| w.contains("動きが閉じている")),
+            "{whats:?} {:?}",
+            c.metrics
+        );
+        // 句が 1 つにつながっているので 4 小節ごとに切って見る(句の終わりの点検が働く)
+        assert!(
+            c.phrases.iter().all(|p| p.split == "bars"),
+            "{:?}",
+            c.phrases
+        );
+        assert!(
+            whats.iter().any(|w| w.contains("句の終わりが伸びていない")),
+            "{whats:?}"
+        );
+        assert!(c.metrics.rest_ratio < 0.02, "{:?}", c.metrics);
+        assert!(c.score < 40, "{} {whats:?} {:?}", c.score, c.strengths);
     }
 
     #[test]

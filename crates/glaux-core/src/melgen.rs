@@ -55,15 +55,19 @@ pub const VOCABS: &[Vocab] = &[
     },
     Vocab {
         genre: "edm",
+        // 伸ばしてつなぐ型だけでなく、短く切って休む型(プラック・スタブ)を多めに。トレシーロ(3-3-2)・
+        // 裏拍・問いと答え・8 分の途中で割る型(docs の実践の調査)
         cells: &[
             c("x--x--x---x--x--"),
-            c("x-xx-x-x--x-x---"),
-            c("x--x--x-x--x--x-"),
-            c("..x--x--x-x-x---"),
-            c("x-x--x--x-x--x--"),
+            c("x-.x-.x.x-.x-.x."),
+            c("x..x..x.x..x..x."),
+            c("..x...x...x.x-.."),
+            c("x-x-x-x-xxx-x-x-"),
+            c("x.x..x.x..x.x-.."),
+            c("..x--x--x-x-x-.."),
             h("x--x--x-------.."),
-            h("x--x----x-----.."),
-            h("x-----x-----x---"),
+            h("x..x..x.x-......"),
+            h("....x.x.x.x.x---"),
         ],
         anticipate: 0.35,
     },
@@ -452,6 +456,22 @@ pub fn make_motif(rhythm: &[(u64, u64)], spec: &MotifSpec) -> Vec<MotifNote> {
                     8..=9 => 3.5,
                     _ => 6.0 + iv as f64,
                 };
+                // 隣の音を行き来するだけ(A–B–A)にしない。順次で進んできたら同じ向きに続けやすく(step inertia)
+                if out.len() >= 2 {
+                    let back = out[out.len() - 2].pitch as i32;
+                    if p == back && p != q {
+                        c += 1.4;
+                    }
+                }
+                if let Some(d) = prev_step {
+                    if (1..=2).contains(&d.abs()) && p != q {
+                        c += if (p - q).signum() == d.signum() {
+                            -0.3
+                        } else {
+                            0.3
+                        };
+                    }
+                }
                 // 跳躍の後は向きを変えて順次に
                 if let Some(d) = prev_step {
                     if d.abs() >= 5 {
