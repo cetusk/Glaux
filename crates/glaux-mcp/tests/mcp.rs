@@ -4816,6 +4816,37 @@ async fn critique_melody_scores_a_shaped_line_above_a_random_one() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+    // 構造の分析: 2 小節ごとの句が 4 つ、2 句目は 1 句目を 1 音下へずらした形(A′)、骨格は小節:拍 音名
+    let a = ok_json(
+        &call(
+            &fx,
+            "analyze_melody",
+            json!({ "clip_id": "clp_mel001", "chords": "C | F | G | C | C | F | G | C", "key": "C major" }),
+        )
+        .await,
+    );
+    let phrases = a["phrases"].as_array().unwrap();
+    assert_eq!(phrases.len(), 4, "{a}");
+    assert_eq!(phrases[0]["label"], "A", "{a}");
+    assert_eq!(phrases[1]["label"], "A′", "{a}");
+    assert_eq!(phrases[1]["like"], 0, "{a}");
+    assert_eq!(a["skeleton"][0], "1:1 E4", "{a}");
+    assert_eq!(
+        a["sections"][0]["form"]
+            .as_str()
+            .unwrap()
+            .split(' ')
+            .count(),
+        4
+    );
+    assert!(!a["summary"].as_array().unwrap().is_empty());
+    // でたらめな 8 分の列は休みが無く 4 小節ごとに切られ、どの小節も同じリズムと言われる
+    let b = ok_json(&call(&fx, "analyze_melody", json!({ "track_id": "trk_mel002" })).await);
+    assert_eq!(b["phrases"][0]["split"], "bars", "{b}");
+    assert!(
+        b["findings"].to_string().contains("同じリズムの輪郭"),
+        "{b}"
+    );
 }
 
 #[tokio::test]

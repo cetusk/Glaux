@@ -60,6 +60,7 @@ const LABELS: Record<string, ToolLabel> = {
   write_transition: { short: "区間のつなぎ", doing: "区間のつなぎを置いています" },
   suggest_progression: { short: "進行の候補", doing: "コード進行の候補を探しています" },
   critique_melody: { short: "旋律の点検", doing: "旋律を点検しています" },
+  analyze_melody: { short: "旋律の構造", doing: "旋律の構造を読んでいます" },
   develop_motif: { short: "動機の展開", doing: "動機から旋律を展開しています" },
   write_melody: { short: "旋律を作る", doing: "旋律の案を作って選んでいます" },
   write_polyrhythm: { short: "ポリリズム", doing: "ポリリズムを置いています" },

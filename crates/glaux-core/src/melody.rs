@@ -1222,7 +1222,7 @@ pub fn critique(notes: &[MelNote], ctx: &Context) -> MelodyCritique {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::chord::parse;
 
@@ -1446,7 +1446,7 @@ mod tests {
 
     /// 実際に AI が書き、「休符が無く、音階のひねりも無い」と言われたハウスのリード(House 124 のドロップ 1、
     /// Am | F | C | G の上の 16 小節)。以前の点検はこれに 100 点・指摘 0 件を付けていた
-    const HOUSE_LEAD: &[(u64, u64, u8)] = &[
+    pub(crate) const HOUSE_LEAD: &[(u64, u64, u8)] = &[
         (0, 480, 72),
         (469, 720, 72),
         (1183, 720, 74),
