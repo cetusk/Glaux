@@ -627,15 +627,23 @@
     await api.importAudioClip(track.id, file, startTick).catch((e) => showError("取り込めませんでした", e));
   }
 
-  /// MIDI ファイル(.mid)を読み込む: パートごとに新しいトラックを足す(1 回の undo で戻る)
+  /// MIDI ファイル(.mid)・MusicXML(.musicxml / .xml / .mxl)を読み込む: パートごとに新しいトラックを足す(1 回の undo で戻る)
   async function importMidiFile() {
-    const file = await pickFile({ title: "MIDI ファイルを読み込む", filters: [{ name: "MIDI", extensions: ["mid", "midi"] }] });
+    const file = await pickFile({
+      title: "MIDI ファイル・MusicXML を読み込む",
+      filters: [
+        { name: "MIDI・MusicXML", extensions: ["mid", "midi", "musicxml", "mxl", "xml"] },
+        { name: "MIDI", extensions: ["mid", "midi"] },
+        { name: "MusicXML", extensions: ["musicxml", "mxl", "xml"] },
+      ],
+    });
     if (typeof file !== "string") return;
     try {
       const r = await api.importMidi({ path: file });
-      showToast("ok", `MIDI を読み込みました: トラック ${r.tracks} 本・ノート ${r.notes} 個${r.tempo_set ? "(テンポと拍子も)" : ""}`);
+      const extra = r.report && r.report.length ? `。${r.report.join("。")}` : "";
+      showToast("ok", `読み込みました: トラック ${r.tracks} 本・ノート ${r.notes} 個${r.tempo_set ? "(テンポと拍子も)" : ""}${extra}`);
     } catch (e) {
-      showError("MIDI ファイルを読み込めませんでした", e);
+      showError("読み込めませんでした", e);
     }
   }
 
@@ -2384,7 +2392,7 @@
       >
       <div class="menu-sep"></div>
       <button class="rich" onclick={() => addFromMenu("midi-file")}
-        ><Icon name="file-music" /><span>MIDI ファイルから…<small>パートごとにトラックを足す。空の曲ならテンポと拍子も</small></span></button
+        ><Icon name="file-music" /><span>MIDI・MusicXML から…<small>パートごとにトラックを足す。MusicXML は強弱・奏法・パート名も。空の曲ならテンポと拍子も</small></span></button
       >
     </div>
   {/if}

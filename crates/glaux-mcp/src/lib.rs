@@ -19,6 +19,7 @@ pub mod guide;
 pub mod midi;
 pub mod models;
 pub mod musicxml;
+pub mod musicxml_in;
 pub mod plan_store;
 pub mod preset_index;
 pub mod presets;

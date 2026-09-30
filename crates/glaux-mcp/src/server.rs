@@ -6782,6 +6782,42 @@ impl GlauxServer {
     }
 
     #[tool(
+        description = "MusicXML(.musicxml / .xml、圧縮の .mxl)を読み込み、パートごとに新しいトラックを末尾に足す(1 回の undo で戻る)。\
+        MIDI より情報が多い: パート名、強弱記号(pp〜ff・sound dynamics・sf 系)を強さに、スタッカート・アクセントを奏法に、\
+        スラーの中の音をレガートに、移調楽器(B♭ クラリネットなど)を実音に、リハーサルマークを区間の目印に、拍子のまとまり\
+        (3+2 など)も移す。和音・タイ・複数の声部(backup / forward)を扱う。音色は part-list の midi-program(無ければ\
+        ピアノの分類)で内蔵の楽器を選ぶ(soundfont を渡すとその SoundFont)。打楽器は midi-unpitched で GM のドラムへ。\
+        テンポ(sound tempo か メトロノーム記号)と拍子は、set_tempo を省略するとプロジェクトにクリップが無いときだけ使う。\
+        装飾音符・キュー音符は飛ばし、繰り返し記号は展開しない(notes に報告)。score-partwise だけ(timewise は不可)。"
+    )]
+    async fn import_musicxml(
+        &self,
+        params: Parameters<crate::midi::ImportMidiRequest>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("import_musicxml");
+        let req = params.0;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let (imp, report) =
+            tokio::task::spawn_blocking(move || crate::musicxml_in::import_file(&project, &req))
+                .await
+                .map_err(|e| e.to_string())??;
+        let command = Command::batch(imp.label.clone(), imp.commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, imp.label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["tempo_set"] = json!(imp.tempo_set);
+        v["tracks"] = json!(imp
+            .tracks
+            .iter()
+            .map(|(id, name, notes)| json!({ "track_id": id, "name": name, "notes": notes }))
+            .collect::<Vec<_>>());
+        v["notes"] = json!(report);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
         description = "曲を MusicXML(譜面ソフト MuseScore・Dorico などで開ける)に書き出す。MIDI トラックごとに 1 パート。\
         拍子の拍のまとまりは <beats>2+2+3</beats> で書け(SMF では書けない)、テンポ・調号(曲の音から推定)も入る。\
         位置と長さは 32 分の格子にそろえ、1 パートを 1 声部にする(同じ位置の音は和音、小節をまたぐ音はタイ)。\

@@ -30,6 +30,7 @@ const LABELS: Record<string, ToolLabel> = {
   export_audio: { short: "書き出し", doing: "WAV に書き出しています" },
   export_midi: { short: "MIDI に書き出し", doing: "MIDI ファイルに書き出しています" },
   import_midi: { short: "MIDI の読み込み", doing: "MIDI ファイルを読み込んでいます" },
+  import_musicxml: { short: "MusicXML の読み込み", doing: "MusicXML を読み込んでいます" },
   // 分析
   analyze_audio: { short: "音を聴いて確認", doing: "音を聴いています" },
   analyze_harmony: { short: "キーとコードを確認", doing: "キーとコードを調べています" },

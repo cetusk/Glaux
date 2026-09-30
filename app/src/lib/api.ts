@@ -819,7 +819,7 @@ export function importMidi(request: {
   start_tick?: number;
   set_tempo?: boolean;
   soundfont?: string;
-}): Promise<{ tracks: number; notes: number; tempo_set: boolean }> {
+}): Promise<{ tracks: number; notes: number; tempo_set: boolean; report?: string[] }> {
   return invoke("import_midi", { request });
 }
 

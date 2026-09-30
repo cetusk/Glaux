@@ -2000,15 +2000,20 @@ async fn export_audio(
     .map_err(|e| e.to_string())?
 }
 
-/// MIDI ファイルを読み込む(パートごとに新しいトラック。1 件の履歴)
+/// MIDI ファイル・MusicXML を読み込む(パートごとに新しいトラック。1 件の履歴)
 #[tauri::command]
 async fn import_midi(
     state: State<'_, AppState>,
     request: glaux_mcp::midi::ImportMidiRequest,
 ) -> Result<Value, String> {
     let (project, _) = state.handle.get_project_shared().await?;
-    let imp = tauri::async_runtime::spawn_blocking(move || {
-        glaux_mcp::midi::import_file(&project, &request)
+    // 楽譜(MusicXML / .mxl)なら MusicXML として読む(強弱・奏法・パート名なども移る)
+    let (imp, report) = tauri::async_runtime::spawn_blocking(move || {
+        if glaux_mcp::musicxml_in::is_score_file(&request.path) {
+            glaux_mcp::musicxml_in::import_file(&project, &request)
+        } else {
+            glaux_mcp::midi::import_file(&project, &request).map(|i| (i, vec![]))
+        }
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -2026,6 +2031,7 @@ async fn import_midi(
         "tracks": imp.tracks.len(),
         "notes": imp.tracks.iter().map(|t| t.2).sum::<usize>(),
         "tempo_set": imp.tempo_set,
+        "report": report,
         "project_version": m.project_version,
     }))
 }

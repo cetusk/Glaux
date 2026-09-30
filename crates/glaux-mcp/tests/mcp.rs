@@ -6201,3 +6201,72 @@ async fn an_edm_plan_is_a_riff_that_repeats_its_rhythm() {
     );
     assert_eq!(v["steps"][0]["accepted"], true, "{v}");
 }
+
+#[tokio::test]
+async fn import_musicxml_brings_parts_dynamics_articulations_and_marks() {
+    let fx = setup().await;
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <work><work-title>小品</work-title></work>
+  <part-list>
+    <score-part id="P1"><part-name>Violin</part-name>
+      <midi-instrument id="P1-I1"><midi-channel>1</midi-channel><midi-program>41</midi-program></midi-instrument></score-part>
+    <score-part id="P2"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+      <direction><direction-type><rehearsal>A</rehearsal></direction-type><sound tempo="90"/></direction>
+      <direction><direction-type><dynamics><pp/></dynamics></direction-type></direction>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><notations><articulations><staccato/></articulations></notations></note>
+      <note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration></note>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration></note>
+    </measure>
+  </part>
+  <part id="P2">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration></note>
+      <note><chord/><pitch><step>G</step><octave>3</octave></pitch><duration>4</duration></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let path = fx.dir.join("small.musicxml");
+    std::fs::write(&path, xml).unwrap();
+    let v = ok_json(
+        &call(
+            &fx,
+            "import_musicxml",
+            json!({ "path": path.to_string_lossy() }),
+        )
+        .await,
+    );
+    assert_eq!(v["tracks"].as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(v["tempo_set"], true);
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    let vn = p.tracks.iter().find(|t| t.name == "Violin").unwrap();
+    let notes = vn.clips[0].notes().unwrap();
+    assert_eq!(notes.len(), 3);
+    assert_eq!(notes[0].pitch, 76);
+    assert_eq!(notes[0].vel, 42, "pp");
+    assert_eq!(notes[0].articulation, glaux_core::Articulation::Staccato);
+    assert_eq!(p.tempo_map.events()[0].bpm, 90.0);
+    assert_eq!(p.sections[0].name, "A");
+    let pn = p.tracks.iter().find(|t| t.name == "Piano").unwrap();
+    assert_eq!(pn.clips[0].notes().unwrap().len(), 2);
+    // 1 回の undo で全部戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert!(p.tracks.is_empty());
+    // MusicXML でないものはエラー
+    let bad = fx.dir.join("bad.xml");
+    std::fs::write(&bad, "<html/>").unwrap();
+    let r = call(
+        &fx,
+        "import_musicxml",
+        json!({ "path": bad.to_string_lossy() }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}

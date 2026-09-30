@@ -48,6 +48,8 @@ pub struct Part {
     pub notes: Vec<RawNote>,
     pub volume: Option<u8>,
     pub pan: Option<u8>,
+    /// ノートの番号 → 奏法(MusicXML のスタッカート・アクセント・スラーなど。MIDI には無い)
+    pub articulations: BTreeMap<usize, glaux_core::Articulation>,
 }
 
 impl Part {
@@ -211,6 +213,7 @@ pub fn parse(bytes: &[u8]) -> Result<MidiSong, String> {
                 notes,
                 volume: b.volume,
                 pan: b.pan,
+                articulations: BTreeMap::new(),
             });
         }
     }
@@ -400,20 +403,25 @@ pub fn import_commands(
             Tick((end - offset).max(1)),
         );
         if let Some(notes) = clip.notes_mut() {
-            notes.extend(part.notes.iter().map(|&(pos, dur, pitch, vel)| Note {
-                id: NoteId::new(),
-                pos: Tick(pos),
-                dur: Tick(dur),
-                pitch,
-                vel,
-                articulation: Default::default(),
-                pitch_curve: vec![],
-                glide_ms: None,
-                vibrato: None,
-                volume_curve: vec![],
-                brightness_curve: vec![],
-                condition: None,
-            }));
+            notes.extend(
+                part.notes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(pos, dur, pitch, vel))| Note {
+                        id: NoteId::new(),
+                        pos: Tick(pos),
+                        dur: Tick(dur),
+                        pitch,
+                        vel,
+                        articulation: part.articulations.get(&i).copied().unwrap_or_default(),
+                        pitch_curve: vec![],
+                        glide_ms: None,
+                        vibrato: None,
+                        volume_curve: vec![],
+                        brightness_curve: vec![],
+                        condition: None,
+                    }),
+            );
             notes.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
         }
         t.clips.push(clip);
