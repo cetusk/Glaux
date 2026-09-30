@@ -176,9 +176,90 @@ impl Project {
         issues
     }
 
+    /// 検査の結果を、同じ種類ごとに 1 行にまとめる(ログ向け)。ノートの ID だけが違う指摘は 1 行にし、
+    /// 該当するノートの ID を並べる。行の順は最初に出た順
+    pub fn summarize_issues(issues: &[Issue]) -> Vec<String> {
+        let mut groups: Vec<(String, &Severity, Vec<String>)> = Vec::new();
+        for i in issues {
+            let mut ids = Vec::new();
+            let template: Vec<String> = i
+                .message
+                .split(' ')
+                .map(|w| {
+                    let core = w.trim_end_matches([':', ',', ')']);
+                    if core.starts_with(crate::id::NoteId::PREFIX)
+                        && core.as_bytes().get(crate::id::NoteId::PREFIX.len()) == Some(&b'_')
+                    {
+                        ids.push(core.to_owned());
+                        w.replacen(core, "<note>", 1)
+                    } else {
+                        w.to_owned()
+                    }
+                })
+                .collect();
+            let template = template.join(" ");
+            match groups
+                .iter_mut()
+                .find(|g| g.0 == template && g.1 == &i.severity)
+            {
+                Some(g) => g.2.extend(ids),
+                None => groups.push((template, &i.severity, ids)),
+            }
+        }
+        groups
+            .into_iter()
+            .map(|(template, sev, ids)| {
+                let kind = match sev {
+                    Severity::Error => "エラー",
+                    Severity::Warning => "警告",
+                };
+                if ids.len() <= 1 {
+                    // まとめるものが無ければ元の文のまま
+                    let msg = match ids.first() {
+                        Some(id) => template.replacen("<note>", id, 1),
+                        None => template,
+                    };
+                    format!("{kind}: {msg}")
+                } else {
+                    format!(
+                        "{kind} {} 件: {template}(該当: {})",
+                        ids.len(),
+                        ids.join(", ")
+                    )
+                }
+            })
+            .collect()
+    }
+
     pub fn is_valid(&self) -> bool {
         self.validate()
             .iter()
             .all(|i| i.severity != Severity::Error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issues_of_the_same_kind_become_one_line_with_the_places() {
+        let issues = vec![
+            Issue::warn("note nt_aaaaaa starts beyond clip clp_prc001 end"),
+            Issue::error("clip clp_x: length is 0"),
+            Issue::warn("note nt_bbbbbb starts beyond clip clp_prc001 end"),
+            Issue::warn("note nt_cccccc starts beyond clip clp_other end"),
+            Issue::warn("note nt_dddddd starts beyond clip clp_prc001 end"),
+        ];
+        let lines = Project::summarize_issues(&issues);
+        assert_eq!(
+            lines,
+            vec![
+                "警告 3 件: note <note> starts beyond clip clp_prc001 end(該当: nt_aaaaaa, nt_bbbbbb, nt_dddddd)"
+                    .to_owned(),
+                "エラー: clip clp_x: length is 0".to_owned(),
+                "警告: note nt_cccccc starts beyond clip clp_other end".to_owned(),
+            ]
+        );
     }
 }

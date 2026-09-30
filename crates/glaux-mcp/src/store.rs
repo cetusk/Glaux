@@ -227,8 +227,9 @@ impl Store {
             .with_context(|| format!("project.json を読めません: {}", project_path.display()))?;
         let project = Project::from_json(&json).context("project.json のパースに失敗")?;
 
-        for issue in project.validate() {
-            tracing::warn!("project.json の検査: {issue:?}");
+        // 同じ種類の指摘は 1 行にまとめる(ノートごとに 1 行ずつ出すと何百行にもなる)
+        for line in Project::summarize_issues(&project.validate()) {
+            tracing::warn!("project.json の検査: {line}");
         }
 
         let session = match store.try_replay(&project) {
