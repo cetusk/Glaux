@@ -1030,12 +1030,19 @@ pub struct WriteMelodyParams {
     /// 強拍の音を 8 分前へ食わせる割合 0〜1(省略でジャンルから。pop 0.2、edm 0.35)。
     #[serde(default)]
     pub anticipate: Option<f64>,
-    /// 作る案の数(既定 4、最大 12)。点検の点数の順に並べる。
+    /// 作る案の数(既定 4、最大 12)。
     #[serde(default)]
     pub candidates: Option<usize>,
-    /// 置く案の数 1〜2(既定 1)。2 なら 2 番目の案を、同じ音色のトラックを複製して(ミュートで)置き、聴き比べられるようにする。
+    /// 置く案の数 1〜3(既定 1)。2 以上なら 2 番目からの案を、同じ音色のトラックを複製して(ミュートで)置き、
+    /// 聴き比べられるようにする。
     #[serde(default)]
     pub place: Option<usize>,
+    /// 足切りの点数(既定 60)。点数は足切りにだけ使い、通った案は互いに違う順に並べて先頭から置く。
+    #[serde(default)]
+    pub gate: Option<u32>,
+    /// 選び方: diverse(既定。足切りに通った案から、形式・輪郭・リズム・動きの違う順)/ best(点数の最大の案から)。
+    #[serde(default)]
+    pub pick: Option<String>,
     /// 乱数の種(既定は始まりの小節番号。区間ごとに違う案になる)。案 k は seed + k で作るので、返った seed を
     /// candidates: 1 で渡すとその案だけを作り直せる。
     #[serde(default)]
@@ -7024,8 +7031,9 @@ impl GlauxServer {
         description = "旋律を作る(動機から道具に任せる入口)。役割(verse / pre / chorus / hook / lead)とジャンルのリズムの型から\
         動機のリズムを選び(2 小節の動機は 1 小節目が動き、2 小節目が伸ばす)、輪郭(arch / rise / fall / valley / flat_hook)に沿って\
         強拍に和音の音・弱拍に音階の音を当て、develop_motif と同じ手順で展開し、critique_melody で点数をつける。これを\
-        candidates 案(既定 4)作って最も点数の高い案を置き、ほかの案の seed・形式・輪郭・点数と指摘を返す。place: 2 で 2 番目の案も\
-        複製したトラック(ミュート)に置いて聴き比べられる。返る motif は develop_motif にそのまま渡せる(動機だけ手で直して展開し直せる)。\
+        candidates 案(既定 4)作る。点数は足切り(gate、既定 60)にだけ使い、通った案を形式・輪郭・リズム・動きの違う順に並べて\
+        先頭を置く(最大の点の案が良い旋律とは限らないため。pick: best で以前の「最大の点」)。ほかの案の seed・形式・輪郭・\
+        点数・足切りの通過と指摘を返す。place: 2〜3 で 2 番目からの案も複製したトラック(ミュート)に置いて聴き比べられる。返る motif は develop_motif にそのまま渡せる(動機だけ手で直して展開し直せる)。\
         rhythm で動機のリズムを固定できる。1 回の undo で戻る。"
     )]
     async fn write_melody(
@@ -7222,8 +7230,27 @@ impl GlauxServer {
                 crit,
             });
         }
-        cands.sort_by(|a, b| b.crit.score.cmp(&a.crit.score).then(a.seed.cmp(&b.seed)));
-        let place = p.place.unwrap_or(1).clamp(1, 2).min(cands.len());
+        // 点数は足切りにだけ使い、通った案は互いに違う順に並べる(最大の点の案が良い旋律とは限らない)
+        let gate = p.gate.unwrap_or(60).min(100);
+        let best_pick = match p.pick.as_deref().unwrap_or("diverse") {
+            "diverse" => false,
+            "best" => true,
+            other => return Err(format!("pick は diverse / best(got: {other})")),
+        };
+        let infos: Vec<melgen::CandInfo> = cands
+            .iter()
+            .map(|c| melgen::CandInfo {
+                score: c.crit.score,
+                form: c.form.clone(),
+                contour: c.contour,
+                rhythm: c.rhythm.clone(),
+                pitches: c.out.iter().map(|o| o.pitch).collect(),
+            })
+            .collect();
+        let (order, passed) = melgen::order_candidates(&infos, gate, best_pick);
+        let mut slots: Vec<Option<Cand>> = cands.into_iter().map(Some).collect();
+        let cands: Vec<Cand> = order.iter().filter_map(|&i| slots[i].take()).collect();
+        let place = p.place.unwrap_or(1).clamp(1, 3).min(cands.len());
         let name = p.name.clone().unwrap_or_else(|| "Melody".to_owned());
         let vel = p.velocity.unwrap_or(92);
         let mut commands = Vec::new();
@@ -7256,8 +7283,10 @@ impl GlauxServer {
             });
         }
         let best = &cands[0];
-        let summary = |c: &Cand| {
+        let summary = |(i, c): (usize, &Cand)| {
             json!({
+                "passed": c.crit.score >= gate,
+                "placed": i < place,
                 "seed": c.seed,
                 "form": c.form,
                 "contour": c.contour.name(),
@@ -7288,7 +7317,19 @@ impl GlauxServer {
         v["findings"] = json!(best.crit.findings);
         v["strengths"] = json!(best.crit.strengths);
         v["metrics"] = json!(best.crit.metrics);
-        v["candidates"] = json!(cands.iter().map(summary).collect::<Vec<_>>());
+        v["candidates"] = json!(cands.iter().enumerate().map(summary).collect::<Vec<_>>());
+        v["gate"] = json!(gate);
+        v["passed"] = json!(passed);
+        v["pick"] = json!(if best_pick { "best" } else { "diverse" });
+        if passed == 0 {
+            v["note"] = json!(format!(
+                "足切り({gate} 点)に通った案がありません。点数の最も高い案を置きました。findings を直すか、candidates を増やす・form / contour / rhythm を変えて作り直してください"
+            ));
+        } else if !best_pick {
+            v["note"] = json!(
+                "点数は足切りにだけ使い、通った案を互いに違う順に並べています(先頭を置いた)。点数の差より聴いた印象で選び、place: 2〜3 で聴き比べる。使わない案は消す"
+            );
+        }
         Ok(JsonText(v))
     }
 

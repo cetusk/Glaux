@@ -743,3 +743,126 @@ mod tests {
         assert_eq!(crate::motif::parse_motif(&s).unwrap(), m);
     }
 }
+
+/// 案を選ぶときに見る性質
+#[derive(Clone, Debug)]
+pub struct CandInfo {
+    pub score: u32,
+    pub form: String,
+    pub contour: Contour,
+    /// 動機のリズムの型("x-x-...|..." の形)
+    pub rhythm: String,
+    /// 旋律の音高の列(時間順)
+    pub pitches: Vec<u8>,
+}
+
+/// 2 つの案の違い(0 = 同じ。形式・輪郭・リズムの型・音高の上下の動きの違いを足す。最大 6)
+pub fn candidate_distance(a: &CandInfo, b: &CandInfo) -> f64 {
+    let mut d = 0.0;
+    if a.form != b.form {
+        d += 1.0;
+    }
+    if a.contour != b.contour {
+        d += 1.0;
+    }
+    // リズムの型: 同じ位置の文字が違う割合
+    let (ra, rb): (Vec<char>, Vec<char>) = (a.rhythm.chars().collect(), b.rhythm.chars().collect());
+    let len = ra.len().max(rb.len()).max(1);
+    let diff = (0..len).filter(|&i| ra.get(i) != rb.get(i)).count();
+    d += 2.0 * diff as f64 / len as f64;
+    // 音高の動き: 16 点に並べ直して、平均の高さをそろえてから比べる(半音 6 つの差で 1)
+    let resample = |p: &[u8]| -> Vec<f64> {
+        if p.is_empty() {
+            return vec![0.0; 16];
+        }
+        let mean = p.iter().map(|&x| x as f64).sum::<f64>() / p.len() as f64;
+        (0..16)
+            .map(|k| p[(k * p.len() / 16).min(p.len() - 1)] as f64 - mean)
+            .collect()
+    };
+    let (pa, pb) = (resample(&a.pitches), resample(&b.pitches));
+    let mad = pa.iter().zip(&pb).map(|(x, y)| (x - y).abs()).sum::<f64>() / 16.0;
+    d += 2.0 * (mad / 6.0).min(1.0);
+    d
+}
+
+/// 案を並べる順(置くのは先頭から)と、足切り(点数が `gate` 以上)に通った数。
+/// 点数は足切りにだけ使う: 通った案は、作った順の最初の案から始めて、それまでに選んだ案から最も遠い案を
+/// 順に選ぶ(輪郭・リズム・形式の違う案を聴き比べられるように。点数の最大の案が良い旋律とは限らない)。
+/// 通らなかった案は点数の順で後ろに並べる。`best` なら全部を点数の順に(以前の選び方)。
+/// 通った案が 1 つも無いときも点数の順
+pub fn order_candidates(c: &[CandInfo], gate: u32, best: bool) -> (Vec<usize>, usize) {
+    let by_score =
+        |idx: &mut Vec<usize>| idx.sort_by(|&a, &b| c[b].score.cmp(&c[a].score).then(a.cmp(&b)));
+    let passed: Vec<usize> = (0..c.len()).filter(|&i| c[i].score >= gate).collect();
+    let mut failed: Vec<usize> = (0..c.len()).filter(|&i| c[i].score < gate).collect();
+    by_score(&mut failed);
+    if best || passed.is_empty() {
+        let mut all: Vec<usize> = (0..c.len()).collect();
+        by_score(&mut all);
+        return (all, passed.len());
+    }
+    let mut chosen = vec![passed[0]];
+    let mut rest: Vec<usize> = passed[1..].to_vec();
+    while !rest.is_empty() {
+        let (k, _) = rest
+            .iter()
+            .enumerate()
+            .map(|(k, &i)| {
+                let near = chosen
+                    .iter()
+                    .map(|&j| candidate_distance(&c[i], &c[j]))
+                    .fold(f64::INFINITY, f64::min);
+                (k, near)
+            })
+            .fold((0, f64::MIN), |acc, x| if x.1 > acc.1 { x } else { acc });
+        chosen.push(rest.remove(k));
+    }
+    let n = chosen.len();
+    chosen.extend(failed);
+    (chosen, n)
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn cand(score: u32, form: &str, contour: Contour, rhythm: &str, pitches: &[u8]) -> CandInfo {
+        CandInfo {
+            score,
+            form: form.into(),
+            contour,
+            rhythm: rhythm.into(),
+            pitches: pitches.to_vec(),
+        }
+    }
+
+    #[test]
+    fn passing_candidates_are_ordered_by_difference_not_by_score() {
+        let up = [60u8, 62, 64, 65, 67, 69, 71, 72];
+        let c = vec![
+            // 0: 通る(作った順の最初)
+            cand(72, "sentence", Contour::Arch, "x-x-x-x-x---x---", &up),
+            // 1: 最高点だが 0 とほぼ同じ
+            cand(94, "sentence", Contour::Arch, "x-x-x-x-x---x---", &up),
+            // 2: 通る。0 と形式・輪郭・リズム・動きが違う
+            cand(
+                66,
+                "loop",
+                Contour::Fall,
+                "x..x..x.x..x..x.",
+                &[72, 71, 69, 67, 65, 64, 62, 60],
+            ),
+            // 3: 足切りで落ちる
+            cand(40, "aab", Contour::Rise, "x---x---x---x---", &up),
+        ];
+        let (order, passed) = order_candidates(&c, 60, false);
+        assert_eq!(passed, 3);
+        // 最初は作った順の最初、次は最も違う案、ほぼ同じ高得点の案は後、落ちた案は最後
+        assert_eq!(order, vec![0, 2, 1, 3]);
+        // 以前の選び方: 点数の順
+        assert_eq!(order_candidates(&c, 60, true).0, vec![1, 0, 2, 3]);
+        // 1 つも通らなければ点数の順
+        assert_eq!(order_candidates(&c, 99, false), (vec![1, 0, 2, 3], 0));
+    }
+}

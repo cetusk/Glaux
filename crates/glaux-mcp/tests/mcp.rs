@@ -4902,12 +4902,42 @@ async fn write_melody_picks_the_best_of_several_candidates() {
     assert_eq!(v["bars"], 8, "{v}");
     let cands = v["candidates"].as_array().unwrap();
     assert_eq!(cands.len(), 5);
-    // 点数の高い順。置いたのは 1 番目
+    // 点数は足切りにだけ使う: 通った案が先(違う順)、落ちた案は後ろに点数の順。置いたのは 1 番目
+    let gate = v["gate"].as_u64().unwrap();
+    assert_eq!(gate, 60);
+    let passed = v["passed"].as_u64().unwrap() as usize;
+    assert!(passed >= 1, "{v}");
     let scores: Vec<u64> = cands.iter().map(|c| c["score"].as_u64().unwrap()).collect();
-    assert!(scores.windows(2).all(|w| w[0] >= w[1]), "{scores:?}");
+    assert!(scores[..passed].iter().all(|&s| s >= gate), "{scores:?}");
+    assert!(scores[passed..].iter().all(|&s| s < gate), "{scores:?}");
+    assert!(
+        scores[passed..].windows(2).all(|w| w[0] >= w[1]),
+        "{scores:?}"
+    );
     assert_eq!(v["score"], cands[0]["score"]);
     assert_eq!(v["seed"], cands[0]["seed"]);
-    assert!(v["score"].as_u64().unwrap() >= 70, "{v}");
+    assert_eq!(cands[0]["placed"], true);
+    assert_eq!(cands[1]["placed"], true);
+    assert_eq!(v["pick"], "diverse");
+    // pick: best なら点数の順(以前の選び方)
+    let b = ok_json(
+        &call(
+            &fx,
+            "write_melody",
+            json!({ "track_id": "trk_wml001", "role": "chorus", "chords": "IV | V | iii | vi",
+                    "key": "C major", "bar": 3, "bars": 8, "candidates": 5, "seed": 7, "pick": "best" }),
+        )
+        .await,
+    );
+    let best: Vec<u64> = b["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["score"].as_u64().unwrap())
+        .collect();
+    assert!(best.windows(2).all(|w| w[0] >= w[1]), "{best:?}");
+    assert_eq!(b["score"].as_u64(), best.iter().max().copied());
+    ok_json(&call(&fx, "undo", json!({})).await);
     // 返る動機は develop_motif にそのまま渡せる
     let motif = v["motif"].as_str().unwrap().to_owned();
     assert!(glaux_core::motif::parse_motif(&motif).is_ok(), "{motif}");
