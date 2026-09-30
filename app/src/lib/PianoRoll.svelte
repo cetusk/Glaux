@@ -122,6 +122,11 @@
 
   const KEY_W = 52;
   const RULER_H = 22;
+  /// マーカー(曲の区間)の帯の高さ。マーカーがある曲だけ目盛りの上に出す
+  const MARK_H = 16;
+  const hasMarks = $derived((project.sections?.length ?? 0) > 0);
+  /// 上の固定部分(マーカーの帯 + 小節の目盛り)の高さ
+  const topH = $derived(RULER_H + (hasMarks ? MARK_H : 0));
   // ズーム(Ctrl+ホイール: 横、Shift+ホイール: 縦)
   let pxPerBeat = $state(60);
   let rowH = $state(14);
@@ -323,7 +328,7 @@
     // 見えている幅はクリップより広くならない(短いクリップ・縮小したときに「見えている範囲が窓に
     // 収まっている」が永遠に偽になり、窓を作り直し続けて固まっていた)
     const viewW = Math.max(1, Math.min(el.clientWidth - KEY_W, contentW));
-    const viewH = Math.max(1, Math.min(el.clientHeight - RULER_H, contentH));
+    const viewH = Math.max(1, Math.min(el.clientHeight - topH, contentH));
     const w = Math.min(contentW, viewW + WIN_MARGIN * 2);
     const h = Math.min(contentH, viewH + WIN_MARGIN * 2);
     const visX = el.scrollLeft;
@@ -746,12 +751,12 @@
         e.preventDefault();
         const rect = el.getBoundingClientRect();
         const cy = e.clientY - rect.top;
-        const rowAt = (el.scrollTop + cy - RULER_H) / rowH;
+        const rowAt = (el.scrollTop + cy - topH) / rowH;
         const next = Math.min(30, Math.max(7, rowH + (e.deltaY < 0 ? 2 : -2)));
         if (next === rowH) return;
         rowH = next;
         sveltick().then(() => {
-          el.scrollTop = Math.max(0, rowAt * next - (cy - RULER_H));
+          el.scrollTop = Math.max(0, rowAt * next - (cy - topH));
         });
       }
     };
@@ -1357,7 +1362,7 @@
     // 行が見えていなければスクロール
     if (scroller) {
       const y = (127 - pitch) * rowH;
-      if (y < scroller.scrollTop + RULER_H || y > scroller.scrollTop + scroller.clientHeight - rowH * 2) {
+      if (y < scroller.scrollTop + topH || y > scroller.scrollTop + scroller.clientHeight - rowH * 2) {
         scroller.scrollTop = Math.max(0, y - scroller.clientHeight / 2);
       }
     }
@@ -1379,7 +1384,7 @@
     drumHighlight = pitch;
     if (scroller) {
       const y = (127 - pitch) * rowH;
-      if (y < scroller.scrollTop + RULER_H || y > scroller.scrollTop + scroller.clientHeight - rowH * 2) {
+      if (y < scroller.scrollTop + topH || y > scroller.scrollTop + scroller.clientHeight - rowH * 2) {
         scroller.scrollTop = Math.max(0, y - scroller.clientHeight / 2);
       }
     }
@@ -1445,6 +1450,24 @@
     if (!currentClip || !onSeek) return;
     onSeek(currentClip.start + e.offsetX / pxPerTick);
   }
+
+  // ルーラーの上に出すマーカー(区間)。クリップに掛かるものを、クリップの頭からの位置で
+  const rollMarks = $derived.by(() => {
+    const secs = [...(project.sections ?? [])].sort((a, b) => a.tick - b.tick);
+    if (!clip || secs.length === 0) return [];
+    const c0 = clip.start;
+    const c1 = clip.start + clip.length;
+    const out: { tick: number; name: string; x: number; w: number; bar: number }[] = [];
+    secs.forEach((m, i) => {
+      const end = secs[i + 1]?.tick ?? Number.MAX_SAFE_INTEGER;
+      const a = Math.max(m.tick, c0);
+      const b = Math.min(end, c1);
+      if (b <= a) return;
+      const bar = songBars.filter((x) => x.tick <= m.tick).length;
+      out.push({ tick: m.tick, name: m.name, x: (a - c0) * pxPerTick, w: (b - a) * pxPerTick, bar });
+    });
+    return out;
+  });
 
   // ルーラーに出す小節(小節頭がクリップ内にあるもの。番号は曲の絶対小節)
   const rulerBars = $derived(
@@ -1738,12 +1761,25 @@
       <!-- Flex 行構成: grid アイテムの sticky は自分のグリッド領域内でしか
            動けず無効化されるため、行(上固定)+ 列(左固定)で組む -->
       <div class="grid" style="width:{KEY_W + contentW}px">
-        <div class="top-row" style="height:{RULER_H}px">
+        <div class="top-row" style="height:{topH}px">
           <div class="corner" style="width:{KEY_W}px"></div>
           <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
           <div class="ruler" style="width:{contentW}px" onclick={onRulerClick}>
+            <!-- マーカー(曲の区間)。クリップに掛かる所だけ、ピアノロールの横の縮尺で。見るだけ(編集はタイムライン) -->
+            {#if hasMarks && clip}
+              {#each rollMarks as m (m.tick)}
+                <span
+                  class="roll-mark"
+                  style="left:{m.x}px;width:{m.w}px;height:{MARK_H}px"
+                  title={`${m.name}(${m.bar} 小節目〜)`}>{m.name}</span
+                >
+              {/each}
+            {/if}
             {#each rulerBars as bar (bar.index)}
-              <span class="bar-no" style="left:{(bar.tick - (clip?.start ?? 0)) * pxPerTick}px">
+              <span
+                class="bar-no"
+                style="left:{(bar.tick - (clip?.start ?? 0)) * pxPerTick}px;top:{hasMarks ? MARK_H : 0}px;height:{RULER_H}px"
+              >
                 {bar.index + 1}{#if bar.sigChange}<span class="sig-chip">{bar.num}/{bar.den}</span>{/if}
               </span>
             {/each}
@@ -2038,6 +2074,23 @@
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     cursor: pointer;
+  }
+
+  /* マーカーの帯(タイムラインの .section-band と同じ見た目。名前はタイムラインと被らせない) */
+  .roll-mark {
+    position: absolute;
+    top: 0;
+    box-sizing: border-box;
+    padding: 0 6px;
+    font-size: 10px;
+    line-height: 16px;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-left: 2px solid var(--accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
   }
 
   .bar-no {

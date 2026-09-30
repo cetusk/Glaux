@@ -1595,7 +1595,9 @@
   .roll-split {
     position: absolute;
     inset: 0;
-    z-index: 5;
+    /* タイムラインのマーカーの行(z-index 7)・小節の行より前に出す(見出しの行 = 閉じる・スナップが隠れていた)。
+       メニュー(30)よりは後ろ */
+    z-index: 8;
     display: flex;
     flex-direction: column;
   }
