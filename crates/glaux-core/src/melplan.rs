@@ -54,6 +54,25 @@ pub struct SectionSpec {
     pub bars: u32,
     /// 盛り上がり 0〜10(無ければ 5)
     pub energy: Option<f32>,
+    /// 伴奏の混み具合(旋律の音域で最も細かく刻んでいるトラック)
+    pub busy: Option<Busy>,
+}
+
+/// 旋律の音域と重なる伴奏のトラック
+#[derive(Clone, Debug)]
+pub struct Busy {
+    pub track: String,
+    pub low: u8,
+    pub high: u8,
+    /// 1 拍あたりの打点の数
+    pub per_beat: f64,
+}
+
+/// 名前の数字を除いた部分(「ドロップ1」と「ドロップ2」は同じ系統)
+fn stem(name: &str) -> &str {
+    name.trim_end_matches(|c: char| {
+        c.is_ascii_digit() || c.is_whitespace() || ('０'..='９').contains(&c)
+    })
 }
 
 /// 区間の並びから、区間ごとの計画を提案する。`low`〜`high` は旋律の音域、`breath` はジャンルが息継ぎを
@@ -140,7 +159,12 @@ pub fn propose(
         if n >= 3 && offsets.windows(2).all(|w| w[0] == w[1]) {
             offsets[1] = if offsets[1] == 0.5 { -0.5 } else { 0.5 };
         }
-        let d0 = 0.9 + 0.13 * e + if breath { 0.0 } else { 0.25 };
+        let mut d0 = 0.9 + 0.13 * e + if breath { 0.0 } else { 0.25 };
+        // 伴奏が旋律の音域を細かく埋めているなら、旋律は疎にして伸ばす・裏で入る(埋もれない・ぶつからない)
+        let crowded = s.busy.as_ref().filter(|b| b.per_beat >= 2.5);
+        if crowded.is_some() {
+            d0 = d0.min(1.4);
+        }
         let peak_frac = if e >= 7.0 {
             0.75
         } else if e >= 4.0 {
@@ -203,6 +227,11 @@ pub fn propose(
         } else {
             &["sparse", "sustain"]
         };
+        let families: &[&str] = if crowded.is_some() {
+            &["sustain", "syncopated"]
+        } else {
+            families
+        };
         let mut family = rng.pick(families).to_string();
         if prev_family.as_deref() == Some(family.as_str()) {
             family = families
@@ -219,12 +248,50 @@ pub fn propose(
             energy: s.energy,
             register,
             density: phrases.iter().filter_map(|p| p.density).collect(),
-            rhythm_family: Some(family),
+            rhythm_family: Some(family.clone()),
             phrases,
             handoff: None,
             like: None,
-            note: None,
+            note: crowded.map(|b| {
+                format!(
+                    "伴奏: {} が {}〜{} を 1 拍 {:.1} 音で埋めている → 旋律は疎に({} の系統)",
+                    b.track,
+                    note_name(b.low),
+                    note_name(b.high),
+                    b.per_beat,
+                    family
+                )
+            }),
         });
+    }
+    // 同じ系統の名前で同じ長さの後の区間(ドロップ1 → ドロップ2)は、前の区間の句の並びを引き継ぐ
+    // (realize で前の区間の骨格とリズムを写し、音域の軌跡へ上げ、最後の句を作り直す)
+    for si in 1..out.len() {
+        let found = (0..si).find(|&sj| {
+            stem(&out[sj].name) == stem(&out[si].name)
+                && !stem(&out[si].name).is_empty()
+                && out[sj].bars == out[si].bars
+                && out[sj].name != out[si].name
+        });
+        if let Some(sj) = found {
+            let phrases = out[sj].phrases.clone();
+            let name = out[sj].name.clone();
+            let sec = &mut out[si];
+            let n = phrases.len();
+            sec.phrases = phrases
+                .into_iter()
+                .enumerate()
+                .map(|(k, mut p)| {
+                    p.skeleton.clear();
+                    if k + 1 == n {
+                        p.transform = vec!["tail".to_owned()];
+                    }
+                    p
+                })
+                .collect();
+            sec.density = sec.phrases.iter().filter_map(|p| p.density).collect();
+            sec.like = Some(name);
+        }
     }
     // 山の区間(盛り上がりが最大)の音域の中心の最高より、ほかの区間は 2 半音以上低く
     if let Some(pi) = (0..out.len()).max_by(|&a, &b| {
@@ -523,6 +590,8 @@ pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
     };
     let mut out = Realized::default();
     let mut prev_pitch: Option<u8> = None;
+    // 作った区間の句(後の区間が like で写す)
+    let mut made_sections: Vec<(String, Vec<Made>)> = Vec::new();
     // 山の区間(盛り上がりが最大。同じなら後ろ)の最高音より、ほかの区間は低く(山で新しい高さを出す)
     let peak = inp
         .plan
@@ -613,15 +682,34 @@ pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
                 .density
                 .unwrap_or_else(|| sec.density.get(k).copied().unwrap_or(1.5));
             let (_, span) = center_at(bar_at);
-            let reference = p
-                .like
-                .as_ref()
-                .and_then(|l| {
-                    made.iter().rev().find(|(lab, _)| {
-                        lab.trim_end_matches(['′', '″', '‴']) == l.trim_end_matches(['′', '″', '‴'])
-                    })
+            // 区間ごと写す(ドロップ2 = ドロップ1 の発展): 前の区間の同じ番号の句。この呼び出しで作っていなければ
+            // 計画に書き戻した骨格から
+            let from_section: Option<Made> = sec.like.as_ref().and_then(|name| {
+                if let Some((_, v)) = made_sections.iter().find(|(n, _)| n == name) {
+                    return v.get(k).cloned();
+                }
+                let other = inp.plan.sections.iter().find(|x| &x.name == name)?;
+                let q = other.phrases.get(k)?;
+                let anchors = parse_skeleton(&q.skeleton).ok()?;
+                (!anchors.is_empty()).then(|| Made {
+                    anchors,
+                    fills: vec![],
+                    inner: vec![],
+                    len,
                 })
-                .map(|x| x.1.clone());
+            });
+            let by_section = from_section.is_some() && !inp.regenerate_skeleton;
+            let reference = from_section.filter(|_| by_section).or_else(|| {
+                p.like
+                    .as_ref()
+                    .and_then(|l| {
+                        made.iter().rev().find(|(lab, _)| {
+                            lab.trim_end_matches(['′', '″', '‴'])
+                                == l.trim_end_matches(['′', '″', '‴'])
+                        })
+                    })
+                    .map(|x| x.1.clone())
+            });
             let target = |x: f64| -> f64 {
                 // 句の中でも音域の軌跡の点を通る(句の途中の山を落とさない)
                 let (c, _) = center_at(bar_at + x * p.bars);
@@ -667,7 +755,8 @@ pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
                         .map(|i| target(i as f64 / r.anchors.len().max(1) as f64))
                         .sum::<f64>()
                         / r.anchors.len().max(1) as f64;
-                    let shift_steps = if p.transform.iter().any(|t| t == "shift")
+                    let shift_steps = if by_section
+                        || p.transform.iter().any(|t| t == "shift")
                         || (want - rmean).abs() >= 2.0
                     {
                         ((want - rmean) / 1.7).round() as i32
@@ -835,6 +924,7 @@ pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
                 },
             ));
         }
+        made_sections.push((sec.name.clone(), made.into_iter().map(|x| x.1).collect()));
     }
     out.notes.sort_by_key(|n| (n.pos, n.pitch));
     out.notes.dedup_by_key(|n| n.pos);
@@ -1132,12 +1222,14 @@ mod tests {
                     start_bar: 1,
                     bars: 8,
                     energy: Some(3.0),
+                    busy: None,
                 },
                 SectionSpec {
                     name: "Drop".into(),
                     start_bar: 9,
                     bars: 16,
                     energy: Some(9.0),
+                    busy: None,
                 },
             ],
             69,
@@ -1281,5 +1373,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_crowded_accompaniment_thins_the_line_and_drop2_develops_drop1() {
+        let busy = Busy {
+            track: "Arp".into(),
+            low: 69,
+            high: 88,
+            per_beat: 3.0,
+        };
+        let spec = |name: &str, start: u32, e: f32| SectionSpec {
+            name: name.into(),
+            start_bar: start,
+            bars: 8,
+            energy: Some(e),
+            busy: Some(busy.clone()),
+        };
+        let sections = propose(
+            &[
+                spec("ドロップ1", 1, 8.0),
+                spec("ブレイク", 9, 4.0),
+                spec("ドロップ2", 17, 10.0),
+            ],
+            69,
+            86,
+            false,
+            Key::parse("A minor"),
+            5,
+        );
+        let d1 = &sections[0];
+        let d2 = &sections[2];
+        assert!(d1.density.iter().all(|&d| d <= 1.41), "{:?}", d1.density);
+        assert!(matches!(
+            d1.rhythm_family.as_deref(),
+            Some("sustain" | "syncopated")
+        ));
+        assert!(d1.note.as_deref().is_some_and(|n| n.contains("Arp")));
+        assert_eq!(d2.like.as_deref(), Some("ドロップ1"));
+        assert_eq!(d2.phrases.len(), d1.phrases.len());
+        let plan = MelodyPlan {
+            sections,
+            ..Default::default()
+        };
+        let r = realize_plan(&plan, 5);
+        // ドロップ2 の最初の句の骨格はドロップ1 の最初の句と同じ動き(音程の並び)
+        let steps = |sec: usize| -> Vec<i32> {
+            let sk = r
+                .skeletons
+                .iter()
+                .find(|x| x.section == sec && x.phrase == 0)
+                .unwrap();
+            let a = parse_skeleton(&sk.skeleton).unwrap();
+            a.windows(2)
+                .map(|w| w[1].1 as i32 - w[0].1 as i32)
+                .collect()
+        };
+        let (a, b) = (steps(0), steps(2));
+        let same = a
+            .iter()
+            .zip(&b)
+            .filter(|(x, y)| (**x - **y).abs() <= 1)
+            .count();
+        assert!(same * 3 >= a.len().min(b.len()) * 2, "{a:?} {b:?}");
     }
 }

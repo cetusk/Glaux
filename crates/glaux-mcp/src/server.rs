@@ -2063,6 +2063,7 @@ fn song_sections(
             start_bar: lo,
             bars: n,
             energy: None,
+            busy: None,
         }];
     }
     let last_bar = bar_idx(end.saturating_sub(1)) + 1;
@@ -2078,9 +2079,64 @@ fn song_sections(
                 start_bar: s,
                 bars: e - s,
                 energy: m.energy,
+                busy: None,
             })
         })
         .collect()
+}
+
+/// 区間の中で、旋律の音域(`low`〜`high`)と 5 半音以上重なる伴奏のうち最も細かく刻んでいるトラック。
+/// ドラム・ミュート・旋律の計画から作ったクリップのあるトラック(旋律の案)は除く
+fn accompaniment_busy(
+    project: &glaux_core::Project,
+    target: &glaux_core::TrackId,
+    start_bar: u32,
+    bars: u32,
+    low: u8,
+    high: u8,
+) -> Option<glaux_core::melplan::Busy> {
+    let (a, len) = glaux_core::arrange::bar_range(project, start_bar, bars)?;
+    let b = a + len;
+    let beats = len as f64 / glaux_core::time::PPQ as f64;
+    project
+        .tracks
+        .iter()
+        .filter(|t| {
+            &t.id != target
+                && t.kind == glaux_core::TrackKind::Midi
+                && !t.mute
+                && !is_drum_track(t)
+                && !t
+                    .clips
+                    .iter()
+                    .any(|c| project.plan_refs.contains_key(&c.id))
+        })
+        .filter_map(|t| {
+            let mut onsets = std::collections::BTreeSet::new();
+            let mut ps: Vec<u8> = Vec::new();
+            for c in &t.clips {
+                for n in c.playback_notes() {
+                    let at = c.start.0 + n.pos.0;
+                    if a <= at && at < b {
+                        onsets.insert(at);
+                        ps.push(n.pitch);
+                    }
+                }
+            }
+            if ps.len() < 4 {
+                return None;
+            }
+            ps.sort_unstable();
+            let (lo, hi) = (ps[ps.len() / 10], ps[ps.len() * 9 / 10]);
+            let overlap = hi.min(high) as i32 - lo.max(low) as i32;
+            (overlap >= 5).then(|| glaux_core::melplan::Busy {
+                track: t.name.clone(),
+                low: lo,
+                high: hi,
+                per_beat: onsets.len() as f64 / beats.max(1.0),
+            })
+        })
+        .max_by(|x, y| x.per_beat.total_cmp(&y.per_beat))
 }
 
 /// 計画の見出し(区間ごとに 1 行)
@@ -2126,7 +2182,15 @@ fn plan_outline(p: &glaux_core::plan::MelodyPlan) -> Vec<String> {
                 s.density,
                 s.rhythm_family.as_deref().unwrap_or("-"),
                 ph.join(" ")
-            )
+            ) + &s
+                .like
+                .as_ref()
+                .map(|l| format!(" / 「{l}」の句を写して発展"))
+                .unwrap_or_default()
+                + &s.note
+                    .as_ref()
+                    .map(|n| format!(" / {n}"))
+                    .unwrap_or_default()
         })
         .collect()
 }
@@ -7341,12 +7405,17 @@ impl GlauxServer {
                     start_bar: s.start_bar.max(1),
                     bars: s.bars.max(1),
                     energy: s.energy,
+                    busy: None,
                 })
                 .collect(),
             _ => song_sections(&project, p.bar, p.bars),
         };
         if sections.is_empty() {
             return Err("区間がありません。sections か bar / bars を指定してください".to_owned());
+        }
+        let mut sections = sections;
+        for s in &mut sections {
+            s.busy = accompaniment_busy(&project, &tid, s.start_bar, s.bars, low, high);
         }
         let seed = p.seed.unwrap_or(sections[0].start_bar as u64);
         let body = plan::MelodyPlan {
