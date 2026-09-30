@@ -451,3 +451,115 @@ fn large_history_is_compacted_by_size() {
     assert!(reopened.project().track(&ids[0]).is_some());
     assert!(reopened.project().track(&ids[39]).is_some());
 }
+
+/// 中身のある曲(デモ曲・曲の写し)
+fn song_with_tracks(n: usize) -> (glaux_core::Project, Vec<TrackId>) {
+    let mut p = glaux_core::Project::new("写し");
+    let mut ids = Vec::new();
+    for i in 0..n {
+        let id = TrackId::new();
+        p.tracks
+            .push(Track::new(id.clone(), format!("元{i}"), TrackKind::Midi));
+        ids.push(id);
+    }
+    (p, ids)
+}
+
+#[test]
+fn a_song_created_with_content_keeps_its_history_on_reopen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Demo.glaux");
+    let dir_s = dir.to_str().unwrap();
+    let (p, ids) = song_with_tracks(2);
+    glaux_mcp::store::create_project_from(&dir, p).unwrap();
+    assert!(dir.join("history.base.json").exists(), "起点を書く");
+    let (store, mut session) = Store::open_or_create(dir_s).unwrap();
+    // 元からあるトラックを消す編集(空の曲からは再生できない)
+    session
+        .apply(
+            Command::RemoveTrack { id: ids[0].clone() },
+            Author::Human,
+            "元0 を消す",
+        )
+        .unwrap();
+    store.save_after_change(&session).unwrap();
+    drop(store);
+    for _ in 0..2 {
+        let (_s, reopened) = Store::open_or_create(dir_s).unwrap();
+        assert_eq!(reopened.history().len(), 1);
+        assert!(reopened.project().track(&ids[0]).is_none());
+        assert!(!dir.join("history.jsonl.orphan").exists());
+    }
+}
+
+#[test]
+fn history_without_a_start_point_is_recovered_by_working_backwards() {
+    // 起点(history.base.json)を書かずに中身のある曲の上へ履歴を積んだ状態(以前の不具合で作られた曲)
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Rev.glaux");
+    let dir_s = dir.to_str().unwrap();
+    let (p, ids) = song_with_tracks(3);
+    glaux_mcp::store::create_project_from(&dir, p).unwrap();
+    let (store, mut session) = Store::open_or_create(dir_s).unwrap();
+    session
+        .apply(
+            Command::RemoveTrack { id: ids[1].clone() },
+            Author::Human,
+            "元1 を消す",
+        )
+        .unwrap();
+    store.save_after_change(&session).unwrap();
+    let (new_id, cmd) = add_track_cmd("新");
+    session.apply(cmd, Author::Human, "新を足す").unwrap();
+    store.save_after_change(&session).unwrap();
+    drop(store);
+    fs::remove_file(dir.join("history.base.json")).unwrap();
+    // 開く: 空の曲からは再生できないが、project.json から起点を逆算して履歴を生かす
+    let (store, mut reopened) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(reopened.history().len(), 2);
+    assert!(dir.join("history.base.json").exists());
+    assert!(!dir.join("history.jsonl.orphan").exists());
+    // 元に戻せる
+    reopened.undo().unwrap().unwrap();
+    reopened.undo().unwrap().unwrap();
+    assert!(reopened.project().track(&ids[1]).is_some());
+    assert!(reopened.project().track(&new_id).is_none());
+    store.save_after_change(&reopened).unwrap();
+    drop(store);
+    let (_s, again) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(again.history().len(), 0);
+    assert!(again.project().track(&ids[1]).is_some());
+}
+
+#[test]
+fn after_an_unusable_history_is_set_aside_the_new_history_survives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Song.glaux");
+    let dir_s = dir.to_str().unwrap();
+    let ids = project_with_tracks(dir_s, 2);
+    // 読めない履歴
+    fs::write(dir.join("history.jsonl"), "not json\n").unwrap();
+    fs::write(dir.join("history.jsonl.orphan"), "前の退避\n").unwrap();
+    let (store, mut session) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(session.history().len(), 0);
+    // 前の退避は上書きしない
+    assert_eq!(
+        fs::read_to_string(dir.join("history.jsonl.orphan")).unwrap(),
+        "前の退避\n"
+    );
+    assert!(dir.join("history.jsonl.orphan.2").exists());
+    // 新しい履歴(元からあるトラックを消す)は、次に開いても残る
+    session
+        .apply(
+            Command::RemoveTrack { id: ids[0].clone() },
+            Author::Human,
+            "消す",
+        )
+        .unwrap();
+    store.save_after_change(&session).unwrap();
+    drop(store);
+    let (_s, reopened) = Store::open_or_create(dir_s).unwrap();
+    assert_eq!(reopened.history().len(), 1);
+    assert!(reopened.project().track(&ids[0]).is_none());
+    assert!(!dir.join("history.jsonl.orphan.3").exists());
+}

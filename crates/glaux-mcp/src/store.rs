@@ -177,6 +177,8 @@ pub fn create_project_from(dir: &Path, project: Project) -> Result<()> {
         snapshot: RefCell::new(None),
         revision: Cell::new(None),
     };
+    // 履歴は空の曲からではなく、この中身から始まる(起点を書かないと、開き直したときに再生できない)
+    store.write_start(&project)?;
     store.save(&Session::new(project))
 }
 
@@ -237,7 +239,12 @@ impl Store {
                 }
                 session
             }
-            None => Session::new(project),
+            None => {
+                // 履歴が無い(か使えずに退避した)ので、今の曲を起点に新しい履歴を始める。
+                // 起点を書いておかないと、次に開いたとき空の曲から再生しようとして失敗し、また退避してしまう
+                store.write_start(&project)?;
+                Session::new(project)
+            }
         };
         store.saved_entries.set(session.history().len());
         if store.saved_lines.borrow().is_none() {
@@ -286,13 +293,28 @@ impl Store {
         }
 
         let base_path = self.base_path();
+        let had_base = base_path.exists();
         let orphan = |reason: &str| {
+            // 前の退避を上書きしない(history.jsonl.orphan、.orphan.2、…)
+            let slot = (1..)
+                .map(|k: u32| {
+                    if k == 1 {
+                        ".orphan".to_owned()
+                    } else {
+                        format!(".orphan.{k}")
+                    }
+                })
+                .find(|suf| !self.dir.join(format!("history.jsonl{suf}")).exists())
+                .unwrap_or_else(|| ".orphan".to_owned());
             tracing::warn!(
-                "history.jsonl を再構築に使えません({reason})。history.jsonl.orphan に退避します"
+                "history.jsonl を再構築に使えません({reason})。history.jsonl{slot} に退避します"
             );
-            let _ = fs::rename(&history_path, self.dir.join("history.jsonl.orphan"));
+            let _ = fs::rename(&history_path, self.dir.join(format!("history.jsonl{slot}")));
             if base_path.exists() {
-                let _ = fs::rename(&base_path, self.dir.join("history.base.json.orphan"));
+                let _ = fs::rename(
+                    &base_path,
+                    self.dir.join(format!("history.base.json{slot}")),
+                );
             }
         };
 
@@ -353,30 +375,49 @@ impl Store {
             base
         };
 
-        let mut session = match Session::replay(base, entries) {
-            Ok(s) => s,
-            Err(e) => {
-                orphan(&format!("リプレイ失敗: {e}"));
-                return None;
-            }
-        };
-        for step in 0..=RECOVER_STEPS {
-            if session.project() == expected {
-                if step > 0 {
-                    tracing::warn!(
-                        "履歴が project.json より {step} 手先にありました(保存の途中で落ちた)。\
-                         その手は「やり直し」で戻せます"
-                    );
-                    repaired = true;
+        let replayed = Session::replay(base, entries.clone());
+        let reason = match replayed {
+            Ok(session) => match settle(session, expected) {
+                Some((session, step)) => {
+                    if step > 0 {
+                        tracing::warn!(
+                            "履歴が project.json より {step} 手先にありました(保存の途中で落ちた)。\
+                             その手は「やり直し」で戻せます"
+                        );
+                        repaired = true;
+                    }
+                    return Some((session, repaired));
                 }
-                return Some((session, repaired));
-            }
-            if step == RECOVER_STEPS || !matches!(session.undo(), Ok(Some(_))) {
-                break;
+                None => "再構築結果が project.json と一致しない".to_owned(),
+            },
+            Err(e) => format!("リプレイ失敗: {e}"),
+        };
+        // 起点が書かれていない(中身のある曲から始まった履歴。デモ曲・曲の写しなど)なら、今の project.json から
+        // 各編集の逆コマンドを後ろから当てて起点を逆算し、そこから再生して一致すれば履歴を生かす(起点を書いて直す)
+        if !had_base {
+            if let Some((session, step, start)) = reverse_start(expected, &entries) {
+                let first = entries.first().map(|e| e.id.to_string());
+                match write_base(&start, first.as_deref())
+                    .and_then(|b| write_atomic(&base_path, b.as_bytes()))
+                {
+                    Ok(()) => {
+                        tracing::warn!(
+                            "履歴の起点が無かったので、project.json から逆算して history.base.json に書きました"
+                        );
+                        return Some((session, repaired || step > 0));
+                    }
+                    Err(e) => tracing::warn!("history.base.json を書けません: {e:#}"),
+                }
             }
         }
-        orphan("再構築結果が project.json と一致しない");
+        orphan(&reason);
         None
+    }
+
+    /// 履歴の起点を書く(履歴が空のまま、この曲の中身から始まるとき)
+    fn write_start(&self, project: &Project) -> Result<()> {
+        let base_json = write_base(project, None)?;
+        write_atomic(&self.base_path(), base_json.as_bytes())
     }
 
     /// `project.json` と `history.jsonl` を保存する(temp + rename で原子的に)。
@@ -869,6 +910,47 @@ impl Drop for ProjectWriter {
 struct BaseFile {
     first_entry: Option<String>,
     project: serde_json::Value,
+}
+
+/// 再生した結果を project.json に合わせる: 履歴が最大 [`RECOVER_STEPS`] 手先にあるなら、その手を undo して
+/// 一致させる(redo できる形で残す)。一致した手数を返す
+fn settle(mut session: Session, expected: &Project) -> Option<(Session, usize)> {
+    for step in 0..=RECOVER_STEPS {
+        if session.project() == expected {
+            return Some((session, step));
+        }
+        if step == RECOVER_STEPS || !matches!(session.undo(), Ok(Some(_))) {
+            break;
+        }
+    }
+    None
+}
+
+/// 起点の逆算: `expected`(project.json)から、履歴の各編集の逆コマンドを後ろから当てて起点を求め、そこから全部を
+/// 再生して project.json と一致するか確かめる。project.json が最後の k 手ぶん遅れている(保存の途中で落ちた)
+/// 場合も、k を 0 から [`RECOVER_STEPS`] まで試す。一致すれば (セッション, k, 起点)
+fn reverse_start(
+    expected: &Project,
+    entries: &[glaux_core::HistoryEntry],
+) -> Option<(Session, usize, Project)> {
+    let n = entries.len();
+    for k in 0..=RECOVER_STEPS.min(n) {
+        let mut start = expected.clone();
+        if entries[..n - k]
+            .iter()
+            .rev()
+            .any(|e| start.apply(&e.inverse).is_err())
+        {
+            continue;
+        }
+        let Ok(session) = Session::replay(start.clone(), entries.to_vec()) else {
+            continue;
+        };
+        if let Some((session, step)) = settle(session, expected) {
+            return Some((session, step, start));
+        }
+    }
+    None
 }
 
 fn write_base(base: &Project, first_entry: Option<&str>) -> Result<String> {
