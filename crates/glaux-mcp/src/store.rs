@@ -228,8 +228,13 @@ impl Store {
         let project = Project::from_json(&json).context("project.json のパースに失敗")?;
 
         // 同じ種類の指摘は 1 行にまとめる(ノートごとに 1 行ずつ出すと何百行にもなる)
-        for line in Project::summarize_issues(&project.validate()) {
-            tracing::warn!("project.json の検査: {line}");
+        for (severity, line) in Project::summarize_issues(&project.validate()) {
+            match severity {
+                glaux_core::validate::Severity::Info => {
+                    tracing::info!("project.json の検査: {line}")
+                }
+                _ => tracing::warn!("project.json の検査: {line}"),
+            }
         }
 
         let session = match store.try_replay(&project) {

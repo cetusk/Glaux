@@ -9,6 +9,8 @@ use std::collections::HashSet;
 pub enum Severity {
     Error,
     Warning,
+    /// 問題ではないが知らせておくこと(クリップを短くして外に残ったノートなど)
+    Info,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -27,6 +29,12 @@ impl Issue {
     fn warn(msg: impl Into<String>) -> Self {
         Issue {
             severity: Severity::Warning,
+            message: msg.into(),
+        }
+    }
+    fn info(msg: impl Into<String>) -> Self {
+        Issue {
+            severity: Severity::Info,
             message: msg.into(),
         }
     }
@@ -141,8 +149,9 @@ impl Project {
                                     n.id
                                 )));
                             }
+                            // クリップを短くすると外にノートが残る(鳴らないだけで、延ばせば戻る)。普通の編集の結果
                             if n.pos >= c.length {
-                                issues.push(Issue::warn(format!(
+                                issues.push(Issue::info(format!(
                                     "note {} starts beyond clip {} end",
                                     n.id, c.id
                                 )));
@@ -177,8 +186,8 @@ impl Project {
     }
 
     /// 検査の結果を、同じ種類ごとに 1 行にまとめる(ログ向け)。ノートの ID だけが違う指摘は 1 行にし、
-    /// 該当するノートの ID を並べる。行の順は最初に出た順
-    pub fn summarize_issues(issues: &[Issue]) -> Vec<String> {
+    /// 該当するノートの ID を並べる。行の順は最初に出た順。(重さ, 行)
+    pub fn summarize_issues(issues: &[Issue]) -> Vec<(Severity, String)> {
         let mut groups: Vec<(String, &Severity, Vec<String>)> = Vec::new();
         for i in issues {
             let mut ids = Vec::new();
@@ -212,6 +221,7 @@ impl Project {
                 let kind = match sev {
                     Severity::Error => "エラー",
                     Severity::Warning => "警告",
+                    Severity::Info => "情報",
                 };
                 if ids.len() <= 1 {
                     // まとめるものが無ければ元の文のまま
@@ -219,12 +229,15 @@ impl Project {
                         Some(id) => template.replacen("<note>", id, 1),
                         None => template,
                     };
-                    format!("{kind}: {msg}")
+                    (sev.clone(), format!("{kind}: {msg}"))
                 } else {
-                    format!(
-                        "{kind} {} 件: {template}(該当: {})",
-                        ids.len(),
-                        ids.join(", ")
+                    (
+                        sev.clone(),
+                        format!(
+                            "{kind} {} 件: {template}(該当: {})",
+                            ids.len(),
+                            ids.join(", ")
+                        ),
                     )
                 }
             })
@@ -245,21 +258,53 @@ mod tests {
     #[test]
     fn issues_of_the_same_kind_become_one_line_with_the_places() {
         let issues = vec![
-            Issue::warn("note nt_aaaaaa starts beyond clip clp_prc001 end"),
+            Issue::info("note nt_aaaaaa starts beyond clip clp_prc001 end"),
             Issue::error("clip clp_x: length is 0"),
-            Issue::warn("note nt_bbbbbb starts beyond clip clp_prc001 end"),
-            Issue::warn("note nt_cccccc starts beyond clip clp_other end"),
-            Issue::warn("note nt_dddddd starts beyond clip clp_prc001 end"),
+            Issue::info("note nt_bbbbbb starts beyond clip clp_prc001 end"),
+            Issue::info("note nt_cccccc starts beyond clip clp_other end"),
+            Issue::info("note nt_dddddd starts beyond clip clp_prc001 end"),
         ];
-        let lines = Project::summarize_issues(&issues);
+        let lines: Vec<String> = Project::summarize_issues(&issues)
+            .into_iter()
+            .map(|x| x.1)
+            .collect();
         assert_eq!(
             lines,
             vec![
-                "警告 3 件: note <note> starts beyond clip clp_prc001 end(該当: nt_aaaaaa, nt_bbbbbb, nt_dddddd)"
+                "情報 3 件: note <note> starts beyond clip clp_prc001 end(該当: nt_aaaaaa, nt_bbbbbb, nt_dddddd)"
                     .to_owned(),
                 "エラー: clip clp_x: length is 0".to_owned(),
-                "警告: note nt_cccccc starts beyond clip clp_other end".to_owned(),
+                "情報: note nt_cccccc starts beyond clip clp_other end".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn notes_left_outside_a_shortened_clip_are_only_info() {
+        let mut p = Project::new("t");
+        let mut t = crate::model::Track::new(crate::TrackId::new(), "t", TrackKind::Midi);
+        let mut c = crate::model::Clip::new_midi(crate::ClipId::new(), "c", Tick(0), Tick(PPQ * 4));
+        if let Some(ns) = c.notes_mut() {
+            ns.push(crate::model::Note {
+                id: crate::NoteId::new(),
+                pos: Tick(PPQ * 8),
+                dur: Tick(PPQ),
+                pitch: 60,
+                vel: 100,
+                articulation: Default::default(),
+                pitch_curve: vec![],
+                glide_ms: None,
+                vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
+                condition: None,
+            });
+        }
+        t.clips.push(c);
+        p.tracks.push(t);
+        let issues = p.validate();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].severity, Severity::Info);
+        assert!(p.is_valid());
     }
 }
