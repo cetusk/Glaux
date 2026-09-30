@@ -2622,7 +2622,16 @@ fn melody_chords(
     let others: Vec<glaux_core::TrackId> = project
         .tracks
         .iter()
-        .filter(|t| &t.id != tid && !is_drum_track(t))
+        // ミュート中のトラックと旋律の案(計画から作ったクリップのあるトラック)は和音の材料にしない
+        .filter(|t| {
+            &t.id != tid
+                && !is_drum_track(t)
+                && !t.mute
+                && !t
+                    .clips
+                    .iter()
+                    .any(|c| project.plan_refs.contains_key(&c.id))
+        })
         .map(|t| t.id.clone())
         .collect();
     let h = glaux_core::harmony::analyze(project, Some(&others), None);

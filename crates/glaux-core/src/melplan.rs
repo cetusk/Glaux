@@ -681,6 +681,12 @@ pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
             let density = p
                 .density
                 .unwrap_or_else(|| sec.density.get(k).copied().unwrap_or(1.5));
+            // 伸ばす・休む系統は、計画の密度が高くても音を増やしすぎない
+            let density = match family {
+                "sustain" => density.min(1.0),
+                "sparse" => density.min(0.7),
+                _ => density,
+            };
             let (_, span) = center_at(bar_at);
             // 区間ごと写す(ドロップ2 = ドロップ1 の発展): 前の区間の同じ番号の句。この呼び出しで作っていなければ
             // 計画に書き戻した骨格から
@@ -865,7 +871,15 @@ pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
                         let d0 = sorted.degree(pch as i32);
                         steps.iter().map(|&x| sorted.pitch(d0 + x)).collect()
                     }
-                    None => surface(pch, p2, offs.len(), came, &sorted, &mut rng),
+                    None => {
+                        // 連打の割合は系統ごと(刻む系統は多く、伸ばす系統は少なく)
+                        let repeat = match family {
+                            "pulse" => 0.6,
+                            "syncopated" => 0.45,
+                            _ => 0.25,
+                        };
+                        surface(pch, p2, offs.len(), came, repeat, &sorted, &mut rng)
+                    }
                 };
                 let d0 = sorted.degree(pch as i32);
                 inners.push(inner.iter().map(|&q| sorted.degree(q) - d0).collect());
@@ -1168,7 +1182,15 @@ fn fit_range(p: i32, low: u8, high: u8, scale: &Scale) -> u8 {
 }
 
 /// `came` は骨格の音 `a` へ来た音程(前の音から。跳躍なら最初の音は逆向きへ戻す)
-fn surface(a: u8, b: u8, k: usize, came: i32, scale: &Scale, rng: &mut Rng) -> Vec<i32> {
+fn surface(
+    a: u8,
+    b: u8,
+    k: usize,
+    came: i32,
+    repeat: f64,
+    scale: &Scale,
+    rng: &mut Rng,
+) -> Vec<i32> {
     if k == 0 {
         return vec![];
     }
@@ -1186,7 +1208,7 @@ fn surface(a: u8, b: u8, k: usize, came: i32, scale: &Scale, rng: &mut Rng) -> V
         } else if k == 1 && x == db && d.abs() == 1 && rng.unit() < 0.3 {
             // 次の骨格の音の先取りばかりにしない: 逸音(離れる向き)か、越えてから戻る
             x = if rng.unit() < 0.5 { da - d } else { db + d };
-        } else if x == prev && rng.unit() < 0.7 {
+        } else if x == prev && rng.unit() < repeat {
             // 同じ音の連打(刻み)
         } else if x == prev {
             // 目的の音から離れる向きの刺繍音
