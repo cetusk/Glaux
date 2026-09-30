@@ -486,6 +486,10 @@ pub struct Realized {
     pub skeletons: Vec<PhraseSkeleton>,
     /// 作った区間の範囲(tick)
     pub ranges: Vec<(u64, u64)>,
+    /// アクセントの音の位置(riff の X)
+    pub accents: Vec<u64>,
+    /// リフの 1 回ごとの頭(riff)
+    pub statements: Vec<u64>,
 }
 
 #[derive(Clone, Debug)]

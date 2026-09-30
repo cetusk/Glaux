@@ -249,6 +249,71 @@ pub fn express(
     out
 }
 
+/// 電子メロディー(リフ)の表情。歌の表情(句の弧・ビブラート)は付けない:
+/// アクセント(リフの X)とリフの頭で強く、裏の 16 分と連打は弱く、ごく小さな揺れ。長さはリフのまま。
+/// グライドは 7 半音以上の跳躍だけ(`e.glide`)、ビブラートは `e.vibrato` が明示されたときだけ長い音に浅く
+#[allow(clippy::too_many_arguments)]
+pub fn express_riff(
+    notes: &[MelNote],
+    accents: &[u64],
+    statements: &[u64],
+    bar_of: &dyn Fn(u64) -> (u64, u64),
+    bpm: f64,
+    e: &Expression,
+    vibrato: bool,
+    seed: u64,
+) -> Vec<ExprNote> {
+    let amt = e.amount.clamp(0.0, 1.0);
+    let ms_per_tick = 60_000.0 / bpm.max(20.0) / PPQ as f64;
+    let mut out = Vec::with_capacity(notes.len());
+    let _ = statements;
+    for (i, n) in notes.iter().enumerate() {
+        let (bs, _) = bar_of(n.pos);
+        let rel = n.pos.saturating_sub(bs);
+        // 小節ごとに同じ型(調査: 拍の頭 95〜100、裏のアクセント 110〜120、ほか 80〜90。句の弧は付けない)
+        let base = e.velocity as f64;
+        let mut v = if accents.contains(&n.pos) {
+            base + 25.0
+        } else if rel % PPQ == 0 {
+            base + 8.0
+        } else {
+            base - 5.0
+        };
+        if i > 0 && notes[i - 1].pitch == n.pitch {
+            v -= 2.0;
+        }
+        v += 2.0 * jitter(seed, n.pos);
+        let v = base + (v - base) * (amt / 0.6).min(1.6);
+        let prev = i.checked_sub(1).map(|j| notes[j]);
+        let leap = prev.map_or(0, |p| n.pitch as i32 - p.pitch as i32);
+        let glide = e.glide
+            && leap.abs() >= 7
+            && prev.is_some_and(|p| n.pos.saturating_sub(p.pos + p.dur) < PPQ / 4);
+        let len_ms = n.dur as f64 * ms_per_tick;
+        out.push(ExprNote {
+            pos: n.pos,
+            dur: n.dur,
+            pitch: n.pitch,
+            vel: v.round().clamp(30.0, 127.0) as u8,
+            articulation: if glide {
+                Articulation::Portamento
+            } else {
+                Articulation::Normal
+            },
+            glide_ms: glide.then_some((30.0 + 30.0 * amt) as f32),
+            vibrato: (vibrato && n.dur >= 2 * PPQ && len_ms >= 600.0).then(|| Vibrato {
+                rate_hz: 5.5,
+                depth_cents: (12.0 * amt / 0.6).clamp(5.0, 25.0) as f32,
+                delay_ms: (len_ms * 0.5).min(500.0) as f32,
+                fade_in_ms: (len_ms * 0.3).min(400.0) as f32,
+                fade_out_ms: 60.0,
+                rate_end_hz: None,
+            }),
+        });
+    }
+    out
+}
+
 /// 表情の一様さ(機械的に聞こえる兆候)の測定
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Uniformity {

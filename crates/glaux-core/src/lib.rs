@@ -30,6 +30,7 @@ pub mod melexpr;
 pub mod melgen;
 pub mod melody;
 pub mod melplan;
+pub mod melriff;
 pub mod melstruct;
 pub mod meter;
 pub mod model;

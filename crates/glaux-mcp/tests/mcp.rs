@@ -5952,7 +5952,7 @@ async fn plan_melody_then_realize_melody_top_down() {
             &fx,
             "plan_melody",
             json!({ "track_id": "trk_top001", "genre": "edm", "role": "lead", "key": "A minor",
-                    "chords": "Am | F | C | G", "seed": 2, "intent": "波に乗る",
+                    "chords": "Am | F | C | G", "seed": 2, "intent": "波に乗る", "style": "line",
                     "sections": [{ "name": "Break", "start_bar": 1, "bars": 8, "energy": 3 },
                                  { "name": "Drop", "start_bar": 9, "bars": 16, "energy": 9 }] }),
         )
@@ -6139,4 +6139,65 @@ async fn revise_melody_tries_a_move_and_keeps_it_only_when_not_worse() {
         a.get("findings").is_some() || a.get("note").is_some(),
         "{a}"
     );
+}
+
+#[tokio::test]
+async fn an_edm_plan_is_a_riff_that_repeats_its_rhythm() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_rif001", "Lead")).await);
+    let pl = ok_json(
+        &call(
+            &fx,
+            "plan_melody",
+            json!({ "track_id": "trk_rif001", "genre": "edm", "key": "A minor", "chords": "Am | F | C | G",
+                    "seed": 8, "range": "A4-A5",
+                    "sections": [{ "name": "Break", "start_bar": 1, "bars": 8, "energy": 4 },
+                                 { "name": "Drop", "start_bar": 9, "bars": 16, "energy": 8 }] }),
+        )
+        .await,
+    );
+    assert_eq!(pl["body"]["style"], "riff", "{pl}");
+    assert_eq!(pl["body"]["riffs"].as_array().unwrap().len(), 2);
+    // ブレイクの前半は休み、後半は予告
+    let brk = &pl["body"]["sections"][0]["phrases"];
+    assert_eq!(brk[0]["label"], "-");
+    assert!(brk[1]["transform"].to_string().contains("sparse"), "{brk}");
+    let pid = pl["plan"]["plan_id"].as_str().unwrap().to_owned();
+    let r = ok_json(&call(&fx, "realize_melody", json!({ "plan_id": pid })).await);
+    // 歌の表情(ビブラート)は付けない。強さはアクセントの型で散らばる
+    assert!(
+        r["expression"]["velocity_sd"].as_f64().unwrap() > 5.0,
+        "{r}"
+    );
+    assert_eq!(r["expression"]["vibrato_long"].as_f64().unwrap(), 0.0);
+    // ドロップの最初のリフの繰り返しは同じリズム(小節の頭からの位置が同じ)
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    let t = p.track(&"trk_rif001".parse().unwrap()).unwrap();
+    let c = &t.clips[0];
+    let bar = |b: u64| -> Vec<u64> {
+        c.notes()
+            .unwrap()
+            .iter()
+            .map(|n| c.start.0 + n.pos.0)
+            .filter(|&x| x / 3840 == b)
+            .map(|x| x % 3840)
+            .collect()
+    };
+    // リフの長さ(小節)ごとに同じリズム
+    let rb = pl["body"]["riffs"][0]["bars"].as_u64().unwrap();
+    assert!(!bar(8).is_empty());
+    assert_eq!(bar(8), bar(8 + rb));
+    assert_eq!(bar(8), bar(8 + 2 * rb));
+    // ブレイクの前半(1〜4 小節)は鳴らない
+    assert!((0..4).all(|b| bar(b).is_empty()));
+    // 改稿(リズムと表面の選び直し)も通る
+    let v = ok_json(
+        &call(
+            &fx,
+            "revise_melody",
+            json!({ "plan_id": pid, "op": "reseed", "why": "別の案", "tries": 2, "accept": "always" }),
+        )
+        .await,
+    );
+    assert_eq!(v["steps"][0]["accepted"], true, "{v}");
 }

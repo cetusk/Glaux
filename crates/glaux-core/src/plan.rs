@@ -139,9 +139,41 @@ pub struct MelodyPlan {
     /// 表情(強さ・切り方・ビブラート・グライド・ノリ)。省略で既定(量 0.6・tight)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression: Option<crate::melexpr::Expression>,
+    /// 作り方: line(歌のように骨格を経過音でつなぐ)/ riff(電子メロディー。短いリフを和音に合わせて繰り返し、
+    /// 句の終わりで変える)。省略で line
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// リフ(style が riff のとき)。句の名前の文字(A・A′ なら A)と同じ名前のリフを使う
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub riffs: Vec<RiffPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<SectionPlan>,
 }
+
+/// リフ(電子メロディーの短い動機)
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct RiffPlan {
+    /// 名前(句の名前の文字と対応。"A" なら句 A・A′・A″ で使う)
+    pub name: String,
+    /// 長さ(小節。1〜4)
+    pub bars: u32,
+    /// リズム: 16 分 1 つが 1 文字。x = 音の頭、X = アクセントのある音の頭、- = 伸ばす、. = 休み("|" と空白は読み飛ばす)
+    pub rhythm: String,
+    /// 音の頭ごとの高さ: その時の和音の音を低い方から並べた梯子の上で、基準の音から何段か(0 = 基準の音、
+    /// 3 段でおおむね 1 オクターブ)
+    pub shape: Vec<i32>,
+    /// 基準の音("E5" など)。省略で区間の音域の軌跡の中心
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+    /// chord(和音が変わると同じ形で和音の音に移す。既定)/ fixed(和音が変わっても同じ高さ)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<String>,
+}
+
+pub const STYLES: &[&str] = &["line", "riff"];
+/// 句の変え方(riff): tail(最後の 1 回の終わりを変える)/ octave(1 オクターブ上)/ sparse(強い拍の音だけ・伸ばす。予告)/
+/// fill(最後の 1 拍を 16 分で埋めて次へつなぐ)/ rise(最後の 1 回を 1 段上から)
+pub const RIFF_TRANSFORMS: &[&str] = &["tail", "octave", "sparse", "fill", "rise", "shift", "stop"];
 
 /// 区間の計画(L0)
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
@@ -223,6 +255,49 @@ const CONTOURS: &[&str] = &["arch", "rise", "fall", "valley", "flat"];
 impl MelodyPlan {
     pub fn validate(&self) -> Result<()> {
         let bad = |s: String| Err(CoreError::InvalidPlan(s));
+        if let Some(st) = &self.style {
+            if !STYLES.contains(&st.as_str()) {
+                return bad(format!("style は {} のどれか", STYLES.join(" / ")));
+            }
+        }
+        for (i, r) in self.riffs.iter().enumerate() {
+            let at = format!("riffs/{i}");
+            if r.name.trim().is_empty() {
+                return bad(format!("{at}: name が空"));
+            }
+            if !(1..=4).contains(&r.bars) {
+                return bad(format!("{at}: bars は 1〜4"));
+            }
+            let onsets = r.rhythm.chars().filter(|c| *c == 'x' || *c == 'X').count();
+            if r.rhythm
+                .chars()
+                .any(|c| !matches!(c, 'x' | 'X' | '-' | '.' | '|' | ' '))
+            {
+                return bad(format!("{at}: rhythm は x X - . だけ(16 分 1 つが 1 文字)"));
+            }
+            if onsets == 0 {
+                return bad(format!("{at}: rhythm に音の頭(x)が無い"));
+            }
+            if r.shape.len() != onsets {
+                return bad(format!(
+                    "{at}: shape の数({})が rhythm の音の頭の数({onsets})と違う",
+                    r.shape.len()
+                ));
+            }
+            if r.shape.iter().any(|d| d.abs() > 12) {
+                return bad(format!("{at}: shape は ±12 段まで"));
+            }
+            if let Some(a) = &r.anchor {
+                if crate::chord::parse_note(a).is_none() {
+                    return bad(format!("{at}: anchor は \"E5\" のような音名"));
+                }
+            }
+            if let Some(f) = &r.follow {
+                if !["chord", "fixed"].contains(&f.as_str()) {
+                    return bad(format!("{at}: follow は chord / fixed"));
+                }
+            }
+        }
         if let Some(e) = &self.expression {
             if !(0.0..=1.0).contains(&e.amount) {
                 return bad("expression/amount は 0〜1".to_owned());

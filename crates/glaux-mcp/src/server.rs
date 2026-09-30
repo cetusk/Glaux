@@ -1090,6 +1090,10 @@ pub struct PlanMelodyParams {
     /// 作曲者の言葉(計画の intent に残す)。
     #[serde(default)]
     pub intent: Option<String>,
+    /// 作り方: riff(電子メロディー。短いリフを和音に合わせて繰り返し、句の終わりで変える。edm の既定)/
+    /// line(歌のように骨格を経過音でつなぐ。ほかのジャンルの既定)。
+    #[serde(default)]
+    pub style: Option<String>,
     #[serde(default)]
     pub seed: Option<u64>,
     /// 計画の名前(既定 "<トラック名> の旋律")。
@@ -2244,6 +2248,33 @@ fn measure_melody(
     let st = glaux_core::melstruct::analyze(notes, &ctx);
     let crit = melody::critique(notes, &ctx);
     let u = glaux_core::melexpr::uniformity(raw, 0);
+    // 電子メロディー(リフ)は同じリズムの反復が型そのもの(調査: 1〜3 小節目のリズムは完全に同じ)。
+    // 反復とリズムの一様さの指摘は外す(4 小節目の変化・休み・音域などは見る)。予告の区間(間引いた句と休みだけ)の
+    // 音域・輪郭の指摘も外す(不完全に見せるのが目的)
+    let riff = mp.style.as_deref() == Some("riff");
+    let teasers: Vec<String> = mp
+        .sections
+        .iter()
+        .filter(|s| {
+            s.phrases.iter().all(|p| {
+                p.label == "-" || p.label == "rest" || p.transform.iter().any(|t| t == "sparse")
+            })
+        })
+        .map(|s| format!("「{}」", s.name))
+        .collect();
+    let intended = |w: &str| {
+        riff && (w.contains("同じリズムの輪郭")
+            || w.contains("繰り返しが多すぎる")
+            || w.contains("リズムが単調")
+            || w.contains("リズムが一様")
+            || w.contains("句どうしのリズムがよく似ている")
+            // 点検は小節ごとの休みで句を細かく切る(歌の物差し)。リフは 4 小節目の終わりだけ伸ばすのが型
+            || w.contains("句の終わりが伸びていない")
+            // リフは同じ高さで繰り返すのが型(盛り上がりはリフの差し替え・オクターブで出す)
+            || w.contains("音域が動かない")
+            || (teasers.iter().any(|t| w.contains(t.as_str()))
+                && (w.contains("音域が動かない") || w.contains("密度が変わらない"))))
+    };
     let mut findings: Vec<glaux_core::critique::Finding> = st
         .findings
         .iter()
@@ -2254,6 +2285,7 @@ fn measure_melody(
                 .filter(|f| f.severity == "warn")
                 .cloned(),
         )
+        .filter(|f| !intended(&f.what))
         .collect();
     for (sev, what, fix) in glaux_core::melexpr::uniformity_findings(&u) {
         findings.push(glaux_core::critique::Finding {
@@ -2312,7 +2344,8 @@ fn draft_melody(
     use glaux_core::{melody, melplan, plan};
     let track = project.track(tid).ok_or("トラックが見つかりません")?;
     let chord_at = |t: u64| prep.chord_at(t);
-    let realized = melplan::realize(&melplan::RealizeInput {
+    let riff = mp.style.as_deref() == Some("riff");
+    let input = melplan::RealizeInput {
         plan: mp,
         only,
         grid: &prep.grid,
@@ -2329,7 +2362,13 @@ fn draft_melody(
         },
         step: if prep.genre.breath { 480 } else { 240 },
         regenerate_skeleton,
-    })?;
+    };
+    // 電子メロディー(リフ)は別の作り方(骨格を経過音でつながない)
+    let realized = if riff {
+        glaux_core::melriff::realize_riff(&input)?
+    } else {
+        melplan::realize(&input)?
+    };
     if realized.notes.is_empty() {
         return Err("音ができませんでした(区間・句の長さを確かめてください)".to_owned());
     }
@@ -2348,15 +2387,31 @@ fn draft_melody(
         expr.velocity = v.clamp(1, 127);
     }
     let bar_of = |t: u64| prep.bar_of(t);
-    let expressed = glaux_core::melexpr::express(
-        &realized.notes,
-        &realized.phrase_ranges(),
-        &realized.anchor_positions(),
-        &bar_of,
-        project.tempo_map.bpm_at(glaux_core::Tick(prep.span_start)),
-        &expr,
-        seed,
-    );
+    let bpm = project.tempo_map.bpm_at(glaux_core::Tick(prep.span_start));
+    let expressed = if riff {
+        // 電子楽器の表情(アクセントとリフの頭。歌のビブラート・句の弧は付けない。ビブラートは計画で明示したときだけ)
+        let vibrato = mp.expression.as_ref().is_some_and(|e| e.vibrato);
+        glaux_core::melexpr::express_riff(
+            &realized.notes,
+            &realized.accents,
+            &realized.statements,
+            &bar_of,
+            bpm,
+            &expr,
+            vibrato,
+            seed,
+        )
+    } else {
+        glaux_core::melexpr::express(
+            &realized.notes,
+            &realized.phrase_ranges(),
+            &realized.anchor_positions(),
+            &bar_of,
+            bpm,
+            &expr,
+            seed,
+        )
+    };
     // 曲に置く: この計画から作ったクリップがこのトラックにあれば、作った区間だけ差し替える
     let existing = track
         .clips
@@ -2878,6 +2933,10 @@ fn accompaniment_busy(
             })
         })
         .max_by(|x, y| x.per_beat.total_cmp(&y.per_beat))
+}
+
+fn melplan_riff(name: &str, bars: u32, density: f64, seed: u64) -> glaux_core::plan::RiffPlan {
+    glaux_core::melriff::make_riff(name, bars, density, seed)
 }
 
 /// 計画の見出し(区間ごとに 1 行)
@@ -8136,6 +8195,11 @@ impl GlauxServer {
         弱起や裏からの入り、A A′ B A″ などの名前と写し方)・終止(途中は開き、区間の最後は主音で閉じる)・リズムの系統\
         (sustain / pulse / syncopated / sparse。区間どうしで変える)を決める。区間は sections か、曲の区間(set_song_plan の\
         マーカーと盛り上がり)から。返る plan_id を get_plan で読み、edit_plan で言葉に合わせて直してから realize_melody で音にする。\
+        style: riff(edm の既定。ハウス・EDM のリードは歌ではなく電子メロディー: 1〜2 小節のリフ(16 分の格子のリズム・\
+        ペンタトニックと和音の音の形)を和音に合わせて繰り返し、4 小節目だけ変え、8 小節目で埋める。ブレイクは前半休みで\
+        1・3 拍目だけの予告、ドロップ直前の 1 拍は止める、ドロップ2 は後半を新しいリフ B に。強さはアクセントの型、\
+        ビブラート無し)/ line(歌のように骨格を経過音でつなぐ。ほかのジャンルの既定)。riffs の rhythm(x X - .)と\
+        shape(梯子の段)は edit_plan で直せる。\
         計画は曲とは別の履歴に残る。"
     )]
     async fn plan_melody(
@@ -8194,6 +8258,8 @@ impl GlauxServer {
             seed: Some(seed),
             intent: p.intent.clone(),
             expression: None,
+            style: None,
+            riffs: vec![],
             sections: melplan::propose(
                 &sections,
                 low,
@@ -8203,6 +8269,36 @@ impl GlauxServer {
                 seed,
             ),
         };
+        let style = p
+            .style
+            .clone()
+            .unwrap_or_else(|| if genre.name == "edm" { "riff" } else { "line" }.to_owned());
+        if !glaux_core::plan::STYLES.contains(&style.as_str()) {
+            return Err(format!("style は line / riff(got: {style})"));
+        }
+        let mut body = body;
+        if style == "riff" {
+            // 電子メロディー: 山の区間の密度でフックのリフ A、疎な対比のリフ B を作り、区間を 4 小節のまとまりに並べる
+            let peak = body
+                .sections
+                .iter()
+                .max_by(|a, b| a.energy.unwrap_or(5.0).total_cmp(&b.energy.unwrap_or(5.0)))
+                .and_then(|sec| {
+                    let d: Vec<f64> = sec.phrases.iter().filter_map(|ph| ph.density).collect();
+                    (!d.is_empty()).then(|| d.iter().sum::<f64>() / d.len() as f64)
+                })
+                .unwrap_or(1.3);
+            let bars = if seed % 10 < 7 { 1 } else { 2 };
+            body.riffs = vec![
+                melplan_riff("A", bars, peak, seed),
+                melplan_riff("B", bars, peak * 0.7, seed.wrapping_add(17)),
+            ];
+            glaux_core::melriff::riff_phrases(
+                &mut body.sections,
+                p.key.as_deref().and_then(glaux_core::chord::Key::parse),
+            );
+        }
+        body.style = Some(style);
         let name = p
             .name
             .clone()
@@ -8242,7 +8338,14 @@ impl GlauxServer {
             "plan": plan_summary(saved, &project),
             "body": saved.body,
         });
-        out["outline"] = json!(plan_outline(&body));
+        let mut outline = plan_outline(&body);
+        for r in &body.riffs {
+            outline.push(format!(
+                "リフ {}({} 小節): {} 形 {:?}",
+                r.name, r.bars, r.rhythm, r.shape
+            ));
+        }
+        out["outline"] = json!(outline);
         Ok(JsonText(out))
     }
 
