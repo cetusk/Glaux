@@ -76,6 +76,8 @@ pub struct SectionInfo {
     pub low: u8,
     pub high: u8,
     pub register_motion: f64,
+    /// 1 小節ごとの音域の中心の最高と最低の差(半音)。句の単位で一方向に動く旋律は 2 小節の中心では小さく見えるので併せて見る
+    pub register_travel: u8,
     /// 密度の変化(変動係数)
     pub density_variation: f64,
     /// 小節どうしのリズム(16 分の打点の型)の似かたの平均(0〜1。1 なら全部の小節が同じリズム)
@@ -391,7 +393,11 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
     iois.sort_unstable();
     let med_ioi = iois[iois.len() / 2].max(1);
     let mut cands: Vec<(f64, usize)> = (0..notes.len() - 1)
-        .filter(|&i| ioi(i) >= 2 * med_ioi && ioi(i) >= PPQ)
+        .filter(|&i| {
+            // 休みを伴うか、とても長い音(中央値の 3 倍以上)の後だけ。伸ばす音が並ぶ旋律を細かく切らない
+            let rest = notes[i + 1].pos.saturating_sub(notes[i].pos + notes[i].dur);
+            ioi(i) >= 2 * med_ioi && ioi(i) >= PPQ && (rest >= PPQ / 2 || ioi(i) >= 3 * med_ioi)
+        })
         .map(|i| {
             let rest = notes[i + 1].pos.saturating_sub(notes[i].pos + notes[i].dur);
             (ioi(i) as f64 / med_ioi as f64 + rest as f64 / PPQ as f64, i)
@@ -417,7 +423,11 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
             let last = heads.get(k + 1).map_or(notes.len() - 1, |&x| x - 1);
             let why = if last + 1 == notes.len() {
                 "end"
-            } else if notes[last + 1].pos - (notes[last].pos + notes[last].dur) >= PPQ / 2 {
+            } else if notes[last + 1]
+                .pos
+                .saturating_sub(notes[last].pos + notes[last].dur)
+                >= PPQ / 2
+            {
                 "rest"
             } else {
                 "long"
@@ -605,6 +615,20 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
             }
         }
         let centers: Vec<f64> = reg.iter().filter(|&&c| c > 0).map(|&c| c as f64).collect();
+        let bar_centers: Vec<u8> = (b_first..b_first + nbars)
+            .filter_map(|b| {
+                let (ws, _) = grid.get(b).copied()?;
+                let we = grid.get(b + 1).map_or(u64::MAX, |g| g.0);
+                let mut ps: Vec<u8> = inside
+                    .iter()
+                    .filter(|n| ws <= n.pos && n.pos < we)
+                    .map(|n| n.pitch)
+                    .collect();
+                (!ps.is_empty()).then(|| median_u8(&mut ps))
+            })
+            .collect();
+        let register_travel =
+            bar_centers.iter().max().unwrap_or(&0) - bar_centers.iter().min().unwrap_or(&0);
         let active: Vec<f64> = dens.iter().copied().filter(|&d| d > 0.0).collect();
         let dmean = active.iter().sum::<f64>() / active.len().max(1) as f64;
         // 小節のリズムの型(16 分の打点の集合)どうしの似かた
@@ -659,6 +683,7 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
             low,
             high,
             register_motion: round2(std_dev(&centers)),
+            register_travel,
             density_variation: round2(if dmean > 0.0 {
                 std_dev(&active) / dmean
             } else {
@@ -748,7 +773,12 @@ pub fn analyze(notes_in: &[MelNote], ctx: &Context) -> Structure {
             .filter(|&c| c > 0)
             .collect();
         let drift = centers.iter().max().unwrap_or(&0) - centers.iter().min().unwrap_or(&0);
-        if s.bars >= 8 && drift <= 5 && s.register_motion < 2.0 && wide <= 12 {
+        if s.bars >= 8
+            && drift <= 5
+            && s.register_motion < 2.0
+            && wide <= 12
+            && s.register_travel < 7
+        {
             warn(
                 "warn",
                 "区間",

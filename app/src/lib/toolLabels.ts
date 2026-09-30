@@ -61,6 +61,8 @@ const LABELS: Record<string, ToolLabel> = {
   suggest_progression: { short: "進行の候補", doing: "コード進行の候補を探しています" },
   critique_melody: { short: "旋律の点検", doing: "旋律を点検しています" },
   analyze_melody: { short: "旋律の構造", doing: "旋律の構造を読んでいます" },
+  plan_melody: { short: "旋律の計画", doing: "旋律の計画を立てています" },
+  realize_melody: { short: "計画から旋律", doing: "計画から旋律を作っています" },
   save_plan: { short: "計画を保存", doing: "旋律の計画を保存しています" },
   edit_plan: { short: "計画を直す", doing: "旋律の計画を直しています" },
   delete_plan: { short: "計画を消す", doing: "旋律の計画を消しています" },

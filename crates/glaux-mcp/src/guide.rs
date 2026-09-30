@@ -77,6 +77,10 @@ A メロ・ヴァースは period、EDM・トラップは loop)→ 4. ヴァー�
 別のクリップに作り、score と聴いた印象で選ぶ(使わない案は消す)。\n\
 全体の流れは analyze_melody で読み返す(句の地図 A・A′・B、区間ごとの音域と密度の曲線、骨格)。[区間] の warn\n\
 (どこも同じリズムの輪郭・音域が動かない)は音を少し変えても直らない。区間の音域の軌跡と句の形から作り直す。\n\
+上から下へ作る(推奨。区間をまたぐ旋律・リード): plan_melody で区間ごとの計画(音域の軌跡・密度・句の並び・終止・\n\
+リズムの系統)を立て、get_plan で読んで作曲者の言葉に合わせ edit_plan で直し、realize_melody で音にする。\n\
+直すときも上から: 区間の register・rhythm_family → 句の bars・offset_beats・cadence → 骨格(skeleton)の順に edit_plan して\n\
+realize_melody(sections で区間だけ・seed でリズムと表面だけ変える)。write_melody は短い動機からの手早い案。\n\
 計画: analyze_melody の plan を save_plan で保存し(why に作曲者の言葉)、edit_plan で上の粒度から直す\n\
 (区間の register・density → 句の長さ・入り・終止 → 骨格)。why・trigger・measures(前後の測定)を必ず残し、\n\
 効果の無かった変更は plan_log で探して undo_plan の revert で戻す。計画の履歴は曲の履歴と別。\n\
