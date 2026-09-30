@@ -1125,6 +1125,37 @@ pub struct RealizeMelodyParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ReviseMelodyParams {
+    /// 計画の ID(この計画から作ったクリップがあること)。
+    pub plan_id: String,
+    /// 手: auto / expression / reseed / reskeleton / register / rhythm_family / density / phrase / rephrase。
+    pub op: String,
+    /// 直す区間の名前(省略で全部の区間)。
+    #[serde(default)]
+    pub section: Option<String>,
+    /// 手の引数(例 expression {"amount":0.8,"feel":"laid_back"}、register {"shift":3} か {"spread":1.5}、
+    /// rhythm_family {"value":"sustain"}、density {"scale":0.8}、phrase {"index":2,"offset_beats":-0.5}、reskeleton {"phrase":1})。
+    #[serde(default)]
+    pub args: Option<Value>,
+    /// なぜ直すか(必須。計画の履歴に残る)。
+    pub why: String,
+    #[serde(default)]
+    pub trigger: Option<PlanTriggerParam>,
+    /// seed を変える手で試す案の数(既定 4、最大 8)。
+    #[serde(default)]
+    pub tries: Option<u32>,
+    /// improve(既定。良くなった・悪くならなかったときだけ採用)/ always。
+    #[serde(default)]
+    pub accept: Option<String>,
+    /// auto の最大の手数(既定 3、最大 8)。
+    #[serde(default)]
+    pub steps: Option<u32>,
+    /// 置くトラック(省略で計画の track)。
+    #[serde(default)]
+    pub track_id: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct DevelopMotifParams {
     /// 置く MIDI トラックの ID。新しいクリップを作る。
     pub track_id: String,
@@ -2022,6 +2053,716 @@ fn arp_rate(s: &str) -> Option<f64> {
     };
     let den: f64 = body.strip_prefix("1/")?.parse().ok()?;
     (den > 0.0 && den <= 64.0).then(|| 4.0 / den * mul)
+}
+
+/// 計画から旋律を作るための和音・キー・ジャンル・音域(realize_melody と revise_melody で共通)
+struct MelPrep {
+    genre: &'static glaux_core::melody::Genre,
+    key: glaux_core::chord::Key,
+    spans: Vec<glaux_core::comp::Span>,
+    chords: Vec<glaux_core::chord::Chord>,
+    span_start: u64,
+    span_len: u64,
+    low: u8,
+    high: u8,
+    grid: Vec<(u64, u64)>,
+}
+
+impl MelPrep {
+    fn chord_at(&self, t: u64) -> Option<Vec<u8>> {
+        let r = t.checked_sub(self.span_start)?;
+        self.spans
+            .iter()
+            .find(|s| s.start <= r && r < s.start + s.len)
+            .and_then(|s| s.chord)
+            .map(|i| self.chords[i].pitch_classes())
+    }
+
+    fn bar_of(&self, t: u64) -> (u64, u64) {
+        let i = self.grid.partition_point(|g| g.0 <= t).saturating_sub(1);
+        self.grid
+            .get(i)
+            .copied()
+            .unwrap_or((0, 4 * glaux_core::time::PPQ))
+    }
+
+    /// 計画の区間(名前・範囲・盛り上がり)
+    fn sections(
+        &self,
+        project: &glaux_core::Project,
+        mp: &glaux_core::plan::MelodyPlan,
+    ) -> Vec<glaux_core::melody::SectionSpan> {
+        mp.sections
+            .iter()
+            .filter_map(|s| {
+                let (a, l) = glaux_core::arrange::bar_range(project, s.start_bar, s.bars)?;
+                Some(glaux_core::melody::SectionSpan {
+                    name: s.name.clone(),
+                    start: a,
+                    end: a + l,
+                    energy: s.energy,
+                })
+            })
+            .collect()
+    }
+}
+
+fn mel_prep(
+    project: &glaux_core::Project,
+    mp: &glaux_core::plan::MelodyPlan,
+    tid: &glaux_core::TrackId,
+) -> Result<MelPrep, String> {
+    use glaux_core::{chord, melgen, melody};
+    if mp.sections.is_empty() {
+        return Err("計画に区間がありません(edit_plan で sections を足してください)".to_owned());
+    }
+    let genre = melody::genre(mp.genre.as_deref().unwrap_or("pop"))
+        .unwrap_or(melody::genre("pop").ok_or("pop")?);
+    let role = melgen::role(mp.role.as_deref().unwrap_or("chorus")).ok_or("役割が不明です")?;
+    let first_bar = mp
+        .sections
+        .iter()
+        .map(|s| s.start_bar)
+        .min()
+        .unwrap_or(1)
+        .max(1);
+    let last_bar = mp
+        .sections
+        .iter()
+        .map(|s| s.start_bar + s.bars)
+        .max()
+        .unwrap_or(first_bar + 1);
+    let total_bars = last_bar - first_bar;
+    let (span_start, span_len) = glaux_core::arrange::bar_range(project, first_bar, total_bars)
+        .ok_or("小節を数えられません")?;
+    let (spans, chords) = melody_chords(
+        project,
+        tid,
+        mp.chords.as_deref(),
+        mp.key.as_deref(),
+        first_bar,
+        total_bars,
+        span_start,
+        span_len,
+    )?;
+    let key = match &mp.key {
+        Some(k) => chord::Key::parse(k).ok_or_else(|| format!("計画の key が読めません: {k}"))?,
+        None => {
+            if chords.is_empty() {
+                return Err(
+                    "下の和音が見つかりません。計画に key か chords を書いてください(edit_plan)"
+                        .to_owned(),
+                );
+            }
+            melody::guess_key(
+                &chords
+                    .iter()
+                    .flat_map(|c| {
+                        c.pitch_classes().into_iter().map(|pc| melody::MelNote {
+                            pos: 0,
+                            dur: 240,
+                            pitch: 60 + pc,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    // 音域: 役割の既定と、計画の音域の軌跡(中心 ± 幅の半分)を合わせたもの
+    let (mut low, mut high) = role.range;
+    let pts: Vec<(u8, u8)> = mp
+        .sections
+        .iter()
+        .flat_map(|s| s.register.iter())
+        .filter_map(|r| chord::parse_note(&r.center).map(|c| (c, r.span.unwrap_or(10))))
+        .collect();
+    if !pts.is_empty() {
+        low = pts
+            .iter()
+            .map(|&(c, w)| c.saturating_sub(w / 2 + 2))
+            .min()
+            .unwrap_or(low);
+        high = pts
+            .iter()
+            .map(|&(c, w)| c.saturating_add(w / 2 + 2))
+            .max()
+            .unwrap_or(high);
+    }
+    let (low, high) = (low.max(24), high.min(108).max(low.max(24) + 7));
+    let grid = glaux_core::arrange::bar_grid(project, span_start + span_len + 1);
+    Ok(MelPrep {
+        genre,
+        key,
+        spans,
+        chords,
+        span_start,
+        span_len,
+        low,
+        high,
+        grid,
+    })
+}
+
+/// 旋律の測定(採否の比べ方: 区間・句の粒度の warn の数 → warn の総数 → 点数)
+#[derive(Clone, Debug, serde::Serialize)]
+struct MelMeasure {
+    score: u32,
+    /// [曲] [区間] [句] の warn の数(上の粒度の問題)
+    structure_warns: usize,
+    warns: usize,
+    findings: Vec<glaux_core::critique::Finding>,
+    summary: Vec<String>,
+    strengths: Vec<String>,
+    expression: glaux_core::melexpr::Uniformity,
+}
+
+impl MelMeasure {
+    /// 小さいほど良い
+    fn rank(&self) -> (usize, usize, i64) {
+        (self.structure_warns, self.warns, -(self.score as i64))
+    }
+}
+
+fn measure_melody(
+    project: &glaux_core::Project,
+    mp: &glaux_core::plan::MelodyPlan,
+    prep: &MelPrep,
+    notes: &[glaux_core::melody::MelNote],
+    raw: &[glaux_core::Note],
+    target: &str,
+) -> MelMeasure {
+    use glaux_core::melody;
+    let chord_at = |t: u64| prep.chord_at(t);
+    let ctx = melody::Context {
+        project,
+        chord_at: &chord_at,
+        key: Some(prep.key),
+        genre: prep.genre,
+        sections: prep.sections(project, mp),
+        target: target.to_owned(),
+    };
+    let st = glaux_core::melstruct::analyze(notes, &ctx);
+    let crit = melody::critique(notes, &ctx);
+    let u = glaux_core::melexpr::uniformity(raw, 0);
+    let mut findings: Vec<glaux_core::critique::Finding> = st
+        .findings
+        .iter()
+        .cloned()
+        .chain(
+            crit.findings
+                .iter()
+                .filter(|f| f.severity == "warn")
+                .cloned(),
+        )
+        .collect();
+    for (sev, what, fix) in glaux_core::melexpr::uniformity_findings(&u) {
+        findings.push(glaux_core::critique::Finding {
+            severity: sev,
+            target: target.to_owned(),
+            what: format!("[表情] {what}"),
+            fix: fix.to_owned(),
+        });
+    }
+    let structure_warns = findings
+        .iter()
+        .filter(|f| {
+            f.severity == "warn"
+                && (f.what.starts_with("[曲]")
+                    || f.what.starts_with("[区間]")
+                    || f.what.starts_with("[句]"))
+        })
+        .count();
+    MelMeasure {
+        score: crit.score,
+        structure_warns,
+        warns: findings.iter().filter(|f| f.severity == "warn").count(),
+        findings,
+        summary: st.summary,
+        strengths: crit.strengths,
+        expression: u,
+    }
+}
+
+/// 計画から作った旋律の案(まだ曲に置いていない)
+struct MelDraft {
+    realized: glaux_core::melplan::Realized,
+    /// 計画に書き戻す骨格
+    skeleton_ops: Vec<glaux_core::plan::PlanOp>,
+    clip_id: glaux_core::ClipId,
+    /// クリップを置く・差し替えるコマンド
+    command: Command,
+    measure: MelMeasure,
+    seed: u64,
+}
+
+/// 計画から旋律を作り、置いた後の旋律全体(作り直さない区間を含む)を測る。曲も計画も変えない
+#[allow(clippy::too_many_arguments)]
+fn draft_melody(
+    project: &glaux_core::Project,
+    mp: &glaux_core::plan::MelodyPlan,
+    prep: &MelPrep,
+    pid: &glaux_core::PlanId,
+    plan_name: &str,
+    tid: &glaux_core::TrackId,
+    only: Option<&[String]>,
+    seed: u64,
+    regenerate_skeleton: bool,
+    velocity: Option<u8>,
+) -> Result<MelDraft, String> {
+    use glaux_core::{melody, melplan, plan};
+    let track = project.track(tid).ok_or("トラックが見つかりません")?;
+    let chord_at = |t: u64| prep.chord_at(t);
+    let realized = melplan::realize(&melplan::RealizeInput {
+        plan: mp,
+        only,
+        grid: &prep.grid,
+        chord_at: &chord_at,
+        key: prep.key,
+        low: prep.low,
+        high: prep.high,
+        max_width: prep.genre.range.1,
+        seed,
+        breath: if prep.genre.breath {
+            glaux_core::time::PPQ
+        } else {
+            glaux_core::time::PPQ / 2
+        },
+        step: if prep.genre.breath { 480 } else { 240 },
+        regenerate_skeleton,
+    })?;
+    if realized.notes.is_empty() {
+        return Err("音ができませんでした(区間・句の長さを確かめてください)".to_owned());
+    }
+    let skeleton_ops: Vec<plan::PlanOp> = realized
+        .skeletons
+        .iter()
+        .filter(|sk| mp.sections[sk.section].phrases[sk.phrase].skeleton != sk.skeleton)
+        .map(|sk| plan::PlanOp::Set {
+            path: format!("/sections/{}/phrases/{}/skeleton", sk.section, sk.phrase),
+            value: json!(sk.skeleton),
+        })
+        .collect();
+    // 表情(強さ・切り方・ビブラート・グライド・ノリ)。計画の expression、無ければ既定
+    let mut expr = mp.expression.clone().unwrap_or_default();
+    if let Some(v) = velocity {
+        expr.velocity = v.clamp(1, 127);
+    }
+    let bar_of = |t: u64| prep.bar_of(t);
+    let expressed = glaux_core::melexpr::express(
+        &realized.notes,
+        &realized.phrase_ranges(),
+        &realized.anchor_positions(),
+        &bar_of,
+        project.tempo_map.bpm_at(glaux_core::Tick(prep.span_start)),
+        &expr,
+        seed,
+    );
+    // 曲に置く: この計画から作ったクリップがこのトラックにあれば、作った区間だけ差し替える
+    let existing = track
+        .clips
+        .iter()
+        .find(|c| project.plan_refs.get(&c.id).is_some_and(|r| &r.id == pid));
+    let inside = |t: u64| realized.ranges.iter().any(|&(a, b)| a <= t && t < b);
+    let (clip_id, clip, is_new) = match existing {
+        Some(c) => {
+            // 作り直さない区間の音は、表情ごとそのまま残す
+            let old: Vec<(u64, glaux_core::Note)> = c
+                .notes()
+                .map(|ns| {
+                    ns.iter()
+                        .map(|n| (c.start.0 + n.pos.0, n.clone()))
+                        .filter(|n| !inside(n.0))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let start = c.start.0.min(expressed.first().map_or(u64::MAX, |n| n.pos));
+            let end = (c.start.0 + c.length.0)
+                .max(expressed.iter().map(|n| n.pos + n.dur).max().unwrap_or(0));
+            let mut clip = glaux_core::Clip::new_midi(
+                c.id.clone(),
+                c.name.clone(),
+                glaux_core::Tick(start),
+                glaux_core::Tick(end - start),
+            );
+            let mut notes: Vec<glaux_core::Note> = old
+                .into_iter()
+                .map(|(t, mut n)| {
+                    n.pos = glaux_core::Tick(t - start);
+                    n
+                })
+                .chain(expressed.iter().map(|e| expr_note_of(e, start, u64::MAX)))
+                .collect();
+            notes.sort_by_key(|n| (n.pos, n.pitch));
+            if let Some(ns) = clip.notes_mut() {
+                *ns = notes;
+            }
+            (c.id.clone(), clip, false)
+        }
+        None => {
+            let start = realized
+                .ranges
+                .iter()
+                .map(|r| r.0)
+                .min()
+                .unwrap_or(prep.span_start);
+            let end = realized
+                .ranges
+                .iter()
+                .map(|r| r.1)
+                .max()
+                .unwrap_or(prep.span_start + prep.span_len);
+            let id = glaux_core::ClipId::new();
+            let mut clip = glaux_core::Clip::new_midi(
+                id.clone(),
+                plan_name.to_owned(),
+                glaux_core::Tick(start),
+                glaux_core::Tick(end - start),
+            );
+            if let Some(ns) = clip.notes_mut() {
+                *ns = expressed
+                    .iter()
+                    .filter(|n| n.pos >= start && n.pos < end)
+                    .map(|e| expr_note_of(e, start, end))
+                    .collect();
+            }
+            (id, clip, true)
+        }
+    };
+    // 置いた後の旋律全体を測る
+    let raw: Vec<glaux_core::Note> = clip
+        .notes()
+        .unwrap_or_default()
+        .iter()
+        .map(|n| {
+            let mut n = n.clone();
+            n.pos = glaux_core::Tick(clip.start.0 + n.pos.0);
+            n
+        })
+        .collect();
+    let mel: Vec<melody::MelNote> = raw
+        .iter()
+        .map(|n| melody::MelNote {
+            pos: n.pos.0,
+            dur: n.dur.0,
+            pitch: n.pitch,
+        })
+        .collect();
+    let measure = measure_melody(project, mp, prep, &mel, &raw, &track.name);
+    let command = if is_new {
+        Command::AddClip {
+            track: tid.clone(),
+            clip,
+        }
+    } else {
+        Command::ReplaceClip {
+            id: clip_id.clone(),
+            clip,
+        }
+    };
+    Ok(MelDraft {
+        realized,
+        skeleton_ops,
+        clip_id,
+        command,
+        measure,
+        seed,
+    })
+}
+
+/// 計画から作ったクリップの今の旋律(測る用。位置は曲の頭から)
+fn plan_clip_notes(
+    project: &glaux_core::Project,
+    tid: &glaux_core::TrackId,
+    pid: &glaux_core::PlanId,
+) -> Option<(Vec<glaux_core::melody::MelNote>, Vec<glaux_core::Note>)> {
+    let track = project.track(tid)?;
+    let c = track
+        .clips
+        .iter()
+        .find(|c| project.plan_refs.get(&c.id).is_some_and(|r| &r.id == pid))?;
+    let raw: Vec<glaux_core::Note> = c
+        .notes()?
+        .iter()
+        .filter(|n| n.pos < c.length)
+        .map(|n| {
+            let mut n = n.clone();
+            n.pos = glaux_core::Tick(c.start.0 + n.pos.0);
+            n
+        })
+        .collect();
+    let mel = raw
+        .iter()
+        .map(|n| glaux_core::melody::MelNote {
+            pos: n.pos.0,
+            dur: n.dur.0,
+            pitch: n.pitch,
+        })
+        .collect();
+    Some((mel, raw))
+}
+
+/// 改稿の手を、計画の編集(JSON Pointer)にする。`seed` は seed を変える手で使う
+fn revision_ops(
+    mp: &glaux_core::plan::MelodyPlan,
+    sec: Option<usize>,
+    op: &str,
+    args: &Value,
+    seed: u64,
+    prep: &MelPrep,
+) -> Result<Vec<glaux_core::plan::PlanOp>, String> {
+    use glaux_core::chord::{note_name, parse_note};
+    use glaux_core::plan::PlanOp;
+    let set = |path: String, value: Value| PlanOp::Set { path, value };
+    let targets: Vec<usize> = match sec {
+        Some(i) => vec![i],
+        None => (0..mp.sections.len()).collect(),
+    };
+    let clear_skeletons = |ops: &mut Vec<PlanOp>, i: usize, only: Option<usize>| {
+        for (k, _) in mp.sections[i].phrases.iter().enumerate() {
+            if only.is_none_or(|o| o == k) {
+                ops.push(set(
+                    format!("/sections/{i}/phrases/{k}/skeleton"),
+                    json!([]),
+                ));
+            }
+        }
+    };
+    let num = |k: &str| args.get(k).and_then(|v| v.as_f64());
+    let mut ops = Vec::new();
+    match op {
+        "expression" => {
+            let mut e = serde_json::to_value(mp.expression.clone().unwrap_or_default())
+                .map_err(|e| e.to_string())?;
+            if let (Some(obj), Some(a)) = (e.as_object_mut(), args.as_object()) {
+                for (k, v) in a {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            ops.push(set("/expression".to_owned(), e));
+        }
+        "reseed" => {
+            // 骨格は保ち、リズムと表面だけ選び直す(seed は呼び出し側で /seed に書く)
+        }
+        "reskeleton" => {
+            let only = num("phrase").map(|x| x as usize);
+            for &i in &targets {
+                clear_skeletons(&mut ops, i, only);
+            }
+        }
+        "register" => {
+            let shift = num("shift").unwrap_or(0.0);
+            let spread = num("spread").unwrap_or(1.0);
+            if shift == 0.0 && (spread - 1.0).abs() < 1e-9 {
+                return Err("register には shift(半音)か spread(倍)を指定してください".to_owned());
+            }
+            let pcs = glaux_core::harmony::scale_pitch_classes(
+                prep.key.tonic,
+                if prep.key.minor { "minor" } else { "major" },
+            );
+            for &i in &targets {
+                let s = &mp.sections[i];
+                let cs: Vec<f64> = s
+                    .register
+                    .iter()
+                    .filter_map(|r| parse_note(&r.center).map(|c| c as f64))
+                    .collect();
+                if cs.is_empty() {
+                    continue;
+                }
+                let mean = cs.iter().sum::<f64>() / cs.len() as f64;
+                let mut reg = s.register.clone();
+                for r in &mut reg {
+                    if let Some(c) = parse_note(&r.center) {
+                        let x = mean + (c as f64 - mean) * spread + shift;
+                        let snapped = glaux_core::harmony::snap_to_pitch_classes(x.round() as i32, &pcs);
+                        r.center = note_name(snapped.clamp(24, 108) as u8);
+                    }
+                }
+                ops.push(set(
+                    format!("/sections/{i}/register"),
+                    serde_json::to_value(&reg).map_err(|e| e.to_string())?,
+                ));
+                clear_skeletons(&mut ops, i, None);
+            }
+        }
+        "rhythm_family" => {
+            let v = args
+                .get("value")
+                .and_then(|v| v.as_str())
+                .ok_or("rhythm_family には value(sustain / pulse / syncopated / sparse)を指定してください")?;
+            for &i in &targets {
+                ops.push(set(format!("/sections/{i}/rhythm_family"), json!(v)));
+            }
+        }
+        "density" => {
+            let scale = num("scale").ok_or("density には scale(倍)を指定してください")?;
+            for &i in &targets {
+                let s = &mp.sections[i];
+                for (k, ph) in s.phrases.iter().enumerate() {
+                    if let Some(d) = ph.density {
+                        ops.push(set(
+                            format!("/sections/{i}/phrases/{k}/density"),
+                            json!(((d * scale).clamp(0.2, 8.0) * 100.0).round() / 100.0),
+                        ));
+                    }
+                }
+                let d: Vec<f64> = s
+                    .density
+                    .iter()
+                    .map(|d| ((d * scale).clamp(0.2, 8.0) * 100.0).round() / 100.0)
+                    .collect();
+                ops.push(set(format!("/sections/{i}/density"), json!(d)));
+            }
+        }
+        "phrase" => {
+            let i = sec.ok_or("phrase には section を指定してください")?;
+            let k = num("index").ok_or("phrase には index(句の番号、0 始まり)を指定してください")? as usize;
+            if k >= mp.sections[i].phrases.len() {
+                return Err(format!("区間「{}」に句 {k} がありません", mp.sections[i].name));
+            }
+            for f in ["bars", "offset_beats", "cadence", "ending_degree", "contour", "density"] {
+                if let Some(v) = args.get(f) {
+                    ops.push(set(format!("/sections/{i}/phrases/{k}/{f}"), v.clone()));
+                }
+            }
+            if ops.is_empty() {
+                return Err("phrase には変える項目(bars・offset_beats・cadence・ending_degree・contour・density)を指定してください".to_owned());
+            }
+            clear_skeletons(&mut ops, i, Some(k));
+        }
+        "rephrase" => {
+            for &i in &targets {
+                let s = &mp.sections[i];
+                let spec = glaux_core::melplan::SectionSpec {
+                    name: s.name.clone(),
+                    start_bar: s.start_bar,
+                    bars: s.bars,
+                    energy: s.energy,
+                    busy: None,
+                };
+                let fresh = glaux_core::melplan::propose(
+                    &[spec],
+                    prep.low,
+                    prep.high,
+                    prep.genre.breath,
+                    Some(prep.key),
+                    seed,
+                );
+                if let Some(f) = fresh.into_iter().next() {
+                    // 伴奏に合わせた密度(計画の句の密度の平均)に合わせる
+                    let old: Vec<f64> = s.phrases.iter().filter_map(|p| p.density).collect();
+                    let new: Vec<f64> = f.phrases.iter().filter_map(|p| p.density).collect();
+                    let k = if old.is_empty() || new.is_empty() {
+                        1.0
+                    } else {
+                        (old.iter().sum::<f64>() / old.len() as f64) / (new.iter().sum::<f64>() / new.len() as f64)
+                    };
+                    let phrases: Vec<glaux_core::plan::PhrasePlan> = f
+                        .phrases
+                        .into_iter()
+                        .map(|mut p| {
+                            p.density = p.density.map(|d| ((d * k) * 100.0).round() / 100.0);
+                            p
+                        })
+                        .collect();
+                    ops.push(set(
+                        format!("/sections/{i}/density"),
+                        json!(phrases.iter().filter_map(|p| p.density).collect::<Vec<_>>()),
+                    ));
+                    ops.push(set(
+                        format!("/sections/{i}/phrases"),
+                        serde_json::to_value(&phrases).map_err(|e| e.to_string())?,
+                    ));
+                }
+            }
+        }
+        other => {
+            return Err(format!(
+                "op は auto / expression / reseed / reskeleton / register / rhythm_family / density / phrase / rephrase(got: {other})"
+            ))
+        }
+    }
+    Ok(ops)
+}
+
+/// auto: 指摘を上の粒度から読み、まだ試していない手を選ぶ。(手, 区間, 引数)
+fn pick_revision(
+    m: &MelMeasure,
+    mp: &glaux_core::plan::MelodyPlan,
+    tried: &[(String, Option<String>)],
+) -> Option<(String, Option<String>, Value)> {
+    let section_of = |what: &str| -> Option<String> {
+        let a = what.find('「')?;
+        let rest = &what[a + '「'.len_utf8()..];
+        let b = rest.find('」')?;
+        let name = &rest[..b];
+        mp.sections
+            .iter()
+            .any(|s| s.name == name)
+            .then(|| name.to_owned())
+    };
+    let level = |w: &str| -> u8 {
+        if w.starts_with("[曲]") {
+            0
+        } else if w.starts_with("[区間]") {
+            1
+        } else if w.starts_with("[句]") {
+            2
+        } else if w.starts_with("[表情]") {
+            4
+        } else {
+            3
+        }
+    };
+    let mut fs: Vec<&glaux_core::critique::Finding> = m
+        .findings
+        .iter()
+        .filter(|f| f.severity == "warn" || (f.what.starts_with("[表情]") && f.severity == "info"))
+        .collect();
+    fs.sort_by_key(|f| (level(&f.what), f.severity != "warn"));
+    for f in fs {
+        let w = f.what.as_str();
+        let sec = section_of(w);
+        // 指摘ごとの手を、安い(変える範囲の小さい)順に
+        let cands: Vec<(&str, Value)> = if w.contains("音域が動かない") {
+            vec![
+                ("register", json!({ "spread": 1.6 })),
+                ("rephrase", json!({})),
+            ]
+        } else if w.contains("対比が無い") {
+            vec![
+                ("register", json!({ "shift": 3 })),
+                ("register", json!({ "shift": -3 })),
+            ]
+        } else if w.contains("同じリズムの輪郭") || (w.contains("長さ") && w.contains("同じ位置"))
+        {
+            vec![("reseed", json!({})), ("rephrase", json!({}))]
+        } else if w.contains("間(長い音か休み)を取る句が少ない")
+            || w.contains("句の終わりが伸びていない")
+            || w.contains("閉じている")
+            || w.contains("往復")
+            || w.contains("跳躍")
+        {
+            vec![
+                ("reseed", json!({})),
+                ("reskeleton", json!({})),
+                ("rephrase", json!({})),
+            ]
+        } else if w.contains("休み") {
+            vec![("reseed", json!({})), ("density", json!({ "scale": 0.85 }))]
+        } else if w.starts_with("[表情]") {
+            vec![("expression", json!({ "amount": 0.75 }))]
+        } else {
+            vec![("reseed", json!({}))]
+        };
+        for (op, a) in cands {
+            let key = (op.to_owned(), sec.clone());
+            if !tried.contains(&key) {
+                return Some((op.to_owned(), sec, a));
+            }
+        }
+    }
+    None
 }
 
 /// 表情を付けた音をクリップのノートにする(`start` はクリップの頭、`end` はクリップの終わり)
@@ -7522,7 +8263,7 @@ impl GlauxServer {
         params: Parameters<RealizeMelodyParams>,
         ctx: RequestContext<RoleServer>,
     ) -> ToolResult {
-        use glaux_core::{chord, melgen, melody, melplan, motif, plan};
+        use glaux_core::plan;
         let _activity = self.handle.begin_activity("realize_melody");
         let p = params.0;
         let pid = parse_plan_id(&p.plan_id)?;
@@ -7538,11 +8279,6 @@ impl GlauxServer {
         }
         let mp: plan::MelodyPlan =
             serde_json::from_value(stored.body.clone()).map_err(|e| e.to_string())?;
-        if mp.sections.is_empty() {
-            return Err(
-                "計画に区間がありません(edit_plan で sections を足してください)".to_owned(),
-            );
-        }
         let track_str = p
             .track_id
             .clone()
@@ -7561,307 +8297,74 @@ impl GlauxServer {
                 }
             }
         }
-        let genre = melody::genre(mp.genre.as_deref().unwrap_or("pop"))
-            .unwrap_or(melody::genre("pop").ok_or("pop")?);
-        let role = melgen::role(mp.role.as_deref().unwrap_or("chorus")).ok_or("役割が不明です")?;
-        // 計画の範囲の小節と和音
-        let first_bar = mp
-            .sections
-            .iter()
-            .map(|s| s.start_bar)
-            .min()
-            .unwrap_or(1)
-            .max(1);
-        let last_bar = mp
-            .sections
-            .iter()
-            .map(|s| s.start_bar + s.bars)
-            .max()
-            .unwrap_or(first_bar + 1);
-        let total_bars = last_bar - first_bar;
-        let (span_start, span_len) =
-            glaux_core::arrange::bar_range(&project, first_bar, total_bars)
-                .ok_or("小節を数えられません")?;
-        let (spans, chords_list) = melody_chords(
-            &project,
-            &tid,
-            mp.chords.as_deref(),
-            mp.key.as_deref(),
-            first_bar,
-            total_bars,
-            span_start,
-            span_len,
-        )?;
-        let look = motif::chord_lookup(&spans, &chords_list);
-        let chord_at = |t: u64| {
-            t.checked_sub(span_start)
-                .and_then(&look)
-                .map(|c| c.pitch_classes())
-        };
-        let key = match &mp.key {
-            Some(k) => {
-                chord::Key::parse(k).ok_or_else(|| format!("計画の key が読めません: {k}"))?
-            }
-            None => {
-                if chords_list.is_empty() {
-                    return Err("下の和音が見つかりません。計画に key か chords を書いてください(edit_plan)".to_owned());
-                }
-                melody::guess_key(
-                    &chords_list
-                        .iter()
-                        .flat_map(|c| {
-                            c.pitch_classes().into_iter().map(|pc| melody::MelNote {
-                                pos: 0,
-                                dur: 240,
-                                pitch: 60 + pc,
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            }
-        };
-        // 音域: 役割の既定と、計画の音域の軌跡(中心 ± 幅の半分)を合わせたもの
-        let (mut low, mut high) = role.range;
-        let pts: Vec<(u8, u8)> = mp
-            .sections
-            .iter()
-            .flat_map(|s| s.register.iter())
-            .filter_map(|r| chord::parse_note(&r.center).map(|c| (c, r.span.unwrap_or(10))))
-            .collect();
-        if !pts.is_empty() {
-            low = pts
-                .iter()
-                .map(|&(c, w)| c.saturating_sub(w / 2 + 2))
-                .min()
-                .unwrap_or(low);
-            high = pts
-                .iter()
-                .map(|&(c, w)| c.saturating_add(w / 2 + 2))
-                .max()
-                .unwrap_or(high);
-        }
-        let (low, high) = (low.max(24), high.min(108).max(low.max(24) + 7));
-        let grid = glaux_core::arrange::bar_grid(&project, span_start + span_len + 1);
+        let prep = mel_prep(&project, &mp, &tid)?;
         let seed = p.seed.or(mp.seed).unwrap_or(1);
-        let realized = melplan::realize(&melplan::RealizeInput {
-            plan: &mp,
-            only: p.sections.as_deref(),
-            grid: &grid,
-            chord_at: &chord_at,
-            key,
-            low,
-            high,
-            max_width: genre.range.1,
+        let draft = draft_melody(
+            &project,
+            &mp,
+            &prep,
+            &pid,
+            &stored.name,
+            &tid,
+            p.sections.as_deref(),
             seed,
-            breath: if genre.breath {
-                glaux_core::time::PPQ
-            } else {
-                glaux_core::time::PPQ / 2
-            },
-            step: if genre.breath { 480 } else { 240 },
-            regenerate_skeleton: p.regenerate_skeleton.unwrap_or(false),
-        })?;
-        if realized.notes.is_empty() {
-            return Err("音ができませんでした(区間・句の長さを確かめてください)".to_owned());
-        }
+            p.regenerate_skeleton.unwrap_or(false),
+            p.velocity,
+        )?;
         // 骨格を計画に書き戻す(計画の履歴に残る)
         let mut plan_ref = stored.reference();
         let mut plan_entry = None;
-        if p.keep_skeleton.unwrap_or(true) {
-            let ops: Vec<plan::PlanOp> = realized
-                .skeletons
-                .iter()
-                .filter(|sk| mp.sections[sk.section].phrases[sk.phrase].skeleton != sk.skeleton)
-                .map(|sk| plan::PlanOp::Set {
-                    path: format!("/sections/{}/phrases/{}/skeleton", sk.section, sk.phrase),
-                    value: json!(sk.skeleton),
-                })
-                .collect();
-            if !ops.is_empty() {
-                let note = plan_note(
-                    &format!(
-                        "realize_melody で骨格を決めた(seed {seed})。次に作るときはこの骨格から"
-                    ),
-                    None,
-                    None,
-                )?;
-                let e = self
-                    .handle
-                    .apply_plan(
-                        plan::PlanCommand::Edit {
-                            id: pid.clone(),
-                            rev: stored.rev + 1,
-                            ops,
-                        },
-                        self.author(&ctx),
-                        format!("骨格を書き戻す: {}", stored.name),
-                        note,
-                    )
-                    .await?;
-                plan_entry = Some(e);
-                let plans = self.handle.get_plans().await?;
-                plan_ref = plans
-                    .doc()
-                    .plans
-                    .get(&pid)
-                    .ok_or("計画が見つかりません")?
-                    .reference();
-            }
-        }
-        // 曲に置く: この計画から作ったクリップがこのトラックにあれば、作った区間だけ差し替える
-        // 表情(強さ・切り方・ビブラート・グライド・ノリ)。計画の expression、無ければ既定
-        let mut expr = mp.expression.clone().unwrap_or_default();
-        if let Some(v) = p.velocity {
-            expr.velocity = v.clamp(1, 127);
-        }
-        let bar_of = |t: u64| {
-            let i = grid.partition_point(|g| g.0 <= t).saturating_sub(1);
-            grid.get(i)
-                .copied()
-                .unwrap_or((0, 4 * glaux_core::time::PPQ))
-        };
-        let expressed = glaux_core::melexpr::express(
-            &realized.notes,
-            &realized.phrase_ranges(),
-            &realized.anchor_positions(),
-            &bar_of,
-            project.tempo_map.bpm_at(glaux_core::Tick(span_start)),
-            &expr,
-            seed,
-        );
-        let existing = track
-            .clips
-            .iter()
-            .find(|c| project.plan_refs.get(&c.id).is_some_and(|r| r.id == pid));
-        let inside = |t: u64| realized.ranges.iter().any(|&(a, b)| a <= t && t < b);
-        let new_abs: Vec<(u64, u64, u8)> =
-            expressed.iter().map(|n| (n.pos, n.dur, n.pitch)).collect();
-        let (clip_id, command) = match existing {
-            Some(c) => {
-                // 作り直さない区間の音は、表情ごとそのまま残す
-                let old: Vec<(u64, glaux_core::Note)> = c
-                    .notes()
-                    .map(|ns| {
-                        ns.iter()
-                            .map(|n| (c.start.0 + n.pos.0, n.clone()))
-                            .filter(|n| !inside(n.0))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let start = c.start.0.min(new_abs.first().map_or(u64::MAX, |n| n.0));
-                let end = (c.start.0 + c.length.0)
-                    .max(new_abs.iter().map(|n| n.0 + n.1).max().unwrap_or(0));
-                let mut clip = glaux_core::Clip::new_midi(
-                    c.id.clone(),
-                    c.name.clone(),
-                    glaux_core::Tick(start),
-                    glaux_core::Tick(end - start),
-                );
-                let mut notes: Vec<glaux_core::Note> = old
-                    .into_iter()
-                    .map(|(t, mut n)| {
-                        n.pos = glaux_core::Tick(t - start);
-                        n
-                    })
-                    .chain(expressed.iter().map(|e| expr_note_of(e, start, u64::MAX)))
-                    .collect();
-                notes.sort_by_key(|n| (n.pos, n.pitch));
-                if let Some(ns) = clip.notes_mut() {
-                    *ns = notes;
-                }
-                (
-                    c.id.clone(),
-                    Command::ReplaceClip {
-                        id: c.id.clone(),
-                        clip,
+        if p.keep_skeleton.unwrap_or(true) && !draft.skeleton_ops.is_empty() {
+            let note = plan_note(
+                &format!("realize_melody で骨格を決めた(seed {seed})。次に作るときはこの骨格から"),
+                None,
+                None,
+            )?;
+            let e = self
+                .handle
+                .apply_plan(
+                    plan::PlanCommand::Edit {
+                        id: pid.clone(),
+                        rev: stored.rev + 1,
+                        ops: draft.skeleton_ops.clone(),
                     },
+                    self.author(&ctx),
+                    format!("骨格を書き戻す: {}", stored.name),
+                    note,
                 )
-            }
-            None => {
-                let start = realized
-                    .ranges
-                    .iter()
-                    .map(|r| r.0)
-                    .min()
-                    .unwrap_or(span_start);
-                let end = realized
-                    .ranges
-                    .iter()
-                    .map(|r| r.1)
-                    .max()
-                    .unwrap_or(span_start + span_len);
-                let id = glaux_core::ClipId::new();
-                let mut clip = glaux_core::Clip::new_midi(
-                    id.clone(),
-                    stored.name.clone(),
-                    glaux_core::Tick(start),
-                    glaux_core::Tick(end - start),
-                );
-                if let Some(ns) = clip.notes_mut() {
-                    *ns = expressed
-                        .iter()
-                        .filter(|n| n.pos >= start && n.pos < end)
-                        .map(|e| expr_note_of(e, start, end))
-                        .collect();
-                }
-                (
-                    id,
-                    Command::AddClip {
-                        track: tid.clone(),
-                        clip,
-                    },
-                )
-            }
-        };
+                .await?;
+            plan_entry = Some(e);
+            let plans = self.handle.get_plans().await?;
+            plan_ref = plans
+                .doc()
+                .plans
+                .get(&pid)
+                .ok_or("計画が見つかりません")?
+                .reference();
+        }
         let label = format!("計画から旋律を作る: {}", stored.name);
         let command = Command::Batch {
             commands: vec![
-                command,
+                draft.command,
                 Command::SetClipPlan {
-                    clip: clip_id.clone(),
+                    clip: draft.clip_id.clone(),
                     plan: Some(plan_ref.clone()),
                 },
             ],
             label: label.clone(),
         };
         let (entry_id, m) = flatten(self.handle.apply(command, self.author(&ctx), label).await)?;
-        // 作った旋律を測る(計画の区間で)
-        let (after, _) = self.handle.get_project_shared().await?;
-        let notes: Vec<melody::MelNote> = realized.notes.clone();
-        let spans_cl = |t: u64| chord_at(t);
-        let ctx_m = melody::Context {
-            project: &after,
-            chord_at: &spans_cl,
-            key: Some(key),
-            genre,
-            sections: mp
-                .sections
-                .iter()
-                .filter(|s| p.sections.as_ref().is_none_or(|o| o.contains(&s.name)))
-                .filter_map(|s| {
-                    let (a, l) = glaux_core::arrange::bar_range(&after, s.start_bar, s.bars)?;
-                    Some(melody::SectionSpan {
-                        name: s.name.clone(),
-                        start: a,
-                        end: a + l,
-                        energy: s.energy,
-                    })
-                })
-                .collect(),
-            target: track.name.clone(),
-        };
-        let st = glaux_core::melstruct::analyze(&notes, &ctx_m);
-        let crit = melody::critique(&notes, &ctx_m);
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
-        v["clip_id"] = json!(clip_id);
+        v["clip_id"] = json!(draft.clip_id);
         v["plan"] = json!(plan_ref);
         if let Some(e) = plan_entry {
             v["plan_entry_id"] = json!(e);
         }
         v["seed"] = json!(seed);
-        v["notes"] = json!(notes.len());
-        v["skeletons"] = json!(realized
+        v["notes"] = json!(draft.realized.notes.len());
+        v["skeletons"] = json!(draft
+            .realized
             .skeletons
             .iter()
             .map(|sk| json!({
@@ -7870,14 +8373,258 @@ impl GlauxServer {
                 "skeleton": sk.skeleton.join(" "),
             }))
             .collect::<Vec<_>>());
-        v["findings"] = json!(st
-            .findings
-            .iter()
-            .chain(crit.findings.iter().filter(|f| f.severity == "warn"))
-            .collect::<Vec<_>>());
-        v["summary"] = json!(st.summary);
-        v["score"] = json!(crit.score);
-        v["strengths"] = json!(crit.strengths);
+        v["findings"] = json!(draft.measure.findings);
+        v["summary"] = json!(draft.measure.summary);
+        v["score"] = json!(draft.measure.score);
+        v["strengths"] = json!(draft.measure.strengths);
+        v["expression"] = json!(draft.measure.expression);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "旋律を直す(改稿のループの 1 手、または auto で数手)。計画を直す手を当て、作り直し、全体を測り直して\
+        良くなったときだけ採用する(accept: improve。always で必ず採用)。seed を変える手は tries 案(既定 4)を作って最も良い案を選ぶ。\
+        採否の比べ方は「[曲][区間][句] の warn の数 → warn の総数 → 点数」の順(上の粒度の問題を先に)。採用した手は計画の履歴に\
+        why・前後の測定と一緒に残り、曲は 1 手(undo で戻る)。手(op): expression(args: amount・feel・vibrato・glide・velocity。\
+        強さ・切り方・ビブラート・ノリ)/ reseed(骨格は保ち、リズムと表面だけ選び直す)/ reskeleton(args: phrase。骨格を\
+        作り直す)/ register(args: shift 半音で区間の音域の軌跡を移す、spread 倍で広げる)/ rhythm_family(args: value)/ \
+        density(args: scale)/ phrase(args: index と bars・offset_beats・cadence・ending_degree・contour)/ rephrase(区間の\
+        句の並び・長さ・入りを作り直す)/ auto(指摘を上の粒度から読んで手を選び、steps 手まで回す)。section で区間を絞る。\
+        計画から作ったクリップが無ければ先に realize_melody。"
+    )]
+    async fn revise_melody(
+        &self,
+        params: Parameters<ReviseMelodyParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::plan;
+        let _activity = self.handle.begin_activity("revise_melody");
+        let p = params.0;
+        let pid = parse_plan_id(&p.plan_id)?;
+        let tries = p.tries.unwrap_or(4).clamp(1, 8) as u64;
+        let always = match p.accept.as_deref().unwrap_or("improve") {
+            "improve" => false,
+            "always" => true,
+            a => return Err(format!("accept は improve / always(got: {a})")),
+        };
+        let steps = if p.op == "auto" {
+            p.steps.unwrap_or(3).clamp(1, 8)
+        } else {
+            1
+        };
+        let args = p.args.clone().unwrap_or(json!({}));
+        let mut log: Vec<Value> = Vec::new();
+        let mut tried_ops: Vec<(String, Option<String>)> = Vec::new();
+        let mut last_measure: Option<MelMeasure> = None;
+        for _ in 0..steps {
+            let plans = self.handle.get_plans().await?;
+            let stored = plans
+                .doc()
+                .plans
+                .get(&pid)
+                .ok_or_else(|| format!("計画が見つかりません: {pid}"))?
+                .clone();
+            let mp: plan::MelodyPlan =
+                serde_json::from_value(stored.body.clone()).map_err(|e| e.to_string())?;
+            let track_str = p
+                .track_id
+                .clone()
+                .or_else(|| mp.track.clone())
+                .ok_or("track_id を指定してください(計画に track がありません)")?;
+            let tid = glaux_core::TrackId::parse(&track_str).map_err(|e| e.to_string())?;
+            let (project, _) = self.handle.get_project_shared().await?;
+            let track_name = project
+                .track(&tid)
+                .ok_or("トラックが見つかりません")?
+                .name
+                .clone();
+            let prep = mel_prep(&project, &mp, &tid)?;
+            let (mel, raw) = plan_clip_notes(&project, &tid, &pid).ok_or(
+                "この計画から作ったクリップがありません。先に realize_melody で作ってください",
+            )?;
+            let before = measure_melody(&project, &mp, &prep, &mel, &raw, &track_name);
+            // 手と区間を決める(auto は指摘を上の粒度から読む)
+            let (op, section, op_args) = if p.op == "auto" {
+                match pick_revision(&before, &mp, &tried_ops) {
+                    Some(x) => x,
+                    None => break,
+                }
+            } else {
+                (p.op.clone(), p.section.clone(), args.clone())
+            };
+            tried_ops.push((op.clone(), section.clone()));
+            let sec_idx = match &section {
+                Some(n) => Some(
+                    mp.sections
+                        .iter()
+                        .position(|s| &s.name == n)
+                        .ok_or_else(|| format!("計画に区間「{n}」がありません"))?,
+                ),
+                None => None,
+            };
+            let only: Option<Vec<String>> = sec_idx.map(|i| vec![mp.sections[i].name.clone()]);
+            let stochastic = op != "expression";
+            let n_try = if stochastic { tries } else { 1 };
+            let mut best: Option<(MelDraft, Vec<plan::PlanOp>)> = None;
+            let mut errors = Vec::new();
+            for t in 0..n_try {
+                let seed_t = mp
+                    .seed
+                    .unwrap_or(1)
+                    .wrapping_add(101 * (t + 1) + 7 * log.len() as u64);
+                let ops = match revision_ops(&mp, sec_idx, &op, &op_args, seed_t, &prep) {
+                    Ok(o) => o,
+                    Err(e) => return Err(e),
+                };
+                // 計画に当てて形を確かめる(失敗すれば何も変えない)
+                let mut doc = plan::PlanSet::default();
+                doc.plans.insert(pid.clone(), stored.clone());
+                if let Err(e) = glaux_core::Document::apply_command(
+                    &mut doc,
+                    &plan::PlanCommand::Edit {
+                        id: pid.clone(),
+                        rev: stored.rev + 1,
+                        ops: ops.clone(),
+                    },
+                ) {
+                    return Err(format!("計画に当てられません: {e}"));
+                }
+                let mp2: plan::MelodyPlan = serde_json::from_value(doc.plans[&pid].body.clone())
+                    .map_err(|e| e.to_string())?;
+                let prep2 = mel_prep(&project, &mp2, &tid)?;
+                match draft_melody(
+                    &project,
+                    &mp2,
+                    &prep2,
+                    &pid,
+                    &stored.name,
+                    &tid,
+                    only.as_deref(),
+                    seed_t,
+                    false,
+                    None,
+                ) {
+                    Ok(d) => {
+                        if best
+                            .as_ref()
+                            .is_none_or(|(b, _)| d.measure.rank() < b.measure.rank())
+                        {
+                            best = Some((d, ops));
+                        }
+                    }
+                    Err(e) => errors.push(e),
+                }
+            }
+            let Some((draft, ops)) = best else {
+                return Err(format!("作り直せませんでした: {}", errors.join(" / ")));
+            };
+            let accepted = always
+                || draft.measure.rank() <= before.rank()
+                    && (op != "reseed" || draft.measure.rank() < before.rank());
+            let summary = |m: &MelMeasure| json!({ "score": m.score, "structure_warns": m.structure_warns, "warns": m.warns });
+            let mut entry = json!({
+                "op": op,
+                "section": section,
+                "args": op_args,
+                "tried": n_try,
+                "accepted": accepted,
+                "before": summary(&before),
+                "after": summary(&draft.measure),
+                "seed": draft.seed,
+            });
+            if accepted {
+                let mut all_ops = ops;
+                all_ops.extend(draft.skeleton_ops.clone());
+                all_ops.push(plan::PlanOp::Set {
+                    path: "/seed".to_owned(),
+                    value: json!(draft.seed),
+                });
+                let trigger = p.trigger.as_ref().map(|t| PlanTriggerParam {
+                    kind: t.kind.clone(),
+                    text: t.text.clone(),
+                });
+                let measures = vec![
+                    PlanMeasureParam {
+                        name: "点検の点数".to_owned(),
+                        before: Some(before.score as f64),
+                        after: Some(draft.measure.score as f64),
+                    },
+                    PlanMeasureParam {
+                        name: "[曲][区間][句] の warn".to_owned(),
+                        before: Some(before.structure_warns as f64),
+                        after: Some(draft.measure.structure_warns as f64),
+                    },
+                    PlanMeasureParam {
+                        name: "warn の総数".to_owned(),
+                        before: Some(before.warns as f64),
+                        after: Some(draft.measure.warns as f64),
+                    },
+                ];
+                let why = if p.op == "auto" {
+                    format!(
+                        "{}(auto: {} を {})",
+                        p.why.trim(),
+                        op,
+                        section.as_deref().unwrap_or("全体")
+                    )
+                } else {
+                    p.why.clone()
+                };
+                let note = plan_note(&why, trigger, Some(measures))?;
+                let pe = self
+                    .handle
+                    .apply_plan(
+                        plan::PlanCommand::Edit {
+                            id: pid.clone(),
+                            rev: stored.rev + 1,
+                            ops: all_ops,
+                        },
+                        self.author(&ctx),
+                        format!("改稿: {op}({})", section.as_deref().unwrap_or("全体")),
+                        note,
+                    )
+                    .await?;
+                let plans = self.handle.get_plans().await?;
+                let plan_ref = plans
+                    .doc()
+                    .plans
+                    .get(&pid)
+                    .ok_or("計画が見つかりません")?
+                    .reference();
+                let label = format!("旋律の改稿: {op}");
+                let command = Command::Batch {
+                    commands: vec![
+                        draft.command,
+                        Command::SetClipPlan {
+                            clip: draft.clip_id.clone(),
+                            plan: Some(plan_ref),
+                        },
+                    ],
+                    label: label.clone(),
+                };
+                let (song_entry, _) =
+                    flatten(self.handle.apply(command, self.author(&ctx), label).await)?;
+                entry["plan_entry_id"] = json!(pe);
+                entry["entry_id"] = json!(song_entry);
+                last_measure = Some(draft.measure);
+            } else {
+                last_measure = Some(before);
+            }
+            log.push(entry);
+            if p.op != "auto" {
+                break;
+            }
+        }
+        let mut v = json!({ "steps": log });
+        if let Some(m) = last_measure {
+            v["findings"] = json!(m.findings);
+            v["summary"] = json!(m.summary);
+            v["score"] = json!(m.score);
+            v["expression"] = json!(m.expression);
+        }
+        if v["steps"].as_array().is_none_or(|a| a.is_empty()) {
+            v["note"] = json!("直す手がありません(上の粒度の warn と表情の指摘が無い)");
+        }
         Ok(JsonText(v))
     }
 

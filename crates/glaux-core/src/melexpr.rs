@@ -259,6 +259,8 @@ pub struct Uniformity {
     /// 長さ ÷ 次の音までの比(0.05 刻み)の種類の数と、最も多い比の割合
     pub cut_kinds: usize,
     pub cut_top_share: f64,
+    /// 最も多い比(1 に近ければ「つなぐ」。レガートの旋律では多数派になるのが自然)
+    pub cut_top: f64,
     /// 16 分の格子ちょうどに頭がある割合
     pub on_grid: f64,
     /// ビブラート・グライド・ベンド・奏法・音量の曲線のどれかがある音の割合
@@ -314,6 +316,10 @@ pub fn uniformity(notes: &[Note], clip_start: u64) -> Uniformity {
         velocity_sd: (sd * 10.0).round() / 10.0,
         velocity_kinds: vk.len(),
         cut_kinds: cuts.len(),
+        cut_top: cuts
+            .iter()
+            .max_by_key(|x| *x.1)
+            .map_or(0.0, |x| *x.0 as f64 * 0.05),
         cut_top_share: ((cuts.values().max().copied().unwrap_or(0) as f64
             / total_cuts.max(1) as f64)
             * 100.0)
@@ -346,7 +352,8 @@ pub fn uniformity_findings(u: &Uniformity) -> Vec<(&'static str, String, &'stati
             "句の山へ強く・終わりで抜く、拍の位置、食った音のアクセントで強さを変える(realize_melody の expression)",
         ));
     }
-    if u.cut_top_share >= 0.7 {
+    // 同じ切り方が多くても、それが「つなぐ」(レガート)なら機械的とは限らない
+    if (u.cut_top_share >= 0.7 && u.cut_top < 0.95) || u.cut_kinds <= 2 {
         v.push((
             "warn",
             format!(

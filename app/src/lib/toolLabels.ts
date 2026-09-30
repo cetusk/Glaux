@@ -63,6 +63,7 @@ const LABELS: Record<string, ToolLabel> = {
   analyze_melody: { short: "旋律の構造", doing: "旋律の構造を読んでいます" },
   plan_melody: { short: "旋律の計画", doing: "旋律の計画を立てています" },
   realize_melody: { short: "計画から旋律", doing: "計画から旋律を作っています" },
+  revise_melody: { short: "旋律の改稿", doing: "旋律を直しています" },
   save_plan: { short: "計画を保存", doing: "旋律の計画を保存しています" },
   edit_plan: { short: "計画を直す", doing: "旋律の計画を直しています" },
   delete_plan: { short: "計画を消す", doing: "旋律の計画を消しています" },

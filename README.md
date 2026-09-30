@@ -84,7 +84,7 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 アプリなしで使う stdio 版は `scripts\glaux-mcp.bat <曲のフォルダ>` です(同じ曲をアプリと同時には開けません)。
 
 <details>
-<summary>ツールの一覧(102 個)</summary>
+<summary>ツールの一覧(103 個)</summary>
 
 | 分類 | ツール |
 |---|---|
@@ -95,7 +95,7 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 | 音色 | `modulate` `set_layer` `set_macro` `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | エフェクトのプリセット | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |
 | CLAP | `list_plugins` `list_plugin_presets` `load_plugin_preset` `refine_plugin_params` |
-| 旋律の計画 | `plan_melody` `realize_melody` `save_plan` `edit_plan` `delete_plan` `get_plan` `plan_log` `undo_plan` |
+| 旋律の計画 | `plan_melody` `realize_melody` `revise_melody` `save_plan` `edit_plan` `delete_plan` `get_plan` `plan_log` `undo_plan` |
 | 素材 | `import_sample` `import_ir` `import_audio_clip` `import_midi` `transcribe_audio` `separate_audio` |
 
 </details>

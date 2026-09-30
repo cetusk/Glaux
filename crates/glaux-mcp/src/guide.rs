@@ -81,6 +81,8 @@ A メロ・ヴァースは period、EDM・トラップは loop)→ 4. ヴァー�
 リズムの系統)を立て、get_plan で読んで作曲者の言葉に合わせ edit_plan で直し、realize_melody で音にする。\n\
 直すときも上から: 区間の register・rhythm_family → 句の bars・offset_beats・cadence → 骨格(skeleton)の順に edit_plan して\n\
 realize_melody(sections で区間だけ・seed でリズムと表面だけ変える)。write_melody は短い動機からの手早い案。\n\
+直すのは revise_melody(手を何案か試し、測って良くなったときだけ採用。auto で指摘から安い手を順に)。聴いた感想は\n\
+手に訳す: 機械的 → expression(amount・feel)/ 同じ輪郭 → reseed・rephrase / 音域が狭い → register spread・shift。\n\
 計画: analyze_melody の plan を save_plan で保存し(why に作曲者の言葉)、edit_plan で上の粒度から直す\n\
 (区間の register・density → 句の長さ・入り・終止 → 骨格)。why・trigger・measures(前後の測定)を必ず残し、\n\
 効果の無かった変更は plan_log で探して undo_plan の revert で戻す。計画の履歴は曲の履歴と別。\n\

@@ -6051,3 +6051,92 @@ async fn plan_melody_then_realize_melody_top_down() {
     .await;
     assert_eq!(e.is_error, Some(true));
 }
+
+#[tokio::test]
+async fn revise_melody_tries_a_move_and_keeps_it_only_when_not_worse() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_rev001", "Lead")).await);
+    let pl = ok_json(
+        &call(
+            &fx,
+            "plan_melody",
+            json!({ "track_id": "trk_rev001", "genre": "edm", "role": "lead", "key": "A minor",
+                    "chords": "Am | F | C | G", "seed": 3,
+                    "sections": [{ "name": "Drop", "start_bar": 1, "bars": 8, "energy": 8 }] }),
+        )
+        .await,
+    );
+    let pid = pl["plan"]["plan_id"].as_str().unwrap().to_owned();
+    // クリップが無いうちは直せない
+    let r = call(
+        &fx,
+        "revise_melody",
+        json!({ "plan_id": pid, "op": "reseed", "why": "x" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let made = ok_json(&call(&fx, "realize_melody", json!({ "plan_id": pid })).await);
+    // 表情が付いている(強さが一様でない・ビブラートは長い音だけ)
+    assert!(
+        made["expression"]["velocity_sd"].as_f64().unwrap() > 2.0,
+        "{made}"
+    );
+    assert!(made["expression"]["vibrato_short"].as_f64().unwrap() < 0.3);
+    let (before, _) = fx.handle.get_project().await.unwrap();
+    // 表情の量を上げる(決まった手。悪くならなければ採用)
+    let v = ok_json(
+        &call(
+            &fx,
+            "revise_melody",
+            json!({ "plan_id": pid, "op": "expression", "args": { "amount": 0.9, "feel": "laid_back" },
+                    "why": "もっと歌わせる", "accept": "always" }),
+        )
+        .await,
+    );
+    assert_eq!(v["steps"][0]["accepted"], true, "{v}");
+    let g = ok_json(&call(&fx, "get_plan", json!({ "plan_id": pid })).await);
+    assert_eq!(g["body"]["expression"]["feel"], "laid_back");
+    assert_eq!(g["clips"][0]["status"], "up_to_date");
+    let log = ok_json(&call(&fx, "plan_log", json!({ "plan_id": pid })).await);
+    assert_eq!(log["entries"][0]["why"], "もっと歌わせる");
+    assert_eq!(log["entries"][0]["measures"].as_array().unwrap().len(), 3);
+    // 曲の undo で音は戻る(計画は残る)
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let (after_undo, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&before.tracks).unwrap(),
+        serde_json::to_value(&after_undo.tracks).unwrap()
+    );
+    ok_json(&call(&fx, "redo", json!({})).await);
+    // 引数の足りない手はエラー
+    let r = call(
+        &fx,
+        "revise_melody",
+        json!({ "plan_id": pid, "op": "register", "why": "x" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    // auto: 手を選んで回す(採否は測定次第。手の記録が返る)
+    let a = ok_json(
+        &call(
+            &fx,
+            "revise_melody",
+            json!({ "plan_id": pid, "op": "auto", "why": "直せる所を直す", "steps": 2, "tries": 2 }),
+        )
+        .await,
+    );
+    for st in a["steps"].as_array().unwrap() {
+        let (b, af) = (&st["before"], &st["after"]);
+        if st["accepted"] == true {
+            // 採用した手は、上の粒度の warn を増やさない
+            assert!(
+                af["structure_warns"].as_u64() <= b["structure_warns"].as_u64(),
+                "{a}"
+            );
+        }
+    }
+    assert!(
+        a.get("findings").is_some() || a.get("note").is_some(),
+        "{a}"
+    );
+}
