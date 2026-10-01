@@ -5084,8 +5084,7 @@ impl GlauxServer {
             None => None,
         };
         let dir = self.handle.project_dir().await?;
-        let imported =
-            crate::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
+        let imported = import_audio_blocking(dir, p.path.clone()).await?;
         let mut cmds = Vec::new();
         if !project.assets.contains_key(&imported.id) {
             cmds.push(Command::AddAsset {
@@ -6168,8 +6167,7 @@ impl GlauxServer {
             .ok_or_else(|| format!("track not found: {track_id}"))?;
 
         let dir = self.handle.project_dir().await?;
-        let imported =
-            crate::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
+        let imported = import_audio_blocking(dir, p.path.clone()).await?;
 
         let mut params_map = glaux_core::ParamMap::new();
         if let Some(root) = p.root {
@@ -6228,8 +6226,7 @@ impl GlauxServer {
         let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
         let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
-        let imported =
-            crate::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&p.path))?;
+        let imported = import_audio_blocking(dir, p.path.clone()).await?;
         let file_name = std::path::Path::new(&p.path)
             .file_stem()
             .map(|n| n.to_string_lossy().into_owned())
@@ -8604,56 +8601,61 @@ impl GlauxServer {
             let only: Option<Vec<String>> = sec_idx.map(|i| vec![mp.sections[i].name.clone()]);
             let stochastic = op != "expression";
             let n_try = if stochastic { tries } else { 1 };
-            let mut best: Option<(MelDraft, Vec<plan::PlanOp>)> = None;
-            let mut errors = Vec::new();
-            for t in 0..n_try {
-                let seed_t = mp
-                    .seed
-                    .unwrap_or(1)
-                    .wrapping_add(101 * (t + 1) + 7 * log.len() as u64);
-                let ops = match revision_ops(&mp, sec_idx, &op, &op_args, seed_t, &prep) {
-                    Ok(o) => o,
-                    Err(e) => return Err(e),
-                };
-                // 計画に当てて形を確かめる(失敗すれば何も変えない)
-                let mut doc = plan::PlanSet::default();
-                doc.plans.insert(pid.clone(), stored.clone());
-                if let Err(e) = glaux_core::Document::apply_command(
-                    &mut doc,
-                    &plan::PlanCommand::Edit {
-                        id: pid.clone(),
-                        rev: stored.rev + 1,
-                        ops: ops.clone(),
-                    },
-                ) {
-                    return Err(format!("計画に当てられません: {e}"));
-                }
-                let mp2: plan::MelodyPlan = serde_json::from_value(doc.plans[&pid].body.clone())
-                    .map_err(|e| e.to_string())?;
-                let prep2 = mel_prep(&project, &mp2, &tid)?;
-                match draft_melody(
-                    &project,
-                    &mp2,
-                    &prep2,
-                    &pid,
-                    &stored.name,
-                    &tid,
-                    only.as_deref(),
-                    seed_t,
-                    false,
-                    None,
-                ) {
-                    Ok(d) => {
-                        if best
-                            .as_ref()
-                            .is_none_or(|(b, _)| d.measure.rank() < b.measure.rank())
-                        {
-                            best = Some((d, ops));
-                        }
+            // 候補を作って測る計算は重いので、非同期の処理の外で(cpu_bound)
+            let (best, errors) = cpu_bound(|| {
+                let mut best: Option<(MelDraft, Vec<plan::PlanOp>)> = None;
+                let mut errors = Vec::new();
+                for t in 0..n_try {
+                    let seed_t = mp
+                        .seed
+                        .unwrap_or(1)
+                        .wrapping_add(101 * (t + 1) + 7 * log.len() as u64);
+                    let ops = match revision_ops(&mp, sec_idx, &op, &op_args, seed_t, &prep) {
+                        Ok(o) => o,
+                        Err(e) => return Err(e),
+                    };
+                    // 計画に当てて形を確かめる(失敗すれば何も変えない)
+                    let mut doc = plan::PlanSet::default();
+                    doc.plans.insert(pid.clone(), stored.clone());
+                    if let Err(e) = glaux_core::Document::apply_command(
+                        &mut doc,
+                        &plan::PlanCommand::Edit {
+                            id: pid.clone(),
+                            rev: stored.rev + 1,
+                            ops: ops.clone(),
+                        },
+                    ) {
+                        return Err(format!("計画に当てられません: {e}"));
                     }
-                    Err(e) => errors.push(e),
+                    let mp2: plan::MelodyPlan =
+                        serde_json::from_value(doc.plans[&pid].body.clone())
+                            .map_err(|e| e.to_string())?;
+                    let prep2 = mel_prep(&project, &mp2, &tid)?;
+                    match draft_melody(
+                        &project,
+                        &mp2,
+                        &prep2,
+                        &pid,
+                        &stored.name,
+                        &tid,
+                        only.as_deref(),
+                        seed_t,
+                        false,
+                        None,
+                    ) {
+                        Ok(d) => {
+                            if best
+                                .as_ref()
+                                .is_none_or(|(b, _)| d.measure.rank() < b.measure.rank())
+                            {
+                                best = Some((d, ops));
+                            }
+                        }
+                        Err(e) => errors.push(e),
+                    }
                 }
-            }
+                Ok::<_, String>((best, errors))
+            })?;
             let Some((draft, ops)) = best else {
                 return Err(format!("作り直せませんでした: {}", errors.join(" / ")));
             };
@@ -9491,63 +9493,72 @@ impl GlauxServer {
             out: Vec<motif::Out>,
             crit: melody::MelodyCritique,
         }
-        let mut cands: Vec<Cand> = Vec::new();
-        for k in 0..n as u64 {
-            let seed = base_seed.wrapping_add(k);
-            let form = forms[(seed % forms.len() as u64) as usize].clone();
-            let contour = contours[((seed / forms.len() as u64) % contours.len() as u64) as usize];
-            let motif_bars = motif_bar_choices[((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33)
-                % motif_bar_choices.len() as u64)
-                as usize];
-            let slots = (total_bars as u64 / motif_bars) as usize;
-            let peak_slot = p
-                .peak_bar
-                .map(|b| (b.saturating_sub(first_bar) as u64 / motif_bars) as usize);
-            let (rhythm, rhythm_name) = match &fixed {
-                Some((r, _, name)) => (r.clone(), name.clone()),
-                None => melgen::pick_rhythm(vocab, role, motif_bars, &meter, genre.breath, seed),
-            };
-            let spec = melgen::MotifSpec {
-                key,
-                contour,
-                low,
-                high,
-                start,
-                span: role.span,
-                bar_len,
-                strong: meter.strong_ticks(),
-                chord_at: &look,
-                seed,
-            };
-            let m = melgen::make_motif(&rhythm, &spec);
-            let plan = melgen::fit_form(&motif::parse_plan(&form)?, slots);
-            let opts = motif::Options {
-                key,
-                low,
-                high,
-                peak_slot,
-                peak_pitch,
-                anticipate,
-                seed,
-                strong: meter.strong_ticks(),
-                breath: if genre.breath {
-                    glaux_core::time::PPQ
-                } else {
-                    glaux_core::time::PPQ / 2
-                },
-            };
-            let out = motif::develop(&m, &plan, bar_len, &look, &opts)?;
-            let crit = melody_critique(&project, &track.name, &out, clip_start, &look, key, genre);
-            cands.push(Cand {
-                seed,
-                form,
-                contour,
-                rhythm: rhythm_name,
-                motif: m,
-                out,
-                crit,
-            });
-        }
+        // 案を作って点検する計算は重いので、非同期の処理の外で(cpu_bound)
+        let cands = cpu_bound(|| {
+            let mut cands: Vec<Cand> = Vec::new();
+            for k in 0..n as u64 {
+                let seed = base_seed.wrapping_add(k);
+                let form = forms[(seed % forms.len() as u64) as usize].clone();
+                let contour =
+                    contours[((seed / forms.len() as u64) % contours.len() as u64) as usize];
+                let motif_bars = motif_bar_choices[((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    >> 33)
+                    % motif_bar_choices.len() as u64)
+                    as usize];
+                let slots = (total_bars as u64 / motif_bars) as usize;
+                let peak_slot = p
+                    .peak_bar
+                    .map(|b| (b.saturating_sub(first_bar) as u64 / motif_bars) as usize);
+                let (rhythm, rhythm_name) = match &fixed {
+                    Some((r, _, name)) => (r.clone(), name.clone()),
+                    None => {
+                        melgen::pick_rhythm(vocab, role, motif_bars, &meter, genre.breath, seed)
+                    }
+                };
+                let spec = melgen::MotifSpec {
+                    key,
+                    contour,
+                    low,
+                    high,
+                    start,
+                    span: role.span,
+                    bar_len,
+                    strong: meter.strong_ticks(),
+                    chord_at: &look,
+                    seed,
+                };
+                let m = melgen::make_motif(&rhythm, &spec);
+                let plan = melgen::fit_form(&motif::parse_plan(&form)?, slots);
+                let opts = motif::Options {
+                    key,
+                    low,
+                    high,
+                    peak_slot,
+                    peak_pitch,
+                    anticipate,
+                    seed,
+                    strong: meter.strong_ticks(),
+                    breath: if genre.breath {
+                        glaux_core::time::PPQ
+                    } else {
+                        glaux_core::time::PPQ / 2
+                    },
+                };
+                let out = motif::develop(&m, &plan, bar_len, &look, &opts)?;
+                let crit =
+                    melody_critique(&project, &track.name, &out, clip_start, &look, key, genre);
+                cands.push(Cand {
+                    seed,
+                    form,
+                    contour,
+                    rhythm: rhythm_name,
+                    motif: m,
+                    out,
+                    crit,
+                });
+            }
+            Ok::<_, String>(cands)
+        })?;
         // 点数は足切りにだけ使い、通った案は互いに違う順に並べる(最大の点の案が良い旋律とは限らない)
         let gate = p.gate.unwrap_or(60).min(100);
         let best_pick = match p.pick.as_deref().unwrap_or("diverse") {
@@ -12872,4 +12883,28 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .map(|s| (*s).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "詳細不明".to_owned())
+}
+
+/// 音声ファイルの取り込み(読み込み・変換・コピー)を非同期の処理の外で行う(応答の処理を止めない)
+async fn import_audio_blocking(
+    dir: String,
+    path: String,
+) -> Result<crate::assets::ImportedSample, String> {
+    tokio::task::spawn_blocking(move || {
+        crate::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// CPU を長く使う計算を、マルチスレッドのランタイムなら `block_in_place` で包む
+/// (同じ worker に載っているほかの要求を別の worker へ逃がす)。それ以外(テストの
+/// current_thread など)ではそのまま呼ぶ
+fn cpu_bound<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
 }

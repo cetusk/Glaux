@@ -352,7 +352,12 @@ impl WavetableVoice {
 
         // ---- position(基準 + エンベロープ + LFO + 奏法) ----
         self.pos_env -= self.pos_env * (4.6 / (p.pos_decay.max(0.005) * sr)).min(1.0);
-        let lfo = (std::f32::consts::TAU * self.lfo_phase).sin();
+        // LFO の深さが 0 のときは sin を求めない(位相だけ進める)
+        let lfo = if p.lfo_depth != 0.0 {
+            (std::f32::consts::TAU * self.lfo_phase).sin()
+        } else {
+            0.0
+        };
         self.lfo_phase = (self.lfo_phase + p.lfo_rate / sr).fract();
         let pos = (p.position + p.pos_env * self.pos_env + p.lfo_depth * 0.5 * lfo + self.pos_bias)
             .clamp(0.0, 1.0);
@@ -389,13 +394,16 @@ impl WavetableVoice {
         let row1 = bank.row(table, f0 + 1, level);
 
         let mut osc = 0.0f32;
+        // 1 サンプルの位相の進み。fract は 1 を超えたとき(1 周期に 1 回)だけ求める
+        let base_dt = base / sr;
         for i in 0..n {
-            let dt = base * self.ratios[i] / sr;
+            let dt = base_dt * self.ratios[i];
             let ph = self.phases[i];
             let a = read(row0, ph);
             let b = read(row1, ph);
             osc += a + (b - a) * ff;
-            self.phases[i] = (ph + dt).fract();
+            let next = ph + dt;
+            self.phases[i] = if next >= 1.0 { next.fract() } else { next };
         }
         osc /= (n as f32).sqrt();
 
