@@ -19,10 +19,18 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+/// アプリのチャットで動いている AI のモデル名(アプリが init イベントなどから設定する)
+pub type ChatModel = std::sync::Arc<std::sync::RwLock<Option<String>>>;
+
+/// アプリのチャットが MCP の接続先 URL に付ける印(作者名にモデル名を使う)
+pub const CHAT_QUERY: &str = "glaux_chat=1";
+
 #[derive(Clone)]
 pub struct GlauxServer {
     handle: SessionHandle,
     tool_router: ToolRouter<Self>,
+    /// アプリのチャットで今動いている AI のモデル名(履歴の作者名に使う。アプリだけが設定する)
+    chat_model: ChatModel,
 }
 
 // ---- パラメータ型 -------------------------------------------------------
@@ -4414,11 +4422,30 @@ impl GlauxServer {
         GlauxServer {
             handle,
             tool_router: Self::tool_router(),
+            chat_model: ChatModel::default(),
         }
     }
 
     /// 接続中クライアントの名前から `Author::Ai` を作る。
+    /// アプリのチャットの AI のモデル名を共有する(アプリ内 MCP サーバーを作るときに渡す)
+    pub fn with_chat_model(mut self, chat_model: ChatModel) -> Self {
+        self.chat_model = chat_model;
+        self
+    }
+
+    /// 履歴の作者。アプリのチャットから起動した AI(接続先の URL に [`CHAT_QUERY`] が付く)なら
+    /// そのモデル名、それ以外は接続元の名前(claude-code など)
     fn author(&self, ctx: &RequestContext<RoleServer>) -> Author {
+        let from_chat = ctx
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|p| p.uri.query())
+            .is_some_and(|q| q.split('&').any(|kv| kv == CHAT_QUERY));
+        if from_chat {
+            if let Some(model) = self.chat_model.read().ok().and_then(|m| m.clone()) {
+                return Author::Ai { model };
+            }
+        }
         let model = ctx
             .peer
             .peer_info()

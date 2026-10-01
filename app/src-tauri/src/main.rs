@@ -2527,10 +2527,14 @@ fn bind_mcp(preferred: u16) -> Option<std::net::TcpListener> {
 }
 
 /// アプリ内 MCP サーバー(streamable HTTP)。UI と同じ SessionHandle を共有する。
-async fn serve_mcp(handle: SessionHandle, listener: std::net::TcpListener) -> Result<()> {
+async fn serve_mcp(
+    handle: SessionHandle,
+    listener: std::net::TcpListener,
+    chat_model: glaux_mcp::server::ChatModel,
+) -> Result<()> {
     let service: StreamableHttpService<GlauxServer, LocalSessionManager> =
         StreamableHttpService::new(
-            move || Ok(GlauxServer::new(handle.clone())),
+            move || Ok(GlauxServer::new(handle.clone()).with_chat_model(chat_model.clone())),
             Default::default(),
             Default::default(),
         );
@@ -2623,6 +2627,8 @@ fn main() -> Result<()> {
         engine: engine.clone(),
         calib: std::sync::Mutex::new(None),
     };
+    // チャットの AI のモデル名(履歴の作者名)を MCP サーバーと共有する
+    let chat_model = state.chat.chat_model.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -2638,11 +2644,12 @@ fn main() -> Result<()> {
 
             // アプリ内 MCP サーバー
             let mcp_handle = handle.clone();
+            let mcp_chat_model = chat_model.clone();
             tauri::async_runtime::spawn(async move {
                 let Some(listener) = mcp_listener else {
                     return;
                 };
-                if let Err(e) = serve_mcp(mcp_handle, listener).await {
+                if let Err(e) = serve_mcp(mcp_handle, listener, mcp_chat_model).await {
                     tracing::error!("MCP サーバーが停止しました: {e:#}");
                 }
             });

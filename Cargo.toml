@@ -35,6 +35,8 @@ anyhow = "1"
 tracing = "0.1"
 # 道具の呼び出しの panic を受け止める(FutureExt::catch_unwind。glaux-mcp のみ)
 futures = "0.3"
+# HTTP の要求の情報(アプリ内 MCP で、チャットの AI からの接続を見分ける。glaux-mcp のみ)
+http = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 # app(Tauri)

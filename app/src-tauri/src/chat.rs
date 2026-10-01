@@ -282,6 +282,17 @@ pub struct ChatManager {
     running: AtomicBool,
     /// 使うモデル(`claude --model` / `codex -m` に渡す)。None なら各 CLI の既定
     model: Mutex<Option<String>>,
+    /// 今動いている AI のモデル名(MCP サーバーと共有し、履歴の作者名に使う)。
+    /// Claude は init イベントの model(既定のモデルでも実際の名前が分かる)、Codex は選んだモデル
+    pub chat_model: glaux_mcp::server::ChatModel,
+}
+
+/// stream-json の init イベントからモデル名を取り出す
+fn init_model(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    (v["type"] == "system" && v["subtype"] == "init")
+        .then(|| v["model"].as_str().map(str::to_owned))
+        .flatten()
 }
 
 /// `--model` に渡してよい値か(英数字と . _ - [ ] のみ。別オプションの注入を防ぐ)。
@@ -350,6 +361,18 @@ impl ChatManager {
             child: Mutex::new(None),
             running: AtomicBool::new(false),
             model: Mutex::new(None),
+            chat_model: Default::default(),
+        }
+    }
+
+    /// AI に渡す MCP の接続先(チャットからの接続だと分かる印を付ける)
+    fn chat_mcp_url(&self) -> String {
+        format!("{}?{}", self.mcp_url, glaux_mcp::server::CHAT_QUERY)
+    }
+
+    fn set_chat_model(&self, model: Option<String>) {
+        if let Ok(mut m) = self.chat_model.write() {
+            *m = model;
         }
     }
 
@@ -489,7 +512,7 @@ impl ChatManager {
             Provider::Codex => {
                 let model = self.model.lock().expect("model lock").clone();
                 cmd.args(codex_args(
-                    &self.mcp_url,
+                    &self.chat_mcp_url(),
                     self.resume_id().as_deref(),
                     model.as_deref(),
                 ));
@@ -508,7 +531,7 @@ impl ChatManager {
 
     fn configure_claude(&self, cmd: &mut Command) {
         let mcp_config = json!({
-            "mcpServers": { "glaux": { "type": "http", "url": self.mcp_url } }
+            "mcpServers": { "glaux": { "type": "http", "url": self.chat_mcp_url() } }
         });
         // 指示本文は引数ではなく stdin で渡す。「-」で始まる指示がオプション扱い
         // されるのを防ぎ、Windows のコマンドライン長制限も回避できる
@@ -529,6 +552,12 @@ impl ChatManager {
     }
 
     fn spawn(&self) -> std::io::Result<Child> {
+        // 作者名: 選んだモデル、無ければ Claude は init イベントで分かるまで接続元の名前、Codex は「codex」
+        let chosen = self.model.lock().expect("model lock").clone();
+        self.set_chat_model(match self.provider() {
+            Provider::Claude => chosen,
+            Provider::Codex => Some(chosen.unwrap_or_else(|| "codex".to_owned())),
+        });
         match self.build_command().spawn() {
             Ok(child) => Ok(child),
             #[cfg(windows)]
@@ -704,6 +733,11 @@ async fn run_turn_inner(
     let mut got_result = false;
     while let Ok(Some(line)) = lines.next_line().await {
         let (events, session_id) = provider.parse_line(&line);
+        if provider == Provider::Claude {
+            if let Some(model) = init_model(&line) {
+                mgr.set_chat_model(Some(model));
+            }
+        }
         if let Some(sid) = session_id {
             mgr.set_session_id(provider, sid);
         }
@@ -776,6 +810,17 @@ mod tests {
         ] {
             assert!(!valid_model_name(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn init_model_is_read_for_the_author_name() {
+        assert_eq!(
+            init_model(
+                r#"{"type":"system","subtype":"init","session_id":"a","model":"claude-opus-5-5"}"#
+            ),
+            Some("claude-opus-5-5".to_owned())
+        );
+        assert_eq!(init_model(r#"{"type":"assistant","model":"x"}"#), None);
     }
 
     #[test]
