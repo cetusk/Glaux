@@ -6779,13 +6779,15 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "MusicXML(.musicxml / .xml、圧縮の .mxl)を読み込み、パートごとに新しいトラックを末尾に足す(段が複数あるパート=ピアノの右手・左手などは段ごと。1 回の undo で戻る)。\
-        MIDI より情報が多い: パート名、強弱記号(pp〜ff・sound dynamics・sf 系)を強さに、スタッカート・アクセントを奏法に、\
+        description = "MusicXML(.musicxml / .xml、圧縮の .mxl。partwise・timewise、UTF-8 / UTF-16)を読み込み、パートごとに新しいトラックを末尾に足す(段が複数あるパート=ピアノの右手・左手などは段ごと。1 回の undo で戻る)。\
+        MIDI より情報が多い: パート名、強弱記号(pp〜ff・sound dynamics・sf 系)と松葉(クレッシェンド・ディミヌエンド)を強さに、スタッカート・アクセントを奏法に、\
         スラーの中の音をレガートに、移調楽器(B♭ クラリネットなど)を実音に、リハーサルマークを区間の目印に、拍子のまとまり\
-        (3+2 など)も移す。和音・タイ・複数の声部(backup / forward)を扱う。音色は part-list の midi-program(無ければ\
+        (3+2 など)も移す。和音・タイ・複数の声部(backup / forward)を扱う。split_voices: true で段の中の声部(合唱のソプラノとアルトなど)もトラックに分ける。\
+        繰り返し記号・1 番 2 番括弧・D.C. / D.S. / Fine / Coda は演奏の順に展開する(expand_repeats: false で書かれた順)。\
+        装飾音符は主音符の頭に短く置く(前打音 1 つは主音符の半分)。音色は part-list の midi-program(無ければ\
         ピアノの分類)で内蔵の楽器を選ぶ(soundfont を渡すとその SoundFont)。打楽器は midi-unpitched で GM のドラムへ。\
         テンポ(sound tempo か メトロノーム記号)と拍子は、set_tempo を省略するとプロジェクトにクリップが無いときだけ使う。\
-        装飾音符・キュー音符は飛ばし、繰り返し記号は展開しない(notes に報告)。score-partwise だけ(timewise は不可)。"
+        キュー音符は飛ばす。展開したこと・飛ばしたものは notes に報告する。"
     )]
     async fn import_musicxml(
         &self,

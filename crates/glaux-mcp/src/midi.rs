@@ -36,6 +36,12 @@ pub struct ImportMidiRequest {
     /// 音源に使う SoundFont(list_soundfonts のファイル名)。省略で内蔵の楽器(GM の分類で選ぶ)
     #[serde(default)]
     pub soundfont: Option<String>,
+    /// MusicXML だけ: 繰り返し記号・1 番 2 番括弧・D.C. / D.S. / Fine / Coda を演奏の順に展開する。省略で true
+    #[serde(default)]
+    pub expand_repeats: Option<bool>,
+    /// MusicXML だけ: 1 つの段の中の声部(合唱のソプラノとアルトなど)もトラックに分ける。省略で false
+    #[serde(default)]
+    pub split_voices: Option<bool>,
 }
 
 /// 読み込んだ 1 パート(元のトラック × チャンネル)。tick は 960 換算済み
