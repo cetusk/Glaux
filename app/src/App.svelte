@@ -15,6 +15,7 @@
     nextBarHead,
     prevBarHead,
     tickToSeconds,
+    fmtBpm,
   } from "./lib/barMap";
   import type { AppInfo, EntrySummary, Project } from "./lib/types";
   import { pollTransport, startTransportPolling, transportStore } from "./lib/transport.svelte";
@@ -1021,7 +1022,7 @@
               ? "クリックで先頭のテンポ(BPM)を編集(曲の途中にテンポの変更あり。途中の変更はルーラーの右クリックで)"
               : "クリックでテンポ(BPM)を編集(曲の途中から変えるときはルーラーを右クリック)"}
           >
-            <span class="lbl">テンポ</span><span class="val">{bpm}{#if (project?.tempo_map.length ?? 0) > 1}*{/if}</span>
+            <span class="lbl">テンポ</span><span class="val">{fmtBpm(bpm)}{#if (project?.tempo_map.length ?? 0) > 1}*{/if}</span>
           </button>
         {/if}
         {#if editingSig}

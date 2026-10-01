@@ -185,3 +185,8 @@ export function formatSeconds(secs: number): string {
   const s = secs - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 }
+
+/** テンポの表示(小数 2 桁まで、末尾の 0 は付けない)。読み込んだ楽譜の 132.35281141881174 のような値を短く見せる */
+export function fmtBpm(bpm: number): string {
+  return String(Math.round(bpm * 100) / 100);
+}

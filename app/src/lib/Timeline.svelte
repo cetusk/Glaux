@@ -8,7 +8,7 @@
   import { harmonyStore } from "./harmony.svelte";
   import { showError, showToast } from "./toast.svelte";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
-  import { barAtTick, barsEndTick, buildBars, defaultGrouping, meterLabel } from "./barMap";
+  import { barAtTick, barsEndTick, buildBars, defaultGrouping, fmtBpm, meterLabel } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
   import SimilarPresetDialog from "./SimilarPresetDialog.svelte";
@@ -1802,7 +1802,7 @@
         <div class="bar-mark" class:quiet={bar.index % barLabelEvery !== 0} style="left:{bar.tick * pxPerTick}px">
           {#if bar.index % barLabelEvery === 0}{bar.index + 1}{/if}{#if barLabelEvery === 1 && chordAt.get(bar.tick)}<span class="chord-chip">{chordAt.get(bar.tick)}</span>{/if}{#if barLabelEvery === 1 && tempoAt.get(bar.tick)}<span
               class="tempo-chip"
-              title="この小節からのテンポ(右クリックで変更・削除)">♩={tempoAt.get(bar.tick)}</span
+              title="この小節からのテンポ(右クリックで変更・削除)">♩={fmtBpm(tempoAt.get(bar.tick) ?? 0)}</span
             >{/if}{#if bar.sigChange && barLabelEvery === 1}<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions --><span
               class="sig-chip"
               title="クリックで拍子を編集・削除"
