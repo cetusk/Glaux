@@ -6,17 +6,8 @@
   import Toasts from "./lib/Toasts.svelte";
   import Icon from "./lib/Icon.svelte";
   import { showToast } from "./lib/toast.svelte";
-  import { harmonyStore, refreshHarmony } from "./lib/harmony.svelte";
-  import {
-    barAtTick,
-    buildBars,
-    formatPosition,
-    formatSeconds,
-    nextBarHead,
-    prevBarHead,
-    tickToSeconds,
-    fmtBpm,
-  } from "./lib/barMap";
+  import { refreshHarmony } from "./lib/harmony.svelte";
+  import { barAtTick, buildBars, nextBarHead, prevBarHead } from "./lib/barMap";
   import type { AppInfo, EntrySummary, Project } from "./lib/types";
   import { pollTransport, startTransportPolling, transportStore } from "./lib/transport.svelte";
   import Timeline from "./lib/Timeline.svelte";
@@ -30,6 +21,8 @@
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import InstrumentPicker from "./lib/InstrumentPicker.svelte";
   import Mixer from "./lib/Mixer.svelte";
+  import TransportLcd from "./lib/TransportLcd.svelte";
+  import StatusBar from "./lib/StatusBar.svelte";
   import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import {
@@ -51,7 +44,6 @@
   let redoable = $state<EntrySummary[]>([]);
   let info = $state<AppInfo | null>(null);
   let error = $state<string | null>(null);
-  let mcpCopied = $state(false);
   /** 保存に失敗したときのエラー(次の保存が成功すると消える) */
   let saveError = $state<string | null>(null);
 
@@ -64,8 +56,6 @@
     settingsUi.open = false;
     refreshAudioDev();
   }
-  let editingBpm = $state(false);
-  let bpmInput = $state("");
 
   // レイアウト(ドラッグで調整、localStorage に保存)
   function loadNum(key: string, fallback: number): number {
@@ -328,12 +318,6 @@
     if (id && project && !project.tracks.some((t) => t.id === id)) midiArmStore.trackId = null;
   });
 
-  /// 窓口のポートが既定(41920)と違うとき(Glaux を複数起動したとき)は、表示にポートを添える
-  function mcpLabel(url: string): string {
-    const port = url.match(/:(\d+)\//)?.[1];
-    return port && port !== "41920" ? `MCP :${port}` : "MCP";
-  }
-
   onMount(() => {
     applyTheme();
     api.appInfo().then((i) => {
@@ -500,45 +484,6 @@
       error = String(e);
     }
   }
-
-  // ---- オーディオ負荷の表示(音切れの原因切り分け用) ----
-  // 平均はポーリングごとの値、最大は直近 3 秒、回数は再生開始からの差分
-  let dspAvg = $state(0);
-  let dspMaxWindow: number[] = [];
-  let dspMax = $state(0);
-  let dspBase: { overruns: number; late: number; swaps: number; xruns: number } | null = null;
-  let dspCounts = $state({ overruns: 0, late: 0, swaps: 0, xruns: 0 });
-  $effect(() => {
-    const d = transport.dsp;
-    if (!d) return;
-    if (!transport.playing) {
-      dspBase = null;
-      return;
-    }
-    if (!dspBase) dspBase = { overruns: d.overruns, late: d.late, swaps: d.swaps, xruns: d.xruns ?? 0 };
-    dspAvg = d.avg_pct;
-    dspMaxWindow = [...dspMaxWindow.slice(-29), d.max_pct];
-    dspMax = Math.max(...dspMaxWindow);
-    dspCounts = {
-      overruns: d.overruns - dspBase.overruns,
-      late: d.late - dspBase.late,
-      swaps: d.swaps - dspBase.swaps,
-      xruns: (d.xruns ?? 0) - dspBase.xruns,
-    };
-  });
-  const dspDrops = $derived(dspCounts.overruns + dspCounts.late + dspCounts.xruns);
-  const dspWarn = $derived(dspDrops > 0 || dspMax > 80);
-
-  // 録音中の入力レベル(上がるときは即座に、下がるときはゆっくり)
-  let recLevel = $state(-90);
-  $effect(() => {
-    const db = transport.input_peak_db;
-    if (!transport.recording) {
-      recLevel = -90;
-      return;
-    }
-    recLevel = Math.max(db ?? -90, recLevel - 6);
-  });
 
   // 録音の結果はトーストで知らせる(以前はヘッダーの通知欄と「♪ MIDI 化」ボタン)
   async function finishMidiRecording() {
@@ -745,11 +690,6 @@
     if (range) api.transportSetLoop(range.start, range.end).catch(() => {});
   });
 
-  function startBpmEdit() {
-    bpmInput = String(bpm);
-    editingBpm = true;
-  }
-
   // ---- 聴く音量(アプリから鳴る音だけ。曲・書き出しには入らない) ----
   function fmtListen(db: number): string {
     return db <= -60 ? "無音" : `${db > 0 ? "+" : ""}${db} dB`;
@@ -759,82 +699,6 @@
     settings.outputVolumeDb = db;
     api.setOutputVolume(db).catch(() => {});
     if (save) saveSettings();
-  }
-
-  async function commitBpm() {
-    editingBpm = false;
-    if (!project) return;
-    const v = Number(bpmInput);
-    if (!Number.isFinite(v)) return;
-    const clamped = Math.min(300, Math.max(20, v));
-    if (Math.abs(clamped - bpm) < 1e-9) return;
-    const events = project.tempo_map.map((e, i) =>
-      i === 0 ? { ...e, bpm: clamped } : e,
-    );
-    try {
-      await api.applyEdit(
-        [{ op: "set_tempo", events }],
-        `BPM を ${clamped} に変更`,
-      );
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  function onBpmKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      commitBpm();
-    } else if (e.key === "Escape") {
-      editingBpm = false;
-    }
-  }
-
-  // ---- 拍子の編集(先頭イベントの書き換え。途中の変更イベントは保持) ----
-
-  let editingSig = $state(false);
-  let sigNumInput = $state(4);
-  let sigDenInput = $state(4);
-
-  function startSigEdit() {
-    if (!project) return;
-    const first = project.time_sig_map[0] ?? { tick: 0, num: 4, den: 4 };
-    sigNumInput = first.num;
-    sigDenInput = first.den;
-    editingSig = true;
-  }
-
-  async function commitSig() {
-    editingSig = false;
-    if (!project) return;
-    const num = Math.min(32, Math.max(1, Math.round(Number(sigNumInput)) || 0));
-    const den = Number(sigDenInput);
-    if (num < 1 || ![1, 2, 4, 8, 16, 32].includes(den)) return;
-    const cur = project.time_sig_map;
-    const first = cur[0] ?? { tick: 0, num: 4, den: 4 };
-    if (first.num === num && first.den === den) return;
-    // 分子・分母を変えたら拍のまとまりは既定に戻す(和が合わなくなるため)
-    const events =
-      cur.length > 0
-        ? cur.map((e, i) => (i === 0 ? { tick: e.tick, num, den } : e))
-        : [{ tick: 0, num, den }];
-    try {
-      await api.applyEdit(
-        [{ op: "set_time_sig", events }],
-        `拍子を ${num}/${den} に変更`,
-      );
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  function onSigKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      commitSig();
-    } else if (e.key === "Escape") {
-      editingSig = false;
-    }
   }
 
   async function doUndo() {
@@ -853,30 +717,6 @@
     }
   }
 
-  async function copyMcpUrl() {
-    if (!info) return;
-    await navigator.clipboard.writeText(
-      `claude mcp add --transport http glaux ${info.mcp_url}`,
-    );
-    mcpCopied = true;
-    setTimeout(() => (mcpCopied = false), 1500);
-  }
-
-  // ---- 表示窓(位置・時間) ----
-  const posBars = $derived.by(() => {
-    if (!project) return [];
-    return buildBars(project, Math.max(contentEndTick, transport.tick) + 1, 1, 2);
-  });
-  const posText = $derived(project ? formatPosition(posBars, transport.tick, project.ppq) : "1.1.1");
-  const timeText = $derived(
-    project ? formatSeconds(tickToSeconds(project.tempo_map, transport.tick, project.ppq)) : "0:00.0",
-  );
-
-  const bpm = $derived(project?.tempo_map[0]?.bpm ?? 120);
-  const timeSig = $derived(
-    project ? `${project.time_sig_map[0]?.num ?? 4}/${project.time_sig_map[0]?.den ?? 4}` : "4/4",
-  );
-  const hasSigChanges = $derived((project?.time_sig_map.length ?? 0) > 1);
 </script>
 
 <div class="layout">
@@ -976,100 +816,7 @@
           ><Icon name="circle" fill /></button
         >
       </div>
-      <!-- 表示窓: 押せるのはテンポと拍子だけ(▾ の付いた欄) -->
-      <div class="lcd" class:recording={transport.recording}>
-        <div class="f pos" title="位置(小節.拍.16 分)">
-          <span class="lbl">位置</span><span class="val">{posText}</span>
-        </div>
-        <div class="f" title="時間(分:秒)">
-          <span class="lbl">時間</span><span class="val">{timeText}</span>
-        </div>
-        {#if transport.recording && !transport.midi_recording}
-          <div class="f" title={`入力レベル ${recLevel.toFixed(0)} dBFS(目安: -12〜-6dB)`}>
-            <span class="lbl rec-lbl">録音中 · 入力</span>
-            <span class="rec-meter"
-              ><span
-                class="rec-meter-fill"
-                class:hot={recLevel > -3}
-                style="width:{Math.max(0, Math.min(100, ((recLevel + 60) / 60) * 100))}%"
-              ></span></span
-            >
-          </div>
-        {:else if transport.midi_recording}
-          <div class="f"><span class="lbl rec-lbl">MIDI 録音中</span><span class="val">{midiArm?.name ?? ""}</span></div>
-        {/if}
-        {#if editingBpm}
-          <div class="f">
-            <span class="lbl">テンポ</span>
-            <!-- svelte-ignore a11y_autofocus -->
-            <input
-              class="lcd-input"
-              type="number"
-              min="20"
-              max="300"
-              step="0.5"
-              autofocus
-              bind:value={bpmInput}
-              onkeydown={onBpmKeydown}
-              onblur={commitBpm}
-            />
-          </div>
-        {:else}
-          <button
-            class="f edit"
-            onclick={startBpmEdit}
-            title={(project?.tempo_map.length ?? 0) > 1
-              ? "クリックで先頭のテンポ(BPM)を編集(曲の途中にテンポの変更あり。途中の変更はルーラーの右クリックで)"
-              : "クリックでテンポ(BPM)を編集(曲の途中から変えるときはルーラーを右クリック)"}
-          >
-            <span class="lbl">テンポ</span><span class="val">{fmtBpm(bpm)}{#if (project?.tempo_map.length ?? 0) > 1}*{/if}</span>
-          </button>
-        {/if}
-        {#if editingSig}
-          <div class="f">
-            <span class="lbl">拍子</span>
-            <span class="sig-edit">
-              <!-- svelte-ignore a11y_autofocus -->
-              <input
-                class="lcd-input sig-input"
-                type="number"
-                min="1"
-                max="32"
-                autofocus
-                bind:value={sigNumInput}
-                onkeydown={onSigKeydown}
-                onblur={(e) => {
-                  // 分母セレクトへの移動では確定しない
-                  const to = e.relatedTarget as HTMLElement | null;
-                  if (!to || !to.classList.contains("sig-den")) commitSig();
-                }}
-              />/<select class="sig-den" bind:value={sigDenInput} onkeydown={onSigKeydown} onchange={commitSig} onblur={commitSig}>
-                {#each [2, 4, 8, 16] as d (d)}
-                  <option value={d}>{d}</option>
-                {/each}
-              </select>
-            </span>
-          </div>
-        {:else}
-          <button
-            class="f edit"
-            onclick={startSigEdit}
-            title={hasSigChanges
-              ? "クリックで先頭の拍子を編集(曲の途中に拍子の変更あり。途中の変更はルーラーの右クリックで)"
-              : "クリックで拍子を編集(曲の途中から変えるときはルーラーを右クリック)"}
-          >
-            <span class="lbl">拍子</span><span class="val">{timeSig}{#if hasSigChanges}*{/if}</span>
-          </button>
-        {/if}
-        {#if harmonyStore.view?.key}
-          <div
-            class="f key"
-            title={`キー(ノートからの推定。確からしさ ${Math.round(harmonyStore.view.key.confidence * 100)}%)。ルーラーに小節ごとのコード`}
-          >
-            <span class="lbl">キー(推定)</span><span class="val">{harmonyStore.view.key.name}</span>
-          </div>
-        {/if}
-      </div>
+      <TransportLcd {project} {contentEndTick} midiArmName={midiArm?.name ?? null} onError={(m) => (error = m)} />
     </div>
     <div class="h-right">
       {#if indicator !== "idle"}
@@ -1230,42 +977,7 @@
     <ExportDialog onClose={() => (showExport = false)} loop={transport.loop ?? null} />
   {/if}
 
-  <!-- ステータスバー: 負荷・デバイス・MCP・版数(押すと設定・コピー) -->
-  <footer>
-    {#if info}
-      <code class="path" title="プロジェクトフォルダ">{info.project_dir}</code>
-    {/if}
-    <div class="st">
-      {#if transport.playing || dspWarn}
-        <span
-          class="it"
-          class:warn={dspWarn}
-          title={`音の処理の負荷(この再生の開始から)\n平均 ${dspAvg.toFixed(0)}% / 直近 3 秒の最大 ${dspMax.toFixed(0)}%\n処理落ち(Glaux の計算が間に合わない): ${dspCounts.overruns} 回\n呼び出し遅延(他の処理に CPU を奪われた): ${dspCounts.late} 回\nOS が知らせた音切れ: ${dspCounts.xruns} 回\n再生データの差し替え(編集で音が切り直される): ${dspCounts.swaps} 回${transport.dsp?.realtime_denied ? "\nOS がリアルタイム優先度を認めていません(途切れやすくなります)" : ""}${dspDrops > 0 ? "\n途切れるときは、設定 → オーディオでバッファを大きくしてください" : ""}`}
-          ><Icon name="cpu" size={12} />{dspAvg.toFixed(0)}%{#if dspDrops > 0}
-            <Icon name="triangle-alert" size={12} />{dspDrops}{/if}</span
-        >
-      {/if}
-      {#if audioDev}
-        <button class="it" onclick={() => openSettings("audio")} title="出力デバイス(クリックで設定)"
-          ><Icon name="speaker" size={12} />{audioDev.output ?? "なし"}{audioDev.rate
-            ? ` · ${(audioDev.rate / 1000).toFixed(1)} kHz`
-            : ""}</button
-        >
-        <button class="it" onclick={() => openSettings("audio")} title="入力デバイス(クリックで設定)"
-          ><Icon name="mic" size={12} />{audioDev.input ?? "なし"}</button
-        >
-        <button class="it" onclick={() => openSettings("midi")} title="MIDI 入力(クリックで設定)"
-          ><Icon name="keyboard-music" size={12} />{audioDev.midi ?? "なし"}</button
-        >
-      {/if}
-      {#if info}
-        <button class="it" onclick={copyMcpUrl} title={`MCP サーバー ${info.mcp_url}\nクリックで Claude Code への登録コマンドをコピー`}
-          ><Icon name={mcpCopied ? "check" : "link"} size={12} />{mcpCopied ? "コピーしました" : mcpLabel(info.mcp_url)}</button
-        >
-      {/if}
-      <span class="it" title="版数(編集・取り消し・やり直しのたびに増える)">v{projectVersion}</span>
-    </div>
-  </footer>
+  <StatusBar {info} {audioDev} {projectVersion} />
 </div>
 
 <Toasts />
@@ -1408,138 +1120,6 @@
     }
   }
 
-  /* 表示窓 */
-  .lcd {
-    display: flex;
-    align-items: stretch;
-    height: 36px;
-    background: var(--bg-inset);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    overflow: hidden;
-  }
-
-  .lcd .f {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 0 10px;
-    border: 0;
-    border-left: 1px solid var(--border);
-    border-radius: 0;
-    background: none;
-    color: var(--text);
-    min-width: 0;
-    height: auto;
-  }
-
-  .lcd .f:first-child {
-    border-left: 0;
-  }
-
-  .lcd .lbl {
-    font-size: 9px;
-    line-height: 1;
-    color: var(--text-faint);
-    letter-spacing: 0.04em;
-  }
-
-  .lcd .val {
-    font-family: var(--mono);
-    font-size: 14px;
-    line-height: 1.25;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .lcd .pos .val {
-    color: var(--accent);
-    font-size: 16px;
-    min-width: 5.5ch;
-  }
-
-  .lcd.recording .pos .val {
-    color: var(--danger);
-  }
-
-  .lcd .key .val {
-    font-family: inherit;
-    font-size: var(--fs-md);
-  }
-
-  .lcd .edit {
-    cursor: pointer;
-  }
-
-  .lcd .edit:hover {
-    background: var(--bg-raised);
-    color: var(--text);
-  }
-
-  .lcd .edit .val::after {
-    content: " ▾";
-    font-size: 9px;
-    color: var(--text-faint);
-  }
-
-  .lcd .rec-lbl {
-    color: var(--danger);
-  }
-
-  .lcd-input {
-    width: 64px;
-    height: 20px;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--accent-dim);
-    border-radius: var(--r-sm);
-    padding: 0 4px;
-    font-family: var(--mono);
-    font-size: var(--fs-md);
-  }
-
-  .sig-edit {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    color: var(--text-dim);
-  }
-
-  .sig-input {
-    width: 40px;
-  }
-
-  .sig-den {
-    height: 20px;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--accent-dim);
-    border-radius: var(--r-sm);
-    font-size: var(--fs-md);
-  }
-
-  .rec-meter {
-    display: inline-block;
-    position: relative;
-    width: 70px;
-    height: 6px;
-    margin-top: 4px;
-    border-radius: 3px;
-    background: var(--bg-raised);
-    overflow: hidden;
-  }
-
-  .rec-meter-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: var(--ok);
-  }
-
-  .rec-meter-fill.hot {
-    background: var(--danger);
-  }
-
   .sep {
     width: 1px;
     height: 22px;
@@ -1580,8 +1160,7 @@
 
   /* 狭い画面(ノート PC の 150% 表示など)では文字を減らす */
   @media (max-width: 1280px) {
-    .export-label,
-    .lcd .key {
+    .export-label {
       display: none;
     }
   }
@@ -1704,61 +1283,6 @@
     flex: 1;
     min-width: 0;
     overflow-y: auto;
-  }
-
-  /* ---- ステータスバー ---- */
-  footer {
-    height: 26px;
-    padding: 0 var(--sp-3);
-    background: var(--bg-panel);
-    border-top: 1px solid var(--border);
-    color: var(--text-dim);
-    font-size: var(--fs-xs);
-    flex-shrink: 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: var(--sp-3);
-  }
-
-  footer .path {
-    font-size: var(--fs-xs);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-  }
-
-  footer .st {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  footer .it {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    border: 0;
-    background: none;
-    padding: 0;
-    font-size: var(--fs-xs);
-    color: var(--text-dim);
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-    max-width: 240px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  footer button.it:hover {
-    color: var(--text);
-  }
-
-  footer .it.warn {
-    color: var(--warn);
   }
 
   .error {

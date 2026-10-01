@@ -11,6 +11,19 @@
   import Fretboard from "./Fretboard.svelte";
   import { drumName } from "./drumMap";
   import { newNoteId } from "./ids";
+  import PianoRollHeader from "./PianoRollHeader.svelte";
+  import VelocityLane from "./VelocityLane.svelte";
+  import {
+    accentRgb,
+    aiColor,
+    ART_LABELS,
+    ARTS_BY_INSTRUMENT,
+    BLACK,
+    MAX_CANVAS_PX,
+    noteName,
+    simplifyCurve,
+    SNAP_OPTIONS,
+  } from "./pianoRollOps";
   import { noteClipboard, pianoRollStore } from "./selection.svelte";
   import type { Articulation, CurveShape, MidiClip, Note, Project, Track } from "./types";
   import { applyCurveShape } from "./types";
@@ -179,72 +192,6 @@
   let fretTuningOverride = $state<"guitar" | "bass" | null>(null);
   const fretTuning = $derived(fretTuningOverride ?? defaultTuning);
 
-  // この楽器で効く奏法(glaux-dsp params.rs の articulations_for と同期を保つこと)
-  const ARTS_BY_INSTRUMENT: Record<string, { art: Articulation; key: string; label: string }[]> = {
-    subtractive: [
-      { art: "palm_mute", key: "M", label: "ミュート" },
-      { art: "staccato", key: "S", label: "スタッカート" },
-      { art: "accent", key: "A", label: "アクセント" },
-      { art: "vibrato", key: "V", label: "ビブラート" },
-      { art: "bend", key: "B", label: "チョーキング" },
-      { art: "legato", key: "T", label: "レガート" },
-      { art: "portamento", key: "P", label: "ポルタメント" },
-    ],
-    drum: [{ art: "accent", key: "A", label: "アクセント" }],
-    pluck: [
-      { art: "palm_mute", key: "M", label: "ブリッジミュート" },
-      { art: "staccato", key: "S", label: "スタッカート" },
-      { art: "accent", key: "A", label: "アクセント" },
-      { art: "vibrato", key: "V", label: "ビブラート" },
-      { art: "bend", key: "B", label: "チョーキング" },
-      { art: "legato", key: "T", label: "ハンマリング" },
-      { art: "portamento", key: "P", label: "スライド" },
-    ],
-    sampler: [
-      { art: "staccato", key: "S", label: "スタッカート" },
-      { art: "accent", key: "A", label: "アクセント" },
-      { art: "vibrato", key: "V", label: "ビブラート" },
-      { art: "bend", key: "B", label: "チョーキング" },
-      { art: "legato", key: "T", label: "レガート" },
-      { art: "portamento", key: "P", label: "ポルタメント" },
-    ],
-    sf2: [
-      { art: "staccato", key: "S", label: "スタッカート" },
-      { art: "accent", key: "A", label: "アクセント" },
-      { art: "vibrato", key: "V", label: "ビブラート" },
-      { art: "bend", key: "B", label: "チョーキング" },
-      { art: "legato", key: "T", label: "レガート" },
-      { art: "portamento", key: "P", label: "ポルタメント" },
-    ],
-    fm: [
-      { art: "palm_mute", key: "M", label: "ミュート" },
-      { art: "staccato", key: "S", label: "スタッカート" },
-      { art: "accent", key: "A", label: "アクセント" },
-      { art: "vibrato", key: "V", label: "ビブラート" },
-      { art: "bend", key: "B", label: "チョーキング" },
-      { art: "legato", key: "T", label: "レガート" },
-      { art: "portamento", key: "P", label: "ポルタメント" },
-    ],
-    wavetable: [
-      { art: "palm_mute", key: "M", label: "ミュート" },
-      { art: "staccato", key: "S", label: "スタッカート" },
-      { art: "accent", key: "A", label: "アクセント" },
-      { art: "vibrato", key: "V", label: "ビブラート" },
-      { art: "bend", key: "B", label: "チョーキング" },
-      { art: "legato", key: "T", label: "レガート" },
-      { art: "portamento", key: "P", label: "ポルタメント" },
-    ],
-    // CLAP 音源: ビブラート・ベンドは音程の変化として送り、ミュート・アクセントは長さと強さで近づける
-    clap: [
-      { art: "palm_mute", key: "M", label: "ミュート(短く弱く)" },
-      { art: "staccato", key: "S", label: "スタッカート" },
-      { art: "accent", key: "A", label: "アクセント" },
-      { art: "vibrato", key: "V", label: "ビブラート" },
-      { art: "bend", key: "B", label: "チョーキング" },
-      { art: "legato", key: "T", label: "レガート(重ねて送る)" },
-      { art: "portamento", key: "P", label: "ポルタメント" },
-    ],
-  };
   const instrumentName = $derived(
     deviceRaw?.type === "sf2" || deviceRaw?.type === "sfz"
       ? isDrum
@@ -260,30 +207,10 @@
   /// 挿入カーソル(クリックで固定。キット/フレット打ち込み先。←/→ でスナップ移動)
   let insertTick = $state(0);
   let showKit = $state(true);
-  /// 操作のヘルプ(以前は 1 行のヒント文に詰め込んでいた)
-  let helpOpen = $state(false);
   let showFret = $state(true);
   let drumHighlight = $state<number | null>(null);
 
   let snapTicks = $state(480); // 1/8
-  // T = 3 連符(PPQ 960: 1/4T=640, 1/8T=320, 1/16T=160)
-  const snapOptions = [
-    { label: "1 小節", ticks: 3840 },
-    { label: "1/2", ticks: 1920 },
-    { label: "1/4", ticks: 960 },
-    { label: "1/4T", ticks: 640 },
-    { label: "1/8", ticks: 480 },
-    { label: "1/8T", ticks: 320 },
-    { label: "1/16", ticks: 240 },
-    { label: "1/16T", ticks: 160 },
-  ];
-
-  const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-  const BLACK = new Set([1, 3, 6, 8, 10]);
-
-  function noteName(pitch: number): string {
-    return `${NOTE_NAMES[pitch % 12]}${Math.floor(pitch / 12) - 1}`;
-  }
 
   // ---- 選択・ドラッグ状態 ----
 
@@ -309,10 +236,6 @@
   let overlayEl: HTMLCanvasElement | undefined = $state();
   let scroller: HTMLDivElement | undefined = $state();
 
-  // ブラウザの Canvas 実サイズ上限(超えると描画が黙って全部消える)。
-  // 長いクリップ × ズームで超えうるので、上限内に収まる解像度スケールに落とす
-  // (見た目は CSS サイズのまま。極端な場合だけ少しぼやける)
-  const MAX_CANVAS_PX = 15000;
 
   // ---- 描画する窓 ----
   // canvas はクリップ全体ではなく「見えている範囲 + 余白」の大きさにして、その位置に置く
@@ -399,26 +322,6 @@
 
   // ---- 描画 ----
 
-  /// AI の編集の色(CSS の --ai)
-  function aiColor(): string {
-    return getComputedStyle(document.documentElement).getPropertyValue("--ai").trim() || "#b07ce8";
-  }
-
-  /// テーマのアクセント色("r, g, b")。選択・再生ヘッド・ホバーをタイムラインと同じ色で描く
-  /// (以前は琥珀色の固定値で、テーマを変えてもピアノロールだけ色が変わらなかった)
-  let accentCache = { css: "", rgb: "255, 194, 71" };
-  function accentRgb(): string {
-    const css = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
-    if (css === accentCache.css) return accentCache.rgb;
-    const m = css.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
-    let rgb = accentCache.rgb;
-    if (m) {
-      const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
-      rgb = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)).join(", ");
-    }
-    accentCache = { css, rgb };
-    return rgb;
-  }
 
   function drawBase() {
     const c = canvasEl;
@@ -787,7 +690,6 @@
 
   // ---- ピッチカーブの手描き(「〜 カーブ」モード) ----
 
-  const MAX_CURVE_POINTS = 8;
   const MAX_CENTS = 2400;
   let curveMode = $state(false);
   /// 描いている途中の軌跡(ノート先頭からの tick, セント)
@@ -813,30 +715,6 @@
     return { t, c };
   }
 
-  /// なぞった軌跡を最大 8 点に間引く(時間方向に等間隔で取り、線形補間で値を読む)
-  function simplifyCurve(pts: { t: number; c: number }[]): { tick: number; cents: number }[] {
-    const sorted = [...pts].sort((a, b) => a.t - b.t);
-    if (sorted.length === 0) return [];
-    const t0 = sorted[0].t;
-    const t1 = sorted[sorted.length - 1].t;
-    const valueAt = (t: number) => {
-      let i = sorted.findIndex((p) => p.t >= t);
-      if (i <= 0) return sorted[Math.max(0, i)].c;
-      const a = sorted[i - 1];
-      const b = sorted[i];
-      const f = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
-      return a.c + (b.c - a.c) * f;
-    };
-    const n = t1 - t0 < 1 ? 1 : MAX_CURVE_POINTS;
-    const out: { tick: number; cents: number }[] = [];
-    for (let k = 0; k < n; k++) {
-      const t = n === 1 ? t0 : t0 + ((t1 - t0) * k) / (n - 1);
-      const tick = Math.round(t);
-      if (out.length > 0 && out[out.length - 1].tick === tick) continue;
-      out.push({ tick, cents: Math.round(valueAt(t)) });
-    }
-    return out;
-  }
 
   function commitCurve(noteId: string, curve: { tick: number; cents: number }[]) {
     const currentClip = clip;
@@ -857,152 +735,8 @@
     if (trackId) api.previewNote(trackId, pitch).catch(() => {});
   }
 
-  // ---- ベロシティの帯(下端に固定、横スクロールはノートと連動) ----
-
-  const VEL_H = 64;
-  const VEL_PAD = 4;
+  // ---- ベロシティの帯(下端に固定、横スクロールはノートと連動。描画と編集は VelocityLane) ----
   let showVel = $state(true);
-  let velEl: HTMLCanvasElement | undefined = $state();
-  /// ドラッグ中の変更(ノート ID → 元の強さ)と、掴んだノートの増減量
-  let velDrag = $state<{ base: Map<string, number>; anchor: string; delta: number } | null>(null);
-
-  function velFromY(y: number): number {
-    const t = 1 - (y - VEL_PAD) / (VEL_H - VEL_PAD * 2);
-    return Math.max(1, Math.min(127, Math.round(t * 127)));
-  }
-
-  function shownVel(n: Note): number {
-    const d = velDrag;
-    const base = d?.base.get(n.id);
-    if (d && base !== undefined) return Math.max(1, Math.min(127, base + d.delta));
-    return n.vel;
-  }
-
-  function velBarRect(n: Note): { x: number; w: number } {
-    return { x: n.pos * pxPerTick, w: Math.max(3, Math.min(8, n.dur * pxPerTick - 1)) };
-  }
-
-  function drawVel() {
-    const c = velEl;
-    const currentClip = clip;
-    if (!c || !currentClip || !showVel) return;
-    const dpr = window.devicePixelRatio || 1;
-    const scale = Math.min(dpr, MAX_CANVAS_PX / win.w);
-    const w = Math.max(1, Math.round(win.w * scale));
-    const h = Math.round(VEL_H * scale);
-    if (c.width !== w || c.height !== h) {
-      c.width = w;
-      c.height = h;
-    }
-    const g = c.getContext("2d")!;
-    g.setTransform(scale, 0, 0, scale, -win.x * scale, 0);
-    g.clearRect(0, 0, contentW, VEL_H);
-    g.fillStyle = "#1b1b1b";
-    g.fillRect(0, 0, contentW, VEL_H);
-    // 目安線(25 / 50 / 75 / 100%)
-    g.fillStyle = "#2a2a2a";
-    for (const f of [0.25, 0.5, 0.75, 1]) {
-      g.fillRect(0, Math.round(VEL_PAD + (1 - f) * (VEL_H - VEL_PAD * 2)), contentW, 1);
-    }
-    // 小節線
-    g.fillStyle = "#333333";
-    for (const b of songBars) {
-      g.fillRect((b.tick - currentClip.start) * pxPerTick, 0, 1, VEL_H);
-    }
-    for (const n of currentClip.notes) {
-      const v = shownVel(n);
-      const { x, w } = velBarRect(n);
-      const bh = (v / 127) * (VEL_H - VEL_PAD * 2);
-      const isSel = selected.has(n.id);
-      g.fillStyle = isSel ? `rgba(${accentRgb()}, 0.95)` : "rgba(94, 156, 224, 0.9)";
-      g.fillRect(x, VEL_H - VEL_PAD - bh, w, bh);
-      // 頭に丸(掴む場所の目印)
-      g.beginPath();
-      g.arc(x + w / 2, VEL_H - VEL_PAD - bh, 2.5, 0, Math.PI * 2);
-      g.fill();
-    }
-  }
-
-  $effect(() => {
-    void clip;
-    void selected;
-    void songBars;
-    void pxPerBeat;
-    void velDrag;
-    void showVel;
-    void win;
-    void settings.accent;
-    drawVel();
-  });
-
-  /// x 位置の縦棒のノート(複数重なるときは開始位置が近い方)
-  function velNoteAt(x: number): Note | null {
-    const currentClip = clip;
-    if (!currentClip) return null;
-    let best: Note | null = null;
-    let bestDist = Infinity;
-    for (const n of currentClip.notes) {
-      const { x: bx, w } = velBarRect(n);
-      if (x < bx - 3 || x > bx + w + 3) continue;
-      const d = Math.abs(x - (bx + w / 2));
-      if (d < bestDist) {
-        bestDist = d;
-        best = n;
-      }
-    }
-    return best;
-  }
-
-  function onVelDown(e: PointerEvent) {
-    if (e.button !== 0) return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const n = velNoteAt(e.clientX - rect.left + win.x);
-    if (!n) return;
-    const currentClip = clip;
-    if (!currentClip) return;
-    // 選択中のノートを掴んだら選択中すべてを同じ量だけ動かす
-    let ids: string[];
-    if (selected.has(n.id) && selected.size > 1) {
-      ids = [...selected];
-    } else {
-      ids = [n.id];
-      selected = new Set([n.id]);
-    }
-    const base = new Map<string, number>();
-    for (const m of currentClip.notes) if (ids.includes(m.id)) base.set(m.id, m.vel);
-    velDrag = { base, anchor: n.id, delta: velFromY(e.clientY - rect.top) - n.vel };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }
-
-  function onVelMove(e: PointerEvent) {
-    const d = velDrag;
-    if (!d) return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const anchorBase = d.base.get(d.anchor) ?? 64;
-    velDrag = { ...d, delta: velFromY(e.clientY - rect.top) - anchorBase };
-  }
-
-  function onVelUp() {
-    const d = velDrag;
-    const currentClip = clip;
-    if (!d || !currentClip) {
-      velDrag = null;
-      return;
-    }
-    const changes = [...d.base.entries()]
-      .map(([id, v]) => ({ id, vel: Math.max(1, Math.min(127, v + d.delta)) }))
-      .filter((c) => c.vel !== d.base.get(c.id));
-    if (changes.length > 0) {
-      const one = changes.length === 1 ? `(${changes[0].vel})` : `(${changes.length} 個)`;
-      // 反映されるまでのちらつきを避けるため、ドラッグ表示は編集の完了後に消す
-      applyEdit(
-        [{ op: "update_notes", clip: currentClip.id, changes }],
-        `ベロシティを変更${one}`,
-      ).finally(() => (velDrag = null));
-    } else {
-      velDrag = null;
-    }
-  }
 
   async function applyEdit(commands: unknown[], label: string) {
     // 失敗は api.applyEdit がトーストで知らせる
@@ -1032,7 +766,6 @@
   }
 
   // ---- ポルタメントの滑る時間(選択中のポルタメントのノートだけ) ----
-  const GLIDE_CHOICES = [40, 80, 150, 250, 400, 800];
   const selectedPorta = $derived(
     (clip?.notes ?? []).filter((n) => selected.has(n.id) && n.articulation === "portamento"),
   );
@@ -1076,7 +809,7 @@
       })
       .filter((c) => c.pos !== c.old)
       .map(({ id, pos }) => ({ id, pos }));
-    const unit = snapOptions.find((o) => o.ticks === g)?.label ?? `${g} tick`;
+    const unit = SNAP_OPTIONS.find((o) => o.ticks === g)?.label ?? `${g} tick`;
     if (changes.length === 0) {
       swingMsg = "もう格子にそろっています";
       setTimeout(() => (swingMsg = null), 3000);
@@ -1412,17 +1145,6 @@
     deleteNotes(selected.has(hit.id) ? [...selected] : [hit.id]);
   }
 
-  const ART_LABELS: Record<Articulation, string> = {
-    normal: "通常",
-    palm_mute: "ブリッジミュート",
-    staccato: "スタッカート",
-    accent: "アクセント",
-    vibrato: "ビブラート",
-    bend: "チョーキング",
-    legato: "レガート",
-    portamento: "ポルタメント",
-  };
-
   /// 選択ノートの奏法をトグルする(全部が同じ奏法なら通常に戻す)
   function toggleArticulation(art: Articulation) {
     const currentClip = clip;
@@ -1575,179 +1297,33 @@
     class:inactive={pianoRollStore.second !== null && pianoRollStore.active !== pane}
     onpointerdowncapture={() => (pianoRollStore.active = pane)}
   >
-    <!-- ツールバー: 表示 / 道具 / スナップ / スウィング。操作の説明は ? のヘルプに -->
-    <div class="head">
-      <div class="head-left">
-        {#if pianoRollStore.second}
-          <span class="pane-tag">{pane === "main" ? "上" : "下"}</span>
-        {/if}
-        <span class="clip-name" title={found.clip.name}>{found.clip.name}</span>
-        <span class="track-name">{found.track.name}</span>
-        {#if found.clip.loop && found.clip.loop_len}
-          <span class="loop-tag" title="ループのクリップ: ここで編集した範囲がクリップの長さまで繰り返し鳴ります"
-            ><Icon name="infinity" size={14} />{(found.clip.loop_len / (project.ppq * 4)).toFixed(
-              found.clip.loop_len % (project.ppq * 4) === 0 ? 0 : 2,
-            )} 小節を繰り返し</span
-          >
-        {/if}
-      </div>
-      <div class="head-right">
-        <span class="glabel">表示</span>
-        <div class="seg">
-          <button class="btn sm" class:on={showVel} onclick={() => (showVel = !showVel)} title="ベロシティ(音の強さ)の帯。縦棒を上下にドラッグで変更、選択中のノートはまとめて変わる"
-            ><Icon name="chart-no-axes-column" />ベロシティ</button
-          >
-          {#if isDrum}
-            <button class="btn sm" class:on={showKit} onclick={() => (showKit = !showKit)} title="ドラムキットの図(押すと挿入カーソルの位置に打ち込む)"
-              ><Icon name="drum" />キット</button
-            >
-          {/if}
-          {#if isFrettable}
-            <button class="btn sm" class:on={showFret} onclick={() => (showFret = !showFret)} title="フレット盤(押すと挿入カーソルの位置に打ち込む)"
-              ><Icon name="guitar" />フレット</button
-            >
-          {/if}
-        </div>
-        {#if isFrettable && showFret}
-          <select
-            class="tuning"
-            value={fretTuning}
-            onchange={(e) => (fretTuningOverride = (e.currentTarget as HTMLSelectElement).value as "guitar" | "bass")}
-            title="フレット盤のチューニング"
-          >
-            <option value="guitar">ギター(6 弦)</option>
-            <option value="bass">ベース(4 弦)</option>
-          </select>
-        {/if}
-        {#if pane === "main"}
-          <label class="sel-ic" title="別のクリップを下に開いて見比べ・コピペ(Ctrl+C → 下をクリック → Ctrl+V)">
-            <Icon name="rows-2" size={14} />
-            <select
-              class="split"
-              value=""
-              onchange={(e) => {
-                const v = (e.currentTarget as HTMLSelectElement).value;
-                if (v) openSplit(v);
-                (e.currentTarget as HTMLSelectElement).value = "";
-              }}
-            >
-              <option value="">分割して開く…</option>
-              {#each otherClips as o (o.clip.id)}
-                <option value={o.clip.id}>{o.track.name} / {o.clip.name}</option>
-              {/each}
-            </select>
-          </label>
-        {:else}
-          <button class="btn sm" onclick={swapPanes} title="上下のクリップを入れ替える"><Icon name="arrow-up-down" />入れ替え</button>
-        {/if}
-        <span class="sep"></span>
-        <span class="glabel">道具</span>
-        <button
-          class="btn sm"
-          class:on={curveMode}
-          onclick={() => (curveMode = !curveMode)}
-          title="ピッチカーブを手で描く: ノートの上をなぞると、その高さのずれ(1 行 = 半音)がカーブになる。右クリックでカーブを消す"
-          ><Icon name="pencil-line" />カーブ</button
-        >
-        <span class="sep"></span>
-        <label class="snap">
-          スナップ
-          <select bind:value={snapTicks}>
-            {#each snapOptions as o (o.ticks)}
-              <option value={o.ticks}>{o.label}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="snap" title="ノートの開始位置をスナップの格子へ寄せる(選択中のノート、無ければクリップ全体)。長さは変えない。Q キーで 100%、Shift+Q で 50%">
-          <select
-            value=""
-            aria-label="クオンタイズ"
-            onchange={(e) => {
-              const el = e.currentTarget as HTMLSelectElement;
-              if (el.value) quantize(Number(el.value));
-              el.value = "";
-            }}
-          >
-            <option value="">クオンタイズ…</option>
-            <option value="1">格子にそろえる(100%)</option>
-            <option value="0.75">75%(少し残す)</option>
-            <option value="0.5">50%(人間味を残す)</option>
-          </select>
-        </label>
-        <label class="snap" title="裏拍の音をハネさせる(選択中のノート、無ければクリップ全体)。表の音と長さは変えない。同じ設定なら何度掛けても同じ">
-          スウィング
-          <select bind:value={swingGrid} aria-label="スウィングの単位">
-            <option value={480}>1/8</option>
-            <option value={240}>1/16</option>
-          </select>
-          <select
-            value=""
-            aria-label="スウィングを掛ける"
-            onchange={(e) => {
-              const el = e.currentTarget as HTMLSelectElement;
-              applySwing(el.value);
-              el.value = "";
-            }}
-          >
-            <option value="">掛ける…</option>
-            <option value="0.5">ストレート(50%)</option>
-            <option value="0.58">軽め(58%)</option>
-            <option value="0.62">中くらい(62%)</option>
-            <option value="0.6667">3 連シャッフル(67%)</option>
-            <option value="0.75">付点(75%)</option>
-          </select>
-        </label>
-        {#if swingMsg}<span class="swing-msg">{swingMsg}</span>{/if}
-        {#if selectedPorta.length > 0}
-          <label class="snap" title="選んだポルタメント(P)のノートが直前の音から滑る時間。トラック全体の既定はインスペクターの「つなぎ」で">
-            滑る時間
-            <select value={glideValue} onchange={(e) => setNoteGlide((e.currentTarget as HTMLSelectElement).value)}>
-              {#if glideValue === ""}<option value="">(ばらばら)</option>{/if}
-              <option value="0">トラックの設定</option>
-              {#each GLIDE_CHOICES as ms (ms)}
-                <option value={String(ms)}>{ms}ms</option>
-              {/each}
-              {#if glideValue !== "" && glideValue !== "0" && !GLIDE_CHOICES.includes(Number(glideValue))}
-                <option value={glideValue}>{glideValue}ms</option>
-              {/if}
-            </select>
-          </label>
-        {/if}
-        <span class="grow"></span>
-        <button class="btn sm icon ghost" class:on={helpOpen} onclick={() => (helpOpen = !helpOpen)} title="操作のヘルプ" aria-label="操作のヘルプ"
-          ><Icon name="circle-help" /></button
-        >
-        <button class="btn sm icon ghost" onclick={close} title={pane === "main" ? "閉じる(Esc)" : "この分割ペインを閉じる(Esc)"} aria-label="閉じる"
-          ><Icon name="x" /></button
-        >
-      </div>
-    </div>
-    {#if helpOpen}
-      <div class="help-pop" role="dialog" aria-label="ピアノロールの操作">
-        <div class="help-h">
-          <b>ピアノロールの操作</b>
-          <button class="btn sm icon ghost" onclick={() => (helpOpen = false)} aria-label="閉じる"><Icon name="x" /></button>
-        </div>
-        <table>
-          <tbody>
-            <tr><td>追加</td><td>空きをダブルクリック(長さはスナップの幅)</td></tr>
-            <tr><td>選ぶ</td><td>クリック / <kbd>Shift</kbd>+クリックで追加 / 空きをドラッグで囲む / <kbd>Ctrl</kbd>+<kbd>A</kbd></td></tr>
-            <tr><td>動かす・長さ</td><td>ドラッグ / 右端をドラッグ / <kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd></td></tr>
-            <tr><td>音の高さ</td><td><kbd>↑</kbd><kbd>↓</kbd>(<kbd>Shift</kbd> でオクターブ)</td></tr>
-            <tr><td>消す</td><td><kbd>Delete</kbd> / 右クリック</td></tr>
-            <tr><td>コピー</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd>(マウスの位置へ。別のクリップにも)</td></tr>
-            <tr><td>挿入カーソル</td><td>空きをクリック / <kbd>←</kbd><kbd>→</kbd>(キット・フレットの打ち込み先)</td></tr>
-            <tr>
-              <td>奏法</td>
-              <td>{#each availableArts as a (a.key)}<span class="art"><kbd>{a.key}</kbd>{a.label}</span>{/each}(選択中のノートに。もう一度で外す)</td>
-            </tr>
-            <tr><td>強さ</td><td>下の帯の縦棒を上下にドラッグ</td></tr>
-            <tr><td>ズーム</td><td><kbd>Ctrl</kbd>+ホイール(横)/ <kbd>Shift</kbd>+ホイール(縦)</td></tr>
-            <tr><td>閉じる</td><td><kbd>Esc</kbd>(選択を外してから)</td></tr>
-          </tbody>
-        </table>
-      </div>
-    {/if}
+    <PianoRollHeader
+      {project}
+      clip={found.clip}
+      track={found.track}
+      {pane}
+      {isDrum}
+      {isFrettable}
+      {otherClips}
+      {availableArts}
+      {fretTuning}
+      {swingMsg}
+      portaCount={selectedPorta.length}
+      {glideValue}
+      bind:showVel
+      bind:showKit
+      bind:showFret
+      bind:curveMode
+      bind:snapTicks
+      bind:swingGrid
+      onTuning={(t) => (fretTuningOverride = t)}
+      onOpenSplit={openSplit}
+      onSwap={swapPanes}
+      onQuantize={quantize}
+      onSwing={applySwing}
+      onGlide={setNoteGlide}
+      onClose={close}
+    />
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     {#if isDrum && showKit}
@@ -1823,24 +1399,8 @@
             ></canvas>
           </div>
         </div>
-        {#if showVel}
-          <div class="vel-row" style="height:{VEL_H}px">
-            <div class="vel-corner" style="width:{KEY_W}px" title="ベロシティ(音の強さ 1〜127)">Vel</div>
-            <div class="vel-track" style="width:{contentW}px;height:{VEL_H}px">
-            <canvas
-              class="vel-layer"
-              bind:this={velEl}
-              style="left:{win.x}px;width:{win.w}px;height:{VEL_H}px"
-              title={velDrag
-                ? `ベロシティ ${Math.max(1, Math.min(127, (velDrag.base.get(velDrag.anchor) ?? 0) + velDrag.delta))}`
-                : "縦棒を上下にドラッグで音の強さを変更(選択中のノートはまとめて変わる)"}
-              onpointerdown={onVelDown}
-              onpointermove={onVelMove}
-              onpointerup={onVelUp}
-              onpointercancel={() => (velDrag = null)}
-            ></canvas>
-            </div>
-          </div>
+        {#if showVel && clip}
+          <VelocityLane {clip} {songBars} {pxPerTick} {contentW} {win} keyW={KEY_W} bind:selected />
         {/if}
       </div>
     </div>
@@ -1855,190 +1415,6 @@
     background: var(--bg);
     display: flex;
     flex-direction: column;
-  }
-
-  /* 分割時: 非アクティブなペインのヘッダを少し落として、キーがどちらに効くか示す */
-  .overlay.inactive .head {
-    opacity: 0.6;
-  }
-
-  .pane-tag {
-    font-size: 10px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    background: color-mix(in srgb, var(--accent) 25%, transparent);
-    color: var(--accent);
-  }
-
-  .split {
-    font-size: 11px;
-    max-width: 150px;
-  }
-
-  .sel-ic {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: var(--text-dim);
-    flex-shrink: 0;
-  }
-
-  .glabel {
-    font-size: 10px;
-    color: var(--text-faint);
-    flex-shrink: 0;
-  }
-
-  .seg {
-    display: inline-flex;
-    gap: 2px;
-    flex-shrink: 0;
-  }
-
-  .sep {
-    width: 1px;
-    height: 18px;
-    background: var(--border);
-    flex-shrink: 0;
-  }
-
-  .grow {
-    flex: 1;
-  }
-
-  .help-pop {
-    position: absolute;
-    right: 12px;
-    top: 44px;
-    z-index: 30;
-    width: 420px;
-    max-width: calc(100% - 24px);
-    background: var(--bg-panel);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--r-lg);
-    box-shadow: var(--shadow-pop);
-    padding: 10px 14px 12px;
-    font-size: var(--fs-sm);
-  }
-
-  .help-h {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 6px;
-  }
-
-  .help-pop table {
-    border-collapse: collapse;
-    width: 100%;
-  }
-
-  .help-pop td {
-    padding: 3px 4px;
-    vertical-align: top;
-    line-height: 1.6;
-  }
-
-  .help-pop td:first-child {
-    color: var(--text-dim);
-    white-space: nowrap;
-    width: 96px;
-  }
-
-  .art {
-    margin-right: 8px;
-    white-space: nowrap;
-  }
-
-  kbd {
-    font-family: var(--mono);
-    font-size: 10px;
-    border: 1px solid var(--border-strong);
-    border-bottom-width: 2px;
-    border-radius: 3px;
-    padding: 0 4px;
-    margin-right: 2px;
-    background: var(--bg-raised);
-  }
-
-  .head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-    height: 40px;
-    padding: 0 8px 0 12px;
-    background: var(--bg-panel);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-
-  .head-left {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    min-width: 0;
-    max-width: 30%;
-    white-space: nowrap;
-    overflow: hidden;
-  }
-
-  .clip-name {
-    font-weight: 600;
-    font-size: var(--fs-md);
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .track-name {
-    color: var(--text-dim);
-    font-size: 12px;
-  }
-
-  /* ヘッダーは 1 行に保つ(ボタン類は折り返さず、説明文だけ省略表示) */
-  .loop-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: 11px;
-    color: var(--accent);
-  }
-
-  .head-right {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    flex: 1;
-    white-space: nowrap;
-  }
-
-  .swing-msg {
-    font-size: 11px;
-    color: var(--accent);
-    white-space: nowrap;
-  }
-
-  .head-right > button,
-  .head-right > select,
-  .head-right > .snap {
-    flex-shrink: 0;
-  }
-
-  .snap {
-    font-size: 12px;
-    color: var(--text-dim);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .snap select {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 2px 4px;
   }
 
   .body {
@@ -2124,7 +1500,6 @@
     border-right: 1px solid var(--border);
   }
 
-
   .key {
     font-size: 9px;
     color: var(--text-dim);
@@ -2148,45 +1523,9 @@
     font-weight: 700;
   }
 
-  .tuning {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 2px 4px;
-    font-size: 11px;
-  }
-
   .stack {
     position: relative;
     flex-shrink: 0;
-  }
-
-  /* ベロシティの帯: 縦スクロールしても下端に残る */
-  .vel-row {
-    display: flex;
-    position: sticky;
-    bottom: 0;
-    z-index: 3;
-    border-top: 1px solid var(--border);
-  }
-
-  .vel-corner {
-    position: sticky;
-    left: 0;
-    z-index: 4;
-    flex-shrink: 0;
-    background: var(--bg-panel);
-    border-right: 1px solid var(--border);
-    font-size: 10px;
-    color: var(--text-dim);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .vel-layer {
-    cursor: ns-resize;
   }
 
   .note-layer.curve-mode {
@@ -2200,13 +1539,8 @@
 
   /* canvas は窓(見えている範囲 + 余白)の大きさで、その位置に置く */
   canvas.note-layer,
-  canvas.win-layer,
-  canvas.vel-layer {
+  canvas.win-layer {
     position: absolute;
   }
 
-  .vel-track {
-    position: relative;
-    flex-shrink: 0;
-  }
 </style>

@@ -3,16 +3,32 @@
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
-  import { keepInView } from "./menu";
   import { aiHighlight } from "./aiHighlight.svelte";
   import { harmonyStore } from "./harmony.svelte";
   import { showError, showToast } from "./toast.svelte";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
-  import { barAtTick, barsEndTick, buildBars, defaultGrouping, fmtBpm, meterLabel } from "./barMap";
+  import { barAtTick, barsEndTick, buildBars, fmtBpm, meterLabel } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
   import ClipPreview from "./ClipPreview.svelte";
   import SimilarPresetDialog from "./SimilarPresetDialog.svelte";
-  import { newClipId, newFxId, newNoteId, newTrackId } from "./ids";
+  import RulerMenu from "./RulerMenu.svelte";
+  import ClipMenu from "./ClipMenu.svelte";
+  import TrackMenu from "./TrackMenu.svelte";
+  import AddTrackMenu from "./AddTrackMenu.svelte";
+  import AudioClipHandles from "./AudioClipHandles.svelte";
+  import TimelineZoom from "./TimelineZoom.svelte";
+  import {
+    bpmAt,
+    cloneClip,
+    expandLoopCommand,
+    focusSelect,
+    followBpm,
+    planText,
+    type ClipMenuAction,
+    type Marker,
+    type RulerMenuState,
+  } from "./timelineOps";
+  import { newClipId, newFxId, newTrackId } from "./ids";
   import {
     instrumentPickerStore,
     MASTER_FOCUS_ID,
@@ -104,7 +120,6 @@
   const HEAD_W = $derived(Math.min(timelineLayout.headW, layoutMax("w")));
   /// 既定のトラックの高さ(ウィンドウの高さの半分までに抑えた値)
   const defaultTrackH = $derived(Math.min(timelineLayout.trackH, layoutMax("h")));
-  let layoutMenu = $state(false);
 
   /// 見出しの幅のつかむ所にマウスが乗っている・ドラッグ中(幅は全トラック共通なので、列全体を光らせる)
   let wGripHot = $state(false);
@@ -293,40 +308,9 @@
 
   // ---- 拍子の変更(ルーラー右クリック / 拍子チップのクリック) ----
 
-  let sigMenu = $state<{
-    x: number;
-    y: number;
-    barIndex: number;
-    num: string;
-    den: string;
-    grouping: string;
-    bpm: string;
-  } | null>(
-    null,
-  );
-  const DENS = [1, 2, 4, 8, 16, 32];
+  let sigMenu = $state<RulerMenuState | null>(null);
 
   // ---- セクションマーカー(曲の構成)。以前は AI の set_sections でしか置けなかった ----
-
-  interface Marker {
-    tick: number;
-    name: string;
-    /// 曲の計画書(set_song_plan)の中身。マーカーを動かしても名前を変えても残す
-    energy?: number;
-    tracks?: string[];
-    note?: string;
-  }
-
-  /// マーカーに乗せたときに出す、計画書の中身(無ければ空)
-  function planText(m: Marker): string {
-    const lines: string[] = [];
-    if (m.energy !== undefined && m.energy !== null) lines.push(`計画の盛り上がり: ${m.energy} / 10`);
-    if (m.tracks && m.tracks.length > 0) lines.push(`鳴らすトラック: ${m.tracks.join("・")}`);
-    if (m.note) lines.push(`役割: ${m.note}`);
-    return lines.length > 0 ? `\n${lines.join("\n")}` : "";
-  }
-
-  const MARKER_PRESETS = ["intro", "Aメロ", "Bメロ", "サビ", "間奏", "outro"];
 
   /// 小節頭 tick → コード名(ノートからの推定。前の小節と同じ・ノートなしは出さない)
   const chordAt = $derived.by(() => {
@@ -338,11 +322,8 @@
     }
     return m;
   });
+  /// マーカーの名前の入力欄(ルーラーのメニュー。閉じても残す)
   let markerName = $state("");
-  /// ルーラーの右クリックメニューを開いた小節にあるマーカー
-  const markerHere = $derived(
-    sigMenu ? (project.sections ?? []).find((m) => m.tick === barList[sigMenu!.barIndex]?.tick) : undefined,
-  );
 
   function commitSections(list: Marker[], label: string) {
     const sorted = [...list].sort((a, b) => a.tick - b.tick);
@@ -449,7 +430,7 @@
       num: String(bar.num),
       den: String(bar.den),
       grouping: bar.grouping.join("+"),
-      bpm: String(bpmAt(bar.tick)),
+      bpm: String(bpmAt(project, bar.tick)),
     };
   }
 
@@ -458,95 +439,10 @@
   /// 小節頭 tick → その小節から始まるテンポ(先頭以外。ルーラーに札を出す)
   const tempoAt = $derived(new Map(project.tempo_map.filter((e) => e.tick > 0).map((e) => [e.tick, e.bpm])));
 
-  function applyTempo() {
-    const m = sigMenu;
-    if (!m) return;
-    const bpm = Math.round(Number(m.bpm) * 100) / 100;
-    if (!(bpm >= 20 && bpm <= 300)) return;
-    const bar = barList[m.barIndex];
-    // 同じ位置の変更を置き換え、直前と同じテンポになる変更は取り除く(先頭は必ず残す)
-    const sorted = [...project.tempo_map.filter((e) => e.tick !== bar.tick), { tick: bar.tick, bpm }].sort(
-      (a, b) => a.tick - b.tick,
-    );
-    const events: { tick: number; bpm: number }[] = [];
-    for (const e of sorted) {
-      if (events.length > 0 && events[events.length - 1].bpm === e.bpm) continue;
-      events.push(e);
-    }
-    if (events.length === 0 || events[0].tick !== 0) events.unshift({ tick: 0, bpm: project.tempo_map[0]?.bpm ?? 120 });
-    sigMenu = null;
-    api
-      .applyEdit([{ op: "set_tempo", events }], `${bar.index + 1} 小節目からテンポを ${bpm} に変更`)
-      .catch(() => {});
-  }
-
-  function removeTempo() {
-    const m = sigMenu;
-    if (!m) return;
-    const bar = barList[m.barIndex];
-    sigMenu = null;
-    const events = project.tempo_map.filter((e) => e.tick !== bar.tick);
-    api
-      .applyEdit([{ op: "set_tempo", events }], `${bar.index + 1} 小節目のテンポ変更を削除`)
-      .catch(() => {});
-  }
-
   function onRulerContext(e: MouseEvent) {
     const lane = e.currentTarget as HTMLElement;
     const x = e.clientX - lane.getBoundingClientRect().left;
     openSigMenu(e, barAtTick(barList, Math.max(0, x / pxPerTick)).index);
-  }
-
-  /// 拍子イベント列を整える: tick 順に並べ、直前と同じ拍子の変更は取り除く
-  function normalizeSigs(events: { tick: number; num: number; den: number; grouping?: number[] }[]) {
-    const sorted = [...events].sort((a, b) => a.tick - b.tick);
-    const out: typeof sorted = [];
-    const same = (a?: number[], b?: number[]) => (a ?? []).join("+") === (b ?? []).join("+");
-    for (const ev of sorted) {
-      const prev = out[out.length - 1];
-      if (prev && prev.num === ev.num && prev.den === ev.den && same(prev.grouping, ev.grouping)) continue;
-      out.push(ev);
-    }
-    if (out.length === 0 || out[0].tick !== 0) out.unshift({ tick: 0, num: 4, den: 4 });
-    return out;
-  }
-
-  function applySig() {
-    const m = sigMenu;
-    if (!m) return;
-    const num = Math.round(Number(m.num));
-    const den = Number(m.den);
-    if (!(num >= 1 && num <= 32) || !DENS.includes(den)) return;
-    const bar = barList[m.barIndex];
-    // まとまり("2+2+3")。和が分子と合わないか既定と同じなら持たない
-    const parts = m.grouping
-      .split(/[+, ]+/)
-      .filter((x) => x !== "")
-      .map(Number);
-    const valid = parts.length > 0 && parts.every((x) => Number.isInteger(x) && x >= 1) && parts.reduce((a, b) => a + b, 0) === num;
-    const grouping = valid && parts.join("+") !== defaultGrouping(num, den).join("+") ? parts : undefined;
-    const events = normalizeSigs([
-      ...project.time_sig_map.filter((e) => e.tick !== bar.tick),
-      grouping ? { tick: bar.tick, num, den, grouping } : { tick: bar.tick, num, den },
-    ]);
-    sigMenu = null;
-    api
-      .applyEdit(
-        [{ op: "set_time_sig", events }],
-        `${bar.index + 1} 小節目から拍子を ${num}/${den}${grouping ? `(${grouping.join("+")})` : ""} に変更`,
-      )
-      .catch(() => {});
-  }
-
-  function removeSig() {
-    const m = sigMenu;
-    if (!m) return;
-    const bar = barList[m.barIndex];
-    sigMenu = null;
-    const events = normalizeSigs(project.time_sig_map.filter((e) => e.tick !== bar.tick));
-    api
-      .applyEdit([{ op: "set_time_sig", events }], `${bar.index + 1} 小節目の拍子変更を削除`)
-      .catch(() => {});
   }
 
   // ---- トラック操作(Command API 経由、author: human) ----
@@ -870,27 +766,6 @@
     selectedClips = new Set();
   }
 
-  /// ループクリップの繰り返しを実際のノートに展開した replace_clip(ループは解除)。
-  function expandLoopCommand(clip: Clip): Record<string, unknown> | null {
-    if (clip.kind !== "midi" || !clip.loop || !clip.loop_len) return null;
-    const L = clip.loop_len;
-    const notes: Record<string, unknown>[] = [];
-    for (let offset = 0; offset < clip.length; offset += L) {
-      for (const n of clip.notes) {
-        if (n.pos >= L) continue;
-        const pos = n.pos + offset;
-        if (pos >= clip.length) continue;
-        const end = Math.min(n.pos + n.dur, L) + offset;
-        notes.push({ ...n, id: newNoteId(), pos, dur: Math.min(end, clip.length) - pos });
-      }
-    }
-    const c = JSON.parse(JSON.stringify(clip)) as Record<string, unknown>;
-    c.notes = notes;
-    c.loop = false;
-    delete c.loop_len;
-    return { op: "replace_clip", id: clip.id, clip: c };
-  }
-
   function setLoop(clip: Clip, on: boolean) {
     if (clip.kind !== "midi") return;
     api
@@ -901,112 +776,6 @@
       .catch(() => {});
   }
 
-  /// `tick` の位置のテンポ(BPM)
-  function bpmAt(tick: number): number {
-    let bpm = project.tempo_map[0]?.bpm ?? 120;
-    for (const e of project.tempo_map) {
-      if (e.tick <= tick) bpm = e.bpm;
-    }
-    return bpm;
-  }
-
-  // ---- 音声クリップのフェードと音量(下の角のつまみで長さ、下の中央のつまみで音量) ----
-
-  /// ドラッグ中のフェード・音量(離すまで表示と試聴だけ)
-  let clipHandle = $state<{
-    clip: Clip;
-    which: "in" | "out" | "gain";
-    startX: number;
-    startY: number;
-    orig: number;
-    value: number;
-  } | null>(null);
-
-  /// `tick` の位置の 1 tick のミリ秒
-  function msPerTick(tick: number): number {
-    return 60000 / (bpmAt(tick) * project.ppq);
-  }
-
-  function clipMs(clip: Clip): number {
-    return clip.length * msPerTick(clip.start);
-  }
-
-  function fadeMs(clip: Clip, which: "in" | "out"): number {
-    if (clip.kind !== "audio") return 0;
-    if (clipHandle?.clip.id === clip.id && clipHandle.which === which) return clipHandle.value;
-    return (which === "in" ? clip.fade_in_ms : clip.fade_out_ms) ?? 0;
-  }
-
-  function clipGain(clip: Clip): number {
-    if (clip.kind !== "audio") return 0;
-    if (clipHandle?.clip.id === clip.id && clipHandle.which === "gain") return clipHandle.value;
-    return clip.gain_db ?? 0;
-  }
-
-  function fadePx(clip: Clip, which: "in" | "out"): number {
-    return (fadeMs(clip, which) / msPerTick(which === "in" ? clip.start : clip.start + clip.length)) * pxPerTick;
-  }
-
-  function handleCommand(h: NonNullable<typeof clipHandle>): unknown {
-    const key = h.which === "in" ? "fade_in_ms" : h.which === "out" ? "fade_out_ms" : "gain_db";
-    return { op: "replace_clip", id: h.clip.id, clip: { ...h.clip, [key]: h.value } };
-  }
-
-  function onHandleDown(e: PointerEvent, clip: Clip, which: "in" | "out" | "gain") {
-    if (e.button !== 0 || clip.kind !== "audio") return;
-    e.stopPropagation();
-    const orig = which === "gain" ? (clip.gain_db ?? 0) : ((which === "in" ? clip.fade_in_ms : clip.fade_out_ms) ?? 0);
-    clipHandle = { clip, which, startX: e.clientX, startY: e.clientY, orig, value: orig };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }
-
-  function onHandleMove(e: PointerEvent) {
-    const h = clipHandle;
-    if (!h) return;
-    let v: number;
-    if (h.which === "gain") {
-      // 上へ 1px = +0.1dB(Shift で細かく)。-36〜+12 dB
-      const per = e.shiftKey ? 0.02 : 0.1;
-      v = Math.round((h.orig - (e.clientY - h.startY) * per) * 10) / 10;
-      v = Math.min(12, Math.max(-36, v));
-    } else {
-      const other = fadeMs(h.clip, h.which === "in" ? "out" : "in");
-      const dx = (e.clientX - h.startX) * (h.which === "in" ? 1 : -1);
-      const tickAt = h.which === "in" ? h.clip.start : h.clip.start + h.clip.length;
-      v = h.orig + (dx / pxPerTick) * msPerTick(tickAt);
-      // フェードイン + アウトはクリップの長さまで
-      v = Math.round(Math.min(Math.max(0, clipMs(h.clip) - other), Math.max(0, v)));
-    }
-    if (v === h.value) return;
-    h.value = v;
-    api.previewEdit([handleCommand(h)]);
-  }
-
-  function onHandleUp() {
-    const h = clipHandle;
-    if (!h) return;
-    clipHandle = null;
-    if (h.value === h.orig) return;
-    const label =
-      h.which === "gain"
-        ? `${h.clip.name} の音量を ${h.value > 0 ? "+" : ""}${h.value.toFixed(1)} dB に`
-        : `${h.clip.name} のフェード${h.which === "in" ? "イン" : "アウト"}を ${Math.round(h.value)}ms に`;
-    api.applyEdit([handleCommand(h)], label).catch(() => {});
-  }
-
-  /** つまみのダブルクリックで元に戻す(フェードなし / 0 dB) */
-  function resetHandle(clip: Clip, which: "in" | "out" | "gain") {
-    if (clip.kind !== "audio") return;
-    const key = which === "in" ? "fade_in_ms" : which === "out" ? "fade_out_ms" : "gain_db";
-    if ((clip[key] ?? 0) === 0) return;
-    const what = which === "gain" ? "音量を 0 dB に戻す" : `フェード${which === "in" ? "イン" : "アウト"}をなくす`;
-    api.applyEdit([{ op: "replace_clip", id: clip.id, clip: { ...clip, [key]: 0 } }], `${clip.name} の${what}`).catch(() => {});
-  }
-
-  function followBpm(clip: Clip): number | null {
-    return clip.kind === "audio" && clip.stretch?.mode === "follow" ? clip.stretch.original_bpm : null;
-  }
-
   /// 音声クリップのテンポ追従。ON のときは今のテンポ(クリップ先頭)で録った素材として扱う
   function setFollow(targets: Clip[], on: boolean) {
     const cmds = targets
@@ -1014,7 +783,7 @@
       .map((c) => ({
         op: "set_clip_stretch",
         id: c.id,
-        stretch: on ? { mode: "follow", original_bpm: bpmAt(c.start) } : { mode: "none" },
+        stretch: on ? { mode: "follow", original_bpm: bpmAt(project, c.start) } : { mode: "none" },
       }));
     if (cmds.length === 0) return;
     const label = on
@@ -1103,17 +872,6 @@
       .applyEdit(cmds, n === 1 ? "クリップを分割" : `クリップ ${n} 個を分割`)
       .catch(() => {});
     return true;
-  }
-
-  /// クリップを新しい ID(ノートも新 ID)で複製した add_clip 用の JSON を作る
-  function cloneClip(clip: Clip, start: number): Record<string, unknown> {
-    const c = JSON.parse(JSON.stringify(clip)) as Record<string, unknown>;
-    c.id = newClipId();
-    c.start = Math.max(0, Math.round(start));
-    if (clip.kind === "midi") {
-      c.notes = clip.notes.map((n) => ({ ...n, id: newNoteId() }));
-    }
-    return c;
   }
 
   /// コピー: クリップの中身と、元のトラック・先頭からの相対位置を覚える
@@ -1218,25 +976,7 @@
     clipMenu = { x: e.clientX, y: e.clientY, clip, at };
   }
 
-  function menuAction(
-    action:
-      | "split"
-      | "split-head"
-      | "dup"
-      | "copy"
-      | "cut"
-      | "delete"
-      | "loop-on"
-      | "loop-off"
-      | "expand"
-      | "follow-on"
-      | "follow-detect"
-      | "follow-off"
-      | "sep-builtin"
-      | "sep-demucs"
-      | "match"
-      | "similar",
-  ) {
+  function menuAction(action: ClipMenuAction) {
     const m = clipMenu;
     clipMenu = null;
     if (!m) return;
@@ -1420,14 +1160,6 @@
       )
       .catch(() => {});
   }
-
-  /** 入力欄を開いたら全選択してフォーカス */
-  function focusSelect(el: HTMLInputElement) {
-    el.focus();
-    el.select();
-  }
-
-  const TRACK_COLORS = ["#25bdb1", "#5da2e8", "#b07ce8", "#e87ca8", "#e8a07c", "#e8d27c", "#7cc47c", null];
 
   function setTrackColor(color: string | null) {
     const menu = trackMenu;
@@ -1723,70 +1455,7 @@
   <div class="ruler-row" style="top:{project.sections && project.sections.length > 0 ? SECTION_ROW_H : 0}px">
     <div class="track-head ruler-head">
       <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
-      <div class="zoom" title="横の拡大・縮小(タイムラインの上で Ctrl+ホイールでも)">
-        <button class="btn sm icon-only" onclick={() => zoomBy(1 / 1.5)} disabled={timelineZoom.value <= TIMELINE_ZOOM_MIN} aria-label="縮小" title="縮小"
-          ><Icon name="zoom-out" size={13} /></button
-        >
-        <button class="btn sm icon-only" onclick={() => zoomBy(1.5)} disabled={timelineZoom.value >= TIMELINE_ZOOM_MAX} aria-label="拡大" title="拡大"
-          ><Icon name="zoom-in" size={13} /></button
-        >
-        <button class="btn sm" onclick={zoomToFit} title="曲全体が横に収まるようにする">全体</button>
-        <button
-          class="btn sm icon-only"
-          class:on={layoutMenu}
-          onclick={() => (layoutMenu = !layoutMenu)}
-          aria-label="トラックの表示の大きさ"
-          title="トラックの高さと見出しの幅"><Icon name="rows-2" size={13} /></button
-        >
-        {#if Math.abs(timelineZoom.value - 1) > 0.01}
-          <button class="btn sm" onclick={() => setZoom(1)} title="元の拡大率(100%)に戻す">{Math.round(timelineZoom.value * 100)}%</button>
-        {/if}
-      </div>
-      {#if layoutMenu}
-        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-        <div class="menu-backdrop" role="presentation" onclick={() => (layoutMenu = false)}></div>
-        <div class="layout-pop">
-          <label>
-            <span>トラックの高さ(全部) <b>{defaultTrackH}px</b></span>
-            <input
-              type="range"
-              min={TIMELINE_TRACK_H.min}
-              max={layoutMax("h")}
-              step="2"
-              value={defaultTrackH}
-              oninput={(e) => {
-                // 全部そろえる(見出しの下の端で個別に変えた高さも、この高さにする)
-                timelineLayout.trackH = Number(e.currentTarget.value);
-                timelineLayout.trackHeights = {};
-              }}
-              onchange={saveTimelineLayout}
-              aria-label="トラックの高さ"
-            />
-          </label>
-          <label>
-            <span>見出しの幅 <b>{HEAD_W}px</b></span>
-            <input
-              type="range"
-              min={TIMELINE_HEAD_W.min}
-              max={layoutMax("w")}
-              step="4"
-              value={HEAD_W}
-              oninput={(e) => (timelineLayout.headW = Number(e.currentTarget.value))}
-              onchange={saveTimelineLayout}
-              aria-label="見出しの幅"
-            />
-          </label>
-          <button
-            class="btn sm"
-            onclick={() => {
-              timelineLayout.trackH = TIMELINE_TRACK_H.def;
-              timelineLayout.trackHeights = {};
-              timelineLayout.headW = TIMELINE_HEAD_W.def;
-              saveTimelineLayout();
-            }}>元に戻す</button
-          >
-        </div>
-      {/if}
+      <TimelineZoom headW={HEAD_W} trackH={defaultTrackH} onZoomBy={zoomBy} onFit={zoomToFit} onSetZoom={(z) => setZoom(z)} />
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -2058,87 +1727,13 @@
                 widthPx={clip.length * pxPerTick}
                 variant={`${clip.gain_db ?? 0}:${followBpm(clip) ?? ""}`}
               />
-              {@const fiPx = Math.min(fadePx(clip, "in"), clip.length * pxPerTick)}
-              {@const foPx = Math.min(fadePx(clip, "out"), clip.length * pxPerTick)}
-              {@const w = Math.max(clip.length * pxPerTick, 8)}
-              {@const gain = clipGain(clip)}
-              {#if fiPx > 0 || foPx > 0}
-                <svg class="fade-shade" width={w} height="100%" viewBox="0 0 {w} 100" preserveAspectRatio="none" aria-hidden="true">
-                  {#if fiPx > 0}<polygon points="0,0 {fiPx},0 0,100" />{/if}
-                  {#if foPx > 0}<polygon points="{w - foPx},0 {w},0 {w},100" />{/if}
-                </svg>
-              {/if}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <span
-                class="fade-h in"
-                class:active={clipHandle?.clip.id === clip.id && clipHandle.which === "in"}
-                style="left:{fiPx}px"
-                title="フェードイン {Math.round(fadeMs(clip, 'in'))}ms(横にドラッグ。ダブルクリックでなくす)"
-                onpointerdown={(e) => onHandleDown(e, clip, "in")}
-                onpointermove={onHandleMove}
-                onpointerup={onHandleUp}
-                onpointercancel={() => (clipHandle = null)}
-                ondblclick={(e) => {
-                  e.stopPropagation();
-                  resetHandle(clip, "in");
-                }}
-              ></span>
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <span
-                class="fade-h out"
-                class:active={clipHandle?.clip.id === clip.id && clipHandle.which === "out"}
-                style="right:{foPx}px"
-                title="フェードアウト {Math.round(fadeMs(clip, 'out'))}ms(横にドラッグ。ダブルクリックでなくす)"
-                onpointerdown={(e) => onHandleDown(e, clip, "out")}
-                onpointermove={onHandleMove}
-                onpointerup={onHandleUp}
-                onpointercancel={() => (clipHandle = null)}
-                ondblclick={(e) => {
-                  e.stopPropagation();
-                  resetHandle(clip, "out");
-                }}
-              ></span>
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <span
-                class="gain-h"
-                class:active={clipHandle?.clip.id === clip.id && clipHandle.which === "gain"}
-                class:set={gain !== 0}
-                title="クリップの音量(上下にドラッグ、Shift で細かく。ダブルクリックで 0 dB)"
-                onpointerdown={(e) => onHandleDown(e, clip, "gain")}
-                onpointermove={onHandleMove}
-                onpointerup={onHandleUp}
-                onpointercancel={() => (clipHandle = null)}
-                ondblclick={(e) => {
-                  e.stopPropagation();
-                  resetHandle(clip, "gain");
-                }}>{gain > 0 ? "+" : ""}{gain.toFixed(1)} dB</span
-              >
-              <button
-                class="transcribe"
-                disabled={transcribing !== null}
-                title="譜起こし(単旋律): 鼻歌・歌・単音の音声を MIDI クリップにする"
-                onpointerdown={(e) => e.stopPropagation()}
-                ondblclick={(e) => e.stopPropagation()}
-                onclick={(e) => {
-                  e.stopPropagation();
-                  transcribe(track, clip);
-                }}
-              >
-                {#if transcribing === clip.id}<Icon name="loader-circle" size={12} />{:else}<Icon name="music" size={12} />{/if}
-              </button>
-              <button
-                class="transcribe poly"
-                disabled={transcribing !== null}
-                title="譜起こし(和音): ピアノ・ギターのコードや伴奏入りの音声を MIDI クリップにする(学習済みモデル basic-pitch)"
-                onpointerdown={(e) => e.stopPropagation()}
-                ondblclick={(e) => e.stopPropagation()}
-                onclick={(e) => {
-                  e.stopPropagation();
-                  transcribe(track, clip, "poly");
-                }}
-              >
-                <Icon name="list-music" size={12} />
-              </button>
+              <AudioClipHandles
+                {project}
+                {clip}
+                {pxPerTick}
+                {transcribing}
+                onTranscribe={(mode) => transcribe(track, clip, mode)}
+              />
             {/if}
             {#if separating === clip.id}
               <div class="clip-busy">パートに分離中…</div>
@@ -2166,103 +1761,15 @@
   {/each}
 
   {#if sigMenu}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="menu-backdrop" role="presentation" onclick={() => (sigMenu = null)} oncontextmenu={(e) => { e.preventDefault(); sigMenu = null; }}></div>
-    <div class="track-menu sig-menu" use:keepInView style="left:{sigMenu.x}px;top:{sigMenu.y}px">
-      <div class="preset-title">{sigMenu.barIndex + 1} 小節目から拍子を変更</div>
-      <div class="sig-form">
-        <input
-          class="sig-num"
-          type="number"
-          min="1"
-          max="32"
-          bind:value={sigMenu.num}
-          onkeydown={(e) => e.key === "Enter" && applySig()}
-        />
-        <span>/</span>
-        <select bind:value={sigMenu.den}>
-          {#each DENS as d (d)}
-            <option value={String(d)}>{d}</option>
-          {/each}
-        </select>
-        <button class="sig-apply" onclick={applySig}>適用</button>
-      </div>
-      <div class="sig-form">
-        <span class="sig-group-label">拍のまとまり</span>
-        <input
-          class="sig-group"
-          type="text"
-          placeholder={defaultGrouping(Number(sigMenu.num) || 4, Number(sigMenu.den) || 4).join("+")}
-          bind:value={sigMenu.grouping}
-          onkeydown={(e) => e.key === "Enter" && applySig()}
-          aria-label="拍のまとまり(例 2+2+3)"
-        />
-      </div>
-      <div class="sig-presets">
-        {#each ["4/4", "3/4", "6/8", "7/8", "5/4", "12/8", "7/8 3+2+2", "9/8 2+2+2+3"] as p (p)}
-          <button
-            class="sig-preset"
-            onclick={() => {
-              if (!sigMenu) return;
-              const [sig, g] = p.split(" ");
-              const [n, d] = sig.split("/");
-              sigMenu.num = n;
-              sigMenu.den = d;
-              sigMenu.grouping = g ?? "";
-              applySig();
-            }}>{p}</button
-          >
-        {/each}
-      </div>
-      {#if sigMenu.barIndex > 0 && project.time_sig_map.some((e) => e.tick === barList[sigMenu!.barIndex].tick)}
-        <div class="menu-sep"></div>
-        <button class="danger" onclick={removeSig}><Icon name="trash-2" />この拍子の変更を削除(前の拍子に戻す)</button>
-      {/if}
-      <div class="menu-note">ノートの位置は変わらず、この小節から先の小節線だけが変わります(Ctrl+Z で戻せます)</div>
-      <div class="menu-sep"></div>
-      <div class="preset-title">{sigMenu.barIndex === 0 ? "曲の頭のテンポ" : `${sigMenu.barIndex + 1} 小節目からテンポを変更`}</div>
-      <div class="sig-form">
-        <input
-          class="sig-num tempo-num"
-          type="number"
-          min="20"
-          max="300"
-          step="0.5"
-          bind:value={sigMenu.bpm}
-          onkeydown={(e) => e.key === "Enter" && applyTempo()}
-          aria-label="テンポ(BPM)"
-        />
-        <span>BPM</span>
-        <button class="sig-apply" onclick={applyTempo}>適用</button>
-      </div>
-      {#if sigMenu.barIndex > 0 && project.tempo_map.some((e) => e.tick === barList[sigMenu!.barIndex].tick)}
-        <button class="danger" onclick={removeTempo}><Icon name="trash-2" />このテンポの変更を削除(前のテンポに戻す)</button>
-      {/if}
-      <div class="menu-note">ノートは拍の位置のまま、この小節から先の速さが変わります</div>
-      <div class="menu-sep"></div>
-      <div class="preset-title">
-        {markerHere ? `マーカー「${markerHere.name}」` : `${sigMenu.barIndex + 1} 小節目にマーカーを置く`}
-      </div>
-      <div class="sig-form">
-        <input
-          class="marker-name"
-          placeholder={markerHere ? "新しい名前" : "名前(例: サビ)"}
-          bind:value={markerName}
-          onkeydown={(e) => e.key === "Enter" && putMarker(sigMenu!.barIndex, markerName)}
-        />
-        <button class="sig-apply" onclick={() => putMarker(sigMenu!.barIndex, markerName)}>
-          {markerHere ? "名前を変更" : "追加"}
-        </button>
-      </div>
-      <div class="sig-presets">
-        {#each MARKER_PRESETS as name (name)}
-          <button class="sig-preset" onclick={() => putMarker(sigMenu!.barIndex, name)}>{name}</button>
-        {/each}
-      </div>
-      {#if markerHere}
-        <button class="danger" onclick={() => removeMarker(markerHere!.tick)}><Icon name="trash-2" />このマーカーを削除</button>
-      {/if}
-    </div>
+    <RulerMenu
+      {project}
+      {barList}
+      bind:menu={sigMenu}
+      bind:markerName
+      onClose={() => (sigMenu = null)}
+      onPutMarker={putMarker}
+      onRemoveMarker={removeMarker}
+    />
   {/if}
 
   {#if similarFor}
@@ -2270,131 +1777,41 @@
   {/if}
 
   {#if clipMenu}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="menu-backdrop" role="presentation" onclick={() => (clipMenu = null)} oncontextmenu={(e) => { e.preventDefault(); clipMenu = null; }}></div>
-    <div class="track-menu clip-menu" use:keepInView style="left:{clipMenu.x}px;top:{clipMenu.y}px">
-      {#if selectedClips.size > 1}
-        <div class="menu-note">選択中のクリップ {selectedClips.size} 個が対象</div>
-      {/if}
-      {#if clipMenu.clip.kind === "midi"}
-        {#if clipMenu.clip.loop && clipMenu.clip.loop_len}
-          <button onclick={() => menuAction("loop-off")}><Icon name="infinity" />ループを解除</button>
-          <button onclick={() => menuAction("expand")} title="繰り返しをノートに書き出して、1 回ずつ個別に編集できるようにする"
-            ><Icon name="infinity" />繰り返しをノートに展開</button
-          >
-        {:else}
-          <button onclick={() => menuAction("loop-on")} title="今の長さを繰り返す。右端を伸ばすと、その分だけ繰り返し鳴る"
-            ><Icon name="infinity" />ループにする</button
-          >
-        {/if}
-        <div class="menu-sep"></div>
-      {:else}
-        {#if followBpm(clipMenu.clip) !== null}
-          <button onclick={() => menuAction("follow-off")} title={`今は ${followBpm(clipMenu.clip)} BPM の素材として伸縮中`}
-            ><Icon name="move-horizontal" />テンポ追従を解除</button
-          >
-        {:else}
-          <button
-            class="rich"
-            onclick={() => menuAction("follow-on")}
-            title="テンポを変えても拍がずれないよう、音程を保ったまま伸縮する"
-            ><Icon name="move-horizontal" /><span
-              >テンポに追従させる<small>{bpmAt(clipMenu.clip.start)} BPM で録った素材として</small></span
-            ></button
-          >
-          <button class="rich" onclick={() => menuAction("follow-detect")} disabled={detectingTempo !== null}
-            ><Icon name="move-horizontal" /><span>テンポに追従させる<small>素材の元のテンポを自動で検出(取り込んだ曲・ループ素材)</small></span
-            ></button
-          >
-        {/if}
-        <button class="rich" onclick={() => menuAction("sep-builtin")} disabled={separating !== null}
-          ><Icon name="layers" /><span>パートに分ける: 打楽器 / 音程楽器<small>内蔵。すぐ終わる</small></span></button
-        >
-        <button class="rich" onclick={() => menuAction("sep-demucs")} disabled={separating !== null}
-          ><Icon name="layers" /><span>パートに分ける: ボーカル / ドラム / ベース / その他<small>Demucs(要インストール)。数分かかる</small></span
-          ></button
-        >
-        <button class="rich" onclick={() => menuAction("match")} disabled={matching !== null}
-          ><Icon name="wand-sparkles" /><span
-            >この音に似せたシンセのトラックを作る<small>subtractive / fm / wavetable とリバーブを自動で探す。約 30 秒。単音のサンプル向け</small></span
-          ></button
-        >
-        <button class="rich" onclick={() => menuAction("similar")}
-          ><Icon name="search" /><span>この音に近い CLAP のプリセットを探す…<small>Surge XT など。読み込んでつまみも自動で詰められる</small></span
-          ></button
-        >
-        <div class="menu-sep"></div>
-      {/if}
-      <button onclick={() => menuAction("split")}><Icon name="scissors" />ここで分割({barLabel(clipMenu.at)})</button>
-      <button onclick={() => menuAction("split-head")}><Icon name="scissors" />再生ヘッドで分割<span class="key">S</span></button>
-      <div class="menu-sep"></div>
-      <button onclick={() => menuAction("dup")}><Icon name="copy" />複製(直後に並べる)<span class="key">Ctrl+D</span></button>
-      <button onclick={() => menuAction("copy")}><span class="ic-space"></span>コピー<span class="key">Ctrl+C</span></button>
-      <button onclick={() => menuAction("cut")}><span class="ic-space"></span>切り取り<span class="key">Ctrl+X</span></button>
-      <div class="menu-sep"></div>
-      <button class="danger" onclick={() => menuAction("delete")}><Icon name="trash-2" />削除<span class="key">Delete</span></button>
-      <div class="menu-note">貼り付け(Ctrl+V)は再生ヘッドの位置・元のトラックに置かれます</div>
-    </div>
+    <ClipMenu
+      {project}
+      x={clipMenu.x}
+      y={clipMenu.y}
+      clip={clipMenu.clip}
+      atLabel={barLabel(clipMenu.at)}
+      selectedCount={selectedClips.size}
+      detectingTempo={detectingTempo !== null}
+      separating={separating !== null}
+      matching={matching !== null}
+      onAction={menuAction}
+      onClose={() => (clipMenu = null)}
+    />
   {/if}
 
   {#if trackMenu}
-    {@const menuTrack = project.tracks[trackMenu.index]}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="menu-backdrop" role="presentation" onclick={() => (trackMenu = null)} oncontextmenu={(e) => { e.preventDefault(); trackMenu = null; }}></div>
-    <div class="track-menu" use:keepInView style="left:{trackMenu.x}px;top:{trackMenu.y}px">
-      <button onclick={() => startRename(trackMenu!.trackId)}><Icon name="pencil" />名前を変更</button>
-      <div class="color-row" role="group" aria-label="トラックの色">
-        <Icon name="palette" />
-        {#each TRACK_COLORS as c (c)}
-          <button
-            class="color-chip"
-            class:none={!c}
-            style={c ? `background:${c}` : ""}
-            title={c ? `色: ${c}` : "色を元に戻す"}
-            aria-label={c ? `色 ${c}` : "色を元に戻す"}
-            onclick={() => setTrackColor(c)}
-          ></button>
-        {/each}
-      </div>
-      <div class="menu-sep"></div>
-      <button disabled={trackMenu.index === 0} onclick={() => moveTrack(trackMenu!.index - 1)}><Icon name="arrow-up" />上へ移動</button>
-      <button disabled={trackMenu.index >= project.tracks.length - 1} onclick={() => moveTrack(trackMenu!.index + 1)}
-        ><Icon name="arrow-down" />下へ移動</button
-      >
-      <div class="menu-note">見出しの左端をつかんでドラッグしても並べ替えられます</div>
-      <button onclick={duplicateTrack}><Icon name="copy" />複製</button>
-      <button
-        onclick={bounceTrack}
-        disabled={!!bouncing || menuTrack?.kind === "bus"}
-        title="エフェクト・音量・パン・送りの響きまで込みで音声に描き出し、直後に音声トラックとして置く(元はミュート)。CLAP の音源の曲をゲームで鳴らすとき・重いトラックを軽くするときに"
-        ><Icon name="snowflake" />音声にする(フリーズ)</button
-      >
-      {#if menuTrack?.device?.type === "clap"}
-        <button onclick={() => openClapGui(trackMenu!.trackId)}><Icon name="app-window" />プラグインの画面を開く</button>
-      {/if}
-      <div class="menu-sep"></div>
-      <button class="danger" onclick={deleteTrack}><Icon name="trash-2" />削除<span class="key">Ctrl+Z で戻せます</span></button>
-    </div>
+    <TrackMenu
+      {project}
+      x={trackMenu.x}
+      y={trackMenu.y}
+      index={trackMenu.index}
+      bouncing={!!bouncing}
+      onRename={() => startRename(trackMenu!.trackId)}
+      onColor={setTrackColor}
+      onMove={moveTrack}
+      onDuplicate={duplicateTrack}
+      onBounce={bounceTrack}
+      onOpenGui={() => openClapGui(trackMenu!.trackId)}
+      onDelete={deleteTrack}
+      onClose={() => (trackMenu = null)}
+    />
   {/if}
 
   {#if addMenu}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="menu-backdrop" role="presentation" onclick={() => (addMenu = null)} oncontextmenu={(e) => { e.preventDefault(); addMenu = null; }}></div>
-    <div class="track-menu" use:keepInView style="left:{addMenu.x}px;top:{addMenu.y}px">
-      <button class="rich" onclick={() => addFromMenu("midi")}
-        ><Icon name="piano" /><span>MIDI トラック<small>ノートを打ち込む・AI に作らせる</small></span></button
-      >
-      <button class="rich" onclick={() => addFromMenu("audio")}
-        ><Icon name="audio-lines" /><span>音声トラック<small>録音・音声ファイルを置く(空きをダブルクリック)</small></span></button
-      >
-      <button class="rich" onclick={() => addFromMenu("bus")}
-        ><Icon name="merge" /><span>バス(リバーブ入り)<small>複数のトラックから送って響きを共有する</small></span></button
-      >
-      <div class="menu-sep"></div>
-      <button class="rich" onclick={() => addFromMenu("midi-file")}
-        ><Icon name="file-music" /><span>MIDI・MusicXML から…<small>パートごとにトラックを足す。MusicXML は強弱・奏法・パート名も。空の曲ならテンポと拍子も</small></span></button
-      >
-    </div>
+    <AddTrackMenu x={addMenu.x} y={addMenu.y} onPick={addFromMenu} onClose={() => (addMenu = null)} />
   {/if}
 
 
@@ -2451,27 +1868,9 @@
     color: var(--accent);
   }
 
-  .sig-num.tempo-num {
-    width: 64px;
-  }
-
   /* 縮小して番号を間引いた小節は、区切りの線も薄く */
   .bar-mark.quiet {
     border-left-color: color-mix(in srgb, var(--border) 45%, transparent);
-  }
-
-  .zoom {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    height: 100%;
-    padding: 0 6px;
-  }
-
-  .zoom .btn {
-    height: 18px;
-    padding: 0 5px;
-    font-size: var(--fs-xs);
   }
 
   /* 小節のコード(推定)。小節番号の横に小さく */
@@ -2498,31 +1897,6 @@
     color: var(--text);
     border: 1px solid var(--accent-dim);
     border-radius: 3px;
-  }
-
-  .color-row {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 10px;
-    color: var(--text-dim);
-    --icon-size: 15px;
-  }
-
-  .color-row :global(.icon) {
-    margin-right: 5px;
-  }
-
-  .color-chip {
-    width: 16px;
-    height: 16px;
-    padding: 0;
-    border-radius: 50%;
-    border: 1px solid var(--border);
-  }
-
-  .color-chip.none {
-    background: repeating-linear-gradient(45deg, var(--bg), var(--bg) 3px, var(--border) 3px, var(--border) 5px);
   }
 
   .track-head {
@@ -2631,11 +2005,6 @@
     flex-shrink: 0;
   }
 
-
-
-
-
-
   .vol {
     flex: 1;
     min-width: 0;
@@ -2722,11 +2091,6 @@
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--accent-dim);
-  }
-
-  .marker-name {
-    flex: 1;
-    min-width: 0;
   }
 
   .ruler-row .lane {
@@ -2840,43 +2204,10 @@
     user-select: none;
   }
 
-  .layout-pop {
-    position: absolute;
-    top: 26px;
-    left: 6px;
-    z-index: 30;
-    width: 220px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px;
-    background: var(--bg-raised);
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    box-shadow: var(--shadow-pop);
-    font-size: var(--fs-sm);
-  }
-
-  .layout-pop label {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .layout-pop input {
-    width: 100%;
-    accent-color: var(--accent);
-  }
-
-  .layout-pop .btn {
-    align-self: flex-end;
-  }
-
   .track-name.master-name {
     flex: 0 0 auto;
     margin-right: 4px;
   }
-
 
   .track-row.alt .lane {
     background: var(--bg-lane-alt);
@@ -2891,7 +2222,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-
 
   /* 音源の名前(押すと音源ピッカー) */
   .dev {
@@ -2929,33 +2259,6 @@
     padding: 0 2px;
   }
 
-
-
-
-  .menu-note {
-    font-size: var(--fs-xs);
-    color: var(--text-faint);
-    padding: 2px 10px 4px 35px;
-    max-width: 300px;
-    line-height: 1.5;
-  }
-
-  .preset-title {
-    font-size: 10px;
-    color: var(--text-dim);
-    padding: 2px 10px;
-    letter-spacing: 0.05em;
-  }
-
-
-
-
-
-
-
-
-
-
   /* 直前のチャットのターンで AI が変えたクリップ */
   .clip.ai-changed {
     box-shadow:
@@ -2981,54 +2284,10 @@
     outline-offset: -1px;
   }
 
-  .clip-menu .danger,
-  .sig-menu .danger {
-    color: var(--warn);
-  }
-
   /* 小節番号(.bar-mark)はクリックを素通しするが、拍子チップは押せるようにする */
   .sig-chip {
     cursor: pointer;
     pointer-events: auto;
-  }
-
-  .sig-form {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 6px;
-  }
-
-  .sig-num {
-    width: 52px;
-  }
-
-  .sig-group-label {
-    font-size: 12px;
-    opacity: 0.8;
-    white-space: nowrap;
-  }
-
-  .sig-group {
-    width: 96px;
-    margin-left: auto;
-  }
-
-  .sig-apply {
-    margin-left: auto;
-  }
-
-  .sig-presets {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 2px 6px;
-  }
-
-  .track-menu .sig-preset {
-    padding: 2px 8px;
-    border: 1px solid var(--border);
-    font-size: 12px;
   }
 
   .clip.dragging {
@@ -3047,9 +2306,6 @@
     z-index: 2;
   }
 
-
-
-
   .clip-busy {
     position: absolute;
     inset: 0;
@@ -3061,89 +2317,6 @@
     background: rgba(0, 0, 0, 0.45);
     z-index: 4;
     pointer-events: none;
-  }
-
-  /* 音声クリップのフェード(暗い三角)と、そのつまみ・音量のつまみ */
-  .fade-shade {
-    position: absolute;
-    left: 0;
-    top: 0;
-    height: 100%;
-    pointer-events: none;
-    z-index: 1;
-  }
-
-  .fade-shade polygon {
-    fill: rgba(0, 0, 0, 0.4);
-  }
-
-  .fade-h {
-    position: absolute;
-    bottom: 1px;
-    width: 9px;
-    height: 9px;
-    margin-left: -1px;
-    border-radius: 2px;
-    background: rgba(255, 255, 255, 0.85);
-    border: 1px solid rgba(0, 0, 0, 0.45);
-    cursor: ew-resize;
-    z-index: 3;
-    opacity: 0;
-    transition: opacity 0.1s;
-  }
-
-  .fade-h.out {
-    margin-right: -1px;
-  }
-
-  .gain-h {
-    position: absolute;
-    bottom: 1px;
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 0 4px;
-    border-radius: 3px;
-    font-size: 10px;
-    line-height: 13px;
-    white-space: nowrap;
-    color: #fff;
-    background: rgba(0, 0, 0, 0.5);
-    cursor: ns-resize;
-    z-index: 3;
-    opacity: 0;
-    transition: opacity 0.1s;
-  }
-
-  /* つまみはクリップにマウスを乗せたときだけ出す(フェード・音量を変えてあれば薄く見せたまま) */
-  .clip:hover .fade-h,
-  .clip:hover .gain-h,
-  .fade-h.active,
-  .gain-h.active {
-    opacity: 1;
-  }
-
-  .gain-h.set {
-    opacity: 0.7;
-  }
-
-  .transcribe.poly {
-    right: 32px;
-  }
-
-  .transcribe {
-    position: absolute;
-    top: 2px;
-    right: 10px;
-    z-index: 3;
-    display: inline-flex;
-    font-size: 11px;
-    line-height: 1;
-    padding: 2px 3px;
-    border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    background: rgba(0, 0, 0, 0.35);
-    color: #fff;
-    cursor: pointer;
   }
 
   .lane.drop-target {
@@ -3181,87 +2354,6 @@
     color: var(--text-dim);
   }
 
-  .menu-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 19;
-  }
-
-  .track-menu {
-    position: fixed;
-    z-index: 20;
-    /* 画面に収まらない分は中でスクロール(位置は keepInView が画面内へ寄せる) */
-    max-height: calc(100vh - 16px);
-    max-width: min(440px, calc(100vw - 16px));
-    overflow-y: auto;
-    background: var(--bg-panel);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--r-lg);
-    box-shadow: var(--shadow-pop);
-    padding: 4px;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    min-width: 200px;
-    font-size: var(--fs-md);
-  }
-
-  /* メニューの項目: アイコン + 文字 + 右端にキー */
-  .track-menu button {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    text-align: left;
-    border: none;
-    background: none;
-    padding: 6px 10px;
-    border-radius: var(--r-sm);
-    font-size: var(--fs-md);
-    --icon-size: 15px;
-  }
-
-  .track-menu button > :global(.icon) {
-    color: var(--text-dim);
-  }
-
-  .track-menu button.rich span {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .track-menu button small {
-    font-size: var(--fs-xs);
-    color: var(--text-dim);
-  }
-
-  .ic-space {
-    width: 15px;
-    flex-shrink: 0;
-  }
-
-  .track-menu .key {
-    margin-left: auto;
-    padding-left: 24px;
-    font-size: var(--fs-xs);
-    font-family: var(--mono);
-    color: var(--text-faint);
-  }
-
-  .track-menu button:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 15%, transparent);
-  }
-
-  .track-menu button.danger:hover {
-    background: var(--danger-bg);
-    color: var(--danger-text);
-  }
-
-  .menu-sep {
-    height: 1px;
-    background: var(--border);
-    margin: 2px 4px;
-  }
-
   .add-track-row {
     padding: 8px;
     position: sticky;
@@ -3275,6 +2367,5 @@
     border-style: dashed;
     color: var(--text-dim);
   }
-
 
 </style>
