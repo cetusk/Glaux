@@ -12818,8 +12818,58 @@ impl GlauxServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for GlauxServer {
+    /// 道具の処理の中で panic しても応答を返す。受け止めないと、その要求の処理ごと消えて
+    /// 応答が返らず、呼び出し側(AI)がいつまでも待ち続ける。セッションのアクターは別に
+    /// 自分で panic から復帰する(`actor.rs`)ので、ここで受け止めるのは道具の層の panic
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        use futures::FutureExt;
+        let name = request.name.to_string();
+        // テスト用: 環境変数 GLAUX_TEST_PANIC があり、引数に "__glaux_test_panic": true が
+        // あれば panic させる(受け止めて応答が返ることの確認。両方そろわないと何もしない)
+        let test_panic = std::env::var_os("GLAUX_TEST_PANIC").is_some()
+            && request
+                .arguments
+                .as_ref()
+                .is_some_and(|a| a.get("__glaux_test_panic") == Some(&Value::Bool(true)));
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let call = async move {
+            if test_panic {
+                panic!("テスト用の panic");
+            }
+            self.tool_router.call(tcc).await
+        };
+        match std::panic::AssertUnwindSafe(call).catch_unwind().await {
+            Ok(result) => result,
+            Err(payload) => {
+                let detail = panic_message(payload.as_ref());
+                tracing::error!("道具 {name} の処理中に panic しました: {detail}");
+                Ok(rmcp::model::CallToolResponse::Complete(
+                    rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                        format!(
+                            "{name} の処理中に内部エラーが起きました({detail})。\
+                             途中までの編集が残っていることがあるので get_changes で確かめてください。引数を変えて試すか、不具合として報告してください"
+                        ),
+                    )]),
+                ))
+            }
+        }
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(crate::guide::CORE)
     }
+}
+
+/// panic の値から説明を取り出す(`panic!` の文字列か、取り出せなければ固定の文言)
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "詳細不明".to_owned())
 }

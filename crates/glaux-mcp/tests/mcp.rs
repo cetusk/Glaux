@@ -466,6 +466,29 @@ async fn errors_are_reported_as_tool_errors() {
     assert_eq!(ok_json(&r)["entries"], json!([]));
 }
 
+/// 道具の処理の中で panic しても応答が返り(以前は返らずに待ち続けた)、サーバーは次の呼び出しに答える
+#[tokio::test]
+async fn a_panic_inside_a_tool_returns_an_error_instead_of_hanging() {
+    std::env::set_var("GLAUX_TEST_PANIC", "1");
+    let fx = setup().await;
+    let r = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        call(&fx, "get_history", json!({ "__glaux_test_panic": true })),
+    )
+    .await
+    .expect("panic しても応答が返る");
+    assert_eq!(r.is_error, Some(true));
+    let text = r.content[0].as_text().expect("text").text.clone();
+    assert!(
+        text.contains("get_history") && text.contains("テスト用の panic"),
+        "{text}"
+    );
+
+    // 同じ接続で次の呼び出しにも答える
+    let r = call(&fx, "get_history", json!({})).await;
+    assert_eq!(ok_json(&r)["entries"], json!([]));
+}
+
 #[tokio::test]
 async fn events_fire_for_ui_subscribers() {
     let fx = setup().await;

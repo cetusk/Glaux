@@ -33,6 +33,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 schemars = "1"
 anyhow = "1"
 tracing = "0.1"
+# 道具の呼び出しの panic を受け止める(FutureExt::catch_unwind。glaux-mcp のみ)
+futures = "0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 # app(Tauri)

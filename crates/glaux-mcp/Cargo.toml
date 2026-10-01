@@ -31,10 +31,11 @@ schemars.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+futures.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 # インプロセス(duplex)でクライアント⇔サーバーを繋ぐエンドツーエンドテスト用
 rmcp = { workspace = true, features = ["client"] }
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "time"] }
