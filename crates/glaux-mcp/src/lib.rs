@@ -13,6 +13,7 @@ pub mod assets;
 pub mod bounce;
 pub mod changes;
 pub mod clap_presets;
+pub mod compact;
 pub mod export;
 pub mod fx_presets;
 pub mod guide;

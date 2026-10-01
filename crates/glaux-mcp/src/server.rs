@@ -4692,75 +4692,26 @@ impl GlauxServer {
 
     #[tool(
         description = "コマンドを適用してプロジェクトを編集する。唯一の編集手段。\
-        commands には glaux の Command JSON({\"op\": ..., ...})を並べる。複数渡すと 1 つの Batch になり、1 回の undo でまとめて戻せる。\
-        新規 ID(トラック trk_、クリップ clp_、ノート nt_、エフェクト fx_ + 英数 6 桁。例 trk_a1b2c3)は省略するとサーバーが振り、\
-        ノート以外は返り値 assigned_ids で返す(同じ呼び出しの中で後から参照するトラック・クリップは自分で付ける)。\
-        相対操作(「半音上げる」等)は不可。現在値を読んで絶対値を計算してから送ること。\
-        ただしノートの移調・時間移動・クオンタイズ・ベロシティ一括調整は\
-        専用ツール(transpose_notes / shift_notes / quantize_notes / scale_velocity)の方が速くて確実。\
-        クリップの複製・小節の挿入と削除は duplicate_clips / insert_bars / delete_bars。\
-        代表例: add_track {track,index?} / add_clip {track,clip} / add_notes {clip,notes} / update_notes {clip,changes} / \
-        バス(リターン): add_track の kind: \"bus\" で作る(クリップは置けない。エフェクトを挿して共有リバーブ・ディレイにする。\
-        リバーブは mix: 1.0 = ウェットのみが基本)。set_send {track, target, level_db, pre_fader?} でトラックからバスへ送る\
-        (level_db -60〜12。省略でセンドを外す。pre_fader: true でフェーダー前 = トラック音量に追従しない)。\
-        送り元はバス以外、送り先はバスのみ。バスはソロの影響を受けない。ボーカル・スネア・パッドを同じ空間に置くのに使う / \
-        set_track_prop {id,prop,value} / set_param {track,path,value} / set_tempo {events} / move_clip {id,start,track?} / \
-        set_title {title}(曲名の変更)/ \
-        set_sections {sections: [{tick, name}]}(曲の構成マーカーを丸ごと置換。\
-        intro / Aメロ / サビ 等。各セクションはそのマーカーから次のマーカーの手前まで。\
-        構成を決めたら早めに打っておくと「サビだけ〜して」の指示を tick 範囲に解決できる)/ \
-        set_clip_plan {clip, plan: {id, rev, digest} | null}(クリップがどの旋律の計画の版から作られたか。get_plan の \
-        plan の plan_id・rev・digest を渡す。計画が先に進むと get_plan で plan_ahead と出る)/ \
-        ノートには articulation を付けられる: \"palm_mute\"(ブリッジミュート。減衰が速いこもった刻み)/ \
-        \"staccato\"(音価半分で切る)/ \"accent\"(強く明るく)/ \
-        \"vibrato\"(後半にかけて深くなるピッチの揺れ。ロングトーンの表情付け)/ \
-        \"bend\"(チョーキング: 全音下から書かれた音程へ滑り上がる。ギターソロの決め音に)/ \
-        \"legato\"(同じトラックの直前の音から弾き直さずにつなぐ。弦・管・歌・リードのフレーズ、ギターのハンマリング。\
-        前の音との隙間 0.3 秒まで。つなげたい 2 音目以降に付ける)/ \
-        \"portamento\"(legato でつなぎ、直前の音の高さから約 0.15 秒で滑らせる。直前の音が無い(フレーズの頭・\
-        0.3 秒より離れた)ときは全音下から滑り込む。ストリングスのポルタメント・\
-        シンセのグライド・ギターのスライド)。\
-        省略で通常。update_notes でも変更可。\
-        滑る時間は、トラック全体なら set_param {track, path: \"track/glide_ms\", value}(10〜2000ms、既定 150)、\
-        1 音だけならノートの glide_ms(add_notes / update_notes。0 で解除してトラックの値へ)。\
-        レガートのつなぎ目の長さは track/legato_ms(5〜200ms、既定 30。長いほどふんわり重なる)。\
-        どちらも unset_param で既定に戻る。\
-        連続ピッチカーブ: ノートの pitch_curve に [{tick, cents, shape?}](tick はノート先頭からの相対、\
-        cents は書かれた音程からのずれ。100 = 半音、±2400 まで、最大 16 点、点から次の点までの曲がり方 shape は\
-        linear(既定)/ ease_in / ease_out / ease_in_out / hold、両端は保持)を書くと自由なベンド・ポルタメント・うねりが作れる\
-        (しゃくり・フォールなどの定番は pitch_gesture、ビブラートの細かい指定はノートの vibrato か set_vibrato)\
-        (例: ギターのチョーキングを 1 拍かけて上げる = [{tick:0,cents:-200},{tick:960,cents:0}]、\
-        ダイブ = [{tick:0,cents:0},{tick:1920,cents:-1200}])。update_notes の pitch_curve で差し替え、[] で削除。\
-        メタルの「ズクズク」した刻みは pluck + amp(gain_db 40 以上)+ 低音 + palm_mute ノートの組み合わせで作る。\
-        マスターバスのエフェクトは add_master_effect {effect, index?} / set_master_param {path: \"fx/<id>/<名前>\", value} / \
-        unset_master_param {path}、削除・並べ替え・バイパスはトラックと同じ remove_effect / move_effect {id, to_index} / set_effect_bypass \
-        / set_effect_prop {id, prop: \"label\" | \"parked\" | \"note\" | \"pos\", value}(表示名・線から外す・メモ・ノード表示の位置。\
-        parked: true のエフェクトは鳴らないが設定は残る。ユーザーが取っておいたものなので、頼まれない限り消さない)/ \
-        set_fx_links {track?, links}(エフェクトのつながり = ノード表示の線を丸ごと置き換える。track 省略でマスター。\
-        links は [{from, to, gain_db?}] で、端は \"in\"(音源・受けた音)/ \"out\"(音量・パンへ)/ エフェクト ID。\
-        1 つの口から何本でも出せ(分岐 = 同じ音を配る)、1 つの口に何本でも入れられる(合流 = 足し合わせる)。\
-        入力から出口まで線でたどれるエフェクトだけが鳴る(各エフェクトの sounding で分かる)。輪は不可。\
-        例: 原音とリバーブを並列に混ぜる = [in→eq, eq→out, eq→rev(gain_db -8), rev→out]。null で並び順の直列に戻す。\
-        つながりの表(get_project の tracks[].fx_links)があるトラックでは parked は使えず、add_effect は出口の直前に入り、\
-        remove_effect は前後をつなぎ直す。表を書き換える前に今の表を読み、ユーザーのつなぎ方を勝手に崩さないこと)\
-        (マスターのチェーンは get_project の master.effects で見える。仕上げのコンプ・EQ・リミッター的な使い方に)/ \
-        set_clip_loop {id, loop_len}(MIDI クリップのループ。loop_len に繰り返す長さ(クリップ先頭から、\
-        tick)を渡すと、クリップ長までその範囲が繰り返し鳴る。null で解除。ドラムパターンやリフは \
-        1〜2 小節を作ってループにし、resize_clip で伸ばすのが速い。ループ範囲より後ろのノートは鳴らない)/ \
-        set_clip_stretch {id, stretch}(音声クリップのテンポ追従。stretch は {mode: \"follow\", original_bpm} \
-        で素材を original_bpm の演奏として扱い、曲のテンポを変えても拍がずれないよう音程を保ったまま伸縮する。\
-        録音・取り込んだときの曲のテンポを original_bpm に入れるのが基本。{mode: \"none\"} で解除)/ \
-                set_automation_points {track,target,points}(target は \"track/volume_db\" / \"track/pan\" / \
-        \"device/<パラメータ名>\"(例 device/cutoff。list_params にある連続値パラメータ。\
-        値はパラメータと同じ単位)/ \"fx/<エフェクト ID>/<パラメータ名>\"(そのトラックのエフェクト。\
-        例 リバーブの mix をサビで上げる、EQ の high_gain_db を開いていく)、points は [{tick,value,curve?}] で curve は \
-        linear/hold/exponential。フェードイン・ビルドアップの音量カーブ・左右の揺れ・\
-        フィルタスイープなど時間変化する表現に使う。\
-        レーンがあるとフェーダー/つまみの値より優先。空配列でレーン削除)/ \
-        set_master_automation_points {target,points}(マスターのレーン。target は \"track/volume_db\"\
-        (曲全体のフェードアウト等)か \"fx/<マスターのエフェクト ID>/<パラメータ名>\"。\
-        レーンは get_project の master.automation で見える)。\
-        失敗時はどのコマンドで失敗したかがエラーメッセージに入る(batch failed at command #N)。"
+        commands に Command JSON({\"op\": ...})を並べる。複数渡すと 1 つの Batch になり、1 回の undo で戻る。\
+        新規 ID(trk_ / clp_ / nt_ / fx_ + 英数 6 桁。例 trk_a1b2c3)は省略するとサーバーが振り、ノート以外は assigned_ids で返す\
+        (同じ呼び出しの中で後から参照するトラック・クリップは自分で付ける)。\
+        値は絶対値で送る(現在値を読んで計算する)。相対の編集は transpose_notes / shift_notes / quantize_notes / scale_velocity、\
+        構成は duplicate_clips / insert_bars / delete_bars の方が速くて確実。\
+        ノートは {pos, dur, pitch, vel, articulation?}(pos はクリップの頭からの tick、4 分 = 960)か、簡潔な書き方の文字列\
+        \"小節:拍 長さ 音 [v強さ] [奏法]\"(例 \"5:1 1/8 E4 v96\"、\"5:2.5 1/16 C4+E4+G4 staccato\"、\"@480 1/4. 60\"。\
+        小節・拍は曲の 1 始まりで、拍は拍子の分母の音符(小数可)、@ はクリップの頭からの tick。長さは 1/8・1/4.(付点)・1/8t(3 連)か tick。\
+        + で和音、強さの省略は 100)。notes は文字列の配列か ; 区切りの 1 本でもよく、オブジェクトと混ぜてよい。長い旋律は文字列の方が短く確実。\
+        主な op: add_track {track, index?}(kind: midi / audio / bus)/ remove_track / move_track / set_track_prop {id, prop, value} / \
+        add_clip {track, clip} / move_clip / resize_clip / split_clip / remove_clip / add_notes {clip, notes} / \
+        update_notes {clip, changes} / remove_notes / set_param {track, path, value} / unset_param / set_device / \
+        add_effect / remove_effect / move_effect / set_effect_bypass / set_effect_prop / set_fx_links / set_send / \
+        add_master_effect / set_master_param / set_master_volume / set_clip_loop / set_clip_stretch / \
+        set_automation_points / set_master_automation_points / set_tempo {events} / set_time_sig / set_title / \
+        set_sections {sections: [{tick, name}]}(構成のマーカー。早めに打つと「サビだけ」を範囲に解決できる)/ set_clip_plan。\
+        各 op の引数、奏法(palm_mute・staccato・accent・vibrato・bend・legato・portamento)、glide・pitch_curve、\
+        バスとセンド、エフェクトのつながり(fx_links・parked)、クリップのループ・テンポ追従、オートメーションの書き方は\
+        get_guide {topic: \"commands\"} を読む。\
+        失敗時はどのコマンドで失敗したかがエラーに入る(batch failed at command #N)。何も変わらない。"
     )]
     async fn apply_commands(
         &self,
@@ -4775,7 +4726,19 @@ impl GlauxServer {
         let mut commands = Vec::with_capacity(p.commands.len());
         let mut current: Option<glaux_core::Project> = None;
         let mut assigned: Vec<Value> = Vec::new();
+        let mut clip_starts = std::collections::HashMap::new();
         for (i, mut value) in p.commands.into_iter().enumerate() {
+            // 簡潔なノートの書き方("5:1 1/8 E4 v96")を、クリップの頭からの tick のノートに直す
+            if crate::compact::has_compact(&value) {
+                if current.is_none() {
+                    current = Some(self.handle.get_project().await?.0);
+                }
+                if let Some(project) = current.as_ref() {
+                    crate::compact::expand_command(&mut value, project, &mut clip_starts)
+                        .map_err(|e| format!("commands[{i}]: {e}"))?;
+                }
+            }
+            crate::compact::remember_starts(&value, &mut clip_starts);
             // 省略された ID はここで振る(コマンドは決定的なので、apply ではなく作る側 = MCP 層で)
             assign_missing_ids(&mut value, i, &mut assigned);
             let mut cmd: Command = serde_json::from_value(value)

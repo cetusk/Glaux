@@ -6,22 +6,61 @@
 //! `get_guide {topic}` で読ませる。
 
 /// 共通の指示(MCP サーバーの instructions。アプリ内チャットのシステムプロンプトにも同じ骨子を入れる)
-pub const CORE: &str = "Glaux(AI と共同作業できる DAW)のプロジェクト編集サーバー。\
+pub const CORE: &str = "Glaux(AI と共同作業できる DAW)の編集サーバー。\
 進め方: get_project(include_notes: false)で構造を把握 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
 apply_commands で編集。\
 相対編集: transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity / transform_notes。構成: duplicate_clips / insert_bars / delete_bars。\
 曲作りは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
 write_drums・write_chords・write_bassline・write_transition → 旋律 → 表情 → 点検)に沿う。\
-旋律は write_melody か develop_motif(動機を展開)、critique_melody で点検。\
+旋律は write_melody か develop_motif、critique_melody で点検。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track)・analyze_sound。\
 人も並行して編集する。project_version が進んでいたら get_changes {since: 最後の entry_id} で確認する。\
-定石は get_guide {topic}(workflow / melody / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
+定石は get_guide {topic}(commands / workflow / melody / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
 ハネ(swing_notes)の後は apply_groove(quantize 0)を重ねる。仕上げは master_mix。\
-完了の報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを確かめ、\
-結果を一言添える。ミックスを変えたら compare_mix で前後を比べる。大きな試行の前は checkpoint。";
+報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを確かめ、\
+結果を添える。ミックスを変えたら compare_mix で前後を比べる。大きな試行の前は checkpoint。";
 
 /// (トピック名, 見出し, 本文)
 pub const TOPICS: &[(&str, &str, &str)] = &[
+    (
+        "commands",
+        "apply_commands の各 op の詳しい書き方",
+        "- 奏法(ノートの articulation。省略で通常、update_notes でも変えられる):\n\
+  palm_mute(ブリッジミュート。減衰が速いこもった刻み)/ staccato(音価の半分で切る)/ accent(強く明るく)/\n\
+  vibrato(後半にかけて深くなるピッチの揺れ。ロングトーンの表情)/ bend(チョーキング: 全音下から書かれた音へ滑り上がる。ギターソロの決め音)/\n\
+  legato(同じトラックの直前の音から弾き直さずにつなぐ。弦・管・歌・リードのフレーズ、ギターのハンマリング。前の音との隙間 0.3 秒まで。\n\
+  つなげたい 2 音目以降に付ける)/ portamento(legato でつなぎ、直前の音の高さから約 0.15 秒で滑らせる。直前の音が無い\n\
+  (フレーズの頭・0.3 秒より離れた)ときは全音下から滑り込む。ストリングスのポルタメント・シンセのグライド・ギターのスライド)。\n\
+- 滑る時間: トラック全体は set_param {track, path: \"track/glide_ms\", value}(10〜2000ms、既定 150)、1 音だけならノートの glide_ms\n\
+  (0 で解除してトラックの値へ)。レガートのつなぎ目は track/legato_ms(5〜200ms、既定 30。長いほどふんわり重なる)。どちらも unset_param で既定。\n\
+- 連続ピッチカーブ: ノートの pitch_curve に [{tick, cents, shape?}](tick はノートの頭から、cents は書かれた音からのずれ。100 = 半音、\n\
+  ±2400 まで、最大 16 点。shape は linear(既定)/ ease_in / ease_out / ease_in_out / hold、両端は保持)。自由なベンド・うねりに。\n\
+  例: 1 拍かけてチョーキング = [{tick:0,cents:-200},{tick:960,cents:0}]、ダイブ = [{tick:0,cents:0},{tick:1920,cents:-1200}]。\n\
+  update_notes の pitch_curve で差し替え、[] で削除。しゃくり・フォールなどの定番は pitch_gesture、ビブラートの細かい指定はノートの vibrato か set_vibrato。\n\
+- メタルの「ズクズク」した刻み: pluck + amp(gain_db 40 以上)+ 低音 + palm_mute のノート。\n\
+- バス(リターン): add_track の kind: \"bus\"(クリップは置けない。エフェクトを挿して共有のリバーブ・ディレイに。リバーブは mix: 1.0 = ウェットのみが基本)。\n\
+  set_send {track, target, level_db, pre_fader?} でトラックからバスへ送る(level_db -60〜12。省略でセンドを外す。pre_fader: true でフェーダーの前 =\n\
+  トラックの音量に追従しない)。送り元はバス以外、送り先はバスだけ。バスはソロの影響を受けない。歌・スネア・パッドを同じ空間に置くのに。\n\
+- マスターのエフェクト: add_master_effect {effect, index?} / set_master_param {path: \"fx/<id>/<名前>\", value} / unset_master_param {path}。\n\
+  削除・並べ替え・バイパスはトラックと同じ remove_effect / move_effect {id, to_index} / set_effect_bypass。チェーンは get_project の master.effects。\n\
+- set_effect_prop {id, prop: \"label\" | \"parked\" | \"note\" | \"pos\", value}: 表示名・線から外す・メモ・ノード表示の位置。\n\
+  parked: true のエフェクトは鳴らないが設定は残る(ユーザーが取っておいたものなので、頼まれない限り消さない)。\n\
+- set_fx_links {track?, links}: エフェクトのつながり(ノード表示の線)を丸ごと置き換える。track 省略でマスター。links は [{from, to, gain_db?}] で、\n\
+  端は \"in\"(音源・受けた音)/ \"out\"(音量・パンへ)/ エフェクト ID。1 つの口から何本でも出せ(分岐)、何本でも入れられる(合流 = 足し合わせ)。\n\
+  入力から出口まで線でたどれるエフェクトだけが鳴る(各エフェクトの sounding)。輪は不可。例: 原音とリバーブを並列に =\n\
+  [in→eq, eq→out, eq→rev(gain_db -8), rev→out]。null で並び順の直列に戻す。表(tracks[].fx_links)があるトラックでは parked は使えず、\n\
+  add_effect は出口の直前に入り、remove_effect は前後をつなぎ直す。書き換える前に今の表を読み、ユーザーのつなぎ方を崩さない。\n\
+- set_clip_loop {id, loop_len}: MIDI クリップのループ(クリップの頭からの tick の長さを、クリップの長さまで繰り返す。null で解除)。\n\
+  ドラムパターンやリフは 1〜2 小節を作ってループにし、resize_clip で伸ばすのが速い。ループの範囲より後ろのノートは鳴らない。\n\
+- set_clip_stretch {id, stretch}: 音声クリップのテンポ追従。{mode: \"follow\", original_bpm} で素材を original_bpm の演奏として扱い、\n\
+  曲のテンポを変えても拍がずれないよう音程を保ったまま伸縮する(録音・取り込みのときの曲のテンポを入れる)。{mode: \"none\"} で解除。\n\
+- set_automation_points {track, target, points}: target は \"track/volume_db\" / \"track/pan\" / \"device/<パラメータ名>\"(list_params の連続値。\n\
+  値はパラメータと同じ単位)/ \"fx/<エフェクト ID>/<パラメータ名>\"。points は [{tick, value, curve?}](curve は linear / hold / exponential)。\n\
+  フェードイン・ビルドアップの音量・左右の揺れ・フィルタのスイープに。レーンがあるとフェーダー・つまみの値より優先。空の配列でレーンを消す。\n\
+  マスターは set_master_automation_points {target, points}(\"track/volume_db\" で曲全体のフェードアウト、\"fx/<マスターのエフェクト ID>/<名前>\")。\n\
+- set_clip_plan {clip, plan: {id, rev, digest} | null}: クリップがどの旋律の計画の版から作られたか(get_plan の plan_id・rev・digest)。\n\
+  計画が先に進むと get_plan で plan_ahead と出る。",
+    ),
     (
         "workflow",
         "曲を作る工程と点検表",

@@ -466,6 +466,102 @@ async fn errors_are_reported_as_tool_errors() {
     assert_eq!(ok_json(&r)["entries"], json!([]));
 }
 
+/// 道具の説明は毎回 AI に送るので長さを見張る(apply_commands は以前 5,180 字あった。細かい書き方は get_guide の commands へ)
+#[tokio::test]
+async fn tool_descriptions_stay_short() {
+    let fx = setup().await;
+    let tools = fx.client.list_all_tools().await.unwrap();
+    let len = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.description.as_ref())
+            .map_or(0, |d| d.chars().count())
+    };
+    assert!(len("apply_commands") > 0);
+    assert!(
+        len("apply_commands") <= 2_000,
+        "apply_commands: {}",
+        len("apply_commands")
+    );
+    let total: usize = tools
+        .iter()
+        .filter_map(|t| t.description.as_ref())
+        .map(|d| d.chars().count())
+        .sum();
+    assert!(total <= 45_000, "道具の説明の合計: {total}");
+}
+
+/// 簡潔なノートの書き方("小節:拍 長さ 音 v強さ 奏法")が、クリップの頭からの tick のノートになる
+#[tokio::test]
+async fn compact_notes_are_expanded_relative_to_the_clip() {
+    let fx = setup().await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_lead01", "name": "Lead", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_lead01",
+                  "clip": { "id": "clp_lead01", "name": "A", "start": 3840, "length": 7680, "kind": "midi",
+                            "notes": "2:1 1/8 E4 v96; 2:1.5 1/8 G4" } },
+                { "op": "add_notes", "clip": "clp_lead01", "notes": ["3:1 1/4. C4+E4 staccato"] }
+            ],
+            "label": "簡潔な書き方",
+        }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "get_project", json!({ "clip_ids": ["clp_lead01"] })).await;
+    let v = ok_json(&r);
+    let notes = v["project"]["tracks"][0]["clips"][0]["notes"].clone();
+    let got: Vec<(u64, u64, u64, u64)> = notes
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            // 省略表示([id, pos, dur, pitch, vel, …])とオブジェクトの両方に対応
+            if let Some(a) = n.as_array() {
+                (
+                    a[1].as_u64().unwrap(),
+                    a[2].as_u64().unwrap(),
+                    a[3].as_u64().unwrap(),
+                    a[4].as_u64().unwrap(),
+                )
+            } else {
+                (
+                    n["pos"].as_u64().unwrap(),
+                    n["dur"].as_u64().unwrap(),
+                    n["pitch"].as_u64().unwrap(),
+                    n["vel"].as_u64().unwrap(),
+                )
+            }
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (0, 480, 64, 96),
+            (480, 480, 67, 100),
+            (3840, 1440, 60, 100),
+            (3840, 1440, 64, 100)
+        ]
+    );
+    // 書き間違いは、どのコマンドのどの行かを返し、何も変えない
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [ { "op": "add_notes", "clip": "clp_lead01", "notes": ["2:9 1/8 C4"] } ], "label": "x" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let text = r.content[0].as_text().unwrap().text.clone();
+    assert!(
+        text.contains("commands[0]") && text.contains("2:9"),
+        "{text}"
+    );
+}
+
 /// 道具の処理の中で panic しても応答が返り(以前は返らずに待ち続けた)、サーバーは次の呼び出しに答える
 #[tokio::test]
 async fn a_panic_inside_a_tool_returns_an_error_instead_of_hanging() {
