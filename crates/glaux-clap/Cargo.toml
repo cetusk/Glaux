@@ -11,6 +11,8 @@ description = "CLAP plugin hosting for Glaux (scan, load, process, state)"
 clack-host.workspace = true
 clack-extensions.workspace = true
 thiserror.workspace = true
+vst3.workspace = true
+libloading.workspace = true
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]

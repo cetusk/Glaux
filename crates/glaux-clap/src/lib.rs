@@ -11,23 +11,24 @@
 //! `ClapProcessor` はオーディオスレッドへ渡して使い、止めるときはメインスレッドへ戻して
 //! [`ClapPlugin::deactivate`] に渡す。
 
+mod backend;
 mod host;
 mod plugin;
 mod presets;
 mod scan;
+mod vst3host;
 #[cfg(windows)]
 mod window;
 #[cfg(target_os = "linux")]
 mod window_x11;
 
+pub use backend::{is_vst3_id, ClapPlugin, ClapProcessor, VST3_PREFIX};
 pub use host::{
     mark_audio_thread, mark_event_loop_thread, mark_main_thread, set_event_loop_support,
 };
-pub use plugin::{
-    ClapPlugin, ClapProcessor, GuiEvent, HostTransport, NoteMsg, ParamInfo, MAX_EVENTS, MAX_FRAMES,
-};
+pub use plugin::{GuiEvent, HostTransport, NoteMsg, ParamInfo, MAX_EVENTS, MAX_FRAMES};
 pub use presets::{list_presets, PresetEntry, PresetLocation};
-pub use scan::{default_search_paths, describe, scan, PluginInfo};
+pub use scan::{default_search_paths, describe, scan, vst3_search_paths, PluginInfo};
 
 /// プラグインの画面のためのウィンドウメッセージを処理する(プラグインのメインスレッドで
 /// こまめに呼ぶ。Windows 以外では何もしない。Linux はウィンドウごとに [`ClapPlugin::gui_tick`] で処理する)。

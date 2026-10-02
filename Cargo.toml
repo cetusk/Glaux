@@ -62,6 +62,9 @@ base64 = "0.22"
 # Windows の API: プラグインの画面を入れるウィンドウ(glaux-clap)、電力抑制を外す(glaux-engine)
 # Linux のプラグインの画面(X11)。libX11 は実行時に読み込む(MIT)
 x11-dl = "2.21"
+# VST3 のホスト(MIT OR Apache-2.0。VST3 SDK の C++ ヘッダーから生成したもの)と、プラグインの動的読み込み(ISC)
+vst3 = "0.3"
+libloading = "0.8"
 libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Threading"] }
 # ラウドネス(EBU R128: 短期・LRA・True Peak)
