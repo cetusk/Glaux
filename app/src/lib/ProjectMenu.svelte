@@ -5,6 +5,7 @@
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
   import { newClipId, newTrackId } from "./ids";
+  import { builtinDevice } from "./instruments";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
   import { selectionStore, soundDesignStore } from "./selection.svelte";
   import type { RecentProject } from "./types";
@@ -227,7 +228,7 @@
                 id: trackId,
                 name: "Sound",
                 kind: "midi",
-                device: { type: "builtin", name: "subtractive" },
+                device: builtinDevice("subtractive"),
               },
             },
             {

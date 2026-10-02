@@ -466,6 +466,36 @@ async fn errors_are_reported_as_tool_errors() {
     assert_eq!(ok_json(&r)["entries"], json!([]));
 }
 
+/// 新しいトラックの減算・ウェーブテーブルは生きた音寄り(揺らぎ 0.2・広がり 0.5)で始まる。指定や音源の省略はそのまま
+#[tokio::test]
+async fn new_synth_tracks_start_lively() {
+    let fx = setup().await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [
+            { "op": "add_track", "track": { "id": "trk_aaaaa1", "name": "A", "kind": "midi", "device": { "type": "builtin", "name": "subtractive" } } },
+            { "op": "add_track", "track": { "id": "trk_aaaaa2", "name": "B", "kind": "midi", "device": { "type": "builtin", "name": "wavetable", "params": { "analog": 0.0 } } } },
+            { "op": "add_track", "track": { "id": "trk_aaaaa3", "name": "C", "kind": "midi", "device": { "type": "builtin", "name": "fm" } } },
+            { "op": "add_track", "track": { "id": "trk_aaaaa4", "name": "D", "kind": "midi" } }
+        ], "label": "x" }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "get_project", json!({})).await;
+    let p = ok_json(&r);
+    let t = &p["project"]["tracks"];
+    assert_eq!(t[0]["device"]["params"]["analog"], 0.2);
+    assert_eq!(t[0]["device"]["params"]["spread"], 0.5);
+    assert_eq!(t[1]["device"]["params"]["analog"], 0.0, "指定はそのまま");
+    assert_eq!(t[1]["device"]["params"]["spread"], 0.5);
+    assert!(
+        t[2]["device"]["params"]["analog"].is_null(),
+        "fm には入れない"
+    );
+    assert!(t[3]["device"].is_null(), "音源を省いたトラックはそのまま");
+}
+
 /// 変種の自動生成: 互いに違う変種を言葉付きで返し、番号で当てると同じ変種がトラックに入る
 #[tokio::test]
 async fn mutate_sound_offers_variants_and_applies_one() {
@@ -655,7 +685,7 @@ async fn critique_mix_finds_problems_and_recipes_fix_them() {
                   "clips": [ { "id": "clp_bass01", "name": "b", "start": 0, "length": 15360, "kind": "midi",
                                "notes": "1:1 1/1 C2; 2:1 1/1 C2; 3:1 1/1 C2; 4:1 1/1 C2" } ] } },
                 { "op": "add_track", "track": { "id": "trk_pad001", "name": "Pad", "kind": "midi",
-                  "device": { "type": "builtin", "name": "subtractive", "params": { "unison": 5.0, "sustain": 1.0, "gain_db": -18.0 } },
+                  "device": { "type": "builtin", "name": "subtractive", "params": { "unison": 5.0, "spread": 0.0, "sustain": 1.0, "gain_db": -18.0 } },
                   "clips": [ { "id": "clp_pad001", "name": "p", "start": 0, "length": 15360, "kind": "midi",
                                "notes": "1:1 4/1 C4+E4+G4" } ] } }
             ],

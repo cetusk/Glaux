@@ -195,7 +195,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - subtractive: シンセ全般(リード・ベース・パッド)。unison + detune で厚く(supersaw)。\n\
   osc_level 0 で雑音だけの音源(noise_color white / pink / brown、crackle でレコードのパチパチ)。プリセット「レコードノイズ」\n\
   (ローファイの地の音。長い音を 1 つ曲の長さぶん)・「ノイズのライザー」(ビルドのシューッ)・「風」。\n\
-- **生きた音**(subtractive・wavetable 共通のつまみ。既定は全部 0 = 止まった音): 止まった・平らな音はプロっぽく聞こえない。\n\
+- **生きた音**(subtractive・wavetable 共通のつまみ。既定は全部 0 = 止まった音。ただし add_track で新しく作ると analog 0.2・spread 0.5 で始まる。\n\
+  要らなければ 0 を指定): 止まった・平らな音はプロっぽく聞こえない。\n\
   spread(ユニゾンを左右に。0.5〜0.8。ベースは 0)、analog(揺らぎ。0.2〜0.4 で自然)、filter_type(lp24 で太く、hp で細く、bp で電話)、\n\
   drive(フィルタ前の歪みで厚み)、filter_decay + filter_env(音量と別に頭だけ開く = プラック・ベースのアタック)、\n\
   vel_cutoff(強く弾くと明るい)、key_track(高い音ほど明るい。0.5)、lfo1/lfo2(target: pitch でビブラート 0.05、cutoff でワウ、\n\

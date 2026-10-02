@@ -47,7 +47,7 @@
   } from "./selection.svelte";
   import Icon from "./Icon.svelte";
   import { flip } from "svelte/animate";
-  import { deviceIcon, deviceName } from "./instruments";
+  import { builtinDevice, deviceIcon, deviceName } from "./instruments";
   import type { Clip, Project, Track } from "./types";
 
   let {
@@ -1368,7 +1368,7 @@
         : `トラック ${project.tracks.length + 1}`;
     api
       .applyEdit(
-        [{ op: "add_track", track: { id, name, kind } }],
+        [{ op: "add_track", track: kind === "midi" ? { id, name, kind, device: builtinDevice("subtractive") } : { id, name, kind } }],
         kind === "audio" ? "音声トラックを追加" : "トラックを追加",
       )
       .catch(() => {});

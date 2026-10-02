@@ -12,6 +12,19 @@ export const BUILTIN_INSTRUMENTS: { name: string; icon: IconName; desc: string }
 
 type Device = Track["device"];
 
+/// 新しく選んだ内蔵の音源の初期値。減算・ウェーブテーブルは「生きた音」寄り(揺らぎ 0.2・広がり 0.5)で始める
+/// (既定値は従来と同じ音のまま。既存の曲は変わらない。MCP の add_track も同じ値を入れる)
+export const LIVELY_PARAMS: Record<string, Record<string, number>> = {
+  subtractive: { analog: 0.2, spread: 0.5 },
+  wavetable: { analog: 0.2, spread: 0.5 },
+};
+
+/** 内蔵の音源の device(新しく選んだとき) */
+export function builtinDevice(name: string) {
+  const params = LIVELY_PARAMS[name];
+  return params ? { type: "builtin", name, params: { ...params } } : { type: "builtin", name };
+}
+
 /** 音源の種類のアイコン */
 export function deviceIcon(device: Device): IconName {
   if (!device) return "audio-waveform";

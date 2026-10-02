@@ -6,7 +6,7 @@
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons";
-  import { BUILTIN_INSTRUMENTS, deviceName } from "./instruments";
+  import { BUILTIN_INSTRUMENTS, builtinDevice, deviceName } from "./instruments";
   import { keepInView } from "./menu";
   import { instrumentPickerStore } from "./selection.svelte";
   import { showError, showToast } from "./toast.svelte";
@@ -119,7 +119,7 @@
     if (!t) return;
     if (t.device?.type !== "clap" && t.device?.type !== "sf2" && t.device?.name === name) return close();
     run(
-      api.applyEdit([{ op: "set_device", track: t.id, device: { type: "builtin", name } }], `${t.name} の音源を ${name} に変更`),
+      api.applyEdit([{ op: "set_device", track: t.id, device: builtinDevice(name) }], `${t.name} の音源を ${name} に変更`),
       "音源を変えられませんでした",
     );
   }

@@ -4837,6 +4837,8 @@ impl GlauxServer {
                 }
             }
             crate::compact::remember_starts(&value, &mut clip_starts);
+            // 新しいトラックの減算・ウェーブテーブルは「生きた音」寄りの初期値で始める(指定があればそちら)
+            lively_new_tracks(&mut value);
             // 省略された ID はここで振る(コマンドは決定的なので、apply ではなく作る側 = MCP 層で)
             assign_missing_ids(&mut value, i, &mut assigned);
             let mut cmd: Command = serde_json::from_value(value)
@@ -13496,4 +13498,50 @@ fn clap_param_range(
         })
         .unwrap_or(info.default);
     Some((info.min, info.max, current))
+}
+
+/// 新しく作るトラック(add_track)の初期値: 音源に減算・ウェーブテーブルを指定したトラックは
+/// 揺らぎ 0.2・広がり 0.5 で始める(音源を省いたトラックはそのまま)。指定された値は変えない。既定値は従来と同じ音のまま(既存の曲は変わらない)。
+/// アプリの「トラックを追加」・音源の選択と同じ値(app の instruments.ts の LIVELY_PARAMS)
+pub(crate) fn lively_new_tracks(cmd: &mut Value) {
+    match cmd.get("op").and_then(Value::as_str) {
+        Some("add_track") => {
+            let Some(t) = cmd.get_mut("track") else {
+                return;
+            };
+            let midi = t
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_none_or(|k| k == "midi");
+            if !midi {
+                return;
+            }
+            let Some(dev) = t.get_mut("device").filter(|d| d.is_object()) else {
+                return;
+            };
+            let builtin = dev.get("type").and_then(Value::as_str) == Some("builtin")
+                && matches!(
+                    dev.get("name").and_then(Value::as_str),
+                    Some("subtractive" | "wavetable")
+                );
+            if !builtin {
+                return;
+            }
+            let params = dev
+                .as_object_mut()
+                .map(|o| o.entry("params").or_insert_with(|| json!({})));
+            if let Some(Value::Object(p)) = params {
+                p.entry("analog").or_insert(json!(0.2));
+                p.entry("spread").or_insert(json!(0.5));
+            }
+        }
+        Some("batch") => {
+            if let Some(cmds) = cmd.get_mut("commands").and_then(Value::as_array_mut) {
+                for c in cmds {
+                    lively_new_tracks(c);
+                }
+            }
+        }
+        _ => {}
+    }
 }
