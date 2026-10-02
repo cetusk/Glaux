@@ -201,6 +201,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   vel_cutoff(強く弾くと明るい)、key_track(高い音ほど明るい。0.5)、lfo1/lfo2(target: pitch でビブラート 0.05、cutoff でワウ、\n\
   amp でトレモロ、pan でオートパン、position は wavetable)。プリセット「ワイドなスーパーソー」「アナログベース」「プラック」\n\
   「ビンテージ・パッド」「ビブラートのリード」「動くウェーブテーブル・パッド」が手本。\n\
+- **言葉の指示は set_character**: 「もう少し明るく・太く・遠く・柔らかく」は、どの音色でも共通の大きなつまみ\n\
+  (brightness・body・motion・width・space・attack・grit、0〜100、50 = 作ったときの音)で 1〜2 個動かす。細かいつまみを探す前に使う。\n\
 - fm: エレピ・ベル・マレット・FM ベースなど金属的・打鍵的な音。\n\
 - 音を重ねるなら set_layer(本体 + 3 層。キックにサブ〈key_range 35-36〉、リード・コードに 1 オクターブ下のサイン、\n\
   強く弾いたときだけ鳴る層〈vel_range〉)。意味の取っ手は set_macro(「明るさ」= cutoff と reverb.mix など。値は macro/N)。\n\

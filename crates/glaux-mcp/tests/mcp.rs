@@ -466,6 +466,64 @@ async fn errors_are_reported_as_tool_errors() {
     assert_eq!(ok_json(&r)["entries"], json!([]));
 }
 
+/// 共通の大きなつまみ: 7 つ作る(空間の行き先が無ければリバーブを足す)、明るさを上げると焼き込んだ cutoff が上がる
+#[tokio::test]
+async fn set_character_makes_macros_that_move_the_sound() {
+    let fx = setup().await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [ { "op": "add_track", "track": { "id": "trk_lead01", "name": "Lead", "kind": "midi",
+            "device": { "type": "builtin", "name": "subtractive", "params": { "cutoff": 2000.0 } } } } ], "label": "x" }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "set_character", json!({ "track_id": "trk_lead01" })).await;
+    let v = ok_json(&r);
+    assert_eq!(v["knobs"].as_array().unwrap().len(), 7, "{v}");
+    let track = |fx_v: &Value| -> glaux_core::Track {
+        serde_json::from_value(fx_v["project"]["tracks"][0].clone()).unwrap()
+    };
+    let r = call(&fx, "get_project", json!({})).await;
+    let t = track(&ok_json(&r));
+    assert!(t
+        .effects
+        .iter()
+        .any(|e| e.ui.label.as_deref() == Some("空間")));
+    let cutoff = |t: &glaux_core::Track| {
+        t.with_macros_applied()
+            .device
+            .as_ref()
+            .and_then(|d| d.params.get("cutoff"))
+            .and_then(glaux_core::ParamValue::as_f64)
+            .unwrap()
+    };
+    assert!(
+        (cutoff(&t) - 2000.0).abs() < 50.0,
+        "50 で今の音: {}",
+        cutoff(&t)
+    );
+    let r = call(
+        &fx,
+        "set_character",
+        json!({ "track_id": "trk_lead01", "brightness": 80.0 }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "get_project", json!({})).await;
+    let t = track(&ok_json(&r));
+    assert!(cutoff(&t) > 3000.0, "明るさ 80 で開く: {}", cutoff(&t));
+    assert_eq!(t.macros.len(), 7, "作り直しで増えない");
+    // 範囲外は弾く
+    let r = call(
+        &fx,
+        "set_character",
+        json!({ "track_id": "trk_lead01", "grit": 120.0 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
 /// 音の点検: キックとベースのぶつかり・低域の広がり・中央に重なったユニゾンを指摘し、レシピで直すと消える
 #[tokio::test]
 async fn critique_mix_finds_problems_and_recipes_fix_them() {

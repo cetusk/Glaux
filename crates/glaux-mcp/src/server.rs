@@ -1871,6 +1871,36 @@ pub struct SetMacroParams {
     pub targets: Option<Vec<MacroTargetArg>>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetCharacterParams {
+    /// トラック ID
+    pub track_id: String,
+    /// 明るさ(0〜100。50 = つまみを作ったときの音。上げると明るく抜ける)
+    #[serde(default)]
+    pub brightness: Option<f64>,
+    /// 太さ(上げると低域と厚み)
+    #[serde(default)]
+    pub body: Option<f64>,
+    /// 動き(上げると揺らぎ・うねり)
+    #[serde(default)]
+    pub motion: Option<f64>,
+    /// 広がり(上げると左右に広がる)
+    #[serde(default)]
+    pub width: Option<f64>,
+    /// 空間(上げると響きが増えて遠く。行き先が無ければ控えめのリバーブを足す)
+    #[serde(default)]
+    pub space: Option<f64>,
+    /// アタック(上げると立ち上がりが速く鋭い)
+    #[serde(default)]
+    pub attack: Option<f64>,
+    /// 歪み(上げると倍音が増えてざらつく)
+    #[serde(default)]
+    pub grit: Option<f64>,
+    /// true なら今の音を 50 にしてつまみを作り直す(つまみを作った後に音色を作り変えたとき)
+    #[serde(default)]
+    pub rebuild: Option<bool>,
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct CritiqueMixParams {
     /// 調べる範囲(tick)。省略すると、曲が 16 小節より長ければノートが最も多い 16 小節
@@ -12131,6 +12161,157 @@ impl GlauxServer {
                 })).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>());
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "どの音色にも効く共通の大きなつまみ: 明るさ(brightness)・太さ(body)・動き(motion)・広がり(width)・\
+        空間(space)・アタック(attack)・歪み(grit)を 0〜100 で動かす(50 = つまみを作ったときの音)。「もう少し明るく・遠く」は\
+        brightness 60〜65・space 60 のように 1〜2 個で指示できる(音源の種類ごとに cutoff・filter_env・sub・spread・analog・drive・\
+        attack、エフェクトの eq・reverb・width・distortion などへ割り当てる。CLAP 音源はつまみの名前から推定)。\
+        中身はトラックのマクロ(set_macro と同じ。名前は「明るさ」など)なので、macro/N のオートメーションで時間で動かせる。\
+        値を渡さないと 7 つをすべて 50 で作るだけ。音色を作り変えたら rebuild: true で今の音を 50 に置き直す。1 回の undo で戻る。"
+    )]
+    async fn set_character(
+        &self,
+        params: Parameters<SetCharacterParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("set_character");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let track = project.track(&tid).ok_or("トラックが見つかりません")?;
+        if track.kind == glaux_core::TrackKind::Bus {
+            return Err("バスには音源が無いので、つまみはエフェクトのものだけになります(音のトラックで使ってください)".into());
+        }
+        let wanted: Vec<(&str, f64)> = [
+            ("brightness", p.brightness),
+            ("body", p.body),
+            ("motion", p.motion),
+            ("width", p.width),
+            ("space", p.space),
+            ("attack", p.attack),
+            ("grit", p.grit),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| (k, v)))
+        .collect();
+        for (k, v) in &wanted {
+            if !(0.0..=100.0).contains(v) {
+                return Err(format!("{k} は 0〜100(got: {v})"));
+            }
+        }
+        let name_of = |key: &str| {
+            crate::character::FEELS
+                .iter()
+                .find(|f| f.0 == key)
+                .map(|f| f.1)
+                .unwrap_or_default()
+        };
+        // 作るつまみ: 値を渡したもののうち、まだ無いもの(rebuild なら全部)。何も渡さなければ 7 つ全部
+        let rebuild = p.rebuild.unwrap_or(false);
+        let all: Vec<&str> = crate::character::FEELS.iter().map(|f| f.0).collect();
+        let keys: Vec<&str> = if wanted.is_empty() {
+            all.iter()
+                .copied()
+                .filter(|k| rebuild || !track.macros.iter().any(|m| m.name == name_of(k)))
+                .collect()
+        } else {
+            wanted
+                .iter()
+                .map(|(k, _)| *k)
+                .filter(|k| rebuild || !track.macros.iter().any(|m| m.name == name_of(k)))
+                .collect()
+        };
+        let mut cmds = Vec::new();
+        let mut work = track.clone();
+        // 空間の行き先(リバーブ・畳み込み・ディレイ)が無ければ、控えめのリバーブを足す
+        if keys.contains(&"space")
+            && !work.effects.iter().any(|e| {
+                matches!(&e.source, glaux_core::PluginSource::Builtin { name }
+                    if name == "reverb" || name == "convolution" || name == "delay")
+            })
+        {
+            let e = crate::character::space_reverb();
+            work.effects.push(e.clone());
+            cmds.push(Command::AddEffect {
+                track: tid.clone(),
+                effect: e,
+                index: None,
+            });
+        }
+        // CLAP 音源のつまみ(名前から推定する)
+        let clap: Vec<crate::character::ClapParam> = match work.device.as_ref().map(|d| &d.source) {
+            Some(glaux_core::PluginSource::Clap { plugin_id, .. }) => {
+                glaux_engine::plugins::param_infos(plugin_id)
+                    .map(|infos| {
+                        infos
+                            .iter()
+                            .filter(|i| glaux_engine::plugins::is_public_param(i))
+                            .filter_map(|i| {
+                                let path = glaux_core::ParamPath::device(
+                                    glaux_engine::plugins::param_key(i.id),
+                                );
+                                clap_param_range(&work, &path).map(|(lo, hi, cur)| {
+                                    (i.id, format!("{} {}", i.module, i.name), lo, hi, cur)
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            _ => vec![],
+        };
+        let (mut macros, made, missing) = crate::character::build_macros(&work, &clap, &keys)?;
+        for (k, v) in &wanted {
+            if let Some(m) = macros.iter_mut().find(|m| m.name == name_of(k)) {
+                m.value = (v / 100.0).clamp(0.0, 1.0);
+            }
+        }
+        glaux_core::check_macros(&macros)?;
+        cmds.push(Command::SetTrackProp {
+            id: tid.clone(),
+            prop: glaux_core::TrackProp::Macros(macros.clone()),
+        });
+        let label = if wanted.is_empty() {
+            "音のつまみを作る".to_owned()
+        } else {
+            format!(
+                "音のつまみ: {}",
+                wanted
+                    .iter()
+                    .map(|(k, v)| format!("{} {v:.0}", name_of(k)))
+                    .collect::<Vec<_>>()
+                    .join("・")
+            )
+        };
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["knobs"] = json!(crate::character::FEELS
+            .iter()
+            .filter_map(|(key, name, desc)| {
+                let (i, mc) = macros.iter().enumerate().find(|(_, m)| m.name == *name)?;
+                Some(json!({
+                    "key": key,
+                    "name": name,
+                    "value": (mc.value * 1000.0).round() / 10.0,
+                    "macro": format!("macro/{}", i + 1),
+                    "targets": mc.targets.iter().map(|t| t.target.to_string()).collect::<Vec<_>>(),
+                    "meaning": desc,
+                }))
+            })
+            .collect::<Vec<_>>());
+        v["made"] = json!(made);
+        if !missing.is_empty() {
+            v["missing"] = json!(missing);
+            v["note"] = json!(
+                "missing のつまみは、この音源・エフェクトに動かせる行き先が無いので作っていない"
+            );
+        }
         Ok(JsonText(v))
     }
 

@@ -12,6 +12,7 @@ pub mod actor;
 pub mod assets;
 pub mod bounce;
 pub mod changes;
+pub mod character;
 pub mod clap_presets;
 pub mod compact;
 pub mod export;

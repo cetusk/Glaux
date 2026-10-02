@@ -55,6 +55,7 @@ const LABELS: Record<string, ToolLabel> = {
   critique_arrangement: { short: "編曲の点検", doing: "編曲を点検しています" },
   critique_mix: { short: "音とミックスの点検", doing: "音とミックスを点検しています" },
   apply_recipe: { short: "定番の手順", doing: "定番の手順を組んでいます" },
+  set_character: { short: "音のつまみ", doing: "音のつまみを動かしています" },
   set_song_plan: { short: "曲の計画書", doing: "曲の計画を立てています" },
   write_chords: { short: "コードの伴奏", doing: "コード進行から伴奏を書いています" },
   write_arpeggio: { short: "アルペジオ", doing: "アルペジオを書いています" },
