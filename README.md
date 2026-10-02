@@ -17,7 +17,7 @@
 
 - **AI と共同作曲** — 相手は Claude(Claude Code)か GPT(Codex CLI)。人間と AI の編集は同じ履歴に残り、AI の 1 ターン分をまとめて取り消せます
 - **AI の「耳」** — 音量・帯域・キーとコード・リズム・音色を AI 自身が測り、確かめてから報告します
-- **音源とエフェクト** — 内蔵シンセ 7 種(シンセ・FM・ウェーブテーブル・ドラム・撥弦・サンプラー・SoundFont / SFZ)、エフェクト 17 種(EQ・ダイナミック EQ・共鳴抑制・仮想低音・コンプ・マルチバンドコンプ・トランジェントシェイパー・リミッタ・ステレオの幅・リバーブ・畳み込みリバーブ・アンプなど)、CLAP プラグイン(Surge XT など)
+- **音源とエフェクト** — 内蔵シンセ 10 種(シンセ・FM・4 オペレーター FM・ウェーブテーブル・加算合成・グラニュラー・ドラム・撥弦・サンプラー・SoundFont / SFZ)、エフェクト 17 種(EQ・ダイナミック EQ・共鳴抑制・仮想低音・コンプ・マルチバンドコンプ・トランジェントシェイパー・リミッタ・ステレオの幅・リバーブ・畳み込みリバーブ・アンプなど)、CLAP プラグイン(Surge XT など)
 - **ミキサーとエフェクトのノード表示** — 全トラックを縦の列で並べて音量・パン・送り・メーターを見渡せます。エフェクトはカードを自由に置いて線でつなぎ、分けて混ぜる(原音 + リバーブなど)こともできます。つながっていないカードは鳴らずに取っておけ、よくできた設定は「エフェクトのプリセット」として別の曲でも使えます。右端のモニター列では、左右の広がり(ゴニオメーター・相関)を見て、モノ・サイド・左右入れ替え・ヘッドホン向けのクロスフィードに切り替えて聴けます(書き出しには入りません)
 - **打ち込みと録音** — ピアノロール、ドラムキット、フレット盤、MIDI キーボード、MIDI ファイルの読み書き、録音、鼻歌の譜起こし、パート分離、テンポ追従
 - **AI にやさしい設計** — プロジェクトは読める JSON。すべての編集が同じコマンドを通り、完全に undo できます。MCP サーバーを内蔵
@@ -84,19 +84,19 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 アプリなしで使う stdio 版は `scripts\glaux-mcp.bat <曲のフォルダ>` です(同じ曲をアプリと同時には開けません)。
 
 <details>
-<summary>ツールの一覧(109 個)</summary>
+<summary>ツールの一覧(111 個)</summary>
 
 | 分類 | ツール |
 |---|---|
 | 基本 | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
-| 構成 | `set_song_plan` `suggest_progression` `write_transition` `duplicate_clips` `insert_bars` `delete_bars` `change_meter` `metric_modulation` `hemiola` `shape_automation` `bounce_track` `export_audio` `export_midi` `export_musicxml` |
+| 構成 | `set_song_plan` `suggest_progression` `write_transition` `duplicate_clips` `insert_bars` `delete_bars` `change_meter` `metric_modulation` `hemiola` `shape_automation` `bounce_track` `resample_to_sampler` `export_audio` `export_midi` `export_musicxml` |
 | 分析 | `critique_arrangement` `critique_mix` `critique_melody` `analyze_melody` `analyze_audio` `compare_mix` `master_mix` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_reference` `analyze_sound` `compare_sounds` `match_sound` `refine_by_words` |
 | ノート | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` `transform_notes` `develop_motif` `write_melody` `write_drums` `write_chords` `write_arpeggio` `write_bassline` `apply_groove` `add_ghost_notes` `write_polyrhythm` `write_polymeter` `set_meter_feel` `pitch_gesture` `set_vibrato` `add_ornament` `melody_lead` `note_dynamics` `strum_chord` `drum_rudiment` `articulate_notes` `tremolo` `glissando` `shape_phrase` `write_tihai` `sustain_pedal` `set_note_condition` |
 | 音色 | `design_sound` `mutate_sound` `set_character` `apply_recipe` `modulate` `set_layer` `set_macro` `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | エフェクトのプリセット | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |
 | CLAP | `list_plugins` `list_plugin_presets` `load_plugin_preset` `refine_plugin_params` |
 | 旋律の計画 | `plan_melody` `realize_melody` `revise_melody` `save_plan` `edit_plan` `delete_plan` `get_plan` `plan_log` `undo_plan` |
-| 素材 | `import_sample` `import_ir` `import_audio_clip` `import_midi` `import_musicxml` `transcribe_audio` `separate_audio` |
+| 素材 | `import_sample` `import_wavetable` `import_ir` `import_audio_clip` `import_midi` `import_musicxml` `transcribe_audio` `separate_audio` |
 
 </details>
 

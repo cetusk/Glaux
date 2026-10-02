@@ -17,7 +17,7 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 
 - **Compose with AI** — Work with Claude (Claude Code) or GPT (Codex CLI). Human and AI edits share one history, and you can undo an AI's whole turn at once
 - **The AI can listen** — It measures loudness, frequency balance, key and chords, rhythm and timbre by itself, and checks its work before reporting
-- **Instruments and effects** — 7 built-in instruments (subtractive, FM, wavetable, drums, plucked string, sampler, SoundFont / SFZ), 17 effects (EQ, dynamic EQ, resonance suppressor, virtual bass, compressor, multiband compressor, transient shaper, limiter, stereo width, reverb, convolution reverb, amp, and more), and CLAP plugins (e.g. Surge XT)
+- **Instruments and effects** — 10 built-in instruments (subtractive, FM, 4-operator FM, wavetable, additive, granular, drums, plucked string, sampler, SoundFont / SFZ), 17 effects (EQ, dynamic EQ, resonance suppressor, virtual bass, compressor, multiband compressor, transient shaper, limiter, stereo width, reverb, convolution reverb, amp, and more), and CLAP plugins (e.g. Surge XT)
 - **Mixer and effect node view** — See every track as a vertical strip with volume, pan, sends and meters. Effects are cards you place freely and connect with cables, including splitting and merging (e.g. dry + reverb in parallel). Unconnected cards stay silent but keep their settings, and good settings can be saved as effect presets for other songs. The monitor strip on the right shows the stereo image (goniometer and correlation) and lets you listen in mono, side only, swapped, or with headphone crossfeed (never included in exports)
 - **Write and record** — Piano roll, drum kit, fretboard, MIDI keyboard, MIDI file import/export, audio recording, humming-to-MIDI, stem separation, tempo-following audio clips
 - **Designed for AI** — Projects are readable JSON. Every edit goes through the same command API with full undo. Built-in MCP server
@@ -89,14 +89,14 @@ To use it without the app, run the stdio server: `scripts\glaux-mcp.bat <song fo
 | Group | Tools |
 |---|---|
 | Basics | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
-| Arrangement | `set_song_plan` `suggest_progression` `write_transition` `duplicate_clips` `insert_bars` `delete_bars` `change_meter` `metric_modulation` `hemiola` `shape_automation` `bounce_track` `export_audio` `export_midi` `export_musicxml` |
+| Arrangement | `set_song_plan` `suggest_progression` `write_transition` `duplicate_clips` `insert_bars` `delete_bars` `change_meter` `metric_modulation` `hemiola` `shape_automation` `bounce_track` `resample_to_sampler` `export_audio` `export_midi` `export_musicxml` |
 | Analysis | `critique_arrangement` `critique_melody` `analyze_melody` `analyze_audio` `compare_mix` `master_mix` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_reference` `analyze_sound` `compare_sounds` `match_sound` `refine_by_words` |
 | Notes | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` `transform_notes` `develop_motif` `write_melody` `write_drums` `write_chords` `write_arpeggio` `write_bassline` `apply_groove` `add_ghost_notes` `write_polyrhythm` `write_polymeter` `set_meter_feel` `pitch_gesture` `set_vibrato` `add_ornament` `melody_lead` `note_dynamics` `strum_chord` `drum_rudiment` `articulate_notes` `tremolo` `glissando` `shape_phrase` `write_tihai` `sustain_pedal` `set_note_condition` |
 | Sounds | `modulate` `set_layer` `set_macro` `list_presets` `save_preset` `load_preset` `delete_preset` `find_similar_presets` `list_soundfonts` `set_soundfont_instrument` |
 | Effect presets | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |
 | CLAP | `list_plugins` `list_plugin_presets` `load_plugin_preset` `refine_plugin_params` |
 | Melody plans | `plan_melody` `realize_melody` `revise_melody` `save_plan` `edit_plan` `delete_plan` `get_plan` `plan_log` `undo_plan` |
-| Audio | `import_sample` `import_ir` `import_audio_clip` `import_midi` `import_musicxml` `transcribe_audio` `separate_audio` |
+| Audio | `import_sample` `import_wavetable` `import_ir` `import_audio_clip` `import_midi` `import_musicxml` `transcribe_audio` `separate_audio` |
 
 </details>
 

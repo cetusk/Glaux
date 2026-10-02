@@ -216,6 +216,12 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 動きのある音色は modulate(トラックの LFO。音源・エフェクトのつまみをテンポに合わせて揺らす): ワブルベース = wavetable の\n\
   position か subtractive の cutoff を 1/8〜1/16 の sine、うねるパッド = cutoff を 2/1 の triangle、ランダムに動く音色 = random。\n\
 - wavetable: position を LFO やオートメーションで動かすウォブルベース・うねるパッド・母音のような音・sync のギラついたリード。\n\
+- fm4: 4 オペレーターの FM(8 アルゴリズム)。DX のエレピ(既定)・ベル・ブラス・オルガン・FM ベース。モジュレーターの level が明るさ、\n\
+  その decay を短くすると頭だけ明るい打鍵の音。2 オペレーターの fm で足りなければこちら。\n\
+- additive: 加算合成(部分音 最大 64 本)。tilt で明るさ、odd_even -1 でクラリネット風、formant_db・formant_hz で声のような母音、\n\
+  damping で撥弦・打鍵の減衰、inharmonic でベル。澄んだパッドに向く(部分音が多いほど重い)。\n\
+- granular: 取り込んだ音声から粒を切り出して重ねる。import_sample の instrument: \"granular\" で素材を入れ、position(どこを)・\n\
+  grain_ms(粒の長さ)・density(1 秒の数)・spray_ms・pitch_rand・spread・scan(進める速さ)で、声を止めて伸ばす・きらめきの雲・ゆっくり移るパッド。\n\
 - drum: ドラムキット(GM 配置)。**ドラムのトラックには必ず drum**。55 はリバースクラッシュ(ビルドアップ用)。\n\
   kit: トラップ・ヒップホップは 808(kick_decay を伸ばしてベースの役も)、ハウス・テクノは 909、その他は modern。\n\
   キックの音程(kick_tune)は曲の主音に合わせる。スネアは snare_tune・snare_snappy、ハットの長さは hat_decay。\n\
@@ -229,6 +235,13 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   返り値の controls が音源の調整つまみ(マイクの混ぜ方・スネアの音程や snap)。sfz_cc で上書き。生の録音は EQ・コンプで仕上げる。\n\
   無料の SFZ 音源(packs)は installed=false ならユーザーに「音源を選ぶ →『SoundFont・SFZ』から取得」を案内する。\n\
 - 実録の音を鳴らす: import_sample(WAV の絶対パス。root にサンプルの実音)でトラックの音源を sampler にする。\n\
+  sampler のつまみ: loop(+ loop_start / loop_end / loop_xfade_ms)で押さえている間伸ばす、attack_ms / decay_ms / sustain で形、\n\
+  filter_type・cutoff・vel_cutoff で明るさ、key_track: false でどの鍵盤も元の高さ、slices でチョップ(root から半音ずつ)、\n\
+  orig_bpm にループ素材の元のテンポを入れると曲のテンポに合わせて伸縮。\n\
+- 音声からウェーブテーブル: import_wavetable で声・楽器の 1 音・シンセの音を 2048 点 × N 枚のテーブルにして wavetable の table に\n\
+  (時間変化を position で行き来する。pos_env・LFO で動かすとしゃべる・うねる音。配布形式のテーブル WAV もそのまま読める)。\n\
+- リサンプリング: resample_to_sampler で、作ったトラック(の範囲)をエフェクト込みで描き出してサンプラーの音源にする\n\
+  (フレーズを弾き直す・スライスして並べ替える・ループして伸ばす)。元と同じ大きさは強さ 127 で root を弾いたとき。\n\
 - 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。\n\
 - エフェクトのプリセット: エフェクト 1 つ分(list_effect_presets → load_effect_preset)。エフェクトを足す前に使える設定がないか見る。\n\
   外してある(parked: true)エフェクトは鳴らないが、ユーザーが取っておいたもの。頼まれない限り消さない。",

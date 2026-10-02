@@ -15,6 +15,7 @@
     insertBeforeOutput,
     IR_FROM_FILE,
     irChoices,
+    sampleChoices,
     moveIndexFor,
     processingOrder,
     serialLinks,
@@ -200,13 +201,17 @@
 
   // ---- つまみのグループ(名前で分ける。知らない名前は「その他」) ----
   const GROUPS: [string, string[]][] = [
-    ["音の元", ["waveform", "unison", "detune", "sub", "noise", "table", "position", "ratio", "feedback", "pick", "root", "tune"]],
-    ["広がり・揺らぎ", ["spread", "analog"]],
+    ["音の元", ["waveform", "unison", "detune", "sub", "noise", "table", "position", "ratio", "feedback", "pick", "root", "tune", "algorithm", "sample", "partials"]],
+    ["オペレーター", ["op1_ratio", "op1_level", "op1_attack", "op1_decay", "op1_sustain", "op2_ratio", "op2_level", "op2_attack", "op2_decay", "op2_sustain", "op3_ratio", "op3_level", "op3_attack", "op3_decay", "op3_sustain", "op4_ratio", "op4_level", "op4_attack", "op4_decay", "op4_sustain"]],
+    ["粒", ["grain_ms", "density", "spray_ms", "pitch_rand", "window", "scan"]],
+    ["倍音", ["tilt", "odd_even", "formant_hz", "formant_db", "formant_width", "damping", "inharmonic"]],
+    ["再生(ループ・スライス)", ["loop", "loop_start", "loop_end", "loop_xfade_ms", "slices", "orig_bpm", "stereo"]],
+    ["広がり・揺らぎ", ["spread", "analog", "wobble"]],
     ["変調", ["index", "index_decay", "index_sustain", "pos_env", "pos_decay", "lfo_rate", "lfo_depth"]],
-    ["音色", ["filter_type", "cutoff", "resonance", "drive", "filter_env", "vel_cutoff", "key_track", "tone", "brightness"]],
+    ["音色", ["filter_type", "cutoff", "resonance", "drive", "filter_env", "vel_cutoff", "key_track", "tone", "brightness", "vel_bright"]],
     ["フィルタのエンベロープ", ["filter_attack", "filter_decay", "filter_sustain"]],
     ["LFO", ["lfo1_target", "lfo1_shape", "lfo1_rate", "lfo1_depth", "lfo2_target", "lfo2_shape", "lfo2_rate", "lfo2_depth"]],
-    ["エンベロープ", ["attack", "decay", "sustain", "release", "release_ms"]],
+    ["エンベロープ", ["attack", "decay", "sustain", "release", "attack_ms", "decay_ms", "release_ms"]],
     ["奏法の効き", ["staccato", "accent", "vibrato", "bend", "legato", "portamento", "palm_mute"]],
     ["出力", ["gain_db"]],
   ];
@@ -635,7 +640,7 @@
         {p.current ? "オン" : "オフ"}</label
       >
     {:else}
-      {@const tc = trackChoices(p, project.tracks) ?? irChoices(p, project.assets)}
+      {@const tc = trackChoices(p, project.tracks) ?? irChoices(p, project.assets) ?? sampleChoices(p, project.assets)}
       <select
         value={String(p.current)}
         onchange={(e) => {
@@ -650,6 +655,10 @@
         {#if tc}
           {#each tc as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
         {:else}
+          {#if !p.range.choices.includes(String(p.current))}
+            <!-- 選択肢に無い値(import_wavetable で音声から作ったテーブル = 素材の ID) -->
+            <option value={String(p.current)}>{p.name === "table" && String(p.current).startsWith("sha256:") ? "音声から作ったテーブル" : String(p.current)}</option>
+          {/if}
           {#each p.range.choices as c (c)}
             <option value={c}>{c}</option>
           {/each}

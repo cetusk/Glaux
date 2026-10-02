@@ -284,6 +284,24 @@ pub struct ImportSampleParams {
     /// 省略時 60。音程のない素材(ドラムワンショット等)は 60 のままでよい。
     #[serde(default)]
     pub root: Option<u8>,
+    /// 鳴らす音源: "sampler"(既定。そのまま再生)/ "granular"(粒を切り出して重ねるグラニュラー。
+    /// 素材から持続音・パッド・きらめきを作る。音源がすでに granular ならほかのつまみは残して素材だけ差し替える)
+    #[serde(default)]
+    pub instrument: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ImportWavetableParams {
+    /// 音源を設定するトラック ID(`trk_xxxxxx`)。音源が wavetable ならテーブルだけ差し替え、
+    /// それ以外なら wavetable にする
+    pub track_id: String,
+    /// 音声ファイルの絶対パス(WAV / MP3 / FLAC / OGG / M4A)。声・楽器の 1 音、シンセの音、
+    /// または配布されているウェーブテーブル(1 周期 2048 点を並べた WAV)
+    pub path: String,
+    /// 切り出す枚数(2〜256)。省略時 16。多いほど position の変化が細かい。
+    /// 長さが 2048 の倍数の素材(配布形式のテーブル)はそのまま使うので効かない
+    #[serde(default)]
+    pub frames: Option<u32>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -3988,6 +4006,31 @@ pub struct BounceTrackParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ResampleParams {
+    /// 描き出すトラック ID(`trk_xxxxxx`)。MIDI・音声トラック(バスは不可)。自分のエフェクト・
+    /// オートメーション・センド先のバスの響きまで込みで描き出す(マスターのエフェクトは通さない)
+    pub track_id: String,
+    /// 範囲の頭(tick)。省略時 0。ここがサンプルの頭になる
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// 範囲の終わり(tick)。省略時は鳴り終わり(無音になる所)まで
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+    /// 置き先の MIDI トラック ID。省略時は元のトラックの直後に新しいトラックを作る
+    #[serde(default)]
+    pub target_track_id: Option<String>,
+    /// サンプラーの root(この鍵盤で元の高さ・速さ)。省略時 60。元のフレーズの最初の音に合わせると弾き直しやすい
+    #[serde(default)]
+    pub root: Option<u8>,
+    /// 音の頭で切ってスライスする数(1〜64。root から半音ずつ並ぶ)。省略時はスライスしない
+    #[serde(default)]
+    pub slices: Option<u32>,
+    /// 元のトラックをミュートする。省略時 false(元も残す)
+    #[serde(default)]
+    pub mute_source: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ExportMidiParams {
     /// 書き出す .mid ファイルの絶対パス。省略でプロジェクトの export/ に日時付きの名前
     #[serde(default)]
@@ -6244,7 +6287,9 @@ impl GlauxServer {
         サンプルは内容ハッシュ名で <プロジェクト>/audio/ にコピーされ、ノートは root からの\
         ピッチ変換で再生される(実録の質感が欲しいときに使う)。\
         音程のある素材は root にサンプルの実音を指定すること(例: A3 の単音ギターなら 57)。\
-        取り込み + 音源設定は 1 Batch = 1 回の undo で戻せる。WAV 以外はエラー。"
+        instrument: \"granular\" にすると、素材から粒を切り出して重ねるグラニュラー音源にする(声・環境音から\
+        パッド・きらめき・時間を止めた音。つまみは position・grain_ms・density・spray_ms・scan など)。\
+        取り込み + 音源設定は 1 Batch = 1 回の undo で戻せる。"
     )]
     async fn import_sample(
         &self,
@@ -6269,6 +6314,40 @@ impl GlauxServer {
                 glaux_core::ParamValue::Int(root.min(127) as i64),
             );
         }
+        // ステレオの素材は左右のまま鳴らす(つまみの既定はモノラルに合算 = 以前に取り込んだ音源の音を変えない)
+        if imported.asset.channels >= 2 {
+            params_map.insert("stereo".to_owned(), glaux_core::ParamValue::Bool(true));
+        }
+        let device = match p.instrument.as_deref().unwrap_or("sampler") {
+            "sampler" => glaux_core::Device {
+                source: glaux_core::PluginSource::Sampler {
+                    asset: imported.id.clone(),
+                },
+                params: params_map,
+            },
+            "granular" => {
+                // 音源がすでに granular なら素材(と root)だけ差し替える
+                let mut d = match &track.device {
+                    Some(d) if matches!(&d.source, glaux_core::PluginSource::Builtin { name } if name == "granular") => {
+                        d.clone()
+                    }
+                    _ => glaux_core::Device::builtin("granular"),
+                };
+                if let Some(root) = params_map.get("root") {
+                    d.params.insert("root".to_owned(), root.clone());
+                }
+                d.params.insert(
+                    "sample".to_owned(),
+                    glaux_core::ParamValue::Enum(imported.id.to_string()),
+                );
+                d
+            }
+            other => {
+                return Err(format!(
+                    "instrument は \"sampler\" か \"granular\" です(指定: {other})"
+                ))
+            }
+        };
         let mut cmds = Vec::new();
         if !project.assets.contains_key(&imported.id) {
             cmds.push(Command::AddAsset {
@@ -6278,12 +6357,7 @@ impl GlauxServer {
         }
         cmds.push(Command::SetDevice {
             track: track_id.clone(),
-            device: Some(glaux_core::Device {
-                source: glaux_core::PluginSource::Sampler {
-                    asset: imported.id.clone(),
-                },
-                params: params_map,
-            }),
+            device: Some(device),
         });
         let file_name = std::path::Path::new(&p.path)
             .file_name()
@@ -6298,6 +6372,88 @@ impl GlauxServer {
         v["asset_id"] = json!(imported.id);
         v["sample_rate"] = json!(imported.asset.sample_rate);
         v["frames"] = json!(imported.asset.frames);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "音声ファイルからウェーブテーブルを作り、トラックの音源(内蔵 wavetable)の table にする。\
+        声・楽器の 1 音・シンセの音なら、音の高さを見つけて頭から終わりまで frames 箇所(既定 16)で 1 周期ずつ切り出す\
+        (時間とともに変わる音色を position で行き来できる。position 0 が頭、1 が終わり。pos_env・LFO で動かすと\
+        しゃべる・うねる音)。長さが 2048 の倍数の WAV は配布形式のテーブル(1 周期 2048 点の並び)としてそのまま使う。\
+        どの高さで弾いても折り返さない(倍音を間引いた版を作る)。音源がすでに wavetable なら他のつまみはそのまま。\
+        取り込み + 音源設定は 1 回の undo で戻せる。打楽器・雑音のように高さの無い素材は 2048 点ずつ切るだけ(ざらついた音)。"
+    )]
+    async fn import_wavetable(
+        &self,
+        params: Parameters<ImportWavetableParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("import_wavetable");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err(format!("「{}」は MIDI トラックではありません", track.name));
+        }
+        let dir = self.handle.project_dir().await?;
+        let frames = p.frames.unwrap_or(16).clamp(2, 256) as usize;
+        let path = p.path.clone();
+        let t = tokio::task::spawn_blocking(move || {
+            crate::assets::import_wavetable(
+                std::path::Path::new(&dir),
+                std::path::Path::new(&path),
+                frames,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+
+        // 音源がすでに wavetable なら table だけ差し替える(ほかの音作りは残す)
+        let mut device = match &track.device {
+            Some(d) if matches!(&d.source, glaux_core::PluginSource::Builtin { name } if name == "wavetable") => {
+                d.clone()
+            }
+            _ => {
+                let mut d = glaux_core::Device::builtin("wavetable");
+                // 新しく選んだときと同じ「生きた音」寄りの初期値
+                d.params
+                    .insert("analog".to_owned(), glaux_core::ParamValue::Float(0.2));
+                d.params
+                    .insert("spread".to_owned(), glaux_core::ParamValue::Float(0.5));
+                d
+            }
+        };
+        device.params.insert(
+            "table".to_owned(),
+            glaux_core::ParamValue::Enum(t.imported.id.to_string()),
+        );
+        let mut cmds = Vec::new();
+        if !project.assets.contains_key(&t.imported.id) {
+            cmds.push(Command::AddAsset {
+                id: t.imported.id.clone(),
+                asset: t.imported.asset.clone(),
+            });
+        }
+        cmds.push(Command::SetDevice {
+            track: track_id.clone(),
+            device: Some(device),
+        });
+        let file_name = std::path::Path::new(&p.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "wavetable".to_owned());
+        let label = format!("{} のウェーブテーブルを「{file_name}」から作る", track.name);
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["asset_id"] = json!(t.imported.id);
+        v["frames"] = json!(t.frames);
+        v["as_is"] = json!(t.as_is);
         Ok(JsonText(v))
     }
 
@@ -6814,6 +6970,57 @@ impl GlauxServer {
         v["entry_id"] = json!(entry_id);
         v["new_track"] = json!(b.new_track);
         v["seconds"] = json!((b.seconds * 100.0).round() / 100.0);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "トラック(の範囲)を音声に描き出し、内蔵の sampler の音源にする(リサンプリング)。\
+        作ったフレーズ・和音・効果を鍵盤で弾き直す、slices でチョップして並べ替える、ループ(loop)して伸ばす、\
+        フィルタ・エンベロープで作り変える、といった音作りの入口。自分のエフェクト・オートメーション・センド先の\
+        バスの響き込みで描き出す(マスターは通さない)。置き先を省略すると直後に新しい MIDI トラックを作り、\
+        元のトラックは残す(mute_source で消音)。ステレオの音は左右のまま鳴らす設定になる。\
+        描き出した音は強さ込みなので、元と同じ大きさにするには強さ 127 で root を弾く。1 回の undo で戻る。\
+        作った後は set_param でサンプラーのつまみ(loop・slices・filter_type・attack_ms など)を整える。"
+    )]
+    async fn resample_to_sampler(
+        &self,
+        params: Parameters<ResampleParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("resample_to_sampler");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let target = p
+            .target_track_id
+            .as_deref()
+            .map(glaux_core::TrackId::parse)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let req = crate::bounce::ResampleRequest {
+            start: glaux_core::Tick(p.start_tick.unwrap_or(0)),
+            end: p.end_tick.map(glaux_core::Tick),
+            target,
+            root: p.root.unwrap_or(60).min(127),
+            slices: p.slices.unwrap_or(0).min(64),
+            mute_source: p.mute_source.unwrap_or(false),
+        };
+        let (project, _) = self.handle.get_project_shared().await?;
+        let dir = self.handle.project_dir().await?;
+        let r = tokio::task::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+            crate::bounce::resample_to_sampler(&project, dir, &track_id, &req, &bank)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let command = Command::batch(r.label.clone(), r.commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, r.label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["sampler_track"] = json!(r.track);
+        v["asset_id"] = json!(r.asset);
+        v["seconds"] = json!((r.seconds * 100.0).round() / 100.0);
         Ok(JsonText(v))
     }
 
@@ -13506,7 +13713,7 @@ fn clap_param_range(
 }
 
 /// 新しく作るトラック(add_track)の初期値: 音源に減算・ウェーブテーブルを指定したトラックは
-/// 揺らぎ 0.2・広がり 0.5 で始める(音源を省いたトラックはそのまま)。指定された値は変えない。既定値は従来と同じ音のまま(既存の曲は変わらない)。
+/// 揺らぎ 0.2・広がり 0.5、加算合成は部分音の揺らぎ 0.15 で始める(音源を省いたトラックはそのまま)。指定された値は変えない。既定値は従来と同じ音のまま(既存の曲は変わらない)。
 /// アプリの「トラックを追加」・音源の選択と同じ値(app の instruments.ts の LIVELY_PARAMS)
 pub(crate) fn lively_new_tracks(cmd: &mut Value) {
     match cmd.get("op").and_then(Value::as_str) {
@@ -13524,20 +13731,22 @@ pub(crate) fn lively_new_tracks(cmd: &mut Value) {
             let Some(dev) = t.get_mut("device").filter(|d| d.is_object()) else {
                 return;
             };
-            let builtin = dev.get("type").and_then(Value::as_str) == Some("builtin")
-                && matches!(
-                    dev.get("name").and_then(Value::as_str),
-                    Some("subtractive" | "wavetable")
-                );
-            if !builtin {
+            if dev.get("type").and_then(Value::as_str) != Some("builtin") {
                 return;
             }
+            // 楽器ごとの初期値(加算合成は部分音の揺らぎ)
+            let lively: &[(&str, f64)] = match dev.get("name").and_then(Value::as_str) {
+                Some("subtractive" | "wavetable") => &[("analog", 0.2), ("spread", 0.5)],
+                Some("additive") => &[("wobble", 0.15)],
+                _ => return,
+            };
             let params = dev
                 .as_object_mut()
                 .map(|o| o.entry("params").or_insert_with(|| json!({})));
             if let Some(Value::Object(p)) = params {
-                p.entry("analog").or_insert(json!(0.2));
-                p.entry("spread").or_insert(json!(0.5));
+                for (k, v) in lively {
+                    p.entry(*k).or_insert(json!(v));
+                }
             }
         }
         Some("batch") => {

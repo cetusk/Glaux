@@ -6,6 +6,10 @@ use std::time::Instant;
 
 fn bench(label: &str, device: Device, pitch: u8) {
     let (_, params) = bake_instrument(Some(&device));
+    bench_params(label, params, pitch);
+}
+
+fn bench_params(label: &str, params: glaux_dsp::InstrumentParams, pitch: u8) {
     let sr = 48_000.0;
     let n = 48_000 * 4;
     let freq = 440.0 * 2f32.powf((pitch as f32 - 69.0) / 12.0);
@@ -18,7 +22,7 @@ fn bench(label: &str, device: Device, pitch: u8) {
             if i == n * 3 / 4 {
                 v.note_off();
             }
-            acc += v.next(&params);
+            acc += v.next_stereo(&params).0;
         }
         best = best.min(t.elapsed().as_nanos() as f64 / n as f64);
     }
@@ -63,6 +67,85 @@ fn main() {
         60,
     );
     bench("fm", with("fm", &[]), 60);
+    bench("fm4", with("fm4", &[]), 60);
+    bench(
+        "fm4 直列+feedback",
+        with("fm4", &[("algorithm", 1.0), ("feedback", 0.5)]),
+        60,
+    );
+    bench("additive 16", with("additive", &[("partials", 16.0)]), 48);
+    bench("additive 32", with("additive", &[]), 48);
+    bench("additive 64", with("additive", &[("partials", 64.0)]), 48);
+    bench(
+        "additive 64 全部入り",
+        with(
+            "additive",
+            &[
+                ("partials", 64.0),
+                ("formant_db", 12.0),
+                ("damping", 0.5),
+                ("inharmonic", 0.3),
+                ("wobble", 0.5),
+            ],
+        ),
+        48,
+    );
+    // 素材を使う音源: 2 秒のステレオの合成音
+    let sr = 48_000.0f32;
+    let l: Vec<f32> = (0..96_000)
+        .map(|i| (i as f32 * 220.0 * std::f32::consts::TAU / sr).sin() * 0.5)
+        .collect();
+    let r: Vec<f32> = (0..96_000)
+        .map(|i| (i as f32 * 331.0 * std::f32::consts::TAU / sr).sin() * 0.5)
+        .collect();
+    let data = std::sync::Arc::new(glaux_dsp::SampleData::stereo(&l, &r, sr));
+    let map = |kv: &[(&str, ParamValue)]| {
+        let mut m = glaux_core::ParamMap::new();
+        for (k, v) in kv {
+            m.insert((*k).into(), v.clone());
+        }
+        m
+    };
+    bench_params(
+        "sampler",
+        glaux_dsp::InstrumentParams::Sampler(glaux_dsp::bake_sampler(&map(&[]), data.clone(), sr)),
+        67,
+    );
+    bench_params(
+        "sampler ループ+フィルタ+ステレオ",
+        glaux_dsp::InstrumentParams::Sampler(glaux_dsp::bake_sampler(
+            &map(&[
+                ("loop", ParamValue::Bool(true)),
+                ("loop_start", ParamValue::Float(0.2)),
+                ("loop_end", ParamValue::Float(0.4)),
+                ("filter_type", ParamValue::Enum("lp24".into())),
+                ("cutoff", ParamValue::Float(2000.0)),
+                ("stereo", ParamValue::Bool(true)),
+            ]),
+            data.clone(),
+            sr,
+        )),
+        67,
+    );
+    bench_params(
+        "granular(既定)",
+        glaux_dsp::InstrumentParams::Granular(glaux_dsp::bake_granular(
+            &map(&[]),
+            Some(data.clone()),
+        )),
+        67,
+    );
+    bench_params(
+        "granular 密(200/s・150ms)",
+        glaux_dsp::InstrumentParams::Granular(glaux_dsp::bake_granular(
+            &map(&[
+                ("density", ParamValue::Float(200.0)),
+                ("grain_ms", ParamValue::Float(150.0)),
+            ]),
+            Some(data),
+        )),
+        67,
+    );
     bench("drum kick", with("drum", &[]), 36);
     bench("drum snare", with("drum", &[]), 38);
     bench("drum hat", with("drum", &[]), 42);

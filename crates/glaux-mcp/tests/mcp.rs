@@ -1706,6 +1706,10 @@ async fn import_sample_sets_sampler_device() {
     assert_eq!(device["type"], "sampler");
     assert_eq!(device["asset"], asset_id);
     assert_eq!(device["params"]["root"], 57);
+    assert_eq!(
+        device["params"]["stereo"], true,
+        "ステレオの素材は左右のまま"
+    );
 
     // list_params は sampler のスペックを返す
     let r = call(&fx, "list_params", json!({ "track_id": "trk_gtr001" })).await;
@@ -1722,6 +1726,28 @@ async fn import_sample_sets_sampler_device() {
     let r = call(&fx, "get_project", json!({})).await;
     assert!(ok_json(&r)["project"]["tracks"][0]["device"].is_null());
 
+    // グラニュラーの素材として取り込む
+    let r = call(
+        &fx,
+        "import_sample",
+        json!({ "track_id": "trk_gtr001", "path": wav.to_string_lossy(), "instrument": "granular" }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "get_project", json!({})).await;
+    let device = ok_json(&r)["project"]["tracks"][0]["device"].clone();
+    assert_eq!(device["type"], "builtin");
+    assert_eq!(device["name"], "granular");
+    assert_eq!(device["params"]["sample"], asset_id.as_str());
+    call(&fx, "undo", json!({})).await;
+    let r = call(
+        &fx,
+        "import_sample",
+        json!({ "track_id": "trk_gtr001", "path": wav.to_string_lossy(), "instrument": "piano" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+
     // WAV でないファイルはエラー
     let bad = wav_dir.path().join("bad.wav");
     std::fs::write(&bad, b"not a wav").unwrap();
@@ -1732,6 +1758,47 @@ async fn import_sample_sets_sampler_device() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn import_wavetable_sets_a_table_made_from_audio() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_wt0001", "Wt")).await;
+    // 声の代わり: 150Hz の三角波 0.5 秒
+    let wav_dir = tempfile::tempdir().unwrap();
+    let wav = wav_dir.path().join("voice.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 48_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(&wav, spec).unwrap();
+    for i in 0..24_000 {
+        let ph = (i as f32 * 150.0 / 48_000.0).fract();
+        w.write_sample(((1.0 - 4.0 * (ph - 0.5).abs()) * 10_000.0) as i16)
+            .unwrap();
+    }
+    w.finalize().unwrap();
+    let r = call(
+        &fx,
+        "import_wavetable",
+        json!({ "track_id": "trk_wt0001", "path": wav.to_string_lossy(), "frames": 8 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["frames"], 8);
+    let asset_id = v["asset_id"].as_str().unwrap().to_owned();
+    let r = call(&fx, "get_project", json!({})).await;
+    let p = ok_json(&r)["project"].clone();
+    let device = &p["tracks"][0]["device"];
+    assert_eq!(device["name"], "wavetable");
+    assert_eq!(device["params"]["table"], asset_id.as_str());
+    assert_eq!(p["assets"][&asset_id]["frames"], 8 * 2048);
+    // 1 回の undo で戻る
+    call(&fx, "undo", json!({})).await;
+    let r = call(&fx, "get_project", json!({})).await;
+    assert!(ok_json(&r)["project"]["tracks"][0]["device"].is_null());
 }
 
 #[tokio::test]

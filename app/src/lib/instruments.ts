@@ -8,15 +8,20 @@ export const BUILTIN_INSTRUMENTS: { name: string; icon: IconName; desc: string }
   { name: "pluck", icon: "guitar", desc: "撥弦(ギター・ベース・ハープ)" },
   { name: "fm", icon: "bell", desc: "FM(エレピ・ベル・マレット・FM ベース)" },
   { name: "wavetable", icon: "waves", desc: "ウェーブテーブル(うねるベース・変化するパッド・母音)" },
+  { name: "fm4", icon: "bell", desc: "4 オペレーター FM(DX のエレピ・ベル・ブラス・オルガン)" },
+  { name: "additive", icon: "audio-waveform", desc: "加算合成(澄んだパッド・オルガン・声のような音)" },
+  { name: "granular", icon: "waves", desc: "グラニュラー(取り込んだ音声から粒の雲・パッド。素材は音作りで選ぶ)" },
 ];
 
 type Device = Track["device"];
 
-/// 新しく選んだ内蔵の音源の初期値。減算・ウェーブテーブルは「生きた音」寄り(揺らぎ 0.2・広がり 0.5)で始める
+/// 新しく選んだ内蔵の音源の初期値。減算・ウェーブテーブルは「生きた音」寄り(揺らぎ 0.2・広がり 0.5)、
+/// 加算合成は部分音の揺らぎ 0.15 で始める
 /// (既定値は従来と同じ音のまま。既存の曲は変わらない。MCP の add_track も同じ値を入れる)
 export const LIVELY_PARAMS: Record<string, Record<string, number>> = {
   subtractive: { analog: 0.2, spread: 0.5 },
   wavetable: { analog: 0.2, spread: 0.5 },
+  additive: { wobble: 0.15 },
 };
 
 /** 内蔵の音源の device(新しく選んだとき) */

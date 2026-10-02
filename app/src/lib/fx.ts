@@ -100,6 +100,19 @@ export function irChoices(
   return [{ value: "", label: "なし(素通し)" }, ...items, { value: IR_FROM_FILE, label: "ファイルから読み込む…" }];
 }
 
+/** 選択肢が空の「素材」(グラニュラーの sample)は、プロジェクトの音声素材から選ぶ */
+export function sampleChoices(
+  p: { name: string; range: { kind: string; choices?: readonly string[] } },
+  assets: Record<string, unknown>,
+): { value: string; label: string }[] | null {
+  if (p.name !== "sample" || p.range.kind !== "enum" || (p.range.choices?.length ?? 0) > 0) return null;
+  const items = Object.entries(assets).map(([id, a]) => {
+    const path = (a as { path?: string })?.path ?? id;
+    return { value: id, label: path.split(/[\\/]/).pop() ?? path };
+  });
+  return [{ value: "", label: "なし(無音)" }, ...items];
+}
+
 /** 種類のキー(内蔵エフェクト名。CLAP は "clap") */
 export function fxKind(e: EffectView | ProjectEffect): string {
   if ("type" in e && e.type === "clap") return "clap";

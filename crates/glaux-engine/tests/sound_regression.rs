@@ -60,7 +60,15 @@ fn phrase(device: &str) -> Track {
 /// 決まった曲たち(名前 → 曲)
 fn cases() -> Vec<(String, Project)> {
     let mut out = Vec::new();
-    for dev in ["subtractive", "fm", "wavetable", "drum", "pluck"] {
+    for dev in [
+        "subtractive",
+        "fm",
+        "wavetable",
+        "drum",
+        "pluck",
+        "fm4",
+        "additive",
+    ] {
         let mut p = Project::new(dev);
         p.tracks.push(phrase(dev));
         out.push((format!("instrument/{dev}"), p));

@@ -78,6 +78,73 @@ pub fn import_audio(project_dir: &Path, src: &Path) -> Result<ImportedSample, St
 
 pub use glaux_engine::data::decode_audio;
 
+/// 音声から作ったウェーブテーブルの取り込み結果
+pub struct ImportedTable {
+    pub imported: ImportedSample,
+    /// フレーム数(1 周期 2048 点の枚数)
+    pub frames: usize,
+    /// 素材がすでにウェーブテーブルの形(2048 の倍数)だった
+    pub as_is: bool,
+}
+
+/// 音声ファイルをウェーブテーブル(1 周期 2048 点 × N 枚を並べた浮動小数のモノラル WAV)にして
+/// プロジェクトの audio/ に取り込む。元のファイルは取り込まない(テーブルにしたものだけ)。
+/// 長さが 2048 の倍数の素材はそのまま、それ以外は音の高さを見つけて `frames` 箇所で 1 周期ずつ切り出す
+pub fn import_wavetable(
+    project_dir: &Path,
+    src: &Path,
+    frames: usize,
+) -> Result<ImportedTable, String> {
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let (mono, sample_rate) = if ext == "wav" {
+        let d = glaux_engine::load_wav(src)?;
+        (d.frames, d.sample_rate)
+    } else {
+        let bytes =
+            std::fs::read(src).map_err(|e| format!("読み込めません({}): {e}", src.display()))?;
+        let (samples, channels, sr) = decode_audio(bytes, &ext)?;
+        let ch = channels.max(1) as usize;
+        let mono = samples
+            .chunks(ch)
+            .map(|c| c.iter().sum::<f32>() / ch as f32)
+            .collect();
+        (mono, sr as f32)
+    };
+    let as_is = mono.len() >= 2048
+        && mono.len() % 2048 == 0
+        && mono.len() / 2048 <= glaux_dsp::MAX_USER_FRAMES;
+    let cycles = glaux_dsp::cycles_from_audio(&mono, sample_rate, frames)?;
+    let n = cycles.len() / 2048;
+    // 鳴らせる形か先に確かめる(無音など)
+    glaux_dsp::UserTable::from_cycles(&cycles).ok_or("ウェーブテーブルにできません(無音)")?;
+    let tmp_dir = project_dir.join("cache");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let tmp = tmp_dir.join(format!("wavetable-{}.wav", std::process::id()));
+    {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&tmp, spec).map_err(|e| e.to_string())?;
+        for v in &cycles {
+            w.write_sample(*v).map_err(|e| e.to_string())?;
+        }
+        w.finalize().map_err(|e| e.to_string())?;
+    }
+    let imported = import_wav(project_dir, &tmp);
+    let _ = std::fs::remove_file(&tmp);
+    Ok(ImportedTable {
+        imported: imported?,
+        frames: n,
+        as_is,
+    })
+}
+
 /// 一時ファイルに書いて確定させてから rename する(途中で落ちても最終名に壊れたファイルを残さない)。
 fn write_file_atomic(dest: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
@@ -306,5 +373,36 @@ mod tests {
         let src = tmp.path().join("not_audio.wav");
         std::fs::write(&src, b"hello").unwrap();
         assert!(import_wav(tmp.path(), &src).is_err());
+    }
+
+    #[test]
+    fn audio_file_becomes_a_wavetable_asset() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 220Hz のノコギリ波 1 秒(WAV、44.1kHz)
+        let src = tmp.path().join("take.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for i in 0..44_100 {
+            let ph = (i as f32 * 220.0 / 44_100.0).fract();
+            w.write_sample(((1.0 - 2.0 * ph) * 12_000.0) as i16)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+        let t = import_wavetable(tmp.path(), &src, 8).unwrap();
+        assert_eq!(t.frames, 8);
+        assert!(!t.as_is);
+        assert_eq!(t.imported.asset.frames, 8 * 2048);
+        assert!(tmp.path().join(&t.imported.asset.path).exists());
+        // 取り込んだテーブルをもう一度取り込むと、そのまま(2048 の倍数)
+        let again =
+            import_wavetable(tmp.path(), &tmp.path().join(&t.imported.asset.path), 16).unwrap();
+        assert!(again.as_is);
+        assert_eq!(again.frames, 8);
+        assert_eq!(again.imported.id, t.imported.id, "同じ中身は同じ素材");
     }
 }
