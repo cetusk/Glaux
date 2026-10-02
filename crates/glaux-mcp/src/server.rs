@@ -1872,6 +1872,24 @@ pub struct SetMacroParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct MutateSoundParams {
+    /// トラック ID(内蔵の音源のトラック)
+    pub track_id: String,
+    /// 変種の数(2〜8。既定 5)
+    #[serde(default)]
+    pub count: Option<usize>,
+    /// 揺らす量(0.05〜1。既定 0.3。小さいほど元に近い)
+    #[serde(default)]
+    pub amount: Option<f64>,
+    /// 乱数の種(同じ種・量・数なら同じ変種。既定 1)
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// 当てる変種の番号(1 始まり)。同じ seed・amount・count で作り直して、その変種をトラックに当てる
+    #[serde(default)]
+    pub apply: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DesignSoundParams {
     /// どんな音か(日本語か英語)。例「暗くて太いベース、少し揺れる」「明るくて広いパッド」「リバーブなしの鋭いリード」
     pub text: String,
@@ -12177,6 +12195,90 @@ impl GlauxServer {
             }))
             .collect::<Vec<_>>());
         Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "変種の自動生成: 今の音色(内蔵の音源)のつまみを少しずつ揺らした変種を作り、1 音ずつ描き出して測り、\
+        互いに最も違うものを count 個選んで、違いを言葉(明るい・暗い・立ち上がりが速い・ふわっと・よく伸びる・ざらつく・広い・揺れが多い…)で添える。\
+        人に聴き比べてもらうための道具: 返した words を見せ、気に入った番号を apply(同じ seed・amount・count)で当てる。\
+        当ててからもう一度呼ぶと「これの方向にもっと」の次の世代(amount を下げると近い所を細かく探す)。\
+        当てるのは 1 回の undo で戻る。CLAP 音源は find_similar_presets / refine_plugin_params を使う。"
+    )]
+    async fn mutate_sound(
+        &self,
+        params: Parameters<MutateSoundParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("mutate_sound");
+        let p = params.0;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let track = project
+            .track(&tid)
+            .ok_or("トラックが見つかりません")?
+            .clone();
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err("音源のある MIDI のトラックで使ってください".into());
+        }
+        let count = p.count.unwrap_or(5).clamp(2, 8);
+        let amount = p.amount.unwrap_or(0.3).clamp(0.05, 1.0);
+        let seed = p.seed.unwrap_or(1);
+        if let Some(k) = p.apply {
+            if k == 0 || k > count {
+                return Err(format!("apply は 1〜{count}"));
+            }
+        }
+        let dir = self.handle.project_dir().await?;
+        let (pr, tr) = (project.clone(), track.clone());
+        let (_, variants) = tokio::task::spawn_blocking(move || {
+            let bank = glaux_engine::SampleBank::for_offline(&pr, std::path::Path::new(&dir));
+            crate::variants::generate(&pr, &tr, seed, amount, count, &bank)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let list: Vec<Value> = variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                json!({
+                    "index": i + 1,
+                    "words": v.words,
+                    "changes": v.changes.iter().map(|(k, a, b)| json!({ "param": k, "before": a, "after": b })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let Some(k) = p.apply else {
+            return Ok(JsonText(json!({
+                "track_id": tid.to_string(),
+                "seed": seed,
+                "amount": amount,
+                "count": count,
+                "variants": list,
+                "next": "聴き比べたい番号を apply で当てる(当てた後に試聴し、気に入らなければ undo して別の番号)",
+            })));
+        };
+        let v = variants
+            .get(k - 1)
+            .ok_or_else(|| format!("変種は {} 個だけでした", variants.len()))?;
+        let mut cmds = vec![Command::SetDevice {
+            track: tid.clone(),
+            device: Some(v.device.clone()),
+        }];
+        for (id, name, val) in &v.effect_params {
+            cmds.push(Command::SetParam {
+                track: tid.clone(),
+                path: glaux_core::ParamPath::effect(id.clone(), name),
+                value: glaux_core::ParamValue::Float(*val),
+            });
+        }
+        let label = format!("変種 {k} を当てる({})", v.words.join("・"));
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut out = mutated_json(&m);
+        out["entry_id"] = json!(entry_id);
+        out["applied"] = list[k - 1].clone();
+        Ok(JsonText(out))
     }
 
     #[tool(

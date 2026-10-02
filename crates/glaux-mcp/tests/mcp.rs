@@ -466,6 +466,62 @@ async fn errors_are_reported_as_tool_errors() {
     assert_eq!(ok_json(&r)["entries"], json!([]));
 }
 
+/// 変種の自動生成: 互いに違う変種を言葉付きで返し、番号で当てると同じ変種がトラックに入る
+#[tokio::test]
+async fn mutate_sound_offers_variants_and_applies_one() {
+    let fx = setup().await;
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [ { "op": "add_track", "track": { "id": "trk_lead01", "name": "Lead", "kind": "midi",
+            "device": { "type": "builtin", "name": "subtractive", "params": { "cutoff": 2000.0 } } } } ], "label": "x" }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(
+        &fx,
+        "mutate_sound",
+        json!({ "track_id": "trk_lead01", "count": 3, "seed": 5 }),
+    )
+    .await;
+    let v = ok_json(&r);
+    let vs = v["variants"].as_array().unwrap();
+    assert_eq!(vs.len(), 3, "{v}");
+    assert!(vs
+        .iter()
+        .all(|x| !x["words"].as_array().unwrap().is_empty()));
+    // 2 番を当てる → その変種のつまみの値になる
+    let want = vs[1]["changes"].as_array().unwrap().clone();
+    let r = call(
+        &fx,
+        "mutate_sound",
+        json!({ "track_id": "trk_lead01", "count": 3, "seed": 5, "apply": 2 }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "get_project", json!({})).await;
+    let p = ok_json(&r);
+    let t: glaux_core::Track = serde_json::from_value(p["project"]["tracks"][0].clone()).unwrap();
+    for c in want
+        .iter()
+        .filter(|c| !c["param"].as_str().unwrap().contains('.'))
+    {
+        let k = c["param"].as_str().unwrap();
+        let got = t
+            .device
+            .as_ref()
+            .unwrap()
+            .params
+            .get(k)
+            .and_then(glaux_core::ParamValue::as_f64)
+            .unwrap();
+        assert!(
+            (got - c["after"].as_f64().unwrap()).abs() < 1e-9,
+            "{k}: {got} {c}"
+        );
+    }
+}
+
 /// 文章から音色: 新しいトラックを作る・既存のトラックの音色を置き換える(1 段目だけ。CLAP のモデルが無くても同じ結果)
 #[tokio::test]
 async fn design_sound_turns_words_into_a_patch() {

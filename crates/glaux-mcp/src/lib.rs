@@ -34,4 +34,5 @@ pub mod sound;
 pub mod stems;
 pub mod store;
 pub mod transcribe;
+pub mod variants;
 pub mod words;
