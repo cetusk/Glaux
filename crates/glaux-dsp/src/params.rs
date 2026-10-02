@@ -1013,6 +1013,196 @@ pub static SAMPLER_SPECS: &[ParamSpec] = &[
         },
         description: "楽器自体の音量。トラック音量と別。",
     },
+    ParamSpec {
+        name: "attack_ms",
+        display_name: "アタック",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.5,
+            max: 5000.0,
+            default: 2.0,
+            skew: Some(0.3),
+        },
+        description: "音の立ち上がりの時間。2ms(既定)はサンプルの頭そのままの鋭さ。\
+            数十 ms で頭の当たりが丸くなり、数百 ms 以上でふわっと湧き出す(弦・パッド風、逆再生のような膨らみ)。",
+    },
+    ParamSpec {
+        name: "decay_ms",
+        display_name: "ディケイ",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 5.0,
+            max: 10000.0,
+            default: 1000.0,
+            skew: Some(0.3),
+        },
+        description: "立ち上がりの後、sustain の高さまで下がる時間。sustain が 1 なら効かない。\
+            短くして sustain を下げると、長いサンプルも歯切れのよい短い音になる。",
+    },
+    ParamSpec {
+        name: "sustain",
+        display_name: "サステイン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "押さえている間に保つ音量(1 = サンプルのまま)。0 にすると decay_ms の後に消える(ワンショットを短く切る)。",
+    },
+    ParamSpec {
+        name: "loop",
+        display_name: "ループ",
+        unit: None,
+        range: ParamRange::Bool { default: false },
+        description: "オンにすると、鍵盤を押さえている間 loop_start〜loop_end を繰り返して音を伸ばす\
+            (短いサンプルで長いパッド・持続音。離すとリリースで消える)。オフ(既定)は最後まで 1 回だけ鳴らす。",
+    },
+    ParamSpec {
+        name: "loop_start",
+        display_name: "ループ開始",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "ループの開始位置(サンプルの長さに対する割合)。頭のアタックを避けて 0.2〜0.5 あたりの\
+            安定した所に置くと自然に伸びる。0 だとつなぎ目のクロスフェードが効かない(頭の手前に素材が無いため)。",
+    },
+    ParamSpec {
+        name: "loop_end",
+        display_name: "ループ終わり",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "ループの終わり(割合)。開始との間が短いほど機械的に繰り返す音(短すぎるとブザーのような音程が付く)。\
+            減衰しきる前の所にすると、音量が一定に伸びる。",
+    },
+    ParamSpec {
+        name: "loop_xfade_ms",
+        display_name: "ループのクロスフェード",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1000.0,
+            default: 10.0,
+            skew: Some(0.4),
+        },
+        description: "ループのつなぎ目をなめらかにする時間。0 だとつなぎ目でプツッと鳴ることがある。\
+            雑音・パッドのような素材は 100ms 以上にすると継ぎ目が聞こえなくなる(音程のはっきりした素材は短めに)。",
+    },
+    ParamSpec {
+        name: "filter_type",
+        display_name: "フィルタの種類",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["off", "lp12", "lp24", "hp", "bp", "notch"],
+            default: "off",
+        },
+        description: "サンプルに掛けるフィルタ。off(既定)は素通し。lp12 / lp24 は高域を削ってこもらせる\
+            (24 はより急)、hp は低域を削って細く軽く、bp は中域だけ(電話・ラジオ)、notch はカットオフ付近だけ抜く。",
+    },
+    ParamSpec {
+        name: "cutoff",
+        display_name: "カットオフ",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 20.0,
+            max: 20000.0,
+            default: 20000.0,
+            skew: Some(0.25),
+        },
+        description: "フィルタの効く周波数(filter_type が off 以外のとき)。ローパスなら下げるほど暗く遠く、\
+            ハイパスなら上げるほど細く軽くなる。",
+    },
+    ParamSpec {
+        name: "resonance",
+        display_name: "レゾナンス",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 0.95,
+            default: 0.0,
+            skew: None,
+        },
+        description: "カットオフ付近の強調。上げるとクセのある鼻にかかった音、0.8 以上でピーッと鳴きはじめる。",
+    },
+    ParamSpec {
+        name: "vel_cutoff",
+        display_name: "ベロシティでカットオフ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "弱く弾いた音ほどカットオフを下げる量(1 で最弱の音が 3 オクターブ暗い)。\
+            強く弾くと明るく、弱く弾くと丸い、生楽器らしい強弱になる。",
+    },
+    ParamSpec {
+        name: "filter_env",
+        display_name: "フィルタの包絡",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "音量の包絡(アタック・ディケイ)に合わせてカットオフを開く量(1 で約 +3 オクターブ)。\
+            カットオフを低めにしてこれを上げると、頭だけ明るく後がこもる(プラック風)。",
+    },
+    ParamSpec {
+        name: "stereo",
+        display_name: "ステレオ",
+        unit: None,
+        range: ParamRange::Bool { default: false },
+        description: "ステレオ素材を左右のまま鳴らす(録音の広がり・定位が残る)。オフ(既定)は中央に合算した\
+            モノラル(ほかの音と混ぜやすい・中央にしっかり座る)。モノラル素材では変わらない。",
+    },
+    ParamSpec {
+        name: "key_track",
+        display_name: "キー追従",
+        unit: None,
+        range: ParamRange::Bool { default: true },
+        description: "オン(既定)は鍵盤の高さに合わせて音程(と長さ)が変わる。オフにするとどの鍵盤でも\
+            元の高さ・長さで鳴る(ドラムのワンショット・効果音・声ネタをリズムだけで並べるとき)。",
+    },
+    ParamSpec {
+        name: "slices",
+        display_name: "スライス数",
+        unit: None,
+        range: ParamRange::Int {
+            min: 0,
+            max: 64,
+            default: 0,
+        },
+        description: "0 より大きいと、サンプルを音の頭(アタック)で最大この数に切り、root の鍵盤から半音ずつ\
+            1 つずつ並べる(ドラムループ・フレーズを切り刻んで並べ替える。チョップ)。各スライスは元の高さで、\
+            次の頭まで鳴る。範囲外の鍵盤は鳴らない。頭が少ない素材ではスライスも少なくなる。",
+    },
+    ParamSpec {
+        name: "orig_bpm",
+        display_name: "元のテンポ",
+        unit: Some("BPM"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 300.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "サンプル(ループ・フレーズ)の元のテンポ。0 より大きいと、曲の頭のテンポに合わせて\
+            音程を変えずに伸び縮みさせる(ドラムループを曲の速さに合わせる)。0(既定)は伸縮しない。\
+            曲の途中のテンポの変化には付いていかない。",
+    },
 ];
 
 pub static SF2_SPECS: &[ParamSpec] = &[ParamSpec {
@@ -1341,6 +1531,16 @@ fn get_enum<'a>(map: &'a ParamMap, specs: &[ParamSpec], name: &'a str) -> &'a st
     }
 }
 
+fn get_bool(map: &ParamMap, specs: &[ParamSpec], name: &str) -> bool {
+    if let Some(v) = map.get(name).and_then(ParamValue::as_f64) {
+        return v >= 0.5;
+    }
+    matches!(
+        specs.iter().find(|s| s.name == name).map(|s| &s.range),
+        Some(ParamRange::Bool { default: true })
+    )
+}
+
 fn db_to_amp(db: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
@@ -1393,7 +1593,8 @@ pub fn bake_sf2(
     }
 }
 
-/// サンプラーの焼き込み(波形はエンジン側で読み込んで渡す)。
+/// サンプラーの焼き込み(波形はエンジン側で読み込んで渡す。テンポ追従〈orig_bpm〉の伸縮も
+/// エンジン側で済ませた波形を渡す)。スライスの頭はここで見つける(オーディオスレッドの外)。
 pub fn bake_sampler(
     map: &ParamMap,
     data: std::sync::Arc<crate::sampler::SampleData>,
@@ -1403,12 +1604,44 @@ pub fn bake_sampler(
     let release_ms = get_f32(map, s, "release_ms").clamp(5.0, 2000.0);
     // 高く鳴らすときの縮小版(1 回だけ作る。オーディオスレッドの外のここで)
     data.prepare_mips();
+    let filter = get_enum(map, s, "filter_type");
+    let slices = get_f32(map, s, "slices").round().clamp(0.0, 64.0) as usize;
+    let slices: std::sync::Arc<[u32]> = if slices > 0 {
+        crate::sampler::detect_slices(&data.frames, data.sample_rate, slices).into()
+    } else {
+        std::sync::Arc::from(Vec::new())
+    };
+    let tone = crate::tone::ToneParams {
+        filter_type: crate::tone::FilterType::parse(filter),
+        vel_cutoff: get_f32(map, s, "vel_cutoff").clamp(0.0, 1.0),
+        ..Default::default()
+    };
     crate::sampler::SamplerParams {
-        data,
         root: get_f32(map, s, "root").clamp(0.0, 127.0) as u8,
         gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 12.0)),
         release_coef: 1.0 / (release_ms * 0.001 * sample_rate),
+        attack: get_f32(map, s, "attack_ms").clamp(0.5, 5000.0) * 0.001,
+        decay: get_f32(map, s, "decay_ms").clamp(5.0, 10000.0) * 0.001,
+        sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
+        looping: get_bool(map, s, "loop"),
+        loop_start: get_f32(map, s, "loop_start").clamp(0.0, 1.0),
+        loop_end: get_f32(map, s, "loop_end").clamp(0.0, 1.0),
+        loop_xfade: get_f32(map, s, "loop_xfade_ms").clamp(0.0, 1000.0) * 0.001,
+        filter_on: filter != "off",
+        cutoff: get_f32(map, s, "cutoff").clamp(20.0, 20000.0),
+        resonance: get_f32(map, s, "resonance").clamp(0.0, 0.95),
+        filter_env: get_f32(map, s, "filter_env").clamp(0.0, 1.0),
+        tone,
+        stereo: get_bool(map, s, "stereo"),
+        key_track: get_bool(map, s, "key_track"),
+        slices,
+        data,
     }
+}
+
+/// サンプラーの元のテンポ(0 = 追従しない)。エンジンが伸縮の要否を決めるのに使う
+pub fn sampler_orig_bpm(map: &ParamMap) -> f64 {
+    get_f32(map, SAMPLER_SPECS, "orig_bpm").clamp(0.0, 300.0) as f64
 }
 
 impl crate::InstrumentParams {
@@ -1458,6 +1691,16 @@ impl crate::InstrumentParams {
             },
             I::Sampler(p) => match name {
                 "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 12.0)),
+                "attack_ms" => p.attack = value.clamp(0.5, 5000.0) * 0.001,
+                "decay_ms" => p.decay = value.clamp(5.0, 10000.0) * 0.001,
+                "sustain" => p.sustain = value.clamp(0.0, 1.0),
+                "loop_start" => p.loop_start = value.clamp(0.0, 1.0),
+                "loop_end" => p.loop_end = value.clamp(0.0, 1.0),
+                "loop_xfade_ms" => p.loop_xfade = value.clamp(0.0, 1000.0) * 0.001,
+                "cutoff" => p.cutoff = value.clamp(20.0, 20000.0),
+                "resonance" => p.resonance = value.clamp(0.0, 0.95),
+                "filter_env" => p.filter_env = value.clamp(0.0, 1.0),
+                "vel_cutoff" => p.tone.vel_cutoff = value.clamp(0.0, 1.0),
                 _ => return false,
             },
             I::Sf2(p) => match name {

@@ -151,11 +151,12 @@ impl VoiceState {
     }
 
     /// 1 サンプルを (中央, 左右の差) で生成する(L = 中央 + 差、R = 中央 − 差)。
-    /// 左右に広げられる音源(減算・ウェーブテーブル)以外は差が 0
+    /// 左右に広げられる音源(減算・ウェーブテーブル・ステレオのサンプラー)以外は差が 0
     pub fn next_stereo(&mut self, params: &InstrumentParams) -> (f32, f32) {
         match (self, params) {
             (VoiceState::Subtractive(v), InstrumentParams::Subtractive(p)) => v.next_stereo(p),
             (VoiceState::Wavetable(v), InstrumentParams::Wavetable(p)) => v.next_stereo(p),
+            (VoiceState::Sampler(v), InstrumentParams::Sampler(p)) => v.next_stereo(p),
             (v, p) => (v.next(p), 0.0),
         }
     }

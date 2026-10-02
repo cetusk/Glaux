@@ -614,6 +614,9 @@ pub struct SampleBank {
     /// テンポ追従クリップの伸縮済み波形(クリップ ID → (条件のハッシュ, 波形))。
     /// 波形はクリップ先頭から末尾までで、素材のサンプルレートのまま
     stretched: HashMap<glaux_core::ClipId, (u64, Arc<SampleData>)>,
+    /// テンポ追従するサンプラー(元のテンポ orig_bpm)の伸縮済み波形
+    /// ((素材, 元のテンポ) → (曲のテンポ, 波形))。曲の頭のテンポに合わせる
+    sampler_stretched: HashMap<(AssetId, u64), (u64, Arc<SampleData>)>,
     /// CLAP プラグインの持ち主(トラック・エフェクト)→ (スロット, 世代)。[`crate::plugins`] が決める
     pub plugin_slots: HashMap<crate::plugins::PluginOwner, (u32, u64)>,
     /// 畳み込みリバーブの本体の使い回し(複製には渡さない)
@@ -669,6 +672,7 @@ impl Default for SampleBank {
             sfz: HashMap::new(),
             sfz_waves: Default::default(),
             stretched: HashMap::new(),
+            sampler_stretched: HashMap::new(),
             plugin_slots: HashMap::new(),
             conv: ConvCache::default(),
             evict: true,
@@ -903,6 +907,7 @@ impl SampleBank {
         if self.evict {
             self.stretched.retain(|id, _| used_clips.contains(id));
         }
+        self.sync_sampler_stretch(project);
 
         // SoundFont: プロジェクトが参照しているプリセットのゾーンを構築
         let mut used: std::collections::HashSet<(String, u16, u16)> =
@@ -983,6 +988,60 @@ impl SampleBank {
             }
         }
         self.sync_sfz(project);
+    }
+
+    /// テンポ追従するサンプラー(orig_bpm > 0)の波形を、曲の頭のテンポに合わせて伸縮しておく
+    /// (音程は保つ。素材に合わせて WSOLA かフェーズボコーダ)。テンポが同じものは伸縮しない
+    fn sync_sampler_stretch(&mut self, project: &Project) {
+        let song = project.tempo_map.bpm_at(glaux_core::Tick(0));
+        let mut used = std::collections::HashSet::new();
+        for d in project
+            .tracks
+            .iter()
+            .flat_map(|t| t.device.iter().chain(t.layers.iter().map(|l| &l.device)))
+        {
+            let glaux_core::PluginSource::Sampler { asset } = &d.source else {
+                continue;
+            };
+            let orig = glaux_dsp::sampler_orig_bpm(&d.params);
+            if orig <= 0.0 {
+                continue;
+            }
+            let key = (asset.clone(), orig.to_bits());
+            if (orig - song).abs() < 1e-6 {
+                // 曲のテンポが元のテンポと同じ: 伸縮しない(前のテンポで伸縮したものを使わせない)
+                self.sampler_stretched.remove(&key);
+                continue;
+            }
+            used.insert(key.clone());
+            if self
+                .sampler_stretched
+                .get(&key)
+                .is_some_and(|(b, _)| *b == song.to_bits())
+            {
+                continue;
+            }
+            let Some(src) = self.map.get(asset) else {
+                continue;
+            };
+            let data = stretch_by_tempo(src, orig, song);
+            self.sampler_stretched
+                .insert(key, (song.to_bits(), Arc::new(data)));
+        }
+        if self.evict {
+            self.sampler_stretched.retain(|k, _| used.contains(k));
+        }
+    }
+
+    /// テンポ追従するサンプラーの伸縮済み波形(伸縮が要らない・まだ無いなら None)
+    pub fn get_sampler_stretched(
+        &self,
+        asset: &AssetId,
+        orig_bpm: f64,
+    ) -> Option<&Arc<SampleData>> {
+        self.sampler_stretched
+            .get(&(asset.clone(), orig_bpm.to_bits()))
+            .map(|(_, d)| d)
     }
 
     /// 再生エンジンが使っている bank を登録する([`Self::for_offline`] で使い回す)。
@@ -1108,6 +1167,27 @@ fn render_follow(
     // 素材に合わせて方法を選ぶ(和音・持続音はフェーズボコーダ、打楽器は WSOLA)
     let mut out =
         glaux_dsp::stretch::stretch_channels(&channels, src.sample_rate, out_len, src_pos);
+    let side = (out.len() > 1).then(|| out.remove(1));
+    let frames = out.remove(0);
+    SampleData {
+        frames,
+        sample_rate: src.sample_rate,
+        side,
+        mips: Default::default(),
+    }
+}
+
+/// 素材を、元のテンポ `orig` から曲のテンポ `song` の速さに伸縮する(音程は保つ)
+fn stretch_by_tempo(src: &SampleData, orig: f64, song: f64) -> SampleData {
+    let ratio = song / orig;
+    let out_len = (src.frames.len() as f64 / ratio).round() as usize;
+    let mut channels: Vec<&[f32]> = vec![&src.frames];
+    if let Some(side) = &src.side {
+        channels.push(side);
+    }
+    let mut out = glaux_dsp::stretch::stretch_channels(&channels, src.sample_rate, out_len, |i| {
+        i as f64 * ratio
+    });
     let side = (out.len() > 1).then(|| out.remove(1));
     let frames = out.remove(0);
     SampleData {
@@ -1335,7 +1415,12 @@ fn bake_device_instrument(
 ) -> InstrumentParams {
     match &d.source {
         glaux_core::PluginSource::Sampler { asset } => {
-            if let Some(data) = bank.get(asset) {
+            // テンポ追従するなら伸縮済みの波形(同期で用意してある)
+            let orig = glaux_dsp::sampler_orig_bpm(&d.params);
+            let stretched = (orig > 0.0)
+                .then(|| bank.get_sampler_stretched(asset, orig))
+                .flatten();
+            if let Some(data) = stretched.or_else(|| bank.get(asset)) {
                 return InstrumentParams::Sampler(glaux_dsp::bake_sampler(
                     &d.params,
                     data.clone(),
@@ -3769,6 +3854,59 @@ mod tests {
         ));
         project.tracks.push(track);
         project
+    }
+
+    #[test]
+    fn sampler_follows_the_song_tempo() {
+        use glaux_core::{Device, ParamValue, PluginSource};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let mut project = audio_clip_project(dir, 0, 1920);
+        let asset = project.assets.keys().next().unwrap().clone();
+        // 音声クリップは外して、同じ素材(1 秒)をサンプラーの音源にする。元のテンポは曲の倍
+        project.tracks[0].clips.clear();
+        let song = project.tempo_map.bpm_at(Tick(0));
+        let mut device = Device {
+            source: PluginSource::Sampler {
+                asset: asset.clone(),
+            },
+            params: Default::default(),
+        };
+        device
+            .params
+            .insert("orig_bpm".into(), ParamValue::Float(song * 2.0));
+        project.tracks[0].device = Some(device);
+        let mut bank = SampleBank::load(&project, dir);
+        let st = bank
+            .get_sampler_stretched(&asset, song * 2.0)
+            .expect("伸縮してある")
+            .clone();
+        assert!(
+            (st.frames.len() as i64 - 96_000).abs() < 50,
+            "曲が元の半分の速さなら倍の長さ: {}",
+            st.frames.len()
+        );
+        let InstrumentParams::Sampler(p) =
+            bake_track_instrument(&project.tracks[0], &bank, 48_000.0)
+        else {
+            panic!("サンプラーのはず");
+        };
+        assert!(Arc::ptr_eq(&p.data, &st), "伸縮した波形で鳴らす");
+        // 元のテンポを曲と同じにすると伸縮しない(元の波形)
+        project.tracks[0]
+            .device
+            .as_mut()
+            .unwrap()
+            .params
+            .insert("orig_bpm".into(), ParamValue::Float(song));
+        bank.sync(&project, dir);
+        assert!(bank.get_sampler_stretched(&asset, song).is_none());
+        let InstrumentParams::Sampler(p) =
+            bake_track_instrument(&project.tracks[0], &bank, 48_000.0)
+        else {
+            panic!("サンプラーのはず");
+        };
+        assert_eq!(p.data.frames.len(), 48_000);
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //! - `subtractive`: 減算方式シンセ(PolyBLEP オシレータ + SVF ローパス + ADSR)
 //! - `drum`: ドラムシンセ(MIDI ノート番号でキック/スネア/ハイハット等を弾き分け)
 //! - `pluck`: 撥弦の物理モデル(Karplus-Strong。ギター/ベース/ハープ)
-//! - `sampler`: 単一サンプル再生(ワンショット。実録の質感)
+//! - `sampler`: 単一サンプル再生(実録の質感。ループ・ADSR・フィルタ・ステレオ・スライス・テンポ追従)
 //! - `sf2`: マルチサンプラー(SoundFont のゾーンを再生。GM 音源一式が鳴る)
 //! - `fm`: FM シンセ(2 オペレーター + フィードバック。エレピ・ベル)
 //! - `wavetable`: ウェーブテーブルシンセ(波形の並びを行き来して音色を動かす)
@@ -52,10 +52,10 @@ pub use fm::{FmParams, FmVoice};
 pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, ZoneMod, ZonePlay, MAX_LAYERS};
 pub use params::{
     articulations_for, bake_instrument, bake_sampler, bake_sf2, instrument_catalog,
-    instrument_params, ArticulationInfo, InstrumentInfo,
+    instrument_params, sampler_orig_bpm, ArticulationInfo, InstrumentInfo,
 };
 pub use pluck::PluckParams;
-pub use sampler::{hermite, SampleData, SamplerParams, SamplerVoice};
+pub use sampler::{detect_slices, hermite, Mips, SampleData, SamplerParams, SamplerVoice};
 pub use subtractive::{NoiseColor, SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
 pub use wave::Wave;

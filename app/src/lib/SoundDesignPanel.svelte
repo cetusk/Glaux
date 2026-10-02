@@ -201,12 +201,13 @@
   // ---- つまみのグループ(名前で分ける。知らない名前は「その他」) ----
   const GROUPS: [string, string[]][] = [
     ["音の元", ["waveform", "unison", "detune", "sub", "noise", "table", "position", "ratio", "feedback", "pick", "root", "tune"]],
+    ["再生(ループ・スライス)", ["loop", "loop_start", "loop_end", "loop_xfade_ms", "slices", "orig_bpm", "stereo"]],
     ["広がり・揺らぎ", ["spread", "analog"]],
     ["変調", ["index", "index_decay", "index_sustain", "pos_env", "pos_decay", "lfo_rate", "lfo_depth"]],
     ["音色", ["filter_type", "cutoff", "resonance", "drive", "filter_env", "vel_cutoff", "key_track", "tone", "brightness"]],
     ["フィルタのエンベロープ", ["filter_attack", "filter_decay", "filter_sustain"]],
     ["LFO", ["lfo1_target", "lfo1_shape", "lfo1_rate", "lfo1_depth", "lfo2_target", "lfo2_shape", "lfo2_rate", "lfo2_depth"]],
-    ["エンベロープ", ["attack", "decay", "sustain", "release", "release_ms"]],
+    ["エンベロープ", ["attack", "decay", "sustain", "release", "attack_ms", "decay_ms", "release_ms"]],
     ["奏法の効き", ["staccato", "accent", "vibrato", "bend", "legato", "portamento", "palm_mute"]],
     ["出力", ["gain_db"]],
   ];
