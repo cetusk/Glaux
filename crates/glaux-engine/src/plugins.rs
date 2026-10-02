@@ -521,7 +521,8 @@ fn host_thread(
     slots: Arc<[PluginSlot; MAX_PLUGINS]>,
     events: Arc<Mutex<Vec<(u64, PluginEvent)>>>,
 ) {
-    glaux_clap::mark_main_thread();
+    // このスレッドはプラグインのイベントループ(タイマー・fd・画面)をこまめに回す
+    glaux_clap::mark_event_loop_thread();
     let mut live: Vec<Live> = Vec::new();
     let retire = |live: &mut Vec<Live>, p: Box<Processor>| {
         if let Some(i) = live.iter().position(|l| l.gen == p.gen) {
@@ -1199,6 +1200,15 @@ impl OfflinePlugins {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 実プラグインを使うテストは 1 つずつ回す(テストごとにプラグインのスレッドを立てるので、並べると
+    /// JUCE 製など「メッセージのスレッドはプロセスに 1 つ」のプラグインが取り合いになる。探し場所の
+    /// 環境変数 GLAUX_CLAP_PATH もテストごとに書き換える)
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        glaux_clap::set_event_loop_support(false);
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
     use crate::data::{build_playback_data, SampleBank};
     use crate::render::{Renderer, Shared};
     use glaux_core::{Clip, ClipContent, ClipId, Device, Note, NoteId, Tick, Track, TrackKind};
@@ -1253,6 +1263,7 @@ mod tests {
 
     #[test]
     fn offline_render_plays_the_plugin() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1276,6 +1287,7 @@ mod tests {
 
     #[test]
     fn realtime_path_receives_processor_plays_and_releases() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1364,6 +1376,7 @@ mod tests {
 
     #[test]
     fn project_param_override_reaches_plugin_and_live_values() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1426,6 +1439,7 @@ mod tests {
 
     #[test]
     fn automation_lane_moves_plugin_param_in_export() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1467,6 +1481,7 @@ mod tests {
 
     #[test]
     fn pitch_curve_bends_plugin_note() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1511,6 +1526,7 @@ mod tests {
 
     #[test]
     fn bend_and_vibrato_articulations_reach_plugin() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1566,6 +1582,7 @@ mod tests {
     /// レガート・ポルタメントで、先に離した音のプラグイン側の余韻(長いリリース)が choke で切れる(`GLAUX_TEST_CLAP`)。
     #[test]
     fn portamento_chokes_plugin_release_tails() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1629,6 +1646,7 @@ mod tests {
     /// 2 チャンネル目以降のベンドは 1 音ごとの音程(Tuning)で送る
     #[test]
     fn per_note_modulation_and_mpe_reach_the_plugin() {
+        let _serial = serial();
         use glaux_clap::NoteMsg;
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
@@ -1730,6 +1748,7 @@ mod tests {
 
     #[test]
     fn live_pitch_bend_reaches_plugin() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1782,6 +1801,7 @@ mod tests {
 
     #[test]
     fn live_sustain_pedal_holds_plugin_notes() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1834,6 +1854,7 @@ mod tests {
 
     #[test]
     fn renders_presets_one_note_each() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -1872,6 +1893,7 @@ mod tests {
     /// トラック・マスターに挿して書き出すと、短い音の後ろにこだまが残る。
     #[test]
     fn clap_effect_on_track_and_master_is_rendered() {
+        let _serial = serial();
         use glaux_core::{Effect, FxId};
         let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_FX").map(PathBuf::from) else {
             eprintln!("GLAUX_TEST_CLAP_FX が未設定のためスキップ");
@@ -1958,6 +1980,7 @@ mod tests {
     /// (処理を呼ばれないと画面を開くときに固まるプラグインがある)。
     #[test]
     fn silent_and_bypassed_clap_effects_keep_processing() {
+        let _serial = serial();
         use glaux_core::{Effect, FxId};
         let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_FX").map(PathBuf::from) else {
             eprintln!("GLAUX_TEST_CLAP_FX が未設定のためスキップ");
@@ -2032,6 +2055,7 @@ mod tests {
     /// プリセットのつまみを変えた音を目標にし、元のつまみから合わせると近づく(`GLAUX_TEST_CLAP`)。
     #[test]
     fn plugin_params_fit_moves_toward_the_target() {
+        let _serial = serial();
         let Some(id) = setup() else {
             eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
             return;
@@ -2097,6 +2121,7 @@ mod tests {
     /// 最初の process で再起動を頼む)で確かめる
     #[test]
     fn restart_request_reactivates_and_updates_delay_compensation() {
+        let _serial = serial();
         use glaux_core::{Effect, FxId};
         let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_SLEEPY").map(PathBuf::from) else {
             eprintln!("GLAUX_TEST_CLAP_SLEEPY が未設定のためスキップ");
@@ -2152,6 +2177,7 @@ mod tests {
     /// ずれだけを、受けないつまみ(8)は値として送る。外したら変調は 0 に、値は元に戻す
     #[test]
     fn clap_modulators_use_param_mod_when_the_plugin_accepts_it() {
+        let _serial = serial();
         use glaux_clap::NoteMsg;
         use glaux_core::{Effect, FxId, LfoShape, Modulator, ParamPath};
         let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_SLEEPY").map(PathBuf::from) else {
@@ -2263,6 +2289,7 @@ mod tests {
 
     #[test]
     fn plugin_delay_compensation_aligns_other_tracks() {
+        let _serial = serial();
         use glaux_core::{Effect, FxId};
         let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_FX").map(PathBuf::from) else {
             eprintln!("GLAUX_TEST_CLAP_FX が未設定のためスキップ");

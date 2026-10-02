@@ -20,7 +20,9 @@ mod window;
 #[cfg(target_os = "linux")]
 mod window_x11;
 
-pub use host::{mark_audio_thread, mark_main_thread};
+pub use host::{
+    mark_audio_thread, mark_event_loop_thread, mark_main_thread, set_event_loop_support,
+};
 pub use plugin::{
     ClapPlugin, ClapProcessor, GuiEvent, HostTransport, NoteMsg, ParamInfo, MAX_EVENTS, MAX_FRAMES,
 };

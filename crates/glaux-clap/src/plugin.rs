@@ -195,7 +195,10 @@ impl ClapPlugin {
         let entry = crate::load_entry(path)?;
         let c_id = std::ffi::CString::new(id).map_err(|e| ClapError::Load(e.to_string()))?;
         let instance = PluginInstance::<GlauxHost>::new(
-            |_| HostShared::default(),
+            |_| HostShared {
+                event_loop: crate::host::runs_event_loop(),
+                ..Default::default()
+            },
             |_| HostMain {
                 _shared: std::marker::PhantomData,
                 dirty: Cell::new(false),

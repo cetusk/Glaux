@@ -28,6 +28,36 @@ use std::sync::OnceLock;
 thread_local! {
     static IS_MAIN: Cell<bool> = const { Cell::new(false) };
     static IS_AUDIO: Cell<bool> = const { Cell::new(false) };
+    static RUNS_EVENT_LOOP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// イベントループのスレッドを使うか(テストでは切る)と、もう担うスレッドが決まったか
+static EVENT_LOOP_ENABLED: AtomicBool = AtomicBool::new(true);
+static EVENT_LOOP_CLAIMED: AtomicBool = AtomicBool::new(false);
+
+/// このスレッドがプラグインのイベントループ(タイマー・fd の見張り)をこまめに回すことを知らせる
+/// (エンジンのプラグインのスレッド)。ここで作るインスタンスにだけ timer-support / posix-fd-support を出す。
+/// 回さないスレッド(書き出し用など)で出すと、それに頼るプラグイン(JUCE 製など)の処理が進まず止まる。
+/// JUCE 製などはメッセージのスレッドをプロセスに 1 つしか持てないので、担うのはプロセスで最初の 1 つのスレッドだけ
+/// (ほかのスレッドのインスタンスは、出さずにプラグイン自身のスレッドで動いてもらう)
+pub fn mark_event_loop_thread() {
+    mark_main_thread();
+    if EVENT_LOOP_ENABLED.load(Ordering::Acquire)
+        && !EVENT_LOOP_CLAIMED.swap(true, Ordering::AcqRel)
+    {
+        RUNS_EVENT_LOOP.with(|c| c.set(true));
+    }
+}
+
+/// イベントループのスレッドを使わないようにする(テスト用: テストごとにプラグインのスレッドを立てるので、
+/// 終わったテストのスレッドがメッセージのスレッドのまま残ると、後のテストのプラグインが止まる)
+pub fn set_event_loop_support(enabled: bool) {
+    EVENT_LOOP_ENABLED.store(enabled, Ordering::Release);
+}
+
+/// このスレッドでイベントループを回すか
+pub(crate) fn runs_event_loop() -> bool {
+    RUNS_EVENT_LOOP.with(|c| c.get())
 }
 
 /// このスレッドをプラグインの「メインスレッド」として扱う(生成・状態の保存などを呼ぶスレッド)。
@@ -47,7 +77,7 @@ impl HostHandlers for GlauxHost {
     type MainThread<'a> = HostMain<'a>;
     type AudioProcessor<'a> = ();
 
-    fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
+    fn declare_extensions(builder: &mut HostExtensions<Self>, shared: &Self::Shared<'_>) {
         builder
             .register::<clack_extensions::log::HostLog>()
             .register::<clack_extensions::thread_check::HostThreadCheck>()
@@ -57,17 +87,22 @@ impl HostHandlers for GlauxHost {
             .register::<clack_extensions::params::HostParams>()
             .register::<clack_extensions::latency::HostLatency>()
             .register::<clack_extensions::gui::HostGui>()
-            .register::<clack_extensions::preset_discovery::HostPresetLoad>()
-            .register::<clack_extensions::timer::HostTimer>();
-        // Linux の画面(JUCE 製など)は、ホストのイベントループに fd とタイマーを預けて動く
-        #[cfg(unix)]
-        builder.register::<clack_extensions::posix_fd::HostPosixFd>();
+            .register::<clack_extensions::preset_discovery::HostPresetLoad>();
+        // Linux の画面(JUCE 製など)は、ホストのイベントループに fd とタイマーを預けて動く。
+        // ループを回すスレッドで作るインスタンスにだけ出す([`mark_event_loop_thread`])
+        if shared.event_loop {
+            builder.register::<clack_extensions::timer::HostTimer>();
+            #[cfg(unix)]
+            builder.register::<clack_extensions::posix_fd::HostPosixFd>();
+        }
     }
 }
 
 /// どのスレッドからも触れるホスト側の状態(プラグインからの要求フラグと、プラグインの拡張)。
 #[derive(Default)]
 pub struct HostShared {
+    /// timer-support / posix-fd-support を出すか(作ったスレッドがイベントループを回すか)
+    pub event_loop: bool,
     pub callback_requested: AtomicBool,
     pub restart_requested: AtomicBool,
     pub process_requested: AtomicBool,

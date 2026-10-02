@@ -5,7 +5,7 @@ fn main() {
     let path = std::path::PathBuf::from(&args[1]);
     let out = &args[2];
     let secs: f64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3.0);
-    glaux_clap::mark_main_thread();
+    glaux_clap::mark_event_loop_thread();
     let id = glaux_clap::describe(&path).expect("記述子を読める")[0]
         .id
         .clone();
