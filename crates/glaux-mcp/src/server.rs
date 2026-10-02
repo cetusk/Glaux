@@ -1992,6 +1992,9 @@ pub struct ModulateParams {
     /// 始まりの位相 0〜1(0.25 で頂点から)。
     #[serde(default)]
     pub phase: Option<f32>,
+    /// true で音ごとに頭から揺らす(ポリフォニック。CLAP 音源で 1 音ごとの変調を受けるつまみだけ。ほかはトラック全体)。
+    #[serde(default)]
+    pub per_note: Option<bool>,
     /// true で外す。
     #[serde(default)]
     pub remove: Option<bool>,
@@ -12649,7 +12652,8 @@ impl GlauxServer {
         (\"cutoff\"・\"auto_filter.cutoff\"・\"fx/<id>/mix\"。CLAP のつまみも \"device/clap:<id>\"・\"fx/<id>/clap:<id>\" で。\
         範囲と今の値はプラグインから読む)、sync でテンポに合わせた周期(\"1/4\"・\"1/8d\"・\"1/1\")か rate_hz、\
         shape(sine / triangle / square / saw_up / saw_down / random)、depth(つまみの単位で ±)。同じつまみのオートメーションが\
-        あればその値を中心に揺らす。ワブルベース = wavetable の position か subtractive の cutoff を 1/8 の sine、うねるパッド = cutoff を\
+        あればその値を中心に揺らす。CLAP のつまみは、プラグインが受けるなら値を書き換えない変調(画面のつまみは動かない)で送り、\
+        per_note: true なら音ごとに頭から揺らす(受けるつまみだけ)。ワブルベース = wavetable の position か subtractive の cutoff を 1/8 の sine、うねるパッド = cutoff を\
         2/1 の triangle、ランダムに動くアルペジオ = random。1 トラック 8 個まで。同じつまみは置き換える。remove で外す。1 回の undo で戻る。"
     )]
     async fn modulate(
@@ -12765,6 +12769,7 @@ impl GlauxServer {
                 phase: p.phase.unwrap_or(0.0),
                 range: clap_info.map(|(lo, hi, _)| (lo, hi)),
                 center: clap_info.map(|(_, _, c)| c),
+                per_note: p.per_note.unwrap_or(false),
             };
             mods.retain(|x| x.target != path);
             mods.push(m);

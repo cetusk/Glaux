@@ -158,6 +158,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                                     phase: 0.0,
                                     range: None,
                                     center: None,
+                                    per_note: rng.gen_bool(0.25),
                                 })
                                 .collect(),
                         ),

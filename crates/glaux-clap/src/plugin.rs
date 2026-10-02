@@ -13,7 +13,7 @@ use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfoBuffer};
 use clack_extensions::note_ports::{NoteDialect, NotePortInfoBuffer};
 use clack_host::events::event_types::{
     MidiEvent, NoteChokeEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent,
-    ParamValueEvent, TransportEvent, TransportFlags,
+    ParamModEvent, ParamValueEvent, TransportEvent, TransportFlags,
 };
 use clack_host::events::Match;
 use clack_host::events::{EventFlags, EventHeader};
@@ -49,6 +49,15 @@ pub enum NoteMsg {
         time: u32,
         id: u32,
         value: f64,
+    },
+    /// パラメータの変調(値に足すずれ。プラグイン固有の単位)。値そのものは変えない(画面のつまみは動かない)。
+    /// `note` があればその 1 音だけ(鍵盤とノートの ID)。変調できないパラメータには送らない
+    /// ([`ClapProcessor::can_modulate`] で確かめてから積む)
+    ParamMod {
+        time: u32,
+        id: u32,
+        amount: f64,
+        note: Option<(u8, u32)>,
     },
     /// MIDI メッセージ(サステインペダル・ピッチベンド等)。MIDI を受けないプラグインには送らない
     Midi {
@@ -92,6 +101,7 @@ impl NoteMsg {
             | NoteMsg::Choke { time, .. }
             | NoteMsg::AllOff { time }
             | NoteMsg::Param { time, .. }
+            | NoteMsg::ParamMod { time, .. }
             | NoteMsg::Midi { time, .. }
             | NoteMsg::Tuning { time, .. }
             | NoteMsg::Volume { time, .. }
@@ -105,7 +115,12 @@ impl NoteMsg {
             NoteMsg::Off { .. } | NoteMsg::Choke { .. } | NoteMsg::AllOff { .. } => 0,
             NoteMsg::Param { .. } | NoteMsg::Midi { .. } => 1,
             NoteMsg::On { .. } => 2,
-            NoteMsg::Tuning { .. } | NoteMsg::Volume { .. } | NoteMsg::Brightness { .. } => 3,
+            // 1 音ごとの変調はノートが鳴ってから(ノートの ID が要る)
+            NoteMsg::ParamMod { note: None, .. } => 1,
+            NoteMsg::ParamMod { note: Some(_), .. }
+            | NoteMsg::Tuning { .. }
+            | NoteMsg::Volume { .. }
+            | NoteMsg::Brightness { .. } => 3,
         }
     }
 }
@@ -123,6 +138,9 @@ pub struct ParamInfo {
     /// 整数値だけを取る(選択肢・スイッチ)
     pub stepped: bool,
     pub automatable: bool,
+    /// 非破壊の変調(ParamMod)を受ける / 1 音ごと(ノートの ID)の変調も受ける
+    pub modulatable: bool,
+    pub per_note: bool,
     /// 画面にも出ない内部用 / 読み取り専用
     pub hidden: bool,
     pub readonly: bool,
@@ -214,8 +232,20 @@ impl ClapPlugin {
             .access_shared_handler(|h| h.latency.get().copied().flatten())
             .map(|ext| ext.get(&self.instance.plugin_handle()))
             .unwrap_or(0);
+        // 変調できるパラメータ(オーディオスレッドで二分探索する。ここで確保して渡す)
+        let infos = self.param_infos();
+        let mut modulatable: Vec<u32> = infos
+            .iter()
+            .filter(|i| i.modulatable)
+            .map(|i| i.id)
+            .collect();
+        let mut per_note: Vec<u32> = infos.iter().filter(|i| i.per_note).map(|i| i.id).collect();
+        modulatable.sort_unstable();
+        per_note.sort_unstable();
         Ok(ClapProcessor {
             latency,
+            modulatable,
+            per_note,
             processor: Some(processor.into()),
             in_ports: AudioPorts::with_capacity(total(&inputs), inputs.len()),
             out_ports: AudioPorts::with_capacity(total(&outputs), outputs.len()),
@@ -340,6 +370,10 @@ impl ClapPlugin {
                     default: info.default_value,
                     stepped: info.flags.contains(ParamInfoFlags::IS_STEPPED),
                     automatable: info.flags.contains(ParamInfoFlags::IS_AUTOMATABLE),
+                    modulatable: info.flags.contains(ParamInfoFlags::IS_MODULATABLE),
+                    per_note: info
+                        .flags
+                        .contains(ParamInfoFlags::IS_MODULATABLE_PER_NOTE_ID),
                     hidden: info.flags.contains(ParamInfoFlags::IS_HIDDEN),
                     readonly: info.flags.contains(ParamInfoFlags::IS_READONLY),
                 })
@@ -671,6 +705,9 @@ pub struct ClapProcessor {
     transport: Option<HostTransport>,
     /// プラグインが申告した処理の遅延(サンプル)
     latency: u32,
+    /// 非破壊の変調を受けるパラメータ / 1 音ごとの変調も受けるパラメータ(昇順)
+    modulatable: Vec<u32>,
+    per_note: Vec<u32>,
     /// 処理に失敗した(以後は無音を返す)
     failed: bool,
     /// プラグインが「眠ってよい」と返した。入力が無音でイベントも無い間は process を呼ばない(CPU の節約)
@@ -782,6 +819,25 @@ impl ClapProcessor {
             if let Some(cid) = ClapId::from_raw(id) {
                 self.events
                     .push(&ParamValueEvent::new(t, cid, Pckn::match_all(), value));
+            }
+            return;
+        }
+        if let NoteMsg::ParamMod {
+            id, amount, note, ..
+        } = msg
+        {
+            let Some(cid) = ClapId::from_raw(id) else {
+                return;
+            };
+            let pckn = match note {
+                Some((key, note_id)) if self.can_modulate_per_note(id) => {
+                    Pckn::new(0u16, 0u16, key as u16, Match::Specific(note_id))
+                }
+                Some(_) => return,
+                None => Pckn::match_all(),
+            };
+            if self.can_modulate(id) {
+                self.events.push(&ParamModEvent::new(t, cid, pckn, amount));
             }
             return;
         }
@@ -992,6 +1048,16 @@ impl ClapProcessor {
     /// プラグインが申告した処理の遅延(サンプル。起動時に取得)。
     pub fn latency(&self) -> u32 {
         self.latency
+    }
+
+    /// そのパラメータが非破壊の変調(ParamMod)を受けるか
+    pub fn can_modulate(&self, id: u32) -> bool {
+        self.modulatable.binary_search(&id).is_ok()
+    }
+
+    /// そのパラメータが 1 音ごと(ノートの ID)の変調を受けるか
+    pub fn can_modulate_per_note(&self, id: u32) -> bool {
+        self.per_note.binary_search(&id).is_ok()
     }
 
     /// テスト用: 遅延の申告を差し替える。

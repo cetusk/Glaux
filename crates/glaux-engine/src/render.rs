@@ -660,6 +660,22 @@ fn process_order(data: &PlaybackData, ntracks: usize) -> ([u32; MAX_TRACKS], usi
     (order, ntracks)
 }
 
+/// 送っている CLAP のつまみの変調の上限(全トラック)
+const MAX_MOD_SENT: usize = 256;
+
+/// 送っている CLAP のつまみの変調 1 つ
+#[derive(Clone, Copy, Debug)]
+struct ModSent {
+    slot: u16,
+    id: u32,
+    /// 最後に送った量(変調ならずれ、値として送るなら値)
+    last: f32,
+    /// 値として送っている(プラグインが変調を受けない)なら、外したときに戻す元の値
+    restore: Option<f32>,
+    /// このブロックで送り直したか(送らなかったものは外れたので戻す)
+    seen: bool,
+}
+
 /// 同時に鳴らしておけるプラグインのノート数
 const MAX_PENDING_OFFS: usize = 1024;
 
@@ -690,6 +706,8 @@ pub struct Renderer {
     clock: u64,
     /// プラグインのオートメーションで最後に送った値(トラック × レーン。NaN = 未送信)
     plugin_auto_last: Vec<[f32; MAX_PLUGIN_LANES]>,
+    /// CLAP のつまみに送っている変調(起動時に確保): 外れたら変調を 0 に戻す・値を元に戻すため
+    mod_sent: Vec<ModSent>,
     /// ピッチカーブ付きのノートに振るノート ID
     next_note_id: u32,
     /// 時刻指定のノートで、まだ鳴らし始めていないもの(容量は起動時に確保)
@@ -862,6 +880,7 @@ impl Renderer {
             track_plugin: [None; MAX_TRACKS],
             clock: 0,
             plugin_auto_last: vec![[f32::NAN; MAX_PLUGIN_LANES]; MAX_TRACKS],
+            mod_sent: Vec::with_capacity(MAX_MOD_SENT),
             next_note_id: 1,
             timed: Vec::with_capacity(MAX_TIMED_NOTES),
             plugin_released: Vec::with_capacity(MAX_PENDING_OFFS),
@@ -1136,6 +1155,9 @@ impl Renderer {
             for l in self.plugin_auto_last.iter_mut() {
                 *l = [f32::NAN; MAX_PLUGIN_LANES];
             }
+            for m in self.mod_sent.iter_mut() {
+                m.last = f32::NAN;
+            }
         }
 
         // ノート試聴要求(カウンタ変化で 1 回だけ発音)
@@ -1271,7 +1293,12 @@ impl Renderer {
                     continue;
                 };
                 if let Some((ps, _)) = fx.plugin {
-                    // CLAP エフェクトのつまみ(clap:<id>)はプラグインへ送る
+                    // CLAP エフェクトのつまみ(clap:<id>)はプラグインへ送る(変調を値として送るつまみは変調の側で)
+                    if crate::plugins::parse_param_key(name)
+                        .is_some_and(|id| self.mod_as_value(mix, Some(*slot), ps as usize, id))
+                    {
+                        continue;
+                    }
                     let cursor = points.partition_point(|pt| pt.sample <= self.pos);
                     let v = eval_auto(points, &mut cursor.saturating_sub(1), self.pos);
                     push_plugin_param(&mut self.plugin_notes[ps as usize], name, v);
@@ -2409,6 +2436,12 @@ impl Renderer {
         }
     }
 
+    /// テスト用: このブロックでプラグインのスロットへ積んだメッセージ。
+    #[doc(hidden)]
+    pub fn plugin_msgs_for_test(&self, slot: usize) -> &[NoteMsg] {
+        self.plugin_notes.get(slot).map_or(&[], |v| v.as_slice())
+    }
+
     /// テスト用: トラックの遅延補正の量(サンプル)。
     #[doc(hidden)]
     pub fn pdc_delay(&self, track: usize) -> u32 {
@@ -2606,12 +2639,20 @@ impl Renderer {
     }
 
     /// CLAP パラメータのオートメーション: 一定間隔で値を評価し、変わったときだけ送る。
+    /// 変調(LFO)は、プラグインが受けるなら非破壊の変調(ParamMod)でずれだけを、受けないなら値として送る
     fn collect_plugin_automation(&mut self, data: &PlaybackData, frames: usize, playing: bool) {
+        for m in self.mod_sent.iter_mut() {
+            m.seen = false;
+        }
+        let sr = data.sample_rate as f32;
         for (ti, mix) in data.tracks.iter().take(MAX_TRACKS).enumerate() {
             let Some(slot) = self.track_plugin[ti] else {
+                if !mix.plugin_mods.is_empty() {
+                    self.collect_plugin_mods(data, ti, frames, playing, sr);
+                }
                 continue;
             };
-            if mix.plugin_auto.is_empty() {
+            if mix.plugin_auto.is_empty() && mix.plugin_mods.is_empty() {
                 continue;
             }
             let mut f = 0;
@@ -2623,6 +2664,10 @@ impl Renderer {
                 };
                 for (li, (id, points)) in mix.plugin_auto.iter().take(MAX_PLUGIN_LANES).enumerate()
                 {
+                    // 変調を受けないプラグインで、変調の付いたつまみは変調の側が値を送る
+                    if self.mod_as_value(mix, None, slot, *id) {
+                        continue;
+                    }
                     let mut cursor = points
                         .partition_point(|p| p.sample <= pos)
                         .saturating_sub(1);
@@ -2638,6 +2683,172 @@ impl Renderer {
                                 value: v as f64,
                             });
                         }
+                    }
+                }
+                if !playing {
+                    break;
+                }
+                f += PLUGIN_CTRL_STEP;
+            }
+            if !mix.plugin_mods.is_empty() {
+                self.collect_plugin_mods(data, ti, frames, playing, sr);
+            }
+        }
+        // 外れた変調: 変調は 0 に、値として送っていたものは元の値に戻す
+        let mut i = 0;
+        while i < self.mod_sent.len() {
+            let m = self.mod_sent[i];
+            if m.seen {
+                i += 1;
+                continue;
+            }
+            if let Some(notes) = self.plugin_notes.get_mut(m.slot as usize) {
+                if notes.len() < MAX_EVENTS {
+                    notes.push(match m.restore {
+                        Some(v) => NoteMsg::Param {
+                            time: 0,
+                            id: m.id,
+                            value: v as f64,
+                        },
+                        None => NoteMsg::ParamMod {
+                            time: 0,
+                            id: m.id,
+                            amount: 0.0,
+                            note: None,
+                        },
+                    });
+                }
+            }
+            self.mod_sent.swap_remove(i);
+        }
+    }
+
+    /// そのつまみの変調を、変調ではなく値として送るか(プラグインが変調を受けない)
+    fn mod_as_value(
+        &self,
+        mix: &crate::data::TrackMix,
+        fx_slot: Option<u32>,
+        ps: usize,
+        id: u32,
+    ) -> bool {
+        mix.plugin_mods
+            .iter()
+            .any(|m| m.fx_slot == fx_slot && m.id == id)
+            && self
+                .plugins
+                .get(ps)
+                .and_then(|p| p.as_ref())
+                .is_some_and(|p| !p.clap.can_modulate(id))
+    }
+
+    /// 1 トラック分の CLAP のつまみの変調を送る(変わったときだけ)
+    fn collect_plugin_mods(
+        &mut self,
+        data: &PlaybackData,
+        ti: usize,
+        frames: usize,
+        playing: bool,
+        sr: f32,
+    ) {
+        let mix = &data.tracks[ti];
+        for m in &mix.plugin_mods {
+            let ps = match m.fx_slot {
+                None => self.track_plugin[ti],
+                Some(s) => mix
+                    .effects
+                    .iter()
+                    .find(|f| f.slot == s)
+                    .and_then(|f| f.plugin)
+                    .map(|(p, _)| p as usize),
+            };
+            let Some(ps) = ps else {
+                continue;
+            };
+            let Some((can_mod, can_note)) =
+                self.plugins.get(ps).and_then(|p| p.as_ref()).map(|p| {
+                    (
+                        p.clap.can_modulate(m.id),
+                        p.clap.can_modulate_per_note(m.id),
+                    )
+                })
+            else {
+                continue;
+            };
+            // 表に載せる(満杯なら送らない)
+            let k = match self
+                .mod_sent
+                .iter()
+                .position(|x| x.slot as usize == ps && x.id == m.id)
+            {
+                Some(k) => k,
+                None if self.mod_sent.len() < MAX_MOD_SENT => {
+                    self.mod_sent.push(ModSent {
+                        slot: ps as u16,
+                        id: m.id,
+                        last: f32::NAN,
+                        restore: None,
+                        seen: false,
+                    });
+                    self.mod_sent.len() - 1
+                }
+                None => continue,
+            };
+            self.mod_sent[k].seen = true;
+            self.mod_sent[k].restore = (!can_mod).then_some(m.fixed);
+            let mut f = 0;
+            while f < frames {
+                let pos = if playing {
+                    self.pos + f as u64
+                } else {
+                    self.pos
+                };
+                let mut cursor = m
+                    .offsets
+                    .partition_point(|p| p.sample <= pos)
+                    .saturating_sub(1);
+                let mut off = if m.offsets.is_empty() {
+                    0.0
+                } else {
+                    eval_auto(&m.offsets, &mut cursor, pos)
+                };
+                // 音ごとの変調を受けないつまみは、曲の頭からの時間でトラック全体を揺らす
+                if !(can_mod && can_note) {
+                    let secs = pos as f32 / sr;
+                    off += m.per_note.iter().map(|l| l.at(secs)).sum::<f32>();
+                }
+                let v = if can_mod {
+                    off
+                } else {
+                    let base = if m.base.is_empty() {
+                        m.fixed
+                    } else {
+                        let mut c = m
+                            .base
+                            .partition_point(|p| p.sample <= pos)
+                            .saturating_sub(1);
+                        eval_auto(&m.base, &mut c, pos)
+                    };
+                    (base + off).clamp(m.lo, m.hi)
+                };
+                let last = self.mod_sent[k].last;
+                if last.is_nan() || (v - last).abs() > 1e-6 * (1.0 + v.abs()) {
+                    self.mod_sent[k].last = v;
+                    let notes = &mut self.plugin_notes[ps];
+                    if notes.len() < MAX_EVENTS {
+                        notes.push(if can_mod {
+                            NoteMsg::ParamMod {
+                                time: f as u32,
+                                id: m.id,
+                                amount: v as f64,
+                                note: None,
+                            }
+                        } else {
+                            NoteMsg::Param {
+                                time: f as u32,
+                                id: m.id,
+                                value: v as f64,
+                            }
+                        });
                     }
                 }
                 if !playing {
@@ -2841,10 +3052,15 @@ impl Renderer {
                     _ => (e.amp, e.end + e.fade_out as u64),
                 };
                 let x = data.expr(&e);
+                let per_note_mod = data.tracks[ti]
+                    .plugin_mods
+                    .iter()
+                    .any(|m| m.fx_slot.is_none() && !m.per_note.is_empty());
                 if x.curve.is_empty()
                     && !x.vibrato.is_active()
                     && !x.shape.is_active()
                     && !glaux_dsp::articulation_moves_pitch(e.articulation)
+                    && !per_note_mod
                 {
                     self.plugin_note_on(slot, e.pitch, amp, t, None);
                     self.push_pending(PendingOff::simple(slot, e.pitch, end.max(pos + 1), true));
@@ -2919,6 +3135,33 @@ impl Renderer {
                                 note_id: p.note_id,
                                 value: bright as f64,
                             });
+                        }
+                    }
+                    // 音ごとの変調(プラグインが 1 音ごとに受けるつまみだけ)
+                    if let Some(mix) = data.tracks.get(e.track as usize) {
+                        let can = |id: u32| {
+                            self.plugins
+                                .get(p.slot as usize)
+                                .and_then(|x| x.as_ref())
+                                .is_some_and(|x| {
+                                    x.clap.can_modulate(id) && x.clap.can_modulate_per_note(id)
+                                })
+                        };
+                        for m in &mix.plugin_mods {
+                            if m.fx_slot.is_some() || m.per_note.is_empty() || !can(m.id) {
+                                continue;
+                            }
+                            let secs = age / sr;
+                            let amount: f32 = m.per_note.iter().map(|l| l.at(secs)).sum();
+                            let notes = &mut self.plugin_notes[p.slot as usize];
+                            if notes.len() < MAX_EVENTS {
+                                notes.push(NoteMsg::ParamMod {
+                                    time: t,
+                                    id: m.id,
+                                    amount: amount as f64,
+                                    note: Some((p.key, p.note_id)),
+                                });
+                            }
                         }
                     }
                     if p.last_semi.is_nan() || (semi - p.last_semi).abs() > 0.005 {
@@ -3261,6 +3504,7 @@ mod tests {
                 fx_graph: None,
                 plugin: None,
                 plugin_auto: vec![],
+                plugin_mods: vec![],
                 is_bus: false,
                 sends: vec![],
                 output: None,

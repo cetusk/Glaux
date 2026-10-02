@@ -320,6 +320,8 @@ pub struct TrackMix {
     pub plugin: Option<(u32, u64)>,
     /// CLAP プラグインのパラメータのオートメーション(`device/clap:<id>`、プラグインの単位)
     pub plugin_auto: Vec<(u32, Vec<AutoPoint>)>,
+    /// CLAP のつまみ(音源・エフェクト)の変調
+    pub plugin_mods: Vec<PluginMod>,
     /// バス(リターン)トラック: 自分の音は持たず、センドで受けた音をチェーン → 音量/パンに通す
     pub is_bus: bool,
     /// センド(送り先のバスの添字・量(リニア)・フェーダー前か)。バスからほかのバスへも送れる
@@ -1527,25 +1529,56 @@ fn bake_fx_plan(
     (baked, (!serial).then_some(plan))
 }
 
-/// プロジェクト全体を再生データに展開する。
 /// トラックの変調(LFO)を、オートメーションのレーンに焼き込む(同じつまみのレーンがあればその値を中心に揺らす)。
-/// 1 周期 16 点以上の直線のレーンにし、つまみの範囲に収める。範囲の分からないつまみの変調は飛ばす
+/// 1 周期 16 点以上の直線のレーンにし、つまみの範囲に収める。範囲の分からないつまみの変調は飛ばす。
+/// CLAP のつまみは焼き込まない(値を書き換えない変調として [`PluginMod`] で送る)
 pub fn modulated_lanes(
     t: &glaux_core::Track,
     project: &Project,
 ) -> Vec<glaux_core::AutomationLane> {
-    use glaux_core::{AutomationLane, AutomationPoint, Curve, ParamRange, ParamValue};
+    use glaux_core::{AutomationLane, AutomationPoint, Curve};
     let mut lanes = t.automation.clone();
-    let end = project.end().0 + glaux_core::PPQ * 8;
-    let bpm0 = project.tempo_map.bpm_at(glaux_core::Tick(0));
-    let mut targets: Vec<&ParamPath> = t.modulators.iter().map(|m| &m.target).collect();
-    targets.dedup();
-    let mut seen: Vec<&ParamPath> = Vec::new();
-    for target in targets {
-        if seen.contains(&target) {
+    for (target, (lo, hi, fixed)) in modulated_targets(t) {
+        // CLAP のつまみは値を書き換えず、変調として別に送る([`plugin_mods`])
+        if is_clap_path(&target) {
             continue;
         }
-        seen.push(target);
+        let lane = lanes.iter().find(|l| l.target == target).cloned();
+        let base = |tick: u64| {
+            lane.as_ref()
+                .and_then(|l| l.value_at(glaux_core::Tick(tick)))
+                .unwrap_or(fixed)
+        };
+        let mods: Vec<&glaux_core::Modulator> =
+            t.modulators.iter().filter(|m| m.target == target).collect();
+        let points = lfo_offsets(&mods, project, false)
+            .into_iter()
+            .map(|(tick, off)| AutomationPoint {
+                tick: glaux_core::Tick(tick),
+                value: (base(tick) + off).clamp(lo, hi),
+                curve: Curve::Linear,
+            })
+            .collect();
+        lanes.retain(|l| l.target != target);
+        lanes.push(AutomationLane { target, points });
+    }
+    lanes
+}
+
+/// CLAP のつまみ(`device/clap:<id>`・`fx/<id>/clap:<id>`)か
+fn is_clap_path(p: &ParamPath) -> bool {
+    matches!(p, ParamPath::Device { name } | ParamPath::Effect { name, .. } if name.starts_with("clap:"))
+}
+
+/// 変調の付いたつまみと、その範囲・置いた値(範囲の分からないつまみは除く)
+fn modulated_targets(t: &glaux_core::Track) -> Vec<(ParamPath, (f64, f64, f64))> {
+    use glaux_core::{ParamRange, ParamValue};
+    let mut out: Vec<(ParamPath, (f64, f64, f64))> = Vec::new();
+    for m in &t.modulators {
+        let target = &m.target;
+        if out.iter().any(|(p, _)| p == target) {
+            continue;
+        }
         // CLAP のつまみは Glaux が範囲を知らないので、変調に付けた範囲と中心を使う
         let clap_range = t
             .modulators
@@ -1598,53 +1631,174 @@ pub fn modulated_lanes(
             (None, None) => continue,
         };
         let fixed = set.and_then(ParamValue::as_f64).unwrap_or(default);
-        let lane = lanes.iter().find(|l| &l.target == target).cloned();
-        let base = |tick: u64| {
-            lane.as_ref()
-                .and_then(|l| l.value_at(glaux_core::Tick(tick)))
-                .unwrap_or(fixed)
-        };
-        let mods: Vec<&glaux_core::Modulator> = t
-            .modulators
-            .iter()
-            .filter(|m| &m.target == target)
-            .collect();
-        // 周期(tick)。Hz は曲の頭のテンポで
-        let period = |m: &glaux_core::Modulator| match &m.sync {
-            Some(s) => glaux_core::meter::sync_ticks(s),
-            None => glaux_core::PPQ as f64 * bpm0 / 60.0 / (m.rate_hz as f64).max(0.01),
-        };
-        let step = mods
-            .iter()
-            .map(|m| (period(m) / 16.0).max(10.0))
-            .fold(f64::MAX, f64::min)
-            .min(glaux_core::PPQ as f64) as u64;
-        let mut points = Vec::new();
-        let mut tick = 0u64;
-        while tick <= end {
-            let secs = project.tempo_map.tick_to_seconds(glaux_core::Tick(tick));
-            let mut v = base(tick);
-            for m in &mods {
-                let cycles = match &m.sync {
-                    Some(_) => tick as f64 / period(m),
-                    None => secs * m.rate_hz as f64,
-                } + m.phase as f64;
-                v += m.depth * m.shape.at(cycles.fract(), cycles.floor() as i64);
-            }
-            points.push(AutomationPoint {
-                tick: glaux_core::Tick(tick),
-                value: v.clamp(lo, hi),
-                curve: Curve::Linear,
-            });
-            tick += step.max(1);
+        out.push((target.clone(), (lo, hi, fixed)));
+    }
+    out
+}
+
+/// 変調(LFO)を曲の頭から一定間隔で評価した (tick, ずれ)。`skip_per_note` なら音ごとの変調は足さない
+fn lfo_offsets(
+    mods: &[&glaux_core::Modulator],
+    project: &Project,
+    skip_per_note: bool,
+) -> Vec<(u64, f64)> {
+    let end = project.end().0 + glaux_core::PPQ * 8;
+    let bpm0 = project.tempo_map.bpm_at(glaux_core::Tick(0));
+    let mods: Vec<&glaux_core::Modulator> = mods
+        .iter()
+        .copied()
+        .filter(|m| !(skip_per_note && m.per_note))
+        .collect();
+    // 周期(tick)。Hz は曲の頭のテンポで
+    let period = |m: &glaux_core::Modulator| match &m.sync {
+        Some(s) => glaux_core::meter::sync_ticks(s),
+        None => glaux_core::PPQ as f64 * bpm0 / 60.0 / (m.rate_hz as f64).max(0.01),
+    };
+    let step = mods
+        .iter()
+        .map(|m| (period(m) / 16.0).max(10.0))
+        .fold(f64::MAX, f64::min)
+        .min(glaux_core::PPQ as f64) as u64;
+    let mut points = Vec::new();
+    let mut tick = 0u64;
+    while tick <= end {
+        let secs = project.tempo_map.tick_to_seconds(glaux_core::Tick(tick));
+        let mut v = 0.0;
+        for m in &mods {
+            let cycles = match &m.sync {
+                Some(_) => tick as f64 / period(m),
+                None => secs * m.rate_hz as f64,
+            } + m.phase as f64;
+            v += m.depth * m.shape.at(cycles.fract(), cycles.floor() as i64);
         }
-        lanes.retain(|l| &l.target != target);
-        lanes.push(AutomationLane {
-            target: target.clone(),
-            points,
+        points.push((tick, v));
+        if mods.is_empty() {
+            break;
+        }
+        tick += step.max(1);
+    }
+    points
+}
+
+/// 1 音ごとに頭から揺らす LFO(ノートの頭からの秒で評価する)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoteLfo {
+    pub shape: glaux_core::LfoShape,
+    /// 周期(Hz。テンポ同期は曲の頭のテンポで Hz にしたもの)
+    pub hz: f32,
+    pub depth: f32,
+    pub phase: f32,
+}
+
+impl NoteLfo {
+    /// ノートの頭から `secs` 秒のずれ
+    pub fn at(&self, secs: f32) -> f32 {
+        let cycles = (secs * self.hz + self.phase) as f64;
+        (self.depth as f64 * self.shape.at(cycles.fract(), cycles.floor() as i64)) as f32
+    }
+}
+
+/// CLAP のつまみの変調(焼き込み済み)。プラグインが非破壊の変調を受けるなら ParamMod でずれだけを送り、
+/// 受けないなら 値(オートメーションか置いた値)+ ずれ を値として送る
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginMod {
+    /// None = トラックの音源のプラグイン、Some = CLAP エフェクトの状態スロット
+    pub fx_slot: Option<u32>,
+    pub id: u32,
+    /// トラック全体のずれ(サンプル位置ごと。音ごとの分は含めない)
+    pub offsets: Vec<AutoPoint>,
+    /// 音ごとに頭から揺らす分
+    pub per_note: Vec<NoteLfo>,
+    /// 値として送るときの元(オートメーションの点列。空なら `fixed`)と範囲
+    pub base: Vec<AutoPoint>,
+    pub fixed: f32,
+    pub lo: f32,
+    pub hi: f32,
+}
+
+/// トラックの CLAP のつまみの変調を焼き込む。`fx_slot` は CLAP エフェクトの ID → 状態スロット
+fn plugin_mods(
+    t: &glaux_core::Track,
+    project: &Project,
+    to_sample: &dyn Fn(Tick) -> u64,
+    fx_slot: &dyn Fn(&glaux_core::FxId) -> Option<u32>,
+) -> Vec<PluginMod> {
+    let bpm0 = project.tempo_map.bpm_at(glaux_core::Tick(0));
+    let mut out = Vec::new();
+    for (target, (lo, hi, fixed)) in modulated_targets(t) {
+        let (slot, name) = match &target {
+            ParamPath::Device { name } if name.starts_with("clap:") => (None, name),
+            ParamPath::Effect { id, name } if name.starts_with("clap:") => match fx_slot(id) {
+                Some(s) => (Some(s), name),
+                None => continue,
+            },
+            _ => continue,
+        };
+        let Some(id) = crate::plugins::parse_param_key(name) else {
+            continue;
+        };
+        let mods: Vec<&glaux_core::Modulator> =
+            t.modulators.iter().filter(|m| m.target == target).collect();
+        // 音ごとの変調はプラグインの音源だけ(エフェクトにはノートが無いのでトラック全体で揺らす)
+        let per_note_ok = slot.is_none();
+        let offsets = lfo_offsets(&mods, project, per_note_ok)
+            .into_iter()
+            .map(|(tick, v)| AutoPoint {
+                sample: to_sample(Tick(tick)),
+                value: v as f32,
+                curve: glaux_core::Curve::Linear,
+            })
+            .collect();
+        let per_note = if per_note_ok {
+            mods.iter()
+                .filter(|m| m.per_note)
+                .map(|m| NoteLfo {
+                    shape: m.shape,
+                    hz: match &m.sync {
+                        Some(s) => {
+                            (bpm0 / 60.0 * glaux_core::PPQ as f64
+                                / glaux_core::meter::sync_ticks(s).max(1.0))
+                                as f32
+                        }
+                        None => m.rate_hz,
+                    },
+                    depth: m.depth as f32,
+                    phase: m.phase,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        let base = t
+            .automation
+            .iter()
+            .find(|l| l.target == target)
+            .map(|l| {
+                let mut pts: Vec<AutoPoint> = l
+                    .points
+                    .iter()
+                    .map(|p| AutoPoint {
+                        sample: to_sample(p.tick),
+                        value: p.value as f32,
+                        curve: p.curve,
+                    })
+                    .collect();
+                pts.sort_by_key(|p| p.sample);
+                pts
+            })
+            .unwrap_or_default();
+        out.push(PluginMod {
+            fx_slot: slot,
+            id,
+            offsets,
+            per_note,
+            base,
+            fixed: fixed as f32,
+            lo: lo as f32,
+            hi: hi as f32,
         });
     }
-    lanes
+    out
 }
 
 /// 1 トラック分のノートの展開(開始順・ラウンドロビン・レガートのつなぎと、発音内容のハッシュの途中経過)。
@@ -2139,6 +2293,12 @@ fn build_inner(
                 &conv,
             );
             let fx_auto = bake_fx_lanes(&t.automation, &chain);
+            let plugin_mods = plugin_mods(t, project, &to_sample, &|id| {
+                chain
+                    .iter()
+                    .find(|(f, b)| f == id && b.plugin.is_some())
+                    .map(|(_, b)| b.slot)
+            });
             TrackMix {
                 gain_l: gain * pl,
                 gain_r: gain * pr,
@@ -2210,6 +2370,7 @@ fn build_inner(
                     })
                     .take(crate::render::MAX_PLUGIN_LANES)
                     .collect(),
+                plugin_mods,
                 ident: 0,
                 content: 0,
             }
@@ -3492,6 +3653,7 @@ mod tests {
             phase: 0.0,
             range: Some((0.0, 1.0)),
             center: Some(0.5),
+            per_note: false,
         });
         // マクロ: clap:9 を 0.2〜0.8 で(値 0.5 → 0.5)
         t.macros.push(Macro {
@@ -3508,13 +3670,26 @@ mod tests {
         glaux_core::check_macros(&t.macros).unwrap();
         let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         let auto = &data.tracks[0].plugin_auto;
-        let lane = |id: u32| auto.iter().find(|(i, _)| *i == id).map(|(_, p)| p).unwrap();
-        let m = lane(7);
-        let at = |sample: u64| m.iter().find(|p| p.sample >= sample).unwrap().value;
-        assert!((at(0) - 0.5).abs() < 1e-3);
-        assert!((at(6_000) - 0.75).abs() < 0.02, "{}", at(6_000));
-        assert!(m.iter().all(|p| (0.0..=1.0).contains(&p.value)));
-        assert!((lane(9)[0].value - 0.5).abs() < 1e-6);
+        let lane = |id: u32| auto.iter().find(|(i, _)| *i == id).map(|(_, p)| p);
+        // 変調は値を書き換えず、ずれ(±0.25)として別に持つ(プラグインが受けなければ値 = 中心 + ずれで送る)
+        assert!(lane(7).is_none());
+        let m = &data.tracks[0].plugin_mods[0];
+        assert_eq!((m.id, m.fx_slot), (7, None));
+        assert_eq!((m.fixed, m.lo, m.hi), (0.5, 0.0, 1.0));
+        let at = |sample: u64| m.offsets.iter().find(|p| p.sample >= sample).unwrap().value;
+        assert!(at(0).abs() < 1e-3);
+        assert!((at(6_000) - 0.25).abs() < 0.02, "{}", at(6_000));
+        assert!(m.per_note.is_empty());
+        assert!((lane(9).unwrap()[0].value - 0.5).abs() < 1e-6);
+        // 音ごと: 音源のつまみは頭から揺らす LFO として持ち、トラック全体のずれには入れない
+        let mut poly = project.clone();
+        poly.tracks[0].modulators[0].per_note = true;
+        let data = build_playback_data(&poly, 48_000.0, &SampleBank::default());
+        let m = &data.tracks[0].plugin_mods[0];
+        assert_eq!(m.per_note.len(), 1);
+        assert!((m.per_note[0].hz - 2.0).abs() < 1e-4, "120 BPM の 4 分 = 2Hz");
+        assert!((m.per_note[0].at(0.125) - 0.25).abs() < 1e-3);
+        assert!(m.offsets.iter().all(|p| p.value == 0.0));
         // 範囲の無い CLAP の変調は通らない
         let mut bad = project.tracks[0].modulators.clone();
         bad[0].range = None;
@@ -3534,6 +3709,7 @@ mod tests {
             phase: 0.0,
             range: None,
             center: None,
+            per_note: false,
         });
         let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         let (name, points) = &data.tracks[0].device_auto[0];

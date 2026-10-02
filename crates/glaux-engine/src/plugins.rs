@@ -2039,6 +2039,119 @@ mod tests {
         assert_eq!(seen, [10, 20], "起動時は 10、再起動で遅延を読み直して 20");
     }
 
+    /// CLAP のつまみの変調: プラグインが変調を受けるつまみ(テスト用エフェクトの probe = 7)は ParamMod で
+    /// ずれだけを、受けないつまみ(8)は値として送る。外したら変調は 0 に、値は元に戻す
+    #[test]
+    fn clap_modulators_use_param_mod_when_the_plugin_accepts_it() {
+        use glaux_clap::NoteMsg;
+        use glaux_core::{Effect, FxId, LfoShape, Modulator, ParamPath};
+        let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_SLEEPY").map(PathBuf::from) else {
+            eprintln!("GLAUX_TEST_CLAP_SLEEPY が未設定のためスキップ");
+            return;
+        };
+        std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
+        let fx_plugin = rescan()
+            .into_iter()
+            .find(|p| p.path == path)
+            .expect("テスト用エフェクトが見つかる")
+            .id;
+        let mut project = Project::new("t");
+        let mut a = Track::new(TrackId::new(), "A", TrackKind::Midi);
+        let fx_id = FxId::new();
+        a.effects.push(Effect {
+            id: fx_id.clone(),
+            source: PluginSource::Clap {
+                plugin_id: fx_plugin,
+                state: None,
+            },
+            bypass: false,
+            params: Default::default(),
+            ui: Default::default(),
+        });
+        for id in [7, 8] {
+            a.modulators.push(Modulator {
+                target: ParamPath::Effect {
+                    id: fx_id.clone(),
+                    name: format!("clap:{id}"),
+                },
+                shape: LfoShape::Square,
+                sync: Some("1/1".into()),
+                rate_hz: 0.0,
+                depth: 0.25,
+                phase: 0.0,
+                range: Some((0.0, 1.0)),
+                center: Some(0.5),
+                per_note: false,
+            });
+        }
+        project.tracks = vec![a];
+        let shared = Arc::new(Shared::new(Default::default()));
+        let manager = PluginManager::start(shared.plugin_slots.clone());
+        let mut bank = SampleBank::default();
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        let slot = bank.plugin_slots.values().next().unwrap().0 as usize;
+        let data = build_playback_data(&project, 48_000.0, &bank);
+        assert_eq!(data.tracks[0].plugin_mods.len(), 2);
+        shared.data.store(Arc::new(data));
+        shared
+            .playing
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 480 * 2];
+        let mut mods: Vec<(u32, f64)> = Vec::new();
+        let mut values: Vec<(u32, f64)> = Vec::new();
+        for _ in 0..300 {
+            r.process(&mut buf, 2);
+            for m in r.plugin_msgs_for_test(slot) {
+                match *m {
+                    NoteMsg::ParamMod {
+                        id,
+                        amount,
+                        note: None,
+                        ..
+                    } => mods.push((id, amount)),
+                    NoteMsg::Param { id, value, .. } => values.push((id, value)),
+                    _ => {}
+                }
+            }
+            if !mods.is_empty() && !values.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // 7 は変調(±0.25 のずれ)、8 は値(0.5 ± 0.25)
+        assert!(mods.iter().all(|(id, _)| *id == 7), "{mods:?}");
+        assert!(
+            mods.iter().any(|(_, a)| (a.abs() - 0.25).abs() < 1e-3),
+            "{mods:?}"
+        );
+        assert!(values.iter().all(|(id, _)| *id == 8), "{values:?}");
+        assert!(
+            values
+                .iter()
+                .any(|(_, v)| (v - 0.75).abs() < 1e-3 || (v - 0.25).abs() < 1e-3),
+            "{values:?}"
+        );
+        // 変調を外すと、7 は変調 0、8 は元の値(中心)に戻す
+        project.tracks[0].modulators.clear();
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        r.process(&mut buf, 2);
+        let msgs = r.plugin_msgs_for_test(slot).to_vec();
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(*m, NoteMsg::ParamMod { id: 7, amount, .. } if amount == 0.0)),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(
+                |m| matches!(*m, NoteMsg::Param { id: 8, value, .. } if (value - 0.5).abs() < 1e-6)
+            ),
+            "{msgs:?}"
+        );
+    }
+
     #[test]
     fn plugin_delay_compensation_aligns_other_tracks() {
         use glaux_core::{Effect, FxId};

@@ -557,6 +557,10 @@ pub struct Modulator {
     /// 揺らす中心(CLAP のつまみの今の値。無ければ置いた値・範囲の中央)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub center: Option<f64>,
+    /// 音ごとに頭から揺らす(ポリフォニックな変調)。CLAP 音源で 1 音ごとの変調を受けるつまみだけ音ごとになり、
+    /// ほかはトラック全体の揺れとして鳴る
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub per_note: bool,
 }
 
 /// 1 トラックの変調の上限

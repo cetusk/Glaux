@@ -381,3 +381,85 @@ fn transport_reaches_the_plugin() {
     );
     plugin.deactivate(proc);
 }
+
+/// 非破壊の変調(ParamMod): 値と変調を分けて届け、値は変調で変わらない。テスト用エフェクトの `probe`(id 7)は
+/// 出力に 値 × 0.01 + 変調 × 0.1 + 1 音ごとの変調 × 1.0 を足す
+#[test]
+fn param_mod_reaches_the_plugin_without_changing_the_value() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_SLEEPY").map(PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP_SLEEPY が未設定のためスキップ");
+        return;
+    };
+    let id = describe(&path).expect("記述子を読める")[0].id.clone();
+    let mut plugin = ClapPlugin::new(&path, &id).expect("生成できる");
+    let info = plugin.param_infos();
+    let probe = info.iter().find(|i| i.id == 7).expect("probe がある");
+    assert!(probe.modulatable && probe.per_note);
+    let proc = plugin.activate(48_000.0).expect("起動できる");
+    assert!(proc.can_modulate(7) && proc.can_modulate_per_note(7));
+    assert!(!proc.can_modulate(8));
+    let (proc, base, value, modded, per_note) = std::thread::spawn(move || {
+        let mut proc = proc;
+        let run = |proc: &mut ClapProcessor, msgs: &[NoteMsg]| {
+            let (l, r) = proc.input_mut().unwrap();
+            l[..256].fill(0.5);
+            if let Some(r) = r {
+                r[..256].fill(0.5);
+            }
+            proc.process(256, msgs);
+            proc.output().unwrap().0[255]
+        };
+        let base = run(&mut proc, &[]);
+        let value = run(
+            &mut proc,
+            &[NoteMsg::Param {
+                time: 0,
+                id: 7,
+                value: 0.5,
+            }],
+        );
+        let modded = run(
+            &mut proc,
+            &[NoteMsg::ParamMod {
+                time: 0,
+                id: 7,
+                amount: 0.2,
+                note: None,
+            }],
+        );
+        let per_note = run(
+            &mut proc,
+            &[
+                NoteMsg::ParamMod {
+                    time: 0,
+                    id: 7,
+                    amount: 0.03,
+                    note: Some((60, 5)),
+                },
+                // 変調できないパラメータへの変調は送らない
+                NoteMsg::ParamMod {
+                    time: 0,
+                    id: 8,
+                    amount: 1.0,
+                    note: None,
+                },
+            ],
+        );
+        (proc, base, value, modded, per_note)
+    })
+    .join()
+    .unwrap();
+    assert!(
+        (value - base - 0.005).abs() < 1e-6,
+        "値が届く: {base} → {value}"
+    );
+    assert!((modded - value - 0.02).abs() < 1e-6, "変調が届く: {modded}");
+    assert!(
+        (per_note - modded - 0.03).abs() < 1e-6,
+        "1 音ごとの変調が届く: {per_note}"
+    );
+    // 値そのものは変調で変わらない
+    let v = plugin.param_values(&[7]);
+    assert!((v[0].1 - 0.5).abs() < 1e-6, "{v:?}");
+    drop(proc);
+}
