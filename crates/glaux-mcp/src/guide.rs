@@ -225,6 +225,11 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   返り値の controls が音源の調整つまみ(マイクの混ぜ方・スネアの音程や snap)。sfz_cc で上書き。生の録音は EQ・コンプで仕上げる。\n\
   無料の SFZ 音源(packs)は installed=false ならユーザーに「音源を選ぶ →『SoundFont・SFZ』から取得」を案内する。\n\
 - 実録の音を鳴らす: import_sample(WAV の絶対パス。root にサンプルの実音)でトラックの音源を sampler にする。\n\
+  sampler のつまみ: loop(+ loop_start / loop_end / loop_xfade_ms)で押さえている間伸ばす、attack_ms / decay_ms / sustain で形、\n\
+  filter_type・cutoff・vel_cutoff で明るさ、key_track: false でどの鍵盤も元の高さ、slices でチョップ(root から半音ずつ)、\n\
+  orig_bpm にループ素材の元のテンポを入れると曲のテンポに合わせて伸縮。\n\
+- リサンプリング: resample_to_sampler で、作ったトラック(の範囲)をエフェクト込みで描き出してサンプラーの音源にする\n\
+  (フレーズを弾き直す・スライスして並べ替える・ループして伸ばす)。元と同じ大きさは強さ 127 で root を弾いたとき。\n\
 - 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。\n\
 - エフェクトのプリセット: エフェクト 1 つ分(list_effect_presets → load_effect_preset)。エフェクトを足す前に使える設定がないか見る。\n\
   外してある(parked: true)エフェクトは鳴らないが、ユーザーが取っておいたもの。頼まれない限り消さない。",

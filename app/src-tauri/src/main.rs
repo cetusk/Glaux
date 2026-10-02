@@ -279,13 +279,18 @@ async fn import_sample(
             asset: imported.asset.clone(),
         });
     }
+    // ステレオの素材は左右のまま鳴らす(つまみの既定はモノラルに合算 = 以前に取り込んだ音源の音を変えない)
+    let mut params = glaux_core::ParamMap::new();
+    if imported.asset.channels >= 2 {
+        params.insert("stereo".to_owned(), glaux_core::ParamValue::Bool(true));
+    }
     cmds.push(Command::SetDevice {
         track: tid,
         device: Some(glaux_core::Device {
             source: glaux_core::PluginSource::Sampler {
                 asset: imported.id.clone(),
             },
-            params: glaux_core::ParamMap::new(),
+            params,
         }),
     });
     let file_name = std::path::Path::new(&path)

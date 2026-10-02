@@ -2350,6 +2350,14 @@ fn build_inner(
             }
         }
     }
+    // ステレオで鳴らすサンプラー(ステレオ素材)も、音声クリップと同じくパンを左右バランスとして掛ける
+    for t in tracks.iter_mut() {
+        if let InstrumentParams::Sampler(p) = &t.instrument {
+            if p.stereo && p.data.side.is_some() {
+                t.stereo = true;
+            }
+        }
+    }
     let end_sample = events
         .iter()
         .map(|e| e.end)

@@ -27,6 +27,7 @@ const LABELS: Record<string, ToolLabel> = {
   change_meter: { short: "拍子を変える", doing: "小節の拍子を変えています" },
   delete_bars: { short: "小節を削除", doing: "小節を削除しています" },
   bounce_track: { short: "トラックを音声にする", doing: "トラックを音声に描き出しています" },
+  resample_to_sampler: { short: "サンプラーへリサンプリング", doing: "トラックを描き出してサンプラーの音源にしています" },
   export_audio: { short: "書き出し", doing: "WAV に書き出しています" },
   export_midi: { short: "MIDI に書き出し", doing: "MIDI ファイルに書き出しています" },
   import_midi: { short: "MIDI の読み込み", doing: "MIDI ファイルを読み込んでいます" },

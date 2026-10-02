@@ -3985,6 +3985,31 @@ pub struct BounceTrackParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ResampleParams {
+    /// 描き出すトラック ID(`trk_xxxxxx`)。MIDI・音声トラック(バスは不可)。自分のエフェクト・
+    /// オートメーション・センド先のバスの響きまで込みで描き出す(マスターのエフェクトは通さない)
+    pub track_id: String,
+    /// 範囲の頭(tick)。省略時 0。ここがサンプルの頭になる
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// 範囲の終わり(tick)。省略時は鳴り終わり(無音になる所)まで
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+    /// 置き先の MIDI トラック ID。省略時は元のトラックの直後に新しいトラックを作る
+    #[serde(default)]
+    pub target_track_id: Option<String>,
+    /// サンプラーの root(この鍵盤で元の高さ・速さ)。省略時 60。元のフレーズの最初の音に合わせると弾き直しやすい
+    #[serde(default)]
+    pub root: Option<u8>,
+    /// 音の頭で切ってスライスする数(1〜64。root から半音ずつ並ぶ)。省略時はスライスしない
+    #[serde(default)]
+    pub slices: Option<u32>,
+    /// 元のトラックをミュートする。省略時 false(元も残す)
+    #[serde(default)]
+    pub mute_source: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ExportMidiParams {
     /// 書き出す .mid ファイルの絶対パス。省略でプロジェクトの export/ に日時付きの名前
     #[serde(default)]
@@ -6266,6 +6291,10 @@ impl GlauxServer {
                 glaux_core::ParamValue::Int(root.min(127) as i64),
             );
         }
+        // ステレオの素材は左右のまま鳴らす(つまみの既定はモノラルに合算 = 以前に取り込んだ音源の音を変えない)
+        if imported.asset.channels >= 2 {
+            params_map.insert("stereo".to_owned(), glaux_core::ParamValue::Bool(true));
+        }
         let mut cmds = Vec::new();
         if !project.assets.contains_key(&imported.id) {
             cmds.push(Command::AddAsset {
@@ -6811,6 +6840,57 @@ impl GlauxServer {
         v["entry_id"] = json!(entry_id);
         v["new_track"] = json!(b.new_track);
         v["seconds"] = json!((b.seconds * 100.0).round() / 100.0);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "トラック(の範囲)を音声に描き出し、内蔵の sampler の音源にする(リサンプリング)。\
+        作ったフレーズ・和音・効果を鍵盤で弾き直す、slices でチョップして並べ替える、ループ(loop)して伸ばす、\
+        フィルタ・エンベロープで作り変える、といった音作りの入口。自分のエフェクト・オートメーション・センド先の\
+        バスの響き込みで描き出す(マスターは通さない)。置き先を省略すると直後に新しい MIDI トラックを作り、\
+        元のトラックは残す(mute_source で消音)。ステレオの音は左右のまま鳴らす設定になる。\
+        描き出した音は強さ込みなので、元と同じ大きさにするには強さ 127 で root を弾く。1 回の undo で戻る。\
+        作った後は set_param でサンプラーのつまみ(loop・slices・filter_type・attack_ms など)を整える。"
+    )]
+    async fn resample_to_sampler(
+        &self,
+        params: Parameters<ResampleParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("resample_to_sampler");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let target = p
+            .target_track_id
+            .as_deref()
+            .map(glaux_core::TrackId::parse)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let req = crate::bounce::ResampleRequest {
+            start: glaux_core::Tick(p.start_tick.unwrap_or(0)),
+            end: p.end_tick.map(glaux_core::Tick),
+            target,
+            root: p.root.unwrap_or(60).min(127),
+            slices: p.slices.unwrap_or(0).min(64),
+            mute_source: p.mute_source.unwrap_or(false),
+        };
+        let (project, _) = self.handle.get_project_shared().await?;
+        let dir = self.handle.project_dir().await?;
+        let r = tokio::task::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+            crate::bounce::resample_to_sampler(&project, dir, &track_id, &req, &bank)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let command = Command::batch(r.label.clone(), r.commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, r.label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["sampler_track"] = json!(r.track);
+        v["asset_id"] = json!(r.asset);
+        v["seconds"] = json!((r.seconds * 100.0).round() / 100.0);
         Ok(JsonText(v))
     }
 
