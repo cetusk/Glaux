@@ -5632,7 +5632,9 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "インストール済みの CLAP プラグイン(外部の音源・エフェクト)を一覧する。\
+        description = "インストール済みの CLAP と VST3 のプラグイン(外部の音源・エフェクト)を一覧する。\
+        VST3 は plugin_id が \"vst3:<クラス ID>\" で、使い方は CLAP と同じ(type は \"clap\" のまま。つまみの値は 0〜1 の正規化値。\
+        プリセットの一覧・読み込みは未対応)。\
         音源(instrument: true)は set_device {track, device: {type: \"clap\", plugin_id}} でトラックの音源にできる\
         (Surge XT・Vital・TAL-NoiseMaker などの本格的なシンセ)。音色の大枠はプラグイン自身の画面で人間が作るが、\
         つまみは list_params {track_id, filter} で探して set_param {path: \"device/clap:<id>\"} で動かせ、\

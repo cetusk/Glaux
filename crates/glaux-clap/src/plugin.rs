@@ -1,11 +1,11 @@
 //! プラグインのインスタンス(メインスレッド側)と音声処理(オーディオスレッド側)。
 //!
-//! - [`ClapPlugin`]: 生成・起動(activate)・状態の保存と復元。`Send` ではないので、
+//! - [`ClapImpl`]: 生成・起動(activate)・状態の保存と復元。`Send` ではないので、
 //!   作ったスレッド(= プラグインのメインスレッド)から動かさないこと
-//! - [`ClapProcessor`]: `activate` で得る音声処理の窓口。オーディオスレッドへ渡して
-//!   [`process`](ClapProcessor::process) を呼ぶ。バッファは起動時に確保済みで、
+//! - [`ClapProcImpl`]: `activate` で得る音声処理の窓口。オーディオスレッドへ渡して
+//!   [`process`](ClapProcImpl::process) を呼ぶ。バッファは起動時に確保済みで、
 //!   `process` 内ではアロケーションしない。止めるときはメインスレッドへ戻して
-//!   [`ClapPlugin::deactivate`] に渡す(オーディオスレッドで解放しない)
+//!   [`ClapImpl::deactivate`] に渡す(オーディオスレッドで解放しない)
 
 use crate::host::{GlauxHost, HostMain, HostShared};
 use crate::ClapError;
@@ -52,7 +52,7 @@ pub enum NoteMsg {
     },
     /// パラメータの変調(値に足すずれ。プラグイン固有の単位)。値そのものは変えない(画面のつまみは動かない)。
     /// `note` があればその 1 音だけ(鍵盤とノートの ID)。変調できないパラメータには送らない
-    /// ([`ClapProcessor::can_modulate`] で確かめてから積む)
+    /// ([`ClapProcImpl::can_modulate`] で確かめてから積む)
     ParamMod {
         time: u32,
         id: u32,
@@ -168,7 +168,7 @@ fn host_info() -> Result<HostInfo, ClapError> {
 }
 
 /// メインスレッド側のプラグイン。
-pub struct ClapPlugin {
+pub struct ClapImpl {
     instance: PluginInstance<GlauxHost>,
     pub id: String,
     /// 画面を開いているか(浮動ウィンドウならプラグイン自身のウィンドウ)
@@ -180,7 +180,7 @@ pub struct ClapPlugin {
     window: Option<crate::window_x11::HostWindow>,
 }
 
-/// 画面まわりで起きたこと([`ClapPlugin::gui_tick`] の戻り値)。
+/// 画面まわりで起きたこと([`ClapImpl::gui_tick`] の戻り値)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GuiEvent {
     None,
@@ -188,7 +188,7 @@ pub enum GuiEvent {
     Closed,
 }
 
-impl ClapPlugin {
+impl ClapImpl {
     /// `path` の `.clap` から `id` のプラグインを作る。呼んだスレッドをメインスレッドとして扱う。
     pub fn new(path: &std::path::Path, id: &str) -> Result<Self, ClapError> {
         crate::host::mark_main_thread();
@@ -214,7 +214,7 @@ impl ClapPlugin {
             &host_info()?,
         )
         .map_err(|e| ClapError::Load(format!("{id}: {e}")))?;
-        Ok(ClapPlugin {
+        Ok(ClapImpl {
             instance,
             id: id.to_owned(),
             gui_open: false,
@@ -224,7 +224,7 @@ impl ClapPlugin {
     }
 
     /// 音声処理を始められる状態にし、オーディオスレッドへ渡す処理窓口を返す。
-    pub fn activate(&mut self, sample_rate: f64) -> Result<ClapProcessor, ClapError> {
+    pub fn activate(&mut self, sample_rate: f64) -> Result<ClapProcImpl, ClapError> {
         // 音声ポート(入出力とも、宣言された全ポートにバッファを用意する必要がある)
         let (inputs, outputs, main_in, main_out) = self.audio_port_layout();
         let (dialect, midi_ok) = self.note_dialect();
@@ -260,7 +260,7 @@ impl ClapPlugin {
         let mut per_note: Vec<u32> = infos.iter().filter(|i| i.per_note).map(|i| i.id).collect();
         modulatable.sort_unstable();
         per_note.sort_unstable();
-        Ok(ClapProcessor {
+        Ok(ClapProcImpl {
             latency,
             modulatable,
             per_note,
@@ -282,7 +282,7 @@ impl ClapPlugin {
     }
 
     /// オーディオスレッドから戻ってきた処理窓口を受け取って止める。
-    pub fn deactivate(&mut self, mut processor: ClapProcessor) {
+    pub fn deactivate(&mut self, mut processor: ClapProcImpl) {
         if let Some(p) = processor.processor.take() {
             self.instance.deactivate(p.into_stopped());
         }
@@ -855,7 +855,7 @@ impl ClapPlugin {
     }
 }
 
-impl Drop for ClapPlugin {
+impl Drop for ClapImpl {
     fn drop(&mut self) {
         // 画面はインスタンスより先に片付ける
         self.close_gui();
@@ -863,7 +863,7 @@ impl Drop for ClapPlugin {
 }
 
 /// オーディオスレッド側の処理窓口。
-pub struct ClapProcessor {
+pub struct ClapProcImpl {
     processor: Option<PluginAudioProcessor<GlauxHost>>,
     in_ports: AudioPorts,
     out_ports: AudioPorts,
@@ -960,7 +960,7 @@ impl HostTransport {
     }
 }
 
-impl ClapProcessor {
+impl ClapProcImpl {
     /// 次の process で渡す曲の進み具合(ブロックの頭の値)。None で渡さない
     pub fn set_transport(&mut self, t: Option<HostTransport>) {
         self.transport = t;
@@ -1288,8 +1288,8 @@ impl ClapProcessor {
     }
 }
 
-// ClapProcessor はオーディオスレッドへ渡して使う(同時に 2 つのスレッドから触らない)
+// ClapProcImpl はオーディオスレッドへ渡して使う(同時に 2 つのスレッドから触らない)
 const _: fn() = || {
     fn assert_send<T: Send>() {}
-    assert_send::<ClapProcessor>();
+    assert_send::<ClapProcImpl>();
 };

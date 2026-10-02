@@ -463,3 +463,144 @@ fn param_mod_reaches_the_plugin_without_changing_the_value() {
     assert!((v[0].1 - 0.5).abs() < 1e-6, "{v:?}");
     drop(proc);
 }
+
+// ---- VST3(環境変数 `GLAUX_TEST_VST3` に音源の `.vst3`、`GLAUX_TEST_VST3_FX` にエフェクトの `.vst3`) ----
+
+fn test_vst3(var: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(std::env::var_os(var)?);
+    p.exists().then_some(p)
+}
+
+#[test]
+fn vst3_instrument_scans_plays_and_restores_state() {
+    let Some(path) = test_vst3("GLAUX_TEST_VST3") else {
+        eprintln!("GLAUX_TEST_VST3 が未設定のためスキップ");
+        return;
+    };
+    // 走査で見つかる(バンドルのフォルダ)
+    let found = scan(&[path.parent().unwrap().to_owned()]);
+    let info = found
+        .iter()
+        .find(|p| p.path == path && p.is_instrument())
+        .expect("走査で音源が見つかる")
+        .clone();
+    eprintln!(
+        "テスト対象: {} ({}) {:?}",
+        info.name, info.id, info.features
+    );
+    assert!(crate::is_vst3_id(&info.id));
+    assert!(list_presets(&path, &info.id).unwrap().is_empty());
+
+    let mut plugin = ClapPlugin::new(&path, &info.id).expect("生成できる");
+    assert!(plugin.is_vst3() && plugin.has_gui());
+    let params = plugin.param_infos();
+    let target = params
+        .iter()
+        .find(|p| p.automatable && !p.hidden && !p.readonly && !p.stepped)
+        .expect("連続値のパラメータがある")
+        .clone();
+    eprintln!(
+        "パラメータ {} 個。対象: {} 既定 {}",
+        params.len(),
+        target.name,
+        target.default
+    );
+    let state = plugin.save_state().expect("状態を保存できる");
+    assert!(state.starts_with(b"GV3S"));
+
+    let mut proc = plugin.activate(48_000.0).expect("起動できる");
+    assert!(proc.accepts_notes());
+    let id = target.id;
+    let to = if target.default > 0.5 { 0.0 } else { 1.0 };
+    let (proc, loud, quiet, after) = std::thread::spawn(move || {
+        proc.process(1024, &[]);
+        let quiet = rms(proc.output().unwrap().0);
+        proc.process(
+            1024,
+            &[
+                NoteMsg::On {
+                    time: 0,
+                    key: 60,
+                    velocity: 0.9,
+                    note_id: Some(1),
+                },
+                NoteMsg::Param {
+                    time: 0,
+                    id,
+                    value: to,
+                },
+            ],
+        );
+        let mut loud = 0.0f32;
+        for _ in 0..10 {
+            proc.process(1024, &[]);
+            loud = loud.max(rms(&proc.output().unwrap().0[..1024]));
+        }
+        proc.process(1024, &[NoteMsg::AllOff { time: 0 }]);
+        let mut after = 0.0f32;
+        for _ in 0..200 {
+            proc.process(1024, &[]);
+            after = rms(&proc.output().unwrap().0[..1024]);
+        }
+        (proc, loud, quiet, after)
+    })
+    .join()
+    .unwrap();
+    assert!(!proc.has_failed());
+    assert!(quiet < 1e-4, "ノート前は無音: {quiet}");
+    assert!(loud > 1e-3, "ノートで音が出る: {loud}");
+    assert!(after < loud * 0.1, "すべて離すと消える: {after}");
+    eprintln!("遅延 {} サンプル", proc.latency());
+    plugin.deactivate(proc);
+    // 処理側へ送った値は、状態に入る
+    let changed = plugin.save_state().unwrap();
+    plugin.load_state(&changed).expect("状態を戻せる");
+    let mut fresh = ClapPlugin::new(&path, &info.id).unwrap();
+    fresh.load_state(&changed).unwrap();
+    let v = fresh.param_values(&[id]);
+    eprintln!("変更後の値(読み直したもの): {:?}", v);
+    assert!((v[0].1 - to).abs() < 0.02, "{v:?}");
+    // 元の状態に戻すと、元の値
+    fresh.load_state(&state).unwrap();
+    let v0 = fresh.param_values(&[id]);
+    assert!((v0[0].1 - to).abs() > 0.1, "{v0:?}");
+}
+
+#[test]
+fn vst3_effect_passes_audio() {
+    let Some(path) = test_vst3("GLAUX_TEST_VST3_FX") else {
+        eprintln!("GLAUX_TEST_VST3_FX が未設定のためスキップ");
+        return;
+    };
+    let info = describe(&path)
+        .expect("記述子を読める")
+        .into_iter()
+        .find(|p| p.is_effect())
+        .expect("エフェクトが入っている");
+    eprintln!(
+        "テスト対象: {} ({}) {:?}",
+        info.name, info.id, info.features
+    );
+    let mut plugin = ClapPlugin::new(&path, &info.id).expect("生成できる");
+    let mut proc = plugin.activate(48_000.0).expect("起動できる");
+    assert!(proc.accepts_audio());
+    let (proc, out) = std::thread::spawn(move || {
+        let mut out = 0.0f32;
+        for b in 0..40 {
+            let (l, r) = proc.input_mut().unwrap();
+            for (i, s) in l[..512].iter_mut().enumerate() {
+                *s = ((b * 512 + i) as f32 * 0.05).sin() * 0.5;
+            }
+            if let Some(r) = r {
+                r[..512].copy_from_slice(&l[..512]);
+            }
+            proc.process(512, &[]);
+            out = out.max(rms(&proc.output().unwrap().0[..512]));
+        }
+        (proc, out)
+    })
+    .join()
+    .unwrap();
+    assert!(out > 1e-3, "音が通る: {out}");
+    plugin.deactivate(proc);
+}

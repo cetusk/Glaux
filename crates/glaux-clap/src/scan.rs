@@ -67,10 +67,46 @@ pub fn default_search_paths() -> Vec<PathBuf> {
         }
         out.push(PathBuf::from("/usr/lib/clap"));
     }
+    out.extend(vst3_search_paths());
     out
 }
 
-/// `.clap` ファイル(macOS ではバンドルのフォルダ)を再帰的に集める。
+/// VST3 の標準の探し場所。
+pub fn vst3_search_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(common) = std::env::var_os("COMMONPROGRAMFILES") {
+            out.push(PathBuf::from(common).join("VST3"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            out.push(
+                PathBuf::from(local)
+                    .join("Programs")
+                    .join("Common")
+                    .join("VST3"),
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            out.push(PathBuf::from(home).join("Library/Audio/Plug-Ins/VST3"));
+        }
+        out.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            out.push(PathBuf::from(home).join(".vst3"));
+        }
+        out.push(PathBuf::from("/usr/lib/vst3"));
+        out.push(PathBuf::from("/usr/local/lib/vst3"));
+    }
+    out
+}
+
+/// `.clap` ファイル(macOS ではバンドルのフォルダ)と `.vst3` のバンドルを再帰的に集める。
 fn collect_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > 6 {
         return;
@@ -80,10 +116,10 @@ fn collect_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     };
     for e in rd.flatten() {
         let path = e.path();
-        let is_clap = path
+        let is_plugin = path
             .extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("clap"));
-        if is_clap {
+            .is_some_and(|x| x.eq_ignore_ascii_case("clap") || x.eq_ignore_ascii_case("vst3"));
+        if is_plugin {
             out.push(path);
         } else if path.is_dir() {
             collect_files(&path, depth + 1, out);
@@ -91,8 +127,14 @@ fn collect_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// `.clap` ファイル 1 つに入っているプラグインの一覧。
+/// `.clap` ファイル(か `.vst3` のバンドル)1 つに入っているプラグインの一覧。
 pub fn describe(path: &Path) -> Result<Vec<PluginInfo>, crate::ClapError> {
+    if path
+        .extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("vst3"))
+    {
+        return crate::vst3host::describe(path);
+    }
     let entry = crate::load_entry(path)?;
     let factory = entry.get_plugin_factory().ok_or_else(|| {
         crate::ClapError::Load(format!("{}: plugin factory がありません", path.display()))
@@ -137,7 +179,7 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<PluginInfo> {
                     }
                 }
             }
-            Err(e) => tracing::warn!("CLAP を読めません: {e}"),
+            Err(e) => tracing::warn!("プラグインを読めません: {e}"),
         }
     }
     out.sort_by_key(|p| p.name.to_lowercase());

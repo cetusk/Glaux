@@ -17,7 +17,7 @@
 
 - **AI と共同作曲** — 相手は Claude(Claude Code)か GPT(Codex CLI)。人間と AI の編集は同じ履歴に残り、AI の 1 ターン分をまとめて取り消せます
 - **AI の「耳」** — 音量・帯域・キーとコード・リズム・音色を AI 自身が測り、確かめてから報告します
-- **音源とエフェクト** — 内蔵シンセ 10 種(シンセ・FM・4 オペレーター FM・ウェーブテーブル・加算合成・グラニュラー・ドラム・撥弦・サンプラー・SoundFont / SFZ)、エフェクト 17 種(EQ・ダイナミック EQ・共鳴抑制・仮想低音・コンプ・マルチバンドコンプ・トランジェントシェイパー・リミッタ・ステレオの幅・リバーブ・畳み込みリバーブ・アンプなど)、CLAP プラグイン(Surge XT など)
+- **音源とエフェクト** — 内蔵シンセ 10 種(シンセ・FM・4 オペレーター FM・ウェーブテーブル・加算合成・グラニュラー・ドラム・撥弦・サンプラー・SoundFont / SFZ)、エフェクト 17 種(EQ・ダイナミック EQ・共鳴抑制・仮想低音・コンプ・マルチバンドコンプ・トランジェントシェイパー・リミッタ・ステレオの幅・リバーブ・畳み込みリバーブ・アンプなど)、CLAP / VST3 プラグイン(Surge XT など)
 - **ミキサーとエフェクトのノード表示** — 全トラックを縦の列で並べて音量・パン・送り・メーターを見渡せます。エフェクトはカードを自由に置いて線でつなぎ、分けて混ぜる(原音 + リバーブなど)こともできます。つながっていないカードは鳴らずに取っておけ、よくできた設定は「エフェクトのプリセット」として別の曲でも使えます。右端のモニター列では、左右の広がり(ゴニオメーター・相関)を見て、モノ・サイド・左右入れ替え・ヘッドホン向けのクロスフィードに切り替えて聴けます(書き出しには入りません)
 - **打ち込みと録音** — ピアノロール、ドラムキット、フレット盤、MIDI キーボード、MIDI ファイルの読み書き、録音、鼻歌の譜起こし、パート分離、テンポ追従
 - **AI にやさしい設計** — プロジェクトは読める JSON。すべての編集が同じコマンドを通り、完全に undo できます。MCP サーバーを内蔵
@@ -117,7 +117,7 @@ crates/
   glaux-engine  リアルタイム再生・録音・MIDI 入力・書き出し・音の解析
   glaux-dsp     内蔵の楽器とエフェクト
   glaux-ml      学習済みモデルの推論(譜起こし・音程・拍・音色)
-  glaux-clap    CLAP プラグインのホスト
+  glaux-clap    CLAP / VST3 プラグインのホスト
   glaux-godot   Godot 4.3+ の拡張
 app/            デスクトップアプリ(Tauri + Svelte 5)
 godot/          Godot のデモとアドオンのビルド
@@ -139,7 +139,7 @@ godot/          Godot のデモとアドオンのビルド
 | GM 音源の SoundFont(GeneralUser GS v2.0.3、S. Christian Collins 作) | 同梱しない。はじめの確認で取得できる | GeneralUser GS License v2.0 |
 | 無料の SFZ 音源([sfzinstruments](https://github.com/sfzinstruments) の 8 つ: Osiris Piano〈Versilian Studios・Karoryfer Samples〉、E-Pianos〈Greg Sullivan〉、Big Rusty Drums・Swagbass・Emilyguitar〈Karoryfer Samples〉、Cello〈Karoryfer Samples・Bigcat Instruments〉、MTG Solo Saxophones〈MTG〉、Ixox Flute〈Xavier Hosxe〉) | 同梱しない。音源の選択から取得できる(作者とライセンスは各フォルダの `CREDITS.txt`) | CC0-1.0 / CC-BY-3.0 / CC-BY-4.0 |
 | デモ曲(CyberNeon) | 同梱(内蔵の音源とエフェクトだけで作った曲) | 上と同じ(MIT / Apache-2.0) |
-| そのほかの SoundFont・CLAP プラグイン・Demucs | 同梱しない(各自で入手) | それぞれによる |
+| そのほかの SoundFont・CLAP / VST3 プラグイン・Demucs | 同梱しない(各自で入手) | それぞれによる |
 | **ロゴ・アイコン** | `assets/` ほか | **上のライセンスの対象外** |
 
 ロゴ・アイコン(Glaux のロゴ、フクロウの図柄、それらから作った画像)は、Glaux を紹介する目的以外で使ったり、改変したり、

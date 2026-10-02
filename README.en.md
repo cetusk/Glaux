@@ -17,7 +17,7 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 
 - **Compose with AI** — Work with Claude (Claude Code) or GPT (Codex CLI). Human and AI edits share one history, and you can undo an AI's whole turn at once
 - **The AI can listen** — It measures loudness, frequency balance, key and chords, rhythm and timbre by itself, and checks its work before reporting
-- **Instruments and effects** — 10 built-in instruments (subtractive, FM, 4-operator FM, wavetable, additive, granular, drums, plucked string, sampler, SoundFont / SFZ), 17 effects (EQ, dynamic EQ, resonance suppressor, virtual bass, compressor, multiband compressor, transient shaper, limiter, stereo width, reverb, convolution reverb, amp, and more), and CLAP plugins (e.g. Surge XT)
+- **Instruments and effects** — 10 built-in instruments (subtractive, FM, 4-operator FM, wavetable, additive, granular, drums, plucked string, sampler, SoundFont / SFZ), 17 effects (EQ, dynamic EQ, resonance suppressor, virtual bass, compressor, multiband compressor, transient shaper, limiter, stereo width, reverb, convolution reverb, amp, and more), and CLAP / VST3 plugins (e.g. Surge XT)
 - **Mixer and effect node view** — See every track as a vertical strip with volume, pan, sends and meters. Effects are cards you place freely and connect with cables, including splitting and merging (e.g. dry + reverb in parallel). Unconnected cards stay silent but keep their settings, and good settings can be saved as effect presets for other songs. The monitor strip on the right shows the stereo image (goniometer and correlation) and lets you listen in mono, side only, swapped, or with headphone crossfeed (never included in exports)
 - **Write and record** — Piano roll, drum kit, fretboard, MIDI keyboard, MIDI file import/export, audio recording, humming-to-MIDI, stem separation, tempo-following audio clips
 - **Designed for AI** — Projects are readable JSON. Every edit goes through the same command API with full undo. Built-in MCP server
@@ -117,7 +117,7 @@ crates/
   glaux-engine  Real-time playback, recording, MIDI input, export, audio analysis
   glaux-dsp     Built-in instruments and effects
   glaux-ml      Model inference (transcription, pitch, beats, timbre)
-  glaux-clap    CLAP plugin host
+  glaux-clap    CLAP / VST3 plugin host
   glaux-godot   Godot 4.3+ extension
 app/            Desktop app (Tauri + Svelte 5)
 godot/          Godot demo and add-on build
@@ -139,7 +139,7 @@ The source code and documentation are dual-licensed under **MIT or Apache-2.0** 
 | General MIDI SoundFont (GeneralUser GS v2.0.3 by S. Christian Collins) | Not bundled; can be downloaded from the setup check | GeneralUser GS License v2.0 |
 | Free SFZ instruments (8 from [sfzinstruments](https://github.com/sfzinstruments): Osiris Piano by Versilian Studios and Karoryfer Samples, E-Pianos by Greg Sullivan, Big Rusty Drums / Swagbass / Emilyguitar by Karoryfer Samples, Cello by Karoryfer Samples and Bigcat Instruments, MTG Solo Saxophones by MTG, Ixox Flute by Xavier Hosxe) | Not bundled; can be downloaded from the instrument picker (authors and licenses in each folder's `CREDITS.txt`) | CC0-1.0 / CC-BY-3.0 / CC-BY-4.0 |
 | Demo song (CyberNeon) | Bundled (made only with the built-in instruments and effects) | Same as above (MIT / Apache-2.0) |
-| Other SoundFonts, CLAP plugins, Demucs | Not bundled (get them yourself) | Their own licenses |
+| Other SoundFonts, CLAP / VST3 plugins, Demucs | Not bundled (get them yourself) | Their own licenses |
 | **Logos and icons** | `assets/` and others | **Not covered by the license above** |
 
 The logos and icons (the Glaux logo, the owl artwork, and images made from them) may only be used to refer to Glaux itself.

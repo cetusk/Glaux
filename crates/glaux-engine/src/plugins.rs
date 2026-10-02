@@ -220,8 +220,11 @@ fn catalog_cell() -> &'static Mutex<Option<Vec<PluginInfo>>> {
 /// 探す場所: CLAP の標準パス + `GLAUX_CLAP_PATH`(区切りは OS の PATH と同じ)。
 pub fn search_paths() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(p) = std::env::var_os("GLAUX_CLAP_PATH") {
-        dirs.extend(std::env::split_paths(&p));
+    // CLAP と VST3 の追加の探し場所(VST3 はバンドルのフォルダを探す)
+    for var in ["GLAUX_CLAP_PATH", "GLAUX_VST3_PATH"] {
+        if let Some(p) = std::env::var_os(var) {
+            dirs.extend(std::env::split_paths(&p));
+        }
     }
     dirs.extend(glaux_clap::default_search_paths());
     dirs
@@ -1259,6 +1262,68 @@ mod tests {
 
     fn rms(x: &[f32]) -> f32 {
         (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
+    }
+
+    /// VST3 のプラグイン(`GLAUX_TEST_VST3` に音源、`GLAUX_TEST_VST3_FX` にエフェクトの `.vst3`)を
+    /// 探し場所に足して探し、ID を返す
+    fn setup_vst3(var: &str, instrument: bool) -> Option<String> {
+        let path = PathBuf::from(std::env::var_os(var)?);
+        std::env::set_var("GLAUX_VST3_PATH", path.parent()?);
+        rescan()
+            .into_iter()
+            .find(|p| {
+                p.path == path
+                    && if instrument {
+                        p.is_instrument()
+                    } else {
+                        p.is_effect()
+                    }
+            })
+            .map(|p| p.id)
+    }
+
+    #[test]
+    fn vst3_instrument_and_effect_render_offline() {
+        let _serial = serial();
+        let Some(id) = setup_vst3("GLAUX_TEST_VST3", true) else {
+            eprintln!("GLAUX_TEST_VST3 が未設定のためスキップ");
+            return;
+        };
+        assert!(glaux_clap::is_vst3_id(&id));
+        let project = project_with_plugin(&id);
+        let out = crate::export::render_project(&project, 48_000.0, &SampleBank::default())
+            .expect("書き出せる");
+        let sec = |a: f64, b: f64| &out[(a * 96_000.0) as usize..(b * 96_000.0) as usize];
+        assert!(
+            rms(sec(0.1, 0.4)) < 1e-4,
+            "ノート前は無音: {}",
+            rms(sec(0.1, 0.4))
+        );
+        assert!(
+            rms(sec(0.6, 0.9)) > 1e-3,
+            "VST3 の音源で鳴る: {}",
+            rms(sec(0.6, 0.9))
+        );
+        // VST3 のエフェクトを内蔵の音源のトラックに挿しても音が通る
+        let Some(fx) = setup_vst3("GLAUX_TEST_VST3_FX", false) else {
+            return;
+        };
+        let mut p = project_with_plugin(&id);
+        p.tracks[0].device = Some(Device::builtin("subtractive"));
+        p.tracks[0].effects.push(glaux_core::Effect {
+            id: glaux_core::FxId::new(),
+            source: PluginSource::Clap {
+                plugin_id: fx,
+                state: None,
+            },
+            bypass: false,
+            params: Default::default(),
+            ui: Default::default(),
+        });
+        let out = crate::export::render_project(&p, 48_000.0, &SampleBank::default())
+            .expect("書き出せる");
+        let wet = rms(&out[(0.6 * 96_000.0) as usize..(0.9 * 96_000.0) as usize]);
+        assert!(wet > 1e-3, "VST3 のエフェクトを通っても鳴る: {wet}");
     }
 
     #[test]

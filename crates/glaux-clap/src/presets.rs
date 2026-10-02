@@ -218,6 +218,10 @@ pub fn list_presets(
     plugin_path: &Path,
     plugin_id: &str,
 ) -> Result<Vec<PresetEntry>, crate::ClapError> {
+    // VST3 のプリセット(.vstpreset)はまだ扱わない
+    if crate::is_vst3_id(plugin_id) {
+        return Ok(vec![]);
+    }
     let entry = crate::load_entry(plugin_path)?;
     let Some(factory) = entry.get_factory::<PresetDiscoveryFactory>() else {
         return Ok(vec![]);
