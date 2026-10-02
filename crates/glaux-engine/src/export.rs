@@ -21,6 +21,8 @@ pub enum ExportError {
     Io(#[from] std::io::Error),
     #[error("FLAC の書き出しに失敗: {0}")]
     Flac(String),
+    #[error("書き出しに失敗: {0}")]
+    Render(String),
 }
 
 /// 書き出すファイルの形式。
@@ -419,7 +421,7 @@ fn limit_once(stereo: &mut [f32], sample_rate: f64, ceiling_db: f64) -> f64 {
 }
 
 /// 曲の統合ラウドネス(LUFS)。48kHz は既存の測り方、それ以外は ebur128(サンプルレートに合わせた K 特性)
-fn lufs_at(stereo: &[f32], sample_rate: u32) -> f64 {
+pub(crate) fn lufs_at(stereo: &[f32], sample_rate: u32) -> f64 {
     if sample_rate == 48_000 {
         crate::analyze::integrated_lufs(stereo)
     } else {

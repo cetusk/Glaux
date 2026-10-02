@@ -122,6 +122,9 @@ pub struct Shared {
     /// 描き出し用(後でミックスするので、大きい音でも潰さずにそのまま残す)
     pub no_master_clip: AtomicBool,
     pub data: ArcSwap<PlaybackData>,
+    /// 音量をそろえた A/B の聴き比べ(書き出した 2 つの音)と、どちらを鳴らすか([`crate::ab::AbSide`] の番号)
+    pub ab: arc_swap::ArcSwapOption<crate::ab::AbClip>,
+    pub ab_side: std::sync::atomic::AtomicU8,
     /// 負荷の統計(オーディオスレッドが書き、UI が読む)。[`DspStats`] 参照
     pub stats: StatsCounters,
     /// MIDI キーボードのライブ演奏イベント(MIDI 受信スレッドが積み、レンダラが取り出す)
@@ -360,6 +363,8 @@ pub fn flush_denormals() {
 impl Shared {
     pub fn new(data: PlaybackData) -> Self {
         Shared {
+            ab: arc_swap::ArcSwapOption::empty(),
+            ab_side: std::sync::atomic::AtomicU8::new(0),
             playing: AtomicBool::new(false),
             pos: AtomicU64::new(0),
             seek: AtomicU64::new(NO_SEEK),
@@ -783,6 +788,9 @@ pub struct Renderer {
     out_smooth: f32,
     /// マスター音量のなめらかにした値(同上)
     master_smooth: f32,
+    /// A/B の聴き比べ: 聴き比べの音の混ぜ具合(0 = ふつうの再生、1 = 聴き比べ)と、B の混ぜ具合(0 = A、1 = B)
+    ab_on: f32,
+    ab_mix: f32,
     /// このブロックでトラックごとに鳴らした声のサンプル数(発音の時間の按分用)
     voice_samples: [u32; MAX_TRACKS],
     /// 相関・ゴニオメーターの測定と、聴き方の切り替え([`crate::monitor`])
@@ -942,6 +950,8 @@ impl Renderer {
             gain_smooth: [(f32::NAN, f32::NAN); MAX_TRACKS],
             out_smooth: f32::NAN,
             master_smooth: f32::NAN,
+            ab_on: 0.0,
+            ab_mix: 1.0,
             voice_samples: [0; MAX_TRACKS],
             monitor: Default::default(),
             inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
@@ -2531,6 +2541,24 @@ impl Renderer {
             || xfeed
             || speaker != crate::monitor::Speaker::Off;
         let out_target = f32::from_bits(self.shared.output_gain.load(Ordering::Relaxed));
+        // A/B の聴き比べ(再生中だけ。止めたらふつうの再生に戻す)。切り替えは約 10ms のクロスフェード
+        let ab_guard = self.shared.ab.load();
+        let ab_clip = ab_guard.as_deref();
+        let ab_side = crate::ab::AbSide::from_code(self.shared.ab_side.load(Ordering::Relaxed));
+        let ab_target_on = if ab_clip.is_some()
+            && ab_side != crate::ab::AbSide::Off
+            && self.shared.playing.load(Ordering::Relaxed)
+        {
+            1.0
+        } else {
+            0.0
+        };
+        let ab_target_b = if ab_side == crate::ab::AbSide::A {
+            0.0
+        } else {
+            1.0
+        };
+        let ab_k = 1.0 - (-1.0 / (0.01 * sr)).exp();
         for f in 0..frames {
             let pos = self.blk_pos[f];
             if f > 0 && pos < self.blk_pos[f - 1] {
@@ -2553,7 +2581,22 @@ impl Renderer {
             let master_amp = self.master_smooth;
             let click = self.blk_click[f];
             let base = f * channels;
-            let (ol, or) = (l[f] * master_amp, r[f] * master_amp);
+            let (mut ol, mut or) = (l[f] * master_amp, r[f] * master_amp);
+            // A/B の聴き比べ: 書き出した音(マスター込み)を今の位置で鳴らす。メーターも聴いている音で測る
+            let mut ab_full = false;
+            if ab_target_on > 0.0 || self.ab_on > 1e-5 {
+                self.ab_on += (ab_target_on - self.ab_on) * ab_k;
+                self.ab_mix += (ab_target_b - self.ab_mix) * ab_k;
+                let (al, ar) = match ab_clip.and_then(|c| c.frame(pos)) {
+                    Some(((al, ar), (bl, br))) => {
+                        (al + (bl - al) * self.ab_mix, ar + (br - ar) * self.ab_mix)
+                    }
+                    None => (0.0, 0.0),
+                };
+                ol += (al - ol) * self.ab_on;
+                or += (ar - or) * self.ab_on;
+                ab_full = self.ab_on > 0.999;
+            }
             // メーター・相関はミックスそのもの(聴き方の切り替えの前)で測る
             self.monitor.measure(&self.shared.monitor, ol, or, sr);
             peak = peak.max((ol + click).abs()).max((or + click).abs());
@@ -2563,7 +2606,8 @@ impl Renderer {
                 (ol, or)
             };
             let (ol, or) = (ol + click, or + click);
-            let (ol, or) = if clip {
+            // 聴き比べの音は書き出しでクリップ防止を通してあるので、二重に掛けない
+            let (ol, or) = if clip && !ab_full {
                 (soft_clip(ol), soft_clip(or))
             } else {
                 (ol, or)
@@ -4598,6 +4642,37 @@ mod tests {
             (other - 220.0).abs() < 10.0,
             "ほかのチャンネルのベンドは効かない: {other}"
         );
+    }
+
+    #[test]
+    fn ab_listening_plays_the_matched_side_at_the_current_position() {
+        // 曲は無音。聴き比べの A は 0.2、B は 0.4(B を半分に下げてそろえる)
+        let shared = Arc::new(Shared::new(data_with_note(10_000_000, 10_000_001, true)));
+        shared.playing.store(true, Ordering::Release);
+        shared.ab.store(Some(Arc::new(crate::ab::AbClip {
+            start: 0,
+            a: vec![0.2; 48_000 * 2],
+            b: vec![0.4; 48_000 * 2],
+            gain_a: 1.0,
+            gain_b: 0.5,
+        })));
+        let mut r = Renderer::new(shared.clone());
+        let last = |b: &[f32]| b[b.len() - 2];
+        shared
+            .ab_side
+            .store(crate::ab::AbSide::A.code(), Ordering::Release);
+        assert!((last(&render_block(&mut r, 4800)) - 0.2).abs() < 1e-3);
+        // B に切り替えても同じ大きさ(そろえてある)。途中はクロスフェード
+        shared
+            .ab_side
+            .store(crate::ab::AbSide::B.code(), Ordering::Release);
+        let b = render_block(&mut r, 4800);
+        assert!((last(&b) - 0.2).abs() < 1e-3);
+        // 範囲の外は無音、やめればふつうの再生(無音)
+        shared
+            .ab_side
+            .store(crate::ab::AbSide::Off.code(), Ordering::Release);
+        assert!(last(&render_block(&mut r, 4800)).abs() < 1e-3);
     }
 
     #[test]

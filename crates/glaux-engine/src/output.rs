@@ -630,6 +630,28 @@ impl EngineHandle {
         )
     }
 
+    /// 音量をそろえた A/B の聴き比べの音を置く(None で片付ける。片付けたらふつうの再生に戻る)
+    pub fn set_ab_clip(&self, clip: Option<crate::ab::AbClip>) {
+        if clip.is_none() {
+            self.shared.ab_side.store(0, Ordering::Release);
+        }
+        self.shared.ab.store(clip.map(std::sync::Arc::new));
+    }
+
+    /// 聴き比べでどちらを鳴らすか(Off でふつうの再生)
+    pub fn set_ab_side(&self, side: crate::ab::AbSide) {
+        self.shared.ab_side.store(side.code(), Ordering::Release);
+    }
+
+    pub fn ab_side(&self) -> crate::ab::AbSide {
+        crate::ab::AbSide::from_code(self.shared.ab_side.load(Ordering::Acquire))
+    }
+
+    /// 聴き比べの音が置いてあるか
+    pub fn has_ab_clip(&self) -> bool {
+        self.shared.ab.load().is_some()
+    }
+
     /// 統合ラウドネスと True Peak の最大を測り直す
     pub fn reset_loudness(&self) {
         self.meter.lock().expect("meter lock").reset();

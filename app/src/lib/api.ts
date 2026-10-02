@@ -760,6 +760,41 @@ export function transportClearLoop(): Promise<void> {
   return invoke("transport_clear_loop");
 }
 
+/** 音量をそろえた A/B の聴き比べの用意の結果 */
+export interface AbInfo {
+  /** それぞれの統合ラウドネス(LUFS。短すぎ・無音なら null) */
+  lufs_a: number | null;
+  lufs_b: number | null;
+  /** そろえるために掛けた量(dB。0 か負) */
+  gain_a_db: number;
+  gain_b_db: number;
+  from_secs: number;
+  to_secs: number;
+  /** 比べる編集の数 */
+  edits_compared: number;
+  /** 実際に書き出した範囲の終わり(長すぎる範囲は詰める) */
+  end_tick: number;
+}
+
+/** 聴き比べを用意する: A = その編集の前、B = 今。同じ範囲を書き出して音量をそろえ、B を鳴らす状態にする */
+export function abPrepare(beforeEntry: string, startTick: number, endTick: number): Promise<AbInfo> {
+  return invoke("ab_prepare", {
+    beforeEntry,
+    startTick: Math.max(0, Math.round(startTick)),
+    endTick: Math.max(0, Math.round(endTick)),
+  });
+}
+
+/** 聴き比べでどちらを鳴らすか */
+export function abSetSide(side: "a" | "b" | "off"): Promise<void> {
+  return invoke("ab_set_side", { side });
+}
+
+/** 聴き比べを終える */
+export function abClear(): Promise<void> {
+  return invoke("ab_clear");
+}
+
 /** ノートを 1 音だけ試聴する(そのトラックの音源・音量・パンで鳴る)。 */
 export function previewNote(trackId: string, pitch: number): Promise<void> {
   return invoke("preview_note", { trackId, pitch });

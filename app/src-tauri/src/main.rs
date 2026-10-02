@@ -1751,6 +1751,7 @@ async fn open_project(
     if let Some(engine) = &state.engine {
         engine.stop();
         engine.clear_loop(); // ループ区間は前のプロジェクトの tick なので持ち越さない
+        engine.set_ab_clip(None); // 聴き比べも前のプロジェクトのもの
     }
     let (title, version) = state.handle.switch_project(path.clone()).await?;
     state.chat.switch_project(path.clone());
@@ -2231,6 +2232,83 @@ fn transport_spectrum(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 /// ラウドネスメーターの統合値と True Peak の最大を測り直す
+/// 聴き比べる範囲の上限(秒)。書き出しを 2 回するので、長すぎると待たされる
+const AB_MAX_SECS: f64 = 90.0;
+
+/// 音量をそろえた A/B の聴き比べを用意する: 履歴のある地点(既定は 1 つ前の編集の前)と今の、
+/// 同じ範囲を書き出して統合ラウドネスをそろえる。用意できたら B(今)を鳴らす状態にする
+#[tauri::command]
+async fn ab_prepare(
+    state: State<'_, AppState>,
+    before_entry: Option<String>,
+    checkpoint: Option<String>,
+    start_tick: u64,
+    end_tick: u64,
+) -> Result<Value, String> {
+    let point = match (checkpoint, before_entry) {
+        (Some(c), _) => glaux_core::HistoryPoint::Checkpoint(c),
+        (None, Some(e)) => {
+            glaux_core::HistoryPoint::BeforeEntry(EntryId::parse(&e).map_err(|e| e.to_string())?)
+        }
+        (None, None) => glaux_core::HistoryPoint::Back(1),
+    };
+    if end_tick <= start_tick {
+        return Err("聴き比べる範囲がありません".into());
+    }
+    let (before, after, _version, back) = state
+        .handle
+        .project_at(point)
+        .await?
+        .map_err(|e| e.to_string())?;
+    if back == 0 {
+        return Err("比べる編集がありません(その地点は今と同じです)".into());
+    }
+    let engine = state.engine()?.clone();
+    let sr = engine.sample_rate();
+    let dir = state.handle.project_dir().await?;
+    let from = after.tempo_map.tick_to_seconds(Tick(start_tick));
+    let to = after
+        .tempo_map
+        .tick_to_seconds(Tick(end_tick))
+        .min(from + AB_MAX_SECS);
+    let end_tick = after.tempo_map.seconds_to_tick(to).0;
+    let (clip, info) = tokio::task::spawn_blocking(move || {
+        let dir = std::path::Path::new(&dir);
+        let bank_a = glaux_engine::SampleBank::for_offline(&before, dir);
+        let bank_b = glaux_engine::SampleBank::for_offline(&after, dir);
+        glaux_engine::ab::prepare(&before, &bank_a, &after, &bank_b, sr, from, to)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("聴き比べを用意できません: {e}"))?;
+    engine.set_ab_clip(Some(clip));
+    engine.set_ab_side(glaux_engine::ab::AbSide::B);
+    let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
+    v["edits_compared"] = json!(back);
+    v["end_tick"] = json!(end_tick);
+    Ok(v)
+}
+
+/// 聴き比べでどちらを鳴らすか("a" = 前、"b" = 今、"off" = ふつうの再生)
+#[tauri::command]
+fn ab_set_side(state: State<'_, AppState>, side: String) -> Result<(), String> {
+    let side = match side.as_str() {
+        "a" => glaux_engine::ab::AbSide::A,
+        "b" => glaux_engine::ab::AbSide::B,
+        "off" => glaux_engine::ab::AbSide::Off,
+        _ => return Err(format!("side は a / b / off(got: {side})")),
+    };
+    state.engine()?.set_ab_side(side);
+    Ok(())
+}
+
+/// 聴き比べを終える(用意した音を片付け、ふつうの再生に戻す)
+#[tauri::command]
+fn ab_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine()?.set_ab_clip(None);
+    Ok(())
+}
+
 #[tauri::command]
 fn transport_reset_loudness(state: State<'_, AppState>) -> Result<(), String> {
     state.engine()?.reset_loudness();
@@ -2870,6 +2948,9 @@ fn main() -> Result<()> {
             transport_set_speaker,
             transport_set_output_volume,
             transport_reset_loudness,
+            ab_prepare,
+            ab_set_side,
+            ab_clear,
             send_chat,
             cancel_chat,
             reset_chat,

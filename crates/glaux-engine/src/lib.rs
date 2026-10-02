@@ -18,6 +18,7 @@
 //! - 音声クリップのテンポ追従(Stretch::Follow)は WSOLA でオフライン伸縮(`SampleBank` にキャッシュ)。
 //!   伸縮の品質は声・単音・リズム素材向け(和音の多い素材で大きく伸ばすと揺れが出る)
 
+pub mod ab;
 pub mod analyze;
 pub mod calibrate;
 pub mod data;
