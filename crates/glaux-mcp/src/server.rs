@@ -4807,7 +4807,7 @@ impl GlauxServer {
         set_automation_points / set_master_automation_points / set_tempo {events} / set_time_sig / set_title / \
         set_sections {sections: [{tick, name}]}(構成のマーカー。早めに打つと「サビだけ」を範囲に解決できる)/ set_clip_plan。\
         各 op の引数、奏法(palm_mute・staccato・accent・vibrato・bend・legato・portamento)、glide・pitch_curve、\
-        バスとセンド、エフェクトのつながり(fx_links・parked)、クリップのループ・テンポ追従、オートメーションの書き方は\
+        バスとセンド・グループ(出力先)、エフェクトのつながり(fx_links・parked)、クリップのループ・テンポ追従、オートメーションの書き方は\
         get_guide {topic: \"commands\"} を読む。\
         失敗時はどのコマンドで失敗したかがエラーに入る(batch failed at command #N)。何も変わらない。"
     )]

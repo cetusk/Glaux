@@ -45,6 +45,8 @@ pub enum TrackProp {
     Layers(Vec<crate::model::Layer>),
     /// マクロ(丸ごと置き換え)
     Macros(Vec<crate::model::Macro>),
+    /// 出力先のバス(グループ)。null でマスター
+    Output(Option<TrackId>),
 }
 
 /// ノートの部分更新。`None` のフィールドは変更しない。
@@ -145,6 +147,8 @@ impl NoteChange {
     }
 }
 
+// トラックを丸ごと持つ AddTrack が大きいが、コマンドは数が少なく(再生の経路にも乗らない)箱に入れる得が無い
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Command {

@@ -18,9 +18,9 @@ pub use clip::{
 pub use param::{ParamMap, ParamPath, ParamRange, ParamSpec, ParamValue};
 pub use routing::{FxIoPos, FxLink, FxNode};
 pub use track::{
-    check_layers, check_macros, check_modulators, Device, Effect, EffectUi, Layer, LfoShape, Macro,
-    MacroTarget, MasterBus, Modulator, PluginSource, Send, Track, TrackKind, MAX_LAYERS,
-    MAX_MACROS, MAX_MODULATORS,
+    check_layers, check_macros, check_modulators, routing_error, Device, Effect, EffectUi, Layer,
+    LfoShape, Macro, MacroTarget, MasterBus, Modulator, PluginSource, Send, Track, TrackKind,
+    MAX_LAYERS, MAX_MACROS, MAX_MODULATORS,
 };
 
 pub(crate) use clip::sort_notes;

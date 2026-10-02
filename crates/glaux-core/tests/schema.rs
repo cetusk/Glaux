@@ -18,6 +18,7 @@ const FIXTURE: &str = r##"{
       "color": "#4a90d9",
       "mute": false, "solo": false,
       "volume_db": -6.0, "pan": 0.0,
+      "output": "trk_grp001",
       "glide_ms": 120.0, "legato_ms": 40.0,
       "device": {
         "type": "builtin",
@@ -90,6 +91,11 @@ const FIXTURE: &str = r##"{
           "stretch": { "mode": "none" }
         }
       ]
+    },
+    {
+      "id": "trk_grp001",
+      "name": "Group",
+      "kind": "bus"
     }
   ],
   "master": {
@@ -115,7 +121,12 @@ const FIXTURE: &str = r##"{
 fn fixture_parses_and_roundtrips() {
     let p = Project::from_json(FIXTURE).expect("fixture should parse");
     assert!(p.is_valid(), "{:?}", p.validate());
-    assert_eq!(p.tracks.len(), 2);
+    assert_eq!(p.tracks.len(), 3);
+    // グループ: ベースの出力先はバス
+    assert_eq!(
+        p.tracks[0].output.as_ref().map(|id| id.as_str()),
+        Some("trk_grp001")
+    );
     assert_eq!(p.tempo_map.events().len(), 2);
     assert_eq!(p.time_sig_map[0].grouping, None);
     assert_eq!(p.time_sig_map[1].grouping, Some(vec![3, 2, 2]));

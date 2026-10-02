@@ -166,9 +166,12 @@ pub struct Track {
     pub clips: Vec<Clip>,
     #[serde(default)]
     pub automation: Vec<AutomationLane>,
-    /// センド(送り先の ID 順)
+    /// センド(送り先の ID 順)。バスからほかのバスへも送れる(輪は作れない)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sends: Vec<Send>,
+    /// 出力先のバス(グループ)。None ならマスター。送り先のバスが無くなったらマスターへ
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<TrackId>,
     /// ポルタメントで滑る時間(ms)。省略時 150ms。`track/glide_ms` で設定
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glide_ms: Option<f32>,
@@ -377,6 +380,7 @@ impl Track {
             clips: Vec::new(),
             automation: self.automation.clone(),
             sends: self.sends.clone(),
+            output: self.output.clone(),
             glide_ms: self.glide_ms,
             legato_ms: self.legato_ms,
             modulators: self.modulators.clone(),
@@ -622,6 +626,7 @@ impl Track {
             clips: vec![],
             automation: vec![],
             sends: vec![],
+            output: None,
             glide_ms: None,
             legato_ms: None,
             modulators: vec![],
@@ -685,6 +690,62 @@ pub struct MasterBus {
     /// `fx/<マスターのエフェクト ID>/<パラメータ>`
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub automation: Vec<AutomationLane>,
+}
+
+/// 音の流れ(出力先とセンド)の検査: 出力先・送り先はバスで自分以外、輪(A → B → A)は作れない。
+/// 問題があればその説明
+pub fn routing_error(tracks: &[Track]) -> Option<String> {
+    use std::collections::HashMap;
+    let index: HashMap<&TrackId, usize> =
+        tracks.iter().enumerate().map(|(i, t)| (&t.id, i)).collect();
+    let mut edges: Vec<Vec<usize>> = vec![Vec::new(); tracks.len()];
+    for (i, t) in tracks.iter().enumerate() {
+        let targets = t.output.iter().chain(t.sends.iter().map(|s| &s.target));
+        for target in targets {
+            let Some(&j) = index.get(target) else {
+                continue; // 消えたバスはマスターへ(エラーにしない)
+            };
+            if j == i {
+                return Some(format!("「{}」は自分自身へは送れません", t.name));
+            }
+            if tracks[j].kind != TrackKind::Bus {
+                return Some(format!(
+                    "送り先・出力先はバスだけです(「{}」はバスではありません)",
+                    tracks[j].name
+                ));
+            }
+            edges[i].push(j);
+        }
+    }
+    // 輪の検出(深さ優先、0 = 未訪問、1 = たどり中、2 = 済み)
+    fn visit(i: usize, edges: &[Vec<usize>], state: &mut [u8]) -> Option<usize> {
+        state[i] = 1;
+        for &j in &edges[i] {
+            match state[j] {
+                1 => return Some(j),
+                0 => {
+                    if let Some(c) = visit(j, edges, state) {
+                        return Some(c);
+                    }
+                }
+                _ => {}
+            }
+        }
+        state[i] = 2;
+        None
+    }
+    let mut state = vec![0u8; tracks.len()];
+    for i in 0..tracks.len() {
+        if state[i] == 0 {
+            if let Some(c) = visit(i, &edges, &mut state) {
+                return Some(format!(
+                    "音の流れが輪になります(「{}」に戻ってくる)。バスからバスへの送り・出力先を見直してください",
+                    tracks[c].name
+                ));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

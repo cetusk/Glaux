@@ -40,7 +40,11 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 - メタルの「ズクズク」した刻み: pluck + amp(gain_db 40 以上)+ 低音 + palm_mute のノート。\n\
 - バス(リターン): add_track の kind: \"bus\"(クリップは置けない。エフェクトを挿して共有のリバーブ・ディレイに。リバーブは mix: 1.0 = ウェットのみが基本)。\n\
   set_send {track, target, level_db, pre_fader?} でトラックからバスへ送る(level_db -60〜12。省略でセンドを外す。pre_fader: true でフェーダーの前 =\n\
-  トラックの音量に追従しない)。送り元はバス以外、送り先はバスだけ。バスはソロの影響を受けない。歌・スネア・パッドを同じ空間に置くのに。\n\
+  トラックの音量に追従しない)。送り先はバスだけで、バスからほかのバスへも送れる(輪になる送りは失敗)。バスはソロの影響を受けない。\n\
+  歌・スネア・パッドを同じ空間に置くのに。\n\
+- グループ(まとめ): set_track_prop {id, prop: \"output\", value: <バスの ID> | null} でトラックの出力先をバスにする(null でマスター)。\n\
+  ドラムを 1 本のバスにまとめてコンプ・音量をまとめて動かすなど。バスの出力先を別のバスにして段にできる(輪は失敗)。\n\
+  遅れのあるエフェクトがあっても、合流するところで自動で揃える。バスをソロにすると流れ込むトラックも鳴る。\n\
 - マスターのエフェクト: add_master_effect {effect, index?} / set_master_param {path: \"fx/<id>/<名前>\", value} / unset_master_param {path}。\n\
   削除・並べ替え・バイパスはトラックと同じ remove_effect / move_effect {id, to_index} / set_effect_bypass。チェーンは get_project の master.effects。\n\
 - set_effect_prop {id, prop: \"label\" | \"parked\" | \"note\" | \"pos\", value}: 表示名・線から外す・メモ・ノード表示の位置。\n\
@@ -245,8 +249,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   ウォーキング(ローファイ・ジャズ)/ 1 音のシンコペーション(ファンク)。\n\
 - 構成: EDM = イントロ 16 → ビルド 8 → ドロップ 16 → ブレイク 16 → ビルド 8 → ドロップ 16 → アウトロ 16(小節)。スネアの連打で予告し、\n\
   ドロップの前に 1 拍〜1 小節の無音。J-POP = A メロ 8 → B メロ 8 → サビ 8〜16(頭サビ・落ちサビ・ラスサビ)。サビは高い音・伸ばす音・リフレイン。\n\
-- EDM の音作り: スーパーソウは subtractive の unison 5〜7 + detune。ポンピングは sidechain エフェクト(source にキックのトラック ID、\n\
-  release_ms = 60000/BPM/2)か shape_automation の pump。ダブステップのウォブルは wavetable の position を lfo_rate で揺らす(8 分 = BPM/30 Hz)。\n\
+- EDM の音作り: スーパーソウは subtractive の unison 5〜7 + detune。ポンピングは sidechain エフェクト(source にキックのトラック ID。\n\
+  CLAP 音源のトラックや、ドラムをまとめたバスもキーにできる。release_ms = 60000/BPM/2)か shape_automation の pump。ダブステップのウォブルは wavetable の position を lfo_rate で揺らす(8 分 = BPM/30 Hz)。\n\
 - メタル: pluck + amp(gain_db 40 以上)+ palm_mute の刻み。Lo-fi・ヴィンテージ: tape エフェクト(wow / flutter・hiss・crackle・bits)。\n\
 - 繰り返し: ドラムやリフは 1〜2 小節を書き、add_clip の clip に \"loop\": true, \"loop_len\"(既存のクリップなら set_clip_loop)。\n\
   区間ごとの変化(フィル・抜き差し)は別のクリップで。\n\

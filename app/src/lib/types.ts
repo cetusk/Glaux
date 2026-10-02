@@ -114,6 +114,8 @@ export interface Track {
   /** bus = バス(リターン)。クリップを持たず、他のトラックのセンドを受ける */
   kind: "midi" | "audio" | "bus";
   sends?: TrackSend[];
+  /** 出力先のバス(グループ)の ID。省略 = マスター */
+  output?: string | null;
   /** ポルタメントで滑る時間(ms)。省略 = 150 */
   glide_ms?: number;
   /** レガートのつなぎ目の長さ(ms)。省略 = 30 */

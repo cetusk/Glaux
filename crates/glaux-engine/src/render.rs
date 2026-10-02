@@ -547,24 +547,117 @@ const PLUGIN_CTRL_STEP: usize = 64;
 /// プラグインの遅延補正で遅らせられる上限(サンプル)。48kHz で約 0.17 秒
 const MAX_PDC: usize = 8192;
 
-/// 遅延線で左右をまとめて `delay` サンプル遅らせる(その場で書き換える)。
-fn delay_stereo(
-    l: &mut [f32],
-    r: &mut [f32],
-    line: &mut [Vec<f32>; 2],
-    pos: &mut usize,
-    delay: usize,
-) {
-    let n = line[0].len();
-    let delay = delay.min(n - 1);
-    for f in 0..l.len() {
-        line[0][*pos] = l[f];
-        line[1][*pos] = r[f];
-        let rd = (*pos + n - delay) % n;
-        l[f] = line[0][rd];
-        r[f] = line[1][rd];
-        *pos = (*pos + 1) % n;
+/// 送り先ごとの「先に書いておく」輪状バッファの長さ。遅延補正の上限 + 1 ブロック
+const RING: usize = MAX_PDC + MAX_FRAMES;
+/// エフェクトの分岐の遅れを揃えるのに使える輪状バッファの数(全トラック・マスターで共有)
+const BRANCH_RINGS: usize = 16;
+/// 分岐の揃えを使わない印
+const NO_RING: u8 = u8::MAX;
+
+/// 輪状バッファの `start` から(折り返して)左右の音を `amp` 倍して足す
+fn ring_add(ring: &mut [Vec<f32>; 2], start: usize, l: &[f32], r: &[f32], amp: f32) {
+    let n = ring[0].len();
+    let start = start % n;
+    let first = l.len().min(n - start);
+    for (side, src) in [(0, l), (1, r)] {
+        let (a, b) = src.split_at(first);
+        for (d, s) in ring[side][start..start + first].iter_mut().zip(a) {
+            *d += s * amp;
+        }
+        for (d, s) in ring[side][..b.len()].iter_mut().zip(b) {
+            *d += s * amp;
+        }
     }
+}
+
+/// 輪状バッファの `start` から `l.len()` 分を取り出し(上書き)、その区間を 0 に戻す
+fn ring_take(ring: &mut [Vec<f32>; 2], start: usize, l: &mut [f32], r: &mut [f32]) {
+    let n = ring[0].len();
+    let start = start % n;
+    let first = l.len().min(n - start);
+    for (side, dst) in [(0, l), (1, r)] {
+        let (a, b) = dst.split_at_mut(first);
+        a.copy_from_slice(&ring[side][start..start + first]);
+        ring[side][start..start + first].fill(0.0);
+        let rest = b.len();
+        b.copy_from_slice(&ring[side][..rest]);
+        ring[side][..rest].fill(0.0);
+    }
+}
+
+/// つながりのノードの入口: 入ってくる線の音を足す。`ring` があれば、各線を「入口の時刻 − 線の元の出口の時刻」
+/// だけ先に書いてから読み出し、遅れの違う枝を揃える
+fn gather(
+    inputs: &[(u16, f32)],
+    done: &[[Vec<f32>; 2]],
+    ol: &mut [f32],
+    or: &mut [f32],
+    ring: Option<(&mut [Vec<f32>; 2], usize)>,
+    times: &[u32],
+    in_time: u32,
+) {
+    let frames = ol.len();
+    match ring {
+        Some((ring, pos)) => {
+            for &(src, amp) in inputs {
+                let Some([sl, sr]) = done.get(src as usize) else {
+                    continue;
+                };
+                let off = in_time.saturating_sub(times[src as usize]) as usize;
+                ring_add(
+                    ring,
+                    pos + off.min(MAX_PDC - 1),
+                    &sl[..frames],
+                    &sr[..frames],
+                    amp,
+                );
+            }
+            ring_take(ring, pos, ol, or);
+        }
+        None => {
+            ol.fill(0.0);
+            or.fill(0.0);
+            for &(src, amp) in inputs {
+                let Some([sl, sr]) = done.get(src as usize) else {
+                    continue;
+                };
+                for f in 0..frames {
+                    ol[f] += sl[f] * amp;
+                    or[f] += sr[f] * amp;
+                }
+            }
+        }
+    }
+}
+
+/// ノードの入口の時刻: 入ってくる線の元(`limit` 以下の番号)の出口の時刻の最大
+fn in_time_of(times: &[u32], inputs: &[(u16, f32)], limit: usize) -> u32 {
+    inputs
+        .iter()
+        .filter(|(src, _)| (*src as usize) <= limit)
+        .map(|(src, _)| times[*src as usize])
+        .max()
+        .unwrap_or(0)
+}
+
+/// トラックを処理する順(先頭 `n` 個)。再生データの順が使えなければ「通常のトラック → バス」
+fn process_order(data: &PlaybackData, ntracks: usize) -> ([u32; MAX_TRACKS], usize) {
+    let mut order = [0u32; MAX_TRACKS];
+    let ok = data.order.len() == ntracks && data.order.iter().all(|&i| (i as usize) < ntracks);
+    if ok {
+        order[..ntracks].copy_from_slice(&data.order);
+    } else {
+        let mut k = 0;
+        for bus in [false, true] {
+            for (i, m) in data.tracks.iter().take(ntracks).enumerate() {
+                if m.is_bus == bus {
+                    order[k] = i as u32;
+                    k += 1;
+                }
+            }
+        }
+    }
+    (order, ntracks)
 }
 
 /// 同時に鳴らしておけるプラグインのノート数
@@ -629,17 +722,25 @@ pub struct Renderer {
     fx_r: Vec<f32>,
     mix_l: Vec<f32>,
     mix_r: Vec<f32>,
-    /// バスの入力(センドの合算。トラック添字 × フレーム、左右)
+    /// バスの入力(このブロックで受けた音。まだ処理していないバスは前のブロックの音。サイドチェインのキーにも使う)
     bus_l: Vec<Vec<f32>>,
     bus_r: Vec<Vec<f32>>,
-    /// プラグインの遅延補正(PDC): トラックごとに遅らせるサンプル数と、その遅延線(左右)・書き込み位置
+    /// 遅延補正(PDC)。各トラックの音が出口に届く時刻(入力の遅れ + 自分の遅れ)と、入口に揃える時刻
+    /// (流れ込む音のうち一番遅いもの)。送る音は「受け側の入口 − 送り側の出口」だけ先の位置に書いておく
+    pdc_out: [u32; MAX_TRACKS],
+    pdc_in: [u32; MAX_TRACKS],
+    pdc_master_in: u32,
+    /// テスト用: 各トラックの出力先(バスかマスター)へ書くときの遅らせる量
     pdc_delay: [u32; MAX_TRACKS],
-    pdc_lines: Vec<[Vec<f32>; 2]>,
-    pdc_pos: [usize; MAX_TRACKS],
-    /// バス経由の音と揃えるため、通常トラックの合算を遅らせる分と、その遅延線
-    pdc_main: u32,
-    pdc_main_line: [Vec<f32>; 2],
-    pdc_main_pos: usize,
+    /// 送り先(バス)ごとの輪状バッファと、マスター前の合算の輪状バッファ。位置は全部で共通
+    route_ring: Vec<[Vec<f32>; 2]>,
+    master_ring: [Vec<f32>; 2],
+    ring_pos: usize,
+    /// エフェクトの分岐の遅れ揃え: つながりごと(トラック + マスター)の各ノードの出口の時刻と、
+    /// 入口で揃えるのに使う輪状バッファの番号(NO_RING なら揃えない)。末尾が出口
+    graph_time: Vec<[u32; crate::data::MAX_GRAPH_NODES + 2]>,
+    graph_ring: Vec<[u8; crate::data::MAX_GRAPH_NODES + 2]>,
+    branch_rings: Vec<[Vec<f32>; 2]>,
     /// トラックごとの無音連続サンプル数(残響が消えたらエフェクト処理を省く)
     track_silence: [u32; MAX_TRACKS],
     /// オートメーション評価カーソル(vol, pan)。単調前進、resync でリセット
@@ -788,14 +889,20 @@ impl Renderer {
             mix_r: vec![0.0; MAX_FRAMES],
             bus_l: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
             bus_r: (0..MAX_TRACKS).map(|_| vec![0.0; MAX_FRAMES]).collect(),
+            pdc_out: [0; MAX_TRACKS],
+            pdc_in: [0; MAX_TRACKS],
+            pdc_master_in: 0,
             pdc_delay: [0; MAX_TRACKS],
-            pdc_lines: (0..MAX_TRACKS)
-                .map(|_| [vec![0.0; MAX_PDC], vec![0.0; MAX_PDC]])
+            route_ring: (0..MAX_TRACKS)
+                .map(|_| [vec![0.0; RING], vec![0.0; RING]])
                 .collect(),
-            pdc_pos: [0; MAX_TRACKS],
-            pdc_main: 0,
-            pdc_main_line: [vec![0.0; MAX_PDC], vec![0.0; MAX_PDC]],
-            pdc_main_pos: 0,
+            master_ring: [vec![0.0; RING], vec![0.0; RING]],
+            ring_pos: 0,
+            graph_time: vec![[0; crate::data::MAX_GRAPH_NODES + 2]; MAX_TRACKS + 1],
+            graph_ring: vec![[NO_RING; crate::data::MAX_GRAPH_NODES + 2]; MAX_TRACKS + 1],
+            branch_rings: (0..BRANCH_RINGS)
+                .map(|_| [vec![0.0; RING], vec![0.0; RING]])
+                .collect(),
             track_silence: [u32::MAX; MAX_TRACKS],
             auto_cursors: [(0, 0); MAX_TRACKS],
             master_cursor: 0,
@@ -1786,8 +1893,9 @@ impl Renderer {
     // ---- エフェクトチェーン(ブロック単位) ----
 
     /// トラックごとに 入力(楽器 + プラグイン出力)→ エフェクトチェーン → 音量/パン を通し、
-    /// `mix_l/r`(マスター前の合算。MAX_TRACKS 超のトラックと試聴の直行分から始める)に足す。
-    /// 通常のトラックを先に処理してセンドをバスの入力に溜め、その後でバスを処理する。
+    /// 出力先(マスター前の合算か、グループのバス)とセンド先のバスへ送る。送る側を受ける側より先に
+    /// 処理する順([`PlaybackData::order`])で回し、遅延補正は送り先の輪状バッファの書く位置で揃える。
+    /// マスター前の合算は MAX_TRACKS 超のトラックと試聴の直行分から始める
     fn process_track_chains(
         &mut self,
         data: &PlaybackData,
@@ -1799,82 +1907,82 @@ impl Renderer {
         let mut mix_r = std::mem::take(&mut self.mix_r);
         let mut fl = std::mem::take(&mut self.fx_l);
         let mut fr = std::mem::take(&mut self.fx_r);
-        let mut bus_l = std::mem::take(&mut self.bus_l);
-        let mut bus_r = std::mem::take(&mut self.bus_r);
-        mix_l[..frames].copy_from_slice(&self.blk_direct[0][..frames]);
-        mix_r[..frames].copy_from_slice(&self.blk_direct[1][..frames]);
-        for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
-            if mix.is_bus {
-                bus_l[ti][..frames].fill(0.0);
-                bus_r[ti][..frames].fill(0.0);
-            }
-        }
         self.compute_pdc(data, ntracks);
-        for bus_pass in [false, true] {
-            // 通常トラックの合算を、バスの最大の遅延ぶん遅らせてバス経由の音と揃える
-            if bus_pass && self.pdc_main > 0 {
-                delay_stereo(
-                    &mut mix_l[..frames],
-                    &mut mix_r[..frames],
-                    &mut self.pdc_main_line,
-                    &mut self.pdc_main_pos,
-                    self.pdc_main as usize,
+        let pos = self.ring_pos;
+        ring_add(
+            &mut self.master_ring,
+            pos + self.pdc_master_in as usize,
+            &self.blk_direct[0][..frames],
+            &self.blk_direct[1][..frames],
+            1.0,
+        );
+        let (order, n) = process_order(data, ntracks);
+        for &ti in &order[..n] {
+            let ti = ti as usize;
+            let mix = &data.tracks[ti];
+            // 入力: 通常のトラックは楽器 + プラグイン出力、バスは送りと出力で受けた音
+            let pslot = if mix.is_bus {
+                None
+            } else {
+                self.track_plugin[ti]
+            };
+            let any = if mix.is_bus {
+                ring_take(
+                    &mut self.route_ring[ti],
+                    pos,
+                    &mut self.bus_l[ti][..frames],
+                    &mut self.bus_r[ti][..frames],
                 );
-            }
-            for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
-                if mix.is_bus != bus_pass {
-                    continue;
-                }
                 // ミュートしたバス(バスには発音が無いので、ここで止める)
-                if bus_pass && !mix.audible {
+                if !mix.audible {
                     continue;
                 }
-                // 入力: 通常のトラックは楽器 + プラグイン出力、バスはセンドで受けた音
-                let pslot = if bus_pass {
-                    None
-                } else {
-                    self.track_plugin[ti]
-                };
-                let any = if bus_pass {
-                    fl[..frames].copy_from_slice(&bus_l[ti][..frames]);
-                    fr[..frames].copy_from_slice(&bus_r[ti][..frames]);
-                    fl[..frames].iter().chain(&fr[..frames]).any(|v| *v != 0.0)
-                } else {
-                    let mut any = false;
-                    for f in 0..frames {
-                        let mono = self.blk_mono[ti][f];
-                        let side = self.blk_side[ti][f];
-                        let (el, er) = match pslot {
-                            Some(s) => (self.plugin_out[s][0][f], self.plugin_out[s][1][f]),
-                            None => (0.0, 0.0),
-                        };
-                        fl[f] = mono + side + el;
-                        fr[f] = mono - side + er;
-                        any |= mono != 0.0 || side != 0.0 || el != 0.0 || er != 0.0;
-                    }
-                    any
-                };
-                let t = std::time::Instant::now();
-                let sounded = self.track_block(
-                    data, ti, mix, pslot, any, frames, sr, &mut fl, &mut fr, &mut mix_l,
-                    &mut mix_r, &mut bus_l, &mut bus_r,
-                );
-                self.shared.stats.track_ns[ti]
-                    .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                if !sounded {
-                    continue;
+                fl[..frames].copy_from_slice(&self.bus_l[ti][..frames]);
+                fr[..frames].copy_from_slice(&self.bus_r[ti][..frames]);
+                fl[..frames].iter().chain(&fr[..frames]).any(|v| *v != 0.0)
+            } else {
+                let mut any = false;
+                for f in 0..frames {
+                    let mono = self.blk_mono[ti][f];
+                    let side = self.blk_side[ti][f];
+                    let (el, er) = match pslot {
+                        Some(s) => (self.plugin_out[s][0][f], self.plugin_out[s][1][f]),
+                        None => (0.0, 0.0),
+                    };
+                    fl[f] = mono + side + el;
+                    fr[f] = mono - side + er;
+                    any |= mono != 0.0 || side != 0.0 || el != 0.0 || er != 0.0;
                 }
+                any
+            };
+            let t = std::time::Instant::now();
+            self.track_block(data, ti, mix, pslot, any, frames, sr, &mut fl, &mut fr);
+            self.shared.stats.track_ns[ti]
+                .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+        ring_take(
+            &mut self.master_ring,
+            pos,
+            &mut mix_l[..frames],
+            &mut mix_r[..frames],
+        );
+        // 読まれなかった送り先(バスでなくなった添字など)の区間を消しておく(古い音が後で出ないように)
+        for ring in self.route_ring.iter_mut() {
+            for side in ring.iter_mut() {
+                let start = pos % RING;
+                let first = frames.min(RING - start);
+                side[start..start + first].fill(0.0);
+                side[..frames - first].fill(0.0);
             }
         }
+        self.ring_pos = (pos + frames) % RING;
         self.mix_l = mix_l;
         self.mix_r = mix_r;
         self.fx_l = fl;
         self.fx_r = fr;
-        self.bus_l = bus_l;
-        self.bus_r = bus_r;
     }
 
-    /// 1 トラック分: チェーン → 音量/パン → マスター前の合算とセンド先のバスへ。
+    /// 1 トラック分: チェーン → 音量/パン → 出力先(マスター前の合算かバス)とセンド先のバスへ。
     /// 長く無音(残響も消えた)で省いたら false。
     #[allow(clippy::too_many_arguments)]
     fn track_block(
@@ -1888,10 +1996,6 @@ impl Renderer {
         sr: f32,
         fl: &mut [f32],
         fr: &mut [f32],
-        mix_l: &mut [f32],
-        mix_r: &mut [f32],
-        bus_l: &mut [Vec<f32>],
-        bus_r: &mut [Vec<f32>],
     ) -> bool {
         // 残響テールが確実に消えるまでの猶予(これを超えて無音ならチェーンごと省く)
         // (畳み込みリバーブの IR は最長 8 秒なので、それがあるトラックは長めに待つ)
@@ -1911,28 +2015,26 @@ impl Renderer {
             return false;
         }
         match &mix.fx_graph {
-            Some(g) => self.run_graph(&mix.effects, g, data, fl, fr, frames),
+            Some(g) => self.run_graph(&mix.effects, g, ti, data, fl, fr, frames),
             None if !mix.effects.is_empty() => self.run_chain(&mix.effects, data, fl, fr, frames),
             None => {}
         }
-        // プラグインの遅延補正: 遅延の少ないトラックを遅らせて揃える(センドもこの揃えた音から)
-        let d = self.pdc_delay[ti] as usize;
-        if d > 0 {
-            delay_stereo(
-                &mut fl[..frames],
-                &mut fr[..frames],
-                &mut self.pdc_lines[ti],
-                &mut self.pdc_pos[ti],
-                d,
-            );
-        }
+        // 遅延補正: 受け側の入口の時刻に合わせて、送り先の輪状バッファの先の位置に書く
+        let out_t = self.pdc_out[ti];
+        let at = |target_in: u32| {
+            self.ring_pos + (target_in.saturating_sub(out_t) as usize).min(MAX_PDC - 1)
+        };
         // フェーダー前のセンド(チェーンの後、音量・パンの前)
         for snd in mix.sends.iter().filter(|s| s.pre_fader) {
             let t = snd.target as usize;
-            for f in 0..frames {
-                bus_l[t][f] += fl[f] * snd.amp;
-                bus_r[t][f] += fr[f] * snd.amp;
-            }
+            let start = at(self.pdc_in[t]);
+            ring_add(
+                &mut self.route_ring[t],
+                start,
+                &fl[..frames],
+                &fr[..frames],
+                snd.amp,
+            );
         }
         // ステレオの音(CLAP 音源・バス・ステレオの音声)はパンを左右のバランスとして掛ける
         // (中央 0dB、反対側だけを下げる)。モノラルの音は等パワーのパン。
@@ -1993,13 +2095,47 @@ impl Renderer {
             let (gl, gr) = gs;
             let (ol, or) = (fl[f] * gl, fr[f] * gr);
             peak = peak.max(ol.abs()).max(or.abs());
-            mix_l[f] += ol;
-            mix_r[f] += or;
-            // フェーダー後のセンド(トラックの音量・パンに追従)
-            for snd in post.iter().filter(|s| !s.pre_fader) {
-                bus_l[snd.target as usize][f] += ol * snd.amp;
-                bus_r[snd.target as usize][f] += or * snd.amp;
+            fl[f] = ol;
+            fr[f] = or;
+        }
+        // 出力先(グループのバスかマスター前の合算)と、フェーダー後のセンド(トラックの音量・パンに追従)
+        let out_t = self.pdc_out[ti];
+        let at = |target_in: u32| {
+            self.ring_pos + (target_in.saturating_sub(out_t) as usize).min(MAX_PDC - 1)
+        };
+        match mix.output {
+            Some(b) => {
+                let b = b as usize;
+                let start = at(self.pdc_in[b]);
+                ring_add(
+                    &mut self.route_ring[b],
+                    start,
+                    &fl[..frames],
+                    &fr[..frames],
+                    1.0,
+                );
             }
+            None => {
+                let start = at(self.pdc_master_in);
+                ring_add(
+                    &mut self.master_ring,
+                    start,
+                    &fl[..frames],
+                    &fr[..frames],
+                    1.0,
+                );
+            }
+        }
+        for snd in post.iter().filter(|s| !s.pre_fader) {
+            let t = snd.target as usize;
+            let start = at(self.pdc_in[t]);
+            ring_add(
+                &mut self.route_ring[t],
+                start,
+                &fl[..frames],
+                &fr[..frames],
+                snd.amp,
+            );
         }
         if ti < MAX_TRACKS {
             self.gain_smooth[ti] = gs;
@@ -2024,11 +2160,15 @@ impl Renderer {
     }
 
     /// つながり(分岐・合流・線の音量)の順にエフェクトを通す。各エフェクトの入口で、入ってくる線の音を
-    /// 足し合わせてから処理し、最後に出口へ入る線の音を足して `fl` / `fr` に返す。確保はしない
+    /// 足し合わせてから処理し、最後に出口へ入る線の音を足して `fl` / `fr` に返す。確保はしない。
+    /// 遅れの違う枝が合流するところは、早い枝を輪状バッファで遅らせて揃える(`owner` はトラックの添字、
+    /// マスターは MAX_TRACKS)
+    #[allow(clippy::too_many_arguments)]
     fn run_graph(
         &mut self,
         chain: &[crate::data::BakedEffect],
         plan: &crate::data::FxGraphPlan,
+        owner: usize,
         data: &PlaybackData,
         fl: &mut [f32],
         fr: &mut [f32],
@@ -2036,36 +2176,41 @@ impl Renderer {
     ) {
         let mut bufs = std::mem::take(&mut self.graph_bufs);
         let n = chain.len().min(bufs.len() - 1);
+        let exit = crate::data::MAX_GRAPH_NODES + 1;
+        let times = self.graph_time[owner];
+        let rings = self.graph_ring[owner];
+        let pos = self.ring_pos;
         bufs[0][0][..frames].copy_from_slice(&fl[..frames]);
         bufs[0][1][..frames].copy_from_slice(&fr[..frames]);
         for (i, fx) in chain.iter().enumerate().take(n) {
             let (done, rest) = bufs.split_at_mut(i + 1);
             let [ol, or] = &mut rest[0];
-            ol[..frames].fill(0.0);
-            or[..frames].fill(0.0);
-            for &(src, amp) in plan.inputs.get(i).map(|v| v.as_slice()).unwrap_or(&[]) {
-                let Some([sl, sr]) = done.get(src as usize) else {
-                    continue;
-                };
-                for f in 0..frames {
-                    ol[f] += sl[f] * amp;
-                    or[f] += sr[f] * amp;
-                }
-            }
+            let inputs = plan.inputs.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
+            let ring = rings[i + 1];
+            gather(
+                inputs,
+                done,
+                &mut ol[..frames],
+                &mut or[..frames],
+                (ring != NO_RING).then(|| (&mut self.branch_rings[ring as usize], pos)),
+                &times,
+                in_time_of(&times, inputs, i),
+            );
             self.run_effect(fx, data, &mut ol[..frames], &mut or[..frames], frames);
         }
-        fl[..frames].fill(0.0);
-        fr[..frames].fill(0.0);
-        for &(src, amp) in &plan.output {
-            if src as usize > n {
-                continue;
-            }
-            let [sl, sr] = &bufs[src as usize];
-            for f in 0..frames {
-                fl[f] += sl[f] * amp;
-                fr[f] += sr[f] * amp;
-            }
-        }
+        let ring = rings[exit];
+        let outs: &[(u16, f32)] = &plan.output;
+        let in_time = in_time_of(&times, outs, n);
+        let valid = &bufs[..=n];
+        gather(
+            outs,
+            valid,
+            &mut fl[..frames],
+            &mut fr[..frames],
+            (ring != NO_RING).then(|| (&mut self.branch_rings[ring as usize], pos)),
+            &times,
+            in_time,
+        );
         self.graph_bufs = bufs;
     }
 
@@ -2120,22 +2265,38 @@ impl Renderer {
                 }
                 return;
             }
-            // サイドチェイン・ダイナミック EQ の検出信号: ソーストラックの生ミックス(エフェクト前)
-            let key_track = params.key_source().map(|t| t as usize);
+            // サイドチェイン・ダイナミック EQ の検出信号: ソーストラックの生ミックス(エフェクト前)。
+            // CLAP 音源のトラックは音源の出力も足し、バスはそのバスが受けた音(送る側より後に処理するので
+            // 同じブロックの音。輪になって先に処理するときは 1 ブロック前の音)
+            let key_track = params
+                .key_source()
+                .map(|t| t as usize)
+                .filter(|t| *t < data.tracks.len().min(MAX_TRACKS));
+            let key_bus = key_track.filter(|t| data.tracks[*t].is_bus);
+            let key_plugin = key_track
+                .filter(|t| !data.tracks[*t].is_bus)
+                .and_then(|t| self.track_plugin[t]);
             let state = &mut self.effect_states[slot];
             state.set_clock(self.blk_tick, self.blk_tps);
             for f in 0..frames {
-                let key = key_track
-                    .filter(|t| *t < data.tracks.len().min(MAX_TRACKS))
-                    .map(|t| self.blk_mono[t][f])
-                    .unwrap_or(0.0);
+                let key = match (key_track, key_bus) {
+                    (_, Some(b)) => (self.bus_l[b][f] + self.bus_r[b][f]) * 0.5,
+                    (Some(t), None) => {
+                        self.blk_mono[t][f]
+                            + key_plugin.map_or(0.0, |s| {
+                                (self.plugin_out[s][0][f] + self.plugin_out[s][1][f]) * 0.5
+                            })
+                    }
+                    (None, None) => 0.0,
+                };
                 (fl[f], fr[f]) = state.process(&params, fl[f], fr[f], key);
             }
         }
     }
 
-    /// 遅延補正の量を決める(CLAP の申告と、内蔵エフェクトの遅れ)。通常トラックは(音源 + エフェクトの遅延)の最大に揃え、
-    /// バスはバス同士の最大に揃える。通常トラックの合算はバスの最大の遅延ぶん遅らせる。
+    /// 遅延補正の量を決める(CLAP の申告と、内蔵エフェクトの遅れ)。処理の順に、各トラックの出口の時刻
+    /// (入口の時刻 + 音源とエフェクトの遅れ)と、各バス・マスターの入口の時刻(流れ込む音の出口の最大)を求める。
+    /// エフェクトの分岐は、遅れの違う枝が合流するノードに輪状バッファを割り当てて揃える
     fn compute_pdc(&mut self, data: &PlaybackData, ntracks: usize) {
         let lat_of = |slot: usize, gen: Option<u64>, plugins: &[Option<Box<Processor>>]| -> u32 {
             plugins
@@ -2145,63 +2306,107 @@ impl Renderer {
                 .map(|p| p.clap.latency())
                 .unwrap_or(0)
         };
+        let fx_lat = |fx: &crate::data::BakedEffect, plugins: &[Option<Box<Processor>>]| {
+            fx.plugin
+                .map(|(s, g)| lat_of(s as usize, Some(g), plugins))
+                .unwrap_or_else(|| fx.params.latency())
+        };
+        const NODES: usize = crate::data::MAX_GRAPH_NODES;
+        let mut next_ring = 0usize;
+        // つながり 1 つ分: 各ノードの出口の時刻を求め、揃えが要る入口に輪状バッファを割り当てる。出口までの遅れを返す
+        let mut plan_graph = |owner: usize,
+                              effects: &[crate::data::BakedEffect],
+                              graph: Option<&crate::data::FxGraphPlan>,
+                              this: &mut Self|
+         -> u32 {
+            let mut times = [0u32; NODES + 2];
+            let mut rings = [NO_RING; NODES + 2];
+            let total = match graph {
+                Some(g) => {
+                    let n = effects.len().min(NODES);
+                    let mut assign =
+                        |times: &[u32], inputs: &[(u16, f32)], limit: usize| -> (u32, u8) {
+                            let t = in_time_of(times, inputs, limit);
+                            let uneven = inputs
+                                .iter()
+                                .filter(|(src, _)| (*src as usize) <= limit)
+                                .any(|(src, _)| times[*src as usize] != t);
+                            let ring = if uneven && next_ring < BRANCH_RINGS {
+                                next_ring += 1;
+                                (next_ring - 1) as u8
+                            } else {
+                                NO_RING
+                            };
+                            (t, ring)
+                        };
+                    for (i, fx) in effects.iter().enumerate().take(n) {
+                        let inputs = g.inputs.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
+                        let (t, ring) = assign(&times, inputs, i);
+                        rings[i + 1] = ring;
+                        times[i + 1] = t + fx_lat(fx, &this.plugins);
+                    }
+                    let (t, ring) = assign(&times, &g.output, n);
+                    rings[NODES + 1] = ring;
+                    t
+                }
+                None => effects.iter().map(|fx| fx_lat(fx, &this.plugins)).sum(),
+            };
+            times[NODES + 1] = total;
+            // 割り当てが変わった輪状バッファは、前の持ち主が先に書いた音を消してから使う
+            for (k, r) in rings.iter().enumerate() {
+                if *r != NO_RING && this.graph_ring[owner][k] != *r {
+                    for side in this.branch_rings[*r as usize].iter_mut() {
+                        side.fill(0.0);
+                    }
+                }
+            }
+            this.graph_time[owner] = times;
+            this.graph_ring[owner] = rings;
+            total
+        };
         let mut lat = [0u32; MAX_TRACKS];
         for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
-            let mut l = self.track_plugin[ti]
+            let inst = self.track_plugin[ti]
                 .filter(|_| !mix.is_bus)
                 .map(|s| lat_of(s, None, &self.plugins))
                 .unwrap_or(0);
-            // CLAP の申告と、内蔵エフェクト(先読みのリミッタ)の遅れ
-            let fx_lat = |fx: &crate::data::BakedEffect| {
-                fx.plugin
-                    .map(|(s, g)| lat_of(s as usize, Some(g), &self.plugins))
-                    .unwrap_or_else(|| fx.params.latency())
-            };
-            match &mix.fx_graph {
-                // 分岐があるときは、出口までの道のうち一番遅いもの
-                // (枝ごとの遅れの違いはまだ揃えない。遅れのある CLAP を並列に置くと少しずれる)
-                Some(g) => {
-                    let mut node = [0u32; crate::data::MAX_GRAPH_NODES + 1];
-                    for (i, fx) in mix
-                        .effects
-                        .iter()
-                        .enumerate()
-                        .take(crate::data::MAX_GRAPH_NODES)
-                    {
-                        let inp = g.inputs[i]
-                            .iter()
-                            .map(|(src, _)| node[*src as usize])
-                            .max()
-                            .unwrap_or(0);
-                        node[i + 1] = inp + fx_lat(fx);
-                    }
-                    l += g
-                        .output
-                        .iter()
-                        .map(|(src, _)| node[*src as usize])
-                        .max()
-                        .unwrap_or(0);
+            lat[ti] = inst + plan_graph(ti, &mix.effects, mix.fx_graph.as_ref(), self);
+        }
+        plan_graph(
+            MAX_TRACKS,
+            &data.master_effects,
+            data.master_fx_graph.as_ref(),
+            self,
+        );
+        let mut inn = [0u32; MAX_TRACKS];
+        let mut master_in = 0u32;
+        let (order, n) = process_order(data, ntracks);
+        for &ti in &order[..n] {
+            let ti = ti as usize;
+            let mix = &data.tracks[ti];
+            let out = inn[ti] + lat[ti];
+            self.pdc_out[ti] = out;
+            for b in mix.output.iter().chain(mix.sends.iter().map(|s| &s.target)) {
+                if let Some(v) = inn.get_mut(*b as usize) {
+                    *v = (*v).max(out);
                 }
-                None => l += mix.effects.iter().map(fx_lat).sum::<u32>(),
             }
-            lat[ti] = l;
+            if mix.output.is_none() {
+                master_in = master_in.max(out);
+            }
         }
-        let max_of = |bus: bool| {
-            data.tracks
-                .iter()
-                .take(ntracks)
-                .enumerate()
-                .filter(|(_, m)| m.is_bus == bus)
-                .map(|(ti, _)| lat[ti])
-                .max()
-                .unwrap_or(0)
-        };
-        let (max_track, max_bus) = (max_of(false), max_of(true));
-        for (ti, mix) in data.tracks.iter().take(ntracks).enumerate() {
-            let target = if mix.is_bus { max_bus } else { max_track };
-            self.pdc_delay[ti] = (target - lat[ti]).min(MAX_PDC as u32 - 1);
+        self.pdc_in = inn;
+        self.pdc_master_in = master_in.min(MAX_PDC as u32 - 1);
+        for &ti in &order[..n] {
+            let ti = ti as usize;
+            let target = match data.tracks[ti].output {
+                Some(b) => inn[b as usize],
+                None => master_in,
+            };
+            self.pdc_delay[ti] = target
+                .saturating_sub(self.pdc_out[ti])
+                .min(MAX_PDC as u32 - 1);
         }
-        self.pdc_main = max_bus.min(MAX_PDC as u32 - 1);
     }
 
     /// テスト用: トラックの遅延補正の量(サンプル)。
@@ -2254,7 +2459,15 @@ impl Renderer {
         let mut l = std::mem::take(&mut self.mix_l);
         let mut r = std::mem::take(&mut self.mix_r);
         match &data.master_fx_graph {
-            Some(g) => self.run_graph(&data.master_effects, g, data, &mut l, &mut r, frames),
+            Some(g) => self.run_graph(
+                &data.master_effects,
+                g,
+                MAX_TRACKS,
+                data,
+                &mut l,
+                &mut r,
+                frames,
+            ),
             None if !data.master_effects.is_empty() => {
                 self.run_chain(&data.master_effects, data, &mut l, &mut r, frames)
             }
@@ -2947,25 +3160,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delay_stereo_shifts_by_the_given_samples() {
-        let mut line = [vec![0.0f32; 16], vec![0.0f32; 16]];
-        let mut pos = 0;
-        let mut l: Vec<f32> = (1..=10).map(|v| v as f32).collect();
-        let mut r: Vec<f32> = (1..=10).map(|v| -(v as f32)).collect();
-        delay_stereo(&mut l, &mut r, &mut line, &mut pos, 3);
-        assert_eq!(&l[..5], &[0.0, 0.0, 0.0, 1.0, 2.0]);
-        assert_eq!(r[9], -7.0);
-        // ブロックをまたいでも続く
-        let mut l2 = vec![11.0f32, 12.0];
-        let mut r2 = vec![0.0f32; 2];
-        delay_stereo(&mut l2, &mut r2, &mut line, &mut pos, 3);
-        assert_eq!(l2, vec![8.0, 9.0]);
-        // 0 なら素通し
-        let mut l3 = vec![5.0f32];
-        let mut r3 = vec![5.0f32];
-        delay_stereo(&mut l3, &mut r3, &mut line, &mut pos, 0);
-        assert_eq!(l3, vec![5.0]);
+    fn ring_writes_ahead_and_reads_back_once() {
+        let mut ring = [vec![0.0f32; 16], vec![0.0f32; 16]];
+        let l: Vec<f32> = (1..=6).map(|v| v as f32).collect();
+        let r: Vec<f32> = l.iter().map(|v| -v).collect();
+        // 位置 12 から 3 先(折り返す)に書き、同じ位置に 0 遅れで足す
+        ring_add(&mut ring, 12 + 3, &l, &r, 1.0);
+        ring_add(&mut ring, 12, &l, &r, 0.5);
+        let (mut ol, mut or) = (vec![0.0f32; 6], vec![0.0f32; 6]);
+        ring_take(&mut ring, 12, &mut ol, &mut or);
+        assert_eq!(ol, vec![0.5, 1.0, 1.5, 3.0, 4.5, 6.0]);
+        assert_eq!(or[3], -3.0);
+        // 読んだ区間は消え、続きは次のブロックで出る
+        let (mut ol2, mut or2) = (vec![0.0f32; 3], vec![0.0f32; 3]);
+        ring_take(&mut ring, 18, &mut ol2, &mut or2);
+        assert_eq!(ol2, vec![4.0, 5.0, 6.0]);
+        let (mut ol3, mut or3) = (vec![0.0f32; 6], vec![0.0f32; 6]);
+        ring_take(&mut ring, 12, &mut ol3, &mut or3);
+        assert!(ol3.iter().all(|v| *v == 0.0));
     }
+
+    #[test]
+    fn gather_aligns_branches_with_different_latency() {
+        // 入力(0)と、遅れ 2 のノード(1)が合流する。早い方(入力)を 2 遅らせて揃える
+        let done = [
+            [vec![1.0f32, 0.0, 0.0, 0.0], vec![0.0f32; 4]],
+            [vec![0.0f32, 0.0, 1.0, 0.0], vec![0.0f32; 4]],
+        ];
+        let times = [0u32, 2];
+        let mut ring = [vec![0.0f32; 32], vec![0.0f32; 32]];
+        let (mut ol, mut or) = (vec![0.0f32; 4], vec![0.0f32; 4]);
+        gather(
+            &[(0, 1.0), (1, 1.0)],
+            &done,
+            &mut ol,
+            &mut or,
+            Some((&mut ring, 0)),
+            &times,
+            2,
+        );
+        assert_eq!(ol, vec![0.0, 0.0, 2.0, 0.0]);
+    }
+
     use crate::data::{NoteEvent, TrackMix};
     use glaux_dsp::{InstrumentParams, SubtractiveParams, Waveform};
 
@@ -3027,6 +3263,7 @@ mod tests {
                 plugin_auto: vec![],
                 is_bus: false,
                 sends: vec![],
+                output: None,
                 stereo: false,
                 ident: 1,
                 // 実際の構築(build_playback_data)と同じく、ノートが違えば発音内容も違う
@@ -3044,6 +3281,7 @@ mod tests {
             tempo: vec![],
             sigs: vec![],
             conv: vec![],
+            order: vec![],
         }
     }
 
@@ -3288,6 +3526,107 @@ mod tests {
         let lat = glaux_dsp::limiter::LimiterParams::new(0.0, -1.0, 100.0, 48_000.0).latency();
         assert_eq!(r.pdc_delay(0), 0);
         assert_eq!(r.pdc_delay(1), lat);
+    }
+
+    /// 2 トラックの曲に、空のバスを `n` 本足す(末尾に並ぶ)
+    fn with_buses(n: usize) -> glaux_core::Project {
+        let mut p = two_pads();
+        for i in 0..n {
+            p.tracks.push(glaux_core::Track::new(
+                glaux_core::TrackId::new(),
+                format!("Bus{i}"),
+                glaux_core::TrackKind::Bus,
+            ));
+        }
+        p
+    }
+
+    fn render_project(p: &glaux_core::Project, blocks: usize) -> Vec<f32> {
+        let shared = Arc::new(Shared::new((*build(p)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared);
+        (0..blocks)
+            .flat_map(|_| render_block(&mut r, 480))
+            .collect()
+    }
+
+    #[test]
+    fn group_bus_sums_its_tracks_and_its_fader_controls_them() {
+        let plain = render_project(&with_buses(1), 20);
+        let mut grouped = with_buses(1);
+        let bus = grouped.tracks[2].id.clone();
+        for t in &mut grouped.tracks[..2] {
+            t.output = Some(bus.clone());
+        }
+        // バスが素通し(0dB・中央)なら、マスターへ直接送ったときと同じ音
+        let g = render_project(&grouped, 20);
+        let diff = plain
+            .iter()
+            .zip(&g)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(rms(&plain) > 1e-3);
+        assert!(diff < 1e-5, "{diff}");
+        // バスのフェーダーを下げると、まとめた 2 本が下がる
+        grouped.tracks[2].volume_db = -60.0;
+        assert!(rms(&render_project(&grouped, 20)) < rms(&plain) * 0.01);
+        // バスをミュートしても同じ
+        grouped.tracks[2].volume_db = 0.0;
+        grouped.tracks[2].mute = true;
+        assert!(rms(&render_project(&grouped, 20)) < 1e-6);
+    }
+
+    #[test]
+    fn bus_can_feed_another_bus() {
+        // トラック → バス0 → バス1 → マスター。バス1 を下げると全部下がる
+        let mut p = with_buses(2);
+        let (b0, b1) = (p.tracks[2].id.clone(), p.tracks[3].id.clone());
+        for t in &mut p.tracks[..2] {
+            t.output = Some(b0.clone());
+        }
+        p.tracks[2].output = Some(b1.clone());
+        let open = render_project(&p, 20);
+        assert!(rms(&open) > 1e-3);
+        p.tracks[3].volume_db = -60.0;
+        assert!(rms(&render_project(&p, 20)) < rms(&open) * 0.01);
+        // バス0 からバス1 へのセンド(フェーダー前)でも届く
+        let mut q = with_buses(2);
+        let b0 = q.tracks[2].id.clone();
+        for t in &mut q.tracks[..2] {
+            t.output = Some(b0.clone());
+        }
+        let b1 = q.tracks[3].id.clone();
+        q.tracks[2].volume_db = -90.0;
+        q.tracks[2].sends.push(glaux_core::Send {
+            target: b1,
+            level_db: 0.0,
+            pre_fader: true,
+        });
+        assert!(rms(&render_project(&q, 20)) > rms(&open) * 0.5);
+    }
+
+    #[test]
+    fn latency_is_compensated_across_bus_levels() {
+        // トラック0 → (リミッタの遅れ) バス0(リミッタ) → マスター、トラック1 → マスター
+        let lat = glaux_dsp::limiter::LimiterParams::new(0.0, -1.0, 100.0, 48_000.0).latency();
+        let mut p = with_buses(1);
+        let bus = p.tracks[2].id.clone();
+        p.tracks[0].output = Some(bus);
+        for i in [0, 2] {
+            p.tracks[i].effects.push(glaux_core::Effect::builtin(
+                glaux_core::FxId::new(),
+                "limiter",
+            ));
+        }
+        let shared = Arc::new(Shared::new((*build(&p)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared);
+        let _ = render_block(&mut r, 480);
+        // トラック0 はバスの入口にそのまま(バスへ入るのは自分だけ)、バスは 2 倍遅れてマスターへ。
+        // トラック1 はその 2 倍ぶん遅らせて揃える
+        assert_eq!(r.pdc_delay(0), 0);
+        assert_eq!(r.pdc_delay(2), 0);
+        assert_eq!(r.pdc_delay(1), 2 * lat);
     }
 
     #[test]

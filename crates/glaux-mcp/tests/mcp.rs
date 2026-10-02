@@ -2023,8 +2023,10 @@ async fn analyze_sound_describes_track_note_and_file() {
     assert!(v["envelope"]["attack_ms"].is_number());
     assert!(v["harmonics"]["waveform_guess"].is_string());
     assert!(v["labels"].as_array().unwrap().len() >= 3);
-    // CLAP のモデルがあれば音色語(カテゴリごと)、無ければ取得方法の案内
-    if glaux_ml::clap::available() {
+    // CLAP のモデルがあれば音色語(カテゴリごと)、無ければ取得方法の案内。
+    // (モデルの有無はここで調べ直さない: 並んで走るほかのテストが XDG_CONFIG_HOME を差し替えるので、
+    // サーバーが見たときと食い違うことがある)
+    if !v["words"].is_null() {
         eprintln!("{}", serde_json::to_string(&v["words"]).unwrap());
         assert_eq!(v["words"]["instrument"].as_array().unwrap().len(), 3);
         assert!(v["words"]["mood"].is_array());

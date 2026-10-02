@@ -126,6 +126,15 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         pre_fader: rng.gen(),
                     };
                 }
+                // 出力先(グループ)。輪になる組み合わせは失敗する(可逆性は成功したものだけ見る)
+                if rng.gen_bool(0.15) && !buses.is_empty() {
+                    let src = *midi_tracks.choose(rng).unwrap();
+                    let bus = buses.choose(rng).unwrap();
+                    return Command::SetTrackProp {
+                        id: src.id.clone(),
+                        prop: TrackProp::Output(rng.gen_bool(0.7).then(|| bus.id.clone())),
+                    };
+                }
                 return Command::SetTrackProp {
                     id: pick_track(rng),
                     prop: match rng.gen_range(0..7) {
@@ -1251,9 +1260,29 @@ fn sends_go_only_to_buses_and_undo_restores() {
     assert!(p.track(&a).unwrap().sends.is_empty());
     p.apply(&applied.inverse).unwrap();
     assert_eq!(p.track(&a).unwrap().sends.len(), 1);
-    // バス → バス、バス以外への送り、範囲外は不可
-    assert!(p.apply(&send(&bus, &bus2, Some(0.0))).is_err());
+    // バス → バスはよい(輪になるのは不可)、バス以外への送り、範囲外は不可
+    p.apply(&send(&bus, &bus2, Some(0.0))).unwrap();
+    assert!(p.apply(&send(&bus2, &bus, Some(0.0))).is_err(), "輪");
+    assert_eq!(p.track(&bus2).unwrap().sends.len(), 0, "輪の送りは入らない");
     assert!(p.apply(&send(&bus2, &a, Some(0.0))).is_err());
+    // 出力先(グループ): バスだけ、輪にならないこと、取り消しで戻る
+    let out = |id: &TrackId, to: Option<&TrackId>| Command::SetTrackProp {
+        id: id.clone(),
+        prop: glaux_core::TrackProp::Output(to.cloned()),
+    };
+    let applied = p.apply(&out(&a, Some(&bus))).unwrap();
+    assert_eq!(p.track(&a).unwrap().output.as_ref(), Some(&bus));
+    p.apply(&applied.inverse).unwrap();
+    assert!(p.track(&a).unwrap().output.is_none());
+    assert!(
+        p.apply(&out(&bus2, Some(&bus))).is_err(),
+        "bus → bus2 があるので輪"
+    );
+    assert!(p.apply(&out(&a, Some(&a))).is_err());
+    assert!(
+        p.track(&bus2).unwrap().output.is_none(),
+        "失敗したら変えない"
+    );
     assert!(p.apply(&send(&a, &bus, Some(40.0))).is_err());
     // バスにクリップは置けない
     let clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(480));

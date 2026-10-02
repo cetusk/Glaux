@@ -816,7 +816,6 @@
   }
 
   select,
-  input[type="text"],
   .num {
     height: 26px;
     background: var(--bg-inset);
@@ -828,8 +827,7 @@
   }
 
   select.sc,
-  .sc select,
-  .sc input[type="text"] {
+  .sc select {
     width: 270px;
   }
 

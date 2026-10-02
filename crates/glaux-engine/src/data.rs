@@ -322,8 +322,10 @@ pub struct TrackMix {
     pub plugin_auto: Vec<(u32, Vec<AutoPoint>)>,
     /// バス(リターン)トラック: 自分の音は持たず、センドで受けた音をチェーン → 音量/パンに通す
     pub is_bus: bool,
-    /// センド(送り先のバスの添字・量(リニア)・フェーダー前か)
+    /// センド(送り先のバスの添字・量(リニア)・フェーダー前か)。バスからほかのバスへも送れる
     pub sends: Vec<SendMix>,
+    /// 出力先のバス(グループ)の添字。`None` ならマスター
+    pub output: Option<u32>,
     /// ステレオの素材(音声クリップ)を含む: パンは左右バランスとして掛ける
     pub stereo: bool,
     /// トラックの識別子(トラック ID と楽器の種類のハッシュ)。再生中にデータを差し替えたとき、
@@ -399,6 +401,9 @@ pub struct PlaybackData {
     /// 畳み込みリバーブの本体(`EffectParams::Convolution` の `index` で引く)。
     /// 同じ IR なら作り直しの間で使い回す(響きが途切れない)
     pub conv: Vec<Arc<glaux_dsp::convolver::ConvEngine>>,
+    /// トラックを処理する順(`tracks` の添字。先頭 [`MAX_TRACKS`] 本)。送る側を受ける側より先に並べる。
+    /// 空なら「通常のトラック → バス」の順(手で組んだテスト用のデータ)
+    pub order: Vec<u32>,
 }
 
 /// 畳み込みリバーブの本体の使い回し(エフェクト ID → (条件のハッシュ, 本体))。
@@ -2046,10 +2051,50 @@ fn build_inner(
         bank,
         out: std::cell::RefCell::new(Vec::new()),
     };
+    let routing_ok = glaux_core::routing_error(&project.tracks).is_none();
+    // 送り・出力先に使えるバスの添字(先頭 MAX_TRACKS 本のうち)
+    let bus_index = |id: &glaux_core::TrackId| -> Option<usize> {
+        project
+            .tracks
+            .iter()
+            .position(|x| &x.id == id && x.kind == glaux_core::TrackKind::Bus)
+            .filter(|i| *i < MAX_TRACKS)
+    };
+    // ソロにしたバスへ流れ込むトラック(上流をたどる)も鳴らす
+    let solo_upstream: std::collections::HashSet<usize> = {
+        let mut set: std::collections::HashSet<usize> = project
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.solo && t.kind == glaux_core::TrackKind::Bus)
+            .map(|(i, _)| i)
+            .collect();
+        if routing_ok {
+            loop {
+                let before = set.len();
+                for (i, t) in project.tracks.iter().enumerate() {
+                    let feeds = t
+                        .output
+                        .iter()
+                        .chain(t.sends.iter().map(|s| &s.target))
+                        .filter_map(&bus_index)
+                        .any(|b| set.contains(&b));
+                    if feeds {
+                        set.insert(i);
+                    }
+                }
+                if set.len() == before {
+                    break;
+                }
+            }
+        }
+        set
+    };
     let mut tracks: Vec<TrackMix> = project
         .tracks
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(ti, t)| {
             // マクロを焼き込み、変調(LFO)をオートメーションのレーンに焼き込んだトラック(無ければそのまま)。
             // ここ(設定側)ではノートを使わないので、クリップは写さない
             let with_macros = t.with_macros_applied();
@@ -2098,7 +2143,11 @@ fn build_inner(
                 gain_l: gain * pl,
                 gain_r: gain * pr,
                 // バスはソロの影響を受けない(ソロにしたトラックのリバーブが消えないように)
-                audible: !t.mute && (!any_solo || t.solo || t.kind == glaux_core::TrackKind::Bus),
+                audible: !t.mute
+                    && (!any_solo
+                        || t.solo
+                        || t.kind == glaux_core::TrackKind::Bus
+                        || solo_upstream.contains(&ti)),
                 base_amp: gain,
                 base_pan: t.pan,
                 vol_db_auto: bake_lane(t, "volume_db"),
@@ -2111,16 +2160,16 @@ fn build_inner(
                 fx_graph,
                 is_bus: t.kind == glaux_core::TrackKind::Bus,
                 stereo: false,
-                sends: if t.kind == glaux_core::TrackKind::Bus {
+                // ルーティングが壊れている(古いファイルなどで輪になっている)ときは、出力はマスターへ、
+                // バスからの送りは無しにして鳴らす
+                sends: if t.kind == glaux_core::TrackKind::Bus && !routing_ok {
                     vec![]
                 } else {
                     t.sends
                         .iter()
                         .filter_map(|snd| {
-                            let target = project.tracks.iter().position(|x| {
-                                x.id == snd.target && x.kind == glaux_core::TrackKind::Bus
-                            })?;
-                            (target < MAX_TRACKS).then_some(SendMix {
+                            let target = bus_index(&snd.target)?;
+                            (target != ti).then_some(SendMix {
                                 target: target as u32,
                                 amp: db_to_amp(snd.level_db),
                                 pre_fader: snd.pre_fader,
@@ -2128,6 +2177,13 @@ fn build_inner(
                         })
                         .collect()
                 },
+                output: t
+                    .output
+                    .as_ref()
+                    .filter(|_| routing_ok)
+                    .and_then(&bus_index)
+                    .filter(|b| *b != ti)
+                    .map(|b| b as u32),
                 plugin: bank
                     .plugin_slots
                     .get(&crate::plugins::PluginOwner::Track(t.id.clone()))
@@ -2293,7 +2349,6 @@ fn build_inner(
         events,
         exprs,
         audio_events,
-        tracks,
         master_effects,
         master_fx_graph,
         master_amp: db_to_amp(project.master.volume_db),
@@ -2304,7 +2359,78 @@ fn build_inner(
         tempo,
         sigs,
         conv: conv.out.into_inner(),
+        order: routing_order(&tracks),
+        tracks,
     }
+}
+
+/// トラックを処理する順を決める(先頭 [`MAX_TRACKS`] 本)。出力先・送り先のバスは送る側より後、
+/// サイドチェインのキーにバスを使うトラックはそのバスより後(できる範囲で。輪になるならキーの順は諦めて
+/// 1 ブロック前の音を使う)。同じ条件なら元の並び(通常のトラックはバスより先)
+pub fn routing_order(tracks: &[TrackMix]) -> Vec<u32> {
+    let n = tracks.len().min(MAX_TRACKS);
+    let feed = |t: &TrackMix| -> Vec<usize> {
+        t.output
+            .iter()
+            .chain(t.sends.iter().map(|s| &s.target))
+            .map(|b| *b as usize)
+            .filter(|b| *b < n)
+            .collect()
+    };
+    let keys = |t: &TrackMix| -> Vec<usize> {
+        t.effects
+            .iter()
+            .filter_map(|e| e.params.key_source())
+            .map(|k| k as usize)
+            .filter(|k| *k < n && tracks[*k].is_bus)
+            .collect()
+    };
+    let sort = |with_keys: bool| -> Option<Vec<u32>> {
+        // edges[a] に b があれば a を b より先に
+        let mut edges: Vec<Vec<usize>> = vec![vec![]; n];
+        for (i, t) in tracks.iter().take(n).enumerate() {
+            edges[i].extend(feed(t));
+            if with_keys {
+                for k in keys(t) {
+                    if k != i {
+                        edges[k].push(i);
+                    }
+                }
+            }
+        }
+        let mut indeg = vec![0usize; n];
+        for e in &edges {
+            for &b in e {
+                indeg[b] += 1;
+            }
+        }
+        let mut done = vec![false; n];
+        let mut out = Vec::with_capacity(n);
+        while out.len() < n {
+            // 入ってくる線の無いもののうち、通常のトラックを先に、その中では元の並び順で
+            let next = (0..n)
+                .filter(|&i| !done[i] && indeg[i] == 0)
+                .min_by_key(|&i| (tracks[i].is_bus, i))?;
+            done[next] = true;
+            out.push(next as u32);
+            for &b in &edges[next] {
+                indeg[b] -= 1;
+            }
+        }
+        Some(out)
+    };
+    sort(true)
+        .or_else(|| sort(false))
+        .unwrap_or_else(|| default_order(tracks))
+}
+
+/// 既定の処理順: 通常のトラック → バス(送り・出力先の無い古いデータと同じ)
+pub fn default_order(tracks: &[TrackMix]) -> Vec<u32> {
+    let n = tracks.len().min(MAX_TRACKS) as u32;
+    (0..n)
+        .filter(|&i| !tracks[i as usize].is_bus)
+        .chain((0..n).filter(|&i| tracks[i as usize].is_bus))
+        .collect()
 }
 
 #[cfg(test)]
@@ -2444,6 +2570,37 @@ mod tests {
         assert!(data.events[0].start <= data.events[1].start);
         // 3840 tick = 2.0s = 96000 samples が終端
         assert_eq!(data.end_sample, 96_000);
+    }
+
+    #[test]
+    fn routing_order_puts_feeders_first_and_ignores_broken_routing() {
+        use glaux_core::{Track, TrackId, TrackKind};
+        let mut p = Project::new("r");
+        // 並び: バスB, バスA, トラック。トラック → A → B、B を最後に処理する
+        let b = Track::new(TrackId::new(), "B", TrackKind::Bus);
+        let mut a = Track::new(TrackId::new(), "A", TrackKind::Bus);
+        let mut t = Track::new(TrackId::new(), "T", TrackKind::Midi);
+        a.output = Some(b.id.clone());
+        t.output = Some(a.id.clone());
+        p.tracks = vec![b, a, t];
+        let d = build_playback_data(&p, 48_000.0, &SampleBank::default());
+        assert_eq!(d.order, vec![2, 1, 0]);
+        assert_eq!(d.tracks[2].output, Some(1));
+        assert_eq!(d.tracks[1].output, Some(0));
+        // 輪になっている(古いファイルなど)ときは出力をマスターへ戻して鳴らす
+        let mut broken = p.clone();
+        broken.tracks[0].output = Some(broken.tracks[1].id.clone());
+        let d = build_playback_data(&broken, 48_000.0, &SampleBank::default());
+        assert!(d.tracks.iter().all(|t| t.output.is_none()));
+        assert_eq!(d.order, vec![2, 0, 1]);
+        // バスをソロにすると、そこへ流れ込むトラックも鳴る(ほかのトラックは止まる)
+        let mut solo = p.clone();
+        solo.tracks[0].solo = true;
+        solo.tracks
+            .push(Track::new(TrackId::new(), "U", TrackKind::Midi));
+        let d = build_playback_data(&solo, 48_000.0, &SampleBank::default());
+        assert!(d.tracks[2].audible);
+        assert!(!d.tracks[3].audible);
     }
 
     #[test]

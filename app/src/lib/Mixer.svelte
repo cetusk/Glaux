@@ -120,7 +120,33 @@
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     instrumentPickerStore.open = { trackId: t.id, x: r.left, y: r.bottom + 4 };
   }
-  const receivers = (bus: Track) => project.tracks.filter((t) => t.sends?.some((s) => s.target === bus.id));
+  const receivers = (bus: Track) =>
+    project.tracks.filter((t) => t.output === bus.id || t.sends?.some((s) => s.target === bus.id));
+  /** `from` の音が(出力・送りをたどって)`to` に届くか */
+  function reaches(from: string, to: string): boolean {
+    const seen = new Set<string>();
+    const stack = [from];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (id === to) return true;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const t = project.tracks.find((x) => x.id === id);
+      if (!t) continue;
+      if (t.output) stack.push(t.output);
+      for (const s of t.sends ?? []) stack.push(s.target);
+    }
+    return false;
+  }
+  /** t の出力先・送り先にできるバス(自分と、輪になるものを除く) */
+  const targetsFor = (t: Track) => buses.filter((b) => b.id !== t.id && !reaches(b.id, t.id));
+  function setOutput(t: Track, target: string) {
+    const bus = buses.find((b) => b.id === target);
+    edit(
+      [{ op: "set_track_prop", id: t.id, prop: "output", value: bus ? bus.id : null }],
+      `${t.name} の出力先を ${bus ? bus.name : "マスター"} に`,
+    );
+  }
   /** 列に出すエフェクト: 鳴るものを処理の順に。分岐・合流があるか、鳴らないものの数も */
   function chainOf(effects: ProjectEffect[], fxLinks: FxLink[] | null | undefined) {
     const links = effectiveLinks(effects, fxLinks);
@@ -208,6 +234,60 @@
   </div>
 {/snippet}
 
+{#snippet sendsOf(t: Track)}
+  {#if targetsFor(t).length > 0 || (t.sends?.length ?? 0) > 0}
+    <div class="s-sec"><span>送り</span></div>
+    <div class="sends">
+      {#each buses.filter((b) => b.id !== t.id && (t.sends?.some((s) => s.target === b.id) || !reaches(b.id, t.id))) as b (b.id)}
+        {@const snd = t.sends?.find((s) => s.target === b.id)}
+        {@const shown = dragSend[`${t.id}>${b.id}`] ?? snd?.level_db}
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+        <div class="send" role="presentation" class:none={!snd} onclick={(e) => e.stopPropagation()}>
+          <span class="sn" title={b.name}><i style="background:{b.color ?? '#888'}"></i>{b.name}</span>
+          <span class="sv">{shown !== undefined ? shown.toFixed(0) : "—"}</span>
+          <input
+            type="range"
+            min="-60"
+            max="6"
+            step="0.5"
+            value={snd?.level_db ?? -60}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              dragSend[`${t.id}>${b.id}`] = v;
+              const pre = t.sends?.find((s) => s.target === b.id)?.pre_fader ?? false;
+              api.previewEdit([
+                v <= -60
+                  ? { op: "set_send", track: t.id, target: b.id }
+                  : { op: "set_send", track: t.id, target: b.id, level_db: v, pre_fader: pre },
+              ]);
+            }}
+            onchange={(e) => setSend(t, b, Number(e.currentTarget.value))}
+            aria-label={`${b.name} へ送る量`}
+            title={`${b.name} へ送る量(左端で送らない)`}
+          />
+        </div>
+      {/each}
+    </div>
+  {/if}
+  {#if buses.length > 0 && (targetsFor(t).length > 0 || t.output)}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="out" role="presentation" onclick={(e) => e.stopPropagation()}>
+      <span>出力</span>
+      <select
+        value={t.output ?? ""}
+        onchange={(e) => setOutput(t, e.currentTarget.value)}
+        aria-label="出力先"
+        title="出力先(バスにまとめるとグループになる)"
+      >
+        <option value="">マスター</option>
+        {#each buses.filter((b) => b.id === t.output || targetsFor(t).includes(b)) as b (b.id)}
+          <option value={b.id}>{b.name}</option>
+        {/each}
+      </select>
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet fader(t: Track | null)}
   {@const key = t?.id ?? MASTER_FOCUS_ID}
   {@const vol = dragVol[key] ?? (t ? t.volume_db : project.master.volume_db)}
@@ -248,40 +328,7 @@
           <div class="s-dev plain">音声</div>
         {/if}
         {@render slots(t.effects, t.fx_links, t.id)}
-        {#if buses.length > 0}
-          <div class="s-sec"><span>送り</span></div>
-          <div class="sends">
-            {#each buses as b (b.id)}
-              {@const snd = t.sends?.find((s) => s.target === b.id)}
-              {@const shown = dragSend[`${t.id}>${b.id}`] ?? snd?.level_db}
-              <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-              <div class="send" role="presentation" class:none={!snd} onclick={(e) => e.stopPropagation()}>
-                <span class="sn" title={b.name}><i style="background:{b.color ?? '#888'}"></i>{b.name}</span>
-                <span class="sv">{shown !== undefined ? shown.toFixed(0) : "—"}</span>
-                <input
-                  type="range"
-                  min="-60"
-                  max="6"
-                  step="0.5"
-                  value={snd?.level_db ?? -60}
-                  oninput={(e) => {
-                    const v = Number(e.currentTarget.value);
-                    dragSend[`${t.id}>${b.id}`] = v;
-                    const pre = t.sends?.find((s) => s.target === b.id)?.pre_fader ?? false;
-                    api.previewEdit([
-                      v <= -60
-                        ? { op: "set_send", track: t.id, target: b.id }
-                        : { op: "set_send", track: t.id, target: b.id, level_db: v, pre_fader: pre },
-                    ]);
-                  }}
-                  onchange={(e) => setSend(t, b, Number(e.currentTarget.value))}
-                  aria-label={`${b.name} へ送る量`}
-                  title={`${b.name} へ送る量(左端で送らない)`}
-                />
-              </div>
-            {/each}
-          </div>
-        {/if}
+        {@render sendsOf(t)}
         <div class="s-bottom">
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div class="pan" role="presentation" onclick={(e) => e.stopPropagation()}>
@@ -320,6 +367,7 @@
         </div>
         <div class="s-dev plain" title="このバスへ送っているトラック">受けている: {receivers(t).map((r) => r.name).join("・") || "なし"}</div>
         {@render slots(t.effects, t.fx_links, t.id)}
+        {@render sendsOf(t)}
         <div class="s-bottom">
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div class="pan" role="presentation" onclick={(e) => e.stopPropagation()}>
@@ -578,6 +626,23 @@
     gap: 4px;
     font-size: 10px;
     color: var(--text-faint);
+    padding: 1px 2px;
+  }
+
+  .out {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px 0;
+    font-size: 10px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  .out select {
+    flex: 1;
+    min-width: 0;
+    font-size: 10px;
     padding: 1px 2px;
   }
 

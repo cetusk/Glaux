@@ -147,6 +147,25 @@ impl Project {
                         crate::model::check_macros(v).map_err(CoreError::OutOfRange)?;
                         TrackProp::Macros(std::mem::replace(&mut t.macros, v.clone()))
                     }
+                    TrackProp::Output(v) => {
+                        let old = std::mem::replace(&mut t.output, v.clone());
+                        // 出力先はバスで、輪にならないこと(だめなら戻す)
+                        if let Some(err) = crate::model::routing_error(&self.tracks) {
+                            if let Some(t) = self.track_mut(id) {
+                                t.output = old;
+                            }
+                            return Err(CoreError::OutOfRange(err));
+                        }
+                        if v.as_ref().is_some_and(|b| self.track(b).is_none()) {
+                            if let Some(t) = self.track_mut(id) {
+                                t.output = old;
+                            }
+                            return Err(CoreError::TrackNotFound(
+                                v.clone().unwrap_or_else(TrackId::new),
+                            ));
+                        }
+                        TrackProp::Output(old)
+                    }
                 };
                 Ok(Applied {
                     inverse: SetTrackProp {
@@ -908,10 +927,9 @@ impl Project {
                     .track_mut(track)
                     .ok_or_else(|| CoreError::TrackNotFound(track.clone()))?;
                 if let Some(db) = level_db {
-                    if t.kind == TrackKind::Bus || target_kind != TrackKind::Bus || track == target
-                    {
+                    if target_kind != TrackKind::Bus || track == target {
                         return Err(CoreError::OutOfRange(
-                            "センドはバス以外のトラックからバスへだけ送れます".into(),
+                            "センドの送り先はバスだけです(自分自身へは送れない)".into(),
                         ));
                     }
                     if !(-60.0..=12.0).contains(db) {
@@ -937,6 +955,21 @@ impl Project {
                             pre_fader: *pre_fader,
                         },
                     );
+                }
+                // バスからバスへの送りで輪になるなら戻す
+                if level_db.is_some() {
+                    if let Some(err) = crate::model::routing_error(&self.tracks) {
+                        if let Some(t) = self.track_mut(track) {
+                            t.sends.retain(|s| &s.target != target);
+                            if let Some(o) = old {
+                                let at = t
+                                    .sends
+                                    .partition_point(|s| s.target.as_str() < o.target.as_str());
+                                t.sends.insert(at, o);
+                            }
+                        }
+                        return Err(CoreError::OutOfRange(err));
+                    }
                 }
                 Ok(Applied {
                     inverse: SetSend {

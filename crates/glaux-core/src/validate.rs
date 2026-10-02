@@ -60,6 +60,10 @@ impl Project {
                 self.ppq
             )));
         }
+        // 出力先・送り先のバス(輪になっていると再生ではマスターへ戻すので、警告にとどめる)
+        if let Some(msg) = crate::model::routing_error(&self.tracks) {
+            issues.push(Issue::warn(format!("routing: {msg}")));
+        }
         if self
             .time_sig_map
             .first()
