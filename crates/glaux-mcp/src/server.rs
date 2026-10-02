@@ -11959,8 +11959,9 @@ impl GlauxServer {
         description = "トラックのマクロ(最大 8 個)を作る・変える。1 つの値(0〜1)で、割り当てた複数のつまみを\
         それぞれの最小〜最大の間で動かす(曲線付き)。「明るさ」= cutoff と reverb.mix、「迫力」= drive と volume など、\
         意味の単位の取っ手にする。値は macro/N として set_param・オートメーション(shape_automation など)でも動かせ、\
-        オートメーションがあれば割り当て先のオートメーションになる。割り当て先は内蔵の音源・エフェクトのつまみと\
-        track/volume_db・track/pan(CLAP は不可)。割り当てたつまみはマクロが上書きする(元のオートメーションより優先)。\
+        オートメーションがあれば割り当て先のオートメーションになる。割り当て先は内蔵の音源・エフェクトのつまみ、\
+        CLAP のつまみ(device/clap:<id>・fx/<id>/clap:<id>。値はプラグインの単位で、list_params の range を見て min・max を決める)、\
+        track/volume_db・track/pan。割り当てたつまみはマクロが上書きする(元のオートメーションより優先)。\
         index で既存を変える(値だけなら index と value)、remove で外す。1 回の undo で戻る。"
     )]
     async fn set_macro(
@@ -12099,8 +12100,9 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "トラックに変調(LFO)を付けて、内蔵の音源・エフェクトのつまみを揺らす(動きのある音色): target につまみ\
-        (\"cutoff\"・\"auto_filter.cutoff\"・\"fx/<id>/mix\")、sync でテンポに合わせた周期(\"1/4\"・\"1/8d\"・\"1/1\")か rate_hz、\
+        description = "トラックに変調(LFO)を付けて、音源・エフェクトのつまみを揺らす(動きのある音色): target につまみ\
+        (\"cutoff\"・\"auto_filter.cutoff\"・\"fx/<id>/mix\"。CLAP のつまみも \"device/clap:<id>\"・\"fx/<id>/clap:<id>\" で。\
+        範囲と今の値はプラグインから読む)、sync でテンポに合わせた周期(\"1/4\"・\"1/8d\"・\"1/1\")か rate_hz、\
         shape(sine / triangle / square / saw_up / saw_down / random)、depth(つまみの単位で ±)。同じつまみのオートメーションが\
         あればその値を中心に揺らす。ワブルベース = wavetable の position か subtractive の cutoff を 1/8 の sine、うねるパッド = cutoff を\
         2/1 の triangle、ランダムに動くアルペジオ = random。1 トラック 8 個まで。同じつまみは置き換える。remove で外す。1 回の undo で戻る。"
@@ -12155,8 +12157,11 @@ impl GlauxServer {
         } else {
             let t = p.target.as_deref().ok_or("target を指定してください")?;
             let path = resolve(t)?;
+            // CLAP のつまみ: 範囲と今の値をプラグインから読む(Glaux はつまみの範囲を持たないので、変調に付ける)
+            let clap_info = clap_param_range(track, &path);
             // つまみの範囲(depth の既定と確認)
             let spec = match &path {
+                _ if clap_info.is_some() => None,
                 glaux_core::ParamPath::Device { name } => {
                     let dev = track
                         .device
@@ -12181,17 +12186,20 @@ impl GlauxServer {
                     .and_then(|ss| ss.iter().find(|s| s.name == name.as_str())),
                 _ => None,
             };
-            let Some(spec) = spec else {
-                return Err(format!(
-                    "{t} は揺らせるつまみではありません(list_params で名前を確かめる)"
-                ));
-            };
-            let (lo, hi) = match spec.range {
-                glaux_core::ParamRange::Float { min, max, .. } => (min, max),
-                glaux_core::ParamRange::Int { min, max, .. } => (min as f64, max as f64),
-                _ => {
+            let (lo, hi) = match (spec, clap_info) {
+                (_, Some((lo, hi, _))) => (lo, hi),
+                (Some(spec), None) => match spec.range {
+                    glaux_core::ParamRange::Float { min, max, .. } => (min, max),
+                    glaux_core::ParamRange::Int { min, max, .. } => (min as f64, max as f64),
+                    _ => {
+                        return Err(format!(
+                            "{t} は数のつまみではありません(選択肢は揺らせない)"
+                        ))
+                    }
+                },
+                (None, None) => {
                     return Err(format!(
-                        "{t} は数のつまみではありません(選択肢は揺らせない)"
+                        "{t} は揺らせるつまみではありません(list_params で名前を確かめる)"
                     ))
                 }
             };
@@ -12210,6 +12218,8 @@ impl GlauxServer {
                 rate_hz: p.rate_hz.unwrap_or(1.0),
                 depth: p.depth.unwrap_or((hi - lo) / 4.0),
                 phase: p.phase.unwrap_or(0.0),
+                range: clap_info.map(|(lo, hi, _)| (lo, hi)),
+                center: clap_info.map(|(_, _, c)| c),
             };
             mods.retain(|x| x.target != path);
             mods.push(m);
@@ -12899,4 +12909,48 @@ fn cpu_bound<T>(f: impl FnOnce() -> T) -> T {
         }
         _ => f(),
     }
+}
+
+/// CLAP のつまみ(`device/clap:<id>`・`fx/<id>/clap:<id>`)なら、(最小, 最大, 今の値)。
+/// 今の値は「プロジェクトの上書き値 → プラグインの今の値 → 既定値」
+fn clap_param_range(
+    track: &glaux_core::Track,
+    path: &glaux_core::ParamPath,
+) -> Option<(f64, f64, f64)> {
+    use glaux_engine::plugins::{param_infos, parse_param_key, PluginOwner};
+    let (plugin_id, owner, params, key) = match path {
+        glaux_core::ParamPath::Device { name } => match &track.device.as_ref()?.source {
+            glaux_core::PluginSource::Clap { plugin_id, .. } => (
+                plugin_id,
+                PluginOwner::Track(track.id.clone()),
+                &track.device.as_ref()?.params,
+                name,
+            ),
+            _ => return None,
+        },
+        glaux_core::ParamPath::Effect { id, name } => {
+            let fx = track.effects.iter().find(|e| &e.id == id)?;
+            match &fx.source {
+                glaux_core::PluginSource::Clap { plugin_id, .. } => (
+                    plugin_id,
+                    PluginOwner::Effect(fx.id.clone()),
+                    &fx.params,
+                    name,
+                ),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let id = parse_param_key(key)?;
+    let infos = param_infos(plugin_id)?;
+    let info = infos.iter().find(|p| p.id == id)?;
+    let current = params
+        .get(key.as_str())
+        .and_then(glaux_core::ParamValue::as_f64)
+        .or_else(|| {
+            glaux_engine::plugins::live_values(&owner).and_then(|v| v.get(&id).map(|(x, _)| *x))
+        })
+        .unwrap_or(info.default);
+    Some((info.min, info.max, current))
 }

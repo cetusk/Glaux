@@ -13,9 +13,10 @@ use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfoBuffer};
 use clack_extensions::note_ports::{NoteDialect, NotePortInfoBuffer};
 use clack_host::events::event_types::{
     MidiEvent, NoteChokeEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent,
-    ParamValueEvent,
+    ParamValueEvent, TransportEvent, TransportFlags,
 };
 use clack_host::events::Match;
+use clack_host::events::{EventFlags, EventHeader};
 use clack_host::prelude::*;
 use std::cell::Cell;
 use std::sync::atomic::Ordering;
@@ -226,6 +227,7 @@ impl ClapPlugin {
             midi_ok,
             events: EventBuffer::with_capacity(MAX_EVENTS),
             steady: 0,
+            transport: None,
             failed: false,
             sleeping: false,
         })
@@ -665,6 +667,8 @@ pub struct ClapProcessor {
     midi_ok: bool,
     events: EventBuffer,
     steady: u64,
+    /// 曲の進み具合(テンポ・拍子・位置)。ブロックの頭でエンジンが渡す。None なら渡さない
+    transport: Option<HostTransport>,
     /// プラグインが申告した処理の遅延(サンプル)
     latency: u32,
     /// 処理に失敗した(以後は無音を返す)
@@ -673,7 +677,81 @@ pub struct ClapProcessor {
     sleeping: bool,
 }
 
+/// プラグインへ渡す曲の進み具合(CLAP のトランスポート)。テンポ同期する LFO・アルペジエーター・ディレイが合うように、
+/// エンジンがブロックの頭の値を渡す(ブロックの中のチャンクは、ここから進めた値にする)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostTransport {
+    pub playing: bool,
+    /// BPM
+    pub tempo: f64,
+    /// 曲の頭からの位置(4 分音符 = 1 拍)
+    pub beats: f64,
+    /// 曲の頭からの位置(秒)
+    pub seconds: f64,
+    pub numerator: u16,
+    pub denominator: u16,
+    /// 今の小節の頭(4 分音符の拍)と小節の番号(0 始まり)
+    pub bar_start: f64,
+    pub bar_number: i32,
+    /// ループ区間(4 分音符の拍と秒)。None ならループなし
+    pub loop_beats: Option<(f64, f64)>,
+    pub loop_seconds: Option<(f64, f64)>,
+    pub sample_rate: f64,
+}
+
+impl HostTransport {
+    /// `offset` サンプル先の値(再生中だけ進める。テンポはブロックの中では一定とみなす)
+    fn advanced(&self, offset: usize) -> HostTransport {
+        if !self.playing || offset == 0 {
+            return *self;
+        }
+        let secs = offset as f64 / self.sample_rate.max(1.0);
+        HostTransport {
+            beats: self.beats + secs * self.tempo / 60.0,
+            seconds: self.seconds + secs,
+            ..*self
+        }
+    }
+
+    fn to_event(self) -> TransportEvent {
+        use clack_host::utils::FixedPoint;
+        let mut flags = TransportFlags::HAS_TEMPO
+            | TransportFlags::HAS_BEATS_TIMELINE
+            | TransportFlags::HAS_SECONDS_TIMELINE
+            | TransportFlags::HAS_TIME_SIGNATURE;
+        if self.playing {
+            flags |= TransportFlags::IS_PLAYING;
+        }
+        let (ls, le) = self.loop_beats.unwrap_or((0.0, 0.0));
+        let (lss, les) = self.loop_seconds.unwrap_or((0.0, 0.0));
+        if self.loop_beats.is_some() {
+            flags |= TransportFlags::IS_LOOP_ACTIVE;
+        }
+        TransportEvent {
+            header: EventHeader::new_core(0, EventFlags::empty()),
+            flags,
+            song_pos_beats: FixedPoint::from_float(self.beats),
+            song_pos_seconds: FixedPoint::from_float(self.seconds),
+            tempo: self.tempo,
+            tempo_inc: 0.0,
+            loop_start_beats: FixedPoint::from_float(ls),
+            loop_end_beats: FixedPoint::from_float(le),
+            loop_start_seconds: FixedPoint::from_float(lss),
+            loop_end_seconds: FixedPoint::from_float(les),
+            bar_start: FixedPoint::from_float(self.bar_start),
+            bar_number: self.bar_number,
+            time_signature_numerator: self.numerator,
+            time_signature_denominator: self.denominator,
+        }
+    }
+}
+
 impl ClapProcessor {
+    /// 次の process で渡す曲の進み具合(ブロックの頭の値)。None で渡さない
+    pub fn set_transport(&mut self, t: Option<HostTransport>) {
+        self.transport = t;
+    }
+
     /// `frames` フレームぶん処理する。`notes` は時刻順であること。
     /// 結果はメイン出力の左右([`output`](Self::output))。
     pub fn process(&mut self, frames: usize, notes: &[NoteMsg]) {
@@ -799,7 +877,6 @@ impl ClapProcessor {
     }
 
     fn process_chunk(&mut self, n: usize, offset: usize) {
-        let _ = offset;
         if self.failed {
             self.clear_outputs(n);
             return;
@@ -850,13 +927,14 @@ impl ClapProcessor {
                     port.iter_mut().map(|ch| &mut ch[..n]),
                 ),
             }));
+        let transport = self.transport.map(|t| t.advanced(offset).to_event());
         let result = started.process(
             &inputs,
             &mut outputs,
             &self.events.as_input(),
             &mut OutputEvents::void(),
             Some(self.steady),
-            None,
+            transport.as_ref(),
         );
         self.steady += n as u64;
         match result {

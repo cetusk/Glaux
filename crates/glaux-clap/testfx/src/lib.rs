@@ -1,5 +1,6 @@
 //! Glaux のテスト用の CLAP エフェクト(配布しない。使い方は Cargo.toml の先頭)。
-//! - 出力 = 入力 + 0.001(処理されたかが分かる)
+//! - 出力 = 入力 + 0.001(処理されたかが分かる)。トランスポートを受け取ったら、さらにテンポ × 1e-6
+//!   (再生中ならさらに 1e-5)を足す(ホストがテンポ・再生中を渡したかが分かる)
 //! - 入力が無音なら Sleep を返す
 //! - 遅延 = 10 × そのインスタンスの起動回数。インスタンスごとに、最初の process で 1 回だけ再起動を頼む
 use clack_extensions::audio_ports::{
@@ -99,10 +100,16 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Proc<'a> {
 
     fn process(
         &mut self,
-        _p: Process,
+        p: Process,
         mut audio: Audio,
         _e: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        let extra = p.transport.map_or(0.0, |t| {
+            let playing = t
+                .flags
+                .contains(clack_plugin::events::event_types::TransportFlags::IS_PLAYING);
+            t.tempo as f32 * 1e-6 + if playing { 1e-5 } else { 0.0 }
+        });
         if !self.shared.asked.swap(true, Ordering::SeqCst) {
             self.shared.host.request_restart();
         }
@@ -118,7 +125,7 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Proc<'a> {
                             if *a != 0.0 {
                                 silent = false;
                             }
-                            *b = a + 0.001;
+                            *b = a + 0.001 + extra;
                         }
                     }
                     ChannelPair::InPlace(b) => {
@@ -126,7 +133,7 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Proc<'a> {
                             if *s != 0.0 {
                                 silent = false;
                             }
-                            *s += 0.001;
+                            *s += 0.001 + extra;
                         }
                     }
                     ChannelPair::OutputOnly(b) => b.fill(0.001),

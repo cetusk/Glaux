@@ -323,3 +323,61 @@ fn sleeping_plugin_is_skipped_and_restart_rereads_latency() {
     assert_eq!(proc.latency(), 20);
     plugin.deactivate(proc);
 }
+
+/// ホストが曲の進み具合(テンポ・再生中)をプラグインへ渡す。`GLAUX_TEST_CLAP_SLEEPY` のテスト用エフェクトは、
+/// 受け取ったテンポ × 1e-6(再生中ならさらに 1e-5)を出力に足す
+#[test]
+fn transport_reaches_the_plugin() {
+    let Some(path) = std::env::var_os("GLAUX_TEST_CLAP_SLEEPY").map(PathBuf::from) else {
+        eprintln!("GLAUX_TEST_CLAP_SLEEPY が未設定のためスキップ");
+        return;
+    };
+    let id = describe(&path).expect("記述子を読める")[0].id.clone();
+    let mut plugin = ClapPlugin::new(&path, &id).expect("生成できる");
+    let proc = plugin.activate(48_000.0).expect("起動できる");
+    let (proc, none, stopped, playing) = std::thread::spawn(move || {
+        let mut proc = proc;
+        let run = |proc: &mut ClapProcessor, t: Option<HostTransport>| {
+            proc.set_transport(t);
+            let (l, r) = proc.input_mut().unwrap();
+            l[..256].fill(0.5);
+            if let Some(r) = r {
+                r[..256].fill(0.5);
+            }
+            proc.process(256, &[]);
+            proc.output().unwrap().0[0]
+        };
+        let t = HostTransport {
+            playing: false,
+            tempo: 128.0,
+            beats: 0.0,
+            seconds: 0.0,
+            numerator: 4,
+            denominator: 4,
+            bar_start: 0.0,
+            bar_number: 0,
+            loop_beats: None,
+            loop_seconds: None,
+            sample_rate: 48_000.0,
+        };
+        let none = run(&mut proc, None);
+        let stopped = run(&mut proc, Some(t));
+        let playing = run(&mut proc, Some(HostTransport { playing: true, ..t }));
+        (proc, none, stopped, playing)
+    })
+    .join()
+    .unwrap();
+    assert!(
+        (none - 0.501).abs() < 1e-6,
+        "渡さなければ足されない: {none}"
+    );
+    assert!(
+        (stopped - (0.501 + 128e-6)).abs() < 2e-7,
+        "テンポが届く: {stopped}"
+    );
+    assert!(
+        (playing - (0.501 + 128e-6 + 1e-5)).abs() < 2e-7,
+        "再生中が届く: {playing}"
+    );
+    plugin.deactivate(proc);
+}

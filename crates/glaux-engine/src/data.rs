@@ -495,6 +495,52 @@ impl PlaybackData {
         seg.tick as f64 + (sample - seg.sample) as f64 / seg.samples_per_tick
     }
 
+    /// `pos`(サンプル)での曲の進み具合(CLAP プラグインへ渡すトランスポート)。
+    /// `loop_range` はループ区間(サンプル)。テンポが無ければ None
+    pub fn transport_at(
+        &self,
+        pos: u64,
+        playing: bool,
+        loop_range: Option<(u64, u64)>,
+    ) -> Option<glaux_clap::HostTransport> {
+        let ppq = glaux_core::PPQ as f64;
+        let sr = self.sample_rate;
+        let idx = self.tempo.partition_point(|s| s.sample <= pos);
+        let seg = idx.checked_sub(1).and_then(|i| self.tempo.get(i))?;
+        let tick = seg.tick as f64 + (pos - seg.sample) as f64 / seg.samples_per_tick;
+        let tempo = 60.0 * sr / (seg.samples_per_tick * ppq);
+        // 小節の番号と頭: 拍子の区間ごとに小節を数える
+        let mut bars = 0i64;
+        let mut cur = (0u64, 4u8, 4u8);
+        for (i, &(t, num, den)) in self.sigs.iter().enumerate() {
+            if (t as f64) > tick {
+                break;
+            }
+            if i > 0 {
+                let len = 3840.0 * cur.1.max(1) as f64 / cur.2.max(1) as f64;
+                bars += ((t - cur.0) as f64 / len).ceil() as i64;
+            }
+            cur = (t, num, den);
+        }
+        let bar_len = 3840.0 * cur.1.max(1) as f64 / cur.2.max(1) as f64;
+        let in_sig = ((tick - cur.0 as f64) / bar_len).floor().max(0.0);
+        let bar_start_tick = cur.0 as f64 + in_sig * bar_len;
+        let to_beats = |s: u64| self.sample_to_tick(s) / ppq;
+        Some(glaux_clap::HostTransport {
+            playing,
+            tempo,
+            beats: tick / ppq,
+            seconds: pos as f64 / sr.max(1.0),
+            numerator: cur.1.max(1) as u16,
+            denominator: cur.2.max(1) as u16,
+            bar_start: bar_start_tick / ppq,
+            bar_number: (bars + in_sig as i64) as i32,
+            loop_beats: loop_range.map(|(a, b)| (to_beats(a), to_beats(b))),
+            loop_seconds: loop_range.map(|(a, b)| (a as f64 / sr, b as f64 / sr)),
+            sample_rate: sr,
+        })
+    }
+
     /// `pos`(サンプル)以降で最初に来る拍。テンポ・拍子が無ければ None。
     pub fn next_beat(&self, pos: u64) -> Option<Beat> {
         if self.tempo.is_empty() {
@@ -1495,8 +1541,17 @@ pub fn modulated_lanes(
             continue;
         }
         seen.push(target);
+        // CLAP のつまみは Glaux が範囲を知らないので、変調に付けた範囲と中心を使う
+        let clap_range = t
+            .modulators
+            .iter()
+            .filter(|m| &m.target == target)
+            .find_map(|m| m.range.map(|r| (r, m.center)));
         // つまみの説明(範囲・既定値)と、置いた値
         let (spec, set) = match target {
+            ParamPath::Device { name } if name.starts_with("clap:") => {
+                (None, t.device.as_ref().and_then(|d| d.params.get(name)))
+            }
             ParamPath::Device { name } => {
                 let dev = t
                     .device
@@ -1514,22 +1569,28 @@ pub fn modulated_lanes(
                 let Some(fx) = t.effects.iter().find(|e| &e.id == id) else {
                     continue;
                 };
-                let glaux_core::PluginSource::Builtin { name: fx_name } = &fx.source else {
-                    continue;
-                };
-                let spec = glaux_dsp::effect_params_spec(fx_name)
-                    .and_then(|ss| ss.iter().find(|s| s.name == name.as_str()));
-                (spec, fx.params.get(name))
+                match &fx.source {
+                    glaux_core::PluginSource::Builtin { name: fx_name } => {
+                        let spec = glaux_dsp::effect_params_spec(fx_name)
+                            .and_then(|ss| ss.iter().find(|s| s.name == name.as_str()));
+                        (spec, fx.params.get(name))
+                    }
+                    _ if name.starts_with("clap:") => (None, fx.params.get(name)),
+                    _ => continue,
+                }
             }
             ParamPath::Track { .. } | ParamPath::Macro { .. } => continue,
         };
-        let Some(spec) = spec else { continue };
-        let (lo, hi, default) = match spec.range {
-            ParamRange::Float {
-                min, max, default, ..
-            } => (min, max, default),
-            ParamRange::Int { min, max, default } => (min as f64, max as f64, default as f64),
-            _ => continue,
+        let (lo, hi, default) = match (spec, clap_range) {
+            (Some(spec), _) => match spec.range {
+                ParamRange::Float {
+                    min, max, default, ..
+                } => (min, max, default),
+                ParamRange::Int { min, max, default } => (min as f64, max as f64, default as f64),
+                _ => continue,
+            },
+            (None, Some(((lo, hi), center))) => (lo, hi, center.unwrap_or(0.5 * (lo + hi))),
+            (None, None) => continue,
         };
         let fixed = set.and_then(ParamValue::as_f64).unwrap_or(default);
         let lane = lanes.iter().find(|l| &l.target == target).cloned();
@@ -2248,6 +2309,39 @@ fn build_inner(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn transport_follows_tempo_bars_and_meter_changes() {
+        // 120 BPM(4 分 = 0.5 秒 = 24000 サンプル、1 tick = 25 サンプル)、2 小節の 4/4 の後に 3/4
+        let d = PlaybackData {
+            tempo: vec![TempoSeg {
+                sample: 0,
+                tick: 0,
+                samples_per_tick: 25.0,
+            }],
+            sigs: vec![(0, 4, 4), (7680, 3, 4)],
+            sample_rate: 48_000.0,
+            ..Default::default()
+        };
+        let t = d.transport_at(48_000, true, None).unwrap();
+        assert!((t.tempo - 120.0).abs() < 1e-9);
+        assert!((t.beats - 2.0).abs() < 1e-9);
+        assert!((t.seconds - 1.0).abs() < 1e-9);
+        assert_eq!((t.numerator, t.denominator, t.bar_number), (4, 4, 0));
+        // 3/4 の 2 小節目の途中(tick 7680 + 2880 + 960 = 11520)
+        let t = d
+            .transport_at(11_520 * 25, false, Some((0, 96_000)))
+            .unwrap();
+        assert_eq!((t.numerator, t.denominator), (3, 4));
+        assert_eq!(t.bar_number, 3);
+        assert!((t.bar_start - (7680.0 + 2880.0) / 960.0).abs() < 1e-9);
+        assert_eq!(t.loop_beats, Some((0.0, 4.0)));
+        assert!(!t.playing);
+        // テンポが無ければ渡さない
+        assert!(PlaybackData::default()
+            .transport_at(0, true, None)
+            .is_none());
+    }
     use super::*;
 
     #[test]
@@ -3220,6 +3314,57 @@ mod tests {
     }
 
     #[test]
+    fn clap_params_take_modulators_and_macros() {
+        use glaux_core::{LfoShape, Macro, MacroTarget, Modulator, ParamPath, PluginSource};
+        let mut project = project_with_notes(vec![note(0, 3840, 60, 100)]);
+        let t = &mut project.tracks[0];
+        t.device = Some(glaux_core::Device {
+            source: PluginSource::Clap {
+                plugin_id: "test.synth".into(),
+                state: None,
+            },
+            params: Default::default(),
+        });
+        // 変調: 範囲 0〜1、中心 0.5 で ±0.25(4 分の周期)
+        t.modulators.push(Modulator {
+            target: ParamPath::device("clap:7"),
+            shape: LfoShape::Sine,
+            sync: Some("1/4".into()),
+            rate_hz: 0.0,
+            depth: 0.25,
+            phase: 0.0,
+            range: Some((0.0, 1.0)),
+            center: Some(0.5),
+        });
+        // マクロ: clap:9 を 0.2〜0.8 で(値 0.5 → 0.5)
+        t.macros.push(Macro {
+            name: "明るさ".into(),
+            value: 0.5,
+            targets: vec![MacroTarget {
+                target: ParamPath::device("clap:9"),
+                min: 0.2,
+                max: 0.8,
+                curve: 0.0,
+            }],
+        });
+        glaux_core::check_modulators(&t.modulators).unwrap();
+        glaux_core::check_macros(&t.macros).unwrap();
+        let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        let auto = &data.tracks[0].plugin_auto;
+        let lane = |id: u32| auto.iter().find(|(i, _)| *i == id).map(|(_, p)| p).unwrap();
+        let m = lane(7);
+        let at = |sample: u64| m.iter().find(|p| p.sample >= sample).unwrap().value;
+        assert!((at(0) - 0.5).abs() < 1e-3);
+        assert!((at(6_000) - 0.75).abs() < 0.02, "{}", at(6_000));
+        assert!(m.iter().all(|p| (0.0..=1.0).contains(&p.value)));
+        assert!((lane(9)[0].value - 0.5).abs() < 1e-6);
+        // 範囲の無い CLAP の変調は通らない
+        let mut bad = project.tracks[0].modulators.clone();
+        bad[0].range = None;
+        assert!(glaux_core::check_modulators(&bad).is_err());
+    }
+
+    #[test]
     fn modulators_bake_into_automation_lanes() {
         use glaux_core::{LfoShape, Modulator, ParamPath};
         let mut project = project_with_notes(vec![note(0, 3840, 60, 100)]);
@@ -3230,6 +3375,8 @@ mod tests {
             rate_hz: 0.0,
             depth: 2000.0,
             phase: 0.0,
+            range: None,
+            center: None,
         });
         let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         let (name, points) = &data.tracks[0].device_auto[0];

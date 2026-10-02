@@ -339,9 +339,7 @@ pub fn check_macros(macros: &[Macro]) -> Result<(), String> {
         }
         for t in &m.targets {
             match &t.target {
-                super::ParamPath::Device { name } if name.starts_with("clap:") => {
-                    return Err("CLAP のつまみはマクロに割り当てられません(内蔵の音源・エフェクトだけ)".to_owned());
-                }
+                // CLAP のつまみ(device/clap:<id>・fx/<id>/clap:<id>)も割り当てられる(値はプラグインの単位)
                 super::ParamPath::Device { .. } | super::ParamPath::Effect { .. } => {}
                 super::ParamPath::Track { name } if name == "volume_db" || name == "pan" => {}
                 _ => {
@@ -441,6 +439,22 @@ impl Track {
                     }
                     None => {
                         let v = tg.map(m.value);
+                        // CLAP のつまみの値はプラグインの起動時の上書きでは届かない(焼き込み前の値を使う)ので、
+                        // 一定値のオートメーションにしてプラグインのオートメーションの経路で送る
+                        let clap = matches!(&tg.target,
+                            ParamPath::Device { name } | ParamPath::Effect { name, .. } if name.starts_with("clap:"));
+                        if clap {
+                            t.automation.retain(|l| l.target != tg.target);
+                            t.automation.push(AutomationLane {
+                                target: tg.target.clone(),
+                                points: vec![AutomationPoint {
+                                    tick: crate::Tick(0),
+                                    value: v,
+                                    curve: Curve::Hold,
+                                }],
+                            });
+                            continue;
+                        }
                         match &tg.target {
                             ParamPath::Device { name } => {
                                 // 音源が未設定のトラックは既定の音源(エンジンの既定 = subtractive)で鳴るので、
@@ -532,6 +546,13 @@ pub struct Modulator {
     /// 始まりの位相 0〜1
     #[serde(default)]
     pub phase: f32,
+    /// つまみの範囲(CLAP のつまみのように、範囲を Glaux が知らないときに付ける。MCP の modulate が
+    /// プラグインから読んで入れる)。内蔵のつまみでは使わない(ParamSpec の範囲を使う)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<(f64, f64)>,
+    /// 揺らす中心(CLAP のつまみの今の値。無ければ置いた値・範囲の中央)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<f64>,
 }
 
 /// 1 トラックの変調の上限
@@ -544,8 +565,18 @@ pub fn check_modulators(mods: &[Modulator]) -> Result<(), String> {
     }
     for m in mods {
         match &m.target {
-            super::ParamPath::Device { name } if name.starts_with("clap:") => {
-                return Err("CLAP のつまみは変調できません(内蔵の音源・エフェクトだけ)".to_owned());
+            super::ParamPath::Device { name } | super::ParamPath::Effect { name, .. }
+                if name.starts_with("clap:") =>
+            {
+                match m.range {
+                    Some((lo, hi)) if lo.is_finite() && hi.is_finite() && lo < hi => {}
+                    _ => {
+                        return Err(
+                            "CLAP のつまみの変調には range(つまみの最小・最大)が要ります"
+                                .to_owned(),
+                        )
+                    }
+                }
             }
             super::ParamPath::Device { .. } | super::ParamPath::Effect { .. } => {}
             super::ParamPath::Track { .. } | super::ParamPath::Macro { .. } => {
@@ -738,8 +769,9 @@ mod layer_macro_tests {
         // 検証
         assert!(check_macros(&track.macros).is_ok());
         let mut bad = track.macros.clone();
+        // CLAP のつまみにも割り当てられる(値はプラグインの単位)
         bad[0].targets[0].target = ParamPath::device("clap:12");
-        assert!(check_macros(&bad).is_err());
+        assert!(check_macros(&bad).is_ok());
         bad[0].targets[0].target = ParamPath::track("glide_ms");
         assert!(check_macros(&bad).is_err());
         let mut bad = track.macros.clone();

@@ -1135,6 +1135,14 @@ impl Renderer {
         // 予約した飛び先(`jump_at` を先に読み、合図が立っていれば残りを読む)
         let mut jump_at = self.shared.jump_at.load(Ordering::Acquire);
 
+        // CLAP プラグインへ渡す曲の進み具合(テンポ同期する LFO・アルペジエーター・ディレイ用)。
+        // ブロックの頭の値を渡し、プラグインの側でチャンクごとに進める
+        let transport =
+            data.transport_at(self.pos, playing, looping.then_some((loop_start, loop_end)));
+        for p in self.plugins.iter_mut().flatten() {
+            p.clap.set_transport(transport);
+        }
+
         // メトロノーム: このブロックで最初に来る拍を求める(resync 後も自然に追従)
         let metronome = self.shared.metronome.load(Ordering::Acquire);
         let click_only = self.shared.click_only.load(Ordering::Acquire);

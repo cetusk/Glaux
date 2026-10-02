@@ -147,6 +147,8 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                                     rate_hz: 2.0,
                                     depth: rng.gen_range(0.0..500.0),
                                     phase: 0.0,
+                                    range: None,
+                                    center: None,
                                 })
                                 .collect(),
                         ),
