@@ -136,6 +136,8 @@ pub struct NoteShape {
     /// 明るさ(−1〜1)
     pub bright: PitchCurve,
     lp: f32,
+    /// 左右の差の成分の低域通過の状態(左右に広がる音源のとき)
+    lp_side: f32,
     /// 前のサンプルの (明るさ, 低域通過の係数) と (音量 dB, 倍率)。曲線の平らな所では `exp` を省く
     /// (未計算は f32::MAX)
     lp_coef: (f32, f32),
@@ -148,6 +150,7 @@ impl NoteShape {
         volume: PitchCurve::EMPTY,
         bright: PitchCurve::EMPTY,
         lp: 0.0,
+        lp_side: 0.0,
         lp_coef: (f32::MAX, 0.0),
         gain: (f32::MAX, 1.0),
     };
@@ -183,6 +186,40 @@ impl NoteShape {
     }
 
     /// 1 サンプルを通す
+    /// (中央, 左右の差) の両方に同じ曲線を掛ける
+    pub fn process_stereo(
+        &mut self,
+        mid: f32,
+        side: f32,
+        age: f32,
+        sample_rate: f32,
+    ) -> (f32, f32) {
+        if side == 0.0 && self.lp_side == 0.0 {
+            return (self.process(mid, age, sample_rate), 0.0);
+        }
+        let mut s = side;
+        if !self.bright.is_empty() {
+            // 係数は中央の処理(process)が求める。ここでは同じ係数で左右の差を通す
+            let m = self.process(mid, age, sample_rate);
+            let (b, a) = self.lp_coef;
+            self.lp_side += a * (s - self.lp_side);
+            if b < 0.0 {
+                s = self.lp_side;
+            } else {
+                s += b * 1.5 * (s - self.lp_side);
+            }
+            if !self.volume.is_empty() {
+                s *= self.gain.1;
+            }
+            return (m, s);
+        }
+        let m = self.process(mid, age, sample_rate);
+        if !self.volume.is_empty() {
+            s *= self.gain.1;
+        }
+        (m, s)
+    }
+
     pub fn process(&mut self, x: f32, age: f32, sample_rate: f32) -> f32 {
         let mut y = x;
         if !self.bright.is_empty() {

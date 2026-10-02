@@ -567,6 +567,190 @@ fn factory_presets() -> Vec<Preset> {
             },
             vec![fx("bitcrush", &[("bits", 6.0), ("downsample", 4.0), ("mix", 1.0)])],
         ),
+        // ---- 生きた音の手本(広がり・揺らぎ・フィルタの種類とエンベロープ・LFO) ----
+        preset(
+            "ワイドなスーパーソー",
+            "7 声のスーパーソーを左右に広げ(spread)、揺らぎ(analog)で生きた厚みに。モノで聴いても痩せない。\
+            EDM・トランスのコード・リード。付点 8 分のディレイとホールの空間付き",
+            device(
+                "subtractive",
+                &[
+                    ("unison", 7.0),
+                    ("detune", 30.0),
+                    ("spread", 0.8),
+                    ("analog", 0.3),
+                    ("cutoff", 6000.0),
+                    ("filter_env", 0.1),
+                    ("key_track", 0.4),
+                    ("sustain", 0.85),
+                    ("release", 0.35),
+                    ("gain_db", -15.0),
+                ],
+            ),
+            vec![
+                fx("delay", &[("time_ms", 375.0), ("feedback", 0.3), ("mix", 0.18), ("ping_pong", 1.0)]),
+                fx("reverb", &[("mix", 0.2), ("size", 0.7)]),
+            ],
+        ),
+        preset(
+            "アナログベース",
+            "24dB のローパスとドライブで太く、フィルタのエンベロープで頭だけ「ブッ」と開くベース。\
+            強く弾くほど明るい。キーで明るさが付いていくので、どの音域でも同じ太さ",
+            {
+                let mut d = device(
+                    "subtractive",
+                    &[
+                        ("cutoff", 280.0),
+                        ("resonance", 0.25),
+                        ("drive", 0.35),
+                        ("filter_env", 0.65),
+                        ("filter_decay", 0.22),
+                        ("filter_sustain", 0.1),
+                        ("vel_cutoff", 0.4),
+                        ("key_track", 0.5),
+                        ("sub", 0.35),
+                        ("analog", 0.2),
+                        ("sustain", 0.9),
+                        ("release", 0.08),
+                        ("gain_db", -10.0),
+                    ],
+                );
+                d.params.insert(
+                    "filter_type".to_owned(),
+                    glaux_core::ParamValue::Enum("lp24".to_owned()),
+                );
+                d
+            },
+            vec![],
+        ),
+        preset(
+            "プラック",
+            "音量は少し伸ばしたまま、フィルタだけ素早く閉じる「ポロン」としたシンセのプラック。\
+            ハウス・フューチャーベースのコードやアルペジオに。弱く弾くと丸い",
+            device(
+                "subtractive",
+                &[
+                    ("unison", 3.0),
+                    ("detune", 14.0),
+                    ("spread", 0.5),
+                    ("analog", 0.2),
+                    ("cutoff", 450.0),
+                    ("filter_env", 0.85),
+                    ("filter_decay", 0.16),
+                    ("vel_cutoff", 0.5),
+                    ("key_track", 0.5),
+                    ("decay", 0.6),
+                    ("sustain", 0.25),
+                    ("release", 0.25),
+                    ("gain_db", -13.0),
+                ],
+            ),
+            vec![fx("reverb", &[("mix", 0.22), ("size", 0.55)])],
+        ),
+        preset(
+            "ビンテージ・パッド",
+            "広げた 5 声のパッドを、揺らぎとゆっくりした LFO(カットオフ)で常に少しずつ動かす。\
+            止まった音にならない、古いアナログシンセのような温かいパッド",
+            {
+                let mut d = device(
+                    "subtractive",
+                    &[
+                        ("unison", 5.0),
+                        ("detune", 18.0),
+                        ("spread", 0.75),
+                        ("analog", 0.45),
+                        ("cutoff", 1600.0),
+                        ("resonance", 0.1),
+                        ("filter_env", 0.15),
+                        ("key_track", 0.4),
+                        ("lfo1_rate", 0.25),
+                        ("lfo1_depth", 0.18),
+                        ("attack", 0.7),
+                        ("sustain", 0.9),
+                        ("release", 1.4),
+                        ("gain_db", -15.0),
+                    ],
+                );
+                d.params.insert(
+                    "lfo1_target".to_owned(),
+                    glaux_core::ParamValue::Enum("cutoff".to_owned()),
+                );
+                d.params.insert(
+                    "lfo1_shape".to_owned(),
+                    glaux_core::ParamValue::Enum("triangle".to_owned()),
+                );
+                d
+            },
+            vec![fx("chorus", &[("mix", 0.25)]), fx("reverb", &[("mix", 0.3), ("size", 0.8)])],
+        ),
+        preset(
+            "ビブラートのリード",
+            "矩形波のリードに軽いドライブと、少し遅れて効くようなビブラート(LFO で音程を 5.5Hz)。\
+            歌うような単音のメロディーに",
+            {
+                let mut d = device(
+                    "subtractive",
+                    &[
+                        ("cutoff", 3800.0),
+                        ("drive", 0.25),
+                        ("filter_env", 0.2),
+                        ("vel_cutoff", 0.3),
+                        ("analog", 0.25),
+                        ("lfo1_rate", 5.5),
+                        ("lfo1_depth", 0.05),
+                        ("sustain", 0.85),
+                        ("release", 0.15),
+                        ("gain_db", -13.0),
+                    ],
+                );
+                d.params.insert(
+                    "waveform".to_owned(),
+                    glaux_core::ParamValue::Enum("square".to_owned()),
+                );
+                d.params.insert(
+                    "lfo1_target".to_owned(),
+                    glaux_core::ParamValue::Enum("pitch".to_owned()),
+                );
+                d
+            },
+            vec![fx("delay", &[("time_ms", 300.0), ("feedback", 0.25), ("mix", 0.15)])],
+        ),
+        preset(
+            "動くウェーブテーブル・パッド",
+            "wavetable(analog)を左右に広げ、2 本の LFO で position と左右をゆっくり動かすパッド。アンビエント・映画の背景に",
+            {
+                let mut d = wavetable(
+                    "analog",
+                    &[
+                        ("position", 0.35),
+                        ("unison", 5.0),
+                        ("detune", 16.0),
+                        ("spread", 0.8),
+                        ("analog", 0.35),
+                        ("cutoff", 5000.0),
+                        ("lfo1_rate", 0.12),
+                        ("lfo1_depth", 0.5),
+                        ("lfo2_rate", 0.07),
+                        ("lfo2_depth", 0.35),
+                        ("attack", 1.2),
+                        ("sustain", 0.9),
+                        ("release", 2.0),
+                        ("gain_db", -14.0),
+                    ],
+                );
+                for (k, v) in [
+                    ("lfo1_target", "position"),
+                    ("lfo1_shape", "sine"),
+                    ("lfo2_target", "pan"),
+                    ("lfo2_shape", "triangle"),
+                ] {
+                    d.params
+                        .insert(k.to_owned(), glaux_core::ParamValue::Enum(v.to_owned()));
+                }
+                d
+            },
+            vec![fx("reverb", &[("mix", 0.35), ("size", 0.9)])],
+        ),
         // ---- 層とマクロの手本 ----
         {
             let mut p = preset(
@@ -687,7 +871,7 @@ fn factory_presets() -> Vec<Preset> {
 
 /// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
 /// (ユーザーが独自に作った別名のプリセットには触れない)。
-const FACTORY_VERSION: &str = "v7";
+const FACTORY_VERSION: &str = "v8";
 
 /// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
 /// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)

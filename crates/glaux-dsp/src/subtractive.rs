@@ -1,8 +1,9 @@
 //! 減算方式シンセ `subtractive`。
 //!
-//! PolyBLEP オシレータ(saw / square はエイリアシング低減済み)
-//! → SVF(TPT 型)ローパス → ADSR。フィルタエンベロープでアタック時に
+//! PolyBLEP オシレータ(saw / square はエイリアシング低減済み、triangle は帯域制限した矩形の積分)
+//! → SVF(TPT 型)フィルタ → ADSR。フィルタエンベロープでアタック時に
 //! カットオフが開く、いわゆる「アナログシンセの基本形」。
+//! 左右の広がり・揺らぎ・フィルタの種類・LFO などの共通部品は [`crate::tone`]。
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Waveform {
@@ -76,6 +77,8 @@ pub struct SubtractiveParams {
     pub crackle: f32,
     /// リニアゲイン(dB から変換済み)
     pub gain: f32,
+    /// 広がり・揺らぎ・フィルタの種類・LFO など(既定値は従来と同じ音)
+    pub tone: crate::tone::ToneParams,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -85,7 +88,7 @@ enum EnvStage {
     Release,
 }
 
-const MAX_UNISON: usize = 7;
+const MAX_UNISON: usize = crate::tone::MAX_UNISON;
 
 /// ノート単位の奏法(アーティキュレーション)によるパラメータ倍率。
 /// トラック共有の `SubtractiveParams` を書き換えずに、ボイス側で音を変える。
@@ -150,16 +153,17 @@ pub struct SubtractiveVoice {
     brown: f32,
     /// パチパチの残り(短く減衰するクリック)
     click: f32,
+    /// triangle の積分の値(声部ごと)
+    tri: [f32; MAX_UNISON],
     // ADSR
     stage: EnvStage,
     env: f32,
-    // SVF 状態
-    ic1: f32,
-    ic2: f32,
-    /// SVF の係数(制御レートで更新)と、次の更新までのサンプル数
-    g: f32,
-    k: f32,
-    a1: f32,
+    /// ベロシティ(カットオフの追従用。amp は奏法の倍率込み)
+    vel: f32,
+    /// 広がり・揺らぎ・フィルタ・LFO の状態
+    tone: crate::tone::ToneVoice,
+    /// フィルタの係数(制御レートで更新)と、次の更新までのサンプル数
+    coefs: crate::tone::SvfCoefs,
     ctrl: u32,
     /// ユニゾンの声部ごとの周波数の倍率と、それを作ったときの (声部数, デチューン)
     ratios: [f32; MAX_UNISON],
@@ -201,12 +205,30 @@ impl SubtractiveVoice {
         articulation: glaux_core::Articulation,
         sample_rate: f32,
     ) -> Self {
-        let _ = p;
+        Self::start_seeded(p, freq, vel, articulation, sample_rate, freq.to_bits())
+    }
+
+    /// 揺らぎの種を渡して鳴らす(音ごとに違う種で、同じ音を繰り返しても少しずつ違う音になる)
+    pub fn start_seeded(
+        p: &SubtractiveParams,
+        freq: f32,
+        vel: f32,
+        articulation: glaux_core::Articulation,
+        sample_rate: f32,
+        seed: u32,
+    ) -> Self {
         let art = ArtMod::from(articulation);
         // 各声部の初期位相をずらす(揃っていると立ち上がりが位相打ち消しでうねる)
         let mut phases = [0.0f32; MAX_UNISON];
         for (i, ph) in phases.iter_mut().enumerate() {
             *ph = (i as f32 * 0.371) % 1.0;
+        }
+        let mut tone = crate::tone::ToneVoice::new(seed);
+        tone.start_phases(&p.tone, &mut phases);
+        // triangle の積分の初期値は、その位相の三角波の値
+        let mut tri = [0.0f32; MAX_UNISON];
+        for (t, ph) in tri.iter_mut().zip(&phases) {
+            *t = 4.0 * (ph - 0.5).abs() - 1.0;
         }
         SubtractiveVoice {
             freq,
@@ -219,13 +241,12 @@ impl SubtractiveVoice {
             pink: [0.0; 3],
             brown: 0.0,
             click: 0.0,
+            tri,
             stage: EnvStage::Attack,
             env: 0.0,
-            ic1: 0.0,
-            ic2: 0.0,
-            g: 0.0,
-            k: 0.0,
-            a1: 0.0,
+            vel,
+            tone,
+            coefs: crate::tone::SvfCoefs::default(),
             ctrl: 0,
             ratios: [1.0; MAX_UNISON],
             ratio_key: (0, u32::MAX),
@@ -247,7 +268,13 @@ impl SubtractiveVoice {
         self.stage == EnvStage::Release && self.env < 1e-4
     }
 
+    /// 中央の成分だけ(モノで使う所。左右に広げていなければ全体)
     pub fn next(&mut self, p: &SubtractiveParams) -> f32 {
+        self.next_stereo(p).0
+    }
+
+    /// (中央, 左右の差)。L = 中央 + 差、R = 中央 − 差
+    pub fn next_stereo(&mut self, p: &SubtractiveParams) -> (f32, f32) {
         let sr = self.sample_rate;
 
         // ---- ADSR(attack は線形、decay/release は指数)。奏法の倍率を反映 ----
@@ -277,12 +304,36 @@ impl SubtractiveVoice {
             }
         }
 
-        // ---- ピッチ表現(ビブラート / チョーキング) ----
+        // ---- 変調(制御レート): LFO・揺らぎ・フィルタのエンベロープ → フィルタの係数 ----
+        if self.ctrl == 0 {
+            let tp = &p.tone;
+            self.tone
+                .control(tp, CTRL_RATE, sr, self.stage == EnvStage::Release);
+            if tp.spread > 0.0 {
+                self.tone.layout((p.unison as usize).clamp(1, MAX_UNISON));
+            }
+            let fc = self
+                .tone
+                .cutoff(
+                    tp,
+                    p.cutoff * self.art.cutoff_mul,
+                    p.filter_env,
+                    self.env,
+                    self.vel,
+                    self.freq,
+                )
+                .clamp(40.0, sr * 0.45);
+            self.coefs = crate::tone::SvfCoefs::new(fc, p.resonance, sr);
+            self.ctrl = CTRL_RATE;
+        }
+        self.ctrl -= 1;
+
+        // ---- ピッチ表現(ビブラート / チョーキング)と LFO・揺らぎの音程 ----
         let base_freq = if self.expr.is_active() {
             self.freq * self.expr.next_ratio(sr)
         } else {
             self.freq
-        };
+        } * self.tone.pitch_ratio;
 
         // ---- オシレータ(ユニゾン対応) ----
         let n = (p.unison as usize).clamp(1, MAX_UNISON);
@@ -300,29 +351,47 @@ impl SubtractiveVoice {
                 *r = (2.0f32).powf(spread * p.detune_cents / 1200.0);
             }
         }
+        let stereo = self.tone.stereo;
         let mut osc = 0.0f32;
+        let mut side = 0.0f32;
         for i in 0..n {
-            let dt = base_freq * self.ratios[i] / sr;
+            let dt = base_freq * self.ratios[i] * self.tone.unison_detune(&p.tone, i) / sr;
             let t = self.phases[i];
-            osc += match p.waveform {
+            let s = match p.waveform {
                 Waveform::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
                 Waveform::Square => {
                     let raw = if t < 0.5 { 1.0 } else { -1.0 };
                     let t2 = if t + 0.5 >= 1.0 { t - 0.5 } else { t + 0.5 };
                     raw + poly_blep(t, dt) - poly_blep(t2, dt)
                 }
-                Waveform::Triangle => 4.0 * (t - 0.5).abs() - 1.0,
+                Waveform::Triangle => {
+                    // 帯域制限した矩形を積分する(角の折り返しを抑える)。わずかに漏らして直流のずれを戻す
+                    let raw = if t < 0.5 { 1.0 } else { -1.0 };
+                    let t2 = if t + 0.5 >= 1.0 { t - 0.5 } else { t + 0.5 };
+                    let sq = raw + poly_blep(t, dt) - poly_blep(t2, dt);
+                    let naive = 4.0 * (t - 0.5).abs() - 1.0;
+                    let tri = self.tri[i] * 0.999 + naive * 0.001 - 4.0 * dt * sq;
+                    self.tri[i] = tri;
+                    tri
+                }
                 Waveform::Sine => (t * std::f32::consts::TAU).sin(),
             };
+            osc += s;
+            if stereo {
+                side += s * self.tone.unison_pan(&p.tone, i);
+            }
             self.phases[i] += dt;
             if self.phases[i] >= 1.0 {
                 self.phases[i] -= 1.0;
             }
         }
         // 本数で音量が膨らみすぎないよう等パワー正規化
-        osc /= (n as f32).sqrt();
+        let norm = (n as f32).sqrt();
+        osc /= norm;
+        side /= norm;
         if p.osc_level != 1.0 {
             osc *= p.osc_level;
+            side *= p.osc_level;
         }
 
         // サブオシレータ(1 オクターブ下のサイン。ベースの土台)
@@ -364,26 +433,13 @@ impl SubtractiveVoice {
             self.click *= 0.55;
         }
 
-        // ---- SVF ローパス(TPT)。エンベロープでカットオフを開く ----
-        // 係数(powf と tan)は制御レートで更新する
-        if self.ctrl == 0 {
-            let fc =
-                (p.cutoff * self.art.cutoff_mul * (2.0_f32).powf(p.filter_env * self.env * 3.0))
-                    .clamp(40.0, sr * 0.45);
-            self.g = (std::f32::consts::PI * fc / sr).tan();
-            self.k = 2.0 * (1.0 - p.resonance.min(0.95));
-            self.a1 = 1.0 / (1.0 + self.g * (self.g + self.k));
-            self.ctrl = CTRL_RATE;
-        }
-        self.ctrl -= 1;
-        let (g, a1) = (self.g, self.a1);
-        let v1 = a1 * (self.ic1 + g * (osc - self.ic2));
-        let v2 = self.ic2 + g * v1;
-        self.ic1 = 2.0 * v1 - self.ic1;
-        self.ic2 = 2.0 * v2 - self.ic2;
-        let lp = v2;
-
-        lp * self.env * self.amp * p.gain
+        // ---- フィルタ(SVF。係数は上の制御レートで更新済み) ----
+        let coefs = self.coefs;
+        let (mid, side) = self.tone.filter(&p.tone, &coefs, osc, side);
+        let (mid, side) = self.tone.apply_pan(mid, side);
+        let g = self.env * self.amp * p.gain;
+        let a = self.tone.amp_mul;
+        (mid * g * a, side * g * a)
     }
 }
 
@@ -409,6 +465,7 @@ mod tests {
             osc_level: 1.0,
             crackle: 0.0,
             gain: 0.35,
+            tone: Default::default(),
         }
     }
 
@@ -629,5 +686,169 @@ mod tests {
         assert!(loud > 5 && loud < 2000, "{loud}");
         // 波形の量 0 で雑音も無ければ無音
         assert!(rms(&render(NoiseColor::White, 0.0, 0.0)) < 1e-6);
+    }
+
+    fn render_st(p: &SubtractiveParams, seed: u32, vel: f32, n: usize) -> Vec<(f32, f32)> {
+        let mut v = SubtractiveVoice::start_seeded(
+            p,
+            220.0,
+            vel,
+            glaux_core::Articulation::Normal,
+            48_000.0,
+            seed,
+        );
+        (0..n).map(|_| v.next_stereo(p)).collect()
+    }
+
+    #[test]
+    fn spread_widens_without_changing_the_mono_sum() {
+        let mut p = default_params();
+        p.unison = 5;
+        p.detune_cents = 20.0;
+        let narrow = render_st(&p, 1, 1.0, 9600);
+        p.tone.spread = 0.8;
+        let wide = render_st(&p, 1, 1.0, 9600);
+        // 中央の成分(モノに畳んだ音)は広げる前と同じ
+        let d: f32 = narrow
+            .iter()
+            .zip(&wide)
+            .map(|(a, b)| (a.0 - b.0).abs())
+            .sum();
+        assert!(d < 1e-3, "{d}");
+        // 左右の差は 0 から増える
+        assert!(narrow.iter().all(|x| x.1 == 0.0));
+        let side: Vec<f32> = wide.iter().map(|x| x.1).collect();
+        let mid: Vec<f32> = wide.iter().map(|x| x.0).collect();
+        assert!(rms(&side) > rms(&mid) * 0.2, "{} {}", rms(&side), rms(&mid));
+    }
+
+    #[test]
+    fn analog_varies_by_seed_but_is_repeatable() {
+        let mut p = default_params();
+        p.unison = 3;
+        p.tone.analog = 0.5;
+        let a = render_st(&p, 11, 1.0, 9600);
+        let b = render_st(&p, 11, 1.0, 9600);
+        let c = render_st(&p, 12, 1.0, 9600);
+        assert_eq!(a, b, "同じ種なら同じ音");
+        let d: f32 = a.iter().zip(&c).map(|(x, y)| (x.0 - y.0).abs()).sum();
+        assert!(d > 1.0, "種が違えば少し違う音: {d}");
+        // 揺らぎ 0 なら種で変わらない
+        p.tone.analog = 0.0;
+        assert_eq!(render_st(&p, 11, 1.0, 4800), render_st(&p, 12, 1.0, 4800));
+    }
+
+    #[test]
+    fn separate_filter_envelope_brightens_only_the_head() {
+        let hf = |x: &[(f32, f32)]| x.windows(2).map(|w| (w[1].0 - w[0].0).powi(2)).sum::<f32>();
+        let mut p = default_params();
+        p.cutoff = 300.0;
+        p.sustain = 1.0;
+        p.filter_env = 1.0;
+        p.tone.filter_decay = 0.08;
+        let sep = render_st(&p, 1, 1.0, 48_000);
+        // 従来(音量の ADSR に従う。サスティン 1 なので開いたまま)と比べ、後半(0.5 秒〜)は閉じて暗い
+        p.tone.filter_decay = 0.0;
+        let legacy = render_st(&p, 1, 1.0, 48_000);
+        let tail_sep = hf(&sep[24_000..26_400]);
+        let tail_legacy = hf(&legacy[24_000..26_400]);
+        assert!(tail_sep < tail_legacy * 0.3, "{tail_sep} {tail_legacy}");
+        // 頭は同じくらい開いている
+        let head_sep = hf(&sep[200..1200]);
+        let head_legacy = hf(&legacy[200..1200]);
+        assert!(head_sep > head_legacy * 0.3, "{head_sep} {head_legacy}");
+    }
+
+    #[test]
+    fn velocity_darkens_soft_notes_when_asked() {
+        let hf = |x: &[(f32, f32)]| {
+            let d: f32 = x.windows(2).map(|w| (w[1].0 - w[0].0).powi(2)).sum();
+            let a: f32 = x.iter().map(|v| v.0 * v.0).sum();
+            d / a.max(1e-12)
+        };
+        let mut p = default_params();
+        p.filter_env = 0.0;
+        p.resonance = 0.0;
+        p.cutoff = 4000.0;
+        p.tone.vel_cutoff = 0.8;
+        let soft = render_st(&p, 1, 0.3, 9600);
+        let hard = render_st(&p, 1, 1.0, 9600);
+        assert!(hf(&soft) < hf(&hard) * 0.8, "{} {}", hf(&soft), hf(&hard));
+    }
+
+    #[test]
+    fn lfo_to_pan_and_amp_moves_the_sound() {
+        let mut p = default_params();
+        p.sustain = 1.0;
+        p.tone.lfo[0] = crate::tone::LfoParams {
+            rate: 4.0,
+            depth: 0.8,
+            shape: crate::tone::LfoShape::Sine,
+            target: crate::tone::LfoTarget::Pan,
+        };
+        let out = render_st(&p, 1, 1.0, 24_000);
+        // パン: 左右の差が出て、符号が入れ替わる(左右へ揺れる)
+        let pos = out.iter().filter(|x| x.1 > 0.01).count();
+        let neg = out.iter().filter(|x| x.1 < -0.01).count();
+        assert!(pos > 1000 && neg > 1000, "{pos} {neg}");
+        // 音量: 包絡が 4Hz で上下する
+        p.tone.lfo[0].target = crate::tone::LfoTarget::Amp;
+        let out = render_st(&p, 1, 1.0, 24_000);
+        let win: Vec<f32> = out
+            .chunks(1200)
+            .map(|c| rms(&c.iter().map(|x| x.0).collect::<Vec<_>>()))
+            .collect();
+        let (mn, mx) = win[2..]
+            .iter()
+            .fold((f32::MAX, 0.0f32), |(a, b), v| (a.min(*v), b.max(*v)));
+        assert!(mx > mn * 2.0, "{mn} {mx}");
+    }
+
+    #[test]
+    fn triangle_aliases_less_than_the_naive_one() {
+        // 高い音(3.5kHz)の三角波: 基本波の 11 倍以上(ナイキストの向こう)の折り返しが、素朴な計算より小さい
+        let mut p = default_params();
+        p.waveform = Waveform::Triangle;
+        p.cutoff = 12000.0;
+        p.filter_env = 0.0;
+        p.sustain = 1.0;
+        let sr = 48_000.0;
+        // DFT の区切りにちょうど乗る周波数(漏れで比べにくくならないように)
+        let f0 = 300.0 * sr / 4096.0;
+        let mut v = SubtractiveVoice::start(&p, f0, 1.0, Default::default(), sr);
+        let ours: Vec<f32> = (0..8192).map(|_| v.next(&p)).collect();
+        let naive: Vec<f32> = (0..8192)
+            .map(|i| {
+                let t = (i as f32 * f0 / sr).fract();
+                4.0 * (t - 0.5).abs() - 1.0
+            })
+            .collect();
+        // 折り返しは基本波の倍音でない周波数に出る: 4.2kHz 付近(13 倍音 45.5kHz の折り返し = 2.5kHz…)を避けて、
+        // 倍音以外の成分の割合を DFT で比べる
+        let inharmonic = |x: &[f32]| {
+            let n = x.len();
+            let mut harm = 0.0f64;
+            let mut other = 0.0f64;
+            for k in 1..n / 2 {
+                let f = k as f64 * sr as f64 / n as f64;
+                let (mut re, mut im) = (0.0f64, 0.0f64);
+                for (i, s) in x.iter().enumerate() {
+                    let a = std::f64::consts::TAU * (k * i) as f64 / n as f64;
+                    re += *s as f64 * a.cos();
+                    im -= *s as f64 * a.sin();
+                }
+                let pw = re * re + im * im;
+                let h = (f / f0 as f64).round();
+                if (f - h * f0 as f64).abs() < 30.0 {
+                    harm += pw;
+                } else {
+                    other += pw;
+                }
+            }
+            other / harm
+        };
+        let a = inharmonic(&ours[4096..]);
+        let b = inharmonic(&naive[4096..]);
+        assert!(a < b * 0.5, "ours {a} naive {b}");
     }
 }

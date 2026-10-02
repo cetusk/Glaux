@@ -40,6 +40,22 @@ fn main() {
         with("subtractive", &[("unison", 7.0)]),
         60,
     );
+    bench(
+        "subtractive 生きた音",
+        with(
+            "subtractive",
+            &[
+                ("unison", 7.0),
+                ("spread", 0.8),
+                ("analog", 0.4),
+                ("drive", 0.3),
+                ("lfo1_depth", 0.2),
+                ("lfo2_depth", 0.2),
+                ("filter_decay", 0.3),
+            ],
+        ),
+        60,
+    );
     bench("wavetable", with("wavetable", &[]), 60);
     bench(
         "wavetable unison7",

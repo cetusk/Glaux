@@ -203,9 +203,15 @@ pub struct WavetableParams {
     pub sustain: f32,
     pub release: f32,
     pub gain: f32,
+    /// エンベロープでカットオフを開く量 0..=1(1 で約 +3 オクターブ。0 = 開かない = 従来)
+    pub filter_env: f32,
+    /// 広がり・揺らぎ・フィルタの種類・LFO など(既定値は従来と同じ音)
+    pub tone: crate::tone::ToneParams,
 }
 
-const MAX_UNISON: usize = 7;
+const MAX_UNISON: usize = crate::tone::MAX_UNISON;
+/// フィルタの係数を更新する間隔(サンプル)
+const CTRL_RATE: u32 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Stage {
@@ -230,17 +236,18 @@ pub struct WavetableVoice {
     cutoff_mul: f32,
     stage: Stage,
     env: f32,
-    ic1: f32,
-    ic2: f32,
     pub(crate) expr: crate::expr::PitchExpr,
     /// ユニゾンの声部ごとの倍率・いちばん高い声部の倍率と、それを作ったときの (声部数, デチューン)
     ratios: [f32; MAX_UNISON],
     top_ratio: f32,
     ratio_key: (usize, u32),
-    /// SVF の係数と、それを作ったときの (カットオフ, レゾナンス)。つまみが動いたときだけ求め直す
-    g: f32,
-    a1: f32,
-    filter_key: (u32, u32),
+    /// ベロシティ(カットオフの追従用)
+    vel: f32,
+    /// 広がり・揺らぎ・フィルタ・LFO の状態
+    tone: crate::tone::ToneVoice,
+    /// フィルタの係数(制御レートで更新)と、次の更新までのサンプル数
+    coefs: crate::tone::SvfCoefs,
+    ctrl: u32,
     sample_rate: f32,
 }
 
@@ -263,11 +270,23 @@ fn read(row: &[f32], phase: f32) -> f32 {
 
 impl WavetableVoice {
     pub fn start(
-        _p: &WavetableParams,
+        p: &WavetableParams,
         freq: f32,
         vel: f32,
         articulation: glaux_core::Articulation,
         sample_rate: f32,
+    ) -> Self {
+        Self::start_seeded(p, freq, vel, articulation, sample_rate, freq.to_bits())
+    }
+
+    /// 揺らぎの種を渡して鳴らす(音ごとに違う種で、同じ音を繰り返しても少しずつ違う音になる)
+    pub fn start_seeded(
+        p: &WavetableParams,
+        freq: f32,
+        vel: f32,
+        articulation: glaux_core::Articulation,
+        sample_rate: f32,
+        seed: u32,
     ) -> Self {
         use glaux_core::Articulation as A;
         let (amp, pos_bias, decay_mul, sustain_mul, release_mul, cutoff_mul) = match articulation {
@@ -280,6 +299,8 @@ impl WavetableVoice {
         for (i, ph) in phases.iter_mut().enumerate() {
             *ph = (i as f32 * 0.371) % 1.0;
         }
+        let mut tone = crate::tone::ToneVoice::new(seed);
+        tone.start_phases(&p.tone, &mut phases);
         WavetableVoice {
             freq,
             amp,
@@ -293,15 +314,14 @@ impl WavetableVoice {
             cutoff_mul,
             stage: Stage::Attack,
             env: 0.0,
-            ic1: 0.0,
-            ic2: 0.0,
             expr: crate::expr::PitchExpr::new(articulation, sample_rate),
             ratios: [1.0; MAX_UNISON],
             top_ratio: 1.0,
             ratio_key: (0, u32::MAX),
-            g: 0.0,
-            a1: 0.0,
-            filter_key: (u32::MAX, u32::MAX),
+            vel,
+            tone,
+            coefs: crate::tone::SvfCoefs::default(),
+            ctrl: 0,
             sample_rate,
         }
     }
@@ -321,9 +341,15 @@ impl WavetableVoice {
         self.stage == Stage::Release && self.env < 1e-4
     }
 
+    /// 中央の成分だけ(モノで使う所。左右に広げていなければ全体)
     pub fn next(&mut self, p: &WavetableParams) -> f32 {
+        self.next_stereo(p).0
+    }
+
+    /// (中央, 左右の差)。L = 中央 + 差、R = 中央 − 差
+    pub fn next_stereo(&mut self, p: &WavetableParams) -> (f32, f32) {
         let Some(bank) = BANK.get() else {
-            return 0.0;
+            return (0.0, 0.0);
         };
         let sr = self.sample_rate;
 
@@ -350,6 +376,30 @@ impl WavetableVoice {
             }
         }
 
+        // ---- 変調(制御レート): LFO・揺らぎ・フィルタのエンベロープ → フィルタの係数 ----
+        if self.ctrl == 0 {
+            let tp = &p.tone;
+            self.tone
+                .control(tp, CTRL_RATE, sr, self.stage == Stage::Release);
+            if tp.spread > 0.0 {
+                self.tone.layout((p.unison as usize).clamp(1, MAX_UNISON));
+            }
+            let fc = self
+                .tone
+                .cutoff(
+                    tp,
+                    p.cutoff * self.cutoff_mul,
+                    p.filter_env,
+                    self.env,
+                    self.vel,
+                    self.freq,
+                )
+                .clamp(40.0, sr * 0.45);
+            self.coefs = crate::tone::SvfCoefs::new(fc, p.resonance, sr);
+            self.ctrl = CTRL_RATE;
+        }
+        self.ctrl -= 1;
+
         // ---- position(基準 + エンベロープ + LFO + 奏法) ----
         self.pos_env -= self.pos_env * (4.6 / (p.pos_decay.max(0.005) * sr)).min(1.0);
         // LFO の深さが 0 のときは sin を求めない(位相だけ進める)
@@ -361,6 +411,11 @@ impl WavetableVoice {
         self.lfo_phase = (self.lfo_phase + p.lfo_rate / sr).fract();
         let pos = (p.position + p.pos_env * self.pos_env + p.lfo_depth * 0.5 * lfo + self.pos_bias)
             .clamp(0.0, 1.0);
+        let pos = if self.tone.position_add != 0.0 {
+            (pos + self.tone.position_add).clamp(0.0, 1.0)
+        } else {
+            pos
+        };
         let fpos = pos * (FRAMES - 1) as f32;
         let f0 = (fpos as usize).min(FRAMES - 2);
         let ff = fpos - f0 as f32;
@@ -371,7 +426,7 @@ impl WavetableVoice {
             self.freq * self.expr.next_ratio(sr)
         } else {
             self.freq
-        };
+        } * self.tone.pitch_ratio;
         let n = (p.unison as usize).clamp(1, MAX_UNISON);
         // 声部ごとの倍率は、声部数かデチューンが変わったときだけ求め直す(毎サンプルの powf を避ける)
         let key = (n, p.detune_cents.to_bits());
@@ -394,35 +449,34 @@ impl WavetableVoice {
         let row1 = bank.row(table, f0 + 1, level);
 
         let mut osc = 0.0f32;
+        let mut side = 0.0f32;
+        let stereo = self.tone.stereo;
         // 1 サンプルの位相の進み。fract は 1 を超えたとき(1 周期に 1 回)だけ求める
         let base_dt = base / sr;
         for i in 0..n {
-            let dt = base_dt * self.ratios[i];
+            let dt = base_dt * self.ratios[i] * self.tone.unison_detune(&p.tone, i);
             let ph = self.phases[i];
             let a = read(row0, ph);
             let b = read(row1, ph);
-            osc += a + (b - a) * ff;
+            let v = a + (b - a) * ff;
+            osc += v;
+            if stereo {
+                side += v * self.tone.unison_pan(&p.tone, i);
+            }
             let next = ph + dt;
             self.phases[i] = if next >= 1.0 { next.fract() } else { next };
         }
-        osc /= (n as f32).sqrt();
+        let norm = (n as f32).sqrt();
+        osc /= norm;
+        side /= norm;
 
-        // ---- SVF ローパス(TPT) ----
-        let fkey = (p.cutoff.to_bits(), p.resonance.to_bits());
-        if self.filter_key != fkey {
-            self.filter_key = fkey;
-            let fc = (p.cutoff * self.cutoff_mul).clamp(40.0, sr * 0.45);
-            self.g = (std::f32::consts::PI * fc / sr).tan();
-            let k = 2.0 * (1.0 - p.resonance.min(0.95));
-            self.a1 = 1.0 / (1.0 + self.g * (self.g + k));
-        }
-        let (g, a1) = (self.g, self.a1);
-        let v1 = a1 * (self.ic1 + g * (osc - self.ic2));
-        let v2 = self.ic2 + g * v1;
-        self.ic1 = 2.0 * v1 - self.ic1;
-        self.ic2 = 2.0 * v2 - self.ic2;
-
-        v2 * self.env * self.amp * p.gain
+        // ---- フィルタ(SVF。係数は上の制御レートで更新済み) ----
+        let coefs = self.coefs;
+        let (mid, side) = self.tone.filter(&p.tone, &coefs, osc, side);
+        let (mid, side) = self.tone.apply_pan(mid, side);
+        let g = self.env * self.amp * p.gain;
+        let a = self.tone.amp_mul;
+        (mid * g * a, side * g * a)
     }
 }
 
@@ -448,6 +502,8 @@ mod tests {
             sustain: 1.0,
             release: 0.1,
             gain: 1.0,
+            filter_env: 0.0,
+            tone: Default::default(),
         }
     }
 

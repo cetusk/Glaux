@@ -186,6 +186,8 @@ pub struct ModFxState {
     coeffs: Option<SvfCoeffs>,
     coef_count: u32,
     env: f32,
+    /// clipper の 2 倍オーバーサンプリング(左右)
+    os: [crate::oversample::Halfband; 2],
 }
 
 impl Default for ModFxState {
@@ -216,6 +218,7 @@ impl ModFxState {
             coeffs: None,
             coef_count: 0,
             env: 0.0,
+            os: [crate::oversample::Halfband::default(); 2],
         }
     }
 
@@ -271,9 +274,12 @@ impl ModFxState {
                         // 1 を超えた分を折り返す(サイン折り返し)
                         ClipMode::Fold => (y * std::f32::consts::FRAC_PI_2).sin(),
                     };
-                    c * ceiling
+                    let c = c * ceiling;
+                    // 原音との混ぜ合わせも 2 倍のレートの中で(遅れをそろえる)
+                    x + (c - x) * mix
                 };
-                (l + (f(l) - l) * mix, r + (f(r) - r) * mix)
+                // 潰した角の倍音が折り返さないよう、2 倍のレートで掛けて戻す
+                (self.os[0].run(l, f), self.os[1].run(r, f))
             }
             ModFxParams::Bitcrush { levels, hold, mix } => {
                 if self.hold_count == 0 {
@@ -938,8 +944,9 @@ mod tests {
             SR,
         )
         .unwrap();
-        let out = run(&p, 10, 120.0, |_| 0.9);
-        assert!(out[0].0 <= 1.0 && out[0].0 > 0.9);
+        // 2 倍オーバーサンプリングの経路はわずかに遅れるので、落ち着いた後で見る
+        let out = run(&p, 64, 120.0, |_| 0.9);
+        assert!(out[63].0 <= 1.0 && out[63].0 > 0.9, "{:?}", out[63]);
         let p = bake(
             "clipper",
             &map(&[
@@ -949,7 +956,8 @@ mod tests {
             SR,
         )
         .unwrap();
-        assert!(run(&p, 1, 120.0, |_| 0.5)[0].0 <= 0.97);
+        let out = run(&p, 64, 120.0, |_| 0.5);
+        assert!(out[63].0 <= 0.97, "{:?}", out[63]);
         let p = bake(
             "bitcrush",
             &map(&[

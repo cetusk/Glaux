@@ -10,6 +10,219 @@ use crate::voice::{InstrumentKind, InstrumentParams};
 use crate::wavetable::WavetableParams;
 use glaux_core::{Device, ParamMap, ParamRange, ParamSpec, ParamValue, PluginSource};
 
+// ---- 共通のつまみ(subtractive・wavetable。crate::tone。既定値は従来と同じ音) ----
+
+const TONE_SPREAD: ParamSpec = ParamSpec {
+    name: "spread",
+    display_name: "広がり",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "ユニゾンの声部を左右に広げる量。0 で中央(従来)、0.5〜0.8 で広いスーパーソー・パッド。中央の成分は変わらないので、モノで聴いても音は痩せない。ユニゾン 1 声では効かない。ベースは 0 のまま(低域は中央に)。",
+};
+
+const TONE_ANALOG: ParamSpec = ParamSpec {
+    name: "analog",
+    display_name: "揺らぎ",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "アナログシンセのような揺らぎ。声部ごとの小さな音程のずれ、ゆっくり漂う音程と明るさ、音ごとの音量のばらつきが加わり、同じ音を繰り返しても毎回少し違う「生きた音」になる。0.2〜0.4 で自然、0.7 以上で古い機材のように不安定。",
+};
+
+const TONE_FILTER_TYPE: ParamSpec = ParamSpec {
+    name: "filter_type",
+    display_name: "フィルタの種類",
+    unit: None,
+    range: ParamRange::Enum {
+        choices: &["lp12", "lp24", "hp", "bp", "notch"],
+        default: "lp12",
+    },
+    description: "lp12 は 12dB のローパス(従来の音)、lp24 はより急に高域を落とす太いローパス(アナログのベース・パッド)、hp は低域を削って細く軽く、bp は中域だけ残す(電話・ラジオ・鼻にかかった音)、notch はカットオフ付近だけ抜く(フェイザーのような抜け)。",
+};
+
+const TONE_DRIVE: ParamSpec = ParamSpec {
+    name: "drive",
+    display_name: "ドライブ",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "フィルタの前で軽く歪ませる量。上げると倍音が増えて太く・押し出しが強くなる(アナログのベース・リード)。0.2〜0.4 で厚み、0.7 以上でざらついた攻撃的な音。",
+};
+
+const TONE_VEL_CUTOFF: ParamSpec = ParamSpec {
+    name: "vel_cutoff",
+    display_name: "ベロシティで明るさ",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "強く弾くほど明るく、弱く弾くほど暗くなる量。生楽器のような表情が出る。0.3〜0.6 が目安(1 で最弱の音が 3 オクターブ暗い)。",
+};
+
+const TONE_KEY_TRACK: ParamSpec = ParamSpec {
+    name: "key_track",
+    display_name: "キーで明るさ",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "高い音ほどカットオフも上がる量。0 だと高い音がこもり低い音がうるさくなりがち。1 で音の高さに比例(どの音域でも同じ明るさ)。0.5 前後が自然。",
+};
+
+const TONE_FILTER_ATTACK: ParamSpec = ParamSpec {
+    name: "filter_attack",
+    display_name: "フィルタの立ち上がり",
+    unit: Some("s"),
+    range: ParamRange::Float {
+        min: 0.001,
+        max: 5.0,
+        default: 0.003,
+        skew: Some(0.3),
+    },
+    description: "フィルタのエンベロープが開ききるまでの時間(filter_decay が 0 より大きいときだけ効く)。長くすると、音が鳴ってからゆっくり明るくなる(ワウっと開くパッド)。",
+};
+
+const TONE_FILTER_DECAY: ParamSpec = ParamSpec {
+    name: "filter_decay",
+    display_name: "フィルタの減衰",
+    unit: Some("s"),
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 5.0,
+        default: 0.0,
+        skew: Some(0.3),
+    },
+    description: "フィルタのエンベロープを音量と別にする。0 は音量の ADSR に従う(従来)。0.1〜0.4 で、音量は伸ばしたまま頭だけ明るい「プラック」「ベースのアタック」、1 以上でゆっくり暗くなるパッド。開く量は filter_env。",
+};
+
+const TONE_FILTER_SUSTAIN: ParamSpec = ParamSpec {
+    name: "filter_sustain",
+    display_name: "フィルタの残り",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "フィルタのエンベロープが減衰した後に残る開き具合(filter_decay が 0 より大きいときだけ効く)。0 で減衰後はカットオフの値まで閉じる。",
+};
+
+const TONE_LFO1_RATE: ParamSpec = ParamSpec {
+    name: "lfo1_rate",
+    display_name: "LFO1 速さ",
+    unit: Some("Hz"),
+    range: ParamRange::Float {
+        min: 0.05,
+        max: 20.0,
+        default: 5.0,
+        skew: Some(0.4),
+    },
+    description: "LFO1 の速さ。音程のビブラートは 4〜6Hz、ワウやウォブルは 1〜8Hz、ゆっくり動くパッドは 0.1〜0.5Hz。",
+};
+
+const TONE_LFO1_DEPTH: ParamSpec = ParamSpec {
+    name: "lfo1_depth",
+    display_name: "LFO1 深さ",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "LFO1 の深さ。0 で掛からない。行き先によって目安が違う: 音程なら 0.05〜0.1(ビブラート)、カットオフなら 0.2〜0.6(ワウ・ウォブル)、音量なら 0.3〜0.7(トレモロ)、パンなら 0.3〜0.8。",
+};
+
+const TONE_LFO1_SHAPE: ParamSpec = ParamSpec {
+    name: "lfo1_shape",
+    display_name: "LFO1 形",
+    unit: None,
+    range: ParamRange::Enum {
+        choices: &["sine", "triangle", "square", "saw", "random"],
+        default: "sine",
+    },
+    description: "LFO1 の形。sine・triangle はなめらかな揺れ、square は 2 値の切り替え(トリル・刻み)、saw は鋸歯(繰り返す上昇・下降)、random は周期ごとに値が飛ぶ(サンプル&ホールド。電子音らしい不規則な動き)。",
+};
+
+const TONE_LFO1_TARGET: ParamSpec = ParamSpec {
+    name: "lfo1_target",
+    display_name: "LFO1 行き先",
+    unit: None,
+    range: ParamRange::Enum {
+        choices: &["pitch", "cutoff", "amp", "pan", "position"],
+        default: "cutoff",
+    },
+    description: "LFO1 で動かすもの。pitch(ビブラート)、cutoff(ワウ・ウォブル)、amp(トレモロ)、pan(オートパン)、position(ウェーブテーブルの位置。wavetable だけ)。",
+};
+
+const TONE_LFO2_RATE: ParamSpec = ParamSpec {
+    name: "lfo2_rate",
+    display_name: "LFO2 速さ",
+    unit: Some("Hz"),
+    range: ParamRange::Float {
+        min: 0.05,
+        max: 20.0,
+        default: 2.0,
+        skew: Some(0.4),
+    },
+    description: "LFO2 の速さ(使い方は LFO1 と同じ。2 本目で別の行き先・別の速さを足す)。",
+};
+
+const TONE_LFO2_DEPTH: ParamSpec = ParamSpec {
+    name: "lfo2_depth",
+    display_name: "LFO2 深さ",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "LFO2 の深さ(0 で掛からない)。",
+};
+
+const TONE_LFO2_SHAPE: ParamSpec = ParamSpec {
+    name: "lfo2_shape",
+    display_name: "LFO2 形",
+    unit: None,
+    range: ParamRange::Enum {
+        choices: &["sine", "triangle", "square", "saw", "random"],
+        default: "sine",
+    },
+    description: "LFO2 の形(LFO1 と同じ)。",
+};
+
+const TONE_LFO2_TARGET: ParamSpec = ParamSpec {
+    name: "lfo2_target",
+    display_name: "LFO2 行き先",
+    unit: None,
+    range: ParamRange::Enum {
+        choices: &["pitch", "cutoff", "amp", "pan", "position"],
+        default: "cutoff",
+    },
+    description: "LFO2 で動かすもの(LFO1 と同じ)。",
+};
+
 pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "waveform",
@@ -213,6 +426,23 @@ pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
         description: "楽器自体の音量。トラック音量と別。和音を弾くと音が重なるので\
             クリップするなら下げる。",
     },
+    TONE_SPREAD,
+    TONE_ANALOG,
+    TONE_FILTER_TYPE,
+    TONE_DRIVE,
+    TONE_VEL_CUTOFF,
+    TONE_KEY_TRACK,
+    TONE_FILTER_ATTACK,
+    TONE_FILTER_DECAY,
+    TONE_FILTER_SUSTAIN,
+    TONE_LFO1_RATE,
+    TONE_LFO1_DEPTH,
+    TONE_LFO1_SHAPE,
+    TONE_LFO1_TARGET,
+    TONE_LFO2_RATE,
+    TONE_LFO2_DEPTH,
+    TONE_LFO2_SHAPE,
+    TONE_LFO2_TARGET,
 ];
 
 pub static DRUM_SPECS: &[ParamSpec] = &[
@@ -714,6 +944,35 @@ pub static WAVETABLE_SPECS: &[ParamSpec] = &[
         },
         description: "楽器自体の音量。トラック音量と別。",
     },
+    ParamSpec {
+        name: "filter_env",
+        display_name: "フィルタのエンベロープ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "鳴り始めにカットオフを開く量(1 で約 +3 オクターブ)。0 は開かない(従来)。filter_decay で開いてから閉じるまでの時間を決める(0 なら音量の ADSR に従う)。",
+    },
+    TONE_SPREAD,
+    TONE_ANALOG,
+    TONE_FILTER_TYPE,
+    TONE_DRIVE,
+    TONE_VEL_CUTOFF,
+    TONE_KEY_TRACK,
+    TONE_FILTER_ATTACK,
+    TONE_FILTER_DECAY,
+    TONE_FILTER_SUSTAIN,
+    TONE_LFO1_RATE,
+    TONE_LFO1_DEPTH,
+    TONE_LFO1_SHAPE,
+    TONE_LFO1_TARGET,
+    TONE_LFO2_RATE,
+    TONE_LFO2_DEPTH,
+    TONE_LFO2_SHAPE,
+    TONE_LFO2_TARGET,
 ];
 
 pub static SAMPLER_SPECS: &[ParamSpec] = &[
@@ -1175,7 +1434,7 @@ impl crate::InstrumentParams {
                 "osc_level" => p.osc_level = value.clamp(0.0, 1.0),
                 "crackle" => p.crackle = value.clamp(0.0, 1.0),
                 "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
-                _ => return false,
+                _ => return p.tone.set_continuous(name, value),
             },
             I::Drum(p) => match name {
                 "gain_db" => p.gain = db_to_amp(value),
@@ -1232,10 +1491,42 @@ impl crate::InstrumentParams {
                 "sustain" => p.sustain = value.clamp(0.0, 1.0),
                 "release" => p.release = value.clamp(0.01, 8.0),
                 "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
-                _ => return false,
+                "filter_env" => p.filter_env = value.clamp(0.0, 1.0),
+                _ => return p.tone.set_continuous(name, value),
             },
         }
         true
+    }
+}
+
+/// 共通のつまみ(crate::tone)を焼き込む
+fn bake_tone(map: &ParamMap, s: &[ParamSpec]) -> crate::tone::ToneParams {
+    use crate::tone::{FilterType, LfoParams, LfoShape, LfoTarget, ToneParams};
+    let lfo = |k: u8| LfoParams {
+        rate: get_f32(map, s, if k == 1 { "lfo1_rate" } else { "lfo2_rate" }).clamp(0.05, 20.0),
+        depth: get_f32(map, s, if k == 1 { "lfo1_depth" } else { "lfo2_depth" }).clamp(0.0, 1.0),
+        shape: LfoShape::parse(get_enum(
+            map,
+            s,
+            if k == 1 { "lfo1_shape" } else { "lfo2_shape" },
+        )),
+        target: LfoTarget::parse(get_enum(
+            map,
+            s,
+            if k == 1 { "lfo1_target" } else { "lfo2_target" },
+        )),
+    };
+    ToneParams {
+        spread: get_f32(map, s, "spread").clamp(0.0, 1.0),
+        analog: get_f32(map, s, "analog").clamp(0.0, 1.0),
+        filter_type: FilterType::parse(get_enum(map, s, "filter_type")),
+        drive: get_f32(map, s, "drive").clamp(0.0, 1.0),
+        vel_cutoff: get_f32(map, s, "vel_cutoff").clamp(0.0, 1.0),
+        key_track: get_f32(map, s, "key_track").clamp(0.0, 1.0),
+        filter_attack: get_f32(map, s, "filter_attack").clamp(0.001, 5.0),
+        filter_decay: get_f32(map, s, "filter_decay").clamp(0.0, 5.0),
+        filter_sustain: get_f32(map, s, "filter_sustain").clamp(0.0, 1.0),
+        lfo: [lfo(1), lfo(2)],
     }
 }
 
@@ -1302,6 +1593,8 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
                 release: get_f32(map, s, "release").clamp(0.01, 8.0),
                 gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+                filter_env: get_f32(map, s, "filter_env").clamp(0.0, 1.0),
+                tone: bake_tone(map, s),
             };
             (InstrumentKind::Wavetable, InstrumentParams::Wavetable(p))
         }
@@ -1341,6 +1634,7 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 osc_level: get_f32(map, s, "osc_level").clamp(0.0, 1.0),
                 crackle: get_f32(map, s, "crackle").clamp(0.0, 1.0),
                 gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+                tone: bake_tone(map, s),
             };
             (
                 InstrumentKind::Subtractive,

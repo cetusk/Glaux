@@ -150,6 +150,16 @@ impl VoiceState {
         }
     }
 
+    /// 1 サンプルを (中央, 左右の差) で生成する(L = 中央 + 差、R = 中央 − 差)。
+    /// 左右に広げられる音源(減算・ウェーブテーブル)以外は差が 0
+    pub fn next_stereo(&mut self, params: &InstrumentParams) -> (f32, f32) {
+        match (self, params) {
+            (VoiceState::Subtractive(v), InstrumentParams::Subtractive(p)) => v.next_stereo(p),
+            (VoiceState::Wavetable(v), InstrumentParams::Wavetable(p)) => v.next_stereo(p),
+            (v, p) => (v.next(p), 0.0),
+        }
+    }
+
     /// レガートでつながれた音: 立ち上がりを飛ばす(エンベロープを持つシンセのみ。
     /// サンプル・撥弦はエンジン側のフェードで立ち上がりを消す)。発音直後に呼ぶ。
     pub fn skip_attack(&mut self, params: &InstrumentParams) {
@@ -175,6 +185,18 @@ impl VoiceState {
             InstrumentParams::Sf2(p) => VoiceState::Sf2(MultiVoice::start_variant(
                 p,
                 pitch,
+                vel,
+                articulation,
+                sample_rate,
+                variant,
+            )),
+            // 減算・ウェーブテーブルは、揺らぎ(analog)の種に使う(音ごとに少しずつ違う音になる)
+            InstrumentParams::Subtractive(p) => VoiceState::Subtractive(
+                SubtractiveVoice::start_seeded(p, freq, vel, articulation, sample_rate, variant),
+            ),
+            InstrumentParams::Wavetable(p) => VoiceState::Wavetable(WavetableVoice::start_seeded(
+                p,
+                freq,
                 vel,
                 articulation,
                 sample_rate,

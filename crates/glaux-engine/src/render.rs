@@ -1577,17 +1577,20 @@ impl Renderer {
                     self.voices.swap_remove(i);
                     continue;
                 }
-                let mut sample = v.state.next(inst) * fade;
+                // 左右に広がる音源(ユニゾンの広がり・パンの LFO)は左右の差も出す
+                let (mut sample, mut vside) = v.state.next_stereo(inst);
+                sample *= fade;
+                vside *= fade;
                 if v.shape.is_active() {
-                    sample = v.shape.process(sample, v.age as f32, sr);
+                    (sample, vside) = v.shape.process_stereo(sample, vside, v.age as f32, sr);
                 }
                 if let Some(c) = self.voice_samples.get_mut(v.track as usize) {
                     *c += 1;
                 }
-                // 層は層の音量・パン(中央成分と左右差成分)を掛ける
+                // 層は層の音量・パン(中央成分と左右差成分)を掛ける。声の左右の差は層の音量で
                 let (mid, side) = match layer {
-                    Some(l) => (sample * l.mid, sample * l.side),
-                    None => (sample, 0.0),
+                    Some(l) => (sample * l.mid, sample * l.side + vside * l.mid),
+                    None => (sample, vside),
                 };
                 match track_mono.get_mut(v.track as usize) {
                     Some(acc) => {
@@ -1674,18 +1677,21 @@ impl Renderer {
                     self.live_voices.swap_remove(i);
                     continue;
                 }
-                let sample = v.state.next(&v.instrument);
+                let (sample, vside) = v.state.next_stereo(&v.instrument);
                 match data.tracks.get(v.track as usize) {
                     Some(mix) => match track_mono.get_mut(v.track as usize) {
-                        Some(acc) => *acc += sample,
+                        Some(acc) => {
+                            *acc += sample;
+                            track_side[v.track as usize] += vside;
+                        }
                         None => {
-                            direct_l += sample * mix.gain_l;
-                            direct_r += sample * mix.gain_r;
+                            direct_l += (sample + vside) * mix.gain_l;
+                            direct_r += (sample - vside) * mix.gain_r;
                         }
                     },
                     None => {
-                        direct_l += sample * 0.8;
-                        direct_r += sample * 0.8;
+                        direct_l += (sample + vside) * 0.8;
+                        direct_r += (sample - vside) * 0.8;
                     }
                 }
                 i += 1;
@@ -1704,9 +1710,9 @@ impl Renderer {
                     continue;
                 }
                 v.remaining = v.remaining.saturating_sub(1);
-                let sample = v.state.next(&v.instrument);
-                direct_l += sample * v.gain_l;
-                direct_r += sample * v.gain_r;
+                let (sample, vside) = v.state.next_stereo(&v.instrument);
+                direct_l += (sample + vside) * v.gain_l;
+                direct_r += (sample - vside) * v.gain_r;
                 i += 1;
             }
 
@@ -2974,6 +2980,7 @@ mod tests {
             osc_level: 1.0,
             crackle: 0.0,
             gain: 1.0,
+            tone: Default::default(),
         })
     }
 

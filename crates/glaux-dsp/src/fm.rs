@@ -5,6 +5,8 @@
 //! 整数比は楽器らしい倍音、非整数比(例 3.5、1.41)は金属的・鐘のような非調和な響きになる。
 //! 減算式(subtractive)では作れない音色の担当。
 //!
+//! 変調が深いと側帯波がナイキストを超えて折り返すので、発振は 2 倍のレートで回して戻す(ハーフバンド)。
+//!
 //! RT セーフ: 値型のみでアロケーションなし。
 
 use glaux_core::Articulation;
@@ -47,6 +49,8 @@ pub struct FmVoice {
     index_scale: f32,
     decay_mul: f32,
     pub(crate) expr: crate::expr::PitchExpr,
+    /// 2 倍のレートから戻すハーフバンド
+    hb: crate::oversample::Halfband,
     sample_rate: f32,
 }
 
@@ -83,6 +87,7 @@ impl FmVoice {
             index_scale: 0.4 + 0.6 * vel,
             decay_mul,
             expr: crate::expr::PitchExpr::new(articulation, sample_rate),
+            hb: Default::default(),
             sample_rate,
         }
     }
@@ -134,18 +139,27 @@ impl FmVoice {
             1.0
         };
         let f = self.freq * ratio_expr;
+        let index = p.index * self.mod_env * self.index_scale;
+        // 発振は 2 倍のレートで 2 回回し、ハーフバンドで戻す(深い変調の折り返しを抑える)
+        let a = self.osc(p, f, index, sr * 2.0);
+        let b = self.osc(p, f, index, sr * 2.0);
+        let out = self.hb.down(a, b);
+        out * self.amp_env * self.vel * p.gain
+    }
+
+    /// 発振を 1 歩進める(`rate` は回すレート)
+    #[inline]
+    fn osc(&mut self, p: &FmParams, f: f32, index: f32, rate: f32) -> f32 {
         let tau = std::f32::consts::TAU;
         let fb = p.feedback * 0.5 * (self.fb_hist[0] + self.fb_hist[1]);
         let m = (tau * self.mod_phase + fb * std::f32::consts::PI).sin();
         self.fb_hist = [self.fb_hist[1], m];
-        let index = p.index * self.mod_env * self.index_scale;
         let out = (tau * self.car_phase + index * m).sin();
-
-        self.car_phase += f / sr;
+        self.car_phase += f / rate;
         self.car_phase -= self.car_phase.floor();
-        self.mod_phase += f * p.ratio / sr;
+        self.mod_phase += f * p.ratio / rate;
         self.mod_phase -= self.mod_phase.floor();
-        out * self.amp_env * self.vel * p.gain
+        out
     }
 }
 

@@ -36,6 +36,7 @@ mod sampler;
 pub mod stretch;
 pub mod string_pool;
 mod subtractive;
+pub mod tone;
 mod voice;
 mod wave;
 mod wavetable;
