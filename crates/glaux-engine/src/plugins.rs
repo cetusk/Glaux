@@ -1625,6 +1625,109 @@ mod tests {
         assert!(p < n * 0.2, "ポルタメントでは余韻が切れる: {p} vs {n}");
     }
 
+    /// 音ごとの変調と MPE: 1 音ごとの変調を受ける音源(Surge XT など)には、ノート ID を付けた ParamMod を送り、
+    /// 2 チャンネル目以降のベンドは 1 音ごとの音程(Tuning)で送る
+    #[test]
+    fn per_note_modulation_and_mpe_reach_the_plugin() {
+        use glaux_clap::NoteMsg;
+        let Some(id) = setup() else {
+            eprintln!("GLAUX_TEST_CLAP が未設定のためスキップ");
+            return;
+        };
+        // 1 音ごとに変調できるつまみを 1 つ選ぶ
+        let info = rescan().into_iter().find(|p| p.id == id).unwrap();
+        let target = std::thread::spawn(move || {
+            glaux_clap::mark_main_thread();
+            let mut p = glaux_clap::ClapPlugin::new(&info.path, &info.id).ok()?;
+            p.param_infos()
+                .into_iter()
+                .find(|i| i.per_note && i.modulatable && !i.stepped)
+        })
+        .join()
+        .unwrap();
+        let Some(target) = target else {
+            eprintln!("1 音ごとに変調できるつまみが無いのでスキップ");
+            return;
+        };
+        let mut project = project_with_plugin(&id);
+        project.tracks[0].modulators.push(glaux_core::Modulator {
+            target: glaux_core::ParamPath::device(format!("clap:{}", target.id)),
+            shape: glaux_core::LfoShape::Sine,
+            sync: Some("1/8".into()),
+            rate_hz: 0.0,
+            depth: (target.max - target.min) * 0.25,
+            phase: 0.25,
+            range: Some((target.min, target.max)),
+            center: Some(target.default),
+            per_note: true,
+        });
+        let shared = Arc::new(Shared::new(Default::default()));
+        let manager = PluginManager::start(shared.plugin_slots.clone());
+        let mut bank = SampleBank::default();
+        bank.plugin_slots = manager.sync(&project, 48_000.0);
+        let slot = bank.plugin_slots.values().next().unwrap().0 as usize;
+        shared
+            .data
+            .store(Arc::new(build_playback_data(&project, 48_000.0, &bank)));
+        shared
+            .live_track
+            .store(0, std::sync::atomic::Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let mut buf = vec![0.0f32; 960 * 2];
+        for _ in 0..300 {
+            r.process(&mut buf, 2);
+            if r.has_plugins() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(r.has_plugins());
+        // 再生して、0.5 秒目からのノートに音ごとの変調が付く
+        shared
+            .playing
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut per_note = Vec::new();
+        for _ in 0..50 {
+            r.process(&mut buf, 2);
+            for m in r.plugin_msgs_for_test(slot) {
+                if let NoteMsg::ParamMod {
+                    id,
+                    amount,
+                    note: Some((key, _)),
+                    ..
+                } = *m
+                {
+                    per_note.push((id, key, amount));
+                }
+            }
+        }
+        assert!(!per_note.is_empty(), "音ごとの変調が送られる");
+        assert!(per_note.iter().all(|(i, k, _)| *i == target.id && *k == 60));
+        let peak = per_note.iter().map(|x| x.2.abs()).fold(0.0, f64::max);
+        assert!(peak > (target.max - target.min) * 0.2, "{peak}");
+        // MPE: 3 チャンネル目の音に、そのチャンネルのベンドを 1 音ごとの音程で送る
+        shared
+            .playing
+            .store(false, std::sync::atomic::Ordering::Release);
+        shared.live.push(crate::midi::LiveEvent::NoteOn {
+            track: 0,
+            pitch: 64,
+            vel: 100,
+            ch: 2,
+        });
+        r.process(&mut buf, 2);
+        shared.live.push(crate::midi::LiveEvent::PitchBend {
+            ch: 2,
+            v: 8192 + 4096,
+            range: 48,
+        });
+        r.process(&mut buf, 2);
+        let tuned = r.plugin_msgs_for_test(slot).iter().any(|m| {
+            matches!(*m, NoteMsg::Tuning { key: 64, semitones, .. } if (semitones - 24.0).abs() < 1e-6)
+        });
+        assert!(tuned, "{:?}", r.plugin_msgs_for_test(slot));
+    }
+
     #[test]
     fn live_pitch_bend_reaches_plugin() {
         let Some(id) = setup() else {

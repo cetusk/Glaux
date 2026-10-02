@@ -17,6 +17,8 @@ mod presets;
 mod scan;
 #[cfg(windows)]
 mod window;
+#[cfg(target_os = "linux")]
+mod window_x11;
 
 pub use host::{mark_audio_thread, mark_main_thread};
 pub use plugin::{
@@ -26,7 +28,7 @@ pub use presets::{list_presets, PresetEntry, PresetLocation};
 pub use scan::{default_search_paths, describe, scan, PluginInfo};
 
 /// プラグインの画面のためのウィンドウメッセージを処理する(プラグインのメインスレッドで
-/// こまめに呼ぶ。Windows 以外では何もしない)。
+/// こまめに呼ぶ。Windows 以外では何もしない。Linux はウィンドウごとに [`ClapPlugin::gui_tick`] で処理する)。
 pub fn pump_gui_events() {
     #[cfg(windows)]
     window::pump_messages();

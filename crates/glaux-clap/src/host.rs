@@ -19,6 +19,7 @@ use clack_extensions::preset_discovery::preset_data::Location;
 use clack_extensions::preset_discovery::{HostPresetLoadImpl, PluginPresetLoad};
 use clack_extensions::state::{HostStateImpl, PluginState};
 use clack_extensions::thread_check::HostThreadCheckImpl;
+use clack_extensions::timer::{HostTimerImpl, PluginTimer, TimerId};
 use clack_host::prelude::*;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -56,7 +57,11 @@ impl HostHandlers for GlauxHost {
             .register::<clack_extensions::params::HostParams>()
             .register::<clack_extensions::latency::HostLatency>()
             .register::<clack_extensions::gui::HostGui>()
-            .register::<clack_extensions::preset_discovery::HostPresetLoad>();
+            .register::<clack_extensions::preset_discovery::HostPresetLoad>()
+            .register::<clack_extensions::timer::HostTimer>();
+        // Linux の画面(JUCE 製など)は、ホストのイベントループに fd とタイマーを預けて動く
+        #[cfg(unix)]
+        builder.register::<clack_extensions::posix_fd::HostPosixFd>();
     }
 }
 
@@ -73,6 +78,9 @@ pub struct HostShared {
     pub params: OnceLock<Option<PluginParams>>,
     pub preset_load: OnceLock<Option<PluginPresetLoad>>,
     pub latency: OnceLock<Option<PluginLatency>>,
+    pub timer: OnceLock<Option<PluginTimer>>,
+    #[cfg(unix)]
+    pub posix_fd: OnceLock<Option<clack_extensions::posix_fd::PluginPosixFd>>,
     /// プラグインが頼んだ画面の大きさ(幅 << 32 | 高さ。0 = なし)
     pub requested_size: AtomicU64,
     /// プラグインが自分の(浮動)ウィンドウを閉じた
@@ -88,6 +96,9 @@ impl<'a> SharedHandler<'a> for HostShared {
         let _ = self.params.set(instance.get_extension());
         let _ = self.preset_load.set(instance.get_extension());
         let _ = self.latency.set(instance.get_extension());
+        let _ = self.timer.set(instance.get_extension());
+        #[cfg(unix)]
+        let _ = self.posix_fd.set(instance.get_extension());
     }
 
     fn request_restart(&self) {
@@ -162,6 +173,82 @@ pub struct HostMain<'a> {
     pub ports_changed: Cell<bool>,
     /// プリセットの読み込み結果(読み込めた / 失敗の理由)
     pub preset_result: std::cell::RefCell<Option<Result<(), String>>>,
+    /// プラグインが頼んだタイマー(ID・周期・次に呼ぶ時刻)と、次に配る ID
+    pub timers: std::cell::RefCell<Vec<HostTimerEntry>>,
+    pub next_timer: Cell<u32>,
+    /// プラグインが見張ってほしい fd とその条件
+    #[cfg(unix)]
+    pub fds: std::cell::RefCell<Vec<(i32, clack_extensions::posix_fd::FdFlags)>>,
+}
+
+/// プラグインが頼んだタイマー 1 つ
+#[derive(Clone, Copy, Debug)]
+pub struct HostTimerEntry {
+    pub id: TimerId,
+    pub period: std::time::Duration,
+    pub due: std::time::Instant,
+}
+
+impl HostTimerImpl for HostMain<'_> {
+    fn register_timer(&self, period_ms: u32) -> Result<TimerId, HostError> {
+        let id = TimerId(self.next_timer.get());
+        self.next_timer.set(self.next_timer.get().wrapping_add(1));
+        let period = std::time::Duration::from_millis(period_ms.max(1) as u64);
+        self.timers.borrow_mut().push(HostTimerEntry {
+            id,
+            period,
+            due: std::time::Instant::now() + period,
+        });
+        Ok(id)
+    }
+
+    fn unregister_timer(&self, timer_id: TimerId) -> Result<(), HostError> {
+        let mut t = self.timers.borrow_mut();
+        let before = t.len();
+        t.retain(|e| e.id != timer_id);
+        if t.len() == before {
+            return Err(HostError::Message("そのタイマーはありません"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl clack_extensions::posix_fd::HostPosixFdImpl for HostMain<'_> {
+    fn register_fd(
+        &self,
+        fd: std::os::unix::io::RawFd,
+        flags: clack_extensions::posix_fd::FdFlags,
+    ) -> Result<(), HostError> {
+        let mut f = self.fds.borrow_mut();
+        f.retain(|(x, _)| *x != fd);
+        f.push((fd, flags));
+        Ok(())
+    }
+
+    fn modify_fd(
+        &self,
+        fd: std::os::unix::io::RawFd,
+        flags: clack_extensions::posix_fd::FdFlags,
+    ) -> Result<(), HostError> {
+        match self.fds.borrow_mut().iter_mut().find(|(x, _)| *x == fd) {
+            Some(e) => {
+                e.1 = flags;
+                Ok(())
+            }
+            None => Err(HostError::Message("その fd は登録されていません")),
+        }
+    }
+
+    fn unregister_fd(&self, fd: std::os::unix::io::RawFd) -> Result<(), HostError> {
+        let mut f = self.fds.borrow_mut();
+        let before = f.len();
+        f.retain(|(x, _)| *x != fd);
+        if f.len() == before {
+            return Err(HostError::Message("その fd は登録されていません"));
+        }
+        Ok(())
+    }
 }
 
 impl<'a> MainThreadHandler<'a> for HostMain<'a> {

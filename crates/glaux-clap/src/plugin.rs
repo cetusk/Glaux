@@ -176,6 +176,8 @@ pub struct ClapPlugin {
     /// 画面を入れているホスト側のウィンドウ(埋め込み方式のとき)
     #[cfg(windows)]
     window: Option<crate::window::HostWindow>,
+    #[cfg(target_os = "linux")]
+    window: Option<crate::window_x11::HostWindow>,
 }
 
 /// 画面まわりで起きたこと([`ClapPlugin::gui_tick`] の戻り値)。
@@ -199,6 +201,10 @@ impl ClapPlugin {
                 dirty: Cell::new(false),
                 ports_changed: Cell::new(false),
                 preset_result: Default::default(),
+                timers: Default::default(),
+                next_timer: Cell::new(1),
+                #[cfg(unix)]
+                fds: Default::default(),
             },
             &entry,
             &c_id,
@@ -209,7 +215,7 @@ impl ClapPlugin {
             instance,
             id: id.to_owned(),
             gui_open: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             window: None,
         })
     }
@@ -519,7 +525,7 @@ impl ClapPlugin {
 
     /// プラグインの画面を開く(開いていれば前面に出す)。
     pub fn open_gui(&mut self, title: &str) -> Result<(), ClapError> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(w) = &self.window {
             w.show();
             return Ok(());
@@ -597,15 +603,83 @@ impl ClapPlugin {
         ))
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    fn open_gui_platform(
+        &mut self,
+        gui: clack_extensions::gui::PluginGui,
+        title: &str,
+    ) -> Result<(), ClapError> {
+        use clack_extensions::gui::{GuiApiType, GuiConfiguration, Window};
+        let handle = self.instance.plugin_handle();
+        let embedded = GuiConfiguration {
+            api_type: GuiApiType::X11,
+            is_floating: false,
+        };
+        if gui.is_api_supported(&handle, embedded) {
+            gui.create(&handle, embedded)
+                .map_err(|e| ClapError::Gui(format!("{e:?}")))?;
+            let size = gui
+                .get_size(&handle)
+                .unwrap_or(clack_extensions::gui::GuiSize {
+                    width: 800,
+                    height: 500,
+                });
+            let resizable = gui.can_resize(&handle);
+            let window =
+                match crate::window_x11::HostWindow::new(title, size.width, size.height, resizable)
+                {
+                    Ok(w) => w,
+                    Err(e) => {
+                        gui.destroy(&handle);
+                        return Err(ClapError::Gui(e));
+                    }
+                };
+            // SAFETY: ウィンドウは画面を破棄する(close_gui)まで生かしておく
+            let set = unsafe { gui.set_parent(&handle, Window::from_x11_handle(window.id())) };
+            if let Err(e) = set {
+                gui.destroy(&handle);
+                return Err(ClapError::Gui(format!("{e:?}")));
+            }
+            let _ = gui.show(&handle);
+            window.show();
+            self.window = Some(window);
+            return Ok(());
+        }
+        let floating = GuiConfiguration {
+            api_type: GuiApiType::X11,
+            is_floating: true,
+        };
+        if gui.is_api_supported(&handle, floating) {
+            gui.create(&handle, floating)
+                .map_err(|e| ClapError::Gui(format!("{e:?}")))?;
+            if let Ok(t) = std::ffi::CString::new(title) {
+                gui.suggest_title(&handle, &t);
+            }
+            gui.show(&handle)
+                .map_err(|e| ClapError::Gui(format!("{e:?}")))?;
+            return Ok(());
+        }
+        Err(ClapError::Gui(
+            "X11 の画面に対応していないプラグインです".into(),
+        ))
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     fn open_gui_platform(
         &mut self,
         _gui: clack_extensions::gui::PluginGui,
         _title: &str,
     ) -> Result<(), ClapError> {
         Err(ClapError::Gui(
-            "この OS ではまだプラグインの画面を開けません(Windows のみ対応)".into(),
+            "この OS ではまだプラグインの画面を開けません(Windows と Linux のみ対応)".into(),
         ))
+    }
+
+    /// テスト用: 埋め込んだ画面の中身を (幅, 高さ, RGB) で読む(Linux のみ)
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn capture_gui_for_test(&self) -> Option<(u32, u32, Vec<u8>)> {
+        self.window.as_ref().and_then(|w| w.capture_rgb())
     }
 
     /// プラグインの画面を閉じる。
@@ -619,7 +693,7 @@ impl ClapPlugin {
         {
             gui.destroy(&self.instance.plugin_handle());
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             self.window = None;
         }
@@ -639,7 +713,12 @@ impl ClapPlugin {
             .window
             .as_ref()
             .is_some_and(|w| w.take_close_requested());
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        let closed_by_user = self.window.as_mut().is_some_and(|w| {
+            w.pump();
+            w.take_close_requested()
+        });
+        #[cfg(not(any(windows, target_os = "linux")))]
         let closed_by_user = false;
         if closed_by_plugin || closed_by_user {
             self.close_gui();
@@ -648,15 +727,15 @@ impl ClapPlugin {
         let requested = self
             .instance
             .access_shared_handler(|h| h.requested_size.swap(0, Ordering::AcqRel));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             if requested != 0 {
-                if let Some(w) = &self.window {
+                if let Some(w) = self.window.as_mut() {
                     w.set_client_size((requested >> 32) as u32, (requested & 0xFFFF_FFFF) as u32);
                 }
             }
             // 利用者がウィンドウの大きさを変えたらプラグインに伝える
-            let resized = self.window.as_ref().and_then(|w| w.take_resized());
+            let resized = self.window.as_mut().and_then(|w| w.take_resized());
             if let Some((width, height)) = resized {
                 if let Some(gui) = self
                     .instance
@@ -671,18 +750,104 @@ impl ClapPlugin {
                 }
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         let _ = requested;
         GuiEvent::None
     }
 
-    /// メインスレッドでの定期処理(プラグインが頼んだコールバックを呼ぶ)。
+    /// メインスレッドでの定期処理(プラグインが頼んだコールバック・タイマー・fd の見張りを呼ぶ)。
     pub fn poll(&mut self) {
         let requested = self
             .instance
             .access_shared_handler(|h| h.callback_requested.swap(false, Ordering::AcqRel));
         if requested {
             self.instance.call_on_main_thread_callback();
+        }
+        self.run_timers();
+        #[cfg(unix)]
+        self.run_fds();
+    }
+
+    /// 時刻の来たタイマーを呼ぶ(遅れたら次は今から 1 周期後)
+    fn run_timers(&mut self) {
+        let now = std::time::Instant::now();
+        let mut due = [clack_extensions::timer::TimerId(0); 32];
+        let n = self.instance.access_handler(|h| {
+            let mut n = 0;
+            for t in h.timers.borrow_mut().iter_mut() {
+                if t.due <= now && n < due.len() {
+                    due[n] = t.id;
+                    n += 1;
+                    t.due = (t.due + t.period).max(now);
+                }
+            }
+            n
+        });
+        if n == 0 {
+            return;
+        }
+        let Some(ext) = self
+            .instance
+            .access_shared_handler(|h| h.timer.get().copied().flatten())
+        else {
+            return;
+        };
+        let handle = self.instance.plugin_handle();
+        for id in &due[..n] {
+            ext.on_timer(&handle, *id);
+        }
+    }
+
+    /// 見張りを頼まれた fd に起きたことを知らせる(待たずに調べるだけ)
+    #[cfg(unix)]
+    fn run_fds(&mut self) {
+        use clack_extensions::posix_fd::FdFlags;
+        let fds = self.instance.access_handler(|h| h.fds.borrow().clone());
+        if fds.is_empty() {
+            return;
+        }
+        let Some(ext) = self
+            .instance
+            .access_shared_handler(|h| h.posix_fd.get().copied().flatten())
+        else {
+            return;
+        };
+        let mut polls: Vec<libc::pollfd> = fds
+            .iter()
+            .map(|(fd, f)| libc::pollfd {
+                fd: *fd,
+                events: (if f.contains(FdFlags::READ) {
+                    libc::POLLIN
+                } else {
+                    0
+                }) | (if f.contains(FdFlags::WRITE) {
+                    libc::POLLOUT
+                } else {
+                    0
+                }),
+                revents: 0,
+            })
+            .collect();
+        // SAFETY: polls は生きている配列で、長さを正しく渡す
+        let ready = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, 0) };
+        if ready <= 0 {
+            return;
+        }
+        let handle = self.instance.plugin_handle();
+        for p in &polls {
+            let mut flags = FdFlags::empty();
+            if p.revents & libc::POLLIN != 0 {
+                flags |= FdFlags::READ;
+            }
+            if p.revents & libc::POLLOUT != 0 {
+                flags |= FdFlags::WRITE;
+            }
+            if p.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                flags |= FdFlags::ERROR;
+            }
+            if !flags.is_empty() {
+                ext.on_fd(&handle, p.fd, flags);
+            }
         }
     }
 }

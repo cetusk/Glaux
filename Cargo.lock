@@ -1677,9 +1677,11 @@ version = "0.2.1"
 dependencies = [
  "clack-extensions",
  "clack-host",
+ "libc",
  "thiserror 1.0.69",
  "tracing",
  "windows-sys 0.61.2",
+ "x11-dl",
 ]
 
 [[package]]

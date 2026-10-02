@@ -56,10 +56,13 @@ rustfft = "6"
 tract-onnx = "0.23"
 # CLAP プラグインのホスト(glaux-clap のみ)
 clack-host = "0.2"
-clack-extensions = { version = "0.2", features = ["clack-host", "audio-ports", "note-ports", "params", "state", "thread-check", "log", "latency", "gui", "preset-discovery"] }
+clack-extensions = { version = "0.2", features = ["clack-host", "audio-ports", "note-ports", "params", "state", "thread-check", "log", "latency", "gui", "preset-discovery", "posix-fd", "timer"] }
 # CLAP プラグインの状態をプロジェクトに書く
 base64 = "0.22"
 # Windows の API: プラグインの画面を入れるウィンドウ(glaux-clap)、電力抑制を外す(glaux-engine)
+# Linux のプラグインの画面(X11)。libX11 は実行時に読み込む(MIT)
+x11-dl = "2.21"
+libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Threading"] }
 # ラウドネス(EBU R128: 短期・LRA・True Peak)
 ebur128 = "0.1"
