@@ -3,11 +3,13 @@
   import {
     ACCENT_PRESETS,
     applyTheme,
-    CHAT_MODEL_EXAMPLES,
     CHAT_MODELS,
     CHAT_PROVIDERS,
+    EFFORT_LABELS,
+    effortsFor,
     playDoneChime,
     saveSettings,
+    setChatEffort,
     setChatModel,
     settings,
     settingsUi,
@@ -243,30 +245,17 @@
   const provider = $derived(settings.chatProvider);
   const currentModel = $derived(provider === "codex" ? settings.chatCodexModel : settings.chatModel);
   const isPresetModel = $derived(CHAT_MODELS[provider].some((m) => m.value === currentModel));
-  /// 「その他」を選んでモデル名を入れているところ
-  let customModel = $state(false);
-  let modelName = $state("");
+  const currentEffort = $derived(provider === "codex" ? settings.chatCodexEffort : settings.chatEffort);
+  const efforts = $derived(effortsFor(provider, currentModel));
 
   function pickProvider(v: "claude" | "codex") {
     settings.chatProvider = v;
-    customModel = false;
     saveSettings();
   }
 
   function pickModel(e: Event) {
     const v = (e.currentTarget as HTMLSelectElement).value;
-    if (v === "__custom") {
-      customModel = true;
-      modelName = isPresetModel ? "" : currentModel;
-      return;
-    }
-    customModel = false;
-    setChatModel(v);
-  }
-
-  function commitModelName() {
-    setChatModel(modelName.trim());
-    customModel = false;
+    if (v !== "__current") setChatModel(v);
   }
 
   let info = $state<{ mcp_url: string } | null>(null);
@@ -567,7 +556,7 @@
             <button class="btn sm" onclick={startCalibration} disabled={calib !== "idle"}><Icon name="target" />測る</button>
           </div>
         </div>
-      {:else}
+      {:else if settingsUi.tab === "ai"}
         <h3>AI</h3>
         <div class="srow">
           {@render row("チャットの相手", "この PC にインストールしてログインしておく。チャットの見出しでも切り替えられます")}
@@ -580,24 +569,23 @@
         <div class="srow">
           {@render row("モデル", "次の指示から使われます(会話の文脈はそのまま)")}
           <div class="sc col">
-            <select value={customModel || !isPresetModel ? "__custom" : currentModel} onchange={pickModel} aria-label="モデル">
-              {#each CHAT_MODELS[provider] as m (m.value)}<option value={m.value}>{m.label}</option>{/each}
-              <option value="__custom">{!isPresetModel && !customModel ? `その他: ${currentModel}` : "その他(名前を入れる)"}</option>
+            <select value={isPresetModel ? currentModel : "__current"} onchange={pickModel} aria-label="モデル">
+              {#each CHAT_MODELS[provider] as m (m.value)}<option value={m.value}>{m.label}{m.note ? `(${m.note})` : ""}</option>{/each}
+              {#if !isPresetModel}<option value="__current">以前の指定: {currentModel}</option>{/if}
             </select>
-            {#if customModel}
-              <!-- svelte-ignore a11y_autofocus -->
-              <input
-                type="text"
-                placeholder={CHAT_MODEL_EXAMPLES[provider]}
-                bind:value={modelName}
-                autofocus
-                onkeydown={(e) => {
-                  if (e.key === "Enter" && !e.isComposing) commitModelName();
-                  else if (e.key === "Escape") customModel = false;
-                }}
-                onblur={commitModelName}
-              />
-            {/if}
+          </div>
+        </div>
+        <div class="srow">
+          {@render row("考える深さ(effort)", "深いほど丁寧だが、時間と使用量が増える。選べる段階はモデルによって違います")}
+          <div class="sc col">
+            <select
+              value={efforts.includes(currentEffort) ? currentEffort : ""}
+              onchange={(e) => setChatEffort((e.currentTarget as HTMLSelectElement).value)}
+              aria-label="考える深さ"
+            >
+              <option value="">既定(モデルの標準)</option>
+              {#each efforts as ef (ef)}<option value={ef}>{EFFORT_LABELS[ef] ?? ef}</option>{/each}
+            </select>
           </div>
         </div>
         <label class="srow">

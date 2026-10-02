@@ -233,7 +233,12 @@ fn toml_string(s: &str) -> String {
 /// - ファイルの読み書きやコマンド実行はさせない(読み取り専用のサンドボックス + シェル系の機能を切る)。
 ///   Glaux のツールだけを承認なしで呼べるようにする(`approval_policy = "never"` だと既定では MCP も拒否される)
 /// - システムプロンプトは `developer_instructions`(開発者の指示)として渡す
-pub fn codex_args(mcp_url: &str, resume: Option<&str>, model: Option<&str>) -> Vec<String> {
+pub fn codex_args(
+    mcp_url: &str,
+    resume: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into()];
     if resume.is_some() {
         args.push("resume".into());
@@ -251,7 +256,9 @@ pub fn codex_args(mcp_url: &str, resume: Option<&str>, model: Option<&str>) -> V
         "mcp_servers.glaux.default_tools_approval_mode=\"approve\"".to_owned(),
         format!("developer_instructions={}", toml_string(system_prompt())),
     ];
-    for c in configs {
+    // 考える深さ(model_reasoning_effort。値は valid_effort で確かめ済み)
+    let effort = effort.map(|e| format!("model_reasoning_effort={}", toml_string(e)));
+    for c in configs.into_iter().chain(effort) {
         args.push("-c".into());
         args.push(c);
     }
@@ -282,6 +289,8 @@ pub struct ChatManager {
     running: AtomicBool,
     /// 使うモデル(`claude --model` / `codex -m` に渡す)。None なら各 CLI の既定
     model: Mutex<Option<String>>,
+    /// 考える深さ(`claude --effort` / Codex の `model_reasoning_effort`)。None なら各 CLI の既定
+    effort: Mutex<Option<String>>,
     /// 今動いている AI のモデル名(MCP サーバーと共有し、履歴の作者名に使う)。
     /// Claude は init イベントの model(既定のモデルでも実際の名前が分かる)、Codex は選んだモデル
     pub chat_model: glaux_mcp::server::ChatModel,
@@ -293,6 +302,14 @@ fn init_model(line: &str) -> Option<String> {
     (v["type"] == "system" && v["subtype"] == "init")
         .then(|| v["model"].as_str().map(str::to_owned))
         .flatten()
+}
+
+/// 考える深さとして渡してよい値か(Claude Code は low〜max、Codex は minimal〜ultra。モデルが受け付けない値は画面で出さない)
+pub fn valid_effort(e: &str) -> bool {
+    matches!(
+        e,
+        "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+    )
 }
 
 /// `--model` に渡してよい値か(英数字と . _ - [ ] のみ。別オプションの注入を防ぐ)。
@@ -345,6 +362,20 @@ impl ChatManager {
         Ok(())
     }
 
+    /// 次のターンから使う考える深さを設定する(None / 空文字で既定)。
+    pub fn set_effort(&self, effort: Option<String>) -> Result<(), String> {
+        let effort = effort
+            .filter(|e| !e.trim().is_empty())
+            .map(|e| e.trim().to_owned());
+        if let Some(e) = &effort {
+            if !valid_effort(e) {
+                return Err(format!("effort が不正です: {e}"));
+            }
+        }
+        *self.effort.lock().expect("effort lock") = effort;
+        Ok(())
+    }
+
     pub fn new(mcp_url: String, project_dir: String) -> Self {
         // 前回のセッション ID があれば読み込み、アプリ再起動をまたいで会話を継続する
         let session = read_cache(&session_file(&project_dir)).map(|s| decode_session(&s));
@@ -361,6 +392,7 @@ impl ChatManager {
             child: Mutex::new(None),
             running: AtomicBool::new(false),
             model: Mutex::new(None),
+            effort: Mutex::new(None),
             chat_model: Default::default(),
         }
     }
@@ -511,10 +543,12 @@ impl ChatManager {
             Provider::Claude => self.configure_claude(cmd),
             Provider::Codex => {
                 let model = self.model.lock().expect("model lock").clone();
+                let effort = self.effort.lock().expect("effort lock").clone();
                 cmd.args(codex_args(
                     &self.chat_mcp_url(),
                     self.resume_id().as_deref(),
                     model.as_deref(),
+                    effort.as_deref(),
                 ));
             }
         }
@@ -548,6 +582,9 @@ impl ChatManager {
         }
         if let Some(model) = self.model.lock().expect("model lock").as_ref() {
             cmd.args(["--model", model]);
+        }
+        if let Some(effort) = self.effort.lock().expect("effort lock").as_ref() {
+            cmd.args(["--effort", effort]);
         }
     }
 
@@ -962,7 +999,7 @@ mod tests {
     #[test]
     fn codex_args_are_built_in_order() {
         let url = "http://127.0.0.1:41920/mcp";
-        let args = codex_args(url, None, Some("gpt-6-astra"));
+        let args = codex_args(url, None, Some("gpt-6-astra"), Some("high"));
         assert_eq!(
             &args[..4],
             [
@@ -974,8 +1011,15 @@ mod tests {
         );
         assert!(args.contains(&"mcp_servers.glaux.url=\"http://127.0.0.1:41920/mcp\"".to_owned()));
         assert_eq!(&args[args.len() - 3..], ["-m", "gpt-6-astra", "-"]);
+        assert!(args.contains(&"model_reasoning_effort=\"high\"".to_owned()));
+        assert!(
+            valid_effort("ultra")
+                && valid_effort("max")
+                && !valid_effort("--x")
+                && !valid_effort("")
+        );
 
-        let args = codex_args(url, Some("01a0d570-4eae"), None);
+        let args = codex_args(url, Some("01a0d570-4eae"), None, None);
         assert_eq!(&args[..2], ["exec", "resume"]);
         assert_eq!(&args[args.len() - 2..], ["01a0d570-4eae", "-"]);
 
@@ -1003,6 +1047,7 @@ mod tests {
             "http://127.0.0.1:41920/mcp",
             Some("01a0d570-4eae-7923-ae85-8c56e471244d"),
             Some("gpt-6-astra-2026-09-01"),
+            Some("xhigh"),
         );
         // 引数ごとの引用符と、内側の " を 2 重にする分を見込む(文字数は UTF-16 単位)
         let len: usize = args
@@ -1027,7 +1072,7 @@ mod tests {
             panic!("GLAUX_CODEX_BIN / GLAUX_CODEX_MOCK / GLAUX_CODEX_MCP を設定してください");
         };
         let run = |resume: Option<&str>| {
-            let mut args = codex_args(&mcp, resume, None);
+            let mut args = codex_args(&mcp, resume, None, None);
             let at = if resume.is_some() { 2 } else { 1 };
             let provider = [
                 "model_provider=\"mock\"".to_owned(),

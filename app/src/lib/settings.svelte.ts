@@ -31,6 +31,9 @@ interface Settings {
   chatModel: string;
   /// GPT のモデル(`codex -m` に渡す)。空文字 = Codex の既定
   chatCodexModel: string;
+  /// 考える深さ(`claude --effort` / Codex の model_reasoning_effort)。空文字 = 既定
+  chatEffort: string;
+  chatCodexEffort: string;
   /// オーディオデバイス(空文字 = OS の既定)
   outputDevice: string;
   inputDevice: string;
@@ -64,6 +67,8 @@ function load(): Settings {
         chatProvider: v.chatProvider === "codex" ? "codex" : "claude",
         chatModel: typeof v.chatModel === "string" ? v.chatModel : "",
         chatCodexModel: typeof v.chatCodexModel === "string" ? v.chatCodexModel : "",
+        chatEffort: typeof v.chatEffort === "string" ? v.chatEffort : "",
+        chatCodexEffort: typeof v.chatCodexEffort === "string" ? v.chatCodexEffort : "",
         outputDevice: typeof v.outputDevice === "string" ? v.outputDevice : "",
         inputDevice: typeof v.inputDevice === "string" ? v.inputDevice : "",
         bufferFrames: typeof v.bufferFrames === "number" ? v.bufferFrames : 0,
@@ -87,6 +92,8 @@ function load(): Settings {
     chatProvider: "claude",
     chatModel: "",
     chatCodexModel: "",
+    chatEffort: "",
+    chatCodexEffort: "",
     outputDevice: "",
     inputDevice: "",
     bufferFrames: 0,
@@ -120,23 +127,52 @@ export const CHAT_PROVIDERS = [
   { value: "codex", label: "GPT", cli: "Codex CLI" },
 ] as const;
 
-/// モデルの選択肢("" は各 CLI の既定)。Claude は claude --model のエイリアス、GPT は codex -m のモデル名
-export const CHAT_MODELS = {
+/// モデルの選択肢("" は各 CLI の既定)。名前を手で入れなくて済むよう、各 CLI が受け付けるものを並べる。
+/// Claude は Claude Code 2.1.287 の正式名、GPT は Codex CLI 0.156.1 に組み込まれた一覧(画面に出すもの)。
+/// efforts はそのモデルが受け付ける考える深さ(GPT はモデルごとに違う)
+export interface ChatModelOption {
+  value: string;
+  label: string;
+  note?: string;
+  efforts?: readonly string[];
+}
+
+const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+const GPT_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+const GPT_EFFORTS_NO_ULTRA = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export const CHAT_MODELS: Record<"claude" | "codex", ChatModelOption[]> = {
   claude: [
-    { value: "", label: "既定" },
-    { value: "opus", label: "Opus" },
-    { value: "sonnet", label: "Sonnet" },
-    { value: "haiku", label: "Haiku" },
+    { value: "", label: "既定", note: "Claude Code の既定のモデル", efforts: CLAUDE_EFFORTS },
+    { value: "claude-fable-5-1", label: "Fable 5.1", efforts: CLAUDE_EFFORTS },
+    { value: "claude-opus-5-5", label: "Opus 5.5", efforts: CLAUDE_EFFORTS },
+    { value: "claude-opus-5-5[1m]", label: "Opus 5.5(1M)", note: "長い文脈(100 万トークン)", efforts: CLAUDE_EFFORTS },
+    { value: "claude-sonnet-5-5", label: "Sonnet 5.5", efforts: CLAUDE_EFFORTS },
+    { value: "claude-sonnet-5-5[1m]", label: "Sonnet 5.5(1M)", note: "長い文脈(100 万トークン)", efforts: CLAUDE_EFFORTS },
+    { value: "claude-haiku-4-5", label: "Haiku 4.5", note: "速くて軽い", efforts: CLAUDE_EFFORTS },
   ],
   codex: [
-    { value: "", label: "既定" },
-    { value: "gpt-6-astra", label: "GPT-6 Astra" },
+    { value: "", label: "既定", note: "Codex CLI の既定のモデル", efforts: GPT_EFFORTS },
+    { value: "gpt-6-astra", label: "GPT-6 Astra", note: "最も高度な作業に", efforts: GPT_EFFORTS },
+    { value: "gpt-6-sol", label: "GPT-6 Sol", note: "普段の作業に", efforts: GPT_EFFORTS },
+    { value: "gpt-6-luna", label: "GPT-6 Luna", note: "速くて安い", efforts: GPT_EFFORTS_NO_ULTRA },
+    { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", note: "前の世代", efforts: GPT_EFFORTS },
+    { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", note: "前の世代", efforts: GPT_EFFORTS },
+    { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", note: "前の世代・速い", efforts: GPT_EFFORTS_NO_ULTRA },
+    { value: "gpt-5.5", label: "GPT-5.5", note: "旧版", efforts: ["low", "medium", "high", "xhigh"] },
   ],
 };
 
-export const CHAT_MODEL_EXAMPLES = {
-  claude: "例: claude-opus-5-5、claude-sonnet-5",
-  codex: "例: gpt-6-astra",
+/// 考える深さの表示("" = 既定)
+export const EFFORT_LABELS: Record<string, string> = {
+  "": "既定",
+  minimal: "最小",
+  low: "low(軽く速く)",
+  medium: "medium(標準)",
+  high: "high(じっくり)",
+  xhigh: "xhigh(さらにじっくり)",
+  max: "max(最大)",
+  ultra: "ultra(最も深く・遅い)",
 };
 
 /** 今の相手のモデル名("" = 既定) */
@@ -144,9 +180,28 @@ export function currentChatModel(): string {
   return settings.chatProvider === "codex" ? settings.chatCodexModel : settings.chatModel;
 }
 
+/** 今の相手の考える深さ("" = 既定) */
+export function currentChatEffort(): string {
+  return settings.chatProvider === "codex" ? settings.chatCodexEffort : settings.chatEffort;
+}
+
+/** モデルが受け付ける考える深さ(一覧に無いモデル = 以前に手で入れた名前は、その相手の既定のモデルと同じ) */
+export function effortsFor(provider: "claude" | "codex", model: string): readonly string[] {
+  const list = CHAT_MODELS[provider];
+  return (list.find((m) => m.value === model) ?? list[0]).efforts ?? [];
+}
+
 export function setChatModel(v: string) {
   if (settings.chatProvider === "codex") settings.chatCodexModel = v;
   else settings.chatModel = v;
+  // 新しいモデルが受け付けない深さは既定に戻す
+  if (!effortsFor(settings.chatProvider, v).includes(currentChatEffort())) setChatEffort("");
+  saveSettings();
+}
+
+export function setChatEffort(v: string) {
+  if (settings.chatProvider === "codex") settings.chatCodexEffort = v;
+  else settings.chatEffort = v;
   saveSettings();
 }
 

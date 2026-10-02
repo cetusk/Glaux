@@ -773,8 +773,9 @@ export function sendChat(
   prompt: string,
   model: string | null = null,
   provider: "claude" | "codex" = "claude",
+  effort: string | null = null,
 ): Promise<void> {
-  return invoke("send_chat", { prompt, model: model || null, provider });
+  return invoke("send_chat", { prompt, model: model || null, provider, effort: effort || null });
 }
 
 export function cancelChat(): Promise<void> {

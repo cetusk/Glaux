@@ -2415,6 +2415,7 @@ async fn send_chat(
     prompt: String,
     model: Option<String>,
     provider: Option<String>,
+    effort: Option<String>,
 ) -> Result<(), String> {
     let provider = chat::Provider::parse(provider.as_deref())?;
     let prompt = prompt.trim().to_owned();
@@ -2425,6 +2426,7 @@ async fn send_chat(
         return Err("前の指示がまだ実行中です".to_owned());
     }
     state.chat.set_model(model)?;
+    state.chat.set_effort(effort)?;
     state.chat.set_provider(provider);
     let full_prompt = match build_chat_context(&state).await {
         Some(ctx) => format!("{ctx}\n{prompt}"),

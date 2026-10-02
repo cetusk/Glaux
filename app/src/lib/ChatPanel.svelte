@@ -10,10 +10,12 @@
   import {
     CHAT_MODELS,
     CHAT_PROVIDERS,
-    openSettings,
+    EFFORT_LABELS,
+    effortsFor,
     playDoneChime,
     playErrorChime,
     saveSettings,
+    setChatEffort,
     setChatModel,
     settings,
   } from "./settings.svelte";
@@ -22,7 +24,10 @@
   const MODELS = CHAT_MODELS;
   const provider = $derived(settings.chatProvider);
   const currentModel = $derived(provider === "codex" ? settings.chatCodexModel : settings.chatModel);
+  /// 一覧に無いモデル(以前に名前を手で入れたもの)。選び直すまでは残して見せる
   const isCustomModel = $derived(!MODELS[provider].some((m) => m.value === currentModel));
+  const currentEffort = $derived(provider === "codex" ? settings.chatCodexEffort : settings.chatEffort);
+  const efforts = $derived(effortsFor(provider, currentModel));
 
   function pickProvider(e: Event) {
     const v = (e.currentTarget as HTMLSelectElement).value;
@@ -31,15 +36,12 @@
   }
 
   function pickModel(e: Event) {
-    const el = e.currentTarget as HTMLSelectElement;
-    const v = el.value;
-    if (v === "__custom") {
-      // 名前を入れるのは設定の「AI」のページで(以前は window.prompt だった)
-      el.value = isCustomModel ? "__current" : currentModel;
-      openSettings("ai");
-      return;
-    }
-    setChatModel(v);
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    if (v !== "__current") setChatModel(v);
+  }
+
+  function pickEffort(e: Event) {
+    setChatEffort((e.currentTarget as HTMLSelectElement).value);
   }
   import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
 
@@ -277,7 +279,7 @@
       turnStart = null;
     }
     try {
-      await api.sendChat(fullPrompt, currentModel, provider);
+      await api.sendChat(fullPrompt, currentModel, provider, currentEffort);
     } catch (e) {
       push({ role: "error", text: String(e) });
       chatStatus.running = false;
@@ -378,12 +380,24 @@
         title="AI のモデル(次の指示から反映。会話の文脈はそのまま引き継がれます)"
       >
         {#each MODELS[provider] as m (m.value)}
-          <option value={m.value}>{m.label}</option>
+          <option value={m.value} title={m.note}>{m.label}</option>
         {/each}
         {#if isCustomModel}
           <option value="__current">{currentModel}</option>
         {/if}
-        <option value="__custom">その他(モデル名を入力)…</option>
+      </select>
+      <select
+        class="effort"
+        value={efforts.includes(currentEffort) ? currentEffort : ""}
+        onchange={pickEffort}
+        disabled={chatStatus.running}
+        title="考える深さ(effort)。深いほど丁寧だが時間と使用量が増える。次の指示から反映"
+        aria-label="考える深さ"
+      >
+        <option value="">深さ: 既定</option>
+        {#each efforts as ef (ef)}
+          <option value={ef}>{EFFORT_LABELS[ef] ?? ef}</option>
+        {/each}
       </select>
       <button class="btn sm" onclick={newConversation} disabled={chatStatus.running} title="会話の文脈をリセットする(表示中の会話も消えます)"
         ><Icon name="message-square-plus" />新しい会話</button
@@ -522,6 +536,7 @@
   }
 
   .model,
+  .effort,
   .provider {
     height: 22px;
     max-width: 130px;
