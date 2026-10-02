@@ -284,6 +284,10 @@ pub struct ImportSampleParams {
     /// 省略時 60。音程のない素材(ドラムワンショット等)は 60 のままでよい。
     #[serde(default)]
     pub root: Option<u8>,
+    /// 鳴らす音源: "sampler"(既定。そのまま再生)/ "granular"(粒を切り出して重ねるグラニュラー。
+    /// 素材から持続音・パッド・きらめきを作る。音源がすでに granular ならほかのつまみは残して素材だけ差し替える)
+    #[serde(default)]
+    pub instrument: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -6280,7 +6284,9 @@ impl GlauxServer {
         サンプルは内容ハッシュ名で <プロジェクト>/audio/ にコピーされ、ノートは root からの\
         ピッチ変換で再生される(実録の質感が欲しいときに使う)。\
         音程のある素材は root にサンプルの実音を指定すること(例: A3 の単音ギターなら 57)。\
-        取り込み + 音源設定は 1 Batch = 1 回の undo で戻せる。WAV 以外はエラー。"
+        instrument: \"granular\" にすると、素材から粒を切り出して重ねるグラニュラー音源にする(声・環境音から\
+        パッド・きらめき・時間を止めた音。つまみは position・grain_ms・density・spray_ms・scan など)。\
+        取り込み + 音源設定は 1 Batch = 1 回の undo で戻せる。"
     )]
     async fn import_sample(
         &self,
@@ -6309,6 +6315,36 @@ impl GlauxServer {
         if imported.asset.channels >= 2 {
             params_map.insert("stereo".to_owned(), glaux_core::ParamValue::Bool(true));
         }
+        let device = match p.instrument.as_deref().unwrap_or("sampler") {
+            "sampler" => glaux_core::Device {
+                source: glaux_core::PluginSource::Sampler {
+                    asset: imported.id.clone(),
+                },
+                params: params_map,
+            },
+            "granular" => {
+                // 音源がすでに granular なら素材(と root)だけ差し替える
+                let mut d = match &track.device {
+                    Some(d) if matches!(&d.source, glaux_core::PluginSource::Builtin { name } if name == "granular") => {
+                        d.clone()
+                    }
+                    _ => glaux_core::Device::builtin("granular"),
+                };
+                if let Some(root) = params_map.get("root") {
+                    d.params.insert("root".to_owned(), root.clone());
+                }
+                d.params.insert(
+                    "sample".to_owned(),
+                    glaux_core::ParamValue::Enum(imported.id.to_string()),
+                );
+                d
+            }
+            other => {
+                return Err(format!(
+                    "instrument は \"sampler\" か \"granular\" です(指定: {other})"
+                ))
+            }
+        };
         let mut cmds = Vec::new();
         if !project.assets.contains_key(&imported.id) {
             cmds.push(Command::AddAsset {
@@ -6318,12 +6354,7 @@ impl GlauxServer {
         }
         cmds.push(Command::SetDevice {
             track: track_id.clone(),
-            device: Some(glaux_core::Device {
-                source: glaux_core::PluginSource::Sampler {
-                    asset: imported.id.clone(),
-                },
-                params: params_map,
-            }),
+            device: Some(device),
         });
         let file_name = std::path::Path::new(&p.path)
             .file_name()
@@ -13677,7 +13708,7 @@ fn clap_param_range(
 }
 
 /// 新しく作るトラック(add_track)の初期値: 音源に減算・ウェーブテーブルを指定したトラックは
-/// 揺らぎ 0.2・広がり 0.5 で始める(音源を省いたトラックはそのまま)。指定された値は変えない。既定値は従来と同じ音のまま(既存の曲は変わらない)。
+/// 揺らぎ 0.2・広がり 0.5、加算合成は部分音の揺らぎ 0.15 で始める(音源を省いたトラックはそのまま)。指定された値は変えない。既定値は従来と同じ音のまま(既存の曲は変わらない)。
 /// アプリの「トラックを追加」・音源の選択と同じ値(app の instruments.ts の LIVELY_PARAMS)
 pub(crate) fn lively_new_tracks(cmd: &mut Value) {
     match cmd.get("op").and_then(Value::as_str) {
@@ -13695,20 +13726,22 @@ pub(crate) fn lively_new_tracks(cmd: &mut Value) {
             let Some(dev) = t.get_mut("device").filter(|d| d.is_object()) else {
                 return;
             };
-            let builtin = dev.get("type").and_then(Value::as_str) == Some("builtin")
-                && matches!(
-                    dev.get("name").and_then(Value::as_str),
-                    Some("subtractive" | "wavetable")
-                );
-            if !builtin {
+            if dev.get("type").and_then(Value::as_str) != Some("builtin") {
                 return;
             }
+            // 楽器ごとの初期値(加算合成は部分音の揺らぎ)
+            let lively: &[(&str, f64)] = match dev.get("name").and_then(Value::as_str) {
+                Some("subtractive" | "wavetable") => &[("analog", 0.2), ("spread", 0.5)],
+                Some("additive") => &[("wobble", 0.15)],
+                _ => return,
+            };
             let params = dev
                 .as_object_mut()
                 .map(|o| o.entry("params").or_insert_with(|| json!({})));
             if let Some(Value::Object(p)) = params {
-                p.entry("analog").or_insert(json!(0.2));
-                p.entry("spread").or_insert(json!(0.5));
+                for (k, v) in lively {
+                    p.entry(*k).or_insert(json!(v));
+                }
             }
         }
         Some("batch") => {

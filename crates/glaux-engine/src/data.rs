@@ -1424,8 +1424,19 @@ fn wavetable_asset(d: &glaux_core::Device) -> Option<AssetId> {
     }
 }
 
+/// 内蔵の granular が粒を切り出す素材(`sample`)
+fn granular_asset(d: &glaux_core::Device) -> Option<AssetId> {
+    match (&d.source, d.params.get("sample")) {
+        (
+            glaux_core::PluginSource::Builtin { name },
+            Some(glaux_core::ParamValue::Enum(sample)),
+        ) if name == "granular" => AssetId::parse(sample).ok(),
+        _ => None,
+    }
+}
+
 /// 再生に使われている素材(音声クリップ・サンプラーの音源〈層を含む〉・音声から作ったウェーブテーブル・
-/// 畳み込みリバーブの残響)
+/// グラニュラーの素材・畳み込みリバーブの残響)
 fn used_assets(project: &Project) -> std::collections::HashSet<AssetId> {
     let mut used = std::collections::HashSet::new();
     let ir_of = |e: &Effect| match e.params.get("ir") {
@@ -1443,6 +1454,7 @@ fn used_assets(project: &Project) -> std::collections::HashSet<AssetId> {
                 used.insert(asset.clone());
             }
             used.extend(wavetable_asset(d));
+            used.extend(granular_asset(d));
         }
         used.extend(t.effects.iter().filter_map(ir_of));
     }
@@ -1499,6 +1511,17 @@ fn bake_device_instrument(
                 return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
             }
             tracing::warn!("SoundFont 未読込のため subtractive で代用: {soundfont}");
+        }
+        glaux_core::PluginSource::Builtin { name } if name == "granular" => {
+            // 粒を切り出す素材(無い・読めなければ無音)
+            let data = granular_asset(d).and_then(|a| {
+                let data = bank.get(&a).cloned();
+                if data.is_none() {
+                    tracing::warn!("グラニュラーの素材が未読込のため無音: {a}");
+                }
+                data
+            });
+            return InstrumentParams::Granular(glaux_dsp::bake_granular(&d.params, data));
         }
         glaux_core::PluginSource::Builtin { .. } => {
             // 音声から作ったウェーブテーブル(読めなければ内蔵の analog で鳴らす)
@@ -3930,6 +3953,49 @@ mod tests {
         ));
         project.tracks.push(track);
         project
+    }
+
+    #[test]
+    fn granular_plays_grains_from_an_asset() {
+        use crate::export::render_project;
+        use glaux_core::{Device, ParamValue};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // 1 秒の 440Hz を素材に、2 秒の音(素材より長く伸びる)
+        let base = audio_clip_project(dir, 0, 1920);
+        let asset = base.assets.keys().next().unwrap().clone();
+        let mut project = project_with_notes(vec![note(0, 3840, 60, 127)]);
+        project.assets = base.assets.clone();
+        let mut d = Device::builtin("granular");
+        d.params
+            .insert("sample".into(), ParamValue::Enum(asset.to_string()));
+        project.tracks[0].device = Some(d);
+        assert!(used_assets(&project).contains(&asset));
+        let bank = SampleBank::load(&project, dir);
+        let InstrumentParams::Granular(p) =
+            bake_track_instrument(&project.tracks[0], &bank, 48_000.0)
+        else {
+            panic!("granular のはず");
+        };
+        assert!(p.data.is_some(), "素材を読んで渡す");
+        let out = render_project(&project, 48_000.0, &bank).unwrap();
+        // 1.2〜1.8 秒(素材の長さを超えた所)も鳴っていて、左右に広がっている(既定の spread 0.5)
+        let seg = &out[2 * 57_600..2 * 86_400];
+        let (mut l, mut r, mut diff) = (0.0f32, 0.0f32, 0.0f32);
+        for c in seg.chunks(2) {
+            l += c[0] * c[0];
+            r += c[1] * c[1];
+            diff += (c[0] - c[1]) * (c[0] - c[1]);
+        }
+        assert!(l > 1.0 && r > 1.0, "鳴り続ける: {l} {r}");
+        assert!(diff > (l + r) * 0.01, "左右に広がる");
+        // 素材が無ければ無音(落ちない)
+        let InstrumentParams::Granular(p) =
+            bake_track_instrument(&project.tracks[0], &SampleBank::default(), 48_000.0)
+        else {
+            panic!("granular のはず");
+        };
+        assert!(p.data.is_none());
     }
 
     #[test]

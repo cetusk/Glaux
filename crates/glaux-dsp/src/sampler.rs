@@ -146,7 +146,21 @@ impl SampleData {
     #[inline]
     pub fn read_cached(&self, pos: f64, step: f64, level: &mut (f64, f64)) -> f32 {
         let mips = self.mips.get().map_or(&[][..], |m| &m.mid[..]);
-        read_band_limited(&self.frames, mips, pos, step, level)
+        if mips.is_empty() || step <= 1.0 {
+            return read_band_limited(&self.frames, mips, pos, 0.0);
+        }
+        if level.0 != step {
+            *level = (step, step.log2());
+        }
+        read_band_limited(&self.frames, mips, pos, level.1)
+    }
+
+    /// 段(速さの 2 を底とする対数 `lg`。0 以下は元のまま)を先に求めてある版。
+    /// 速さが一定の読み出し(グラニュラーの粒)で、1 サンプルごとの対数を省く
+    #[inline]
+    pub fn read_at_level(&self, pos: f64, lg: f64) -> f32 {
+        let mips = self.mips.get().map_or(&[][..], |m| &m.mid[..]);
+        read_band_limited(&self.frames, mips, pos, lg)
     }
 
     /// [`Self::read_cached`] の左右差成分版(モノラル素材は 0)
@@ -156,7 +170,13 @@ impl SampleData {
             return 0.0;
         };
         let mips = self.mips.get().map_or(&[][..], |m| &m.side[..]);
-        read_band_limited(side, mips, pos, step, level)
+        if mips.is_empty() || step <= 1.0 {
+            return read_band_limited(side, mips, pos, 0.0);
+        }
+        if level.0 != step {
+            *level = (step, step.log2());
+        }
+        read_band_limited(side, mips, pos, level.1)
     }
 
     /// 左右の波形(モノラルなら同じもの)。
@@ -171,26 +191,17 @@ impl SampleData {
     }
 }
 
-/// [`SampleData::read_cached`] の中身(1 チャンネル分)
+/// [`SampleData::read_cached`] の中身(1 チャンネル分)。`lg` は速さの 2 を底とする対数(0 以下は元のまま)
 #[inline]
-fn read_band_limited(
-    frames: &[f32],
-    mips: &[Vec<f32>],
-    pos: f64,
-    step: f64,
-    level: &mut (f64, f64),
-) -> f32 {
+fn read_band_limited(frames: &[f32], mips: &[Vec<f32>], pos: f64, lg: f64) -> f32 {
     let base = |pos: f64| {
         let i = pos as usize;
         hermite(frames, i, (pos - i as f64) as f32)
     };
-    if mips.is_empty() || step <= 1.0 {
+    if mips.is_empty() || lg <= 0.0 {
         return base(pos);
     }
-    if level.0 != step {
-        *level = (step, step.log2());
-    }
-    let level = level.1.min(mips.len() as f64);
+    let level = lg.min(mips.len() as f64);
     let lo = level.floor() as usize;
     let t = (level - lo as f64) as f32;
     let at = |k: usize| -> f32 {

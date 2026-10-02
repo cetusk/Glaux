@@ -212,6 +212,12 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 動きのある音色は modulate(トラックの LFO。音源・エフェクトのつまみをテンポに合わせて揺らす): ワブルベース = wavetable の\n\
   position か subtractive の cutoff を 1/8〜1/16 の sine、うねるパッド = cutoff を 2/1 の triangle、ランダムに動く音色 = random。\n\
 - wavetable: position を LFO やオートメーションで動かすウォブルベース・うねるパッド・母音のような音・sync のギラついたリード。\n\
+- fm4: 4 オペレーターの FM(8 アルゴリズム)。DX のエレピ(既定)・ベル・ブラス・オルガン・FM ベース。モジュレーターの level が明るさ、\n\
+  その decay を短くすると頭だけ明るい打鍵の音。2 オペレーターの fm で足りなければこちら。\n\
+- additive: 加算合成(部分音 最大 64 本)。tilt で明るさ、odd_even -1 でクラリネット風、formant_db・formant_hz で声のような母音、\n\
+  damping で撥弦・打鍵の減衰、inharmonic でベル。澄んだパッドに向く(部分音が多いほど重い)。\n\
+- granular: 取り込んだ音声から粒を切り出して重ねる。import_sample の instrument: \"granular\" で素材を入れ、position(どこを)・\n\
+  grain_ms(粒の長さ)・density(1 秒の数)・spray_ms・pitch_rand・spread・scan(進める速さ)で、声を止めて伸ばす・きらめきの雲・ゆっくり移るパッド。\n\
 - drum: ドラムキット(GM 配置)。**ドラムのトラックには必ず drum**。55 はリバースクラッシュ(ビルドアップ用)。\n\
   kit: トラップ・ヒップホップは 808(kick_decay を伸ばしてベースの役も)、ハウス・テクノは 909、その他は modern。\n\
   キックの音程(kick_tune)は曲の主音に合わせる。スネアは snare_tune・snare_snappy、ハットの長さは hat_decay。\n\

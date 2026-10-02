@@ -3,8 +3,11 @@
 //! すべて `Copy` 可能な小さい値型で、`next` / `note_off` / `finished` は
 //! アロケーションしない(RT セーフ)。
 
+use crate::additive::{AdditiveParams, AdditiveVoice};
 use crate::drum::{DrumParams, DrumVoice};
 use crate::fm::{FmParams, FmVoice};
+use crate::fm4::{Fm4Params, Fm4Voice};
+use crate::granular::{GranularParams, GranularVoice};
 use crate::multi::{MultiSamplerParams, MultiVoice};
 use crate::pluck::{PluckParams, PluckVoice};
 use crate::sampler::{SamplerParams, SamplerVoice};
@@ -20,6 +23,9 @@ pub enum InstrumentKind {
     Sf2,
     Fm,
     Wavetable,
+    Fm4,
+    Granular,
+    Additive,
 }
 
 /// トラックごとに焼き込まれたパラメータ。
@@ -34,6 +40,9 @@ pub enum InstrumentParams {
     Sf2(MultiSamplerParams),
     Fm(FmParams),
     Wavetable(WavetableParams),
+    Fm4(Fm4Params),
+    Granular(GranularParams),
+    Additive(AdditiveParams),
 }
 
 impl Default for InstrumentParams {
@@ -55,6 +64,9 @@ pub enum VoiceState {
     Wavetable(WavetableVoice),
     Sampler(SamplerVoice),
     Sf2(MultiVoice),
+    Fm4(Fm4Voice),
+    Granular(GranularVoice),
+    Additive(AdditiveVoice),
 }
 
 impl VoiceState {
@@ -89,6 +101,23 @@ impl VoiceState {
             InstrumentParams::Fm(p) => {
                 VoiceState::Fm(FmVoice::start(p, freq, vel, articulation, sample_rate))
             }
+            InstrumentParams::Fm4(p) => {
+                VoiceState::Fm4(Fm4Voice::start(p, freq, vel, articulation, sample_rate))
+            }
+            InstrumentParams::Additive(p) => VoiceState::Additive(AdditiveVoice::start(
+                p,
+                freq,
+                vel,
+                articulation,
+                sample_rate,
+            )),
+            InstrumentParams::Granular(p) => VoiceState::Granular(GranularVoice::start(
+                p,
+                pitch,
+                vel,
+                articulation,
+                sample_rate,
+            )),
             InstrumentParams::Wavetable(p) => VoiceState::Wavetable(WavetableVoice::start(
                 p,
                 freq,
@@ -115,6 +144,9 @@ impl VoiceState {
             VoiceState::Subtractive(v) => v.expr.set_curve(curve),
             VoiceState::Pluck(v) => v.expr.set_curve(curve),
             VoiceState::Fm(v) => v.expr.set_curve(curve),
+            VoiceState::Fm4(v) => v.expr.set_curve(curve),
+            VoiceState::Granular(v) => v.expr.set_curve(curve),
+            VoiceState::Additive(v) => v.expr.set_curve(curve),
             VoiceState::Wavetable(v) => v.expr.set_curve(curve),
             VoiceState::Sampler(v) => v.expr.set_curve(curve),
             VoiceState::Sf2(v) => v.expr.set_curve(curve),
@@ -128,6 +160,9 @@ impl VoiceState {
             VoiceState::Subtractive(v) => v.expr.set_vibrato(spec),
             VoiceState::Pluck(v) => v.expr.set_vibrato(spec),
             VoiceState::Fm(v) => v.expr.set_vibrato(spec),
+            VoiceState::Fm4(v) => v.expr.set_vibrato(spec),
+            VoiceState::Granular(v) => v.expr.set_vibrato(spec),
+            VoiceState::Additive(v) => v.expr.set_vibrato(spec),
             VoiceState::Wavetable(v) => v.expr.set_vibrato(spec),
             VoiceState::Sampler(v) => v.expr.set_vibrato(spec),
             VoiceState::Sf2(v) => v.expr.set_vibrato(spec),
@@ -143,6 +178,9 @@ impl VoiceState {
             (VoiceState::Drum(v), InstrumentParams::Drum(p)) => v.next(p),
             (VoiceState::Pluck(v), InstrumentParams::Pluck(p)) => v.next(p),
             (VoiceState::Fm(v), InstrumentParams::Fm(p)) => v.next(p),
+            (VoiceState::Fm4(v), InstrumentParams::Fm4(p)) => v.next(p),
+            (VoiceState::Granular(v), InstrumentParams::Granular(p)) => v.next(p),
+            (VoiceState::Additive(v), InstrumentParams::Additive(p)) => v.next(p),
             (VoiceState::Wavetable(v), InstrumentParams::Wavetable(p)) => v.next(p),
             (VoiceState::Sampler(v), InstrumentParams::Sampler(p)) => v.next(p),
             (VoiceState::Sf2(v), InstrumentParams::Sf2(p)) => v.next(p),
@@ -151,12 +189,13 @@ impl VoiceState {
     }
 
     /// 1 サンプルを (中央, 左右の差) で生成する(L = 中央 + 差、R = 中央 − 差)。
-    /// 左右に広げられる音源(減算・ウェーブテーブル・ステレオのサンプラー)以外は差が 0
+    /// 左右に広げられる音源(減算・ウェーブテーブル・ステレオのサンプラー・グラニュラー)以外は差が 0
     pub fn next_stereo(&mut self, params: &InstrumentParams) -> (f32, f32) {
         match (self, params) {
             (VoiceState::Subtractive(v), InstrumentParams::Subtractive(p)) => v.next_stereo(p),
             (VoiceState::Wavetable(v), InstrumentParams::Wavetable(p)) => v.next_stereo(p),
             (VoiceState::Sampler(v), InstrumentParams::Sampler(p)) => v.next_stereo(p),
+            (VoiceState::Granular(v), InstrumentParams::Granular(p)) => v.next_stereo(p),
             (v, p) => (v.next(p), 0.0),
         }
     }
@@ -167,6 +206,8 @@ impl VoiceState {
         match (self, params) {
             (VoiceState::Subtractive(v), InstrumentParams::Subtractive(p)) => v.skip_attack(p),
             (VoiceState::Fm(v), InstrumentParams::Fm(p)) => v.skip_attack(p),
+            (VoiceState::Fm4(v), InstrumentParams::Fm4(p)) => v.skip_attack(p),
+            (VoiceState::Additive(v), InstrumentParams::Additive(p)) => v.skip_attack(p),
             (VoiceState::Wavetable(v), InstrumentParams::Wavetable(p)) => v.skip_attack(p),
             _ => {}
         }
@@ -198,6 +239,24 @@ impl VoiceState {
             InstrumentParams::Wavetable(p) => VoiceState::Wavetable(WavetableVoice::start_seeded(
                 p,
                 freq,
+                vel,
+                articulation,
+                sample_rate,
+                variant,
+            )),
+            // 加算は部分音の揺らぎ(wobble)の種に使う
+            InstrumentParams::Additive(p) => VoiceState::Additive(AdditiveVoice::start_seeded(
+                p,
+                freq,
+                vel,
+                articulation,
+                sample_rate,
+                variant,
+            )),
+            // グラニュラーは粒の並び(位置・音程・左右のばらつき)の種に使う
+            InstrumentParams::Granular(p) => VoiceState::Granular(GranularVoice::start_seeded(
+                p,
+                pitch,
                 vel,
                 articulation,
                 sample_rate,
@@ -243,6 +302,9 @@ impl VoiceState {
             VoiceState::Drum(v) => v.note_off(),
             VoiceState::Pluck(v) => v.note_off(),
             VoiceState::Fm(v) => v.note_off(),
+            VoiceState::Fm4(v) => v.note_off(),
+            VoiceState::Granular(v) => v.note_off(),
+            VoiceState::Additive(v) => v.note_off(),
             VoiceState::Wavetable(v) => v.note_off(),
             VoiceState::Sampler(v) => v.note_off(),
             VoiceState::Sf2(v) => v.note_off(),
@@ -256,6 +318,9 @@ impl VoiceState {
             (VoiceState::Drum(_), _) => true,
             (VoiceState::Pluck(v), _) => v.finished(),
             (VoiceState::Fm(v), _) => v.finished(),
+            (VoiceState::Fm4(v), _) => v.finished(),
+            (VoiceState::Granular(v), _) => v.finished(),
+            (VoiceState::Additive(v), _) => v.finished(),
             (VoiceState::Wavetable(v), _) => v.finished(),
             (VoiceState::Sampler(v), _) => v.finished(),
             (VoiceState::Sf2(v), _) => v.finished(),

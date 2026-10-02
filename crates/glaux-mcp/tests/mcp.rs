@@ -1713,6 +1713,28 @@ async fn import_sample_sets_sampler_device() {
     let r = call(&fx, "get_project", json!({})).await;
     assert!(ok_json(&r)["project"]["tracks"][0]["device"].is_null());
 
+    // グラニュラーの素材として取り込む
+    let r = call(
+        &fx,
+        "import_sample",
+        json!({ "track_id": "trk_gtr001", "path": wav.to_string_lossy(), "instrument": "granular" }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "get_project", json!({})).await;
+    let device = ok_json(&r)["project"]["tracks"][0]["device"].clone();
+    assert_eq!(device["type"], "builtin");
+    assert_eq!(device["name"], "granular");
+    assert_eq!(device["params"]["sample"], asset_id.as_str());
+    call(&fx, "undo", json!({})).await;
+    let r = call(
+        &fx,
+        "import_sample",
+        json!({ "track_id": "trk_gtr001", "path": wav.to_string_lossy(), "instrument": "piano" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+
     // WAV でないファイルはエラー
     let bad = wav_dir.path().join("bad.wav");
     std::fs::write(&bad, b"not a wav").unwrap();

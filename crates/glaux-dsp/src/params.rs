@@ -977,6 +977,705 @@ pub static WAVETABLE_SPECS: &[ParamSpec] = &[
     TONE_LFO2_TARGET,
 ];
 
+pub static FM4_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "algorithm",
+        display_name: "アルゴリズム",
+        unit: None,
+        range: ParamRange::Int {
+            min: 1,
+            max: 8,
+            default: 5,
+        },
+        description: "4 つのオペレーターのつなぎ方(→ は揺らす、[ ] は音として出る)。\
+            1 = 4→3→2→[1](直列。ブラス・リード・歪んだベース、倍音がいちばん複雑)、\
+            2 = (4+3)→2→[1](弦・ブラスの厚み)、3 = (3→2 + 4)→[1](エレピ・クラビ)、\
+            4 = (4→3 + 2)→[1](ベース・木管)、5 = 2→[1] と 4→[3](DX のエレピ・ベル。既定)、\
+            6 = 4→[1][2][3](オルガン・ブラス合奏)、7 = 4→[3] と [1][2](オルガン・マリンバ)、\
+            8 = [1][2][3][4](正弦波 4 つの足し算。オルガン・笛)。",
+    },
+    ParamSpec {
+        name: "op1_ratio",
+        display_name: "OP1 周波数比",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.5,
+            max: 16.0,
+            default: 1.0,
+            skew: Some(0.5),
+        },
+        description: "オペレーター 1 の周波数(鳴らす音の高さに対する比)。アルゴリズム 1〜8 のどれでもキャリア(音として出る)。\
+            モジュレーターの整数比(1・2・3)は楽器らしい倍音、大きい整数(14 など)は金属的なアタック(エレピの「チン」)、\
+            非整数(1.41・3.5)は鐘のような非調和な響き。キャリアの比を変えると音の高さそのものが変わる。",
+    },
+    ParamSpec {
+        name: "op1_level",
+        display_name: "OP1 出力",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "オペレーター 1 の出力。キャリアなら音量、モジュレーターなら変調の深さ\
+            (上げるほど倍音が増えて明るく・硬く、1 近くでざらついた金属的な音)。0 で使わない。",
+    },
+    ParamSpec {
+        name: "op1_attack",
+        display_name: "OP1 アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 5.0,
+            default: 0.002,
+            skew: Some(0.3),
+        },
+        description: "オペレーター 1 の立ち上がり。キャリアは音量の立ち上がり、モジュレーターは明るさが\
+            ゆっくり増える(ブラスの「ファー」と開く感じは 0.05〜0.2)。",
+    },
+    ParamSpec {
+        name: "op1_decay",
+        display_name: "OP1 ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 10.0,
+            default: 3.0,
+            skew: Some(0.3),
+        },
+        description: "オペレーター 1 が sustain まで下がる時間。モジュレーターを短くすると頭だけ明るく\
+            すぐ丸くなる(エレピ・ベル・マレット)。",
+    },
+    ParamSpec {
+        name: "op1_sustain",
+        display_name: "OP1 サステイン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "オペレーター 1 の減衰後の高さ。キャリアが 0 だと押さえていても消える(ピアノ・ベル)、\
+            1 近くだと伸びる(オルガン・ブラス・パッド)。",
+    },
+    ParamSpec {
+        name: "op2_ratio",
+        display_name: "OP2 周波数比",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.5,
+            max: 16.0,
+            default: 1.0,
+            skew: Some(0.5),
+        },
+        description: "オペレーター 2 の周波数(鳴らす音の高さに対する比)。アルゴリズム 5〜8 ではキャリア、1〜4 では 1 を揺らすモジュレーター。\
+            モジュレーターの整数比(1・2・3)は楽器らしい倍音、大きい整数(14 など)は金属的なアタック(エレピの「チン」)、\
+            非整数(1.41・3.5)は鐘のような非調和な響き。キャリアの比を変えると音の高さそのものが変わる。",
+    },
+    ParamSpec {
+        name: "op2_level",
+        display_name: "OP2 出力",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.45,
+            skew: None,
+        },
+        description: "オペレーター 2 の出力。キャリアなら音量、モジュレーターなら変調の深さ\
+            (上げるほど倍音が増えて明るく・硬く、1 近くでざらついた金属的な音)。0 で使わない。",
+    },
+    ParamSpec {
+        name: "op2_attack",
+        display_name: "OP2 アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 5.0,
+            default: 0.002,
+            skew: Some(0.3),
+        },
+        description: "オペレーター 2 の立ち上がり。キャリアは音量の立ち上がり、モジュレーターは明るさが\
+            ゆっくり増える(ブラスの「ファー」と開く感じは 0.05〜0.2)。",
+    },
+    ParamSpec {
+        name: "op2_decay",
+        display_name: "OP2 ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 10.0,
+            default: 1.5,
+            skew: Some(0.3),
+        },
+        description: "オペレーター 2 が sustain まで下がる時間。モジュレーターを短くすると頭だけ明るく\
+            すぐ丸くなる(エレピ・ベル・マレット)。",
+    },
+    ParamSpec {
+        name: "op2_sustain",
+        display_name: "OP2 サステイン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.15,
+            skew: None,
+        },
+        description: "オペレーター 2 の減衰後の高さ。キャリアが 0 だと押さえていても消える(ピアノ・ベル)、\
+            1 近くだと伸びる(オルガン・ブラス・パッド)。",
+    },
+    ParamSpec {
+        name: "op3_ratio",
+        display_name: "OP3 周波数比",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.5,
+            max: 16.0,
+            default: 1.0,
+            skew: Some(0.5),
+        },
+        description: "オペレーター 3 の周波数(鳴らす音の高さに対する比)。アルゴリズム 5〜8 ではキャリア、1〜4 ではモジュレーター。\
+            モジュレーターの整数比(1・2・3)は楽器らしい倍音、大きい整数(14 など)は金属的なアタック(エレピの「チン」)、\
+            非整数(1.41・3.5)は鐘のような非調和な響き。キャリアの比を変えると音の高さそのものが変わる。",
+    },
+    ParamSpec {
+        name: "op3_level",
+        display_name: "OP3 出力",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.35,
+            skew: None,
+        },
+        description: "オペレーター 3 の出力。キャリアなら音量、モジュレーターなら変調の深さ\
+            (上げるほど倍音が増えて明るく・硬く、1 近くでざらついた金属的な音)。0 で使わない。",
+    },
+    ParamSpec {
+        name: "op3_attack",
+        display_name: "OP3 アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 5.0,
+            default: 0.002,
+            skew: Some(0.3),
+        },
+        description: "オペレーター 3 の立ち上がり。キャリアは音量の立ち上がり、モジュレーターは明るさが\
+            ゆっくり増える(ブラスの「ファー」と開く感じは 0.05〜0.2)。",
+    },
+    ParamSpec {
+        name: "op3_decay",
+        display_name: "OP3 ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 10.0,
+            default: 1.2,
+            skew: Some(0.3),
+        },
+        description: "オペレーター 3 が sustain まで下がる時間。モジュレーターを短くすると頭だけ明るく\
+            すぐ丸くなる(エレピ・ベル・マレット)。",
+    },
+    ParamSpec {
+        name: "op3_sustain",
+        display_name: "OP3 サステイン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "オペレーター 3 の減衰後の高さ。キャリアが 0 だと押さえていても消える(ピアノ・ベル)、\
+            1 近くだと伸びる(オルガン・ブラス・パッド)。",
+    },
+    ParamSpec {
+        name: "op4_ratio",
+        display_name: "OP4 周波数比",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.5,
+            max: 16.0,
+            default: 14.0,
+            skew: Some(0.5),
+        },
+        description: "オペレーター 4 の周波数(鳴らす音の高さに対する比)。アルゴリズム 8 だけキャリア、ほかはモジュレーター(feedback で自分も揺らせる)。\
+            モジュレーターの整数比(1・2・3)は楽器らしい倍音、大きい整数(14 など)は金属的なアタック(エレピの「チン」)、\
+            非整数(1.41・3.5)は鐘のような非調和な響き。キャリアの比を変えると音の高さそのものが変わる。",
+    },
+    ParamSpec {
+        name: "op4_level",
+        display_name: "OP4 出力",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.2,
+            skew: None,
+        },
+        description: "オペレーター 4 の出力。キャリアなら音量、モジュレーターなら変調の深さ\
+            (上げるほど倍音が増えて明るく・硬く、1 近くでざらついた金属的な音)。0 で使わない。",
+    },
+    ParamSpec {
+        name: "op4_attack",
+        display_name: "OP4 アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 5.0,
+            default: 0.002,
+            skew: Some(0.3),
+        },
+        description: "オペレーター 4 の立ち上がり。キャリアは音量の立ち上がり、モジュレーターは明るさが\
+            ゆっくり増える(ブラスの「ファー」と開く感じは 0.05〜0.2)。",
+    },
+    ParamSpec {
+        name: "op4_decay",
+        display_name: "OP4 ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 10.0,
+            default: 0.15,
+            skew: Some(0.3),
+        },
+        description: "オペレーター 4 が sustain まで下がる時間。モジュレーターを短くすると頭だけ明るく\
+            すぐ丸くなる(エレピ・ベル・マレット)。",
+    },
+    ParamSpec {
+        name: "op4_sustain",
+        display_name: "OP4 サステイン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "オペレーター 4 の減衰後の高さ。キャリアが 0 だと押さえていても消える(ピアノ・ベル)、\
+            1 近くだと伸びる(オルガン・ブラス・パッド)。",
+    },
+    ParamSpec {
+        name: "feedback",
+        display_name: "フィードバック",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "オペレーター 4 が自分自身を揺らす量。上げるとノコギリ波寄りのざらつき(ブラス・ベース)、\
+            1 近くでノイズっぽくなる。",
+    },
+    ParamSpec {
+        name: "release",
+        display_name: "リリース",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 8.0,
+            default: 0.4,
+            skew: Some(0.3),
+        },
+        description: "鍵盤を離してから消えるまでの時間(全オペレーター共通)。ベル・パッドは長く。",
+    },
+    ParamSpec {
+        name: "vel_bright",
+        display_name: "強さで明るさ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.6,
+            skew: None,
+        },
+        description: "弱く弾いた音ほど変調を浅くする量(弱いと丸く、強いと硬く明るい。エレピ・ピアノらしい強弱)。\
+            0 だと強さは音量だけ。",
+    },
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 6.0,
+            default: -8.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。",
+    },
+];
+
+pub static GRANULAR_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "sample",
+        display_name: "素材",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &[],
+            default: "",
+        },
+        description: "粒を切り出す音声素材の ID(sha256:…)。import_sample の instrument: \"granular\" で取り込むと入る\
+            (プロジェクトにある素材の ID を直接入れてもよい)。声・楽器・環境音・ドラムループなど何でも。空なら無音。",
+    },
+    ParamSpec {
+        name: "root",
+        display_name: "ルート音程",
+        unit: None,
+        range: ParamRange::Int {
+            min: 0,
+            max: 127,
+            default: 60,
+        },
+        description: "この鍵盤で素材の元の高さ。離れるほど粒の音程が上下する(長さ・密度は変わらない)。",
+    },
+    ParamSpec {
+        name: "position",
+        display_name: "位置",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.3,
+            skew: None,
+        },
+        description: "粒を切り出す場所(素材の頭 0 〜 終わり 1)。声なら母音の所、楽器なら持続している所に置くと\
+            その瞬間の音色が伸び続ける(時間を止めた音)。オートメーションで動かすと音色が移り変わる。",
+    },
+    ParamSpec {
+        name: "spray_ms",
+        display_name: "位置のばらつき",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 2000.0,
+            default: 40.0,
+            skew: Some(0.4),
+        },
+        description: "粒ごとに切り出す場所を前後にずらす幅。0 だと同じ所の繰り返しで機械的(ブザー・ロボット声)、\
+            数十 ms で自然なざわめき、数百 ms 以上で素材のあちこちが混ざった雲になる。",
+    },
+    ParamSpec {
+        name: "grain_ms",
+        display_name: "粒の長さ",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 5.0,
+            max: 500.0,
+            default: 90.0,
+            skew: Some(0.4),
+        },
+        description: "粒 1 つの長さ。短い(5〜30ms)とザラザラ・ブツブツした質感(音程も曖昧)、\
+            50〜150ms で素材の音色が分かるなめらかなパッド、長い(200ms〜)と素材の断片がそのまま聞こえる。",
+    },
+    ParamSpec {
+        name: "density",
+        display_name: "密度",
+        unit: Some("/s"),
+        range: ParamRange::Float {
+            min: 1.0,
+            max: 200.0,
+            default: 30.0,
+            skew: Some(0.4),
+        },
+        description: "1 秒あたりの粒の数。少ない(〜10)と粒が 1 つずつ聞こえるパラパラした音、\
+            粒の長さ × 密度が 2 を超えると粒が重なってなめらかな持続音になる。",
+    },
+    ParamSpec {
+        name: "pitch_rand",
+        display_name: "音程のばらつき",
+        unit: Some("半音"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 12.0,
+            default: 0.1,
+            skew: Some(0.4),
+        },
+        description: "粒ごとの音程のずれ(±半音)。0.1〜0.3 でコーラスのような厚み、1〜2 で揺らいだ不安定な響き、\
+            12 近くで音程の無いきらめきの雲。",
+    },
+    ParamSpec {
+        name: "spread",
+        display_name: "広がり",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            skew: None,
+        },
+        description: "粒を左右に散らばらせる量。0 は中央(モノ)、上げるほど左右いっぱいに広がる。\
+            モノに畳んでも音量は変わらない。",
+    },
+    ParamSpec {
+        name: "window",
+        display_name: "粒の形",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["hann", "triangle", "trapezoid", "perc"],
+            default: "hann",
+        },
+        description: "粒 1 つの音量の形。hann = なめらかな山(柔らかい雲。既定)、triangle = 少しはっきり、\
+            trapezoid = 頭と終わりだけ短くフェード(粒の中身がそのまま聞こえる)、perc = 鋭い立ち上がりで減衰\
+            (パラパラ・チリチリした打楽器的な粒)。",
+    },
+    ParamSpec {
+        name: "scan",
+        display_name: "スキャン",
+        unit: None,
+        range: ParamRange::Float {
+            min: -2.0,
+            max: 2.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "押さえている間に切り出す場所を進める速さ(1 = 素材の元の速さ、0.1 なら 10 倍に引き伸ばし、\
+            負なら逆向き)。0(既定)は止まった時間。素材の端を越えたら反対の端へ回る。",
+    },
+    ParamSpec {
+        name: "attack",
+        display_name: "アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 10.0,
+            default: 0.2,
+            skew: Some(0.3),
+        },
+        description: "立ち上がりの時間。パッドは 0.2〜2 秒でふわっと、短くすると粒の雲がいきなり始まる。",
+    },
+    ParamSpec {
+        name: "decay",
+        display_name: "ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 10.0,
+            default: 1.0,
+            skew: Some(0.3),
+        },
+        description: "立ち上がりの後、sustain まで下がる時間。",
+    },
+    ParamSpec {
+        name: "sustain",
+        display_name: "サステイン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "押さえている間の音量。0 にすると decay の後に消える(粒の雲を短い音として使う)。",
+    },
+    ParamSpec {
+        name: "release",
+        display_name: "リリース",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 10.0,
+            default: 1.0,
+            skew: Some(0.3),
+        },
+        description: "鍵盤を離してから消えるまでの時間。長いと粒の雲が余韻として残る。",
+    },
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。",
+    },
+];
+
+pub static ADDITIVE_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "partials",
+        display_name: "部分音の数",
+        unit: None,
+        range: ParamRange::Int {
+            min: 8,
+            max: 64,
+            default: 32,
+        },
+        description: "足す正弦波の数。多いほど高い倍音まで出せて明るく細かい音になるが、処理が重い\
+            (64 で減算シンセの数倍)。低い音・明るい音は 48〜64、高い音・丸い音は 16 でも足りる。",
+    },
+    ParamSpec {
+        name: "tilt",
+        display_name: "明るさの傾き",
+        unit: Some("dB/oct"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 3.0,
+            default: -6.0,
+            skew: None,
+        },
+        description: "高い部分音ほど弱める量(1 オクターブごと)。-6 でノコギリ波の並び(明るい・弦)、\
+            -12 で丸い(フルート・柔らかいパッド)、-18 以下でほぼ正弦波、0 以上はギラギラした硬い音。",
+    },
+    ParamSpec {
+        name: "odd_even",
+        display_name: "奇数・偶数",
+        unit: None,
+        range: ParamRange::Float {
+            min: -1.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "部分音の奇数・偶数の釣り合い。-1 で偶数を消す(奇数だけ = 矩形波・クラリネットの空洞な音)、\
+            +1 で奇数を消す(基音と偶数 = オクターブが重なった明るく開いた音、オルガンの 8'+4' 風)。0 は全部。",
+    },
+    ParamSpec {
+        name: "formant_hz",
+        display_name: "フォルマントの位置",
+        unit: Some("Hz"),
+        range: ParamRange::Float {
+            min: 200.0,
+            max: 5000.0,
+            default: 1000.0,
+            skew: Some(0.4),
+        },
+        description: "鳴らす高さに関係なく、決まった周波数のあたりを持ち上げる山の位置(formant_db が 0 より大きいとき)。\
+            300〜800Hz で「お・あ」、1500〜2500Hz で「え・い」のような声・管楽器らしさ。オートメーションでしゃべる。",
+    },
+    ParamSpec {
+        name: "formant_db",
+        display_name: "フォルマントの強さ",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 24.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "フォルマントの山の高さ。0 で無し。6〜12dB で楽器らしいクセ、18dB 以上で声・トーキングのような強い母音。",
+    },
+    ParamSpec {
+        name: "formant_width",
+        display_name: "フォルマントの幅",
+        unit: Some("oct"),
+        range: ParamRange::Float {
+            min: 0.1,
+            max: 2.0,
+            default: 0.5,
+            skew: Some(0.5),
+        },
+        description: "山の幅(オクターブ)。狭いと鼻にかかった鋭い母音、広いとなだらかな色付け。",
+    },
+    ParamSpec {
+        name: "damping",
+        display_name: "高域の減衰",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "高い部分音ほど速く消える量。0 は消えない(オルガン・パッド)、0.3〜0.6 でピアノ・エレピ、\
+            1 で撥弦・マレット(明るい頭からすぐ丸い尾へ。k 番目の部分音は 2 番目の k/2 倍の速さで消える)。",
+    },
+    ParamSpec {
+        name: "inharmonic",
+        display_name: "非調和",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "上の部分音ほど少しずつ高くずらす量(ピアノの弦の伸び)。0.2〜0.4 でピアノらしい張り、\
+            1 近くでベル・金属の響き。",
+    },
+    ParamSpec {
+        name: "wobble",
+        display_name: "揺らぎ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "部分音ごとのゆっくりした音程(±8 セント)・音量(±20%)の漂い。0 は電子的に澄んだ静止した音、\
+            0.1〜0.3 でアナログの生きた感じ・合唱のような厚み、1 近くで揺れの大きいテープのような音。\
+            音ごとに揺れ方が変わる(同じ曲は何度描き出しても同じ)。新しく作るトラックは 0.15 で始まる。",
+    },
+    ParamSpec {
+        name: "attack",
+        display_name: "アタック",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.001,
+            max: 10.0,
+            default: 0.01,
+            skew: Some(0.3),
+        },
+        description: "立ち上がりの時間。パッドは 0.3〜2 秒。",
+    },
+    ParamSpec {
+        name: "decay",
+        display_name: "ディケイ",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 10.0,
+            default: 1.0,
+            skew: Some(0.3),
+        },
+        description: "立ち上がりの後、sustain まで下がる時間。",
+    },
+    ParamSpec {
+        name: "sustain",
+        display_name: "サステイン",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.8,
+            skew: None,
+        },
+        description: "押さえている間の音量。0 にすると decay の後に消える(打鍵・撥弦)。",
+    },
+    ParamSpec {
+        name: "release",
+        display_name: "リリース",
+        unit: Some("s"),
+        range: ParamRange::Float {
+            min: 0.01,
+            max: 10.0,
+            default: 0.4,
+            skew: Some(0.3),
+        },
+        description: "鍵盤を離してから消えるまでの時間。",
+    },
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 6.0,
+            default: -6.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。",
+    },
+];
+
 pub static SAMPLER_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "root",
@@ -1350,6 +2049,42 @@ pub static FM_ARTS: &[ArticulationInfo] = &[
     ART_LEGATO,
     ART_PORTAMENTO,
 ];
+pub static FM4_ARTS: &[ArticulationInfo] = &[
+    ArticulationInfo {
+        name: "palm_mute",
+        key: "M",
+        display_name: "ミュート",
+        description: "全オペレーターの減衰を 4 倍速くした短い音(ミュートしたエレピ・マレット)。",
+    },
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+    ART_LEGATO,
+    ART_PORTAMENTO,
+];
+pub static GRANULAR_ARTS: &[ArticulationInfo] = &[
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+    ART_LEGATO,
+    ART_PORTAMENTO,
+];
+pub static ADDITIVE_ARTS: &[ArticulationInfo] = &[
+    ArticulationInfo {
+        name: "palm_mute",
+        key: "M",
+        display_name: "ミュート",
+        description: "減衰(decay と高域の減衰)を 4 倍速くした短い音。",
+    },
+    ART_STACCATO,
+    ART_ACCENT,
+    ART_VIBRATO,
+    ART_BEND,
+    ART_LEGATO,
+    ART_PORTAMENTO,
+];
 pub static WAVETABLE_ARTS: &[ArticulationInfo] = &[
     ArticulationInfo {
         name: "palm_mute",
@@ -1408,6 +2143,9 @@ pub fn articulations_for(instrument: &str) -> &'static [ArticulationInfo] {
         "sampler" => SAMPLER_ARTS,
         "sf2" => SF2_ARTS,
         "fm" => FM_ARTS,
+        "fm4" => FM4_ARTS,
+        "granular" => GRANULAR_ARTS,
+        "additive" => ADDITIVE_ARTS,
         "wavetable" => WAVETABLE_ARTS,
         "clap" => CLAP_ARTS,
         _ => SUBTRACTIVE_ARTS,
@@ -1486,6 +2224,35 @@ pub fn instrument_catalog() -> Vec<InstrumentInfo> {
             articulations: FM_ARTS,
         },
         InstrumentInfo {
+            name: "fm4",
+            description: "4 オペレーターの FM シンセ(DX21 / TX81Z 系の 8 アルゴリズム、オペレーターごとの\
+                エンベロープ)。2 オペレーターの fm より作り込める: DX のエレピ(既定。アルゴリズム 5、OP4 の比 14 で\
+                金属的なアタック)、ベル(非整数比・sustain 0・長い release)、ブラス(アルゴリズム 1〜2、\
+                モジュレーターの attack を遅く)、オルガン(アルゴリズム 8、比 0.5・1・2・3、sustain 1)、\
+                FM ベース(アルゴリズム 1、feedback 0.5)、マリンバ・木琴(アルゴリズム 7、短い decay)。",
+            params: FM4_SPECS,
+            articulations: FM4_ARTS,
+        },
+        InstrumentInfo {
+            name: "granular",
+            description: "グラニュラー音源。取り込んだ音声素材(sample)から短い粒を次々に切り出して重ね、\
+                素材とは別物の持続音・パッド・きらめき・ざわめきを作る。声の母音を止めて伸ばす(position を母音に、\
+                spray_ms 少し)、ゆっくり移り変わるパッド(scan 0.05〜0.2)、きらめきの雲(grain_ms 短く、\
+                pitch_rand 大きく、spread 1)、パラパラした粒(density 少なく、window perc)。\
+                素材は import_sample の instrument: \"granular\" で入れる。",
+            params: GRANULAR_SPECS,
+            articulations: GRANULAR_ARTS,
+        },
+        InstrumentInfo {
+            name: "additive",
+            description: "加算合成(正弦波の部分音を最大 64 本足す)。倍音の並びを直接作る: 澄んだガラスのようなパッド\
+                (tilt -12、wobble 0.2)、オルガン(odd_even・sustain 1)、クラリネット風(odd_even -1)、\
+                声・トーキング(formant_db 18、formant_hz をオートメーション)、ピアノ・エレピ(damping 0.4、\
+                inharmonic 0.3)、ベル(inharmonic 0.9、sustain 0)。部分音が多いほど重い。",
+            params: ADDITIVE_SPECS,
+            articulations: ADDITIVE_ARTS,
+        },
+        InstrumentInfo {
             name: "wavetable",
             description: "ウェーブテーブルシンセ。波形の並び(table)を position で行き来して\
                 音色そのものを変える。position をオートメーションや LFO(lfo_depth)で動かすと\
@@ -1507,6 +2274,9 @@ pub fn instrument_params(name: &str) -> Option<&'static [ParamSpec]> {
         "sampler" => Some(SAMPLER_SPECS),
         "sf2" => Some(SF2_SPECS),
         "fm" => Some(FM_SPECS),
+        "fm4" => Some(FM4_SPECS),
+        "granular" => Some(GRANULAR_SPECS),
+        "additive" => Some(ADDITIVE_SPECS),
         "wavetable" => Some(WAVETABLE_SPECS),
         _ => None,
     }
@@ -1641,6 +2411,35 @@ pub fn bake_sampler(
     }
 }
 
+/// グラニュラーの焼き込み(素材はエンジン側で読み込んで渡す。無ければ無音)
+pub fn bake_granular(
+    map: &ParamMap,
+    data: Option<std::sync::Arc<crate::sampler::SampleData>>,
+) -> crate::granular::GranularParams {
+    let s = GRANULAR_SPECS;
+    if let Some(d) = &data {
+        // 高く鳴らす粒のための縮小版(オーディオスレッドの外のここで)
+        d.prepare_mips();
+    }
+    crate::granular::GranularParams {
+        data,
+        root: get_f32(map, s, "root").clamp(0.0, 127.0) as u8,
+        position: get_f32(map, s, "position").clamp(0.0, 1.0),
+        spray: get_f32(map, s, "spray_ms").clamp(0.0, 2000.0) * 0.001,
+        grain: get_f32(map, s, "grain_ms").clamp(5.0, 500.0) * 0.001,
+        density: get_f32(map, s, "density").clamp(1.0, 200.0),
+        pitch_rand: get_f32(map, s, "pitch_rand").clamp(0.0, 12.0),
+        spread: get_f32(map, s, "spread").clamp(0.0, 1.0),
+        window: crate::granular::GrainWindow::parse(get_enum(map, s, "window")),
+        scan: get_f32(map, s, "scan").clamp(-2.0, 2.0),
+        attack: get_f32(map, s, "attack").clamp(0.001, 10.0),
+        decay: get_f32(map, s, "decay").clamp(0.01, 10.0),
+        sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
+        release: get_f32(map, s, "release").clamp(0.01, 10.0),
+        gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 12.0)),
+    }
+}
+
 /// サンプラーの元のテンポ(0 = 追従しない)。エンジンが伸縮の要否を決めるのに使う
 pub fn sampler_orig_bpm(map: &ParamMap) -> f64 {
     get_f32(map, SAMPLER_SPECS, "orig_bpm").clamp(0.0, 300.0) as f64
@@ -1720,6 +2519,65 @@ impl crate::InstrumentParams {
                 "sustain" => p.sustain = value.clamp(0.0, 1.0),
                 "release" => p.release = value.clamp(0.01, 6.0),
                 "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
+                _ => return false,
+            },
+            I::Fm4(p) => {
+                // op1_level などはオペレーターの番号と項目に分けて
+                if let Some((n, what)) = name
+                    .strip_prefix("op")
+                    .and_then(|r| r.split_once('_'))
+                    .and_then(|(n, w)| n.parse::<usize>().ok().map(|n| (n, w)))
+                {
+                    let Some(op) = n.checked_sub(1).and_then(|i| p.ops.get_mut(i)) else {
+                        return false;
+                    };
+                    match what {
+                        "ratio" => op.ratio = value.clamp(0.5, 16.0),
+                        "level" => op.level = value.clamp(0.0, 1.0),
+                        "attack" => op.attack = value.clamp(0.001, 5.0),
+                        "decay" => op.decay = value.clamp(0.01, 10.0),
+                        "sustain" => op.sustain = value.clamp(0.0, 1.0),
+                        _ => return false,
+                    }
+                } else {
+                    match name {
+                        "feedback" => p.feedback = value.clamp(0.0, 1.0),
+                        "release" => p.release = value.clamp(0.01, 8.0),
+                        "vel_bright" => p.vel_bright = value.clamp(0.0, 1.0),
+                        "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
+                        _ => return false,
+                    }
+                }
+            }
+            I::Additive(p) => match name {
+                "tilt" => p.tilt = value.clamp(-24.0, 3.0),
+                "odd_even" => p.odd_even = value.clamp(-1.0, 1.0),
+                "formant_hz" => p.formant_hz = value.clamp(200.0, 5000.0),
+                "formant_db" => p.formant_db = value.clamp(0.0, 24.0),
+                "formant_width" => p.formant_width = value.clamp(0.1, 2.0),
+                "damping" => p.damping = value.clamp(0.0, 1.0),
+                "inharmonic" => p.inharmonic = value.clamp(0.0, 1.0),
+                "wobble" => p.wobble = value.clamp(0.0, 1.0),
+                "attack" => p.attack = value.clamp(0.001, 10.0),
+                "decay" => p.decay = value.clamp(0.01, 10.0),
+                "sustain" => p.sustain = value.clamp(0.0, 1.0),
+                "release" => p.release = value.clamp(0.01, 10.0),
+                "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
+                _ => return false,
+            },
+            I::Granular(p) => match name {
+                "position" => p.position = value.clamp(0.0, 1.0),
+                "spray_ms" => p.spray = value.clamp(0.0, 2000.0) * 0.001,
+                "grain_ms" => p.grain = value.clamp(5.0, 500.0) * 0.001,
+                "density" => p.density = value.clamp(1.0, 200.0),
+                "pitch_rand" => p.pitch_rand = value.clamp(0.0, 12.0),
+                "spread" => p.spread = value.clamp(0.0, 1.0),
+                "scan" => p.scan = value.clamp(-2.0, 2.0),
+                "attack" => p.attack = value.clamp(0.001, 10.0),
+                "decay" => p.decay = value.clamp(0.01, 10.0),
+                "sustain" => p.sustain = value.clamp(0.0, 1.0),
+                "release" => p.release = value.clamp(0.01, 10.0),
+                "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 12.0)),
                 _ => return false,
             },
             I::Wavetable(p) => match name {
@@ -1814,6 +2672,54 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
             };
             (InstrumentKind::Fm, InstrumentParams::Fm(p))
         }
+        "fm4" => {
+            // 正弦の表は初回だけここ(UI スレッド)で作る
+            crate::fm4::ensure_sine_table();
+            let s = FM4_SPECS;
+            let op = |n: usize| {
+                let k = |what: &str| format!("op{n}_{what}");
+                crate::fm4::Fm4Op {
+                    ratio: get_f32(map, s, &k("ratio")).clamp(0.5, 16.0),
+                    level: get_f32(map, s, &k("level")).clamp(0.0, 1.0),
+                    attack: get_f32(map, s, &k("attack")).clamp(0.001, 5.0),
+                    decay: get_f32(map, s, &k("decay")).clamp(0.01, 10.0),
+                    sustain: get_f32(map, s, &k("sustain")).clamp(0.0, 1.0),
+                }
+            };
+            let p = crate::fm4::Fm4Params {
+                algorithm: (get_f32(map, s, "algorithm").round().clamp(1.0, 8.0) as u8) - 1,
+                ops: [op(1), op(2), op(3), op(4)],
+                feedback: get_f32(map, s, "feedback").clamp(0.0, 1.0),
+                release: get_f32(map, s, "release").clamp(0.01, 8.0),
+                vel_bright: get_f32(map, s, "vel_bright").clamp(0.0, 1.0),
+                gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+            };
+            (InstrumentKind::Fm4, InstrumentParams::Fm4(p))
+        }
+        "additive" => {
+            let s = ADDITIVE_SPECS;
+            let p = crate::additive::AdditiveParams {
+                partials: get_f32(map, s, "partials").round().clamp(8.0, 64.0) as u8,
+                tilt: get_f32(map, s, "tilt").clamp(-24.0, 3.0),
+                odd_even: get_f32(map, s, "odd_even").clamp(-1.0, 1.0),
+                formant_hz: get_f32(map, s, "formant_hz").clamp(200.0, 5000.0),
+                formant_db: get_f32(map, s, "formant_db").clamp(0.0, 24.0),
+                formant_width: get_f32(map, s, "formant_width").clamp(0.1, 2.0),
+                damping: get_f32(map, s, "damping").clamp(0.0, 1.0),
+                inharmonic: get_f32(map, s, "inharmonic").clamp(0.0, 1.0),
+                wobble: get_f32(map, s, "wobble").clamp(0.0, 1.0),
+                attack: get_f32(map, s, "attack").clamp(0.001, 10.0),
+                decay: get_f32(map, s, "decay").clamp(0.01, 10.0),
+                sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
+                release: get_f32(map, s, "release").clamp(0.01, 10.0),
+                gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+            };
+            (InstrumentKind::Additive, InstrumentParams::Additive(p))
+        }
+        "granular" => (
+            InstrumentKind::Granular,
+            InstrumentParams::Granular(bake_granular(map, None)),
+        ),
         "wavetable" => {
             // テーブルは初回だけここ(UI スレッド)で作る
             crate::wavetable::ensure_tables();
