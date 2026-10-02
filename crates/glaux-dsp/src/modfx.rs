@@ -5,7 +5,7 @@
 //! (`ModFxState::set_clock`)。停止中は位置が進まないので止まったまま。
 //! 状態は固定長(flanger のディレイだけ起動時に確保)で、オーディオスレッドでは確保しない。
 
-use crate::effects::{SvfCoeffs, SvfState};
+use crate::effects::{Smoothed, SvfCoeffs, SvfState};
 use glaux_core::{ParamMap, ParamRange, ParamSpec, ParamValue};
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -13,9 +13,12 @@ const TAU: f32 = std::f32::consts::TAU;
 // 192kHz で 18ms(delay_ms 10 + depth_ms 8 = 3456 サンプル)まで入る長さ
 const FL_LEN: usize = 4096;
 const FL_MASK: usize = FL_LEN - 1;
+/// つまみ(ミックス・深さ・カットオフ)をオートメーションで動かしたときの平滑化の係数
+/// (48kHz で約 5ms。ブロックごとの段差のジッパー音を消す)
+const SMOOTH_K: f32 = 1.0 / 240.0;
 
 /// テンポに合わせる周期の選択肢(tick。0 = 合わせない)
-const SYNC_CHOICES: &[&str] = &[
+pub(crate) const SYNC_CHOICES: &[&str] = &[
     "off", "4/1", "2/1", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/2d", "1/4d", "1/8d",
     "1/16d", "1/2t", "1/4t", "1/8t", "1/16t",
 ];
@@ -188,6 +191,8 @@ pub struct ModFxState {
     env: f32,
     /// clipper の 2 倍オーバーサンプリング(左右)
     os: [crate::oversample::Halfband; 2],
+    /// つまみの平滑化
+    sm: [Smoothed; 2],
 }
 
 impl Default for ModFxState {
@@ -219,6 +224,7 @@ impl ModFxState {
             coef_count: 0,
             env: 0.0,
             os: [crate::oversample::Halfband::default(); 2],
+            sm: Default::default(),
         }
     }
 
@@ -239,6 +245,7 @@ impl ModFxState {
         self.coeffs = None;
         self.coef_count = 0;
         self.env = 0.0;
+        self.sm = Default::default();
     }
 
     /// このブロックの頭の曲の位置(tick)と、1 サンプルあたりの tick(停止中は 0)
@@ -266,6 +273,8 @@ impl ModFxState {
                 ceiling,
                 mix,
             } => {
+                let drive = self.sm[0].next(drive, SMOOTH_K);
+                let mix = self.sm[1].next(mix, SMOOTH_K);
                 let f = |x: f32| {
                     let y = x * drive / ceiling;
                     let c = match mode {
@@ -282,6 +291,7 @@ impl ModFxState {
                 (self.os[0].run(l, f), self.os[1].run(r, f))
             }
             ModFxParams::Bitcrush { levels, hold, mix } => {
+                let mix = self.sm[0].next(mix, SMOOTH_K);
                 if self.hold_count == 0 {
                     let q = |x: f32| (x * levels).round() / levels;
                     self.held = [q(l), q(r)];
@@ -295,6 +305,7 @@ impl ModFxState {
                 shape,
                 stereo,
             } => {
+                let depth = self.sm[0].next(depth, SMOOTH_K);
                 let ph = self.lfo_phase(&rate);
                 let a = shape.at(ph);
                 // stereo 1 で左右が逆向き(オートパン)
@@ -312,6 +323,7 @@ impl ModFxState {
                 mix,
                 sr,
             } => {
+                let mix = self.sm[0].next(mix, SMOOTH_K);
                 let ph = self.lfo_phase(&rate);
                 // 中心から ±depth × 2 オクターブ
                 let fc = (center * (depth * 2.0 * (TAU * ph).sin()).exp2()).clamp(40.0, sr * 0.45);
@@ -340,6 +352,7 @@ impl ModFxState {
                 if self.fl[0].is_empty() {
                     return (l, r);
                 }
+                let mix = self.sm[0].next(mix, SMOOTH_K);
                 let ph = self.lfo_phase(&rate);
                 let idx = self.fl_idx;
                 let mut out = [0.0f32; 2];
@@ -384,6 +397,7 @@ impl ModFxState {
                 env_amount,
                 sr,
             } => {
+                let cutoff = self.sm[0].next(cutoff, SMOOTH_K);
                 let ph = self.lfo_phase(&rate);
                 // 音量に追従(速く上がってゆっくり下がる)
                 let lvl = l.abs().max(r.abs());
@@ -412,6 +426,7 @@ impl ModFxState {
                 curve,
                 release,
             } => {
+                let depth = self.sm[0].next(depth, SMOOTH_K);
                 let x = if period_ticks > 0.0 {
                     (self.tick / period_ticks).fract() as f32
                 } else {
@@ -439,7 +454,7 @@ impl ModFxState {
     }
 }
 
-fn get(map: &ParamMap, specs: &[ParamSpec], name: &str) -> f32 {
+pub(crate) fn get(map: &ParamMap, specs: &[ParamSpec], name: &str) -> f32 {
     if let Some(v) = map.get(name).and_then(ParamValue::as_f64) {
         return v as f32;
     }
@@ -449,7 +464,7 @@ fn get(map: &ParamMap, specs: &[ParamSpec], name: &str) -> f32 {
     }
 }
 
-fn choice<'a>(map: &'a ParamMap, specs: &[ParamSpec], name: &str) -> &'a str {
+pub(crate) fn choice<'a>(map: &'a ParamMap, specs: &[ParamSpec], name: &str) -> &'a str {
     if let Some(ParamValue::Enum(v)) = map.get(name) {
         return v.as_str();
     }
@@ -459,7 +474,7 @@ fn choice<'a>(map: &'a ParamMap, specs: &[ParamSpec], name: &str) -> &'a str {
     }
 }
 
-const fn f(
+pub(crate) const fn f(
     name: &'static str,
     display_name: &'static str,
     unit: Option<&'static str>,
@@ -482,7 +497,7 @@ const fn f(
     }
 }
 
-const fn e(
+pub(crate) const fn e(
     name: &'static str,
     display_name: &'static str,
     choices: &'static [&'static str],
@@ -498,7 +513,7 @@ const fn e(
     }
 }
 
-const SYNC_DESC: &str = "テンポに合わせた周期(1/4 = 4 分、1/8d = 付点 8 分、1/8t = 3 連の 8 分、1/1 = 1 小節)。off で rate_hz を使う。";
+pub(crate) const SYNC_DESC: &str = "テンポに合わせた周期(1/4 = 4 分、1/8d = 付点 8 分、1/8t = 3 連の 8 分、1/1 = 1 小節)。off で rate_hz を使う。";
 
 pub static CLIPPER_SPECS: &[ParamSpec] = &[
     f("drive_db", "ドライブ", Some("dB"), 0.0, 24.0, 6.0, "入れる前に上げる量。上げるほど頭が潰れて音が前に出る(ドラムバス・マスター前は 2〜6、ベースの歪みは 12 以上)。"),
@@ -816,6 +831,20 @@ pub fn bake(name: &str, map: &ParamMap, sr: f32) -> Option<ModFxParams> {
 }
 
 impl ModFxParams {
+    /// 種類の番号(状態を作り直すかの判定用)
+    pub(crate) fn kind(&self) -> u8 {
+        match self {
+            ModFxParams::Clipper { .. } => 0,
+            ModFxParams::Bitcrush { .. } => 1,
+            ModFxParams::Tremolo { .. } => 2,
+            ModFxParams::Phaser { .. } => 3,
+            ModFxParams::Flanger { .. } => 4,
+            ModFxParams::TranceGate { .. } => 5,
+            ModFxParams::AutoFilter { .. } => 6,
+            ModFxParams::VolumeShaper { .. } => 7,
+        }
+    }
+
     /// オートメーション: 連続のつまみを上書き(確保しない)
     pub fn set_continuous(&mut self, name: &str, v: f32, sr: f32) -> bool {
         let db = |x: f32| 10.0_f32.powf(x / 20.0);

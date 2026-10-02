@@ -28,6 +28,13 @@ export const FX_COLORS: Record<string, string> = {
   trance_gate: "#d6a33a",
   auto_filter: "#7a9f4f",
   volume_shaper: "#c9b04a",
+  eq8: "#5f9be6",
+  saturation: "#d9822b",
+  deesser: "#8fa6c9",
+  gate: "#8c96a3",
+  pitch_shift: "#b48be0",
+  harmonizer: "#c495d8",
+  pitch_correct: "#9b7fe0",
   sidechain: "#caa43a",
   clap: "#b07ce8",
 };
@@ -58,10 +65,17 @@ export const FX_KIND_JA: Record<string, string> = {
   trance_gate: "トランスゲート",
   auto_filter: "動くフィルター",
   volume_shaper: "音量シェイパー",
+  eq8: "8 バンド EQ",
+  saturation: "サチュレーション",
+  deesser: "ディエッサー",
+  gate: "ゲート",
+  pitch_shift: "ピッチシフト",
+  harmonizer: "ハーモナイザー",
+  pitch_correct: "ピッチ補正",
   sidechain: "サイドチェイン",
 };
 
-/** 選択肢が空の「検出のトラック」(サイドチェイン・ダイナミック EQ の source)は、曲のトラックから選ばせる */
+/** 選択肢が空の「検出のトラック」(サイドチェイン・ダイナミック EQ・ゲートの source)は、曲のトラックから選ばせる */
 export function trackChoices(
   p: { name: string; range: { kind: string; choices?: readonly string[] } },
   tracks: { id: string; name: string }[],
