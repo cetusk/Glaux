@@ -134,6 +134,12 @@ fn effect_table(name: &str) -> &'static [(&'static str, &'static str, Span, bool
             ("motion", "wow", Span::Add(0.3), true),
         ],
         "transient" => &[("attack", "attack_db", Span::Add(6.0), true)],
+        "eq8" => &[
+            ("brightness", "b7_gain_db", Span::Add(5.0), true),
+            ("body", "b2_gain_db", Span::Add(4.0), true),
+        ],
+        "saturation" => &[("grit", "drive_db", Span::Add(12.0), true)],
+        "harmonizer" => &[("body", "mix", Span::Add(0.25), true)],
         _ => &[],
     }
 }

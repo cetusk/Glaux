@@ -81,6 +81,13 @@ fn cases() -> Vec<(String, Project)> {
         "delay",
         "chorus",
         "tape",
+        "eq8",
+        "saturation",
+        "deesser",
+        "gate",
+        "pitch_shift",
+        "harmonizer",
+        "pitch_correct",
     ];
     for fx in effects {
         let mut p = Project::new(fx);
@@ -99,11 +106,37 @@ fn cases() -> Vec<(String, Project)> {
                 set(&mut e, "hiss", 0.0);
                 set(&mut e, "crackle", 0.0);
             }
+            "eq8" => set(&mut e, "b6_gain_db", 6.0),
+            "saturation" => set(&mut e, "drive_db", 18.0),
+            "gate" => set(&mut e, "threshold_db", -30.0),
+            "pitch_shift" => set(&mut e, "semitones", 7.0),
             _ => {}
         }
         t.effects.push(e);
         p.tracks.push(t);
         out.push((format!("effect/{fx}"), p));
+    }
+    // 既存のエフェクトの新しい種類
+    for (name, fx, key, choice) in [
+        ("compressor_fet", "compressor", "character", "fet"),
+        ("compressor_opto", "compressor", "character", "opto"),
+        ("delay_tape", "delay", "type", "tape"),
+        ("delay_multitap", "delay", "type", "multitap"),
+        ("reverb_hall", "reverb", "character", "hall"),
+        ("reverb_shimmer", "reverb", "character", "shimmer"),
+    ] {
+        let mut p = Project::new(name);
+        let mut t = phrase("subtractive");
+        let mut e = Effect::builtin(FxId::new(), fx);
+        e.params
+            .insert(key.into(), glaux_core::ParamValue::Enum(choice.into()));
+        if fx == "compressor" {
+            e.params
+                .insert("threshold_db".into(), glaux_core::ParamValue::Float(-30.0));
+        }
+        t.effects.push(e);
+        p.tracks.push(t);
+        out.push((format!("effect/{name}"), p));
     }
     out
 }

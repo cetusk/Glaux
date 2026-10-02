@@ -293,9 +293,15 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
         "- 定番の手順は apply_recipe(send_reverb・send_delay・kick_bass・vocal_chain・supersaw・parallel_drums)で 1 回で組む。\n\
 - 仕上げの前に critique_mix(低域の広がり・クリック・キックとベース・True Peak・モノ・刺さり・こもり・かぶり・止まった音)。\n\
   warn は fix の道具で直し、もう一度呼んで確かめる。\n\
-- エフェクト: add_effect(eq / dynamic_eq / resonance / compressor / multiband / transient / limiter / width / virtual_bass / reverb / convolution(import_ir で) / distortion / amp / sidechain / delay / chorus / tape /\n\
-  clipper / bitcrush / tremolo / phaser / flanger / trance_gate / auto_filter / volume_shaper)→\n\
+- エフェクト: add_effect(eq / eq8 / dynamic_eq / resonance / deesser / compressor / multiband / transient / gate / limiter / width / virtual_bass / reverb / convolution(import_ir で) / distortion / saturation / amp / sidechain / delay / chorus / tape /\n\
+  clipper / bitcrush / tremolo / phaser / flanger / trance_gate / auto_filter / volume_shaper / pitch_shift / harmonizer / pitch_correct)→\n\
   set_param(fx/<id>/<名前>)。マスターは add_master_effect / set_master_param。\n\
+- 細かい帯域は eq8(8 バンド。b3_gain_db のように番号で選ぶ。range_db でその帯域が大きいときだけ動くダイナミック、stereo で mid / side だけ)。\n\
+  歌のサ行の刺さりは deesser、かぶり・ノイズ・残響の尻尾は gate。倍音で太く温かくは saturation(tape / tube / transistor / soft_clip)。\n\
+  コンプの癖は character(vca = バスのまとまり、fet = ドラム・歌を前へ、opto = なめらか)、頭の山を確実に取るなら lookahead_ms。\n\
+  ディレイは sync(1/4・1/8d など)でテンポに合わせ、type で tape(揺れて丸く飽和)・bbd(暗く温かい)・multitap(刻み)。\n\
+  リバーブの character は hall(長く広い)・chamber(密で明るい)・shimmer(オクターブ上へ昇る)も。\n\
+  歌のハモりは harmonizer、音程補正は pitch_correct(key・scale を曲に合わせる。speed_ms 0〜5 でケロケロ)、音程の移調は pitch_shift。\n\
 - distortion はシンセ・ドラム等の歪み。エレキギターの歪みは amp(instruments を参照)。\n\
 - 空間: 複数のトラックに同じリバーブ・ディレイを掛けるなら、バス(add_track kind: \"bus\" + リバーブ mix 1.0)を作り、\n\
   各トラックから set_send で送る(トラックごとに挿すより空間がまとまり軽い)。\n\

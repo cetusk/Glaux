@@ -57,6 +57,7 @@ impl MultibandParams {
             rms_coef: 0.0,
             sc_hpf: None,
             sc_hpf_hz: 20.0,
+            ext: Default::default(),
         });
         MultibandParams {
             lp1: SvfCoeffs::low_pass(sr, lo),

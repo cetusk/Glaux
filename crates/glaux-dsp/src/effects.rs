@@ -1,5 +1,6 @@
 //! 内蔵エフェクト: `eq` / `compressor` / `reverb` / `distortion` / `amp` / `sidechain` /
-//! `delay` / `chorus` / `tape`。
+//! `delay` / `chorus` / `tape` ほか。変調系は [`crate::modfx`]、スタジオ系(eq8・saturation・
+//! deesser・gate)は [`crate::studio`]、音程を動かすものは [`crate::pitch`] にある。
 //!
 //! - パラメータはデータ構築時(UI スレッド)に**係数まで焼き込む**([`bake_effect`])。
 //!   オーディオスレッドは焼き込み済みの [`EffectParams`] を読むだけ
@@ -37,7 +38,7 @@ impl SvfCoeffs {
         }
     }
 
-    fn g_of(sr: f32, freq: f32) -> f32 {
+    pub(crate) fn g_of(sr: f32, freq: f32) -> f32 {
         (std::f32::consts::PI * (freq / sr).clamp(0.0001, 0.49)).tan()
     }
 
@@ -246,8 +247,36 @@ impl SvfState {
 /// 係数の平滑化の時定数(秒)
 const SMOOTH_SECS: f32 = 0.005;
 
-fn smooth_coef(sample_rate: f32) -> f32 {
+pub(crate) fn smooth_coef(sample_rate: f32) -> f32 {
     1.0 - (-1.0 / (SMOOTH_SECS * sample_rate)).exp()
+}
+
+/// つまみの値(ミックス・ゲインなど)を数 ms かけて目標へ寄せる 1 次の追従。
+/// オートメーションはブロック(128 フレーム)ごとに値を変えるので、そのままだと階段の段差が
+/// ジッパー音になる。最初の 1 サンプルと、目標に着いた後は目標そのものを返す
+/// (オートメーションが無ければ平滑化しない場合と同じ音)
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Smoothed(f32);
+
+impl Default for Smoothed {
+    fn default() -> Self {
+        Smoothed(f32::NAN)
+    }
+}
+
+impl Smoothed {
+    #[inline]
+    pub(crate) fn next(&mut self, target: f32, k: f32) -> f32 {
+        if self.0 == target || self.0.is_nan() {
+            self.0 = target;
+        } else {
+            self.0 += (target - self.0) * k;
+            if (self.0 - target).abs() <= 1e-6 * (1.0 + target.abs()) {
+                self.0 = target;
+            }
+        }
+        self.0
+    }
 }
 
 /// EQ のバンド数(ハイパス・低域・中域・高域・ローパス)
@@ -344,6 +373,77 @@ pub struct CompressorParams {
     pub sc_hpf: Option<SvfCoeffs>,
     /// ハイパスの周波数(オートメーション用の生の値)
     pub sc_hpf_hz: f32,
+    /// 種類と先読み
+    pub ext: CompExtra,
+}
+
+/// コンプの種類(機材の癖)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CompCharacter {
+    /// 素直(以前からのコンプ)
+    #[default]
+    Clean,
+    /// VCA: 長く圧縮したあとはゆっくり戻る(自動リリース。バス・ミックスのまとまり)
+    Vca,
+    /// FET: とても速いアタックと、圧縮に応じて足される歪み(攻撃的。ドラム・ボーカルを前へ)
+    Fet,
+    /// 光学式: 遅めのアタックと 2 段の戻り(速く半分戻り、残りはゆっくり。なめらか)
+    Opto,
+}
+
+/// コンプの種類・先読みと、つまみの生の値
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompExtra {
+    pub character: CompCharacter,
+    /// 先読み(サンプル。音を遅らせて、検出を先に走らせる)
+    pub lookahead: u32,
+    pub lookahead_ms: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    /// vca / opto のゆっくり戻る追従: 溜まる係数・抜ける係数・効かせる割合(0 = 使わない)
+    pub slow_charge: f32,
+    pub slow_coef: f32,
+    pub slow_weight: f32,
+    /// メイクアップの平滑化
+    pub smooth: f32,
+}
+
+impl Default for CompExtra {
+    fn default() -> Self {
+        CompExtra {
+            character: CompCharacter::Clean,
+            lookahead: 0,
+            lookahead_ms: 0.0,
+            attack_ms: 10.0,
+            release_ms: 150.0,
+            slow_charge: 0.0,
+            slow_coef: 0.0,
+            slow_weight: 0.0,
+            smooth: 1.0,
+        }
+    }
+}
+
+impl CompExtra {
+    /// 種類ごとのアタック / リリースの係数を求め、ゆっくり戻る追従の係数を入れる
+    fn coefs(&mut self, sample_rate: f32) -> (f32, f32) {
+        let (a, r) = (self.attack_ms, self.release_ms);
+        let t = |ms: f32| time_coef(ms, sample_rate);
+        let (att, rel, slow) = match self.character {
+            CompCharacter::Clean => (t(a), t(r), None),
+            // 長く潰した分だけ(4 倍の時間で溜まる)ゆっくり戻る
+            CompCharacter::Vca => (t(a), t(r), Some((t(r * 4.0), t(r * 4.0), 1.0))),
+            CompCharacter::Fet => (t(a * 0.2), t(r * 0.6), None),
+            // 半分は速く戻り、残りの半分は溜まった分だけ 15 倍の時間でゆっくり抜ける
+            CompCharacter::Opto => (
+                t(a.max(10.0)),
+                t(r * 0.5),
+                Some((t(r * 3.0), t(r * 15.0), 0.5)),
+            ),
+        };
+        (self.slow_charge, self.slow_coef, self.slow_weight) = slow.unwrap_or((0.0, 0.0, 0.0));
+        (att, rel)
+    }
 }
 
 impl CompressorParams {
@@ -385,6 +485,8 @@ pub struct DistortionParams {
     pub mix: f32,
     /// 出力レベル(リニア)
     pub level: f32,
+    /// ドライブ・ミックス・レベルの平滑化
+    pub smooth: f32,
 }
 
 // =============================== Amp ===================================
@@ -459,8 +561,10 @@ pub struct SidechainParams {
 
 /// ディレイ系(delay / chorus / tape)が共有するバッファ長(1ch 分、2 のべき乗)。
 /// 48kHz で約 1.36 秒。delay の最大 1000ms はここに収まる(高いサンプルレートでは頭打ち)。
-const DLY_LEN: usize = 1 << 16;
-const DLY_MASK: usize = DLY_LEN - 1;
+pub(crate) const DLY_LEN: usize = 1 << 16;
+pub(crate) const DLY_MASK: usize = DLY_LEN - 1;
+/// ディレイの長さの上限(サンプル。テンポに合わせて長くなってもバッファに収める)
+const DELAY_MAX: f32 = (DLY_LEN - 4) as f32;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DelayParams {
@@ -476,6 +580,28 @@ pub struct DelayParams {
     pub ping_pong: bool,
     /// ダッキング: 原音が鳴っている間にやまびこを沈める量(dB。0 = しない)
     pub duck_db: f32,
+    /// 種類(digital = 以前からのディレイ)
+    pub kind: DelayKind,
+    /// テンポに合わせる長さ(tick。0 = time を使う)
+    pub sync_ticks: f64,
+    /// multitap の読み出し口の数(2〜4)
+    pub taps: u8,
+    /// ミックス・フィードバックの平滑化と、長さの変化を追う係数(digital / 揺れる種類)
+    pub smooth: f32,
+    pub glide: f32,
+    pub glide_slow: f32,
+    /// 揺れ(tape / bbd)の 1 サンプルあたりの位相の進み
+    pub wow_inc: f32,
+    pub flutter_inc: f32,
+    pub sample_rate: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DelayKind {
+    Digital,
+    Tape,
+    Bbd,
+    Multitap,
 }
 
 // ============================ Chorus ===================================
@@ -489,6 +615,8 @@ pub struct ChorusParams {
     /// 中心の遅延(サンプル)
     pub base: f32,
     pub mix: f32,
+    /// ミックスの平滑化
+    pub smooth: f32,
 }
 
 // ============================= Tape ====================================
@@ -531,7 +659,7 @@ impl TapeParams {
 
 /// 小数遅延の読み出し(4 点の 3 次 Hermite 補間)。`idx` は次に書く位置。
 /// 線形補間は遅延を揺らす(コーラス・テープ)と高域が落ちるので、4 点で読む
-fn read_frac(buf: &[f32], idx: usize, delay: f32) -> f32 {
+pub(crate) fn read_frac(buf: &[f32], idx: usize, delay: f32) -> f32 {
     let delay = delay.clamp(2.0, (DLY_LEN - 3) as f32);
     let d0 = delay.floor();
     let t = delay - d0;
@@ -550,6 +678,9 @@ fn read_frac(buf: &[f32], idx: usize, delay: f32) -> f32 {
 // ======================= 統合(定義と状態) =============================
 
 /// 焼き込み済みのエフェクト定義(オーディオスレッドは読むだけ)。
+/// `Copy` のまま再生データの中に並べる(箱に入れると差し替えのたびに確保が要る)ので、
+/// 大きな種類(eq8 の 8 バンド)との大きさの差は受け入れる
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EffectParams {
     Eq(EqParams),
@@ -572,6 +703,10 @@ pub enum EffectParams {
     VirtualBass(crate::dynamics::VirtualBassParams),
     /// 変調系・質感系(clipper / bitcrush / tremolo / phaser / flanger / trance_gate / auto_filter / volume_shaper)
     Mod(crate::modfx::ModFxParams),
+    /// スタジオ系(eq8 / saturation / deesser / gate)
+    Studio(crate::studio::StudioParams),
+    /// 音程を動かすもの(pitch_shift / harmonizer / pitch_correct)
+    Pitch(crate::pitch::PitchParams),
     /// glaux-dsp の外(CLAP プラグイン)で処理するエフェクト。ここでは素通し
     External,
 }
@@ -596,7 +731,9 @@ enum EffectKind {
     Convolution,
     Resonance,
     VirtualBass,
-    Mod,
+    Mod(u8),
+    Studio(u8),
+    Pitch(u8),
 }
 
 /// エフェクト 1 スロット分の状態。全種類のバッファを持ち、起動時に確保して使い回す。
@@ -647,6 +784,25 @@ pub struct EffectState {
     virtual_bass: crate::dynamics::VirtualBassState,
     /// 変調系・質感系の状態
     modfx: crate::modfx::ModFxState,
+    /// スタジオ系・音程の状態
+    studio: crate::studio::StudioState,
+    pitch: Box<crate::pitch::PitchState>,
+    /// つまみの平滑化(ミックス・ゲインなど。種類ごとに使い方が違う)
+    sm: [Smoothed; 3],
+    /// 共有ディレイバッファを今のエフェクトが使っている / 前に使って汚れている
+    dly_user: bool,
+    dly_dirty: bool,
+    /// 曲の 1 サンプルあたりの tick(テンポに合わせるディレイ用。停止中は 0)
+    clock_tps: f64,
+    /// ディレイ: いまの長さ(なめらかに追う)・テンポに合わせた最後の長さ・tape の低域の削り・bbd の 2 段目のローパス
+    dly_time: Smoothed,
+    sync_time: f32,
+    dly_hp: [f32; 2],
+    dly_lp2: [f32; 2],
+    /// bbd: 2 段目のローパスの係数と、それを求めたときの長さ
+    bbd: (f32, f32),
+    /// コンプ: ゆっくり戻る追従(vca / opto)
+    comp_y2: f32,
 }
 
 const RNG_SEED: u32 = 0x9E37_79B9;
@@ -702,12 +858,25 @@ impl EffectState {
             resonance: Default::default(),
             virtual_bass: Default::default(),
             modfx: crate::modfx::ModFxState::light(),
+            studio: Default::default(),
+            pitch: Default::default(),
+            sm: Default::default(),
+            dly_user: false,
+            dly_dirty: false,
+            clock_tps: 0.0,
+            dly_time: Smoothed::default(),
+            sync_time: 0.0,
+            dly_hp: [0.0; 2],
+            dly_lp2: [0.0; 2],
+            bbd: (f32::NAN, 0.0),
+            comp_y2: 0.0,
         }
     }
 
     /// このブロックの頭の曲の位置(tick)と 1 サンプルあたりの tick(テンポに合わせるエフェクト用。停止中は 0)
     pub fn set_clock(&mut self, tick: f64, ticks_per_sample: f64) {
         self.modfx.set_clock(tick, ticks_per_sample);
+        self.clock_tps = ticks_per_sample;
     }
 
     /// 0..1 の一様乱数(xorshift32)
@@ -737,8 +906,22 @@ impl EffectState {
             EffectParams::Convolution(_) => EffectKind::Convolution,
             EffectParams::Resonance(_) => EffectKind::Resonance,
             EffectParams::VirtualBass(_) => EffectKind::VirtualBass,
-            EffectParams::Mod(_) => EffectKind::Mod,
+            EffectParams::Mod(m) => EffectKind::Mod(m.kind()),
+            EffectParams::Studio(s) => EffectKind::Studio(s.kind()),
+            EffectParams::Pitch(p) => EffectKind::Pitch(p.kind()),
             EffectParams::External => EffectKind::None,
+        }
+    }
+
+    /// 共有のディレイバッファを使うか
+    fn uses_dly(p: &EffectParams) -> bool {
+        match p {
+            EffectParams::Delay(_)
+            | EffectParams::Chorus(_)
+            | EffectParams::Tape(_)
+            | EffectParams::Pitch(_) => true,
+            EffectParams::Compressor(c) => c.ext.lookahead > 0,
+            _ => false,
         }
     }
 
@@ -770,8 +953,23 @@ impl EffectState {
             ) {
                 self.dly[0].fill(0.0);
                 self.dly[1].fill(0.0);
+                self.dly_dirty = false;
             }
             self.dly_idx = 0;
+            self.dly_user = false;
+            self.comp_y2 = 0.0;
+            self.sm = Default::default();
+            self.dly_time = Smoothed::default();
+            self.sync_time = 0.0;
+            self.dly_hp = [0.0; 2];
+            self.dly_lp2 = [0.0; 2];
+            self.bbd = (f32::NAN, 0.0);
+            if matches!(kind, EffectKind::Studio(_)) {
+                self.studio.reset();
+            }
+            if matches!(kind, EffectKind::Pitch(_)) {
+                self.pitch.reset();
+            }
             self.dly_lp = [0.0; 2];
             self.lfo = [0.0; 2];
             self.rng = RNG_SEED;
@@ -785,9 +983,23 @@ impl EffectState {
                 self.resonance.reset();
             }
             self.virtual_bass = Default::default();
-            if kind == EffectKind::Mod {
+            if matches!(kind, EffectKind::Mod(_)) {
                 self.modfx.reset();
             }
+        }
+        // 共有のディレイバッファを使い始めるとき、前の種類が残した音を消す
+        // (コンプの先読みは種類を変えずに入る・切れるので、ここで見る)
+        let uses = Self::uses_dly(p);
+        if uses && !self.dly_user {
+            if self.dly_dirty {
+                self.dly[0].fill(0.0);
+                self.dly[1].fill(0.0);
+            }
+            self.dly_idx = 0;
+        }
+        self.dly_user = uses;
+        if uses && !self.dly[0].is_empty() {
+            self.dly_dirty = true;
         }
     }
 
@@ -797,7 +1009,10 @@ impl EffectState {
         if self.dly[0].is_empty()
             && matches!(
                 p,
-                EffectParams::Delay(_) | EffectParams::Chorus(_) | EffectParams::Tape(_)
+                EffectParams::Delay(_)
+                    | EffectParams::Chorus(_)
+                    | EffectParams::Tape(_)
+                    | EffectParams::Pitch(_)
             )
         {
             return (l, r);
@@ -817,6 +1032,17 @@ impl EffectState {
                 (ch(l, sl), ch(r, sr))
             }
             EffectParams::Compressor(c) => {
+                // 先読み: 音は遅らせて出し、検出は今の音で走らせる(減衰が音より先に効き始める)
+                let (xl, xr) = if c.ext.lookahead > 0 && !self.dly[0].is_empty() {
+                    let idx = self.dly_idx;
+                    self.dly[0][idx] = l;
+                    self.dly[1][idx] = r;
+                    self.dly_idx = (idx + 1) & DLY_MASK;
+                    let back = idx.wrapping_sub(c.ext.lookahead as usize) & DLY_MASK;
+                    (self.dly[0][back], self.dly[1][back])
+                } else {
+                    (l, r)
+                };
                 // 検出: 検出側のハイパス → 左右の大きい方(ピーク)か、二乗平均(RMS)
                 let (dl, dr) = match &c.sc_hpf {
                     Some(hp) => (
@@ -845,15 +1071,33 @@ impl EffectState {
                 // 減衰量(dB、正)をなめらかで分離したピーク検出で追う
                 self.comp_y1 =
                     want.max(c.release_coef * self.comp_y1 + (1.0 - c.release_coef) * want);
-                self.envelope =
-                    c.attack_coef * self.envelope + (1.0 - c.attack_coef) * self.comp_y1;
+                // vca / opto: 長く圧縮していた分だけゆっくり戻る(短いアタックの後は速く戻る)
+                let y = if c.ext.slow_weight > 0.0 {
+                    let k = if want > self.comp_y2 {
+                        c.ext.slow_charge
+                    } else {
+                        c.ext.slow_coef
+                    };
+                    self.comp_y2 = k * self.comp_y2 + (1.0 - k) * want;
+                    self.comp_y1.max(self.comp_y2 * c.ext.slow_weight)
+                } else {
+                    self.comp_y1
+                };
+                self.envelope = c.attack_coef * self.envelope + (1.0 - c.attack_coef) * y;
+                let makeup = self.sm[0].next(c.makeup, c.ext.smooth);
                 // 減衰がほぼ 0(-100dB 未満の差)なら累乗を省く
                 let gain = if self.envelope < 1e-5 {
-                    c.makeup
+                    makeup
                 } else {
-                    10.0_f32.powf(-self.envelope / 20.0) * c.makeup
+                    10.0_f32.powf(-self.envelope / 20.0) * makeup
                 };
-                (l * gain, r * gain)
+                if c.ext.character == CompCharacter::Fet {
+                    // FET: 潰すほど奇数次の歪みが乗る(小さい音はほぼそのまま)
+                    let k = 1.0 + self.envelope * (1.0 / 12.0);
+                    let sat = |x: f32| (x * k).tanh() / k;
+                    return (sat(xl * gain), sat(xr * gain));
+                }
+                (xl * gain, xr * gain)
             }
             EffectParams::Reverb(rv) => {
                 let (mut wl, mut wr) = self.reverb.process(rv, l, r);
@@ -869,19 +1113,20 @@ impl EffectState {
                     wl *= self.envelope;
                     wr *= self.envelope;
                 }
-                (
-                    l * (1.0 - rv.mix) + wl * rv.mix,
-                    r * (1.0 - rv.mix) + wr * rv.mix,
-                )
+                let mix = self.sm[0].next(rv.mix, rv.smooth);
+                (l * (1.0 - mix) + wl * mix, r * (1.0 - mix) + wr * mix)
             }
             EffectParams::Distortion(d) => {
+                let drive = self.sm[0].next(d.drive, d.smooth);
+                let mix = self.sm[1].next(d.mix, d.smooth);
+                let level = self.sm[2].next(d.level, d.smooth);
                 let mut shape = |x: f32, ch: usize| {
                     // tanh を ADAA で(強く歪ませた高い音の折り返しを減らす。遅れは 0.5 サンプル)
-                    let wet = self.adaa[ch].process(x * d.drive);
+                    let wet = self.adaa[ch].process(x * drive);
                     // 歪みで出た高域のギラつきをトーンで丸める(1 次 LP)
                     self.tone_lp[ch] += (wet - self.tone_lp[ch]) * (1.0 - d.tone_coef);
                     let toned = self.tone_lp[ch];
-                    (x * (1.0 - d.mix) + toned * d.mix) * d.level
+                    (x * (1.0 - mix) + toned * mix) * level
                 };
                 (shape(l, 0), shape(r, 1))
             }
@@ -960,36 +1205,7 @@ impl EffectState {
                 };
                 (l * gain, r * gain)
             }
-            EffectParams::Delay(d) => {
-                let idx = self.dly_idx;
-                // やまびこは毎回トーンの LP を通る(回を重ねるほど暗くなる)
-                for ch in 0..2 {
-                    let y = read_frac(&self.dly[ch], idx, d.time);
-                    self.dly_lp[ch] += (y - self.dly_lp[ch]) * (1.0 - d.tone_coef);
-                }
-                let [el, er] = self.dly_lp;
-                let (wl, wr) = if d.ping_pong {
-                    // 入力は左へ、左のやまびこは右へ、右は左へ
-                    ((l + r) * 0.5 + er * d.feedback, el * d.feedback)
-                } else {
-                    (l + el * d.feedback, r + er * d.feedback)
-                };
-                self.dly[0][idx] = wl;
-                self.dly[1][idx] = wr;
-                self.dly_idx = (idx + 1) & DLY_MASK;
-                // ダッキング: 原音の大きさ(速く上がって約 40ms で下がる)でやまびこを沈める
-                let duck = if d.duck_db > 0.0 {
-                    let lvl = l.abs().max(r.abs());
-                    self.envelope = lvl.max(self.envelope * 0.9995);
-                    10.0_f32.powf(-d.duck_db * (self.envelope / 0.25).min(1.0) / 20.0)
-                } else {
-                    1.0
-                };
-                (
-                    l * (1.0 - d.mix) + el * d.mix * duck,
-                    r * (1.0 - d.mix) + er * d.mix * duck,
-                )
-            }
+            EffectParams::Delay(d) => self.process_delay(d, l, r),
             EffectParams::Chorus(c) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1003,10 +1219,8 @@ impl EffectState {
                 let yr = read_frac(&self.dly[1], idx, c.base + c.depth * mr);
                 self.lfo[0] = (ph + c.rate_inc).fract();
                 self.dly_idx = (idx + 1) & DLY_MASK;
-                (
-                    l * (1.0 - c.mix) + yl * c.mix,
-                    r * (1.0 - c.mix) + yr * c.mix,
-                )
+                let mix = self.sm[0].next(c.mix, c.smooth);
+                (l * (1.0 - mix) + yl * mix, r * (1.0 - mix) + yr * mix)
             }
             EffectParams::Multiband(m) => self.multiband.process(m, l, r),
             EffectParams::Transient(t) => self.transient.process(t, l, r),
@@ -1018,6 +1232,13 @@ impl EffectState {
             EffectParams::Resonance(rp) => self.resonance.process(rp, l, r),
             EffectParams::VirtualBass(vb) => self.virtual_bass.process(vb, l, r),
             EffectParams::Mod(m) => self.modfx.process(m, l, r),
+            EffectParams::Studio(sp) => self.studio.process(sp, l, r, key),
+            EffectParams::Pitch(pp) => {
+                let idx = self.dly_idx;
+                let out = self.pitch.process(pp, &mut self.dly, idx, l, r);
+                self.dly_idx = (idx + 1) & DLY_MASK;
+                out
+            }
             EffectParams::Tape(t) => {
                 let idx = self.dly_idx;
                 self.dly[0][idx] = l;
@@ -1073,6 +1294,144 @@ impl EffectState {
                 (out[0], out[1])
             }
         }
+    }
+
+    /// ディレイ(digital / tape / bbd / multitap)
+    fn process_delay(&mut self, d: &DelayParams, l: f32, r: f32) -> (f32, f32) {
+        let idx = self.dly_idx;
+        // 長さの目標: テンポに合わせるなら曲の速さから(停止中は最後に合わせた長さ)
+        let target = if d.sync_ticks > 0.0 && self.clock_tps > 0.0 {
+            self.sync_time = ((d.sync_ticks / self.clock_tps) as f32).clamp(2.0, DELAY_MAX);
+            self.sync_time
+        } else if d.sync_ticks > 0.0 && self.sync_time > 0.0 {
+            self.sync_time
+        } else {
+            d.time
+        };
+        // 長さが変わったら(テンポ・オートメーション)なめらかに追う。テープ・BBD はゆっくり(音程がうねる)
+        let glide = match d.kind {
+            DelayKind::Tape | DelayKind::Bbd => d.glide_slow,
+            _ => d.glide,
+        };
+        let time = self.dly_time.next(target, glide);
+        let mix = self.sm[0].next(d.mix, d.smooth);
+        let feedback = self.sm[1].next(d.feedback, d.smooth);
+        let tau = std::f32::consts::TAU;
+        let (el, er) = match d.kind {
+            DelayKind::Digital => {
+                // やまびこは毎回トーンの LP を通る(回を重ねるほど暗くなる)
+                for ch in 0..2 {
+                    let y = read_frac(&self.dly[ch], idx, time);
+                    self.dly_lp[ch] += (y - self.dly_lp[ch]) * (1.0 - d.tone_coef);
+                }
+                let [el, er] = self.dly_lp;
+                let (wl, wr) = if d.ping_pong {
+                    // 入力は左へ、左のやまびこは右へ、右は左へ
+                    ((l + r) * 0.5 + er * feedback, el * feedback)
+                } else {
+                    (l + el * feedback, r + er * feedback)
+                };
+                self.dly[0][idx] = wl;
+                self.dly[1][idx] = wr;
+                (el, er)
+            }
+            DelayKind::Tape | DelayKind::Bbd => {
+                let ms = 0.001 * d.sample_rate;
+                let tape = d.kind == DelayKind::Tape;
+                // テープは回転むら(ワウ・フラッター)、BBD はクロックのゆっくりした揺れ
+                let wobble = if tape {
+                    0.5 * ms * (tau * self.lfo[0]).sin() + 0.03 * ms * (tau * self.lfo[1]).sin()
+                } else {
+                    0.15 * ms * (tau * self.lfo[0]).sin()
+                };
+                self.lfo[0] = (self.lfo[0] + d.wow_inc).fract();
+                self.lfo[1] = (self.lfo[1] + d.flutter_inc).fract();
+                if !tape && ((self.bbd.0 - time).abs() > 0.5 || self.bbd.0.is_nan()) {
+                    // BBD は長くするほどクロックが下がり、高域が出なくなる(4096 段の素子を想定)
+                    let secs = time / d.sample_rate;
+                    let fc = (0.45 * 4096.0 / (2.0 * secs.max(1e-3))).min(0.45 * d.sample_rate);
+                    self.bbd = (time, (-tau * fc / d.sample_rate).exp());
+                }
+                let mut e = [0.0f32; 2];
+                for (ch, ech) in e.iter_mut().enumerate() {
+                    let y = read_frac(&self.dly[ch], idx, time + wobble);
+                    self.dly_lp[ch] += (y - self.dly_lp[ch]) * (1.0 - d.tone_coef);
+                    let mut v = self.dly_lp[ch];
+                    if tape {
+                        // 回を重ねても低音が膨らまないよう、約 120Hz 以下を少し削る
+                        self.dly_hp[ch] += (v - self.dly_hp[ch]) * (tau * 120.0 / d.sample_rate);
+                        v -= self.dly_hp[ch];
+                    } else {
+                        self.dly_lp2[ch] += (v - self.dly_lp2[ch]) * (1.0 - self.bbd.1);
+                        v = self.dly_lp2[ch];
+                    }
+                    *ech = v;
+                }
+                let [el, er] = e;
+                // 繰り返しは飽和して丸くなる(フィードバックを上げても発振しきらない)
+                let fb = |x: f32| (x * feedback * 1.3).tanh() * (1.0 / 1.3);
+                let (wl, wr) = if d.ping_pong {
+                    ((l + r) * 0.5 + fb(er), fb(el))
+                } else {
+                    (l + fb(el), r + fb(er))
+                };
+                self.dly[0][idx] = wl;
+                self.dly[1][idx] = wr;
+                (el, er)
+            }
+            DelayKind::Multitap => {
+                // time を taps 等分した位置に読み出し口。後ろほど小さく、ping_pong なら左右交互
+                let n = d.taps.clamp(2, 4) as usize;
+                let (mut wl, mut wr) = (0.0, 0.0);
+                let mut g = 1.0;
+                for k in 1..=n {
+                    let at = time * k as f32 / n as f32;
+                    let yl = read_frac(&self.dly[0], idx, at);
+                    let yr = read_frac(&self.dly[1], idx, at);
+                    if d.ping_pong {
+                        let m = 0.5 * (yl + yr) * g;
+                        if k % 2 == 1 {
+                            wl += m;
+                        } else {
+                            wr += m;
+                        }
+                    } else {
+                        wl += yl * g;
+                        wr += yr * g;
+                    }
+                    g *= 0.7;
+                }
+                // トーン(全体)と、最後の読み出し口からのフィードバック(繰り返すほど暗く)
+                self.dly_lp[0] += (wl - self.dly_lp[0]) * (1.0 - d.tone_coef);
+                self.dly_lp[1] += (wr - self.dly_lp[1]) * (1.0 - d.tone_coef);
+                for ch in 0..2 {
+                    let last = read_frac(&self.dly[ch], idx, time);
+                    self.dly_lp2[ch] += (last - self.dly_lp2[ch]) * (1.0 - d.tone_coef);
+                }
+                let (il, ir) = if d.ping_pong {
+                    let m = (l + r) * 0.5;
+                    (m, m)
+                } else {
+                    (l, r)
+                };
+                self.dly[0][idx] = il + self.dly_lp2[0] * feedback;
+                self.dly[1][idx] = ir + self.dly_lp2[1] * feedback;
+                (self.dly_lp[0], self.dly_lp[1])
+            }
+        };
+        self.dly_idx = (idx + 1) & DLY_MASK;
+        // ダッキング: 原音の大きさ(速く上がって約 40ms で下がる)でやまびこを沈める
+        let duck = if d.duck_db > 0.0 {
+            let lvl = l.abs().max(r.abs());
+            self.envelope = lvl.max(self.envelope * 0.9995);
+            10.0_f32.powf(-d.duck_db * (self.envelope / 0.25).min(1.0) / 20.0)
+        } else {
+            1.0
+        };
+        (
+            l * (1.0 - mix) + el * mix * duck,
+            r * (1.0 - mix) + er * mix * duck,
+        )
     }
 }
 
@@ -1835,6 +2194,32 @@ pub static COMPRESSOR_SPECS: &[ParamSpec] = &[
         description: "音量を測るときだけ低音を削る(20 で切る)。キックやベースの低音でコンプが\
             ポンピングするのを防ぐ。ミックス全体・バスには 80〜150。",
     },
+    ParamSpec {
+        name: "character",
+        display_name: "種類",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["clean", "vca", "fet", "opto"],
+            default: "clean",
+        },
+        description: "コンプの癖。clean は色付けのない素直な圧縮。vca は長く潰した後ほどゆっくり戻る(自動リリース)\
+            まとまりのある圧縮で、バス・ミックス全体に。fet はとても速く掴み、潰すほど歪みが乗る攻撃的な音で、\
+            ドラム・ボーカル・ベースを前へ。opto は遅めに掴んで速く半分戻り残りはゆっくり戻る、なめらかで\
+            自然な圧縮で、ボーカル・ベース・パッドに。",
+    },
+    ParamSpec {
+        name: "lookahead_ms",
+        display_name: "先読み",
+        unit: Some("ms"),
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 10.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "音をこれだけ遅らせて、圧縮を先に効かせ始める(速いアタックでも頭の山を取りこぼさない)。\
+            1〜5 でピークを確実に抑える。遅れはエンジンが補正する(オートメーションでは動かせない)。",
+    },
 ];
 
 pub static REVERB_SPECS: &[ParamSpec] = &[
@@ -1908,11 +2293,26 @@ pub static REVERB_SPECS: &[ParamSpec] = &[
         display_name: "種類",
         unit: None,
         range: ParamRange::Enum {
-            choices: &["room", "plate"],
+            choices: &["room", "plate", "hall", "chamber", "shimmer"],
             default: "room",
         },
-        description: "room は部屋・ホールの自然な響き。plate は鉄板リバーブ風の密で明るい響きで、\
-            ボーカルやスネアに艶を足す定番。",
+        description: "room は部屋の自然な響き。plate は鉄板リバーブ風の密で明るい響きで、\
+            ボーカルやスネアに艶を足す定番。hall は大きなホールの長く広い響き(同じ size でも 1.6 倍長い。\
+            ストリングス・パッド・バラード)。chamber は石の部屋の密で明るい短めの響き(ボーカル・ドラム)。\
+            shimmer はホールの響きが 1 オクターブ上へ昇っていくきらめき(アンビエント・パッド・ギター。shimmer で量)。",
+    },
+    ParamSpec {
+        name: "shimmer",
+        display_name: "シマー",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            skew: None,
+        },
+        description: "character が shimmer のとき、響きをオクターブ上げて戻す量。上げるほどきらめきが積み重なって\
+            天井へ昇る。0.3〜0.6 が使いやすい。",
     },
 ];
 
@@ -2169,6 +2569,42 @@ pub static DELAY_SPECS: &[ParamSpec] = &[
         description: "原音が鳴っている間にやまびこを沈める量(ダッキングディレイ)。歌・リードの言葉を濁さず、\
             伸ばしや句の切れ目でだけやまびこが聞こえる。3〜6 が定番。",
     },
+    ParamSpec {
+        name: "sync",
+        display_name: "テンポ同期",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: crate::modfx::SYNC_CHOICES,
+            default: "off",
+        },
+        description: "やまびこの間隔を曲のテンポに合わせる(1/4 = 4 分、1/8d = 付点 8 分、1/8t = 3 連の 8 分)。\
+            off で time_ms を使う。テンポが変わっても付いていく(長さはバッファの上限、48kHz で約 1.3 秒まで)。",
+    },
+    ParamSpec {
+        name: "type",
+        display_name: "種類",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: &["digital", "tape", "bbd", "multitap"],
+            default: "digital",
+        },
+        description: "digital はくっきりした繰り返し。tape はテープエコー: 回転むらで少し揺れ、繰り返すほど丸く\
+            飽和して低音が膨らまない(ダブ・ロック・ボーカル)。bbd はアナログの BBD: 長くするほど暗くなる\
+            温かい繰り返し(シンセ・ギター)。multitap は time を taps 等分した位置に読み出し口を並べた\
+            リズミカルな繰り返し(ping_pong で左右交互)。",
+    },
+    ParamSpec {
+        name: "taps",
+        display_name: "タップ数",
+        unit: None,
+        range: ParamRange::Float {
+            min: 2.0,
+            max: 4.0,
+            default: 3.0,
+            skew: None,
+        },
+        description: "multitap の読み出し口の数(2〜4)。3 で 3 連符、4 で 16 分の刻み(time を 4 分にしたとき)。",
+    },
 ];
 
 pub static CHORUS_SPECS: &[ParamSpec] = &[
@@ -2334,7 +2770,9 @@ pub fn effect_params_spec(name: &str) -> Option<&'static [ParamSpec]> {
         "convolution" => Some(CONVOLUTION_SPECS),
         "resonance" => Some(RESONANCE_SPECS),
         "virtual_bass" => Some(VIRTUAL_BASS_SPECS),
-        other => crate::modfx::specs(other),
+        other => crate::modfx::specs(other)
+            .or_else(|| crate::studio::specs(other))
+            .or_else(|| crate::pitch::specs(other)),
     }
 }
 
@@ -2471,6 +2909,8 @@ pub fn effect_catalog() -> Vec<crate::params::InstrumentInfo> {
     ]
     .into_iter()
     .chain(crate::modfx::catalog())
+    .chain(crate::studio::catalog())
+    .chain(crate::pitch::catalog())
     .collect()
 }
 
@@ -2534,6 +2974,7 @@ impl EffectParams {
         match self {
             EffectParams::Sidechain(sc) => Some(sc.source_track),
             EffectParams::DynamicEq(d) if d.source_track != u32::MAX => Some(d.source_track),
+            EffectParams::Studio(s) => s.key_source(),
             _ => None,
         }
     }
@@ -2544,6 +2985,8 @@ impl EffectParams {
             EffectParams::Limiter(p) => p.latency(),
             EffectParams::Convolution(p) => p.latency,
             EffectParams::Resonance(p) => p.latency(),
+            EffectParams::Pitch(p) => p.latency(),
+            EffectParams::Compressor(c) => c.ext.lookahead,
             _ => 0,
         }
     }
@@ -2575,8 +3018,14 @@ impl EffectParams {
                 "threshold_db" => p.threshold_db = v.clamp(-40.0, 0.0),
                 "ratio" => p.ratio = v.clamp(1.0, 20.0),
                 "knee_db" => p.knee_db = v.clamp(0.0, 24.0),
-                "attack_ms" => p.attack_coef = time_coef(v, sample_rate),
-                "release_ms" => p.release_coef = time_coef(v, sample_rate),
+                "attack_ms" | "release_ms" => {
+                    if name == "attack_ms" {
+                        p.ext.attack_ms = v;
+                    } else {
+                        p.ext.release_ms = v;
+                    }
+                    (p.attack_coef, p.release_coef) = p.ext.coefs(sample_rate);
+                }
                 "makeup_db" => p.makeup = db(v.clamp(0.0, 24.0)),
                 "sc_hpf_hz" => {
                     p.sc_hpf_hz = v;
@@ -2598,6 +3047,7 @@ impl EffectParams {
                         p.gate = v.clamp(0.0, 600.0) * 0.001 * sample_rate;
                         return true;
                     }
+                    "shimmer" => raw.shimmer = v.clamp(0.0, 1.0),
                     _ => return false,
                 }
                 let gate = p.gate;
@@ -2633,6 +3083,7 @@ impl EffectParams {
                 "mix" => p.mix = v.clamp(0.0, 1.0),
                 "duck_db" => p.duck_db = v.clamp(0.0, 24.0),
                 "tone" => p.tone_coef = (-tau * v.clamp(1000.0, 16000.0) / sample_rate).exp(),
+                "taps" => p.taps = v.clamp(2.0, 4.0).round() as u8,
                 _ => return false,
             },
             EffectParams::Chorus(p) => match name {
@@ -2673,6 +3124,8 @@ impl EffectParams {
                 *p = crate::dynamics::MultibandParams::new(r);
             }
             EffectParams::Mod(m) => return m.set_continuous(name, v, sample_rate),
+            EffectParams::Studio(m) => return m.set_continuous(name, v, sample_rate),
+            EffectParams::Pitch(m) => return m.set_continuous(name, v, sample_rate),
             EffectParams::VirtualBass(p) => {
                 let (mut f, mut a, mut rl) = (p.freq, p.amount, p.remove_lows);
                 match name {
@@ -2840,7 +3293,7 @@ pub fn bake_effect(
         "compressor" => {
             let s = COMPRESSOR_SPECS;
             let hpf = get(map, s, "sc_hpf_hz");
-            Some(EffectParams::Compressor(CompressorParams {
+            let mut c = CompressorParams {
                 threshold_db: get(map, s, "threshold_db").clamp(-40.0, 0.0),
                 ratio: get(map, s, "ratio").clamp(1.0, 20.0),
                 knee_db: get(map, s, "knee_db").clamp(0.0, 24.0),
@@ -2851,7 +3304,27 @@ pub fn bake_effect(
                 rms_coef: time_coef(10.0, sample_rate),
                 sc_hpf: comp_sc_hpf(hpf, sample_rate),
                 sc_hpf_hz: hpf,
-            }))
+                ext: CompExtra::default(),
+            };
+            let la = get(map, s, "lookahead_ms").clamp(0.0, 10.0);
+            c.ext = CompExtra {
+                character: match get_choice(map, s, "character") {
+                    "vca" => CompCharacter::Vca,
+                    "fet" => CompCharacter::Fet,
+                    "opto" => CompCharacter::Opto,
+                    _ => CompCharacter::Clean,
+                },
+                lookahead: (la * 0.001 * sample_rate).round() as u32,
+                lookahead_ms: la,
+                attack_ms: get(map, s, "attack_ms"),
+                release_ms: get(map, s, "release_ms"),
+                slow_charge: 0.0,
+                slow_coef: 0.0,
+                slow_weight: 0.0,
+                smooth: smooth_coef(sample_rate),
+            };
+            (c.attack_coef, c.release_coef) = c.ext.coefs(sample_rate);
+            Some(EffectParams::Compressor(c))
         }
         "reverb" => {
             let s = REVERB_SPECS;
@@ -2862,7 +3335,12 @@ pub fn bake_effect(
                     damping: get(map, s, "damping").clamp(0.0, 1.0),
                     predelay_ms: get(map, s, "predelay_ms")
                         .clamp(0.0, crate::reverb::PREDELAY_MAX_MS),
-                    plate: get_choice(map, s, "character") == "plate",
+                    character: crate::reverb::ReverbCharacter::parse(get_choice(
+                        map,
+                        s,
+                        "character",
+                    )),
+                    shimmer: get(map, s, "shimmer"),
                     sample_rate,
                 },
             );
@@ -2878,6 +3356,7 @@ pub fn bake_effect(
                 tone_coef: (-std::f32::consts::TAU * tone_hz / sample_rate).exp(),
                 mix: get(map, s, "mix").clamp(0.0, 1.0),
                 level: 10.0_f32.powf(get(map, s, "level_db").clamp(-24.0, 6.0) / 20.0),
+                smooth: smooth_coef(sample_rate),
             }))
         }
         "amp" => {
@@ -2933,6 +3412,21 @@ pub fn bake_effect(
                     .exp(),
                 ping_pong,
                 duck_db: get(map, s, "duck_db").clamp(0.0, 24.0),
+                kind: match get_choice(map, s, "type") {
+                    "tape" => DelayKind::Tape,
+                    "bbd" => DelayKind::Bbd,
+                    "multitap" => DelayKind::Multitap,
+                    _ => DelayKind::Digital,
+                },
+                sync_ticks: glaux_core::meter::sync_ticks(get_choice(map, s, "sync")),
+                taps: get(map, s, "taps").clamp(2.0, 4.0).round() as u8,
+                smooth: smooth_coef(sample_rate),
+                // 長さの変化を追う時間: 30ms(digital・multitap)/ 250ms(tape・bbd)
+                glide: 1.0 - (-1.0 / (0.03 * sample_rate)).exp(),
+                glide_slow: 1.0 - (-1.0 / (0.25 * sample_rate)).exp(),
+                wow_inc: 0.6 / sample_rate,
+                flutter_inc: 5.5 / sample_rate,
+                sample_rate,
             }))
         }
         "chorus" => {
@@ -2942,6 +3436,7 @@ pub fn bake_effect(
                 depth: get(map, s, "depth_ms").clamp(0.0, 8.0) * 0.001 * sample_rate,
                 base: get(map, s, "delay_ms").clamp(3.0, 30.0) * 0.001 * sample_rate,
                 mix: get(map, s, "mix").clamp(0.0, 1.0),
+                smooth: smooth_coef(sample_rate),
             }))
         }
         "multiband" => {
@@ -2986,6 +3481,12 @@ pub fn bake_effect(
         }
         other if crate::modfx::specs(other).is_some() => {
             crate::modfx::bake(other, map, sample_rate).map(EffectParams::Mod)
+        }
+        other if crate::studio::specs(other).is_some() => {
+            crate::studio::bake(other, map, sample_rate, resolve_track).map(EffectParams::Studio)
+        }
+        other if crate::pitch::specs(other).is_some() => {
+            crate::pitch::bake(other, map, sample_rate).map(EffectParams::Pitch)
         }
         "virtual_bass" => {
             let s = VIRTUAL_BASS_SPECS;
@@ -3765,5 +4266,244 @@ mod tests {
         // 0 なら無音のまま
         let off = bake(&effect("tape", &[("hiss", 0.0)])).unwrap();
         assert!(run(&off, |_| (0.0, 0.0), 48_000).iter().all(|o| o.0 == 0.0));
+    }
+
+    #[test]
+    fn studio_and_pitch_effects_are_listed_and_baked() {
+        let names: Vec<&str> = effect_catalog().iter().map(|i| i.name).collect();
+        for n in [
+            "eq8",
+            "saturation",
+            "deesser",
+            "gate",
+            "pitch_shift",
+            "harmonizer",
+            "pitch_correct",
+        ] {
+            assert!(names.contains(&n), "{n}");
+            assert!(effect_params_spec(n).is_some());
+            let p = bake(&effect(n, &[])).unwrap();
+            assert!(matches!(
+                p,
+                EffectParams::Studio(_) | EffectParams::Pitch(_)
+            ));
+            // 既定のつまみで通しても壊れない
+            let out = run(&p, |i| ((i as f32 * 0.05).sin() * 0.5, 0.0), 9600);
+            assert!(
+                out.iter().all(|s| s.0.is_finite() && s.1.is_finite()),
+                "{n}"
+            );
+        }
+        // 音程を動かすものは遅れを申告する(遅延補正のため)
+        assert!(bake(&effect("pitch_shift", &[])).unwrap().latency() > 0);
+        // ゲートは source のトラックを検出に使う
+        let mut e = effect("gate", &[]);
+        e.params
+            .insert("source".into(), ParamValue::Enum("trk_kick".into()));
+        let g = bake_effect(&e, 48_000.0, &|_| Some(2)).unwrap();
+        assert_eq!(g.key_source(), Some(2));
+    }
+
+    #[test]
+    fn pitch_effects_without_delay_buffers_pass_through() {
+        let p = bake(&effect("pitch_shift", &[("semitones", 7.0)])).unwrap();
+        let mut st = EffectState::without_delay_buffers();
+        st.ensure_kind(&p);
+        assert_eq!(st.process(&p, 0.3, -0.2, 0.0), (0.3, -0.2));
+    }
+
+    /// 大きな音が急に来たときの、頭の数 ms の出力の山
+    fn onset_peak(p: &EffectParams, lat: usize) -> f32 {
+        let out = run(
+            p,
+            |i| {
+                let x = if i >= 4800 { 0.9 } else { 0.01 };
+                (x, x)
+            },
+            9600,
+        );
+        out[4800 + lat..4800 + lat + 96]
+            .iter()
+            .map(|s| s.0.abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn compressor_lookahead_catches_the_onset_and_reports_latency() {
+        let plain = bake(&effect(
+            "compressor",
+            &[("threshold_db", -20.0), ("ratio", 20.0), ("attack_ms", 5.0)],
+        ))
+        .unwrap();
+        let la = bake(&effect(
+            "compressor",
+            &[
+                ("threshold_db", -20.0),
+                ("ratio", 20.0),
+                ("attack_ms", 5.0),
+                ("lookahead_ms", 5.0),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(plain.latency(), 0);
+        assert_eq!(la.latency(), 240);
+        let (a, b) = (onset_peak(&plain, 0), onset_peak(&la, 240));
+        assert!(b < a * 0.7, "先読みなし {a} / あり {b}");
+    }
+
+    #[test]
+    fn compressor_characters_differ_as_described() {
+        let comp = |c: &str| {
+            let mut e = effect(
+                "compressor",
+                &[
+                    ("threshold_db", -30.0),
+                    ("ratio", 8.0),
+                    ("release_ms", 100.0),
+                ],
+            );
+            e.params
+                .insert("character".into(), ParamValue::Enum(c.into()));
+            bake(&e).unwrap()
+        };
+        // 1 秒の大きな音のあと静かにして、`ms` 後にどれだけ戻ったか(出力 ÷ 入力)
+        let recovered = |p: &EffectParams, ms: usize| {
+            let n = 48_000 + ms * 48;
+            let out = run(
+                p,
+                |i| {
+                    let x = if i < 48_000 { 0.8 } else { 0.01 };
+                    (x, x)
+                },
+                n,
+            );
+            out[n - 1].0 / 0.01
+        };
+        let clean = recovered(&comp("clean"), 100);
+        let vca = recovered(&comp("vca"), 100);
+        assert!(
+            vca < clean * 0.8,
+            "vca は長く潰した後ゆっくり戻る {vca} {clean}"
+        );
+        // opto は 100ms で vca より戻るが、1 秒たっても戻りきらない(clean は戻りきる)
+        let opto = recovered(&comp("opto"), 100);
+        assert!(opto > vca, "{opto} {vca}");
+        let (opto1, clean1) = (
+            recovered(&comp("opto"), 1000),
+            recovered(&comp("clean"), 1000),
+        );
+        assert!(clean1 > 0.98 && opto1 < 0.9, "{opto1} {clean1}");
+        // fet は潰した音に歪みが乗る(3 倍音)
+        let h3 = |p: &EffectParams| {
+            let out = run(
+                p,
+                |i| {
+                    let x = (i as f32 * 200.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.8;
+                    (x, x)
+                },
+                24_000,
+            );
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (i, s) in out.iter().enumerate().skip(12_000) {
+                let w = i as f32 * 600.0 * std::f32::consts::TAU / 48_000.0;
+                re += s.0 * w.cos();
+                im += s.0 * w.sin();
+            }
+            (re * re + im * im).sqrt()
+        };
+        assert!(h3(&comp("fet")) > h3(&comp("clean")) * 3.0);
+    }
+
+    #[test]
+    fn delay_follows_the_tempo_and_each_type_echoes() {
+        // 120BPM で 1/4 = 0.5 秒 = 24000 サンプル
+        let mut e = effect("delay", &[("mix", 1.0), ("feedback", 0.0)]);
+        e.params
+            .insert("sync".into(), ParamValue::Enum("1/4".into()));
+        let p = bake(&e).unwrap();
+        let mut st = EffectState::default();
+        st.ensure_kind(&p);
+        st.set_clock(0.0, glaux_core::PPQ as f64 * 2.0 / 48_000.0);
+        let out: Vec<f32> = (0..30_000)
+            .map(|i| st.process(&p, impulse(i).0, impulse(i).1, 0.0).0)
+            .collect();
+        let at = out
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+            .unwrap()
+            .0;
+        assert!((at as i64 - 24_000).abs() <= 3, "{at}");
+        for t in ["tape", "bbd", "multitap"] {
+            let mut e = effect(
+                "delay",
+                &[
+                    ("mix", 1.0),
+                    ("feedback", 0.5),
+                    ("time_ms", 100.0),
+                    ("taps", 4.0),
+                ],
+            );
+            e.params.insert("type".into(), ParamValue::Enum(t.into()));
+            let p = bake(&e).unwrap();
+            let out = run(&p, impulse, 48_000);
+            let energy: f32 = out.iter().map(|s| s.0 * s.0).sum();
+            assert!(energy > 1e-4 && energy.is_finite(), "{t}: {energy}");
+            // 最初のやまびこは 100ms 付近(multitap は 25ms ごと)
+            let first = out.iter().position(|s| s.0.abs() > 0.01).unwrap();
+            let want = if t == "multitap" { 1200 } else { 4800 };
+            assert!((first as i64 - want).abs() < 60, "{t}: {first}");
+        }
+        // bbd は長くするほど暗い
+        let bright = |ms: f64| {
+            let mut e = effect("delay", &[("mix", 1.0), ("feedback", 0.0), ("time_ms", ms)]);
+            e.params
+                .insert("type".into(), ParamValue::Enum("bbd".into()));
+            let p = bake(&e).unwrap();
+            let out = run(
+                &p,
+                |i| {
+                    let x = (i as f32 * 6000.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.3;
+                    (x, x)
+                },
+                48_000,
+            );
+            out[40_000..].iter().map(|s| s.0 * s.0).sum::<f32>()
+        };
+        assert!(bright(800.0) < bright(100.0) * 0.5);
+    }
+
+    #[test]
+    fn automation_steps_are_smoothed() {
+        // 出力レベルを 1 ブロックで 0 → -24dB にしても、次のサンプルで段差にならない
+        let mut p = bake(&effect("distortion", &[("mix", 0.0), ("level_db", 0.0)])).unwrap();
+        let mut st = EffectState::default();
+        st.ensure_kind(&p);
+        for _ in 0..1000 {
+            st.process(&p, 0.5, 0.5, 0.0);
+        }
+        assert!(p.set_continuous("level_db", -24.0, 48_000.0));
+        let first = st.process(&p, 0.5, 0.5, 0.0).0;
+        assert!(first > 0.45, "{first}");
+        let mut last = first;
+        for _ in 0..4800 {
+            last = st.process(&p, 0.5, 0.5, 0.0).0;
+        }
+        assert!(
+            (last - 0.5 * 10f32.powf(-24.0 / 20.0)).abs() < 1e-3,
+            "{last}"
+        );
+        // ミックスも同じ
+        let mut p = bake(&effect("reverb", &[("mix", 0.0)])).unwrap();
+        let mut st = EffectState::default();
+        st.ensure_kind(&p);
+        let sine = |i: usize| (i as f32 * 0.03).sin() * 0.5;
+        let mut prev = 0.0;
+        for i in 0..2000 {
+            prev = st.process(&p, sine(i), sine(i), 0.0).0;
+        }
+        assert!(p.set_continuous("mix", 1.0, 48_000.0));
+        let next = st.process(&p, sine(2000), sine(2000), 0.0).0;
+        assert!((next - prev).abs() < 0.05, "{prev} → {next}");
     }
 }
