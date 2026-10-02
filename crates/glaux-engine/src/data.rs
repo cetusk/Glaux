@@ -3687,7 +3687,10 @@ mod tests {
         let data = build_playback_data(&poly, 48_000.0, &SampleBank::default());
         let m = &data.tracks[0].plugin_mods[0];
         assert_eq!(m.per_note.len(), 1);
-        assert!((m.per_note[0].hz - 2.0).abs() < 1e-4, "120 BPM の 4 分 = 2Hz");
+        assert!(
+            (m.per_note[0].hz - 2.0).abs() < 1e-4,
+            "120 BPM の 4 分 = 2Hz"
+        );
         assert!((m.per_note[0].at(0.125) - 0.25).abs() < 1e-3);
         assert!(m.offsets.iter().all(|p| p.value == 0.0));
         // 範囲の無い CLAP の変調は通らない

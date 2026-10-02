@@ -20,7 +20,19 @@ struct Fixture {
     dir: std::path::PathBuf,
 }
 
+/// CLAP の音声モデルの場所を、テストが XDG_CONFIG_HOME などを差し替える前の場所に固定する
+/// (並んで走るテストが設定ディレクトリを差し替えると、モデルの有無の判定がテストごとに食い違うため)
+fn pin_clap_model() {
+    static PIN: std::sync::Once = std::sync::Once::new();
+    PIN.call_once(|| {
+        if std::env::var_os("GLAUX_CLAP_MODEL").is_none() {
+            std::env::set_var("GLAUX_CLAP_MODEL", glaux_ml::clap::model_path());
+        }
+    });
+}
+
 async fn setup() -> Fixture {
+    pin_clap_model();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("Song.glaux");
     let (store, session) = Store::open_or_create(dir.to_str().unwrap()).unwrap();
@@ -1510,6 +1522,7 @@ async fn note_utility_tools_validate_inputs() {
 async fn preset_tools_save_and_apply_across_tracks() {
     // プリセット置き場をテスト用に隔離(default_dir は APPDATA/XDG を見る)
     let preset_tmp = tempfile::tempdir().unwrap();
+    pin_clap_model();
     std::env::set_var("XDG_CONFIG_HOME", preset_tmp.path());
     std::env::set_var("APPDATA", preset_tmp.path());
 
@@ -2382,6 +2395,7 @@ async fn find_similar_presets_finds_the_source_preset() {
     std::env::set_var("GLAUX_CLAP_PATH", path.parent().unwrap());
     // 索引のキャッシュを一時フォルダに
     let cache = tempfile::tempdir().unwrap();
+    pin_clap_model();
     std::env::set_var("XDG_CONFIG_HOME", cache.path());
     let plugin = glaux_engine::plugins::rescan()
         .into_iter()
