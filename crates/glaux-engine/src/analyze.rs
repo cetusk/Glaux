@@ -911,8 +911,18 @@ pub fn analyze_mix(
     range: Option<(Tick, Tick)>,
     bank: &crate::data::SampleBank,
 ) -> MixAnalysis {
-    // トラックごとのソロのレンダは互いに独立なので並列にする(CLAP を含むものは、プラグインの
-    // インスタンスを作るので 1 つずつ)。再生スレッドと競合しないよう、コア数より少し少なくする
+    let rendered = render_tracks_solo(project, range, bank);
+    analyze_mix_rendered(project, &rendered)
+}
+
+/// トラックごとにソロで描き出す(48kHz、インターリーブのステレオ。鳴らないトラックは None)。
+/// 互いに独立なので並列にする(CLAP を含むものは、プラグインのインスタンスを作るので 1 つずつ)。
+/// 再生スレッドと競合しないよう、コア数より少し少なくする
+pub fn render_tracks_solo(
+    project: &Project,
+    range: Option<(Tick, Tick)>,
+    bank: &crate::data::SampleBank,
+) -> Vec<Option<Vec<f32>>> {
     let solo = |t: &glaux_core::Track| {
         let mut target = project.clone();
         target.tracks.retain(|x| x.id == t.id);
@@ -961,14 +971,18 @@ pub fn analyze_mix(
         }
         out
     };
+    rendered
+}
 
+/// 描き出し済みのトラックごとの音([`render_tracks_solo`])から、要約とかぶり(マスキング)を求める
+pub fn analyze_mix_rendered(project: &Project, rendered: &[Option<Vec<f32>>]) -> MixAnalysis {
     let mut tracks = Vec::new();
     let mut frames: Vec<(String, Vec<BandFrame>)> = Vec::new();
     for (t, stereo) in project.tracks.iter().zip(rendered) {
         let Some(stereo) = stereo else {
             continue;
         };
-        let sliced: &[f32] = &stereo;
+        let sliced: &[f32] = stereo;
         if sliced.len() < 8192 {
             continue;
         }

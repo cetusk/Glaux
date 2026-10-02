@@ -25,6 +25,7 @@ pub mod export;
 pub mod loudness;
 pub mod mastering;
 pub mod midi;
+pub mod mixcheck;
 pub mod monitor;
 pub mod output;
 pub mod plugins;

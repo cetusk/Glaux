@@ -1871,6 +1871,41 @@ pub struct SetMacroParams {
     pub targets: Option<Vec<MacroTargetArg>>,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct CritiqueMixParams {
+    /// 調べる範囲(tick)。省略すると、曲が 16 小節より長ければノートが最も多い 16 小節
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ApplyRecipeParams {
+    /// レシピ: send_reverb / send_delay / kick_bass / vocal_chain / supersaw / parallel_drums
+    pub recipe: String,
+    /// 対象のトラック(ID か名前)。send_reverb・send_delay・parallel_drums は送るトラック、vocal_chain・supersaw は 1 つ
+    #[serde(default)]
+    pub tracks: Option<Vec<String>>,
+    /// send_reverb の響き: room / hall(既定)/ plate
+    #[serde(default)]
+    pub space: Option<String>,
+    /// 送る量(dB。既定はレシピごと: リバーブ -12・ディレイ -16・ボーカル -14・並列コンプ -8)
+    #[serde(default)]
+    pub level_db: Option<f32>,
+    /// send_delay の音符("1/8d" 既定・"1/4"・"1/8t" など。曲の頭のテンポで ms にする)
+    #[serde(default)]
+    pub note: Option<String>,
+    /// kick_bass の方式: duck(既定。ベース全体を短く沈める)/ dynamic_eq(60Hz 付近だけ沈める)
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// kick_bass のキックとベースのトラック(省略で名前と音の高さから推定)
+    #[serde(default)]
+    pub kick: Option<String>,
+    #[serde(default)]
+    pub bass: Option<String>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct ModulateParams {
     /// トラックの ID。
@@ -12096,6 +12131,108 @@ impl GlauxServer {
                 })).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>());
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "音と混ぜ具合を点検する(作曲の点検の critique_arrangement の、音の版)。トラックごとにソロで描き出して測り、\
+        直した方がよいもの(warn)と好みで検討するもの(info)を、直し方の案(fix: {tool, args} か hint)付きで返す。\
+        見るもの: 低域(150Hz 以下)の左右の広がり、音の頭・終わりのクリック(位置は小節:拍)、キックとベースの低域のぶつかり、\
+        True Peak、モノにしたときの減り、2〜5kHz の刺さり・200〜400Hz のこもり、トラックどうしのかぶり、\
+        中央に重なったユニゾン、まったく動かない長い音、空間(リバーブ・ディレイ)の無さ。\
+        範囲を省略すると、長い曲はノートが最も多い 16 小節を調べる(重い描き出しを避ける)。\
+        ミックスや音作りを変えたら呼び、warn を fix で直して、もう一度呼んで確かめる。"
+    )]
+    async fn critique_mix(&self, params: Parameters<CritiqueMixParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("critique_mix");
+        let p = params.0;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let dir = self.handle.project_dir().await?;
+        let range = match (p.start_tick, p.end_tick) {
+            (Some(a), Some(b)) if b > a => Some((glaux_core::Tick(a), glaux_core::Tick(b))),
+            (None, None) => None,
+            _ => return Err("start_tick と end_tick は両方(end > start)で".to_owned()),
+        };
+        let kick = crate::recipes::guess_kick(&project).map(|t| t.id.clone());
+        let bass = crate::recipes::guess_bass(&project).map(|t| t.id.clone());
+        let drums: Vec<glaux_core::TrackId> = project
+            .tracks
+            .iter()
+            .filter(|t| crate::recipes::is_drum(t))
+            .map(|t| t.id.clone())
+            .collect();
+        let pr = project.clone();
+        let (k2, b2) = (kick.clone(), bass.clone());
+        let check = tokio::task::spawn_blocking(move || {
+            let bank = glaux_engine::SampleBank::for_offline(&pr, std::path::Path::new(&dir));
+            glaux_engine::mixcheck::check_mix(&pr, range, &bank, &drums, k2.as_ref(), b2.as_ref())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        let kick_t = kick.as_ref().and_then(|id| project.track(id));
+        let bass_t = bass.as_ref().and_then(|id| project.track(id));
+        let findings = crate::mixcritique::findings(&project, &check, kick_t, bass_t);
+        let warns = findings.iter().filter(|f| f["severity"] == "warn").count();
+        Ok(JsonText(json!({
+            "range": check.range.map(|(a, b)| json!({
+                "start_tick": a,
+                "end_tick": b,
+                "from": crate::mixcritique::bar_beat(&project, project.tempo_map.tick_to_seconds(glaux_core::Tick(a))),
+            })),
+            "warns": warns,
+            "findings": findings,
+            "mix": {
+                "loudness_lufs": (check.mix.loudness_lufs * 10.0).round() / 10.0,
+                "true_peak_dbtp": (check.mix.true_peak_dbtp * 10.0).round() / 10.0,
+                "mono_loudness_change_db": (check.mix.stereo.mono_loudness_change_db * 10.0).round() / 10.0,
+                "low_correlation": (check.mix.stereo.low_correlation * 100.0).round() / 100.0,
+            },
+            "kick_bass_overlap": check.kick_bass_overlap,
+            "tracks": check.tracks.iter().map(|c| json!({
+                "track": c.name,
+                "peak_db": (c.peak_db * 10.0).round() / 10.0,
+                "centroid_hz": c.centroid_hz.round(),
+                "low_side_to_mid_db": c.low_side_to_mid_db.map(|v| (v * 10.0).round() / 10.0),
+                "clicks": c.abrupt_starts.len() + c.abrupt_ends.len(),
+            })).collect::<Vec<_>>(),
+        })))
+    }
+
+    #[tool(
+        description = "定番の手順(レシピ)を 1 回で組む(1 回の undo で戻る)。recipe: \
+        send_reverb(リバーブのバスを作り〈返りは 300Hz〜8kHz、プリディレイ〉tracks から送る。space: room / hall / plate。同名のバスは使い回す)/ \
+        send_delay(テンポに合わせたピンポンのディレイのバス〈note: 1/8d など〉、返りは 400Hz〜6kHz)/ \
+        kick_bass(キックとベースのすみ分け。ベースにキックで沈むサイドチェイン〈mode: duck〉か 60Hz だけ沈むダイナミック EQ〈mode: dynamic_eq〉。kick・bass を省略すると推定)/ \
+        vocal_chain(ボーカルの定番: ハイパス・濁り取りの EQ → コンプ → 歯擦音の抑え → 軽いテープ、プレートのリバーブへ送る)/ \
+        supersaw(7 声を左右に広げたスーパーソー + 1 オクターブ上の層、ホールのリバーブと付点 8 分のディレイへ送る)/ \
+        parallel_drums(ドラムの並列コンプ。強く潰したバスに送って混ぜ、アタックを残したまま太く。tracks 省略でドラムのトラック全部)。\
+        返り値 steps に何をしたか。critique_mix の指摘の直し方としても使う。"
+    )]
+    async fn apply_recipe(
+        &self,
+        params: Parameters<ApplyRecipeParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("apply_recipe");
+        let p = params.0;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let args = crate::recipes::RecipeArgs {
+            tracks: p.tracks.unwrap_or_default(),
+            space: p.space,
+            level_db: p.level_db,
+            note: p.note,
+            mode: p.mode,
+            kick: p.kick,
+            bass: p.bass,
+        };
+        let r = crate::recipes::build(&project, &p.recipe, &args)?;
+        let command = Command::batch(r.label.clone(), r.commands);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, r.label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["steps"] = json!(r.steps);
         Ok(JsonText(v))
     }
 

@@ -466,6 +466,68 @@ async fn errors_are_reported_as_tool_errors() {
     assert_eq!(ok_json(&r)["entries"], json!([]));
 }
 
+/// 音の点検: キックとベースのぶつかり・低域の広がり・中央に重なったユニゾンを指摘し、レシピで直すと消える
+#[tokio::test]
+async fn critique_mix_finds_problems_and_recipes_fix_them() {
+    let fx = setup().await;
+    let kick_notes: Vec<String> = (0..16)
+        .map(|i| format!("{}:{} 1/8 C2 v120", i / 4 + 1, i % 4 + 1))
+        .collect();
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_kick01", "name": "Kick", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" },
+                  "clips": [ { "id": "clp_kick01", "name": "k", "start": 0, "length": 15360, "kind": "midi", "notes": kick_notes } ] } },
+                { "op": "add_track", "track": { "id": "trk_bass01", "name": "Bass", "kind": "midi",
+                  "device": { "type": "builtin", "name": "subtractive",
+                              "params": { "waveform": "saw", "unison": 5.0, "detune": 20.0, "spread": 1.0, "cutoff": 400.0, "sustain": 1.0, "gain_db": -6.0 } },
+                  "clips": [ { "id": "clp_bass01", "name": "b", "start": 0, "length": 15360, "kind": "midi",
+                               "notes": "1:1 1/1 C2; 2:1 1/1 C2; 3:1 1/1 C2; 4:1 1/1 C2" } ] } },
+                { "op": "add_track", "track": { "id": "trk_pad001", "name": "Pad", "kind": "midi",
+                  "device": { "type": "builtin", "name": "subtractive", "params": { "unison": 5.0, "sustain": 1.0, "gain_db": -18.0 } },
+                  "clips": [ { "id": "clp_pad001", "name": "p", "start": 0, "length": 15360, "kind": "midi",
+                               "notes": "1:1 4/1 C4+E4+G4" } ] } }
+            ],
+            "label": "点検の素材",
+        }),
+    )
+    .await;
+    ok_json(&r);
+    let kinds = |v: &Value| -> Vec<String> {
+        v["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["kind"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let r = call(&fx, "critique_mix", json!({})).await;
+    let v = ok_json(&r);
+    let k = kinds(&v);
+    assert!(k.contains(&"kick_bass".to_owned()), "{v}");
+    assert!(k.contains(&"wide_low_end".to_owned()), "{v}");
+    assert!(k.contains(&"narrow_unison".to_owned()), "{v}");
+    assert!(k.contains(&"no_space".to_owned()), "{v}");
+    // レシピで直す
+    let r = call(&fx, "apply_recipe", json!({ "recipe": "kick_bass" })).await;
+    let v = ok_json(&r);
+    assert!(v["steps"][0].as_str().unwrap().contains("Bass"), "{v}");
+    let r = call(
+        &fx,
+        "apply_recipe",
+        json!({ "recipe": "send_reverb", "tracks": ["Pad"], "space": "plate" }),
+    )
+    .await;
+    ok_json(&r);
+    let r = call(&fx, "critique_mix", json!({})).await;
+    let k = kinds(&ok_json(&r));
+    assert!(!k.contains(&"kick_bass".to_owned()), "{k:?}");
+    assert!(!k.contains(&"no_space".to_owned()), "{k:?}");
+}
+
 /// 道具の説明は毎回 AI に送るので長さを見張る(apply_commands は以前 5,180 字あった。細かい書き方は get_guide の commands へ)
 #[tokio::test]
 async fn tool_descriptions_stay_short() {

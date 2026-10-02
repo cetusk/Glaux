@@ -7,18 +7,18 @@
 
 /// 共通の指示(MCP サーバーの instructions。アプリ内チャットのシステムプロンプトにも同じ骨子を入れる)
 pub const CORE: &str = "Glaux(AI と共同作業できる DAW)の編集サーバー。\
-進め方: get_project(include_notes: false)で構造を把握 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
+進め方: get_project(include_notes: false)で構造 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
 apply_commands で編集。\
 相対編集: transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity / transform_notes。構成: duplicate_clips / insert_bars / delete_bars。\
 曲作りは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
 write_drums・write_chords・write_bassline・write_transition → 旋律 → 表情 → 点検)に沿う。\
-旋律は write_melody か develop_motif、critique_melody で点検。\
-感覚: analyze_harmony・analyze_rhythm・analyze_audio(per_track)・analyze_sound。\
-人も並行して編集する。project_version が進んでいたら get_changes {since: 最後の entry_id} で確認する。\
+旋律は write_melody か develop_motif、点検は critique_melody。\
+感覚: analyze_harmony・analyze_rhythm・analyze_audio・analyze_sound。\
+人も並行して編集する。project_version が進んだら get_changes {since: 最後の entry_id}。\
 定石は get_guide {topic}(commands / workflow / melody / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
 ハネ(swing_notes)の後は apply_groove(quantize 0)を重ねる。仕上げは master_mix。\
-報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを確かめ、\
-結果を添える。ミックスを変えたら compare_mix で前後を比べる。大きな試行の前は checkpoint。";
+報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを見て、\
+結果を添える。音・ミックスを変えたら critique_mix の warn を直し compare_mix で比べる。大きな試行の前は checkpoint。";
 
 /// (トピック名, 見出し, 本文)
 pub const TOPICS: &[(&str, &str, &str)] = &[
@@ -281,7 +281,10 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
     (
         "mix",
         "ミックスとエフェクト",
-        "- エフェクト: add_effect(eq / dynamic_eq / resonance / compressor / multiband / transient / limiter / width / virtual_bass / reverb / convolution(import_ir で) / distortion / amp / sidechain / delay / chorus / tape /\n\
+        "- 定番の手順は apply_recipe(send_reverb・send_delay・kick_bass・vocal_chain・supersaw・parallel_drums)で 1 回で組む。\n\
+- 仕上げの前に critique_mix(低域の広がり・クリック・キックとベース・True Peak・モノ・刺さり・こもり・かぶり・止まった音)。\n\
+  warn は fix の道具で直し、もう一度呼んで確かめる。\n\
+- エフェクト: add_effect(eq / dynamic_eq / resonance / compressor / multiband / transient / limiter / width / virtual_bass / reverb / convolution(import_ir で) / distortion / amp / sidechain / delay / chorus / tape /\n\
   clipper / bitcrush / tremolo / phaser / flanger / trance_gate / auto_filter / volume_shaper)→\n\
   set_param(fx/<id>/<名前>)。マスターは add_master_effect / set_master_param。\n\
 - distortion はシンセ・ドラム等の歪み。エレキギターの歪みは amp(instruments を参照)。\n\
