@@ -1872,6 +1872,21 @@ pub struct SetMacroParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesignSoundParams {
+    /// どんな音か(日本語か英語)。例「暗くて太いベース、少し揺れる」「明るくて広いパッド」「リバーブなしの鋭いリード」
+    pub text: String,
+    /// 音色を置き換えるトラック。省略すると新しいトラックを末尾に作る
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// 新しいトラックの名前(省略で役割の名前)
+    #[serde(default)]
+    pub name: Option<String>,
+    /// CLAP で言葉との近さを測って追い込むか(省略で、モデルがあれば行う。1 回 3〜5 秒)
+    #[serde(default)]
+    pub refine: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetCharacterParams {
     /// トラック ID
     pub track_id: String,
@@ -12161,6 +12176,114 @@ impl GlauxServer {
                 })).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>());
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "文章から音色を作る: 「暗くて太いベース、少し揺れる」のような言葉(日本語・英語)から、内蔵音源のパッチ(音源 + エフェクト)を作る。\
+        1 段目は言葉の対応表: 役割(ベース・リード・パッド・プラック・エレピ・ベル・オルガン・ストリングス・ブラス・スーパーソー・ウォブル・母音)と、\
+        明るさ・太さ・動き・広がり・空間・アタック・歪みの向き(「少し・とても」で強弱、「〜なし・〜くない」で否定、ローファイ・8bit・息っぽい)。\
+        2 段目は CLAP のモデルがあれば、言葉に対応する音色語との近さを測って 3〜5 秒だけ追い込む(言葉の向きは覆さない)。\
+        track_id でそのトラックの音色を置き換え(エフェクトも置き換え。層・マクロは残す)、省略すると新しいトラック。1 回の undo で戻る。\
+        返り値: role・matched(読み取った言葉と強さ)・changes(土台の音色から変えたつまみ)・refine(採点の前後)。\
+        その後の微調整は set_character(明るさ・太さ…)で。"
+    )]
+    async fn design_sound(
+        &self,
+        params: Parameters<DesignSoundParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("design_sound");
+        let p = params.0;
+        if p.text.trim().is_empty() {
+            return Err("text にどんな音かを書いてください".into());
+        }
+        let (project, _) = self.handle.get_project_shared().await?;
+        let target = match &p.track_id {
+            Some(t) => {
+                let id = glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?;
+                let track = project.track(&id).ok_or("トラックが見つかりません")?;
+                if track.kind != glaux_core::TrackKind::Midi {
+                    return Err("音源を置けるのは MIDI のトラックだけです".into());
+                }
+                Some(track.clone())
+            }
+            None => None,
+        };
+        let intent = crate::design::read(&p.text);
+        let do_refine = p.refine.unwrap_or(true);
+        let it = intent.clone();
+        let (refined, device, effects) = tokio::task::spawn_blocking(move || {
+            let refined = if do_refine {
+                crate::design::refine(&it, 16)?
+            } else {
+                None
+            };
+            let off = refined.as_ref().map_or([0.0; 7], |r| r.offsets);
+            let (d, fx) = crate::design::patch(&it, &off);
+            Ok::<_, String>((refined, d, fx))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let changes = crate::design::describe_changes(&intent, &device, &effects);
+        let mut cmds = Vec::new();
+        let track_id = match &target {
+            Some(t) => {
+                cmds.push(Command::SetDevice {
+                    track: t.id.clone(),
+                    device: Some(device.clone()),
+                });
+                for e in &t.effects {
+                    cmds.push(Command::RemoveEffect { id: e.id.clone() });
+                }
+                for e in &effects {
+                    cmds.push(Command::AddEffect {
+                        track: t.id.clone(),
+                        effect: e.clone(),
+                        index: None,
+                    });
+                }
+                t.id.clone()
+            }
+            None => {
+                let mut t = glaux_core::Track::new(
+                    glaux_core::TrackId::new(),
+                    p.name
+                        .clone()
+                        .unwrap_or_else(|| intent.role.name().to_owned()),
+                    glaux_core::TrackKind::Midi,
+                );
+                t.device = Some(device.clone());
+                t.effects = effects.clone();
+                let id = t.id.clone();
+                cmds.push(Command::AddTrack {
+                    track: t,
+                    index: None,
+                });
+                id
+            }
+        };
+        let label = format!("音色を作る「{}」", p.text.trim());
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["track_id"] = json!(track_id.to_string());
+        v["role"] = json!(intent.role.name());
+        v["matched"] = json!(intent.matched);
+        v["changes"] = json!(changes);
+        v["refine"] = match &refined {
+            Some(r) => json!(r),
+            None if !do_refine => json!("しない(refine: false)"),
+            None if !glaux_ml::clap::available() => {
+                json!("CLAP のモデルが無いので 1 段目だけ(analyze_sound の案内で取得できる)")
+            }
+            None => json!("測れる音色語が無いので 1 段目だけ"),
+        };
+        if intent.matched.is_empty() {
+            v["note"] = json!("言葉を読み取れなかったので、リードの土台の音色のまま。役割(ベース・パッド…)や感じ(明るい・太い…)を書くと変わる");
+        }
         Ok(JsonText(v))
     }
 

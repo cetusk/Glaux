@@ -466,6 +466,60 @@ async fn errors_are_reported_as_tool_errors() {
     assert_eq!(ok_json(&r)["entries"], json!([]));
 }
 
+/// 文章から音色: 新しいトラックを作る・既存のトラックの音色を置き換える(1 段目だけ。CLAP のモデルが無くても同じ結果)
+#[tokio::test]
+async fn design_sound_turns_words_into_a_patch() {
+    let fx = setup().await;
+    let r = call(
+        &fx,
+        "design_sound",
+        json!({ "text": "暗くて太いベース、少し揺れる", "refine": false }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["role"], "ベース");
+    assert!(v["matched"].as_array().unwrap().len() >= 3, "{v}");
+    let tid = v["track_id"].as_str().unwrap().to_owned();
+    let r = call(&fx, "get_project", json!({})).await;
+    let p = ok_json(&r);
+    let t: glaux_core::Track = serde_json::from_value(p["project"]["tracks"][0].clone()).unwrap();
+    assert_eq!(t.name, "ベース");
+    let num = |k: &str| {
+        t.device
+            .as_ref()
+            .unwrap()
+            .params
+            .get(k)
+            .and_then(glaux_core::ParamValue::as_f64)
+            .unwrap()
+    };
+    assert!(num("cutoff") < 600.0, "暗い: {}", num("cutoff"));
+    assert!(num("sub") > 0.4, "太い: {}", num("sub"));
+    assert!(num("analog") > 0.0, "揺れる");
+    // 置き換え: リバーブなしの鋭いリードに
+    let r = call(
+        &fx,
+        "design_sound",
+        json!({ "text": "リバーブなしの鋭いリード", "track_id": tid, "refine": false }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["role"], "リード");
+    let r = call(&fx, "get_project", json!({})).await;
+    let p = ok_json(&r);
+    let t: glaux_core::Track = serde_json::from_value(p["project"]["tracks"][0].clone()).unwrap();
+    assert_eq!(
+        p["project"]["tracks"].as_array().unwrap().len(),
+        1,
+        "新しいトラックは作らない"
+    );
+    assert!(
+        t.effects.is_empty(),
+        "リバーブ・ディレイを外す: {:?}",
+        t.effects
+    );
+}
+
 /// 共通の大きなつまみ: 7 つ作る(空間の行き先が無ければリバーブを足す)、明るさを上げると焼き込んだ cutoff が上がる
 #[tokio::test]
 async fn set_character_makes_macros_that_move_the_sound() {

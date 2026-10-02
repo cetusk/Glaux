@@ -15,6 +15,7 @@ pub mod changes;
 pub mod character;
 pub mod clap_presets;
 pub mod compact;
+pub mod design;
 pub mod export;
 pub mod fx_presets;
 pub mod guide;
