@@ -495,6 +495,10 @@ struct LiveVoice {
     /// 送り先トラック index(`LIVE_NO_TRACK` なら既定音色でマスター直行)
     track: u32,
     pitch: u8,
+    /// 弾いた MIDI チャンネル(MPE ではチャンネルごとのベンド・音色・押し込みがこの音にだけ効く)
+    ch: u8,
+    /// 音色(CC74)・押し込みを明るさ・音量としてかける
+    shape: glaux_dsp::NoteShape,
     released: bool,
     /// 時刻指定のノート: この時計の位置で離す(MIDI キーボードの音は u64::MAX = 鍵盤を離すまで)
     off_at: u64,
@@ -521,6 +525,8 @@ struct PendingOff {
     /// 最後に送った音量(倍率)・明るさ(0〜1)
     last_gain: f32,
     last_bright: f32,
+    /// ライブ演奏の音: 弾いた MIDI チャンネル
+    ch: u8,
 }
 
 impl PendingOff {
@@ -535,6 +541,7 @@ impl PendingOff {
             last_semi: 0.0,
             last_gain: f32::NAN,
             last_bright: f32::NAN,
+            ch: 0,
         }
     }
 }
@@ -689,6 +696,10 @@ pub struct Renderer {
     /// 最後に消費した試聴要求のカウンタ
     last_preview: u64,
     live_voices: Vec<LiveVoice>,
+    /// MIDI チャンネルごとの今のベンド(セント)・音色(−1〜1)・押し込み(0〜1)。1 チャンネル目は全部の音に効く
+    mpe_bend: [f32; 16],
+    mpe_bright: [Option<f32>; 16],
+    mpe_press: [Option<f32>; 16],
     /// サステインペダルを踏んでいるか
     sustain: bool,
     /// ライブ演奏の残響を停止中にも鳴らす残りサンプル数
@@ -867,6 +878,9 @@ impl Renderer {
             preview_voices: Vec::with_capacity(MAX_PREVIEW_VOICES),
             last_preview: 0,
             live_voices: Vec::with_capacity(MAX_LIVE_VOICES),
+            mpe_bend: [0.0; 16],
+            mpe_bright: [None; 16],
+            mpe_press: [None; 16],
             sustain: false,
             live_tail: 0,
             plugins: (0..MAX_PLUGINS).map(|_| None).collect(),
@@ -1819,7 +1833,10 @@ impl Renderer {
                     self.live_voices.swap_remove(i);
                     continue;
                 }
-                let (sample, vside) = v.state.next_stereo(&v.instrument);
+                let (mut sample, mut vside) = v.state.next_stereo(&v.instrument);
+                if v.shape.is_active() {
+                    (sample, vside) = v.shape.process_stereo(sample, vside, 0.0, sr);
+                }
                 match data.tracks.get(v.track as usize) {
                     Some(mix) => match track_mono.get_mut(v.track as usize) {
                         Some(acc) => {
@@ -3081,6 +3098,7 @@ impl Renderer {
                         last_semi: f32::NAN,
                         last_gain: f32::NAN,
                         last_bright: f32::NAN,
+                        ch: 0,
                     });
                     next_off = next_off.min(end.max(pos + 1));
                 }
@@ -3244,6 +3262,8 @@ impl Renderer {
         self.live_voices.push(LiveVoice {
             track: n.track as u32,
             pitch: n.pitch,
+            ch: 0,
+            shape: glaux_dsp::NoteShape::NONE,
             released: false,
             off_at: now + n.dur.max(1) as u64,
             sustained: false,
@@ -3258,23 +3278,40 @@ impl Renderer {
                 break;
             };
             match ev {
-                LiveEvent::NoteOn { track, pitch, vel }
-                    if self
-                        .track_plugin
-                        .get(track as usize)
-                        .copied()
-                        .flatten()
-                        .is_some() =>
+                LiveEvent::NoteOn {
+                    track,
+                    pitch,
+                    vel,
+                    ch,
+                } if self
+                    .track_plugin
+                    .get(track as usize)
+                    .copied()
+                    .flatten()
+                    .is_some() =>
                 {
-                    // プラグインのトラック: ノートを送り、鍵盤を離すまで保持
+                    // プラグインのトラック: ノート ID を付けて送り(MPE の 1 音ごとの表現のため)、鍵盤を離すまで保持
                     let slot = self.track_plugin[track as usize].unwrap_or(0);
-                    self.plugin_note_on(slot, pitch, vel as f32 / 127.0, 0, None);
-                    self.push_pending(PendingOff::simple(slot, pitch, u64::MAX, false));
+                    let note_id = self.next_note_id;
+                    self.next_note_id = self.next_note_id.wrapping_add(1).max(1);
+                    self.plugin_note_on(slot, pitch, vel as f32 / 127.0, 0, Some(note_id));
+                    let mut p = PendingOff::simple(slot, pitch, u64::MAX, false);
+                    p.note_id = note_id;
+                    p.ch = ch;
+                    self.push_pending(p);
+                    if ch != 0 {
+                        self.send_live_expression(slot, pitch, note_id, ch);
+                    }
                 }
-                LiveEvent::NoteOn { track, pitch, vel } => {
+                LiveEvent::NoteOn {
+                    track,
+                    pitch,
+                    vel,
+                    ch,
+                } => {
                     // 同じ音高を打ち直したら前の音はリリースへ
                     for v in self.live_voices.iter_mut() {
-                        if v.pitch == pitch && !v.released {
+                        if v.pitch == pitch && v.ch == ch && !v.released {
                             v.state.note_off();
                             v.released = true;
                             v.sustained = false;
@@ -3304,17 +3341,21 @@ impl Renderer {
                     self.live_voices.push(LiveVoice {
                         track,
                         pitch,
+                        ch,
+                        shape: glaux_dsp::NoteShape::NONE,
                         released: false,
                         off_at: u64::MAX,
                         sustained: false,
                         instrument,
                         state,
                     });
+                    let i = self.live_voices.len() - 1;
+                    self.apply_live_expression(i);
                 }
-                LiveEvent::NoteOff { pitch } => {
+                LiveEvent::NoteOff { pitch, ch } => {
                     self.release_live_plugin_notes(Some(pitch));
                     for v in self.live_voices.iter_mut() {
-                        if v.pitch == pitch && !v.released {
+                        if v.pitch == pitch && v.ch == ch && !v.released {
                             if self.sustain {
                                 v.sustained = true;
                             } else {
@@ -3324,27 +3365,33 @@ impl Renderer {
                         }
                     }
                 }
-                LiveEvent::PitchBend(v) => {
-                    if let Some(slot) = self.live_plugin_slot() {
-                        let notes = &mut self.plugin_notes[slot];
-                        if notes.len() < MAX_EVENTS {
-                            notes.push(NoteMsg::Midi {
-                                time: 0,
-                                data: [0xE0, (v & 0x7F) as u8, ((v >> 7) & 0x7F) as u8],
-                            });
-                        }
+                LiveEvent::PitchBend { ch, v, range } => {
+                    let c = (ch & 0xF) as usize;
+                    self.mpe_bend[c] = (v as f32 - 8192.0) / 8192.0 * range as f32 * 100.0;
+                    // 1 チャンネル目は今までどおり MIDI のベンドとしてプラグインへ(幅はプラグインの設定)
+                    if c == 0 {
+                        self.live_plugin_midi([0xE0, (v & 0x7F) as u8, ((v >> 7) & 0x7F) as u8]);
                     }
+                    self.live_expression_changed(ch);
+                }
+                LiveEvent::Timbre { ch, v } => {
+                    let c = (ch & 0xF) as usize;
+                    self.mpe_bright[c] = Some(((v as f32 - 64.0) / 63.0).clamp(-1.0, 1.0));
+                    if c == 0 {
+                        self.live_plugin_midi([0xB0, 74, v & 0x7F]);
+                    }
+                    self.live_expression_changed(ch);
+                }
+                LiveEvent::Pressure { ch, v } => {
+                    let c = (ch & 0xF) as usize;
+                    self.mpe_press[c] = Some(v as f32 / 127.0);
+                    if c == 0 {
+                        self.live_plugin_midi([0xD0, v & 0x7F, 0]);
+                    }
+                    self.live_expression_changed(ch);
                 }
                 LiveEvent::Sustain(on) => {
-                    if let Some(slot) = self.live_plugin_slot() {
-                        let notes = &mut self.plugin_notes[slot];
-                        if notes.len() < MAX_EVENTS {
-                            notes.push(NoteMsg::Midi {
-                                time: 0,
-                                data: [0xB0, 64, if on { 127 } else { 0 }],
-                            });
-                        }
-                    }
+                    self.live_plugin_midi([0xB0, 64, if on { 127 } else { 0 }]);
                     self.sustain = on;
                     if !on {
                         for v in self.live_voices.iter_mut() {
@@ -3367,6 +3414,92 @@ impl Renderer {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// MIDI キーボードの送り先がプラグインのトラックなら、MIDI メッセージをそのまま送る
+    fn live_plugin_midi(&mut self, data: [u8; 3]) {
+        if let Some(slot) = self.live_plugin_slot() {
+            let notes = &mut self.plugin_notes[slot];
+            if notes.len() < MAX_EVENTS {
+                notes.push(NoteMsg::Midi { time: 0, data });
+            }
+        }
+    }
+
+    /// チャンネル `ch` の音に効く今の (ベンドのセント, 音色, 押し込み)。1 チャンネル目の分は全部の音に効く
+    fn live_expression(&self, ch: u8) -> (f32, Option<f32>, Option<f32>) {
+        let c = (ch & 0xF) as usize;
+        let bend = self.mpe_bend[0] + if c != 0 { self.mpe_bend[c] } else { 0.0 };
+        let bright = if c != 0 { self.mpe_bright[c] } else { None }.or(self.mpe_bright[0]);
+        let press = if c != 0 { self.mpe_press[c] } else { None }.or(self.mpe_press[0]);
+        (bend, bright, press)
+    }
+
+    /// 内蔵音源のライブの音に、今の表現をかける(ベンドは音程、音色は明るさ、押し込みは 0〜+6dB)
+    fn apply_live_expression(&mut self, i: usize) {
+        let (bend, bright, press) = self.live_expression(self.live_voices[i].ch);
+        let v = &mut self.live_voices[i];
+        let curve = |x: f32| glaux_dsp::PitchCurve::from_points(&[(0.0, x)]);
+        v.state.set_curve(&if bend != 0.0 {
+            curve(bend)
+        } else {
+            glaux_dsp::PitchCurve::EMPTY
+        });
+        v.shape.bright = bright.map_or(glaux_dsp::PitchCurve::EMPTY, curve);
+        v.shape.volume = press.map_or(glaux_dsp::PitchCurve::EMPTY, |p| curve(p * 6.0));
+    }
+
+    /// プラグインのライブの音 1 つに、そのチャンネルの表現を 1 音ごとの表現として送る(MPE)
+    fn send_live_expression(&mut self, slot: usize, key: u8, note_id: u32, ch: u8) {
+        let (bend, bright, press) = self.live_expression(ch);
+        // 1 チャンネル目のベンドは MIDI のベンドで送っているので、ここではそのチャンネルの分だけ
+        let own = bend - self.mpe_bend[0];
+        let notes = &mut self.plugin_notes[slot];
+        if notes.len() + 3 > MAX_EVENTS {
+            return;
+        }
+        notes.push(NoteMsg::Tuning {
+            time: 0,
+            key,
+            note_id,
+            semitones: own as f64 / 100.0,
+        });
+        if let Some(b) = bright {
+            notes.push(NoteMsg::Brightness {
+                time: 0,
+                key,
+                note_id,
+                value: (0.5 + 0.5 * b) as f64,
+            });
+        }
+        if let Some(p) = press {
+            notes.push(NoteMsg::Pressure {
+                time: 0,
+                key,
+                note_id,
+                value: p as f64,
+            });
+        }
+    }
+
+    /// チャンネル `ch` の表現が変わった: その音(1 チャンネル目なら全部の音)に反映する
+    fn live_expression_changed(&mut self, ch: u8) {
+        let affects = |note_ch: u8| ch == 0 || note_ch == ch;
+        for i in 0..self.live_voices.len() {
+            if affects(self.live_voices[i].ch) {
+                self.apply_live_expression(i);
+            }
+        }
+        // プラグインの音は MPE のチャンネル(2 チャンネル目以降)の分だけ 1 音ごとに送る
+        if ch == 0 {
+            return;
+        }
+        for i in 0..self.plugin_pending.len() {
+            let p = self.plugin_pending[i];
+            if p.end == u64::MAX && !p.seq && p.note_id != 0 && p.ch == ch {
+                self.send_live_expression(p.slot as usize, p.key, p.note_id, p.ch);
             }
         }
     }
@@ -4367,12 +4500,13 @@ mod tests {
             track: 0,
             pitch: 60,
             vel: 120,
+            ch: 0,
         });
         let block = render_block(&mut r, 4800);
         assert!(rms(&block) > 0.05, "停止中でもライブ演奏は鳴るはず");
         // 押している間は鳴り続ける
         assert!(rms(&render_block(&mut r, 4800)) > 0.05);
-        shared.live.push(LiveEvent::NoteOff { pitch: 60 });
+        shared.live.push(LiveEvent::NoteOff { pitch: 60, ch: 0 });
         let _ = render_block(&mut r, 4800);
         assert!(rms(&render_block(&mut r, 4800)) < 1e-3, "離したら消える");
         assert_eq!(shared.pos.load(Ordering::Acquire), 0, "再生位置は動かない");
@@ -4387,9 +4521,10 @@ mod tests {
             track: 0,
             pitch: 64,
             vel: 100,
+            ch: 0,
         });
         let _ = render_block(&mut r, 480);
-        shared.live.push(LiveEvent::NoteOff { pitch: 64 });
+        shared.live.push(LiveEvent::NoteOff { pitch: 64, ch: 0 });
         let _ = render_block(&mut r, 4800);
         assert!(
             rms(&render_block(&mut r, 4800)) > 0.05,
@@ -4412,6 +4547,7 @@ mod tests {
                 track: LIVE_NO_TRACK,
                 pitch: p,
                 vel: 10,
+                ch: 0,
             });
         }
         let _ = render_block(&mut r, 480);
@@ -4422,6 +4558,46 @@ mod tests {
             let _ = render_block(&mut r, 48_000); // 既定音色のリリースを待つ
         }
         assert!(r.live_voices.is_empty());
+    }
+
+    #[test]
+    fn mpe_bend_moves_only_the_notes_on_its_channel() {
+        // 左チャンネルのゼロ交差から音の高さを測る
+        let freq = |buf: &[f32]| -> f32 {
+            let l: Vec<f32> = buf.chunks(2).map(|c| c[0]).collect();
+            let crossings = l.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+            crossings as f32 / (l.len() as f32 / 48_000.0)
+        };
+        let run = |bend_ch: u8| -> f32 {
+            let shared = Arc::new(Shared::new(data_with_note(0, 1, false)));
+            let mut r = Renderer::new(shared.clone());
+            // 2 チャンネル目で A3(220Hz)だけを鳴らす
+            shared.live.push(LiveEvent::NoteOn {
+                track: LIVE_NO_TRACK,
+                pitch: 57,
+                vel: 100,
+                ch: 1,
+            });
+            let _ = render_block(&mut r, 4800);
+            // そのチャンネルを +12 半音(幅 48 半音で 1/4 だけ倒す)
+            shared.live.push(LiveEvent::PitchBend {
+                ch: bend_ch,
+                v: 8192 + 2048,
+                range: 48,
+            });
+            let _ = render_block(&mut r, 960);
+            freq(&render_block(&mut r, 9600))
+        };
+        let own = run(1);
+        let other = run(5);
+        assert!(
+            (own - 440.0).abs() < 15.0,
+            "自分のチャンネルのベンドで 1 オクターブ上: {own}"
+        );
+        assert!(
+            (other - 220.0).abs() < 10.0,
+            "ほかのチャンネルのベンドは効かない: {other}"
+        );
     }
 
     #[test]

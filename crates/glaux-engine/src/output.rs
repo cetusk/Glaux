@@ -361,6 +361,7 @@ impl EngineHandle {
             sample_rate: self.sample_rate.clone(),
             take: self.midi_take.clone(),
             last_seen: self.midi_seen.clone(),
+            bends: Default::default(),
         };
         *slot = Some(MidiConnection::open(&name, sink).map_err(EngineError::Stream)?);
         Ok(())

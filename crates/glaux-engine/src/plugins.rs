@@ -1664,9 +1664,14 @@ mod tests {
             track: 0,
             pitch: 69,
             vel: 110,
+            ch: 0,
         });
         let f1 = listen(&mut r);
-        shared.live.push(crate::midi::LiveEvent::PitchBend(16383));
+        shared.live.push(crate::midi::LiveEvent::PitchBend {
+            ch: 0,
+            v: 16383,
+            range: 2,
+        });
         let f2 = listen(&mut r);
         eprintln!("ベンド前 {f1} Hz / 最大ベンド {f2} Hz");
         assert!(f2 > f1 * 1.05, "ピッチベンドで音が上がる: {f1} → {f2}");
@@ -1712,9 +1717,10 @@ mod tests {
             track: 0,
             pitch: 60,
             vel: 110,
+            ch: 0,
         });
         let _ = level(&mut r);
-        shared.live.push(LiveEvent::NoteOff { pitch: 60 });
+        shared.live.push(LiveEvent::NoteOff { pitch: 60, ch: 0 });
         let held = level(&mut r);
         shared.live.push(LiveEvent::Sustain(false));
         let released = level(&mut r);

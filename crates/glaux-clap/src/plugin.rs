@@ -91,6 +91,13 @@ pub enum NoteMsg {
         note_id: u32,
         value: f64,
     },
+    /// 1 音だけの押し込み(0〜1。MPE のプレッシャー)
+    Pressure {
+        time: u32,
+        key: u8,
+        note_id: u32,
+        value: f64,
+    },
 }
 
 impl NoteMsg {
@@ -105,7 +112,8 @@ impl NoteMsg {
             | NoteMsg::Midi { time, .. }
             | NoteMsg::Tuning { time, .. }
             | NoteMsg::Volume { time, .. }
-            | NoteMsg::Brightness { time, .. } => time,
+            | NoteMsg::Brightness { time, .. }
+            | NoteMsg::Pressure { time, .. } => time,
         }
     }
 
@@ -120,7 +128,8 @@ impl NoteMsg {
             NoteMsg::ParamMod { note: Some(_), .. }
             | NoteMsg::Tuning { .. }
             | NoteMsg::Volume { .. }
-            | NoteMsg::Brightness { .. } => 3,
+            | NoteMsg::Brightness { .. }
+            | NoteMsg::Pressure { .. } => 3,
         }
     }
 }
@@ -915,6 +924,20 @@ impl ClapProcessor {
                 t,
                 Pckn::new(0u16, 0u16, key as u16, note_id),
                 NoteExpressionType::Brightness,
+                value,
+            )),
+            (
+                NoteDialect::Clap,
+                NoteMsg::Pressure {
+                    key,
+                    note_id,
+                    value,
+                    ..
+                },
+            ) => self.events.push(&NoteExpressionEvent::new(
+                t,
+                Pckn::new(0u16, 0u16, key as u16, note_id),
+                NoteExpressionType::Pressure,
                 value,
             )),
             (_, NoteMsg::On { key, velocity, .. }) => {

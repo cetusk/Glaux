@@ -132,7 +132,7 @@ CLAP の列: ビブラート・ベンドは内蔵音源と同じ形の音程変�
 | 音源 | subtractive(シンセ全般。unison でスーパーソウ。波形を消して雑音だけの音源にもなる: ホワイト / ピンク / ブラウン、レコードのパチパチ)、fm(FM シンセ: エレピ・ベル・マレット・FM ベース)、wavetable(ウェーブテーブル: position を動かすウォブルベース・うねるパッド・母音・シンクリード)、drum(ドラムシンセ、GM 配置。アナログのドラムマシンの作り方で、キットは modern / 808 / 909。808 の矩形波 6 つの金属音のハット・シンバル・カウベル、2 音の胴と響き線のスネア、3 連打のクラップ、パーカッション 20 種。強く叩くほど明るく、クローズドハットでオープンハットが止まる。キックの音程・長さ・パンチ、スネアの音程・響き線、ハットの長さのつまみ)、pluck(ギター・ベース・ハープの撥弦モデル)、sampler(WAV のワンショット)、SoundFont(FluidR3 で GM 128 音色: ピアノ・ストリングス・ブラス等)、SFZ(自前のパーサ。ベロシティの層・ラウンドロビン・ランダム・ハイハットのチョーク・ワンショット・キースイッチの既定・CC のカーブ・WAV / FLAC / Ogg の波形。音源の調整つまみ〈マイクの混ぜ方・スネアの snap や音程など〉をトラックごとに上書きできる)、CLAP プラグイン(Surge XT はプリセット 2,944 個) |
 | エフェクト | eq(5 バンド)、eq8(8 バンドのパラメトリック。種類・Q・ダイナミック・M/S)、dynamic_eq、resonance、deesser、compressor(clean / vca / fet / opto、先読み)、multiband、transient、gate(外部キー)、limiter(True Peak)、width、virtual_bass、reverb(room / plate / hall / chamber / shimmer、ゲートリバーブ)、convolution(IR)、distortion、saturation(tape / tube / transistor / soft_clip)、amp(ギターアンプ)、sidechain(ポンピング)、delay(digital / tape / bbd / multitap、テンポ同期・ピンポン・ダッキング)、chorus、tape(Lo-fi: 回転むら・飽和・ヒス・レコードのパチパチ・ビット落とし)、clipper / bitcrush / tremolo / phaser / flanger / trance_gate / auto_filter / volume_shaper、pitch_shift / harmonizer / pitch_correct。トラックにもマスターにも挿せる。オートメーションで動かすミックス・ゲイン・カットオフは数 ms でなめらかに追う。CLAP エフェクト(Surge XT Effects 等)も同じチェーンに挿せる |
 | 音声 | 録音(鼻歌・楽器。ステレオ録音も可)、WAV / MP3 等の取り込み(ステレオのまま)、テンポ追従(タイムストレッチ。元のテンポは自動検出できる)、パート分離(内蔵: 打楽器 / 音程楽器、Demucs: 4 パート)、譜起こし(単旋律・和音) |
-| 入力 | MIDI キーボード(サステインペダル・ピッチベンド込み)、MIDI 録音 |
+| 入力 | MIDI キーボード(サステインペダル・ピッチベンド込み)、MPE(チャンネルごとのベンド・押し込み・CC74 を、その音だけに効かせる。内蔵音源と、CLAP のノートの表現を受けるプラグイン)、MIDI 録音(ベンド・CC74・押し込みはノートのピッチカーブ・明るさ・音量の曲線になる) |
 
 ---
 
