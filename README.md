@@ -96,7 +96,7 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 | エフェクトのプリセット | `list_effect_presets` `save_effect_preset` `load_effect_preset` `delete_effect_preset` |
 | CLAP | `list_plugins` `list_plugin_presets` `load_plugin_preset` `refine_plugin_params` |
 | 旋律の計画 | `plan_melody` `realize_melody` `revise_melody` `save_plan` `edit_plan` `delete_plan` `get_plan` `plan_log` `undo_plan` |
-| 素材 | `import_sample` `import_ir` `import_audio_clip` `import_midi` `import_musicxml` `transcribe_audio` `separate_audio` |
+| 素材 | `import_sample` `import_wavetable` `import_ir` `import_audio_clip` `import_midi` `import_musicxml` `transcribe_audio` `separate_audio` |
 
 </details>
 

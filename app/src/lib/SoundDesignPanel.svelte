@@ -651,6 +651,10 @@
         {#if tc}
           {#each tc as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
         {:else}
+          {#if !p.range.choices.includes(String(p.current))}
+            <!-- 選択肢に無い値(import_wavetable で音声から作ったテーブル = 素材の ID) -->
+            <option value={String(p.current)}>{p.name === "table" && String(p.current).startsWith("sha256:") ? "音声から作ったテーブル" : String(p.current)}</option>
+          {/if}
           {#each p.range.choices as c (c)}
             <option value={c}>{c}</option>
           {/each}

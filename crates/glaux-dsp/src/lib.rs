@@ -59,7 +59,9 @@ pub use sampler::{detect_slices, hermite, Mips, SampleData, SamplerParams, Sampl
 pub use subtractive::{NoiseColor, SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
 pub use wave::Wave;
-pub use wavetable::{WavetableParams, WavetableVoice};
+pub use wavetable::{
+    cycles_from_audio, UserTable, UserTableRef, WavetableParams, WavetableVoice, MAX_USER_FRAMES,
+};
 
 /// device 未設定トラックに使う既定の楽器名。
 pub const DEFAULT_INSTRUMENT: &str = "subtractive";

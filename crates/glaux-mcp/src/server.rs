@@ -287,6 +287,20 @@ pub struct ImportSampleParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ImportWavetableParams {
+    /// 音源を設定するトラック ID(`trk_xxxxxx`)。音源が wavetable ならテーブルだけ差し替え、
+    /// それ以外なら wavetable にする
+    pub track_id: String,
+    /// 音声ファイルの絶対パス(WAV / MP3 / FLAC / OGG / M4A)。声・楽器の 1 音、シンセの音、
+    /// または配布されているウェーブテーブル(1 周期 2048 点を並べた WAV)
+    pub path: String,
+    /// 切り出す枚数(2〜256)。省略時 16。多いほど position の変化が細かい。
+    /// 長さが 2048 の倍数の素材(配布形式のテーブル)はそのまま使うので効かない
+    #[serde(default)]
+    pub frames: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ImportAudioClipParams {
     /// 置き先の音声トラック ID(`trk_xxxxxx`、kind: "audio")。
     pub track_id: String,
@@ -6324,6 +6338,88 @@ impl GlauxServer {
         v["asset_id"] = json!(imported.id);
         v["sample_rate"] = json!(imported.asset.sample_rate);
         v["frames"] = json!(imported.asset.frames);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "音声ファイルからウェーブテーブルを作り、トラックの音源(内蔵 wavetable)の table にする。\
+        声・楽器の 1 音・シンセの音なら、音の高さを見つけて頭から終わりまで frames 箇所(既定 16)で 1 周期ずつ切り出す\
+        (時間とともに変わる音色を position で行き来できる。position 0 が頭、1 が終わり。pos_env・LFO で動かすと\
+        しゃべる・うねる音)。長さが 2048 の倍数の WAV は配布形式のテーブル(1 周期 2048 点の並び)としてそのまま使う。\
+        どの高さで弾いても折り返さない(倍音を間引いた版を作る)。音源がすでに wavetable なら他のつまみはそのまま。\
+        取り込み + 音源設定は 1 回の undo で戻せる。打楽器・雑音のように高さの無い素材は 2048 点ずつ切るだけ(ざらついた音)。"
+    )]
+    async fn import_wavetable(
+        &self,
+        params: Parameters<ImportWavetableParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("import_wavetable");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+        if track.kind != glaux_core::TrackKind::Midi {
+            return Err(format!("「{}」は MIDI トラックではありません", track.name));
+        }
+        let dir = self.handle.project_dir().await?;
+        let frames = p.frames.unwrap_or(16).clamp(2, 256) as usize;
+        let path = p.path.clone();
+        let t = tokio::task::spawn_blocking(move || {
+            crate::assets::import_wavetable(
+                std::path::Path::new(&dir),
+                std::path::Path::new(&path),
+                frames,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+
+        // 音源がすでに wavetable なら table だけ差し替える(ほかの音作りは残す)
+        let mut device = match &track.device {
+            Some(d) if matches!(&d.source, glaux_core::PluginSource::Builtin { name } if name == "wavetable") => {
+                d.clone()
+            }
+            _ => {
+                let mut d = glaux_core::Device::builtin("wavetable");
+                // 新しく選んだときと同じ「生きた音」寄りの初期値
+                d.params
+                    .insert("analog".to_owned(), glaux_core::ParamValue::Float(0.2));
+                d.params
+                    .insert("spread".to_owned(), glaux_core::ParamValue::Float(0.5));
+                d
+            }
+        };
+        device.params.insert(
+            "table".to_owned(),
+            glaux_core::ParamValue::Enum(t.imported.id.to_string()),
+        );
+        let mut cmds = Vec::new();
+        if !project.assets.contains_key(&t.imported.id) {
+            cmds.push(Command::AddAsset {
+                id: t.imported.id.clone(),
+                asset: t.imported.asset.clone(),
+            });
+        }
+        cmds.push(Command::SetDevice {
+            track: track_id.clone(),
+            device: Some(device),
+        });
+        let file_name = std::path::Path::new(&p.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "wavetable".to_owned());
+        let label = format!("{} のウェーブテーブルを「{file_name}」から作る", track.name);
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["asset_id"] = json!(t.imported.id);
+        v["frames"] = json!(t.frames);
+        v["as_is"] = json!(t.as_is);
         Ok(JsonText(v))
     }
 

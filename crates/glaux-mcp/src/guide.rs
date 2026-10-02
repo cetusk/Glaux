@@ -228,6 +228,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   sampler のつまみ: loop(+ loop_start / loop_end / loop_xfade_ms)で押さえている間伸ばす、attack_ms / decay_ms / sustain で形、\n\
   filter_type・cutoff・vel_cutoff で明るさ、key_track: false でどの鍵盤も元の高さ、slices でチョップ(root から半音ずつ)、\n\
   orig_bpm にループ素材の元のテンポを入れると曲のテンポに合わせて伸縮。\n\
+- 音声からウェーブテーブル: import_wavetable で声・楽器の 1 音・シンセの音を 2048 点 × N 枚のテーブルにして wavetable の table に\n\
+  (時間変化を position で行き来する。pos_env・LFO で動かすとしゃべる・うねる音。配布形式のテーブル WAV もそのまま読める)。\n\
 - リサンプリング: resample_to_sampler で、作ったトラック(の範囲)をエフェクト込みで描き出してサンプラーの音源にする\n\
   (フレーズを弾き直す・スライスして並べ替える・ループして伸ばす)。元と同じ大きさは強さ 127 で root を弾いたとき。\n\
 - 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。\n\

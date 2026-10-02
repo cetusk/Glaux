@@ -772,7 +772,9 @@ pub static WAVETABLE_SPECS: &[ParamSpec] = &[
         description: "波形の並び(position で行き来する)。analog = 正弦→三角→ノコギリ→矩形、\
             pulse = パルス幅 50%→5%(細く鼻にかかる)、vocal = 母音 あ→え→い→お→う(しゃべるような音)、\
             sync = ハードシンク(ギラついた金属的な変化。EDM のリード・ベース)、\
-            organ = 倍音を 1 本ずつ足すドローバー(丸い→きらびやか)。",
+            organ = 倍音を 1 本ずつ足すドローバー(丸い→きらびやか)。\
+            import_wavetable で音声から作ったテーブルは素材の ID(sha256:…)が入る(声・楽器の 1 音の時間変化を\
+            position で行き来する。頭が 0、終わりが 1)。",
     },
     ParamSpec {
         name: "position",
@@ -1838,6 +1840,8 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
                 filter_env: get_f32(map, s, "filter_env").clamp(0.0, 1.0),
                 tone: bake_tone(map, s),
+                // 音声から作ったテーブル(table が素材の ID)はエンジンが素材から作って入れる
+                user: None,
             };
             (InstrumentKind::Wavetable, InstrumentParams::Wavetable(p))
         }

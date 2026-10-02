@@ -5,6 +5,8 @@
 //! ベースミュージックのうねるベース、変化するパッドの定番)。
 //!
 //! - テーブルは 5 種(analog / pulse / vocal / sync / organ)。倍音の設計図から逆 FFT で作る
+//! - 音声ファイルから作ったテーブル([`UserTable`]、2048 点 × N フレーム)も使える。`table` に素材の ID
+//!   (sha256:…)を入れると、エンジンが素材から作って渡す([`WavetableParams::user`])
 //! - 折り返し雑音を避けるため、1 オクターブごとに倍音を間引いた版(ミップマップ)を持ち、
 //!   鳴らす高さで選ぶ
 //! - テーブルは初回の焼き込み時(UI スレッド)に 1 度だけ作る。オーディオスレッドは読むだけ
@@ -179,8 +181,244 @@ fn build_bank() -> Bank {
     Bank { data }
 }
 
+/// 音声から作ったテーブルのフレーム数の上限
+pub const MAX_USER_FRAMES: usize = 256;
+
+/// 音声から作ったテーブル([フレーム][段][ROW])。段ごとに倍音を間引いてある(内蔵のテーブルと同じ形)
+pub struct UserTable {
+    frames: usize,
+    data: Vec<f32>,
+}
+
+impl std::fmt::Debug for UserTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UserTable({} フレーム)", self.frames)
+    }
+}
+
+impl UserTable {
+    /// フレーム数(2 以上。1 周期だけの素材は同じものを 2 枚並べる)
+    pub fn frames(&self) -> usize {
+        self.frames
+    }
+
+    fn row(&self, frame: usize, level: usize) -> &[f32] {
+        let off = (frame * LEVELS + level) * ROW;
+        &self.data[off..off + ROW]
+    }
+
+    /// 1 周期 2048 点の波形を並べたもの(長さが 2048 の倍数)からテーブルを作る。
+    /// 段ごとに倍音を間引き、全フレームを通したいちばん大きい所で正規化する(フレームの間の音量差は残す)。
+    /// 長さが合わない・空なら None。オーディオスレッドの外で呼ぶ
+    pub fn from_cycles(cycles: &[f32]) -> Option<UserTable> {
+        if cycles.is_empty() || cycles.len() % N != 0 {
+            return None;
+        }
+        let n_in = (cycles.len() / N).min(MAX_USER_FRAMES);
+        let frames = n_in.max(2);
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(N);
+        let ifft = planner.plan_fft_inverse(N);
+        let mut data = vec![0.0f32; frames * LEVELS * ROW];
+        let mut spec = vec![Complex::new(0.0f32, 0.0); N];
+        let mut buf = vec![Complex::new(0.0f32, 0.0); N];
+        for frame in 0..frames {
+            let src = &cycles[frame.min(n_in - 1) * N..][..N];
+            for (c, v) in spec.iter_mut().zip(src) {
+                *c = Complex::new(*v, 0.0);
+            }
+            fft.process(&mut spec);
+            for level in 0..LEVELS {
+                let max_h = MAX_HARMONIC >> level;
+                buf.fill(Complex::new(0.0, 0.0));
+                // 実数の波形 = Σ (2/N) Re(X_h e^{i2πhx})(直流とナイキストは除く)
+                for h in 1..=max_h {
+                    buf[h] = spec[h] * (2.0 / N as f32);
+                }
+                ifft.process(&mut buf);
+                let off = (frame * LEVELS + level) * ROW;
+                let row = &mut data[off..off + ROW];
+                for (o, c) in row.iter_mut().zip(&buf) {
+                    *o = c.re;
+                }
+                row[N] = row[0];
+            }
+        }
+        let peak = (0..frames)
+            .flat_map(|f| {
+                let off = f * LEVELS * ROW;
+                data[off..off + ROW].iter()
+            })
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        if peak <= 1e-6 {
+            return None;
+        }
+        let scale = 0.9 / peak;
+        for v in &mut data {
+            *v *= scale;
+        }
+        Some(UserTable { frames, data })
+    }
+}
+
+/// 焼き込み済みのパラメータに載せる、音声から作ったテーブルへの参照(比較はポインタで)
+#[derive(Clone, Debug)]
+pub struct UserTableRef(pub std::sync::Arc<UserTable>);
+
+impl PartialEq for UserTableRef {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// 音声を、1 周期 2048 点 × `frames` 枚の並びにする(ウェーブテーブルの取り込み)。
+///
+/// - 長さが 2048 の倍数(256 枚まで)なら、すでにウェーブテーブルの形の素材とみなしてそのまま返す
+///   (よくある配布形式: 1 周期 2048 点を並べた WAV)
+/// - そうでなければ、音の高さ(1 周期の長さ)を見つけ、鳴っている所を頭から終わりまで `frames` 箇所で
+///   1 周期ずつ切り出して 2048 点に引き伸ばす(声・楽器の 1 音の時間変化がそのまま position の変化になる)
+/// - 高さが見つからない(雑音・打楽器)ときは 2048 点ずつそのまま切り出す
+///
+/// 切り出した 1 周期は、終わりと頭がつながるように直線でずれを均し、直流を除く
+pub fn cycles_from_audio(x: &[f32], sample_rate: f32, frames: usize) -> Result<Vec<f32>, String> {
+    if x.len() >= N && x.len() % N == 0 && x.len() / N <= MAX_USER_FRAMES {
+        return Ok(x.to_vec());
+    }
+    let frames = frames.clamp(1, MAX_USER_FRAMES);
+    let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    if peak <= 1e-5 {
+        return Err("無音の素材です".to_owned());
+    }
+    // 鳴っている所(いちばん大きい所の 5% を超える範囲)
+    let first = x.iter().position(|v| v.abs() > peak * 0.05).unwrap_or(0);
+    let last = x
+        .iter()
+        .rposition(|v| v.abs() > peak * 0.05)
+        .unwrap_or(x.len() - 1);
+    let period = detect_period(&x[first..=last], sample_rate);
+    let span = match period {
+        Some(p) => p,
+        None => N as f64,
+    };
+    if ((last - first) as f64) < span + 4.0 {
+        return Err("短すぎます(1 周期ぶんの長さがありません)".to_owned());
+    }
+    let mut out = Vec::with_capacity(frames * N);
+    for k in 0..frames {
+        let t = if frames == 1 {
+            0.5
+        } else {
+            k as f64 / (frames - 1) as f64
+        };
+        let mut at = first as f64 + (last as f64 - first as f64 - span - 3.0) * t;
+        // 高さがあるときは上向きのゼロ交差に合わせる(フレームの間で位相がそろい、position を動かしても濁らない)
+        if period.is_some() {
+            let from = at as usize;
+            let to = ((at + span) as usize + 2).min(x.len() - 2);
+            if let Some(i) = (from..to).find(|&i| x[i] <= 0.0 && x[i + 1] > 0.0) {
+                let frac = -x[i] / (x[i + 1] - x[i]);
+                at = i as f64 + frac as f64;
+            }
+        }
+        let read = |pos: f64| {
+            let i = (pos as usize).min(x.len() - 2);
+            crate::sampler::hermite(x, i, (pos - i as f64) as f32)
+        };
+        let mut cycle: Vec<f32> = (0..N)
+            .map(|j| read(at + span * j as f64 / N as f64))
+            .collect();
+        // 終わりと頭のずれ(音の高さ・形がゆっくり変わる分)を直線で均す(1 周期の外の値 = 次の周期の頭)。
+        // ずれが大きいのは頭が段差の上にある(ノコギリ波など)ときで、均すと形が崩れるので触らない
+        let gap = read(at + span) - cycle[0];
+        let range = cycle.iter().fold(f32::MIN, |m, v| m.max(*v))
+            - cycle.iter().fold(f32::MAX, |m, v| m.min(*v));
+        if gap.abs() < range * 0.2 {
+            for (j, v) in cycle.iter_mut().enumerate() {
+                *v -= gap * j as f32 / N as f32;
+            }
+        }
+        let dc = cycle.iter().sum::<f32>() / N as f32;
+        out.extend(cycle.iter().map(|v| v - dc));
+    }
+    Ok(out)
+}
+
+/// 1 周期の長さ(サンプル、小数)。YIN の正規化した差分関数で 30Hz〜2kHz を探す。見つからなければ None
+fn detect_period(x: &[f32], sample_rate: f32) -> Option<f64> {
+    let tau_min = ((sample_rate / 2000.0) as usize).max(2);
+    let tau_max = (sample_rate / 30.0) as usize;
+    let win = 4096.min(x.len().saturating_sub(tau_max));
+    if win < 512 {
+        return None;
+    }
+    // いちばん大きい所(窓 win)で測る
+    let step = (win / 2).max(1);
+    let mut best = (0usize, 0.0f32);
+    let mut i = 0;
+    while i + win + tau_max <= x.len() {
+        let e: f32 = x[i..i + win].iter().map(|v| v * v).sum();
+        if e > best.1 {
+            best = (i, e);
+        }
+        i += step;
+    }
+    let seg = &x[best.0..];
+    let mut d = vec![0.0f32; tau_max + 1];
+    for (tau, dv) in d.iter_mut().enumerate().skip(1) {
+        *dv = seg[..win]
+            .iter()
+            .zip(&seg[tau..tau + win])
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+    }
+    // 累積平均で正規化
+    let mut cum = 0.0f32;
+    let mut dn = vec![1.0f32; tau_max + 1];
+    for tau in 1..=tau_max {
+        cum += d[tau];
+        dn[tau] = if cum > 0.0 {
+            d[tau] * tau as f32 / cum
+        } else {
+            1.0
+        };
+    }
+    let mut pick = None;
+    let mut tau = tau_min;
+    while tau < tau_max {
+        if dn[tau] < 0.15 {
+            while tau + 1 < tau_max && dn[tau + 1] < dn[tau] {
+                tau += 1;
+            }
+            pick = Some(tau);
+            break;
+        }
+        tau += 1;
+    }
+    let tau = match pick {
+        Some(t) => t,
+        None => {
+            let (t, v) = (tau_min..tau_max)
+                .map(|t| (t, dn[t]))
+                .min_by(|a, b| a.1.total_cmp(&b.1))?;
+            if v > 0.35 {
+                return None;
+            }
+            t
+        }
+    };
+    // 放物線で小数の位置を補う
+    let (a, b, c) = (dn[tau - 1], dn[tau], dn[(tau + 1).min(tau_max)]);
+    let den = a - 2.0 * b + c;
+    let shift = if den.abs() > 1e-9 {
+        (0.5 * (a - c) / den).clamp(-0.5, 0.5)
+    } else {
+        0.0
+    };
+    Some(tau as f64 + shift as f64)
+}
+
 /// 焼き込み済みパラメータ(1 トラック分)。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WavetableParams {
     /// テーブル番号(TABLE_NAMES の添字)
     pub table: u8,
@@ -207,6 +445,8 @@ pub struct WavetableParams {
     pub filter_env: f32,
     /// 広がり・揺らぎ・フィルタの種類・LFO など(既定値は従来と同じ音)
     pub tone: crate::tone::ToneParams,
+    /// 音声から作ったテーブル(あればこちらを鳴らす。`table` は無視)
+    pub user: Option<UserTableRef>,
 }
 
 const MAX_UNISON: usize = crate::tone::MAX_UNISON;
@@ -416,8 +656,9 @@ impl WavetableVoice {
         } else {
             pos
         };
-        let fpos = pos * (FRAMES - 1) as f32;
-        let f0 = (fpos as usize).min(FRAMES - 2);
+        let frames = p.user.as_ref().map_or(FRAMES, |u| u.0.frames());
+        let fpos = pos * (frames - 1) as f32;
+        let f0 = (fpos as usize).min(frames - 2);
         let ff = fpos - f0 as f32;
         let table = (p.table as usize).min(TABLE_NAMES.len() - 1);
 
@@ -445,8 +686,10 @@ impl WavetableVoice {
         // いちばん高い声部で段を選ぶ(折り返しを出さない側に寄せる)
         let top = base * self.top_ratio;
         let level = level_for(top, sr);
-        let row0 = bank.row(table, f0, level);
-        let row1 = bank.row(table, f0 + 1, level);
+        let (row0, row1) = match &p.user {
+            Some(u) => (u.0.row(f0, level), u.0.row(f0 + 1, level)),
+            None => (bank.row(table, f0, level), bank.row(table, f0 + 1, level)),
+        };
 
         let mut osc = 0.0f32;
         let mut side = 0.0f32;
@@ -504,6 +747,7 @@ mod tests {
             gain: 1.0,
             filter_env: 0.0,
             tone: Default::default(),
+            user: None,
         }
     }
 
@@ -600,5 +844,83 @@ mod tests {
             v.next(&p);
         }
         assert!(v.finished());
+    }
+
+    /// ノコギリ波 → 矩形波 へ変わっていく 2 秒の「録音」(220Hz、48kHz)
+    fn morphing_take() -> Vec<f32> {
+        let sr = 48_000.0f32;
+        let n = (sr * 2.0) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sr;
+                let m = i as f32 / n as f32;
+                let ph = (t * 220.0).fract();
+                let saw = 1.0 - 2.0 * ph;
+                let sq = if ph < 0.5 { 1.0 } else { -1.0 };
+                (saw * (1.0 - m) + sq * m) * 0.5
+            })
+            .collect()
+    }
+
+    #[test]
+    fn audio_becomes_cycles_that_follow_the_take() {
+        let x = morphing_take();
+        let cycles = cycles_from_audio(&x, 48_000.0, 8).unwrap();
+        assert_eq!(cycles.len(), 8 * N);
+        // 1 枚目はノコギリ波(2 倍音が強い)、最後は矩形波(2 倍音がほぼ無い)
+        let h2 = |c: &[f32]| {
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (j, v) in c.iter().enumerate() {
+                let w = std::f32::consts::TAU * 2.0 * j as f32 / N as f32;
+                re += v * w.cos();
+                im += v * w.sin();
+            }
+            (re * re + im * im).sqrt() / N as f32
+        };
+        let first = h2(&cycles[..N]);
+        let last = h2(&cycles[7 * N..]);
+        assert!(first > 0.05 && last < first * 0.3, "{first} → {last}");
+        // すでにテーブルの形(2048 の倍数)ならそのまま
+        let raw = vec![0.1f32; 3 * N];
+        assert_eq!(cycles_from_audio(&raw, 48_000.0, 16).unwrap().len(), 3 * N);
+        assert!(cycles_from_audio(&[0.0; 5000], 48_000.0, 4).is_err());
+    }
+
+    #[test]
+    fn detects_the_period_of_a_tone() {
+        let sr = 48_000.0;
+        for f in [55.0f32, 220.0, 1234.0] {
+            let x: Vec<f32> = (0..24_000)
+                .map(|i| (i as f32 * f * std::f32::consts::TAU / sr).sin())
+                .collect();
+            let p = detect_period(&x, sr).unwrap();
+            assert!((p - (sr / f) as f64).abs() < 0.2, "{f}Hz: {p}");
+        }
+    }
+
+    #[test]
+    fn user_table_plays_and_morphs_without_aliasing() {
+        let cycles = cycles_from_audio(&morphing_take(), 48_000.0, 16).unwrap();
+        let table = std::sync::Arc::new(UserTable::from_cycles(&cycles).unwrap());
+        assert_eq!(table.frames(), 16);
+        let mut p = params();
+        p.user = Some(UserTableRef(table.clone()));
+        // 頭(ノコギリ波)は 2 倍音あり、終わり(矩形波)は 2 倍音なし。鳴らす高さは元と違ってよい
+        let a = render(&p, 200.0, 24_000);
+        p.position = 1.0;
+        let b = render(&p, 200.0, 24_000);
+        let (a, b) = (&a[4800..], &b[4800..]);
+        assert!(bin(a, 200.0) > 0.3, "{}", bin(a, 200.0));
+        assert!(bin(a, 400.0) > 0.1, "ノコギリ: {}", bin(a, 400.0));
+        assert!(bin(b, 400.0) < 0.02, "矩形: {}", bin(b, 400.0));
+        // 高い音でも折り返さない
+        let x = render(&p, 4000.0, 24_000);
+        for f in [1000.0, 3000.0, 6000.0] {
+            assert!(bin(&x[2400..], f) < 0.005, "{f}Hz: {}", bin(&x[2400..], f));
+        }
+        // 1 周期だけの素材も鳴る(同じものを 2 枚並べる)
+        let one = UserTable::from_cycles(&cycles[..N]).unwrap();
+        assert_eq!(one.frames(), 2);
+        assert!(UserTable::from_cycles(&cycles[..N - 1]).is_none());
     }
 }

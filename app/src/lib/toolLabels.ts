@@ -123,6 +123,7 @@ const LABELS: Record<string, ToolLabel> = {
   refine_plugin_params: { short: "プラグインのつまみを調整", doing: "プラグインのつまみを詰めています" },
   // 素材
   import_sample: { short: "サンプルを取り込み", doing: "サンプルを取り込んでいます" },
+  import_wavetable: { short: "ウェーブテーブルを作る", doing: "音声からウェーブテーブルを作っています" },
   import_audio_clip: { short: "音声を配置", doing: "音声を取り込んでいます" },
   transcribe_audio: { short: "譜起こし", doing: "譜起こししています" },
   separate_audio: { short: "パート分離", doing: "パートに分けています" },

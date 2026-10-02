@@ -617,6 +617,8 @@ pub struct SampleBank {
     /// テンポ追従するサンプラー(元のテンポ orig_bpm)の伸縮済み波形
     /// ((素材, 元のテンポ) → (曲のテンポ, 波形))。曲の頭のテンポに合わせる
     sampler_stretched: HashMap<(AssetId, u64), (u64, Arc<SampleData>)>,
+    /// 音声から作ったウェーブテーブル(素材 → テーブル)。wavetable の `table` が素材の ID のとき
+    tables: HashMap<AssetId, Arc<glaux_dsp::UserTable>>,
     /// CLAP プラグインの持ち主(トラック・エフェクト)→ (スロット, 世代)。[`crate::plugins`] が決める
     pub plugin_slots: HashMap<crate::plugins::PluginOwner, (u32, u64)>,
     /// 畳み込みリバーブの本体の使い回し(複製には渡さない)
@@ -673,6 +675,7 @@ impl Default for SampleBank {
             sfz_waves: Default::default(),
             stretched: HashMap::new(),
             sampler_stretched: HashMap::new(),
+            tables: HashMap::new(),
             plugin_slots: HashMap::new(),
             conv: ConvCache::default(),
             evict: true,
@@ -908,6 +911,7 @@ impl SampleBank {
             self.stretched.retain(|id, _| used_clips.contains(id));
         }
         self.sync_sampler_stretch(project);
+        self.sync_tables(project);
 
         // SoundFont: プロジェクトが参照しているプリセットのゾーンを構築
         let mut used: std::collections::HashSet<(String, u16, u16)> =
@@ -1031,6 +1035,43 @@ impl SampleBank {
         if self.evict {
             self.sampler_stretched.retain(|k, _| used.contains(k));
         }
+    }
+
+    /// 音声から作ったウェーブテーブルを用意する(素材の波形 = 1 周期 2048 点の並び。読めないものは飛ばす)
+    fn sync_tables(&mut self, project: &Project) {
+        let mut used = std::collections::HashSet::new();
+        for d in project
+            .tracks
+            .iter()
+            .flat_map(|t| t.device.iter().chain(t.layers.iter().map(|l| &l.device)))
+        {
+            let Some(asset) = wavetable_asset(d) else {
+                continue;
+            };
+            used.insert(asset.clone());
+            if self.tables.contains_key(&asset) {
+                continue;
+            }
+            let Some(src) = self.map.get(&asset) else {
+                continue;
+            };
+            match glaux_dsp::UserTable::from_cycles(&src.frames) {
+                Some(t) => {
+                    self.tables.insert(asset, Arc::new(t));
+                }
+                None => tracing::warn!(
+                    "ウェーブテーブルにできません(長さが 2048 の倍数でない・無音): {asset}"
+                ),
+            }
+        }
+        if self.evict {
+            self.tables.retain(|k, _| used.contains(k));
+        }
+    }
+
+    /// 音声から作ったウェーブテーブル
+    pub fn get_table(&self, asset: &AssetId) -> Option<&Arc<glaux_dsp::UserTable>> {
+        self.tables.get(asset)
     }
 
     /// テンポ追従するサンプラーの伸縮済み波形(伸縮が要らない・まだ無いなら None)
@@ -1371,7 +1412,20 @@ fn variant_hash(id: &glaux_core::NoteId, start: u64) -> u32 {
     ((h as u32) >> 16) << 16
 }
 
-/// 再生に使われている素材(音声クリップ・サンプラーの音源〈層を含む〉・畳み込みリバーブの残響)
+/// 内蔵の wavetable が、音声から作ったテーブル(`table` が素材の ID)を使っていればその素材
+fn wavetable_asset(d: &glaux_core::Device) -> Option<AssetId> {
+    match (&d.source, d.params.get("table")) {
+        (glaux_core::PluginSource::Builtin { name }, Some(glaux_core::ParamValue::Enum(table)))
+            if name == "wavetable" =>
+        {
+            AssetId::parse(table).ok()
+        }
+        _ => None,
+    }
+}
+
+/// 再生に使われている素材(音声クリップ・サンプラーの音源〈層を含む〉・音声から作ったウェーブテーブル・
+/// 畳み込みリバーブの残響)
 fn used_assets(project: &Project) -> std::collections::HashSet<AssetId> {
     let mut used = std::collections::HashSet::new();
     let ir_of = |e: &Effect| match e.params.get("ir") {
@@ -1388,6 +1442,7 @@ fn used_assets(project: &Project) -> std::collections::HashSet<AssetId> {
             if let glaux_core::PluginSource::Sampler { asset } = &d.source {
                 used.insert(asset.clone());
             }
+            used.extend(wavetable_asset(d));
         }
         used.extend(t.effects.iter().filter_map(ir_of));
     }
@@ -1444,6 +1499,19 @@ fn bake_device_instrument(
                 return InstrumentParams::Sf2(glaux_dsp::bake_sf2(&d.params, zones.clone()));
             }
             tracing::warn!("SoundFont 未読込のため subtractive で代用: {soundfont}");
+        }
+        glaux_core::PluginSource::Builtin { .. } => {
+            // 音声から作ったウェーブテーブル(読めなければ内蔵の analog で鳴らす)
+            if let Some(asset) = wavetable_asset(d) {
+                let mut p = glaux_dsp::bake_instrument(Some(d)).1;
+                match (&mut p, bank.get_table(&asset)) {
+                    (InstrumentParams::Wavetable(w), Some(t)) => {
+                        w.user = Some(glaux_dsp::UserTableRef(t.clone()));
+                    }
+                    _ => tracing::warn!("ウェーブテーブル未読込のため analog で代用: {asset}"),
+                }
+                return p;
+            }
         }
         _ => {}
     }
@@ -3862,6 +3930,60 @@ mod tests {
         ));
         project.tracks.push(track);
         project
+    }
+
+    #[test]
+    fn wavetable_plays_a_table_made_from_audio() {
+        use glaux_core::{Asset, AssetId, Device, ParamValue};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        // 1 周期 2048 点のノコギリ波を 2 枚並べた WAV(浮動小数)
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(dir.join("audio/table.wav"), spec).unwrap();
+        for i in 0..4096 {
+            w.write_sample(1.0 - 2.0 * (i % 2048) as f32 / 2048.0)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+        let mut project = Project::new("wt");
+        let asset = AssetId::from_sha256_hex(&"ab".repeat(32)).unwrap();
+        project.assets.insert(
+            asset.clone(),
+            Asset {
+                path: "audio/table.wav".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                frames: 4096,
+            },
+        );
+        let mut track = Track::new(TrackId::new(), "Wt", glaux_core::TrackKind::Midi);
+        let mut d = Device::builtin("wavetable");
+        d.params
+            .insert("table".into(), ParamValue::Enum(asset.to_string()));
+        track.device = Some(d);
+        project.tracks.push(track);
+        assert!(used_assets(&project).contains(&asset));
+        let bank = SampleBank::load(&project, dir);
+        assert_eq!(bank.get_table(&asset).map(|t| t.frames()), Some(2));
+        let InstrumentParams::Wavetable(p) =
+            bake_track_instrument(&project.tracks[0], &bank, 48_000.0)
+        else {
+            panic!("wavetable のはず");
+        };
+        assert!(p.user.is_some(), "音声から作ったテーブルで鳴らす");
+        // 素材が無いときは内蔵の analog で鳴らす(落ちない)
+        let InstrumentParams::Wavetable(p) =
+            bake_track_instrument(&project.tracks[0], &SampleBank::default(), 48_000.0)
+        else {
+            panic!("wavetable のはず");
+        };
+        assert!(p.user.is_none());
     }
 
     #[test]
