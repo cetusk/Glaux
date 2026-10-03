@@ -340,22 +340,28 @@ fn factory_presets() -> Vec<Preset> {
         ),
         preset(
             "ウォブルベース",
-            "wavetable(sync)の position を LFO で揺らすダブステップ/ベースミュージックのうねり。\
-             lfo_rate をテンポに合わせる(8 分 = BPM/30 Hz)",
-            wavetable(
+            "ダブステップ / ベースミュージックの定番のワブル。声ごとのモジュレーター mod1 をテンポに合わせた 8 分(mod1_rate 2)の\
+             wub の形で、カットオフ・position・レゾナンスへ同時に送る(音の頭で揺れ直す)。write_wobble で拍ごとに速さ\
+             (1/4・1/8・1/16t …)を切り替えると、しゃべるように表情が変わる",
+            wavetable_with(
                 "sync",
                 &[
-                    ("position", 0.35),
-                    ("lfo_rate", 4.0),
-                    ("lfo_depth", 0.6),
+                    ("position", 0.3),
                     ("unison", 3.0),
                     ("detune", 10.0),
-                    ("cutoff", 6000.0),
+                    ("cutoff", 1200.0),
+                    ("resonance", 0.3),
+                    ("drive", 0.2),
+                    ("mod1_rate", 2.0),
+                    ("mod1_cutoff", 0.55),
+                    ("mod1_position", 0.35),
+                    ("mod1_res", 0.2),
                     ("attack", 0.003),
                     ("sustain", 1.0),
                     ("release", 0.08),
                     ("gain_db", -10.0),
                 ],
+                &[("mod1_shape", "wub")],
             ),
             vec![fx(
                 "distortion",
@@ -364,26 +370,28 @@ fn factory_presets() -> Vec<Preset> {
         ),
         preset(
             "グロウルベース",
-            "うなる母音のテーブル(growl)を position と変形(FM)の 2 本の動きで揺らすダブステップのグロウル。\
-             position の LFO と LFO2(warp)の速さをテンポに合わせる(8 分 = BPM/30 Hz)。オートメーションで position を動かしても",
+            "うなる母音のテーブル(growl)を 2 本の声ごとのモジュレーターで動かすダブステップのグロウル。\
+             mod1 = 8 分の yoi の形で position とカットオフ(しゃべる)、mod2 = 2 分の saw_down_curve で変形(FM)の量(うなりが引いていく)。\
+             どちらもテンポに合う。write_wobble で mod1 の速さを拍ごとに切り替える",
             wavetable_with(
                 "growl",
                 &[
-                    ("position", 0.35),
-                    ("lfo_rate", 3.0),
-                    ("lfo_depth", 0.5),
-                    ("warp_amount", 0.25),
-                    ("lfo2_rate", 1.5),
-                    ("lfo2_depth", 0.5),
+                    ("position", 0.3),
+                    ("warp_amount", 0.15),
                     ("unison", 2.0),
                     ("detune", 8.0),
-                    ("cutoff", 4000.0),
+                    ("cutoff", 2500.0),
+                    ("mod1_rate", 2.0),
+                    ("mod1_position", 0.5),
+                    ("mod1_cutoff", 0.35),
+                    ("mod2_rate", 0.5),
+                    ("mod2_warp", 0.4),
                     ("attack", 0.003),
                     ("sustain", 1.0),
                     ("release", 0.08),
                     ("gain_db", -10.0),
                 ],
-                &[("warp", "fm"), ("lfo2_target", "warp")],
+                &[("warp", "fm"), ("mod1_shape", "yoi"), ("mod2_shape", "saw_down_curve")],
             ),
             vec![fx(
                 "distortion",
@@ -417,24 +425,27 @@ fn factory_presets() -> Vec<Preset> {
         ),
         preset(
             "ニューロベース",
-            "ウェーブフォールド(fold)にシンクの変形を掛け、LFO2 で変形の量を細かく揺らす荒れたベース(ニューロファンク)。\
+            "ウェーブフォールド(fold)にシンクの変形を掛けた荒れたベース(ニューロファンク)。mod1 = 16 分の階段(stairs)で\
+             変形の量と position を刻み、mod2 = 8 分 3 連のランダムでカットオフとドライブを揺らす(どちらもテンポに合う)。\
              position をオートメーションで動かすと表情が変わる",
             wavetable_with(
                 "fold",
                 &[
                     ("position", 0.5),
-                    ("lfo_rate", 2.0),
-                    ("lfo_depth", 0.3),
-                    ("warp_amount", 0.3),
-                    ("lfo2_rate", 4.0),
-                    ("lfo2_depth", 0.4),
-                    ("cutoff", 8000.0),
+                    ("warp_amount", 0.2),
+                    ("cutoff", 3500.0),
+                    ("mod1_rate", 4.0),
+                    ("mod1_warp", 0.5),
+                    ("mod1_position", 0.3),
+                    ("mod2_rate", 3.0),
+                    ("mod2_cutoff", 0.4),
+                    ("mod2_drive", 0.3),
                     ("attack", 0.002),
                     ("sustain", 1.0),
                     ("release", 0.06),
                     ("gain_db", -12.0),
                 ],
-                &[("warp", "sync"), ("lfo2_target", "warp"), ("lfo2_shape", "square")],
+                &[("warp", "sync"), ("mod1_shape", "stairs"), ("mod2_shape", "random")],
             ),
             vec![fx(
                 "distortion",
@@ -985,7 +996,7 @@ fn factory_presets() -> Vec<Preset> {
 
 /// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
 /// (ユーザーが独自に作った別名のプリセットには触れない)。
-const FACTORY_VERSION: &str = "v9";
+const FACTORY_VERSION: &str = "v10";
 
 /// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
 /// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)

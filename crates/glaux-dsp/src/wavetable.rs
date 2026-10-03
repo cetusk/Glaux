@@ -733,7 +733,7 @@ impl WavetableVoice {
                     self.freq,
                 )
                 .clamp(40.0, sr * 0.45);
-            self.coefs = crate::tone::SvfCoefs::new(fc, p.resonance, sr);
+            self.coefs = crate::tone::SvfCoefs::new(fc, self.tone.resonance(p.resonance), sr);
             self.ctrl = CTRL_RATE;
         }
         self.ctrl -= 1;

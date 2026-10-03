@@ -53,6 +53,7 @@ const LABELS: Record<string, ToolLabel> = {
   add_ghost_notes: { short: "ゴーストノート", doing: "ゴーストノートを足しています" },
   transform_notes: { short: "旋律の変形", doing: "旋律を展開しています" },
   shape_automation: { short: "動きを付ける", doing: "オートメーションを書いています" },
+  write_wobble: { short: "ワブルを書く", doing: "ワブルの速さのリズムを書いています" },
   critique_arrangement: { short: "編曲の点検", doing: "編曲を点検しています" },
   critique_mix: { short: "音とミックスの点検", doing: "音とミックスを点検しています" },
   apply_recipe: { short: "定番の手順", doing: "定番の手順を組んでいます" },

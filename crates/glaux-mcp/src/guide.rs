@@ -216,6 +216,12 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 動きのある音色は modulate(トラックの LFO。音源・エフェクトのつまみをテンポに合わせて揺らす): ワブルベース = wavetable の\n\
   position か subtractive の cutoff を 1/8〜1/16 の sine、うねるパッド = cutoff を 2/1 の triangle、ランダムに動く音色 = random。\n\
 - wavetable: position を LFO やオートメーションで動かすウォブルベース・うねるパッド・母音のような音・sync のギラついたリード。\n\
+- ワブル(subtractive・wavetable): 声ごとのモジュレーター mod1 / mod2 を使う。速さはテンポに合う拍あたりの回数(mod1_rate: 1/4 = 1、\n\
+  1/8 = 2、1/8t = 3、1/16 = 4、1/16t = 6)、形 mod1_shape(wub・yoi・saw_down_curve・stairs・custom = mod1_points で描く)、\n\
+  1 本から複数の行き先へ(mod1_cutoff・mod1_position・mod1_warp・mod1_pitch・mod1_res・mod1_drive・mod1_amp。−1〜1)。\n\
+  ワブルの表情は「速さのリズム」: write_wobble で拍ごとに速さを切り替える(例 [1/8, 1/8, 1/16t, 1/4]、区間ごとに pattern を変える)。\n\
+  さらに、ノートを刻む・音程を跳ばす(オクターブ・5 度)・2 本目の mod を別の速さで変形やピッチに送る・ドロップの後半で形を替える、で単調にしない。\n\
+  retrig: note は音ごとに揺れ直す(刻むワブル)、song は曲の拍に固定(長い音で速さを替えるとき)。\n\
 - fm4: 4 オペレーターの FM(8 アルゴリズム)。DX のエレピ(既定)・ベル・ブラス・オルガン・FM ベース。モジュレーターの level が明るさ、\n\
   その decay を短くすると頭だけ明るい打鍵の音。2 オペレーターの fm で足りなければこちら。\n\
 - additive: 加算合成(部分音 最大 64 本)。tilt で明るさ、odd_even -1 でクラリネット風、formant_db・formant_hz で声のような母音、\n\
@@ -269,7 +275,7 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 構成: EDM = イントロ 16 → ビルド 8 → ドロップ 16 → ブレイク 16 → ビルド 8 → ドロップ 16 → アウトロ 16(小節)。スネアの連打で予告し、\n\
   ドロップの前に 1 拍〜1 小節の無音。J-POP = A メロ 8 → B メロ 8 → サビ 8〜16(頭サビ・落ちサビ・ラスサビ)。サビは高い音・伸ばす音・リフレイン。\n\
 - EDM の音作り: スーパーソウは subtractive の unison 5〜7 + detune。ポンピングは sidechain エフェクト(source にキックのトラック ID。\n\
-  CLAP 音源のトラックや、ドラムをまとめたバスもキーにできる。release_ms = 60000/BPM/2)か shape_automation の pump。ダブステップのウォブルは wavetable の position を lfo_rate で揺らす(8 分 = BPM/30 Hz)。\n\
+  CLAP 音源のトラックや、ドラムをまとめたバスもキーにできる。release_ms = 60000/BPM/2)か shape_automation の pump。ダブステップのウォブルは write_wobble(声ごとのモジュレーターの速さを拍ごとに切り替える)。\n\
 - メタル: pluck + amp(gain_db 40 以上)+ palm_mute の刻み。Lo-fi・ヴィンテージ: tape エフェクト(wow / flutter・hiss・crackle・bits)。\n\
 - 繰り返し: ドラムやリフは 1〜2 小節を書き、add_clip の clip に \"loop\": true, \"loop_len\"(既存のクリップなら set_clip_loop)。\n\
   区間ごとの変化(フィル・抜き差し)は別のクリップで。\n\

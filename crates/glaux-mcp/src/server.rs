@@ -651,6 +651,47 @@ pub struct LoadEffectPresetParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct WriteWobbleParams {
+    /// トラック ID。音源が subtractive か wavetable のトラック
+    pub track_id: String,
+    /// 始まり。"小節" か "小節:拍"(1 始まり)
+    pub start: String,
+    /// 長さ(小節)
+    pub bars: f64,
+    /// 揺れの速さの並び(刻みごとに 1 つ。足りなければ繰り返す)。"1/4"・"1/8"・"1/16"・"1/32"・"1/2"・3 連 "1/8t"・付点 "1/8d"、
+    /// 拍あたりの回数の数でも可。"." は前と同じ(つなげる)。例 ["1/8", "1/8", "1/16t", "1/4"]
+    pub pattern: Vec<String>,
+    /// 刻み(拍。既定 1 = 4 分ごとに切り替え。0.5 で 8 分ごと、2 で 2 拍ごと)
+    #[serde(default)]
+    pub step_beats: Option<f64>,
+    /// 使う声ごとのモジュレーター(1 か 2。既定 1)
+    #[serde(default, rename = "mod")]
+    pub modulator: Option<u8>,
+    /// 揺れの形(sine / triangle / square / saw_up / saw_down / random / wub / saw_down_curve / yoi / stairs / custom)。省略で今のまま
+    #[serde(default)]
+    pub shape: Option<String>,
+    /// shape が custom のときの点("x,y[,曲がり]; …")
+    #[serde(default)]
+    pub points: Option<String>,
+    /// note(音の頭で揺れ直す)か song(曲の拍に固定)。既定 song(速さを拍ごとに替えても拍に合う)
+    #[serde(default)]
+    pub retrig: Option<String>,
+    /// 行き先ごとの深さ(−1〜1)。例 {"cutoff": 0.6, "position": 0.5}。行き先: pitch / cutoff / res / amp / pan / position / warp / drive。
+    /// 省略で今のまま(どれも 0 なら揺れないので、初めて使うときは指定する)
+    #[serde(default)]
+    pub depths: Option<serde_json::Map<String, Value>>,
+    /// ベースのノートも書く: 音の並び(音名 "F1" か MIDI 番号。"." は前の音を伸ばす、"-" は休み)。note_beats ごとに 1 つ、足りなければ繰り返す
+    #[serde(default)]
+    pub pitches: Option<Vec<String>>,
+    /// ノートの長さ(拍。既定は step_beats と同じ)
+    #[serde(default)]
+    pub note_beats: Option<f64>,
+    /// ノートの強さ(1〜127。既定 110)
+    #[serde(default)]
+    pub velocity: Option<u8>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ShapeAutomationParams {
     /// トラック ID。省略でマスター(target は track/volume_db か fx/<マスターのエフェクト ID>/<名前>)。
     #[serde(default)]
@@ -13650,6 +13691,197 @@ impl GlauxServer {
                 range.unwrap_or_default()
             ));
         }
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ワブルベースの「速さのリズム」を書く: 声ごとのモジュレーター(mod1 / mod2)の速さを、拍(step_beats)ごとに pattern の順で\
+        切り替える(例 [\"1/8\", \"1/8\", \"1/16t\", \"1/4\"] で、8 分・8 分・16 分 3 連・4 分としゃべるように揺れる)。\
+        速さは段々のオートメーション(device/mod1_rate)として置き、区間の後は元の速さに戻す。shape(wub・yoi・saw_down_curve など)・\
+        retrig(既定 song = 曲の拍に固定)・depths(行き先ごとの深さ。cutoff・position・warp・pitch など、1 本から複数へ)も一緒に設定できる。\
+        pitches を渡すとベースのノート(note_beats ごと。\".\" で伸ばす、\"-\" で休み)も書く。音源は subtractive か wavetable。\
+        区間ごとに pattern を変えて何度か呼ぶと、ドロップの中で表情が変わる。1 回の undo で戻る。"
+    )]
+    async fn write_wobble(
+        &self,
+        params: Parameters<WriteWobbleParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        use glaux_core::{ParamPath, ParamValue};
+        let _activity = self.handle.begin_activity("write_wobble");
+        let p = params.0;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let track = project
+            .track(&tid)
+            .ok_or_else(|| format!("トラックが見つかりません: {}", p.track_id))?;
+        let inst = match track.device.as_ref().map(|d| &d.source) {
+            Some(glaux_core::PluginSource::Builtin { name }) if name == "subtractive" || name == "wavetable" => {
+                name.clone()
+            }
+            None => "subtractive".to_owned(),
+            _ => {
+                return Err(format!(
+                    "「{}」の音源は subtractive か wavetable にしてください(声ごとのモジュレーターはこの 2 つで使える)",
+                    track.name
+                ))
+            }
+        };
+        let k = p.modulator.unwrap_or(1);
+        if !(1..=2).contains(&k) {
+            return Err("mod は 1 か 2".to_owned());
+        }
+        let key = |n: &str| format!("mod{k}_{n}");
+        // 区間
+        let start = glaux_core::shape::position_to_tick(&project, &p.start)?;
+        if p.bars.is_nan() || p.bars <= 0.0 {
+            return Err("bars は 0 より大きく".to_owned());
+        }
+        let start_bar: u32 = p
+            .start
+            .split(':')
+            .next()
+            .and_then(|x| x.trim().parse().ok())
+            .unwrap_or(1);
+        let bar0 = glaux_core::arrange::bar_range(&project, start_bar, 1)
+            .ok_or("小節が求められません")?
+            .0;
+        let whole = p.bars.floor() as u32;
+        let after_whole = glaux_core::arrange::bar_range(&project, start_bar + whole, 1)
+            .ok_or("小節が求められません")?;
+        let end = after_whole.0
+            + (start - bar0)
+            + ((p.bars - whole as f64) * after_whole.1 as f64).round() as u64;
+        let step_beats = p.step_beats.unwrap_or(1.0);
+        if !(1.0 / 8.0..=16.0).contains(&step_beats) {
+            return Err("step_beats は 0.125〜16".to_owned());
+        }
+        let step = (step_beats * glaux_core::PPQ as f64).round() as u64;
+        // 速さの前後の値(既存のレーンか、置いた値か、既定)
+        let target = ParamPath::device(key("rate"));
+        let lane = track.automation.iter().find(|l| l.target == target);
+        let fixed = track
+            .device
+            .as_ref()
+            .and_then(|d| d.params.get(&key("rate")))
+            .and_then(ParamValue::as_f64)
+            .unwrap_or(2.0);
+        let before = lane
+            .and_then(|l| l.value_at(glaux_core::Tick(start.saturating_sub(1))))
+            .unwrap_or(fixed);
+        let after = lane
+            .and_then(|l| l.value_at(glaux_core::Tick(end)))
+            .unwrap_or(fixed);
+        let pts = crate::wobble::pattern_points(start, end, step, &p.pattern, before, Some(after))?;
+        let n_points = pts.len();
+        let points = glaux_core::shape::merge_points(
+            &lane.map(|l| l.points.clone()).unwrap_or_default(),
+            pts,
+            start,
+            end,
+        );
+        let mut cmds = Vec::new();
+        if track.device.is_none() {
+            cmds.push(Command::SetDevice {
+                track: tid.clone(),
+                device: Some(glaux_core::Device::builtin(&inst)),
+            });
+        }
+        let set = |name: String, value: ParamValue| Command::SetParam {
+            track: tid.clone(),
+            path: ParamPath::device(name),
+            value,
+        };
+        let retrig = p.retrig.clone().unwrap_or_else(|| "song".to_owned());
+        if retrig != "song" && retrig != "note" {
+            return Err(format!("retrig は note か song(got: {retrig})"));
+        }
+        cmds.push(set(key("retrig"), ParamValue::Enum(retrig)));
+        if let Some(sh) = &p.shape {
+            if !glaux_dsp::tone::MOD_SHAPE_NAMES.contains(&sh.as_str()) {
+                return Err(format!(
+                    "shape は {} のどれか(got: {sh})",
+                    glaux_dsp::tone::MOD_SHAPE_NAMES.join(" / ")
+                ));
+            }
+            cmds.push(set(key("shape"), ParamValue::Enum(sh.clone())));
+        }
+        if let Some(pt) = &p.points {
+            if glaux_dsp::tone::ModCurve::parse(pt).is_none() {
+                return Err(format!(
+                    "points が読めません: {pt}(\"x,y[,曲がり]; x,y; …\")"
+                ));
+            }
+            cmds.push(set(key("points"), ParamValue::Enum(pt.clone())));
+        }
+        for (d, v) in p.depths.iter().flatten() {
+            if !glaux_dsp::tone::MOD_DEST_NAMES.contains(&d.as_str()) {
+                return Err(format!(
+                    "depths の行き先は {} のどれか(got: {d})",
+                    glaux_dsp::tone::MOD_DEST_NAMES.join(" / ")
+                ));
+            }
+            let x = v
+                .as_f64()
+                .ok_or_else(|| format!("depths.{d} は数(−1〜1)"))?;
+            cmds.push(set(key(d), ParamValue::Float(x.clamp(-1.0, 1.0))));
+        }
+        cmds.push(Command::SetAutomationPoints {
+            track: tid.clone(),
+            target,
+            points,
+        });
+        // ベースのノート
+        let mut notes_written = 0usize;
+        if let Some(pitches) = p.pitches.as_ref().filter(|v| !v.is_empty()) {
+            let nb = p.note_beats.unwrap_or(step_beats);
+            if !(1.0 / 16.0..=16.0).contains(&nb) {
+                return Err("note_beats は 0.0625〜16".to_owned());
+            }
+            let nlen = (nb * glaux_core::PPQ as f64).round() as u64;
+            let vel = p.velocity.unwrap_or(110).clamp(1, 127);
+            let mut notes: Vec<(u64, u64, u8, u8)> = Vec::new();
+            let mut i = 0usize;
+            let mut t = start;
+            while t < end {
+                let tok = pitches[i % pitches.len()].trim();
+                match tok {
+                    "-" => {}
+                    "." => {
+                        if let Some(last) = notes.last_mut() {
+                            if last.0 + last.1 == t - start {
+                                last.1 += nlen.min(end - t);
+                            }
+                        }
+                    }
+                    _ => {
+                        let pitch = parse_pitch(Some(tok), 36)?;
+                        notes.push((t - start, nlen.min(end - t), pitch, vel));
+                    }
+                }
+                i += 1;
+                t += nlen;
+            }
+            notes_written = notes.len();
+            if !notes.is_empty() {
+                cmds.push(Command::AddClip {
+                    track: tid.clone(),
+                    clip: simple_clip("ワブル".to_owned(), start, end - start, &notes),
+                });
+            }
+        }
+        let label = format!(
+            "{} のワブルの速さを {} 小節目から {} 小節ぶん書く",
+            track.name, p.start, p.bars
+        );
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["rate_points"] = json!(n_points);
+        v["range_ticks"] = json!([start, end]);
+        v["notes"] = json!(notes_written);
         Ok(JsonText(v))
     }
 

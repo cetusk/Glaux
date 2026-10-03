@@ -39,6 +39,37 @@ fn with(name: &str, kv: &[(&str, f64)]) -> Device {
 
 fn main() {
     bench("subtractive", with("subtractive", &[]), 60);
+    // 声ごとのモジュレーター 2 本(カーブの形・複数の行き先)
+    let mut wob = with(
+        "subtractive",
+        &[
+            ("mod1_rate", 3.0),
+            ("mod1_cutoff", 0.6),
+            ("mod1_res", 0.2),
+            ("mod1_drive", 0.3),
+            ("mod2_rate", 0.5),
+            ("mod2_pitch", 0.05),
+            ("mod2_amp", 0.3),
+        ],
+    );
+    wob.params
+        .insert("mod1_shape".into(), ParamValue::Enum("yoi".into()));
+    wob.params.insert(
+        "mod2_shape".into(),
+        ParamValue::Enum("saw_down_curve".into()),
+    );
+    bench("subtractive ワブル", wob.clone(), 36);
+    let mut wt = wob.clone();
+    wt.source = glaux_core::PluginSource::Builtin {
+        name: "wavetable".into(),
+    };
+    wt.params
+        .insert("mod1_position".into(), ParamValue::Float(0.5));
+    wt.params.insert("mod2_warp".into(), ParamValue::Float(0.4));
+    wt.params
+        .insert("warp".into(), ParamValue::Enum("fm".into()));
+    bench("wavetable", with("wavetable", &[]), 36);
+    bench("wavetable ワブル", wt, 36);
     bench(
         "subtractive unison7",
         with("subtractive", &[("unison", 7.0)]),

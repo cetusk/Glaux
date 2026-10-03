@@ -223,6 +223,254 @@ const TONE_LFO2_TARGET: ParamSpec = ParamSpec {
     description: "LFO2 で動かすもの(LFO1 と同じ)。",
 };
 
+// ---- 声ごとのモジュレーター 2 本(crate::tone の mods。深さが全部 0 なら掛からない = 従来の音) ----
+
+const TONE_MOD1_RATE: ParamSpec = ParamSpec {
+    name: "mod1_rate",
+    display_name: "MOD1 速さ",
+    unit: None,
+    range: ParamRange::Float { min: 0.03125, max: 32.0, default: 2.0, skew: Some(0.4) },
+    description: "声ごとのモジュレーター 1 の速さ。拍(4 分音符)あたりの回数でテンポに合う: 1/1 = 0.25、1/2 = 0.5、1/4 = 1、1/4d = 0.667、1/8 = 2、1/8d = 1.333、1/8t = 3、1/16 = 4、1/16t = 6、1/32 = 8。オートメーション(write_wobble)で拍ごとに切り替えると、ワブルがしゃべるように速さを変える。mod1_hz が 0 より大きいときはそちら。",
+};
+
+const TONE_MOD1_HZ: ParamSpec = ParamSpec {
+    name: "mod1_hz",
+    display_name: "MOD1 速さ(Hz)",
+    unit: None,
+    range: ParamRange::Float { min: 0.0, max: 40.0, default: 0.0, skew: Some(0.4) },
+    description: "0 より大きくすると、テンポに合わせず Hz で揺らす(mod1_rate より優先)。0 でテンポに合わせる。",
+};
+
+const TONE_MOD1_SHAPE: ParamSpec = ParamSpec {
+    name: "mod1_shape",
+    display_name: "MOD1 形",
+    unit: None,
+    range: ParamRange::Enum { choices: &crate::tone::MOD_SHAPE_NAMES, default: "sine" },
+    description: "揺れの形。sine・triangle はなめらか、square は 2 値の切り替え、saw_up / saw_down は鋸歯、random は周期ごとに値が飛ぶ。wub はすばやく開いてゆっくり閉じる(定番のワブル)、saw_down_curve は開いてから指数的に閉じる(ブォ)、yoi は 1 周期に 2 つの山(ヨイヨイ)、stairs は 4 段の階段。custom は mod1_points で自分で描く。",
+};
+
+const TONE_MOD1_POINTS: ParamSpec = ParamSpec {
+    name: "mod1_points",
+    display_name: "MOD1 カーブ",
+    unit: None,
+    range: ParamRange::Enum { choices: &[""], default: "" },
+    description: "mod1_shape が custom のときの 1 周期の形。「x,y[,曲がり]; x,y; …」(x は 0〜1 の昇順、y は −1〜1、曲がりは −1〜1 で正なら始めゆっくり)。同じ x を続けると段差。最大 16 点。例:「0,-1; 0.1,1,-0.5; 1,-1,0.6」(すばやく開いてゆっくり閉じる)。",
+};
+
+const TONE_MOD1_RETRIG: ParamSpec = ParamSpec {
+    name: "mod1_retrig",
+    display_name: "MOD1 再トリガ",
+    unit: None,
+    range: ParamRange::Enum { choices: &["note", "song"], default: "note" },
+    description: "note = 音の頭で揺れ直す(音ごとに同じ揺れ。短く刻むワブルの基本)、song = 曲の拍に固定(全部の音がそろい、長い音でも拍の頭で揺れがそろう。速さを拍ごとに替えるとき向き)。",
+};
+
+const TONE_MOD1_PHASE: ParamSpec = ParamSpec {
+    name: "mod1_phase",
+    display_name: "MOD1 位相",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "揺れの始まりの位置(0〜1。0.5 で半周期ずらす)。",
+};
+
+const TONE_MOD1_PITCH: ParamSpec = ParamSpec {
+    name: "mod1_pitch",
+    display_name: "MOD1 → pitch",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "音程へ送る深さ(±1 で ±12 半音)。小さく(0.02〜0.05)でうなり、大きくでピッチが落ちる・跳ぶワブル。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD1_CUTOFF: ParamSpec = ParamSpec {
+    name: "mod1_cutoff",
+    display_name: "MOD1 → cutoff",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "カットオフへ送る深さ(±1 で ±4 オクターブ)。ワブルの「ワウ」の主役。カットオフを低めにして 0.4〜0.8。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD1_RES: ParamSpec = ParamSpec {
+    name: "mod1_res",
+    display_name: "MOD1 → res",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "レゾナンスへ送る深さ(±1 で ±0.9)。開くときに鳴きが強まる。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD1_AMP: ParamSpec = ParamSpec {
+    name: "mod1_amp",
+    display_name: "MOD1 → amp",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "音量へ送る深さ(1 で谷が無音。負で向きが逆)。刻み・ゲートのような動き。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD1_PAN: ParamSpec = ParamSpec {
+    name: "mod1_pan",
+    display_name: "MOD1 → pan",
+    unit: None,
+    range: ParamRange::Float {
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description:
+        "左右へ送る深さ(±1 で端まで)。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD1_POSITION: ParamSpec = ParamSpec {
+    name: "mod1_position",
+    display_name: "MOD1 → position",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "ウェーブテーブルの position へ送る深さ(±1 でテーブルの端から端。wavetable だけ)。しゃべるワブル・グロウルの主役。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD1_WARP: ParamSpec = ParamSpec {
+    name: "mod1_warp",
+    display_name: "MOD1 → warp",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "ウェーブテーブルの変形の量へ送る深さ(±1。wavetable だけ。warp を none 以外にしておく)。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD1_DRIVE: ParamSpec = ParamSpec {
+    name: "mod1_drive",
+    display_name: "MOD1 → drive",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "フィルタの前の歪みへ送る深さ(±1)。開くときに荒れる。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD2_RATE: ParamSpec = ParamSpec {
+    name: "mod2_rate",
+    display_name: "MOD2 速さ",
+    unit: None,
+    range: ParamRange::Float { min: 0.03125, max: 32.0, default: 2.0, skew: Some(0.4) },
+    description: "声ごとのモジュレーター 2 の速さ。拍(4 分音符)あたりの回数でテンポに合う: 1/1 = 0.25、1/2 = 0.5、1/4 = 1、1/4d = 0.667、1/8 = 2、1/8d = 1.333、1/8t = 3、1/16 = 4、1/16t = 6、1/32 = 8。オートメーション(write_wobble)で拍ごとに切り替えると、ワブルがしゃべるように速さを変える。mod2_hz が 0 より大きいときはそちら。",
+};
+
+const TONE_MOD2_HZ: ParamSpec = ParamSpec {
+    name: "mod2_hz",
+    display_name: "MOD2 速さ(Hz)",
+    unit: None,
+    range: ParamRange::Float { min: 0.0, max: 40.0, default: 0.0, skew: Some(0.4) },
+    description: "0 より大きくすると、テンポに合わせず Hz で揺らす(mod2_rate より優先)。0 でテンポに合わせる。",
+};
+
+const TONE_MOD2_SHAPE: ParamSpec = ParamSpec {
+    name: "mod2_shape",
+    display_name: "MOD2 形",
+    unit: None,
+    range: ParamRange::Enum { choices: &crate::tone::MOD_SHAPE_NAMES, default: "sine" },
+    description: "揺れの形。sine・triangle はなめらか、square は 2 値の切り替え、saw_up / saw_down は鋸歯、random は周期ごとに値が飛ぶ。wub はすばやく開いてゆっくり閉じる(定番のワブル)、saw_down_curve は開いてから指数的に閉じる(ブォ)、yoi は 1 周期に 2 つの山(ヨイヨイ)、stairs は 4 段の階段。custom は mod2_points で自分で描く。",
+};
+
+const TONE_MOD2_POINTS: ParamSpec = ParamSpec {
+    name: "mod2_points",
+    display_name: "MOD2 カーブ",
+    unit: None,
+    range: ParamRange::Enum { choices: &[""], default: "" },
+    description: "mod2_shape が custom のときの 1 周期の形。「x,y[,曲がり]; x,y; …」(x は 0〜1 の昇順、y は −1〜1、曲がりは −1〜1 で正なら始めゆっくり)。同じ x を続けると段差。最大 16 点。例:「0,-1; 0.1,1,-0.5; 1,-1,0.6」(すばやく開いてゆっくり閉じる)。",
+};
+
+const TONE_MOD2_RETRIG: ParamSpec = ParamSpec {
+    name: "mod2_retrig",
+    display_name: "MOD2 再トリガ",
+    unit: None,
+    range: ParamRange::Enum { choices: &["note", "song"], default: "note" },
+    description: "note = 音の頭で揺れ直す(音ごとに同じ揺れ。短く刻むワブルの基本)、song = 曲の拍に固定(全部の音がそろい、長い音でも拍の頭で揺れがそろう。速さを拍ごとに替えるとき向き)。",
+};
+
+const TONE_MOD2_PHASE: ParamSpec = ParamSpec {
+    name: "mod2_phase",
+    display_name: "MOD2 位相",
+    unit: None,
+    range: ParamRange::Float {
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description: "揺れの始まりの位置(0〜1。0.5 で半周期ずらす)。",
+};
+
+const TONE_MOD2_PITCH: ParamSpec = ParamSpec {
+    name: "mod2_pitch",
+    display_name: "MOD2 → pitch",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "音程へ送る深さ(±1 で ±12 半音)。小さく(0.02〜0.05)でうなり、大きくでピッチが落ちる・跳ぶワブル。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD2_CUTOFF: ParamSpec = ParamSpec {
+    name: "mod2_cutoff",
+    display_name: "MOD2 → cutoff",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "カットオフへ送る深さ(±1 で ±4 オクターブ)。ワブルの「ワウ」の主役。カットオフを低めにして 0.4〜0.8。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD2_RES: ParamSpec = ParamSpec {
+    name: "mod2_res",
+    display_name: "MOD2 → res",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "レゾナンスへ送る深さ(±1 で ±0.9)。開くときに鳴きが強まる。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD2_AMP: ParamSpec = ParamSpec {
+    name: "mod2_amp",
+    display_name: "MOD2 → amp",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "音量へ送る深さ(1 で谷が無音。負で向きが逆)。刻み・ゲートのような動き。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD2_PAN: ParamSpec = ParamSpec {
+    name: "mod2_pan",
+    display_name: "MOD2 → pan",
+    unit: None,
+    range: ParamRange::Float {
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+        skew: None,
+    },
+    description:
+        "左右へ送る深さ(±1 で端まで)。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD2_POSITION: ParamSpec = ParamSpec {
+    name: "mod2_position",
+    display_name: "MOD2 → position",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "ウェーブテーブルの position へ送る深さ(±1 でテーブルの端から端。wavetable だけ)。しゃべるワブル・グロウルの主役。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD2_WARP: ParamSpec = ParamSpec {
+    name: "mod2_warp",
+    display_name: "MOD2 → warp",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "ウェーブテーブルの変形の量へ送る深さ(±1。wavetable だけ。warp を none 以外にしておく)。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
+const TONE_MOD2_DRIVE: ParamSpec = ParamSpec {
+    name: "mod2_drive",
+    display_name: "MOD2 → drive",
+    unit: None,
+    range: ParamRange::Float { min: -1.0, max: 1.0, default: 0.0, skew: None },
+    description: "フィルタの前の歪みへ送る深さ(±1)。開くときに荒れる。0 で送らない。1 本の揺れから複数の行き先へ送れる(変調行列)。",
+};
+
 pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "waveform",
@@ -443,6 +691,34 @@ pub static SUBTRACTIVE_SPECS: &[ParamSpec] = &[
     TONE_LFO2_DEPTH,
     TONE_LFO2_SHAPE,
     TONE_LFO2_TARGET,
+    TONE_MOD1_RATE,
+    TONE_MOD1_HZ,
+    TONE_MOD1_SHAPE,
+    TONE_MOD1_POINTS,
+    TONE_MOD1_RETRIG,
+    TONE_MOD1_PHASE,
+    TONE_MOD1_PITCH,
+    TONE_MOD1_CUTOFF,
+    TONE_MOD1_RES,
+    TONE_MOD1_AMP,
+    TONE_MOD1_PAN,
+    TONE_MOD1_POSITION,
+    TONE_MOD1_WARP,
+    TONE_MOD1_DRIVE,
+    TONE_MOD2_RATE,
+    TONE_MOD2_HZ,
+    TONE_MOD2_SHAPE,
+    TONE_MOD2_POINTS,
+    TONE_MOD2_RETRIG,
+    TONE_MOD2_PHASE,
+    TONE_MOD2_PITCH,
+    TONE_MOD2_CUTOFF,
+    TONE_MOD2_RES,
+    TONE_MOD2_AMP,
+    TONE_MOD2_PAN,
+    TONE_MOD2_POSITION,
+    TONE_MOD2_WARP,
+    TONE_MOD2_DRIVE,
 ];
 
 pub static DRUM_SPECS: &[ParamSpec] = &[
@@ -1004,6 +1280,34 @@ pub static WAVETABLE_SPECS: &[ParamSpec] = &[
     TONE_LFO2_DEPTH,
     TONE_LFO2_SHAPE,
     TONE_LFO2_TARGET,
+    TONE_MOD1_RATE,
+    TONE_MOD1_HZ,
+    TONE_MOD1_SHAPE,
+    TONE_MOD1_POINTS,
+    TONE_MOD1_RETRIG,
+    TONE_MOD1_PHASE,
+    TONE_MOD1_PITCH,
+    TONE_MOD1_CUTOFF,
+    TONE_MOD1_RES,
+    TONE_MOD1_AMP,
+    TONE_MOD1_PAN,
+    TONE_MOD1_POSITION,
+    TONE_MOD1_WARP,
+    TONE_MOD1_DRIVE,
+    TONE_MOD2_RATE,
+    TONE_MOD2_HZ,
+    TONE_MOD2_SHAPE,
+    TONE_MOD2_POINTS,
+    TONE_MOD2_RETRIG,
+    TONE_MOD2_PHASE,
+    TONE_MOD2_PITCH,
+    TONE_MOD2_CUTOFF,
+    TONE_MOD2_RES,
+    TONE_MOD2_AMP,
+    TONE_MOD2_PAN,
+    TONE_MOD2_POSITION,
+    TONE_MOD2_WARP,
+    TONE_MOD2_DRIVE,
 ];
 
 pub static FM4_SPECS: &[ParamSpec] = &[
@@ -2660,7 +2964,32 @@ fn bake_tone(map: &ParamMap, s: &[ParamSpec]) -> crate::tone::ToneParams {
         filter_decay: get_f32(map, s, "filter_decay").clamp(0.0, 5.0),
         filter_sustain: get_f32(map, s, "filter_sustain").clamp(0.0, 1.0),
         lfo: [lfo(1), lfo(2)],
+        mods: [bake_mod(map, s, 1), bake_mod(map, s, 2)],
     }
+}
+
+/// 声ごとのモジュレーター `k`(1 か 2)を焼き込む
+fn bake_mod(map: &ParamMap, s: &[ParamSpec], k: u8) -> crate::tone::ModParams {
+    use crate::tone::{ModParams, ModRetrig, MOD_DEST_NAMES};
+    let key = |name: &str| format!("mod{k}_{name}");
+    let mut m = ModParams {
+        rate: get_f32(map, s, &key("rate")).clamp(1.0 / 32.0, 32.0),
+        hz: get_f32(map, s, &key("hz")).clamp(0.0, 40.0),
+        retrig: if get_enum(map, s, &key("retrig")) == "song" {
+            ModRetrig::Song
+        } else {
+            ModRetrig::Note
+        },
+        phase: get_f32(map, s, &key("phase")).clamp(0.0, 1.0),
+        ..ModParams::default()
+    };
+    for (i, d) in MOD_DEST_NAMES.iter().enumerate() {
+        m.depth[i] = get_f32(map, s, &key(d)).clamp(-1.0, 1.0);
+    }
+    let shape = get_enum(map, s, &key("shape")).to_owned();
+    let points = get_enum(map, s, &key("points")).to_owned();
+    m.set_shape(&shape, &points);
+    m
 }
 
 /// トラックの `Device` から再生用パラメータを焼き込む。

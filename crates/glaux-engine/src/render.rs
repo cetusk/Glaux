@@ -1280,6 +1280,11 @@ impl Renderer {
         } else {
             0.0
         };
+        // 声ごとのモジュレーター(テンポに合わせる揺れ)に今のテンポと曲の位置を渡す
+        if let Some(spb) = data.secs_per_beat(self.pos) {
+            glaux_dsp::tone::set_beat_secs(spb as f32);
+        }
+        glaux_dsp::tone::set_song_beat(self.blk_tick / glaux_core::PPQ as f64);
 
         // ループ区間(このブロックの間は固定値として扱う。予約した飛びでだけ替わる)
         let mut loop_start = self.shared.loop_start.load(Ordering::Acquire);
@@ -1558,6 +1563,10 @@ impl Renderer {
                         live -= 1;
                     }
                     if self.voices.len() < MAX_VOICES + STEAL_RESERVE {
+                        // 声ごとのモジュレーターが曲の拍に合わせられるよう、この音の頭の位置(拍)を渡す
+                        glaux_dsp::tone::set_song_beat(
+                            data.sample_to_tick(self.pos) / glaux_core::PPQ as f64,
+                        );
                         // 発音時パラメータ(pluck 等)にもスイープ中の値を反映する
                         let ti = e.track as usize;
                         let inst = if !mix.device_auto.is_empty() && ti < MAX_TRACKS {

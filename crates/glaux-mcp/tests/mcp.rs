@@ -1925,6 +1925,90 @@ async fn make_wavetable_builds_edits_describes_and_shelves_tables() {
 }
 
 #[tokio::test]
+async fn write_wobble_switches_the_rate_by_beat_and_writes_notes() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_wob001", "Wob")).await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "commands": [ { "op": "set_device", "track": "trk_wob001",
+                "device": { "type": "builtin", "name": "wavetable", "params": { "table": "growl" } } } ],
+                "label": "ウェーブテーブルに" }),
+        )
+        .await,
+    );
+    let r = call(
+        &fx,
+        "write_wobble",
+        json!({
+            "track_id": "trk_wob001",
+            "start": "2",
+            "bars": 1,
+            "pattern": ["1/8", "1/16", ".", "1/8t"],
+            "shape": "wub",
+            "depths": { "cutoff": 0.6, "position": 0.4 },
+            "pitches": ["F1", ".", "-", "G#1"]
+        }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["range_ticks"], json!([3840, 7680]));
+    assert_eq!(v["notes"], 2);
+    let p = ok_json(&call(&fx, "get_project", json!({})).await)["project"].clone();
+    let t = &p["tracks"][0];
+    assert_eq!(t["device"]["params"]["mod1_shape"], "wub");
+    assert_eq!(t["device"]["params"]["mod1_retrig"], "song");
+    assert_eq!(t["device"]["params"]["mod1_cutoff"], 0.6);
+    let lane = t["automation"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["target"] == "device/mod1_rate")
+        .unwrap();
+    let pts: Vec<(u64, f64)> = lane["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["tick"].as_u64().unwrap(), p["value"].as_f64().unwrap()))
+        .collect();
+    assert_eq!(
+        pts,
+        vec![(3840, 2.0), (4800, 4.0), (6720, 3.0), (7680, 2.0)]
+    );
+    // ノート: F1 を 2 拍(. で伸ばす)、休み、G#1 を 1 拍
+    let clip = t["clips"].as_array().unwrap().last().unwrap();
+    let notes = clip["notes"].as_array().unwrap();
+    assert_eq!(
+        (notes[0]["pitch"].as_u64(), notes[0]["dur"].as_u64()),
+        (Some(29), Some(1920))
+    );
+    assert_eq!(
+        (notes[1]["pitch"].as_u64(), notes[1]["pos"].as_u64()),
+        (Some(32), Some(2880))
+    );
+    // 間違った速さ・行き先は失敗
+    let r = call(
+        &fx,
+        "write_wobble",
+        json!({ "track_id": "trk_wob001", "start": "1", "bars": 1, "pattern": ["fast"] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let r = call(&fx, "write_wobble", json!({ "track_id": "trk_wob001", "start": "1", "bars": 1, "pattern": ["1/8"], "depths": { "nope": 1 } })).await;
+    assert_eq!(r.is_error, Some(true));
+    // 1 回の undo で戻る
+    ok_json(&call(&fx, "undo", json!({})).await);
+    let p = ok_json(&call(&fx, "get_project", json!({})).await)["project"].clone();
+    assert!(p["tracks"][0]["device"]["params"]
+        .get("mod1_shape")
+        .is_none());
+    assert!(p["tracks"][0]["automation"]
+        .as_array()
+        .is_none_or(|a| a.is_empty()));
+}
+
+#[tokio::test]
 async fn analyze_harmony_detects_key_and_chords() {
     let fx = setup().await;
     let r = call(

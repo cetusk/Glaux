@@ -493,6 +493,13 @@ impl PlaybackData {
         self.exprs.get(e.expr as usize).unwrap_or(&EMPTY_EXPR)
     }
 
+    /// `sample` での 1 拍(4 分音符)の秒数。テンポが無ければ None
+    pub fn secs_per_beat(&self, sample: u64) -> Option<f64> {
+        let idx = self.tempo.partition_point(|s| s.sample <= sample);
+        let seg = idx.checked_sub(1).and_then(|i| self.tempo.get(i))?;
+        Some(seg.samples_per_tick * glaux_core::PPQ as f64 / self.sample_rate.max(1.0))
+    }
+
     /// サンプル位置 → tick(小数)。区分線形。
     pub fn sample_to_tick(&self, sample: u64) -> f64 {
         let idx = self.tempo.partition_point(|s| s.sample <= sample);

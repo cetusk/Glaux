@@ -9,12 +9,45 @@
 //! - **フィルタのエンベロープ**: 従来は音量の ADSR を流用。filter_decay を 0 より大きくすると独立した AD(S)
 //! - **ベロシティとキーの追従**: 強く弾くと明るい・高い音ほど明るい
 //! - **LFO 2 本**: 形(sine / triangle / square / saw / random)と行き先(音程・カットオフ・音量・パン・position)
+//! - **声ごとのモジュレーター 2 本**(mod1 / mod2): テンポに合わせた速さ(拍あたりの回数。Hz も可)、音の頭で揺れ直すか
+//!   曲の拍に固定するか、形(定番 + 自分で描くカーブ = MSEG)、1 本から複数の行き先へ深さを変えて送る(変調行列)。
+//!   ワブルベースの「速さを拍ごとに切り替えてしゃべらせる」ための仕組み。速さのつまみはオートメーションできる
 //!
 //! 新しいつまみがすべて既定値なら、従来とまったく同じ音になる(既存の曲の音を変えない)。
 //! 揺らぎの乱数は音ごとに決まる種から作るので、同じ曲は何度描き出しても同じ音になる。
 //! RT セーフ: 値型のみでアロケーションなし。
 
 use crate::oversample::AdaaTanh;
+use std::cell::Cell;
+
+thread_local! {
+    /// 今のテンポ(1 拍 = 4 分音符の秒数)と、これから鳴らし始める音の曲の位置(拍)。
+    /// レンダラが描き出すスレッドでブロックごと・音の頭ごとに書く(声は同じスレッドで読む。ロックなし)
+    static BEAT_SECS: Cell<f32> = const { Cell::new(0.5) };
+    static SONG_BEAT: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// 今のテンポ(1 拍の秒数)を知らせる(レンダラがブロックの頭で呼ぶ)
+pub fn set_beat_secs(secs: f32) {
+    if secs.is_finite() && secs > 0.0 {
+        BEAT_SECS.with(|c| c.set(secs));
+    }
+}
+
+/// これから鳴らし始める音の曲の位置(拍)を知らせる(レンダラが音の頭で呼ぶ)
+pub fn set_song_beat(beat: f64) {
+    if beat.is_finite() {
+        SONG_BEAT.with(|c| c.set(beat));
+    }
+}
+
+fn beat_secs() -> f32 {
+    BEAT_SECS.with(|c| c.get())
+}
+
+fn song_beat() -> f64 {
+    SONG_BEAT.with(|c| c.get())
+}
 
 /// フィルタの種類
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -126,6 +159,232 @@ impl Default for LfoParams {
     }
 }
 
+/// 声ごとのモジュレーターの形
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModShape {
+    #[default]
+    Sine,
+    Triangle,
+    Square,
+    SawUp,
+    SawDown,
+    Random,
+    /// 自分で描くカーブ(points)と、定番の形(下の名前。中身は点の並び)
+    Curve,
+}
+
+/// 名前で選べる形(curve の定番)。点は (x 0..1, y −1..1, 曲がり −1..1)。同じ x が続くと段差
+pub const MOD_SHAPE_NAMES: [&str; 11] = [
+    "sine",
+    "triangle",
+    "square",
+    "saw_up",
+    "saw_down",
+    "random",
+    "wub",
+    "saw_down_curve",
+    "yoi",
+    "stairs",
+    "custom",
+];
+
+/// 定番の形の点
+fn preset_points(name: &str) -> Option<&'static [(f32, f32, f32)]> {
+    Some(match name {
+        // 「ワウ」: すばやく開いて、ゆっくり閉じる
+        "wub" => &[
+            (0.0, -1.0, 0.0),
+            (0.12, 1.0, -0.6),
+            (0.55, 0.1, 0.4),
+            (1.0, -1.0, 0.5),
+        ],
+        // 開いてから指数的に閉じる(ベースの「ブォ」)
+        "saw_down_curve" => &[(0.0, 1.0, 0.0), (1.0, -1.0, 0.75)],
+        // 「ヨイ」: 1 周期に 2 回、形の違う山
+        "yoi" => &[
+            (0.0, -1.0, 0.0),
+            (0.18, 1.0, -0.5),
+            (0.42, -0.5, 0.4),
+            (0.62, 0.7, -0.5),
+            (1.0, -1.0, 0.5),
+        ],
+        // 4 段の階段(刻むような変化)
+        "stairs" => &[
+            (0.0, -1.0, 0.0),
+            (0.25, -1.0, 0.0),
+            (0.25, -0.33, 0.0),
+            (0.5, -0.33, 0.0),
+            (0.5, 0.33, 0.0),
+            (0.75, 0.33, 0.0),
+            (0.75, 1.0, 0.0),
+            (1.0, 1.0, 0.0),
+        ],
+        _ => return None,
+    })
+}
+
+/// カーブの点の上限
+pub const MAX_CURVE_POINTS: usize = 16;
+
+/// 自分で描くカーブ(固定長。オーディオスレッドで確保しない)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModCurve {
+    pub pts: [(f32, f32, f32); MAX_CURVE_POINTS],
+    pub len: u8,
+}
+
+impl Default for ModCurve {
+    fn default() -> Self {
+        ModCurve {
+            pts: [(0.0, 0.0, 0.0); MAX_CURVE_POINTS],
+            len: 0,
+        }
+    }
+}
+
+impl ModCurve {
+    pub fn from_points(points: &[(f32, f32, f32)]) -> ModCurve {
+        let mut c = ModCurve::default();
+        let mut last_x = 0.0f32;
+        for (i, &(x, y, k)) in points.iter().take(MAX_CURVE_POINTS).enumerate() {
+            let x = x.clamp(last_x, 1.0);
+            last_x = x;
+            c.pts[i] = (x, y.clamp(-1.0, 1.0), k.clamp(-1.0, 1.0));
+            c.len = (i + 1) as u8;
+        }
+        c
+    }
+
+    /// 文字列 "x,y[,曲がり]; x,y; …"(x 0〜1 昇順、y −1〜1、曲がり −1〜1。正で後ろ寄り = 始めゆっくり)。読めなければ None
+    pub fn parse(s: &str) -> Option<ModCurve> {
+        let mut pts = Vec::new();
+        for item in s.split(';').map(str::trim).filter(|t| !t.is_empty()) {
+            let v: Vec<f32> = item
+                .split(',')
+                .map(|t| t.trim().parse::<f32>())
+                .collect::<Result<_, _>>()
+                .ok()?;
+            if v.len() < 2 || v.iter().any(|x| !x.is_finite()) {
+                return None;
+            }
+            pts.push((v[0], v[1], v.get(2).copied().unwrap_or(0.0)));
+        }
+        if pts.is_empty() || pts.windows(2).any(|w| w[1].0 < w[0].0) {
+            return None;
+        }
+        Some(ModCurve::from_points(&pts))
+    }
+
+    /// 位相 `ph`(0..1)での値(−1..1)
+    pub fn at(&self, ph: f32) -> f32 {
+        let n = self.len as usize;
+        if n == 0 {
+            return 0.0;
+        }
+        let pts = &self.pts[..n];
+        if ph <= pts[0].0 {
+            return pts[0].1;
+        }
+        // ph を挟む区間(同じ x の段差は後ろの点を使う)
+        let mut i = 0;
+        while i + 1 < n && pts[i + 1].0 <= ph {
+            i += 1;
+        }
+        if i + 1 >= n {
+            return pts[n - 1].1;
+        }
+        let (x0, y0, _) = pts[i];
+        let (x1, y1, k) = pts[i + 1];
+        let w = x1 - x0;
+        if w <= 1e-6 {
+            return y1;
+        }
+        let t = ((ph - x0) / w).clamp(0.0, 1.0);
+        // 曲がり: 正で始めゆっくり(t の累乗)、負で始め速く
+        let t = if k >= 0.0 {
+            t.powf(1.0 + k * 4.0)
+        } else {
+            1.0 - (1.0 - t).powf(1.0 - k * 4.0)
+        };
+        y0 + (y1 - y0) * t
+    }
+}
+
+/// 音の頭で揺れ直すか
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModRetrig {
+    /// 音の頭で位相を戻す(音ごとに同じ揺れ。ワブルの基本)
+    #[default]
+    Note,
+    /// 曲の拍に固定する(全声部がそろい、長い音でも拍の頭で揺れがそろう。速さを拍ごとに替えても拍に合う)
+    Song,
+}
+
+/// モジュレーターの行き先の数
+pub const MOD_DESTS: usize = 8;
+/// 行き先の名前(つまみの名前は `mod1_<行き先>`)
+pub const MOD_DEST_NAMES: [&str; MOD_DESTS] = [
+    "pitch", "cutoff", "res", "amp", "pan", "position", "warp", "drive",
+];
+
+/// 声ごとのモジュレーター 1 本(焼き込み済み)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModParams {
+    /// 速さ: 拍(4 分音符)あたりの回数(1/4 = 1、1/8 = 2、1/8t = 3、1/16 = 4)。`hz` が 0 より大きければそちら
+    pub rate: f32,
+    pub hz: f32,
+    pub shape: ModShape,
+    pub curve: ModCurve,
+    pub retrig: ModRetrig,
+    /// 始まりの位相 0..1
+    pub phase: f32,
+    /// 行き先ごとの深さ −1..1([`MOD_DEST_NAMES`] の順)
+    pub depth: [f32; MOD_DESTS],
+}
+
+impl Default for ModParams {
+    fn default() -> Self {
+        ModParams {
+            rate: 2.0,
+            hz: 0.0,
+            shape: ModShape::Sine,
+            curve: ModCurve::default(),
+            retrig: ModRetrig::Note,
+            phase: 0.0,
+            depth: [0.0; MOD_DESTS],
+        }
+    }
+}
+
+impl ModParams {
+    fn active(&self) -> bool {
+        self.depth.iter().any(|d| *d != 0.0)
+    }
+
+    /// 形と点を名前から決める(curve の定番は点を入れる。custom は `points` の文字列)
+    pub fn set_shape(&mut self, name: &str, points: &str) {
+        self.shape = match name {
+            "triangle" => ModShape::Triangle,
+            "square" => ModShape::Square,
+            "saw_up" => ModShape::SawUp,
+            "saw_down" => ModShape::SawDown,
+            "random" => ModShape::Random,
+            "sine" => ModShape::Sine,
+            _ => ModShape::Curve,
+        };
+        if self.shape == ModShape::Curve {
+            self.curve = match preset_points(name) {
+                Some(p) => ModCurve::from_points(p),
+                None => ModCurve::parse(points).unwrap_or_else(|| {
+                    // 読めない・空のカーブは正弦の代わり
+                    self.shape = ModShape::Sine;
+                    ModCurve::default()
+                }),
+            };
+        }
+    }
+}
+
 /// 焼き込み済みの共通のつまみ(1 トラック分)。既定値は「従来と同じ音」
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ToneParams {
@@ -147,6 +406,8 @@ pub struct ToneParams {
     /// フィルタのエンベロープの減衰後の高さ 0..=1
     pub filter_sustain: f32,
     pub lfo: [LfoParams; 2],
+    /// 声ごとのモジュレーター(深さが全部 0 なら掛からない)
+    pub mods: [ModParams; 2],
 }
 
 impl Default for ToneParams {
@@ -168,6 +429,7 @@ impl Default for ToneParams {
                 },
                 LfoParams::default(),
             ],
+            mods: [ModParams::default(); 2],
         }
     }
 }
@@ -188,7 +450,27 @@ impl ToneParams {
             "lfo1_depth" => self.lfo[0].depth = v.clamp(0.0, 1.0),
             "lfo2_rate" => self.lfo[1].rate = v.clamp(0.05, 20.0),
             "lfo2_depth" => self.lfo[1].depth = v.clamp(0.0, 1.0),
-            _ => return false,
+            _ => {
+                // mod1_rate / mod2_cutoff …
+                let Some(rest) = name.strip_prefix("mod") else {
+                    return false;
+                };
+                let (k, key) = match rest.split_once('_') {
+                    Some(("1", key)) => (0, key),
+                    Some(("2", key)) => (1, key),
+                    _ => return false,
+                };
+                let m = &mut self.mods[k];
+                match key {
+                    "rate" => m.rate = v.clamp(1.0 / 32.0, 32.0),
+                    "hz" => m.hz = v.clamp(0.0, 40.0),
+                    "phase" => m.phase = v.clamp(0.0, 1.0),
+                    _ => match MOD_DEST_NAMES.iter().position(|d| *d == key) {
+                        Some(i) => m.depth[i] = v.clamp(-1.0, 1.0),
+                        None => return false,
+                    },
+                }
+            }
         }
         true
     }
@@ -201,6 +483,8 @@ impl ToneParams {
             && self.drive == 0.0
             && self.lfo[0].depth == 0.0
             && self.lfo[1].depth == 0.0
+            && !self.mods[0].active()
+            && !self.mods[1].active()
     }
 }
 
@@ -233,6 +517,13 @@ pub struct ToneVoice {
     pub position_add: f32,
     /// 変形の量に足す分(wavetable)
     pub warp_add: f32,
+    /// レゾナンス・ドライブに足す分(声ごとのモジュレーター)
+    pub res_add: f32,
+    pub drive_add: f32,
+    /// 声ごとのモジュレーターの位相・乱数の今の値と、この音の曲の位置(拍)
+    mod_phase: [f32; 2],
+    mod_hold: [f32; 2],
+    song_beat: f64,
     /// フィルタのエンベロープ
     fenv: f32,
     fenv_stage: u8,
@@ -309,6 +600,11 @@ impl ToneVoice {
             pan_mod: 0.0,
             position_add: 0.0,
             warp_add: 0.0,
+            res_add: 0.0,
+            drive_add: 0.0,
+            mod_phase: [0.0; 2],
+            mod_hold: [0.0; 2],
+            song_beat: song_beat(),
             fenv: 0.0,
             fenv_stage: 0,
             svf: [[Svf::default(); 2]; 2],
@@ -333,6 +629,14 @@ impl ToneVoice {
         self.drift_bright_to = self.rand();
         for k in 0..2 {
             self.lfo_hold[k] = self.rand();
+        }
+        // 声ごとのモジュレーターの乱数は、ほかの乱数の並びを変えないよう別の種から
+        let mut r = (seed ^ 0x2545_f491).wrapping_mul(0x9e37_79b9) | 1;
+        for h in self.mod_hold.iter_mut() {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            *h = (r as f32 / u32::MAX as f32) * 2.0 - 1.0;
         }
     }
 
@@ -365,6 +669,10 @@ impl ToneVoice {
 
     /// 音の頭に呼ぶ。ユニゾンの初期位相を乱数にする(analog があるとき。無ければ従来の固定の並び)
     pub fn start_phases(&mut self, p: &ToneParams, phases: &mut [f32; MAX_UNISON]) {
+        // 声ごとのモジュレーターは音の頭で始まりの位相へ(曲の拍に固定するものは control で求める)
+        for (ph, m) in self.mod_phase.iter_mut().zip(&p.mods) {
+            *ph = m.phase;
+        }
         if p.analog > 0.0 {
             for ph in phases.iter_mut() {
                 let r = self.rand() * 0.5 + 0.5;
@@ -450,6 +758,72 @@ impl ToneVoice {
                 LfoTarget::Warp => warp += v * l.depth * 0.5,
             }
         }
+        // 声ごとのモジュレーター(深さが 0 のものは計算しない)
+        let mut res = 0.0f32;
+        let mut drive = 0.0f32;
+        // 曲の位置は常に進める(途中のオートメーションで掛け始めても拍に合うように)
+        let beats = dt / beat_secs();
+        if p.mods[0].active() || p.mods[1].active() {
+            for k in 0..2 {
+                let m = &p.mods[k];
+                if !m.active() {
+                    continue;
+                }
+                // 位相: 音の頭からの経過か、曲の拍に固定か
+                let ph = match (m.retrig, m.hz > 0.0) {
+                    (ModRetrig::Song, false) => {
+                        ((self.song_beat * m.rate as f64 + m.phase as f64).rem_euclid(1.0)) as f32
+                    }
+                    _ => self.mod_phase[k],
+                };
+                let v = match m.shape {
+                    ModShape::Sine => (ph * std::f32::consts::TAU).sin(),
+                    ModShape::Triangle => 1.0 - 4.0 * (ph - 0.5).abs(),
+                    ModShape::Square => {
+                        if ph < 0.5 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
+                    }
+                    ModShape::SawUp => 2.0 * ph - 1.0,
+                    ModShape::SawDown => 1.0 - 2.0 * ph,
+                    ModShape::Random => self.mod_hold[k],
+                    ModShape::Curve => m.curve.at(ph),
+                };
+                let step = if m.hz > 0.0 {
+                    m.hz * dt
+                } else {
+                    m.rate * beats
+                };
+                let next = ph + step;
+                if next >= 1.0 && m.shape == ModShape::Random {
+                    // 周期ごとに次の値(声の乱数とは別に回す)
+                    let mut r = self.mod_hold[k].to_bits() | 1;
+                    r ^= r << 13;
+                    r ^= r >> 17;
+                    r ^= r << 5;
+                    self.mod_hold[k] = (r as f32 / u32::MAX as f32) * 2.0 - 1.0;
+                }
+                self.mod_phase[k] = next.fract();
+                let d = &m.depth;
+                pitch_semi += v * d[0] * 12.0;
+                cutoff_oct += v * d[1] * 4.0;
+                res += v * d[2] * 0.9;
+                if d[3] != 0.0 {
+                    let a = d[3].abs();
+                    let vv = if d[3] > 0.0 { v } else { -v };
+                    amp *= 1.0 - a * (0.5 - 0.5 * vv);
+                }
+                pan += v * d[4];
+                pos += v * d[5];
+                warp += v * d[6];
+                drive += v * d[7];
+            }
+        }
+        self.song_beat += beats as f64;
+        self.res_add = res;
+        self.drive_add = drive;
         // 揺らぎ: 音程 ±4 セント、明るさ ±0.15 オクターブ
         let drift_cents = p.analog * 4.0 * self.drift_pitch;
         let drift_oct = p.analog * 0.15 * self.drift_bright;
@@ -517,10 +891,15 @@ impl ToneVoice {
     #[inline]
     pub fn filter(&mut self, p: &ToneParams, c: &SvfCoefs, mid: f32, side: f32) -> (f32, f32) {
         let (mut m, mut s) = (mid, side);
-        if p.drive > 0.0 {
+        let drive = if self.drive_add != 0.0 {
+            (p.drive + self.drive_add).clamp(0.0, 1.0)
+        } else {
+            p.drive
+        };
+        if drive > 0.0 {
             // 左右それぞれで歪ませる(ADAA の tanh。1 + drive × 7 倍まで押し込み、音量は戻す)
-            let pre = 1.0 + p.drive * 7.0;
-            let post = 1.0 / (1.0 + p.drive * 2.0);
+            let pre = 1.0 + drive * 7.0;
+            let post = 1.0 / (1.0 + drive * 2.0);
             let (l, r) = (m + s, m - s);
             let l = self.drive[0].process(l * pre) * post;
             let r = if self.stereo {
@@ -559,6 +938,16 @@ impl ToneVoice {
         }
     }
 
+    /// レゾナンス(声ごとのモジュレーターの分を足す)
+    #[inline]
+    pub fn resonance(&self, base: f32) -> f32 {
+        if self.res_add != 0.0 {
+            (base + self.res_add).clamp(0.0, 0.95)
+        } else {
+            base
+        }
+    }
+
     /// パンの LFO を (mid, side) に掛ける
     #[inline]
     pub fn apply_pan(&self, mid: f32, side: f32) -> (f32, f32) {
@@ -584,6 +973,158 @@ mod tests {
         }
         for n in LfoTarget::NAMES {
             assert_eq!(LfoTarget::NAMES[LfoTarget::parse(n) as usize], n);
+        }
+    }
+
+    /// 32 サンプルごとに control を回し、各時点の値を集める
+    fn run_mod(
+        p: &ToneParams,
+        v: &mut ToneVoice,
+        steps: usize,
+        f: impl Fn(&ToneVoice) -> f32,
+    ) -> Vec<f32> {
+        let mut ph = [0.0f32; MAX_UNISON];
+        v.start_phases(p, &mut ph);
+        (0..steps)
+            .map(|_| {
+                v.control(p, 32, 48_000.0, false);
+                f(v)
+            })
+            .collect()
+    }
+
+    fn cutoff_mod(rate: f32, shape: &str) -> ToneParams {
+        let mut p = ToneParams::default();
+        p.mods[0].rate = rate;
+        p.mods[0].set_shape(shape, "");
+        p.mods[0].depth[1] = 0.5;
+        p
+    }
+
+    #[test]
+    fn mod_rate_follows_the_tempo() {
+        // 120 BPM(1 拍 0.5 秒)で 1/8(拍あたり 2 回)= 0.25 秒 = 375 ステップで 1 周期
+        set_beat_secs(0.5);
+        set_song_beat(0.0);
+        let p = cutoff_mod(2.0, "saw_up");
+        let mut v = ToneVoice::new(1);
+        let c = run_mod(&p, &mut v, 1200, |v| v.cutoff_mul.log2());
+        // 鋸歯の折り返し(急に下がる所)の間隔
+        let wraps: Vec<usize> = (1..c.len()).filter(|&i| c[i] < c[i - 1] - 0.5).collect();
+        assert!(wraps.len() >= 2, "{wraps:?}");
+        assert!(
+            wraps.windows(2).all(|w| (w[1] - w[0]).abs_diff(375) <= 1),
+            "{wraps:?}"
+        );
+        // テンポが倍になると周期は半分
+        set_beat_secs(0.25);
+        let mut v = ToneVoice::new(1);
+        let c = run_mod(&p, &mut v, 600, |v| v.cutoff_mul.log2());
+        let wraps: Vec<usize> = (1..c.len()).filter(|&i| c[i] < c[i - 1] - 0.5).collect();
+        assert!(
+            wraps.windows(2).all(|w| (w[1] - w[0]).abs_diff(188) <= 1),
+            "{wraps:?}"
+        );
+        set_beat_secs(0.5);
+    }
+
+    #[test]
+    fn note_retrig_restarts_and_song_mode_locks_to_the_beat() {
+        set_beat_secs(0.5);
+        let mut p = cutoff_mod(1.0, "saw_up");
+        // 音の頭で揺れ直す: 曲のどこで鳴らしても、頭の値は同じ
+        set_song_beat(0.3);
+        let a = run_mod(&p, &mut ToneVoice::new(1), 3, |v| v.cutoff_mul);
+        set_song_beat(2.7);
+        let b = run_mod(&p, &mut ToneVoice::new(2), 3, |v| v.cutoff_mul);
+        assert_eq!(a, b);
+        // 曲の拍に固定: 拍の 0.25 から鳴らすと、位相も 0.25 から(頭で鳴らした音の 0.25 拍後と同じ)
+        p.mods[0].retrig = ModRetrig::Song;
+        set_song_beat(0.25);
+        let late = run_mod(&p, &mut ToneVoice::new(3), 1, |v| v.cutoff_mul)[0];
+        set_song_beat(0.0);
+        let early = run_mod(&p, &mut ToneVoice::new(4), 376, |v| v.cutoff_mul);
+        // 0.25 拍 = 0.125 秒 = 187.5 ステップ後の値と同じ
+        let d = |i: usize| (late.log2() - early[i].log2()).abs();
+        assert!(
+            d(187).min(d(188)) < 0.02,
+            "{late} vs {} / {}",
+            early[187],
+            early[188]
+        );
+    }
+
+    #[test]
+    fn curves_follow_their_points() {
+        let c = ModCurve::parse("0,-1; 0.5,1; 1,-1").unwrap();
+        assert!((c.at(0.0) + 1.0).abs() < 1e-6);
+        assert!((c.at(0.25)).abs() < 1e-6);
+        assert!((c.at(0.5) - 1.0).abs() < 1e-6);
+        // 曲がり: 正で始めゆっくり
+        let slow = ModCurve::parse("0,0; 1,1,0.5").unwrap();
+        assert!(slow.at(0.5) < 0.5);
+        let fast = ModCurve::parse("0,0; 1,1,-0.5").unwrap();
+        assert!(fast.at(0.5) > 0.5);
+        // 段差(同じ x)
+        let step = ModCurve::parse("0,0; 0.5,0; 0.5,1; 1,1").unwrap();
+        assert_eq!((step.at(0.49), step.at(0.51)), (0.0, 1.0));
+        // 読めないもの
+        assert!(ModCurve::parse("0,0; 0.5").is_none());
+        assert!(ModCurve::parse("0.5,0; 0.2,1").is_none());
+        // 定番の形はどれも −1..1 の中で動く
+        for name in ["wub", "saw_down_curve", "yoi", "stairs"] {
+            let mut m = ModParams::default();
+            m.set_shape(name, "");
+            assert_eq!(m.shape, ModShape::Curve);
+            let vals: Vec<f32> = (0..=100).map(|i| m.curve.at(i as f32 / 100.0)).collect();
+            assert!(vals.iter().all(|v| (-1.0..=1.0).contains(v)), "{name}");
+            let span = vals.iter().fold(f32::MIN, |a, b| a.max(*b))
+                - vals.iter().fold(f32::MAX, |a, b| a.min(*b));
+            assert!(span > 1.0, "{name}");
+        }
+        // custom の読めない点は正弦に
+        let mut m = ModParams::default();
+        m.set_shape("custom", "nope");
+        assert_eq!(m.shape, ModShape::Sine);
+    }
+
+    #[test]
+    fn one_mod_drives_several_destinations() {
+        set_beat_secs(0.5);
+        let mut p = cutoff_mod(1.0, "sine");
+        p.mods[0].depth[5] = 0.5; // position
+        p.mods[0].depth[2] = -0.5; // レゾナンスは逆向き
+        p.mods[0].depth[7] = 0.5; // ドライブ
+        let mut v = ToneVoice::new(1);
+        let mut ph = [0.0f32; MAX_UNISON];
+        v.start_phases(&p, &mut ph);
+        for _ in 0..100 {
+            v.control(&p, 32, 48_000.0, false);
+        }
+        // サインの山の手前(位相 > 0): カットオフは開き、position は進み、レゾナンスは下がる
+        assert!(v.cutoff_mul > 1.0);
+        assert!(v.position_add > 0.0);
+        assert!(v.resonance(0.5) < 0.5);
+        assert!(v.drive_add > 0.0);
+        assert!(!v.plain);
+    }
+
+    #[test]
+    fn mod_knobs_are_automatable_and_default_is_plain() {
+        let mut p = ToneParams::default();
+        assert!(p.is_plain());
+        assert!(p.set_continuous("mod2_rate", 6.0));
+        assert!(p.set_continuous("mod1_cutoff", 0.7));
+        assert!(p.set_continuous("mod2_position", -0.4));
+        assert!(!p.set_continuous("mod3_rate", 1.0));
+        assert!(!p.set_continuous("mod1_nope", 1.0));
+        assert_eq!(p.mods[1].rate, 6.0);
+        assert_eq!(p.mods[0].depth[1], 0.7);
+        assert_eq!(p.mods[1].depth[5], -0.4);
+        assert!(!p.is_plain());
+        for n in MOD_DEST_NAMES {
+            let mut q = ToneParams::default();
+            assert!(q.set_continuous(&format!("mod1_{n}"), 0.1), "{n}");
         }
     }
 
