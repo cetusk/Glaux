@@ -124,6 +124,7 @@ const LABELS: Record<string, ToolLabel> = {
   // 素材
   import_sample: { short: "サンプルを取り込み", doing: "サンプルを取り込んでいます" },
   import_wavetable: { short: "ウェーブテーブルを作る", doing: "音声からウェーブテーブルを作っています" },
+  review_edits: { short: "直した所を確かめる", doing: "直した所の周りを確かめています" },
   make_wavetable: { short: "ウェーブテーブルを作り込む", doing: "ウェーブテーブルを作っています" },
   describe_wavetable: { short: "ウェーブテーブルを確かめる", doing: "ウェーブテーブルの中身を調べています" },
   wavetable_library: { short: "ウェーブテーブルの棚", doing: "ウェーブテーブルの棚を使っています" },

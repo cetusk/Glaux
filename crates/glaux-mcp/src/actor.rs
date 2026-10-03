@@ -81,6 +81,8 @@ pub struct Mutated {
     pub project_version: usize,
     /// 保存に失敗したときのエラーメッセージ(状態はメモリ上では反映済み)
     pub save_error: Option<String>,
+    /// 編集の後の確認(AI の道具の編集だけ。サーバーが付ける。glaux_core::aftercare)
+    pub aftercare: Option<serde_json::Value>,
 }
 
 /// `RevertEntry` の返り値: (revert エントリ, 衝突エントリ一覧, Mutated)。
@@ -657,6 +659,7 @@ fn mutated(
         changes,
         project_version: version(session, store),
         save_error,
+        aftercare: None,
     }
 }
 
@@ -731,6 +734,7 @@ fn handle(
                 changes: vec![],
                 project_version: version(session, store),
                 save_error: None,
+                aftercare: None,
             });
         }
         Request::RevertTo { label, reply } => {
@@ -898,6 +902,7 @@ fn undo_redo(
             changes: vec![],
             project_version: version(session, store),
             save_error: None,
+            aftercare: None,
         }
     };
     Ok((done, m))

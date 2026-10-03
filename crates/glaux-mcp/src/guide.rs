@@ -9,16 +9,17 @@
 pub const CORE: &str = "Glaux(AI と共同作業できる DAW)の編集サーバー。\
 進め方: get_project(include_notes: false)で構造 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
 apply_commands で編集。\
-相対編集: transpose_notes / shift_notes / quantize_notes / swing_notes / scale_velocity / transform_notes。構成: duplicate_clips / insert_bars / delete_bars。\
-曲作りは get_guide {topic: \"workflow\"} の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
-write_drums・write_chords・write_bassline・write_transition → 旋律 → 表情 → 点検)に沿う。\
-旋律は write_melody か develop_motif、点検は critique_melody。\
+相対編集: transpose_notes・shift_notes・quantize_notes・swing_notes・scale_velocity・transform_notes。構成: duplicate_clips・insert_bars・delete_bars。\
+曲作りは topic workflow の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
+write_drums・write_chords・write_bassline・write_transition → 旋律(critique_melody で点検)→ 表情 → 点検)に沿う。\
+旋律は write_melody か develop_motif。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio・analyze_sound。\
 人も並行して編集する。project_version が進んだら get_changes {since: 最後の entry_id}。\
-定石は get_guide {topic}(commands / workflow / melody / groove / instruments / genres / expression / mix / audio / sound_match / clap)。\
+定石は get_guide {topic}(commands・workflow・revise・melody・groove・instruments・genres・expression・mix・audio・sound_match・clap)。\
 ハネ(swing_notes)の後は apply_groove(quantize 0)を重ねる。仕上げは master_mix。\
-報告の前に critique_arrangement の warn を直し、analyze_harmony で調性、analyze_audio でバランスを見て、\
-結果を添える。音・ミックスを変えたら critique_mix の warn を直し compare_mix で比べる。大きな試行の前は checkpoint。";
+曲作りの報告前は critique_arrangement の warn を直し、analyze_harmony・analyze_audio の結果を添える。\
+修正は topic revise: 応答の aftercare の warn を直し、報告前に review_edits。\
+音・ミックスを変えたら critique_mix の warn を直し compare_mix。大きな試行の前は checkpoint。";
 
 /// (トピック名, 見出し, 本文)
 pub const TOPICS: &[(&str, &str, &str)] = &[
@@ -103,6 +104,25 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 点検表: 格子どおりが 95% を超えるトラックが無い / 強弱に幅がある / 3 分の曲でオートメーションが数本以上ある / \n\
 区間の energy に差がある(山と谷)/ 同じ型のまま 3 区間以上続くトラックが無い / 低い音域でトラックがぶつからない /\n\
 主旋律の critique_melody に warn が無い / マスターに master_mix の処理がある。",
+    ),
+    (
+        "revise",
+        "作った曲を直すとき(直す範囲は狭く、確かめる範囲は広く)",
+        "- 直す範囲は頼まれた所だけ(頼まれていないパート・区間を勝手に変えない)。確かめる範囲は広く取る。\n\
+- 直す前に読む: 対象のクリップに加え、前後 1〜2 小節、同じ小節のほかのパート(get_project の clip_ids で同じ区間のクリップ)、\n\
+  その小節の和音(analyze_harmony の start_tick / end_tick)、区間の計画(sections の energy・tracks・note)。\n\
+- ノートを変える道具の応答には aftercare が付く(変わった範囲 ranges と、その周りの点検 issues)。\n\
+  warn(clash = ほかのパートと半音でぶつかる、stale_copy / stale_section = 直す前と同じ中身だった繰り返しが古いまま、\n\
+  beyond_clip = クリップの外にはみ出す)は直すか、わざとなら報告で理由を言う。info(out_of_key・leap・velocity_step・\n\
+  denser / thinner・overlap)は意図と照らして見直す。\n\
+- 繰り返し: 「サビを直して」なら繰り返しの全部に当てる(duplicate_clips で置き直すか同じ編集)。「1 回目のサビを」ならそこだけ。\n\
+  どちらか分からなければ 1 か所だけ直し、報告で「ほかのサビにも当てるか」を尋ねる。\n\
+- 前後とのつなぎ: 直した範囲の頭と終わりで音程が跳ぶ・強さが段差になるなら、つなぎの音・強さを合わせる。\n\
+- 厚さ: 音を足して厚くなったら critique_mix で住み分けと音量、薄くなったら critique_arrangement で区間の盛り上がりを見る。\n\
+  ベース・キック・音色・エフェクトを変えたら compare_mix(render)で前後を比べる。\n\
+- 報告の前に review_edits(before_entry に今回の最初の編集、または back に今回の編集の数。音が変わったなら render: true)。\n\
+  報告には「直した所」「確かめた所(checked)」「残した知らせとその理由」を短く添える。\n\
+- 大きく直す前は checkpoint。結果が悪ければ revert_to で戻して別の案を試す。",
     ),
     (
         "melody",

@@ -203,6 +203,23 @@ pub struct CompareMixParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ReviewEditsParams {
+    /// 「前」にするチェックポイントの名前。checkpoint / before_entry / back のどれか 1 つ
+    /// (どれも無ければ直前の 1 編集の前)
+    #[serde(default)]
+    pub checkpoint: Option<String>,
+    /// 「前」にする履歴エントリ ID(そのエントリを適用する直前から今までをまとめて振り返る)
+    #[serde(default)]
+    pub before_entry: Option<String>,
+    /// 最新から n 個の編集を戻した所を「前」にする
+    #[serde(default)]
+    pub back: Option<usize>,
+    /// true で、変わった範囲を前後で描き出してミックスも比べる(compare_mix と同じ指標。数十秒かかることがある)
+    #[serde(default)]
+    pub render: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct AnalyzeHarmonyParams {
     /// 対象トラック ID の配列。省略で全トラック(ドラムは自動で除外される)。
     #[serde(default)]
@@ -4347,6 +4364,9 @@ fn mutated_json(m: &Mutated) -> Value {
     if let Some(err) = &m.save_error {
         v["save_error"] = json!(err);
     }
+    if let Some(a) = &m.aftercare {
+        v["aftercare"] = a.clone();
+    }
     v
 }
 
@@ -4638,6 +4658,51 @@ impl GlauxServer {
 
     /// 履歴の作者。アプリのチャットから起動した AI(接続先の URL に [`CHAT_QUERY`] が付く)なら
     /// そのモデル名、それ以外は接続元の名前(claude-code など)
+    /// 編集を適用し、ノートが変わったら編集の後の確認(glaux_core::aftercare)を応答に付ける。
+    /// 変わったクリップの周りだけを、ノートの上で調べる(音は描き出さない)
+    async fn apply_checked(
+        &self,
+        command: Command,
+        author: Author,
+        label: String,
+    ) -> Result<(EntryId, Mutated), String> {
+        let before = self.handle.get_project_shared().await.ok().map(|(p, _)| p);
+        let (id, mut m) = flatten(self.handle.apply(command, author, label).await)?;
+        let touches_notes = m.changes.iter().any(|c| {
+            matches!(
+                c,
+                glaux_core::Change::NotesChanged { .. } | glaux_core::Change::ClipsChanged { .. }
+            )
+        });
+        if let (true, Some(before)) = (touches_notes, before) {
+            if let Ok((after, _)) = self.handle.get_project_shared().await {
+                let mut clips: Vec<glaux_core::ClipId> = Vec::new();
+                for c in &m.changes {
+                    match c {
+                        glaux_core::Change::NotesChanged { clip } => clips.push(clip.clone()),
+                        glaux_core::Change::ClipsChanged { track } => {
+                            for p in [&before, &after] {
+                                if let Some(t) = p.track(track) {
+                                    clips.extend(t.clips.iter().map(|c| c.id.clone()));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let a = tokio::task::spawn_blocking(move || {
+                    glaux_core::aftercare::check(&before, &after, Some(&clips))
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                if !a.is_empty() {
+                    m.aftercare = serde_json::to_value(&a).ok();
+                }
+            }
+        }
+        Ok((id, m))
+    }
+
     fn author(&self, ctx: &RequestContext<RoleServer>) -> Author {
         let from_chat = ctx
             .extensions
@@ -4722,7 +4787,7 @@ impl GlauxServer {
         let changed = changes.len();
         let command = Command::UpdateNotes { clip, changes };
         let author = self.author(ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(changed);
@@ -5021,7 +5086,7 @@ impl GlauxServer {
         };
 
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, p.label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, p.label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         if !assigned.is_empty() {
@@ -5318,7 +5383,7 @@ impl GlauxServer {
         let label = format!("畳み込みリバーブ「{name}」を足す");
         let command = glaux_core::Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         Ok(JsonText(json!({
             "fx_id": fx_id.to_string(),
             "asset": imported.id.to_string(),
@@ -5392,7 +5457,7 @@ impl GlauxServer {
             };
             let command = glaux_core::Command::batch(label.clone(), cmds);
             let author = self.author(&ctx);
-            let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+            let (entry_id, m) = self.apply_checked(command, author, label).await?;
             v["applied"] = json!(true);
             v["entry_id"] = json!(entry_id.to_string());
             v["project_version"] = json!(m.project_version);
@@ -5497,7 +5562,7 @@ impl GlauxServer {
             };
             let command = glaux_core::Command::batch(label.clone(), cmds);
             let author = self.author(&ctx);
-            let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+            let (entry_id, m) = self.apply_checked(command, author, label).await?;
             v["applied"] = json!(true);
             v["entry_id"] = json!(entry_id.to_string());
             v["project_version"] = json!(m.project_version);
@@ -5512,6 +5577,112 @@ impl GlauxServer {
         } else {
             v["applied"] = json!(false);
         }
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ある時点からの修正をまとめて振り返る(直した後の確認)。「前」は checkpoint・before_entry・back で指定\
+        (省略で直前の 1 編集の前)。変わった範囲(トラック・小節)と、その周りの点検をまとめて返す: ほかのパートとの半音のぶつかり・\
+        調の外の音・前後の小節とのつなぎ目(跳躍・強さの段差)・直す前と同じ中身だった繰り返し(クリップ・同じ名前の区間)が古いまま・\
+        クリップからのはみ出し・音の数の増減(issues。warn は直す)。変わった範囲の和音(chords)と曲の調、\
+        構成の点検(critique_arrangement の warn のうち変わったトラックと曲全体のもの)。render: true で、変わった範囲を\
+        描き出してミックスも比べる(compare_mix と同じ指標)。修正の報告の前に呼び、checked と結果を添える。今のプロジェクトは変えない。"
+    )]
+    async fn review_edits(&self, params: Parameters<ReviewEditsParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("review_edits");
+        let p = params.0;
+        let point = match (p.checkpoint, p.before_entry, p.back) {
+            (Some(c), None, None) => glaux_core::HistoryPoint::Checkpoint(c),
+            (None, Some(e), None) => glaux_core::HistoryPoint::BeforeEntry(
+                glaux_core::EntryId::parse(&e).map_err(|e| e.to_string())?,
+            ),
+            (None, None, Some(n)) => glaux_core::HistoryPoint::Back(n),
+            (None, None, None) => glaux_core::HistoryPoint::Back(1),
+            _ => {
+                return Err(
+                    "checkpoint / before_entry / back はどれか 1 つだけ指定すること".to_owned(),
+                )
+            }
+        };
+        let (before, after, version, back) = self
+            .handle
+            .project_at(point)
+            .await?
+            .map_err(|e| e.to_string())?;
+        if back == 0 {
+            return Err("「前」が今と同じ地点です(振り返る編集がありません)".to_owned());
+        }
+        let render = p.render.unwrap_or(false);
+        let project_dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let care = glaux_core::aftercare::check(&before, &after, None);
+            let mut v = json!({
+                "edits_compared": back,
+                "project_version": version,
+                "ranges": care.ranges,
+                "checked": care.checked,
+                "issues": care.issues,
+            });
+            if care.omitted > 0 {
+                v["omitted_issues"] = json!(care.omitted);
+            }
+            if care.is_empty() {
+                v["summary"] = json!("ノートの変化はありません(音色・ミックスだけの変化なら compare_mix で比べる)");
+                return Ok(v);
+            }
+            // 変わった範囲(全トラックを通した最初と最後の小節)
+            let from = care.ranges.iter().map(|r| r.from_bar).min().unwrap_or(1);
+            let to = care.ranges.iter().map(|r| r.to_bar).max().unwrap_or(from);
+            let grid = glaux_core::arrange::bar_grid(&after, after.end().0 + glaux_core::PPQ * 8);
+            let tick_of = |bar: usize| grid.get(bar.saturating_sub(1)).map_or(0, |(s, _)| *s);
+            let range = (
+                glaux_core::Tick(tick_of(from)),
+                glaux_core::Tick(tick_of(to + 1).max(tick_of(from) + 1)),
+            );
+            let h = glaux_core::harmony::analyze(&after, None, Some(range));
+            let song_key = glaux_core::harmony::analyze(&after, None, None).key;
+            v["harmony"] = json!({
+                "song_key": song_key.as_ref().map(|k| k.name.clone()),
+                "range_key": h.key.as_ref().map(|k| k.name.clone()),
+                "out_of_key_ratio": h.out_of_key_ratio,
+                "chords": h.chords.iter().map(|c| json!({ "bar": c.bar, "chord": c.chord })).collect::<Vec<_>>(),
+            });
+            let names: Vec<&str> = care.ranges.iter().map(|r| r.track.as_str()).collect();
+            let crit = glaux_core::critique::critique(&after);
+            let findings: Vec<&glaux_core::critique::Finding> = crit
+                .findings
+                .iter()
+                .filter(|f| f.severity == "warn")
+                // 変わったトラックのものと、曲全体(どのトラックの名前も含まない)のもの
+                .filter(|f| {
+                    names.iter().any(|n| f.target.contains(n))
+                        || !after.tracks.iter().any(|t| f.target.contains(t.name.as_str()))
+                })
+                .take(10)
+                .collect();
+            v["arrangement"] = json!(findings);
+            if render {
+                let dir = std::path::Path::new(&project_dir);
+                let bank_before = glaux_engine::SampleBank::for_offline(&before, dir);
+                let bank_after = glaux_engine::SampleBank::for_offline(&after, dir);
+                match glaux_engine::compare_projects(&before, &after, None, Some(range), &bank_before, &bank_after) {
+                    Ok(c) => v["mix"] = serde_json::to_value(&c).unwrap_or(Value::Null),
+                    Err(e) => v["mix_error"] = json!(e.to_string()),
+                }
+            }
+            let warns = care.warn_count() + findings.len();
+            v["summary"] = json!(format!(
+                "{} トラック・{}〜{} 小節が変わった。直すべき所 {} 件、見直す候補 {} 件",
+                care.ranges.len(),
+                from,
+                to,
+                warns,
+                care.issues.len() - care.warn_count()
+            ));
+            Ok(v)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         Ok(JsonText(v))
     }
 
@@ -5902,7 +6073,7 @@ impl GlauxServer {
             glaux_core::Command::batch(edit_label.clone(), cmds)
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, edit_label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, edit_label).await?;
         // トラックのエフェクトも通して鳴らし、目標とどれだけ近いか確かめる
         let (project, _) = self.handle.get_project_shared().await?;
         let (pitch, hold) = (outcome.pitch, outcome.hold);
@@ -6038,7 +6209,7 @@ impl GlauxServer {
         );
         let author = self.author(&ctx);
         let command = glaux_core::Command::batch(label.clone(), refined.commands);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
         out["entry_id"] = json!(entry_id);
         out["refine"] = v;
@@ -6158,7 +6329,7 @@ impl GlauxServer {
         .await
         .map_err(|e| e.to_string())??;
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["preset"] = json!(name);
@@ -6294,7 +6465,7 @@ impl GlauxServer {
                 }),
             };
             let author = self.author(&ctx);
-            let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+            let (entry_id, m) = self.apply_checked(command, author, label).await?;
             let mut v = mutated_json(&m);
             v["entry_id"] = json!(entry_id);
             v["sfz"] = json!(sfz);
@@ -6336,7 +6507,7 @@ impl GlauxServer {
             }),
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["preset_name"] = json!(preset_name);
@@ -6427,7 +6598,7 @@ impl GlauxServer {
         let label = format!("{} にサンプル「{file_name}」を設定", track.name);
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["asset_id"] = json!(imported.id);
@@ -6509,7 +6680,7 @@ impl GlauxServer {
         let label = format!("{} のウェーブテーブルを「{file_name}」から作る", track.name);
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["asset_id"] = json!(t.imported.id);
@@ -6580,7 +6751,7 @@ impl GlauxServer {
         let label = format!("{} のウェーブテーブルを作る", track.name);
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["asset_id"] = json!(imported.id);
@@ -6698,7 +6869,7 @@ impl GlauxServer {
                 let label = format!("{} のウェーブテーブルを棚の「{name}」に", track.name);
                 let command = Command::batch(label.clone(), cmds);
                 let author = self.author(&ctx);
-                let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+                let (entry_id, m) = self.apply_checked(command, author, label).await?;
                 let mut v = mutated_json(&m);
                 v["entry_id"] = json!(entry_id);
                 v["asset_id"] = json!(imported.id);
@@ -6772,7 +6943,7 @@ impl GlauxServer {
         let label = format!("{track_name} に音声クリップ「{name}」を配置");
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["clip_id"] = json!(clip_id);
@@ -6827,7 +6998,7 @@ impl GlauxServer {
         let label = format!("音声クリップを譜起こし({} ノート)", t.note_count);
         let command = Command::batch(label.clone(), t.commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["clip_id"] = json!(t.clip_id);
@@ -6870,7 +7041,7 @@ impl GlauxServer {
         let label = format!("音声クリップをパートに分離({})", names.join(" / "));
         let command = Command::batch(label.clone(), s.commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["tracks"] = json!(s
@@ -6953,7 +7124,7 @@ impl GlauxServer {
         let cmds = crate::presets::apply_commands(track, &preset);
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["applied"] = json!(preset.name);
@@ -7036,7 +7207,7 @@ impl GlauxServer {
         )?;
         let label = format!("エフェクトのプリセット「{}」を追加", preset.name);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["fx_id"] = json!(fx_id);
@@ -7168,7 +7339,7 @@ impl GlauxServer {
         let label = format!("クリップ {} 個を複製", made.len());
         let command = Command::batch(label.clone(), made.into_iter().map(|(_, c)| c).collect());
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["clips"] = json!(new_ids);
@@ -7239,7 +7410,7 @@ impl GlauxServer {
         .map_err(|e| e.to_string())??;
         let command = Command::batch(b.label.clone(), b.commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, b.label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, b.label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["new_track"] = json!(b.new_track);
@@ -7289,7 +7460,7 @@ impl GlauxServer {
         .map_err(|e| e.to_string())??;
         let command = Command::batch(r.label.clone(), r.commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, r.label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, r.label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["sampler_track"] = json!(r.track);
@@ -7340,7 +7511,7 @@ impl GlauxServer {
             .map_err(|e| e.to_string())??;
         let command = Command::batch(imp.label.clone(), imp.commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, imp.label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, imp.label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["tempo_set"] = json!(imp.tempo_set);
@@ -7377,7 +7548,7 @@ impl GlauxServer {
                 .map_err(|e| e.to_string())??;
         let command = Command::batch(imp.label.clone(), imp.commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, imp.label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, imp.label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["tempo_set"] = json!(imp.tempo_set);
@@ -7442,7 +7613,7 @@ impl GlauxServer {
         }
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["start_tick"] = json!(start);
@@ -7717,7 +7888,7 @@ impl GlauxServer {
             Command::batch(label.clone(), commands)
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -7797,7 +7968,7 @@ impl GlauxServer {
         };
         let label = format!("ゴーストノートを {added} 個({name} の置き方)");
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["added"] = json!(added);
@@ -7895,7 +8066,7 @@ impl GlauxServer {
             Command::batch(label.clone(), cmds)
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(n_changed);
@@ -8062,7 +8233,7 @@ impl GlauxServer {
         let label = format!("コード進行({} 小節・{} 和音)", n_bars, chords_list.len());
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
@@ -8244,7 +8415,7 @@ impl GlauxServer {
         let label = format!("アルペジオ({}・{} 小節)", style_name, n_bars);
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
@@ -8403,7 +8574,7 @@ impl GlauxServer {
         let label = format!("ベースライン({n_bars} 小節)");
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
@@ -8535,7 +8706,7 @@ impl GlauxServer {
         let label = format!("ドラム({} の型・{} 小節)", style.name, p.bars);
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
@@ -8717,7 +8888,7 @@ impl GlauxServer {
             Command::batch(label.clone(), commands)
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
         out["entry_id"] = json!(entry_id);
         out["bar"] = json!(bar);
@@ -9065,7 +9236,9 @@ impl GlauxServer {
             ],
             label: label.clone(),
         };
-        let (entry_id, m) = flatten(self.handle.apply(command, self.author(&ctx), label).await)?;
+        let (entry_id, m) = self
+            .apply_checked(command, self.author(&ctx), label)
+            .await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["clip_id"] = json!(draft.clip_id);
@@ -9319,8 +9492,9 @@ impl GlauxServer {
                     ],
                     label: label.clone(),
                 };
-                let (song_entry, _) =
-                    flatten(self.handle.apply(command, self.author(&ctx), label).await)?;
+                let (song_entry, _) = self
+                    .apply_checked(command, self.author(&ctx), label)
+                    .await?;
                 entry["plan_entry_id"] = json!(pe);
                 entry["entry_id"] = json!(song_entry);
                 last_measure = Some(draft.measure);
@@ -9909,7 +10083,7 @@ impl GlauxServer {
         let label = format!("旋律の展開({} 小節)", total_bars);
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["clip_id"] = json!(clip_id);
@@ -10206,7 +10380,7 @@ impl GlauxServer {
             label: label.clone(),
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["placed"] = json!(placed);
@@ -10317,7 +10491,7 @@ impl GlauxServer {
         );
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let (after, _) = self.handle.get_project().await?;
         let meter = glaux_core::meter::meter_at(&after, start);
         let mut v = mutated_json(&m);
@@ -10601,7 +10775,7 @@ impl GlauxServer {
         let label = format!("拍の揺れ(長い拍 ×{long_ratio:.2}、{total} ノート)");
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -10722,7 +10896,7 @@ impl GlauxServer {
         let label = format!("音程の表情 {}({total} ノート)", p.kind);
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -10841,7 +11015,7 @@ impl GlauxServer {
         };
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -11027,7 +11201,7 @@ impl GlauxServer {
         let label = format!("装飾音 {}({total} ノート)", p.kind);
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["decorated"] = json!(total);
@@ -11093,7 +11267,7 @@ impl GlauxServer {
         let label = format!("旋律を {lead_ms:.0}ms 先に({total} ノート)");
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -11219,7 +11393,7 @@ impl GlauxServer {
         };
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -11331,7 +11505,7 @@ impl GlauxServer {
         let label = format!("ストローク {style}({chords} 和音)");
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["chords"] = json!(chords);
@@ -11552,7 +11726,7 @@ impl GlauxServer {
         let label = format!("ルーディメント {kind_name}");
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["added"] = json!(added.len());
@@ -11658,7 +11832,7 @@ impl GlauxServer {
         let label = format!("音の切り方 {}({total} ノート)", p.style);
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -11789,7 +11963,7 @@ impl GlauxServer {
             ],
         );
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["notes"] = json!(count);
@@ -11976,7 +12150,7 @@ impl GlauxServer {
         );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["added"] = json!(added_n);
@@ -12066,7 +12240,7 @@ impl GlauxServer {
         let label = format!("句の呼吸({} 小節目から {bars} 小節)", p.bar);
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let (after, _) = self.handle.get_project().await?;
         let secs = |t: u64| after.tempo_map.tick_to_seconds(glaux_core::Tick(t));
         let before_secs = |t: u64| project.tempo_map.tick_to_seconds(glaux_core::Tick(t));
@@ -12171,7 +12345,7 @@ impl GlauxServer {
         let label = format!("{} 小節目からテンポ {old} → {new}", p.bar);
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["bpm_before"] = json!(old);
@@ -12284,7 +12458,7 @@ impl GlauxServer {
         let label = format!("ヘミオラ({} 小節目から 2 小節)", p.bar);
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["accented"] = json!(touched);
@@ -12532,7 +12706,7 @@ impl GlauxServer {
             prop: glaux_core::TrackProp::Layers(layers.clone()),
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["layers"] = layers_json(&layers);
@@ -12663,7 +12837,7 @@ impl GlauxServer {
         }
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["macros"] = json!(macros
@@ -12760,7 +12934,7 @@ impl GlauxServer {
         let label = format!("変種 {k} を当てる({})", v.words.join("・"));
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
         out["entry_id"] = json!(entry_id);
         out["applied"] = list[k - 1].clone();
@@ -12854,7 +13028,7 @@ impl GlauxServer {
         let label = format!("音色を作る「{}」", p.text.trim());
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["track_id"] = json!(track_id.to_string());
@@ -12999,7 +13173,7 @@ impl GlauxServer {
         };
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["knobs"] = json!(crate::character::FEELS
@@ -13121,7 +13295,7 @@ impl GlauxServer {
         let r = crate::recipes::build(&project, &p.recipe, &args)?;
         let command = Command::batch(r.label.clone(), r.commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, r.label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, r.label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["steps"] = json!(r.steps);
@@ -13263,7 +13437,7 @@ impl GlauxServer {
             prop: glaux_core::TrackProp::Modulators(mods.clone()),
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["modulators"] = json!(mods);
@@ -13344,7 +13518,7 @@ impl GlauxServer {
         let label = format!("サステインペダル({total} ノート)");
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -13434,7 +13608,7 @@ impl GlauxServer {
         };
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
@@ -13493,7 +13667,7 @@ impl GlauxServer {
             sections: made.into_iter().map(|(m, _, _)| m).collect(),
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["sections"] = json!(sections_json);
@@ -13639,7 +13813,7 @@ impl GlauxServer {
             p.target, p.start, p.shape
         );
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["points"] = json!(n);
@@ -13760,7 +13934,7 @@ impl GlauxServer {
             Command::batch(label.clone(), commands)
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
         v["changed"] = json!(total);
