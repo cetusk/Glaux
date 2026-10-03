@@ -11,6 +11,7 @@
 //! - [`Session`] が Git ライクな履歴(undo/redo/checkpoint/revert/replay)を提供する。
 //! - ID は生成側が決める(コマンドは決定的)。
 
+pub mod aftercare;
 pub mod apply;
 pub mod arp;
 pub mod arrange;

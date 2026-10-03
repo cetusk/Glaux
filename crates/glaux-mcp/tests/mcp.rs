@@ -2009,6 +2009,82 @@ async fn write_wobble_switches_the_rate_by_beat_and_writes_notes() {
 }
 
 #[tokio::test]
+async fn edits_come_with_aftercare_and_review_edits_sums_them_up() {
+    let fx = setup().await;
+    // コード(C・E・G を 4 小節)と、同じ中身の旋律のクリップを 1 小節目と 3 小節目に
+    let phrase = json!([
+        { "id": "nt_ph0001", "pos": 0, "dur": 960, "pitch": 72, "vel": 100 },
+        { "id": "nt_ph0002", "pos": 960, "dur": 960, "pitch": 74, "vel": 100 },
+        { "id": "nt_ph0003", "pos": 1920, "dur": 1920, "pitch": 76, "vel": 100 }
+    ]);
+    let mut phrase2 = phrase.clone();
+    for (i, n) in phrase2.as_array_mut().unwrap().iter_mut().enumerate() {
+        n["id"] = json!(format!("nt_pq000{}", i + 1));
+    }
+    ok_json(&call(&fx, "apply_commands", json!({
+        "commands": [
+            { "op": "add_track", "track": { "id": "trk_chd001", "name": "Chords", "kind": "midi" } },
+            { "op": "add_clip", "track": "trk_chd001", "clip": { "id": "clp_chd001", "name": "c", "start": 0, "length": 15360, "kind": "midi",
+              "notes": [
+                { "id": "nt_cc0001", "pos": 0, "dur": 15360, "pitch": 60, "vel": 90 },
+                { "id": "nt_cc0002", "pos": 0, "dur": 15360, "pitch": 64, "vel": 90 },
+                { "id": "nt_cc0003", "pos": 0, "dur": 15360, "pitch": 67, "vel": 90 } ] } },
+            { "op": "add_track", "track": { "id": "trk_led001", "name": "Lead", "kind": "midi" } },
+            { "op": "add_clip", "track": "trk_led001", "clip": { "id": "clp_led001", "name": "A", "start": 0, "length": 3840, "kind": "midi", "notes": phrase } },
+            { "op": "add_clip", "track": "trk_led001", "clip": { "id": "clp_led002", "name": "A2", "start": 7680, "length": 3840, "kind": "midi", "notes": phrase2 } }
+        ],
+        "label": "下地"
+    })).await);
+    // 1 小節目の旋律の 2 つ目を半音下げる(D → C#: コードとぶつかり、3 小節目の同じ中身は古いまま)
+    let r = call(
+        &fx,
+        "transpose_notes",
+        json!({ "clip_id": "clp_led001", "semitones": -1, "note_ids": ["nt_ph0002"] }),
+    )
+    .await;
+    let v = ok_json(&r);
+    let care = &v["aftercare"];
+    assert_eq!(care["ranges"][0]["track"], "Lead");
+    let kinds: Vec<&str> = care["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"clash"), "{care}");
+    assert!(kinds.contains(&"stale_copy"), "{care}");
+    // ノートを変えない編集には付かない
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [ { "op": "set_title", "title": "曲" } ], "label": "題名" }),
+    )
+    .await;
+    assert!(ok_json(&r).get("aftercare").is_none());
+    // 2 つ前からまとめて振り返る(題名の変更 + 移調)
+    let r = call(&fx, "review_edits", json!({ "back": 2, "render": true })).await;
+    let v = ok_json(&r);
+    assert_eq!(v["edits_compared"], 2);
+    assert_eq!(v["ranges"].as_array().unwrap().len(), 1);
+    assert!(v["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["kind"] == "clash"));
+    assert!(v["harmony"]["chords"]
+        .as_array()
+        .is_some_and(|c| !c.is_empty()));
+    assert!(v["mix"].is_object() || v["mix_error"].is_string(), "{v}");
+    assert!(v["summary"].as_str().unwrap().contains("小節"));
+    // 振り返るものが無い
+    let r = call(&fx, "review_edits", json!({ "back": 1 })).await;
+    assert!(ok_json(&r)["summary"]
+        .as_str()
+        .unwrap()
+        .contains("ノートの変化はありません"));
+}
+
+#[tokio::test]
 async fn analyze_harmony_detects_key_and_chords() {
     let fx = setup().await;
     let r = call(
