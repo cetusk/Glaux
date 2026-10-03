@@ -444,7 +444,8 @@ fn large_history_is_compacted_by_size() {
     let kept = session.history().len();
     assert!((8..=12).contains(&kept), "{kept}");
     let after = fs::metadata(dir.join("history.jsonl")).unwrap().len();
-    assert!(after <= size / 4 + size / 40, "{after} / {size}");
+    // 1 行は約 size / 40。行の長さは時刻の桁数などで少し揺れるので、2 行分の余裕を見る
+    assert!(after <= size / 4 + size / 20, "{after} / {size}");
     drop(store);
     let (_s, reopened) = Store::open_or_create(dir_s).unwrap();
     assert_eq!(reopened.history().len(), kept);

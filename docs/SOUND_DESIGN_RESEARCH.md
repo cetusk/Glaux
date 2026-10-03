@@ -405,7 +405,11 @@ roexaudio.com、en.wikipedia.org(CLAP)、spectral-colors.com。
 | 7.6 合成方式 | ウェーブテーブルを作り込む道具(make_wavetable: 定番の変化・倍音の設計図・音声から作り、明るさ・倍音の帯・飽和・位相そろえ・なめらかに・混ぜるなどの加工を手順として残す。describe_wavetable で数値の要約、wavetable_library で共通の棚と配布形式の WAV の書き出し)、内蔵のテーブル 10 種、鳴らすときの変形 6 種(bend・squeeze・sync・mirror・quantize・fm)と LFO の行き先 warp、グロウル・リース・ニューロ・デジタルリードのプリセット、ウェーブテーブルの取り込み(import_wavetable)、fm4(4 オペレーター)、加算合成(additive)、グラニュラー(granular) |
 | 聴き比べ | アプリの中で、履歴の編集の前と今を音量をそろえて A / B で聴き比べる |
 
-まだのもの: 声ごとのモジュレーター(MSEG・変調行列)、macOS のプラグイン画面(AppKit は主スレッドでしか窓を作れないため、
+声ごとのモジュレーター(2026-10-03): subtractive・wavetable に 2 本。テンポ同期(拍あたりの回数・3 連・付点)、音の頭で揺れ直すか曲の拍に固定か、
+形(定番 + wub・yoi・stairs・自分で描くカーブ 16 点)、1 本から 8 つの行き先へ深さを変えて送る変調行列。write_wobble で揺れの速さを拍ごとに
+切り替える(「しゃべる」ワブル)。
+
+まだのもの: fm・fm4・additive の声ごとのモジュレーター、macOS のプラグイン画面(AppKit は主スレッドでしか窓を作れないため、
 プラグインのスレッドの作りを変える必要がある)。
 
 ## 9. 確かめきれなかったこと
