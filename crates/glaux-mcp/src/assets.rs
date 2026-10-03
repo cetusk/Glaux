@@ -78,6 +78,27 @@ pub fn import_audio(project_dir: &Path, src: &Path) -> Result<ImportedSample, St
 
 pub use glaux_engine::data::decode_audio;
 
+/// 音声ファイル(WAV / MP3 / FLAC など)をモノラルの波形とサンプルレートにする
+pub fn decode_mono(src: &Path) -> Result<(Vec<f32>, f32), String> {
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext == "wav" {
+        let d = glaux_engine::load_wav(src)?;
+        return Ok((d.frames, d.sample_rate));
+    }
+    let bytes =
+        std::fs::read(src).map_err(|e| format!("読み込めません({}): {e}", src.display()))?;
+    let (samples, channels, sr) = decode_audio(bytes, &ext)?;
+    let ch = channels.max(1) as usize;
+    let mono = samples
+        .chunks(ch)
+        .map(|c| c.iter().sum::<f32>() / ch as f32)
+        .collect();
+    Ok((mono, sr as f32))
+}
+
 /// 音声から作ったウェーブテーブルの取り込み結果
 pub struct ImportedTable {
     pub imported: ImportedSample,
@@ -95,24 +116,7 @@ pub fn import_wavetable(
     src: &Path,
     frames: usize,
 ) -> Result<ImportedTable, String> {
-    let ext = src
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let (mono, sample_rate) = if ext == "wav" {
-        let d = glaux_engine::load_wav(src)?;
-        (d.frames, d.sample_rate)
-    } else {
-        let bytes =
-            std::fs::read(src).map_err(|e| format!("読み込めません({}): {e}", src.display()))?;
-        let (samples, channels, sr) = decode_audio(bytes, &ext)?;
-        let ch = channels.max(1) as usize;
-        let mono = samples
-            .chunks(ch)
-            .map(|c| c.iter().sum::<f32>() / ch as f32)
-            .collect();
-        (mono, sr as f32)
-    };
+    let (mono, sample_rate) = decode_mono(src)?;
     let as_is = mono.len() >= 2048
         && mono.len() % 2048 == 0
         && mono.len() / 2048 <= glaux_dsp::MAX_USER_FRAMES;

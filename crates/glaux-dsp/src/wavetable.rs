@@ -30,7 +30,14 @@ const LEVELS: usize = 11;
 const MAX_HARMONIC: usize = N / 2 - 1;
 
 /// テーブル名(ParamSpec の choices と同じ並び)。
-pub const TABLE_NAMES: &[&str] = &["analog", "pulse", "vocal", "sync", "organ"];
+pub const TABLE_NAMES: &[&str] = &[
+    "analog", "pulse", "vocal", "sync", "organ", "fm", "growl", "fold", "harmonic", "digital",
+];
+
+/// 鳴らすときの変形(warp)の名前(ParamSpec の choices と同じ並び。0 = 変形しない)
+pub const WARP_NAMES: &[&str] = &[
+    "none", "bend", "squeeze", "sync", "mirror", "quantize", "fm",
+];
 
 /// 全テーブル([テーブル][フレーム][段][ROW])。
 struct Bank {
@@ -58,6 +65,24 @@ fn spectrum(table: usize, t: f32, planner: &mut FftPlanner<f32>) -> Vec<Complex<
     // 正弦成分(sin(2πhx))は複素係数 -i/2 に相当。ここでは実部・虚部をそのまま
     // 逆 FFT に入れて実数部を取るので、sin は (0, -a)、cos は (a, 0) で表す
     let sin = |a: f32| Complex::new(0.0, -a);
+    // 後から足したテーブルは、時間の形から作った 1 周期を倍音に分ける(wtedit の定番の変化と同じもの)
+    let shaped = match TABLE_NAMES[table] {
+        "fm" => Some("fm"),
+        "growl" => Some("growl"),
+        "fold" => Some("fold"),
+        "harmonic" => Some("harmonic_sweep"),
+        "digital" => Some("digital"),
+        _ => None,
+    };
+    if let Some(name) = shaped {
+        let cycle = crate::wtedit::shape_cycle(name, t).unwrap_or_else(|| vec![0.0; N]);
+        let mut buf: Vec<Complex<f32>> = cycle.iter().map(|v| Complex::new(*v, 0.0)).collect();
+        planner.plan_fft_forward(N).process(&mut buf);
+        for (h, v) in s.iter_mut().enumerate().skip(1) {
+            *v = buf[h] * (2.0 / N as f32);
+        }
+        return s;
+    }
     match TABLE_NAMES[table] {
         // sine → triangle → saw → square を倍音の混ぜ合わせで連続につなぐ
         "analog" => {
@@ -146,6 +171,20 @@ fn spectrum(table: usize, t: f32, planner: &mut FftPlanner<f32>) -> Vec<Complex<
         }
     }
     s
+}
+
+/// 内蔵のテーブル `table` の位置 `t`(0〜1)の 1 周期(全倍音。いちばん大きい所 0.9)。テーブルを作り込む元に使う
+pub fn builtin_cycle(table: usize, t: f32) -> Vec<f32> {
+    let mut planner = FftPlanner::<f32>::new();
+    let spec = spectrum(table.min(TABLE_NAMES.len() - 1), t, &mut planner);
+    let mut buf = vec![Complex::new(0.0f32, 0.0); N];
+    for (h, c) in spec.iter().enumerate().skip(1) {
+        buf[h] = *c;
+    }
+    planner.plan_fft_inverse(N).process(&mut buf);
+    let peak = buf.iter().map(|c| c.re.abs()).fold(0.0f32, f32::max);
+    let scale = if peak > 1e-6 { 0.9 / peak } else { 0.0 };
+    buf.iter().map(|c| c.re * scale).collect()
 }
 
 fn build_bank() -> Bank {
@@ -311,6 +350,18 @@ pub fn cycles_from_audio(x: &[f32], sample_rate: f32, frames: usize) -> Result<V
             k as f64 / (frames - 1) as f64
         };
         let mut at = first as f64 + (last as f64 - first as f64 - span - 3.0) * t;
+        // 音の高さがゆっくり動く素材(ビブラート・しゃくり)に合わせて、その場所で 1 周期の長さを測り直す
+        // (全体の長さから 15% 以内のときだけ。外れたら全体の長さのまま)
+        let span = match period {
+            Some(p) => {
+                let lo = (at as usize).saturating_sub(N);
+                let hi = ((at as usize) + 3 * N + (sample_rate / 30.0) as usize).min(x.len());
+                detect_period(&x[lo..hi], sample_rate)
+                    .filter(|q| (q / p - 1.0).abs() < 0.15)
+                    .unwrap_or(p)
+            }
+            None => span,
+        };
         // 高さがあるときは上向きのゼロ交差に合わせる(フレームの間で位相がそろい、position を動かしても濁らない)
         if period.is_some() {
             let from = at as usize;
@@ -339,6 +390,10 @@ pub fn cycles_from_audio(x: &[f32], sample_rate: f32, frames: usize) -> Result<V
         }
         let dc = cycle.iter().sum::<f32>() / N as f32;
         out.extend(cycle.iter().map(|v| v - dc));
+    }
+    // 枚数の間で基音の向きをそろえる(position を動かしても打ち消し合って細ったり濁ったりしない)
+    if period.is_some() {
+        crate::wtedit::align_phases(&mut out);
     }
     Ok(out)
 }
@@ -447,6 +502,9 @@ pub struct WavetableParams {
     pub tone: crate::tone::ToneParams,
     /// 音声から作ったテーブル(あればこちらを鳴らす。`table` は無視)
     pub user: Option<UserTableRef>,
+    /// 鳴らすときの変形([`WARP_NAMES`] の添字。0 = 変形しない)と、その量 0..=1
+    pub warp: u8,
+    pub warp_amount: f32,
 }
 
 const MAX_UNISON: usize = crate::tone::MAX_UNISON;
@@ -506,6 +564,46 @@ fn read(row: &[f32], phase: f32) -> f32 {
     let i = (x as usize).min(N - 1);
     let f = x - i as f32;
     row[i] + (row[i + 1] - row[i]) * f
+}
+
+/// 読む位置を変形する(位相 0..1 → 0..1)。`amount` 0..=1
+#[inline]
+fn warp_phase(mode: u8, amount: f32, ph: f32) -> f32 {
+    let a = amount.clamp(0.0, 1.0);
+    match mode {
+        // 曲げる: 前半を詰めて後半を伸ばす(山が前に寄る)
+        1 => {
+            let k = 1.0 + 7.0 * a;
+            ph.powf(1.0 / k)
+        }
+        // 押しつぶす: 波形の前半を細く(パルス幅を変えるような変化)
+        2 => {
+            let w = 0.5 - 0.45 * a;
+            if ph < w {
+                ph * 0.5 / w
+            } else {
+                0.5 + (ph - w) * 0.5 / (1.0 - w)
+            }
+        }
+        // シンク: 1 周期の中で 1 → 8 回読む(ギラつく)
+        3 => (ph * (1.0 + 7.0 * a)).fract(),
+        // 鏡写し: 前半で 1 周期を読み、後半で逆向きに読む(左右対称になって奇数倍音が増える)
+        4 => {
+            let m = if ph < 0.5 { ph * 2.0 } else { 2.0 - ph * 2.0 };
+            let m = m.min(0.999_999);
+            ph + (m - ph) * a
+        }
+        // FM: 同じ高さの正弦で読む位置を揺らす
+        6 => (ph + a * 0.6 * (std::f32::consts::TAU * ph).sin()).rem_euclid(1.0),
+        _ => ph,
+    }
+}
+
+/// 値を段に丸める(ビットを落としたような粗さ。`amount` 1 で 2 段)
+#[inline]
+fn quantize(v: f32, amount: f32) -> f32 {
+    let steps = 256f32 * (2.0f32 / 256.0).powf(amount.clamp(0.0, 1.0));
+    (v * steps).round() / steps
 }
 
 impl WavetableVoice {
@@ -685,7 +783,25 @@ impl WavetableVoice {
         }
         // いちばん高い声部で段を選ぶ(折り返しを出さない側に寄せる)
         let top = base * self.top_ratio;
-        let level = level_for(top, sr);
+        // 変形の量(LFO の分も足す)
+        let warp_amount = if self.tone.warp_add != 0.0 {
+            (p.warp_amount + self.tone.warp_add).clamp(0.0, 1.0)
+        } else {
+            p.warp_amount
+        };
+        let warp = if warp_amount > 0.0 && p.warp != 0 {
+            p.warp
+        } else {
+            0
+        };
+        // 変形で増える倍音のぶん、倍音を間引いた段を使う(折り返しを抑える)
+        let extra = match warp {
+            0 => 0,
+            3 => 1 + (warp_amount * 3.0) as usize,
+            5 => 0,
+            _ => 1,
+        };
+        let level = (level_for(top, sr) + extra).min(LEVELS - 1);
         let (row0, row1) = match &p.user {
             Some(u) => (u.0.row(f0, level), u.0.row(f0 + 1, level)),
             None => (bank.row(table, f0, level), bank.row(table, f0 + 1, level)),
@@ -699,9 +815,17 @@ impl WavetableVoice {
         for i in 0..n {
             let dt = base_dt * self.ratios[i] * self.tone.unison_detune(&p.tone, i);
             let ph = self.phases[i];
-            let a = read(row0, ph);
-            let b = read(row1, ph);
-            let v = a + (b - a) * ff;
+            let rp = if warp == 0 || warp == 5 {
+                ph
+            } else {
+                warp_phase(warp, warp_amount, ph)
+            };
+            let a = read(row0, rp);
+            let b = read(row1, rp);
+            let mut v = a + (b - a) * ff;
+            if warp == 5 {
+                v = quantize(v, warp_amount);
+            }
             osc += v;
             if stereo {
                 side += v * self.tone.unison_pan(&p.tone, i);
@@ -748,6 +872,8 @@ mod tests {
             filter_env: 0.0,
             tone: Default::default(),
             user: None,
+            warp: 0,
+            warp_amount: 0.0,
         }
     }
 
@@ -884,6 +1010,69 @@ mod tests {
         let raw = vec![0.1f32; 3 * N];
         assert_eq!(cycles_from_audio(&raw, 48_000.0, 16).unwrap().len(), 3 * N);
         assert!(cycles_from_audio(&[0.0; 5000], 48_000.0, 4).is_err());
+    }
+
+    #[test]
+    fn audio_with_vibrato_is_cut_at_the_local_period() {
+        // ビブラートのある 220Hz のノコギリ波。どの枚も 1 周期ぴったり(終わりと頭がつながる)
+        let sr = 48_000.0f32;
+        let mut ph = 0.0f32;
+        let x: Vec<f32> = (0..48_000)
+            .map(|i| {
+                let f = 220.0 * (1.0 + 0.04 * (std::f32::consts::TAU * 1.5 * i as f32 / sr).sin());
+                ph = (ph + f / sr).fract();
+                2.0 * ph - 1.0 + 0.3 * (std::f32::consts::TAU * ph).sin()
+            })
+            .collect();
+        let c = cycles_from_audio(&x, sr, 12).unwrap();
+        // 1 枚ずつ、基音以外がほとんど無いずれ(段差の続き)でないこと = 倍音の分布がノコギリ波に近い
+        let s = crate::wtedit::describe(&c, 12);
+        for r in &s.rows {
+            assert!(r.centroid > 2.0 && r.harmonics > 20, "{r:?}");
+        }
+        // 枚の間で大きく変わらない(同じ音色を切り出せている)
+        assert!(s.mean_change < 0.05, "{}", s.mean_change);
+    }
+
+    #[test]
+    fn warps_change_the_tone_and_none_keeps_it() {
+        let mut p = params();
+        p.table = 0;
+        p.position = 0.0; // 正弦
+        let plain = render(&p, 110.0, 9600);
+        // 量 0 なら変わらない(ビット単位で同じ)
+        p.warp = 3;
+        p.warp_amount = 0.0;
+        assert_eq!(render(&p, 110.0, 9600), plain);
+        // どの変形も、正弦に倍音を足す(2・3 倍音が出る)
+        let harm = |x: &[f32]| (2..10).map(|h| bin(x, 110.0 * h as f32)).sum::<f32>();
+        let base = harm(&plain[4800..]);
+        for w in 1..crate::wavetable::WARP_NAMES.len() as u8 {
+            p.warp = w;
+            p.warp_amount = 0.7;
+            let out = render(&p, 110.0, 9600);
+            assert!(
+                out.iter().all(|v| v.is_finite() && v.abs() < 4.0),
+                "warp {w}"
+            );
+            let more = harm(&out[4800..]);
+            assert!(more > base + 0.02, "warp {w}: {base} → {more}");
+        }
+    }
+
+    #[test]
+    fn new_builtin_tables_play_and_morph() {
+        for name in ["fm", "growl", "fold", "harmonic", "digital"] {
+            let mut p = params();
+            p.table = TABLE_NAMES.iter().position(|n| *n == name).unwrap() as u8;
+            p.position = 0.0;
+            let a = render(&p, 110.0, 4800);
+            p.position = 1.0;
+            let b = render(&p, 110.0, 4800);
+            let rms = |v: &[f32]| (v.iter().map(|x| x * x).sum::<f32>() / v.len() as f32).sqrt();
+            assert!(rms(&a[2400..]) > 0.05 && rms(&b[2400..]) > 0.05, "{name}");
+            assert_ne!(a, b, "{name} は position で変わる");
+        }
     }
 
     #[test]

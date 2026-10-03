@@ -49,6 +49,7 @@ mod voice;
 mod wave;
 mod wavetable;
 mod width;
+pub mod wtedit;
 
 pub use additive::{AdditiveParams, AdditiveVoice};
 pub use drum::{DrumKit, DrumParams};
@@ -71,7 +72,8 @@ pub use subtractive::{NoiseColor, SubtractiveParams, Waveform};
 pub use voice::{InstrumentKind, InstrumentParams, VoiceState};
 pub use wave::Wave;
 pub use wavetable::{
-    cycles_from_audio, UserTable, UserTableRef, WavetableParams, WavetableVoice, MAX_USER_FRAMES,
+    builtin_cycle, cycles_from_audio, UserTable, UserTableRef, WavetableParams, WavetableVoice,
+    MAX_USER_FRAMES, TABLE_NAMES, WARP_NAMES,
 };
 
 /// device 未設定トラックに使う既定の楽器名。

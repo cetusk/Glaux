@@ -240,6 +240,12 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   orig_bpm にループ素材の元のテンポを入れると曲のテンポに合わせて伸縮。\n\
 - 音声からウェーブテーブル: import_wavetable で声・楽器の 1 音・シンセの音を 2048 点 × N 枚のテーブルにして wavetable の table に\n\
   (時間変化を position で行き来する。pos_env・LFO で動かすとしゃべる・うねる音。配布形式のテーブル WAV もそのまま読める)。\n\
+- ウェーブテーブルを作り込む: make_wavetable で 元(shape = 定番の変化 / harmonics = 倍音の設計図 / audio / library / current)→\n\
+  edits(tilt・odd_even・band・saturate・fold・phase align・smooth・resize・mix など)。結果の summary(明るさの幅・急に変わる所・\n\
+  直流)を見て、source: current でさらに直す。describe_wavetable で中身の要約、wavetable_library で棚(save / load / export)。\n\
+  鳴らすときの変形は wavetable の warp(bend / squeeze / sync / mirror / quantize / fm)と warp_amount(modulate で動かすと\n\
+  position とは別の軸でうねる)。グロウル = growl か fold を position と warp_amount の 2 本の LFO で、\n\
+  リース = analog の saw 寄り + unison 2〜3・detune 10〜20 + 低めの cutoff。\n\
 - リサンプリング: resample_to_sampler で、作ったトラック(の範囲)をエフェクト込みで描き出してサンプラーの音源にする\n\
   (フレーズを弾き直す・スライスして並べ替える・ループして伸ばす)。元と同じ大きさは強さ 127 で root を弾いたとき。\n\
 - 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。\n\

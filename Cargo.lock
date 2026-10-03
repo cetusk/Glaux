@@ -1708,8 +1708,10 @@ name = "glaux-dsp"
 version = "0.2.1"
 dependencies = [
  "glaux-core",
+ "hound",
  "rustfft",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

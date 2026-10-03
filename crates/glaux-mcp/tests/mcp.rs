@@ -1802,6 +1802,129 @@ async fn import_wavetable_sets_a_table_made_from_audio() {
 }
 
 #[tokio::test]
+async fn make_wavetable_builds_edits_describes_and_shelves_tables() {
+    let fx = setup().await;
+    let lib = tempfile::tempdir().unwrap();
+    std::env::set_var("GLAUX_WAVETABLE_DIR", lib.path());
+    call(&fx, "apply_commands", add_track_args("trk_wtm001", "Growl")).await;
+    // 定番の変化 + 加工で作る
+    let r = call(
+        &fx,
+        "make_wavetable",
+        json!({
+            "track_id": "trk_wtm001",
+            "source": { "kind": "shape", "name": "growl" },
+            "frames": 32,
+            "edits": [
+                { "op": "mix", "with": { "kind": "shape", "name": "fold" }, "amount": 0.25 },
+                { "op": "smooth", "amount": 0.4 },
+                { "op": "normalize", "per_frame": true }
+            ],
+            "save_as": "グロウル 1",
+            "note": "テスト"
+        }),
+    )
+    .await;
+    let v = ok_json(&r);
+    assert_eq!(v["summary"]["frames"], 32);
+    assert_eq!(v["saved_as"], "グロウル 1");
+    let asset = v["asset_id"].as_str().unwrap().to_owned();
+    let p = ok_json(&call(&fx, "get_project", json!({})).await)["project"].clone();
+    assert_eq!(p["tracks"][0]["device"]["name"], "wavetable");
+    assert_eq!(p["tracks"][0]["device"]["params"]["table"], asset.as_str());
+    // 今のテーブルを直す(枚数を減らして暗く)
+    let r = call(
+        &fx,
+        "make_wavetable",
+        json!({
+            "track_id": "trk_wtm001",
+            "source": { "kind": "current" },
+            "edits": [ { "op": "resize", "frames": 8 }, { "op": "tilt", "db_per_octave": -3 } ]
+        }),
+    )
+    .await;
+    let v2 = ok_json(&r);
+    assert_eq!(v2["summary"]["frames"], 8);
+    let darker = v2["summary"]["centroid_range"][1].as_f64().unwrap();
+    let brighter = v["summary"]["centroid_range"][1].as_f64().unwrap();
+    assert!(darker < brighter, "{darker} < {brighter}");
+    // 要約と手順
+    let d = ok_json(
+        &call(
+            &fx,
+            "describe_wavetable",
+            json!({ "track_id": "trk_wtm001", "rows": 4 }),
+        )
+        .await,
+    );
+    assert_eq!(d["rows"].as_array().unwrap().len(), 4);
+    assert_eq!(d["recipe"]["source"]["kind"], "current");
+    assert!(d["shapes"].as_array().unwrap().len() >= 10);
+    // 棚: 一覧・読み込み・書き出し・削除
+    let l = ok_json(&call(&fx, "wavetable_library", json!({ "action": "list" })).await);
+    assert_eq!(l["tables"][0]["name"], "グロウル 1");
+    let dl = ok_json(
+        &call(
+            &fx,
+            "describe_wavetable",
+            json!({ "library": "グロウル 1" }),
+        )
+        .await,
+    );
+    assert_eq!(dl["frames"], 32);
+    assert_eq!(dl["recipe"]["source"]["name"], "growl");
+    let r = call(
+        &fx,
+        "wavetable_library",
+        json!({ "action": "load", "name": "グロウル 1", "track_id": "trk_wtm001" }),
+    )
+    .await;
+    assert_eq!(
+        ok_json(&r)["asset_id"],
+        asset.as_str(),
+        "同じ中身なら同じ素材"
+    );
+    let out = lib.path().join("out").join("growl.wav");
+    ok_json(
+        &call(
+            &fx,
+            "wavetable_library",
+            json!({ "action": "export", "track_id": "trk_wtm001", "path": out.to_string_lossy() }),
+        )
+        .await,
+    );
+    let rd = hound::WavReader::open(&out).unwrap();
+    assert_eq!(rd.len() as usize, 32 * 2048);
+    ok_json(
+        &call(
+            &fx,
+            "wavetable_library",
+            json!({ "action": "delete", "name": "グロウル 1" }),
+        )
+        .await,
+    );
+    let l = ok_json(&call(&fx, "wavetable_library", json!({ "action": "list" })).await);
+    assert!(l["tables"].as_array().unwrap().is_empty());
+    // 1 回ずつ undo で戻る(読み込み → 直す前 → 作る前)
+    for _ in 0..3 {
+        ok_json(&call(&fx, "undo", json!({})).await);
+    }
+    let p = ok_json(&call(&fx, "get_project", json!({})).await)["project"].clone();
+    assert!(p["tracks"][0]["device"].is_null());
+    // 間違った手順は、どこが悪いか分かる
+    let r = call(
+        &fx,
+        "make_wavetable",
+        json!({ "track_id": "trk_wtm001", "source": { "kind": "shape", "name": "fm" }, "edits": [ { "op": "explode" } ] }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    // warp のつまみは list_params に出る
+    let lp = ok_json(&call(&fx, "list_params", json!({})).await);
+    assert!(lp.to_string().contains("warp_amount"));
+}
+
+#[tokio::test]
 async fn analyze_harmony_detects_key_and_chords() {
     let fx = setup().await;
     let r = call(

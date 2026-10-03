@@ -305,6 +305,65 @@ pub struct ImportWavetableParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct MakeWavetableParams {
+    /// 音源を設定するトラック ID(`trk_xxxxxx`)。音源が wavetable ならテーブルだけ差し替え、それ以外なら wavetable にする
+    pub track_id: String,
+    /// 元。{kind: "shape", name}(定番の変化: sine_to_saw / sine_to_square / analog / pwm / sync / fm / fm_octave /
+    /// vowels / growl / fold / harmonic_sweep / digital / organ)、{kind: "harmonics", keys: [{pos, amps, phases?}]}
+    /// (位置 pos 0〜1 ごとの倍音の振幅。amps[0] が基音。phases は回転数 0〜1。位置の間は補間)、
+    /// {kind: "audio", path}(声・楽器の 1 音を切り出す)、{kind: "library", name}(棚)、{kind: "current"}(トラックの今のテーブル。
+    /// 直すとき)、{kind: "asset", id}
+    pub source: Value,
+    /// 作る枚数(2〜256。省略時 64。current / library / asset では元の枚数のまま。変えるなら edits の resize)
+    #[serde(default)]
+    pub frames: Option<u32>,
+    /// 加工の手順(順に当てる)。{op: "normalize", per_frame?} / {op: "remove_dc"} / {op: "tilt", db_per_octave} /
+    /// {op: "odd_even", odd, even} / {op: "band", from, to, gain_db} / {op: "lowpass", max} /
+    /// {op: "phase", mode: zero | align | random, seed?} / {op: "smooth", amount} / {op: "reverse"} /
+    /// {op: "resize", frames} / {op: "select", from, to} / {op: "saturate", drive} / {op: "fold", gain} /
+    /// {op: "mix", with: <元>, amount?} / {op: "concat", with: <元>}
+    #[serde(default)]
+    pub edits: Option<Vec<Value>>,
+    /// 棚にもこの名前で置く(全プロジェクト共通。同じ名前は上書き)
+    #[serde(default)]
+    pub save_as: Option<String>,
+    /// 棚に置くときのメモ
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DescribeWavetableParams {
+    /// トラック ID(その音源の今のテーブル)。library と排他
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// 棚のテーブルの名前
+    #[serde(default)]
+    pub library: Option<String>,
+    /// 抜き出す枚数(1〜32。省略時 8)
+    #[serde(default)]
+    pub rows: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WavetableLibraryParams {
+    /// list / save(トラックの今のテーブルを棚へ)/ load(棚からトラックへ)/ delete / export(WAV に書き出す)
+    pub action: String,
+    /// 棚の名前(save / load / delete。export では棚のものを書き出すとき)
+    #[serde(default)]
+    pub name: Option<String>,
+    /// トラック ID(save / load。export ではトラックの今のテーブルを書き出すとき)
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// export の書き出し先(絶対パス。.wav)
+    #[serde(default)]
+    pub path: Option<String>,
+    /// save のメモ
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ImportAudioClipParams {
     /// 置き先の音声トラック ID(`trk_xxxxxx`、kind: "audio")。
     pub track_id: String,
@@ -6457,6 +6516,219 @@ impl GlauxServer {
         v["frames"] = json!(t.frames);
         v["as_is"] = json!(t.as_is);
         Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ウェーブテーブルを作り込んで、トラックの音源(内蔵 wavetable)の table にする。source(元)から作り、\
+        edits(加工の手順)を順に当てる。元: 定番の変化 {kind: \"shape\", name}(sine_to_saw・pwm・sync・fm・vowels・growl・fold・\
+        harmonic_sweep・digital など)、倍音の設計図 {kind: \"harmonics\", keys: [{pos, amps}]}(位置ごとの倍音の振幅。間は補間)、\
+        音声 {kind: \"audio\", path}、棚 {kind: \"library\", name}、今のテーブル {kind: \"current\"}(直すとき)。\
+        加工: tilt(明るさの傾き)・odd_even(奇数・偶数の倍音)・band / lowpass(倍音の帯)・saturate / fold(倍音を増やす)・\
+        phase(align で枚数の間をそろえる)・smooth(position の変化をなめらかに)・resize / select / reverse(並び)・\
+        mix / concat(ほかのテーブルと混ぜる・つなぐ)・normalize / remove_dc。\
+        結果の summary(位置ごとの明るさ・倍音の数・変わり方・注意)で仕上がりを確かめ、気になれば source: current でさらに直す。\
+        作り方の手順は素材の隣に残り、save_as で全プロジェクト共通の棚にも置ける。1 回の undo で戻る。\
+        鳴らすときの変形(warp: bend / squeeze / sync / mirror / quantize / fm と warp_amount)は set_param で別に。"
+    )]
+    async fn make_wavetable(
+        &self,
+        params: Parameters<MakeWavetableParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("make_wavetable");
+        let p = params.0;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?
+            .clone();
+        let dir = self.handle.project_dir().await?;
+        let mut recipe =
+            json!({ "source": p.source, "edits": p.edits.clone().unwrap_or_default() });
+        if let Some(f) = p.frames {
+            recipe["frames"] = json!(f.clamp(2, 256));
+        }
+        let save_as = p.save_as.clone();
+        let note = p.note.clone().unwrap_or_default();
+        let project2 = project.clone();
+        let track2 = track.clone();
+        let recipe2 = recipe.clone();
+        let (cycles, imported, saved) = tokio::task::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let ctx = crate::wavetables::Ctx {
+                project: &project2,
+                project_dir: dir,
+                track: Some(&track2),
+            };
+            let cycles = crate::wavetables::build(&recipe2, &ctx)?;
+            let imported = crate::wavetables::write_asset(dir, &cycles, Some(&recipe2))?;
+            let saved = match &save_as {
+                Some(name) => Some(crate::wavetables::save_library(
+                    name,
+                    &cycles,
+                    &note,
+                    Some(recipe2.clone()),
+                )?),
+                None => None,
+            };
+            Ok::<_, String>((cycles, imported, saved))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let cmds = crate::wavetables::set_table_commands(&project, &track, &imported)?;
+        let label = format!("{} のウェーブテーブルを作る", track.name);
+        let command = Command::batch(label.clone(), cmds);
+        let author = self.author(&ctx);
+        let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+        let mut v = mutated_json(&m);
+        v["entry_id"] = json!(entry_id);
+        v["asset_id"] = json!(imported.id);
+        v["summary"] = crate::wavetables::summary_json(&cycles, 8);
+        if let Some(s) = saved {
+            v["saved_as"] = json!(s.name);
+        }
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ウェーブテーブルの中身を数値で要約する(耳の代わりに仕上がりを確かめる): 位置ごとの音量・明るさ(倍音の重心)・\
+        倍音の数・奇数倍音の割合・前の枚からの変わり方、明るさの幅、急に変わる所、直流、言葉の注意(notes)。\
+        track_id でその音源の今のテーブル、library で棚のもの。作り方の手順が残っていれば recipe も返す。\
+        定番の変化の一覧(shapes)も返す。"
+    )]
+    async fn describe_wavetable(&self, params: Parameters<DescribeWavetableParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("describe_wavetable");
+        let p = params.0;
+        let rows = p.rows.unwrap_or(8).clamp(1, 32) as usize;
+        let (project, _) = self.handle.get_project_shared().await?;
+        let dir = self.handle.project_dir().await?;
+        let dir = std::path::Path::new(&dir);
+        let (cycles, recipe, from) = match (&p.track_id, &p.library) {
+            (Some(t), None) => {
+                let id = glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?;
+                let track = project
+                    .track(&id)
+                    .ok_or_else(|| format!("track not found: {id}"))?;
+                let c = crate::wavetables::current_cycles(track, &project, dir)?;
+                let recipe = track
+                    .device
+                    .as_ref()
+                    .and_then(|d| match d.params.get("table") {
+                        Some(glaux_core::ParamValue::Enum(v)) => glaux_core::AssetId::parse(v).ok(),
+                        _ => None,
+                    })
+                    .and_then(|a| crate::wavetables::asset_recipe(&project, dir, &a));
+                (c, recipe, json!({ "track_id": t }))
+            }
+            (None, Some(name)) => {
+                let (c, meta) = crate::wavetables::load_library(name)?;
+                (c, meta.and_then(|m| m.recipe), json!({ "library": name }))
+            }
+            _ => return Err("track_id か library のどちらか 1 つを指定すること".to_owned()),
+        };
+        let mut v = crate::wavetables::summary_json(&cycles, rows);
+        v["from"] = from;
+        if let Some(r) = recipe {
+            v["recipe"] = r;
+        }
+        v["shapes"] = crate::wavetables::shapes_json();
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "ウェーブテーブルの棚(全プロジェクト共通): action = list(一覧)/ save(track_id の今のテーブルを name で置く)/ \
+        load(name をトラックの音源のテーブルにする。1 回の undo で戻る)/ delete(name を消す)/ \
+        export(track_id の今のテーブルか name の棚のものを path に WAV で書き出す。1 周期 2048 点の配布形式で Serum などでも読める)。\
+        棚の置き場に配布のテーブル(2048 点の倍数の WAV)を置けば、そのまま一覧に並ぶ。"
+    )]
+    async fn wavetable_library(
+        &self,
+        params: Parameters<WavetableLibraryParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("wavetable_library");
+        let p = params.0;
+        let need = |v: &Option<String>, what: &str| {
+            v.clone()
+                .ok_or_else(|| format!("{} には {what} を指定すること", p.action))
+        };
+        let (project, _) = self.handle.get_project_shared().await?;
+        let dir_s = self.handle.project_dir().await?;
+        let dir = std::path::Path::new(&dir_s);
+        let track_of = |t: &str| -> Result<glaux_core::Track, String> {
+            let id = glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?;
+            project
+                .track(&id)
+                .cloned()
+                .ok_or_else(|| format!("track not found: {id}"))
+        };
+        match p.action.as_str() {
+            "list" => Ok(JsonText(json!({
+                "dir": crate::wavetables::library_dir().to_string_lossy(),
+                "tables": crate::wavetables::list_library(),
+            }))),
+            "save" => {
+                let name = need(&p.name, "name")?;
+                let track = track_of(&need(&p.track_id, "track_id")?)?;
+                let cycles = crate::wavetables::current_cycles(&track, &project, dir)?;
+                let recipe = track
+                    .device
+                    .as_ref()
+                    .and_then(|d| match d.params.get("table") {
+                        Some(glaux_core::ParamValue::Enum(v)) => glaux_core::AssetId::parse(v).ok(),
+                        _ => None,
+                    })
+                    .and_then(|a| crate::wavetables::asset_recipe(&project, dir, &a));
+                let e = crate::wavetables::save_library(
+                    &name,
+                    &cycles,
+                    p.note.as_deref().unwrap_or(""),
+                    recipe,
+                )?;
+                Ok(JsonText(json!({ "saved": e.name, "frames": e.frames })))
+            }
+            "load" => {
+                let name = need(&p.name, "name")?;
+                let track = track_of(&need(&p.track_id, "track_id")?)?;
+                let (cycles, meta) = crate::wavetables::load_library(&name)?;
+                let recipe = meta.and_then(|m| m.recipe);
+                let imported = crate::wavetables::write_asset(dir, &cycles, recipe.as_ref())?;
+                let cmds = crate::wavetables::set_table_commands(&project, &track, &imported)?;
+                let label = format!("{} のウェーブテーブルを棚の「{name}」に", track.name);
+                let command = Command::batch(label.clone(), cmds);
+                let author = self.author(&ctx);
+                let (entry_id, m) = flatten(self.handle.apply(command, author, label).await)?;
+                let mut v = mutated_json(&m);
+                v["entry_id"] = json!(entry_id);
+                v["asset_id"] = json!(imported.id);
+                v["summary"] = crate::wavetables::summary_json(&cycles, 8);
+                Ok(JsonText(v))
+            }
+            "delete" => {
+                let name = need(&p.name, "name")?;
+                crate::wavetables::delete_library(&name)?;
+                Ok(JsonText(json!({ "deleted": name })))
+            }
+            "export" => {
+                let path = need(&p.path, "path")?;
+                let cycles = match (&p.track_id, &p.name) {
+                    (Some(t), None) => {
+                        crate::wavetables::current_cycles(&track_of(t)?, &project, dir)?
+                    }
+                    (None, Some(n)) => crate::wavetables::load_library(n)?.0,
+                    _ => return Err("export には track_id か name のどちらか 1 つを".to_owned()),
+                };
+                crate::wavetables::export_wav(&cycles, std::path::Path::new(&path))?;
+                Ok(JsonText(json!({
+                    "path": path,
+                    "frames": glaux_dsp::wtedit::frame_count(&cycles),
+                })))
+            }
+            other => Err(format!(
+                "action は list / save / load / delete / export(got: {other})"
+            )),
+        }
     }
 
     #[tool(

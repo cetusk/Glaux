@@ -244,6 +244,17 @@ fn factory_presets() -> Vec<Preset> {
         );
         d
     };
+    // wavetable に選択肢のつまみ(変形・LFO の行き先など)も入れる
+    let wavetable_with = |table: &str, params: &[(&str, f64)], enums: &[(&str, &str)]| {
+        let mut d = wavetable(table, params);
+        for (k, v) in enums {
+            d.params.insert(
+                (*k).to_owned(),
+                glaux_core::ParamValue::Enum((*v).to_owned()),
+            );
+        }
+        d
+    };
     // 雑音だけの subtractive(波形を消して、雑音の色を選ぶ)
     let noise_dev = |color: &str, params: &[(&str, f64)]| {
         let mut d = device("subtractive", params);
@@ -350,6 +361,109 @@ fn factory_presets() -> Vec<Preset> {
                 "distortion",
                 &[("drive_db", 10.0), ("mix", 0.5), ("level_db", -4.0)],
             )],
+        ),
+        preset(
+            "グロウルベース",
+            "うなる母音のテーブル(growl)を position と変形(FM)の 2 本の動きで揺らすダブステップのグロウル。\
+             position の LFO と LFO2(warp)の速さをテンポに合わせる(8 分 = BPM/30 Hz)。オートメーションで position を動かしても",
+            wavetable_with(
+                "growl",
+                &[
+                    ("position", 0.35),
+                    ("lfo_rate", 3.0),
+                    ("lfo_depth", 0.5),
+                    ("warp_amount", 0.25),
+                    ("lfo2_rate", 1.5),
+                    ("lfo2_depth", 0.5),
+                    ("unison", 2.0),
+                    ("detune", 8.0),
+                    ("cutoff", 4000.0),
+                    ("attack", 0.003),
+                    ("sustain", 1.0),
+                    ("release", 0.08),
+                    ("gain_db", -10.0),
+                ],
+                &[("warp", "fm"), ("lfo2_target", "warp")],
+            ),
+            vec![fx(
+                "distortion",
+                &[("drive_db", 8.0), ("mix", 0.45), ("level_db", -4.0)],
+            )],
+        ),
+        preset(
+            "リースベース",
+            "わずかにずらしたノコギリ波を重ねてうねらせる、ドラムンベース・ベースミュージックの太い低音。\
+             低めのカットオフをゆっくり揺らす。左右には広げない(低音は真ん中に)",
+            wavetable(
+                "analog",
+                &[
+                    ("position", 0.66),
+                    ("unison", 3.0),
+                    ("detune", 18.0),
+                    ("cutoff", 900.0),
+                    ("resonance", 0.15),
+                    ("lfo1_rate", 0.3),
+                    ("lfo1_depth", 0.2),
+                    ("attack", 0.005),
+                    ("sustain", 1.0),
+                    ("release", 0.12),
+                    ("gain_db", -10.0),
+                ],
+            ),
+            vec![fx(
+                "distortion",
+                &[("drive_db", 6.0), ("mix", 0.35), ("level_db", -3.0)],
+            )],
+        ),
+        preset(
+            "ニューロベース",
+            "ウェーブフォールド(fold)にシンクの変形を掛け、LFO2 で変形の量を細かく揺らす荒れたベース(ニューロファンク)。\
+             position をオートメーションで動かすと表情が変わる",
+            wavetable_with(
+                "fold",
+                &[
+                    ("position", 0.5),
+                    ("lfo_rate", 2.0),
+                    ("lfo_depth", 0.3),
+                    ("warp_amount", 0.3),
+                    ("lfo2_rate", 4.0),
+                    ("lfo2_depth", 0.4),
+                    ("cutoff", 8000.0),
+                    ("attack", 0.002),
+                    ("sustain", 1.0),
+                    ("release", 0.06),
+                    ("gain_db", -12.0),
+                ],
+                &[("warp", "sync"), ("lfo2_target", "warp"), ("lfo2_shape", "square")],
+            ),
+            vec![fx(
+                "distortion",
+                &[("drive_db", 12.0), ("mix", 0.55), ("level_db", -6.0)],
+            )],
+        ),
+        preset(
+            "デジタルリード",
+            "量子化したノコギリ(digital)を曲げる変形(bend)で鋭くした、粗いデジタルのリード。左右に広げて付点 8 分のディレイ",
+            wavetable_with(
+                "digital",
+                &[
+                    ("position", 0.4),
+                    ("warp_amount", 0.3),
+                    ("unison", 3.0),
+                    ("detune", 12.0),
+                    ("spread", 0.6),
+                    ("cutoff", 7000.0),
+                    ("attack", 0.005),
+                    ("sustain", 0.85),
+                    ("release", 0.25),
+                    ("gain_db", -14.0),
+                ],
+                &[("warp", "bend")],
+            ),
+            vec![
+                fx("delay", &[("time_ms", 375.0), ("feedback", 0.3), ("mix", 0.18), ("ping_pong", 1.0)]),
+                fx("reverb", &[("mix", 0.15), ("size", 0.5)]),
+            ],
         ),
         preset(
             "母音パッド",
@@ -871,7 +985,7 @@ fn factory_presets() -> Vec<Preset> {
 
 /// 出荷時プリセットの版。上げると次回起動時に同名の出荷時プリセットを更新する
 /// (ユーザーが独自に作った別名のプリセットには触れない)。
-const FACTORY_VERSION: &str = "v8";
+const FACTORY_VERSION: &str = "v9";
 
 /// 出荷時プリセットを導入・更新する(アプリ起動時に呼ぶ)。
 /// - マーカーが現行版: 何もしない(ユーザーが削除したものを復活させない)
@@ -1091,6 +1205,39 @@ mod tests {
             unreachable!()
         };
         assert_eq!(sp.attack, 4.0);
+    }
+
+    /// ウェーブテーブルの出荷時プリセットは、低い音で鳴らしても無音にならず、割れもしない
+    #[test]
+    fn wavetable_factory_presets_sound() {
+        use glaux_core::{Project, TrackId, TrackKind};
+        for preset in factory_presets().into_iter().filter(
+            |p| matches!(&p.device.source, PluginSource::Builtin { name } if name == "wavetable"),
+        ) {
+            let mut project = Project::new("t");
+            let track = Track::new(TrackId::new(), "W", TrackKind::Midi);
+            project.tracks.push(track.clone());
+            for c in apply_commands(&track, &preset) {
+                project
+                    .apply(&c)
+                    .unwrap_or_else(|e| panic!("{}: {e}", preset.name));
+            }
+            let out = glaux_engine::export::render_track_note(
+                &project,
+                &track.id,
+                45,
+                110,
+                1.0,
+                48_000.0,
+                &Default::default(),
+            )
+            .unwrap();
+            let body = &out[out.len() / 8..out.len() / 2];
+            let rms = (body.iter().map(|v| v * v).sum::<f32>() / body.len() as f32).sqrt();
+            let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(rms > 0.01, "{}: 小さすぎる {rms}", preset.name);
+            assert!(peak < 1.0, "{}: 割れる {peak}", preset.name);
+        }
     }
 
     #[test]

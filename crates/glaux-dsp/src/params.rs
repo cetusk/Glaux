@@ -169,10 +169,10 @@ const TONE_LFO1_TARGET: ParamSpec = ParamSpec {
     display_name: "LFO1 行き先",
     unit: None,
     range: ParamRange::Enum {
-        choices: &["pitch", "cutoff", "amp", "pan", "position"],
+        choices: &["pitch", "cutoff", "amp", "pan", "position", "warp"],
         default: "cutoff",
     },
-    description: "LFO1 で動かすもの。pitch(ビブラート)、cutoff(ワウ・ウォブル)、amp(トレモロ)、pan(オートパン)、position(ウェーブテーブルの位置。wavetable だけ)。",
+    description: "LFO1 で動かすもの。pitch(ビブラート)、cutoff(ワウ・ウォブル)、amp(トレモロ)、pan(オートパン)、position(ウェーブテーブルの位置。wavetable だけ)、warp(ウェーブテーブルの変形の量。wavetable だけ)。",
 };
 
 const TONE_LFO2_RATE: ParamSpec = ParamSpec {
@@ -217,7 +217,7 @@ const TONE_LFO2_TARGET: ParamSpec = ParamSpec {
     display_name: "LFO2 行き先",
     unit: None,
     range: ParamRange::Enum {
-        choices: &["pitch", "cutoff", "amp", "pan", "position"],
+        choices: &["pitch", "cutoff", "amp", "pan", "position", "warp"],
         default: "cutoff",
     },
     description: "LFO2 で動かすもの(LFO1 と同じ)。",
@@ -772,7 +772,10 @@ pub static WAVETABLE_SPECS: &[ParamSpec] = &[
         description: "波形の並び(position で行き来する)。analog = 正弦→三角→ノコギリ→矩形、\
             pulse = パルス幅 50%→5%(細く鼻にかかる)、vocal = 母音 あ→え→い→お→う(しゃべるような音)、\
             sync = ハードシンク(ギラついた金属的な変化。EDM のリード・ベース)、\
-            organ = 倍音を 1 本ずつ足すドローバー(丸い→きらびやか)。\
+            organ = 倍音を 1 本ずつ足すドローバー(丸い→きらびやか)、fm = FM の深さ 0→8(ベル→濁ったうなり)、\
+            growl = うなる母音 お→あ→え(ダブステップのグロウル)、fold = ウェーブフォールド(折り返すほど荒れる。ニューロ)、\
+            harmonic = 明るい倍音の帯が下から上へ動く、digital = ノコギリを 64→2 段に量子化(粗いデジタルの音)。\
+            make_wavetable で倍音の設計図・定番の変化・加工から作ったテーブルも素材の ID で入る。\
             import_wavetable で音声から作ったテーブルは素材の ID(sha256:…)が入る(声・楽器の 1 音の時間変化を\
             position で行き来する。頭が 0、終わりが 1)。",
     },
@@ -957,6 +960,32 @@ pub static WAVETABLE_SPECS: &[ParamSpec] = &[
             skew: None,
         },
         description: "鳴り始めにカットオフを開く量(1 で約 +3 オクターブ)。0 は開かない(従来)。filter_decay で開いてから閉じるまでの時間を決める(0 なら音量の ADSR に従う)。",
+    },
+    ParamSpec {
+        name: "warp",
+        display_name: "変形",
+        unit: None,
+        range: ParamRange::Enum {
+            choices: crate::wavetable::WARP_NAMES,
+            default: "none",
+        },
+        description: "鳴らすときに波形を変形する(テーブルはそのまま。量は warp_amount)。bend = 山を前に寄せる(明るく鋭く)、\
+            squeeze = 前半を細く(パルス幅を変えるような鼻にかかった変化)、sync = 1 周期に何度も読む(ギラつくシンク)、\
+            mirror = 左右対称に折り返す(中空の太い音)、quantize = 値を段に丸める(ビットを落とした粗さ)、\
+            fm = 同じ高さの正弦で揺らす(ベル・金属的なうなり)。warp_amount をオートメーション・modulate で動かすとうねる。",
+    },
+    ParamSpec {
+        name: "warp_amount",
+        display_name: "変形の量",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "変形(warp)の量 0〜1。0 は変形しない。動かすとテーブルの position とは別の軸で音色が変わる\
+            (ウォブル・グロウルに 2 つ目の動きを足す)。",
     },
     TONE_SPREAD,
     TONE_ANALOG,
@@ -2595,6 +2624,7 @@ impl crate::InstrumentParams {
                 "release" => p.release = value.clamp(0.01, 8.0),
                 "gain_db" => p.gain = db_to_amp(value.clamp(-24.0, 6.0)),
                 "filter_env" => p.filter_env = value.clamp(0.0, 1.0),
+                "warp_amount" => p.warp_amount = value.clamp(0.0, 1.0),
                 _ => return p.tone.set_continuous(name, value),
             },
         }
@@ -2748,6 +2778,11 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 tone: bake_tone(map, s),
                 // 音声から作ったテーブル(table が素材の ID)はエンジンが素材から作って入れる
                 user: None,
+                warp: crate::wavetable::WARP_NAMES
+                    .iter()
+                    .position(|n| *n == get_enum(map, s, "warp"))
+                    .unwrap_or(0) as u8,
+                warp_amount: get_f32(map, s, "warp_amount").clamp(0.0, 1.0),
             };
             (InstrumentKind::Wavetable, InstrumentParams::Wavetable(p))
         }

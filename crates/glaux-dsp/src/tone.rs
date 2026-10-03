@@ -86,10 +86,12 @@ pub enum LfoTarget {
     Pan,
     /// ウェーブテーブルの位置(wavetable だけ。深さ 1 で ±0.5)
     Position,
+    /// ウェーブテーブルの変形の量(wavetable だけ。深さ 1 で ±0.5)
+    Warp,
 }
 
 impl LfoTarget {
-    pub const NAMES: [&'static str; 5] = ["pitch", "cutoff", "amp", "pan", "position"];
+    pub const NAMES: [&'static str; 6] = ["pitch", "cutoff", "amp", "pan", "position", "warp"];
 
     pub fn parse(s: &str) -> LfoTarget {
         match s {
@@ -97,6 +99,7 @@ impl LfoTarget {
             "amp" => LfoTarget::Amp,
             "pan" => LfoTarget::Pan,
             "position" => LfoTarget::Position,
+            "warp" => LfoTarget::Warp,
             _ => LfoTarget::Cutoff,
         }
     }
@@ -228,6 +231,8 @@ pub struct ToneVoice {
     pub amp_mul: f32,
     pub pan_mod: f32,
     pub position_add: f32,
+    /// 変形の量に足す分(wavetable)
+    pub warp_add: f32,
     /// フィルタのエンベロープ
     fenv: f32,
     fenv_stage: u8,
@@ -303,6 +308,7 @@ impl ToneVoice {
             amp_mul: 1.0,
             pan_mod: 0.0,
             position_add: 0.0,
+            warp_add: 0.0,
             fenv: 0.0,
             fenv_stage: 0,
             svf: [[Svf::default(); 2]; 2],
@@ -410,6 +416,7 @@ impl ToneVoice {
         let mut amp = 1.0f32;
         let mut pan = 0.0f32;
         let mut pos = 0.0f32;
+        let mut warp = 0.0f32;
         for k in 0..2 {
             let l = p.lfo[k];
             if l.depth <= 0.0 {
@@ -440,6 +447,7 @@ impl ToneVoice {
                 LfoTarget::Amp => amp *= 1.0 - l.depth * (0.5 - 0.5 * v),
                 LfoTarget::Pan => pan += v * l.depth,
                 LfoTarget::Position => pos += v * l.depth * 0.5,
+                LfoTarget::Warp => warp += v * l.depth * 0.5,
             }
         }
         // 揺らぎ: 音程 ±4 セント、明るさ ±0.15 オクターブ
@@ -463,6 +471,7 @@ impl ToneVoice {
         };
         self.pan_mod = pan.clamp(-1.0, 1.0);
         self.position_add = pos;
+        self.warp_add = warp;
         self.stereo = p.spread > 0.0 || pan != 0.0;
     }
 

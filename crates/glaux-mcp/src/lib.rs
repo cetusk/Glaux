@@ -35,4 +35,5 @@ pub mod stems;
 pub mod store;
 pub mod transcribe;
 pub mod variants;
+pub mod wavetables;
 pub mod words;
