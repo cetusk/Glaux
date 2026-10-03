@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import { APP_VERSION, APP_VERSION_DETAIL } from "./appVersion";
   import {
     ACCENT_PRESETS,
     applyTheme,
@@ -279,7 +280,6 @@
     { key: "about", label: "Glaux について", icon: "info" },
   ];
 
-  const APP_VERSION = __APP_VERSION__;
   const REPO_URL = "https://github.com/cetusk/Glaux";
   let urlCopied = $state(false);
   async function copyRepoUrl() {
@@ -630,7 +630,7 @@
       {:else if settingsUi.tab === "about"}
         <div class="about">
           <img class="about-logo" src="/glaux-logo.png" alt="Glaux" width="320" height="132" />
-          <div class="about-ver">バージョン {APP_VERSION}</div>
+          <div class="about-ver" title={APP_VERSION_DETAIL}>バージョン {APP_VERSION}</div>
           <p>Glaux は、AI と一緒に曲を作れる、シンプルで軽いデスクトップの DAW です。画面で手を動かしても、チャットで AI に頼んでも、同じ曲を同じように編集できます。</p>
           <ul>
             <li>編集はすべて履歴に残り、人と AI のどちらが何をしたかが分かります。どの編集も後から打ち消せます</li>

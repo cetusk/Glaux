@@ -1,6 +1,7 @@
 <script lang="ts">
   // ステータスバー: プロジェクトフォルダ・音の処理の負荷・デバイス・MCP・版数(押すと設定・コピー)
   import Icon from "./Icon.svelte";
+  import { APP_VERSION, APP_VERSION_DETAIL } from "./appVersion";
   import { openSettings } from "./settings.svelte";
   import { transportStore } from "./transport.svelte";
   import type { AppInfo } from "./types";
@@ -96,7 +97,12 @@
         ><Icon name={mcpCopied ? "check" : "link"} size={12} />{mcpCopied ? "コピーしました" : mcpLabel(info.mcp_url)}</button
       >
     {/if}
-    <span class="it" title="版数(編集・取り消し・やり直しのたびに増える)">v{projectVersion}</span>
+    <span class="it" title="この曲の編集の回数(編集・取り消し・やり直しのたびに増える)"
+      ><Icon name="history" size={12} />編集 {projectVersion}</span
+    >
+    <button class="it" onclick={() => openSettings("about")} title={`${APP_VERSION_DETAIL}(クリックで「Glaux について」)`}
+      >v{APP_VERSION}</button
+    >
   </div>
 </footer>
 
