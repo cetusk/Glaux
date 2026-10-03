@@ -167,13 +167,80 @@
     scrollToBottom(true);
   }
 
-  // 入力欄は内容に合わせて高くなる(1 行〜5 行。それ以上は欄の中でスクロール)
+  // 入力欄は内容に合わせて高くなる(1 行〜5 行。それ以上は欄の中でスクロール)。
+  // 上のハンドルで高さを決めたら、その高さに固定する(チャット欄の高さの中で。ダブルクリックで自動に戻す)
   const MAX_LINES = 5;
+  /** 入力欄より上に最低限残す高さ(見出しと会話の表示) */
+  const KEEP_ABOVE = 150;
+  const INPUT_MIN = 40;
   let inputEl: HTMLTextAreaElement | undefined = $state();
+  let chatH = $state(0);
+  let inputH = $state<number | null>(loadInputH());
+  function loadInputH(): number | null {
+    try {
+      const v = Number(localStorage.getItem("glaux.chatInputH"));
+      return Number.isFinite(v) && v >= INPUT_MIN ? v : null;
+    } catch {
+      return null;
+    }
+  }
+  /** チャット欄の高さに収めた入力欄の高さ(欄を縮めたときも入力欄だけが残らないように) */
+  const inputShown = $derived(
+    inputH == null ? null : Math.max(INPUT_MIN, Math.min(inputH, (chatH || 600) - KEEP_ABOVE)),
+  );
+  function startInputResize(e: PointerEvent) {
+    e.preventDefault();
+    const y0 = e.clientY;
+    const h0 = inputShown ?? inputEl?.offsetHeight ?? 60;
+    // ドラッグの間は文字を選ばない(会話の文字が反転しないように)
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    window.getSelection()?.removeAllRanges();
+    const move = (m: PointerEvent) => {
+      inputH = Math.round(Math.max(INPUT_MIN, Math.min((chatH || 600) - KEEP_ABOVE, h0 - (m.clientY - y0))));
+    };
+    const up = () => {
+      document.body.style.userSelect = prevSelect;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try {
+        if (inputH != null) localStorage.setItem("glaux.chatInputH", String(inputH));
+      } catch {
+        // 保存できなくても動作には関係しない
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+  function resetInputH() {
+    inputH = null;
+    try {
+      localStorage.removeItem("glaux.chatInputH");
+    } catch {
+      // 保存できなくても動作には関係しない
+    }
+  }
+  /** キーボードでも動かせるように(上下の矢印で 20px ずつ) */
+  function onResizeKey(e: KeyboardEvent) {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const h0 = inputShown ?? inputEl?.offsetHeight ?? 60;
+    inputH = Math.max(INPUT_MIN, Math.min((chatH || 600) - KEEP_ABOVE, h0 + (e.key === "ArrowUp" ? 20 : -20)));
+    try {
+      localStorage.setItem("glaux.chatInputH", String(inputH));
+    } catch {
+      // 保存できなくても動作には関係しない
+    }
+  }
   $effect(() => {
     void input;
     const el = inputEl;
     if (!el) return;
+    if (inputShown != null) {
+      el.style.height = `${inputShown}px`;
+      el.style.overflowY = "auto";
+      return;
+    }
     const cs = getComputedStyle(el);
     const line = parseFloat(cs.lineHeight) || 18;
     const extra =
@@ -357,7 +424,7 @@
   });
 </script>
 
-<div class="chat">
+<div class="chat" bind:clientHeight={chatH}>
   <div class="chat-head">
     <h2><Icon name="sparkles" size={15} />AI に指示</h2>
     <div class="head-right">
@@ -493,6 +560,19 @@
     </div>
   {/if}
 
+  <!-- 仕切り(ウィンドウの仕切りの型): ドラッグと上下の矢印で入力欄の高さを変える -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  <div
+    class="input-split"
+    role="separator"
+    aria-orientation="horizontal"
+    aria-label="入力欄の高さ"
+    tabindex="0"
+    title="ドラッグで入力欄の高さを変える(ダブルクリックで自動に戻す)"
+    onpointerdown={startInputResize}
+    ondblclick={resetInputH}
+    onkeydown={onResizeKey}
+  ></div>
   <div class="input-row">
     <textarea
       bind:this={inputEl}
@@ -803,11 +883,24 @@
     background: color-mix(in srgb, var(--accent) 20%, transparent);
   }
 
+  .input-split {
+    height: 5px;
+    flex-shrink: 0;
+    border-top: 1px solid var(--border);
+    cursor: row-resize;
+    touch-action: none;
+  }
+
+  .input-split:hover,
+  .input-split:focus-visible {
+    outline: none;
+    background: var(--accent-dim);
+  }
+
   .input-row {
     display: flex;
     gap: 6px;
-    padding: 8px 10px 10px;
-    border-top: 1px solid var(--border);
+    padding: 4px 10px 10px;
   }
 
   textarea {
