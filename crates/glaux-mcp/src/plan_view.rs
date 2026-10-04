@@ -474,6 +474,8 @@ pub async fn adopt_proposal(
         .and_then(|r| plans.doc().plans.get(&r.id))
         .cloned();
     let human = glaux_core::Author::Human;
+    // 計画の履歴に書いた件数(画面の Ctrl+Z が採用をまとめて戻すのに使う)
+    let mut plan_entries = if base.is_some() { 2 } else { 1 };
     let plan_entry = match base {
         Some(b) => {
             let e = handle
@@ -559,6 +561,10 @@ pub async fn adopt_proposal(
             )
             .await?;
         discarded.push(name);
+        plan_entries += 1;
     }
-    Ok(json!({ "entry_id": song_entry, "plan_entry_id": plan_entry, "discarded": discarded }))
+    Ok(
+        json!({ "entry_id": song_entry, "plan_entry_id": plan_entry, "discarded": discarded,
+               "plan_entries": plan_entries }),
+    )
 }

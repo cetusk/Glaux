@@ -2,7 +2,7 @@
 // 中身はバックエンドの get_design(glaux_core::designcheck::design_view + 計画の一覧・履歴)。
 // 画面で直す操作(計画の保存・区間・メモ・取り消し)もここ。人の操作として履歴に残る。
 import { invoke } from "@tauri-apps/api/core";
-import { abClear, abSetSide, applyEdit, redo as songRedo, undo as songUndo } from "./api";
+import { abClear, abSetSide, applyEdit, getHistory, redo as songRedo, undo as songUndo } from "./api";
 import { endAbLoop, ensureAbPlaying, restartAb, startAbLoop } from "./abLoop";
 import { showToast } from "./toast.svelte";
 import type { Project } from "./types";
@@ -266,43 +266,66 @@ export function planBody(d: DesignData | null, planId: string | undefined): Reco
   return p?.body ? structuredClone($state.snapshot(p.body) as Record<string, unknown>) : null;
 }
 
-// 設計画面の取り消し: 直した先が曲(区間・テンポ)か計画かを覚えておき、その履歴を戻す。覚えが無ければ計画を戻す
-const undoStack: ("song" | "plan")[] = [];
-const redoStack: ("song" | "plan")[] = [];
+// 設計画面の取り消し: 1 回の操作で直した先(曲〈区間・テンポ・案の採用〉の件数と計画の件数)を覚えておき、まとめて戻す。
+// 覚えが無ければ計画を 1 件戻す。案の採用は曲 1 件 + 計画の数件なので、1 回の Ctrl+Z で両方を戻す
+interface UndoUnit {
+  song: number;
+  plan: number;
+  /** 曲を戻す前に、曲の履歴のいちばん新しい編集がこれか確かめる(後で別の画面から曲を直していたら戻さない) */
+  songEntry?: string;
+  label?: string;
+}
+const undoStack: UndoUnit[] = [];
+const redoStack: UndoUnit[] = [];
 function noteEdit(kind: "song" | "plan", n = 1) {
-  for (let k = 0; k < n; k++) undoStack.push(kind);
+  for (let k = 0; k < n; k++) undoStack.push(kind === "song" ? { song: 1, plan: 0 } : { song: 0, plan: 1 });
+  redoStack.length = 0;
+}
+function noteUnit(u: UndoUnit) {
+  undoStack.push(u);
   redoStack.length = 0;
 }
 
 export async function designUndo(): Promise<void> {
-  const kind = undoStack.pop() ?? "plan";
+  const u = undoStack.pop() ?? { song: 0, plan: 1 };
   try {
-    if (kind === "song") await songUndo();
-    else {
-      const r = await invoke<{ done: number }>("plan_step", { n: 1, redo: false });
-      if (!r.done) {
+    if (u.song && u.songEntry) {
+      const h = await getHistory(1);
+      if (h.entries[h.entries.length - 1]?.id !== u.songEntry) {
+        undoStack.push(u);
+        showToast("warn", `${u.label ?? "この操作"}の後に曲が直されているので、ここでは取り消せません(履歴パネルで戻してください)`);
+        return;
+      }
+    }
+    // 後に書いた方(計画)から戻す
+    if (u.plan) {
+      const r = await invoke<{ done: number }>("plan_step", { n: u.plan, redo: false });
+      if (!r.done && !u.song) {
         showToast("warn", "取り消せる計画の変更はありません");
         return;
       }
     }
-    redoStack.push(kind);
+    for (let k = 0; k < u.song; k++) await songUndo();
+    redoStack.push(u);
+    if (u.label) showToast("ok", `${u.label}を取り消しました`);
   } catch (e) {
     showToast("error", `取り消せませんでした: ${e}`);
   }
 }
 
 export async function designRedo(): Promise<void> {
-  const kind = redoStack.pop() ?? "plan";
+  const u = redoStack.pop() ?? { song: 0, plan: 1 };
   try {
-    if (kind === "song") await songRedo();
-    else {
-      const r = await invoke<{ done: number }>("plan_step", { n: 1, redo: true });
-      if (!r.done) {
+    for (let k = 0; k < u.song; k++) await songRedo();
+    if (u.plan) {
+      const r = await invoke<{ done: number }>("plan_step", { n: u.plan, redo: true });
+      if (!r.done && !u.song) {
         showToast("warn", "やり直せる計画の変更はありません");
         return;
       }
     }
-    undoStack.push(kind);
+    undoStack.push(u);
+    if (u.label) showToast("ok", `${u.label}をやり直しました`);
   } catch (e) {
     showToast("error", `やり直せませんでした: ${e}`);
   }
@@ -584,8 +607,18 @@ export async function adoptProposal(planId: string, name: string): Promise<void>
   const alsoDiscard = proposalAb.planIds.filter((id) => id !== planId);
   await endProposalAb();
   try {
-    const r = await invoke<{ discarded?: string[] }>("plan_adopt_proposal", { planId, alsoDiscard });
+    const r = await invoke<{ discarded?: string[]; entry_id?: string | null; plan_entries?: number }>("plan_adopt_proposal", {
+      planId,
+      alsoDiscard,
+    });
     const gone = r?.discarded ?? [];
+    // 1 回の Ctrl+Z で、曲に当てた音と計画の変更(ほかの案を捨てたことも)をまとめて戻せるように
+    noteUnit({
+      song: r?.entry_id ? 1 : 0,
+      plan: r?.plan_entries ?? 1,
+      songEntry: r?.entry_id ?? undefined,
+      label: `案「${name}」の採用`,
+    });
     showToast(
       "ok",
       `案「${name}」を採用しました${gone.length ? `。ほかの案(${gone.map((n) => `「${n}」`).join("")})は捨てました` : ""}(曲と計画の履歴に残り、取り消せます)`,

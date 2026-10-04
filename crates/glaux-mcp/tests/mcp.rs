@@ -7337,6 +7337,8 @@ async fn adopting_a_proposal_discards_its_siblings() {
     let r = plan_view::adopt_proposal(&fx.handle, &ids[2], &[ids[0].clone(), ids[3].clone()])
         .await
         .unwrap();
+    // 計画の履歴: 置き換え + しまう + 捨てた 3 件
+    assert_eq!(r["plan_entries"], 5);
     let mut gone: Vec<String> = serde_json::from_value(r["discarded"].clone()).unwrap();
     gone.sort();
     assert_eq!(gone, vec!["パッド", "中域", "低域"]);
