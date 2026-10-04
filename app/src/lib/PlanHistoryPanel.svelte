@@ -58,7 +58,9 @@
           {#if e.trigger}
             <div class="trigger">{TRIGGERS[e.trigger.kind] ?? e.trigger.kind}: {e.trigger.text}</div>
           {/if}
-          {#if k > 0 && !e.reverts}
+          {#if e.song_entry}
+            <div class="linked" title="曲の履歴の {e.song_entry} と一組">曲の編集と一組(曲の側で取り消す・やり直すと、一緒に戻ります)</div>
+          {:else if k > 0 && !e.reverts}
             <div class="ops">
               {#if e.rev != null && e.op !== "delete" && d.plans.some((p) => p.plan_id === e.plan_id) && !isProposal(e.plan_id)}
                 <button type="button" title="この計画をこの版の中身に戻す(戻したことも新しい版として残る)" onclick={() => restorePlan(e.plan_id, e.rev!)}
@@ -190,5 +192,10 @@
     color: var(--text-faint);
     font-size: var(--fs-xs);
     margin-top: 2px;
+  }
+  .linked {
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+    margin-top: 4px;
   }
 </style>

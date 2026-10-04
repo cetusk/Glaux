@@ -7471,6 +7471,104 @@ async fn proposals_respect_later_edits_locks_and_resaves() {
     assert!(e.contains("固定"), "{e}");
 }
 
+/// AI の道具(チャットから)で採用を取り消し・やり直しても、曲と計画がそろう。計画の側だけの取り消しは断る
+#[tokio::test]
+async fn adoption_undo_through_ai_tools_keeps_song_and_plans_together() {
+    use glaux_mcp::plan_view;
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_ait001", "Wob")).await);
+    let wob = ok_json(
+        &call(
+            &fx,
+            "save_plan",
+            json!({ "name": "Wob", "kind": "part", "why": "元", "body": { "track": "trk_ait001", "function": "lead" } }),
+        )
+        .await,
+    )["plan"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut ids = vec![];
+    for (name, db) in [("低域", -1.0), ("中域", -2.0)] {
+        let r = ok_json(
+            &call(
+                &fx,
+                "propose_design",
+                json!({ "name": name, "why": "試し", "base_plan_id": wob,
+                        "commands": [{ "op": "set_track_prop", "id": "trk_ait001", "prop": "volume_db", "value": db }] }),
+            )
+            .await,
+        );
+        ids.push(r["plan_id"].as_str().unwrap().to_owned());
+    }
+    let state = |fx: &Fixture| {
+        let h = fx.handle.clone();
+        async move {
+            let p = h.get_plans().await.unwrap();
+            (
+                serde_json::to_value(&p.doc().plans).unwrap(),
+                h.get_project().await.unwrap().0.tracks,
+            )
+        }
+    };
+    ok_json(&call(&fx, "checkpoint", json!({ "label": "前" })).await);
+    let s0 = state(&fx).await;
+    plan_view::adopt_proposal(&fx.handle, &ids[0], &[])
+        .await
+        .unwrap();
+    let s1 = state(&fx).await;
+    // undo / redo の道具
+    ok_json(&call(&fx, "undo", json!({})).await);
+    assert_eq!(state(&fx).await, s0);
+    ok_json(&call(&fx, "redo", json!({})).await);
+    assert_eq!(state(&fx).await, s1);
+    // チェックポイントまで戻す道具
+    ok_json(&call(&fx, "revert_to", json!({ "label": "前" })).await);
+    assert_eq!(state(&fx).await, s0);
+    ok_json(&call(&fx, "redo", json!({})).await);
+    assert_eq!(state(&fx).await, s1);
+    // この変更だけ取り消す道具(revert。採用の曲の編集を指す)
+    let adopt = fx
+        .handle
+        .get_history(None, None, Some(1))
+        .await
+        .unwrap()
+        .unwrap()
+        .entries[0]
+        .id
+        .to_string();
+    ok_json(&call(&fx, "revert", json!({ "entry_id": adopt })).await);
+    let (plans, tracks) = state(&fx).await;
+    assert_eq!(tracks, s0.1);
+    assert_eq!(
+        plans
+            .as_object()
+            .unwrap()
+            .values()
+            .filter(|p| p["state"] == "proposal")
+            .count(),
+        2
+    );
+    ok_json(&call(&fx, "undo", json!({})).await);
+    assert_eq!(state(&fx).await, s1);
+    // 計画の側だけで一組を動かす(undo_plan の undo / revert)は断る
+    let log = ok_json(&call(&fx, "plan_log", json!({ "limit": 5 })).await);
+    let linked = log["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["song_entry"].is_string())
+        .expect("一組の項目が計画の履歴に出る");
+    for args in [
+        json!({ "action": "undo" }),
+        json!({ "action": "revert", "entry_id": linked["entry_id"], "why": "試し" }),
+    ] {
+        let r = call(&fx, "undo_plan", args).await;
+        assert_eq!(r.is_error, Some(true));
+    }
+    assert_eq!(state(&fx).await, s1);
+}
+
 /// 案の採用は曲の編集と計画の変更の一組: 曲の側でどう戻しても(undo・redo・この変更だけ取り消す・チェックポイントまで戻す)、
 /// 計画も一緒に戻る。採用の後に別の計画に入った変更は残す
 #[tokio::test]

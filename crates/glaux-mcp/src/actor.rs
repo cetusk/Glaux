@@ -94,6 +94,10 @@ pub struct Mutated {
 /// `RevertEntry` の返り値: (revert エントリ, 衝突エントリ一覧, Mutated)。
 pub type RevertOutcome = (EntryId, Vec<EntryId>, Mutated);
 
+/// 曲の編集と一組の計画の変更を、計画の側だけで動かそうとしたとき
+pub const LINKED_PLAN_MSG: &str = "この計画の変更は、曲の編集(案の採用など)と一組なので、計画の側だけでは取り消せません。\
+    曲の側でその編集を取り消す・やり直すと、計画も一緒に戻ります(Ctrl+Z・履歴パネルの「この変更だけ取り消す」・undo / redo)";
+
 /// 旋律の計画への要求(曲とは別の文書・別の履歴。曲のフォルダが変わったら開き直す)
 pub enum PlanRequest {
     /// 計画のセッションの複製(計画と履歴。小さいので丸ごと渡し、読み取りはサーバー側で行う)
@@ -392,7 +396,7 @@ impl SessionHandle {
                 song_entry: Some(link.clone()),
                 ..Default::default()
             };
-            if let Err(e) = self.revert_plan(id, Author::System, note).await {
+            if let Err(e) = self.revert_plan_raw(id, Author::System, note).await {
                 tracing::warn!("曲の編集と一組の計画の変更を戻せませんでした: {e}");
             }
         }
@@ -535,16 +539,35 @@ impl SessionHandle {
                 .any(|e| e.note.as_ref().is_some_and(|n| n.song_entry.is_some()))
         };
         if linked {
-            return Err("曲の編集と一組の計画の変更(案の採用など)は、計画の側だけでは動かせません。\
-                曲の側で取り消す・やり直すと、計画も一緒に戻ります(Ctrl+Z・履歴パネル・undo / redo)"
-                .to_owned());
+            return Err(LINKED_PLAN_MSG.to_owned());
         }
         self.request(|reply| Request::Plan(PlanRequest::Step { n, redo, reply }))
             .await?
     }
 
-    /// 計画の途中の変更を取り消す
+    /// 計画の途中の変更を取り消す。曲の編集と一組の計画の変更(案の採用など)は、計画の側だけで取り消すと
+    /// 曲と食い違うので取り消さない(曲の側で取り消すと一緒に戻る)
     pub async fn revert_plan(
+        &self,
+        id: EntryId,
+        author: Author,
+        note: EntryNote,
+    ) -> Result<(EntryId, Vec<EntryId>), String> {
+        let plans = self.get_plans().await?;
+        let linked = plans
+            .history()
+            .applied()
+            .iter()
+            .find(|e| e.id == id)
+            .is_some_and(|e| e.note.as_ref().is_some_and(|n| n.song_entry.is_some()));
+        if linked {
+            return Err(LINKED_PLAN_MSG.to_owned());
+        }
+        self.revert_plan_raw(id, author, note).await
+    }
+
+    /// 計画の途中の変更を取り消す(一組かどうかを見ない。一組を曲と合わせて戻すときだけ使う)
+    async fn revert_plan_raw(
         &self,
         id: EntryId,
         author: Author,

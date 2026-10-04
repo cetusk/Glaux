@@ -97,6 +97,8 @@ export interface PlanHistoryEntry {
   why?: string;
   trigger?: { kind: string; text: string };
   reverts?: string;
+  /** 一組の曲の履歴の項目(案の採用など。計画の側だけでは取り消せない) */
+  song_entry?: string;
 }
 
 export interface DesignData {

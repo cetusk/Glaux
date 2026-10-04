@@ -40,6 +40,10 @@ pub fn plan_entry_json(e: &HistoryEntry<PlanCommand>) -> Value {
         if !n.measures.is_empty() {
             v["measures"] = json!(n.measures);
         }
+        // 曲の編集と一組の変更(案の採用など。計画の側だけでは取り消せない)
+        if let Some(s) = &n.song_entry {
+            v["song_entry"] = json!(s);
+        }
     }
     if let Some(r) = &e.reverts {
         v["reverts"] = json!(r);
