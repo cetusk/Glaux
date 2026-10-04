@@ -15,13 +15,22 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 
 ## Features
 
-- **Compose with AI** — Work with Claude (Claude Code) or GPT (Codex CLI). Human and AI edits share one history, and you can undo an AI's whole turn at once
+- **Compose with AI** — Work with Claude (Claude Code) or GPT (Codex CLI). Human and AI edits share one history, and you can undo an AI's whole turn at once.
+  For any edit in the history, you can compare before and now at matched loudness
 - **The AI can listen** — It measures loudness, frequency balance, key and chords, rhythm and timbre by itself, and checks its work before reporting
-- **Instruments and effects** — 10 built-in instruments (subtractive, FM, 4-operator FM, wavetable, additive, granular, drums, plucked string, sampler, SoundFont / SFZ), 17 effects (EQ, dynamic EQ, resonance suppressor, virtual bass, compressor, multiband compressor, transient shaper, limiter, stereo width, reverb, convolution reverb, amp, and more), and CLAP / VST3 plugins (e.g. Surge XT)
+- **Song design** — See the plan for the whole song (genre, mood, the shape of the energy) and, per section, the energy curve, each part's register and each part's role,
+  side by side with what the song actually does, and edit them in place. The AI reads where the song drifts from the plan when it writes and revises, and keeps the notes you locked and the bars you edited by hand
+- **Compare proposals by ear** — For changes that come down to taste, the AI leaves the song untouched and offers "proposals". Switch between the current song and up to four proposals
+  at matched loudness without losing your place, then adopt the one you like. An adoption can be undone in one step from any screen
+- **Instruments and effects** — 10 built-in instruments (subtractive, FM, 4-operator FM, wavetable, additive, granular, drums, plucked string, sampler, SoundFont / SFZ), 32 effects (EQ, 8-band EQ, dynamic EQ, resonance suppressor, virtual bass, compressor, multiband compressor, transient shaper, limiter, clipper, gate, de-esser, saturation, stereo width, reverb, convolution reverb, delay, chorus, phaser, trance gate, pitch correction, harmonizer, amp, and more), and CLAP / VST3 plugins (e.g. Surge XT)
 - **Mixer and effect node view** — See every track as a vertical strip with volume, pan, sends and meters. Effects are cards you place freely and connect with cables, including splitting and merging (e.g. dry + reverb in parallel). Unconnected cards stay silent but keep their settings, and good settings can be saved as effect presets for other songs. The monitor strip on the right shows the stereo image (goniometer and correlation) and lets you listen in mono, side only, swapped, or with headphone crossfeed (never included in exports)
 - **Write and record** — Piano roll, drum kit, fretboard, MIDI keyboard, MIDI file import/export, audio recording, humming-to-MIDI, stem separation, tempo-following audio clips
 - **Designed for AI** — Projects are readable JSON. Every edit goes through the same command API with full undo. Built-in MCP server
 - **Play it in games** — A Godot 4 extension plays your songs in-game and syncs enemies or hit judgement to the beat
+
+![The design view: the plan for the whole song and for each section (energy, each part's register and role) next to what the song actually does](docs/images/screenshot-design.png)
+
+![Switching between the current song and the AI's proposals at matched loudness](docs/images/screenshot-proposals.png)
 
 ![The mixer and the effect node view](docs/images/screenshot-mixer.png)
 

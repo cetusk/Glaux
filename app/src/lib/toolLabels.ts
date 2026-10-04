@@ -61,6 +61,8 @@ const LABELS: Record<string, ToolLabel> = {
   design_sound: { short: "言葉から音色", doing: "言葉から音色を作っています" },
   mutate_sound: { short: "音色の変種", doing: "音色の変種を作っています" },
   set_song_plan: { short: "曲の計画書", doing: "曲の計画を立てています" },
+  get_design: { short: "設計を確認", doing: "曲の設計(計画と実際)を読んでいます" },
+  propose_design: { short: "案を出す", doing: "案を出しています" },
   write_chords: { short: "コードの伴奏", doing: "コード進行から伴奏を書いています" },
   write_arpeggio: { short: "アルペジオ", doing: "アルペジオを書いています" },
   write_bassline: { short: "ベースライン", doing: "ベースラインを書いています" },
