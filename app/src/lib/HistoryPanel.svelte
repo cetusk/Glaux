@@ -3,6 +3,7 @@
   import * as api from "./api";
   import { selectionStore } from "./selection.svelte";
   import { transportStore } from "./transport.svelte";
+  import { endAbLoop, ensureAbPlaying, startAbLoop } from "./abLoop";
   import type { Author, EntrySummary } from "./types";
 
   let {
@@ -50,7 +51,7 @@
   // ---- 音量をそろえた A/B の聴き比べ(A = その編集の前、B = 今) ----
   /** 範囲を決めないときに聴く長さ(tick。4/4 の 8 小節) */
   const AB_DEFAULT_TICKS = 960 * 4 * 8;
-  let ab = $state<{ entry: EntrySummary; info: api.AbInfo; side: "a" | "b" } | null>(null);
+  let ab = $state<{ entry: EntrySummary; info: api.AbInfo; side: "a" | "b"; start: number; end: number } | null>(null);
   let abBusy = $state<string | null>(null);
 
   /** 聴き比べる範囲: ループ中ならその区間、範囲を選んでいればそこ、無ければ今の位置から 8 小節 */
@@ -69,10 +70,10 @@
     try {
       const { start, end } = abRange();
       const info = await api.abPrepare(e.id, start, end);
-      ab = { entry: e, info, side: "b" };
-      // 範囲の頭から鳴らす(ループ中ならそのまま)
-      if (!transportStore.state.loop) await api.transportSeek(start);
-      if (!transportStore.state.playing) await api.transportPlay();
+      // 範囲は長すぎると切り詰められる(end_tick)。その範囲をループにして頭から鳴らす(聴き終えて黙らないように)
+      const stop = info.end_tick && info.end_tick > start ? info.end_tick : end;
+      ab = { entry: e, info, side: "b", start, end: stop };
+      await startAbLoop(start, stop);
     } catch (err) {
       showNotice(`聴き比べを用意できませんでした: ${err}`);
     } finally {
@@ -84,11 +85,14 @@
     if (!ab) return;
     ab.side = side;
     api.abSetSide(side).catch(() => {});
+    // 止まっている・範囲の外にいるなら、範囲の頭から鳴らす
+    ensureAbPlaying(ab.start, ab.end).catch(() => {});
   }
 
   function endAb() {
     ab = null;
     api.abClear().catch(() => {});
+    endAbLoop();
   }
 
   // 聴き比べの途中で編集したら、「今」が古くなるので終える(古い音を聴き続けないように)

@@ -2,8 +2,8 @@
 // 中身はバックエンドの get_design(glaux_core::designcheck::design_view + 計画の一覧・履歴)。
 // 画面で直す操作(計画の保存・区間・メモ・取り消し)もここ。人の操作として履歴に残る。
 import { invoke } from "@tauri-apps/api/core";
-import { abClear, abSetSide, applyEdit, redo as songRedo, transportPlay, transportSeek, undo as songUndo, type AbInfo } from "./api";
-import { transportStore } from "./transport.svelte";
+import { abClear, abSetSide, applyEdit, redo as songRedo, undo as songUndo, type AbInfo } from "./api";
+import { endAbLoop, ensureAbPlaying, startAbLoop } from "./abLoop";
 import { showToast } from "./toast.svelte";
 import type { Project } from "./types";
 
@@ -477,11 +477,21 @@ export function proposals(d: DesignData | null): PlanInfo[] {
 }
 
 /** 案の聴き比べの状態(A = 今、B = 案) */
-export const proposalAb = $state<{ planId: string | null; side: "a" | "b"; info: AbInfo | null; busy: string | null }>({
+export const proposalAb = $state<{
+  planId: string | null;
+  side: "a" | "b";
+  info: AbInfo | null;
+  busy: string | null;
+  /** 聴いている範囲(tick) */
+  start: number;
+  end: number;
+}>({
   planId: null,
   side: "b",
   info: null,
   busy: null,
+  start: 0,
+  end: 0,
 });
 
 /** 案を聴き比べる(範囲の頭から鳴らす) */
@@ -496,8 +506,11 @@ export async function abProposal(planId: string, start: number, end: number): Pr
     proposalAb.planId = planId;
     proposalAb.side = "b";
     proposalAb.info = info;
-    if (!transportStore.state.loop) await transportSeek(start);
-    if (!transportStore.state.playing) await transportPlay();
+    // 範囲は長すぎると切り詰められる(end_tick)。その範囲をループにして頭から鳴らす
+    const e = info.end_tick && info.end_tick > start ? info.end_tick : end;
+    proposalAb.start = start;
+    proposalAb.end = e;
+    await startAbLoop(start, e);
   } catch (e) {
     showToast("error", `聴き比べを用意できませんでした: ${e}`);
   } finally {
@@ -508,6 +521,8 @@ export async function abProposal(planId: string, start: number, end: number): Pr
 export async function setProposalSide(side: "a" | "b"): Promise<void> {
   proposalAb.side = side;
   abSetSide(side).catch(() => {});
+  // 止まっている・範囲の外にいるなら、範囲の頭から鳴らす(押せば聞こえるように)
+  if (proposalAb.planId) await ensureAbPlaying(proposalAb.start, proposalAb.end).catch(() => {});
 }
 
 export async function endProposalAb(): Promise<void> {
@@ -515,6 +530,7 @@ export async function endProposalAb(): Promise<void> {
   proposalAb.planId = null;
   proposalAb.info = null;
   abClear().catch(() => {});
+  await endAbLoop();
 }
 
 /** 案を採用する(案の音を曲に当て、案の計画を今の計画にする) */
