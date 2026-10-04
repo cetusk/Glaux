@@ -25,6 +25,7 @@ pub mod models;
 pub mod musicxml;
 pub mod musicxml_in;
 pub mod plan_store;
+pub mod plan_view;
 pub mod preset_index;
 pub mod presets;
 pub mod recipes;

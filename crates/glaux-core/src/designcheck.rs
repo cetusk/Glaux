@@ -452,7 +452,22 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
         }
     }
 
-    // クリップの状態
+    let clips = clip_states(project, plans);
+
+    DesignView {
+        song,
+        song_plan_id,
+        song_estimated,
+        sections,
+        parts,
+        deviations,
+        clips,
+    }
+}
+
+/// 計画から作った・AI が作ったクリップの状態(計画どおり / 先に進んだ・手で直した小節・固定の音の数)。
+/// 何も無いクリップは含めない。タイムラインのクリップの印に使う(盛り上がりなどは測らないので軽い)
+pub fn clip_states(project: &Project, plans: &PlanSet) -> Vec<ClipView> {
     let mut clips = Vec::new();
     for t in &project.tracks {
         for c in &t.clips {
@@ -487,16 +502,7 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
             });
         }
     }
-
-    DesignView {
-        song,
-        song_plan_id,
-        song_estimated,
-        sections,
-        parts,
-        deviations,
-        clips,
-    }
+    clips
 }
 
 #[cfg(test)]

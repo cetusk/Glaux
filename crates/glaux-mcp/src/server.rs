@@ -9926,7 +9926,6 @@ impl GlauxServer {
         誰がなぜこの値にしたか」)。効果の無かった変更は undo_plan の revert で取り消せる。"
     )]
     async fn plan_log(&self, params: Parameters<PlanLogParams>) -> ToolResult {
-        use glaux_core::plan::PlanCommand;
         let _activity = self.handle.begin_activity("plan_log");
         let p = params.0;
         let id = p.plan_id.as_deref().map(parse_plan_id).transpose()?;
@@ -9943,45 +9942,7 @@ impl GlauxServer {
             .rev()
             .filter(|e| id.as_ref().is_none_or(|id| e.forward.touches(id, &path)))
             .take(limit)
-            .map(|e| {
-                let (op, rev, paths): (&str, Option<u64>, Vec<&str>) = match &e.forward {
-                    PlanCommand::Create { plan } => ("create", Some(plan.rev), vec![]),
-                    PlanCommand::Replace { plan } => ("replace", Some(plan.rev), vec![]),
-                    PlanCommand::Delete { .. } => ("delete", None, vec![]),
-                    PlanCommand::Edit { rev, ops, .. } => {
-                        ("edit", Some(*rev), ops.iter().map(|o| o.path()).collect())
-                    }
-                };
-                let mut v = json!({
-                    "entry_id": e.id,
-                    "time": e.timestamp,
-                    "author": e.author,
-                    "subject": e.label,
-                    "plan_id": e.forward.plan_id(),
-                    "op": op,
-                });
-                if let Some(r) = rev {
-                    v["rev"] = json!(r);
-                }
-                if !paths.is_empty() {
-                    v["paths"] = json!(paths);
-                }
-                if let Some(n) = &e.note {
-                    if !n.why.is_empty() {
-                        v["why"] = json!(n.why);
-                    }
-                    if let Some(t) = &n.trigger {
-                        v["trigger"] = json!(t);
-                    }
-                    if !n.measures.is_empty() {
-                        v["measures"] = json!(n.measures);
-                    }
-                }
-                if let Some(r) = &e.reverts {
-                    v["reverts"] = json!(r);
-                }
-                v
-            })
+            .map(crate::plan_view::plan_entry_json)
             .collect();
         Ok(JsonText(json!({
             "entries": entries,

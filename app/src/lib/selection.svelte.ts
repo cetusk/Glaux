@@ -82,7 +82,7 @@ export function saveInspectorWidth() {
 /// 本体の画面(タイムライン / ミキサー)と、ミキサーで選んでいるトラック(下のノード表示の対象)。
 /// `highlightFx` はミキサーの列で押したエフェクト(下のカードを光らせる)
 export const viewStore = $state<{
-  main: "timeline" | "mixer";
+  main: "timeline" | "mixer" | "design";
   mixerTrack: string | null;
   highlightFx: string | null;
 }>({ main: "timeline", mixerTrack: null, highlightFx: null });

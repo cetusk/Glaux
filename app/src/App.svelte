@@ -21,6 +21,9 @@
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
   import InstrumentPicker from "./lib/InstrumentPicker.svelte";
   import Mixer from "./lib/Mixer.svelte";
+  import DesignView from "./lib/DesignView.svelte";
+  import PlanHistoryPanel from "./lib/PlanHistoryPanel.svelte";
+  import { refreshClipStates, refreshDesign } from "./lib/design.svelte";
   import TransportLcd from "./lib/TransportLcd.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
   import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
@@ -258,6 +261,24 @@
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let refreshPending = false;
 
+  // 設計画面の中身(開いているとき)と、タイムラインのクリップの印の読み直し。
+  // 設計画面の中身は盛り上がりなどを測るので重い。曲・計画が変わってから 300ms 落ち着いたら 1 回だけ
+  let designTimer: ReturnType<typeof setTimeout> | undefined;
+  function scheduleDesign(delay = 300) {
+    clearTimeout(designTimer);
+    designTimer = setTimeout(() => {
+      if (viewStore.main === "design") refreshDesign();
+      else refreshClipStates();
+    }, delay);
+  }
+  $effect(() => {
+    // 画面を切り替えたら(設計画面を開いたら)すぐ読み直す
+    void viewStore.main;
+    scheduleDesign(0);
+  });
+  /// 下の履歴の欄のタブ(設計画面では計画の履歴を先に出す)
+  let historyTab = $state<"plan" | "song">("plan");
+
   function scheduleRefresh() {
     if (refreshTimer) {
       refreshPending = true;
@@ -357,8 +378,9 @@
 
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     const unlistenChanged = api.onProjectChanged((ev) => {
-      // 計画だけの変更は曲の版が進まない。曲の再取得の判断(版の連続)を乱さないよう、ここでは受け流す
-      // (計画を見せる設計画面ができたら、その読み直しに使う)
+      // 計画だけの変更は曲の版が進まない。曲の再取得の判断(版の連続)を乱さないよう、曲は取り直さず、
+      // 設計画面とクリップの印だけを読み直す
+      scheduleDesign();
       if (ev?.plans_version != null) return;
       // 保存の失敗は、次に保存が成功するまで出し続ける(再取得で消える error とは分ける)
       saveError = ev?.save_error ?? null;
@@ -736,14 +758,21 @@
           aria-selected={viewStore.main === "timeline"}
           class:on={viewStore.main === "timeline"}
           onclick={() => (viewStore.main = "timeline")}
-          title="タイムライン(曲の流れ・クリップ・ピアノロール)"><Icon name="rows-2" />タイムライン</button
+          title="タイムライン(曲の流れ・クリップ・ピアノロール)"><Icon name="rows-2" /><span class="lbl">タイムライン</span></button
         >
         <button
           role="tab"
           aria-selected={viewStore.main === "mixer"}
           class:on={viewStore.main === "mixer"}
           onclick={() => (viewStore.main = "mixer")}
-          title="ミキサー(音量・パン・送り・エフェクトのつなぎ方)"><Icon name="sliders-horizontal" />ミキサー</button
+          title="ミキサー(音量・パン・送り・エフェクトのつなぎ方)"><Icon name="sliders-horizontal" /><span class="lbl">ミキサー</span></button
+        >
+        <button
+          role="tab"
+          aria-selected={viewStore.main === "design"}
+          class:on={viewStore.main === "design"}
+          onclick={() => (viewStore.main = "design")}
+          title="設計(曲の計画と実際: 盛り上がり・パートごとの音域・パートの役割)"><Icon name="spline" /><span class="lbl">設計</span></button
         >
       </div>
     </div>
@@ -895,6 +924,10 @@
           <div class="mixer-host" style={soundDesignStore.focus ? `margin-right:${inspectorStore.width}px` : ""}>
             <Mixer {project} />
           </div>
+        {:else if viewStore.main === "design"}
+          <div class="mixer-host">
+            <DesignView {project} />
+          </div>
         {:else}
         <div class="timeline-scroll" style={soundDesignStore.focus ? `margin-right:${inspectorStore.width}px` : ""}>
           <Timeline
@@ -965,7 +998,21 @@
       </div>
       <div class="col-handle" role="separator" aria-orientation="vertical" onpointerdown={startColResize} title="ドラッグで幅を調整"></div>
       <div class="history-section">
-        <HistoryPanel {entries} total={historyTotal} {redoable} />
+        {#if viewStore.main === "design"}
+          <div class="history-tabs" role="tablist" aria-label="履歴の切り替え">
+            <button role="tab" class="btn sm" class:on={historyTab === "plan"} aria-selected={historyTab === "plan"} onclick={() => (historyTab = "plan")}
+              >計画の履歴</button
+            >
+            <button role="tab" class="btn sm" class:on={historyTab === "song"} aria-selected={historyTab === "song"} onclick={() => (historyTab = "song")}
+              >曲の履歴</button
+            >
+          </div>
+        {/if}
+        {#if viewStore.main === "design" && historyTab === "plan"}
+          <PlanHistoryPanel />
+        {:else}
+          <HistoryPanel {entries} total={historyTotal} {redoable} />
+        {/if}
       </div>
     </section>
   </main>
@@ -1012,6 +1059,16 @@
     align-items: center;
     gap: var(--sp-2);
     min-width: 0;
+  }
+
+  /* 左の欄が狭いときは、切り替えの名前を選んでいる画面だけにする(ほかはアイコンと説明の吹き出し) */
+  .h-left {
+    container-type: inline-size;
+  }
+  @container (max-width: 440px) {
+    .view-switch button:not(.on) .lbl {
+      display: none;
+    }
   }
 
   .h-right {
@@ -1280,6 +1337,12 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  .history-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 10px 0;
   }
 
   .history-section {

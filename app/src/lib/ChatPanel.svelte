@@ -43,7 +43,11 @@
   function pickEffort(e: Event) {
     setChatEffort((e.currentTarget as HTMLSelectElement).value);
   }
-  import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
+  import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore, viewStore } from "./selection.svelte";
+  import { designSel, designStore, designTargetLabel, designTargetPrompt } from "./design.svelte";
+
+  // 設計画面で選んでいる所(設計画面を開いている間だけ、指示の対象として添える)
+  const designTarget = $derived(viewStore.main === "design" ? designTargetLabel(designStore.data, designSel.sel) : null);
 
   interface Msg {
     role: "user" | "assistant" | "tool" | "notice" | "error" | "turn";
@@ -303,6 +307,10 @@
         `編集・分析はこの範囲内に限定し、範囲外のノートやクリップは変更しないでください。\n`;
       shown = `〔小節 ${range.startBar + 1}〜${range.endBar + 1}〕 ${shown}`;
     }
+    if (designTarget) {
+      prefix += designTargetPrompt(designStore.data, designSel.sel) ?? "";
+      shown = `〔${designTarget}〕 ${shown}`;
+    }
     const sd = soundDesignStore.focus;
     if (sd && sd.trackId === MASTER_FOCUS_ID) {
       prefix +=
@@ -385,6 +393,9 @@
   }
 
   onMount(() => {
+    // 設計画面の「この所について AI に頼む」: 入力欄へ移る
+    const focusChat = () => inputEl?.focus();
+    window.addEventListener("glaux:focus-chat", focusChat);
     const unlisten = api
       .onChatEvent((ev) => {
         switch (ev.kind) {
@@ -419,6 +430,7 @@
       })
       .catch(() => undefined);
     return () => {
+      window.removeEventListener("glaux:focus-chat", focusChat);
       unlisten.then((f) => f && f());
     };
   });
@@ -521,8 +533,18 @@
   </div>
 
   <!-- 指示の対象(ピアノロールのクリップ・インスペクターのトラック・選んだ小節)。✕ で外す -->
-  {#if pianoRollStore.focus || soundDesignStore.focus || selectionStore.range}
+  {#if pianoRollStore.focus || soundDesignStore.focus || selectionStore.range || designTarget}
     <div class="chips">
+      {#if designTarget}
+        <span class="chip" title="設計画面で選んでいる所が指示の対象になります(その所の計画と実際を AI が読む)"
+          ><Icon name="target" size={12} />{designTarget}<button
+            class="chip-x"
+            onclick={() => (designSel.sel = { kind: "none" })}
+            title="対象を外す(曲全体への指示になる)"
+            aria-label="対象を外す"><Icon name="x" size={11} /></button
+          ></span
+        >
+      {/if}
       {#if pianoRollStore.focus}
         <span class="chip" title="ピアノロールで開いているクリップが指示の対象になります"
           ><Icon name="piano" size={12} />{pianoRollStore.focus.clipName}<button

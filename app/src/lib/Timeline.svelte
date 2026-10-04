@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { designSel, designStore, type ClipState } from "./design.svelte";
   import { tick } from "svelte";
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
@@ -44,6 +45,7 @@
     timelineZoom,
     TIMELINE_ZOOM_MAX,
     TIMELINE_ZOOM_MIN,
+    viewStore,
   } from "./selection.svelte";
   import Icon from "./Icon.svelte";
   import { flip } from "svelte/animate";
@@ -1387,6 +1389,29 @@
       )
       .catch(() => {});
   }
+
+  // ---- 設計データの状態の印 ----
+  function clipMarkTitle(st: ClipState): string {
+    const out: string[] = [];
+    if (st.plan === "ahead") out.push("計画が先に進んだ(この計画の今の版から作り直せる)");
+    if (st.plan === "in_sync") out.push("計画どおり");
+    if (st.plan === "missing") out.push("作った元の計画が無い");
+    if (st.edited_bars?.length)
+      out.push(
+        `手で直した小節: ${st.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}〜${b}`)).join("・")}(AI の作り直しで残す)`,
+      );
+    if (st.locked_notes) out.push(`固定の音 ${st.locked_notes} 個(AI は変えない)`);
+    return out.join(" / ") + "。押すと設計画面のこのパートへ";
+  }
+  function openDesignFor(track: { id: string }, e: MouseEvent) {
+    e.stopPropagation();
+    const idx = project.tracks.filter((t) => t.kind === "midi").findIndex((t) => t.id === track.id);
+    if (idx >= 0) {
+      designSel.part = idx;
+      designSel.sel = { kind: "part", p: idx };
+    }
+    viewStore.main = "design";
+  }
 </script>
 
 <div class="timeline" class:w-hot={wGripHot} bind:this={root} style="--head-w:{HEAD_W}px;--track-h:{defaultTrackH}px;--grid:{gridImage};--grid-w:{Math.max(1, Math.ceil(totalPx))}px">
@@ -1715,7 +1740,25 @@
                   title="ループのクリップ"><Icon name="infinity" size={12} /></span
                 >{/if}{clip.name}{#if followBpm(clip) !== null}<span class="follow" title="テンポに追従中(元の素材の BPM)"
                   ><Icon name="move-horizontal" size={12} />{followBpm(clip)}</span
-                >{/if}</span
+                >{/if}
+              {#if designStore.clips[clip.id]}
+                {@const st = designStore.clips[clip.id]}
+                <!-- 設計データの状態の印(計画が先に進んだ・手で直した小節・固定の音)。押すと設計画面のそのパートへ -->
+                <button
+                  class="clip-marks"
+                  type="button"
+                  title={clipMarkTitle(st)}
+                  aria-label={clipMarkTitle(st)}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  ondblclick={(e) => e.stopPropagation()}
+                  onclick={(e) => openDesignFor(track, e)}
+                >
+                  {#if st.plan === "ahead"}<span class="mk ahead"><Icon name="refresh-cw" size={10} /></span>{/if}
+                  {#if st.edited_bars?.length}<span class="mk edited"><Icon name="pencil" size={10} />{st.edited_bars.reduce((n, [a, b]) => n + b - a + 1, 0)}</span>{/if}
+                  {#if st.locked_notes}<span class="mk">🔒{st.locked_notes}</span>{/if}
+                  {#if st.plan === "in_sync" && !st.edited_bars?.length && !st.locked_notes}<span class="mk sync"><Icon name="check" size={10} /></span>{/if}
+                </button>
+              {/if}</span
             >
             {#if clip.kind === "midi"}
               <ClipPreview {clip} widthPx={clip.length * pxPerTick} />
@@ -2332,6 +2375,34 @@
     background: color-mix(in srgb, var(--clip-audio) 45%, var(--bg));
   }
 
+  .clip-marks {
+    display: inline-flex;
+    margin-left: 6px;
+    vertical-align: middle;
+    gap: 2px;
+    padding: 0 3px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: color-mix(in srgb, var(--bg) 70%, transparent);
+    font-size: 10px;
+    line-height: 14px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .clip-marks .mk {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+  }
+  .clip-marks .ahead {
+    color: var(--accent);
+  }
+  .clip-marks .edited {
+    color: var(--human);
+  }
+  .clip-marks .sync {
+    color: var(--text-dim);
+  }
   .clip-name {
     display: inline-flex;
     align-items: center;

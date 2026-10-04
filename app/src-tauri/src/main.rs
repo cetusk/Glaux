@@ -2068,6 +2068,18 @@ async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
     Ok(v)
 }
 
+/// 設計画面の中身: 曲の計画と実際の音(区間の盛り上がり・パート × 区間・ずれ・クリップの状態)、計画の一覧と計画の履歴
+#[tauri::command]
+async fn get_design(state: State<'_, AppState>, limit: Option<usize>) -> Result<Value, String> {
+    glaux_mcp::plan_view::design(&state.handle, limit.unwrap_or(100)).await
+}
+
+/// タイムラインのクリップの印(計画どおり / 計画が先に進んだ・手で直した小節・固定の音の数)
+#[tauri::command]
+async fn clip_states(state: State<'_, AppState>) -> Result<Value, String> {
+    glaux_mcp::plan_view::clip_states(&state.handle).await
+}
+
 /// トラックを音声にする(フリーズ)。描き出して直後に音声トラックとして置き、元はミュート(1 件の履歴)
 #[tauri::command]
 async fn bounce_track(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
@@ -2904,6 +2916,8 @@ fn main() -> Result<()> {
             import_midi,
             export_midi,
             harmony,
+            get_design,
+            clip_states,
             export_audio,
             import_audio_clip,
             clip_peaks,
