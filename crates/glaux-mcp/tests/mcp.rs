@@ -7389,6 +7389,15 @@ async fn proposals_branch_and_adopt() {
         .await
         .unwrap_err();
     assert!(e.contains("曲が変わった"), "{e}");
+    // 案の音が今の曲と同じ(同じ編集をすでに曲に当てた)案は受け付けない
+    let e = call(
+        &fx,
+        "propose_design",
+        json!({ "name": "同じ音", "why": "x", "base_plan_id": base_id,
+                "commands": [{ "op": "update_notes", "clip": "clp_prp001", "changes": [{ "id": "nt_prp001", "pitch": 24 }] }] }),
+    )
+    .await;
+    assert_eq!(e.is_error, Some(true));
     // 案の上に案は作れない・今の曲に当てられない案は出せない
     let e = call(
         &fx,

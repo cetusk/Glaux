@@ -366,6 +366,13 @@ pub async fn propose(
         let mut sim = (*project).clone();
         sim.apply(&guarded)
             .map_err(|e| format!("案の編集を今の曲に当てられません: {e}"))?;
+        // 案の音が今の曲と同じなら、聴き比べても違いが無い(同じ編集をすでに曲に当てた、など)。案として受け付けない
+        let diff = glaux_core::designcheck::song_diff(&project, &sim);
+        if diff.ranges.is_empty() && !diff.whole {
+            return Err("案の音が今の曲と同じです(聴き比べても違いがありません)。同じ編集をすでに曲に当てていないか確かめ、\
+                曲は変えずに、案で変える編集を commands に入れてください"
+                .to_owned());
+        }
         match guarded {
             glaux_core::Command::Batch { commands, .. } => commands,
             c => vec![c],

@@ -3822,6 +3822,57 @@ mod tests {
         post / pre
     }
 
+    /// 本物に近い流れ: 曲の途中の範囲で聴き比べを用意し、範囲をループにして途中から鳴らし、再生中に B → A → B と切り替える。
+    /// どの側も、切り替えた後も鳴り続ける(ループで頭に戻った後も)
+    #[test]
+    fn ab_switching_while_playing_keeps_sounding_across_loops() {
+        let now = two_pads();
+        let mut alt = now.clone();
+        if let glaux_core::ClipContent::Midi { notes, .. } = &mut alt.tracks[0].clips[0].content {
+            notes[0].pitch = 45;
+        }
+        let sr = 48_000.0;
+        let bank = crate::data::SampleBank::default();
+        // 2 小節目から 3 小節目(120 BPM: 2〜4 秒)
+        let (from, to) = (2.0, 4.0);
+        let (clip, info) = crate::ab::prepare(&now, &bank, &alt, &bank, sr, from, to).unwrap();
+        assert!(info.first_diff_secs.is_some());
+        let shared = Arc::new(Shared::new((*build(&now)).clone()));
+        shared.ab.store(Some(Arc::new(clip)));
+        shared
+            .ab_side
+            .store(crate::ab::AbSide::B.code(), Ordering::Release);
+        shared
+            .loop_start
+            .store((from * sr) as u64, Ordering::Release);
+        shared.loop_end.store((to * sr) as u64, Ordering::Release);
+        shared.seek.store((from * sr) as u64, Ordering::Release);
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let level = |r: &mut Renderer| rms(&render_block(r, 4_800));
+        // B で 0.5 秒
+        for _ in 0..5 {
+            assert!(level(&mut r) > 0.01, "B が鳴る");
+        }
+        // 再生中に A へ
+        shared
+            .ab_side
+            .store(crate::ab::AbSide::A.code(), Ordering::Release);
+        for k in 0..10 {
+            assert!(level(&mut r) > 0.01, "A に切り替えた後も鳴る({k})");
+        }
+        // ループで頭に戻った後(2 秒の範囲を越えて鳴らす)も、B に戻しても鳴る
+        for _ in 0..20 {
+            let _ = level(&mut r);
+        }
+        shared
+            .ab_side
+            .store(crate::ab::AbSide::B.code(), Ordering::Release);
+        for k in 0..30 {
+            assert!(level(&mut r) > 0.01, "B に戻した後も鳴る({k})");
+        }
+    }
+
     #[test]
     fn levels_follow_each_track_and_reset_when_read() {
         // ミキサーのメーター: トラックごと(フェーダーの後)とマスターのピーク。読むと 0 に戻る
