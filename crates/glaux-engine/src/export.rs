@@ -229,7 +229,8 @@ pub fn render_track_note(
     if let ClipContent::Midi { notes, .. } = &mut clip.content {
         notes.push(Note {
             locked: false,
-            id: NoteId::new(),
+            // 音の揺らぎの種はノートの ID から作るので、決まった ID にする(同じ音色は何度測っても同じ音)
+            id: NoteId::parse("nt_audition").map_err(|_| ExportError::Empty)?,
             pos: Tick::ZERO,
             dur: Tick(dur),
             pitch: pitch.min(127),

@@ -2,7 +2,7 @@
 // 中身はバックエンドの get_design(glaux_core::designcheck::design_view + 計画の一覧・履歴)。
 // 画面で直す操作(計画の保存・区間・メモ・取り消し)もここ。人の操作として履歴に残る。
 import { invoke } from "@tauri-apps/api/core";
-import { abClear, abSetSide, applyEdit, redo as songRedo, undo as songUndo, type AbInfo } from "./api";
+import { abClear, abSetSide, applyEdit, redo as songRedo, undo as songUndo } from "./api";
 import { endAbLoop, ensureAbPlaying, restartAb, startAbLoop } from "./abLoop";
 import { showToast } from "./toast.svelte";
 import type { Project } from "./types";
@@ -485,19 +485,41 @@ export function proposals(d: DesignData | null): PlanInfo[] {
   return (d?.plans ?? []).filter((p) => p.state === "proposal");
 }
 
-/** 案の聴き比べの状態(A = 今、B = 案) */
+/** 案の聴き比べで用意した音の情報(0 番 = 今、1 番〜 = 案。バックエンドの ab::AbManyInfo) */
+export interface ProposalAbInfo {
+  /** それぞれの統合ラウドネス(LUFS。短すぎ・無音なら null) */
+  lufs: (number | null)[];
+  /** そろえるために掛けた量(dB。0 か負) */
+  gains_db: number[];
+  from_secs: number;
+  to_secs: number;
+  /** それぞれが今と違い始める位置(範囲の頭からの秒。今自身と、今と同じ音は null) */
+  first_diff_secs: (number | null)[];
+  end_tick: number;
+}
+
+/** いっしょに聴き比べられる案の数(今 + 4 つ。バックエンドの ab::MAX_TAKES - 1) */
+export const MAX_PROPOSALS_AB = 4;
+
+/** 鳴らす音の字(0 = A = 今、1 = B …) */
+export const abLetter = (i: number): string => "ABCDE"[i] ?? "?";
+
+/** 案の聴き比べの状態(A = 今、B・C … = 案。案 1 つなら行ごと、2 つ以上なら「まとめて」) */
 export const proposalAb = $state<{
-  planId: string | null;
-  side: "a" | "b";
-  info: AbInfo | null;
+  /** 聴き比べている案(空 = 聴き比べていない) */
+  planIds: string[];
+  /** 鳴らしている音(0 = 今、1〜 = planIds の順の案) */
+  side: number;
+  info: ProposalAbInfo | null;
+  /** 用意している最中(1 つの案ならその ID、まとめてなら "all") */
   busy: string | null;
   /** 聴いている範囲(tick)と区間(区間で選んだとき) */
   start: number;
   end: number;
   section: number | null;
 }>({
-  planId: null,
-  side: "b",
+  planIds: [],
+  side: 1,
   info: null,
   busy: null,
   start: 0,
@@ -505,17 +527,21 @@ export const proposalAb = $state<{
   section: null,
 });
 
-/** 案を聴き比べる(範囲の頭から鳴らす) */
-export async function abProposal(planId: string, start: number, end: number, section: number | null = null): Promise<void> {
-  proposalAb.busy = planId;
+/** 案を 1 つ聴き比べている(行の中に切り替えを出す) */
+export const abSingle = (planId: string): boolean => proposalAb.planIds.length === 1 && proposalAb.planIds[0] === planId;
+
+/** 案(1 つ以上)を今と聴き比べる(範囲の頭から、最初の案を鳴らす) */
+export async function abProposals(planIds: string[], start: number, end: number, section: number | null = null): Promise<void> {
+  if (!planIds.length) return;
+  proposalAb.busy = planIds.length === 1 ? planIds[0] : "all";
   try {
-    const info = await invoke<AbInfo>("ab_prepare_proposal", {
-      planId,
+    const info = await invoke<ProposalAbInfo>("ab_prepare_proposals", {
+      planIds,
       startTick: Math.max(0, Math.round(start)),
       endTick: Math.max(0, Math.round(end)),
     });
-    proposalAb.planId = planId;
-    proposalAb.side = "b";
+    proposalAb.planIds = [...planIds];
+    proposalAb.side = 1;
     proposalAb.info = info;
     // 範囲は長すぎると切り詰められる(end_tick)。その範囲をループにして頭から鳴らす
     const e = info.end_tick && info.end_tick > start ? info.end_tick : end;
@@ -530,21 +556,23 @@ export async function abProposal(planId: string, start: number, end: number, sec
   }
 }
 
-export async function setProposalSide(side: "a" | "b"): Promise<void> {
+/** 鳴らす音を切り替える(0 = 今、1〜 = 案)。同じ位置から続けて鳴る */
+export async function setProposalSide(side: number): Promise<void> {
+  if (side < 0 || side > proposalAb.planIds.length) return;
   proposalAb.side = side;
-  abSetSide(side).catch(() => {});
+  abSetSide(abLetter(side).toLowerCase() as "a" | "b" | "c" | "d" | "e").catch(() => {});
   // 止まっている・範囲の外にいるなら、範囲の頭から鳴らす(押せば聞こえるように)
-  if (proposalAb.planId) await ensureAbPlaying(proposalAb.start, proposalAb.end).catch(() => {});
+  if (proposalAb.planIds.length) await ensureAbPlaying(proposalAb.start, proposalAb.end).catch(() => {});
 }
 
 /** 聴いている範囲の頭から聴き直す */
 export async function restartProposalAb(): Promise<void> {
-  if (proposalAb.planId) await restartAb(proposalAb.start).catch(() => {});
+  if (proposalAb.planIds.length) await restartAb(proposalAb.start).catch(() => {});
 }
 
 export async function endProposalAb(): Promise<void> {
-  if (!proposalAb.planId) return;
-  proposalAb.planId = null;
+  if (!proposalAb.planIds.length) return;
+  proposalAb.planIds = [];
   proposalAb.info = null;
   abClear().catch(() => {});
   await endAbLoop();
@@ -564,7 +592,7 @@ export async function adoptProposal(planId: string, name: string): Promise<void>
 
 /** 案を捨てる */
 export async function discardProposal(planId: string, name: string): Promise<void> {
-  if (proposalAb.planId === planId) await endProposalAb();
+  if (proposalAb.planIds.includes(planId)) await endProposalAb();
   try {
     await invoke("plan_delete", { planId, label: `案「${name}」を捨てる` });
     showToast("ok", `案「${name}」を捨てました`);

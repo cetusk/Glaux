@@ -2308,24 +2308,37 @@ fn transport_spectrum(state: State<'_, AppState>) -> Result<Value, String> {
     Ok(json!({ "bands": glaux_engine::monitor::SPECTRUM_BANDS, "db": e.spectrum() }))
 }
 
-/// ラウドネスメーターの統合値と True Peak の最大を測り直す
-/// 聴き比べる範囲の上限(秒)。書き出しを 2 回するので、長すぎると待たされる
+/// 聴き比べる範囲の上限(秒)。音の数だけ書き出すので、長すぎると待たされる
 const AB_MAX_SECS: f64 = 90.0;
 
-/// 音量をそろえた A/B の聴き比べを用意する: 履歴のある地点(既定は 1 つ前の編集の前)と今の、
-/// 同じ範囲を書き出して統合ラウドネスをそろえる。用意できたら B(今)を鳴らす状態にする
-/// 案(設計データの枝)の聴き比べを用意する: A = 今の曲、B = 今の曲に案の音を当てたもの(音量をそろえる)
+/// 案(設計データの枝)の聴き比べを用意する: A = 今の曲、B・C … = 今の曲にそれぞれの案の音を当てたもの
+/// (いちばん小さい音量にそろえる。案は 4 つまで)。用意できたら B(最初の案)を鳴らす状態にする
 #[tauri::command]
-async fn ab_prepare_proposal(
+async fn ab_prepare_proposals(
     state: State<'_, AppState>,
-    plan_id: String,
+    plan_ids: Vec<String>,
     start_tick: u64,
     end_tick: u64,
 ) -> Result<Value, String> {
     if end_tick <= start_tick {
         return Err("聴き比べる範囲がありません".into());
     }
-    let (now, alt) = glaux_mcp::plan_view::proposal_projects(&state.handle, &plan_id).await?;
+    if plan_ids.is_empty() || plan_ids.len() >= glaux_engine::ab::MAX_TAKES {
+        return Err(format!(
+            "いっしょに聴き比べられる案は 1〜{} 個です",
+            glaux_engine::ab::MAX_TAKES - 1
+        ));
+    }
+    let mut now = None;
+    let mut alts = Vec::with_capacity(plan_ids.len());
+    for id in &plan_ids {
+        let (n, alt) = glaux_mcp::plan_view::proposal_projects(&state.handle, id).await?;
+        now.get_or_insert(n);
+        alts.push(alt);
+    }
+    let Some(now) = now else {
+        return Err("案がありません".into());
+    };
     let engine = state.engine()?.clone();
     let sr = engine.sample_rate();
     let dir = state.handle.project_dir().await?;
@@ -2337,9 +2350,13 @@ async fn ab_prepare_proposal(
     let end_tick = now.tempo_map.seconds_to_tick(to).0;
     let (clip, info) = tokio::task::spawn_blocking(move || {
         let dir = std::path::Path::new(&dir);
-        let bank_a = glaux_engine::SampleBank::for_offline(&now, dir);
-        let bank_b = glaux_engine::SampleBank::for_offline(&alt, dir);
-        glaux_engine::ab::prepare(&now, &bank_a, &alt, &bank_b, sr, from, to)
+        let songs: Vec<glaux_core::Project> = std::iter::once(now).chain(alts).collect();
+        let banks: Vec<glaux_engine::SampleBank> = songs
+            .iter()
+            .map(|p| glaux_engine::SampleBank::for_offline(p, dir))
+            .collect();
+        let pairs: Vec<_> = songs.iter().zip(banks.iter()).collect();
+        glaux_engine::ab::prepare_many(&pairs, sr, from, to)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2348,6 +2365,7 @@ async fn ab_prepare_proposal(
     engine.set_ab_side(glaux_engine::ab::AbSide::B);
     let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
     v["end_tick"] = json!(end_tick);
+    v["plan_ids"] = json!(plan_ids);
     Ok(v)
 }
 
@@ -2357,6 +2375,8 @@ async fn plan_adopt_proposal(state: State<'_, AppState>, plan_id: String) -> Res
     glaux_mcp::plan_view::adopt_proposal(&state.handle, &plan_id).await
 }
 
+/// 音量をそろえた A/B の聴き比べを用意する: 履歴のある地点(既定は 1 つ前の編集の前)と今の、
+/// 同じ範囲を書き出して統合ラウドネスをそろえる。用意できたら B(今)を鳴らす状態にする
 #[tauri::command]
 async fn ab_prepare(
     state: State<'_, AppState>,
@@ -2409,14 +2429,13 @@ async fn ab_prepare(
     Ok(v)
 }
 
-/// 聴き比べでどちらを鳴らすか("a" = 前、"b" = 今、"off" = ふつうの再生)
+/// 聴き比べでどれを鳴らすか("a" = 前・今、"b"〜"e" = 後・案、"off" = ふつうの再生)
 #[tauri::command]
 fn ab_set_side(state: State<'_, AppState>, side: String) -> Result<(), String> {
-    let side = match side.as_str() {
-        "a" => glaux_engine::ab::AbSide::A,
-        "b" => glaux_engine::ab::AbSide::B,
-        "off" => glaux_engine::ab::AbSide::Off,
-        _ => return Err(format!("side は a / b / off(got: {side})")),
+    let side = match side.as_bytes() {
+        b"off" => glaux_engine::ab::AbSide::Off,
+        [c @ b'a'..=b'e'] => glaux_engine::ab::AbSide::Take(c - b'a'),
+        _ => return Err(format!("side は a〜e / off(got: {side})")),
     };
     state.engine()?.set_ab_side(side);
     Ok(())
@@ -2429,6 +2448,7 @@ fn ab_clear(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// ラウドネスメーターの統合値と True Peak の最大を測り直す
 #[tauri::command]
 fn transport_reset_loudness(state: State<'_, AppState>) -> Result<(), String> {
     state.engine()?.reset_loudness();
@@ -3032,7 +3052,7 @@ fn main() -> Result<()> {
             plan_revert,
             plan_restore,
             plan_settle_estimated,
-            ab_prepare_proposal,
+            ab_prepare_proposals,
             plan_adopt_proposal,
             export_audio,
             import_audio_clip,

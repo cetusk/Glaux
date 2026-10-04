@@ -790,7 +790,10 @@ pub struct Renderer {
     master_smooth: f32,
     /// A/B の聴き比べ: 聴き比べの音の混ぜ具合(0 = ふつうの再生、1 = 聴き比べ)と、B の混ぜ具合(0 = A、1 = B)
     ab_on: f32,
-    ab_mix: f32,
+    /// 聴き比べの切り替え: 前に鳴らしていた番号・今の番号・今の番号への進み具合(0〜1)
+    ab_prev: usize,
+    ab_cur: usize,
+    ab_x: f32,
     /// このブロックでトラックごとに鳴らした声のサンプル数(発音の時間の按分用)
     voice_samples: [u32; MAX_TRACKS],
     /// 相関・ゴニオメーターの測定と、聴き方の切り替え([`crate::monitor`])
@@ -951,7 +954,9 @@ impl Renderer {
             out_smooth: f32::NAN,
             master_smooth: f32::NAN,
             ab_on: 0.0,
-            ab_mix: 1.0,
+            ab_prev: 1,
+            ab_cur: 1,
+            ab_x: 1.0,
             voice_samples: [0; MAX_TRACKS],
             monitor: Default::default(),
             inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
@@ -2562,11 +2567,18 @@ impl Renderer {
         } else {
             0.0
         };
-        let ab_target_b = if ab_side == crate::ab::AbSide::A {
-            0.0
-        } else {
-            1.0
-        };
+        // 番号が変わったら、今鳴らしている方(切り替えの途中なら近い方)から新しい方へクロスフェードする
+        if let Some(t) = ab_side.index() {
+            if t != self.ab_cur {
+                self.ab_prev = if self.ab_x >= 0.5 {
+                    self.ab_cur
+                } else {
+                    self.ab_prev
+                };
+                self.ab_cur = t;
+                self.ab_x = 0.0;
+            }
+        }
         let ab_k = 1.0 - (-1.0 / (0.01 * sr)).exp();
         for f in 0..frames {
             let pos = self.blk_pos[f];
@@ -2595,10 +2607,12 @@ impl Renderer {
             let mut ab_full = false;
             if ab_target_on > 0.0 || self.ab_on > 1e-5 {
                 self.ab_on += (ab_target_on - self.ab_on) * ab_k;
-                self.ab_mix += (ab_target_b - self.ab_mix) * ab_k;
-                let (al, ar) = match ab_clip.and_then(|c| c.frame(pos)) {
-                    Some(((al, ar), (bl, br))) => {
-                        (al + (bl - al) * self.ab_mix, ar + (br - ar) * self.ab_mix)
+                self.ab_x += (1.0 - self.ab_x) * ab_k;
+                let (al, ar) = match ab_clip {
+                    Some(c) => {
+                        let (pl, pr) = c.take(self.ab_prev, pos).unwrap_or((0.0, 0.0));
+                        let (cl, cr) = c.take(self.ab_cur, pos).unwrap_or((0.0, 0.0));
+                        (pl + (cl - pl) * self.ab_x, pr + (cr - pr) * self.ab_x)
                     }
                     None => (0.0, 0.0),
                 };
@@ -4712,10 +4726,8 @@ mod tests {
         shared.playing.store(true, Ordering::Release);
         shared.ab.store(Some(Arc::new(crate::ab::AbClip {
             start: 0,
-            a: vec![0.2; 48_000 * 2],
-            b: vec![0.4; 48_000 * 2],
-            gain_a: 1.0,
-            gain_b: 0.5,
+            takes: vec![vec![0.2; 48_000 * 2], vec![0.4; 48_000 * 2]],
+            gains: vec![1.0, 0.5],
         })));
         let mut r = Renderer::new(shared.clone());
         let last = |b: &[f32]| b[b.len() - 2];

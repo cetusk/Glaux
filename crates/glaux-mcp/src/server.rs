@@ -9935,6 +9935,10 @@ impl GlauxServer {
         };
         let mut out = plan_summary(&plan, &project);
         out["body"] = plan.body.clone();
+        if !plan.patch.is_empty() {
+            // 案の音: 今の曲に当てると案の音になる編集の列(採用すると当たる)
+            out["patch"] = json!(plan.patch);
+        }
         if let Some(r) = p.compare_rev {
             let other = pick(r)?;
             out["diff"] = json!({

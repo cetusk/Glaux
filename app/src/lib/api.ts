@@ -790,7 +790,7 @@ export function abPrepare(beforeEntry: string, startTick: number, endTick: numbe
 }
 
 /** 聴き比べでどちらを鳴らすか */
-export function abSetSide(side: "a" | "b" | "off"): Promise<void> {
+export function abSetSide(side: "a" | "b" | "c" | "d" | "e" | "off"): Promise<void> {
   return invoke("ab_set_side", { side });
 }
 

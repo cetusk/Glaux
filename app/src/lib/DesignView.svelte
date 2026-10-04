@@ -10,7 +10,10 @@
     ARCS,
     FUNCTIONS,
     PRESENCE,
-    abProposal,
+    MAX_PROPOSALS_AB,
+    abLetter,
+    abProposals,
+    abSingle,
     addMemo,
     adoptProposal,
     askChat,
@@ -762,11 +765,39 @@
   function listen(planId: string, prefer: number | null = null) {
     const r = proposalRange(planId, prefer);
     if (r.section != null) pick({ kind: "section", i: r.section });
-    abProposal(planId, r.start, r.end, r.section);
+    abProposals([planId], r.start, r.end, r.section);
   }
+  // まとめて聴き比べる: 音の変わる・今の曲に当てられる案(最初の 4 つ)を、今と同じ範囲で切り替えて聴く
+  const listenable = $derived(propList.filter((p) => p.edits && !changesOf(p.plan_id)?.stale));
+  const allIds = $derived(listenable.slice(0, MAX_PROPOSALS_AB).map((p) => p.plan_id));
+  /** どれかの案で変わる区間(区間ごとに、変わる案の数) */
+  const changedBy = $derived.by(() => {
+    const m = new Map<number, number>();
+    for (const id of allIds) for (const si of changesOf(id)?.sections ?? []) m.set(si, (m.get(si) ?? 0) + 1);
+    return m;
+  });
+  const allChanged = $derived([...changedBy.keys()].sort((a, b) => a - b));
+  const multi = $derived(proposalAb.planIds.length >= 2);
+  /** まとめて聴く範囲: 区間を指定したらそこ。無ければ、選んでいる区間が変わる所ならそこ、
+   *  そうでなければいちばん多くの案が変わる区間(同じなら前の方)。どれも無ければ最初の案の範囲 */
+  function listenAll(prefer: number | null = null) {
+    if (allIds.length < 2) return;
+    const selI = sel.kind === "section" || sel.kind === "cell" ? sel.i : -1;
+    let i = prefer;
+    if (i == null && changedBy.has(selI)) i = selI;
+    if (i == null && allChanged.length) i = allChanged.reduce((b, x) => ((changedBy.get(x) ?? 0) > (changedBy.get(b) ?? 0) ? x : b));
+    const r = i != null && sortedSecs[i] ? { ...sectionRange(i), section: i } : proposalRange(allIds[0]);
+    if (r.section != null) pick({ kind: "section", i: r.section });
+    abProposals(allIds, r.start, r.end, r.section);
+  }
+  /** まとめて聴き比べているときの、案の字(B・C …。入っていなければ null) */
+  const letterOf = (planId: string) => {
+    const k = proposalAb.planIds.indexOf(planId);
+    return multi && k >= 0 ? abLetter(k + 1) : null;
+  };
   // 案が無くなったら(採用・捨てる・AI が消した)聴き比べも終える
   $effect(() => {
-    if (proposalAb.planId && !propList.some((p) => p.plan_id === proposalAb.planId)) endProposalAb();
+    if (proposalAb.planIds.some((id) => !propList.some((p) => p.plan_id === id))) endProposalAb();
   });
 
   let lanesEl = $state<HTMLDivElement>();
@@ -826,11 +857,70 @@
             >今の曲と計画は変わっていません。聴き比べて、よければ採用してください。聴き比べ中は範囲を繰り返し鳴らし、A / B でいつでも切り替えられます</span
           >
         </div>
+        {#if allIds.length >= 2}
+          <div class="pall" class:on={multi}>
+            {#if multi}
+              {@const info = proposalAb.info}
+              <div class="prow">
+                <span class="abswitch" role="group" aria-label="今と案を切り替える">
+                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>A 今</button>
+                  {#each proposalAb.planIds as id, k (id)}
+                    <button class="btn sm" class:on={proposalAb.side === k + 1} type="button" title={planName(id)} onclick={() => setProposalSide(k + 1)}
+                      >{abLetter(k + 1)} {planName(id) ?? "案"}</button
+                    >
+                  {/each}
+                </span>
+                <button class="btn sm" type="button" title="聴いている範囲の頭から聴き直す" onclick={restartProposalAb}>⏮ 頭から</button>
+                <span class="spacer"></span>
+                <button class="btn sm" type="button" onclick={endProposalAb}>聴き比べを終える</button>
+              </div>
+              <div class="prow">
+                <span class="plabel">範囲</span>
+                {#each allChanged as si (si)}
+                  <button
+                    class="btn sm secchip"
+                    class:on={proposalAb.section === si}
+                    type="button"
+                    title="この区間でまとめて聴き比べる(変わる案 {changedBy.get(si)} つ)"
+                    disabled={proposalAb.busy != null}
+                    onclick={() => listenAll(si)}>{d.sections[si]?.name ?? `区間 ${si + 1}`}</button
+                  >
+                {/each}
+                <span class="abnote"
+                  >{proposalAb.section != null ? `「${d.sections[proposalAb.section]?.name}」を聴いています` : "選んだ範囲を聴いています"}{#if info}{" "}· {info.lufs
+                      .map((l, k) => `${k === 0 ? "今" : abLetter(k)} ${l?.toFixed(1) ?? "—"}`)
+                      .join(" / ")} LUFS(音量はいちばん小さいものにそろえてあります){/if}</span
+                >
+              </div>
+              <span class="pnote">切り替えても、同じ位置から続けて鳴ります(頭から聴くなら「頭から」)</span>
+              {#if info}
+                {#each proposalAb.planIds as id, k (id)}
+                  {#if info.first_diff_secs[k + 1] === null}
+                    <span class="pwarn">{abLetter(k + 1)}「{planName(id)}」はこの範囲では今と同じ音です(範囲の区間を変えてみてください)</span>
+                  {/if}
+                {/each}
+              {/if}
+            {:else}
+              <div class="prow">
+                <button class="btn sm" type="button" disabled={proposalAb.busy != null} onclick={() => listenAll()}
+                  >{proposalAb.busy === "all" ? "用意しています…" : `まとめて聴き比べる(今 + 案 ${allIds.length} つ)`}</button
+                >
+                <span class="pnote"
+                  >A = 今、{allIds.map((id, k) => `${abLetter(k + 1)} = ${planName(id)}`).join("、")} を同じ範囲で切り替えて聴けます{listenable.length > allIds.length
+                    ? `(いっしょに聴けるのは ${MAX_PROPOSALS_AB} つまで)`
+                    : ""}</span
+                >
+              </div>
+            {/if}
+          </div>
+        {/if}
         {#each propList as pr (pr.plan_id)}
-          {@const on = proposalAb.planId === pr.plan_id}
+          {@const on = abSingle(pr.plan_id)}
           {@const ch = changesOf(pr.plan_id)}
-          <div class="prop" class:on>
+          {@const letter = letterOf(pr.plan_id)}
+          <div class="prop" class:on={on || letter != null}>
             <div class="prow">
+              {#if letter}<span class="pletter" class:cur={proposalAb.side === proposalAb.planIds.indexOf(pr.plan_id) + 1}>{letter}</span>{/if}
               <span class="pname">{pr.name}</span>
               <span class="pbase"
                 >{pr.derived_from ? `「${planName(pr.derived_from.id) ?? "元の計画"}」の案` : "新しい計画の案"}{pr.edits
@@ -865,18 +955,19 @@
             <div class="prow">
               {#if on}
                 <span class="abswitch" role="group" aria-label="今と案を切り替える">
-                  <button class="btn sm" class:on={proposalAb.side === "a"} type="button" onclick={() => setProposalSide("a")}>A 今</button>
-                  <button class="btn sm" class:on={proposalAb.side === "b"} type="button" onclick={() => setProposalSide("b")}>B 案</button>
+                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>A 今</button>
+                  <button class="btn sm" class:on={proposalAb.side === 1} type="button" onclick={() => setProposalSide(1)}>B 案</button>
                 </span>
                 <button class="btn sm" type="button" title="聴いている範囲の頭から聴き直す" onclick={restartProposalAb}>⏮ 頭から</button>
                 <span class="pnote">A / B を切り替えても、同じ位置から続けて鳴ります(頭から聴くなら「頭から」)</span>
                 <span class="abnote"
-                  >{proposalAb.section != null ? `「${d.sections[proposalAb.section]?.name}」を聴いています` : "選んだ範囲を聴いています"}{#if proposalAb.info}{" "}· 今 {proposalAb.info.lufs_a?.toFixed(1) ?? "—"} / 案 {proposalAb.info.lufs_b?.toFixed(1) ?? "—"} LUFS(音量はそろえてあります){/if}</span
+                  >{proposalAb.section != null ? `「${d.sections[proposalAb.section]?.name}」を聴いています` : "選んだ範囲を聴いています"}{#if proposalAb.info}{" "}· 今 {proposalAb.info.lufs[0]?.toFixed(1) ?? "—"} / 案 {proposalAb.info.lufs[1]?.toFixed(1) ?? "—"} LUFS(音量はそろえてあります){/if}</span
                 >
-                {#if proposalAb.info && proposalAb.info.first_diff_secs === null}
+                {@const fd = proposalAb.info?.first_diff_secs[1]}
+                {#if proposalAb.info && fd === null}
                   <span class="pwarn">この範囲では今と案の音が同じです(変わる所の区間を押して聴いてください)</span>
-                {:else if proposalAb.info?.first_diff_secs != null && proposalAb.info.first_diff_secs > 1}
-                  <span class="pnote">違いは範囲の頭から {proposalAb.info.first_diff_secs.toFixed(1)} 秒あたりから</span>
+                {:else if fd != null && fd > 1}
+                  <span class="pnote">違いは範囲の頭から {fd.toFixed(1)} 秒あたりから</span>
                 {/if}
                 <span class="spacer"></span>
                 <button class="btn sm" type="button" onclick={endProposalAb}>聴き比べを終える</button>
@@ -2519,6 +2610,34 @@
   .prop.on {
     border-style: solid;
     border-color: var(--accent);
+  }
+  .pall {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    border-radius: var(--r-sm);
+  }
+  .pall.on {
+    border: 1px solid var(--accent);
+    /* 案の一覧を送っても、切り替えは見えたままにする */
+    position: sticky;
+    top: -6px;
+    z-index: 1;
+    background: var(--bg-panel);
+  }
+  .pletter {
+    min-width: 18px;
+    text-align: center;
+    border-radius: 3px;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+  }
+  .pletter.cur {
+    background: var(--accent);
+    color: var(--bg);
   }
   .prow {
     display: flex;
