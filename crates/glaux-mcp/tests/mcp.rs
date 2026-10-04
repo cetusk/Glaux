@@ -7302,6 +7302,57 @@ async fn design_screen_plan_operations() {
     .is_err());
 }
 
+/// 案を採用すると、同じ元の計画から出たほかの案と、指定した案(いっしょに聴き比べていた案)を捨てる。ほかの案は残す
+#[tokio::test]
+async fn adopting_a_proposal_discards_its_siblings() {
+    use glaux_mcp::plan_view;
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_sib001", "Wob")).await);
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_sib002", "Pad")).await);
+    let plan = |name: &str, track: &str| json!({ "name": name, "kind": "part", "why": "元", "body": { "track": track, "function": "lead" } });
+    let wob = ok_json(&call(&fx, "save_plan", plan("Wob", "trk_sib001")).await)["plan"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let pad = ok_json(&call(&fx, "save_plan", plan("Pad", "trk_sib002")).await)["plan"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let propose = |name: &str, base: &str, track: &str, db: f64| {
+        json!({ "name": name, "why": "試し", "base_plan_id": base,
+                "commands": [{ "op": "set_track_prop", "id": track, "prop": "volume_db", "value": db }] })
+    };
+    let mut ids = vec![];
+    for (name, base, track, db) in [
+        ("低域", &wob, "trk_sib001", -1.0),
+        ("中域", &wob, "trk_sib001", -2.0),
+        ("高域", &wob, "trk_sib001", -3.0),
+        ("パッド", &pad, "trk_sib002", -4.0),
+        ("パッド 2", &pad, "trk_sib002", -5.0),
+    ] {
+        let r = ok_json(&call(&fx, "propose_design", propose(name, base, track, db)).await);
+        ids.push(r["plan_id"].as_str().unwrap().to_owned());
+    }
+    // 「高域」を採用し、いっしょに聴き比べていた「パッド」も捨てる
+    let r = plan_view::adopt_proposal(&fx.handle, &ids[2], &[ids[0].clone(), ids[3].clone()])
+        .await
+        .unwrap();
+    let mut gone: Vec<String> = serde_json::from_value(r["discarded"].clone()).unwrap();
+    gone.sort();
+    assert_eq!(gone, vec!["パッド", "中域", "低域"]);
+    let plans = fx.handle.get_plans().await.unwrap();
+    let left: Vec<&str> = plans
+        .doc()
+        .plans
+        .values()
+        .filter(|p| p.state.as_deref() == Some("proposal"))
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(left, vec!["パッド 2"]);
+    let (now, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(now.tracks[0].volume_db, -3.0);
+}
+
 /// 段階 3: AI の案(枝)。今の曲と計画は変えず、案の音(編集の列)を持つ。採用で曲と計画に当たる。古くなった案は当てられない
 #[tokio::test]
 async fn proposals_branch_and_adopt() {
@@ -7354,7 +7405,9 @@ async fn proposals_branch_and_adopt() {
     let pitch = |p: &glaux_core::Project| p.tracks[0].clips[0].notes().unwrap()[0].pitch;
     assert_eq!((pitch(&a), pitch(&b)), (36, 24));
     // 採用: 曲と元の計画に当たり、案は消える。AI の音として指紋も残る
-    plan_view::adopt_proposal(&fx.handle, &pid).await.unwrap();
+    plan_view::adopt_proposal(&fx.handle, &pid, &[])
+        .await
+        .unwrap();
     let (now, _) = fx.handle.get_project().await.unwrap();
     assert_eq!(pitch(&now), 24);
     assert!(now.made.contains_key(&"clp_prp001".parse().unwrap()));
@@ -7385,7 +7438,7 @@ async fn proposals_branch_and_adopt() {
         .await
         .unwrap()
         .unwrap();
-    let e = plan_view::adopt_proposal(&fx.handle, pr2["plan_id"].as_str().unwrap())
+    let e = plan_view::adopt_proposal(&fx.handle, pr2["plan_id"].as_str().unwrap(), &[])
         .await
         .unwrap_err();
     assert!(e.contains("曲が変わった"), "{e}");

@@ -431,7 +431,14 @@ pub async fn proposal_projects(
 }
 
 /// 案を採用する: 案の音を曲に当て(1 件の編集)、案の計画を今の計画にする(元の計画があれば中身を置き換えて案を消す)
-pub async fn adopt_proposal(handle: &SessionHandle, plan_id: &str) -> Result<Value, String> {
+///
+/// 採用したら、ほかの案のうち同じ元の計画から出たもの(元の計画が変わったので古くなる)と `also_discard`
+/// (いっしょに聴き比べていた案など)を捨てる(計画の履歴に 1 件ずつ残るので、取り消せる)
+pub async fn adopt_proposal(
+    handle: &SessionHandle,
+    plan_id: &str,
+    also_discard: &[String],
+) -> Result<Value, String> {
     use glaux_core::plan::Plan;
     let id = parse_plan_id(plan_id)?;
     let plans = handle.get_plans().await?;
@@ -501,7 +508,7 @@ pub async fn adopt_proposal(handle: &SessionHandle, plan_id: &str) -> Result<Val
                             rev: p.rev + 1,
                             state: None,
                             patch: vec![],
-                            ..p
+                            ..p.clone()
                         },
                     },
                     human,
@@ -511,5 +518,35 @@ pub async fn adopt_proposal(handle: &SessionHandle, plan_id: &str) -> Result<Val
                 .await?
         }
     };
-    Ok(json!({ "entry_id": song_entry, "plan_entry_id": plan_entry }))
+    // ほかの案を捨てる
+    let extra: Vec<_> = also_discard
+        .iter()
+        .filter_map(|s| parse_plan_id(s).ok())
+        .collect();
+    let base_id = p.derived_from.as_ref().map(|r| r.id.clone());
+    let others: Vec<(glaux_core::PlanId, String)> = plans
+        .doc()
+        .plans
+        .values()
+        .filter(|q| q.id != p.id && q.state.as_deref() == Some("proposal"))
+        .filter(|q| {
+            extra.contains(&q.id)
+                || (base_id.is_some() && q.derived_from.as_ref().map(|r| &r.id) == base_id.as_ref())
+        })
+        .map(|q| (q.id.clone(), q.name.clone()))
+        .collect();
+    let mut discarded = Vec::new();
+    for (id, name) in others {
+        let l = format!("案「{}」を採用したので、案「{name}」を捨てる", p.name);
+        handle
+            .apply_plan(
+                PlanCommand::Delete { id },
+                glaux_core::Author::Human,
+                l.clone(),
+                note(&l),
+            )
+            .await?;
+        discarded.push(name);
+    }
+    Ok(json!({ "entry_id": song_entry, "plan_entry_id": plan_entry, "discarded": discarded }))
 }

@@ -578,12 +578,18 @@ export async function endProposalAb(): Promise<void> {
   await endAbLoop();
 }
 
-/** 案を採用する(案の音を曲に当て、案の計画を今の計画にする) */
+/** 案を採用する(案の音を曲に当て、案の計画を今の計画にする)。同じ元の計画から出たほかの案と、
+ *  いっしょに聴き比べていた案は捨てる(計画の履歴に残るので取り消せる) */
 export async function adoptProposal(planId: string, name: string): Promise<void> {
+  const alsoDiscard = proposalAb.planIds.filter((id) => id !== planId);
   await endProposalAb();
   try {
-    await invoke("plan_adopt_proposal", { planId });
-    showToast("ok", `案「${name}」を採用しました(曲と計画の履歴に残り、取り消せます)`);
+    const r = await invoke<{ discarded?: string[] }>("plan_adopt_proposal", { planId, alsoDiscard });
+    const gone = r?.discarded ?? [];
+    showToast(
+      "ok",
+      `案「${name}」を採用しました${gone.length ? `。ほかの案(${gone.map((n) => `「${n}」`).join("")})は捨てました` : ""}(曲と計画の履歴に残り、取り消せます)`,
+    );
     refreshDesign();
   } catch (e) {
     showToast("error", `採用できませんでした: ${e}`);

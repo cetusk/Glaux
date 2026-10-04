@@ -2371,8 +2371,13 @@ async fn ab_prepare_proposals(
 
 /// 案を採用する(案の音を曲に当て、案の計画を今の計画にする)
 #[tauri::command]
-async fn plan_adopt_proposal(state: State<'_, AppState>, plan_id: String) -> Result<Value, String> {
-    glaux_mcp::plan_view::adopt_proposal(&state.handle, &plan_id).await
+async fn plan_adopt_proposal(
+    state: State<'_, AppState>,
+    plan_id: String,
+    also_discard: Option<Vec<String>>,
+) -> Result<Value, String> {
+    glaux_mcp::plan_view::adopt_proposal(&state.handle, &plan_id, &also_discard.unwrap_or_default())
+        .await
 }
 
 /// 音量をそろえた A/B の聴き比べを用意する: 履歴のある地点(既定は 1 つ前の編集の前)と今の、
