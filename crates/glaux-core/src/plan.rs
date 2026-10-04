@@ -1057,6 +1057,7 @@ mod tests {
         .unwrap();
         let before = s.doc().clone();
         let note = EntryNote {
+            song_entry: None,
             why: "音域が動かないと言われた".into(),
             trigger: Some(Trigger {
                 kind: "user".into(),

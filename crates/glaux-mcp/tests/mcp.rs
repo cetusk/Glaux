@@ -7441,7 +7441,10 @@ async fn proposals_respect_later_edits_locks_and_resaves() {
     // 採用が書いた計画の履歴の項目は、履歴のいちばん新しい側にある(画面の Ctrl+Z の確かめ)
     let ids: Vec<String> = serde_json::from_value(r["plan_entry_ids"].clone()).unwrap();
     assert_eq!(ids.len(), r["plan_entries"].as_u64().unwrap() as usize);
-    let h = plan_view::plan_head(&fx.handle, ids.len()).await.unwrap();
+    let h = plan_view::plan_head(&fx.handle, ids.len(), &ids)
+        .await
+        .unwrap();
+    assert_eq!(h["present"].as_array().unwrap().len(), ids.len());
     let mut head: Vec<String> = serde_json::from_value(h["applied"].clone()).unwrap();
     let mut want = ids.clone();
     head.sort();
@@ -7466,6 +7469,163 @@ async fn proposals_respect_later_edits_locks_and_resaves() {
         .await
         .unwrap_err();
     assert!(e.contains("固定"), "{e}");
+}
+
+/// 案の採用は曲の編集と計画の変更の一組: 曲の側でどう戻しても(undo・redo・この変更だけ取り消す・チェックポイントまで戻す)、
+/// 計画も一緒に戻る。採用の後に別の計画に入った変更は残す
+#[tokio::test]
+async fn adoption_undo_from_anywhere_keeps_song_and_plans_together() {
+    use glaux_mcp::plan_view;
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_lnk001", "Wob")).await);
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_lnk002", "Pad")).await);
+    let plan = |name: &str, track: &str| json!({ "name": name, "kind": "part", "why": "元", "body": { "track": track, "function": "lead" } });
+    let wob = ok_json(&call(&fx, "save_plan", plan("Wob", "trk_lnk001")).await)["plan"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let pad = ok_json(&call(&fx, "save_plan", plan("Pad", "trk_lnk002")).await)["plan"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut ids = vec![];
+    for (name, db) in [("低域", -1.0), ("中域", -2.0), ("高域", -3.0)] {
+        let r = ok_json(
+            &call(
+                &fx,
+                "propose_design",
+                json!({ "name": name, "why": "試し", "base_plan_id": wob,
+                        "body": { "track": "trk_lnk001", "function": "bass" },
+                        "commands": [{ "op": "set_track_prop", "id": "trk_lnk001", "prop": "volume_db", "value": db }] }),
+            )
+            .await,
+        );
+        ids.push(r["plan_id"].as_str().unwrap().to_owned());
+    }
+    let plans_json = |fx: &Fixture| {
+        let h = fx.handle.clone();
+        async move {
+            let p = h.get_plans().await.unwrap();
+            serde_json::to_value(&p.doc().plans).unwrap()
+        }
+    };
+    let song = |fx: &Fixture| {
+        let h = fx.handle.clone();
+        async move { h.get_project().await.unwrap().0.tracks }
+    };
+    fx.handle.checkpoint("採用の前".into()).await.unwrap();
+    let (p0, s0) = (plans_json(&fx).await, song(&fx).await);
+    plan_view::adopt_proposal(&fx.handle, &ids[1], &[])
+        .await
+        .unwrap();
+    let (p1, s1) = (plans_json(&fx).await, song(&fx).await);
+    assert_ne!(p0, p1);
+    assert_ne!(s0, s1);
+    // 計画の側だけで採用の分を動かすことはできない(曲と食い違うので)
+    let e = fx.handle.step_plan(1, false).await.unwrap_err();
+    assert!(e.contains("曲の側で"), "{e}");
+    assert_eq!(plans_json(&fx).await, p1);
+
+    // 1) タイムラインの Ctrl+Z(曲の undo)→ 計画も採用の前に戻る。redo → 採用の後に戻る
+    fx.handle.undo(1).await.unwrap().unwrap();
+    assert_eq!(
+        (plans_json(&fx).await, song(&fx).await),
+        (p0.clone(), s0.clone())
+    );
+    fx.handle.redo(1).await.unwrap().unwrap();
+    assert_eq!(
+        (plans_json(&fx).await, song(&fx).await),
+        (p1.clone(), s1.clone())
+    );
+    // 何度往復しても同じ
+    fx.handle.undo(1).await.unwrap().unwrap();
+    assert_eq!(plans_json(&fx).await, p0);
+    fx.handle.redo(1).await.unwrap().unwrap();
+    assert_eq!(plans_json(&fx).await, p1);
+
+    // 2) 採用の後に AI が別の計画(Pad)を直してから、曲の undo → 採用だけ戻り、Pad の直しは残る
+    ok_json(
+        &call(
+            &fx,
+            "save_plan",
+            json!({ "plan_id": pad, "name": "Pad(AI)", "kind": "part", "why": "AI の直し", "body": { "track": "trk_lnk002", "function": "texture" } }),
+        )
+        .await,
+    );
+    fx.handle.undo(1).await.unwrap().unwrap();
+    let now = fx.handle.get_plans().await.unwrap();
+    let names: Vec<&str> = now.doc().plans.values().map(|p| p.name.as_str()).collect();
+    assert!(names.contains(&"Pad(AI)"), "{names:?}");
+    assert_eq!(
+        now.doc()
+            .plans
+            .values()
+            .filter(|p| p.state.as_deref() == Some("proposal"))
+            .count(),
+        3
+    );
+    assert_eq!(song(&fx).await, s0);
+    fx.handle.redo(1).await.unwrap().unwrap();
+    assert_eq!(song(&fx).await, s1);
+    let now = fx.handle.get_plans().await.unwrap();
+    assert_eq!(
+        now.doc()
+            .plans
+            .values()
+            .filter(|p| p.state.as_deref() == Some("proposal"))
+            .count(),
+        0
+    );
+
+    // 3) 採用の後に曲を別に直してから、履歴パネルの「この変更だけ取り消す」で採用を取り消す → 計画も戻る。
+    //    その取り消しを undo すると、採用がまた効く
+    let adopt_entry = fx
+        .handle
+        .get_history(None, None, Some(1))
+        .await
+        .unwrap()
+        .unwrap()
+        .entries[0]
+        .id
+        .clone();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "別の直し", "commands": [{ "op": "set_track_prop", "id": "trk_lnk002", "prop": "pan", "value": 0.3 }] }),
+        )
+        .await,
+    );
+    fx.handle
+        .revert_entry(adopt_entry, glaux_core::Author::Human)
+        .await
+        .unwrap()
+        .unwrap();
+    let props = |fx: &Fixture| {
+        let h = fx.handle.clone();
+        async move {
+            h.get_plans()
+                .await
+                .unwrap()
+                .doc()
+                .plans
+                .values()
+                .filter(|p| p.state.as_deref() == Some("proposal"))
+                .count()
+        }
+    };
+    assert_eq!(props(&fx).await, 3);
+    fx.handle.undo(1).await.unwrap().unwrap();
+    assert_eq!(props(&fx).await, 0);
+
+    // 4) チェックポイント(採用の前)まで戻す → 計画も採用の前の案が戻る
+    fx.handle
+        .revert_to("採用の前".into())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(song(&fx).await, s0);
+    assert_eq!(props(&fx).await, 3);
 }
 
 /// 案を採用すると、同じ元の計画から出たほかの案と、指定した案(いっしょに聴き比べていた案)を捨てる。ほかの案は残す

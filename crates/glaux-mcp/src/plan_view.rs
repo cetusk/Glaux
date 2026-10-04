@@ -197,6 +197,7 @@ pub async fn clip_states(handle: &SessionHandle) -> Result<Value, String> {
 
 fn note(why: &str) -> glaux_core::EntryNote {
     glaux_core::EntryNote {
+        song_entry: None,
         why: why.to_owned(),
         trigger: None,
         measures: vec![],
@@ -519,8 +520,20 @@ pub async fn proposal_projects_many(
 
 /// 計画の履歴の、いちばん新しい側の項目の ID(新しい順に `n` 件)と、やり直せる項目の ID(次にやり直す順に `n` 件)。
 /// 画面の Ctrl+Z が、戻そうとしている操作がまだいちばん新しいかを確かめるのに使う
-pub async fn plan_head(handle: &SessionHandle, n: usize) -> Result<Value, String> {
+///
+/// `ids` を渡すと、そのうち今も効いている(取り消されていない)項目も返す(present)
+pub async fn plan_head(handle: &SessionHandle, n: usize, ids: &[String]) -> Result<Value, String> {
     let plans = handle.get_plans().await?;
+    let present: Vec<&String> = ids
+        .iter()
+        .filter(|id| {
+            plans
+                .history()
+                .applied()
+                .iter()
+                .any(|e| e.id.to_string() == **id)
+        })
+        .collect();
     let applied: Vec<String> = plans
         .history()
         .applied()
@@ -536,7 +549,7 @@ pub async fn plan_head(handle: &SessionHandle, n: usize) -> Result<Value, String
         .take(n)
         .map(|e| e.id.to_string())
         .collect();
-    Ok(json!({ "applied": applied, "redoable": redoable }))
+    Ok(json!({ "applied": applied, "redoable": redoable, "present": present }))
 }
 
 /// 案を採用する: 案の音を曲に当て(1 件の編集)、案の計画を今の計画にする(元の計画があれば中身を置き換えて案を消す)
@@ -602,6 +615,11 @@ pub async fn adopt_proposal(
         .and_then(|r| plans.doc().plans.get(&r.id))
         .cloned();
     let human = glaux_core::Author::Human;
+    // 計画の変更は、曲に当てた採用の編集と一組にする(曲の側でどの画面から取り消しても、計画も一緒に戻るように)
+    let linked = |why: &str| glaux_core::EntryNote {
+        song_entry: song_entry.clone(),
+        ..note(why)
+    };
     // 計画の履歴に書いた項目(画面の Ctrl+Z が採用をまとめて戻し、それがまだ新しいかを確かめるのに使う)
     let mut plan_entry_ids = Vec::new();
     match base {
@@ -619,7 +637,7 @@ pub async fn adopt_proposal(
                         },
                         human.clone(),
                         label.clone(),
-                        note(&label),
+                        linked(&label),
                     )
                     .await?,
             );
@@ -629,7 +647,7 @@ pub async fn adopt_proposal(
                         PlanCommand::Delete { id: p.id.clone() },
                         human,
                         format!("採用した案「{}」をしまう", p.name),
-                        note(&label),
+                        linked(&label),
                     )
                     .await?,
             );
@@ -649,7 +667,7 @@ pub async fn adopt_proposal(
                         },
                         human,
                         label.clone(),
-                        note(&label),
+                        linked(&label),
                     )
                     .await?,
             );
@@ -693,7 +711,7 @@ pub async fn adopt_proposal(
                     PlanCommand::Delete { id },
                     glaux_core::Author::Human,
                     l.clone(),
-                    note(&l),
+                    linked(&l),
                 )
                 .await?,
         );

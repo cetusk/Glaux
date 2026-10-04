@@ -2364,8 +2364,12 @@ async fn ab_prepare_proposals(
 
 /// 計画の履歴のいちばん新しい側の項目の ID と、やり直せる項目の ID(設計画面の Ctrl+Z の確かめ)
 #[tauri::command]
-async fn plan_head(state: State<'_, AppState>, n: usize) -> Result<Value, String> {
-    glaux_mcp::plan_view::plan_head(&state.handle, n.clamp(1, 64)).await
+async fn plan_head(
+    state: State<'_, AppState>,
+    n: usize,
+    ids: Option<Vec<String>>,
+) -> Result<Value, String> {
+    glaux_mcp::plan_view::plan_head(&state.handle, n.clamp(1, 64), &ids.unwrap_or_default()).await
 }
 
 /// 案を採用する(案の音を曲に当て、案の計画を今の計画にする)

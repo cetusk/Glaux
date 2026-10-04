@@ -269,8 +269,10 @@ export function planBody(d: DesignData | null, planId: string | undefined): Reco
 }
 
 // 設計画面の取り消し: 1 回の操作で直した先(曲〈区間・テンポ・案の採用〉と計画)の履歴の項目を覚えておき、まとめて戻す。
-// 覚えが無ければ計画を 1 件戻す。案の採用は曲 1 件 + 計画の数件なので、1 回の Ctrl+Z で両方を戻す。
-// 戻す・やり直す前に、覚えた項目がまだいちばん新しい(次にやり直す)かを確かめる(別の画面や AI が後から直していたら、それを戻してしまうので)
+// 覚えが無ければ計画を 1 件戻す。案の採用は曲の編集 1 件として覚える(計画の変更は曲の編集と一組で記録してあり、
+// 曲の側で戻すと、どの画面からでも計画も一緒に戻る)。
+// 戻す・やり直す前に、覚えた項目がまだいちばん新しい(次にやり直す)かを確かめる(別の画面や AI が後から直していたら、それを戻してしまうので)。
+// ほかの画面ですでに戻された(やり直された)操作は飛ばす
 interface UndoUnit {
   song: number;
   plan: number;
@@ -308,8 +310,36 @@ async function moved(u: UndoUnit, redo: boolean): Promise<string | null> {
   return null;
 }
 
+/** 覚えた操作が、今効いているか(曲の編集が曲の履歴に効いている・計画の項目が残っている) */
+async function applied(u: UndoUnit): Promise<boolean> {
+  if (u.song && u.songEntry) {
+    const h = await getHistory();
+    if (!h.entries.some((e) => e.id === u.songEntry)) return false;
+  }
+  if (u.plan && u.planEntries?.length) {
+    const h = await invoke<{ present: string[] }>("plan_head", { n: 1, ids: u.planEntries });
+    if (h.present.length < u.planEntries.length) return false;
+  }
+  return true;
+}
+
+/** ほかの画面(タイムラインの Ctrl+Z・履歴パネル・AI)で戻した・やり直した操作に合わせて、覚えた操作を並べ直す:
+ *  戻された操作はやり直せる側へ、やり直された操作は取り消せる側へ */
+async function reconcile(): Promise<void> {
+  while (undoStack.length && !(await applied(undoStack[undoStack.length - 1]))) redoStack.push(undoStack.pop()!);
+  while (redoStack.length && (await applied(redoStack[redoStack.length - 1]))) undoStack.push(redoStack.pop()!);
+}
+
 export async function designUndo(): Promise<void> {
-  const u = undoStack.pop() ?? { song: 0, plan: 1 };
+  const had = undoStack.length > 0;
+  await reconcile();
+  let u = undoStack.pop();
+  if (!u && had) {
+    // 覚えていた操作はどれもほかの画面で戻されていた(ここで計画を 1 件戻すと、曲と食い違うことがある)
+    showToast("warn", "設計画面で直した所は、ほかの画面ですでに戻されています");
+    return;
+  }
+  u ??= { song: 0, plan: 1 };
   try {
     const m = await moved(u, false);
     if (m) {
@@ -334,7 +364,14 @@ export async function designUndo(): Promise<void> {
 }
 
 export async function designRedo(): Promise<void> {
-  const u = redoStack.pop() ?? { song: 0, plan: 1 };
+  const had = redoStack.length > 0;
+  await reconcile();
+  let u = redoStack.pop();
+  if (!u && had) {
+    showToast("warn", "設計画面で取り消した所は、ほかの画面ですでにやり直されています");
+    return;
+  }
+  u ??= { song: 0, plan: 1 };
   try {
     const m = await moved(u, true);
     if (m) {
@@ -644,14 +681,13 @@ export async function adoptProposal(planId: string, name: string): Promise<void>
       alsoDiscard,
     });
     const gone = r?.discarded ?? [];
-    // 1 回の Ctrl+Z で、曲に当てた音と計画の変更(ほかの案を捨てたことも)をまとめて戻せるように
-    noteUnit({
-      song: r?.entry_id ? 1 : 0,
-      plan: r?.plan_entries ?? 1,
-      songEntry: r?.entry_id ?? undefined,
-      planEntries: r?.plan_entry_ids,
-      label: `案「${name}」の採用`,
-    });
+    // 1 回の Ctrl+Z で、曲に当てた音と計画の変更(ほかの案を捨てたことも)をまとめて戻せるように。
+    // 計画の変更は曲の採用の編集と一組で記録してあるので、曲の編集を戻せば(どの画面からでも)計画も一緒に戻る
+    noteUnit(
+      r?.entry_id
+        ? { song: 1, plan: 0, songEntry: r.entry_id, label: `案「${name}」の採用` }
+        : { song: 0, plan: r?.plan_entries ?? 1, planEntries: r?.plan_entry_ids, label: `案「${name}」の採用` },
+    );
     showToast(
       "ok",
       `案「${name}」を採用しました${gone.length ? `。ほかの案(${gone.map((n) => `「${n}」`).join("")})は捨てました` : ""}(曲と計画の履歴に残り、取り消せます)`,

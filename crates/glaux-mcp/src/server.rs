@@ -3285,6 +3285,7 @@ fn plan_note(
         None => None,
     };
     Ok(glaux_core::EntryNote {
+        song_entry: None,
         why: why.trim().to_owned(),
         trigger,
         measures: measures

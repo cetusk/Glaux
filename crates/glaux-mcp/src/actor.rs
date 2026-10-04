@@ -331,12 +331,71 @@ impl SessionHandle {
         .await
     }
 
+    /// 曲の undo を n 回。取り消した編集と一組の計画の変更(案の採用など)も戻す
     pub async fn undo(&self, n: usize) -> Result<Result<(usize, Mutated), CoreError>, String> {
-        self.request(|reply| Request::Undo { n, reply }).await
+        let before = self.song_ids(n).await.0;
+        let r = self.request(|reply| Request::Undo { n, reply }).await?;
+        if let Ok((k, _)) = &r {
+            // 取り消した編集(新しい順)
+            for id in before.iter().rev().take(*k) {
+                self.flip_linked_plan(id, id).await;
+            }
+        }
+        Ok(r)
     }
 
+    /// 曲の redo を n 回。やり直した編集と一組の計画の変更も、もう一度効かせる
     pub async fn redo(&self, n: usize) -> Result<Result<(usize, Mutated), CoreError>, String> {
-        self.request(|reply| Request::Redo { n, reply }).await
+        let before = self.song_ids(n).await.1;
+        let r = self.request(|reply| Request::Redo { n, reply }).await?;
+        if let Ok((k, _)) = &r {
+            for id in before.iter().take(*k) {
+                self.flip_linked_plan(id, id).await;
+            }
+        }
+        Ok(r)
+    }
+
+    /// 曲の履歴の (効いている編集の ID〈新しい側から `n` 件、古い順〉, やり直せる編集の ID〈次にやり直す順〉)
+    async fn song_ids(&self, n: usize) -> (Vec<EntryId>, Vec<EntryId>) {
+        match self.get_history(None, None, Some(n.max(1))).await {
+            Ok(Ok(page)) => (
+                page.entries.into_iter().map(|e| e.id).collect(),
+                page.redoable.into_iter().map(|e| e.id).collect(),
+            ),
+            _ => (vec![], vec![]),
+        }
+    }
+
+    /// 曲の編集 `song` と一組の計画の変更(計画の経緯の song_entry が `song`)を、今と逆の向きにする:
+    /// 効いていれば取り消し、取り消してあれば戻す。どちらも計画の「この変更だけ取り消す」で行う
+    /// (後から計画に入った別の変更は残し、戻したことも履歴に残る)。戻した記録は `link`(その操作で動いた
+    /// 曲の履歴の項目)と一組にする。一組の変更が無ければ何もしない。戻せなかったときは記録だけ残す
+    async fn flip_linked_plan(&self, song: &EntryId, link: &EntryId) {
+        let Ok(plans) = self.get_plans().await else {
+            return;
+        };
+        let applied = plans.history().applied();
+        let linked: Vec<_> = applied
+            .iter()
+            .filter(|e| e.note.as_ref().and_then(|n| n.song_entry.as_ref()) == Some(song))
+            .collect();
+        // 今の向きを決めている項目: 一組の中で、まだ別の項目に取り消されていないもの
+        let live: Vec<EntryId> = linked
+            .iter()
+            .filter(|e| !linked.iter().any(|o| o.reverts.as_ref() == Some(&e.id)))
+            .map(|e| e.id.clone())
+            .collect();
+        for id in live.into_iter().rev() {
+            let note = EntryNote {
+                why: "一組の曲の編集を取り消した・やり直したので、計画の変更も合わせる".to_owned(),
+                song_entry: Some(link.clone()),
+                ..Default::default()
+            };
+            if let Err(e) = self.revert_plan(id, Author::System, note).await {
+                tracing::warn!("曲の編集と一組の計画の変更を戻せませんでした: {e}");
+            }
+        }
     }
 
     pub async fn checkpoint(&self, label: String) -> Result<Mutated, String> {
@@ -344,9 +403,19 @@ impl SessionHandle {
             .await
     }
 
+    /// チェックポイントまで戻す。戻した編集と一組の計画の変更も戻す
     pub async fn revert_to(&self, label: String) -> Result<Result<Mutated, CoreError>, String> {
-        self.request(|reply| Request::RevertTo { label, reply })
-            .await
+        let before = self.song_ids(usize::MAX / 2).await.0;
+        let r = self
+            .request(|reply| Request::RevertTo { label, reply })
+            .await?;
+        if r.is_ok() {
+            let after = self.song_ids(usize::MAX / 2).await.0;
+            for id in before.iter().rev().filter(|id| !after.contains(id)) {
+                self.flip_linked_plan(id, id).await;
+            }
+        }
+        Ok(r)
     }
 
     /// 履歴の途中のエントリを個別に取り消す。
@@ -355,8 +424,18 @@ impl SessionHandle {
         id: EntryId,
         author: Author,
     ) -> Result<Result<RevertOutcome, CoreError>, String> {
-        self.request(|reply| Request::RevertEntry { id, author, reply })
-            .await
+        let r = self
+            .request(|reply| Request::RevertEntry {
+                id: id.clone(),
+                author,
+                reply,
+            })
+            .await?;
+        // 取り消した編集と一組の計画の変更も戻す(戻した記録は、取り消しの新しい項目と一組にする)
+        if let Ok((new_id, _, _)) = &r {
+            self.flip_linked_plan(&id, new_id).await;
+        }
+        Ok(r)
     }
 
     /// 履歴エントリ本体(コマンド込み)。`since` より後、最新側から `limit` 件
@@ -435,8 +514,31 @@ impl SessionHandle {
         .await?
     }
 
-    /// 計画の undo / redo を n 回
+    /// 計画の undo / redo を n 回。曲の編集と一組の計画の変更(案の採用など)は、計画の側だけで動かすと
+    /// 曲と計画が食い違うので動かさない(曲の側の取り消し・やり直しで一緒に戻る)
     pub async fn step_plan(&self, n: usize, redo: bool) -> Result<usize, String> {
+        let plans = self.get_plans().await?;
+        let linked = if redo {
+            plans
+                .history()
+                .redoable()
+                .iter()
+                .take(n)
+                .any(|e| e.note.as_ref().is_some_and(|n| n.song_entry.is_some()))
+        } else {
+            plans
+                .history()
+                .applied()
+                .iter()
+                .rev()
+                .take(n)
+                .any(|e| e.note.as_ref().is_some_and(|n| n.song_entry.is_some()))
+        };
+        if linked {
+            return Err("曲の編集と一組の計画の変更(案の採用など)は、計画の側だけでは動かせません。\
+                曲の側で取り消す・やり直すと、計画も一緒に戻ります(Ctrl+Z・履歴パネル・undo / redo)"
+                .to_owned());
+        }
         self.request(|reply| Request::Plan(PlanRequest::Step { n, redo, reply }))
             .await?
     }

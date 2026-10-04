@@ -65,6 +65,10 @@ pub struct EntryNote {
     /// 変更の前後の測定(例: 区間の音域の幅 8 → 13 半音)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub measures: Vec<Measure>,
+    /// この計画の変更と一組の、曲の履歴の項目(案の採用など)。曲の側でその編集を取り消す・やり直す・
+    /// 「この変更だけ取り消す」と、どの画面・道具からでも、計画の側の一組の変更も一緒に戻す(戻したことも計画の履歴に残る)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub song_entry: Option<EntryId>,
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
