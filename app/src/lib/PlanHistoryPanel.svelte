@@ -1,8 +1,8 @@
 <script lang="ts">
-  // 計画の履歴(曲の履歴とは別。誰が・なぜ・きっかけ)。段階 1 は見るだけ
-  // (この版に戻す・この変更だけ取り消す・案の採用は段階 2。今はチャットで頼めるし、AI は undo_plan を使える)
+  // 計画の履歴(曲の履歴とは別。誰が・なぜ・きっかけ)。版ごとに「この版に戻す」(戻したことも新しい版として残る)と
+  // 「この変更だけ取り消す」(後の変更は残す)。設計画面の Ctrl+Z も計画に効く
   import Icon from "./Icon.svelte";
-  import { designStore, type PlanHistoryEntry } from "./design.svelte";
+  import { designStore, restorePlan, revertPlanEntry, type PlanHistoryEntry } from "./design.svelte";
 
   const d = $derived(designStore.data);
   const nameOf = (id: string) => d?.plans.find((p) => p.plan_id === id)?.name ?? id;
@@ -55,6 +55,16 @@
           {#if e.why}<div class="why">{e.why}</div>{/if}
           {#if e.trigger}
             <div class="trigger">{TRIGGERS[e.trigger.kind] ?? e.trigger.kind}: {e.trigger.text}</div>
+          {/if}
+          {#if k > 0 && !e.reverts}
+            <div class="ops">
+              {#if e.rev != null && e.op !== "delete" && d.plans.some((p) => p.plan_id === e.plan_id)}
+                <button type="button" title="この計画をこの版の中身に戻す(戻したことも新しい版として残る)" onclick={() => restorePlan(e.plan_id, e.rev!)}
+                  >この版に戻す</button
+                >
+              {/if}
+              <button type="button" title="この変更だけを取り消す(後の変更は残す)" onclick={() => revertPlanEntry(e.entry_id)}>この変更だけ取り消す</button>
+            </div>
           {/if}
         </li>
       {/each}
@@ -157,6 +167,22 @@
   .why {
     color: var(--text);
     margin-top: 2px;
+  }
+  .ops {
+    display: flex;
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .ops button {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    color: var(--accent);
+    font-size: var(--fs-xs);
+    cursor: pointer;
+  }
+  .ops button:hover {
+    text-decoration: underline;
   }
   .trigger {
     color: var(--text-faint);

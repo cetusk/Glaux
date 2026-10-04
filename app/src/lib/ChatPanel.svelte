@@ -396,6 +396,14 @@
     // 設計画面の「この所について AI に頼む」: 入力欄へ移る
     const focusChat = () => inputEl?.focus();
     window.addEventListener("glaux:focus-chat", focusChat);
+    // 設計画面の「この版から作り直す」など: 決まった言葉をそのまま送る(選んでいる所は対象として添わる)
+    const sendText = (e: Event) => {
+      const text = (e as CustomEvent<string>).detail;
+      if (!text) return;
+      input = text;
+      send();
+    };
+    window.addEventListener("glaux:chat-send", sendText);
     const unlisten = api
       .onChatEvent((ev) => {
         switch (ev.kind) {
@@ -431,6 +439,7 @@
       .catch(() => undefined);
     return () => {
       window.removeEventListener("glaux:focus-chat", focusChat);
+      window.removeEventListener("glaux:chat-send", sendText);
       unlisten.then((f) => f && f());
     };
   });

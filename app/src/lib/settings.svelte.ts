@@ -51,6 +51,8 @@ interface Settings {
   welcomeDone: boolean;
   /// 聴く音量(アプリから鳴る音だけ。曲・書き出しには入らない。dB)
   outputVolumeDb: number;
+  /// 推定した計画を確認せずに採用する(設計画面の「次から確認せずに採用する」)
+  autoAdoptEstimated: boolean;
 }
 
 function load(): Settings {
@@ -78,6 +80,7 @@ function load(): Settings {
         midiQuantize: typeof v.midiQuantize === "number" ? v.midiQuantize : 0,
         welcomeDone: v.welcomeDone === true,
         outputVolumeDb: typeof v.outputVolumeDb === "number" ? v.outputVolumeDb : 0,
+        autoAdoptEstimated: v.autoAdoptEstimated === true,
       };
     }
   } catch {
@@ -103,6 +106,7 @@ function load(): Settings {
     midiQuantize: 0,
     welcomeDone: false,
     outputVolumeDb: 0,
+    autoAdoptEstimated: false,
   };
 }
 

@@ -394,6 +394,23 @@
       g.strokeStyle = isSel ? "#ffd98a" : byAi ? aiColor() : "rgba(255,255,255,0.25)";
       g.lineWidth = byAi && !isSel ? 2 : 1;
       g.stroke();
+      // 固定の音(AI が変えない音)は白い点線で縁取り、幅があれば頭に鍵の印
+      if (n.locked) {
+        g.save();
+        g.setLineDash([3, 2]);
+        g.strokeStyle = "rgba(255,255,255,0.9)";
+        g.lineWidth = 1.5;
+        g.beginPath();
+        g.roundRect(x + 1, y + 2.5, w - 2, rowH - 5, 2);
+        g.stroke();
+        g.restore();
+        if (w >= 14 && rowH >= 9) {
+          g.fillStyle = "rgba(255,255,255,0.95)";
+          g.font = `${Math.min(10, rowH - 2)}px sans-serif`;
+          g.textBaseline = "middle";
+          g.fillText("🔒", x + 2, y + rowH / 2);
+        }
+      }
       // ピッチカーブ(AI が描いたベンド等)。1 行 = 半音として折れ線で重ねる
       const curve = n.pitch_curve;
       if (curve && curve.length > 0 && w >= 6) {
@@ -1145,6 +1162,19 @@
     deleteNotes(selected.has(hit.id) ? [...selected] : [hit.id]);
   }
 
+  /// 選択ノートの固定をトグルする(全部が固定なら外す)。固定の音は AI の編集で変わらない(人はいつでも変えられる)
+  function toggleLock() {
+    const currentClip = clip;
+    if (!currentClip || selected.size === 0) return;
+    const notes = currentClip.notes.filter((n) => selected.has(n.id));
+    if (notes.length === 0) return;
+    const allLocked = notes.every((n) => n.locked);
+    applyEdit(
+      [{ op: "update_notes", clip: currentClip.id, changes: notes.map((n) => ({ id: n.id, locked: !allLocked })) }],
+      allLocked ? `固定を外す(${notes.length} 音)` : `固定する(${notes.length} 音。AI が変えない)`,
+    );
+  }
+
   /// 選択ノートの奏法をトグルする(全部が同じ奏法なら通常に戻す)
   function toggleArticulation(art: Articulation) {
     const currentClip = clip;
@@ -1263,6 +1293,11 @@
         if (!entry) return;
         e.preventDefault();
         toggleArticulation(entry.art);
+      } else if (e.code === "KeyK" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // 固定(Keep): 選んだ音を AI が変えない音にする・外す
+        if (selected.size === 0) return;
+        e.preventDefault();
+        toggleLock();
       } else if (e.code === "KeyQ" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         // クオンタイズ(Shift で 50% = 人間味を残す)
         e.preventDefault();

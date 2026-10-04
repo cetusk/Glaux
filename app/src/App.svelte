@@ -23,7 +23,7 @@
   import Mixer from "./lib/Mixer.svelte";
   import DesignView from "./lib/DesignView.svelte";
   import PlanHistoryPanel from "./lib/PlanHistoryPanel.svelte";
-  import { refreshClipStates, refreshDesign } from "./lib/design.svelte";
+  import { designRedo, designUndo, refreshClipStates, refreshDesign } from "./lib/design.svelte";
   import TransportLcd from "./lib/TransportLcd.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
   import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
@@ -727,6 +727,8 @@
   }
 
   async function doUndo() {
+    // 設計画面では、設計画面で直した先(曲か計画)の履歴を戻す(覚えが無ければ計画)
+    if (viewStore.main === "design") return designUndo();
     try {
       await api.undo();
     } catch (e) {
@@ -735,6 +737,7 @@
   }
 
   async function doRedo() {
+    if (viewStore.main === "design") return designRedo();
     try {
       await api.redo();
     } catch (e) {

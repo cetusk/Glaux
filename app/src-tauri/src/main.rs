@@ -2074,6 +2074,71 @@ async fn get_design(state: State<'_, AppState>, limit: Option<usize>) -> Result<
     glaux_mcp::plan_view::design(&state.handle, limit.unwrap_or(100)).await
 }
 
+/// 画面から計画を保存する(作る・丸ごと置き換える。人の操作として計画の履歴に残る)
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn plan_save(
+    state: State<'_, AppState>,
+    plan_id: Option<String>,
+    name: Option<String>,
+    kind: String,
+    body: Value,
+    plan_state: Option<String>,
+    label: String,
+) -> Result<Value, String> {
+    glaux_mcp::plan_view::save(
+        &state.handle,
+        plan_id.as_deref(),
+        name.as_deref(),
+        &kind,
+        body,
+        plan_state.as_deref(),
+        &label,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn plan_delete(
+    state: State<'_, AppState>,
+    plan_id: String,
+    label: String,
+) -> Result<Value, String> {
+    glaux_mcp::plan_view::delete(&state.handle, &plan_id, &label).await
+}
+
+/// 計画の取り消し・やり直し
+#[tauri::command]
+async fn plan_step(
+    state: State<'_, AppState>,
+    n: Option<usize>,
+    redo: bool,
+) -> Result<Value, String> {
+    glaux_mcp::plan_view::step(&state.handle, n.unwrap_or(1), redo).await
+}
+
+/// 計画の途中の変更だけを取り消す
+#[tauri::command]
+async fn plan_revert(state: State<'_, AppState>, entry_id: String) -> Result<Value, String> {
+    glaux_mcp::plan_view::revert(&state.handle, &entry_id).await
+}
+
+/// 計画を前の版の中身に戻す
+#[tauri::command]
+async fn plan_restore(
+    state: State<'_, AppState>,
+    plan_id: String,
+    rev: u64,
+) -> Result<Value, String> {
+    glaux_mcp::plan_view::restore(&state.handle, &plan_id, rev).await
+}
+
+/// 推定した計画をまとめて採用する・捨てる
+#[tauri::command]
+async fn plan_settle_estimated(state: State<'_, AppState>, adopt: bool) -> Result<Value, String> {
+    glaux_mcp::plan_view::settle_estimated(&state.handle, adopt).await
+}
+
 /// タイムラインのクリップの印(計画どおり / 計画が先に進んだ・手で直した小節・固定の音の数)
 #[tauri::command]
 async fn clip_states(state: State<'_, AppState>) -> Result<Value, String> {
@@ -2918,6 +2983,12 @@ fn main() -> Result<()> {
             harmony,
             get_design,
             clip_states,
+            plan_save,
+            plan_delete,
+            plan_step,
+            plan_revert,
+            plan_restore,
+            plan_settle_estimated,
             export_audio,
             import_audio_clip,
             clip_peaks,

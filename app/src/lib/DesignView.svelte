@@ -1,6 +1,7 @@
 <script lang="ts">
-  // 設計画面(曲の設計データ)。段階 1 は見るだけ: 曲全体の計画、区間ごとの計画(盛り上がり・パートごとの音域・
-  // パートの役割)と測った値・ずれ、選んだ所の詳しい情報。直すのはチャットで AI に頼む(画面で直すのは段階 2)。
+  // 設計画面(曲の設計データ)。曲全体の計画、区間ごとの計画(盛り上がり・パートごとの音域・パートの役割)と
+  // 測った値・ずれ、選んだ所の詳しい情報。画面で直す(段階 2): 盛り上がりの点・区間の平行移動・境目、音域の帯、
+  // 役割のマス(選択肢・数字キー・塗り)、曲全体の項目、メモ、推定した計画の採用。区間とテンポは曲の履歴、ほかは計画の履歴に残る。
   // 見た目と操作は docs/SONG_DESIGN_DATA.md §5(触れる試作で決めたもの)に沿う。
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
@@ -9,15 +10,27 @@
     ARCS,
     FUNCTIONS,
     PRESENCE,
+    addMemo,
+    askChat,
     designSel,
     designStore,
     designTargetLabel,
+    editPartPlan,
+    editSections,
+    editSongPlan,
+    memosFor,
     noteName,
+    partCell,
     sectionCurve,
+    setTempo,
+    settleEstimated,
     type DesignCell,
+    type DesignData,
     type DesignDeviation,
     type DesignSel,
   } from "./design.svelte";
+  import { saveSettings, settings } from "./settings.svelte";
+  import { showToast } from "./toast.svelte";
 
   let { project }: { project: Project } = $props();
 
@@ -245,6 +258,465 @@
     window.dispatchEvent(new CustomEvent("glaux:focus-chat"));
   }
 
+  // ================================================================ 直す(段階 2)
+  const clamp10 = (v: number) => Math.max(0, Math.min(10, Math.round(v * 10) / 10));
+  const hasSections = $derived((project.sections ?? []).length > 0);
+  // 読み直すまでの下書き(ドラッグ中・保存の返事を待つ間に見せる)。読み直したら捨てる(ドラッグ中は捨てない)
+  let curveDraft = $state<Record<number, [number, number][]>>({});
+  let bandDraft = $state<Record<number, [number, number]>>({});
+  let cellDraft = $state<Record<string, number>>({});
+  let seenData: DesignData | null = null;
+  $effect(() => {
+    const cur = designStore.data;
+    if (cur !== seenData) {
+      seenData = cur;
+      if (!dragging) {
+        curveDraft = {};
+        bandDraft = {};
+        cellDraft = {};
+      }
+    }
+  });
+  /** 盛り上がりの形(下書きがあれば下書き)。計画が無い区間は null */
+  const curveOf = (i: number): [number, number][] | null => {
+    if (curveDraft[i]) return curveDraft[i];
+    const s = d?.sections[i];
+    return s ? sectionCurve(s) : null;
+  };
+  /** 直すときの元の形(計画が無ければ測った値の平ら) */
+  const editBase = (i: number): [number, number][] => {
+    const c = curveOf(i);
+    if (c) return c.map(([t, v]) => [t, v] as [number, number]);
+    const m = clamp10(d?.sections[i]?.measured ?? 5);
+    return [
+      [0, m],
+      [1, m],
+    ];
+  };
+  const joinOf = (i: number) => d?.sections[i]?.join ?? "smooth";
+  function needSections(): boolean {
+    if (hasSections) return true;
+    showToast("warn", "区間がありません。タイムラインでマーカーを置くか、AI に set_song_plan で計画書を書いてもらうと直せます");
+    return false;
+  }
+  /** 下書きの形を区間に書き込む(1 件の編集。曲の履歴に残る) */
+  async function commitCurves(idx: number[], label: string) {
+    const c = { ...curveDraft };
+    await editSections(
+      project,
+      (secs) => {
+        for (const i of idx) {
+          if (!secs[i] || !c[i]) continue;
+          secs[i].curve = c[i];
+          secs[i].energy = Math.round(avgCurve(c[i]) * 10) / 10;
+        }
+      },
+      label,
+    );
+  }
+  /** つないだ境目は、隣の端も同じ値にそろえる(下書きの上で) */
+  function linkEnds(i: number, k: number, v: number, draft: Record<number, [number, number][]>, changed: Set<number>) {
+    const c = draft[i];
+    if (k === c.length - 1 && joinOf(i) !== "step" && d?.sections[i + 1]) {
+      draft[i + 1] = draft[i + 1] ?? editBase(i + 1);
+      draft[i + 1][0][1] = v;
+      changed.add(i + 1);
+    }
+    if (k === 0 && i > 0 && joinOf(i - 1) !== "step") {
+      draft[i - 1] = draft[i - 1] ?? editBase(i - 1);
+      const p = draft[i - 1];
+      p[p.length - 1][1] = v;
+      changed.add(i - 1);
+    }
+  }
+  function svgPoint(e: PointerEvent | MouseEvent, svg: SVGSVGElement, i: number) {
+    const r = svg.getBoundingClientRect();
+    return { t: (e.clientX - r.left - x0(i)) / xw(i), v: 10 - (e.clientY - r.top - CT) / (CP / 10) };
+  }
+  // 点をドラッグ(上下で値、間の点は左右にも)
+  function dragPoint(e: PointerEvent, i: number, k: number) {
+    if (e.button !== 0 || !needSections()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pick({ kind: "section", i });
+    const svg = (e.currentTarget as SVGElement).ownerSVGElement!;
+    const changed = new Set([i]);
+    const draft: Record<number, [number, number][]> = { [i]: editBase(i) };
+    const n = draft[i].length;
+    let moved = false;
+    track(
+      (m) => {
+        moved = true;
+        const p = svgPoint(m, svg, i);
+        const v = clamp10(p.v);
+        draft[i][k][1] = v;
+        if (k > 0 && k < n - 1) draft[i][k][0] = Math.max(draft[i][k - 1][0] + 0.02, Math.min(draft[i][k + 1][0] - 0.02, p.t));
+        linkEnds(i, k, v, draft, changed);
+        curveDraft = { ...curveDraft, ...structuredClone(draft) };
+      },
+      () => {
+        if (moved) commitCurves([...changed], `「${d?.sections[i]?.name}」の盛り上がりの形を変える`);
+      },
+    );
+  }
+  // 区間の面: 上下にドラッグでその区間ごと平行に(Shift で全区間)。ダブルクリックで点を足す
+  let lastDown = { t: 0, x: 0, y: 0 };
+  function dragArea(e: PointerEvent, i: number) {
+    if (e.button !== 0) return;
+    const now = performance.now();
+    const svg = (e.currentTarget as SVGElement).ownerSVGElement!;
+    if (now - lastDown.t < 350 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 6) {
+      lastDown.t = 0;
+      if (!needSections()) return;
+      const p = svgPoint(e, svg, i);
+      if (p.t <= 0.02 || p.t >= 0.98) return;
+      const c = editBase(i);
+      c.push([Math.round(p.t * 1000) / 1000, clamp10(p.v)]);
+      c.sort((a, b) => a[0] - b[0]);
+      curveDraft = { ...curveDraft, [i]: c };
+      commitCurves([i], `「${d?.sections[i]?.name}」の盛り上がりに点を足す`);
+      return;
+    }
+    lastDown = { t: now, x: e.clientX, y: e.clientY };
+    e.preventDefault();
+    pick({ kind: "section", i });
+    const all = e.shiftKey;
+    const y0 = e.clientY;
+    const idx = all ? (d?.sections.map((_, k) => k) ?? []) : [i];
+    const start: Record<number, [number, number][]> = Object.fromEntries(idx.map((k) => [k, editBase(k)]));
+    let moved = false;
+    const changed = new Set(idx);
+    track(
+      (m) => {
+        if (!moved && Math.abs(m.clientY - y0) <= 3) return;
+        if (!moved && !needSections()) return;
+        moved = true;
+        const dv = -(m.clientY - y0) / (CP / 10);
+        const draft: Record<number, [number, number][]> = {};
+        for (const k of idx) draft[k] = start[k].map(([t, v]) => [t, clamp10(v + dv)] as [number, number]);
+        if (!all) {
+          const c = draft[i];
+          linkEnds(i, c.length - 1, c[c.length - 1][1], draft, changed);
+          linkEnds(i, 0, c[0][1], draft, changed);
+        }
+        curveDraft = { ...curveDraft, ...draft };
+      },
+      () => {
+        if (moved) commitCurves([...changed], all ? "盛り上がり全体を平行に動かす" : `「${d?.sections[i]?.name}」の盛り上がりを平行に動かす`);
+      },
+    );
+  }
+  function removePoint(e: MouseEvent, i: number, k: number) {
+    e.preventDefault();
+    const c = editBase(i);
+    if (k === 0 || k === c.length - 1) {
+      showToast("warn", "区間の両端の点は消せません");
+      return;
+    }
+    if (!needSections()) return;
+    c.splice(k, 1);
+    curveDraft = { ...curveDraft, [i]: c };
+    commitCurves([i], `「${d?.sections[i]?.name}」の盛り上がりの点を消す`);
+  }
+  async function toggleJoin(i: number) {
+    if (!needSections()) return;
+    const toStep = joinOf(i) !== "step";
+    const a = editBase(i);
+    const b = editBase(i + 1);
+    if (!toStep) b[0][1] = a[a.length - 1][1];
+    await editSections(
+      project,
+      (secs) => {
+        secs[i].join = toStep ? "step" : undefined;
+        if (!toStep && secs[i + 1]) {
+          secs[i + 1].curve = b;
+          secs[i + 1].energy = Math.round(avgCurve(b) * 10) / 10;
+        }
+      },
+      toStep ? `「${d?.sections[i]?.name}」の次との境目を段差に` : `「${d?.sections[i]?.name}」の次との境目をつなぐ`,
+    );
+  }
+  /** 盛り上がり全体: 上げ下げ(dv)か、平均を中心に起伏を大きく・小さく(scale) */
+  async function curveAll(op: { dv?: number; scale?: number }, label: string) {
+    if (!needSections() || !d) return;
+    const all = d.sections.map((_, i) => editBase(i));
+    const mean = all.flat().reduce((a, p) => a + p[1], 0) / Math.max(1, all.flat().length);
+    const draft: Record<number, [number, number][]> = {};
+    all.forEach((c, i) => {
+      draft[i] = c.map(([t, v]) => [t, clamp10(op.scale ? mean + (v - mean) * op.scale : v + (op.dv ?? 0))] as [number, number]);
+    });
+    curveDraft = draft;
+    await commitCurves(Object.keys(draft).map(Number), label);
+  }
+  /** 盛り上がりの型を当てる(区間の形は残し、平均を型の高さに合わせる) */
+  async function applyArc() {
+    const arc = d?.song?.arc;
+    if (!d || !arc || !needSections()) return;
+    const n = d.sections.length;
+    const target = (t: number) =>
+      arc === "rise" ? 2 + 7 * t : arc === "waves" ? 5 + 3.5 * Math.sin(Math.PI * (4 * t - 0.5)) : arc === "peak" ? 2 + 7 * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.15)), 1.5) : arc === "sink" ? 8 - 6 * t : 5;
+    const draft: Record<number, [number, number][]> = {};
+    d.sections.forEach((_, i) => {
+      const c = editBase(i);
+      const dv = target(n > 1 ? i / (n - 1) : 0.5) - avgCurve(c);
+      draft[i] = c.map(([t, v]) => [t, clamp10(v + dv)] as [number, number]);
+    });
+    curveDraft = draft;
+    await commitCurves(Object.keys(draft).map(Number), `盛り上がりの型(${ARCS[arc]})を当てる`);
+  }
+
+  // ---- 音域の帯(選んだパート) ----
+  const regOf = (i: number): [number, number] | null => bandDraft[i] ?? d?.parts[selPart]?.cells[i]?.planned_register ?? null;
+  function dragBand(e: PointerEvent, i: number, edge: "move" | "top" | "bottom") {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pick({ kind: "cell", p: selPart, i });
+    const part = d?.parts[selPart];
+    if (!part) return;
+    const all = e.shiftKey;
+    const idx = all ? part.cells.map((_, k) => k).filter((k) => regOf(k)) : [i];
+    const start: Record<number, [number, number]> = Object.fromEntries(idx.map((k) => [k, [...regOf(k)!] as [number, number]]));
+    const y0 = e.clientY;
+    let moved = false;
+    track(
+      (m) => {
+        const dp = -Math.round(((m.clientY - y0) / BH) * (PMAX - PMIN));
+        if (dp === 0 && !moved) return;
+        moved = true;
+        const draft: Record<number, [number, number]> = {};
+        for (const k of idx) {
+          const [lo, hi] = start[k];
+          draft[k] =
+            edge === "top"
+              ? [lo, Math.min(127, Math.max(lo + 1, hi + dp))]
+              : edge === "bottom"
+                ? [Math.max(0, Math.min(hi - 1, lo + dp)), hi]
+                : [Math.max(0, lo + dp), Math.min(127, hi + dp)];
+        }
+        bandDraft = { ...bandDraft, ...draft };
+      },
+      () => {
+        if (!moved) return;
+        const draft = { ...bandDraft };
+        editPartPlan(
+          project,
+          selPart,
+          (b, dd) => {
+            for (const k of idx) if (draft[k]) partCell(b, dd, selPart, k).register = draft[k];
+          },
+          `「${part.name}」の${all ? "全区間" : `「${d?.sections[i]?.name}」`}の音域の帯を変える`,
+        );
+      },
+    );
+  }
+  let bandTarget = $state<"one" | "all">("one");
+  /** 音域の帯をまとめて: 上げ下げ(dp 半音)か、幅を広げる・狭める(dw 半音ずつ上下に) */
+  async function bandBulk(dp: number, dw: number) {
+    if (!d) return;
+    const parts = bandTarget === "all" ? d.parts.map((_, k) => k) : [selPart];
+    let n = 0;
+    for (const pi of parts) {
+      const p = d.parts[pi];
+      if (!p.cells.some((c) => c.planned_register)) continue;
+      n++;
+      await editPartPlan(
+        project,
+        pi,
+        (b, dd) => {
+          p.cells.forEach((c, i) => {
+            if (!c.planned_register) return;
+            let [lo, hi] = c.planned_register;
+            lo = lo + dp - dw;
+            hi = hi + dp + dw;
+            if (hi - lo < 1) return;
+            partCell(b, dd, pi, i).register = [Math.max(0, lo), Math.min(127, hi)];
+          });
+        },
+        dw ? `「${p.name}」の音域の幅を${dw > 0 ? "広げる" : "狭める"}` : `「${p.name}」の音域を${dp > 0 ? "上げる" : "下げる"}(${Math.abs(dp) === 12 ? "オクターブ" : "半音"})`,
+      );
+    }
+    if (!n) showToast("warn", "計画の音域の帯がまだありません(「実際の音域を計画に」で作れます)");
+  }
+  /** 選んだパートの実際の音域を、計画の帯にする(鳴っている区間だけ) */
+  async function bandFromReal() {
+    const p = d?.parts[selPart];
+    if (!p) return;
+    await editPartPlan(
+      project,
+      selPart,
+      (b, dd) => {
+        p.cells.forEach((c, i) => {
+          if (c.register) partCell(b, dd, selPart, i).register = c.register;
+        });
+      },
+      `「${p.name}」の実際の音域を計画の帯にする`,
+    );
+  }
+
+  // ---- 役割のマス ----
+  const lvOf = (pi: number, i: number) => {
+    const k = `${pi}:${i}`;
+    if (k in cellDraft) return cellDraft[k];
+    const c = d?.parts[pi]?.cells[i];
+    return c?.planned ?? null;
+  };
+  async function setPresence(pi: number, idx: number[], lv: number) {
+    const p = d?.parts[pi];
+    if (!p) return;
+    const keep = idx.filter((i) => !p.cells[i]?.locked);
+    if (keep.length < idx.length) showToast("warn", "固定のマスは変えませんでした(固定を外すと変えられます)");
+    if (!keep.length) return;
+    cellDraft = { ...cellDraft, ...Object.fromEntries(keep.map((i) => [`${pi}:${i}`, lv])) };
+    await editPartPlan(
+      project,
+      pi,
+      (b, dd) => {
+        for (const i of keep) partCell(b, dd, pi, i).presence = lv;
+      },
+      `「${p.name}」の${keep.length > 1 ? `${keep.length} 区間` : `「${d?.sections[keep[0]]?.name}」`}を「${PRESENCE[lv]}」に`,
+    );
+  }
+  async function setCellProp(pi: number, i: number, prop: "function" | "locked", v: string | boolean | undefined) {
+    const p = d?.parts[pi];
+    if (!p) return;
+    await editPartPlan(
+      project,
+      pi,
+      (b, dd) => {
+        const c = partCell(b, dd, pi, i);
+        if (prop === "function") {
+          if (!v || v === b.function) delete c.function;
+          else c.function = String(v);
+        } else c.locked = v ? true : undefined;
+      },
+      prop === "locked"
+        ? `「${p.name}」の「${d?.sections[i]?.name}」を${v ? "固定する" : "固定を外す"}`
+        : `「${p.name}」の「${d?.sections[i]?.name}」の働きを変える`,
+    );
+  }
+  async function setPartFunction(pi: number, f: string) {
+    const p = d?.parts[pi];
+    if (!p) return;
+    await editPartPlan(
+      project,
+      pi,
+      (b) => {
+        if (f) b.function = f;
+        else delete b.function;
+      },
+      `「${p.name}」の働きを「${f ? FUNCTIONS[f] : "未設定"}」に`,
+    );
+  }
+  // 選択肢(マスの ▾ で開き、∧ で閉じる)
+  let pop = $state<{ p: number; i: number; x: number; y: number; up: boolean } | null>(null);
+  function togglePop(e: MouseEvent, pi: number, i: number) {
+    e.stopPropagation();
+    if (pop && pop.p === pi && pop.i === i) {
+      pop = null;
+      return;
+    }
+    pick({ kind: "cell", p: pi, i });
+    const cell = (e.currentTarget as HTMLElement).closest(".cell") as HTMLElement;
+    const r = cell.getBoundingClientRect();
+    const up = r.bottom + 330 > window.innerHeight;
+    pop = { p: pi, i, x: Math.max(8, Math.min(window.innerWidth - 270, r.right - 260)), y: up ? r.top - 4 : r.bottom + 4, up };
+  }
+  // 押したまま横へドラッグで、同じ段階を塗る
+  let paint: { p: number; lv: number; from: number; cells: Set<number> } | null = null;
+  function paintStart(e: PointerEvent, pi: number, i: number) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest(".cellbtn")) return;
+    e.preventDefault();
+    paint = { p: pi, lv: lvOf(pi, i) ?? d?.parts[pi]?.cells[i]?.measured ?? 3, from: i, cells: new Set() };
+    track(
+      () => {},
+      () => {
+        const pt = paint;
+        paint = null;
+        // 塗り始めのマスも同じ段階にする(計画の無いマスは、ここで計画に入る)
+        if (pt && pt.cells.size) setPresence(pt.p, [pt.from, ...pt.cells], pt.lv);
+      },
+    );
+  }
+  function paintEnter(e: PointerEvent, pi: number, i: number) {
+    if (!paint || e.buttons === 0 || paint.p !== pi || i === paint.from) return;
+    if (d?.parts[pi]?.cells[i]?.locked) return;
+    paint.cells.add(i);
+    cellDraft = { ...cellDraft, [`${pi}:${i}`]: paint.lv };
+  }
+  function onKey(e: KeyboardEvent) {
+    const tag = (document.activeElement as HTMLElement | null)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (e.key === "Escape" && pop) {
+      pop = null;
+      return;
+    }
+    if (sel.kind === "cell" && /^[0-5]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      pop = null;
+      setPresence(sel.p, [sel.i], Number(e.key));
+    }
+  }
+
+  // ---- 曲全体 ----
+  async function songField(key: string, value: unknown, label: string) {
+    await editSongPlan((b) => {
+      if (value === "" || value == null || (Array.isArray(value) && value.length === 0)) delete b[key];
+      else b[key] = value;
+    }, label);
+  }
+  let moodInput = $state("");
+  let mustInput = $state("");
+  const tempoSingle = $derived((project.tempo_map ?? []).length <= 1);
+
+  // ---- メモ・頼む ----
+  const memoKey = $derived.by(() => {
+    if (!d) return "";
+    switch (sel.kind) {
+      case "song":
+        return "song";
+      case "lane":
+        return sel.lane;
+      case "section":
+        return `section:${d.sections[sel.i]?.id ?? d.sections[sel.i]?.name}`;
+      case "part":
+        return `part:${d.parts[sel.p]?.track_id}`;
+      case "cell":
+        return `cell:${d.parts[sel.p]?.track_id}:${d.sections[sel.i]?.id ?? d.sections[sel.i]?.name}`;
+      default:
+        return "";
+    }
+  });
+  const memos = $derived(memosFor(d, memoKey));
+  const hasMemo = (key: string) => memosFor(d, key).length > 0;
+  let memoText = $state("");
+  async function saveMemo() {
+    const t = memoText.trim();
+    if (!t || !memoKey) return;
+    await addMemo(memoKey, t);
+    memoText = "";
+  }
+  let overwriteArmed = $state(false);
+  let overwriteTimer: ReturnType<typeof setTimeout> | undefined;
+  function remake(overwrite: boolean) {
+    if (overwrite && !overwriteArmed) {
+      overwriteArmed = true;
+      clearTimeout(overwriteTimer);
+      overwriteTimer = setTimeout(() => (overwriteArmed = false), 4000);
+      return;
+    }
+    overwriteArmed = false;
+    askChat(
+      overwrite
+        ? "選んだ所を、計画の今の版から作り直してください。人が手で直した所も含めて上書きしてかまいません(作り直しの道具は overwrite_edits: true。固定の音は残ります)。"
+        : "選んだ所を、計画の今の版から作り直してください。人が手で直した小節と固定の音は残し、残した所を報告してください。",
+    );
+  }
+  // 推定した計画: 「次から確認せずに採用する」なら、出てきたらすぐ採用する
+  $effect(() => {
+    if (settings.autoAdoptEstimated && estimated) settleEstimated(true);
+  });
+
   let lanesEl = $state<HTMLDivElement>();
   // 見える幅(曲全体が見える縮尺の計算に使う)。中身を読み込んでから段ができるので、段ができたら測る
   $effect(() => {
@@ -261,6 +733,8 @@
   });
 </script>
 
+<svelte:window onkeydown={onKey} onpointerdown={(e) => pop && !(e.target as HTMLElement).closest(".pop, .cellbtn") && (pop = null)} />
+
 <div class="design" class:dragging>
   {#if designStore.error && !d}
     <div class="empty-all">設計データを読めませんでした: {designStore.error}</div>
@@ -270,8 +744,25 @@
     {#if estimated}
       <div class="estimate" role="status">
         <b>推定した計画(未確認)があります</b>
-        <span
-          >今の音から推定した計画です。採用するまで、AI は参考としてだけ使います。採用・直してから採用・捨てるは、次の段階で画面からできるようになります(今はチャットで頼めます)。</span
+        <span>今の音から推定した計画です。採用するまで、AI は参考としてだけ使います。</span>
+        <span class="spacer"></span>
+        <button class="btn sm primary" type="button" onclick={() => settleEstimated(true)}>この計画を採用</button>
+        <button
+          class="btn sm"
+          type="button"
+          title="画面で直してから「この計画を採用」を押すと、直した計画が今の計画になります"
+          onclick={() => showToast("warn", "直してから「この計画を採用」を押すと、直した計画が今の計画になります")}>直してから採用</button
+        >
+        <button class="btn sm" type="button" onclick={() => settleEstimated(false)}>捨てる</button>
+        <label
+          ><input
+            type="checkbox"
+            checked={settings.autoAdoptEstimated}
+            onchange={(e) => {
+              settings.autoAdoptEstimated = (e.currentTarget as HTMLInputElement).checked;
+              saveSettings();
+            }}
+          /> 次から確認せずに採用する</label
         >
       </div>
     {/if}
@@ -302,40 +793,145 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="songgrid" onclick={() => pick({ kind: "song" })}>
-              <div class="field"><span>ジャンル</span><div>{d.song?.genre ?? "―"}</div></div>
+              <label class="field"
+                ><span>ジャンル</span><input
+                  type="text"
+                  value={d.song?.genre ?? ""}
+                  onchange={(e) => songField("genre", (e.currentTarget as HTMLInputElement).value.trim(), "ジャンルを変える")}
+                /></label
+              >
               <div class="field">
                 <span>雰囲気の言葉</span>
                 <div class="tags">
-                  {#each d.song?.mood ?? [] as m (m)}<span class="word">{m}</span>{:else}―{/each}
+                  {#each d.song?.mood ?? [] as m (m)}<span class="word"
+                      >{m}<button
+                        class="wx"
+                        type="button"
+                        aria-label="{m} を外す"
+                        onclick={() => songField("mood", (d?.song?.mood ?? []).filter((x) => x !== m), `雰囲気の言葉「${m}」を外す`)}>×</button
+                      ></span
+                    >{/each}
+                  <input
+                    class="wordin"
+                    type="text"
+                    placeholder="+ 足す"
+                    bind:value={moodInput}
+                    onkeydown={(e) => {
+                      if (e.key === "Enter" && !e.isComposing && moodInput.trim()) {
+                        songField("mood", [...(d?.song?.mood ?? []), moodInput.trim()], `雰囲気の言葉「${moodInput.trim()}」を足す`);
+                        moodInput = "";
+                      }
+                    }}
+                  />
                 </div>
               </div>
-              <div class="field"><span>キー・旋法</span><div>{d.song?.key ?? "―"}</div></div>
-              <div class="field"><span>テンポ</span><div>{tempo} <small>(タイムラインと同じ値)</small></div></div>
+              <label class="field"
+                ><span>キー・旋法</span><input
+                  type="text"
+                  value={d.song?.key ?? ""}
+                  onchange={(e) => songField("key", (e.currentTarget as HTMLInputElement).value.trim(), "キーの狙いを変える")}
+                /></label
+              >
+              <label class="field"
+                ><span>テンポ(タイムラインと同じ値)</span>
+                {#if tempoSingle}
+                  <span class="row"
+                    ><input
+                      type="number"
+                      min="20"
+                      max="400"
+                      step="0.5"
+                      value={project.tempo_map?.[0]?.bpm ?? 120}
+                      onchange={(e) => {
+                        const v = Number((e.currentTarget as HTMLInputElement).value);
+                        if (v >= 20 && v <= 400) setTempo(v);
+                      }}
+                    /> BPM</span
+                  >
+                {:else}<div>途中で変わる <small>(タイムラインで直す)</small></div>{/if}
+              </label>
               <div class="field"><span>長さ</span><div>{totalBars} 小節 <small>(タイムラインから)</small></div></div>
-              <div class="field"><span>盛り上がりの型</span><div>{d.song?.arc ? ARCS[d.song.arc] : "―"}</div></div>
-              {#each [["明るさ", d.song?.brightness, "暗い", "明るい"], ["音の密度", d.song?.density, "まばら", "ぎっしり"], ["質感", d.song?.organic, "無機質", "有機的"]] as [name, v, lo, hi] (name)}
-                <div class="field">
-                  <span>{name}</span>
-                  {#if v != null}
-                    <div class="meter" title="{v} / 10"><i style="width:{(Number(v) / 10) * 100}%"></i></div>
-                    <div class="ends"><span>{lo}</span><span>{hi}</span></div>
-                  {:else}<div>―</div>{/if}
-                </div>
+              <label class="field"
+                ><span>盛り上がりの型</span><select
+                  value={d.song?.arc ?? ""}
+                  onchange={(e) => songField("arc", (e.currentTarget as HTMLSelectElement).value, "盛り上がりの型を変える")}
+                  ><option value="">―</option>{#each Object.entries(ARCS) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
+                ></label
+              >
+              {#each [["brightness", "明るさ", d.song?.brightness, "暗い", "明るい"], ["density", "音の密度", d.song?.density, "まばら", "ぎっしり"], ["organic", "質感", d.song?.organic, "無機質", "有機的"]] as [key, name, v, lo, hi] (key)}
+                <label class="field">
+                  <span>{name}{v == null ? "(未設定)" : `  ${v}`}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="10"
+                    step="1"
+                    value={v ?? 5}
+                    class:unset={v == null}
+                    onchange={(e) => songField(String(key), Number((e.currentTarget as HTMLInputElement).value), `${name}を変える`)}
+                  />
+                  <div class="ends"><span>{lo}</span><span>{hi}</span></div>
+                </label>
               {/each}
-              <div class="field"><span>音量の目標</span><div>{d.song?.loudness != null ? `${d.song.loudness} LUFS` : "―"}</div></div>
+              <label class="field"
+                ><span>音量の目標</span><select
+                  value={d.song?.loudness != null ? String(d.song.loudness) : ""}
+                  onchange={(e) => {
+                    const v = (e.currentTarget as HTMLSelectElement).value;
+                    songField("loudness", v === "" ? null : Number(v), "音量の目標を変える");
+                  }}
+                  ><option value="">―</option>{#each [-14, -11, -10, -9, -8, -7, -6] as l (l)}<option value={String(l)}
+                      >{l} LUFS{l === -14 ? "(配信)" : l <= -9 ? "(クラブ)" : ""}</option
+                    >{/each}</select
+                ></label
+              >
               <div class="field">
                 <span>守ること</span>
                 <div class="tags">
-                  {#each d.song?.musts ?? [] as m (m)}<span class="word must">{m}</span>{:else}―{/each}
+                  {#each d.song?.musts ?? [] as m (m)}<span class="word must"
+                      >{m}<button
+                        class="wx"
+                        type="button"
+                        aria-label="{m} を外す"
+                        onclick={() => songField("musts", (d?.song?.musts ?? []).filter((x) => x !== m), `守ることを外す`)}>×</button
+                      ></span
+                    >{/each}
+                  <input
+                    class="wordin"
+                    type="text"
+                    placeholder="+ 足す"
+                    bind:value={mustInput}
+                    onkeydown={(e) => {
+                      if (e.key === "Enter" && !e.isComposing && mustInput.trim()) {
+                        songField("musts", [...(d?.song?.musts ?? []), mustInput.trim()], "守ることを足す");
+                        mustInput = "";
+                      }
+                    }}
+                  />
                 </div>
               </div>
-              <div class="field"><span>参考曲</span><div>{(d.song?.refs ?? []).join("、") || "―"}</div></div>
-              <div class="field wide"><span>全体のメモ</span><div>{d.song?.note ?? "―"}</div></div>
-              {#if !d.song}
-                <div class="field wide hint-row">
-                  曲全体の計画はまだありません。チャットで「曲全体の狙いを決めよう」のように頼むと、AI が書きます(画面で書くのは次の段階)。
-                </div>
-              {/if}
+              <label class="field"
+                ><span>参考曲(、で区切る)</span><input
+                  type="text"
+                  value={(d.song?.refs ?? []).join("、")}
+                  onchange={(e) =>
+                    songField(
+                      "refs",
+                      (e.currentTarget as HTMLInputElement).value
+                        .split(/[、,]/)
+                        .map((x) => x.trim())
+                        .filter(Boolean),
+                      "参考曲を変える",
+                    )}
+                /></label
+              >
+              <label class="field wide"
+                ><span>全体のメモ</span><input
+                  type="text"
+                  value={d.song?.note ?? ""}
+                  onchange={(e) => songField("note", (e.currentTarget as HTMLInputElement).value.trim(), "全体のメモを変える")}
+                /></label
+              >
             </div>
           {/if}
         </section>
@@ -369,7 +965,8 @@
                         style="left:{x0(i)}px;width:{xw(i)}px"
                         type="button"
                         title={s.name}
-                        onclick={() => pick({ kind: "section", i })}><b>{s.name}</b> {s.bars}</button
+                        onclick={() => pick({ kind: "section", i })}
+                        ><b>{s.name}</b> {s.bars}{#if hasMemo(`section:${s.id ?? s.name}`)}<span class="cm" title="メモがあります">💬</span>{/if}</button
                       >
                     {/each}
                   </div>
@@ -393,7 +990,14 @@
               {#if folded.curve}
                 <span class="summary">区間ごとの盛り上がりの計画と実測(開くと見えます)</span>
               {:else}
-                <button type="button" class="qmark" aria-label="説明" title="区間ごとの盛り上がりの計画(実線)と実測(点線)。境目の印はつなぐ / 段差。● は実測とずれた区間。&#10;直すのは次の段階で(今はチャットで頼めます)">?</button>
+                <button type="button" class="qmark" aria-label="説明" title="区間ごとの盛り上がりの計画(実線)と実測(点線)。● は実測とずれた区間。&#10;点をドラッグで動かす。ダブルクリックで点を足し、右クリックで消す。&#10;区間の面を上下にドラッグでその区間ごと、Shift + ドラッグで全体を平行に動かす。境目の ⌇ を押すと「つなぐ / 段差」">?</button>
+                <div class="tools">
+                  <button class="btn sm" type="button" title="盛り上がり全体を 0.5 上げる" onclick={() => curveAll({ dv: 0.5 }, "盛り上がり全体を上げる")}>▲ 全体</button>
+                  <button class="btn sm" type="button" title="盛り上がり全体を 0.5 下げる" onclick={() => curveAll({ dv: -0.5 }, "盛り上がり全体を下げる")}>▼ 全体</button>
+                  <span class="sep"></span>
+                  <button class="btn sm" type="button" title="平均を中心に起伏を大きく" onclick={() => curveAll({ scale: 1.2 }, "盛り上がりの起伏を大きく")}>起伏 ＋</button>
+                  <button class="btn sm" type="button" title="平均を中心に起伏を小さく" onclick={() => curveAll({ scale: 1 / 1.2 }, "盛り上がりの起伏を小さく")}>起伏 −</button>
+                </div>
                 <div class="legend">
                   <label
                     ><input
@@ -429,34 +1033,56 @@
                       {#each [0, 2, 4, 6, 8, 10] as v (v)}
                         <line x1="0" x2={W} y1={cy(v)} y2={cy(v)} class={v === 0 || v === 10 ? "edge" : "grid"} />
                       {/each}
+                      <!-- 重ね順: 区間の面(当たり) → 線と点 → 境目の印。境目の点が次の区間の面に隠れないように -->
                       {#each d.sections as s, i (i)}
-                        {@const c = sectionCurve(s)}
+                        <line x1={x0(i)} x2={x0(i)} y1="0" y2={CH} class="secline" />
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <rect x={x0(i)} y="0" width={xw(i)} height={CH} fill="transparent" class="hit" onpointerdown={(e) => dragArea(e, i)} />
+                      {/each}
+                      {#each d.sections as s, i (i)}
+                        {@const c = curveOf(i)}
                         {@const X = (t: number) => x0(i) + t * xw(i)}
                         {@const on = sel.kind === "section" && sel.i === i}
-                        <line x1={x0(i)} x2={x0(i)} y1="0" y2={CH} class="secline" />
-                        <!-- svelte-ignore a11y_click_events_have_key_events -->
-                        <!-- svelte-ignore a11y_no_static_element_interactions -->
-                        <rect x={x0(i)} y="0" width={xw(i)} height={CH} fill="transparent" onclick={() => pick({ kind: "section", i })} />
-                        {#if c}
-                          {@const path = c.map(([t, v], k) => `${k ? "L" : "M"}${X(t)},${cy(v)}`).join(" ")}
-                          <path d="{path} L{X(1)},{cy(0)} L{X(0)},{cy(0)} Z" class="area" class:on pointer-events="none" />
-                          <path d={path} class="plan" pointer-events="none" />
-                          {#each c as [t, v], k (k)}
-                            <circle cx={X(t)} cy={cy(v)} r={on ? 4.5 : 3} class="pt" class:on pointer-events="none" />
-                          {/each}
-                        {/if}
                         {#if showMeasured}
                           <line x1={x0(i) + 2} x2={x0(i) + xw(i) - 2} y1={cy(s.measured)} y2={cy(s.measured)} class="measured" />
                           {#if offSection(i)}
                             <circle cx={X(0.5)} cy="7" r="3.5" class="offdot"><title>実測とずれている(計画 {s.planned?.toFixed(1)} / 実測 {s.measured.toFixed(1)})</title></circle>
                           {/if}
                         {/if}
+                        {#if c}
+                          {@const path = c.map(([t, v], k) => `${k ? "L" : "M"}${X(t)},${cy(v)}`).join(" ")}
+                          <path d="{path} L{X(1)},{cy(0)} L{X(0)},{cy(0)} Z" class="area" class:on pointer-events="none" />
+                          <path d={path} class="plan" pointer-events="none" />
+                        {/if}
+                      {/each}
+                      {#each d.sections as s, i (i)}
+                        {@const c = curveOf(i)}
+                        {@const X = (t: number) => x0(i) + t * xw(i)}
+                        {@const on = sel.kind === "section" && sel.i === i}
+                        {#if c}
+                          {#each c as [t, v], k (k)}
+                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                            <circle
+                              cx={X(t)}
+                              cy={cy(v)}
+                              r={on ? 5 : 3.5}
+                              class="pt"
+                              class:on
+                              onpointerdown={(e) => dragPoint(e, i, k)}
+                              oncontextmenu={(e) => removePoint(e, i, k)}
+                            />
+                          {/each}
+                        {/if}
+                      {/each}
+                      {#each d.sections as s, i (i)}
                         {#if i < d.sections.length - 1}
                           {@const bx = x0(i + 1)}
-                          <g class="join" class:step={s.join === "step"}>
+                          <!-- svelte-ignore a11y_click_events_have_key_events -->
+                          <!-- svelte-ignore a11y_no_static_element_interactions -->
+                          <g class="join" class:step={s.join === "step"} onclick={() => toggleJoin(i)}>
                             <rect x={bx - 8} y={CH - 15} width="16" height="12" rx="3" />
                             <text x={bx} y={CH - 6}>{s.join === "step" ? "↕" : "⌇"}</text>
-                            <title>{s.join === "step" ? "段差(急に変わる)" : "つなぐ(なめらか)"}</title>
+                            <title>{s.join === "step" ? "段差(急に変わる)。押すとつなぐ" : "つなぐ(なめらか)。押すと段差に"}</title>
                           </g>
                         {/if}
                       {/each}
@@ -491,7 +1117,21 @@
               {#if folded.band}
                 <span class="summary">選んでいるパート: {d.parts[selPart]?.name ?? "―"}</span>
               {:else}
-                <button type="button" class="qmark" aria-label="説明" title="左の一覧(か役割の段のパート名)でパートを選ぶと、そのパートの音域の帯(計画)が色付きで前に出る。点線の枠は実際の音域(下 10%〜上 90%)。&#10;下の端のつまみで段の高さ(音高の縦の大きさ)を変える">?</button>
+                <button type="button" class="qmark" aria-label="説明" title="左の一覧(か役割の段のパート名)でパートを選ぶと、そのパートの音域の帯(計画)が色付きで前に出て、動かせる。点線の枠は実際の音域(下 10%〜上 90%)。&#10;帯を上下にドラッグで移す、上下の端で幅(Shift で全区間まとめて)。下の端のつまみで段の高さ">?</button>
+                <div class="tools">
+                  <select bind:value={bandTarget} aria-label="まとめて動かす対象"
+                    ><option value="one">選んだパート</option><option value="all">全パート</option></select
+                  >
+                  <button class="btn sm" type="button" onclick={() => bandBulk(1, 0)}>▲ 半音</button>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(-1, 0)}>▼ 半音</button>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(12, 0)}>▲ 8va</button>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(-12, 0)}>▼ 8va</button>
+                  <span class="sep"></span>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(0, 2)}>幅 ＋</button>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(0, -2)}>幅 −</button>
+                  <span class="sep"></span>
+                  <button class="btn sm" type="button" title="選んだパートの実際の音域を、計画の帯にする" onclick={bandFromReal}>実際を計画に</button>
+                </div>
                 <div class="legend">
                   <label title="強いパートどうしの計画の音域の重なりを斜線で(参考。警告ではない)"
                     ><input type="checkbox" bind:checked={showOverlap} /> 重なり</label
@@ -558,22 +1198,26 @@
                         {@const p = d.parts[selPart]}
                         {#each p.cells as c, i (i)}
                           {@const on = sel.kind === "cell" && sel.p === selPart && sel.i === i}
-                          {#if c.planned_register && (c.planned ?? 0) > 0}
-                            <!-- svelte-ignore a11y_click_events_have_key_events -->
+                          {@const r = regOf(i)}
+                          {#if r && (lvOf(selPart, i) ?? c.planned ?? 0) > 0}
                             <!-- svelte-ignore a11y_no_static_element_interactions -->
                             <rect
                               x={x0(i) + 2}
                               width={Math.max(0, xw(i) - 4)}
-                              y={BY(c.planned_register[1])}
-                              height={BY(c.planned_register[0]) - BY(c.planned_register[1])}
+                              y={BY(r[1])}
+                              height={BY(r[0]) - BY(r[1])}
                               rx="2"
                               class="mine"
                               class:on
                               style="--c:{colorOf(selPart)}"
-                              onclick={() => pick({ kind: "cell", p: selPart, i })}
+                              onpointerdown={(e) => dragBand(e, i, "move")}
                             />
-                            <text x={x0(i) + 6} y={BY(c.planned_register[1]) + 13} class="bandlabel" style="fill:{colorOf(selPart)}"
-                              >{noteName(c.planned_register[0])}〜{noteName(c.planned_register[1])}</text
+                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                            <rect x={x0(i) + 2} width={Math.max(0, xw(i) - 4)} y={BY(r[1]) - 3} height="6" class="edge-hit" onpointerdown={(e) => dragBand(e, i, "top")} />
+                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                            <rect x={x0(i) + 2} width={Math.max(0, xw(i) - 4)} y={BY(r[0]) - 3} height="6" class="edge-hit" onpointerdown={(e) => dragBand(e, i, "bottom")} />
+                            <text x={x0(i) + 6} y={BY(r[1]) + 13} class="bandlabel" style="fill:{colorOf(selPart)}"
+                              >{noteName(r[0])}〜{noteName(r[1])}</text
                             >
                           {/if}
                           {#if c.register}
@@ -619,8 +1263,8 @@
               {#if folded.table}
                 <span class="summary">{d.parts.length} パート × {d.sections.length} 区間</span>
               {:else}
-                <button type="button" class="qmark" aria-label="説明" title="マスは区間ごとの存在の段階(計画)。計画の無いマスは、測った段階を薄く出す。&#10;● は計画と実際がずれたマス。🔒 は固定(AI が作り直さない)。マスを押すと右に詳しく">?</button>
-                <span class="hint">🔒 固定 · ● 実際とずれ · 薄い字 = 計画なし(実測)</span>
+                <button type="button" class="qmark" aria-label="説明" title="マスは区間ごとの存在の段階(計画)。計画の無いマスは、測った段階を薄く出す。&#10;マスを押すと選ぶ。役割を変えるのはマスの ▾(選ぶと出る)か数字キー 0〜5。押したまま横へドラッグで同じ段階を塗る。&#10;● は計画と実際がずれたマス。🔒 は固定(AI が作り直さない。固定のマスは塗らない)">?</button>
+                <span class="hint">🔒 固定 · 💬 メモ · ● 実際とずれ · 薄い字 = 計画なし(実測)</span>
               {/if}
             </div>
             {#if !folded.table}
@@ -647,23 +1291,43 @@
                       {#each d.parts as p, pi (p.track_id)}
                         <div class="mrow" style="height:{rowH}px">
                           {#each p.cells as c, i (i)}
-                            {@const lv = c.planned ?? c.measured}
-                            <button
+                            {@const planned = lvOf(pi, i)}
+                            {@const lv = planned ?? c.measured}
+                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                            <div
                               class="cell"
                               class:sel={sel.kind === "cell" && sel.p === pi && sel.i === i}
                               class:diff={cellOff(c)}
-                              class:unplanned={c.planned == null}
+                              class:unplanned={planned == null}
                               style="left:{x0(i)}px;width:{xw(i)}px;height:{rowH - 1}px"
-                              type="button"
-                              aria-label="{p.name} / {d.sections[i]?.name}: {c.planned != null ? PRESENCE[c.planned] : `計画なし(実測 ${PRESENCE[c.measured]})`}"
+                              role="button"
+                              tabindex="0"
+                              aria-label="{p.name} / {d.sections[i]?.name}: {planned != null ? PRESENCE[planned] : `計画なし(実測 ${PRESENCE[c.measured]})`}"
                               onclick={() => pick({ kind: "cell", p: pi, i })}
+                              onkeydown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  togglePop(e as unknown as MouseEvent, pi, i);
+                                }
+                              }}
+                              onpointerdown={(e) => paintStart(e, pi, i)}
+                              onpointerenter={(e) => paintEnter(e, pi, i)}
                             >
                               {#if c.locked}<span class="lock" title="固定(AI が作り直さない)">🔒</span>{/if}
+                              {#if hasMemo(`cell:${p.track_id}:${d.sections[i]?.id ?? d.sections[i]?.name}`)}<span class="cm" title="メモがあります">💬</span>{/if}
                               <span class="steps">
                                 {#each [1, 2, 3, 4, 5] as n (n)}<i class:on={n <= lv}></i>{/each}
                               </span>
-                              <span class="lab">{c.planned != null ? PRESENCE[c.planned] : c.notes > 0 ? `実測 ${PRESENCE[c.measured]}` : "―"}</span>
-                            </button>
+                              <span class="lab">{planned != null ? PRESENCE[planned] : c.notes > 0 ? `実測 ${PRESENCE[c.measured]}` : "―"}</span>
+                              <button
+                                class="cellbtn"
+                                class:open={pop?.p === pi && pop?.i === i}
+                                type="button"
+                                title={pop?.p === pi && pop?.i === i ? "選択肢を閉じる" : "役割を変える(数字キー 0〜5 でも)"}
+                                aria-label="{p.name} / {d.sections[i]?.name} の役割を変える"
+                                onclick={(e) => togglePop(e, pi, i)}><Icon name="chevron-down" size={12} /></button
+                              >
+                            </div>
                           {/each}
                         </div>
                       {/each}
@@ -713,6 +1377,15 @@
               <dt>守ること</dt><dd>{(d.song?.musts ?? []).join("、") || "―"}</dd>
               <dt>状態</dt><dd>{d.song ? (d.song_estimated ? "推定(未確認)" : "採用済み") : "計画なし"}</dd>
             </dl>
+            <div class="actions">
+              <button
+                class="btn sm"
+                type="button"
+                disabled={!d.song?.arc}
+                title="盛り上がりの型に合わせて、区間ごとの盛り上がりの高さを動かす(区間の中の形は残す。取り消せる)"
+                onclick={applyArc}>型を盛り上がりに当てる</button
+              >
+            </div>
           {:else if sel.kind === "lane"}
             {#if sel.lane === "curve"}
               {@const hi = d.sections.reduce((a, s, i) => (s.measured > (d.sections[a]?.measured ?? -1) ? i : a), 0)}
@@ -777,8 +1450,16 @@
                 {/each}
               {:else}
                 <dl class="kv">
-                  <dt>働き</dt><dd>{p.function ? FUNCTIONS[p.function] ?? p.function : "―"}</dd>
-                  <dt>計画</dt><dd>{p.plan_id ? (p.estimated ? "推定(未確認)" : "採用済み") : "なし"}</dd>
+                  <dt>働き</dt>
+                  <dd>
+                    <select
+                      value={p.function ?? ""}
+                      aria-label="このパートの既定の働き"
+                      onchange={(e) => setPartFunction(sel.kind === "part" ? sel.p : 0, (e.currentTarget as HTMLSelectElement).value)}
+                      ><option value="">―</option>{#each Object.entries(FUNCTIONS) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
+                    >
+                  </dd>
+                  <dt>計画</dt><dd>{p.plan_id ? (p.estimated ? "推定(未確認)" : "採用済み") : "なし(直すと作られる)"}</dd>
                   <dt>鳴っている区間</dt><dd>{p.cells.filter((c) => c.notes > 0).length} / {p.cells.length}</dd>
                 </dl>
                 {#each devOf((x) => x.track === p.name) as x, k (k)}
@@ -799,15 +1480,90 @@
               {/if}
             {/if}
           {/if}
-          <div class="actions">
-            <button class="btn sm" type="button" onclick={askAi} title="下のチャットの入力欄へ(選んだ所が対象として添わる)"
-              >この所について AI に頼む ↓</button
+          <!-- メモ: 所に付く人の言葉(AI はその所を作る・直すときに読む)。AI とのやりとりは下のチャット -->
+          <div class="memo-box">
+            <h4>メモ({memos.length})</h4>
+            {#if memos.length}
+              <div class="thread">
+                {#each memos as m, k (k)}
+                  <div class="memo">
+                    <div class="who">あなた{m.when ? ` · ${new Date(m.when).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}</div>
+                    {m.text}
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <p class="empty">この所のメモはまだありません。AI は作る・直すときにここを読みます</p>
+            {/if}
+            <textarea bind:value={memoText} rows="2" placeholder="例: ここはもっと沈んだ感じに / ハットは抜きたい"></textarea>
+            <div class="actions">
+              <button class="btn sm" type="button" disabled={!memoText.trim()} onclick={saveMemo}>メモを残す</button>
+              <button class="btn sm" type="button" onclick={askAi} title="下のチャットの入力欄へ(選んだ所が対象として添わる)"
+                >この所について AI に頼む ↓</button
+              >
+            </div>
+          </div>
+          <div class="actions two">
+            <button class="btn sm" type="button" title="計画の今の版から作り直すよう AI に頼む(手で直した小節と固定の音は残す)" onclick={() => remake(false)}
+              >この版から作り直す</button
+            >
+            <button
+              class="btn sm"
+              class:danger={overwriteArmed}
+              type="button"
+              title="手で直した所も含めて作り直すよう AI に頼む(固定の音は残る)。押すと確かめの表示になり、もう一度で送る"
+              onclick={() => remake(true)}>{overwriteArmed ? "もう一度押すと送ります" : "手直しも含めて上書き"}</button
             >
           </div>
-          <p class="stage-note">画面で直す・メモを残す・この版から作り直すは、次の段階で使えるようになります。</p>
         {/if}
       </aside>
     </div>
+    {#if pop && d.parts[pop.p]}
+      {@const p = d.parts[pop.p]}
+      {@const c = p.cells[pop.i]}
+      {@const cur = lvOf(pop.p, pop.i)}
+      <div class="pop" style="left:{pop.x}px;{pop.up ? `bottom:${window.innerHeight - pop.y}px` : `top:${pop.y}px`}" role="dialog" aria-label="役割を変える">
+        <h4>{p.name} / {d.sections[pop.i]?.name}</h4>
+        {#each PRESENCE as name, n (n)}
+          <button
+            class="opt"
+            class:on={cur === n}
+            type="button"
+            onclick={() => {
+              const t = pop;
+              pop = null;
+              if (t) setPresence(t.p, [t.i], n);
+            }}
+          >
+            <span class="steps">{#each [1, 2, 3, 4, 5] as k (k)}<i class:on={k <= n}></i>{/each}</span>
+            <span>{n} {name}</span>
+          </button>
+        {/each}
+        <label class="row"
+          >働き <select
+            value={c.function ?? p.function ?? ""}
+            onchange={(e) => {
+              const t = pop;
+              pop = null;
+              if (t) setCellProp(t.p, t.i, "function", (e.currentTarget as HTMLSelectElement).value);
+            }}
+            ><option value="">―</option>{#each Object.entries(FUNCTIONS) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
+          ></label
+        >
+        <label class="row"
+          ><input
+            type="checkbox"
+            checked={!!c.locked}
+            onchange={(e) => {
+              const t = pop;
+              pop = null;
+              if (t) setCellProp(t.p, t.i, "locked", (e.currentTarget as HTMLInputElement).checked);
+            }}
+          /> 🔒 固定する</label
+        >
+        <p class="help">固定した所は、AI が作り直すとき(「手直しも含めて上書き」でも)変えません。あなたはいつでも変えられます。</p>
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -1027,17 +1783,6 @@
   .word.must {
     border-color: var(--accent-dim);
   }
-  .meter {
-    height: 6px;
-    border-radius: 3px;
-    background: var(--bg-inset);
-    overflow: hidden;
-  }
-  .meter i {
-    display: block;
-    height: 100%;
-    background: var(--accent-dim);
-  }
   .ends {
     display: flex;
     justify-content: space-between;
@@ -1239,6 +1984,10 @@
   }
   line.secline {
     stroke: var(--border);
+  }
+  svg line,
+  svg text {
+    pointer-events: none;
   }
   path.area {
     fill: var(--accent);
@@ -1547,8 +2296,7 @@
     color: var(--text-dim);
     font-weight: 600;
   }
-  .empty,
-  .stage-note {
+  .empty {
     color: var(--text-faint);
     font-size: var(--fs-sm);
     margin: 0;
@@ -1608,6 +2356,251 @@
   .actions {
     display: flex;
     gap: 6px;
+  }
+  /* ---- 直す(段階 2) ---- */
+  .spacer {
+    flex: 1;
+  }
+  .estimate label {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+  }
+  .songgrid input[type="text"],
+  .songgrid input[type="number"],
+  .songgrid select,
+  .panel select {
+    background: var(--bg-inset);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    font: inherit;
+    font-size: var(--fs-sm);
+    padding: 3px 6px;
+    min-width: 0;
+  }
+  .songgrid input[type="number"] {
+    width: 90px;
+  }
+  .songgrid input[type="range"] {
+    accent-color: var(--accent);
+    width: 100%;
+  }
+  .songgrid input[type="range"].unset {
+    opacity: 0.4;
+  }
+  .songgrid .row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .word {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .wx {
+    background: transparent;
+    border: 0;
+    padding: 0 2px;
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+    line-height: 1;
+  }
+  .wx:hover {
+    color: var(--text);
+  }
+  .wordin {
+    width: 80px;
+    background: transparent !important;
+    border: 1px dashed var(--border-strong) !important;
+    border-radius: 10px !important;
+    padding: 0 8px !important;
+    font-size: var(--fs-xs) !important;
+  }
+  .tools {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .tools .btn {
+    padding: 1px 8px;
+    font-size: var(--fs-xs);
+  }
+  .tools select {
+    background: var(--bg-raised);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    font: inherit;
+    font-size: var(--fs-xs);
+    padding: 1px 4px;
+  }
+  .tools .sep {
+    width: 1px;
+    height: 14px;
+    background: var(--border-strong);
+    margin: 0 4px;
+  }
+  rect.hit {
+    cursor: ns-resize;
+  }
+  circle.pt {
+    cursor: grab;
+  }
+  g.join {
+    cursor: pointer;
+  }
+  rect.edge-hit {
+    fill: transparent;
+    cursor: ns-resize;
+  }
+  rect.mine {
+    cursor: grab;
+  }
+  .sec .cm,
+  .cell .cm {
+    font-size: 9px;
+  }
+  .cell .cm {
+    position: absolute;
+    left: 4px;
+    bottom: 1px;
+  }
+  .cell {
+    cursor: pointer;
+  }
+  .cellbtn {
+    position: absolute;
+    right: 3px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 20px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    background: var(--bg-raised);
+    color: var(--text);
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  .cell:hover .cellbtn,
+  .cell.sel .cellbtn,
+  .cellbtn.open {
+    display: inline-flex;
+  }
+  .cellbtn.open {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .cellbtn.open :global(svg) {
+    transform: rotate(180deg);
+  }
+  .cell.sel .lab,
+  .cell:hover .lab {
+    max-width: calc(100% - 64px);
+  }
+  .pop {
+    position: fixed;
+    z-index: 20;
+    width: 260px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    padding: 8px;
+    box-shadow: var(--shadow-pop);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: var(--fs-sm);
+  }
+  .pop h4 {
+    margin: 0 0 4px;
+    font-size: var(--fs-sm);
+  }
+  .pop .opt {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 6px;
+    align-items: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    padding: 3px 6px;
+    text-align: left;
+    font-size: var(--fs-sm);
+  }
+  .pop .opt:hover {
+    background: var(--bg-panel);
+  }
+  .pop .opt.on {
+    border-color: var(--accent-dim);
+  }
+  .pop .opt .steps i.on {
+    background: var(--text);
+  }
+  .pop .row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    color: var(--text-dim);
+  }
+  .pop select {
+    flex: 1;
+    background: var(--bg-panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    font: inherit;
+    font-size: var(--fs-sm);
+  }
+  .pop .help {
+    margin: 0;
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+  }
+  .memo-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .thread {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 160px;
+    overflow-y: auto;
+    font-size: var(--fs-sm);
+  }
+  .memo {
+    border-left: 2px solid var(--border-strong);
+    padding: 2px 0 2px 8px;
+  }
+  .memo .who {
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+  }
+  .memo-box textarea {
+    width: 100%;
+    resize: vertical;
+    background: var(--bg-inset);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: 6px 8px;
+    font: inherit;
+    font-size: var(--fs-sm);
+  }
+  .actions {
+    flex-wrap: wrap;
+  }
+  .actions.two .btn {
+    flex: 1;
   }
   @media (max-width: 980px) {
     .main {

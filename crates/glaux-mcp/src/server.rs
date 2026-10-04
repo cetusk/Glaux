@@ -13838,7 +13838,7 @@ impl GlauxServer {
                 "presence": PRESENCE,
                 "arcs": ARCS.iter().map(|(k, n)| json!({ "key": k, "name": n })).collect::<Vec<_>>(),
                 "part_rhythms": PART_RHYTHMS,
-                "song_body": "genre・mood(言葉の列)・key・arc・brightness / density / organic(0〜10)・loudness(LUFS)・musts(守ること)・refs・note",
+                "song_body": "genre・mood(言葉の列)・key・arc・brightness / density / organic(0〜10)・loudness(LUFS)・musts(守ること)・refs・note・memos(人のメモ。target = song / section:<区間 ID> / part:<トラック ID> / cell:<トラック ID>:<区間 ID> / curve など。AI は読むだけ)",
                 "part_body": "track(trk_…)・function(既定の働き)・note・sections: [{section(sec_…)・presence 0〜5・function・register [下, 上](MIDI)・density 0〜1・rhythm・note・locked}]",
             });
         }

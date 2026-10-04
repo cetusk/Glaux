@@ -176,6 +176,21 @@ pub struct SongPlan {
     pub refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// 人が設計画面で「所」に付けたメモ(言葉の意図)。AI はその所を作る・直すときに読む。AI は書かない
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memos: Vec<Memo>,
+}
+
+/// 「所」に付く人のメモ
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct Memo {
+    /// 付けた所: song / sections / curve / band / table(段の全体)/ section:<区間 ID> / part:<トラック ID> /
+    /// cell:<トラック ID>:<区間 ID>
+    pub target: String,
+    pub text: String,
+    /// 書いた時(RFC 3339)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub when: String,
 }
 
 impl SongPlan {
@@ -200,6 +215,11 @@ impl SongPlan {
         }
         if self.loudness.is_some_and(|v| !(-40.0..=0.0).contains(&v)) {
             return bad("loudness は -40〜0(LUFS)".to_owned());
+        }
+        for (i, m) in self.memos.iter().enumerate() {
+            if m.target.trim().is_empty() || m.text.trim().is_empty() {
+                return bad(format!("memos/{i}: target と text は空にできない"));
+            }
         }
         Ok(())
     }

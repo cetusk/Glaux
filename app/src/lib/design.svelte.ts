@@ -1,7 +1,10 @@
 // 設計画面(曲の設計データ)の中身と、タイムラインのクリップの印。
 // 中身はバックエンドの get_design(glaux_core::designcheck::design_view + 計画の一覧・履歴)。
-// 段階 1 は見るだけ(直すのはチャットで AI に頼む。画面で直すのは段階 2)。
+// 画面で直す操作(計画の保存・区間・メモ・取り消し)もここ。人の操作として履歴に残る。
 import { invoke } from "@tauri-apps/api/core";
+import { applyEdit, redo as songRedo, undo as songUndo } from "./api";
+import { showToast } from "./toast.svelte";
+import type { Project } from "./types";
 
 export interface DesignSection {
   id?: string;
@@ -230,4 +233,232 @@ export function sectionCurve(s: DesignSection): [number, number][] | null {
 export function noteName(p: number): string {
   const N = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   return N[((p % 12) + 12) % 12] + (Math.floor(p / 12) - 1);
+}
+
+// ---------------------------------------------------------------- 画面で直す(段階 2)
+
+
+export interface Memo {
+  target: string;
+  text: string;
+  when?: string;
+}
+
+/** 計画の中身(画面が直すときに丸ごと書き戻す。旋律の計画には無い) */
+export function planBody(d: DesignData | null, planId: string | undefined): Record<string, unknown> | null {
+  if (!d || !planId) return null;
+  const p = d.plans.find((x) => x.plan_id === planId) as (PlanInfo & { body?: Record<string, unknown> }) | undefined;
+  return p?.body ? structuredClone($state.snapshot(p.body) as Record<string, unknown>) : null;
+}
+
+// 設計画面の取り消し: 直した先が曲(区間・テンポ)か計画かを覚えておき、その履歴を戻す。覚えが無ければ計画を戻す
+const undoStack: ("song" | "plan")[] = [];
+const redoStack: ("song" | "plan")[] = [];
+function noteEdit(kind: "song" | "plan", n = 1) {
+  for (let k = 0; k < n; k++) undoStack.push(kind);
+  redoStack.length = 0;
+}
+
+export async function designUndo(): Promise<void> {
+  const kind = undoStack.pop() ?? "plan";
+  try {
+    if (kind === "song") await songUndo();
+    else {
+      const r = await invoke<{ done: number }>("plan_step", { n: 1, redo: false });
+      if (!r.done) {
+        showToast("warn", "取り消せる計画の変更はありません");
+        return;
+      }
+    }
+    redoStack.push(kind);
+  } catch (e) {
+    showToast("error", `取り消せませんでした: ${e}`);
+  }
+}
+
+export async function designRedo(): Promise<void> {
+  const kind = redoStack.pop() ?? "plan";
+  try {
+    if (kind === "song") await songRedo();
+    else {
+      const r = await invoke<{ done: number }>("plan_step", { n: 1, redo: true });
+      if (!r.done) {
+        showToast("warn", "やり直せる計画の変更はありません");
+        return;
+      }
+    }
+    undoStack.push(kind);
+  } catch (e) {
+    showToast("error", `やり直せませんでした: ${e}`);
+  }
+}
+
+/** 計画を保存する(作る・置き換える)。人の操作として計画の履歴に残る */
+export async function savePlan(
+  planId: string | null,
+  kind: string,
+  name: string,
+  body: unknown,
+  label: string,
+  planState?: "estimated" | "adopted",
+): Promise<string | null> {
+  try {
+    const r = await invoke<{ plan_id: string }>("plan_save", { planId, name, kind, body, planState, label });
+    noteEdit("plan");
+    refreshDesign();
+    return r.plan_id;
+  } catch (e) {
+    showToast("error", `「${label}」を保存できませんでした: ${e}`);
+    return null;
+  }
+}
+
+/** 区間(曲のデータ)を直す。区間の並びを丸ごと置き換える 1 件の編集(曲の履歴に残る) */
+export async function editSections(
+  project: Project,
+  mutate: (secs: NonNullable<Project["sections"]>) => void,
+  label: string,
+): Promise<boolean> {
+  const secs = structuredClone($state.snapshot(project.sections ?? []) as NonNullable<Project["sections"]>);
+  secs.sort((a, b) => a.tick - b.tick);
+  mutate(secs);
+  try {
+    await applyEdit([{ op: "set_sections", sections: secs }], label);
+    noteEdit("song");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** テンポ(曲のデータ。途中で変わらない曲だけ) */
+export async function setTempo(bpm: number): Promise<void> {
+  try {
+    await applyEdit([{ op: "set_tempo", events: [{ tick: 0, bpm }] }], `テンポを ${bpm} BPM に`);
+    noteEdit("song");
+  } catch {
+    // applyEdit がエラーを出す
+  }
+}
+
+/** 区間に ID が無ければ付ける(パートの計画は区間を ID で指すため)。付けたら読み直して true */
+export async function ensureSectionIds(project: Project): Promise<boolean> {
+  if ((project.sections ?? []).every((s) => s.id)) return false;
+  await editSections(project, () => {}, "区間に ID を付ける");
+  await refreshDesign();
+  return true;
+}
+
+/** 曲全体の計画を直す(無ければ作る) */
+export async function editSongPlan(mutate: (body: Record<string, unknown>) => void, label: string): Promise<void> {
+  const d = designStore.data;
+  const body = planBody(d, d?.song_plan_id) ?? {};
+  mutate(body);
+  await savePlan(d?.song_plan_id ?? null, "song", "曲全体", body, label);
+}
+
+/** パートの計画を直す(無ければ作る)。区間の ID が無ければ先に付ける */
+export async function editPartPlan(
+  project: Project,
+  partIndex: number,
+  mutate: (body: { track: string; function?: string; sections: Record<string, unknown>[] }, d: DesignData) => void,
+  label: string,
+): Promise<void> {
+  await ensureSectionIds(project);
+  const d = designStore.data;
+  const part = d?.parts[partIndex];
+  if (!d || !part) return;
+  if (d.sections.some((s) => !s.id)) {
+    showToast("error", "区間が無いので、パートの計画を作れません(set_song_plan か、タイムラインでマーカーを置いてください)");
+    return;
+  }
+  const body = (planBody(d, part.plan_id) ?? { track: part.track_id, sections: [] }) as {
+    track: string;
+    function?: string;
+    sections: Record<string, unknown>[];
+  };
+  body.track = part.track_id;
+  body.sections = body.sections ?? [];
+  mutate(body, d);
+  await savePlan(part.plan_id ?? null, "part", part.name, body, label);
+}
+
+/** パートの計画の、区間 `i` の項目(無ければ測った段階で作る) */
+export function partCell(body: { sections: Record<string, unknown>[] }, d: DesignData, partIndex: number, i: number) {
+  const sid = d.sections[i]?.id ?? "";
+  let e = body.sections.find((s) => s.section === sid);
+  if (!e) {
+    e = { section: sid, presence: d.parts[partIndex]?.cells[i]?.measured ?? 3 };
+    body.sections.push(e);
+  }
+  return e as {
+    section: string;
+    presence: number;
+    function?: string;
+    register?: [number, number];
+    locked?: boolean;
+    density?: number;
+    rhythm?: string;
+    note?: string;
+  };
+}
+
+/** 所のメモ(曲全体の計画の memos) */
+export function memosFor(d: DesignData | null, target: string): Memo[] {
+  const m = (d?.song as (SongPlan & { memos?: Memo[] }) | undefined)?.memos ?? [];
+  return m.filter((x) => x.target === target);
+}
+
+export async function addMemo(target: string, text: string): Promise<void> {
+  await editSongPlan((b) => {
+    const list = (b.memos as Memo[] | undefined) ?? [];
+    list.push({ target, text, when: new Date().toISOString() });
+    b.memos = list;
+  }, "メモを残す");
+}
+
+/** 推定した計画をまとめて採用する・捨てる */
+export async function settleEstimated(adopt: boolean): Promise<void> {
+  try {
+    const r = await invoke<{ entries: string[] }>("plan_settle_estimated", { adopt });
+    noteEdit("plan", r.entries.length);
+    showToast("ok", adopt ? "推定した計画を採用しました" : "推定した計画を捨てました");
+    refreshDesign();
+  } catch (e) {
+    showToast("error", `${adopt ? "採用" : "捨てる"}できませんでした: ${e}`);
+  }
+}
+
+/** 計画を前の版の中身に戻す(戻したことも新しい版として残る) */
+export async function restorePlan(planId: string, rev: number): Promise<void> {
+  try {
+    await invoke("plan_restore", { planId, rev });
+    noteEdit("plan");
+    showToast("ok", `版 ${rev} に戻しました(戻したことも新しい版として残ります)`);
+    refreshDesign();
+  } catch (e) {
+    showToast("error", `戻せませんでした: ${e}`);
+  }
+}
+
+/** 計画の途中の変更だけを取り消す(後の変更は残す) */
+export async function revertPlanEntry(entryId: string): Promise<void> {
+  try {
+    const r = await invoke<{ conflicts: string[] }>("plan_revert", { entryId });
+    noteEdit("plan");
+    showToast(
+      "ok",
+      r.conflicts.length
+        ? `取り消しました(後で同じ計画を ${r.conflicts.length} 回直しています。結果を確かめてください)`
+        : "この変更だけ取り消しました",
+    );
+    refreshDesign();
+  } catch (e) {
+    showToast("error", `取り消せませんでした: ${e}`);
+  }
+}
+
+/** チャットで AI に頼む(設計画面で選んでいる所を対象に添えて送る) */
+export function askChat(text: string): void {
+  window.dispatchEvent(new CustomEvent("glaux:chat-send", { detail: text }));
 }

@@ -130,6 +130,8 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
   固定の音は AI の編集では変わらない(外した編集は応答の kept_locked。固定を外すのは人だけ)。\n\
   realize_melody・revise_melody の作り直しは、手で直した小節を既定で残す(応答の protected)。残したことを報告し、\n\
   人が「手直しも含めて」と言ったときだけ overwrite_edits: true。ほかの道具でも、手で直した小節は消さずに避けて書く。\n\
+- 人のメモ: get_design の song.memos は、人が設計画面で所(区間・パート・マス・段の全体)に付けた言葉の意図。その所を作る・直すときは\n\
+  必ず読んで従う(AI はメモを書かない。判断の理由は計画の why に残す)。\n\
 - 計画とのずれ: get_design の deviations は計画と実際の食い違い。直すのは計画か音のどちらか(人の意図に近い方。迷えば尋ねる)。\n\
   推定した計画(state: estimated)は参考だけ。採用は人がする。",
     ),

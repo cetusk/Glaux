@@ -18,6 +18,8 @@ export interface Note {
   vel: number;
   /** 奏法。省略 = normal */
   articulation?: Articulation;
+  /** 固定(AI が作り直す・直すときに変えない音)。省略 = 固定しない */
+  locked?: boolean;
   /** 連続ピッチカーブ(ノート先頭からの相対 tick, セント, 次の点までの曲がり方)。省略 = なし */
   pitch_curve?: { tick: number; cents: number; shape?: CurveShape }[];
   /** ポルタメントで滑る時間(ms)。省略 = トラックの glide_ms */
@@ -170,7 +172,18 @@ export interface Project {
   assets: Record<string, unknown>;
   /** 曲の構成マーカー(tick 昇順)。省略 = なし */
   /** 区間のマーカー。energy・tracks・note は曲の計画書(set_song_plan)の中身 */
-  sections?: { tick: number; name: string; energy?: number; tracks?: string[]; note?: string }[];
+  sections?: {
+    id?: string;
+    tick: number;
+    name: string;
+    energy?: number;
+    tracks?: string[];
+    note?: string;
+    /** 区間の中の盛り上がりの形 [位置 0〜1, 値 0〜10] */
+    curve?: [number, number][];
+    /** 次の区間との境目(省略 = つなぐ) */
+    join?: "smooth" | "step";
+  }[];
 }
 
 export type Author =

@@ -7204,3 +7204,100 @@ async fn design_keeps_hand_edits_and_locks_and_compares_plans() {
     assert_eq!(p.sections[0].id.as_ref().unwrap().as_str(), sec[0]);
     assert_eq!(p.sections[1].id.as_ref().unwrap().as_str(), sec[1]);
 }
+
+/// 設計画面(段階 2)の計画の操作: 人の保存・版に戻す・推定の採用と捨てる・途中の取り消し・取り消しとやり直し
+#[tokio::test]
+async fn design_screen_plan_operations() {
+    use glaux_mcp::plan_view;
+    let fx = setup().await;
+    let h = &fx.handle;
+    // 曲全体の計画をメモ付きで作る(人の操作)
+    let r = plan_view::save(
+        h,
+        None,
+        Some("曲全体"),
+        "song",
+        json!({ "genre": "techno", "memos": [{ "target": "song", "text": "暗く", "when": "2026-10-04T00:00:00Z" }] }),
+        None,
+        "曲全体を作る",
+    )
+    .await
+    .unwrap();
+    let id = r["plan_id"].as_str().unwrap().to_owned();
+    plan_view::save(
+        h,
+        Some(&id),
+        None,
+        "song",
+        json!({ "genre": "house" }),
+        None,
+        "ジャンルを変える",
+    )
+    .await
+    .unwrap();
+    let d = plan_view::design(h, 50).await.unwrap();
+    assert_eq!(d["song"]["genre"], "house");
+    assert_eq!(d["history"][0]["author"]["kind"], "human");
+    assert!(
+        d["plans"][0]["body"].is_object(),
+        "画面が書き戻すための中身"
+    );
+    // 版 1 に戻す(戻したことも新しい版として残る)
+    plan_view::restore(h, &id, 1).await.unwrap();
+    let d = plan_view::design(h, 50).await.unwrap();
+    assert_eq!(d["song"]["genre"], "techno");
+    assert_eq!(d["song"]["memos"][0]["text"], "暗く");
+    assert_eq!(d["history_total"], 3);
+    // 途中の変更だけを取り消す(版 2 の変更 = ジャンルを変える を取り消しても、今は版 3 のまま)
+    let second = d["history"][1]["entry_id"].as_str().unwrap().to_owned();
+    plan_view::revert(h, &second).await.unwrap();
+    // 計画の取り消しとやり直し
+    let r = plan_view::step(h, 1, false).await.unwrap();
+    assert_eq!(r["done"], 1);
+    plan_view::step(h, 1, true).await.unwrap();
+    // 推定した計画: 捨てる・採用する
+    plan_view::save(
+        h,
+        None,
+        Some("推定 A"),
+        "song",
+        json!({}),
+        Some("estimated"),
+        "推定",
+    )
+    .await
+    .unwrap();
+    plan_view::settle_estimated(h, false).await.unwrap();
+    let plans = h.get_plans().await.unwrap();
+    assert!(plans.doc().plans.values().all(|p| p.state.is_none()));
+    plan_view::save(
+        h,
+        None,
+        Some("推定 B"),
+        "song",
+        json!({}),
+        Some("estimated"),
+        "推定",
+    )
+    .await
+    .unwrap();
+    plan_view::settle_estimated(h, true).await.unwrap();
+    let plans = h.get_plans().await.unwrap();
+    assert!(plans
+        .doc()
+        .plans
+        .values()
+        .any(|p| p.name == "推定 B" && p.state.is_none()));
+    // メモの形の誤りは保存できない
+    assert!(plan_view::save(
+        h,
+        Some(&id),
+        None,
+        "song",
+        json!({ "memos": [{ "target": "", "text": "x" }] }),
+        None,
+        "x"
+    )
+    .await
+    .is_err());
+}

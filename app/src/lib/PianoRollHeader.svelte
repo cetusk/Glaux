@@ -234,6 +234,7 @@
           <td>奏法</td>
           <td>{#each availableArts as a (a.key)}<span class="art"><kbd>{a.key}</kbd>{a.label}</span>{/each}(選択中のノートに。もう一度で外す)</td>
         </tr>
+        <tr><td>固定</td><td><kbd>K</kbd>(選択中のノートを固定する。もう一度で外す。固定の音は AI が変えない。点線の縁と鍵の印)</td></tr>
         <tr><td>強さ</td><td>下の帯の縦棒を上下にドラッグ</td></tr>
         <tr><td>ズーム</td><td><kbd>Ctrl</kbd>+ホイール(横)/ <kbd>Shift</kbd>+ホイール(縦)</td></tr>
         <tr><td>閉じる</td><td><kbd>Esc</kbd>(選択を外してから)</td></tr>
