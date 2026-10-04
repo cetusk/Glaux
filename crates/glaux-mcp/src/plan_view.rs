@@ -57,7 +57,7 @@ pub async fn design(handle: &SessionHandle, limit: usize) -> Result<Value, Strin
         .values()
         .map(|p| {
             json!({ "plan_id": p.id, "name": p.name, "kind": p.kind, "rev": p.rev,
-                    "state": p.state, "derived_from": p.derived_from,
+                    "state": p.state, "derived_from": p.derived_from, "edits": p.patch.len(),
                     // 画面が直すときに丸ごと書き戻すため、旋律以外は中身も渡す(旋律の計画は大きい)
                     "body": (p.kind != "melody").then_some(&p.body) })
         })
@@ -134,6 +134,7 @@ pub async fn save(
                 .ok_or_else(|| format!("計画が見つかりません: {pid}"))?;
             PlanCommand::Replace {
                 plan: Plan {
+                    patch: vec![],
                     id,
                     name: name.map_or_else(|| old.name.clone(), str::to_owned),
                     kind: kind.to_owned(),
@@ -150,6 +151,7 @@ pub async fn save(
         }
         None => PlanCommand::Create {
             plan: Plan {
+                patch: vec![],
                 id: glaux_core::PlanId::new(),
                 name: name.unwrap_or(kind).to_owned(),
                 kind: kind.to_owned(),
@@ -274,4 +276,203 @@ pub async fn settle_estimated(handle: &SessionHandle, adopt: bool) -> Result<Val
         );
     }
     Ok(json!({ "entries": entries }))
+}
+
+// ---------------------------------------------------------------- 案(枝)
+
+/// AI の案を出す: 元の計画(あれば)から派生した計画(状態 proposal)と、今の曲に当てると案の音になる編集の列(patch)。
+/// 今の計画にも曲にも効かない。編集の列は今の曲に試しに当てて確かめ、固定の音は守る(外した編集を返す)
+#[allow(clippy::too_many_arguments)]
+pub async fn propose(
+    handle: &SessionHandle,
+    author: glaux_core::Author,
+    base_plan_id: Option<&str>,
+    name: &str,
+    kind: Option<&str>,
+    body: Option<Value>,
+    commands: Vec<glaux_core::Command>,
+    note: glaux_core::EntryNote,
+) -> Result<Value, String> {
+    use glaux_core::plan::Plan;
+    let plans = handle.get_plans().await?;
+    let base = match base_plan_id {
+        Some(pid) => {
+            let id = parse_plan_id(pid)?;
+            Some(
+                plans
+                    .doc()
+                    .plans
+                    .get(&id)
+                    .cloned()
+                    .ok_or_else(|| format!("元の計画が見つかりません: {pid}"))?,
+            )
+        }
+        None => None,
+    };
+    if base
+        .as_ref()
+        .is_some_and(|b| b.state.as_deref() == Some("proposal"))
+    {
+        return Err("案から案は作れません(元にするのは今の計画)".to_owned());
+    }
+    let kind = kind
+        .map(str::to_owned)
+        .or_else(|| base.as_ref().map(|b| b.kind.clone()))
+        .ok_or("kind が要ります(元の計画が無いとき)")?;
+    let body = body
+        .or_else(|| base.as_ref().map(|b| b.body.clone()))
+        .unwrap_or_else(|| json!({}));
+    // 案の音: 固定の音を守り、今の曲に当てられることを確かめる
+    let (project, _) = handle.get_project_shared().await?;
+    let mut locks = Vec::new();
+    let patch: Vec<glaux_core::Command> = if commands.is_empty() {
+        vec![]
+    } else {
+        let (guarded, hits) =
+            glaux_core::made::guard_locks(&project, glaux_core::Command::batch("案", commands));
+        locks = hits;
+        let guarded =
+            guarded.ok_or("案の編集は全部が固定の音への変更でした(固定は人が外すまで変えない)")?;
+        let mut sim = (*project).clone();
+        sim.apply(&guarded)
+            .map_err(|e| format!("案の編集を今の曲に当てられません: {e}"))?;
+        match guarded {
+            glaux_core::Command::Batch { commands, .. } => commands,
+            c => vec![c],
+        }
+    };
+    let plan = Plan {
+        id: glaux_core::PlanId::new(),
+        name: name.to_owned(),
+        kind,
+        rev: 1,
+        derived_from: base.as_ref().map(|b| b.reference()),
+        state: Some("proposal".to_owned()),
+        body,
+        patch,
+    };
+    let id = plan.id.clone();
+    let edits = plan.patch.len();
+    let entry = handle
+        .apply_plan(
+            PlanCommand::Create { plan },
+            author,
+            format!("案「{name}」"),
+            note,
+        )
+        .await?;
+    let mut v = json!({ "entry_id": entry, "plan_id": id, "edits": edits });
+    if !locks.is_empty() {
+        v["kept_locked"] = json!(locks);
+    }
+    Ok(v)
+}
+
+/// 案を聴き比べるための (今の曲, 案を当てた曲)
+pub async fn proposal_projects(
+    handle: &SessionHandle,
+    plan_id: &str,
+) -> Result<(glaux_core::Project, glaux_core::Project), String> {
+    let id = parse_plan_id(plan_id)?;
+    let plans = handle.get_plans().await?;
+    let p = plans
+        .doc()
+        .plans
+        .get(&id)
+        .filter(|p| p.state.as_deref() == Some("proposal"))
+        .ok_or("案が見つかりません")?;
+    let (project, _) = handle.get_project_shared().await?;
+    let now = (*project).clone();
+    let mut alt = now.clone();
+    if !p.patch.is_empty() {
+        alt.apply(&glaux_core::Command::batch("案", p.patch.clone()))
+            .map_err(|e| {
+                format!("案を作った後に曲が変わったので、案の音を当てられません({e})。AI に案を作り直してもらってください")
+            })?;
+    }
+    Ok((now, alt))
+}
+
+/// 案を採用する: 案の音を曲に当て(1 件の編集)、案の計画を今の計画にする(元の計画があれば中身を置き換えて案を消す)
+pub async fn adopt_proposal(handle: &SessionHandle, plan_id: &str) -> Result<Value, String> {
+    use glaux_core::plan::Plan;
+    let id = parse_plan_id(plan_id)?;
+    let plans = handle.get_plans().await?;
+    let p = plans
+        .doc()
+        .plans
+        .get(&id)
+        .filter(|p| p.state.as_deref() == Some("proposal"))
+        .cloned()
+        .ok_or("案が見つかりません")?;
+    let label = format!("案「{}」を採用", p.name);
+    let mut song_entry = None;
+    if !p.patch.is_empty() {
+        // 案の音は AI が作ったもの。人が採用したことを作者の名前に残す(指紋も AI の編集として記録する)
+        let (e, _) = handle
+            .apply(
+                glaux_core::Command::batch(label.clone(), p.patch.clone()),
+                glaux_core::Author::Ai {
+                    model: "案(人が採用)".to_owned(),
+                },
+                label.clone(),
+            )
+            .await?
+            .map_err(|e| {
+                format!("案を作った後に曲が変わったので、案の音を当てられません({e})。AI に案を作り直してもらってください")
+            })?;
+        song_entry = Some(e);
+    }
+    let base = p
+        .derived_from
+        .as_ref()
+        .and_then(|r| plans.doc().plans.get(&r.id))
+        .cloned();
+    let human = glaux_core::Author::Human;
+    let plan_entry = match base {
+        Some(b) => {
+            let e = handle
+                .apply_plan(
+                    PlanCommand::Replace {
+                        plan: Plan {
+                            rev: b.rev + 1,
+                            body: p.body.clone(),
+                            state: None,
+                            ..b
+                        },
+                    },
+                    human.clone(),
+                    label.clone(),
+                    note(&label),
+                )
+                .await?;
+            handle
+                .apply_plan(
+                    PlanCommand::Delete { id: p.id.clone() },
+                    human,
+                    format!("採用した案「{}」をしまう", p.name),
+                    note(&label),
+                )
+                .await?;
+            e
+        }
+        None => {
+            handle
+                .apply_plan(
+                    PlanCommand::Replace {
+                        plan: Plan {
+                            rev: p.rev + 1,
+                            state: None,
+                            patch: vec![],
+                            ..p
+                        },
+                    },
+                    human,
+                    label.clone(),
+                    note(&label),
+                )
+                .await?
+        }
+    };
+    Ok(json!({ "entry_id": song_entry, "plan_entry_id": plan_entry }))
 }

@@ -2314,6 +2314,49 @@ const AB_MAX_SECS: f64 = 90.0;
 
 /// 音量をそろえた A/B の聴き比べを用意する: 履歴のある地点(既定は 1 つ前の編集の前)と今の、
 /// 同じ範囲を書き出して統合ラウドネスをそろえる。用意できたら B(今)を鳴らす状態にする
+/// 案(設計データの枝)の聴き比べを用意する: A = 今の曲、B = 今の曲に案の音を当てたもの(音量をそろえる)
+#[tauri::command]
+async fn ab_prepare_proposal(
+    state: State<'_, AppState>,
+    plan_id: String,
+    start_tick: u64,
+    end_tick: u64,
+) -> Result<Value, String> {
+    if end_tick <= start_tick {
+        return Err("聴き比べる範囲がありません".into());
+    }
+    let (now, alt) = glaux_mcp::plan_view::proposal_projects(&state.handle, &plan_id).await?;
+    let engine = state.engine()?.clone();
+    let sr = engine.sample_rate();
+    let dir = state.handle.project_dir().await?;
+    let from = now.tempo_map.tick_to_seconds(Tick(start_tick));
+    let to = now
+        .tempo_map
+        .tick_to_seconds(Tick(end_tick))
+        .min(from + AB_MAX_SECS);
+    let end_tick = now.tempo_map.seconds_to_tick(to).0;
+    let (clip, info) = tokio::task::spawn_blocking(move || {
+        let dir = std::path::Path::new(&dir);
+        let bank_a = glaux_engine::SampleBank::for_offline(&now, dir);
+        let bank_b = glaux_engine::SampleBank::for_offline(&alt, dir);
+        glaux_engine::ab::prepare(&now, &bank_a, &alt, &bank_b, sr, from, to)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("聴き比べを用意できません: {e}"))?;
+    engine.set_ab_clip(Some(clip));
+    engine.set_ab_side(glaux_engine::ab::AbSide::B);
+    let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
+    v["end_tick"] = json!(end_tick);
+    Ok(v)
+}
+
+/// 案を採用する(案の音を曲に当て、案の計画を今の計画にする)
+#[tauri::command]
+async fn plan_adopt_proposal(state: State<'_, AppState>, plan_id: String) -> Result<Value, String> {
+    glaux_mcp::plan_view::adopt_proposal(&state.handle, &plan_id).await
+}
+
 #[tauri::command]
 async fn ab_prepare(
     state: State<'_, AppState>,
@@ -2989,6 +3032,8 @@ fn main() -> Result<()> {
             plan_revert,
             plan_restore,
             plan_settle_estimated,
+            ab_prepare_proposal,
+            plan_adopt_proposal,
             export_audio,
             import_audio_clip,
             clip_peaks,

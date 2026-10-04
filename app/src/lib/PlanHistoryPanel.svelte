@@ -6,7 +6,9 @@
 
   const d = $derived(designStore.data);
   const nameOf = (id: string) => d?.plans.find((p) => p.plan_id === id)?.name ?? id;
+  const isProposal = (id: string) => d?.plans.find((p) => p.plan_id === id)?.state === "proposal";
   const kindOf = (id: string) => {
+    if (isProposal(id)) return "案";
     const k = d?.plans.find((p) => p.plan_id === id)?.kind;
     return k === "song" ? "曲全体" : k === "part" ? "パート" : k === "melody" ? "旋律" : "";
   };
@@ -58,7 +60,7 @@
           {/if}
           {#if k > 0 && !e.reverts}
             <div class="ops">
-              {#if e.rev != null && e.op !== "delete" && d.plans.some((p) => p.plan_id === e.plan_id)}
+              {#if e.rev != null && e.op !== "delete" && d.plans.some((p) => p.plan_id === e.plan_id) && !isProposal(e.plan_id)}
                 <button type="button" title="この計画をこの版の中身に戻す(戻したことも新しい版として残る)" onclick={() => restorePlan(e.plan_id, e.rev!)}
                   >この版に戻す</button
                 >

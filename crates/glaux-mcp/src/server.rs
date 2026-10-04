@@ -4015,6 +4015,30 @@ pub struct SongPlanSection {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ProposeDesignParams {
+    /// 案の名前(人が聴き比べるときに見る。例「ドロップをハーフタイムに」)。
+    pub name: String,
+    /// なぜこの案か(必須。計画の履歴に残る)。
+    pub why: String,
+    #[serde(default)]
+    pub trigger: Option<PlanTriggerParam>,
+    /// 元にする計画の ID(pln_…。曲全体・パート・旋律の計画)。採用すると、その計画の中身が案の body になる。
+    /// 省略すると元の無い案(採用すると新しい計画になる)。
+    #[serde(default)]
+    pub base_plan_id: Option<String>,
+    /// 計画の種類(元の計画が無いときは必須: song / part / melody)。
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// 案の計画の中身(省略で元の計画の中身のまま = 音だけの案)。
+    #[serde(default)]
+    pub body: Option<Value>,
+    /// 案の音: 今の曲に当てると案の音になる編集の列(apply_commands と同じ書き方)。今の曲は変えない。
+    /// 人が聴き比べて採用したときだけ曲に当たる。固定の音への編集は外す。
+    #[serde(default)]
+    pub commands: Option<Vec<Value>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct GetDesignParams {
     /// 語彙(働き・段階・盛り上がりの型・計画の形)も返す(既定 true。2 回目からは false で短く)。
     #[serde(default)]
@@ -4748,6 +4772,103 @@ impl GlauxServer {
         }
     }
 
+    /// AI が書いた編集の列(JSON)を Command にする(簡潔なノートの書き方の展開・省略した ID の割り当て・
+    /// 新しいトラックの初期値・省略表示した CLAP の状態の復元)。apply_commands と propose_design で共通
+    async fn parse_commands(
+        &self,
+        values: Vec<Value>,
+    ) -> Result<(Vec<Command>, Vec<Value>), String> {
+        let mut commands = Vec::with_capacity(values.len());
+        let mut current: Option<glaux_core::Project> = None;
+        let mut assigned: Vec<Value> = Vec::new();
+        let mut clip_starts = std::collections::HashMap::new();
+        for (i, mut value) in values.into_iter().enumerate() {
+            // 簡潔なノートの書き方("5:1 1/8 E4 v96")を、クリップの頭からの tick のノートに直す
+            if crate::compact::has_compact(&value) {
+                if current.is_none() {
+                    current = Some(self.handle.get_project().await?.0);
+                }
+                if let Some(project) = current.as_ref() {
+                    crate::compact::expand_command(&mut value, project, &mut clip_starts)
+                        .map_err(|e| format!("commands[{i}]: {e}"))?;
+                }
+            }
+            crate::compact::remember_starts(&value, &mut clip_starts);
+            // 新しいトラックの減算・ウェーブテーブルは「生きた音」寄りの初期値で始める(指定があればそちら)
+            lively_new_tracks(&mut value);
+            // 省略された ID はここで振る(コマンドは決定的なので、apply ではなく作る側 = MCP 層で)
+            assign_missing_ids(&mut value, i, &mut assigned);
+            let mut cmd: Command = serde_json::from_value(value)
+                .map_err(|e| format!("commands[{i}] を Command として解釈できません: {e}"))?;
+            // get_project で省略表示した CLAP の状態をそのまま送ってきたら、今の状態に戻す
+            if let Command::SetDevice {
+                track,
+                device:
+                    Some(glaux_core::Device {
+                        source: glaux_core::PluginSource::Clap { plugin_id, state },
+                        ..
+                    }),
+            } = &mut cmd
+            {
+                if state
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with(ELIDED_CLAP_STATE))
+                {
+                    if current.is_none() {
+                        current = Some(self.handle.get_project().await?.0);
+                    }
+                    *state = current
+                        .as_ref()
+                        .and_then(|p| p.track(track))
+                        .and_then(|t| t.device.as_ref())
+                        .and_then(|d| match &d.source {
+                            glaux_core::PluginSource::Clap {
+                                plugin_id: cur_id,
+                                state,
+                            } if cur_id == plugin_id => state.clone(),
+                            _ => None,
+                        });
+                }
+            }
+            // エフェクトの状態も同様(同じ ID のエフェクトの今の状態。無ければ既定の状態)
+            let fx_state = match &mut cmd {
+                Command::AddEffect { effect, .. } | Command::AddMasterEffect { effect, .. } => {
+                    match &mut effect.source {
+                        glaux_core::PluginSource::Clap { state, .. } => {
+                            Some((effect.id.clone(), state))
+                        }
+                        _ => None,
+                    }
+                }
+                Command::SetEffectState { id, state } => Some((id.clone(), state)),
+                _ => None,
+            };
+            if let Some((id, state)) = fx_state {
+                if state
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with(ELIDED_CLAP_STATE))
+                {
+                    if current.is_none() {
+                        current = Some(self.handle.get_project().await?.0);
+                    }
+                    *state = current.as_ref().and_then(|p| {
+                        p.tracks
+                            .iter()
+                            .flat_map(|t| t.effects.iter())
+                            .chain(p.master.effects.iter())
+                            .find(|e| e.id == id)
+                            .and_then(|e| match &e.source {
+                                glaux_core::PluginSource::Clap { state, .. } => state.clone(),
+                                _ => None,
+                            })
+                    });
+                }
+            }
+            commands.push(cmd);
+        }
+        Ok((commands, assigned))
+    }
+
     /// 接続中クライアントの名前から `Author::Ai` を作る。
     /// アプリのチャットの AI のモデル名を共有する(アプリ内 MCP サーバーを作るときに渡す)
     pub fn with_chat_model(mut self, chat_model: ChatModel) -> Self {
@@ -5108,94 +5229,7 @@ impl GlauxServer {
         if p.commands.is_empty() {
             return Err("commands が空です".to_owned());
         }
-        let mut commands = Vec::with_capacity(p.commands.len());
-        let mut current: Option<glaux_core::Project> = None;
-        let mut assigned: Vec<Value> = Vec::new();
-        let mut clip_starts = std::collections::HashMap::new();
-        for (i, mut value) in p.commands.into_iter().enumerate() {
-            // 簡潔なノートの書き方("5:1 1/8 E4 v96")を、クリップの頭からの tick のノートに直す
-            if crate::compact::has_compact(&value) {
-                if current.is_none() {
-                    current = Some(self.handle.get_project().await?.0);
-                }
-                if let Some(project) = current.as_ref() {
-                    crate::compact::expand_command(&mut value, project, &mut clip_starts)
-                        .map_err(|e| format!("commands[{i}]: {e}"))?;
-                }
-            }
-            crate::compact::remember_starts(&value, &mut clip_starts);
-            // 新しいトラックの減算・ウェーブテーブルは「生きた音」寄りの初期値で始める(指定があればそちら)
-            lively_new_tracks(&mut value);
-            // 省略された ID はここで振る(コマンドは決定的なので、apply ではなく作る側 = MCP 層で)
-            assign_missing_ids(&mut value, i, &mut assigned);
-            let mut cmd: Command = serde_json::from_value(value)
-                .map_err(|e| format!("commands[{i}] を Command として解釈できません: {e}"))?;
-            // get_project で省略表示した CLAP の状態をそのまま送ってきたら、今の状態に戻す
-            if let Command::SetDevice {
-                track,
-                device:
-                    Some(glaux_core::Device {
-                        source: glaux_core::PluginSource::Clap { plugin_id, state },
-                        ..
-                    }),
-            } = &mut cmd
-            {
-                if state
-                    .as_deref()
-                    .is_some_and(|s| s.starts_with(ELIDED_CLAP_STATE))
-                {
-                    if current.is_none() {
-                        current = Some(self.handle.get_project().await?.0);
-                    }
-                    *state = current
-                        .as_ref()
-                        .and_then(|p| p.track(track))
-                        .and_then(|t| t.device.as_ref())
-                        .and_then(|d| match &d.source {
-                            glaux_core::PluginSource::Clap {
-                                plugin_id: cur_id,
-                                state,
-                            } if cur_id == plugin_id => state.clone(),
-                            _ => None,
-                        });
-                }
-            }
-            // エフェクトの状態も同様(同じ ID のエフェクトの今の状態。無ければ既定の状態)
-            let fx_state = match &mut cmd {
-                Command::AddEffect { effect, .. } | Command::AddMasterEffect { effect, .. } => {
-                    match &mut effect.source {
-                        glaux_core::PluginSource::Clap { state, .. } => {
-                            Some((effect.id.clone(), state))
-                        }
-                        _ => None,
-                    }
-                }
-                Command::SetEffectState { id, state } => Some((id.clone(), state)),
-                _ => None,
-            };
-            if let Some((id, state)) = fx_state {
-                if state
-                    .as_deref()
-                    .is_some_and(|s| s.starts_with(ELIDED_CLAP_STATE))
-                {
-                    if current.is_none() {
-                        current = Some(self.handle.get_project().await?.0);
-                    }
-                    *state = current.as_ref().and_then(|p| {
-                        p.tracks
-                            .iter()
-                            .flat_map(|t| t.effects.iter())
-                            .chain(p.master.effects.iter())
-                            .find(|e| e.id == id)
-                            .and_then(|e| match &e.source {
-                                glaux_core::PluginSource::Clap { state, .. } => state.clone(),
-                                _ => None,
-                            })
-                    });
-                }
-            }
-            commands.push(cmd);
-        }
+        let (mut commands, assigned) = self.parse_commands(p.commands).await?;
         let command = if commands.len() == 1 {
             commands.pop().expect("len checked")
         } else {
@@ -9213,6 +9247,7 @@ impl GlauxServer {
             .unwrap_or_else(|| "区間と盛り上がりから提案".to_owned());
         let note = plan_note(&why, None, None)?;
         let plan = plan::Plan {
+            patch: vec![],
             state: None,
             id: glaux_core::PlanId::new(),
             name: name.clone(),
@@ -9701,6 +9736,7 @@ impl GlauxServer {
                     format!("計画が見つかりません: {pid}(新しく作るなら plan_id を省略)")
                 })?;
                 let plan = Plan {
+                    patch: vec![],
                     state: match p.state.as_deref() {
                         None => old.state.clone(),
                         Some("adopted") => None,
@@ -9722,6 +9758,7 @@ impl GlauxServer {
                     .filter(|n| !n.trim().is_empty())
                     .ok_or("新しい計画には name が要ります")?;
                 let plan = Plan {
+                    patch: vec![],
                     state: match p.state.as_deref() {
                         None | Some("adopted") => None,
                         Some(s) => Some(s.to_owned()),
@@ -13807,6 +13844,45 @@ impl GlauxServer {
         v["duration"] = json!(format!("{}:{:02}", whole / 60, whole % 60));
         v["duration_sec"] = json!((seconds * 10.0).round() / 10.0);
         v["content_bars"] = json!(content_bars);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "AI の案(枝)を出す。好みが分かれる・大きく変える直し(ドロップをハーフタイムに、ベースを別の型に など)は、\
+        今の曲を直接変えずに案として出し、人に聴き比べてもらう。元の計画(base_plan_id)から派生した計画と、今の曲に当てると\
+        案の音になる編集の列(commands。apply_commands と同じ書き方)を持つ。今の計画にも曲にも効かない。人が設計画面で\
+        「聴き比べる」(今と案を音量をそろえて切り替える)・「採用」(案の音を曲に当て、案の計画を今の計画にする)・「捨てる」を選ぶ。\
+        固定の音への編集は外す(kept_locked)。案を出したら、人に「案を出したので聴き比べて」と伝えて待つ。"
+    )]
+    async fn propose_design(
+        &self,
+        params: Parameters<ProposeDesignParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("propose_design");
+        let p = params.0;
+        let note = plan_note(&p.why, p.trigger, None)?;
+        let (commands, assigned) = match p.commands {
+            Some(c) if !c.is_empty() => self.parse_commands(c).await?,
+            _ => (vec![], vec![]),
+        };
+        let mut v = crate::plan_view::propose(
+            &self.handle,
+            self.author(&ctx),
+            p.base_plan_id.as_deref(),
+            &p.name,
+            p.kind.as_deref(),
+            p.body,
+            commands,
+            note,
+        )
+        .await?;
+        if !assigned.is_empty() {
+            v["assigned_ids"] = json!(assigned);
+        }
+        v["note"] = json!(
+            "案は今の曲と計画を変えない。人が設計画面の計画の履歴で「聴き比べる」「採用」「捨てる」を選ぶ。採用まで待つ(勝手に当てない)"
+        );
         Ok(JsonText(v))
     }
 

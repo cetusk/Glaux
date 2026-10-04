@@ -8,6 +8,7 @@ use std::fs;
 
 fn plan(id: &PlanId, name: &str) -> Plan {
     Plan {
+        patch: vec![],
         state: None,
         id: id.clone(),
         name: name.into(),

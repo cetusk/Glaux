@@ -2,7 +2,8 @@
 // 中身はバックエンドの get_design(glaux_core::designcheck::design_view + 計画の一覧・履歴)。
 // 画面で直す操作(計画の保存・区間・メモ・取り消し)もここ。人の操作として履歴に残る。
 import { invoke } from "@tauri-apps/api/core";
-import { applyEdit, redo as songRedo, undo as songUndo } from "./api";
+import { abClear, abSetSide, applyEdit, redo as songRedo, transportPlay, transportSeek, undo as songUndo, type AbInfo } from "./api";
+import { transportStore } from "./transport.svelte";
 import { showToast } from "./toast.svelte";
 import type { Project } from "./types";
 
@@ -77,7 +78,12 @@ export interface PlanInfo {
   name: string;
   kind: string;
   rev: number;
+  /** 省略 = 採用済み / estimated = 推定(未確認)/ proposal = AI の案(枝) */
   state?: string | null;
+  /** 派生元(案の元の計画) */
+  derived_from?: { id: string; rev: number } | null;
+  /** 案の音の編集の数 */
+  edits?: number;
 }
 
 export interface PlanHistoryEntry {
@@ -461,4 +467,76 @@ export async function revertPlanEntry(entryId: string): Promise<void> {
 /** チャットで AI に頼む(設計画面で選んでいる所を対象に添えて送る) */
 export function askChat(text: string): void {
   window.dispatchEvent(new CustomEvent("glaux:chat-send", { detail: text }));
+}
+
+// ---------------------------------------------------------------- 案(枝。段階 3)
+
+/** 案の一覧(AI が propose_design で出した、今の計画・曲には効かない派生の計画) */
+export function proposals(d: DesignData | null): PlanInfo[] {
+  return (d?.plans ?? []).filter((p) => p.state === "proposal");
+}
+
+/** 案の聴き比べの状態(A = 今、B = 案) */
+export const proposalAb = $state<{ planId: string | null; side: "a" | "b"; info: AbInfo | null; busy: string | null }>({
+  planId: null,
+  side: "b",
+  info: null,
+  busy: null,
+});
+
+/** 案を聴き比べる(範囲の頭から鳴らす) */
+export async function abProposal(planId: string, start: number, end: number): Promise<void> {
+  proposalAb.busy = planId;
+  try {
+    const info = await invoke<AbInfo>("ab_prepare_proposal", {
+      planId,
+      startTick: Math.max(0, Math.round(start)),
+      endTick: Math.max(0, Math.round(end)),
+    });
+    proposalAb.planId = planId;
+    proposalAb.side = "b";
+    proposalAb.info = info;
+    if (!transportStore.state.loop) await transportSeek(start);
+    if (!transportStore.state.playing) await transportPlay();
+  } catch (e) {
+    showToast("error", `聴き比べを用意できませんでした: ${e}`);
+  } finally {
+    proposalAb.busy = null;
+  }
+}
+
+export async function setProposalSide(side: "a" | "b"): Promise<void> {
+  proposalAb.side = side;
+  abSetSide(side).catch(() => {});
+}
+
+export async function endProposalAb(): Promise<void> {
+  if (!proposalAb.planId) return;
+  proposalAb.planId = null;
+  proposalAb.info = null;
+  abClear().catch(() => {});
+}
+
+/** 案を採用する(案の音を曲に当て、案の計画を今の計画にする) */
+export async function adoptProposal(planId: string, name: string): Promise<void> {
+  await endProposalAb();
+  try {
+    await invoke("plan_adopt_proposal", { planId });
+    showToast("ok", `案「${name}」を採用しました(曲と計画の履歴に残り、取り消せます)`);
+    refreshDesign();
+  } catch (e) {
+    showToast("error", `採用できませんでした: ${e}`);
+  }
+}
+
+/** 案を捨てる */
+export async function discardProposal(planId: string, name: string): Promise<void> {
+  if (proposalAb.planId === planId) await endProposalAb();
+  try {
+    await invoke("plan_delete", { planId, label: `案「${name}」を捨てる` });
+    showToast("ok", `案「${name}」を捨てました`);
+    refreshDesign();
+  } catch (e) {
+    showToast("error", `捨てられませんでした: ${e}`);
+  }
 }

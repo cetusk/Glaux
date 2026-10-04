@@ -44,14 +44,18 @@ pub struct Plan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_from: Option<PlanRef>,
     /// 状態。省略 = 採用した今の計画。"estimated" = 今の音から推定して、まだ人が確かめていない計画
-    /// (AI は参考としてだけ使い、作り直し・点検の基準にはしない)
+    /// (AI は参考としてだけ使い、作り直し・点検の基準にはしない)。"proposal" = AI の案(枝。derived_from が元の計画。
+    /// 人が聴き比べて採用するまで、今の計画にも曲にも効かない)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     pub body: Value,
+    /// 案の音: 今の曲に当てると案の音になる編集の列(案だけが持つ。採用すると曲にも当てる)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patch: Vec<crate::command::Command>,
 }
 
 /// 計画の状態(省略 = 採用済み)
-pub const PLAN_STATES: &[&str] = &["estimated"];
+pub const PLAN_STATES: &[&str] = &["estimated", "proposal"];
 /// 計画の種類
 pub const PLAN_KINDS: &[&str] = &["song", "part", "melody"];
 
@@ -87,6 +91,11 @@ impl Plan {
         if !self.body.is_object() {
             return Err(CoreError::InvalidPlan(
                 "body は JSON のオブジェクト".to_owned(),
+            ));
+        }
+        if !self.patch.is_empty() && self.state.as_deref() != Some("proposal") {
+            return Err(CoreError::InvalidPlan(
+                "patch(案の音)は案(state: proposal)だけが持てる".to_owned(),
             ));
         }
         if let Some(s) = &self.state {
@@ -1004,6 +1013,7 @@ mod tests {
 
     fn plan(id: &PlanId) -> Plan {
         Plan {
+            patch: vec![],
             state: None,
             id: id.clone(),
             name: "ドロップ 1 のリード".into(),

@@ -10,8 +10,15 @@
     ARCS,
     FUNCTIONS,
     PRESENCE,
+    abProposal,
     addMemo,
+    adoptProposal,
     askChat,
+    discardProposal,
+    endProposalAb,
+    proposalAb,
+    proposals,
+    setProposalSide,
     designSel,
     designStore,
     designTargetLabel,
@@ -30,6 +37,8 @@
     type DesignSel,
   } from "./design.svelte";
   import { saveSettings, settings } from "./settings.svelte";
+  import { selectionStore } from "./selection.svelte";
+  import { transportStore } from "./transport.svelte";
   import { showToast } from "./toast.svelte";
 
   let { project }: { project: Project } = $props();
@@ -717,6 +726,28 @@
     if (settings.autoAdoptEstimated && estimated) settleEstimated(true);
   });
 
+  // ---- 案(枝)----
+  const propList = $derived(proposals(d));
+  const planName = (id: string | undefined) => d?.plans.find((p) => p.plan_id === id)?.name;
+  const proposalWhy = (id: string) => d?.history.find((h) => h.plan_id === id && h.op === "create")?.why;
+  /** 聴き比べる範囲: 選んでいる区間 → 選んだ小節 → 再生位置から 8 小節 */
+  function abRange(): { start: number; end: number } {
+    const secs = [...(project.sections ?? [])].sort((a, b) => a.tick - b.tick);
+    const i = sel.kind === "section" || sel.kind === "cell" ? sel.i : -1;
+    if (i >= 0 && secs[i]) {
+      const end = secs[i + 1]?.tick ?? secs[i].tick + 3840 * (d?.sections[i]?.bars ?? 8);
+      return { start: secs[i].tick, end };
+    }
+    const r = selectionStore.range;
+    if (r && r.endTick > r.startTick) return { start: r.startTick, end: r.endTick };
+    const start = Math.max(0, transportStore.state.tick ?? 0);
+    return { start, end: start + 3840 * 8 };
+  }
+  // 案が無くなったら(採用・捨てる・AI が消した)聴き比べも終える
+  $effect(() => {
+    if (proposalAb.planId && !propList.some((p) => p.plan_id === proposalAb.planId)) endProposalAb();
+  });
+
   let lanesEl = $state<HTMLDivElement>();
   // 見える幅(曲全体が見える縮尺の計算に使う)。中身を読み込んでから段ができるので、段ができたら測る
   $effect(() => {
@@ -764,6 +795,54 @@
             }}
           /> 次から確認せずに採用する</label
         >
+      </div>
+    {/if}
+    {#if propList.length}
+      <div class="proposals" role="region" aria-label="AI の案">
+        <div class="phead">
+          <b>AI の案({propList.length})</b>
+          <span class="hint"
+            >今の曲と計画は変わっていません。聴き比べて、よければ採用してください。聴く範囲: 選んでいる区間(無ければ選んだ小節・再生位置から 8 小節)</span
+          >
+        </div>
+        {#each propList as pr (pr.plan_id)}
+          {@const on = proposalAb.planId === pr.plan_id}
+          <div class="prop" class:on title={proposalWhy(pr.plan_id) ?? ""}>
+            <span class="pname">{pr.name}</span>
+            <span class="pbase"
+              >{pr.derived_from ? `「${planName(pr.derived_from.id) ?? "元の計画"}」の案` : "新しい計画の案"}{pr.edits
+                ? ` · 音の編集 ${pr.edits}`
+                : " · 計画だけ"}</span
+            >
+            {#if proposalWhy(pr.plan_id)}<span class="pwhy">{proposalWhy(pr.plan_id)}</span>{/if}
+            <span class="spacer"></span>
+            {#if on}
+              <span class="abswitch" role="group" aria-label="今と案を切り替える">
+                <button class="btn sm" class:on={proposalAb.side === "a"} type="button" onclick={() => setProposalSide("a")}>A 今</button>
+                <button class="btn sm" class:on={proposalAb.side === "b"} type="button" onclick={() => setProposalSide("b")}>B 案</button>
+              </span>
+              {#if proposalAb.info}
+                <span class="abnote" title="音量をそろえて比べています"
+                  >今 {proposalAb.info.lufs_a?.toFixed(1) ?? "—"} / 案 {proposalAb.info.lufs_b?.toFixed(1) ?? "—"} LUFS</span
+                >
+              {/if}
+              <button class="btn sm" type="button" onclick={endProposalAb}>聴き比べを終える</button>
+            {:else}
+              <button
+                class="btn sm"
+                type="button"
+                disabled={proposalAb.busy != null || !pr.edits}
+                title={pr.edits ? "今と案を、音量をそろえて切り替えて聴く" : "音の変わらない案です(計画だけ)"}
+                onclick={() => {
+                  const r = abRange();
+                  abProposal(pr.plan_id, r.start, r.end);
+                }}>{proposalAb.busy === pr.plan_id ? "用意しています…" : "聴き比べる"}</button
+              >
+            {/if}
+            <button class="btn sm primary" type="button" onclick={() => adoptProposal(pr.plan_id, pr.name)}>採用</button>
+            <button class="btn sm" type="button" onclick={() => discardProposal(pr.plan_id, pr.name)}>捨てる</button>
+          </div>
+        {/each}
       </div>
     {/if}
     <div class="main">
@@ -2357,6 +2436,65 @@
     display: flex;
     gap: 6px;
   }
+  /* ---- 案(段階 3) ---- */
+  .proposals {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--r-md);
+    padding: 6px 10px;
+    background: var(--bg-panel);
+    font-size: var(--fs-sm);
+    max-height: 30vh;
+    overflow-y: auto;
+  }
+  .phead {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .prop {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 4px 6px;
+    border-radius: var(--r-sm);
+    border: 1px dashed var(--border-strong);
+  }
+  .prop.on {
+    border-style: solid;
+    border-color: var(--accent);
+  }
+  .pname {
+    font-weight: 600;
+  }
+  .pbase,
+  .abnote {
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+  }
+  .pwhy {
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 40ch;
+  }
+  .abswitch {
+    display: inline-flex;
+    gap: 2px;
+  }
+  .abswitch .btn.on {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+
   /* ---- 直す(段階 2) ---- */
   .spacer {
     flex: 1;

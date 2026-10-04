@@ -226,6 +226,10 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
     let mut song_estimated = false;
     let mut part_plans: Vec<(&PlanId, PartPlan, bool)> = Vec::new();
     for (id, p) in &plans.plans {
+        // 案(枝)は今の計画ではないので並べない(案は計画の一覧から聴き比べて採用する)
+        if p.state.as_deref() == Some("proposal") {
+            continue;
+        }
         let estimated = p.state.as_deref() == Some("estimated");
         match p.kind.as_str() {
             "song" if song.is_none() || (song_estimated && !estimated) => {
@@ -575,6 +579,7 @@ mod tests {
         plans
             .apply_command(&PlanCommand::Create {
                 plan: Plan {
+                    patch: vec![],
                     id: PlanId::new(),
                     name: "Lead".into(),
                     kind: "part".into(),

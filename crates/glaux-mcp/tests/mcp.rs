@@ -7301,3 +7301,108 @@ async fn design_screen_plan_operations() {
     .await
     .is_err());
 }
+
+/// 段階 3: AI の案(枝)。今の曲と計画は変えず、案の音(編集の列)を持つ。採用で曲と計画に当たる。古くなった案は当てられない
+#[tokio::test]
+async fn proposals_branch_and_adopt() {
+    use glaux_mcp::plan_view;
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_prp001", "Bass")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "ベース", "commands": [
+                { "op": "add_clip", "track": "trk_prp001", "clip": { "id": "clp_prp001", "name": "b", "start": 0, "length": 7680, "kind": "midi",
+                  "notes": [ { "id": "nt_prp001", "pos": 0, "dur": 960, "pitch": 36, "vel": 100 },
+                             { "id": "nt_prp002", "pos": 3840, "dur": 960, "pitch": 38, "vel": 100 } ] } } ] }),
+        )
+        .await,
+    );
+    let base = ok_json(
+        &call(
+            &fx,
+            "save_plan",
+            json!({ "name": "Bass", "kind": "part", "why": "元", "body": { "track": "trk_prp001", "function": "bass" } }),
+        )
+        .await,
+    );
+    let base_id = base["plan"]["plan_id"].as_str().unwrap().to_owned();
+    let (before, _) = fx.handle.get_project().await.unwrap();
+    // 案: 働きを sub に、1 音目を 1 オクターブ下に
+    let pr = ok_json(
+        &call(
+            &fx,
+            "propose_design",
+            json!({ "name": "サブベースに", "why": "低く重く", "base_plan_id": base_id,
+                    "body": { "track": "trk_prp001", "function": "sub" },
+                    "commands": [{ "op": "update_notes", "clip": "clp_prp001", "changes": [{ "id": "nt_prp001", "pitch": 24 }] }] }),
+        )
+        .await,
+    );
+    let pid = pr["plan_id"].as_str().unwrap().to_owned();
+    assert_eq!(pr["edits"], 1);
+    // 今の曲と計画は変わらない(設計の比べにも案は出ない)
+    let (now, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(now.tracks, before.tracks);
+    let d = ok_json(&call(&fx, "get_design", json!({ "vocab": false })).await);
+    assert_eq!(d["parts"][0]["function"], "bass");
+    // 聴き比べ用: 案を当てた曲だけ 1 音目が低い
+    let (a, b) = plan_view::proposal_projects(&fx.handle, &pid)
+        .await
+        .unwrap();
+    let pitch = |p: &glaux_core::Project| p.tracks[0].clips[0].notes().unwrap()[0].pitch;
+    assert_eq!((pitch(&a), pitch(&b)), (36, 24));
+    // 採用: 曲と元の計画に当たり、案は消える。AI の音として指紋も残る
+    plan_view::adopt_proposal(&fx.handle, &pid).await.unwrap();
+    let (now, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(pitch(&now), 24);
+    assert!(now.made.contains_key(&"clp_prp001".parse().unwrap()));
+    let plans = fx.handle.get_plans().await.unwrap();
+    assert_eq!(plans.doc().plans.len(), 1);
+    let bp = plans.doc().plans.values().next().unwrap();
+    assert_eq!(bp.body["function"], "sub");
+    assert!(bp.state.is_none() && bp.patch.is_empty());
+    // 古くなった案(案の後で音を消した)は当てられない
+    let pr2 = ok_json(
+        &call(
+            &fx,
+            "propose_design",
+            json!({ "name": "2 音目を上へ", "why": "試し", "base_plan_id": base_id,
+                    "commands": [{ "op": "update_notes", "clip": "clp_prp001", "changes": [{ "id": "nt_prp002", "pitch": 50 }] }] }),
+        )
+        .await,
+    );
+    fx.handle
+        .apply(
+            glaux_core::Command::RemoveNotes {
+                clip: "clp_prp001".parse().unwrap(),
+                ids: vec!["nt_prp002".parse().unwrap()],
+            },
+            glaux_core::Author::Human,
+            "消す".into(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let e = plan_view::adopt_proposal(&fx.handle, pr2["plan_id"].as_str().unwrap())
+        .await
+        .unwrap_err();
+    assert!(e.contains("曲が変わった"), "{e}");
+    // 案の上に案は作れない・今の曲に当てられない案は出せない
+    let e = call(
+        &fx,
+        "propose_design",
+        json!({ "name": "x", "why": "x", "base_plan_id": pr2["plan_id"] }),
+    )
+    .await;
+    assert_eq!(e.is_error, Some(true));
+    let e = call(
+        &fx,
+        "propose_design",
+        json!({ "name": "x", "why": "x", "kind": "song",
+                "commands": [{ "op": "remove_clip", "id": "clp_nothere" }] }),
+    )
+    .await;
+    assert_eq!(e.is_error, Some(true));
+}
