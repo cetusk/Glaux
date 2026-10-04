@@ -270,7 +270,7 @@
 <svelte:window onkeydown={(e) => e.key === "Escape" && openMenu && (openMenu = false)} />
 
 <div class="menu-root">
-  <button class="title-btn" bind:this={titleBtn} onclick={toggle} title="プロジェクトを切り替える">
+  <button class="title-btn" bind:this={titleBtn} onclick={toggle} title={`${title} — プロジェクトを切り替える`}>
     <span class="title-text">{title}</span>
     <span class="chev"><Icon name="chevron-down" size={14} /></span>
   </button>
@@ -400,11 +400,16 @@
 </div>
 
 <style>
+  /* ヘッダーの左が狭いときは、画面の切り替えより先に曲名を「…」で縮める */
   .menu-root {
     position: relative;
+    min-width: 64px;
+    flex: 0 1 auto;
   }
 
   .title-btn {
+    max-width: 100%;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -419,7 +424,15 @@
     color: var(--accent);
   }
 
+  .title-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .chev {
+    flex: none;
     font-size: 10px;
     color: var(--text-dim);
   }

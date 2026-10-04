@@ -761,6 +761,7 @@
           aria-selected={viewStore.main === "timeline"}
           class:on={viewStore.main === "timeline"}
           onclick={() => (viewStore.main = "timeline")}
+          aria-label="タイムライン"
           title="タイムライン(曲の流れ・クリップ・ピアノロール)"><Icon name="rows-2" /><span class="lbl">タイムライン</span></button
         >
         <button
@@ -768,6 +769,7 @@
           aria-selected={viewStore.main === "mixer"}
           class:on={viewStore.main === "mixer"}
           onclick={() => (viewStore.main = "mixer")}
+          aria-label="ミキサー"
           title="ミキサー(音量・パン・送り・エフェクトのつなぎ方)"><Icon name="sliders-horizontal" /><span class="lbl">ミキサー</span></button
         >
         <button
@@ -775,6 +777,7 @@
           aria-selected={viewStore.main === "design"}
           class:on={viewStore.main === "design"}
           onclick={() => (viewStore.main = "design")}
+          aria-label="設計"
           title="設計(曲の計画と実際: 盛り上がり・パートごとの音域・パートの役割)"><Icon name="spline" /><span class="lbl">設計</span></button
         >
       </div>
@@ -1064,12 +1067,32 @@
     min-width: 0;
   }
 
-  /* 左の欄が狭いときは、切り替えの名前を選んでいる画面だけにする(ほかはアイコンと説明の吹き出し) */
+  /* 左の欄が狭いときは、切り替えの名前を段階的にしまう(選んでいる画面は色で分かり、名前は説明の吹き出し)。
+     切り替えは縮めず、足りなければ曲名を「…」で縮める */
   .h-left {
     container-type: inline-size;
   }
-  @container (max-width: 440px) {
+  /* 少し狭い: 選んでいる画面だけ名前を出す */
+  @container (max-width: 470px) {
     .view-switch button:not(.on) .lbl {
+      display: none;
+    }
+    .view-switch button:not(.on) {
+      padding: 0 9px;
+    }
+  }
+  /* かなり狭い: 3 つともアイコンだけ */
+  @container (max-width: 290px) {
+    .view-switch button .lbl {
+      display: none;
+    }
+    .view-switch button {
+      padding: 0 9px;
+    }
+  }
+  /* さらに狭い: ロゴもしまう(切り替えと曲名のメニューを残す) */
+  @container (max-width: 240px) {
+    .h-left .owl {
       display: none;
     }
   }
@@ -1086,6 +1109,7 @@
 
   /* タイムライン / ミキサーの切り替え(2 つだけの切り替えなので、つながったボタン) */
   .view-switch {
+    flex-shrink: 0;
     display: flex;
     margin-left: var(--sp-2);
     border: 1px solid var(--border);
