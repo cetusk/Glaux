@@ -26,6 +26,12 @@ export async function ensureAbPlaying(start: number, end: number): Promise<void>
   if (!transportStore.state.playing) await transportPlay();
 }
 
+/** 範囲の頭から聴き直す */
+export async function restartAb(start: number): Promise<void> {
+  await transportSeek(start);
+  if (!transportStore.state.playing) await transportPlay();
+}
+
 /** 聴き比べを終えたら、ループを元の設定に戻す */
 export async function endAbLoop(): Promise<void> {
   if (saved === null) return;

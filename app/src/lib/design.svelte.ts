@@ -3,7 +3,7 @@
 // 画面で直す操作(計画の保存・区間・メモ・取り消し)もここ。人の操作として履歴に残る。
 import { invoke } from "@tauri-apps/api/core";
 import { abClear, abSetSide, applyEdit, redo as songRedo, undo as songUndo, type AbInfo } from "./api";
-import { endAbLoop, ensureAbPlaying, startAbLoop } from "./abLoop";
+import { endAbLoop, ensureAbPlaying, restartAb, startAbLoop } from "./abLoop";
 import { showToast } from "./toast.svelte";
 import type { Project } from "./types";
 
@@ -535,6 +535,11 @@ export async function setProposalSide(side: "a" | "b"): Promise<void> {
   abSetSide(side).catch(() => {});
   // 止まっている・範囲の外にいるなら、範囲の頭から鳴らす(押せば聞こえるように)
   if (proposalAb.planId) await ensureAbPlaying(proposalAb.start, proposalAb.end).catch(() => {});
+}
+
+/** 聴いている範囲の頭から聴き直す */
+export async function restartProposalAb(): Promise<void> {
+  if (proposalAb.planId) await restartAb(proposalAb.start).catch(() => {});
 }
 
 export async function endProposalAb(): Promise<void> {

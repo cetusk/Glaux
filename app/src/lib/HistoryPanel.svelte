@@ -3,7 +3,7 @@
   import * as api from "./api";
   import { selectionStore } from "./selection.svelte";
   import { transportStore } from "./transport.svelte";
-  import { endAbLoop, ensureAbPlaying, startAbLoop } from "./abLoop";
+  import { endAbLoop, ensureAbPlaying, restartAb, startAbLoop } from "./abLoop";
   import type { Author, EntrySummary } from "./types";
 
   let {
@@ -154,7 +154,9 @@
         <button class="btn sm" class:on={ab.side === "b"} onclick={() => setAbSide("b")} title={`今(${fmtLufs(ab.info.lufs_b)})`}
           >B 今</button
         >
+        <button class="btn sm" onclick={() => ab && restartAb(ab.start).catch(() => {})} title="聴いている範囲の頭から聴き直す">⏮ 頭から</button>
       </div>
+      <div class="ab-note">A / B を切り替えても、同じ位置から続けて鳴ります(頭から聴くなら「頭から」)</div>
       <div class="ab-note">{matchText(ab.info)}(前 {fmtLufs(ab.info.lufs_a)} / 今 {fmtLufs(ab.info.lufs_b)})</div>
     </div>
   {/if}

@@ -18,6 +18,7 @@
     endProposalAb,
     proposalAb,
     proposals,
+    restartProposalAb,
     setProposalSide,
     designSel,
     designStore,
@@ -867,6 +868,8 @@
                   <button class="btn sm" class:on={proposalAb.side === "a"} type="button" onclick={() => setProposalSide("a")}>A 今</button>
                   <button class="btn sm" class:on={proposalAb.side === "b"} type="button" onclick={() => setProposalSide("b")}>B 案</button>
                 </span>
+                <button class="btn sm" type="button" title="聴いている範囲の頭から聴き直す" onclick={restartProposalAb}>⏮ 頭から</button>
+                <span class="pnote">A / B を切り替えても、同じ位置から続けて鳴ります(頭から聴くなら「頭から」)</span>
                 <span class="abnote"
                   >{proposalAb.section != null ? `「${d.sections[proposalAb.section]?.name}」を聴いています` : "選んだ範囲を聴いています"}{#if proposalAb.info}{" "}· 今 {proposalAb.info.lufs_a?.toFixed(1) ?? "—"} / 案 {proposalAb.info.lufs_b?.toFixed(1) ?? "—"} LUFS(音量はそろえてあります){/if}</span
                 >
