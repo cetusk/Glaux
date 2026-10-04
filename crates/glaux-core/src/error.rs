@@ -44,6 +44,11 @@ pub enum CoreError {
     ClipKindMismatch,
     #[error("value out of range: {0}")]
     OutOfRange(String),
+    /// AI の編集が固定の音にだけ当たって、何も変えなかった
+    #[error(
+        "固定の音への変更だけだったので、何も変えていません(固定は人が外すまで AI は変えない): {0}"
+    )]
+    Locked(String),
     #[error("invalid effect links: {0}")]
     InvalidLinks(String),
     #[error(transparent)]

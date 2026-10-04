@@ -266,6 +266,7 @@ mod tests {
         .unwrap();
         let since = s.history().applied().last().unwrap().id.clone();
         let n = Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(0),
             dur: Tick(480),

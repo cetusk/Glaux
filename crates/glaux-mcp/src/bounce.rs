@@ -334,6 +334,7 @@ mod tests {
         let mut c = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840));
         if let ClipContent::Midi { notes, .. } = &mut c.content {
             notes.push(Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(0),
                 dur: Tick(1920),
@@ -400,6 +401,7 @@ mod tests {
 
     fn note_at(pos: u64, pitch: u8) -> Note {
         Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(960),

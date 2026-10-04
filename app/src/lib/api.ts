@@ -54,6 +54,8 @@ export interface ProjectChangedEvent {
   save_error?: string;
   /** 曲の中身は変わらず履歴だけが変わった(チェックポイント) */
   history_only?: boolean;
+  /** 計画(plans.json)が変わったときの計画の版。曲の中身も版も変わらない(設計画面が読み直すのに使う) */
+  plans_version?: number;
 }
 
 /** 指定したトラックだけを取得する(見つからない ID は含まれない) */

@@ -38,6 +38,7 @@ fn phrase(device: &str) -> Track {
         };
         for (i, p) in pitches.iter().enumerate() {
             notes.push(Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(i as u64 * 480),
                 dur: Tick(420),

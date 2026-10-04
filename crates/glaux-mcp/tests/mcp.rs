@@ -3346,6 +3346,7 @@ async fn midi_file_round_trips_through_the_tools() {
             glaux_core::Tick(3840),
         );
         c.notes_mut().unwrap().push(glaux_core::Note {
+            locked: false,
             id: glaux_core::NoteId::new(),
             pos: glaux_core::Tick(0),
             dur: glaux_core::Tick(480),
@@ -6459,6 +6460,7 @@ fn duplicate_track_remaps_effects_and_keeps_plugin_state() {
     if let Some(ns) = clip.notes_mut() {
         for p in [60u8, 64, 67] {
             ns.push(glaux_core::Note {
+                locked: false,
                 id: glaux_core::NoteId::new(),
                 pos: glaux_core::Tick(0),
                 dur: glaux_core::Tick(480),
@@ -7014,4 +7016,191 @@ async fn import_musicxml_brings_parts_dynamics_articulations_and_marks() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+}
+
+/// 曲の設計データの段階 0: AI の編集は指紋を残し、人の手直し・固定を見分けて守る。計画(曲全体・パート)と実際を get_design で並べる
+#[tokio::test]
+async fn design_keeps_hand_edits_and_locks_and_compares_plans() {
+    use glaux_core::{Author, Command, NoteChange};
+    let fx = setup().await;
+    let mut changes = fx.handle.subscribe();
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_dsg001", "Lead")).await);
+    // 区間(ID が付く)
+    let sp = ok_json(
+        &call(
+            &fx,
+            "set_song_plan",
+            json!({ "sections": [
+                { "name": "Break", "bars": 8, "energy": 3 },
+                { "name": "Drop", "bars": 16, "energy": 9, "curve": [[0, 8], [1, 10]], "join": "step" }
+            ] }),
+        )
+        .await,
+    );
+    let sec: Vec<String> = sp["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(sec.iter().all(|s| s.starts_with("sec_")));
+    // 旋律を計画から作る(AI の編集 → 指紋が残る)
+    let pl = ok_json(
+        &call(
+            &fx,
+            "plan_melody",
+            json!({ "track_id": "trk_dsg001", "genre": "edm", "role": "lead", "key": "A minor",
+                    "chords": "Am | F | C | G", "seed": 2, "style": "line",
+                    "sections": [{ "name": "Break", "start_bar": 1, "bars": 8, "energy": 3 },
+                                 { "name": "Drop", "start_bar": 9, "bars": 16, "energy": 9 }] }),
+        )
+        .await,
+    );
+    let pid = pl["plan"]["plan_id"].as_str().unwrap().to_owned();
+    let r = ok_json(&call(&fx, "realize_melody", json!({ "plan_id": pid })).await);
+    let clip: glaux_core::ClipId = r["clip_id"].as_str().unwrap().parse().unwrap();
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert!(p.made.contains_key(&clip), "AI が作ったクリップに指紋");
+    let (_, c) = p.clip(&clip).unwrap();
+    let start = c.start.0;
+    let notes = c.notes().unwrap().to_vec();
+    // 人が 2 小節目の 1 音を変え、ドロップの 1 音を固定する
+    let edited = notes
+        .iter()
+        .find(|n| (3840..7680).contains(&(start + n.pos.0)))
+        .unwrap()
+        .clone();
+    let locked = notes
+        .iter()
+        .find(|n| start + n.pos.0 >= 8 * 3840)
+        .unwrap()
+        .clone();
+    fx.handle
+        .apply(
+            Command::UpdateNotes {
+                clip: clip.clone(),
+                changes: vec![
+                    NoteChange::new(edited.id.clone()).pitch(edited.pitch + 1),
+                    NoteChange::new(locked.id.clone()).locked(true),
+                ],
+            },
+            Author::Human,
+            "手直しと固定".into(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let d = ok_json(&call(&fx, "get_design", json!({})).await);
+    assert_eq!(d["sections"][1]["join"], "step");
+    assert_eq!(d["sections"][1]["planned"], 9.0);
+    let cv = d["clips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["clip_id"] == clip.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(cv["plan"], "in_sync");
+    assert_eq!(cv["edited_bars"], json!([[2, 2]]), "{cv}");
+    assert_eq!(cv["locked_notes"], 1);
+    assert!(d["vocab"]["functions"].as_array().unwrap().len() >= 11);
+    // 作り直しは手で直した小節を残す(固定の音も残る)
+    let r = ok_json(
+        &call(
+            &fx,
+            "realize_melody",
+            json!({ "plan_id": pid, "seed": 9, "regenerate_skeleton": true }),
+        )
+        .await,
+    );
+    assert_eq!(r["protected"][0]["bars"], json!([[2, 2]]), "{r}");
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    let (_, c) = p.clip(&clip).unwrap();
+    let now: Vec<_> = c.notes().unwrap().to_vec();
+    assert!(now
+        .iter()
+        .any(|n| n.id == edited.id && n.pitch == edited.pitch + 1));
+    assert!(now.iter().any(|n| n.id == locked.id && n.locked));
+    // AI は固定の音を消せない: 固定の音だけならエラー、ほかの音と一緒なら固定の音を外して消す(外した編集は kept_locked)
+    let e = call(
+        &fx,
+        "apply_commands",
+        json!({ "commands": [{ "op": "remove_notes", "clip": clip, "ids": [locked.id] }], "label": "固定の音を消してみる" }),
+    )
+    .await;
+    assert_eq!(e.is_error, Some(true));
+    let other = now
+        .iter()
+        .find(|n| n.id != locked.id && n.id != edited.id)
+        .unwrap();
+    let r = ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "commands": [{ "op": "remove_notes", "clip": clip, "ids": [locked.id, other.id] }], "label": "2 音を消す" }),
+        )
+        .await,
+    );
+    assert_eq!(r["kept_locked"][0]["op"], "remove_notes", "{r}");
+    // パートの計画: ブレイクでは鳴らさない計画 → 実際は鳴っているのでずれ
+    let part = ok_json(
+        &call(
+            &fx,
+            "save_plan",
+            json!({ "name": "Lead", "kind": "part", "why": "設計の試し",
+                    "body": { "track": "trk_dsg001", "function": "lead",
+                              "sections": [{ "section": sec[0], "presence": 0 },
+                                           { "section": sec[1], "presence": 5, "register": [57, 84] }] } }),
+        )
+        .await,
+    );
+    assert_eq!(part["plan"]["kind"], "part");
+    // 計画の変更は通知に計画の版が載る
+    let mut got = None;
+    while let Ok(ev) = changes.try_recv() {
+        if ev.plans_version.is_some() {
+            got = ev.plans_version;
+        }
+    }
+    assert!(got.is_some());
+    let d = ok_json(&call(&fx, "get_design", json!({ "vocab": false })).await);
+    assert!(d.get("vocab").is_none());
+    let lead = &d["parts"][0];
+    assert_eq!(lead["function"], "lead");
+    assert_eq!(lead["cells"][0]["planned"], 0);
+    assert!(d["deviations"].as_array().unwrap().iter().any(|x| x["what"]
+        .as_str()
+        .unwrap()
+        .contains("鳴らさない計画なのに鳴っている")));
+    // 推定の計画として保存し直すと、ずれの基準にしない
+    let id = part["plan"]["plan_id"].as_str().unwrap();
+    ok_json(
+        &call(
+            &fx,
+            "save_plan",
+            json!({ "plan_id": id, "kind": "part", "state": "estimated", "why": "推定に戻す",
+                    "body": { "track": "trk_dsg001", "sections": [{ "section": sec[0], "presence": 0 }] } }),
+        )
+        .await,
+    );
+    let d = ok_json(&call(&fx, "get_design", json!({ "vocab": false })).await);
+    assert_eq!(d["parts"][0]["estimated"], true);
+    assert!(d["deviations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|x| x.get("track").is_none()));
+    // 区間の名前を変えても ID は位置で引き継ぐ(パートの計画が切れない)
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "commands": [{ "op": "set_sections", "sections": [
+                { "tick": 0, "name": "Intro" }, { "tick": 8 * 3840, "name": "Drop" } ] }], "label": "区間の名前を変える" }),
+        )
+        .await,
+    );
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(p.sections[0].id.as_ref().unwrap().as_str(), sec[0]);
+    assert_eq!(p.sections[1].id.as_ref().unwrap().as_str(), sec[1]);
 }

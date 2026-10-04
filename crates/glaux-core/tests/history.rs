@@ -42,6 +42,7 @@ fn seed_project() -> Project {
             let notes = clip.notes_mut().unwrap();
             for n in 0..8u64 {
                 notes.push(Note {
+                    locked: false,
                     id: NoteId::new(),
                     pos: Tick(n * 480),
                     dur: Tick(480),
@@ -273,6 +274,7 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 };
                 let notes = (0..rng.gen_range(1..4))
                     .map(|_| Note {
+                        locked: false,
                         id: NoteId::new(),
                         pos: Tick(rng.gen_range(0..8) * 480),
                         dur: Tick(240),
@@ -418,6 +420,10 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                                 probability: *[1.0, 0.5, 0.25].choose(rng).unwrap(),
                                 every: rng.gen_bool(0.5).then_some([1, 2]),
                             });
+                        }
+                        if rng.gen_bool(0.2) {
+                            // 固定する・外す
+                            ch = ch.locked(rng.gen());
                         }
                         if rng.gen_bool(0.3) {
                             // 深さ 0 はビブラートの解除
@@ -598,6 +604,21 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
             18 => {
                 let sections = (0..rng.gen_range(0..4))
                     .map(|i| SectionMarker {
+                        // 区間の ID・盛り上がりの形・境目も付けたり付けなかったり(ID は並びの中で重ならないように)
+                        curve: if rng.gen_bool(0.3) {
+                            vec![
+                                [0.0, rng.gen_range(0.0..10.0)],
+                                [1.0, rng.gen_range(0.0..10.0)],
+                            ]
+                        } else {
+                            vec![]
+                        },
+                        id: rng.gen_bool(0.5).then(SectionId::new),
+                        join: rng.gen_bool(0.3).then(|| {
+                            *[SectionJoin::Smooth, SectionJoin::Step]
+                                .choose(rng)
+                                .unwrap()
+                        }),
                         tick: Tick(rng.gen_range(0..8) * 3840),
                         name: format!("sec{i}"),
                         // 計画書の項目(set_song_plan)も付けたり付けなかったり
@@ -775,6 +796,22 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                 let Some((_, c)) = all_clips.choose(rng) else {
                     continue;
                 };
+                if rng.gen_bool(0.4) {
+                    // AI が作ったときの指紋(付ける・外す)
+                    let made = rng.gen_bool(0.7).then(|| glaux_core::made::Made {
+                        spans: (0..rng.gen_range(1..4u64))
+                            .map(|i| glaux_core::made::MadeSpan {
+                                start: Tick(i * 3840),
+                                end: Tick((i + 1) * 3840),
+                                hash: format!("{:016x}", rng.gen::<u64>()),
+                            })
+                            .collect(),
+                    });
+                    return Command::SetClipMade {
+                        clip: c.id.clone(),
+                        made,
+                    };
+                }
                 let plan = rng.gen_bool(0.7).then(|| glaux_core::plan::PlanRef {
                     id: PlanId::new(),
                     rev: rng.gen_range(1..10),
@@ -946,6 +983,7 @@ fn compact_keeps_recent_entries_and_replayable_base() {
 fn loop_clip_expands_notes_for_playback() {
     let mut clip = Clip::new_midi(ClipId::new(), "drums", Tick(0), Tick(3840 * 4));
     let n = |pos: u64, dur: u64| Note {
+        locked: false,
         id: NoteId::new(),
         pos: Tick(pos),
         dur: Tick(dur),
@@ -1157,6 +1195,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
     let ids: Vec<NoteId> = (0..3).map(|_| NoteId::new()).collect();
     clip.notes_mut().unwrap().extend([
         Note {
+            locked: false,
             id: ids[0].clone(),
             pos: Tick(0),
             dur: Tick(480),
@@ -1171,6 +1210,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             condition: None,
         }, // 左に残る
         Note {
+            locked: false,
             id: ids[1].clone(),
             pos: Tick(1680),
             dur: Tick(480),
@@ -1185,6 +1225,7 @@ fn split_midi_clip_moves_and_truncates_notes() {
             condition: None,
         }, // 分割点(1920)をまたぐ → 切り詰め
         Note {
+            locked: false,
             id: ids[2].clone(),
             pos: Tick(2880),
             dur: Tick(480),

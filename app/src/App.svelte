@@ -357,6 +357,9 @@
 
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     const unlistenChanged = api.onProjectChanged((ev) => {
+      // 計画だけの変更は曲の版が進まない。曲の再取得の判断(版の連続)を乱さないよう、ここでは受け流す
+      // (計画を見せる設計画面ができたら、その読み直しに使う)
+      if (ev?.plans_version != null) return;
       // 保存の失敗は、次に保存が成功するまで出し続ける(再取得で消える error とは分ける)
       saveError = ev?.save_error ?? null;
       pendingChanges.push(ev);

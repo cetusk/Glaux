@@ -25,15 +25,16 @@ pub use track::{
 
 pub(crate) use clip::sort_notes;
 
-use crate::id::{AssetId, ClipId, FxId, TrackId};
+use crate::id::{AssetId, ClipId, FxId, SectionId, TrackId};
 use crate::time::{TempoMap, Tick, TimeSigEvent, PPQ};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const FORMAT_NAME: &str = "glaux";
-/// 形式の版。2: 拍子の拍のまとまり(`TimeSigEvent.grouping`)。1 の曲はそのまま読める
-pub const FORMAT_VERSION: u32 = 2;
+/// 形式の版。2: 拍子の拍のまとまり(`TimeSigEvent.grouping`)。3: 区間の ID・盛り上がりの形・境目、音の固定、
+/// AI が作ったときの指紋(`made`)。古い版の曲はそのまま読める
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Meta {
@@ -66,12 +67,19 @@ pub struct Project {
     /// 消したクリップの参照は残っていても無視する
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub plan_refs: BTreeMap<ClipId, crate::plan::PlanRef>,
+    /// AI が作った・直したクリップの、その時の中身の指紋(小節ごと)。今の中身と違う小節は人が手で直した所
+    /// ([`crate::made`])。消したクリップの記録は残っていても無視する
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub made: BTreeMap<ClipId, crate::made::Made>,
 }
 
 /// 曲構成のマーカー。「サビだけ盛り上げて」のような構造単位の指示に使う。
 /// 曲の計画書(MCP の set_song_plan)の中身(盛り上がり・鳴らすトラック・役割)も持つ。点検が計画と実際を比べる
 #[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SectionMarker {
+    /// 区間の ID(計画が区間を指す。古い曲には無い。set_song_plan などが付ける)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<SectionId>,
     pub tick: Tick,
     pub name: String,
     /// 計画の盛り上がり 0〜10(critique_arrangement の区間の energy と同じ目盛り)
@@ -83,6 +91,80 @@ pub struct SectionMarker {
     /// 計画の役割・意図のメモ(例「キックとベースを抜いてパッドだけ」)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// 区間の中の盛り上がりの形: [位置 0〜1, 値 0〜10] の点の列(位置の昇順)。空なら `energy` の平ら
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve: Vec<[f32; 2]>,
+    /// 次の区間との境目(省略でつなぐ)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<SectionJoin>,
+}
+
+/// 区間の境目
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SectionJoin {
+    /// つなぐ(この区間の終わりと次の頭を同じ値にそろえる)
+    Smooth,
+    /// 段差(急に変わる。ビルド → ドロップの落差など)
+    Step,
+}
+
+/// 区間の盛り上がりの形の点の上限
+pub const MAX_SECTION_CURVE_POINTS: usize = 32;
+
+impl SectionMarker {
+    /// 区間の中の位置 `t`(0〜1)の盛り上がり。形が無ければ `energy`
+    pub fn energy_at(&self, t: f32) -> Option<f32> {
+        let c = &self.curve;
+        if c.is_empty() {
+            return self.energy;
+        }
+        let t = t.clamp(0.0, 1.0);
+        if t <= c[0][0] {
+            return Some(c[0][1]);
+        }
+        for w in c.windows(2) {
+            let ([a, va], [b, vb]) = (w[0], w[1]);
+            if t <= b {
+                let k = if b > a { (t - a) / (b - a) } else { 1.0 };
+                return Some(va + (vb - va) * k);
+            }
+        }
+        c.last().map(|p| p[1])
+    }
+
+    /// 区間の盛り上がりの平均(形があれば形の平均、無ければ `energy`)
+    pub fn energy_mean(&self) -> Option<f32> {
+        if self.curve.is_empty() {
+            return self.energy;
+        }
+        const N: usize = 32;
+        Some(
+            (0..=N)
+                .filter_map(|i| self.energy_at(i as f32 / N as f32))
+                .sum::<f32>()
+                / (N + 1) as f32,
+        )
+    }
+}
+
+/// 盛り上がりの形の検証(点の数・位置 0〜1 の昇順・値 0〜10)
+pub fn check_section_curve(curve: &[[f32; 2]]) -> Result<(), String> {
+    if curve.len() > MAX_SECTION_CURVE_POINTS {
+        return Err(format!("curve の点は {MAX_SECTION_CURVE_POINTS} 個まで"));
+    }
+    for (i, [t, v]) in curve.iter().enumerate() {
+        if !(0.0..=1.0).contains(t) || !t.is_finite() {
+            return Err(format!("curve/{i}: 位置は 0〜1"));
+        }
+        if !(0.0..=10.0).contains(v) || !v.is_finite() {
+            return Err(format!("curve/{i}: 値は 0〜10"));
+        }
+        if i > 0 && curve[i - 1][0] > *t {
+            return Err(format!("curve/{i}: 位置は昇順に"));
+        }
+    }
+    Ok(())
 }
 
 fn default_time_sig() -> Vec<TimeSigEvent> {
@@ -117,6 +199,7 @@ impl Project {
             assets: BTreeMap::new(),
             sections: vec![],
             plan_refs: BTreeMap::new(),
+            made: BTreeMap::new(),
         }
     }
 

@@ -228,6 +228,7 @@ pub fn render_track_note(
     let mut clip = Clip::new_midi(ClipId::new(), "test", Tick::ZERO, Tick(dur + 1920));
     if let ClipContent::Midi { notes, .. } = &mut clip.content {
         notes.push(Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick::ZERO,
             dur: Tick(dur),
@@ -975,6 +976,7 @@ mod tests {
         let mut clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(1920));
         if let ClipContent::Midi { notes, .. } = &mut clip.content {
             notes.push(Note {
+                locked: false,
                 articulation: Default::default(),
                 pitch_curve: vec![],
                 id: NoteId::new(),

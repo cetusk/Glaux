@@ -723,6 +723,7 @@ pub fn to_clip_notes(
             }
         }
         out.push(Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(end - pos),
@@ -769,6 +770,7 @@ pub fn to_clip_notes_poly(
             continue;
         }
         out.push(Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(end - pos),

@@ -17,6 +17,7 @@ fn project_with_track() -> (Project, TrackId) {
 
 fn note(pos: u64, dur: u64) -> Note {
     Note {
+        locked: false,
         id: NoteId::new(),
         pos: Tick(pos),
         dur: Tick(dur),

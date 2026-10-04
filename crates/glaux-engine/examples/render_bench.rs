@@ -20,6 +20,7 @@ const SR: f64 = 48_000.0;
 
 fn note(pos: u64, dur: u64, pitch: u8, vel: u8) -> Note {
     Note {
+        locked: false,
         id: NoteId::new(),
         pos: Tick(pos),
         dur: Tick(dur),

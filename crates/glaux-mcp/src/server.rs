@@ -1101,11 +1101,16 @@ pub struct SavePlanParams {
     /// 計画の名前(新しく作るときは必須。例 "Drop 1 のリード")。
     #[serde(default)]
     pub name: Option<String>,
-    /// 計画の種類(既定 melody)。
+    /// 計画の種類: melody(既定)/ song(曲全体。1 曲に 1 つ)/ part(パート。トラック 1 本に 1 つ)。
     #[serde(default)]
     pub kind: Option<String>,
-    /// 計画の中身(melody の形。analyze_melody の plan をそのまま渡せる)。
+    /// 計画の中身(種類の形。melody は analyze_melody の plan をそのまま渡せる。song・part の形は get_design の vocab)。
     pub body: Value,
+    /// estimated(今の音から推定した、まだ人が確かめていない計画)/ adopted(採用済み)。省略で、新しい計画は
+    /// adopted、置き換えは今の状態のまま。推定した計画を adopted にするのは人(画面の「採用」)か、人に
+    /// 「推定して採用まで」と頼まれたときだけ。
+    #[serde(default)]
+    pub state: Option<String>,
     /// 別案として派生する元の計画の ID(その計画の今の版を派生元として記録する)。
     #[serde(default)]
     pub derived_from: Option<String>,
@@ -1260,6 +1265,10 @@ pub struct RealizeMelodyParams {
     /// リズムと表面の選び方(省略で計画の seed か 1)。骨格が計画にあれば骨格は変わらない。
     #[serde(default)]
     pub seed: Option<u64>,
+    /// 手直しも含めて上書きする(既定 false: 人が手で直した小節は残し、応答の protected に小節を書く)。
+    /// 人が「手直しも含めて作り直して」と言ったときだけ true。固定の音はどちらでも残る。
+    #[serde(default)]
+    pub overwrite_edits: Option<bool>,
     /// 計画に骨格があっても作り直す(既定 false)。
     #[serde(default)]
     pub regenerate_skeleton: Option<bool>,
@@ -1294,6 +1303,10 @@ pub struct ReviseMelodyParams {
     /// improve(既定。良くなった・悪くならなかったときだけ採用)/ always。
     #[serde(default)]
     pub accept: Option<String>,
+    /// 手直しも含めて上書きする(既定 false: 人が手で直した小節は残し、応答の protected に小節を書く)。
+    /// 人が「手直しも含めて作り直して」と言ったときだけ true。固定の音はどちらでも残る。
+    #[serde(default)]
+    pub overwrite_edits: Option<bool>,
     /// auto の最大の手数(既定 3、最大 8)。
     #[serde(default)]
     pub steps: Option<u32>,
@@ -3067,6 +3080,7 @@ fn pick_revision(
 /// 表情を付けた音をクリップのノートにする(`start` はクリップの頭、`end` はクリップの終わり)
 fn expr_note_of(e: &glaux_core::melexpr::ExprNote, start: u64, end: u64) -> glaux_core::Note {
     glaux_core::Note {
+        locked: false,
         id: glaux_core::NoteId::new(),
         pos: glaux_core::Tick(e.pos - start),
         dur: glaux_core::Tick(e.dur.min(end.saturating_sub(e.pos)).max(1)),
@@ -3317,6 +3331,26 @@ fn plan_summary(plan: &glaux_core::plan::Plan, project: &glaux_core::Project) ->
     });
     if let Some(d) = &plan.derived_from {
         v["derived_from"] = json!(d);
+    }
+    if let Some(s) = &plan.state {
+        v["state"] = json!(s);
+    }
+    if plan.kind == "part" {
+        if let Some(t) = plan.body.get("track").and_then(|t| t.as_str()) {
+            let name = glaux_core::TrackId::parse(t)
+                .ok()
+                .and_then(|id| project.track(&id).map(|t| t.name.clone()));
+            v["track"] = json!(name.unwrap_or_else(|| t.to_owned()));
+        }
+        v["sections"] = json!(plan
+            .body
+            .get("sections")
+            .and_then(|s| s.as_array())
+            .map_or(0, |a| a.len()));
+        return v;
+    }
+    if plan.kind != "melody" {
+        return v;
     }
     if let Some(secs) = plan.body.get("sections").and_then(|s| s.as_array()) {
         v["sections"] = json!(secs
@@ -3738,6 +3772,7 @@ fn melody_clip(
             .iter()
             .filter(|o| o.pos < clip_len)
             .map(|o| glaux_core::Note {
+                locked: false,
                 id: glaux_core::NoteId::new(),
                 pos: glaux_core::Tick(o.pos),
                 dur: glaux_core::Tick(o.dur.min(clip_len - o.pos)),
@@ -3914,6 +3949,7 @@ fn simple_clip(
         *ns = notes
             .iter()
             .map(|&(pos, dur, pitch, vel)| glaux_core::Note {
+                locked: false,
                 id: glaux_core::NoteId::new(),
                 pos: glaux_core::Tick(pos),
                 dur: glaux_core::Tick(dur.min(len - pos).max(1)),
@@ -3965,6 +4001,24 @@ pub struct SongPlanSection {
     /// 役割・意図(例「キックとベースを抜いてパッドと旋律だけ」「フィルタを開いて次のドロップを予告」)。
     #[serde(default)]
     pub note: Option<String>,
+    /// 区間の ID(`sec_xxxxxx`。get_design の sections の id)。省略すると、今の区間に同じ名前があればその ID を引き継ぎ、
+    /// 無ければ新しい ID を振る。パートの計画は区間をこの ID で指すので、名前を変える区間は ID を渡す。
+    #[serde(default)]
+    pub id: Option<String>,
+    /// 区間の中の盛り上がりの形: [位置 0〜1, 値 0〜10] の点の列(位置の昇順、32 点まで)。省略で energy の平ら。
+    /// 例: ビルドを上げて最後に落とす [[0, 6.5], [0.85, 8], [1, 2]]。
+    #[serde(default)]
+    pub curve: Option<Vec<[f32; 2]>>,
+    /// 次の区間との境目: smooth(つなぐ。既定)/ step(段差。ビルド → ドロップの落差・ブレイクの入りなど急に変わる所)。
+    #[serde(default)]
+    pub join: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct GetDesignParams {
+    /// 語彙(働き・段階・盛り上がりの型・計画の形)も返す(既定 true。2 回目からは false で短く)。
+    #[serde(default)]
+    pub vocab: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -4408,6 +4462,10 @@ fn mutated_json(m: &Mutated) -> Value {
     if let Some(a) = &m.aftercare {
         v["aftercare"] = a.clone();
     }
+    if !m.locks.is_empty() {
+        // 固定の音(人が「変えない」とした音)を守るために外した編集
+        v["kept_locked"] = json!(m.locks);
+    }
     v
 }
 
@@ -4744,6 +4802,19 @@ impl GlauxServer {
         Ok((id, m))
     }
 
+    /// 作り直し(クリップの差し替え)で、人が手で直した小節を残す(`overwrite` なら残さない)。残した所を返す
+    async fn protect_remake(
+        &self,
+        command: Command,
+        overwrite: bool,
+    ) -> Result<(Command, Vec<glaux_core::made::Protected>), String> {
+        if overwrite {
+            return Ok((command, vec![]));
+        }
+        let (project, _) = self.handle.get_project_shared().await?;
+        Ok(glaux_core::made::protect_edits(&project, command))
+    }
+
     fn author(&self, ctx: &RequestContext<RoleServer>) -> Author {
         let from_chat = ctx
             .extensions
@@ -4839,6 +4910,11 @@ impl GlauxServer {
         Ok(JsonText(v))
     }
 }
+
+/// 作り直しで手直しを残したときの説明(応答の protected_note)
+const PROTECTED_NOTE: &str =
+    "protected の小節は人が手で直した所なので、作り直さずに残した(測った値は残す前の見積もり)。\
+    人に「残した」と伝え、作り直してよいと言われたときだけ overwrite_edits: true でもう一度呼ぶ";
 
 /// get_project で CLAP プラグインの状態を省略したときの表示(apply_commands で元に戻す目印)
 const ELIDED_CLAP_STATE: &str = "(省略: CLAP プラグインの状態 ";
@@ -7989,6 +8065,7 @@ impl GlauxServer {
         let new_notes: Vec<glaux_core::Note> = pos
             .into_iter()
             .map(|(t, v)| glaux_core::Note {
+                locked: false,
                 id: glaux_core::NoteId::new(),
                 pos: glaux_core::Tick(t),
                 dur: glaux_core::Tick(120),
@@ -8231,6 +8308,7 @@ impl GlauxServer {
             *ns = rendered
                 .iter()
                 .map(|n| glaux_core::Note {
+                    locked: false,
                     id: glaux_core::NoteId::new(),
                     pos: glaux_core::Tick(n.pos),
                     dur: glaux_core::Tick(n.dur),
@@ -8422,6 +8500,7 @@ impl GlauxServer {
             *ns = rendered
                 .iter()
                 .map(|n| glaux_core::Note {
+                    locked: false,
                     id: glaux_core::NoteId::new(),
                     pos: glaux_core::Tick(n.pos),
                     dur: glaux_core::Tick(n.dur),
@@ -8583,6 +8662,7 @@ impl GlauxServer {
             *ns = notes
                 .iter()
                 .map(|n| glaux_core::Note {
+                    locked: false,
                     id: glaux_core::NoteId::new(),
                     pos: glaux_core::Tick(n.pos),
                     dur: glaux_core::Tick(n.dur),
@@ -8720,6 +8800,7 @@ impl GlauxServer {
             *ns = hits
                 .iter()
                 .map(|h| glaux_core::Note {
+                    locked: false,
                     id: glaux_core::NoteId::new(),
                     pos: glaux_core::Tick(h.pos),
                     dur: glaux_core::Tick(h.dur),
@@ -8899,6 +8980,7 @@ impl GlauxServer {
                     *ns = hits
                         .iter()
                         .map(|h| glaux_core::Note {
+                            locked: false,
                             id: glaux_core::NoteId::new(),
                             pos: glaux_core::Tick(h.pos),
                             dur: glaux_core::Tick(h.dur.max(1)),
@@ -9131,6 +9213,7 @@ impl GlauxServer {
             .unwrap_or_else(|| "区間と盛り上がりから提案".to_owned());
         let note = plan_note(&why, None, None)?;
         let plan = plan::Plan {
+            state: None,
             id: glaux_core::PlanId::new(),
             name: name.clone(),
             kind: "melody".to_owned(),
@@ -9267,9 +9350,12 @@ impl GlauxServer {
                 .reference();
         }
         let label = format!("計画から旋律を作る: {}", stored.name);
+        let (remake, protected) = self
+            .protect_remake(draft.command, p.overwrite_edits.unwrap_or(false))
+            .await?;
         let command = Command::Batch {
             commands: vec![
-                draft.command,
+                remake,
                 Command::SetClipPlan {
                     clip: draft.clip_id.clone(),
                     plan: Some(plan_ref.clone()),
@@ -9281,6 +9367,10 @@ impl GlauxServer {
             .apply_checked(command, self.author(&ctx), label)
             .await?;
         let mut v = mutated_json(&m);
+        if !protected.is_empty() {
+            v["protected"] = json!(protected);
+            v["protected_note"] = json!(PROTECTED_NOTE);
+        }
         v["entry_id"] = json!(entry_id);
         v["clip_id"] = json!(draft.clip_id);
         v["plan"] = json!(plan_ref);
@@ -9523,9 +9613,16 @@ impl GlauxServer {
                     .ok_or("計画が見つかりません")?
                     .reference();
                 let label = format!("旋律の改稿: {op}");
+                let (remake, protected) = self
+                    .protect_remake(draft.command, p.overwrite_edits.unwrap_or(false))
+                    .await?;
+                if !protected.is_empty() {
+                    entry["protected"] = json!(protected);
+                    entry["protected_note"] = json!(PROTECTED_NOTE);
+                }
                 let command = Command::Batch {
                     commands: vec![
-                        draft.command,
+                        remake,
                         Command::SetClipPlan {
                             clip: draft.clip_id.clone(),
                             plan: Some(plan_ref),
@@ -9561,7 +9658,8 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "旋律の計画を保存する(新しく作る・丸ごと置き換える)。計画は曲とは別の文書(plans.json)で、\
+        description = "計画を保存する(新しく作る・丸ごと置き換える)。種類は melody(旋律。既定)/ song(曲全体の狙い)/ \
+        part(パートの区間ごとの働き・存在の段階・音域の帯。形と語彙は get_design の vocab)。計画は曲とは別の文書(plans.json)で、\
         曲とは別の git ライクな履歴を持つ(曲の undo は計画を戻さず、計画の undo は音符を戻さない)。\
         body は melody の形: key・chords・genre・role・track・intent(作曲者の言葉)・expression(表情。amount・feel・vibrato・glide・velocity)と sections(区間ごとに name・\
         start_bar・bars・energy・register(区間の中の小節位置 at と中心の音 center・幅 span の点列)・density・\
@@ -9603,6 +9701,11 @@ impl GlauxServer {
                     format!("計画が見つかりません: {pid}(新しく作るなら plan_id を省略)")
                 })?;
                 let plan = Plan {
+                    state: match p.state.as_deref() {
+                        None => old.state.clone(),
+                        Some("adopted") => None,
+                        Some(s) => Some(s.to_owned()),
+                    },
                     id,
                     name: p.name.unwrap_or_else(|| old.name.clone()),
                     kind,
@@ -9619,6 +9722,10 @@ impl GlauxServer {
                     .filter(|n| !n.trim().is_empty())
                     .ok_or("新しい計画には name が要ります")?;
                 let plan = Plan {
+                    state: match p.state.as_deref() {
+                        None | Some("adopted") => None,
+                        Some(s) => Some(s.to_owned()),
+                    },
                     id: glaux_core::PlanId::new(),
                     name,
                     kind,
@@ -11196,6 +11303,7 @@ impl GlauxServer {
                 }
                 for (pos, dur, pitch, vel) in d.added {
                     added.push(glaux_core::Note {
+                        locked: false,
                         id: glaux_core::NoteId::new(),
                         pos: glaux_core::Tick(pos),
                         dur: glaux_core::Tick(dur.max(1)),
@@ -11583,6 +11691,7 @@ impl GlauxServer {
         let bpm = project.tempo_map.bpm_at(clip.start);
         let tick = |ms: f64| (ms * glaux_core::PPQ as f64 * bpm / 60_000.0).round() as u64;
         let new_note = |pos: u64, dur: u64, pitch: u8, vel: u8| glaux_core::Note {
+            locked: false,
             id: glaux_core::NoteId::new(),
             pos: glaux_core::Tick(pos),
             dur: glaux_core::Tick(dur.max(1)),
@@ -11966,6 +12075,7 @@ impl GlauxServer {
                 .push(glaux_core::NoteChange::new(n.id.clone()).dur(glaux_core::Tick(hits[0].1)));
             for &(off, dur, vr, up) in hits.iter().skip(1) {
                 added.push(glaux_core::Note {
+                    locked: false,
                     id: glaux_core::NoteId::new(),
                     pos: glaux_core::Tick(n.pos.0 + off),
                     dur: glaux_core::Tick(dur),
@@ -12147,6 +12257,7 @@ impl GlauxServer {
                         break;
                     }
                     added.push(glaux_core::Note {
+                        locked: false,
                         id: glaux_core::NoteId::new(),
                         pos: glaux_core::Tick(pos),
                         dur: glaux_core::Tick(step.min(n.pos.0 + n.dur.0 - pos)),
@@ -13673,14 +13784,30 @@ impl GlauxServer {
         let plan: Vec<glaux_core::arrange::PlanSection> = p
             .sections
             .into_iter()
-            .map(|s| glaux_core::arrange::PlanSection {
-                name: s.name,
-                bars: s.bars,
-                energy: s.energy,
-                tracks: s.tracks.unwrap_or_default(),
-                note: s.note,
+            .map(|s| {
+                Ok(glaux_core::arrange::PlanSection {
+                    id: s
+                        .id
+                        .as_deref()
+                        .map(glaux_core::SectionId::parse)
+                        .transpose()
+                        .map_err(|e| e.to_string())?,
+                    curve: s.curve.unwrap_or_default(),
+                    join: match s.join.as_deref() {
+                        None | Some("smooth") => None,
+                        Some("step") => Some(glaux_core::SectionJoin::Step),
+                        Some(j) => {
+                            return Err(format!("join は smooth / step(got: {j})"));
+                        }
+                    },
+                    name: s.name,
+                    bars: s.bars,
+                    energy: s.energy,
+                    tracks: s.tracks.unwrap_or_default(),
+                    note: s.note,
+                })
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         let bars_of: Vec<u32> = plan.iter().map(|s| s.bars).collect();
         let start_bar = p.start_bar.unwrap_or(1);
         let made = glaux_core::arrange::plan_markers(&project, start_bar, &plan)?;
@@ -13693,8 +13820,9 @@ impl GlauxServer {
             .iter()
             .zip(&bars_of)
             .map(|((m, bar, _), bars)| {
-                json!({ "name": m.name, "start_bar": bar, "bars": bars, "tick": m.tick,
-                    "energy": m.energy, "tracks": m.tracks, "note": m.note })
+                json!({ "id": m.id, "name": m.name, "start_bar": bar, "bars": bars, "tick": m.tick,
+                    "energy": m.energy, "tracks": m.tracks, "note": m.note,
+                    "curve": (!m.curve.is_empty()).then_some(&m.curve), "join": m.join })
             })
             .collect();
         // 今の曲の中身の終わり(計画より長い・短いを知らせる)
@@ -13718,6 +13846,41 @@ impl GlauxServer {
         v["duration"] = json!(format!("{}:{:02}", whole / 60, whole % 60));
         v["duration_sec"] = json!((seconds * 10.0).round() / 10.0);
         v["content_bars"] = json!(content_bars);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "曲の設計(計画)と実際の音を並べて見る。曲全体の計画(song)、区間ごとの盛り上がりの計画と実測\
+        (sections: id・形 curve・境目 join)、パート × 区間の計画(存在の段階 0〜5・働き・音域の帯)と実測(鳴っているか・\
+        音量から見た段階・実際の音域・密度)、計画と実際のずれ(deviations。直すのは計画か音のどちらか)、\
+        クリップの状態(計画どおり / 計画が先に進んだ、人が手で直した小節、固定の音の数)を返す。\
+        作り直す・直す前に見て、手で直した小節(edited_bars)と固定の音は残す。計画は set_song_plan(区間)と\
+        save_plan / edit_plan(kind song・part)で直す。vocab に働き・段階・盛り上がりの型の語彙。"
+    )]
+    async fn get_design(&self, params: Parameters<GetDesignParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("get_design");
+        let p = params.0;
+        let (project, version) = self.handle.get_project_shared().await?;
+        let plans = self.handle.get_plans().await?;
+        let doc = plans.doc().clone();
+        let view = tokio::task::spawn_blocking(move || {
+            glaux_core::designcheck::design_view(&project, &doc)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let mut v = json!(view);
+        v["project_version"] = json!(version);
+        if p.vocab.unwrap_or(true) {
+            use glaux_core::plan::{ARCS, FUNCTIONS, PART_RHYTHMS, PRESENCE};
+            v["vocab"] = json!({
+                "functions": FUNCTIONS.iter().map(|(k, n)| json!({ "key": k, "name": n })).collect::<Vec<_>>(),
+                "presence": PRESENCE,
+                "arcs": ARCS.iter().map(|(k, n)| json!({ "key": k, "name": n })).collect::<Vec<_>>(),
+                "part_rhythms": PART_RHYTHMS,
+                "song_body": "genre・mood(言葉の列)・key・arc・brightness / density / organic(0〜10)・loudness(LUFS)・musts(守ること)・refs・note",
+                "part_body": "track(trk_…)・function(既定の働き)・note・sections: [{section(sec_…)・presence 0〜5・function・register [下, 上](MIDI)・density 0〜1・rhythm・note・locked}]",
+            });
+        }
         Ok(JsonText(v))
     }
 

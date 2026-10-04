@@ -3778,6 +3778,7 @@ mod tests {
             let mut c = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840 * 4));
             if let ClipContent::Midi { notes, .. } = &mut c.content {
                 notes.push(Note {
+                    locked: false,
                     id: NoteId::new(),
                     pos: Tick(0),
                     dur: Tick(3840 * 4),

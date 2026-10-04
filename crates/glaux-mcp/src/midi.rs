@@ -414,6 +414,7 @@ pub fn import_commands(
                     .iter()
                     .enumerate()
                     .map(|(i, &(pos, dur, pitch, vel))| Note {
+                        locked: false,
                         id: NoteId::new(),
                         pos: Tick(pos),
                         dur: Tick(dur),
@@ -843,6 +844,7 @@ mod tests {
 
     fn note(pos: u64, dur: u64, pitch: u8) -> Note {
         Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(dur),

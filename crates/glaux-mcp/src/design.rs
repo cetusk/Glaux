@@ -1220,6 +1220,7 @@ pub fn render_patch(
     if let Some(ns) = c.notes_mut() {
         for (pos, dur, pitch, vel) in phrase(intent.role) {
             ns.push(Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(pos),
                 dur: Tick(dur),

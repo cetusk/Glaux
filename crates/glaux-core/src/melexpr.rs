@@ -490,6 +490,7 @@ mod tests {
     fn to_notes(e: &[ExprNote]) -> Vec<Note> {
         e.iter()
             .map(|x| Note {
+                locked: false,
                 id: crate::NoteId::new(),
                 pos: crate::time::Tick(x.pos),
                 dur: crate::time::Tick(x.dur),

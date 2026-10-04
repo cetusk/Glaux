@@ -1288,6 +1288,7 @@ mod tests {
         if let ClipContent::Midi { notes: n, .. } = &mut clip.content {
             for (pos, dur, pitch, vel) in notes {
                 n.push(Note {
+                    locked: false,
                     articulation: Default::default(),
                     pitch_curve: vec![],
                     id: NoteId::new(),

@@ -2841,6 +2841,7 @@ mod tests {
 
     fn note(pos: u64, dur: u64, pitch: u8, vel: u8) -> glaux_core::Note {
         glaux_core::Note {
+            locked: false,
             articulation: Default::default(),
             pitch_curve: vec![],
             id: NoteId::new(),

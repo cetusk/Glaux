@@ -100,6 +100,8 @@ define_id!(/// 履歴エントリ
     EntryId, "hst");
 define_id!(/// 旋律などの計画(設計データ)
     PlanId, "pln");
+define_id!(/// 曲の区間(構成のマーカー)。計画は区間をこの ID で指す(位置・名前が変わっても切れない)
+    SectionId, "sec");
 
 /// 音声アセット。内容ハッシュで参照する: `sha256:<hex>`。
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]

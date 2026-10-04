@@ -403,6 +403,7 @@ mod tests {
         for (i, chord) in bars.iter().enumerate() {
             for &pitch in chord.iter() {
                 notes.push(Note {
+                    locked: false,
                     id: NoteId::new(),
                     pos: Tick(i as u64 * 3840),
                     dur: Tick(3840),

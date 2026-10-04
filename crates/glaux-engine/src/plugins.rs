@@ -1241,6 +1241,7 @@ mod tests {
         if let ClipContent::Midi { notes, .. } = &mut clip.content {
             // 0.5 秒目から 0.5 秒の C4(120BPM: 960 tick = 0.5 秒)
             notes.push(Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(960),
                 dur: Tick(960),
@@ -1976,6 +1977,7 @@ mod tests {
         let mut clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840));
         if let ClipContent::Midi { notes, .. } = &mut clip.content {
             notes.push(Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(0),
                 dur: Tick(120),
@@ -2372,6 +2374,7 @@ mod tests {
             let mut clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840));
             if let ClipContent::Midi { notes, .. } = &mut clip.content {
                 notes.push(Note {
+                    locked: false,
                     id: NoteId::new(),
                     pos: Tick(960),
                     dur: Tick(480),

@@ -7,6 +7,7 @@ use std::time::Instant;
 
 fn note(i: u64) -> Note {
     Note {
+        locked: false,
         // 連番(ランダムな 6 桁だと、2 万個で約 9% の確率でどこかが重複してテストが揺れる)
         id: NoteId::parse(&format!("nt_{i:06}")).unwrap(),
         pos: Tick(i * 120),

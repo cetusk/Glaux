@@ -1,11 +1,11 @@
-//! 旋律の計画(設計データ)と、その編集コマンド。
+//! 曲の計画(設計データ)と、その編集コマンド。計画の種類は 3 つ: 曲全体(`song`)・パート(`part`)・旋律(`melody`)。
 //!
 //! 計画は曲とは別の文書([`PlanSet`])として持ち、曲と同じ git ライクな履歴([`crate::Session`])で管理する。
 //! git に例えると、`plans.json` が作業ツリー、`plans.history.jsonl` がコミットの列、`plans.base.json` が起点。
 //! 曲の側はクリップごとに「どの計画の、どの版から作った音符か」([`PlanRef`])を `Project::plan_refs` に持つ
 //! (サブモジュールの参照)。計画の版と参照の版が違えば「計画が先に進んでいる(作り直し待ち)」。
 //!
-//! - 計画の中身(`body`)は JSON。`kind` が `"melody"` なら [`MelodyPlan`] として読めることを適用のたびに確かめる。
+//! - 計画の中身(`body`)は JSON。種類ごとの形([`SongPlan`] / [`PartPlan`] / [`MelodyPlan`])として読めることを適用のたびに確かめる。
 //!   無い項目は省略でき、知らない項目は残す(古い計画も新しい計画も読める)
 //! - 編集は [`PlanCommand`]: 作る・消す・丸ごと置き換える・JSON Pointer の道で一部を変える。すべて絶対値で、
 //!   版(`rev`)もコマンドを作る側が決める(決定性)。逆コマンドを返す
@@ -36,15 +36,24 @@ pub struct PlanRef {
 pub struct Plan {
     pub id: PlanId,
     pub name: String,
-    /// 計画の種類(今は "melody" だけ)
+    /// 計画の種類: song(曲全体)/ part(パート)/ melody(旋律)
     pub kind: String,
     /// 版(変えるたびに 1 つ上がる。値はコマンドを作る側が決める)
     pub rev: u64,
     /// 別案として派生した元(git の branch)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_from: Option<PlanRef>,
+    /// 状態。省略 = 採用した今の計画。"estimated" = 今の音から推定して、まだ人が確かめていない計画
+    /// (AI は参考としてだけ使い、作り直し・点検の基準にはしない)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
     pub body: Value,
 }
+
+/// 計画の状態(省略 = 採用済み)
+pub const PLAN_STATES: &[&str] = &["estimated"];
+/// 計画の種類
+pub const PLAN_KINDS: &[&str] = &["song", "part", "melody"];
 
 impl Plan {
     /// 中身(名前・種類・本体)の指紋。16 桁の 16 進(FNV-1a 64)。版の番号と派生元は含めない
@@ -80,15 +89,25 @@ impl Plan {
                 "body は JSON のオブジェクト".to_owned(),
             ));
         }
-        match self.kind.as_str() {
-            "melody" => {
-                let m: MelodyPlan = serde_json::from_value(self.body.clone()).map_err(|e| {
-                    CoreError::InvalidPlan(format!("melody の計画として読めない: {e}"))
-                })?;
-                m.validate()
+        if let Some(s) = &self.state {
+            if !PLAN_STATES.contains(&s.as_str()) {
+                return Err(CoreError::InvalidPlan(format!(
+                    "state は {} のどれか(省略で採用済み)",
+                    PLAN_STATES.join(" / ")
+                )));
             }
+        }
+        fn read<T: serde::de::DeserializeOwned>(body: &Value, kind: &str) -> Result<T> {
+            serde_json::from_value(body.clone())
+                .map_err(|e| CoreError::InvalidPlan(format!("{kind} の計画として読めない: {e}")))
+        }
+        match self.kind.as_str() {
+            "melody" => read::<MelodyPlan>(&self.body, "melody")?.validate(),
+            "song" => read::<SongPlan>(&self.body, "song")?.validate(),
+            "part" => read::<PartPlan>(&self.body, "part")?.validate(),
             k => Err(CoreError::InvalidPlan(format!(
-                "計画の種類が不明: {k}(使えるもの: melody)"
+                "計画の種類が不明: {k}(使えるもの: {})",
+                PLAN_KINDS.join(" / ")
             ))),
         }
     }
@@ -110,6 +129,213 @@ impl Default for PlanSet {
             version: PLANS_VERSION,
             plans: BTreeMap::new(),
         }
+    }
+}
+
+// ---------------------------------------------------------------- 曲全体の計画の形
+
+/// 盛り上がりの型(キーと日本語の名前)
+pub const ARCS: &[(&str, &str)] = &[
+    ("rise", "段々に上がる"),
+    ("waves", "波を 2 回"),
+    ("peak", "山を 1 つ"),
+    ("sink", "沈んでいく"),
+    ("flat", "平ら(ループ向け)"),
+];
+
+/// 曲全体の計画(曲 1 つにつき 1 つ)。区間・パートの計画の上に置く、曲全体の狙い。どの項目も省略できる。
+/// テンポ・長さ・拍子は曲のデータをそのまま使い、ここには持たない
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct SongPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    /// 雰囲気の言葉
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mood: Vec<String>,
+    /// キー・旋法の狙い("D minor (phrygian)" など。言葉でよい)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// 盛り上がりの型([`ARCS`] のキー)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc: Option<String>,
+    /// 明るさ(暗い 0〜明るい 10)・音の密度(まばら 0〜ぎっしり 10)・質感(無機質 0〜有機的 10)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organic: Option<f32>,
+    /// 音量の目標(LUFS)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudness: Option<f32>,
+    /// 守ること(「リードメロディーは入れない」など)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub musts: Vec<String>,
+    /// 参考曲
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl SongPlan {
+    pub fn validate(&self) -> Result<()> {
+        let bad = |s: String| Err(CoreError::InvalidPlan(s));
+        if let Some(a) = &self.arc {
+            if !ARCS.iter().any(|(k, _)| k == a) {
+                return bad(format!(
+                    "arc は {} のどれか",
+                    ARCS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(" / ")
+                ));
+            }
+        }
+        for (name, v) in [
+            ("brightness", self.brightness),
+            ("density", self.density),
+            ("organic", self.organic),
+        ] {
+            if v.is_some_and(|v| !(0.0..=10.0).contains(&v)) {
+                return bad(format!("{name} は 0〜10"));
+            }
+        }
+        if self.loudness.is_some_and(|v| !(-40.0..=0.0).contains(&v)) {
+            return bad("loudness は -40〜0(LUFS)".to_owned());
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------- パートの計画の形
+
+/// パートの働き(キーと日本語の名前)。作曲・ミックスの解説(Owsinski の 5 つの要素)、ポピュラー音楽の層の分析
+/// (Moore)、ダンス音楽の制作の解説から
+pub const FUNCTIONS: &[(&str, &str)] = &[
+    ("beat", "ビート(拍の土台)"),
+    ("bass", "低音の土台"),
+    ("sub", "サブ"),
+    ("harmony", "和声の支え"),
+    ("rhythm", "リズムの彩り"),
+    ("lead", "主役"),
+    ("hook", "フック"),
+    ("answer", "合いの手"),
+    ("texture", "質感・空気"),
+    ("ear_candy", "飾り(一度きりの小技)"),
+    ("transition", "つなぎ"),
+];
+
+/// 存在の段階 0〜5 の名前
+pub const PRESENCE: &[&str] = &["鳴らさない", "気配", "背景", "支え", "前面", "主役"];
+
+/// パートのリズムの系統
+pub const PART_RHYTHMS: &[&str] = &["sustain", "pulse", "syncopated", "sparse", "busy"];
+
+/// パートの計画(トラック 1 本につき 1 つ)。区間ごとに働き・存在の段階・音域の帯などを持つ
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct PartPlan {
+    /// 対象のトラックの ID
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<String>,
+    /// 既定の働き([`FUNCTIONS`] のキー。区間ごとに変えられる)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<PartSectionPlan>,
+}
+
+/// パートの、区間 1 つぶんの計画
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct PartSectionPlan {
+    /// 区間の ID(`sec_xxxxxx`)
+    pub section: String,
+    /// この区間だけの働き(省略でパートの既定)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    /// 存在の段階 0〜5(鳴らさない / 気配 / 背景 / 支え / 前面 / 主役)
+    pub presence: u8,
+    /// 音域の帯 [下, 上](MIDI のノート番号)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub register: Option<[u8; 2]>,
+    /// 刻みの細かさ 0〜1(音の数の目安)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<f32>,
+    /// リズムの系統([`PART_RHYTHMS`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rhythm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// 固定(この区間のこのパートは AI が作り直さない)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
+}
+
+fn check_function(f: &str, at: &str) -> Result<()> {
+    if FUNCTIONS.iter().any(|(k, _)| *k == f) {
+        return Ok(());
+    }
+    Err(CoreError::InvalidPlan(format!(
+        "{at}function は {} のどれか",
+        FUNCTIONS
+            .iter()
+            .map(|(k, _)| *k)
+            .collect::<Vec<_>>()
+            .join(" / ")
+    )))
+}
+
+impl PartPlan {
+    pub fn validate(&self) -> Result<()> {
+        let bad = |s: String| Err(CoreError::InvalidPlan(s));
+        if let Some(t) = &self.track {
+            if crate::id::TrackId::parse(t).is_err() {
+                return bad(format!("track はトラックの ID(trk_…)。got: {t}"));
+            }
+        }
+        if let Some(f) = &self.function {
+            check_function(f, "")?;
+        }
+        let mut seen = BTreeSet::new();
+        for (i, s) in self.sections.iter().enumerate() {
+            let at = format!("sections/{i}: ");
+            if crate::id::SectionId::parse(&s.section).is_err() {
+                return bad(format!(
+                    "{at}section は区間の ID(sec_…)。got: {}",
+                    s.section
+                ));
+            }
+            if !seen.insert(s.section.as_str()) {
+                return bad(format!("{at}区間 {} が 2 回ある", s.section));
+            }
+            if let Some(f) = &s.function {
+                check_function(f, &at)?;
+            }
+            if s.presence > 5 {
+                return bad(format!("{at}presence は 0〜5"));
+            }
+            if let Some([lo, hi]) = s.register {
+                if lo > hi || hi > 127 {
+                    return bad(format!("{at}register は [下, 上](0〜127、下 ≤ 上)"));
+                }
+            }
+            if s.density.is_some_and(|d| !(0.0..=1.0).contains(&d)) {
+                return bad(format!("{at}density は 0〜1"));
+            }
+            if let Some(r) = &s.rhythm {
+                if !PART_RHYTHMS.contains(&r.as_str()) {
+                    return bad(format!(
+                        "{at}rhythm は {} のどれか",
+                        PART_RHYTHMS.join(" / ")
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 区間 `section` の計画
+    pub fn section(&self, section: &str) -> Option<&PartSectionPlan> {
+        self.sections.iter().find(|s| s.section == section)
     }
 }
 
@@ -758,6 +984,7 @@ mod tests {
 
     fn plan(id: &PlanId) -> Plan {
         Plan {
+            state: None,
             id: id.clone(),
             name: "ドロップ 1 のリード".into(),
             kind: "melody".into(),

@@ -1400,6 +1400,7 @@ mod tests {
         if let Some(ns) = c.notes_mut() {
             for (pos, dur, pitch) in seq {
                 ns.push(Note {
+                    locked: false,
                     id: NoteId::new(),
                     pos: Tick(pos),
                     dur: Tick(dur),

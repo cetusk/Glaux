@@ -599,6 +599,7 @@ mod tests {
 
     fn note(pos: u64, pitch: u8, vel: u8) -> Note {
         Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(200),

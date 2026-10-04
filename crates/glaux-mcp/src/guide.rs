@@ -74,6 +74,9 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    (動かすもの = ビルドのフィルタ等も note に)。マーカーが置かれ、曲の長さ(秒)が返るので依頼の長さに合わせる。\n\
    critique_arrangement が計画と実際(盛り上がりの上がり下がり・鳴らすトラック)を突き合わせる。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
    参考曲の音声があれば analyze_reference で区間の並び・小節数・音量の差を読み、計画に写す(メロディは写さない)。\n\
+   区間の中の盛り上がりの形は curve、ビルド → ドロップの落差のような急な変わり目は join: step。\n\
+   設計を細かく決めるなら、曲全体の狙い(save_plan kind song: 雰囲気・盛り上がりの型・明るさ・守ること)と、パートごとの計画\n\
+   (kind part: 区間ごとの働き・存在の段階 0〜5・音域の帯)も書く。get_design が計画と実際のずれを返す。\n\
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
    コード進行は suggest_progression で定番から選ぶ(区間ごとに変える)。\n\
    ドラムは write_drums(ジャンルの型・区間ごとに intensity を変える・区切りのフィル・ビルドのロールと gap_beats)。\n\
@@ -122,7 +125,13 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
   ベース・キック・音色・エフェクトを変えたら compare_mix(render)で前後を比べる。\n\
 - 報告の前に review_edits(before_entry に今回の最初の編集、または back に今回の編集の数。音が変わったなら render: true)。\n\
   報告には「直した所」「確かめた所(checked)」「残した知らせとその理由」を短く添える。\n\
-- 大きく直す前は checkpoint。結果が悪ければ revert_to で戻して別の案を試す。",
+- 大きく直す前は checkpoint。結果が悪ければ revert_to で戻して別の案を試す。\n\
+- 人の手直しと固定: 直す前に get_design の clips を見る。edited_bars(人が手で直した小節)と固定の音(locked)は人の意図。\n\
+  固定の音は AI の編集では変わらない(外した編集は応答の kept_locked。固定を外すのは人だけ)。\n\
+  realize_melody・revise_melody の作り直しは、手で直した小節を既定で残す(応答の protected)。残したことを報告し、\n\
+  人が「手直しも含めて」と言ったときだけ overwrite_edits: true。ほかの道具でも、手で直した小節は消さずに避けて書く。\n\
+- 計画とのずれ: get_design の deviations は計画と実際の食い違い。直すのは計画か音のどちらか(人の意図に近い方。迷えば尋ねる)。\n\
+  推定した計画(state: estimated)は参考だけ。採用は人がする。",
     ),
     (
         "melody",

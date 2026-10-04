@@ -21,6 +21,7 @@ fn project(rate: f64, lane: Option<Vec<(u64, f64)>>, bpm: f64) -> Project {
     t.device = Some(d);
     let mut c = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840 * 4));
     c.notes_mut().unwrap().push(Note {
+        locked: false,
         id: NoteId::new(),
         pos: Tick(0),
         dur: Tick(3840 * 4),

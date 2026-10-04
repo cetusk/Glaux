@@ -82,6 +82,9 @@ pub struct NoteChange {
     /// 条件付きの発音の差し替え。いつも鳴る条件(probability 1・every 無し)で外す
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<crate::model::NoteCondition>,
+    /// 固定する・外す(AI の編集では、固定を外す変更と固定の音への変更は外される。[`crate::made::guard_locks`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
 }
 
 impl NoteChange {
@@ -99,6 +102,7 @@ impl NoteChange {
             volume_curve: None,
             brightness_curve: None,
             condition: None,
+            locked: None,
         }
     }
     pub fn pos(mut self, v: Tick) -> Self {
@@ -143,6 +147,10 @@ impl NoteChange {
     }
     pub fn condition(mut self, v: crate::model::NoteCondition) -> Self {
         self.condition = Some(v);
+        self
+    }
+    pub fn locked(mut self, v: bool) -> Self {
+        self.locked = Some(v);
         self
     }
 }
@@ -348,6 +356,12 @@ pub enum Command {
         clip: ClipId,
         plan: Option<crate::plan::PlanRef>,
     },
+    /// AI が作った・直したときのクリップの中身の指紋を記す(None で外す)。AI の編集にはアクターが自動で足す
+    /// ([`crate::made::for_ai`])
+    SetClipMade {
+        clip: ClipId,
+        made: Option<crate::made::Made>,
+    },
     AddAsset {
         id: AssetId,
         asset: Asset,
@@ -508,7 +522,7 @@ impl Command {
             SetSections { .. } => {
                 out.insert(T::Sections);
             }
-            SetClipPlan { clip, .. } => {
+            SetClipPlan { clip, .. } | SetClipMade { clip, .. } => {
                 out.insert(T::Clip(clip.clone()));
             }
             AddAsset { id, .. } | RemoveAsset { id } => {

@@ -603,6 +603,7 @@ mod tests {
 
     fn note(pitch: u8) -> Note {
         Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(0),
             dur: Tick(960),

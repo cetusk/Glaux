@@ -779,6 +779,7 @@ pub fn match_clip_commands(
     );
     if let ClipContent::Midi { notes, .. } = &mut midi.content {
         notes.push(Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick::ZERO,
             dur,

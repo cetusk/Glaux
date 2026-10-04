@@ -239,6 +239,9 @@ pub struct Note {
     /// 条件付きの発音(確率・ループの何回目か)。省略でいつも鳴る
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<NoteCondition>,
+    /// 固定。AI が作り直す・直すときに変えない音(「手直しも含めて上書き」でも)。人はいつでも変えられる
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
 }
 
 /// 条件付きの発音(Elektron の条件と同じ考え方)。ループの何回目か(`rep`、0 始まり)とノートの ID から決まるので、
@@ -541,6 +544,7 @@ mod tests {
             *looped = true;
             *loop_len = Some(Tick(3840));
             notes.push(Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(0),
                 dur: Tick(240),

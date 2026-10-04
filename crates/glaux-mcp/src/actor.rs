@@ -27,6 +27,10 @@ pub struct ProjectChanged {
     /// 曲の中身は変わらず、履歴だけが変わった(チェックポイント)。保存・再生データの作り直し・画面の全体取得は要らない
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history_only: bool,
+    /// 計画(plans.json)が変わったときの計画の版(この曲を開いてからの変更の回数。計画の変更のときだけ)。
+    /// 曲の中身は変わらないので history_only も立てる
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plans_version: Option<u64>,
 }
 
 /// AI(MCP クライアント)のツール呼び出し状況。UI の「AI 作業中」表示に使う。
@@ -83,6 +87,8 @@ pub struct Mutated {
     pub save_error: Option<String>,
     /// 編集の後の確認(AI の道具の編集だけ。サーバーが付ける。glaux_core::aftercare)
     pub aftercare: Option<serde_json::Value>,
+    /// 固定の音を守るために外した編集(AI の編集だけ。glaux_core::made::guard_locks)
+    pub locks: Vec<glaux_core::made::LockHit>,
 }
 
 /// `RevertEntry` の返り値: (revert エントリ, 衝突エントリ一覧, Mutated)。
@@ -121,6 +127,8 @@ pub enum PlanRequest {
 struct Plans {
     store: PlanStore,
     session: PlanSession,
+    /// 計画の版(開いてから変えた回数。変更の通知に載せる)
+    version: u64,
 }
 
 pub enum Request {
@@ -505,9 +513,22 @@ fn actor_loop(
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 handle_plan(&mut plans, store.dir(), req)
             }));
-            if result.is_err() {
-                tracing::error!("計画の要求の処理中に panic しました。次の要求で読み直します");
-                plans = None;
+            match result {
+                // 計画が変わったことを画面(と購読者)に知らせる。曲の中身は変わらない
+                Ok(Some(v)) => {
+                    let _ = events.send(ProjectChanged {
+                        project_version: version(&session, &store),
+                        changes: vec![],
+                        save_error: None,
+                        history_only: true,
+                        plans_version: Some(v),
+                    });
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    tracing::error!("計画の要求の処理中に panic しました。次の要求で読み直します");
+                    plans = None;
+                }
             }
             continue;
         }
@@ -536,6 +557,7 @@ fn actor_loop(
                         changes: vec![],
                         save_error: None,
                         history_only: false,
+                        plans_version: None,
                     });
                 }
                 Err(e) => {
@@ -547,14 +569,21 @@ fn actor_loop(
     tracing::info!("session actor: 全ハンドルが閉じたので終了します");
 }
 
-/// 計画の要求を処理する。曲のフォルダと違うフォルダの計画を開いていたら開き直す
-fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanRequest) {
+/// 計画の要求を処理する。曲のフォルダと違うフォルダの計画を開いていたら開き直す。
+/// 計画が変わったら、新しい計画の版を返す
+fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanRequest) -> Option<u64> {
     if plans.as_ref().is_some_and(|p| p.store.dir() != dir) {
         *plans = None;
     }
     if plans.is_none() {
         match PlanStore::open(dir) {
-            Ok((store, session)) => *plans = Some(Plans { store, session }),
+            Ok((store, session)) => {
+                *plans = Some(Plans {
+                    store,
+                    session,
+                    version: 0,
+                })
+            }
             Err(e) => {
                 let msg = format!("計画を開けません: {e:#}");
                 match req {
@@ -563,13 +592,12 @@ fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanReques
                     PlanRequest::Step { reply, .. } => drop(reply.send(Err(msg))),
                     PlanRequest::Revert { reply, .. } => drop(reply.send(Err(msg))),
                 }
-                return;
+                return None;
             }
         }
     }
-    let Some(p) = plans.as_mut() else {
-        return;
-    };
+    let p = plans.as_mut()?;
+    let mut changed = false;
     let save = |p: &mut Plans| {
         p.store
             .save(&p.session)
@@ -587,7 +615,10 @@ fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanReques
             reply,
         } => {
             let result = match p.session.apply_with_note(*command, author, label, note) {
-                Ok((id, _)) => save(p).map(|_| id),
+                Ok((id, _)) => {
+                    changed = true;
+                    save(p).map(|_| id)
+                }
                 Err(e) => Err(e.to_string()),
             };
             let _ = reply.send(result);
@@ -610,6 +641,7 @@ fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanReques
                     }
                 }
             }
+            changed = done > 0;
             let result = match (err, done) {
                 (Some(e), _) => Err(e),
                 (None, 0) => Ok(0),
@@ -624,11 +656,20 @@ fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanReques
             reply,
         } => {
             let result = match p.session.revert_with_note(&id, author, Some(note)) {
-                Ok(r) => save(p).map(|_| (r.entry, r.conflicts)),
+                Ok(r) => {
+                    changed = true;
+                    save(p).map(|_| (r.entry, r.conflicts))
+                }
                 Err(e) => Err(e.to_string()),
             };
             let _ = reply.send(result);
         }
+    }
+    if changed {
+        p.version += 1;
+        Some(p.version)
+    } else {
+        None
     }
 }
 
@@ -654,12 +695,14 @@ fn mutated(
         changes: changes.clone(),
         save_error: save_error.clone(),
         history_only: false,
+        plans_version: None,
     });
     Mutated {
         changes,
         project_version: version(session, store),
         save_error,
         aftercare: None,
+        locks: vec![],
     }
 }
 
@@ -705,12 +748,30 @@ fn handle(
             label,
             reply,
         } => {
-            let result = session.apply(*command, author, label).map(|(id, changes)| {
+            // 区間の置き換えは、ID の無い区間に今の区間の ID を引き継がせる(計画が区間を ID で指すため)
+            let command = glaux_core::arrange::keep_section_ids(session.project(), *command);
+            // AI の編集: 固定の音を守り、ノートが変わったクリップの指紋を同じ 1 件に記録する(手で直した所を後で見分ける)
+            let (command, locks) = if matches!(author, Author::Ai { .. }) {
+                let e = glaux_core::made::for_ai(session.project(), command);
+                match e.command {
+                    Some(c) => (c, e.locks),
+                    None => {
+                        let what: Vec<String> = e.locks.iter().map(|l| l.what.clone()).collect();
+                        let _ = reply.send(Err(CoreError::Locked(what.join(" / "))));
+                        return;
+                    }
+                }
+            } else {
+                (command, vec![])
+            };
+            let result = session.apply(command, author, label).map(|(id, changes)| {
                 // 履歴が長くなりすぎたら切り詰める(保存は mutated 内の全書き換えで行われる)
                 if let Err(e) = store.maybe_compact(session) {
                     tracing::warn!("履歴の compaction に失敗: {e:#}");
                 }
-                (id, mutated(session, store, events, changes))
+                let mut m = mutated(session, store, events, changes);
+                m.locks = locks;
+                (id, m)
             });
             let _ = reply.send(result);
         }
@@ -729,12 +790,14 @@ fn handle(
                 changes: vec![],
                 save_error: None,
                 history_only: true,
+                plans_version: None,
             });
             let _ = reply.send(Mutated {
                 changes: vec![],
                 project_version: version(session, store),
                 save_error: None,
                 aftercare: None,
+                locks: vec![],
             });
         }
         Request::RevertTo { label, reply } => {
@@ -802,6 +865,7 @@ fn handle(
                         changes: vec![],
                         save_error: None,
                         history_only: false,
+                        plans_version: None,
                     });
                     tracing::info!("プロジェクトを切り替えました: {dir}");
                     Ok((session.project().meta.title.clone(), version))
@@ -858,6 +922,7 @@ fn handle(
                             changes: vec![],
                             save_error: None,
                             history_only: false,
+                            plans_version: None,
                         });
                         tracing::info!("プロジェクトを移動しました: {} → {dest}", from.display());
                         Ok((session.project().meta.title.clone(), version))
@@ -903,6 +968,7 @@ fn undo_redo(
             project_version: version(session, store),
             save_error: None,
             aftercare: None,
+            locks: vec![],
         }
     };
     Ok((done, m))

@@ -8,6 +8,7 @@ use std::fs;
 
 fn plan(id: &PlanId, name: &str) -> Plan {
     Plan {
+        state: None,
         id: id.clone(),
         name: name.into(),
         kind: "melody".into(),

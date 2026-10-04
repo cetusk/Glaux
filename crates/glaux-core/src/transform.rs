@@ -207,6 +207,7 @@ mod tests {
 
     fn n(i: usize, pos: u64, pitch: u8) -> Note {
         Note {
+            locked: false,
             id: NoteId::parse(&format!("nt_t{i:05}")).unwrap(),
             pos: Tick(pos),
             dur: Tick(480),

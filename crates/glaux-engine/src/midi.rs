@@ -587,6 +587,7 @@ pub fn take_to_notes(notes: &[RecordedNote], clip_start: Tick, quantize_ticks: u
             let brightness_curve = expr(&n.bright, 0.0, &|v| v.clamp(-1.0, 1.0));
             let volume_curve = expr(&n.press, 0.0, &|v| (v * 6.0).clamp(0.0, 6.0));
             (end > pos).then(|| Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(pos),
                 dur: Tick(end - pos),

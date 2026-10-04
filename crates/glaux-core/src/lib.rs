@@ -20,6 +20,7 @@ pub mod chord;
 pub mod command;
 pub mod comp;
 pub mod critique;
+pub mod designcheck;
 pub mod drums;
 pub mod error;
 pub mod gesture;
@@ -27,6 +28,7 @@ pub mod groove;
 pub mod harmony;
 pub mod history;
 pub mod id;
+pub mod made;
 pub mod melexpr;
 pub mod melgen;
 pub mod melody;
@@ -54,6 +56,6 @@ pub use history::{
     Author, Document, EntryNote, History, HistoryCommand, HistoryEntry, HistoryPoint, Measure,
     RevertResult, Session, Trigger,
 };
-pub use id::{AssetId, ClipId, EntryId, FxId, NoteId, PlanId, TrackId};
+pub use id::{AssetId, ClipId, EntryId, FxId, NoteId, PlanId, SectionId, TrackId};
 pub use model::*;
 pub use time::{TempoEvent, TempoMap, Tick, TimeSigEvent, MAX_TICK, PPQ};

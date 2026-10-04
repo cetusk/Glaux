@@ -5,7 +5,7 @@ use glaux_core::*;
 
 const FIXTURE: &str = r##"{
   "format": "glaux",
-  "version": 2,
+  "version": 3,
   "ppq": 960,
   "meta": { "title": "Fixture", "created": "2026-09-21T10:00:00Z" },
   "tempo_map": [ { "tick": 0, "bpm": 120.0 }, { "tick": 7680, "bpm": 90.0 } ],
@@ -52,7 +52,7 @@ const FIXTURE: &str = r##"{
           "length": 3840,
           "kind": "midi",
           "notes": [
-            { "id": "nt_000001", "pos": 0,   "dur": 480, "pitch": 36, "vel": 100 },
+            { "id": "nt_000001", "pos": 0,   "dur": 480, "pitch": 36, "vel": 100, "locked": true },
             { "id": "nt_000003", "pos": 480, "dur": 240, "pitch": 43, "vel": 100,
               "articulation": "portamento", "glide_ms": 250.0 },
             { "id": "nt_000002", "pos": 960, "dur": 480, "pitch": 36, "vel": 90,
@@ -109,11 +109,15 @@ const FIXTURE: &str = r##"{
     "sha256:ab12cd34": { "path": "audio/vocal_take1.wav", "sample_rate": 48000, "channels": 1, "frames": 480000 }
   },
   "sections": [
-    { "tick": 0, "name": "intro", "energy": 3.0, "tracks": ["Bass"], "note": "ベースだけで始める" },
+    { "id": "sec_intro1", "tick": 0, "name": "intro", "energy": 3.0, "tracks": ["Bass"], "note": "ベースだけで始める",
+      "curve": [ [0.0, 2.0], [1.0, 4.5] ], "join": "step" },
     { "tick": 7680, "name": "サビ" }
   ],
   "plan_refs": {
     "clp_7w6v5u": { "id": "pln_ab12cd", "rev": 3, "digest": "0123456789abcdef" }
+  },
+  "made": {
+    "clp_c3d4e5": { "spans": [ { "start": 0, "end": 3840, "hash": "0123456789abcdef" } ] }
   }
 }"##;
 
@@ -168,6 +172,21 @@ fn fixture_parses_and_roundtrips() {
     assert_eq!(r.rev, 3);
     assert_eq!(r.id.as_str(), "pln_ab12cd");
     assert!(!Project::new("x").to_json().unwrap().contains("plan_refs"));
+
+    // 区間の ID・盛り上がりの形・境目(古い区間には無い)
+    assert_eq!(
+        p.sections[0].id.as_ref().map(|i| i.as_str()),
+        Some("sec_intro1")
+    );
+    assert_eq!(p.sections[0].join, Some(SectionJoin::Step));
+    assert_eq!(p.sections[0].energy_at(0.5), Some(3.25));
+    assert_eq!(p.sections[1].id, None);
+    // 音の固定(省略で固定しない)と、AI が作ったときの指紋
+    let bass_a = p.clip(&"clp_c3d4e5".parse().unwrap()).unwrap().1;
+    assert!(bass_a.notes().unwrap()[0].locked);
+    assert!(!bass_a.notes().unwrap()[1].locked);
+    assert_eq!(p.made[&"clp_c3d4e5".parse().unwrap()].spans.len(), 1);
+    assert!(!p.to_json().unwrap().contains(r#""locked": false"#));
 
     let json = p.to_json().unwrap();
     let back = Project::from_json(&json).unwrap();

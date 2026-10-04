@@ -290,6 +290,7 @@ mod tests {
         let mut c = crate::model::Clip::new_midi(crate::ClipId::new(), "c", Tick(0), Tick(PPQ * 4));
         if let Some(ns) = c.notes_mut() {
             ns.push(crate::model::Note {
+                locked: false,
                 id: crate::NoteId::new(),
                 pos: Tick(PPQ * 8),
                 dur: Tick(PPQ),

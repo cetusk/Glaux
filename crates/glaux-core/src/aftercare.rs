@@ -657,6 +657,7 @@ mod tests {
 
     fn note(pos: u64, dur: u64, pitch: u8) -> Note {
         Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(dur),
@@ -758,6 +759,9 @@ mod tests {
         let mut before = song();
         before.sections = vec![
             crate::model::SectionMarker {
+                curve: vec![],
+                id: None,
+                join: None,
                 tick: Tick(0),
                 name: "サビ".into(),
                 energy: None,
@@ -765,6 +769,9 @@ mod tests {
                 note: None,
             },
             crate::model::SectionMarker {
+                curve: vec![],
+                id: None,
+                join: None,
                 tick: Tick(7680),
                 name: "サビ 2".into(),
                 energy: None,
@@ -798,6 +805,9 @@ mod tests {
         let mut p = Project::new("big");
         p.sections = (0..8)
             .map(|i| crate::model::SectionMarker {
+                curve: vec![],
+                id: None,
+                join: None,
                 tick: Tick(i * 3840 * 8),
                 name: if i % 2 == 0 {
                     "A".into()

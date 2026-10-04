@@ -620,6 +620,9 @@ impl Project {
                             },
                         ));
                     }
+                    if let Some(v) = ch.locked {
+                        inv.locked = Some(std::mem::replace(&mut n.locked, v));
+                    }
                     inverse_changes.push(inv);
                 }
                 inverse_changes.reverse();
@@ -1156,7 +1159,33 @@ impl Project {
                     changes: vec![Change::MetaChanged],
                 })
             }
+            SetClipMade { clip, made } => {
+                if self.clip(clip).is_none() {
+                    return Err(CoreError::ClipNotFound(clip.clone()));
+                }
+                let old = match made {
+                    Some(m) => self.made.insert(clip.clone(), m.clone()),
+                    None => self.made.remove(clip),
+                };
+                Ok(Applied {
+                    inverse: SetClipMade {
+                        clip: clip.clone(),
+                        made: old,
+                    },
+                    changes: vec![Change::MetaChanged],
+                })
+            }
             SetSections { sections } => {
+                let mut ids = std::collections::BTreeSet::new();
+                for (i, m) in sections.iter().enumerate() {
+                    crate::model::check_section_curve(&m.curve)
+                        .map_err(|e| CoreError::OutOfRange(format!("sections/{i}: {e}")))?;
+                    if let Some(id) = &m.id {
+                        if !ids.insert(id.clone()) {
+                            return Err(CoreError::DuplicateId(id.to_string()));
+                        }
+                    }
+                }
                 let mut new = sections.clone();
                 new.sort_by_key(|m| m.tick);
                 let old = std::mem::replace(&mut self.sections, new);

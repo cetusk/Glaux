@@ -203,6 +203,7 @@ mod tests {
         let notes = clip.notes_mut().unwrap();
         for &pos in onsets {
             notes.push(Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(pos),
                 dur: Tick(120),
@@ -290,6 +291,7 @@ mod tests {
     fn swing_moves_offbeats_and_is_idempotent() {
         use crate::{Note, NoteId, Tick};
         let n = |pos: u64| Note {
+            locked: false,
             id: NoteId::new(),
             pos: Tick(pos),
             dur: Tick(120),

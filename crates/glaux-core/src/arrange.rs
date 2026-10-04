@@ -468,6 +468,62 @@ pub struct PlanSection {
     pub tracks: Vec<String>,
     /// 役割・意図
     pub note: Option<String>,
+    /// 区間の ID(省略で、今の区間に同じ名前があればその ID、無ければ新しい ID)
+    pub id: Option<crate::id::SectionId>,
+    /// 区間の中の盛り上がりの形([位置 0〜1, 値 0〜10])
+    pub curve: Vec<[f32; 2]>,
+    /// 次の区間との境目
+    pub join: Option<crate::model::SectionJoin>,
+}
+
+/// 区間の並び `sections` のうち ID の無い区間に、今の曲の区間の ID を引き継がせる(同じ名前 → 同じ位置の順に探し、
+/// 1 つの ID は 1 回だけ使う)。どれにも当たらなければ新しい ID を振る(コマンドを作る側で振るので決定的)
+pub fn fill_section_ids(project: &Project, sections: &mut [SectionMarker]) {
+    let mut used: std::collections::BTreeSet<crate::id::SectionId> =
+        sections.iter().filter_map(|m| m.id.clone()).collect();
+    let pick = |m: &SectionMarker, used: &mut std::collections::BTreeSet<crate::id::SectionId>| {
+        let found = project
+            .sections
+            .iter()
+            .filter_map(|o| o.id.as_ref().map(|id| (o, id)))
+            .filter(|(_, id)| !used.contains(*id))
+            .find(|(o, _)| o.name == m.name)
+            .or_else(|| {
+                project
+                    .sections
+                    .iter()
+                    .filter_map(|o| o.id.as_ref().map(|id| (o, id)))
+                    .filter(|(_, id)| !used.contains(*id))
+                    .find(|(o, _)| o.tick == m.tick)
+            })
+            .map(|(_, id)| id.clone())
+            .unwrap_or_default();
+        used.insert(found.clone());
+        found
+    };
+    for m in sections.iter_mut() {
+        if m.id.is_none() {
+            m.id = Some(pick(m, &mut used));
+        }
+    }
+}
+
+/// コマンドの中の区間の置き換え(`SetSections`)に、区間の ID を引き継がせる([`fill_section_ids`])
+pub fn keep_section_ids(project: &Project, cmd: Command) -> Command {
+    match cmd {
+        Command::SetSections { mut sections } => {
+            fill_section_ids(project, &mut sections);
+            Command::SetSections { sections }
+        }
+        Command::Batch { commands, label } => Command::Batch {
+            commands: commands
+                .into_iter()
+                .map(|c| keep_section_ids(project, c))
+                .collect(),
+            label,
+        },
+        other => other,
+    }
 }
 
 /// 計画書の区間を、小節の頭に置く区間のマーカーにする(拍子の変化に沿って小節を数える)。
@@ -483,6 +539,8 @@ pub fn plan_markers(
     let mut bar = start_bar.max(1);
     let mut out = Vec::with_capacity(plan.len());
     for s in plan {
+        crate::model::check_section_curve(&s.curve)
+            .map_err(|e| format!("「{}」の {e}", s.name.trim()))?;
         let name = s.name.trim();
         if name.is_empty() {
             return Err("区間の名前が空です".to_owned());
@@ -499,6 +557,9 @@ pub fn plan_markers(
             .ok_or_else(|| format!("「{name}」の小節を数えられません"))?;
         out.push((
             SectionMarker {
+                curve: s.curve.clone(),
+                id: s.id.clone(),
+                join: s.join,
                 tick: Tick(at),
                 name: name.to_owned(),
                 energy: s.energy,
@@ -518,6 +579,11 @@ pub fn plan_markers(
             at + len,
         ));
         bar += s.bars;
+    }
+    let mut marks: Vec<SectionMarker> = out.iter().map(|o| o.0.clone()).collect();
+    fill_section_ids(project, &mut marks);
+    for (o, m) in out.iter_mut().zip(marks) {
+        o.0.id = m.id;
     }
     Ok(out)
 }
@@ -566,6 +632,7 @@ mod tests {
         if let ClipContent::Midi { notes, .. } = &mut c.content {
             for i in 0..4 {
                 notes.push(Note {
+                    locked: false,
                     id: NoteId::new(),
                     pos: Tick(i * BAR),
                     dur: Tick(480),
@@ -750,6 +817,7 @@ mod tests {
         {
             for k in 0..4 {
                 notes.push(Note {
+                    locked: false,
                     id: NoteId::new(),
                     pos: Tick(k * 960),
                     dur: Tick(900),
@@ -813,6 +881,7 @@ mod tests {
                 energy: Some(3.0),
                 tracks: vec!["Kick".into(), " ".into()],
                 note: Some("  ".into()),
+                ..Default::default()
             },
             PlanSection {
                 name: "waltz".into(),
@@ -835,6 +904,87 @@ mod tests {
             ..Default::default()
         }];
         assert!(plan_markers(&p, 1, &bad).is_err());
+    }
+
+    #[test]
+    fn section_ids_follow_names_then_positions() {
+        let mut p = Project::new("t");
+        let plan = vec![
+            PlanSection {
+                name: "intro".into(),
+                bars: 8,
+                ..Default::default()
+            },
+            PlanSection {
+                name: "drop".into(),
+                bars: 8,
+                curve: vec![[0.0, 8.0], [1.0, 9.5]],
+                join: Some(crate::model::SectionJoin::Step),
+                ..Default::default()
+            },
+        ];
+        let m: Vec<SectionMarker> = plan_markers(&p, 1, &plan)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.0)
+            .collect();
+        assert!(m.iter().all(|s| s.id.is_some()));
+        assert_ne!(m[0].id, m[1].id);
+        assert_eq!(m[1].curve.len(), 2);
+        p.apply(&Command::SetSections {
+            sections: m.clone(),
+        })
+        .unwrap();
+        // 名前で引き継ぐ(並べ替え・長さを変えても)
+        let again: Vec<SectionMarker> = plan_markers(
+            &p,
+            1,
+            &[
+                PlanSection {
+                    name: "drop".into(),
+                    bars: 4,
+                    ..Default::default()
+                },
+                PlanSection {
+                    name: "intro".into(),
+                    bars: 4,
+                    ..Default::default()
+                },
+            ],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|x| x.0)
+        .collect();
+        assert_eq!(again[0].id, m[1].id);
+        assert_eq!(again[1].id, m[0].id);
+        // 名前を変えた区間は位置で引き継ぐ(ID の無い区間の置き換え)
+        let renamed = keep_section_ids(
+            &p,
+            Command::SetSections {
+                sections: vec![SectionMarker {
+                    name: "Intro (new)".into(),
+                    tick: Tick(0),
+                    ..Default::default()
+                }],
+            },
+        );
+        let Command::SetSections { sections } = renamed else {
+            panic!()
+        };
+        assert_eq!(sections[0].id, m[0].id);
+        // 形の範囲の外は置けない
+        let bad = plan_markers(
+            &p,
+            1,
+            &[PlanSection {
+                name: "x".into(),
+                bars: 4,
+                curve: vec![[0.0, 3.0], [1.2, 3.0]],
+                ..Default::default()
+            }],
+        );
+        assert!(bad.is_err());
     }
 
     #[test]
@@ -879,6 +1029,7 @@ mod tests {
         let mut clip = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840 * 4));
         for k in 0..16u64 {
             clip.notes_mut().unwrap().push(Note {
+                locked: false,
                 id: NoteId::new(),
                 pos: Tick(k * 960),
                 dur: Tick(480),

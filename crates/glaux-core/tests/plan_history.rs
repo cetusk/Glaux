@@ -20,6 +20,7 @@ fn new_plan(rng: &mut StdRng) -> Plan {
         })
         .collect();
     Plan {
+        state: None,
         id: PlanId::new(),
         name: format!("plan{}", rng.gen_range(0..100)),
         kind: "melody".into(),
