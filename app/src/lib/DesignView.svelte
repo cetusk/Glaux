@@ -985,7 +985,7 @@
                 class="btn sm primary"
                 type="button"
                 disabled={!!ch?.stale}
-                title="案の音を曲に当て、案の計画を今の計画にする。同じ元の計画から出たほかの案と、いっしょに聴き比べていた案は捨てる"
+                title="案の音を曲に当て、案の計画を今の計画にする。同じ元の計画・同じ頼みから出たほかの案と、いっしょに聴き比べていた案は捨てる"
                 onclick={() => adoptProposal(pr.plan_id, pr.name)}>採用</button
               >
               <button class="btn sm" type="button" onclick={() => discardProposal(pr.plan_id, pr.name)}>捨てる</button>

@@ -7351,6 +7351,35 @@ async fn adopting_a_proposal_discards_its_siblings() {
     assert_eq!(left, vec!["パッド 2"]);
     let (now, _) = fx.handle.get_project().await.unwrap();
     assert_eq!(now.tracks[0].volume_db, -3.0);
+    // 元の計画の無い案(新しいトラックの案など)でも、同じきっかけ(人の同じ言葉)で出た案は捨てる。違うきっかけの案は残す
+    let fresh = |name: &str, db: f64, ask: &str| {
+        json!({ "name": name, "why": "試し", "kind": "part", "trigger": { "kind": "user", "text": ask },
+                "body": { "track": "trk_sib002", "function": "texture" },
+                "commands": [{ "op": "set_track_prop", "id": "trk_sib002", "prop": "volume_db", "value": db }] })
+    };
+    let mut ids = vec![];
+    for (name, db, ask) in [
+        ("新 1", -7.0, "新しく 3 案"),
+        ("新 2", -8.0, "新しく 3 案"),
+        ("別", -9.0, "別の頼み"),
+    ] {
+        let r = ok_json(&call(&fx, "propose_design", fresh(name, db, ask)).await);
+        ids.push(r["plan_id"].as_str().unwrap().to_owned());
+    }
+    let r = plan_view::adopt_proposal(&fx.handle, &ids[0], &[])
+        .await
+        .unwrap();
+    assert_eq!(r["discarded"], json!(["新 2"]));
+    let plans = fx.handle.get_plans().await.unwrap();
+    let mut left: Vec<&str> = plans
+        .doc()
+        .plans
+        .values()
+        .filter(|p| p.state.as_deref() == Some("proposal"))
+        .map(|p| p.name.as_str())
+        .collect();
+    left.sort();
+    assert_eq!(left, vec!["パッド 2", "別"]);
 }
 
 /// 段階 3: AI の案(枝)。今の曲と計画は変えず、案の音(編集の列)を持つ。採用で曲と計画に当たる。古くなった案は当てられない

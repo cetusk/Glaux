@@ -578,7 +578,7 @@ export async function endProposalAb(): Promise<void> {
   await endAbLoop();
 }
 
-/** 案を採用する(案の音を曲に当て、案の計画を今の計画にする)。同じ元の計画から出たほかの案と、
+/** 案を採用する(案の音を曲に当て、案の計画を今の計画にする)。同じ元の計画・同じ頼みから出たほかの案と、
  *  いっしょに聴き比べていた案は捨てる(計画の履歴に残るので取り消せる) */
 export async function adoptProposal(planId: string, name: string): Promise<void> {
   const alsoDiscard = proposalAb.planIds.filter((id) => id !== planId);

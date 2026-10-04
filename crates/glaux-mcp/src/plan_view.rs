@@ -432,8 +432,9 @@ pub async fn proposal_projects(
 
 /// 案を採用する: 案の音を曲に当て(1 件の編集)、案の計画を今の計画にする(元の計画があれば中身を置き換えて案を消す)
 ///
-/// 採用したら、ほかの案のうち同じ元の計画から出たもの(元の計画が変わったので古くなる)と `also_discard`
-/// (いっしょに聴き比べていた案など)を捨てる(計画の履歴に 1 件ずつ残るので、取り消せる)
+/// 採用したら、ほかの案のうち同じ組のもの(同じ元の計画から出た案〈元の計画が変わったので古くなる〉と、
+/// 同じきっかけ〈人の同じ言葉〉で出された案)と `also_discard`(いっしょに聴き比べていた案など)を捨てる
+/// (計画の履歴に 1 件ずつ残るので、取り消せる)
 pub async fn adopt_proposal(
     handle: &SessionHandle,
     plan_id: &str,
@@ -524,6 +525,16 @@ pub async fn adopt_proposal(
         .filter_map(|s| parse_plan_id(s).ok())
         .collect();
     let base_id = p.derived_from.as_ref().map(|r| r.id.clone());
+    // 案を出したときのきっかけ(最初の履歴の項目。AI が 1 つの依頼で並べて出した案は同じきっかけを持つ)
+    let trigger_of = |id: &glaux_core::PlanId| {
+        plans
+            .history()
+            .applied()
+            .iter()
+            .find(|e| e.forward.plan_id() == id)
+            .and_then(|e| e.note.as_ref()?.trigger.clone())
+    };
+    let trigger = trigger_of(&p.id);
     let others: Vec<(glaux_core::PlanId, String)> = plans
         .doc()
         .plans
@@ -532,6 +543,7 @@ pub async fn adopt_proposal(
         .filter(|q| {
             extra.contains(&q.id)
                 || (base_id.is_some() && q.derived_from.as_ref().map(|r| &r.id) == base_id.as_ref())
+                || (trigger.is_some() && trigger_of(&q.id) == trigger)
         })
         .map(|q| (q.id.clone(), q.name.clone()))
         .collect();
