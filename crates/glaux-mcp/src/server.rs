@@ -9247,6 +9247,7 @@ impl GlauxServer {
             .unwrap_or_else(|| "区間と盛り上がりから提案".to_owned());
         let note = plan_note(&why, None, None)?;
         let plan = plan::Plan {
+            patch_base: Default::default(),
             patch: vec![],
             state: None,
             id: glaux_core::PlanId::new(),
@@ -9735,13 +9736,25 @@ impl GlauxServer {
                 let old = plans.doc().plans.get(&id).ok_or_else(|| {
                     format!("計画が見つかりません: {pid}(新しく作るなら plan_id を省略)")
                 })?;
+                let state = match p.state.as_deref() {
+                    None => old.state.clone(),
+                    Some("adopted") => None,
+                    Some(s) => Some(s.to_owned()),
+                };
+                // 案のまま直すなら、案の音(編集の列と、出したときの指紋)を引き継ぐ
+                let still_proposal = state.as_deref() == Some("proposal");
                 let plan = Plan {
-                    patch: vec![],
-                    state: match p.state.as_deref() {
-                        None => old.state.clone(),
-                        Some("adopted") => None,
-                        Some(s) => Some(s.to_owned()),
+                    patch_base: if still_proposal {
+                        old.patch_base.clone()
+                    } else {
+                        Default::default()
                     },
+                    patch: if still_proposal {
+                        old.patch.clone()
+                    } else {
+                        vec![]
+                    },
+                    state,
                     id,
                     name: p.name.unwrap_or_else(|| old.name.clone()),
                     kind,
@@ -9758,6 +9771,7 @@ impl GlauxServer {
                     .filter(|n| !n.trim().is_empty())
                     .ok_or("新しい計画には name が要ります")?;
                 let plan = Plan {
+                    patch_base: Default::default(),
                     patch: vec![],
                     state: match p.state.as_deref() {
                         None | Some("adopted") => None,

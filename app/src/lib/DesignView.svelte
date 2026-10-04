@@ -5,6 +5,7 @@
   // 見た目と操作は docs/SONG_DESIGN_DATA.md §5(触れる試作で決めたもの)に沿う。
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
+  import { barAtTick, buildBars } from "./barMap";
   import type { Project } from "./types";
   import {
     ARCS,
@@ -735,9 +736,19 @@
   const planName = (id: string | undefined) => d?.plans.find((p) => p.plan_id === id)?.name;
   const proposalWhy = (id: string) => d?.history.find((h) => h.plan_id === id && h.op === "create")?.why;
   const sortedSecs = $derived([...(project.sections ?? [])].sort((a, b) => a.tick - b.tick));
+  /** `tick` を含む小節の頭と、そこから `n` 小節進んだ所(拍子どおり) */
+  function barHead(tick: number): number {
+    const bars = buildBars(project, tick + 1, 1, 1);
+    return bars.length ? barAtTick(bars, tick).tick : tick;
+  }
+  function addBars(tick: number, n: number): number {
+    const bars = buildBars(project, tick + 1, 1, n + 1);
+    const at = bars.length ? barAtTick(bars, tick) : null;
+    return at && bars[at.index + n] ? bars[at.index + n].tick : tick + project.ppq * 4 * n;
+  }
   const sectionRange = (i: number) => ({
     start: sortedSecs[i].tick,
-    end: sortedSecs[i + 1]?.tick ?? sortedSecs[i].tick + 3840 * (d?.sections[i]?.bars ?? 8),
+    end: sortedSecs[i + 1]?.tick ?? addBars(sortedSecs[i].tick, d?.sections[i]?.bars ?? 8),
   });
   const changesOf = (planId: string) => d?.proposal_changes?.[planId];
   /** 案を聴き比べる範囲: 区間を指定したらその区間。無ければ、選んでいる区間が変わる所ならそこ、
@@ -756,11 +767,11 @@
     if (r && r.endTick > r.startTick) return { start: r.startTick, end: r.endTick, section: null };
     const first = ch?.ranges?.[0];
     if (first) {
-      const start = Math.floor(first[0] / 3840) * 3840;
-      return { start, end: Math.max(first[1], start + 3840 * 4), section: null };
+      const start = barHead(first[0]);
+      return { start, end: Math.max(first[1], addBars(start, 4)), section: null };
     }
     const start = Math.max(0, transportStore.state.tick ?? 0);
-    return { start, end: start + 3840 * 8, section: null };
+    return { start, end: addBars(start, 8), section: null };
   }
   function listen(planId: string, prefer: number | null = null) {
     const r = proposalRange(planId, prefer);
@@ -932,7 +943,7 @@
             <div class="prow">
               <span class="plabel">変わる所</span>
               {#if ch?.stale}
-                <span class="pwarn">案を出した後で曲が変わったので、今の曲に当てられません(AI に作り直してもらってください)</span>
+                <span class="pwarn">{ch.why ?? "案を出した後で曲が変わったので、今の曲に当てられません(AI に作り直してもらってください)"}</span>
               {:else if !pr.edits}
                 <span class="pnote">音は変わりません(計画だけの案)</span>
               {:else}

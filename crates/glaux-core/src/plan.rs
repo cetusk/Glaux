@@ -52,6 +52,11 @@ pub struct Plan {
     /// 案の音: 今の曲に当てると案の音になる編集の列(案だけが持つ。採用すると曲にも当てる)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub patch: Vec<crate::command::Command>,
+    /// 案を出したときの、案の編集が触る所(トラック・クリップ・エフェクト・テンポなど)の中身の指紋(所の鍵 → 指紋)。
+    /// 採用・聴き比べのときに今の曲と比べ、案を出した後に直された所があれば当てない(人の手直しを案で上書きしない)。
+    /// 鍵と指紋は [`crate::designcheck::patch_base`] が作る
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub patch_base: BTreeMap<String, String>,
 }
 
 /// 計画の状態(省略 = 採用済み)
@@ -1013,6 +1018,7 @@ mod tests {
 
     fn plan(id: &PlanId) -> Plan {
         Plan {
+            patch_base: Default::default(),
             patch: vec![],
             state: None,
             id: id.clone(),

@@ -107,6 +107,19 @@ pub fn song_diff(before: &Project, after: &Project) -> SongDiff {
         for t in &p.tracks {
             let m = out.entry(t.id.to_string()).or_default();
             for c in &t.clips {
+                // 音声クリップ: 中身(素材・位置・長さ・音量・フェード・伸縮など。ID と名前・色は除く)で数える
+                if c.notes().is_none() {
+                    let mut v = serde_json::to_value(c).unwrap_or_default();
+                    if let Some(o) = v.as_object_mut() {
+                        o.remove("id");
+                        o.remove("name");
+                        o.remove("color");
+                    }
+                    let key = format!("audio:{v}");
+                    let e = m.entry(key).or_insert((c.start.0, c.end().0, 0));
+                    e.2 += 1;
+                    continue;
+                }
                 for n in c.playback_notes() {
                     let at = c.start.0 + n.pos.0;
                     let mut k = n.clone();
@@ -182,6 +195,154 @@ pub fn song_diff(before: &Project, after: &Project) -> SongDiff {
         }
     }
     SongDiff { ranges, whole }
+}
+
+// ---------------------------------------------------------------- 案の編集が触る所の指紋
+
+fn fnv_hex(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// 指紋の鍵(ノートはクリップごと比べるので鍵にしない)
+fn target_key(t: &crate::command::Target) -> Option<String> {
+    use crate::command::Target as T;
+    Some(match t {
+        T::Track(id) => format!("track:{id}"),
+        T::Clip(id) => format!("clip:{id}"),
+        T::Effect(id) => format!("fx:{id}"),
+        T::Asset(id) => format!("asset:{id}"),
+        T::Tempo => "tempo".to_owned(),
+        T::TimeSig => "time_sig".to_owned(),
+        T::Master => "master".to_owned(),
+        T::Meta => "meta".to_owned(),
+        T::Sections => "sections".to_owned(),
+        T::Note(_) => return None,
+    })
+}
+
+/// 値の中の `locked`(音の固定)を外す。固定しただけでは中身は変わらないので、指紋に入れない
+fn strip_locked(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.remove("locked");
+            o.values_mut().for_each(strip_locked);
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(strip_locked),
+        _ => {}
+    }
+}
+
+/// 鍵の指す所の中身(無ければ None)
+fn key_value(project: &Project, key: &str) -> Option<serde_json::Value> {
+    let (kind, id) = key.split_once(':').unwrap_or((key, ""));
+    let mut v = match kind {
+        "track" => {
+            let t = project.tracks.iter().find(|t| t.id.to_string() == id)?;
+            let mut v = serde_json::to_value(t).ok()?;
+            // トラックの設定だけ(クリップは別の鍵で比べる)
+            v.as_object_mut()?.remove("clips");
+            v
+        }
+        "clip" => serde_json::to_value(
+            project
+                .tracks
+                .iter()
+                .flat_map(|t| &t.clips)
+                .find(|c| c.id.to_string() == id)?,
+        )
+        .ok()?,
+        "fx" => serde_json::to_value(
+            project
+                .tracks
+                .iter()
+                .flat_map(|t| &t.effects)
+                .chain(project.master.effects.iter())
+                .find(|e| e.id.to_string() == id)?,
+        )
+        .ok()?,
+        "asset" => serde_json::to_value(
+            project
+                .assets
+                .iter()
+                .find(|(k, _)| k.to_string() == id)
+                .map(|(_, a)| a)?,
+        )
+        .ok()?,
+        "tempo" => serde_json::to_value(&project.tempo_map).ok()?,
+        "time_sig" => serde_json::to_value(&project.time_sig_map).ok()?,
+        "master" => serde_json::to_value(&project.master).ok()?,
+        "meta" => serde_json::to_value(&project.meta).ok()?,
+        "sections" => serde_json::to_value(&project.sections).ok()?,
+        _ => return None,
+    };
+    strip_locked(&mut v);
+    Some(v)
+}
+
+fn key_digest(project: &Project, key: &str) -> String {
+    key_value(project, key).map_or_else(|| "-".to_owned(), |v| fnv_hex(&v.to_string()))
+}
+
+/// 案を出すときに記録する、案の編集 `patch` が触る所の中身の指紋(まだ無い所は "-")
+pub fn patch_base(
+    project: &Project,
+    patch: &[crate::command::Command],
+) -> std::collections::BTreeMap<String, String> {
+    patch
+        .iter()
+        .flat_map(|c| c.targets())
+        .filter_map(|t| target_key(&t))
+        .map(|k| {
+            let d = key_digest(project, &k);
+            (k, d)
+        })
+        .collect()
+}
+
+/// 指紋を記録した後に中身が変わった所(人に見せる名前。変わっていなければ空)
+pub fn patch_base_changed(
+    project: &Project,
+    base: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    base.iter()
+        .filter(|(k, d)| key_digest(project, k) != **d)
+        .map(|(k, _)| {
+            let (kind, id) = k.split_once(':').unwrap_or((k, ""));
+            match kind {
+                "track" => format!(
+                    "トラック「{}」",
+                    project
+                        .tracks
+                        .iter()
+                        .find(|t| t.id.to_string() == id)
+                        .map_or(id, |t| t.name.as_str())
+                ),
+                "clip" => project
+                    .tracks
+                    .iter()
+                    .find_map(|t| {
+                        t.clips
+                            .iter()
+                            .find(|c| c.id.to_string() == id)
+                            .map(|c| format!("「{}」のクリップ「{}」", t.name, c.name))
+                    })
+                    .unwrap_or_else(|| format!("クリップ({id})")),
+                "fx" => "エフェクト".to_owned(),
+                "asset" => "素材".to_owned(),
+                "tempo" => "テンポ".to_owned(),
+                "time_sig" => "拍子".to_owned(),
+                "master" => "マスター".to_owned(),
+                "meta" => "曲の情報".to_owned(),
+                "sections" => "区間".to_owned(),
+                _ => k.clone(),
+            }
+        })
+        .collect()
 }
 
 /// 計画から作った・AI が作ったクリップの状態
@@ -674,6 +835,7 @@ mod tests {
         plans
             .apply_command(&PlanCommand::Create {
                 plan: Plan {
+                    patch_base: Default::default(),
                     patch: vec![],
                     id: PlanId::new(),
                     name: "Lead".into(),
@@ -778,5 +940,76 @@ mod tests {
         let mut m = p.clone();
         m.master.volume_db = -3.0;
         assert!(song_diff(&p, &m).whole);
+    }
+
+    #[test]
+    fn song_diff_sees_audio_clips() {
+        let mut p = Project::new("t");
+        let mut t = Track::new(TrackId::new(), "vo", TrackKind::Audio);
+        let cid = ClipId::new();
+        t.clips.push(Clip::new_audio(
+            cid.clone(),
+            "a",
+            Tick(3840),
+            Tick(3840 * 2),
+            crate::id::AssetId::parse("sha256:ab12").unwrap(),
+        ));
+        p.tracks.push(t);
+        let mut q = p.clone();
+        q.apply(&Command::MoveClip {
+            id: cid,
+            start: Tick(3840 * 3),
+            track: None,
+        })
+        .unwrap();
+        let d = song_diff(&p, &q);
+        assert!(!d.whole);
+        // 前の位置と後の位置(続いているので 1 つにつなぐ)
+        assert_eq!(d.ranges, vec![(3840, 3840 * 5)]);
+        assert!(song_diff(&p, &p.clone()).ranges.is_empty());
+    }
+
+    #[test]
+    fn patch_base_notices_edits_to_what_the_patch_touches() {
+        let mut p = Project::new("t");
+        let tid = TrackId::new();
+        let mut t = Track::new(tid.clone(), "b", TrackKind::Midi);
+        let (c1, c2) = (ClipId::new(), ClipId::new());
+        for (id, at) in [(&c1, 0), (&c2, 3840 * 4)] {
+            let mut c = Clip::new_midi(id.clone(), "c", Tick(at), Tick(3840 * 2));
+            if let Some(ns) = c.notes_mut() {
+                ns.push(note(0, 40));
+            }
+            t.clips.push(c);
+        }
+        p.tracks.push(t);
+        let n1 = p.tracks[0].clips[0].notes().unwrap()[0].id.clone();
+        let patch = vec![Command::UpdateNotes {
+            clip: c1.clone(),
+            changes: vec![crate::command::NoteChange::new(n1.clone()).pitch(28)],
+        }];
+        let base = patch_base(&p, &patch);
+        assert!(base.contains_key(&format!("clip:{c1}")));
+        // 別のクリップを直しても、固定しただけでも、案の触る所は変わらない
+        let mut q = p.clone();
+        let n2 = q.tracks[0].clips[1].notes().unwrap()[0].id.clone();
+        q.apply(&Command::UpdateNotes {
+            clip: c2,
+            changes: vec![crate::command::NoteChange::new(n2).pitch(45)],
+        })
+        .unwrap();
+        q.apply(&Command::UpdateNotes {
+            clip: c1.clone(),
+            changes: vec![crate::command::NoteChange::new(n1.clone()).locked(true)],
+        })
+        .unwrap();
+        assert!(patch_base_changed(&q, &base).is_empty());
+        // 案の触るクリップを人が直した → 変わった所として名前が出る
+        q.apply(&Command::UpdateNotes {
+            clip: c1,
+            changes: vec![crate::command::NoteChange::new(n1).vel(60)],
+        })
+        .unwrap();
+        assert_eq!(patch_base_changed(&q, &base), vec!["「b」のクリップ「c」"]);
     }
 }

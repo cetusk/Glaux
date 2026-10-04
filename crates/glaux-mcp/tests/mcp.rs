@@ -7302,6 +7302,172 @@ async fn design_screen_plan_operations() {
     .is_err());
 }
 
+/// 案の安全: 出した後の手直しは採用で上書きしない・案のまま保存し直しても案の音は残る・固定の音は外して知らせる・
+/// 全部が固定に当たれば固定の理由で断る・採用が書いた計画の履歴の項目は履歴の先頭にある
+#[tokio::test]
+async fn proposals_respect_later_edits_locks_and_resaves() {
+    use glaux_core::{Author, Command};
+    use glaux_mcp::plan_view;
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_saf001", "Bass")).await);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "ベース", "commands": [
+                { "op": "add_clip", "track": "trk_saf001", "clip": { "id": "clp_saf001", "name": "b", "start": 0, "length": 7680, "kind": "midi",
+                  "notes": [ { "id": "nt_saf001", "pos": 0, "dur": 960, "pitch": 36, "vel": 100 },
+                             { "id": "nt_saf002", "pos": 3840, "dur": 960, "pitch": 38, "vel": 100 } ] } } ] }),
+        )
+        .await,
+    );
+    let body = json!({ "track": "trk_saf001", "function": "bass" });
+    let propose = |name: &str, changes: Value| {
+        json!({ "name": name, "why": "試し", "kind": "part", "body": body.clone(),
+                "commands": [{ "op": "update_notes", "clip": "clp_saf001", "changes": changes }] })
+    };
+    let pid = |v: Value| v["plan_id"].as_str().unwrap().to_owned();
+    let human = |c: Command| {
+        let h = fx.handle.clone();
+        async move {
+            h.apply(c, Author::Human, "手直し".into())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    };
+    let update = |id: &str, ch: glaux_core::command::NoteChange| {
+        let _ = id;
+        Command::UpdateNotes {
+            clip: "clp_saf001".parse().unwrap(),
+            changes: vec![ch],
+        }
+    };
+    let nid = |s: &str| -> glaux_core::NoteId { s.parse().unwrap() };
+    let pitch_of =
+        |p: &glaux_core::Project, i: usize| p.tracks[0].clips[0].notes().unwrap()[i].pitch;
+
+    // 1) 案を出した後に、人が案の触るクリップを直す → 採用しない。変わる所は「当てられない」と理由、聴き比べも断る
+    let a = pid(ok_json(
+        &call(
+            &fx,
+            "propose_design",
+            propose("上へ", json!([{ "id": "nt_saf001", "pitch": 48 }])),
+        )
+        .await,
+    ));
+    human(update(
+        "",
+        glaux_core::command::NoteChange::new(nid("nt_saf002")).vel(50),
+    ))
+    .await;
+    let e = plan_view::adopt_proposal(&fx.handle, &a, &[])
+        .await
+        .unwrap_err();
+    assert!(e.contains("直されたので"), "{e}");
+    let (now, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(pitch_of(&now, 0), 36);
+    let d = plan_view::design(&fx.handle, 50).await.unwrap();
+    assert_eq!(d["proposal_changes"][&a]["stale"], true);
+    assert!(d["proposal_changes"][&a]["why"]
+        .as_str()
+        .unwrap()
+        .contains("クリップ「b」"));
+    assert!(plan_view::proposal_projects(&fx.handle, &a).await.is_err());
+
+    // 2) 案のまま名前や中身を保存し直しても(AI の save_plan・画面の保存)、案の音は残る
+    let b = pid(ok_json(
+        &call(
+            &fx,
+            "propose_design",
+            propose("下へ", json!([{ "id": "nt_saf001", "pitch": 24 }])),
+        )
+        .await,
+    ));
+    ok_json(
+        &call(
+            &fx,
+            "save_plan",
+            json!({ "plan_id": b, "name": "下へ(改)", "kind": "part", "why": "名前", "body": body }),
+        )
+        .await,
+    );
+    plan_view::save(
+        &fx.handle,
+        Some(&b),
+        Some("下へ 2"),
+        "part",
+        body.clone(),
+        None,
+        "名前",
+    )
+    .await
+    .unwrap();
+    let plans = fx.handle.get_plans().await.unwrap();
+    let bp = &plans.doc().plans[&b.parse().unwrap()];
+    assert_eq!(bp.state.as_deref(), Some("proposal"));
+    assert_eq!(bp.patch.len(), 1);
+    assert!(!bp.patch_base.is_empty());
+    // 曲は変わっていないので、聴き比べられる
+    let (_, alt) = plan_view::proposal_projects(&fx.handle, &b).await.unwrap();
+    assert_eq!(pitch_of(&alt, 0), 24);
+
+    // 3) 2 音を変える案を出した後に、そのうち 1 音を人が固定する → 採用は固定の音を外して当て、外したことを知らせる
+    let c = pid(ok_json(
+        &call(
+            &fx,
+            "propose_design",
+            propose(
+                "2 音",
+                json!([{ "id": "nt_saf001", "pitch": 30 }, { "id": "nt_saf002", "pitch": 31 }]),
+            ),
+        )
+        .await,
+    ));
+    human(update(
+        "",
+        glaux_core::command::NoteChange::new(nid("nt_saf002")).locked(true),
+    ))
+    .await;
+    let r = plan_view::adopt_proposal(&fx.handle, &c, &[])
+        .await
+        .unwrap();
+    assert!(
+        r["kept_locked"].as_array().is_some_and(|k| !k.is_empty()),
+        "{r}"
+    );
+    let (now, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!((pitch_of(&now, 0), pitch_of(&now, 1)), (30, 38));
+    // 採用が書いた計画の履歴の項目は、履歴のいちばん新しい側にある(画面の Ctrl+Z の確かめ)
+    let ids: Vec<String> = serde_json::from_value(r["plan_entry_ids"].clone()).unwrap();
+    assert_eq!(ids.len(), r["plan_entries"].as_u64().unwrap() as usize);
+    let h = plan_view::plan_head(&fx.handle, ids.len()).await.unwrap();
+    let mut head: Vec<String> = serde_json::from_value(h["applied"].clone()).unwrap();
+    let mut want = ids.clone();
+    head.sort();
+    want.sort();
+    assert_eq!(head, want);
+
+    // 4) 案の編集が全部固定の音に当たる → 「曲が変わった」ではなく固定の理由で断る
+    let e2 = pid(ok_json(
+        &call(
+            &fx,
+            "propose_design",
+            propose("1 音目", json!([{ "id": "nt_saf001", "vel": 77 }])),
+        )
+        .await,
+    ));
+    human(update(
+        "",
+        glaux_core::command::NoteChange::new(nid("nt_saf001")).locked(true),
+    ))
+    .await;
+    let e = plan_view::adopt_proposal(&fx.handle, &e2, &[])
+        .await
+        .unwrap_err();
+    assert!(e.contains("固定"), "{e}");
+}
+
 /// 案を採用すると、同じ元の計画から出たほかの案と、指定した案(いっしょに聴き比べていた案)を捨てる。ほかの案は残す
 #[tokio::test]
 async fn adopting_a_proposal_discards_its_siblings() {
@@ -7469,10 +7635,11 @@ async fn proposals_branch_and_adopt() {
         .await
         .unwrap()
         .unwrap();
+    // (案の触るクリップが案を出した後に直されたので、当てる前に断る)
     let e = plan_view::adopt_proposal(&fx.handle, pr2["plan_id"].as_str().unwrap(), &[])
         .await
         .unwrap_err();
-    assert!(e.contains("曲が変わった"), "{e}");
+    assert!(e.contains("直されたので"), "{e}");
     // 案の音が今の曲と同じ(同じ編集をすでに曲に当てた)案は受け付けない
     let e = call(
         &fx,

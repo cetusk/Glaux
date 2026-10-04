@@ -20,6 +20,7 @@ fn new_plan(rng: &mut StdRng) -> Plan {
         })
         .collect();
     Plan {
+        patch_base: Default::default(),
         patch: vec![],
         state: None,
         id: PlanId::new(),

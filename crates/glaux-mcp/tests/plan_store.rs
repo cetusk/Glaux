@@ -8,6 +8,7 @@ use std::fs;
 
 fn plan(id: &PlanId, name: &str) -> Plan {
     Plan {
+        patch_base: Default::default(),
         patch: vec![],
         state: None,
         id: id.clone(),

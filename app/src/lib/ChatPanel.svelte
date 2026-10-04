@@ -404,8 +404,12 @@
     const sendText = (e: Event) => {
       const text = (e as CustomEvent<string>).detail;
       if (!text) return;
+      // 入力欄の書きかけは消さない: 決まった言葉だけを送り、書きかけは入力欄に戻す
+      // (send は最初の await より前に入力欄を空にするので、呼んだ直後に戻せる)
+      const draft = input;
       input = text;
-      send();
+      void send();
+      if (draft.trim()) input = draft;
     };
     window.addEventListener("glaux:chat-send", sendText);
     const unlisten = api

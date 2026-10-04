@@ -2329,16 +2329,9 @@ async fn ab_prepare_proposals(
             glaux_engine::ab::MAX_TAKES - 1
         ));
     }
-    let mut now = None;
-    let mut alts = Vec::with_capacity(plan_ids.len());
-    for id in &plan_ids {
-        let (n, alt) = glaux_mcp::plan_view::proposal_projects(&state.handle, id).await?;
-        now.get_or_insert(n);
-        alts.push(alt);
-    }
-    let Some(now) = now else {
-        return Err("案がありません".into());
-    };
+    // 曲は 1 回だけ取り、どの案も同じ曲に当てる(取る合間に曲が変わって、A と B・C の元が食い違わないように)
+    let (now, alts) =
+        glaux_mcp::plan_view::proposal_projects_many(&state.handle, &plan_ids).await?;
     let engine = state.engine()?.clone();
     let sr = engine.sample_rate();
     let dir = state.handle.project_dir().await?;
@@ -2367,6 +2360,12 @@ async fn ab_prepare_proposals(
     v["end_tick"] = json!(end_tick);
     v["plan_ids"] = json!(plan_ids);
     Ok(v)
+}
+
+/// 計画の履歴のいちばん新しい側の項目の ID と、やり直せる項目の ID(設計画面の Ctrl+Z の確かめ)
+#[tauri::command]
+async fn plan_head(state: State<'_, AppState>, n: usize) -> Result<Value, String> {
+    glaux_mcp::plan_view::plan_head(&state.handle, n.clamp(1, 64)).await
 }
 
 /// 案を採用する(案の音を曲に当て、案の計画を今の計画にする)
@@ -3059,6 +3058,7 @@ fn main() -> Result<()> {
             plan_settle_estimated,
             ab_prepare_proposals,
             plan_adopt_proposal,
+            plan_head,
             export_audio,
             import_audio_clip,
             clip_peaks,

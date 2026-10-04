@@ -162,25 +162,25 @@ fn merged_fingerprint(before: &Project, after: &Project, clip_id: &ClipId) -> Op
         return Some(fresh);
     };
     let old_notes = abs_notes(old_clip);
-    // 前の記録を曲の頭からの位置で引けるように
+    // 前の記録をクリップの中の位置で引けるように(AI がクリップを動かしても、同じ所の記録を引き継ぐ)
     let old_spans: BTreeMap<(u64, u64), &str> = old
         .spans
         .iter()
-        .map(|s| {
-            (
-                (old_clip.start.0 + s.start.0, old_clip.start.0 + s.end.0),
-                s.hash.as_str(),
-            )
-        })
+        .map(|s| ((s.start.0, s.end.0), s.hash.as_str()))
         .collect();
     let new_notes = abs_notes(clip);
     let spans = fresh
         .spans
         .into_iter()
         .map(|s| {
-            let (a, b) = (clip.start.0 + s.start.0, clip.start.0 + s.end.0);
-            let unchanged = hash_range(&old_notes, a, b) == hash_range(&new_notes, a, b);
-            match old_spans.get(&(a, b)) {
+            // 中身は、前のクリップと今のクリップのそれぞれ同じ所(クリップの頭からの位置)で比べる
+            let unchanged =
+                hash_range(
+                    &old_notes,
+                    old_clip.start.0 + s.start.0,
+                    old_clip.start.0 + s.end.0,
+                ) == hash_range(&new_notes, clip.start.0 + s.start.0, clip.start.0 + s.end.0);
+            match old_spans.get(&(s.start.0, s.end.0)) {
                 Some(h) if unchanged => MadeSpan {
                     hash: (*h).to_owned(),
                     ..s
@@ -200,7 +200,8 @@ pub struct LockHit {
     pub clip: ClipId,
     /// 守った固定の音
     pub notes: Vec<NoteId>,
-    /// 外した編集(remove_notes / update_notes / replace_clip / remove_clip / remove_track / resize_clip / split_clip)
+    /// 外した編集(remove_notes / update_notes / replace_clip / remove_clip / remove_track / resize_clip / split_clip /
+    /// move_clip / set_clip_loop)
     pub op: &'static str,
     pub what: String,
 }
@@ -311,6 +312,19 @@ fn guard_one(
             let (Some(l), Some((_, old))) = (locked.get(&id), project.clip(&id)) else {
                 return Some(Command::ReplaceClip { id, clip });
             };
+            // 音の入らないクリップ(音声)への差し替えでは固定の音を残せないので、差し替えない
+            if clip.notes().is_none() {
+                hits.push(LockHit {
+                    clip: id.clone(),
+                    notes: l.iter().map(|n| n.id.clone()).collect(),
+                    op: "replace_clip",
+                    what: format!(
+                        "固定の音が {} 個あるクリップは、音声のクリップに差し替えなかった",
+                        l.len()
+                    ),
+                });
+                return None;
+            }
             let kept = keep_notes(&mut clip, old, l.iter().copied());
             if kept > 0 {
                 hits.push(LockHit {
@@ -359,6 +373,40 @@ fn guard_one(
                     op: "remove_track",
                 });
             }
+            None
+        }
+        Command::MoveClip { id, start, track } => match locked.get(&id) {
+            // 固定の音は曲の上の位置も含めて固定(クリップごと動かすと固定の音も動く)
+            Some(l) if project.clip(&id).is_some_and(|(_, c)| c.start != start) => {
+                hits.push(LockHit {
+                    clip: id.clone(),
+                    notes: l.iter().map(|n| n.id.clone()).collect(),
+                    op: "move_clip",
+                    what: format!("固定の音が {} 個あるクリップは動かさなかった", l.len()),
+                });
+                None
+            }
+            _ => Some(Command::MoveClip { id, start, track }),
+        },
+        Command::SetClipLoop { id, loop_len } => {
+            // ループを短くすると、ループの外の固定の音が鳴らなくなる・途中で切れる
+            let cut: Vec<NoteId> = match (loop_len, locked.get(&id)) {
+                (Some(len), Some(l)) => l
+                    .iter()
+                    .filter(|n| n.end() > len)
+                    .map(|n| n.id.clone())
+                    .collect(),
+                _ => vec![],
+            };
+            if cut.is_empty() {
+                return Some(Command::SetClipLoop { id, loop_len });
+            }
+            hits.push(LockHit {
+                clip: id.clone(),
+                what: "固定の音がループの外に出るので、ループを変えなかった".to_owned(),
+                notes: cut,
+                op: "set_clip_loop",
+            });
             None
         }
         Command::ResizeClip { id, length } => {
@@ -846,5 +894,111 @@ mod tests {
         assert_eq!(e.locks.len(), 1);
         p.apply(&e.command.unwrap()).unwrap();
         assert!(notes_of(&p, &cid).iter().all(|n| n.locked));
+    }
+
+    #[test]
+    fn locked_notes_stop_moves_loops_and_audio_replacements() {
+        let (mut p, cid) = song();
+        // 4 小節目の音を固定する
+        let n = notes_of(&p, &cid)[6].id.clone();
+        p.apply(&Command::UpdateNotes {
+            clip: cid.clone(),
+            changes: vec![NoteChange::new(n).locked(true)],
+        })
+        .unwrap();
+        let start = p.clip(&cid).unwrap().1.start;
+        // クリップを動かす → 動かさない。同じ位置(トラックだけ)なら通す
+        let e = for_ai(
+            &p,
+            Command::MoveClip {
+                id: cid.clone(),
+                start: Tick(start.0 + 3840),
+                track: None,
+            },
+        );
+        assert!(e.command.is_none());
+        assert_eq!(e.locks[0].op, "move_clip");
+        assert!(for_ai(
+            &p,
+            Command::MoveClip {
+                id: cid.clone(),
+                start,
+                track: None,
+            },
+        )
+        .command
+        .is_some());
+        // ループを固定の音より短くする → 変えない。固定の音を含む長さ・ループを外すのは通す
+        let e = for_ai(
+            &p,
+            Command::SetClipLoop {
+                id: cid.clone(),
+                loop_len: Some(Tick(3840 * 2)),
+            },
+        );
+        assert!(e.command.is_none());
+        assert_eq!(e.locks[0].op, "set_clip_loop");
+        for len in [Some(Tick(3840 * 4)), None] {
+            assert!(for_ai(
+                &p,
+                Command::SetClipLoop {
+                    id: cid.clone(),
+                    loop_len: len,
+                },
+            )
+            .command
+            .is_some());
+        }
+        // 音声のクリップへの差し替え → 差し替えない(固定の音を残せない)
+        let audio = Clip::new_audio(
+            cid.clone(),
+            "a",
+            start,
+            Tick(3840 * 4),
+            crate::id::AssetId::parse("sha256:ab12").unwrap(),
+        );
+        let e = for_ai(
+            &p,
+            Command::ReplaceClip {
+                id: cid.clone(),
+                clip: audio,
+            },
+        );
+        assert!(e.command.is_none());
+        assert_eq!(e.locks[0].op, "replace_clip");
+    }
+
+    #[test]
+    fn hand_edit_marks_survive_when_ai_moves_the_clip() {
+        let (mut p, cid) = song();
+        let n0 = notes_of(&p, &cid)[0].id.clone();
+        ai(
+            &mut p,
+            Command::UpdateNotes {
+                clip: cid.clone(),
+                changes: vec![NoteChange::new(n0).vel(90)],
+            },
+        );
+        // 人が 3 小節目を直す
+        let n = notes_of(&p, &cid)[4].id.clone();
+        p.apply(&Command::UpdateNotes {
+            clip: cid.clone(),
+            changes: vec![NoteChange::new(n).pitch(70)],
+        })
+        .unwrap();
+        let before = edited_spans(&p, &cid);
+        assert_eq!(before.len(), 1);
+        // AI がクリップを 1 小節後ろへ動かす → 手で直した印は、動いた先の同じ小節に残る
+        let start = p.clip(&cid).unwrap().1.start.0;
+        ai(
+            &mut p,
+            Command::MoveClip {
+                id: cid.clone(),
+                start: Tick(start + 3840),
+                track: None,
+            },
+        );
+        let after = edited_spans(&p, &cid);
+        assert_eq!(after, vec![(before[0].0 + 3840, before[0].1 + 3840)]);
     }
 }
