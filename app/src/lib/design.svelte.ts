@@ -112,6 +112,15 @@ export interface DesignData {
   history: PlanHistoryEntry[];
   history_total: number;
   redoable: number;
+  /** 案ごとの「変わる所」(案の ID → 区間の番号・範囲〈tick〉・曲全体に効くか・今の曲に当てられないか) */
+  proposal_changes?: Record<string, ProposalChanges>;
+}
+
+export interface ProposalChanges {
+  sections?: number[];
+  ranges?: [number, number][];
+  whole?: boolean;
+  stale?: boolean;
 }
 
 /** 働き・段階・盛り上がりの型の名前(バックエンドの glaux_core::plan と同じ) */
@@ -482,9 +491,10 @@ export const proposalAb = $state<{
   side: "a" | "b";
   info: AbInfo | null;
   busy: string | null;
-  /** 聴いている範囲(tick) */
+  /** 聴いている範囲(tick)と区間(区間で選んだとき) */
   start: number;
   end: number;
+  section: number | null;
 }>({
   planId: null,
   side: "b",
@@ -492,10 +502,11 @@ export const proposalAb = $state<{
   busy: null,
   start: 0,
   end: 0,
+  section: null,
 });
 
 /** 案を聴き比べる(範囲の頭から鳴らす) */
-export async function abProposal(planId: string, start: number, end: number): Promise<void> {
+export async function abProposal(planId: string, start: number, end: number, section: number | null = null): Promise<void> {
   proposalAb.busy = planId;
   try {
     const info = await invoke<AbInfo>("ab_prepare_proposal", {
@@ -510,6 +521,7 @@ export async function abProposal(planId: string, start: number, end: number): Pr
     const e = info.end_tick && info.end_tick > start ? info.end_tick : end;
     proposalAb.start = start;
     proposalAb.end = e;
+    proposalAb.section = section;
     await startAbLoop(start, e);
   } catch (e) {
     showToast("error", `聴き比べを用意できませんでした: ${e}`);

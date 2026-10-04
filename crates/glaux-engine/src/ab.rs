@@ -72,6 +72,18 @@ pub struct AbInfo {
     /// 範囲(秒)
     pub from_secs: f64,
     pub to_secs: f64,
+    /// 範囲の中で A と B の音が違い始める位置(範囲の頭からの秒)。同じなら None(切り替えても違いが聞こえない)
+    pub first_diff_secs: Option<f64>,
+}
+
+/// 2 つの書き出し(ステレオ・インターリーブ)が違い始めるフレーム。同じなら None
+fn first_diff(a: &[f32], b: &[f32]) -> Option<usize> {
+    // -80 dBFS 程度より小さい違いは聞こえないので同じとみなす
+    const EPS: f32 = 1e-4;
+    a.iter()
+        .zip(b)
+        .position(|(x, y)| (x - y).abs() > EPS)
+        .map(|i| i / 2)
 }
 
 /// そろえる量の上限(dB)。片方がほぼ無音のときに、もう片方を大きく下げすぎないように
@@ -122,6 +134,7 @@ pub fn prepare(
         (l.is_finite() && l > -70.0).then_some(l)
     };
     let (lufs_a, lufs_b) = (lufs(&ra), lufs(&rb));
+    let first_diff_secs = first_diff(&ra, &rb).map(|f| f as f64 / sample_rate);
     let (ga, gb) = match_gains(lufs_a, lufs_b);
     let amp = |db: f64| 10f64.powf(db / 20.0) as f32;
     let clip = AbClip {
@@ -138,6 +151,7 @@ pub fn prepare(
         gain_b_db: gb,
         from_secs,
         to_secs,
+        first_diff_secs,
     };
     Ok((clip, info))
 }

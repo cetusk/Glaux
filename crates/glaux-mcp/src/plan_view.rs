@@ -72,6 +72,35 @@ pub async fn design(handle: &SessionHandle, limit: usize) -> Result<Value, Strin
         .collect();
     let total = plans.history().applied().len();
     let redoable = plans.history().redoable().len();
+    // 案ごとの「変わる所」: 案の音を今の曲に当てた曲との違い(区間の番号・範囲・曲全体に効くか・当てられないか)
+    let mut changes = serde_json::Map::new();
+    for p in doc
+        .plans
+        .values()
+        .filter(|p| p.state.as_deref() == Some("proposal"))
+    {
+        let mut alt = (*project).clone();
+        let v = if p.patch.is_empty() {
+            json!({ "sections": [], "ranges": [], "whole": false })
+        } else if alt
+            .apply(&glaux_core::Command::batch("案", p.patch.clone()))
+            .is_err()
+        {
+            json!({ "stale": true })
+        } else {
+            let diff = glaux_core::designcheck::song_diff(&project, &alt);
+            let mut marks: Vec<u64> = project.sections.iter().map(|m| m.tick.0).collect();
+            marks.sort_unstable();
+            let sections: Vec<usize> = (0..marks.len())
+                .filter(|&i| {
+                    let (a, b) = (marks[i], marks.get(i + 1).copied().unwrap_or(u64::MAX));
+                    diff.ranges.iter().any(|&(s, e)| s < b && e > a)
+                })
+                .collect();
+            json!({ "sections": sections, "ranges": diff.ranges, "whole": diff.whole })
+        };
+        changes.insert(p.id.to_string(), v);
+    }
     let view =
         tokio::task::spawn_blocking(move || glaux_core::designcheck::design_view(&project, &doc))
             .await
@@ -81,6 +110,7 @@ pub async fn design(handle: &SessionHandle, limit: usize) -> Result<Value, Strin
     v["plans"] = json!(list);
     v["history"] = json!(history);
     v["history_total"] = json!(total);
+    v["proposal_changes"] = Value::Object(changes);
     v["redoable"] = json!(redoable);
     Ok(v)
 }

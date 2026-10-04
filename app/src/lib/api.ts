@@ -776,6 +776,8 @@ export interface AbInfo {
   edits_compared: number;
   /** 実際に書き出した範囲の終わり(長すぎる範囲は詰める) */
   end_tick: number;
+  /** 範囲の中で A と B の音が違い始める位置(範囲の頭からの秒)。同じなら null(切り替えても違いが聞こえない) */
+  first_diff_secs?: number | null;
 }
 
 /** 聴き比べを用意する: A = その編集の前、B = 今。同じ範囲を書き出して音量をそろえ、B を鳴らす状態にする */

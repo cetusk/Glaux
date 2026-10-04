@@ -730,18 +730,38 @@
   const propList = $derived(proposals(d));
   const planName = (id: string | undefined) => d?.plans.find((p) => p.plan_id === id)?.name;
   const proposalWhy = (id: string) => d?.history.find((h) => h.plan_id === id && h.op === "create")?.why;
-  /** 聴き比べる範囲: 選んでいる区間 → 選んだ小節 → 再生位置から 8 小節 */
-  function abRange(): { start: number; end: number } {
-    const secs = [...(project.sections ?? [])].sort((a, b) => a.tick - b.tick);
-    const i = sel.kind === "section" || sel.kind === "cell" ? sel.i : -1;
-    if (i >= 0 && secs[i]) {
-      const end = secs[i + 1]?.tick ?? secs[i].tick + 3840 * (d?.sections[i]?.bars ?? 8);
-      return { start: secs[i].tick, end };
+  const sortedSecs = $derived([...(project.sections ?? [])].sort((a, b) => a.tick - b.tick));
+  const sectionRange = (i: number) => ({
+    start: sortedSecs[i].tick,
+    end: sortedSecs[i + 1]?.tick ?? sortedSecs[i].tick + 3840 * (d?.sections[i]?.bars ?? 8),
+  });
+  const changesOf = (planId: string) => d?.proposal_changes?.[planId];
+  /** 案を聴き比べる範囲: 区間を指定したらその区間。無ければ、選んでいる区間が変わる所ならそこ、
+   *  そうでなければ変わる所の最初の区間 → 選んでいる区間 → 選んだ小節 → 変わる範囲の頭から 4 小節 → 再生位置から 8 小節 */
+  function proposalRange(planId: string, prefer: number | null = null): { start: number; end: number; section: number | null } {
+    const ch = changesOf(planId);
+    const selI = sel.kind === "section" || sel.kind === "cell" ? sel.i : -1;
+    if (prefer != null && sortedSecs[prefer]) return { ...sectionRange(prefer), section: prefer };
+    const changed = ch?.sections ?? [];
+    if (changed.length && sortedSecs[changed[0]]) {
+      const i = changed.includes(selI) ? selI : changed[0];
+      return { ...sectionRange(i), section: i };
     }
+    if (selI >= 0 && sortedSecs[selI]) return { ...sectionRange(selI), section: selI };
     const r = selectionStore.range;
-    if (r && r.endTick > r.startTick) return { start: r.startTick, end: r.endTick };
+    if (r && r.endTick > r.startTick) return { start: r.startTick, end: r.endTick, section: null };
+    const first = ch?.ranges?.[0];
+    if (first) {
+      const start = Math.floor(first[0] / 3840) * 3840;
+      return { start, end: Math.max(first[1], start + 3840 * 4), section: null };
+    }
     const start = Math.max(0, transportStore.state.tick ?? 0);
-    return { start, end: start + 3840 * 8 };
+    return { start, end: start + 3840 * 8, section: null };
+  }
+  function listen(planId: string, prefer: number | null = null) {
+    const r = proposalRange(planId, prefer);
+    if (r.section != null) pick({ kind: "section", i: r.section });
+    abProposal(planId, r.start, r.end, r.section);
   }
   // 案が無くなったら(採用・捨てる・AI が消した)聴き比べも終える
   $effect(() => {
@@ -802,45 +822,74 @@
         <div class="phead">
           <b>AI の案({propList.length})</b>
           <span class="hint"
-            >今の曲と計画は変わっていません。聴き比べて、よければ採用してください。聴く範囲: 選んでいる区間(無ければ選んだ小節・再生位置から 8 小節)</span
+            >今の曲と計画は変わっていません。聴き比べて、よければ採用してください。聴き比べ中は範囲を繰り返し鳴らし、A / B でいつでも切り替えられます</span
           >
         </div>
         {#each propList as pr (pr.plan_id)}
           {@const on = proposalAb.planId === pr.plan_id}
-          <div class="prop" class:on title={proposalWhy(pr.plan_id) ?? ""}>
-            <span class="pname">{pr.name}</span>
-            <span class="pbase"
-              >{pr.derived_from ? `「${planName(pr.derived_from.id) ?? "元の計画"}」の案` : "新しい計画の案"}{pr.edits
-                ? ` · 音の編集 ${pr.edits}`
-                : " · 計画だけ"}</span
-            >
-            {#if proposalWhy(pr.plan_id)}<span class="pwhy">{proposalWhy(pr.plan_id)}</span>{/if}
-            <span class="spacer"></span>
-            {#if on}
-              <span class="abswitch" role="group" aria-label="今と案を切り替える">
-                <button class="btn sm" class:on={proposalAb.side === "a"} type="button" onclick={() => setProposalSide("a")}>A 今</button>
-                <button class="btn sm" class:on={proposalAb.side === "b"} type="button" onclick={() => setProposalSide("b")}>B 案</button>
-              </span>
-              {#if proposalAb.info}
-                <span class="abnote" title="音量をそろえて比べています"
-                  >今 {proposalAb.info.lufs_a?.toFixed(1) ?? "—"} / 案 {proposalAb.info.lufs_b?.toFixed(1) ?? "—"} LUFS</span
-                >
-              {/if}
-              <button class="btn sm" type="button" onclick={endProposalAb}>聴き比べを終える</button>
-            {:else}
-              <button
-                class="btn sm"
-                type="button"
-                disabled={proposalAb.busy != null || !pr.edits}
-                title={pr.edits ? "今と案を、音量をそろえて切り替えて聴く" : "音の変わらない案です(計画だけ)"}
-                onclick={() => {
-                  const r = abRange();
-                  abProposal(pr.plan_id, r.start, r.end);
-                }}>{proposalAb.busy === pr.plan_id ? "用意しています…" : "聴き比べる"}</button
+          {@const ch = changesOf(pr.plan_id)}
+          <div class="prop" class:on>
+            <div class="prow">
+              <span class="pname">{pr.name}</span>
+              <span class="pbase"
+                >{pr.derived_from ? `「${planName(pr.derived_from.id) ?? "元の計画"}」の案` : "新しい計画の案"}{pr.edits
+                  ? ` · 編集 ${pr.edits} 件`
+                  : " · 計画だけ"}</span
               >
-            {/if}
-            <button class="btn sm primary" type="button" onclick={() => adoptProposal(pr.plan_id, pr.name)}>採用</button>
-            <button class="btn sm" type="button" onclick={() => discardProposal(pr.plan_id, pr.name)}>捨てる</button>
+            </div>
+            {#if proposalWhy(pr.plan_id)}<div class="pwhy">{proposalWhy(pr.plan_id)}</div>{/if}
+            <div class="prow">
+              <span class="plabel">変わる所</span>
+              {#if ch?.stale}
+                <span class="pwarn">案を出した後で曲が変わったので、今の曲に当てられません(AI に作り直してもらってください)</span>
+              {:else if !pr.edits}
+                <span class="pnote">音は変わりません(計画だけの案)</span>
+              {:else}
+                {#each ch?.sections ?? [] as si (si)}
+                  <button
+                    class="btn sm secchip"
+                    class:on={on && proposalAb.section === si}
+                    type="button"
+                    title="この区間で聴き比べる"
+                    disabled={proposalAb.busy != null}
+                    onclick={() => listen(pr.plan_id, si)}>{d.sections[si]?.name ?? `区間 ${si + 1}`}</button
+                  >
+                {:else}
+                  {#if ch?.ranges?.length}<span class="pnote">区間の外({ch.ranges.length} か所)</span>{/if}
+                {/each}
+                {#if ch?.whole}<span class="pnote">+ 音色・ミックスなど曲全体</span>{/if}
+                {#if !ch?.sections?.length && !ch?.ranges?.length && !ch?.whole}<span class="pnote">音の違いは見つかりませんでした</span>{/if}
+              {/if}
+            </div>
+            <div class="prow">
+              {#if on}
+                <span class="abswitch" role="group" aria-label="今と案を切り替える">
+                  <button class="btn sm" class:on={proposalAb.side === "a"} type="button" onclick={() => setProposalSide("a")}>A 今</button>
+                  <button class="btn sm" class:on={proposalAb.side === "b"} type="button" onclick={() => setProposalSide("b")}>B 案</button>
+                </span>
+                <span class="abnote"
+                  >{proposalAb.section != null ? `「${d.sections[proposalAb.section]?.name}」を聴いています` : "選んだ範囲を聴いています"}{#if proposalAb.info}{" "}· 今 {proposalAb.info.lufs_a?.toFixed(1) ?? "—"} / 案 {proposalAb.info.lufs_b?.toFixed(1) ?? "—"} LUFS(音量はそろえてあります){/if}</span
+                >
+                {#if proposalAb.info && proposalAb.info.first_diff_secs === null}
+                  <span class="pwarn">この範囲では今と案の音が同じです(変わる所の区間を押して聴いてください)</span>
+                {:else if proposalAb.info?.first_diff_secs != null && proposalAb.info.first_diff_secs > 1}
+                  <span class="pnote">違いは範囲の頭から {proposalAb.info.first_diff_secs.toFixed(1)} 秒あたりから</span>
+                {/if}
+                <span class="spacer"></span>
+                <button class="btn sm" type="button" onclick={endProposalAb}>聴き比べを終える</button>
+              {:else}
+                <button
+                  class="btn sm"
+                  type="button"
+                  disabled={proposalAb.busy != null || !pr.edits || !!ch?.stale}
+                  title={pr.edits ? "今と案を、音量をそろえて切り替えて聴く(範囲は変わる所の区間)" : "音の変わらない案です(計画だけ)"}
+                  onclick={() => listen(pr.plan_id)}>{proposalAb.busy === pr.plan_id ? "用意しています…" : "聴き比べる"}</button
+                >
+                <span class="spacer"></span>
+              {/if}
+              <button class="btn sm primary" type="button" disabled={!!ch?.stale} onclick={() => adoptProposal(pr.plan_id, pr.name)}>採用</button>
+              <button class="btn sm" type="button" onclick={() => discardProposal(pr.plan_id, pr.name)}>捨てる</button>
+            </div>
           </div>
         {/each}
       </div>
@@ -2447,7 +2496,7 @@
     padding: 6px 10px;
     background: var(--bg-panel);
     font-size: var(--fs-sm);
-    max-height: 30vh;
+    max-height: 40vh;
     overflow-y: auto;
   }
   .phead {
@@ -2458,10 +2507,9 @@
   }
   .prop {
     display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-    padding: 4px 6px;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
     border-radius: var(--r-sm);
     border: 1px dashed var(--border-strong);
   }
@@ -2469,8 +2517,35 @@
     border-style: solid;
     border-color: var(--accent);
   }
+  .prow {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
   .pname {
     font-weight: 600;
+  }
+  .plabel {
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+  }
+  .pnote {
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+  }
+  .pwarn {
+    color: var(--warn);
+    font-size: var(--fs-xs);
+  }
+  .secchip {
+    border-radius: 10px;
+    padding: 0 8px;
+    font-size: var(--fs-xs);
+  }
+  .secchip.on {
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .pbase,
   .abnote {
@@ -2480,10 +2555,6 @@
   .pwhy {
     color: var(--text-dim);
     font-size: var(--fs-xs);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 40ch;
   }
   .abswitch {
     display: inline-flex;

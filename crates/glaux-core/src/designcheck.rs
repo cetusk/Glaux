@@ -89,6 +89,85 @@ pub struct Deviation {
     pub fix: String,
 }
 
+/// 2 つの曲の音の違い(案の「変わる所」)。ノートの違いは曲の頭からの範囲 [a, b)、
+/// 音色・エフェクト・つまみ・オートメーション・テンポなど曲全体に効く違いは `whole`
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SongDiff {
+    pub ranges: Vec<(u64, u64)>,
+    pub whole: bool,
+}
+
+/// 2 つの曲の音の違いを調べる(案を当てる前と後)
+pub fn song_diff(before: &Project, after: &Project) -> SongDiff {
+    use std::collections::BTreeMap;
+    // トラックごとの、鳴る音(ID を除いた中身と曲の頭からの位置)の数え上げ
+    fn sounding(p: &Project) -> BTreeMap<String, BTreeMap<String, (u64, u64, i64)>> {
+        let mut out: BTreeMap<String, BTreeMap<String, (u64, u64, i64)>> = BTreeMap::new();
+        for t in &p.tracks {
+            let m = out.entry(t.id.to_string()).or_default();
+            for c in &t.clips {
+                for n in c.playback_notes() {
+                    let at = c.start.0 + n.pos.0;
+                    let mut k = n.clone();
+                    k.id = crate::id::NoteId::parse("nt_x").expect("固定の ID");
+                    k.locked = false;
+                    k.pos = crate::time::Tick(at);
+                    let key = serde_json::to_string(&k).unwrap_or_default();
+                    let e = m.entry(key).or_insert((at, at + n.dur.0, 0));
+                    e.2 += 1;
+                }
+            }
+        }
+        out
+    }
+    let (a, b) = (sounding(before), sounding(after));
+    let mut ranges = Vec::new();
+    let tracks: std::collections::BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+    let empty = BTreeMap::new();
+    for t in tracks {
+        let (x, y) = (a.get(t).unwrap_or(&empty), b.get(t).unwrap_or(&empty));
+        let keys: std::collections::BTreeSet<&String> = x.keys().chain(y.keys()).collect();
+        for k in keys {
+            let (cx, cy) = (x.get(k).map_or(0, |v| v.2), y.get(k).map_or(0, |v| v.2));
+            if cx != cy {
+                let (s, e, _) = x.get(k).or(y.get(k)).copied().unwrap_or_default();
+                ranges.push((s, e.max(s + 1)));
+            }
+        }
+    }
+    ranges.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::new();
+    for (s, e) in ranges {
+        match merged.last_mut() {
+            Some(l) if s <= l.1 => l.1 = l.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    // 曲全体に効く違い: クリップ以外のトラックの設定・マスター・テンポ・拍子
+    let strip = |p: &Project| -> Vec<serde_json::Value> {
+        p.tracks
+            .iter()
+            .map(|t| {
+                let mut v = serde_json::to_value(t).unwrap_or_default();
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("clips");
+                    o.remove("name");
+                    o.remove("color");
+                }
+                v
+            })
+            .collect()
+    };
+    let whole = strip(before) != strip(after)
+        || serde_json::to_value(&before.master).ok() != serde_json::to_value(&after.master).ok()
+        || before.tempo_map != after.tempo_map
+        || before.time_sig_map != after.time_sig_map;
+    SongDiff {
+        ranges: merged,
+        whole,
+    }
+}
+
 /// 計画から作った・AI が作ったクリップの状態
 #[derive(Clone, Debug, Serialize)]
 pub struct ClipView {
@@ -633,5 +712,33 @@ mod tests {
             "{:?}",
             v.deviations
         );
+    }
+
+    #[test]
+    fn song_diff_finds_changed_ranges_and_whole_song_changes() {
+        let mut p = Project::new("t");
+        let tid = TrackId::new();
+        let mut t = Track::new(tid.clone(), "b", TrackKind::Midi);
+        let mut c = Clip::new_midi(ClipId::new(), "c", Tick(3840), Tick(3840 * 4));
+        if let Some(ns) = c.notes_mut() {
+            ns.push(note(0, 40));
+            ns.push(note(3840 * 2, 43));
+        }
+        t.clips.push(c);
+        p.tracks.push(t);
+        let mut q = p.clone();
+        let n2 = q.tracks[0].clips[0].notes().unwrap()[1].id.clone();
+        q.apply(&Command::UpdateNotes {
+            clip: q.tracks[0].clips[0].id.clone(),
+            changes: vec![crate::command::NoteChange::new(n2).pitch(31)],
+        })
+        .unwrap();
+        let d = song_diff(&p, &q);
+        assert_eq!(d.ranges, vec![(3840 * 3, 3840 * 3 + 480)]);
+        assert!(!d.whole);
+        // ID が変わっただけ(中身が同じ)なら違いなし
+        assert!(song_diff(&p, &p.clone()).ranges.is_empty());
+        q.tracks[0].volume_db = -6.0;
+        assert!(song_diff(&p, &q).whole);
     }
 }
