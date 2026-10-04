@@ -238,6 +238,8 @@
   }
   $effect(() => {
     void input;
+    // 隠れていた欄が見えるようになったら(下のパネルを開いたときなど)測り直す。隠れている間は中身の高さが 0 と測られる
+    void chatH;
     const el = inputEl;
     if (!el) return;
     if (inputShown != null) {
@@ -254,7 +256,9 @@
       parseFloat(cs.borderBottomWidth);
     el.style.height = "auto";
     const max = line * MAX_LINES + extra;
-    el.style.height = `${Math.min(el.scrollHeight + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth), max)}px`;
+    // 少なくとも 1 行分(隠れていて中身の高さが測れないときも、つぶれないように)
+    const min = line + extra;
+    el.style.height = `${Math.max(min, Math.min(el.scrollHeight + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth), max))}px`;
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
   });
   let scroller: HTMLDivElement | undefined = $state();
