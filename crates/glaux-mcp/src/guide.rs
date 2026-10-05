@@ -364,7 +364,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   歌のサ行の刺さりは deesser、かぶり・ノイズ・残響の尻尾は gate。倍音で太く温かくは saturation(tape / tube / transistor / soft_clip)。\n\
   コンプの癖は character(vca = バスのまとまり、fet = ドラム・歌を前へ、opto = なめらか)、頭の山を確実に取るなら lookahead_ms。\n\
   ディレイは sync(1/4・1/8d など)でテンポに合わせ、type で tape(揺れて丸く飽和)・bbd(暗く温かい)・multitap(刻み)。\n\
-  リバーブの character は hall(長く広い)・chamber(密で明るい)・shimmer(オクターブ上へ昇る)も。\n\
+  リバーブの character は hall(長く広い)・chamber(密で明るい)・shimmer(オクターブ上へ昇る)も。\
+  低域の濁りは low_mult 0.5〜0.8、長い残響の金属的な鳴きは modulation 0.2〜0.5、部屋の距離感は early 0.3〜0.6。\n\
   歌のハモりは harmonizer、音程補正は pitch_correct(key・scale を曲に合わせる。speed_ms 0〜5 でケロケロ)、音程の移調は pitch_shift。\n\
 - distortion はシンセ・ドラム等の歪み。エレキギターの歪みは amp(instruments を参照)。\n\
 - 空間: 複数のトラックに同じリバーブ・ディレイを掛けるなら、バス(add_track kind: \"bus\" + リバーブ mix 1.0)を作り、\n\

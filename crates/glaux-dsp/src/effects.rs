@@ -2314,6 +2314,59 @@ pub static REVERB_SPECS: &[ParamSpec] = &[
         description: "character が shimmer のとき、響きをオクターブ上げて戻す量。上げるほどきらめきが積み重なって\
             天井へ昇る。0.3〜0.6 が使いやすい。",
     },
+    ParamSpec {
+        name: "modulation",
+        display_name: "揺らぎ",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "残響の中をわずかに揺らし、長い残響の金属的な鳴き(特定の音が残るリンギング)を和らげて滑らかにする。\
+            0.2〜0.5 でパッド・ボーカル・ピアノの長い残響が自然に。上げすぎると残響の音程がわずかに揺れる(コーラス風)。",
+    },
+    ParamSpec {
+        name: "low_mult",
+        display_name: "低域の長さ",
+        unit: Some("×"),
+        range: ParamRange::Float {
+            min: 0.25,
+            max: 2.5,
+            default: 1.0,
+            skew: None,
+        },
+        description: "250Hz 以下の残響時間の倍率。下げると低域の濁りが減って締まる(ミックスでは 0.5〜0.8 が定番。\
+            ベース・キックと響きがぶつからない)。上げると大聖堂のような重く長い低域。",
+    },
+    ParamSpec {
+        name: "high_mult",
+        display_name: "高域の長さ",
+        unit: Some("×"),
+        range: ParamRange::Float {
+            min: 0.25,
+            max: 2.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "4kHz 以上の残響時間の倍率(damping と一緒に効く)。下げると本物の部屋のように高域が先に消えて\
+            落ち着く。上げるとプレートのように明るい響きが長く伸びる(歯擦音が目立つときは下げる)。",
+    },
+    ParamSpec {
+        name: "early",
+        display_name: "初期反射",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "壁からの最初の跳ね返り(数〜数十 ms)の量。上げると部屋の大きさと、音源までの距離感がはっきりする\
+            (遠くに置くなら上げて mix も上げる)。0.3〜0.6 で生楽器・ボーカルを部屋に置いた感じ。\
+            hall で長く、plate では短く弱い(鉄板には壁が無い)。",
+    },
 ];
 
 pub static DISTORTION_SPECS: &[ParamSpec] = &[
@@ -3048,6 +3101,10 @@ impl EffectParams {
                         return true;
                     }
                     "shimmer" => raw.shimmer = v.clamp(0.0, 1.0),
+                    "modulation" => raw.modulation = v.clamp(0.0, 1.0),
+                    "low_mult" => raw.low_mult = v.clamp(0.25, 2.5),
+                    "high_mult" => raw.high_mult = v.clamp(0.25, 2.0),
+                    "early" => raw.early = v.clamp(0.0, 1.0),
                     _ => return false,
                 }
                 let gate = p.gate;
@@ -3341,6 +3398,10 @@ pub fn bake_effect(
                         "character",
                     )),
                     shimmer: get(map, s, "shimmer"),
+                    modulation: get(map, s, "modulation").clamp(0.0, 1.0),
+                    low_mult: get(map, s, "low_mult").clamp(0.25, 2.5),
+                    high_mult: get(map, s, "high_mult").clamp(0.25, 2.0),
+                    early: get(map, s, "early").clamp(0.0, 1.0),
                     sample_rate,
                 },
             );
@@ -3586,6 +3647,10 @@ mod tests {
             ("reverb", "mix", 0.8),
             ("reverb", "size", 0.9),
             ("reverb", "predelay_ms", 25.0),
+            ("reverb", "modulation", 0.4),
+            ("reverb", "low_mult", 0.5),
+            ("reverb", "high_mult", 1.6),
+            ("reverb", "early", 0.5),
             ("distortion", "drive_db", 30.0),
             ("amp", "tone", 0.2),
             ("sidechain", "duck_db", 12.0),

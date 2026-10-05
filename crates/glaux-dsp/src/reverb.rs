@@ -12,6 +12,13 @@
 //!   プレートの間の長さで、拡散が強く明るめ
 //! - シマー(shimmer): ホールの響きを 1 オクターブ上げて入口へ戻す(残響が上へ上へと昇っていく)。
 //!   音程を上げるのは 2 本の読み出し口を持つ遅延線(読み出しを 2 倍の速さで回し、sin² の重みで入れ替える)
+//! - 揺らぎ(modulation): 遅延線の読み出し位置を線ごとに違う速さ(0.3〜1Hz)でわずかに揺らし、補間して読む。
+//!   長い残響の金属的な鳴き(決まった周波数が残るリンギング)が和らぐ。既定 0(揺らさない。上の理由で)
+//! - 帯域ごとの残響時間(low_mult / high_mult): 帰還の中で 250Hz 以下と 4kHz 以上を分け、それぞれの残響時間を
+//!   何倍にするかを決める(1 次のフィルタで分け、3 つを足すと元に戻る)。どちらも 1 なら分けない
+//! - 初期反射(early): プリディレイの後の音から 8 本の跳ね返り(部屋で約 4〜42ms。種類とサイズで伸び縮み)を
+//!   左右に振って足す。部屋の大きさと音源までの距離感が出る。既定 0
+//! - 3 つとも既定の値では処理を通らない(以前と同じ音)
 //! - 長さはサンプルレートに合わせて伸縮する(96kHz まで同じ部屋。それより上は 96kHz の長さで頭打ち)
 //! - バッファは作るときに 1 回だけ確保する。処理中はアロケーションしない
 
@@ -44,6 +51,20 @@ const CHAMBER_OUT_GAIN: f32 = 0.90;
 /// ホール(とシマー)の残響時間の伸び、チェンバーの縮み
 const HALL_RT_MUL: f32 = 1.6;
 const CHAMBER_RT_MUL: f32 = 0.8;
+/// 揺らぎ: 最大の深さ(48kHz のサンプル数)と、遅延線ごとの速さ(Hz。互いにずらす)
+const MOD_MAX: f32 = 16.0;
+const MOD_RATES: [f32; LINES] = [0.31, 0.43, 0.53, 0.61, 0.71, 0.79, 0.89, 0.97];
+/// 帯域ごとの残響時間の境目(Hz)
+const BAND_LO_HZ: f32 = 250.0;
+const BAND_HI_HZ: f32 = 4000.0;
+/// 初期反射: 跳ね返りの遅れ(48kHz の部屋のサンプル数)・大きさ・左右の重み
+const ER_TAPS: usize = 8;
+const ER_LENS: [f32; ER_TAPS] = [187., 353., 571., 787., 1031., 1307., 1613., 1993.];
+const ER_GAINS: [f32; ER_TAPS] = [0.9, 0.8, 0.72, 0.64, 0.56, 0.48, 0.4, 0.33];
+/// 跳ね返りを足した大きさを残響とそろえる係数(大きさの 2 乗和の平方根の逆数)
+const ER_NORM: f32 = 0.56;
+/// 種類・サイズによる伸び縮みの最大(ホール 1.8 × サイズ 1.4)
+const ER_MAX_SCALE: f32 = 2.52;
 /// シマーの音程を上げる遅延線の入れ替えの窓(48kHz のサンプル数)と、最短の遅れ
 const SHIMMER_WIN: f32 = 2048.0;
 const SHIMMER_BASE: usize = 2;
@@ -79,7 +100,39 @@ pub struct ReverbRaw {
     pub character: ReverbCharacter,
     /// シマーの量(0..1。character が shimmer のときだけ使う)
     pub shimmer: f32,
+    /// 揺らぎの量(0..1。0 で揺らさない)
+    pub modulation: f32,
+    /// 250Hz 以下・4kHz 以上の残響時間の倍率(1 で分けない)
+    pub low_mult: f32,
+    pub high_mult: f32,
+    /// 初期反射の量(0..1)
+    pub early: f32,
     pub sample_rate: f32,
+}
+
+impl ReverbRaw {
+    /// 揺らぎ・帯域ごとの残響時間・初期反射を既定(使わない)にした設定
+    pub fn basic(
+        size: f32,
+        damping: f32,
+        predelay_ms: f32,
+        character: ReverbCharacter,
+        shimmer: f32,
+        sample_rate: f32,
+    ) -> Self {
+        ReverbRaw {
+            size,
+            damping,
+            predelay_ms,
+            character,
+            shimmer,
+            modulation: 0.0,
+            low_mult: 1.0,
+            high_mult: 1.0,
+            early: 0.0,
+            sample_rate,
+        }
+    }
 }
 
 /// 焼き込み済みのリバーブの設定
@@ -106,6 +159,20 @@ pub struct ReverbParams {
     pub smooth: f32,
     /// ゲートリバーブ: 入ってくる音が途切れてから残響を切るまで(サンプル。0 = 切らない)
     pub gate: f32,
+    /// 揺らぎの深さ(サンプル。0 = 揺らさない)と、遅延線ごとの 1 サンプルの進み(周期に対する割合)
+    mod_depth: f32,
+    mod_inc: [f32; LINES],
+    /// 帯域ごとの残響時間: 分けるか、低域・高域の 1 周ごとの減衰、境目の 1 次ローパスの係数
+    bands: bool,
+    gain_lo: [f32; LINES],
+    gain_hi: [f32; LINES],
+    band_lo_a: f32,
+    band_hi_a: f32,
+    /// 初期反射の量・遅れ(サンプル)・左右の大きさ
+    early: f32,
+    er_len: [usize; ER_TAPS],
+    er_l: [f32; ER_TAPS],
+    er_r: [f32; ER_TAPS],
 }
 
 /// サイズ(0..1)→ 残響時間(秒)。以前のリバーブ(コムの帰還 0.7〜0.98)と同じ伸び方にしてある
@@ -133,7 +200,22 @@ impl ReverbParams {
                 Room | Plate => 1.0,
             };
         let len: [usize; LINES] = std::array::from_fn(|i| ((base[i] * scale) as usize).max(1));
-        let gain = std::array::from_fn(|i| 10.0_f32.powf(-3.0 * len[i] as f32 / (sr * rt60)));
+        let gain_for = |rt: f32| -> [f32; LINES] {
+            std::array::from_fn(|i| 10.0_f32.powf(-3.0 * len[i] as f32 / (sr * rt)))
+        };
+        let gain = gain_for(rt60);
+        let low_mult = raw.low_mult.clamp(0.25, 2.5);
+        let high_mult = raw.high_mult.clamp(0.25, 2.0);
+        let bands = low_mult != 1.0 || high_mult != 1.0;
+        let lp_coef = |hz: f32| (-std::f32::consts::TAU * hz / sr).exp();
+        let er_scale = scale
+            * (0.6 + 0.8 * raw.size.clamp(0.0, 1.0))
+            * match ch {
+                Room => 1.0,
+                Plate => 0.5,
+                Hall | Shimmer => 1.8,
+                Chamber => 0.85,
+            };
         // 48kHz での係数をほかのレートでも同じ周波数になるように(プレートは明るめ)
         let d = raw.damping.clamp(0.0, 1.0)
             * match ch {
@@ -170,6 +252,29 @@ impl ReverbParams {
             shimmer_win: ((SHIMMER_WIN * scale) as usize / 2 * 2).max(64),
             smooth: crate::effects::smooth_coef(sr),
             gate: 0.0,
+            mod_depth: raw.modulation.clamp(0.0, 1.0) * MOD_MAX * scale,
+            mod_inc: std::array::from_fn(|i| MOD_RATES[i] / sr),
+            bands,
+            gain_lo: if bands {
+                gain_for(rt60 * low_mult)
+            } else {
+                gain
+            },
+            gain_hi: if bands {
+                gain_for(rt60 * high_mult)
+            } else {
+                gain
+            },
+            band_lo_a: lp_coef(BAND_LO_HZ),
+            band_hi_a: lp_coef(BAND_HI_HZ),
+            early: raw.early.clamp(0.0, 1.0),
+            er_len: std::array::from_fn(|k| ((ER_LENS[k] * er_scale) as usize).max(1)),
+            er_l: std::array::from_fn(|k| {
+                ER_GAINS[k] * ER_NORM * if k % 2 == 0 { 1.0 } else { 0.45 }
+            }),
+            er_r: std::array::from_fn(|k| {
+                ER_GAINS[k] * ER_NORM * if k % 2 == 0 { 0.45 } else { 1.0 }
+            }),
         }
     }
 }
@@ -194,6 +299,17 @@ impl Ring {
         if self.w >= self.cap {
             self.w = 0;
         }
+    }
+
+    /// `d` サンプル前を、端数は線形補間で(揺らぎの読み出し)
+    #[inline]
+    fn read_frac(&self, buf: &[f32], d: f32) -> f32 {
+        let d = d.clamp(1.0, (self.cap - 1) as f32);
+        let i = d as usize;
+        let t = d - i as f32;
+        let a = self.read(buf, i);
+        let b = self.read(buf, i + 1);
+        a + (b - a) * t
     }
 
     /// `d` サンプル前(1 = いちばん新しい)
@@ -222,6 +338,13 @@ pub struct FdnState {
     shim_d: [usize; 2],
     shim_prev: f32,
     shim_lp: f32,
+    /// 揺らぎの位相(遅延線ごと。0..1)
+    mod_ph: [f32; LINES],
+    /// 帯域ごとの残響時間の境目のフィルタの状態(遅延線ごと)
+    band_lo: [f32; LINES],
+    band_hi: [f32; LINES],
+    /// 初期反射の遅延線
+    er: Ring,
 }
 
 impl Default for FdnState {
@@ -245,8 +368,9 @@ impl FdnState {
                 .max(HALL_LENS[i])
                 .max(CHAMBER_LENS[i])
         });
+        // 揺らぎで読む位置が伸びる分も
         let lines: Vec<Ring> = longest
-            .map(|l| ring((l * MAX_SCALE) as usize + 2))
+            .map(|l| ring(((l + MOD_MAX * 2.0) * MAX_SCALE) as usize + 4))
             .collect();
         let diff: Vec<Ring> = DIFF_LENS
             .iter()
@@ -254,6 +378,7 @@ impl FdnState {
             .collect();
         let pre = ring((PREDELAY_MAX_MS * 0.001 * 48_000.0 * MAX_SCALE) as usize + 2);
         let shim = ring((SHIMMER_WIN * MAX_SCALE) as usize + SHIMMER_BASE + 4);
+        let er = ring((ER_LENS[ER_TAPS - 1] * ER_MAX_SCALE * MAX_SCALE) as usize + 4);
         FdnState {
             buf: vec![0.0; off],
             lines: std::array::from_fn(|i| lines[i]),
@@ -264,6 +389,11 @@ impl FdnState {
             shim_d: [0, 0],
             shim_prev: 0.0,
             shim_lp: 0.0,
+            // 遅延線ごとに位相をずらす(同時に伸び縮みしないように)
+            mod_ph: std::array::from_fn(|i| i as f32 / LINES as f32),
+            band_lo: [0.0; LINES],
+            band_hi: [0.0; LINES],
+            er,
         }
     }
 
@@ -273,6 +403,8 @@ impl FdnState {
         self.shim_d = [0, 0];
         self.shim_prev = 0.0;
         self.shim_lp = 0.0;
+        self.band_lo = [0.0; LINES];
+        self.band_hi = [0.0; LINES];
     }
 
     /// シマー: 前のサンプルの響きを 1 オクターブ上げた音
@@ -313,6 +445,16 @@ impl FdnState {
         if p.pre > 0 {
             x = self.pre.read(buf, p.pre);
         }
+        // 初期反射(プリディレイの後の音から。拡散の前)
+        let (mut er_l, mut er_r) = (0.0, 0.0);
+        if p.early > 0.0 {
+            self.er.write(buf, x);
+            for k in 0..ER_TAPS {
+                let v = self.er.read(buf, p.er_len[k]);
+                er_l += v * p.er_l[k];
+                er_r += v * p.er_r[k];
+            }
+        }
         // 入力の拡散(オールパス: w = x + g·w[n-D]、y = -g·w + w[n-D])
         for k in 0..4 {
             let ring = &mut self.diff[k];
@@ -321,8 +463,22 @@ impl FdnState {
             ring.write(buf, w);
             x = delayed - p.diff_g[k] * w;
         }
-        // 遅延線の出口
-        let y: [f32; LINES] = std::array::from_fn(|i| self.lines[i].read(buf, p.len[i]));
+        // 遅延線の出口(揺らぎがあれば、線ごとに読む位置を伸び縮みさせて補間で読む)
+        let y: [f32; LINES] = if p.mod_depth > 0.0 {
+            std::array::from_fn(|i| {
+                let ph = &mut self.mod_ph[i];
+                *ph += p.mod_inc[i];
+                if *ph >= 1.0 {
+                    *ph -= 1.0;
+                }
+                // 放物線で近似した sin(-1..1)。遅れは元の長さから伸ばす向きだけ(短くはしない)
+                let u = 2.0 * *ph - 1.0;
+                let sine = 4.0 * u * (1.0 - u.abs());
+                self.lines[i].read_frac(buf, p.len[i] as f32 + p.mod_depth * (1.0 + sine))
+            })
+        } else {
+            std::array::from_fn(|i| self.lines[i].read(buf, p.len[i]))
+        };
         let (mut out_l, mut out_r) = (0.0, 0.0);
         for i in 0..LINES {
             out_l += y[i] * OUT_L[i];
@@ -336,13 +492,29 @@ impl FdnState {
         }
         hadamard8(&mut v);
         let inject = x * std::f32::consts::FRAC_1_SQRT_2 * 0.5;
-        for i in 0..LINES {
-            let w = inject * IN_SIGN[i] + p.gain[i] * v[i];
-            self.lines[i].write(buf, w);
+        if p.bands {
+            // 帯域ごとの残響時間: 低域(〜250Hz)・中域・高域(4kHz〜)に分けて、それぞれの減衰を掛ける
+            for i in 0..LINES {
+                self.band_lo[i] += (v[i] - self.band_lo[i]) * (1.0 - p.band_lo_a);
+                self.band_hi[i] += (v[i] - self.band_hi[i]) * (1.0 - p.band_hi_a);
+                let (lo, hi) = (self.band_lo[i], v[i] - self.band_hi[i]);
+                let mid = v[i] - lo - hi;
+                let w =
+                    inject * IN_SIGN[i] + p.gain_lo[i] * lo + p.gain[i] * mid + p.gain_hi[i] * hi;
+                self.lines[i].write(buf, w);
+            }
+        } else {
+            for i in 0..LINES {
+                let w = inject * IN_SIGN[i] + p.gain[i] * v[i];
+                self.lines[i].write(buf, w);
+            }
         }
         let (out_l, out_r) = (out_l * p.out_gain, out_r * p.out_gain);
         if p.shimmer > 0.0 {
             self.shim_prev = 0.5 * (out_l + out_r);
+        }
+        if p.early > 0.0 {
+            return (out_l + er_l * p.early, out_r + er_r * p.early);
         }
         (out_l, out_r)
     }
@@ -385,7 +557,7 @@ mod tests {
                 ReverbCharacter::Room
             },
             shimmer: 0.5,
-            sample_rate: sr,
+            ..ReverbRaw::basic(0.0, 0.0, 0.0, ReverbCharacter::Room, 0.0, sr)
         }
     }
 
@@ -513,9 +685,131 @@ mod tests {
                 predelay_ms: 0.0,
                 character: ch,
                 shimmer,
-                sample_rate: 48_000.0,
+                ..ReverbRaw::basic(0.0, 0.0, 0.0, ch, 0.0, 48_000.0)
             },
         )
+    }
+
+    fn tuned(f: impl Fn(&mut ReverbRaw)) -> ReverbParams {
+        let mut raw = ReverbRaw::basic(0.6, 0.3, 0.0, ReverbCharacter::Room, 0.0, 48_000.0);
+        f(&mut raw);
+        ReverbParams::new(1.0, raw)
+    }
+
+    /// `hz` のサイン波を 0.3 秒入れたあと、0.5〜1.5 秒の響きのその周波数の大きさ
+    fn tail_at(p: &ReverbParams, hz: f32) -> f64 {
+        let mut st = FdnState::new();
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for i in 0..72_000 {
+            let t = i as f32 / 48_000.0;
+            let x = if i < 14_400 {
+                (t * hz * std::f32::consts::TAU).sin() * 0.5
+            } else {
+                0.0
+            };
+            let (l, r) = st.process(p, x, x);
+            assert!(l.is_finite() && l.abs() < 10.0, "発散しない");
+            if i >= 24_000 {
+                let w = (hz * std::f32::consts::TAU * t) as f64;
+                re += (l + r) as f64 * w.cos();
+                im += (l + r) as f64 * w.sin();
+            }
+        }
+        (re * re + im * im).sqrt()
+    }
+
+    #[test]
+    fn new_controls_at_their_defaults_change_nothing() {
+        // 既定(揺らぎ 0・倍率 1・初期反射 0)は以前と同じ処理を通る(音の回帰テストでも確かめる)
+        let p = tuned(|_| {});
+        assert!(!p.bands && p.mod_depth == 0.0 && p.early == 0.0);
+    }
+
+    #[test]
+    fn band_multipliers_shorten_or_lengthen_their_band() {
+        let base = tuned(|_| {});
+        let short_low = tuned(|r| r.low_mult = 0.4);
+        let long_low = tuned(|r| r.low_mult = 2.0);
+        let (b, s, l) = (
+            tail_at(&base, 100.0),
+            tail_at(&short_low, 100.0),
+            tail_at(&long_low, 100.0),
+        );
+        assert!(
+            s < b * 0.6 && l > b * 1.3,
+            "低域の響き: 基準 {b} 短く {s} 長く {l}"
+        );
+        // 中域(1kHz)はほとんど変わらない
+        let (bm, sm) = (tail_at(&base, 1000.0), tail_at(&short_low, 1000.0));
+        assert!((sm / bm - 1.0).abs() < 0.25, "中域 {bm} {sm}");
+        let short_high = tuned(|r| r.high_mult = 0.4);
+        let (bh, sh) = (tail_at(&base, 8000.0), tail_at(&short_high, 8000.0));
+        assert!(sh < bh * 0.6, "高域の響き: 基準 {bh} 短く {sh}");
+        // いちばん長くしても発散しない(ホール・最大サイズ・低域 2.5 倍)
+        let hall = tuned(|r| {
+            r.size = 1.0;
+            r.character = ReverbCharacter::Hall;
+            r.damping = 0.0;
+            r.low_mult = 2.5;
+            r.high_mult = 2.0;
+        });
+        let _ = tail_at(&hall, 60.0);
+    }
+
+    #[test]
+    fn modulation_keeps_the_length_but_changes_the_tail() {
+        let base = tuned(|_| {});
+        let moved = tuned(|r| r.modulation = 0.6);
+        let (a, b) = (t60(&base, 48_000.0), t60(&moved, 48_000.0));
+        assert!((b / a - 1.0).abs() < 0.15, "残響時間はほぼ同じ: {a} {b}");
+        let run = |p: &ReverbParams| {
+            let mut st = FdnState::new();
+            (0..48_000)
+                .map(|i| st.process(p, if i == 0 { 1.0 } else { 0.0 }, 0.0).0)
+                .collect::<Vec<f32>>()
+        };
+        let (x, y) = (run(&base), run(&moved));
+        let diff: f32 = x.iter().zip(&y).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff > 1.0, "揺らぎで響きが変わる: {diff}");
+    }
+
+    #[test]
+    fn early_reflections_arrive_before_the_late_reverb() {
+        let first_sound = |p: &ReverbParams| {
+            let mut st = FdnState::new();
+            (0..48_000)
+                .position(|i| {
+                    let (l, r) = st.process(p, if i == 0 { 1.0 } else { 0.0 }, 0.0);
+                    l.abs() + r.abs() > 1e-3
+                })
+                .unwrap()
+        };
+        let base = tuned(|_| {});
+        let early = tuned(|r| r.early = 0.6);
+        let (a, b) = (first_sound(&base), first_sound(&early));
+        assert!(b < a, "初期反射のほうが先に届く: {b} < {a}");
+        // 初期反射は左右に振ってある(最初の跳ね返りは左が大きい)
+        let mut st = FdnState::new();
+        let mut first = (0.0f32, 0.0f32);
+        for i in 0..400 {
+            let (l, r) = st.process(
+                &early,
+                if i == 0 { 1.0 } else { 0.0 },
+                if i == 0 { 1.0 } else { 0.0 },
+            );
+            if l.abs() + r.abs() > 1e-3 && first == (0.0, 0.0) {
+                first = (l, r);
+            }
+        }
+        assert!(first.0.abs() > first.1.abs() * 1.5, "{first:?}");
+        // ホールは部屋より遅く、プレートは早く届く
+        let at = |ch| {
+            first_sound(&tuned(|r| {
+                r.early = 0.6;
+                r.character = ch;
+            }))
+        };
+        assert!(at(ReverbCharacter::Hall) > b && at(ReverbCharacter::Plate) < b);
     }
 
     #[test]

@@ -147,6 +147,24 @@ fn cases() -> Vec<(String, Project)> {
         p.tracks.push(t);
         out.push((format!("effect/{name}"), p));
     }
+    // リバーブの揺らぎ・帯域ごとの残響時間・初期反射(既定ではどれも効かないので、効かせた形を別に持つ)
+    {
+        let mut p = Project::new("reverb_shaped");
+        let mut t = phrase("subtractive");
+        let mut e = Effect::builtin(FxId::new(), "reverb");
+        for (k, v) in [
+            ("mix", 0.5),
+            ("modulation", 0.5),
+            ("low_mult", 0.5),
+            ("high_mult", 1.5),
+            ("early", 0.6),
+        ] {
+            e.params.insert(k.into(), glaux_core::ParamValue::Float(v));
+        }
+        t.effects.push(e);
+        p.tracks.push(t);
+        out.push(("effect/reverb_shaped".to_owned(), p));
+    }
     out
 }
 
