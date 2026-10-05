@@ -45,6 +45,20 @@ pub enum InstrumentParams {
     Additive(AdditiveParams),
 }
 
+impl InstrumentParams {
+    /// 波形・テーブルなどの共有データ(`Arc`)を持つか。オーディオスレッドで最後の持ち主として手放すと、
+    /// 大きな解放がそこで起きるので、レンダラは別のスレッドへ渡して捨てる
+    pub fn holds_shared_data(&self) -> bool {
+        matches!(
+            self,
+            InstrumentParams::Sampler(_)
+                | InstrumentParams::Sf2(_)
+                | InstrumentParams::Wavetable(_)
+                | InstrumentParams::Granular(_)
+        )
+    }
+}
+
 impl Default for InstrumentParams {
     fn default() -> Self {
         crate::params::bake_instrument(None).1

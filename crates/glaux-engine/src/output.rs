@@ -911,7 +911,7 @@ fn open_stream(
     let stream = match device.build_output_stream(
         stream_config,
         {
-            let mut r = Renderer::new(shared.clone());
+            let mut r = Renderer::new(shared.clone()).with_retire(crate::render::retire_channel());
             move |out: &mut [f32], _| r.process(out, channels)
         },
         stream_error_handler(shared),
@@ -921,7 +921,7 @@ fn open_stream(
         Err(e) => {
             tracing::warn!("バッファ {want} での起動に失敗({e})。既定バッファで再試行");
             applied = None;
-            let mut r = Renderer::new(shared.clone());
+            let mut r = Renderer::new(shared.clone()).with_retire(crate::render::retire_channel());
             device
                 .build_output_stream(
                     config.config(),

@@ -703,6 +703,10 @@ pub struct Renderer {
     /// 最後に消費した試聴要求のカウンタ
     last_preview: u64,
     live_voices: Vec<LiveVoice>,
+    /// 手放す楽器データの送り先([`retire_channel`])。試聴・ライブのボイスや作業用の楽器データが、
+    /// 曲のデータを差し替えた後に波形の最後の持ち主になっていると、ここで捨てると大きな解放が
+    /// オーディオスレッドで起きるので、別のスレッドへ渡す(None ならその場で捨てる。書き出しなど)
+    retired: Option<std::sync::mpsc::SyncSender<glaux_dsp::InstrumentParams>>,
     /// この呼び出しで受け取った MIDI キーボードのイベントと、呼び出しの頭からの位置(前もって確保して再確保しない)
     live_pending: Vec<(LiveEvent, u32)>,
     /// live_pending のうち、反映し終えた数
@@ -882,7 +886,55 @@ fn push_plugin_param(notes: &mut Vec<NoteMsg>, name: &str, value: f32) {
     }
 }
 
+/// 手放す楽器データの待ち行列の長さ(満杯ならその場で捨てる)
+const RETIRE_CAP: usize = 256;
+
+/// 手放す楽器データを受け取り、オーディオスレッドの外で捨てるスレッドを立てて、その送り口を返す。
+/// 送り口(レンダラ)が無くなるとスレッドも終わる。送る側は `try_send` だけ(確保済みの待ち行列に置くだけで、
+/// 受け取り手を待たせないので起こす処理も無い)
+pub fn retire_channel() -> std::sync::mpsc::SyncSender<glaux_dsp::InstrumentParams> {
+    use std::sync::mpsc::TryRecvError;
+    let (tx, rx) = std::sync::mpsc::sync_channel(RETIRE_CAP);
+    let spawned = std::thread::Builder::new()
+        .name("glaux-retire".into())
+        .spawn(move || loop {
+            match rx.try_recv() {
+                Ok(inst) => drop(inst),
+                Err(TryRecvError::Empty) => {
+                    std::thread::sleep(std::time::Duration::from_millis(200))
+                }
+                Err(TryRecvError::Disconnected) => break,
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(
+            "楽器データを捨てるスレッドを起動できません({e})。オーディオスレッドで捨てます"
+        );
+    }
+    tx
+}
+
 impl Renderer {
+    /// 手放す楽器データの送り先を設定する(リアルタイムの出力で使う)
+    pub fn with_retire(
+        mut self,
+        tx: std::sync::mpsc::SyncSender<glaux_dsp::InstrumentParams>,
+    ) -> Self {
+        self.retired = Some(tx);
+        self
+    }
+
+    /// 楽器データを手放す。共有データ(波形など)を持つものは別のスレッドで捨てる。
+    /// 送れない(満杯・受け取り手が無い)ときはその場で捨てる
+    fn retire(&self, inst: glaux_dsp::InstrumentParams) {
+        if !inst.holds_shared_data() {
+            return;
+        }
+        if let Some(tx) = &self.retired {
+            let _ = tx.try_send(inst);
+        }
+    }
+
     /// 差し替え・シークで発音内容が変わったトラックか(MAX_TRACKS 超のトラックは常に鳴らし直す)
     fn retrig_track(&self, track: u32) -> bool {
         self.retrig.get(track as usize).copied().unwrap_or(true)
@@ -899,6 +951,7 @@ impl Renderer {
             preview_voices: Vec::with_capacity(MAX_PREVIEW_VOICES),
             last_preview: 0,
             live_voices: Vec::with_capacity(MAX_LIVE_VOICES),
+            retired: None,
             live_pending: Vec::with_capacity(MAX_LIVE_EVENTS_PER_BLOCK),
             live_head: 0,
             live_chunk_start: 0,
@@ -1145,8 +1198,10 @@ impl Renderer {
             self.next_event = first;
             self.resync_audio(data);
             // 旧データの Arc(サンプル波形等)を掴んだままにしないようスクラッチを戻す
-            for s in self.inst_scratch.iter_mut() {
-                *s = glaux_dsp::InstrumentParams::default();
+            // (旧データがもう解放されていれば最後の持ち主なので、共有データを持つものは別のスレッドで捨てる)
+            for ti in 0..self.inst_scratch.len() {
+                let old = std::mem::take(&mut self.inst_scratch[ti]);
+                self.retire(old);
             }
             for s in self.fx_scratch.iter_mut() {
                 *s = None;
@@ -1875,7 +1930,8 @@ impl Renderer {
                     v.released = true;
                 }
                 if v.released && v.state.finished(&v.instrument) {
-                    self.live_voices.swap_remove(i);
+                    let v = self.live_voices.swap_remove(i);
+                    self.retire(v.instrument);
                     continue;
                 }
                 let (mut sample, mut vside) = v.state.next_stereo(&v.instrument);
@@ -1910,7 +1966,8 @@ impl Renderer {
                     v.released = true;
                 }
                 if v.released && v.state.finished(&v.instrument) {
-                    self.preview_voices.swap_remove(i);
+                    let v = self.preview_voices.swap_remove(i);
+                    self.retire(v.instrument);
                     continue;
                 }
                 v.remaining = v.remaining.saturating_sub(1);
@@ -3336,7 +3393,8 @@ impl Renderer {
                 .iter()
                 .position(|v| v.released)
                 .unwrap_or(0);
-            self.live_voices.swap_remove(victim);
+            let v = self.live_voices.swap_remove(victim);
+            self.retire(v.instrument);
         }
         let instrument = mix.instrument.clone();
         let state = VoiceState::start(
@@ -3465,7 +3523,8 @@ impl Renderer {
                             .iter()
                             .position(|v| v.released)
                             .unwrap_or(0);
-                        self.live_voices.swap_remove(victim);
+                        let v = self.live_voices.swap_remove(victim);
+                        self.retire(v.instrument);
                     }
                     let (instrument, track) = match data.tracks.get(track as usize) {
                         Some(mix) if track != LIVE_NO_TRACK => (mix.instrument.clone(), track),
@@ -4708,6 +4767,47 @@ mod tests {
         let _ = render_block(&mut r, 4800);
         assert!(rms(&render_block(&mut r, 4800)) < 1e-3, "離したら消える");
         assert_eq!(shared.pos.load(Ordering::Acquire), 0, "再生位置は動かない");
+    }
+
+    #[test]
+    fn live_voices_hand_shared_waveforms_to_another_thread() {
+        // サンプラーのトラックでライブの音を鳴らしている間に、曲のデータを差し替えて旧データを捨てる。
+        // 波形の最後の持ち主はボイスになるので、音が終わったらオーディオスレッドでは捨てずに送り口へ渡す
+        let wave = Arc::new(glaux_dsp::SampleData::mono(vec![0.5; 48_000], 48_000.0));
+        let weak = Arc::downgrade(&wave);
+        let mut a = data_with_note(10_000_000, 10_000_001, true);
+        a.tracks[0].instrument = glaux_dsp::InstrumentParams::Sampler(
+            glaux_dsp::SamplerParams::one_shot(wave, 69, 1.0, 0.99),
+        );
+        let shared = Arc::new(Shared::new(a));
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let mut r = Renderer::new(shared.clone()).with_retire(tx);
+        shared.live.push(LiveEvent::NoteOn {
+            track: 0,
+            pitch: 69,
+            vel: 100,
+            ch: 0,
+        });
+        let _ = render_block(&mut r, 480);
+        drop(
+            shared
+                .data
+                .swap(Arc::new(data_with_note(10_000_000, 10_000_001, true))),
+        );
+        let _ = render_block(&mut r, 480);
+        assert!(weak.upgrade().is_some(), "鳴っている間はボイスが持っている");
+        shared.live.push(LiveEvent::NoteOff { pitch: 69, ch: 0 });
+        for _ in 0..20 {
+            let _ = render_block(&mut r, 4800);
+        }
+        let got = rx.try_recv().expect("終わったボイスの楽器データが送られる");
+        assert!(matches!(got, glaux_dsp::InstrumentParams::Sampler(_)));
+        assert!(
+            weak.upgrade().is_some(),
+            "受け取った側が捨てるまで波形は残る"
+        );
+        drop(got);
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]
