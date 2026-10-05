@@ -141,7 +141,7 @@
   <div class="f pos" title="位置(小節.拍.16 分)">
     <span class="lbl">位置</span><span class="val">{posText}</span>
   </div>
-  <div class="f" title="時間(分:秒)">
+  <div class="f time" title="時間(分:秒)">
     <span class="lbl">時間</span><span class="val">{timeText}</span>
   </div>
   {#if transport.recording && !transport.midi_recording}
@@ -285,6 +285,13 @@
 
   .lcd.recording .pos .val {
     color: var(--danger);
+  }
+
+  /* とても狭い画面では時間をしまう(位置・テンポ・拍子を残す) */
+  @media (max-width: 640px) {
+    .lcd .time {
+      display: none;
+    }
   }
 
   .lcd .key .val {

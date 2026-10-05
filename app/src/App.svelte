@@ -791,7 +791,7 @@
         <button class="btn icon" onclick={seekStart} disabled={!transport.available} title="先頭へ(Home)" aria-label="先頭へ"
           ><Icon name="skip-back" /></button
         >
-        <button class="btn icon" onclick={prevBar} disabled={!transport.available} title="前の小節へ(←)" aria-label="前の小節へ"
+        <button class="btn icon bar-step" onclick={prevBar} disabled={!transport.available} title="前の小節へ(←)" aria-label="前の小節へ"
           ><Icon name="rewind" /></button
         >
         <button
@@ -805,7 +805,7 @@
         <button class="btn icon" onclick={stopPlayback} disabled={!transport.available} title="停止" aria-label="停止"
           ><Icon name="square" /></button
         >
-        <button class="btn icon" onclick={nextBar} disabled={!transport.available} title="次の小節へ(→)" aria-label="次の小節へ"
+        <button class="btn icon bar-step" onclick={nextBar} disabled={!transport.available} title="次の小節へ(→)" aria-label="次の小節へ"
           ><Icon name="fast-forward" /></button
         >
         <button class="btn icon" onclick={seekEnd} disabled={!transport.available} title="終端へ(End)" aria-label="終端へ"
@@ -1258,6 +1258,37 @@
 
   @media (max-width: 1150px) {
     .ai-text {
+      display: none;
+    }
+  }
+
+  /* さらに狭い(画面の半分など): 1 行に収まらず、左右の欄が中央(再生・位置の表示)に重なっていた。
+     2 段にして、上の段に左右の欄、下の段に中央を置く(どのボタンも隠さない) */
+  @media (max-width: 1060px) {
+    header {
+      height: auto;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "left right"
+        "center center";
+      row-gap: 4px;
+      padding-block: 6px;
+    }
+    .h-left {
+      grid-area: left;
+    }
+    .h-right {
+      grid-area: right;
+    }
+    .h-center {
+      grid-area: center;
+      justify-content: center;
+      min-width: 0;
+    }
+  }
+  /* とても狭い: 前・次の小節のボタンをしまう(← → キーで動かせる。時間の表示もしまう: TransportLcd) */
+  @media (max-width: 640px) {
+    .bar-step {
       display: none;
     }
   }

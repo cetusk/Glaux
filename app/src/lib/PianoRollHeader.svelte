@@ -85,6 +85,8 @@
     {/if}
   </div>
   <div class="head-right">
+    <!-- 道具は幅が足りなければ横にスクロールする(ヘルプと閉じるは右端に固定して、いつも見えるように) -->
+    <div class="tools">
     <span class="glabel">表示</span>
     <div class="seg">
       <button class="btn sm" class:on={showVel} onclick={() => (showVel = !showVel)} title="ベロシティ(音の強さ)の帯。縦棒を上下にドラッグで変更、選択中のノートはまとめて変わる"
@@ -206,13 +208,15 @@
         </select>
       </label>
     {/if}
-    <span class="grow"></span>
+    </div>
+    <div class="head-end">
     <button class="btn sm icon ghost" class:on={helpOpen} onclick={() => (helpOpen = !helpOpen)} title="操作のヘルプ" aria-label="操作のヘルプ"
       ><Icon name="circle-help" /></button
     >
     <button class="btn sm icon ghost" onclick={onClose} title={pane === "main" ? "閉じる(Esc)" : "この分割ペインを閉じる(Esc)"} aria-label="閉じる"
       ><Icon name="x" /></button
     >
+    </div>
   </div>
 </div>
 {#if helpOpen}
@@ -289,9 +293,6 @@
     flex-shrink: 0;
   }
 
-  .grow {
-    flex: 1;
-  }
 
   .help-pop {
     position: absolute;
@@ -399,6 +400,25 @@
     flex: 1;
     white-space: nowrap;
   }
+  /* 道具の並び: 縮んで、はみ出す分は横にスクロール(細いスクロールバー) */
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  /* ヘルプと閉じるは縮めない */
+  .head-end {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
 
   .swing-msg {
     font-size: 11px;
@@ -406,9 +426,8 @@
     white-space: nowrap;
   }
 
-  .head-right > button,
-  .head-right > select,
-  .head-right > .snap {
+  /* 道具は縮めずに並べ、入りきらない分は横にスクロール */
+  .tools > * {
     flex-shrink: 0;
   }
 
