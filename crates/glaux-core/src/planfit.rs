@@ -165,9 +165,7 @@ pub fn fit_notes(
                         })
                         .count()
                 };
-                let best = (-3..=3)
-                    .max_by_key(|&k| (count(k), -(k as i32).abs()))
-                    .unwrap_or(0);
+                let best = (-3..=3).max_by_key(|&k| (count(k), -k.abs())).unwrap_or(0);
                 if best != 0 && count(best) > count(0) {
                     for &i in &idx {
                         notes[i].pitch = (notes[i].pitch as i32 + 12 * best).clamp(0, 127) as u8;
@@ -191,7 +189,7 @@ pub fn fit_notes(
         }
     }
     // 折り返しで同じ位置・同じ高さに重なった音は 1 つにする
-    notes.sort_by(|x, y| (x.pos, x.pitch).cmp(&(y.pos, y.pitch)));
+    notes.sort_by_key(|n| (n.pos, n.pitch));
     notes.dedup_by(|x, y| x.pos == y.pos && x.pitch == y.pitch);
     PlanFit {
         plan_id: plan.id.to_string(),
