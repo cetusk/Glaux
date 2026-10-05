@@ -123,6 +123,8 @@ export interface ProposalChanges {
   sections?: number[];
   ranges?: [number, number][];
   whole?: boolean;
+  /** 違いはあるが、今鳴っていないトラック(ミュート中など)だけ */
+  silent_only?: boolean;
   stale?: boolean;
   /** 当てられない理由(案を出した後に直された所の名前など) */
   why?: string;

@@ -152,7 +152,7 @@ fn proposal_changes(
                             diff.ranges.iter().any(|&(s, e)| s < b && e > a)
                         })
                         .collect();
-                    json!({ "sections": sections, "ranges": diff.ranges, "whole": diff.whole })
+                    json!({ "sections": sections, "ranges": diff.ranges, "whole": diff.whole, "silent_only": diff.silent_only })
                 }
             }
         };
@@ -515,6 +515,12 @@ pub async fn propose(
             .map_err(|e| format!("案の編集を今の曲に当てられません: {e}"))?;
         // 案の音が今の曲と同じなら、聴き比べても違いが無い(同じ編集をすでに曲に当てた、など)。案として受け付けない
         let diff = glaux_core::designcheck::song_diff(&project, &sim);
+        if diff.silent_only {
+            return Err("案で変わる所が、今は鳴っていないトラック(ミュート中・ほかのトラックのソロ中)だけなので、\
+                聴き比べても違いがありません。人にミュート・ソロを外すか尋ねるか、ミュートを外す編集\
+                (set_track_prop の mute: false)も案の commands に入れてください。ミュートしたトラックを足して案の代わりにしない"
+                .to_owned());
+        }
         if diff.ranges.is_empty() && !diff.whole {
             return Err("案の音が今の曲と同じです(聴き比べても違いがありません)。同じ編集をすでに曲に当てていないか確かめ、\
                 曲は変えずに、案で変える編集を commands に入れてください"

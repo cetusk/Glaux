@@ -2402,7 +2402,7 @@ async fn change_ranges(state: State<'_, AppState>, before_entry: String) -> Resu
         tokio::task::spawn_blocking(move || glaux_core::designcheck::song_diff(&before, &after))
             .await
             .map_err(|e| e.to_string())?;
-    Ok(json!({ "ranges": d.ranges, "whole": d.whole }))
+    Ok(json!({ "ranges": d.ranges, "whole": d.whole, "silent_only": d.silent_only }))
 }
 
 /// 音量をそろえた A/B の聴き比べを用意する: 履歴のある地点(既定は 1 つ前の編集の前)と今の、

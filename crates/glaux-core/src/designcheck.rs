@@ -91,21 +91,87 @@ pub struct Deviation {
 
 /// 2 つの曲の音の違い(案の「変わる所」)。曲の頭からの範囲 [a, b) で持つ: ノートの違い、
 /// トラックの設定(音色・エフェクト・つまみ・オートメーション・音量など)の違いはそのトラックが鳴っている所。
-/// マスター・テンポ・拍子・音の無いトラック(バス)の違いは曲全体に効くので `whole`
+/// マスター・テンポ・拍子・音の無いトラック(バス)の違いは曲全体に効くので `whole`。
+/// 鳴っていないトラック([`silent_tracks`])の違いは数えない
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SongDiff {
     pub ranges: Vec<(u64, u64)>,
     pub whole: bool,
+    /// 違いはあるが、鳴っていないトラック(ミュート中・ほかのトラックのソロ中など)だけ。聴き比べても違いが無い
+    pub silent_only: bool,
 }
 
-/// 2 つの曲の音の違いを調べる(案を当てる前と後)
+/// 鳴っていないトラックの ID: ミュート中、出力先のバスがミュート中(送りも無い)、ほかのトラックがソロ中
+/// (バスと、ソロのバスへ出す・送るトラックは鳴る)。エンジンの判定(`TrackMix::audible`)に合わせた近似
+pub fn silent_tracks(p: &Project) -> std::collections::BTreeSet<String> {
+    use crate::model::TrackKind;
+    let any_solo = p.tracks.iter().any(|t| t.solo);
+    let by_id = |id: &TrackId| p.tracks.iter().find(|t| &t.id == id);
+    // 出力先の連なり(壊れた輪でも止まるように 16 段まで)
+    let outputs = |t: &Track| -> Vec<&Track> {
+        let mut v = Vec::new();
+        let mut cur = t.output.as_ref();
+        while let Some(b) = cur.and_then(by_id) {
+            if v.len() >= 16 {
+                break;
+            }
+            v.push(b);
+            cur = b.output.as_ref();
+        }
+        v
+    };
+    p.tracks
+        .iter()
+        .filter(|t| {
+            let outs = outputs(t);
+            let muted = t.mute || (outs.iter().any(|b| b.mute) && t.sends.is_empty());
+            let solo_ok = !any_solo
+                || t.solo
+                || t.kind == TrackKind::Bus
+                || outs.iter().any(|b| b.solo)
+                || t.sends
+                    .iter()
+                    .any(|s| by_id(&s.target).is_some_and(|b| b.solo));
+            muted || !solo_ok
+        })
+        .map(|t| t.id.to_string())
+        .collect()
+}
+
+/// 2 つの曲の音の違いを調べる(案を当てる前と後)。鳴っていないトラックの違いは数えない
 pub fn song_diff(before: &Project, after: &Project) -> SongDiff {
-    use std::collections::BTreeMap;
+    let d = song_diff_inner(before, after, true);
+    if d.ranges.is_empty() && !d.whole {
+        let all = song_diff_inner(before, after, false);
+        return SongDiff {
+            silent_only: !all.ranges.is_empty() || all.whole,
+            ..d
+        };
+    }
+    d
+}
+
+fn song_diff_inner(before: &Project, after: &Project, audible_only: bool) -> SongDiff {
+    use std::collections::{BTreeMap, BTreeSet};
+    let silent = |p: &Project| {
+        if audible_only {
+            silent_tracks(p)
+        } else {
+            BTreeSet::new()
+        }
+    };
+    let (silent_a, silent_b) = (silent(before), silent(after));
     // トラックごとの、鳴る音(ID を除いた中身と曲の頭からの位置)の数え上げ
-    fn sounding(p: &Project) -> BTreeMap<String, BTreeMap<String, (u64, u64, i64)>> {
+    fn sounding(
+        p: &Project,
+        silent: &BTreeSet<String>,
+    ) -> BTreeMap<String, BTreeMap<String, (u64, u64, i64)>> {
         let mut out: BTreeMap<String, BTreeMap<String, (u64, u64, i64)>> = BTreeMap::new();
         for t in &p.tracks {
             let m = out.entry(t.id.to_string()).or_default();
+            if silent.contains(t.id.as_str()) {
+                continue;
+            }
             for c in &t.clips {
                 // 音声クリップ: 中身(素材・位置・長さ・音量・フェード・伸縮など。ID と名前・色は除く)で数える
                 if c.notes().is_none() {
@@ -134,7 +200,7 @@ pub fn song_diff(before: &Project, after: &Project) -> SongDiff {
         }
         out
     }
-    let (a, b) = (sounding(before), sounding(after));
+    let (a, b) = (sounding(before, &silent_a), sounding(after, &silent_b));
     let mut ranges = Vec::new();
     let tracks: std::collections::BTreeSet<&String> = a.keys().chain(b.keys()).collect();
     let empty = BTreeMap::new();
@@ -163,15 +229,27 @@ pub fn song_diff(before: &Project, after: &Project) -> SongDiff {
     let mut whole = serde_json::to_value(&before.master).ok()
         != serde_json::to_value(&after.master).ok()
         || before.tempo_map != after.tempo_map
-        || before.time_sig_map != after.time_sig_map
-        || before.tracks.len() != after.tracks.len();
-    for t in &after.tracks {
-        let old = before.track(&t.id);
-        if old.is_some_and(|o| settings(o) == settings(t)) {
+        || before.time_sig_map != after.time_sig_map;
+    // 足した・変えたトラックと、消したトラック(前の曲だけにある)。どちらの曲でも鳴っていなければ数えない
+    let removed = before
+        .tracks
+        .iter()
+        .filter(|t| after.track(&t.id).is_none())
+        .map(|t| (Some(t), None));
+    let kept = after.tracks.iter().map(|t| (before.track(&t.id), Some(t)));
+    for (old, new) in kept.chain(removed) {
+        if let (Some(o), Some(n)) = (old, new) {
+            if settings(o) == settings(n) {
+                continue;
+            }
+        }
+        let heard_a = old.filter(|t| !silent_a.contains(t.id.as_str()));
+        let heard_b = new.filter(|t| !silent_b.contains(t.id.as_str()));
+        if heard_a.is_none() && heard_b.is_none() {
             continue;
         }
         let mut spans: Vec<(u64, u64)> = Vec::new();
-        for tr in [old, Some(t)].into_iter().flatten() {
+        for tr in [heard_a, heard_b].into_iter().flatten() {
             for c in &tr.clips {
                 for n in c.playback_notes() {
                     let at = c.start.0 + n.pos.0;
@@ -194,7 +272,11 @@ pub fn song_diff(before: &Project, after: &Project) -> SongDiff {
             _ => ranges.push((s, e)),
         }
     }
-    SongDiff { ranges, whole }
+    SongDiff {
+        ranges,
+        whole,
+        silent_only: false,
+    }
 }
 
 // ---------------------------------------------------------------- 案の編集が触る所の指紋
@@ -940,6 +1022,51 @@ mod tests {
         let mut m = p.clone();
         m.master.volume_db = -3.0;
         assert!(song_diff(&p, &m).whole);
+    }
+
+    #[test]
+    fn song_diff_ignores_tracks_that_are_not_heard() {
+        let mut p = Project::new("t");
+        for name in ["lead", "pad"] {
+            let mut t = Track::new(TrackId::new(), name, TrackKind::Midi);
+            let mut c = Clip::new_midi(ClipId::new(), "c", Tick(3840), Tick(3840 * 2));
+            if let Some(ns) = c.notes_mut() {
+                ns.push(note(0, 60));
+            }
+            t.clips.push(c);
+            p.tracks.push(t);
+        }
+        p.tracks[0].mute = true;
+        // ミュート中のトラックの音色を変えても、ミュートのトラックを足しても、鳴る音は変わらない
+        let mut q = p.clone();
+        q.tracks[0].volume_db = -6.0;
+        let mut extra = p.tracks[0].clone();
+        extra.id = TrackId::new();
+        q.tracks.push(extra);
+        let d = song_diff(&p, &q);
+        assert!(d.ranges.is_empty() && !d.whole);
+        assert!(d.silent_only);
+        // ミュートを外すと、そのトラックが鳴る所が変わる
+        let mut u = p.clone();
+        u.tracks[0].mute = false;
+        let d = song_diff(&p, &u);
+        assert_eq!(d.ranges, vec![(3840, 3840 + 480)]);
+        assert!(!d.silent_only);
+        // ほかのトラックのソロ中は、ソロでないトラックの違いは聞こえない
+        let mut s = p.clone();
+        s.tracks[0].mute = false;
+        s.tracks[0].solo = true;
+        let mut s2 = s.clone();
+        s2.tracks[1].volume_db = -6.0;
+        let d = song_diff(&s, &s2);
+        assert!(d.ranges.is_empty() && d.silent_only);
+        // 同じ曲なら違いも印も無い
+        let d = song_diff(&p, &p.clone());
+        assert!(d.ranges.is_empty() && !d.whole && !d.silent_only);
+        // 鳴っているトラックを消すと、その所が変わる
+        let mut r = p.clone();
+        r.tracks.remove(1);
+        assert_eq!(song_diff(&p, &r).ranges, vec![(3840, 3840 + 480)]);
     }
 
     #[test]

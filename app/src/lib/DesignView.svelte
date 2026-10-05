@@ -967,7 +967,9 @@
                   {#if ch?.ranges?.length}<span class="pnote">区間の外({ch.ranges.length} か所)</span>{/if}
                 {/each}
                 {#if ch?.whole}<span class="pnote">+ 音色・ミックスなど曲全体</span>{/if}
-                {#if !ch?.sections?.length && !ch?.ranges?.length && !ch?.whole}<span class="pnote">音の違いは見つかりませんでした</span>{/if}
+                {#if !ch?.sections?.length && !ch?.ranges?.length && !ch?.whole}<span class="pnote"
+                    >{ch?.silent_only ? "違いは今鳴っていないトラック(ミュート中など)だけです" : "音の違いは見つかりませんでした"}</span
+                  >{/if}
               {/if}
             </div>
             <div class="prow">

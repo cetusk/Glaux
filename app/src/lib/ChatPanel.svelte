@@ -150,11 +150,18 @@
       if (!first) throw new Error("このターンの編集が見つかりません");
       // 範囲: このターンで音が変わった所(最初の所から)。分からなければ今の位置から
       let range: { start: number; end: number } | null = null;
+      let r: { ranges: [number, number][]; whole: boolean; silent_only?: boolean } | null = null;
       try {
-        const r = await invoke<{ ranges: [number, number][]; whole: boolean }>("change_ranges", { beforeEntry: first });
+        r = await invoke<{ ranges: [number, number][]; whole: boolean; silent_only?: boolean }>("change_ranges", { beforeEntry: first });
         if (project) range = rangeFromChanges(project, r.ranges);
       } catch {
         range = null;
+      }
+      if (r?.silent_only) {
+        // 鳴っていないトラックだけの編集: 聴き比べても同じ音なので始めない
+        releaseAb("chat");
+        showToast("warn", "このターンの編集は、今鳴っていないトラック(ミュート中・ほかのトラックのソロ中)だけでした。聴き比べても違いはありません");
+        return;
       }
       range ??= defaultAbRange(project);
       const info = await api.abPrepare(first, range.start, range.end);
