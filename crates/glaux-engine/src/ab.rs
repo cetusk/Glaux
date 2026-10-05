@@ -155,9 +155,20 @@ pub fn prepare_many(
             })
             .collect()
     });
+    // ノートの無い曲(作る前の「前」など)は無音として比べる。全部が無音なら比べるものが無い
+    let frames = ((to_secs - from_secs).max(0.0) * sample_rate) as usize;
+    if renders
+        .iter()
+        .all(|r| matches!(r, Err(crate::export::ExportError::Empty)))
+    {
+        return Err(crate::export::ExportError::Empty);
+    }
     let mut takes = Vec::with_capacity(renders.len());
     for r in renders {
-        takes.push(r?);
+        takes.push(match r {
+            Err(crate::export::ExportError::Empty) => vec![0.0; frames * 2],
+            r => r?,
+        });
     }
     // 長さをそろえる(末尾は無音で埋める)
     let len = takes.iter().map(|t| t.len()).max().unwrap_or(0);
@@ -329,6 +340,21 @@ mod tests {
         assert_eq!(info.first_diff_secs[2], None);
         // 1 つだけ・多すぎるのは受け付けない
         assert!(prepare_many(&[(&a, &bank)], 48_000.0, 1.0, 3.0).is_err());
+    }
+
+    #[test]
+    fn a_song_without_notes_is_compared_as_silence() {
+        let (a, b) = (Project::new("空"), pad(-12.0));
+        let bank = SampleBank::default();
+        let (clip, info) = prepare_many(&[(&a, &bank), (&b, &bank)], 48_000.0, 1.0, 3.0).unwrap();
+        assert!(clip.takes[0].iter().all(|x| *x == 0.0));
+        assert_eq!(clip.takes[0].len(), clip.takes[1].len());
+        assert_eq!(info.lufs[0], None);
+        assert_eq!(info.gains_db[1], 0.0, "無音に合わせて下げない");
+        assert!(info.first_diff_secs[1].is_some());
+        // 両方とも無音なら比べない
+        let e = prepare_many(&[(&a, &bank), (&a, &bank)], 48_000.0, 1.0, 3.0);
+        assert!(e.is_err());
     }
 
     #[test]
