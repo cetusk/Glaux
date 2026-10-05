@@ -41,6 +41,9 @@ if errorlevel 1 (
     echo npm install failed.
     exit /b 1
 )
+rem Remove installers of older versions left in the bundle folder,
+rem so that only the one built now is copied below.
+if exist "%CARGO_TARGET_DIR%\release\bundle\nsis\*-setup.exe" del /Q "%CARGO_TARGET_DIR%\release\bundle\nsis\*-setup.exe"
 echo Building release (frontend + Rust + installer)...
 call npm run tauri build
 if errorlevel 1 (
@@ -51,8 +54,11 @@ if errorlevel 1 (
 popd
 
 set "OUT=%ROOT%\release"
-if exist "%OUT%" rmdir /S /Q "%OUT%"
-mkdir "%OUT%"
+rem Keep other files in release\ (e.g. the renamed files made by make_release.py).
+rem Replace only the files this script makes.
+if not exist "%OUT%" mkdir "%OUT%"
+if exist "%OUT%\Glaux.exe" del /Q "%OUT%\Glaux.exe"
+if exist "%OUT%\Glaux_*_x64-setup.exe" del /Q "%OUT%\Glaux_*_x64-setup.exe"
 copy /Y "%CARGO_TARGET_DIR%\release\glaux-app.exe" "%OUT%\Glaux.exe" >nul
 if errorlevel 1 (
     echo glaux-app.exe not found in %CARGO_TARGET_DIR%\release
