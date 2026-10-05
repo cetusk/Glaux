@@ -193,6 +193,216 @@ pub struct SongPlan {
     /// 人が設計画面で「所」に付けたメモ(言葉の意図)。AI はその所を作る・直すときに読む。AI は書かない
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memos: Vec<Memo>,
+    /// 区間ごとの設計(盛り上がり・形・境目・鳴らすトラック・役割のメモ)。区間の ID で曲の区間のマーカーを指す。
+    /// 曲(project.json)の区間には位置と名前だけを持ち、この値は読み出すときに曲の区間へ重ねる([`overlay_sections`])
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<SongSectionPlan>,
+}
+
+/// 曲全体の計画の、1 区間の設計
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct SongSectionPlan {
+    /// 区間の ID(sec_…)
+    pub section: String,
+    /// 盛り上がり 0〜10
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy: Option<f32>,
+    /// 鳴らすトラックの名前
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<String>,
+    /// 役割・意図のメモ
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// 区間の中の盛り上がりの形([位置 0〜1, 値 0〜10])
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve: Vec<[f32; 2]>,
+    /// 次の区間との境目
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<crate::model::SectionJoin>,
+}
+
+impl SongSectionPlan {
+    /// 区間のマーカーが持っている設計(ID が無い・設計が何も無いなら None)
+    pub fn of(m: &crate::model::SectionMarker) -> Option<SongSectionPlan> {
+        let id = m.id.as_ref()?;
+        let sp = SongSectionPlan {
+            section: id.to_string(),
+            energy: m.energy,
+            tracks: m.tracks.clone(),
+            note: m.note.clone(),
+            curve: m.curve.clone(),
+            join: m.join,
+        };
+        (!sp.is_empty()).then_some(sp)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.energy.is_none()
+            && self.tracks.is_empty()
+            && self.note.is_none()
+            && self.curve.is_empty()
+            && self.join.is_none()
+    }
+
+    /// マーカーにこの設計を書く(無い項目は消す)
+    fn write_to(&self, m: &mut crate::model::SectionMarker) {
+        m.energy = self.energy;
+        m.tracks = self.tracks.clone();
+        m.note = self.note.clone();
+        m.curve = self.curve.clone();
+        m.join = self.join;
+    }
+}
+
+/// 区間のマーカーの設計(盛り上がり・形・境目・鳴らすトラック・メモ)を外す。外したら true
+pub fn strip_section_design(m: &mut crate::model::SectionMarker) -> bool {
+    let had = SongSectionPlan::of(m).is_some()
+        || m.energy.is_some()
+        || !m.tracks.is_empty()
+        || m.note.is_some()
+        || !m.curve.is_empty()
+        || m.join.is_some();
+    SongSectionPlan::default().write_to(m);
+    had
+}
+
+/// 今の曲全体の計画(案は除く。採用済みを推定より、区間の設計を持つものを持たないものより優先)
+pub fn current_song_plan(plans: &PlanSet) -> Option<(&Plan, SongPlan)> {
+    let rank = |p: &Plan, s: &SongPlan| (p.state.is_none(), !s.sections.is_empty());
+    let mut best: Option<(&Plan, SongPlan)> = None;
+    for p in plans.plans.values() {
+        if p.kind != "song" || p.state.as_deref() == Some("proposal") {
+            continue;
+        }
+        let Ok(s) = serde_json::from_value::<SongPlan>(p.body.clone()) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .map_or(true, |(bp, bs)| rank(p, &s) > rank(bp, bs))
+        {
+            best = Some((p, s));
+        }
+    }
+    best
+}
+
+/// 曲全体の計画の区間ごとの設計を、曲の区間のマーカーへ重ねる(計画に無い区間・ID の無い区間は設計を外す)。
+/// 変えた所があれば true
+pub fn overlay_sections(project: &mut crate::model::Project, plans: &PlanSet) -> bool {
+    let song = current_song_plan(plans).map(|(_, s)| s);
+    let mut changed = false;
+    for m in project.sections.iter_mut() {
+        let want =
+            m.id.as_ref()
+                .and_then(|id| {
+                    song.as_ref()?
+                        .sections
+                        .iter()
+                        .find(|s| s.section == id.as_str())
+                })
+                .cloned()
+                .unwrap_or_default();
+        let mut next = m.clone();
+        want.write_to(&mut next);
+        if next != *m {
+            *m = next;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// 区間ごとの設計を曲全体の計画に書くコマンド(区間の設計を丸ごと置き換える)。採用済みの曲全体の計画があれば
+/// その版を上げて置き換え、無ければ `new_id` で「曲全体」の計画を作る。今と同じなら None
+pub fn section_design_command(
+    plans: &PlanSet,
+    entries: Vec<SongSectionPlan>,
+    new_id: PlanId,
+) -> Option<PlanCommand> {
+    let entries: Vec<SongSectionPlan> = entries.into_iter().filter(|e| !e.is_empty()).collect();
+    let adopted = current_song_plan(plans)
+        .map(|(p, _)| p)
+        .filter(|p| p.state.is_none());
+    let set = |body: &mut Value| {
+        if let Some(o) = body.as_object_mut() {
+            if entries.is_empty() {
+                o.remove("sections");
+            } else {
+                // f32 を Value にそのまま変えると 6.2 → 6.199999809265137 になるので、文字列を経て短い表記のまま入れる
+                let v = serde_json::to_string(&entries)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                    .unwrap_or(Value::Null);
+                o.insert("sections".to_owned(), v);
+            }
+        }
+    };
+    match adopted {
+        Some(p) => {
+            let mut body = if p.body.is_object() {
+                p.body.clone()
+            } else {
+                Value::Object(Default::default())
+            };
+            set(&mut body);
+            (body != p.body).then(|| PlanCommand::Replace {
+                plan: Plan {
+                    rev: p.rev + 1,
+                    body,
+                    ..p.clone()
+                },
+            })
+        }
+        None if entries.is_empty() => None,
+        None => {
+            let mut body = Value::Object(Default::default());
+            set(&mut body);
+            Some(PlanCommand::Create {
+                plan: Plan {
+                    id: new_id,
+                    name: "曲全体".to_owned(),
+                    kind: "song".to_owned(),
+                    rev: 1,
+                    derived_from: None,
+                    state: None,
+                    body,
+                    patch: vec![],
+                    patch_base: BTreeMap::new(),
+                },
+            })
+        }
+    }
+}
+
+/// 曲全体の計画を丸ごと置き換えるとき、区間の設計(`sections`)を今の計画から引き継ぐ。
+/// `always` なら新しい中身に sections があっても今のものにする(画面: 区間の設計は区間の編集でだけ変える)。
+/// そうでなければ、新しい中身に sections が無いときだけ引き継ぐ(AI が曲全体の項目だけを書き直したとき)
+pub fn keep_song_sections(old: &Plan, body: &mut Value, always: bool) {
+    if old.kind != "song" {
+        return;
+    }
+    let Some(to) = body.as_object_mut() else {
+        return;
+    };
+    if !always && to.contains_key("sections") {
+        return;
+    }
+    match old.body.get("sections") {
+        Some(v) => {
+            to.insert("sections".to_owned(), v.clone());
+        }
+        None => {
+            to.remove("sections");
+        }
+    }
+}
+
+/// [`overlay_sections`] で曲が変わるか(重ねる必要があるか)
+pub fn needs_overlay(project: &crate::model::Project, plans: &PlanSet) -> bool {
+    let mut p = crate::model::Project::new("");
+    p.sections = project.sections.clone();
+    overlay_sections(&mut p, plans)
 }
 
 /// 「所」に付く人のメモ

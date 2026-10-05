@@ -5261,10 +5261,47 @@ impl GlauxServer {
             Command::batch(p.label.clone(), commands)
         };
 
+        // 区間の置き換えに設計(盛り上がり・形・境目・鳴らすトラック・メモ)が付いていれば、曲全体の計画に書く
+        // (曲の履歴には位置と名前だけが残る。設計の無い置き換え〈名前だけ直す など〉は計画を変えない)
+        fn last_sections(c: &Command) -> Option<&Vec<glaux_core::SectionMarker>> {
+            match c {
+                Command::SetSections { sections } => Some(sections),
+                Command::Batch { commands, .. } => commands.iter().rev().find_map(last_sections),
+                _ => None,
+            }
+        }
+        let with_design = last_sections(&command)
+            .filter(|ms| {
+                ms.iter().any(|m| {
+                    m.energy.is_some()
+                        || !m.tracks.is_empty()
+                        || m.note.is_some()
+                        || !m.curve.is_empty()
+                        || m.join.is_some()
+                })
+            })
+            .cloned();
         let author = self.author(&ctx);
-        let (entry_id, m) = self.apply_checked(command, author, p.label).await?;
+        let label = p.label.clone();
+        let (entry_id, m) = self.apply_checked(command, author.clone(), p.label).await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
+        if let Some(markers) = with_design {
+            let (after, _) = self.handle.get_project_shared().await?;
+            let design = crate::plan_view::section_design_of(&after, &markers);
+            if let Some(e) = crate::plan_view::save_section_design(
+                &self.handle,
+                author,
+                design,
+                &label,
+                "区間の設計(set_sections)",
+                Some(entry_id.clone()),
+            )
+            .await?
+            {
+                v["plan_entry_id"] = json!(e);
+            }
+        }
         if !assigned.is_empty() {
             v["assigned_ids"] = json!(assigned);
         }
@@ -9814,7 +9851,8 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "計画を保存する(新しく作る・丸ごと置き換える)。種類は melody(旋律。既定)/ song(曲全体の狙い)/ \
+        description = "計画を保存する(新しく作る・丸ごと置き換える)。種類は melody(旋律。既定)/ song(曲全体の狙い。\
+        区間ごとの盛り上がり・形・境目・鳴らすトラック・メモ〈sections〉は set_song_plan が書く。song を置き換えるとき sections を省くと今のものを引き継ぐ)/ \
         part(パートの区間ごとの働き・存在の段階・音域の帯。形と語彙は get_design の vocab)。計画は曲とは別の文書(plans.json)で、\
         曲とは別の git ライクな履歴を持つ(曲の undo は計画を戻さず、計画の undo は音符を戻さない)。\
         body は melody の形: key・chords・genre・role・track・intent(作曲者の言葉)・expression(表情。amount・feel・vibrato・glide・velocity)と sections(区間ごとに name・\
@@ -9880,7 +9918,12 @@ impl GlauxServer {
                     kind,
                     rev: old.rev + 1,
                     derived_from: derived_from.or_else(|| old.derived_from.clone()),
-                    body: p.body,
+                    body: {
+                        // 曲全体の計画で sections(区間の設計)を書かなければ、今の区間の設計を引き継ぐ
+                        let mut body = p.body;
+                        glaux_core::plan::keep_song_sections(old, &mut body, false);
+                        body
+                    },
                 };
                 let subject = format!("計画を置き換える: {}", plan.name);
                 (PlanCommand::Replace { plan }, subject)
@@ -13992,13 +14035,32 @@ impl GlauxServer {
             .filter(|(s, _)| *s < content_end)
             .count();
         let label = format!("曲の計画書({} 区間・{total_bars} 小節)", made.len());
+        let markers: Vec<glaux_core::SectionMarker> = made.into_iter().map(|(m, _, _)| m).collect();
         let command = Command::SetSections {
-            sections: made.into_iter().map(|(m, _, _)| m).collect(),
+            sections: markers.clone(),
         };
         let author = self.author(&ctx);
-        let (entry_id, m) = self.apply_checked(command, author, label).await?;
+        // 区間の位置と名前は曲(曲の履歴)、盛り上がり・形・境目・鳴らすトラック・メモは曲全体の計画(計画の履歴)。
+        // 計画の変更は区間の置き換えと一組にする(曲の側でどこから取り消しても一緒に戻る)
+        let (entry_id, m) = self
+            .apply_checked(command, author.clone(), label.clone())
+            .await?;
+        let (after, _) = self.handle.get_project_shared().await?;
+        let design = crate::plan_view::section_design_of(&after, &markers);
+        let plan_entry = crate::plan_view::save_section_design(
+            &self.handle,
+            author,
+            design,
+            &label,
+            "曲の計画書(区間ごとの盛り上がり・鳴らすトラック・役割)",
+            Some(entry_id.clone()),
+        )
+        .await?;
         let mut v = mutated_json(&m);
         v["entry_id"] = json!(entry_id);
+        if let Some(e) = plan_entry {
+            v["plan_entry_id"] = json!(e);
+        }
         v["sections"] = json!(sections_json);
         v["total_bars"] = json!(total_bars);
         v["end_bar"] = json!(start_bar + total_bars - 1);

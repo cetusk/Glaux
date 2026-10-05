@@ -1445,7 +1445,7 @@
               : at === sec.tick
                 ? `right:0`
                 : `width:120px`}"
-            title={`${sec.name}(${barAtTick(barList, sec.tick).index + 1} 小節目〜)${planText(sec)}\nクリックでこの区間を選択 / ドラッグで移動 / ダブルクリックで名前を変更 / 右クリックで削除`}
+            title={`${sec.name}(${barAtTick(barList, sec.tick).index + 1} 小節目〜)${planText((sec.id && designStore.sectionDesign[sec.id]) || {})}\nクリックでこの区間を選択 / ドラッグで移動 / ダブルクリックで名前を変更 / 右クリックで削除`}
             onpointerdown={(e) => onMarkerDown(e, sec)}
             onpointermove={onMarkerMove}
             onpointerup={(e) => onMarkerUp(e, sec, next)}

@@ -5348,6 +5348,159 @@ async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     assert_eq!(r.is_error, Some(true));
 }
 
+/// 区間の設計(盛り上がり・形・境目・鳴らすトラック・メモ)は曲全体の計画が持ち主: 曲の履歴には区間の位置と名前だけ、
+/// 設計は計画の履歴に残り、曲を読み出すときに重なる。画面で設計だけ直すと曲の履歴は増えない。
+/// set_song_plan は曲と計画を一組にし、曲の側で取り消すと計画も戻る
+#[tokio::test]
+async fn section_design_lives_in_the_song_plan() {
+    let fx = setup().await;
+    let energies =
+        |p: &glaux_core::Project| p.sections.iter().map(|s| s.energy).collect::<Vec<_>>();
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_song_plan",
+            json!({ "sections": [ { "name": "A", "bars": 2, "energy": 3, "note": "静か" },
+                                  { "name": "B", "bars": 2, "energy": 8, "tracks": ["Bass"] } ] }),
+        )
+        .await,
+    );
+    assert!(v["plan_entry_id"].is_string(), "{v}");
+    // 曲の履歴の項目には設計が無い
+    let entries = fx.handle.get_entries(None, 10).await.unwrap().unwrap();
+    let last = entries.last().unwrap();
+    let fwd = serde_json::to_string(&last.forward).unwrap();
+    assert!(
+        fwd.contains("set_sections") && !fwd.contains("energy") && !fwd.contains("静か"),
+        "{fwd}"
+    );
+    // 読み出すと計画の値が重なる
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(energies(&p), vec![Some(3.0), Some(8.0)]);
+    assert_eq!(p.sections[0].note.as_deref(), Some("静か"));
+    assert_eq!(p.sections[1].tracks, vec!["Bass".to_owned()]);
+    let song_len = entries.len();
+    // 画面で設計だけ直す: 曲の履歴は増えず、計画の履歴に 1 件
+    let mut secs = p.sections.clone();
+    secs[0].energy = Some(5.0);
+    secs[0].curve = vec![[0.0, 4.0], [1.0, 6.0]];
+    let (song, plan) = glaux_mcp::plan_view::edit_sections(
+        &fx.handle,
+        glaux_core::Author::Human,
+        secs,
+        "盛り上がり",
+    )
+    .await
+    .unwrap();
+    assert!(song.is_none() && plan.is_some());
+    assert_eq!(
+        fx.handle
+            .get_entries(None, 10)
+            .await
+            .unwrap()
+            .unwrap()
+            .len(),
+        song_len
+    );
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(energies(&p), vec![Some(5.0), Some(8.0)]);
+    assert_eq!(p.sections[0].curve.len(), 2);
+    // 計画の中の小数は短い表記のまま(6.2 が 6.199999809265137 にならない)
+    let mut secs = p.sections.clone();
+    secs[0].energy = Some(6.2);
+    glaux_mcp::plan_view::edit_sections(&fx.handle, glaux_core::Author::Human, secs, "6.2")
+        .await
+        .unwrap();
+    let plans = fx.handle.get_plans().await.unwrap();
+    let (sp, _) = glaux_core::plan::current_song_plan(plans.doc()).unwrap();
+    assert_eq!(sp.body["sections"][0]["energy"], json!(6.2), "{}", sp.body);
+    assert_eq!(fx.handle.step_plan(1, false).await.unwrap(), 1);
+    // 計画を 1 つ戻すと設計が戻る(曲はそのまま)
+    assert_eq!(fx.handle.step_plan(1, false).await.unwrap(), 1);
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(energies(&p), vec![Some(3.0), Some(8.0)]);
+    assert!(p.sections[0].curve.is_empty());
+    // 区間の名前を変えつつ設計も直す: 曲と計画が一組になり、曲の側で取り消すと両方戻る
+    let mut secs = p.sections.clone();
+    secs[1].name = "サビ".to_owned();
+    secs[1].energy = Some(9.0);
+    let (song, plan) =
+        glaux_mcp::plan_view::edit_sections(&fx.handle, glaux_core::Author::Human, secs, "サビ")
+            .await
+            .unwrap();
+    assert!(song.is_some() && plan.is_some());
+    fx.handle.undo(1).await.unwrap().unwrap();
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(p.sections[1].name, "B");
+    assert_eq!(energies(&p), vec![Some(3.0), Some(8.0)]);
+    // set_song_plan の取り消しで、区間も設計も消える。やり直しで戻る
+    fx.handle.undo(1).await.unwrap().unwrap();
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert!(p.sections.is_empty(), "{:?}", p.sections);
+    let plans = fx.handle.get_plans().await.unwrap();
+    assert!(
+        glaux_core::plan::current_song_plan(plans.doc()).is_none_or(|(_, s)| s.sections.is_empty())
+    );
+    fx.handle.redo(1).await.unwrap().unwrap();
+    let (p, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(energies(&p), vec![Some(3.0), Some(8.0)]);
+}
+
+/// 区間の設計を曲に持っていた前の曲を開くと、設計を曲全体の計画へ移す(計画の履歴に 1 件。読み出す値は変わらない)
+#[tokio::test]
+async fn old_songs_move_section_design_into_the_plan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Old.glaux");
+    {
+        let (store, mut session) = Store::open_or_create(dir.to_str().unwrap()).unwrap();
+        let sections = vec![
+            glaux_core::SectionMarker {
+                id: Some(glaux_core::SectionId::new()),
+                tick: glaux_core::Tick(0),
+                name: "Intro".to_owned(),
+                energy: Some(2.0),
+                note: Some("薄く".to_owned()),
+                ..Default::default()
+            },
+            // ID の無い区間にも ID を付けて移す
+            glaux_core::SectionMarker {
+                tick: glaux_core::Tick(3840 * 4),
+                name: "Drop".to_owned(),
+                energy: Some(9.0),
+                join: Some(glaux_core::SectionJoin::Step),
+                ..Default::default()
+            },
+        ];
+        session
+            .apply(
+                glaux_core::Command::SetSections { sections },
+                glaux_core::Author::Human,
+                "前の曲".to_owned(),
+            )
+            .unwrap();
+        store.save_after_change(&session).unwrap();
+    }
+    let (store, session) = Store::open_or_create(dir.to_str().unwrap()).unwrap();
+    let handle = SessionHandle::spawn(session, store);
+    let (p, _) = handle.get_project().await.unwrap();
+    assert_eq!(
+        p.sections.iter().map(|s| s.energy).collect::<Vec<_>>(),
+        vec![Some(2.0), Some(9.0)]
+    );
+    assert_eq!(p.sections[1].join, Some(glaux_core::SectionJoin::Step));
+    assert!(p.sections.iter().all(|s| s.id.is_some()));
+    let plans = handle.get_plans().await.unwrap();
+    let (_, song) = glaux_core::plan::current_song_plan(plans.doc()).expect("曲全体の計画ができる");
+    assert_eq!(song.sections.len(), 2);
+    assert!(plans
+        .history()
+        .applied()
+        .iter()
+        .any(|e| e.label == "区間の設計を計画へ移す"));
+    // 前の曲の履歴を取り消しても、設計(計画)は動かない(区間が消えるだけ)
+    drop(tmp);
+}
+
 /// 計画より先に音を書かないよう知らせる: set_song_plan は計画の無いトラックを、作る道具は plan_hint を返す
 #[tokio::test]
 async fn song_plan_and_write_tools_point_to_missing_part_plans() {
@@ -7448,11 +7601,22 @@ async fn design_screen_plan_operations() {
     .unwrap();
     plan_view::settle_estimated(h, true).await.unwrap();
     let plans = h.get_plans().await.unwrap();
+    // 採用済みの曲全体の計画がすでにあるので、推定はそこへ足して採用する(曲全体の計画は 1 つのまま)
+    assert!(plans.doc().plans.values().all(|p| p.state.is_none()));
+    assert_eq!(
+        plans
+            .doc()
+            .plans
+            .values()
+            .filter(|p| p.kind == "song")
+            .count(),
+        1
+    );
     assert!(plans
-        .doc()
-        .plans
-        .values()
-        .any(|p| p.name == "推定 B" && p.state.is_none()));
+        .history()
+        .applied()
+        .iter()
+        .any(|e| e.label.contains("推定 B")));
     // メモの形の誤りは保存できない
     assert!(plan_view::save(
         h,

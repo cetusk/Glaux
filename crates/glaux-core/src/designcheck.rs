@@ -558,10 +558,15 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
         })
         .collect();
 
-    // 計画(曲全体・パート)
-    let mut song = None;
-    let mut song_plan_id = None;
-    let mut song_estimated = false;
+    // 計画(曲全体・パート)。曲全体は区間の設計を重ねるときと同じ選び方
+    let current = crate::plan::current_song_plan(plans);
+    let song_estimated = current.as_ref().is_some_and(|(p, _)| p.state.is_some());
+    let song_plan_id = current.as_ref().map(|(p, _)| p.id.clone());
+    // 区間ごとの設計は区間の欄(planned・curve・join・note)に並ぶので、曲全体の計画からは外して見せる(二重にしない)
+    let song: Option<SongPlan> = current.map(|(_, s)| SongPlan {
+        sections: vec![],
+        ..s
+    });
     let mut part_plans: Vec<(&PlanId, PartPlan, bool)> = Vec::new();
     for (id, p) in &plans.plans {
         // 案(枝)は今の計画ではないので並べない(案は計画の一覧から聴き比べて採用する)
@@ -569,20 +574,10 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
             continue;
         }
         let estimated = p.state.as_deref() == Some("estimated");
-        match p.kind.as_str() {
-            "song" if song.is_none() || (song_estimated && !estimated) => {
-                if let Ok(s) = serde_json::from_value::<SongPlan>(p.body.clone()) {
-                    song = Some(s);
-                    song_plan_id = Some(id.clone());
-                    song_estimated = estimated;
-                }
+        if p.kind == "part" {
+            if let Ok(pp) = serde_json::from_value::<PartPlan>(p.body.clone()) {
+                part_plans.push((id, pp, estimated));
             }
-            "part" => {
-                if let Ok(pp) = serde_json::from_value::<PartPlan>(p.body.clone()) {
-                    part_plans.push((id, pp, estimated));
-                }
-            }
-            _ => {}
         }
     }
 

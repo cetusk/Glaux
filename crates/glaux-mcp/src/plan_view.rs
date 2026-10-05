@@ -122,6 +122,9 @@ pub async fn design(handle: &SessionHandle, limit: usize) -> Result<Value, Strin
     v["history_total"] = json!(total);
     v["proposal_changes"] = Value::Object(changes);
     v["redoable"] = json!(redoable);
+    v["section_design"] = json!(glaux_core::plan::current_song_plan(plans.doc())
+        .map(|(_, s)| s.sections)
+        .unwrap_or_default());
     Ok(v)
 }
 
@@ -190,11 +193,15 @@ pub async fn clip_states(handle: &SessionHandle) -> Result<Value, String> {
     let (project, version) = handle.get_project_shared().await?;
     let plans = handle.get_plans().await?;
     let doc = plans.doc().clone();
+    // 区間の設計(計画が持ち主。タイムラインの区間の吹き出しが、曲を取り直さずに計画の今の値を出すため)
+    let section_design = glaux_core::plan::current_song_plan(&doc)
+        .map(|(_, s)| s.sections)
+        .unwrap_or_default();
     let states =
         tokio::task::spawn_blocking(move || glaux_core::designcheck::clip_states(&project, &doc))
             .await
             .map_err(|e| e.to_string())?;
-    Ok(json!({ "project_version": version, "clips": states }))
+    Ok(json!({ "project_version": version, "clips": states, "section_design": section_design }))
 }
 
 // ---------------------------------------------------------------- 画面からの計画の編集(人の操作)
@@ -240,6 +247,9 @@ pub async fn save(
             };
             // 案のまま直すなら、案の音(編集の列と、出したときの指紋)を引き継ぐ
             let still_proposal = state.as_deref() == Some("proposal");
+            // 区間の設計は区間の編集(edit_sections)でだけ変える。画面の古い中身で上書きしない
+            let mut body = body;
+            glaux_core::plan::keep_song_sections(old, &mut body, true);
             PlanCommand::Replace {
                 plan: Plan {
                     patch_base: if still_proposal {
@@ -424,7 +434,42 @@ pub async fn settle_estimated(handle: &SessionHandle, adopt: bool) -> Result<Val
         .cloned()
         .collect();
     let mut entries = Vec::new();
+    // 採用済みの曲全体の計画(区間の設計を持つ)がすでにあれば、推定した曲全体の計画はそこへ足す(採用済みの値を優先)
+    let adopted_song = glaux_core::plan::current_song_plan(plans.doc())
+        .map(|(p, _)| p.clone())
+        .filter(|p| p.state.is_none());
     for p in targets {
+        if let (true, "song", Some(base)) = (adopt, p.kind.as_str(), adopted_song.as_ref()) {
+            let label = format!("推定した計画「{}」を「{}」に足して採用", p.name, base.name);
+            let mut body = base.body.clone();
+            if let (Some(to), Some(from)) = (body.as_object_mut(), p.body.as_object()) {
+                for (k, v) in from {
+                    to.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            for command in [
+                PlanCommand::Replace {
+                    plan: glaux_core::plan::Plan {
+                        rev: base.rev + 1,
+                        body,
+                        ..base.clone()
+                    },
+                },
+                PlanCommand::Delete { id: p.id.clone() },
+            ] {
+                entries.push(
+                    handle
+                        .apply_plan(
+                            command,
+                            glaux_core::Author::Human,
+                            label.clone(),
+                            note(&label),
+                        )
+                        .await?,
+                );
+            }
+            continue;
+        }
         let (command, label) = if adopt {
             let label = format!("推定した計画「{}」を採用", p.name);
             (
@@ -703,7 +748,12 @@ pub async fn adopt_proposal(
                         PlanCommand::Replace {
                             plan: Plan {
                                 rev: b.rev + 1,
-                                body: p.body.clone(),
+                                body: {
+                                    // 曲全体の計画の案が区間の設計を書いていなければ、今の区間の設計を引き継ぐ
+                                    let mut body = p.body.clone();
+                                    glaux_core::plan::keep_song_sections(&b, &mut body, false);
+                                    body
+                                },
                                 state: None,
                                 ..b
                             },
@@ -815,6 +865,100 @@ fn same_ask(
         }
         _ => false,
     }
+}
+
+// ---------------------------------------------------------------- 区間の設計(曲全体の計画が持ち主)
+
+/// 区間のマーカーの並び(設計付き)から、区間の設計を作る。ID の無いマーカーは、今の曲の同じ位置・名前の区間の ID を使う
+/// (区間を置き換えた後に呼ぶ。置き換えで ID が付いている)
+pub fn section_design_of(
+    project: &glaux_core::Project,
+    markers: &[glaux_core::SectionMarker],
+) -> Vec<glaux_core::plan::SongSectionPlan> {
+    let mut used = std::collections::BTreeSet::new();
+    markers
+        .iter()
+        .filter_map(|m| {
+            let id = m.id.clone().or_else(|| {
+                project
+                    .sections
+                    .iter()
+                    .filter(|o| o.tick == m.tick && o.name == m.name)
+                    .filter_map(|o| o.id.clone())
+                    .find(|id| !used.contains(id))
+            })?;
+            used.insert(id.clone());
+            let mut with_id = m.clone();
+            with_id.id = Some(id);
+            glaux_core::plan::SongSectionPlan::of(&with_id)
+        })
+        .collect()
+}
+
+/// 区間の設計を曲全体の計画に書く(区間の設計を丸ごと置き換える。採用済みの曲全体の計画が無ければ作る)。
+/// `song_entry` があれば、その曲の編集(区間の置き換え)と一組にする(曲の側で取り消すと計画も戻る)。
+/// 今と同じなら書かずに None
+pub async fn save_section_design(
+    handle: &SessionHandle,
+    author: glaux_core::Author,
+    entries: Vec<glaux_core::plan::SongSectionPlan>,
+    label: &str,
+    why: &str,
+    song_entry: Option<glaux_core::EntryId>,
+) -> Result<Option<glaux_core::EntryId>, String> {
+    let plans = handle.get_plans().await?;
+    let Some(command) =
+        glaux_core::plan::section_design_command(plans.doc(), entries, glaux_core::PlanId::new())
+    else {
+        return Ok(None);
+    };
+    let note = glaux_core::EntryNote {
+        why: why.to_owned(),
+        song_entry,
+        ..Default::default()
+    };
+    handle
+        .apply_plan(command, author, label.to_owned(), note)
+        .await
+        .map(Some)
+}
+
+/// 画面で区間を直す: 区間の位置・名前・数が変わったら曲の区間を置き換え(曲の履歴)、盛り上がり・形・境目・
+/// 鳴らすトラック・メモは曲全体の計画に書く(計画の履歴。曲も変えたなら一組にする)。
+/// 返り値は (曲の履歴の項目, 計画の履歴の項目)
+pub async fn edit_sections(
+    handle: &SessionHandle,
+    author: glaux_core::Author,
+    sections: Vec<glaux_core::SectionMarker>,
+    label: &str,
+) -> Result<(Option<glaux_core::EntryId>, Option<glaux_core::EntryId>), String> {
+    let (project, _) = handle.get_project_shared().await?;
+    let marks =
+        |v: &[glaux_core::SectionMarker]| -> Vec<(Option<glaux_core::SectionId>, u64, String)> {
+            v.iter()
+                .map(|m| (m.id.clone(), m.tick.0, m.name.clone()))
+                .collect()
+        };
+    let mut song_entry = None;
+    // ID の無い区間があれば、置き換えで ID を付ける(計画が区間を ID で指すため)
+    if marks(&sections) != marks(&project.sections) || sections.iter().any(|m| m.id.is_none()) {
+        let r = handle
+            .apply(
+                glaux_core::Command::SetSections {
+                    sections: sections.clone(),
+                },
+                author.clone(),
+                label.to_owned(),
+            )
+            .await?
+            .map_err(|e| e.to_string())?;
+        song_entry = Some(r.0);
+    }
+    let (after, _) = handle.get_project_shared().await?;
+    let entries = section_design_of(&after, &sections);
+    let plan_entry =
+        save_section_design(handle, author, entries, label, label, song_entry.clone()).await?;
+    Ok((song_entry, plan_entry))
 }
 
 #[cfg(test)]

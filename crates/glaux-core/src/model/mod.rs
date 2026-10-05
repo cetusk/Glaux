@@ -74,7 +74,8 @@ pub struct Project {
 }
 
 /// 曲構成のマーカー。「サビだけ盛り上げて」のような構造単位の指示に使う。
-/// 曲の計画書(MCP の set_song_plan)の中身(盛り上がり・鳴らすトラック・役割)も持つ。点検が計画と実際を比べる
+/// 区間の設計(盛り上がり・形・境目・鳴らすトラック・メモ)の持ち主は曲全体の計画(`plan::SongPlan::sections`)で、
+/// 曲を読み出すときにここへ重ねる(点検・設計画面が計画と実際を比べる)。曲の履歴には位置と名前だけを残す
 #[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SectionMarker {
     /// 区間の ID(計画が区間を指す。古い曲には無い。set_song_plan などが付ける)

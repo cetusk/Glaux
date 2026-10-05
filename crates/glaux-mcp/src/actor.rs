@@ -133,6 +133,152 @@ struct Plans {
     session: PlanSession,
     /// 計画の版(開いてから変えた回数。変更の通知に載せる)
     version: u64,
+    /// 曲の区間に残っていた設計を計画へ移し終えたか(開いてから 1 回だけ確かめる)
+    migrated: bool,
+}
+
+/// 計画の値を重ねた曲の読み取り用の複製(元の複製・計画の版と一緒に覚え、どちらかが変わったら作り直す)
+struct Overlaid {
+    base: std::sync::Arc<Project>,
+    plans_version: u64,
+    dir: std::path::PathBuf,
+    out: std::sync::Arc<Project>,
+}
+
+/// 曲のフォルダの計画を開く(開いていない・別のフォルダなら開き直す)
+fn open_plans(plans: &mut Option<Plans>, dir: &std::path::Path) -> Result<(), String> {
+    if plans.as_ref().is_some_and(|p| p.store.dir() != dir) {
+        *plans = None;
+    }
+    if plans.is_none() {
+        let (store, session) =
+            PlanStore::open(dir).map_err(|e| format!("計画を開けません: {e:#}"))?;
+        *plans = Some(Plans {
+            store,
+            session,
+            version: 0,
+            migrated: false,
+        });
+    }
+    Ok(())
+}
+
+/// 区間の設計(盛り上がり・形・境目・鳴らすトラック・メモ)の持ち主を曲全体の計画にする前の曲を開いたとき、
+/// 曲の区間に残っている設計を計画へ移す(計画が区間の設計をまだ持っていないときだけ。計画の履歴に 1 件)。
+/// ID の無い区間には ID を付ける(曲の履歴に 1 件)。計画を変えたら新しい計画の版を返す
+fn migrate_section_design(
+    p: &mut Plans,
+    session: &mut Session,
+    store: &Store,
+    events: &broadcast::Sender<ProjectChanged>,
+) -> Option<u64> {
+    use glaux_core::plan::SongSectionPlan;
+    p.migrated = true;
+    let has_design = |m: &glaux_core::SectionMarker| {
+        m.energy.is_some()
+            || !m.tracks.is_empty()
+            || m.note.is_some()
+            || !m.curve.is_empty()
+            || m.join.is_some()
+    };
+    if !session.project().sections.iter().any(has_design) {
+        return None;
+    }
+    if glaux_core::plan::current_song_plan(p.session.doc())
+        .is_some_and(|(_, s)| !s.sections.is_empty())
+    {
+        return None;
+    }
+    if session
+        .project()
+        .sections
+        .iter()
+        .any(|m| m.id.is_none() && has_design(m))
+    {
+        let mut sections = session.project().sections.clone();
+        glaux_core::arrange::fill_section_ids(session.project(), &mut sections);
+        match session.apply(
+            glaux_core::Command::SetSections { sections },
+            Author::System,
+            "区間に ID を付ける(区間の設計を計画へ移すため)".to_owned(),
+        ) {
+            Ok((_, changes)) => {
+                let _ = mutated(session, store, events, changes);
+            }
+            Err(e) => {
+                tracing::warn!("区間に ID を付けられません: {e}");
+                return None;
+            }
+        }
+    }
+    let entries: Vec<SongSectionPlan> = session
+        .project()
+        .sections
+        .iter()
+        .filter_map(SongSectionPlan::of)
+        .collect();
+    let command = glaux_core::plan::section_design_command(
+        p.session.doc(),
+        entries,
+        glaux_core::PlanId::new(),
+    )?;
+    let note = glaux_core::EntryNote {
+        why: "区間の設計(盛り上がり・形・境目・鳴らすトラック・メモ)の持ち主を曲から曲全体の計画へ移した".to_owned(),
+        ..Default::default()
+    };
+    match p.session.apply_with_note(
+        command,
+        Author::System,
+        "区間の設計を計画へ移す".to_owned(),
+        note,
+    ) {
+        Ok(_) => {
+            if let Err(e) = p.store.save(&p.session) {
+                tracing::warn!("計画の保存に失敗しました(メモリ上は反映済み): {e:#}");
+            }
+            p.version += 1;
+            Some(p.version)
+        }
+        Err(e) => {
+            tracing::warn!("区間の設計を計画へ移せません: {e}");
+            None
+        }
+    }
+}
+
+/// 計画の値(区間の設計)を重ねた曲。重ねる必要が無ければ元の複製をそのまま返す
+fn overlaid_project(
+    store: &Store,
+    session: &Session,
+    plans: Option<&Plans>,
+    cache: &mut Option<Overlaid>,
+) -> std::sync::Arc<Project> {
+    let base = store.snapshot(session);
+    let Some(p) = plans else {
+        return base;
+    };
+    if let Some(c) = cache.as_ref() {
+        if std::sync::Arc::ptr_eq(&c.base, &base)
+            && c.plans_version == p.version
+            && c.dir == p.store.dir()
+        {
+            return c.out.clone();
+        }
+    }
+    let out = if glaux_core::plan::needs_overlay(&base, p.session.doc()) {
+        let mut q = (*base).clone();
+        glaux_core::plan::overlay_sections(&mut q, p.session.doc());
+        std::sync::Arc::new(q)
+    } else {
+        base.clone()
+    };
+    *cache = Some(Overlaid {
+        base,
+        plans_version: p.version,
+        dir: p.store.dir().to_path_buf(),
+        out: out.clone(),
+    });
+    out
 }
 
 pub enum Request {
@@ -632,7 +778,34 @@ fn actor_loop(
     events: broadcast::Sender<ProjectChanged>,
 ) {
     let mut plans: Option<Plans> = None;
+    let mut overlay_cache: Option<Overlaid> = None;
     while let Some(req) = rx.blocking_recv() {
+        // 曲のフォルダの計画を開き、古い曲なら区間の設計を計画へ移す(フォルダごとに 1 回)
+        if open_plans(&mut plans, store.dir()).is_ok() {
+            if let Some(p) = plans.as_mut().filter(|p| !p.migrated) {
+                let moved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    migrate_section_design(p, &mut session, &store, &events)
+                }));
+                match moved {
+                    Ok(Some(v)) => {
+                        let _ = events.send(ProjectChanged {
+                            project_version: version(&session, &store),
+                            changes: vec![],
+                            save_error: None,
+                            history_only: true,
+                            plans_version: Some(v),
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(_) => tracing::error!("区間の設計を計画へ移す途中で panic しました"),
+                }
+            }
+        }
+        if let Request::GetProject { reply } = req {
+            let out = overlaid_project(&store, &session, plans.as_ref(), &mut overlay_cache);
+            let _ = reply.send((out, version(&session, &store)));
+            continue;
+        }
         if let Request::Plan(req) = req {
             // 計画は曲とは別。曲のフォルダ(切り替え・移動・読み直しで変わる)に合わせて開く
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -697,29 +870,14 @@ fn actor_loop(
 /// 計画の要求を処理する。曲のフォルダと違うフォルダの計画を開いていたら開き直す。
 /// 計画が変わったら、新しい計画の版を返す
 fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanRequest) -> Option<u64> {
-    if plans.as_ref().is_some_and(|p| p.store.dir() != dir) {
-        *plans = None;
-    }
-    if plans.is_none() {
-        match PlanStore::open(dir) {
-            Ok((store, session)) => {
-                *plans = Some(Plans {
-                    store,
-                    session,
-                    version: 0,
-                })
-            }
-            Err(e) => {
-                let msg = format!("計画を開けません: {e:#}");
-                match req {
-                    PlanRequest::Get { reply } => drop(reply.send(Err(msg))),
-                    PlanRequest::Apply { reply, .. } => drop(reply.send(Err(msg))),
-                    PlanRequest::Step { reply, .. } => drop(reply.send(Err(msg))),
-                    PlanRequest::Revert { reply, .. } => drop(reply.send(Err(msg))),
-                }
-                return None;
-            }
+    if let Err(msg) = open_plans(plans, dir) {
+        match req {
+            PlanRequest::Get { reply } => drop(reply.send(Err(msg))),
+            PlanRequest::Apply { reply, .. } => drop(reply.send(Err(msg))),
+            PlanRequest::Step { reply, .. } => drop(reply.send(Err(msg))),
+            PlanRequest::Revert { reply, .. } => drop(reply.send(Err(msg))),
         }
+        return None;
     }
     let p = plans.as_mut()?;
     let mut changed = false;
@@ -875,6 +1033,8 @@ fn handle(
         } => {
             // 区間の置き換えは、ID の無い区間に今の区間の ID を引き継がせる(計画が区間を ID で指すため)
             let command = glaux_core::arrange::keep_section_ids(session.project(), *command);
+            // 区間の設計は曲全体の計画が持ち主(曲の履歴には区間の位置と名前だけを残す)
+            let command = glaux_core::arrange::strip_section_design(command);
             // AI の編集: 固定の音を守り、ノートが変わったクリップの指紋を同じ 1 件に記録する(手で直した所を後で見分ける)
             let (command, locks) = if matches!(author, Author::Ai { .. }) {
                 let e = glaux_core::made::for_ai(session.project(), command);

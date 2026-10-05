@@ -526,6 +526,24 @@ pub fn keep_section_ids(project: &Project, cmd: Command) -> Command {
     }
 }
 
+/// 区間の置き換えから、区間の設計(盛り上がり・形・境目・鳴らすトラック・メモ)を外す。
+/// 設計の持ち主は曲全体の計画で、曲の履歴には区間の位置と名前だけを残す(設計は計画の履歴に残す)
+pub fn strip_section_design(cmd: Command) -> Command {
+    match cmd {
+        Command::SetSections { mut sections } => {
+            for m in sections.iter_mut() {
+                crate::plan::strip_section_design(m);
+            }
+            Command::SetSections { sections }
+        }
+        Command::Batch { commands, label } => Command::Batch {
+            commands: commands.into_iter().map(strip_section_design).collect(),
+            label,
+        },
+        other => other,
+    }
+}
+
 /// 計画書の区間を、小節の頭に置く区間のマーカーにする(拍子の変化に沿って小節を数える)。
 /// 返り値は (マーカー, 始まりの小節, 終わりの tick) の並び。`start_bar` は最初の区間の小節(1 始まり)
 pub fn plan_markers(

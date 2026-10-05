@@ -117,6 +117,8 @@ export interface DesignData {
   redoable: number;
   /** 案ごとの「変わる所」(案の ID → 区間の番号・範囲〈tick〉・曲全体に効くか・今の曲に当てられないか) */
   proposal_changes?: Record<string, ProposalChanges>;
+  /** 区間の設計(計画が持ち主) */
+  section_design?: SectionDesign[];
 }
 
 export interface ProposalChanges {
@@ -159,7 +161,16 @@ export const designStore = $state<{
   error: string | null;
   /** タイムラインのクリップの印(クリップ ID → 状態) */
   clips: Record<string, ClipState>;
-}>({ data: null, loading: false, error: null, clips: {} });
+  /** 区間の設計(計画が持ち主。区間 ID → 盛り上がり・鳴らすトラック・メモ)。タイムラインの区間の吹き出し用 */
+  sectionDesign: Record<string, SectionDesign>;
+}>({ data: null, loading: false, error: null, clips: {}, sectionDesign: {} });
+
+export interface SectionDesign {
+  section: string;
+  energy?: number;
+  tracks?: string[];
+  note?: string;
+}
 
 /** 設計画面の外で設計データを見ている所の数(チャットの案の一覧)。0 でなければ、設計画面を開いていなくても
  *  曲・計画が変わるたびに読み直す(タイムラインで採用を Ctrl+Z しても、チャットの一覧が古いままだった) */
@@ -177,6 +188,7 @@ export async function refreshDesign(): Promise<void> {
     designStore.data = d;
     designStore.error = null;
     designStore.clips = Object.fromEntries(d.clips.map((c) => [c.clip_id, c]));
+    designStore.sectionDesign = Object.fromEntries((d.section_design ?? []).map((s) => [s.section, s]));
   } catch (e) {
     if (my === seq) designStore.error = String(e);
   } finally {
@@ -190,9 +202,10 @@ let clipSeq = 0;
 export async function refreshClipStates(): Promise<void> {
   const my = ++clipSeq;
   try {
-    const r = await invoke<{ clips: ClipState[] }>("clip_states");
+    const r = await invoke<{ clips: ClipState[]; section_design?: SectionDesign[] }>("clip_states");
     if (my !== clipSeq) return;
     designStore.clips = Object.fromEntries(r.clips.map((c) => [c.clip_id, c]));
+    designStore.sectionDesign = Object.fromEntries((r.section_design ?? []).map((s) => [s.section, s]));
   } catch {
     // 印が出ないだけで、編集には関係しない
   }
@@ -423,7 +436,8 @@ export async function savePlan(
   }
 }
 
-/** 区間(曲のデータ)を直す。区間の並びを丸ごと置き換える 1 件の編集(曲の履歴に残る) */
+/** 区間を直す。区間の位置・名前・数が変わったら曲の区間を置き換え(曲の履歴)、盛り上がり・形・境目・鳴らすトラック・
+ *  メモは曲全体の計画に書く(計画の履歴。曲も変えたなら一組で、曲の側で戻すと計画も戻る) */
 export async function editSections(
   project: Project,
   mutate: (secs: NonNullable<Project["sections"]>) => void,
@@ -433,10 +447,12 @@ export async function editSections(
   secs.sort((a, b) => a.tick - b.tick);
   mutate(secs);
   try {
-    const r = await applyEdit([{ op: "set_sections", sections: secs }], label);
-    noteEdit("song", [r?.entry_id]);
+    const r = await invoke<{ entry_id?: string | null; plan_entry_id?: string | null }>("design_edit_sections", { sections: secs, label });
+    if (r.entry_id) noteUnit({ song: 1, plan: 0, songEntry: r.entry_id });
+    else if (r.plan_entry_id) noteUnit({ song: 0, plan: 1, planEntries: [r.plan_entry_id] });
     return true;
-  } catch {
+  } catch (e) {
+    showToast("error", `「${label}」を保存できませんでした: ${e}`);
     return false;
   }
 }

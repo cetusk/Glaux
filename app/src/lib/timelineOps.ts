@@ -81,10 +81,10 @@ export interface Marker {
   note?: string;
 }
 
-/// マーカーに乗せたときに出す、計画書の中身(無ければ空)
-export function planText(m: Marker): string {
+/// マーカーに乗せたときに出す、計画書の中身(無ければ空)。中身は曲全体の計画の区間の設計
+export function planText(m: Pick<Marker, "energy" | "tracks" | "note">): string {
   const lines: string[] = [];
-  if (m.energy !== undefined && m.energy !== null) lines.push(`計画の盛り上がり: ${m.energy} / 10`);
+  if (m.energy !== undefined && m.energy !== null) lines.push(`計画の盛り上がり: ${Math.round(m.energy * 10) / 10} / 10`);
   if (m.tracks && m.tracks.length > 0) lines.push(`鳴らすトラック: ${m.tracks.join("・")}`);
   if (m.note) lines.push(`役割: ${m.note}`);
   return lines.length > 0 ? `\n${lines.join("\n")}` : "";

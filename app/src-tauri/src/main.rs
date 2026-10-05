@@ -2389,6 +2389,24 @@ async fn plan_adopt_proposal(
         .await
 }
 
+/// 設計画面で区間を直す: 区間の位置・名前・数が変わったら曲の区間を置き換え(曲の履歴)、盛り上がり・形・境目・
+/// 鳴らすトラック・メモは曲全体の計画に書く(計画の履歴。曲も変えたなら一組)。返り値は書いた履歴の項目
+#[tauri::command]
+async fn design_edit_sections(
+    state: State<'_, AppState>,
+    sections: Vec<glaux_core::SectionMarker>,
+    label: String,
+) -> Result<Value, String> {
+    let (song, plan) = glaux_mcp::plan_view::edit_sections(
+        &state.handle,
+        glaux_core::Author::Human,
+        sections,
+        &label,
+    )
+    .await?;
+    Ok(json!({ "entry_id": song, "plan_entry_id": plan }))
+}
+
 /// 履歴の編集 `before_entry` の前と今の、音の違う範囲(tick)と、曲全体に効く違いがあるか(チャットのターンを聴き比べる範囲)
 #[tauri::command]
 async fn change_ranges(state: State<'_, AppState>, before_entry: String) -> Result<Value, String> {
@@ -3084,6 +3102,7 @@ fn main() -> Result<()> {
             plan_settle_estimated,
             ab_prepare_proposals,
             plan_adopt_proposal,
+            design_edit_sections,
             plan_head,
             plan_estimate,
             change_ranges,
