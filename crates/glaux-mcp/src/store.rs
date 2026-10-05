@@ -325,14 +325,14 @@ impl Store {
         };
 
         let mut repaired = false;
-        let mut entries = match History::entries_from_jsonl(&text) {
+        let mut entries = match read_entries(&self.dir, &text) {
             Ok(e) => e,
             Err(e) => {
                 // 末尾の 1 行だけが壊れている(書き込みの途中で落ちた)なら、その行を捨てる
                 let body = text.trim_end_matches('\n');
                 match body
                     .rfind('\n')
-                    .map(|i| History::entries_from_jsonl(&body[..i]))
+                    .map(|i| read_entries(&self.dir, &body[..i]))
                 {
                     Some(Ok(e)) => {
                         tracing::warn!("history.jsonl の末尾の壊れた行を捨てました");
@@ -438,13 +438,13 @@ impl Store {
         let mut history_jsonl = String::new();
         let mut lines = Vec::with_capacity(session.history().len());
         for e in session.history().applied() {
-            history_jsonl
-                .push_str(&serde_json::to_string(e).context("history.jsonl のシリアライズに失敗")?);
+            history_jsonl.push_str(&self.entry_line(e)?);
             history_jsonl.push('\n');
             lines.push((e.id.clone(), history_jsonl.len() as u64));
         }
         write_atomic(&self.project_path(), project_json.as_bytes())?;
         write_atomic(&self.history_path(), history_jsonl.as_bytes())?;
+        self.prune_blobs(&history_jsonl);
         self.saved_entries.set(session.history().len());
         *self.saved_lines.borrow_mut() = Some(lines);
         Ok(())
@@ -523,8 +523,7 @@ impl Store {
                 .applied()
                 .last()
                 .expect("len == saved+1 なので必ずある");
-            let line =
-                serde_json::to_string(last).context("history エントリのシリアライズに失敗")?;
+            let line = self.entry_line(last)?;
             let append = fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -766,6 +765,138 @@ impl ProjectLocked {
         e.chain()
             .any(|c| c.downcast_ref::<ProjectLocked>().is_some())
     }
+}
+
+/// 履歴の中の大きな文字列(CLAP プラグインの状態など)を、別のファイルに 1 回だけ書いて参照にする目安(バイト)。
+/// プラグインの状態は 1 件で約 100KB あり、編集の前と後の両方が履歴に入るので、同じ状態が何度も積まれる
+const BLOB_MIN: usize = 8 * 1024;
+/// 大きな文字列を置くフォルダ(曲のフォルダの中。ファイル名は中身の SHA-256)
+const BLOB_DIR: &str = "history.blobs";
+/// 履歴の行の中で、大きな文字列の代わりに置く参照の頭(JSON では "\u0001blob:")
+const BLOB_TAG: &str = "\u{1}blob:";
+
+fn blob_name(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(s.as_bytes());
+    let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{hex}.txt")
+}
+
+impl Store {
+    /// 履歴の 1 行(大きな文字列は history.blobs/ のファイルへの参照に置き換える)
+    fn entry_line(&self, e: &glaux_core::HistoryEntry) -> Result<String> {
+        let s = serde_json::to_string(e).context("history エントリのシリアライズに失敗")?;
+        if s.len() < BLOB_MIN {
+            return Ok(s);
+        }
+        let mut v = serde_json::to_value(e).context("history エントリのシリアライズに失敗")?;
+        if !self.stash_blobs(&mut v)? {
+            return Ok(s);
+        }
+        serde_json::to_string(&v).context("history エントリのシリアライズに失敗")
+    }
+
+    /// 値の中の大きな文字列をファイルに書いて参照に置き換える。置き換えたら true
+    fn stash_blobs(&self, v: &mut serde_json::Value) -> Result<bool> {
+        use serde_json::Value;
+        Ok(match v {
+            Value::String(s) if s.len() >= BLOB_MIN => {
+                let name = blob_name(s);
+                let dir = self.dir.join(BLOB_DIR);
+                let path = dir.join(&name);
+                if !path.exists() {
+                    fs::create_dir_all(&dir).context("history.blobs を作れません")?;
+                    write_atomic(&path, s.as_bytes())?;
+                }
+                *s = format!("{BLOB_TAG}{name}");
+                true
+            }
+            Value::Array(a) => {
+                let mut any = false;
+                for x in a {
+                    any |= self.stash_blobs(x)?;
+                }
+                any
+            }
+            Value::Object(o) => {
+                let mut any = false;
+                for x in o.values_mut() {
+                    any |= self.stash_blobs(x)?;
+                }
+                any
+            }
+            _ => false,
+        })
+    }
+
+    /// 履歴から参照されなくなった history.blobs/ のファイルを消す(履歴を全部書き直したとき)
+    fn prune_blobs(&self, history_jsonl: &str) {
+        let dir = self.dir.join(BLOB_DIR);
+        let Ok(rd) = fs::read_dir(&dir) else {
+            return;
+        };
+        let tag = "\\u0001blob:";
+        let used: std::collections::HashSet<&str> = history_jsonl
+            .match_indices(tag)
+            .filter_map(|(i, _)| {
+                let rest = &history_jsonl[i + tag.len()..];
+                rest.find('"').map(|j| &rest[..j])
+            })
+            .collect();
+        for f in rd.flatten() {
+            let name = f.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !used.contains(name) {
+                let _ = fs::remove_file(f.path());
+            }
+        }
+    }
+}
+
+/// `history.jsonl` を読む。大きな文字列の参照は history.blobs/ のファイルの中身に戻す(ファイルが無ければ読めない)
+fn read_entries(dir: &Path, text: &str) -> serde_json::Result<Vec<glaux_core::HistoryEntry>> {
+    if !text.contains("\\u0001blob:") {
+        return History::entries_from_jsonl(text);
+    }
+    fn restore(dir: &Path, v: &mut serde_json::Value) -> serde_json::Result<()> {
+        use serde_json::Value;
+        match v {
+            Value::String(s) => {
+                if let Some(name) = s.strip_prefix(BLOB_TAG) {
+                    let body = fs::read_to_string(dir.join(BLOB_DIR).join(name)).map_err(|e| {
+                        <serde_json::Error as serde::de::Error>::custom(format!(
+                            "history.blobs/{name} を読めません: {e}"
+                        ))
+                    })?;
+                    *s = body;
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    restore(dir, x)?;
+                }
+            }
+            Value::Object(o) => {
+                for x in o.values_mut() {
+                    restore(dir, x)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            if l.contains("\\u0001blob:") {
+                let mut v: serde_json::Value = serde_json::from_str(l)?;
+                restore(dir, &mut v)?;
+                serde_json::from_value(v)
+            } else {
+                serde_json::from_str(l)
+            }
+        })
+        .collect()
 }
 
 pub fn acquire_lock(dir: &Path) -> Result<()> {
@@ -1025,6 +1156,81 @@ mod tests {
         assert_eq!(folder_name("COM1"), "COM1_");
         assert_eq!(folder_name("Community"), "Community");
         assert_eq!(folder_name(&"あ".repeat(100)).chars().count(), 80);
+    }
+
+    /// 履歴の中の大きな文字列(プラグインの状態)は history.blobs/ に 1 回だけ書き、開き直したら元に戻る
+    #[test]
+    fn large_strings_in_the_history_are_stored_once_and_restored() {
+        use glaux_core::{Author, Command, Device, PluginSource, Track, TrackId, TrackKind};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("Song.glaux");
+        create_project(&dir, "Song").unwrap();
+        let (store, mut session) = Store::open_or_create(&dir).unwrap();
+        let tid = TrackId::new();
+        let mut t = Track::new(tid.clone(), "Synth", TrackKind::Midi);
+        let state = |c: char| c.to_string().repeat(20_000);
+        let dev = |st: String| Device {
+            source: PluginSource::Clap {
+                plugin_id: "com.example.synth".into(),
+                state: Some(st),
+            },
+            params: Default::default(),
+        };
+        t.device = Some(dev(state('A')));
+        session
+            .apply(
+                Command::AddTrack {
+                    track: t,
+                    index: None,
+                },
+                Author::Human,
+                "t",
+            )
+            .unwrap();
+        store.save_after_change(&session).unwrap();
+        // 状態を 2 回変える(どの行も前と後の状態を丸ごと持つ)
+        for c in ['B', 'A'] {
+            session
+                .apply(
+                    Command::SetDevice {
+                        track: tid.clone(),
+                        device: Some(dev(state(c))),
+                    },
+                    Author::Human,
+                    "状態",
+                )
+                .unwrap();
+            store.save_after_change(&session).unwrap();
+        }
+        let jsonl = fs::read_to_string(dir.join("history.jsonl")).unwrap();
+        assert!(
+            jsonl.len() < 20_000,
+            "履歴の行は参照だけ({} バイト)",
+            jsonl.len()
+        );
+        let blobs = fs::read_dir(dir.join(BLOB_DIR)).unwrap().count();
+        assert_eq!(blobs, 2, "同じ状態は 1 回だけ");
+        // 全部を書き直しても同じ。開き直すと元の状態に戻り、取り消しもできる
+        store.save(&session).unwrap();
+        drop(store);
+        release_lock(&dir);
+        let (_, mut again) = Store::open_or_create(&dir).unwrap();
+        assert_eq!(again.history().len(), 3);
+        let st = |s: &Session| match &s
+            .project()
+            .track(&tid)
+            .unwrap()
+            .device
+            .as_ref()
+            .unwrap()
+            .source
+        {
+            PluginSource::Clap { state, .. } => state.clone().unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(st(&again), state('A'));
+        again.undo().unwrap();
+        assert_eq!(st(&again), state('B'));
     }
 
     #[test]
