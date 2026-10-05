@@ -40,6 +40,7 @@ pub mod model;
 pub mod motif;
 pub mod ornament;
 pub mod plan;
+pub mod planestimate;
 pub mod planfit;
 pub mod progressions;
 pub mod rhythm;

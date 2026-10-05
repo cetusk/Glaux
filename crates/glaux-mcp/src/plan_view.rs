@@ -305,6 +305,69 @@ pub async fn delete(handle: &SessionHandle, plan_id: &str, label: &str) -> Resul
     Ok(json!({ "entry_id": entry }))
 }
 
+/// 計画の無い所を、今の音から推定して保存する(推定 = state: estimated。人が確かめて採用するまで AI は参考としてだけ使う)。
+/// 区間のマーカー(ID 付き)が無い曲では推定しない。返り値: 作った計画の名前(created)と、曲全体の計画を作ったか(song)
+pub async fn estimate(handle: &SessionHandle) -> Result<Value, String> {
+    use glaux_core::plan::Plan;
+    let (project, _) = handle.get_project_shared().await?;
+    if project.sections.is_empty() {
+        return Err(
+            "区間がありません。ルーラーの右クリックで区間を置くか、AI に曲の計画書を頼んでください"
+                .to_owned(),
+        );
+    }
+    if project.sections.iter().any(|s| s.id.is_none()) {
+        return Err("区間に ID がありません(設計画面で区間を直すと付きます)".to_owned());
+    }
+    let plans = handle.get_plans().await?;
+    let doc = plans.doc().clone();
+    let est =
+        tokio::task::spawn_blocking(move || glaux_core::planestimate::estimate(&project, &doc))
+            .await
+            .map_err(|e| e.to_string())?;
+    let why = "今の音から推定した計画(人が確かめて採用するまで、AI は参考としてだけ使う)";
+    let mut todo: Vec<(String, &str, Value)> = Vec::new();
+    let song = est.song.is_some();
+    if let Some(sp) = est.song {
+        todo.push(("曲全体".to_owned(), "song", json!(sp)));
+    }
+    let mut created = Vec::new();
+    for (name, pp) in est.parts {
+        created.push(name.clone());
+        todo.push((name, "part", json!(pp)));
+    }
+    let mut entries = Vec::new();
+    for (name, kind, body) in todo {
+        let label = if kind == "song" {
+            "曲全体の計画を推定".to_owned()
+        } else {
+            format!("「{name}」の計画を推定")
+        };
+        let plan = Plan {
+            id: glaux_core::PlanId::new(),
+            name,
+            kind: kind.to_owned(),
+            rev: 1,
+            derived_from: None,
+            state: Some("estimated".to_owned()),
+            body,
+            patch: vec![],
+            patch_base: Default::default(),
+        };
+        entries.push(
+            handle
+                .apply_plan(
+                    PlanCommand::Create { plan },
+                    glaux_core::Author::System,
+                    label,
+                    note(why),
+                )
+                .await?,
+        );
+    }
+    Ok(json!({ "created": created, "song": song, "entries": entries }))
+}
+
 /// 計画の取り消し・やり直し(n 回)
 pub async fn step(handle: &SessionHandle, n: usize, redo: bool) -> Result<Value, String> {
     let done = handle.step_plan(n.max(1), redo).await?;

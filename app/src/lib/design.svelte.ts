@@ -452,6 +452,33 @@ export async function ensureSectionIds(project: Project): Promise<boolean> {
   return true;
 }
 
+/** 計画の無い所(パート・曲全体)を、今の音から推定する。推定は未確認の扱いで、採用するまで AI は参考としてだけ使う。
+ *  区間に ID が無ければ先に付ける。`auto` は設計画面を開いたときの自動の推定(推定できる所が無くても黙る) */
+export async function estimatePlans(project: Project, auto = false): Promise<void> {
+  try {
+    await ensureSectionIds(project);
+    const r = await invoke<{ created: string[]; song: boolean; entries: string[] }>("plan_estimate");
+    if (r.entries.length) noteUnit({ song: 0, plan: r.entries.length, planEntries: r.entries, label: "計画の推定" });
+    const what = [r.song ? "曲全体" : "", r.created.length ? `${r.created.length} パート` : ""].filter(Boolean).join("と ");
+    if (what) showToast("ok", `今の音から${what}の計画を推定しました。上の帯で確かめて、採用してください`);
+    else if (!auto) showToast("warn", "推定できる所がありませんでした(計画の無い、音のあるパートがありません)");
+    refreshDesign();
+  } catch (e) {
+    if (!auto) showToast("error", `推定できませんでした: ${e}`);
+  }
+}
+
+/** 一度も計画を作っていない曲で設計画面を開いたら、1 回だけ今の音から推定する(区間が無い曲ではしない) */
+const autoEstimated = new Set<string>();
+export function maybeAutoEstimate(project: Project, d: DesignData | null): void {
+  if (!d || d.plans.length > 0 || d.history_total > 0 || !(project.sections ?? []).length) return;
+  if (!d.parts.some((p) => p.cells.some((c) => c.notes > 0))) return;
+  const key = `${project.meta?.title ?? ""}|${project.meta?.created ?? ""}`;
+  if (autoEstimated.has(key)) return;
+  autoEstimated.add(key);
+  estimatePlans(project, true);
+}
+
 /** 曲全体の計画を直す(無ければ作る) */
 export async function editSongPlan(mutate: (body: Record<string, unknown>) => void, label: string): Promise<void> {
   const d = designStore.data;

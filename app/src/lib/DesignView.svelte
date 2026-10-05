@@ -30,6 +30,8 @@
     editPartPlan,
     editSections,
     editSongPlan,
+    estimatePlans,
+    maybeAutoEstimate,
     memosFor,
     noteName,
     partCell,
@@ -726,6 +728,14 @@
         : "選んだ所を、計画の今の版から作り直してください。人が手で直した小節と固定の音は残し、残した所を報告してください。",
     );
   }
+  // 計画の無い所(音のあるパート・曲全体)の数。計画を一度も作っていない曲は、開いたときに 1 回だけ推定する
+  const missingPlans = $derived(
+    d ? d.parts.filter((p) => !p.plan_id && p.cells.some((c) => c.notes > 0)).length + (d.song ? 0 : 1) : 0,
+  );
+  $effect(() => {
+    maybeAutoEstimate(project, d);
+  });
+
   // 推定した計画: 「次から確認せずに採用する」なら、出てきたらすぐ採用する
   $effect(() => {
     if (settings.autoAdoptEstimated && estimated) settleEstimated(true);
@@ -1180,6 +1190,14 @@
           <div class="gtop">
             <div class="grouphead">
               区間ごとの計画<span>左から右へ曲の時間の流れ</span>
+              {#if missingPlans > 0 && (project.sections ?? []).length}
+                <button
+                  class="btn sm"
+                  type="button"
+                  title="計画の無いパート(と曲全体)を、今の音から推定する。推定は未確認の扱いで、確かめて採用するまで AI は参考としてだけ使う"
+                  onclick={() => estimatePlans(project)}>計画の無い所を推定({missingPlans})</button
+                >
+              {/if}
               <div class="zoom" role="group" aria-label="横の縮尺">
                 <button class="btn sm" class:on={zoom == null} type="button" title="曲全体が見える幅にする" onclick={() => setZoom(null)}>全体</button>
                 <button class="btn sm icon" type="button" title="縮小" aria-label="縮小" onclick={() => setZoom(pxb / 1.5)}><Icon name="zoom-out" size={13} /></button>

@@ -2362,6 +2362,12 @@ async fn ab_prepare_proposals(
     Ok(v)
 }
 
+/// 計画の無い所を、今の音から推定して保存する(推定 = 未確認)
+#[tauri::command]
+async fn plan_estimate(state: State<'_, AppState>) -> Result<Value, String> {
+    glaux_mcp::plan_view::estimate(&state.handle).await
+}
+
 /// 計画の履歴のいちばん新しい側の項目の ID と、やり直せる項目の ID(設計画面の Ctrl+Z の確かめ)
 #[tauri::command]
 async fn plan_head(
@@ -3063,6 +3069,7 @@ fn main() -> Result<()> {
             ab_prepare_proposals,
             plan_adopt_proposal,
             plan_head,
+            plan_estimate,
             export_audio,
             import_audio_clip,
             clip_peaks,
