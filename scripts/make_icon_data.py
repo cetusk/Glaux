@@ -20,7 +20,7 @@ copy trash-2 sparkles history plug search wand-sparkles chevron-down chevron-rig
 grip-vertical power app-window save mic speaker cpu audio-waveform drum guitar bell waves library
 file-audio pencil arrow-up arrow-down palette layers music list-music move-horizontal circle-help
 chart-no-axes-column rows-2 arrow-up-down magnet link check piano headphones triangle-alert info
-loader-circle eye send square-stop message-square-plus folder file-plus-2 hand-metal ruler target clapperboard
+loader-circle eye send square-stop message-square-plus message-circle-question-mark folder file-plus-2 hand-metal ruler target clapperboard
 unplug pin archive split scissors layout-grid zoom-in zoom-out eraser
 """.split()
 

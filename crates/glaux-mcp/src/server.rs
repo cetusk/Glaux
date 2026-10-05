@@ -4035,6 +4035,37 @@ pub struct SongPlanSection {
     pub join: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct AskOption {
+    /// 選択肢の名前(短く。例「プログレッシブハウス」)。推測したおすすめは先頭に置き、名前の後に「(おすすめ)」
+    pub label: String,
+    /// 選んだら何が変わるか(1 文。省略可)
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct AskQuestion {
+    /// 質問の文(例「どんなジャンルにしますか?」)
+    pub question: String,
+    /// 短い見出し(答えの記録に使う。例「ジャンル」「長さ」。12 字まで)
+    pub header: String,
+    /// 選択肢(2〜4 個)。「その他(自由に書く)」と「おまかせ」は画面が自動で足すので入れない
+    pub options: Vec<AskOption>,
+    /// 複数選べるか(既定 false)
+    #[serde(default)]
+    pub multi: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct AskUserParams {
+    /// 質問(1〜4 個)
+    pub questions: Vec<AskQuestion>,
+    /// なぜ尋ねるか(人に見せる 1 文。例「ジャンルと長さで曲の作りが大きく変わるため」)
+    #[serde(default)]
+    pub why: Option<String>,
+}
+
 /// 作る道具の応答の plan_hint: トラックにパートの計画が無いとき(計画より先に曲ができ、設計画面に音域の帯が出ない)
 const NO_PART_PLAN_HINT: &str = "このトラックにはパートの計画がありません。曲を作るときは、書く前に save_plan(kind part)で\
     区間ごとの働き・存在の段階・音域の帯を書く(作る道具はそれに沿い、設計画面に計画と実際が並ぶ)。計画なしで書くなら follow_plan: false";
@@ -14093,6 +14124,71 @@ impl GlauxServer {
             }
         }
         Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "人に質問して、選択肢から選んでもらう(作る前に決め手を確かめる)。画面のチャットに質問のカード\
+        (選択肢・その他〈自由に書く〉・おまかせ)が出る。呼んだら作業を止め、ターンを終える(返答は「質問に答えてください」程度に短く)。\
+        人の答えは次の指示で【質問への答え】として届くので、それを計画(save_plan の曲全体: ジャンル・雰囲気・守ること・参考曲)に写してから作る。\
+        尋ねるとき: 新しい曲を作る・大きく作り変えるのに、決め手(ジャンル・雰囲気・長さ・テンポ・編成・主役のパート・参考曲)が\
+        指示から読み取れず、解釈で曲が大きく変わるとき。尋ねないとき: 小さな直し、対象と中身がはっきりした指示、\
+        【おまかせ】が付いた指示(決め手は自分で選び、選んだものを報告に書く)。\
+        1 回の依頼で原則 1 回、質問は 4 個まで、選択肢は 2〜4 個。指示から分かることは尋ねない。推測できるおすすめは選択肢の先頭に置く。"
+    )]
+    async fn ask_user(&self, params: Parameters<AskUserParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("ask_user");
+        let p = params.0;
+        if p.questions.is_empty() || p.questions.len() > 4 {
+            return Err("質問は 1〜4 個".to_owned());
+        }
+        for q in &p.questions {
+            if q.question.trim().is_empty() {
+                return Err("質問の文が空です".to_owned());
+            }
+            if !(2..=4).contains(&q.options.len()) {
+                return Err(format!(
+                    "選択肢は 2〜4 個(「{}」は {} 個)",
+                    q.header,
+                    q.options.len()
+                ));
+            }
+            if q.header.chars().count() > 12 || q.header.trim().is_empty() {
+                return Err(format!("見出し(header)は 1〜12 字(「{}」)", q.header));
+            }
+            if q.options
+                .iter()
+                .any(|o| o.label.trim().is_empty() || o.label.chars().count() > 40)
+            {
+                return Err(format!("選択肢の名前は 1〜40 字(「{}」)", q.header));
+            }
+        }
+        let id = format!(
+            "q_{}",
+            glaux_core::PlanId::new()
+                .to_string()
+                .trim_start_matches("pln_")
+        );
+        let card = json!({
+            "id": id,
+            "why": p.why,
+            "questions": p.questions.iter().map(|q| json!({
+                "question": q.question,
+                "header": q.header,
+                "multi": q.multi,
+                "options": q.options.iter().map(|o| json!({ "label": o.label, "description": o.description })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        });
+        let shown = self.handle.post_question(card) > 0;
+        Ok(JsonText(json!({
+            "asked": true,
+            "id": id,
+            "shown_in_app": shown,
+            "next": if shown {
+                "Glaux の画面に質問のカードを出した。ここで作業を止めてターンを終える(返答は短く)。答えは次の指示で【質問への答え】として届く"
+            } else {
+                "Glaux の画面が開いていないので、同じ質問(選択肢付き)を文章で示し、ここで作業を止めて人の答えを待つ"
+            },
+        })))
     }
 
     #[tool(

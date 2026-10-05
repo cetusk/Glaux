@@ -53,6 +53,8 @@ interface Settings {
   outputVolumeDb: number;
   /// 推定した計画を確認せずに採用する(設計画面の「次から確認せずに採用する」)
   autoAdoptEstimated: boolean;
+  /// 作る前に AI が質問する: auto = 決め手が読み取れないとき / never = 尋ねない(いつもおまかせ)
+  chatAsk: "auto" | "never";
 }
 
 function load(): Settings {
@@ -81,6 +83,7 @@ function load(): Settings {
         welcomeDone: v.welcomeDone === true,
         outputVolumeDb: typeof v.outputVolumeDb === "number" ? v.outputVolumeDb : 0,
         autoAdoptEstimated: v.autoAdoptEstimated === true,
+        chatAsk: v.chatAsk === "never" ? "never" : "auto",
       };
     }
   } catch {
@@ -107,6 +110,7 @@ function load(): Settings {
     welcomeDone: false,
     outputVolumeDb: 0,
     autoAdoptEstimated: false,
+    chatAsk: "auto",
   };
 }
 

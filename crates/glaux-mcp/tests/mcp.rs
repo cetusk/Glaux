@@ -5348,6 +5348,38 @@ async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     assert_eq!(r.is_error, Some(true));
 }
 
+/// ask_user: 質問を画面へ知らせる(画面が無ければ文章で示すよう返す)。形の誤り(選択肢の数・見出しの長さ)は断る
+#[tokio::test]
+async fn ask_user_posts_questions_to_the_app() {
+    let fx = setup().await;
+    let args = json!({ "why": "ジャンルで作りが変わるため", "questions": [
+        { "question": "どんなジャンルにしますか?", "header": "ジャンル",
+          "options": [ { "label": "ハウス(おすすめ)", "description": "128 BPM" }, { "label": "ローファイ" } ] },
+        { "question": "主役は?", "header": "主役", "multi": true,
+          "options": [ { "label": "ピアノ" }, { "label": "リード" }, { "label": "パッド" } ] } ] });
+    // 画面が無い(購読者がいない)とき
+    let v = ok_json(&call(&fx, "ask_user", args.clone()).await);
+    assert_eq!(v["shown_in_app"], false, "{v}");
+    assert!(v["next"].as_str().unwrap().contains("文章"));
+    // 画面がある(チャットが購読している)とき
+    let mut rx = fx.handle.subscribe_questions();
+    let v = ok_json(&call(&fx, "ask_user", args).await);
+    assert_eq!(v["shown_in_app"], true, "{v}");
+    let q = rx.recv().await.unwrap();
+    assert_eq!(q["id"], v["id"]);
+    assert_eq!(q["questions"][0]["header"], "ジャンル");
+    assert_eq!(q["questions"][0]["options"][0]["description"], "128 BPM");
+    assert_eq!(q["questions"][1]["multi"], true);
+    // 形の誤り
+    for bad in [
+        json!({ "questions": [] }),
+        json!({ "questions": [ { "question": "?", "header": "x", "options": [ { "label": "a" } ] } ] }),
+        json!({ "questions": [ { "question": "?", "header": "とても長い見出しの名前ですね", "options": [ { "label": "a" }, { "label": "b" } ] } ] }),
+    ] {
+        assert_eq!(call(&fx, "ask_user", bad).await.is_error, Some(true));
+    }
+}
+
 /// 区間の設計(盛り上がり・形・境目・鳴らすトラック・メモ)は曲全体の計画が持ち主: 曲の履歴には区間の位置と名前だけ、
 /// 設計は計画の履歴に残り、曲を読み出すときに重なる。画面で設計だけ直すと曲の履歴は増えない。
 /// set_song_plan は曲と計画を一組にし、曲の側で取り消すと計画も戻る

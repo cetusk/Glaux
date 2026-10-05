@@ -3037,6 +3037,22 @@ fn main() -> Result<()> {
                 });
             }
 
+            // AI から人への質問(ask_user)→ フロントエンドイベント(チャットの質問のカード)
+            let app_handle = app.handle().clone();
+            let mut question_rx = handle.subscribe_questions();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    use tokio::sync::broadcast::error::RecvError;
+                    match question_rx.recv().await {
+                        Ok(q) => {
+                            let _ = app_handle.emit("ai-question", &q);
+                        }
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+            });
+
             // AI のツール呼び出し状況 → フロントエンドイベント(「AI 作業中」表示)
             let app_handle = app.handle().clone();
             let mut activity_rx = handle.subscribe_activity();

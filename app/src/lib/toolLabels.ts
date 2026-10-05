@@ -63,6 +63,7 @@ const LABELS: Record<string, ToolLabel> = {
   set_song_plan: { short: "曲の計画書", doing: "曲の計画を立てています" },
   get_design: { short: "設計を確認", doing: "曲の設計(計画と実際)を読んでいます" },
   propose_design: { short: "案を出す", doing: "案を出しています" },
+  ask_user: { short: "質問", doing: "質問を用意しています" },
   write_chords: { short: "コードの伴奏", doing: "コード進行から伴奏を書いています" },
   write_arpeggio: { short: "アルペジオ", doing: "アルペジオを書いています" },
   write_bassline: { short: "ベースライン", doing: "ベースラインを書いています" },

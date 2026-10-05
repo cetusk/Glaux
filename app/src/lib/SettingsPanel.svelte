@@ -588,6 +588,21 @@
             </select>
           </div>
         </div>
+        <div class="srow">
+          {@render row("作る前に AI が質問する", "曲の決め手(ジャンル・雰囲気・長さ・編成など)が指示から読み取れないとき、作る前に選択肢で尋ねます。「尋ねない」なら、いつも AI が決めて最後まで作ります(1 回だけなら指示の頭に /goal)")}
+          <div class="sc seg">
+            {#each [{ v: "auto", l: "必要なとき" }, { v: "never", l: "尋ねない" }] as o (o.v)}
+              <button
+                class="btn sm"
+                class:on={settings.chatAsk === o.v}
+                onclick={() => {
+                  settings.chatAsk = o.v as "auto" | "never";
+                  saveSettings();
+                }}>{o.l}</button
+              >
+            {/each}
+          </div>
+        </div>
         <label class="srow">
           {@render row("作業が終わったら音で知らせる", "AI のターンが終わったとき(失敗したときは低い音)")}
           <input class="sc" type="checkbox" checked={settings.notifyOnAiDone} onchange={toggleNotify} />

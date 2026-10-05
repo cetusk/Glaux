@@ -76,7 +76,7 @@
   const designTarget = $derived(designLabel && designSel.sel !== designDetached ? designLabel : null);
 
   interface Msg {
-    role: "user" | "assistant" | "tool" | "notice" | "error" | "turn" | "choices";
+    role: "user" | "assistant" | "tool" | "notice" | "error" | "turn" | "choices" | "question";
     text: string;
     /** role "turn": ターンの開始前の最後の履歴エントリ(取り消しの起点)と、取り消したか */
     since?: string | null;
@@ -87,6 +87,10 @@
     reverted?: boolean;
     /** role "user": 送信待ちのまま停止したので送らなかった */
     dropped?: boolean;
+    /** role "question": AI の質問(ask_user)と、送った答え・答えずに次へ進んだか */
+    question?: api.AiQuestion;
+    answer?: string;
+    skipped?: boolean;
   }
 
   /// 送信待ちの指示(実行中に書いたもの)。会話の下に並べ、前のターンが終わったら順に送る
@@ -252,6 +256,23 @@
 
 
   let messages = $state<Msg[]>([]);
+  /** ターンの途中に出た答えていない質問を、ターンの終わりに会話の最後へ移す(入力欄の近くで答えられるように) */
+  function questionsToEnd() {
+    const open = messages.filter((m) => m.role === "question" && qOpen(m));
+    if (!open.length) return;
+    messages = [...messages.filter((m) => !(m.role === "question" && qOpen(m))), ...open];
+    saveLog();
+    revealQuestion();
+  }
+
+  /** 答えていない質問のカードを見せる(欄より高ければカードの頭から、収まれば最後まで) */
+  async function revealQuestion() {
+    await tick();
+    const cards = scroller?.querySelectorAll<HTMLElement>(".msg.question:not(.closed)");
+    const el = cards?.[cards.length - 1];
+    if (el && scroller && el.offsetHeight > scroller.clientHeight) el.scrollIntoView({ block: "start" });
+    else scrollToBottom(true);
+  }
   let input = $state("");
 
   // ---- 送った指示の履歴(入力欄が空のとき ↑ でさかのぼる。ターミナルと同じ) ----
@@ -311,6 +332,7 @@
       const r = await api.loadChatLog();
       const saved = r.log ? JSON.parse(r.log) : null;
       messages = Array.isArray(saved?.messages) ? (saved.messages as Msg[]) : [];
+      for (const m of messages) if (m.role === "question" && m.question) initQuestion(m.question);
       prompts = Array.isArray(saved?.prompts) ? (saved.prompts as string[]).filter((p) => typeof p === "string") : [];
       logDir = r.dir;
     } catch {
@@ -478,9 +500,23 @@
         `音色・エフェクトに関する指示は、特に指定がなければこのトラックが対象です。\n`;
       shown = `〔音作り: ${sd.trackName}〕 ${shown}`;
     }
-    const fullPrompt = prefix ? `${prefix}\n${prompt}` : prompt;
+    // /goal: 質問せずに AI が決め手を選んで最後まで作る(何も無ければ、何でもよいので 1 曲)。設定で「尋ねない」なら毎回
+    const goal = prompt.match(/^\/(goal|おまかせ)(?:\s+|$)([\s\S]*)$/);
+    let body = prompt;
+    if (goal) {
+      body = goal[2].trim() || GOAL_DEFAULT;
+      shown = shown.replace(prompt, `〔おまかせ〕 ${body}`);
+    }
+    if (goal || settings.chatAsk === "never") prefix = OMAKASE + prefix;
+    const fullPrompt = prefix ? `${prefix}\n${body}` : body;
     rememberPrompt(prompt);
     input = "";
+    await sendPrompt(shown, fullPrompt);
+  }
+
+  /** 送る(実行中なら送信待ちに並べる)。答えていない質問は「答えずに次へ進んだ」にする */
+  async function sendPrompt(shown: string, fullPrompt: string) {
+    for (const m of messages) if (m.role === "question" && !m.answer && !m.skipped) m.skipped = true;
     if (chatStatus.running || pending.length > 0) {
       // 実行中に書いた指示は、今のターンが終わってから送る
       pending.push({ text: shown, fullPrompt });
@@ -489,6 +525,44 @@
     }
     push({ role: "user", text: shown }, true);
     await start(fullPrompt);
+  }
+
+  // ---- AI からの質問(ask_user)----
+  const OMAKASE =
+    "【おまかせ】ask_user で質問せず、決め手(ジャンル・雰囲気・長さ・編成など)は自分で選んで最後まで作る。選んだ決め手は報告に書く。\n";
+  const GOAL_DEFAULT = "何でもよいので、1 曲作ってください(ジャンル・雰囲気・長さ・編成は自由に選んでください)。";
+  /** 質問ごとの選んだ選択肢とその他の言葉(質問の ID → 質問の番号ごと) */
+  let qPick = $state<Record<string, { picks: string[]; other: string }[]>>({});
+  /** 選んだ内容の入れ物を作る(質問が届いたとき・会話の記録を読んだとき。描画の途中では作らない) */
+  function initQuestion(q: api.AiQuestion) {
+    if (!qPick[q.id]) qPick[q.id] = q.questions.map(() => ({ picks: [], other: "" }));
+  }
+  const qState = (m: Msg) => qPick[m.question!.id] ?? m.question!.questions.map(() => ({ picks: [], other: "" }));
+  const qOpen = (m: Msg) => !m.answer && !m.skipped;
+  function togglePick(m: Msg, qi: number, label: string) {
+    initQuestion(m.question!);
+    const st = qPick[m.question!.id][qi];
+    const multi = m.question!.questions[qi].multi;
+    st.picks = st.picks.includes(label) ? st.picks.filter((x) => x !== label) : multi ? [...st.picks, label] : [label];
+  }
+  /** 答えを送る(`all` なら全部おまかせ)。選ばなかった質問は AI に任せる */
+  async function answerQuestion(m: Msg, all = false) {
+    if (!qOpen(m)) return;
+    const q = m.question!;
+    const st = qState(m);
+    const lines = q.questions.map((qq, i) => {
+      const v = all ? [] : [...st[i].picks, ...(st[i].other.trim() ? [st[i].other.trim()] : [])];
+      return `- ${qq.header}: ${v.length ? v.join("・") : "おまかせ"}`;
+    });
+    const summary = all ? "すべておまかせ" : lines.map((l) => l.slice(2)).join(" / ");
+    const shown = `【質問への答え】${summary}`;
+    const full =
+      (all ? OMAKASE : "") +
+      `【質問への答え】\n${lines.join("\n")}\nこの答えをもとに、これ以上は質問せずに作る(「おまかせ」の項目は自分で選び、選んだものを報告に書く)。`;
+    // 答えた質問は閉じる(sendPrompt がほかの答えていない質問を「進んだ」にする前に)
+    m.answer = summary;
+    saveLog();
+    await sendPrompt(shown, full);
   }
 
   /// 送信待ちの次の指示を送る(ターンが終わったとき)
@@ -565,6 +639,15 @@
       if (draft.trim()) input = draft;
     };
     window.addEventListener("glaux:chat-send", sendText);
+    // AI の質問(このチャットのターンの途中に来たものだけ。外の AI クライアントの質問は、その AI が文章でも示す)
+    const unlistenQ = api
+      .onAiQuestion((q) => {
+        if (!chatStatus.running) return;
+        initQuestion(q);
+        push({ role: "question", text: "", question: q });
+        revealQuestion();
+      })
+      .catch(() => undefined);
     const unlisten = api
       .onChatEvent((ev) => {
         switch (ev.kind) {
@@ -585,7 +668,10 @@
             }
             if (ev.ok) playDoneChime();
             else playErrorChime();
-            finishTurn().then(sendNext);
+            finishTurn().then(() => {
+              questionsToEnd();
+              sendNext();
+            });
             break;
           case "notice":
             push({ role: "notice", text: ev.text });
@@ -603,6 +689,7 @@
       window.removeEventListener("glaux:focus-chat", focusChat);
       window.removeEventListener("glaux:chat-send", sendText);
       unlisten.then((f) => f && f());
+      unlistenQ.then((f) => f && f());
     };
   });
 </script>
@@ -743,6 +830,52 @@
             {#if on}<div class="abnote">音量はいちばん小さいものにそろえてあります。切り替えても同じ位置から続けて鳴ります</div>{/if}
           {:else}
             <div class="abnote">どの案も、もう残っていません</div>
+          {/if}
+        </div>
+      {:else if m.role === "question" && m.question}
+        {@const open = qOpen(m)}
+        {@const st = qState(m)}
+        <div class="msg question" class:closed={!open} role="group" aria-label="AI からの質問">
+          <div class="ch-head"><Icon name="message-circle-question-mark" size={13} />AI からの質問{m.question.why ? `(${m.question.why})` : ""}</div>
+          {#each m.question.questions as q, qi (qi)}
+            <div class="q-item">
+              <div class="q-text"><span class="q-tag">{q.header}</span>{q.question}{q.multi ? "(いくつでも)" : ""}</div>
+              <div class="q-opts">
+                {#each q.options as o (o.label)}
+                  <button
+                    class="btn sm q-opt"
+                    class:on={st[qi].picks.includes(o.label)}
+                    type="button"
+                    disabled={!open}
+                    title={o.description ?? undefined}
+                    onclick={() => togglePick(m, qi, o.label)}
+                    >{o.label}{#if o.description}<small>{o.description}</small>{/if}</button
+                  >
+                {/each}
+              </div>
+              {#if open}
+                <input
+                  class="q-other"
+                  type="text"
+                  placeholder="その他(自由に書く)"
+                  bind:value={st[qi].other}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" && !e.isComposing) answerQuestion(m);
+                  }}
+                />
+              {/if}
+            </div>
+          {/each}
+          {#if open}
+            <div class="ch-row">
+              <button class="btn sm primary" type="button" onclick={() => answerQuestion(m)}><Icon name="send" />答えを送る</button>
+              <button class="btn sm" type="button" title="決め手は AI が選び、選んだものを報告に書きます" onclick={() => answerQuestion(m, true)}
+                >おまかせで進める</button
+              >
+              <span class="abnote">選ばなかった質問は AI に任せます</span>
+            </div>
+          {:else}
+            <div class="abnote">{m.skipped ? "答えずに次の指示へ進みました" : `答え: ${m.answer}`}</div>
           {/if}
         </div>
       {:else if m.role === "assistant"}
@@ -1091,6 +1224,68 @@
   }
   .abnote.warn {
     color: var(--warn);
+  }
+  .msg.question {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--accent-dim);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+  .msg.question.closed {
+    border-color: var(--border);
+    background: transparent;
+  }
+  .q-item {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .q-text {
+    font-size: var(--fs-sm);
+    color: var(--text);
+  }
+  .q-tag {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--bg-elev, var(--bg-lane));
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .q-opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .btn.sm.q-opt {
+    height: auto;
+    min-height: 24px;
+    padding: 3px 9px;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    text-align: left;
+    line-height: 1.35;
+  }
+  .q-opt small {
+    color: var(--text-faint);
+    font-size: 10.5px;
+    white-space: normal;
+  }
+  .btn.q-opt.on {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .q-other {
+    font-size: var(--fs-sm);
+    padding: 3px 8px;
   }
   .msg.choices {
     align-self: stretch;

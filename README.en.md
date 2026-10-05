@@ -93,11 +93,11 @@ For Codex, add `[mcp_servers.glaux]` with `url = "http://127.0.0.1:41920/mcp"` t
 To use it without the app, run the stdio server: `scripts\glaux-mcp.bat <song folder>` (the same song can't be open in the app at the same time).
 
 <details>
-<summary>Tools (118)</summary>
+<summary>Tools (119)</summary>
 
 | Group | Tools |
 |---|---|
-| Basics | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` |
+| Basics | `get_project` `apply_commands` `undo` `redo` `checkpoint` `revert_to` `revert` `get_history` `get_changes` `list_params` `get_guide` `ask_user` |
 | Arrangement | `set_song_plan` `get_design` `propose_design` `suggest_progression` `write_transition` `duplicate_clips` `insert_bars` `delete_bars` `change_meter` `metric_modulation` `hemiola` `shape_automation` `write_wobble` `bounce_track` `resample_to_sampler` `export_audio` `export_midi` `export_musicxml` |
 | Analysis | `critique_arrangement` `critique_mix` `critique_melody` `analyze_melody` `analyze_audio` `compare_mix` `review_edits` `master_mix` `analyze_harmony` `analyze_rhythm` `analyze_beats` `analyze_reference` `analyze_sound` `compare_sounds` `match_sound` `refine_by_words` |
 | Notes | `transpose_notes` `shift_notes` `swing_notes` `quantize_notes` `scale_velocity` `transform_notes` `develop_motif` `write_melody` `write_drums` `write_chords` `write_arpeggio` `write_bassline` `apply_groove` `add_ghost_notes` `write_polyrhythm` `write_polymeter` `set_meter_feel` `pitch_gesture` `set_vibrato` `add_ornament` `melody_lead` `note_dynamics` `strum_chord` `drum_rudiment` `articulate_notes` `tremolo` `glissando` `shape_phrase` `write_tihai` `sustain_pedal` `set_note_condition` |

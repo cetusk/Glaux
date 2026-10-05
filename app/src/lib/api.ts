@@ -906,6 +906,17 @@ export function saveChatLog(dir: string, log: string): Promise<boolean> {
   return invoke("save_chat_log", { dir, log });
 }
 
+/** AI から人への質問(MCP の ask_user) */
+export interface AiQuestion {
+  id: string;
+  why?: string | null;
+  questions: { question: string; header: string; multi: boolean; options: { label: string; description?: string | null }[] }[];
+}
+
+export function onAiQuestion(cb: (q: AiQuestion) => void): Promise<UnlistenFn> {
+  return listen<AiQuestion>("ai-question", (e) => cb(e.payload));
+}
+
 export function onChatEvent(cb: (e: ChatEvent) => void): Promise<UnlistenFn> {
   return listen<ChatEvent>("chat-event", (e) => cb(e.payload));
 }

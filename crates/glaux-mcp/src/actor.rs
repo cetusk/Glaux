@@ -369,6 +369,8 @@ pub struct SessionHandle {
     events: broadcast::Sender<ProjectChanged>,
     activity: broadcast::Sender<AiActivity>,
     active_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// AI から人への質問(ask_user)。画面のチャットが質問のカードとして出す
+    questions: broadcast::Sender<serde_json::Value>,
 }
 
 /// ツール呼び出し 1 件の進行を表す RAII ガード。
@@ -400,6 +402,7 @@ impl SessionHandle {
         let (tx, rx) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(256);
         let (activity, _) = broadcast::channel(256);
+        let (questions, _) = broadcast::channel(16);
         let events_tx = events.clone();
         std::thread::Builder::new()
             .name("glaux-session".into())
@@ -414,7 +417,18 @@ impl SessionHandle {
             events,
             activity,
             active_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            questions,
         }
+    }
+
+    /// AI から人への質問を画面へ知らせる(受け手がいなければ何もしない)。受け手の数を返す
+    pub fn post_question(&self, question: serde_json::Value) -> usize {
+        self.questions.send(question).unwrap_or(0)
+    }
+
+    /// AI から人への質問を購読する(画面のチャットが質問のカードを出す)
+    pub fn subscribe_questions(&self) -> broadcast::Receiver<serde_json::Value> {
+        self.questions.subscribe()
     }
 
     /// 状態変更の通知を購読する。受信が追いつかない場合は古い通知が落ちる
