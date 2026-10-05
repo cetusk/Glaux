@@ -832,6 +832,8 @@ pub struct Renderer {
     pos: u64,
     /// 直前ブロックで再生中だったか(再開時に音声クリップを途中から鳴らし直す)
     was_playing: bool,
+    /// 止めたときの位置(止めている間に位置を動かしてから鳴らし始めたら、エフェクトの鳴り残りを消す)
+    stop_pos: u64,
     /// メトロノーム: 次のクリック位置と発音中のクリック
     next_beat: Option<crate::data::Beat>,
     click: Click,
@@ -922,6 +924,33 @@ impl Renderer {
     ) -> Self {
         self.retired = Some(tx);
         self
+    }
+
+    /// 内蔵エフェクト(トラック・マスター)・畳み込みリバーブ・合流のバッファの鳴り残りを消す(アロケーションなし)
+    fn flush_effects(&mut self, data: &PlaybackData) {
+        for fx in data
+            .tracks
+            .iter()
+            .flat_map(|t| t.effects.iter())
+            .chain(data.master_effects.iter())
+        {
+            if let Some(st) = self.effect_states.get_mut(fx.slot as usize) {
+                st.flush(&fx.params);
+            }
+        }
+        for c in data.conv.iter() {
+            c.clear();
+        }
+        // 遅れの補正で先の位置へ書いてある合流の音も(止めた直前の音が数 ms 残っている)
+        for ring in self
+            .route_ring
+            .iter_mut()
+            .chain(std::iter::once(&mut self.master_ring))
+            .chain(self.branch_rings.iter_mut())
+        {
+            ring[0].fill(0.0);
+            ring[1].fill(0.0);
+        }
     }
 
     /// 楽器データを手放す。共有データ(波形など)を持つものは別のスレッドで捨てる。
@@ -1036,6 +1065,7 @@ impl Renderer {
             replay_until: 0,
             pos: 0,
             was_playing: false,
+            stop_pos: 0,
             next_beat: None,
             click: Click::default(),
             last_tick: 0.0,
@@ -1317,12 +1347,18 @@ impl Renderer {
         }
 
         let playing = self.shared.playing.load(Ordering::Acquire);
+        if playing && !self.was_playing && self.pos != self.stop_pos {
+            // 止めている間は(プラグインが無ければ)エフェクトも止まり、止めた直前の音が残響・ディレイの中に残っている。
+            // 別の位置から鳴らし始めると、その音が一瞬鳴ってしまうので消す。同じ位置からなら続きとして残す
+            self.flush_effects(data);
+        }
         if playing && !self.was_playing && !resync {
             self.resync_audio(data);
         }
         if !playing && self.was_playing {
             // 止めたらプラグインで鳴っている曲のノートを離す
             self.plugins_all_off(true);
+            self.stop_pos = self.pos;
         }
         self.was_playing = playing;
         let any_plugin = self.plugins.iter().any(Option::is_some);
@@ -4143,6 +4179,63 @@ mod tests {
         // 読むとリセット
         let (again, _) = shared.stats.take_loads(2);
         assert!(again.iter().all(|v| *v == 0.0));
+    }
+
+    /// 頭に短い音(0.25 秒)、10 小節目(20 秒)にもう 1 音。トラックには長いリバーブ(ウェットのみ)
+    fn short_note_with_reverb() -> glaux_core::Project {
+        use glaux_core::{ClipContent, ClipId, Tick};
+        let mut p = two_pads();
+        p.tracks.truncate(1);
+        let t = &mut p.tracks[0];
+        let mut far = t.clips[0].clone();
+        far.id = ClipId::new();
+        far.start = Tick(3840 * 10);
+        if let ClipContent::Midi { notes, .. } = &mut t.clips[0].content {
+            notes[0].dur = Tick(480);
+        }
+        if let ClipContent::Midi { notes, .. } = &mut far.content {
+            notes[0].id = glaux_core::NoteId::new();
+            notes[0].dur = Tick(480);
+        }
+        t.clips.push(far);
+        let mut rv = glaux_core::Effect::builtin(glaux_core::FxId::new(), "reverb");
+        rv.params.insert("mix".into(), 1.0.into());
+        rv.params.insert("size".into(), 0.95.into());
+        t.effects.push(rv);
+        // 先読みのリミッタ(遅れの補正で、ほかのトラックの音を先の位置へ書く)
+        let mut other = p.tracks[0].clone();
+        other.id = glaux_core::TrackId::new();
+        other.effects = vec![glaux_core::Effect::builtin(
+            glaux_core::FxId::new(),
+            "limiter",
+        )];
+        p.tracks.push(other);
+        p
+    }
+
+    #[test]
+    fn resuming_elsewhere_does_not_replay_the_tail_from_before_the_pause() {
+        let run = |seek_to: Option<u64>| {
+            let shared = Arc::new(Shared::new((*build(&short_note_with_reverb())).clone()));
+            shared.playing.store(true, Ordering::Release);
+            let mut r = Renderer::new(shared.clone());
+            // 音が鳴り終わって残響だけが鳴っている所(0.4 秒)で止める
+            let _ = render_block(&mut r, 19_200);
+            shared.playing.store(false, Ordering::Release);
+            let _ = render_block(&mut r, 4800);
+            if let Some(s) = seek_to {
+                shared.seek.store(s, Ordering::Release);
+                let _ = render_block(&mut r, 480);
+            }
+            shared.playing.store(true, Ordering::Release);
+            rms(&render_block(&mut r, 2400))
+        };
+        // 別の位置(5 秒。何も鳴っていない所)から再開: 止める直前の残響は鳴らない
+        let moved = run(Some(48_000 * 5));
+        assert!(moved < 1e-5, "止めた直前の音が鳴っている: {moved}");
+        // 同じ位置から再開: 残響の続きとして鳴る
+        let same = run(None);
+        assert!(same > 1e-3, "{same}");
     }
 
     #[test]

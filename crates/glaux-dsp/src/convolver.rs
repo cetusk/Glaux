@@ -187,6 +187,30 @@ impl ConvEngine {
     }
 
     /// ブロックを処理する(オーディオスレッド。アロケーションなし)。`mix` はウェットの割合、`wet` はウェットの音量
+    /// 鳴り残り(ためた入力・過去のスペクトル・出力)を消す(アロケーションなし)。処理中なら何もしない
+    pub fn clear(&self) {
+        if self.busy.swap(true, Ordering::Acquire) {
+            return;
+        }
+        // SAFETY: busy の旗で、ここに入っているのは 1 か所だけ
+        let s = unsafe { &mut *self.inner.get() };
+        for v in [
+            &mut s.in_buf,
+            &mut s.prev,
+            &mut s.out_l,
+            &mut s.out_r,
+            &mut s.dry_l,
+            &mut s.dry_r,
+        ] {
+            v.fill(0.0);
+        }
+        for f in s.fdl.iter_mut() {
+            f.fill(Complex::new(0.0, 0.0));
+        }
+        s.pos = 0;
+        self.busy.store(false, Ordering::Release);
+    }
+
     pub fn process_block(&self, l: &mut [f32], r: &mut [f32], mix: f32, wet: f32) {
         if self.busy.swap(true, Ordering::Acquire) {
             return;

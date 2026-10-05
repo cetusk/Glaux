@@ -925,6 +925,17 @@ impl EffectState {
         }
     }
 
+    /// 鳴り残り(残響・ディレイ・先読み・エンベロープなど)を消して、今の種類のまま作り直す(アロケーションなし)。
+    /// 止めた位置と違う所から鳴らし始めるときに呼ぶ(止めた直前の音が新しい位置で鳴らないように)
+    pub fn flush(&mut self, p: &EffectParams) {
+        self.kind = EffectKind::None;
+        if self.dly_user {
+            self.dly_user = false;
+            self.dly_dirty = true;
+        }
+        self.ensure_kind(p);
+    }
+
     /// データ差し替えでスロットの中身が変わったときに呼ぶ(アロケーションなし)。
     pub fn ensure_kind(&mut self, p: &EffectParams) {
         let kind = Self::kind_of(p);
