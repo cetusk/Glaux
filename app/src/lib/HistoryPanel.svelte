@@ -3,7 +3,7 @@
   import * as api from "./api";
   import { selectionStore } from "./selection.svelte";
   import { transportStore } from "./transport.svelte";
-  import { endAbLoop, ensureAbPlaying, restartAb, startAbLoop } from "./abLoop";
+  import { claimAb, endAbLoop, ensureAbPlaying, releaseAb, restartAb, startAbLoop } from "./abLoop";
   import type { Author, EntrySummary } from "./types";
 
   let {
@@ -67,6 +67,7 @@
   async function startAb(e: EntrySummary) {
     if (abBusy) return;
     abBusy = e.id;
+    claimAb("history", endAb);
     try {
       const { start, end } = abRange();
       const info = await api.abPrepare(e.id, start, end);
@@ -90,6 +91,7 @@
   }
 
   function endAb() {
+    releaseAb("history");
     ab = null;
     api.abClear().catch(() => {});
     endAbLoop();

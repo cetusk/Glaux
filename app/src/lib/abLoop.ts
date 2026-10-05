@@ -5,6 +5,25 @@
 import { transportClearLoop, transportPlay, transportSeek, transportSetLoop } from "./api";
 import { transportStore } from "./transport.svelte";
 
+/** 今聴き比べている所(履歴・案・チャット)と、それを終える関数。聴き比べのエンジンは 1 つなので、
+ *  別の所で始めたら前の聴き比べを終える */
+let owner: { name: string; end: () => void } | null = null;
+
+/** 聴き比べを始める前に呼ぶ(音を用意する前に。前の持ち主の終わりで、用意した音が片付けられないように) */
+export function claimAb(name: string, end: () => void): void {
+  if (owner && owner.name !== name) {
+    const prev = owner;
+    owner = null;
+    prev.end();
+  }
+  owner = { name, end };
+}
+
+/** 聴き比べを終えたときに呼ぶ */
+export function releaseAb(name: string): void {
+  if (owner?.name === name) owner = null;
+}
+
 /** 聴き比べを始める前のループの設定(聴き比べ中でなければ null) */
 let saved: { loop: [number, number] | null } | null = null;
 

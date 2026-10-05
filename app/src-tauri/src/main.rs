@@ -2389,6 +2389,21 @@ async fn plan_adopt_proposal(
         .await
 }
 
+/// 履歴の編集 `before_entry` の前と今の、音の違う範囲(tick)と、曲全体に効く違いがあるか(チャットのターンを聴き比べる範囲)
+#[tauri::command]
+async fn change_ranges(state: State<'_, AppState>, before_entry: String) -> Result<Value, String> {
+    let id = EntryId::parse(&before_entry).map_err(|e| e.to_string())?;
+    let (before, after, _, _) = state
+        .handle
+        .project_at(glaux_core::HistoryPoint::BeforeEntry(id))
+        .await?
+        .map_err(|e| e.to_string())?;
+    let d = tokio::task::spawn_blocking(move || glaux_core::designcheck::song_diff(&before, &after))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "ranges": d.ranges, "whole": d.whole }))
+}
+
 /// 音量をそろえた A/B の聴き比べを用意する: 履歴のある地点(既定は 1 つ前の編集の前)と今の、
 /// 同じ範囲を書き出して統合ラウドネスをそろえる。用意できたら B(今)を鳴らす状態にする
 #[tauri::command]
@@ -3070,6 +3085,7 @@ fn main() -> Result<()> {
             plan_adopt_proposal,
             plan_head,
             plan_estimate,
+            change_ranges,
             export_audio,
             import_audio_clip,
             clip_peaks,

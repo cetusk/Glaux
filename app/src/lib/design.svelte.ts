@@ -3,7 +3,8 @@
 // 画面で直す操作(計画の保存・区間・メモ・取り消し)もここ。人の操作として履歴に残る。
 import { invoke } from "@tauri-apps/api/core";
 import { abClear, abSetSide, applyEdit, getHistory, redo as songRedo, undo as songUndo } from "./api";
-import { endAbLoop, ensureAbPlaying, restartAb, startAbLoop } from "./abLoop";
+import { claimAb, endAbLoop, ensureAbPlaying, releaseAb, restartAb, startAbLoop } from "./abLoop";
+import { addBars, barHead, defaultAbRange } from "./abRange";
 import { showToast } from "./toast.svelte";
 import type { Project } from "./types";
 
@@ -648,6 +649,7 @@ export const abSingle = (planId: string): boolean => proposalAb.planIds.length =
 /** 案(1 つ以上)を今と聴き比べる(範囲の頭から、最初の案を鳴らす) */
 export async function abProposals(planIds: string[], start: number, end: number, section: number | null = null): Promise<void> {
   if (!planIds.length) return;
+  claimAb("proposal", () => void endProposalAb());
   proposalAb.busy = planIds.length === 1 ? planIds[0] : "all";
   try {
     const info = await invoke<ProposalAbInfo>("ab_prepare_proposals", {
@@ -671,6 +673,30 @@ export async function abProposals(planIds: string[], start: number, end: number,
   }
 }
 
+/** 案(1 つ以上)を聴く範囲: いちばん多くの案が変わる区間(同じなら前の方)。区間に無ければ最初に変わる所から、
+ *  何も分からなければ今の位置から(チャットから聴き比べるとき。設計画面は選んでいる区間も見る) */
+export function proposalsRange(
+  project: Project,
+  d: DesignData | null,
+  planIds: string[],
+): { start: number; end: number; section: number | null } {
+  const secs = [...(project.sections ?? [])].sort((a, b) => a.tick - b.tick);
+  const count = new Map<number, number>();
+  for (const id of planIds) for (const si of d?.proposal_changes?.[id]?.sections ?? []) count.set(si, (count.get(si) ?? 0) + 1);
+  const best = [...count.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
+  if (best != null && secs[best]) {
+    const start = secs[best].tick;
+    const end = secs[best + 1]?.tick ?? addBars(project, start, d?.sections[best]?.bars ?? 8);
+    return { start, end, section: best };
+  }
+  const first = planIds.map((id) => d?.proposal_changes?.[id]?.ranges?.[0]).find((r) => r);
+  if (first) {
+    const start = barHead(project, first[0]);
+    return { start, end: Math.max(first[1], addBars(project, start, 4)), section: null };
+  }
+  return { ...defaultAbRange(project), section: null };
+}
+
 /** 鳴らす音を切り替える(0 = 今、1〜 = 案)。同じ位置から続けて鳴る */
 export async function setProposalSide(side: number): Promise<void> {
   if (side < 0 || side > proposalAb.planIds.length) return;
@@ -686,6 +712,7 @@ export async function restartProposalAb(): Promise<void> {
 }
 
 export async function endProposalAb(): Promise<void> {
+  releaseAb("proposal");
   if (!proposalAb.planIds.length) return;
   proposalAb.planIds = [];
   proposalAb.info = null;

@@ -7,6 +7,10 @@
   import { clearAiHighlight, setAiHighlight } from "./aiHighlight.svelte";
   import { renderMarkdown } from "./markdown";
   import { showError, showToast } from "./toast.svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import { claimAb, endAbLoop, ensureAbPlaying, releaseAb, restartAb, startAbLoop } from "./abLoop";
+  import { defaultAbRange, rangeFromChanges } from "./abRange";
+  import type { Project } from "./types";
   import {
     CHAT_MODELS,
     CHAT_PROVIDERS,
@@ -44,16 +48,38 @@
     setChatEffort((e.currentTarget as HTMLSelectElement).value);
   }
   import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore, viewStore } from "./selection.svelte";
-  import { designSel, designStore, designTargetLabel, designTargetPrompt } from "./design.svelte";
+  import {
+    MAX_PROPOSALS_AB,
+    abLetter,
+    abProposals,
+    adoptProposal,
+    designSel,
+    designStore,
+    designTargetLabel,
+    designTargetPrompt,
+    endProposalAb,
+    proposalAb,
+    proposalsRange,
+    refreshDesign,
+    restartProposalAb,
+    setProposalSide,
+  } from "./design.svelte";
+
+  /** 曲(ターンの聴き比べの範囲を拍子どおりに決めるため) */
+  let { project = null }: { project?: Project | null } = $props();
 
   // 設計画面で選んでいる所(設計画面を開いている間だけ、指示の対象として添える)
   const designTarget = $derived(viewStore.main === "design" ? designTargetLabel(designStore.data, designSel.sel) : null);
 
   interface Msg {
-    role: "user" | "assistant" | "tool" | "notice" | "error" | "turn";
+    role: "user" | "assistant" | "tool" | "notice" | "error" | "turn" | "choices";
     text: string;
     /** role "turn": ターンの開始前の最後の履歴エントリ(取り消しの起点)と、取り消したか */
     since?: string | null;
+    /** role "turn": ターンで AI が最初にした編集(聴き比べの「前」= この編集の前) */
+    first?: string;
+    /** role "choices": このターンで AI が出した案(出した順) */
+    planIds?: string[];
     reverted?: boolean;
     /** role "user": 送信待ちのまま停止したので送らなかった */
     dropped?: boolean;
@@ -69,16 +95,116 @@
   /// 実行中のターンの開始前の最後の履歴エントリ(null = 履歴が空)
   let turnStart: string | null = null;
 
-  /// ターンが終わったら、AI の編集の件数を数えて「取り消す」を出し、変わった所を縁取る
+  /// 実行中のターンを始めた時刻と、そのターンで AI が案を出したか
+  let turnStartedAt = 0;
+  let turnProposed = false;
+
+  /// ターンが終わったら、AI の編集の件数を数えて「取り消す」「聴き比べる」を出し、変わった所を縁取る。
+  /// 案を出していたら、その案の選択肢(聴き比べる・採用)を並べる
   async function finishTurn() {
     try {
       const ch = await api.turnChanges(turnStart);
-      if (ch.entry_ids.length === 0) return;
-      setAiHighlight(ch);
-      push({ role: "turn", text: `このターンの編集 ${ch.entry_ids.length} 件`, since: turnStart });
+      if (ch.entry_ids.length > 0) {
+        setAiHighlight(ch);
+        push({ role: "turn", text: `このターンの編集 ${ch.entry_ids.length} 件`, since: turnStart, first: ch.entry_ids[0] });
+      }
     } catch {
       // 数えられなくても会話には影響しない
     }
+    if (turnProposed) {
+      turnProposed = false;
+      try {
+        await refreshDesign();
+        const d = designStore.data;
+        const live = new Set((d?.plans ?? []).filter((p) => p.state === "proposal").map((p) => p.plan_id));
+        // 計画の履歴は新しい順。このターンで作られた案を、出した順に
+        const ids = (d?.history ?? [])
+          .filter((h) => h.op === "create" && live.has(h.plan_id) && Date.parse(h.time) >= turnStartedAt - 2000)
+          .map((h) => h.plan_id)
+          .reverse();
+        const uniq = [...new Set(ids)];
+        if (uniq.length) push({ role: "choices", text: "", planIds: uniq });
+      } catch {
+        // 案を並べられなくても、設計画面から聴き比べられる
+      }
+    }
+  }
+
+  // ---- このターンの前と今を、音量をそろえて聴き比べる(A = ターンの前、B = 今) ----
+  let turnAb = $state<{ key: string; side: "a" | "b"; info: api.AbInfo; start: number; end: number } | null>(null);
+  let turnAbBusy = $state<string | null>(null);
+  const turnKey = (m: Msg) => m.first ?? m.since ?? "start";
+
+  async function startTurnAb(m: Msg) {
+    if (turnAbBusy) return;
+    const key = turnKey(m);
+    turnAbBusy = key;
+    claimAb("chat", endTurnAb);
+    try {
+      let first = m.first;
+      if (!first) first = (await api.turnChanges(m.since ?? null)).entry_ids[0];
+      if (!first) throw new Error("このターンの編集が見つかりません");
+      // 範囲: このターンで音が変わった所(最初の所から)。分からなければ今の位置から
+      let range: { start: number; end: number } | null = null;
+      try {
+        const r = await invoke<{ ranges: [number, number][]; whole: boolean }>("change_ranges", { beforeEntry: first });
+        if (project) range = rangeFromChanges(project, r.ranges);
+      } catch {
+        range = null;
+      }
+      range ??= defaultAbRange(project);
+      const info = await api.abPrepare(first, range.start, range.end);
+      const end = info.end_tick && info.end_tick > range.start ? info.end_tick : range.end;
+      turnAb = { key, side: "b", info, start: range.start, end };
+      await startAbLoop(range.start, end);
+    } catch (e) {
+      releaseAb("chat");
+      showToast("error", `聴き比べを用意できませんでした: ${e}`);
+    } finally {
+      turnAbBusy = null;
+    }
+  }
+
+  function setTurnSide(side: "a" | "b") {
+    if (!turnAb) return;
+    turnAb.side = side;
+    api.abSetSide(side).catch(() => {});
+    ensureAbPlaying(turnAb.start, turnAb.end).catch(() => {});
+  }
+
+  function endTurnAb() {
+    releaseAb("chat");
+    if (!turnAb) return;
+    turnAb = null;
+    api.abClear().catch(() => {});
+    endAbLoop();
+  }
+
+  // 聴き比べの途中で曲が変わったら、「今」が古くなるので終える
+  let abProject: Project | null = null;
+  $effect(() => {
+    const p = project;
+    if (!turnAb) {
+      abProject = p;
+      return;
+    }
+    if (p !== abProject) {
+      endTurnAb();
+      showToast("warn", "曲が変わったので聴き比べを終えました(もう一度「聴き比べる」で聴けます)");
+    }
+  });
+
+  // ---- このターンで AI が出した案の選択肢 ----
+  const liveProposals = (ids: string[] | undefined) =>
+    (ids ?? []).filter((id) => designStore.data?.plans.some((p) => p.plan_id === id && p.state === "proposal"));
+  const planName = (id: string) => designStore.data?.plans.find((p) => p.plan_id === id)?.name;
+  const comparing = (ids: string[]) => ids.length > 0 && proposalAb.planIds.length > 0 && proposalAb.planIds.every((id) => ids.includes(id));
+
+  async function listenProposals(ids: string[]) {
+    if (!designStore.data) await refreshDesign();
+    const use = ids.slice(0, MAX_PROPOSALS_AB);
+    const r = project ? proposalsRange(project, designStore.data, use) : { ...defaultAbRange(null), section: null };
+    await abProposals(use, r.start, r.end, r.section);
   }
 
   async function revertTurnAt(m: Msg) {
@@ -351,6 +477,8 @@
   async function start(fullPrompt: string) {
     chatStatus.running = true;
     clearAiHighlight();
+    turnStartedAt = Date.now();
+    turnProposed = false;
     try {
       const h = await api.getHistory(1);
       turnStart = h.entries.length > 0 ? h.entries[h.entries.length - 1].id : null;
@@ -422,6 +550,7 @@
             break;
           case "tool_use":
             push({ role: "tool", text: toolShort(ev.name) });
+            if (ev.name.includes("propose_design")) turnProposed = true;
             break;
           case "result":
             chatStatus.running = false;
@@ -520,6 +649,73 @@
               title="このターンで AI が行った編集をまとめて打ち消す(後から人間が行った編集は残す)"
               ><Icon name="eraser" />このターンを取り消す</button
             >
+            {#if turnAb?.key !== turnKey(m)}
+              <button
+                class="btn sm"
+                disabled={turnAbBusy != null}
+                onclick={() => startTurnAb(m)}
+                title="このターンの前と今を、音量をそろえて切り替えて聴く(範囲はこのターンで音が変わった所)"
+                ><Icon name="headphones" />{turnAbBusy === turnKey(m) ? "用意しています…" : "前と今を聴き比べる"}</button
+              >
+            {/if}
+          {/if}
+        </div>
+        {#if turnAb && turnAb.key === turnKey(m)}
+          <div class="msg abrow" role="group" aria-label="このターンの前と今を切り替える">
+            <button class="btn sm" class:on={turnAb.side === "a"} type="button" onclick={() => setTurnSide("a")}>A 前</button>
+            <button class="btn sm" class:on={turnAb.side === "b"} type="button" onclick={() => setTurnSide("b")}>B 今</button>
+            <button class="btn sm" type="button" title="範囲の頭から聴き直す" onclick={() => turnAb && restartAb(turnAb.start)}>⏮ 頭から</button>
+            <button class="btn sm" type="button" onclick={endTurnAb}>終える</button>
+            <span class="abnote"
+              >音量はそろえてあります。切り替えても同じ位置から続けて鳴ります{turnAb.info.first_diff_secs == null
+                ? "(この範囲では前と今の音が同じです)"
+                : ""}</span
+            >
+          </div>
+        {/if}
+      {:else if m.role === "choices"}
+        {@const live = liveProposals(m.planIds)}
+        {@const on = comparing(live)}
+        <div class="msg choices">
+          <div class="ch-head"><Icon name="split" size={13} />AI の案({m.planIds?.length ?? 0})</div>
+          {#each m.planIds ?? [] as id (id)}
+            {@const k = live.indexOf(id)}
+            <div class="ch-row">
+              {#if k >= 0}
+                <span class="pletter" class:cur={on && proposalAb.side === proposalAb.planIds.indexOf(id) + 1}>{abLetter(k + 1)}</span>
+                <span class="ch-name">{planName(id)}</span>
+                <span class="spacer"></span>
+                <button class="btn sm primary" type="button" title="案の音を曲に当て、案の計画を今の計画にする(同じ頼みのほかの案は片付ける)" onclick={() => adoptProposal(id, planName(id) ?? "案")}
+                  >採用</button
+                >
+              {:else}
+                <span class="ch-gone">採用したか、片付けた案</span>
+              {/if}
+            </div>
+          {/each}
+          {#if live.length}
+            <div class="ch-row">
+              {#if on}
+                <span class="abswitch" role="group" aria-label="今と案を切り替える">
+                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>A 今</button>
+                  {#each proposalAb.planIds as pid, j (pid)}
+                    <button class="btn sm" class:on={proposalAb.side === j + 1} type="button" title={planName(pid)} onclick={() => setProposalSide(j + 1)}
+                      >{abLetter(j + 1)}</button
+                    >
+                  {/each}
+                </span>
+                <button class="btn sm" type="button" title="範囲の頭から聴き直す" onclick={restartProposalAb}>⏮ 頭から</button>
+                <button class="btn sm" type="button" onclick={() => endProposalAb()}>終える</button>
+              {:else}
+                <button class="btn sm" type="button" disabled={proposalAb.busy != null} onclick={() => listenProposals(live)}
+                  ><Icon name="headphones" />{live.length >= 2 ? `まとめて聴き比べる(今 + 案 ${Math.min(live.length, MAX_PROPOSALS_AB)} つ)` : "今と聴き比べる"}</button
+                >
+              {/if}
+              <button class="btn sm" type="button" onclick={() => (viewStore.main = "design")}>設計画面で見る</button>
+            </div>
+            {#if on}<div class="abnote">音量はいちばん小さいものにそろえてあります。切り替えても同じ位置から続けて鳴ります</div>{/if}
+          {:else}
+            <div class="abnote">どの案も、もう残っていません</div>
           {/if}
         </div>
       {:else if m.role === "assistant"}
@@ -837,6 +1033,73 @@
     padding: 3px 9px;
   }
 
+  .msg.abrow {
+    align-self: flex-start;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px;
+  }
+  .msg.abrow .btn.on,
+  .abswitch .btn.on {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .abnote {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .msg.choices {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border: 1px solid var(--accent-dim);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: var(--fs-sm);
+  }
+  .ch-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+  .ch-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .ch-name {
+    font-weight: 600;
+  }
+  .ch-gone {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .abswitch {
+    display: inline-flex;
+    gap: 4px;
+  }
+  .spacer {
+    flex: 1;
+  }
+  .pletter {
+    min-width: 18px;
+    text-align: center;
+    border-radius: 3px;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .pletter.cur {
+    background: var(--accent);
+    color: var(--bg);
+  }
   .msg.turn {
     align-self: flex-start;
     display: flex;

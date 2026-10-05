@@ -1000,7 +1000,7 @@
     <!-- 隠しても部品は残す(チャットの表示中の会話が消えないように) -->
     <section class="bottom-area" class:collapsed={bottomCollapsed} style="height:{bottomHeight}px">
       <div class="chat-section" style="flex:0 0 {chatFrac * 100}%">
-        <ChatPanel />
+        <ChatPanel {project} />
       </div>
       <div class="col-handle" role="separator" aria-orientation="vertical" onpointerdown={startColResize} title="ドラッグで幅を調整"></div>
       <div class="history-section">
