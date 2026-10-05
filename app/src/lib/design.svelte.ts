@@ -159,6 +159,10 @@ export const designStore = $state<{
   clips: Record<string, ClipState>;
 }>({ data: null, loading: false, error: null, clips: {} });
 
+/** 設計画面の外で設計データを見ている所の数(チャットの案の一覧)。0 でなければ、設計画面を開いていなくても
+ *  曲・計画が変わるたびに読み直す(タイムラインで採用を Ctrl+Z しても、チャットの一覧が古いままだった) */
+export const designWatch = $state({ chat: 0 });
+
 let seq = 0;
 
 /** 設計画面の中身を読み直す(設計画面を開いている間、曲・計画が変わるたびに呼ぶ) */

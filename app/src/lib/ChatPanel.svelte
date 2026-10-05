@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
   import { toolShort } from "./toolLabels";
@@ -55,6 +55,7 @@
     adoptProposal,
     designSel,
     designStore,
+    designWatch,
     designTargetLabel,
     designTargetPrompt,
     endProposalAb,
@@ -199,6 +200,12 @@
   });
 
   // ---- このターンで AI が出した案の選択肢 ----
+  // 一覧があれば、設計画面の外でも設計データ(案が残っているか)を読み直してもらう
+  $effect(() => {
+    const n = messages.filter((m) => m.role === "choices").length;
+    designWatch.chat = n;
+    if (n > 0 && !untrack(() => designStore.data)) refreshDesign();
+  });
   const liveProposals = (ids: string[] | undefined) =>
     (ids ?? []).filter((id) => designStore.data?.plans.some((p) => p.plan_id === id && p.state === "proposal"));
   const planName = (id: string) => designStore.data?.plans.find((p) => p.plan_id === id)?.name;

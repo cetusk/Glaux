@@ -23,7 +23,7 @@
   import Mixer from "./lib/Mixer.svelte";
   import DesignView from "./lib/DesignView.svelte";
   import PlanHistoryPanel from "./lib/PlanHistoryPanel.svelte";
-  import { designRedo, designUndo, refreshClipStates, refreshDesign } from "./lib/design.svelte";
+  import { designRedo, designUndo, designWatch, refreshClipStates, refreshDesign } from "./lib/design.svelte";
   import TransportLcd from "./lib/TransportLcd.svelte";
   import { abLooping } from "./lib/abLoop";
   import StatusBar from "./lib/StatusBar.svelte";
@@ -268,7 +268,8 @@
   function scheduleDesign(delay = 300) {
     clearTimeout(designTimer);
     designTimer = setTimeout(() => {
-      if (viewStore.main === "design") refreshDesign();
+      // 設計画面の外でも、チャットに案の一覧があれば読み直す(採用・取り消しで一覧の状態が変わる)
+      if (viewStore.main === "design" || designWatch.chat > 0) refreshDesign();
       else refreshClipStates();
     }, delay);
   }
