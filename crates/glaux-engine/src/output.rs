@@ -701,8 +701,9 @@ enum Ctl {
     },
 }
 
-/// 出力バッファの既定の大きさ(フレーム。48kHz で約 21ms)。途切れにくさを優先した値
-pub const DEFAULT_BUFFER_FRAMES: u32 = 1024;
+/// 出力バッファの既定の大きさ(フレーム。48kHz で約 11ms)。鍵盤を弾いたときの遅れと途切れにくさの釣り合い
+/// (途切れるときは設定で大きくする)
+pub const DEFAULT_BUFFER_FRAMES: u32 = 512;
 
 /// 出力バッファの大きさ。小さいほど操作から音までが速いが、処理が間に合わず途切れやすい
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -897,7 +898,7 @@ fn open_stream(
     let dev_name = device_name(&device);
     tracing::info!("オーディオ出力: {dev_name} / {sample_rate} Hz / {channels} ch");
 
-    // 既定は大きめ(1024 フレーム ≒ 21ms @48k)でスパイク耐性を稼ぐ。設定で小さくもできる。
+    // 既定は 512 フレーム(≒ 11ms @48k)。途切れるなら設定で大きく、遅れが気になるなら小さくできる。
     // デバイスの受け付ける範囲に丸め、ドライバが拒否したら OS 任せで開く
     let (min, max) = match config.buffer_size() {
         cpal::SupportedBufferSize::Range { min, max } => (Some(*min), Some(*max)),

@@ -385,9 +385,9 @@
               `小さいほど鍵盤やつまみから音までが速く、大きいほど途切れにくい。途切れるときは大きく` +
                 (devices.buffer?.block ? `(いま 1 回に ${devices.buffer.block} フレーム ≒ ${msOf(devices.buffer.block).toFixed(1)} ms で処理)` : ""),
             )}
-            <select class="sc" value={settings.bufferFrames || 1024} onchange={pickBuffer} aria-label="バッファの大きさ">
+            <select class="sc" value={settings.bufferFrames || 512} onchange={pickBuffer} aria-label="バッファの大きさ">
               {#each bufferChoices as n (n)}
-                <option value={n}>{n} フレーム({msOf(n).toFixed(1)} ms){n === 1024 ? " — 既定" : ""}</option>
+                <option value={n}>{n} フレーム({msOf(n).toFixed(1)} ms){n === 512 ? " — 既定" : ""}</option>
               {/each}
             </select>
           </div>

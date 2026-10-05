@@ -101,6 +101,9 @@ impl LiveEvent {
 /// (積む側は MIDI 受信スレッドや UI スレッドで、RT 制約はない)。
 pub struct LiveQueue {
     buf: Box<[AtomicU64]>,
+    /// 積んだ時刻(`epoch` からのナノ秒)。ブロックの中のどこで鳴らすかを決める
+    times: Box<[AtomicU64]>,
+    epoch: std::time::Instant,
     head: AtomicUsize,
     tail: AtomicUsize,
     push_lock: Mutex<()>,
@@ -110,6 +113,8 @@ impl Default for LiveQueue {
     fn default() -> Self {
         LiveQueue {
             buf: (0..QUEUE_CAP).map(|_| AtomicU64::new(0)).collect(),
+            times: (0..QUEUE_CAP).map(|_| AtomicU64::new(0)).collect(),
+            epoch: std::time::Instant::now(),
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             push_lock: Mutex::new(()),
@@ -118,6 +123,11 @@ impl Default for LiveQueue {
 }
 
 impl LiveQueue {
+    /// 今の時刻(積んだ時刻と同じ物差し。ナノ秒)
+    pub fn now_ns(&self) -> u64 {
+        self.epoch.elapsed().as_nanos() as u64
+    }
+
     /// 積む。満杯なら false(そのイベントは捨てる)。
     pub fn push(&self, ev: LiveEvent) -> bool {
         let _guard = self.push_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -127,20 +137,22 @@ impl LiveQueue {
             return false;
         }
         self.buf[h & (QUEUE_CAP - 1)].store(ev.pack(), Ordering::Relaxed);
+        self.times[h & (QUEUE_CAP - 1)].store(self.now_ns(), Ordering::Relaxed);
         self.head.store(h.wrapping_add(1), Ordering::Release);
         true
     }
 
-    /// 取り出す(オーディオスレッド専用。単一の消費者から呼ぶこと)。
-    pub fn pop(&self) -> Option<LiveEvent> {
+    /// 取り出す(オーディオスレッド専用。単一の消費者から呼ぶこと)。積んだ時刻(ナノ秒)も返す
+    pub fn pop(&self) -> Option<(LiveEvent, u64)> {
         let t = self.tail.load(Ordering::Relaxed);
         let h = self.head.load(Ordering::Acquire);
         if t == h {
             return None;
         }
         let v = self.buf[t & (QUEUE_CAP - 1)].load(Ordering::Relaxed);
+        let at = self.times[t & (QUEUE_CAP - 1)].load(Ordering::Relaxed);
         self.tail.store(t.wrapping_add(1), Ordering::Release);
-        Some(LiveEvent::unpack(v))
+        Some((LiveEvent::unpack(v), at))
     }
 }
 
@@ -790,7 +802,7 @@ mod tests {
     #[test]
     fn queue_is_fifo_and_bounded() {
         let q = LiveQueue::default();
-        assert_eq!(q.pop(), None);
+        assert_eq!(q.pop().map(|(e, _)| e), None);
         for i in 0..QUEUE_CAP {
             assert!(q.push(LiveEvent::NoteOff {
                 pitch: (i % 128) as u8,
@@ -798,20 +810,24 @@ mod tests {
             }));
         }
         assert!(!q.push(LiveEvent::AllOff), "満杯なら積めない");
+        // 積んだ時刻は積んだ順に増える(ブロックの中の位置を決めるのに使う)
+        assert!(
+            q.times[0].load(Ordering::Relaxed) <= q.times[QUEUE_CAP - 1].load(Ordering::Relaxed)
+        );
         for i in 0..QUEUE_CAP {
             assert_eq!(
-                q.pop(),
+                q.pop().map(|(e, _)| e),
                 Some(LiveEvent::NoteOff {
                     pitch: (i % 128) as u8,
                     ch: (i % 16) as u8,
                 })
             );
         }
-        assert_eq!(q.pop(), None);
+        assert_eq!(q.pop().map(|(e, _)| e), None);
         // 周回しても壊れない
         for _ in 0..3 * QUEUE_CAP {
             assert!(q.push(LiveEvent::AllOff));
-            assert_eq!(q.pop(), Some(LiveEvent::AllOff));
+            assert_eq!(q.pop().map(|(e, _)| e), Some(LiveEvent::AllOff));
         }
     }
 

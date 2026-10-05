@@ -507,6 +507,8 @@ struct LiveVoice {
     released: bool,
     /// 時刻指定のノート: この時計の位置で離す(MIDI キーボードの音は u64::MAX = 鍵盤を離すまで)
     off_at: u64,
+    /// この時計の位置から鳴らし始める(MIDI キーボードの音は、鍵盤を押した時刻に合わせてブロックの途中から)
+    start_at: u64,
     /// ペダルで保持中(ペダルを離したらリリース)
     sustained: bool,
     instrument: glaux_dsp::InstrumentParams,
@@ -701,6 +703,14 @@ pub struct Renderer {
     /// 最後に消費した試聴要求のカウンタ
     last_preview: u64,
     live_voices: Vec<LiveVoice>,
+    /// この呼び出しで受け取った MIDI キーボードのイベントと、呼び出しの頭からの位置(前もって確保して再確保しない)
+    live_pending: Vec<(LiveEvent, u32)>,
+    /// live_pending のうち、反映し終えた数
+    live_head: usize,
+    /// 処理中の塊の、呼び出しの頭からの位置
+    live_chunk_start: u32,
+    /// 前の呼び出しの時刻(MIDI の待ち行列の物差し)
+    live_prev_ns: Option<u64>,
     /// MIDI チャンネルごとの今のベンド(セント)・音色(−1〜1)・押し込み(0〜1)。1 チャンネル目は全部の音に効く
     mpe_bend: [f32; 16],
     mpe_bright: [Option<f32>; 16],
@@ -889,6 +899,10 @@ impl Renderer {
             preview_voices: Vec::with_capacity(MAX_PREVIEW_VOICES),
             last_preview: 0,
             live_voices: Vec::with_capacity(MAX_LIVE_VOICES),
+            live_pending: Vec::with_capacity(MAX_LIVE_EVENTS_PER_BLOCK),
+            live_head: 0,
+            live_chunk_start: 0,
+            live_prev_ns: None,
             mpe_bend: [0.0; 16],
             mpe_bright: [None; 16],
             mpe_press: [None; 16],
@@ -1013,8 +1027,11 @@ impl Renderer {
         } else {
             MAX_FRAMES
         };
+        // MIDI キーボードのライブ演奏: この呼び出しの分をまとめて受け取り、押した時刻からブロックの中の位置を決める
+        self.fetch_live(out.len() / channels.max(1));
         for chunk in out.chunks_mut(step * channels.max(1)) {
             self.process_inner(chunk, channels);
+            self.live_chunk_start += (chunk.len() / channels.max(1)) as u32;
         }
 
         // 負荷統計(ロック・アロケーションなし)
@@ -1234,8 +1251,8 @@ impl Renderer {
             }
         }
 
-        // MIDI キーボードのライブ演奏(ブロック頭でまとめて反映。遅れは最大 1 ブロック)
-        self.consume_live(data, sr);
+        // MIDI キーボードのライブ演奏(押した時刻に合わせて、ブロックの途中から鳴らす)
+        self.consume_live(data, sr, out.len() / channels);
         // 時刻指定のノートを受け取る(鳴らし始めはフレーム単位で正確に)
         while self.timed.len() < MAX_TIMED_NOTES {
             let Some(n) = self.shared.notes.pop() else {
@@ -1849,6 +1866,10 @@ impl Renderer {
             let mut i = 0;
             while i < self.live_voices.len() {
                 let v = &mut self.live_voices[i];
+                if now < v.start_at {
+                    i += 1;
+                    continue;
+                }
                 if !v.released && now >= v.off_at {
                     v.state.note_off();
                     v.released = true;
@@ -3333,17 +3354,60 @@ impl Renderer {
             shape: glaux_dsp::NoteShape::NONE,
             released: false,
             off_at: now + n.dur.max(1) as u64,
+            start_at: 0,
             sustained: false,
             instrument,
             state,
         });
     }
 
-    fn consume_live(&mut self, data: &PlaybackData, sr: f32) {
-        for _ in 0..MAX_LIVE_EVENTS_PER_BLOCK {
-            let Some(ev) = self.shared.live.pop() else {
+    /// MIDI キーボードのイベントを受け取り、押した時刻からこの呼び出し(`frames_total` フレーム)の中の位置を決める。
+    /// 前の呼び出しから 1 ブロックほど経っていれば(実時間で鳴らしているとき)、前の呼び出しから今までに届いた
+    /// イベントを、届いた時刻の割合で同じだけの位置へ置く(遅れは一定の 1 ブロックで、揺れない)。
+    /// そうでなければ(最初・書き出し・試験)ブロックの頭で鳴らす
+    fn fetch_live(&mut self, frames_total: usize) {
+        if self.live_head >= self.live_pending.len() {
+            self.live_pending.clear();
+            self.live_head = 0;
+        }
+        self.live_chunk_start = 0;
+        let sr = self.shared.data.load().sample_rate.max(1.0);
+        let now = self.shared.live.now_ns();
+        let block_ns = (frames_total as f64 / sr * 1e9) as u64;
+        let window = match self.live_prev_ns {
+            Some(p) if now > p && (now - p) * 2 >= block_ns && now - p <= block_ns * 2 => {
+                Some((p, now - p))
+            }
+            _ => None,
+        };
+        self.live_prev_ns = Some(now);
+        let last = frames_total.saturating_sub(1) as u32;
+        while self.live_pending.len() < self.live_pending.capacity() {
+            let Some((ev, at)) = self.shared.live.pop() else {
                 break;
             };
+            let frame = match window {
+                Some((p, span)) => {
+                    let d = at.saturating_sub(p).min(span);
+                    ((d as f64 / span as f64) * frames_total as f64) as u32
+                }
+                None => 0,
+            };
+            self.live_pending.push((ev, frame.min(last)));
+        }
+    }
+
+    /// 受け取ったイベントのうち、この塊(`frames` フレーム)の中のものを反映する
+    fn consume_live(&mut self, data: &PlaybackData, sr: f32, frames: usize) {
+        let end = self.live_chunk_start + frames as u32;
+        while self.live_head < self.live_pending.len() {
+            let (ev, frame) = self.live_pending[self.live_head];
+            if frame >= end {
+                break;
+            }
+            self.live_head += 1;
+            // 塊の頭からの位置
+            let k = frame.saturating_sub(self.live_chunk_start);
             match ev {
                 LiveEvent::NoteOn {
                     track,
@@ -3361,7 +3425,7 @@ impl Renderer {
                     let slot = self.track_plugin[track as usize].unwrap_or(0);
                     let note_id = self.next_note_id;
                     self.next_note_id = self.next_note_id.wrapping_add(1).max(1);
-                    self.plugin_note_on(slot, pitch, vel as f32 / 127.0, 0, Some(note_id));
+                    self.plugin_note_on(slot, pitch, vel as f32 / 127.0, k, Some(note_id));
                     let mut p = PendingOff::simple(slot, pitch, u64::MAX, false);
                     p.note_id = note_id;
                     p.ch = ch;
@@ -3376,12 +3440,17 @@ impl Renderer {
                     vel,
                     ch,
                 } => {
-                    // 同じ音高を打ち直したら前の音はリリースへ
+                    // 同じ音高を打ち直したら前の音はリリースへ(打ち直した位置で)
+                    let at = self.clock + k as u64;
                     for v in self.live_voices.iter_mut() {
                         if v.pitch == pitch && v.ch == ch && !v.released {
-                            v.state.note_off();
-                            v.released = true;
                             v.sustained = false;
+                            if at <= self.clock || v.start_at >= at {
+                                v.state.note_off();
+                                v.released = true;
+                            } else {
+                                v.off_at = v.off_at.min(at);
+                            }
                         }
                     }
                     if self.live_voices.len() >= MAX_LIVE_VOICES {
@@ -3412,6 +3481,7 @@ impl Renderer {
                         shape: glaux_dsp::NoteShape::NONE,
                         released: false,
                         off_at: u64::MAX,
+                        start_at: self.clock + k as u64,
                         sustained: false,
                         instrument,
                         state,
@@ -3421,13 +3491,17 @@ impl Renderer {
                 }
                 LiveEvent::NoteOff { pitch, ch } => {
                     self.release_live_plugin_notes(Some(pitch));
+                    // 鍵盤を離した位置で離す(鳴らし始める前に離したなら、鳴らし始めの位置で)
+                    let at = self.clock + k as u64;
                     for v in self.live_voices.iter_mut() {
                         if v.pitch == pitch && v.ch == ch && !v.released {
                             if self.sustain {
                                 v.sustained = true;
-                            } else {
+                            } else if k == 0 && v.start_at <= self.clock {
                                 v.state.note_off();
                                 v.released = true;
+                            } else {
+                                v.off_at = v.off_at.min(at.max(v.start_at + 1));
                             }
                         }
                     }
@@ -4655,6 +4729,34 @@ mod tests {
             rms(&render_block(&mut r, 4800)) < 1e-3,
             "ペダルを離したら消える"
         );
+    }
+
+    #[test]
+    fn live_notes_start_where_the_key_was_pressed_within_the_block() {
+        // 実時間で鳴らしているときの様子: 前の呼び出しから半ブロック後に鍵盤を押し、さらに半ブロック後に次の呼び出し
+        let shared = Arc::new(Shared::new(data_with_note(0, 4800, false)));
+        let mut r = Renderer::new(shared.clone());
+        let block_ns = 100_000_000u64; // 4800 フレーム @48k = 100ms
+        let t0 = shared.live.now_ns();
+        r.live_prev_ns = Some(t0.saturating_sub(block_ns / 2));
+        shared.live.push(LiveEvent::NoteOn {
+            track: LIVE_NO_TRACK,
+            pitch: 69,
+            vel: 120,
+            ch: 0,
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let buf = render_block(&mut r, 4800);
+        let rms_of = |a: usize, b: usize| {
+            let s: f32 = (a..b).map(|i| buf[i * 2] * buf[i * 2]).sum();
+            (s / (b - a) as f32).sqrt()
+        };
+        // 押した位置(ブロックの半ばあたり)より前は鳴らず、後で鳴る
+        assert!(rms_of(0, 1500) < 1e-4, "{}", rms_of(0, 1500));
+        assert!(rms_of(3600, 4800) > 1e-3, "{}", rms_of(3600, 4800));
+        // 鳴り始めは届いた時刻の割合の所(揺れの幅は呼び出しの間隔の誤差まで)
+        let first = (0..4800).position(|i| buf[i * 2].abs() > 1e-6).unwrap();
+        assert!((1500..3600).contains(&first), "first = {first}");
     }
 
     #[test]
