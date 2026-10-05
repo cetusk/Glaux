@@ -17,19 +17,31 @@ const SLIDER_KEYS = new Set([
 
 const NON_TEXT_INPUTS = new Set(["range", "checkbox", "radio", "button", "submit", "reset", "color", "file"]);
 
+/** 修飾キーなしの Space(再生 / 一時停止) */
+const plainSpace = (e: KeyboardEvent) => e.code === "Space" && !(e.ctrlKey || e.metaKey || e.altKey || e.shiftKey);
+
 /** このキー操作をアプリのショートカットにせず、フォーカスのある要素に任せるか */
 export function shouldYieldKey(e: KeyboardEvent): boolean {
   const el = e.target as HTMLElement | null;
   if (!el || !el.tagName) return false;
-  if (el.isContentEditable || el.tagName === "TEXTAREA") return true;
+  if (e.isComposing) return true; // 日本語の変換中のキーはすべて入力欄へ
+  const isText =
+    el.isContentEditable ||
+    el.tagName === "TEXTAREA" ||
+    (el.tagName === "INPUT" && !NON_TEXT_INPUTS.has((el as HTMLInputElement).type));
+  if (isText) {
+    // 空の入力欄の Space は再生に回す(チャット欄などに入力先が残ったまま Space を押すと、見えない空白が入るだけで
+    // 再生されなかった。先頭の空白は使わないので、文字があるときだけ欄に任せる)
+    const value = el.isContentEditable ? (el.textContent ?? "") : (el as HTMLInputElement | HTMLTextAreaElement).value;
+    return !(plainSpace(e) && value === "");
+  }
   if (el.tagName === "SELECT") {
-    // 選択肢は頭文字や矢印で選ぶので、修飾キーなしは譲る(Ctrl+Z 等はアプリへ)
-    return !(e.ctrlKey || e.metaKey || e.altKey);
+    // 選択肢は頭文字や矢印で選ぶので、修飾キーなしは譲る(Ctrl+Z 等はアプリへ)。
+    // Space は再生に回す(スナップなどの選択欄を触った後、入力先が残って Space が効かなかった)
+    return !(e.ctrlKey || e.metaKey || e.altKey) && !plainSpace(e);
   }
   if (el.tagName === "INPUT") {
-    const type = (el as HTMLInputElement).type;
-    if (!NON_TEXT_INPUTS.has(type)) return true; // text / number / search など
-    return type === "range" && SLIDER_KEYS.has(e.code);
+    return (el as HTMLInputElement).type === "range" && SLIDER_KEYS.has(e.code);
   }
   return false;
 }

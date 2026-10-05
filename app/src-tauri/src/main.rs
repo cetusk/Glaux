@@ -3188,6 +3188,15 @@ fn main() -> Result<()> {
             if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
                 let _ = window.set_icon(taskbar_icon(*scale_factor));
             }
+            // ほかの窓から戻ったら、中身(WebView)へキーの入力先を戻す。戻らないことがあり、そのときは
+            // 中をクリックするまで Space などのキー操作が届かなかった(Windows の WebView2)
+            if let tauri::WindowEvent::Focused(true) = event {
+                use tauri::Manager;
+                if let Some(w) = window.get_webview_window(window.label()) {
+                    let webview: &tauri::Webview<_> = w.as_ref();
+                    let _ = webview.set_focus();
+                }
+            }
         })
         .build(tauri::generate_context!())
         .context("Tauri の起動に失敗")?

@@ -7,6 +7,7 @@
   import Icon from "./Icon.svelte";
   import { addBars as addBarsIn, rangeFromChanges } from "./abRange";
   import { abLooping } from "./abLoop";
+  import { shouldYieldKey } from "./keys";
   import { transportSeek } from "./api";
   import type { Project } from "./types";
   import {
@@ -669,8 +670,8 @@
     cellDraft = { ...cellDraft, [`${pi}:${i}`]: paint.lv };
   }
   function onKey(e: KeyboardEvent) {
-    const tag = (document.activeElement as HTMLElement | null)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    // 文字を打つ欄などには譲る(以前はスライダー・選択欄に入力先があるだけで、数字キーと Esc が効かなかった)
+    if (shouldYieldKey(e)) return;
     if (e.key === "Escape" && pop) {
       pop = null;
       return;
