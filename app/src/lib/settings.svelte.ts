@@ -53,7 +53,7 @@ interface Settings {
   outputVolumeDb: number;
   /// 推定した計画を確認せずに採用する(設計画面の「次から確認せずに採用する」)
   autoAdoptEstimated: boolean;
-  /// 作る前に AI が質問する: auto = 決め手が読み取れないとき / never = 尋ねない(いつもおまかせ)
+  /// 作る前に AI が質問する: auto = 決め手が読み取れないとき / never = 途中で尋ねない(いつもおまかせ。最後まで AI が決める)
   chatAsk: "auto" | "never";
 }
 

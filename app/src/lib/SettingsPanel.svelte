@@ -589,9 +589,9 @@
           </div>
         </div>
         <div class="srow">
-          {@render row("作る前に AI が質問する", "曲の決め手(ジャンル・雰囲気・長さ・編成など)が指示から読み取れないとき、作る前に選択肢で尋ねます。「尋ねない」なら、いつも AI が決めて最後まで作ります(1 回だけなら指示の頭に /goal)")}
+          {@render row("作る前に AI が質問する", "曲の決め手(ジャンル・雰囲気・長さ・編成など)が指示から読み取れないとき、作る前に選択肢で尋ねます。「途中で尋ねない」なら、いつも AI が決め手を選んで最後まで作ります(1 回だけなら指示の頭に /goal)")}
           <div class="sc seg">
-            {#each [{ v: "auto", l: "必要なとき" }, { v: "never", l: "尋ねない" }] as o (o.v)}
+            {#each [{ v: "auto", l: "必要なとき" }, { v: "never", l: "途中で尋ねない" }] as o (o.v)}
               <button
                 class="btn sm"
                 class:on={settings.chatAsk === o.v}
