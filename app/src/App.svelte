@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
   import { shouldYieldKey } from "./lib/keys";
   import { toolDoing } from "./lib/toolLabels";
@@ -25,6 +25,7 @@
   import PlanHistoryPanel from "./lib/PlanHistoryPanel.svelte";
   import { designRedo, designUndo, refreshClipStates, refreshDesign } from "./lib/design.svelte";
   import TransportLcd from "./lib/TransportLcd.svelte";
+  import { abLooping } from "./lib/abLoop";
   import StatusBar from "./lib/StatusBar.svelte";
   import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
@@ -706,11 +707,13 @@
     }
   }
 
-  // ループ中に範囲選択・曲の長さが変わったら区間を更新
+  // ループ中に範囲選択・曲の長さが変わったら区間を更新。ループの入り切りそのものでは張り直さない
+  // (聴き比べが範囲をループにすると loopOn が立ち、ここで曲全体に張り直して聴き比べのループが外れていた)。
+  // 聴き比べの間は、聴き比べの範囲のままにする
   $effect(() => {
     void selectionStore.range;
     void contentEndTick;
-    if (!loopOn) return;
+    if (!untrack(() => loopOn) || abLooping()) return;
     const range = loopRange();
     if (range) api.transportSetLoop(range.start, range.end).catch(() => {});
   });

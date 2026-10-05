@@ -27,6 +27,11 @@ export function releaseAb(name: string): void {
 /** 聴き比べを始める前のループの設定(聴き比べ中でなければ null) */
 let saved: { loop: [number, number] | null } | null = null;
 
+/** 聴き比べがループを使っている間は true(画面のループの処理が、聴き比べの範囲を張り直さないように) */
+export function abLooping(): boolean {
+  return saved !== null;
+}
+
 /** 範囲をループにして、頭から鳴らす */
 export async function startAbLoop(start: number, end: number): Promise<void> {
   if (saved === null) {

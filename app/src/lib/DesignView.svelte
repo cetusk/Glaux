@@ -5,7 +5,9 @@
   // 見た目と操作は docs/SONG_DESIGN_DATA.md §5(触れる試作で決めたもの)に沿う。
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
-  import { barAtTick, buildBars } from "./barMap";
+  import { addBars as addBarsIn, rangeFromChanges } from "./abRange";
+  import { abLooping } from "./abLoop";
+  import { transportSeek } from "./api";
   import type { Project } from "./types";
   import {
     ARCS,
@@ -126,8 +128,14 @@
 
   // ---- 選ぶ ----
   function pick(s: DesignSel) {
+    const prev = designSel.sel;
     designSel.sel = s;
     if (s.kind === "part" || s.kind === "cell") designSel.part = s.p;
+    // 別の区間(またはその区間のマス)を選んだら、再生位置をその区間の頭へ(再生中ならそこから続けて鳴る)。
+    // 同じ区間の中で選び直したとき(曲線を直すなど)と、聴き比べの間(範囲の外は鳴らない)は動かさない
+    const secOf = (x: DesignSel) => (x.kind === "section" || x.kind === "cell" ? x.i : -1);
+    const i = secOf(s);
+    if (i >= 0 && i !== secOf(prev) && sortedSecs[i] && !abLooping()) transportSeek(sortedSecs[i].tick).catch(() => {});
   }
   function pickWhole(k: "song" | "sections" | "curve" | "band" | "table", e: MouseEvent) {
     e.stopPropagation();
@@ -746,16 +754,8 @@
   const planName = (id: string | undefined) => d?.plans.find((p) => p.plan_id === id)?.name;
   const proposalWhy = (id: string) => d?.history.find((h) => h.plan_id === id && h.op === "create")?.why;
   const sortedSecs = $derived([...(project.sections ?? [])].sort((a, b) => a.tick - b.tick));
-  /** `tick` を含む小節の頭と、そこから `n` 小節進んだ所(拍子どおり) */
-  function barHead(tick: number): number {
-    const bars = buildBars(project, tick + 1, 1, 1);
-    return bars.length ? barAtTick(bars, tick).tick : tick;
-  }
-  function addBars(tick: number, n: number): number {
-    const bars = buildBars(project, tick + 1, 1, n + 1);
-    const at = bars.length ? barAtTick(bars, tick) : null;
-    return at && bars[at.index + n] ? bars[at.index + n].tick : tick + project.ppq * 4 * n;
-  }
+  /** `tick` から `n` 小節進んだ所(拍子どおり) */
+  const addBars = (tick: number, n: number) => addBarsIn(project, tick, n);
   const sectionRange = (i: number) => ({
     start: sortedSecs[i].tick,
     end: sortedSecs[i + 1]?.tick ?? addBars(sortedSecs[i].tick, d?.sections[i]?.bars ?? 8),
@@ -775,11 +775,8 @@
     if (selI >= 0 && sortedSecs[selI]) return { ...sectionRange(selI), section: selI };
     const r = selectionStore.range;
     if (r && r.endTick > r.startTick) return { start: r.startTick, end: r.endTick, section: null };
-    const first = ch?.ranges?.[0];
-    if (first) {
-      const start = barHead(first[0]);
-      return { start, end: Math.max(first[1], addBars(start, 4)), section: null };
-    }
+    const fromChanges = ch?.ranges?.length ? rangeFromChanges(project, ch.ranges) : null;
+    if (fromChanges) return { ...fromChanges, section: null };
     const start = Math.max(0, transportStore.state.tick ?? 0);
     return { start, end: addBars(start, 8), section: null };
   }

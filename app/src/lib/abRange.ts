@@ -17,6 +17,12 @@ export function addBars(project: Project, tick: number, n: number): number {
   return at && bars[at.index + n] ? bars[at.index + n].tick : tick + project.ppq * 4 * n;
 }
 
+/** `tick` 以後で最初の小節の頭(`tick` が小節の頭ならそのまま) */
+export function barCeil(project: Project, tick: number): number {
+  const head = barHead(project, tick);
+  return head >= tick ? head : addBars(project, head, 1);
+}
+
 /** 範囲を決めないとき: ループ中ならその区間、範囲を選んでいればそこ、無ければ今の位置の小節から 8 小節 */
 export function defaultAbRange(project: Project | null): { start: number; end: number } {
   const loop = transportStore.state.loop;
@@ -29,12 +35,13 @@ export function defaultAbRange(project: Project | null): { start: number; end: n
   return { start, end: addBars(project, start, 8) };
 }
 
-/** 音の違う範囲(曲の頭からの tick)から聴く範囲: 最初に違う所の小節の頭から、その範囲の終わりか 4 小節の長い方(8 小節まで)。
+/** 音の違う範囲(曲の頭からの tick)から聴く範囲: 最初に違う所の小節の頭から、その範囲の終わり(小節の終わりへ切り上げ)か
+ *  4 小節の長い方(8 小節まで)。
  *  違いが無い・曲全体に効く違いだけなら null */
 export function rangeFromChanges(project: Project, ranges: [number, number][]): { start: number; end: number } | null {
   const first = ranges[0];
   if (!first) return null;
   const start = barHead(project, first[0]);
-  const end = Math.min(Math.max(first[1], addBars(project, start, 4)), addBars(project, start, 8));
+  const end = Math.min(Math.max(barCeil(project, first[1]), addBars(project, start, 4)), addBars(project, start, 8));
   return { start, end };
 }

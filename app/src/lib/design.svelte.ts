@@ -4,7 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { abClear, abSetSide, applyEdit, getHistory, redo as songRedo, undo as songUndo } from "./api";
 import { claimAb, endAbLoop, ensureAbPlaying, releaseAb, restartAb, startAbLoop } from "./abLoop";
-import { addBars, barHead, defaultAbRange } from "./abRange";
+import { addBars, defaultAbRange, rangeFromChanges } from "./abRange";
 import { showToast } from "./toast.svelte";
 import type { Project } from "./types";
 
@@ -689,11 +689,9 @@ export function proposalsRange(
     const end = secs[best + 1]?.tick ?? addBars(project, start, d?.sections[best]?.bars ?? 8);
     return { start, end, section: best };
   }
-  const first = planIds.map((id) => d?.proposal_changes?.[id]?.ranges?.[0]).find((r) => r);
-  if (first) {
-    const start = barHead(project, first[0]);
-    return { start, end: Math.max(first[1], addBars(project, start, 4)), section: null };
-  }
+  const ranges = planIds.map((id) => d?.proposal_changes?.[id]?.ranges).find((r) => r?.length);
+  const fromChanges = ranges ? rangeFromChanges(project, ranges) : null;
+  if (fromChanges) return { ...fromChanges, section: null };
   return { ...defaultAbRange(project), section: null };
 }
 

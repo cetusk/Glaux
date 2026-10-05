@@ -68,8 +68,11 @@
   /** 曲(ターンの聴き比べの範囲を拍子どおりに決めるため) */
   let { project = null }: { project?: Project | null } = $props();
 
-  // 設計画面で選んでいる所(設計画面を開いている間だけ、指示の対象として添える)
-  const designTarget = $derived(viewStore.main === "design" ? designTargetLabel(designStore.data, designSel.sel) : null);
+  // 設計画面で選んでいる所(設計画面を開いている間だけ、指示の対象として添える)。
+  // 対象の ✕ は、設計画面の選択を残したままチャットに添えるのだけをやめる(別の所を選ぶと、また添える)
+  let designDetached = $state<object | null>(null);
+  const designLabel = $derived(viewStore.main === "design" ? designTargetLabel(designStore.data, designSel.sel) : null);
+  const designTarget = $derived(designLabel && designSel.sel !== designDetached ? designLabel : null);
 
   interface Msg {
     role: "user" | "assistant" | "tool" | "notice" | "error" | "turn" | "choices";
@@ -157,6 +160,7 @@
       const end = info.end_tick && info.end_tick > range.start ? info.end_tick : range.end;
       turnAb = { key, side: "b", info, start: range.start, end };
       await startAbLoop(range.start, end);
+      revealAb();
     } catch (e) {
       releaseAb("chat");
       showToast("error", `聴き比べを用意できませんでした: ${e}`);
@@ -205,6 +209,13 @@
     const use = ids.slice(0, MAX_PROPOSALS_AB);
     const r = project ? proposalsRange(project, designStore.data, use) : { ...defaultAbRange(null), section: null };
     await abProposals(use, r.start, r.end, r.section);
+    revealAb();
+  }
+
+  /** 聴き比べの操作(A / B …)が出たら、その行が見える所までスクロールする */
+  async function revealAb() {
+    await tick();
+    scroller?.querySelector<HTMLElement>("[data-ab-live]")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   async function revertTurnAt(m: Msg) {
@@ -661,22 +672,24 @@
           {/if}
         </div>
         {#if turnAb && turnAb.key === turnKey(m)}
-          <div class="msg abrow" role="group" aria-label="このターンの前と今を切り替える">
+          <div class="msg abrow" data-ab-live role="group" aria-label="このターンの前と今を切り替える">
             <button class="btn sm" class:on={turnAb.side === "a"} type="button" onclick={() => setTurnSide("a")}>A 前</button>
             <button class="btn sm" class:on={turnAb.side === "b"} type="button" onclick={() => setTurnSide("b")}>B 今</button>
             <button class="btn sm" type="button" title="範囲の頭から聴き直す" onclick={() => turnAb && restartAb(turnAb.start)}>⏮ 頭から</button>
             <button class="btn sm" type="button" onclick={endTurnAb}>終える</button>
-            <span class="abnote"
-              >音量はそろえてあります。切り替えても同じ位置から続けて鳴ります{turnAb.info.first_diff_secs == null
-                ? "(この範囲では前と今の音が同じです)"
-                : ""}</span
-            >
+            {#if turnAb.info.first_diff_secs == null}
+              <span class="abnote warn"
+                >この範囲では、前と今の音が同じです。このターンの編集は、ミュートしたトラックなど今は聞こえない所だけかもしれません</span
+              >
+            {:else}
+              <span class="abnote">音量はそろえてあります。切り替えても同じ位置から続けて鳴ります</span>
+            {/if}
           </div>
         {/if}
       {:else if m.role === "choices"}
         {@const live = liveProposals(m.planIds)}
         {@const on = comparing(live)}
-        <div class="msg choices">
+        <div class="msg choices" data-ab-live={on ? "" : undefined}>
           <div class="ch-head"><Icon name="split" size={13} />AI の案({m.planIds?.length ?? 0})</div>
           {#each m.planIds ?? [] as id (id)}
             {@const k = live.indexOf(id)}
@@ -746,16 +759,23 @@
   </div>
 
   <!-- 指示の対象(ピアノロールのクリップ・インスペクターのトラック・選んだ小節)。✕ で外す -->
-  {#if pianoRollStore.focus || soundDesignStore.focus || selectionStore.range || designTarget}
+  {#if pianoRollStore.focus || soundDesignStore.focus || selectionStore.range || designLabel}
     <div class="chips">
       {#if designTarget}
-        <span class="chip" title="設計画面で選んでいる所が指示の対象になります(その所の計画と実際を AI が読む)"
+        <span class="chip" title="設計画面で選んでいる所が指示の対象になります(その所の計画と実際を AI が読み、直すのはその所だけ)"
           ><Icon name="target" size={12} />{designTarget}<button
             class="chip-x"
-            onclick={() => (designSel.sel = { kind: "none" })}
-            title="対象を外す(曲全体への指示になる)"
-            aria-label="対象を外す"><Icon name="x" size={11} /></button
+            onclick={() => (designDetached = designSel.sel)}
+            title="この所に限らない指示にする(設計画面の選択はそのまま)"
+            aria-label="対象から外す"><Icon name="x" size={11} /></button
           ></span
+        >
+      {:else if designLabel}
+        <button
+          class="chip off"
+          type="button"
+          title="設計画面で選んでいる所を、指示の対象として添え直す"
+          onclick={() => (designDetached = null)}><Icon name="target" size={12} />{designLabel} を対象にする</button
         >
       {/if}
       {#if pianoRollStore.focus}
@@ -791,6 +811,11 @@
             aria-label="範囲の指定を外す"><Icon name="x" size={11} /></button
           ></span
         >
+      {/if}
+      {#if designTarget || pianoRollStore.focus || soundDesignStore.focus || selectionStore.range}
+        <span class="chips-note">指示はこの対象だけに効きます。ほかの所も頼むときは ✕ で外してください</span>
+      {:else}
+        <span class="chips-note">指示は曲全体に効きます</span>
       {/if}
     </div>
   {/if}
@@ -1050,6 +1075,9 @@
     color: var(--text-faint);
     font-size: 11px;
   }
+  .abnote.warn {
+    color: var(--warn);
+  }
   .msg.choices {
     align-self: stretch;
     display: flex;
@@ -1166,6 +1194,24 @@
     color: var(--accent);
     font-size: var(--fs-xs);
     max-width: 100%;
+  }
+  /* 外した対象(押すと添え直す) */
+  .chip.off {
+    padding: 0 8px;
+    border-style: dashed;
+    border-color: var(--border-strong);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .chip.off:hover {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+  }
+  .chips-note {
+    flex-basis: 100%;
+    color: var(--text-faint);
+    font-size: 11px;
   }
 
   .chip-x {

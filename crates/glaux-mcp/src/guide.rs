@@ -19,7 +19,8 @@ write_drums・write_chords・write_bassline・write_transition → 旋律(critiq
 ハネ(swing_notes)の後は apply_groove(quantize 0)を重ねる。仕上げは master_mix。\
 曲作りの報告前は critique_arrangement の warn を直し、analyze_harmony・analyze_audio の結果を添える。\
 修正は topic revise: 応答の aftercare の warn を直し、報告前に review_edits。\
-音・ミックスを変えたら critique_mix の warn を直し compare_mix。大きな試行の前は checkpoint。";
+音・ミックスを変えたら critique_mix の warn を直し compare_mix。大きな試行の前は checkpoint。\
+案・候補を頼まれたら(音色・型・ミックスも)曲は変えずに propose_design を案ごとに呼ぶ(ミュートのトラックや複製で代用しない)。";
 
 /// (トピック名, 見出し, 本文)
 pub const TOPICS: &[(&str, &str, &str)] = &[
@@ -451,7 +452,7 @@ mod tests {
     fn core_is_short_and_lists_every_topic() {
         // 毎ターン送るので短く保つ(以前は instructions 約 2,000 字 + チャット 6,100 字)
         let n = CORE.chars().count();
-        assert!(n <= 1_000, "CORE が長すぎます({n} 字)");
+        assert!(n <= 1_100, "CORE が長すぎます({n} 字)");
         for (name, _, body) in TOPICS {
             assert!(CORE.contains(name), "CORE に {name} が無い");
             assert!(!body.is_empty());
