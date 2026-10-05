@@ -10,7 +10,7 @@ pub const CORE: &str = "Glaux(AI と共同作業できる DAW)の編集サーバ
 進め方: get_project(include_notes: false)で構造 → 必要なクリップだけ clip_ids と note_format: \"compact\" で読む → \
 apply_commands で編集。\
 相対編集: transpose_notes・shift_notes・quantize_notes・swing_notes・scale_velocity・transform_notes。構成: duplicate_clips・insert_bars・delete_bars。\
-曲作りは topic workflow の工程(set_song_plan で計画 → 骨格 = suggest_progression・\
+曲作りは topic workflow の工程(set_song_plan で区間 → save_plan で曲全体とパートの計画 → 骨格 = suggest_progression・\
 write_drums・write_chords・write_bassline・write_transition → 旋律(critique_melody で点検)→ 表情 → 点検)に沿う。\
 旋律は write_melody か develop_motif。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio・analyze_sound。\
@@ -76,8 +76,10 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    critique_arrangement が計画と実際(盛り上がりの上がり下がり・鳴らすトラック)を突き合わせる。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
    参考曲の音声があれば analyze_reference で区間の並び・小節数・音量の差を読み、計画に写す(メロディは写さない)。\n\
    区間の中の盛り上がりの形は curve、ビルド → ドロップの落差のような急な変わり目は join: step。\n\
-   設計を細かく決めるなら、曲全体の狙い(save_plan kind song: 雰囲気・盛り上がりの型・明るさ・守ること)と、パートごとの計画\n\
-   (kind part: 区間ごとの働き・存在の段階 0〜5・音域の帯)も書く。get_design が計画と実際のずれを返す。\n\
+   続けて、音を書く前に必ず曲全体の狙い(save_plan kind song: 雰囲気・盛り上がりの型・明るさ・守ること)と、トラックごとの\n\
+   パートの計画(kind part: 区間ごとの働き・存在の段階 0〜5・音域の帯)を書く(トラックを作ってから。人が「計画は作らない」と\n\
+   言ったときだけ省く)。作る道具はパートの計画に沿い(鳴らさない区間に書かない・帯へ寄せる)、設計画面に計画と実際が並ぶ。\n\
+   計画より先に音を書くと、設計画面に音域の帯が無く「実際を計画に」しか出ない。get_design が計画と実際のずれを返す。\n\
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
    コード進行は suggest_progression で定番から選ぶ(区間ごとに変える)。\n\
    ドラムは write_drums(ジャンルの型・区間ごとに intensity を変える・区切りのフィル・ビルドのロールと gap_beats)。\n\

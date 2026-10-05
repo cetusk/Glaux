@@ -4035,6 +4035,10 @@ pub struct SongPlanSection {
     pub join: Option<String>,
 }
 
+/// 作る道具の応答の plan_hint: トラックにパートの計画が無いとき(計画より先に曲ができ、設計画面に音域の帯が出ない)
+const NO_PART_PLAN_HINT: &str = "このトラックにはパートの計画がありません。曲を作るときは、書く前に save_plan(kind part)で\
+    区間ごとの働き・存在の段階・音域の帯を書く(作る道具はそれに沿い、設計画面に計画と実際が並ぶ)。計画なしで書くなら follow_plan: false";
+
 #[derive(Deserialize, JsonSchema)]
 pub struct ProposeDesignParams {
     /// 案の名前(人が聴き比べるときに見る。例「ドロップをハーフタイムに」)。
@@ -8269,6 +8273,7 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project_shared().await?;
         // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
         let part = self.part_plan(&p.track_id, p.follow_plan).await?;
+        let no_part_plan = part.is_none() && p.follow_plan != Some(false);
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -8428,6 +8433,8 @@ impl GlauxServer {
         let mut out = mutated_json(&m);
         if let Some(f) = &plan_fit {
             out["plan"] = json!(f);
+        } else if no_part_plan {
+            out["plan_hint"] = json!(NO_PART_PLAN_HINT);
         }
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
@@ -8462,6 +8469,7 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project_shared().await?;
         // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
         let part = self.part_plan(&p.track_id, p.follow_plan).await?;
+        let no_part_plan = part.is_none() && p.follow_plan != Some(false);
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -8631,6 +8639,8 @@ impl GlauxServer {
         let mut out = mutated_json(&m);
         if let Some(f) = &plan_fit {
             out["plan"] = json!(f);
+        } else if no_part_plan {
+            out["plan_hint"] = json!(NO_PART_PLAN_HINT);
         }
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
@@ -8661,6 +8671,7 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project_shared().await?;
         // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
         let part = self.part_plan(&p.track_id, p.follow_plan).await?;
+        let no_part_plan = part.is_none() && p.follow_plan != Some(false);
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -8809,6 +8820,8 @@ impl GlauxServer {
         let mut out = mutated_json(&m);
         if let Some(f) = &plan_fit {
             out["plan"] = json!(f);
+        } else if no_part_plan {
+            out["plan_hint"] = json!(NO_PART_PLAN_HINT);
         }
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
@@ -8855,6 +8868,7 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project_shared().await?;
         // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
         let part = self.part_plan(&p.track_id, p.follow_plan).await?;
+        let no_part_plan = part.is_none() && p.follow_plan != Some(false);
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if !is_drum_track(track) {
             return Err("ドラムのトラック(音源が内蔵の drum か、SoundFont のドラム(bank 128))を指定してください".to_owned());
@@ -8967,6 +8981,8 @@ impl GlauxServer {
         let mut out = mutated_json(&m);
         if let Some(f) = &plan_fit {
             out["plan"] = json!(f);
+        } else if no_part_plan {
+            out["plan_hint"] = json!(NO_PART_PLAN_HINT);
         }
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
@@ -10386,6 +10402,7 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project_shared().await?;
         // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
         let part = self.part_plan(&p.track_id, p.follow_plan).await?;
+        let no_part_plan = part.is_none() && p.follow_plan != Some(false);
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -10670,6 +10687,8 @@ impl GlauxServer {
         let mut v = mutated_json(&m);
         if let Some(f) = &plan_fit {
             v["plan"] = json!(f);
+        } else if no_part_plan {
+            v["plan_hint"] = json!(NO_PART_PLAN_HINT);
         }
         v["entry_id"] = json!(entry_id);
         v["placed"] = json!(placed);
@@ -13987,6 +14006,30 @@ impl GlauxServer {
         v["duration"] = json!(format!("{}:{:02}", whole / 60, whole % 60));
         v["duration_sec"] = json!((seconds * 10.0).round() / 10.0);
         v["content_bars"] = json!(content_bars);
+        // 次に書く計画: 曲全体の計画と、パートの計画が無いトラック(曲を書く前に作る。作る道具がそれに沿う)
+        if let Ok(plans) = self.handle.get_plans().await {
+            let doc = plans.doc();
+            let has_song = doc
+                .plans
+                .values()
+                .any(|p| p.kind == "song" && p.state.is_none());
+            let missing: Vec<&str> = project
+                .tracks
+                .iter()
+                .filter(|t| t.kind != glaux_core::TrackKind::Bus)
+                .filter(|t| glaux_core::planfit::part_plan_for(doc, t.id.as_str()).is_none())
+                .map(|t| t.name.as_str())
+                .collect();
+            if !has_song || !missing.is_empty() {
+                v["next"] = json!({
+                    "song_plan": !has_song,
+                    "tracks_without_part_plan": missing,
+                    "hint": "曲を書く前に save_plan で曲全体の計画(kind song)と、トラックごとのパートの計画(kind part: \
+                        区間ごとの働き・存在の段階・音域の帯)を書く。作る道具(write_*)はそれに沿い、設計画面に計画と実際が並ぶ。\
+                        トラックをまだ作っていなければ、作ってから書く",
+                });
+            }
+        }
         Ok(JsonText(v))
     }
 

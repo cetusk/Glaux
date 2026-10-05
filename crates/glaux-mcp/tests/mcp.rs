@@ -5348,6 +5348,60 @@ async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     assert_eq!(r.is_error, Some(true));
 }
 
+/// 計画より先に音を書かないよう知らせる: set_song_plan は計画の無いトラックを、作る道具は plan_hint を返す
+#[tokio::test]
+async fn song_plan_and_write_tools_point_to_missing_part_plans() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "トラック", "commands": [
+                { "op": "add_track", "track": { "id": "trk_npb001", "name": "Bass", "kind": "midi" } } ] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "set_song_plan",
+            json!({ "sections": [ { "name": "A", "bars": 2 }, { "name": "B", "bars": 2 } ] }),
+        )
+        .await,
+    );
+    assert_eq!(v["next"]["song_plan"], true, "{v}");
+    assert!(
+        v["next"]["tracks_without_part_plan"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "Bass"),
+        "{v}"
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_npb001", "chords": "Am | F" }),
+        )
+        .await,
+    );
+    assert!(
+        v["plan_hint"].as_str().unwrap().contains("save_plan"),
+        "{v}"
+    );
+    // 計画なしで書くと決めたとき(follow_plan: false)は知らせない
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_npb001", "chords": "Am | F", "follow_plan": false, "name": "b2" }),
+        )
+        .await,
+    );
+    assert!(v.get("plan_hint").is_none(), "{v}");
+}
+
 /// 作る道具がパートの計画を目安にする: 鳴らさない区間には書かず、区間ごとに音域の帯へ寄せる(範囲を省くと帯で作る)
 #[tokio::test]
 async fn write_tools_follow_the_part_plan() {
@@ -5413,6 +5467,7 @@ async fn write_tools_follow_the_part_plan() {
     assert!(ns.iter().all(|&(t, _)| t >= verse), "{ns:?}");
     assert!(ns.iter().all(|&(_, p)| (52..=64).contains(&p)), "{ns:?}");
     assert_eq!(v["plan"]["sections"][0]["reason"], "鳴らさない", "{v}");
+    assert!(v.get("plan_hint").is_none(), "{v}");
     // 2) 範囲を指定しても(E1〜E3)、区間ごとに帯へ寄せる
     let v = ok_json(
         &call(
