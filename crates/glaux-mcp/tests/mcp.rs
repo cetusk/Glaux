@@ -5348,6 +5348,116 @@ async fn write_drums_places_a_genre_pattern_with_fills_and_a_build() {
     assert_eq!(r.is_error, Some(true));
 }
 
+/// 作る道具がパートの計画を目安にする: 鳴らさない区間には書かず、区間ごとに音域の帯へ寄せる(範囲を省くと帯で作る)
+#[tokio::test]
+async fn write_tools_follow_the_part_plan() {
+    let fx = setup().await;
+    ok_json(
+        &call(
+            &fx,
+            "set_song_plan",
+            json!({ "sections": [ { "name": "イントロ", "bars": 2 }, { "name": "Aメロ", "bars": 2 } ] }),
+        )
+        .await,
+    );
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "トラック", "commands": [
+                { "op": "add_track", "track": { "id": "trk_pfb001", "name": "Bass", "kind": "midi" } },
+                { "op": "add_track", "track": { "id": "trk_pfd001", "name": "Drums", "kind": "midi",
+                  "device": { "type": "builtin", "name": "drum" } } } ] }),
+        )
+        .await,
+    );
+    let (proj, _) = fx.handle.get_project().await.unwrap();
+    let ids: Vec<String> = proj
+        .sections
+        .iter()
+        .map(|s| s.id.as_ref().unwrap().to_string())
+        .collect();
+    let part = |track: &str| {
+        json!({ "name": track, "kind": "part", "why": "計画",
+                "body": { "track": track, "function": "bass", "sections": [
+                    { "section": ids[0], "presence": 0 },
+                    { "section": ids[1], "presence": 3, "register": [52, 64] } ] } })
+    };
+    ok_json(&call(&fx, "save_plan", part("trk_pfb001")).await);
+    ok_json(&call(&fx, "save_plan", part("trk_pfd001")).await);
+    let notes_of = |fx: &Fixture, clip: &str| {
+        let h = fx.handle.clone();
+        let clip = clip.to_owned();
+        async move {
+            let (p, _) = h.get_project().await.unwrap();
+            let (_, c) = p.clip(&clip.parse().unwrap()).unwrap();
+            c.notes()
+                .unwrap()
+                .iter()
+                .map(|n| (c.start.0 + n.pos.0, n.pitch))
+                .collect::<Vec<_>>()
+        }
+    };
+    let verse = 3840 * 2;
+    // 1) 範囲を省く → 計画の帯(E3〜E4)で作り、イントロ(鳴らさない)には書かない
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_pfb001", "chords": "Am | F | C | G" }),
+        )
+        .await,
+    );
+    let ns = notes_of(&fx, v["clip_id"].as_str().unwrap()).await;
+    assert!(!ns.is_empty());
+    assert!(ns.iter().all(|&(t, _)| t >= verse), "{ns:?}");
+    assert!(ns.iter().all(|&(_, p)| (52..=64).contains(&p)), "{ns:?}");
+    assert_eq!(v["plan"]["sections"][0]["reason"], "鳴らさない", "{v}");
+    // 2) 範囲を指定しても(E1〜E3)、区間ごとに帯へ寄せる
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_pfb001", "chords": "Am | F | C | G", "range": "E1-E3", "name": "b2" }),
+        )
+        .await,
+    );
+    let ns = notes_of(&fx, v["clip_id"].as_str().unwrap()).await;
+    assert!(
+        ns.iter()
+            .all(|&(t, p)| t >= verse && (52..=64).contains(&p)),
+        "{ns:?}"
+    );
+    // 3) follow_plan: false → 計画を見ない(イントロにも書き、指定の範囲のまま)
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_bassline",
+            json!({ "track_id": "trk_pfb001", "chords": "Am | F | C | G", "range": "E1-E3", "follow_plan": false, "name": "b3" }),
+        )
+        .await,
+    );
+    assert!(v.get("plan").is_none());
+    let ns = notes_of(&fx, v["clip_id"].as_str().unwrap()).await;
+    assert!(ns.iter().any(|&(t, _)| t < verse));
+    assert!(ns.iter().all(|&(_, p)| p <= 52));
+    // 4) ドラムは音域を動かさず、鳴らさない区間に書かないだけ
+    let v = ok_json(
+        &call(
+            &fx,
+            "write_drums",
+            json!({ "track_id": "trk_pfd001", "style": "house", "bars": 4 }),
+        )
+        .await,
+    );
+    let ns = notes_of(&fx, v["clip_id"].as_str().unwrap()).await;
+    assert!(
+        !ns.is_empty() && ns.iter().all(|&(t, _)| t >= verse),
+        "{ns:?}"
+    );
+    assert!(ns.iter().any(|&(_, p)| p == 36));
+}
+
 #[tokio::test]
 async fn write_transition_leaves_a_gap_and_rolls_into_the_drop() {
     let fx = setup().await;

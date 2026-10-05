@@ -855,6 +855,10 @@ pub struct WriteChordsParams {
     /// legato / portamento / vibrato / bend。省略で通常。SoundFont のギター・ベースの奏法の音色もこれで切り替わる。
     #[serde(default)]
     pub articulation: Option<String>,
+    /// パートの計画を目安にする(既定 true)。トラックに採用済みのパートの計画があれば、鳴らさない区間・固定の区間には書かず、
+    /// 区間ごとに音域の帯へ寄せる(range を省くと帯を作る音域に使う)。合わせた所は応答の plan。false で計画を見ない
+    #[serde(default)]
+    pub follow_plan: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -915,6 +919,10 @@ pub struct WriteArpeggioParams {
     /// クリップの名前(既定 "Arp")。
     #[serde(default)]
     pub name: Option<String>,
+    /// パートの計画を目安にする(既定 true)。トラックに採用済みのパートの計画があれば、鳴らさない区間・固定の区間には書かず、
+    /// 区間ごとに音域の帯へ寄せる(range を省くと帯を作る音域に使う)。合わせた所は応答の plan。false で計画を見ない
+    #[serde(default)]
+    pub follow_plan: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -958,6 +966,10 @@ pub struct WriteBasslineParams {
     /// クリップの名前(既定 "Bass")。
     #[serde(default)]
     pub name: Option<String>,
+    /// パートの計画を目安にする(既定 true)。トラックに採用済みのパートの計画があれば、鳴らさない区間・固定の区間には書かず、
+    /// 区間ごとに音域の帯へ寄せる(range を省くと帯を作る音域に使う)。合わせた所は応答の plan。false で計画を見ない
+    #[serde(default)]
+    pub follow_plan: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1008,6 +1020,10 @@ pub struct WriteDrumsParams {
     /// クリップの名前(既定 "Drums")。
     #[serde(default)]
     pub name: Option<String>,
+    /// パートの計画を目安にする(既定 true)。トラックに採用済みのパートの計画があれば、鳴らさない区間・固定の区間には書かず、
+    /// 区間ごとに音域の帯へ寄せる(range を省くと帯を作る音域に使う)。合わせた所は応答の plan。false で計画を見ない
+    #[serde(default)]
+    pub follow_plan: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1438,6 +1454,10 @@ pub struct WriteMelodyParams {
     /// クリップの名前(既定 "Melody")。
     #[serde(default)]
     pub name: Option<String>,
+    /// パートの計画を目安にする(既定 true)。トラックに採用済みのパートの計画があれば、鳴らさない区間・固定の区間には書かず、
+    /// 区間ごとに音域の帯へ寄せる(range を省くと帯を作る音域に使う)。合わせた所は応答の plan。false で計画を見ない
+    #[serde(default)]
+    pub follow_plan: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -8247,6 +8267,8 @@ impl GlauxServer {
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
         let (project, _) = self.handle.get_project_shared().await?;
+        // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
+        let part = self.part_plan(&p.track_id, p.follow_plan).await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -8287,6 +8309,17 @@ impl GlauxServer {
             p.bar,
             rhythm.is_none(),
         )?;
+        // 範囲を指定しなければ、パートの計画の音域の帯
+        let (low, high) = match (&p.range, &part) {
+            (None, Some((_, pp))) => glaux_core::planfit::register_for_range(
+                &project,
+                pp,
+                clip_start,
+                clip_start + clip_len,
+            )
+            .unwrap_or((low, high)),
+            _ => (low, high),
+        };
         let voices = p.voices.map_or(4, |v| v as usize);
         let opts = voicing::Options {
             style,
@@ -8332,6 +8365,7 @@ impl GlauxServer {
             &meters,
             &comp_opts,
         );
+        let mut plan_fit = None;
         let mut clip = glaux_core::Clip::new_midi(
             glaux_core::ClipId::new(),
             p.name.clone().unwrap_or_else(|| "Chords".to_owned()),
@@ -8359,6 +8393,9 @@ impl GlauxServer {
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+            plan_fit = part.as_ref().map(|(pl, pp)| {
+                glaux_core::planfit::fit_notes(&project, pl, pp, clip_start, ns, true)
+            });
         }
         // 返り値: 各和音の実際の音
         let mut summary = Vec::new();
@@ -8389,6 +8426,9 @@ impl GlauxServer {
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
+        if let Some(f) = &plan_fit {
+            out["plan"] = json!(f);
+        }
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
         out["bars"] = json!(n_bars);
@@ -8420,6 +8460,8 @@ impl GlauxServer {
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
         let (project, _) = self.handle.get_project_shared().await?;
+        // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
+        let part = self.part_plan(&p.track_id, p.follow_plan).await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -8463,6 +8505,17 @@ impl GlauxServer {
             n_bars,
             ..
         } = progression_layout(&project, &p.chords, p.key.as_deref(), p.repeat, p.bar, true)?;
+        // 範囲を指定しなければ、パートの計画の音域の帯
+        let (low, high) = match (&p.range, &part) {
+            (None, Some((_, pp))) => glaux_core::planfit::register_for_range(
+                &project,
+                pp,
+                clip_start,
+                clip_start + clip_len,
+            )
+            .unwrap_or((low, high)),
+            _ => (low, high),
+        };
         let opts = voicing::Options {
             style: voicing::Style::Close,
             voices: p.voices.map_or(4, |v| v.clamp(3, 6) as usize),
@@ -8524,6 +8577,7 @@ impl GlauxServer {
                 "鳴らす音がありません(進行が休みだけか、rhythm に x がありません)".to_owned(),
             );
         }
+        let mut plan_fit = None;
         let mut clip = glaux_core::Clip::new_midi(
             glaux_core::ClipId::new(),
             p.name.clone().unwrap_or_else(|| "Arp".to_owned()),
@@ -8551,6 +8605,9 @@ impl GlauxServer {
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+            plan_fit = part.as_ref().map(|(pl, pp)| {
+                glaux_core::planfit::fit_notes(&project, pl, pp, clip_start, ns, true)
+            });
         }
         // 返り値: 和音ごとの最初の 8 音
         let summary: Vec<Value> = spans
@@ -8572,6 +8629,9 @@ impl GlauxServer {
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
+        if let Some(f) = &plan_fit {
+            out["plan"] = json!(f);
+        }
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
         out["bars"] = json!(n_bars);
@@ -8599,6 +8659,8 @@ impl GlauxServer {
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
         let (project, _) = self.handle.get_project_shared().await?;
+        // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
+        let part = self.part_plan(&p.track_id, p.follow_plan).await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -8620,7 +8682,16 @@ impl GlauxServer {
             p.bar,
             pattern == bassline::Pattern::Sustain,
         )?;
-        let (low, high) = parse_range(Some(p.range.as_deref().unwrap_or("E1-E3")))?;
+        let (low, high) = match (&p.range, &part) {
+            (None, Some((_, pp))) => glaux_core::planfit::register_for_range(
+                &project,
+                pp,
+                clip_start,
+                clip_start + clip_len,
+            )
+            .map_or_else(|| parse_range(Some("E1-E3")), Ok)?,
+            _ => parse_range(Some(p.range.as_deref().unwrap_or("E1-E3")))?,
+        };
         let approach = match p.approach.as_deref().unwrap_or("none") {
             "none" => bassline::Approach::None,
             "chromatic" => bassline::Approach::Chromatic,
@@ -8686,6 +8757,7 @@ impl GlauxServer {
             kick.as_deref(),
         )?;
         let glide = p.glide_ms.unwrap_or(60.0).clamp(5.0, 500.0);
+        let mut plan_fit = None;
         let mut clip = glaux_core::Clip::new_midi(
             glaux_core::ClipId::new(),
             p.name.clone().unwrap_or_else(|| "Bass".to_owned()),
@@ -8717,6 +8789,9 @@ impl GlauxServer {
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+            plan_fit = part.as_ref().map(|(pl, pp)| {
+                glaux_core::planfit::fit_notes(&project, pl, pp, clip_start, ns, true)
+            });
         }
         let summary: Vec<Value> = spans
             .iter()
@@ -8732,12 +8807,31 @@ impl GlauxServer {
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
+        if let Some(f) = &plan_fit {
+            out["plan"] = json!(f);
+        }
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
         out["bars"] = json!(n_bars);
         out["notes"] = json!(notes.len());
         out["chords"] = json!(summary);
         Ok(JsonText(out))
+    }
+
+    /// 作る道具が目安にする、トラックの採用済みのパートの計画(follow_plan: false なら無し)
+    async fn part_plan(
+        &self,
+        track_id: &str,
+        follow: Option<bool>,
+    ) -> Result<Option<(glaux_core::plan::Plan, glaux_core::plan::PartPlan)>, String> {
+        if follow == Some(false) {
+            return Ok(None);
+        }
+        let plans = self.handle.get_plans().await?;
+        Ok(
+            glaux_core::planfit::part_plan_for(plans.doc(), track_id)
+                .map(|(p, pp)| (p.clone(), pp)),
+        )
     }
 
     #[tool(
@@ -8759,6 +8853,8 @@ impl GlauxServer {
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
         let (project, _) = self.handle.get_project_shared().await?;
+        // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
+        let part = self.part_plan(&p.track_id, p.follow_plan).await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if !is_drum_track(track) {
             return Err("ドラムのトラック(音源が内蔵の drum か、SoundFont のドラム(bank 128))を指定してください".to_owned());
@@ -8824,6 +8920,7 @@ impl GlauxServer {
                 return Err("その parts の音がこの型にはありません".to_owned());
             }
         }
+        let mut plan_fit = None;
         let mut clip = glaux_core::Clip::new_midi(
             glaux_core::ClipId::new(),
             p.name.clone().unwrap_or_else(|| "Drums".to_owned()),
@@ -8851,6 +8948,9 @@ impl GlauxServer {
                 })
                 .collect();
             ns.sort_by(|a, b| (a.pos, a.pitch, &a.id).cmp(&(b.pos, b.pitch, &b.id)));
+            plan_fit = part.as_ref().map(|(pl, pp)| {
+                glaux_core::planfit::fit_notes(&project, pl, pp, clip_start, ns, false)
+            });
         }
         let fills: Vec<u32> = if fill == drums::Fill::None || opts.fill_every == 0 {
             vec![]
@@ -8865,6 +8965,9 @@ impl GlauxServer {
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut out = mutated_json(&m);
+        if let Some(f) = &plan_fit {
+            out["plan"] = json!(f);
+        }
         out["entry_id"] = json!(entry_id);
         out["clip_id"] = json!(clip_id);
         out["bars"] = json!(p.bars);
@@ -10281,6 +10384,8 @@ impl GlauxServer {
         let p = params.0;
         let tid = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
         let (project, _) = self.handle.get_project_shared().await?;
+        // パートの計画があれば目安にする(鳴らさない・固定の区間には書かず、音域の帯へ寄せる)
+        let part = self.part_plan(&p.track_id, p.follow_plan).await?;
         let track = project.track(&tid).ok_or("トラックが見つかりません")?;
         if track.kind != glaux_core::TrackKind::Midi {
             return Err("MIDI トラックを指定してください".to_owned());
@@ -10384,9 +10489,17 @@ impl GlauxServer {
                 )
             }
         };
-        let (low, high) = match &p.range {
-            Some(r) => parse_range(Some(r))?,
-            None => role.range,
+        let (low, high) = match (&p.range, &part) {
+            (Some(r), _) => parse_range(Some(r))?,
+            // 範囲を指定しなければ、パートの計画の音域の帯(無ければ役割の既定)
+            (None, Some((_, pp))) => glaux_core::planfit::register_for_range(
+                &project,
+                pp,
+                clip_start,
+                clip_start + clip_len,
+            )
+            .unwrap_or(role.range),
+            (None, None) => role.range,
         };
         let peak_pitch = match &p.peak {
             Some(pk) => Some(
@@ -10499,8 +10612,16 @@ impl GlauxServer {
         let vel = p.velocity.unwrap_or(92);
         let mut commands = Vec::new();
         let mut placed = Vec::new();
+        let mut plan_fit = None;
         for (i, c) in cands.iter().take(place).enumerate() {
-            let clip = melody_clip(&c.out, clip_start, clip_len, bar_len, vel, name.clone());
+            let mut clip = melody_clip(&c.out, clip_start, clip_len, bar_len, vel, name.clone());
+            // パートの計画に合わせる(並べる案はどれも同じパートの案)
+            if let (Some((pl, pp)), Some(ns)) = (&part, clip.notes_mut()) {
+                let f = glaux_core::planfit::fit_notes(&project, pl, pp, clip_start, ns, true);
+                if i == 0 {
+                    plan_fit = Some(f);
+                }
+            }
             let clip_id = clip.id.clone();
             let target = if i == 0 {
                 tid.clone()
@@ -10547,6 +10668,9 @@ impl GlauxServer {
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
+        if let Some(f) = &plan_fit {
+            v["plan"] = json!(f);
+        }
         v["entry_id"] = json!(entry_id);
         v["placed"] = json!(placed);
         v["clip_id"] = placed[0]["clip_id"].clone();

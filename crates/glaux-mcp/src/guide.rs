@@ -130,6 +130,9 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
   固定の音は AI の編集では変わらない(外した編集は応答の kept_locked。固定を外すのは人だけ)。\n\
   realize_melody・revise_melody の作り直しは、手で直した小節を既定で残す(応答の protected)。残したことを報告し、\n\
   人が「手直しも含めて」と言ったときだけ overwrite_edits: true。ほかの道具でも、手で直した小節は消さずに避けて書く。\n\
+- 作る道具(write_bassline / write_chords / write_arpeggio / write_melody / write_drums)は、トラックに採用済みのパートの計画があれば\n\
+  目安にする: 鳴らさない区間・固定の区間には書かず、区間ごとに音域の帯へ寄せる(range を省くと帯で作る)。合わせた所は応答の plan。\n\
+  計画を見ずに作るときだけ follow_plan: false。\n\
 - 案(枝): 好みが分かれる・大きく変える直しは、曲を直接変えずに propose_design で案として出す(元の計画と、案の音になる編集の列)。\n\
   人が設計画面で聴き比べて「採用」すると曲に当たる。出したら「案を出したので聴き比べて」と伝えて待つ。\n\
   別々の案を並べて比べてもらうときは、案ごとに propose_design を呼ぶ。案が 2 つ以上あると、人は「まとめて聴き比べる」で\n\
