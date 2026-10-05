@@ -2398,9 +2398,10 @@ async fn change_ranges(state: State<'_, AppState>, before_entry: String) -> Resu
         .project_at(glaux_core::HistoryPoint::BeforeEntry(id))
         .await?
         .map_err(|e| e.to_string())?;
-    let d = tokio::task::spawn_blocking(move || glaux_core::designcheck::song_diff(&before, &after))
-        .await
-        .map_err(|e| e.to_string())?;
+    let d =
+        tokio::task::spawn_blocking(move || glaux_core::designcheck::song_diff(&before, &after))
+            .await
+            .map_err(|e| e.to_string())?;
     Ok(json!({ "ranges": d.ranges, "whole": d.whole }))
 }
 
