@@ -3366,13 +3366,18 @@ impl Renderer {
     /// イベントを、届いた時刻の割合で同じだけの位置へ置く(遅れは一定の 1 ブロックで、揺れない)。
     /// そうでなければ(最初・書き出し・試験)ブロックの頭で鳴らす
     fn fetch_live(&mut self, frames_total: usize) {
+        let now = self.shared.live.now_ns();
+        self.fetch_live_at(frames_total, now);
+    }
+
+    /// [`Self::fetch_live`] の本体(`now` は MIDI の待ち行列の物差しの今の時刻)
+    fn fetch_live_at(&mut self, frames_total: usize, now: u64) {
         if self.live_head >= self.live_pending.len() {
             self.live_pending.clear();
             self.live_head = 0;
         }
         self.live_chunk_start = 0;
         let sr = self.shared.data.load().sample_rate.max(1.0);
-        let now = self.shared.live.now_ns();
         let block_ns = (frames_total as f64 / sr * 1e9) as u64;
         let window = match self.live_prev_ns {
             Some(p) if now > p && (now - p) * 2 >= block_ns && now - p <= block_ns * 2 => {
@@ -4736,16 +4741,21 @@ mod tests {
         // 実時間で鳴らしているときの様子: 前の呼び出しから半ブロック後に鍵盤を押し、さらに半ブロック後に次の呼び出し
         let shared = Arc::new(Shared::new(data_with_note(0, 4800, false)));
         let mut r = Renderer::new(shared.clone());
+        // (実時間に頼らないよう、時刻を渡して受け取らせる。時刻は待ち行列を作ってからの経過なので、
+        // 「前の呼び出し = 半ブロック前」が 0 で切れないよう、作ってから少し経つのを待つ)
         let block_ns = 100_000_000u64; // 4800 フレーム @48k = 100ms
+        while shared.live.now_ns() < block_ns {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let t0 = shared.live.now_ns();
-        r.live_prev_ns = Some(t0.saturating_sub(block_ns / 2));
         shared.live.push(LiveEvent::NoteOn {
             track: LIVE_NO_TRACK,
             pitch: 69,
             vel: 120,
             ch: 0,
         });
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        r.live_prev_ns = Some(t0.saturating_sub(block_ns / 2));
+        r.fetch_live_at(4800, t0 + block_ns / 2);
         let buf = render_block(&mut r, 4800);
         let rms_of = |a: usize, b: usize| {
             let s: f32 = (a..b).map(|i| buf[i * 2] * buf[i * 2]).sum();
