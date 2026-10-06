@@ -2,6 +2,7 @@
   // ピアノロールの見出しの行(ツールバー): 表示 / 道具 / スナップ / クオンタイズ / スウィング / 滑る時間と、
   // 操作のヘルプのポップアップ。値はピアノロールが持ち、ここは選ぶだけ
   import Icon from "./Icon.svelte";
+  import { tr } from "./i18n.svelte";
   import { GLIDE_CHOICES, SNAP_OPTIONS, type ArtEntry } from "./pianoRollOps";
   import { pianoRollStore } from "./selection.svelte";
   import type { MidiClip, Project, Track } from "./types";
@@ -72,34 +73,34 @@
 <div class="head">
   <div class="head-left">
     {#if pianoRollStore.second}
-      <span class="pane-tag">{pane === "main" ? "上" : "下"}</span>
+      <span class="pane-tag">{pane === "main" ? tr("上", "Top") : tr("下", "Bottom")}</span>
     {/if}
     <span class="clip-name" title={clip.name}>{clip.name}</span>
     <span class="track-name">{track.name}</span>
     {#if clip.loop && clip.loop_len}
-      <span class="loop-tag" title="ループのクリップ: ここで編集した範囲がクリップの長さまで繰り返し鳴ります"
+      <span class="loop-tag" title={tr("ループのクリップ: ここで編集した範囲がクリップの長さまで繰り返し鳴ります", "Loop clip: the range edited here repeats up to the clip length")}
         ><Icon name="infinity" size={14} />{(clip.loop_len / (project.ppq * 4)).toFixed(
           clip.loop_len % (project.ppq * 4) === 0 ? 0 : 2,
-        )} 小節を繰り返し</span
+        )}{tr(" 小節を繰り返し", " bars looped")}</span
       >
     {/if}
   </div>
   <div class="head-right">
     <!-- 道具は幅が足りなければ横にスクロールする(ヘルプと閉じるは右端に固定して、いつも見えるように) -->
     <div class="tools">
-    <span class="glabel">表示</span>
+    <span class="glabel">{tr("表示", "View")}</span>
     <div class="seg">
-      <button class="btn sm" class:on={showVel} onclick={() => (showVel = !showVel)} title="ベロシティ(音の強さ)の帯。縦棒を上下にドラッグで変更、選択中のノートはまとめて変わる"
-        ><Icon name="chart-no-axes-column" />ベロシティ</button
+      <button class="btn sm" class:on={showVel} onclick={() => (showVel = !showVel)} title={tr("ベロシティ(音の強さ)の帯。縦棒を上下にドラッグで変更、選択中のノートはまとめて変わる", "Velocity (note strength) lane. Drag bars up/down to change; selected notes change together")}
+        ><Icon name="chart-no-axes-column" />{tr("ベロシティ", "Velocity")}</button
       >
       {#if isDrum}
-        <button class="btn sm" class:on={showKit} onclick={() => (showKit = !showKit)} title="ドラムキットの図(押すと挿入カーソルの位置に打ち込む)"
-          ><Icon name="drum" />キット</button
+        <button class="btn sm" class:on={showKit} onclick={() => (showKit = !showKit)} title={tr("ドラムキットの図(押すと挿入カーソルの位置に打ち込む)", "Drum kit map (click to enter a hit at the insert cursor)")}
+          ><Icon name="drum" />{tr("キット", "Kit")}</button
         >
       {/if}
       {#if isFrettable}
-        <button class="btn sm" class:on={showFret} onclick={() => (showFret = !showFret)} title="フレット盤(押すと挿入カーソルの位置に打ち込む)"
-          ><Icon name="guitar" />フレット</button
+        <button class="btn sm" class:on={showFret} onclick={() => (showFret = !showFret)} title={tr("フレット盤(押すと挿入カーソルの位置に打ち込む)", "Fretboard (click to enter a note at the insert cursor)")}
+          ><Icon name="guitar" />{tr("フレット", "Fretboard")}</button
         >
       {/if}
     </div>
@@ -108,14 +109,14 @@
         class="tuning"
         value={fretTuning}
         onchange={(e) => onTuning((e.currentTarget as HTMLSelectElement).value as "guitar" | "bass")}
-        title="フレット盤のチューニング"
+        title={tr("フレット盤のチューニング", "Fretboard tuning")}
       >
-        <option value="guitar">ギター(6 弦)</option>
-        <option value="bass">ベース(4 弦)</option>
+        <option value="guitar">{tr("ギター(6 弦)", "Guitar (6-string)")}</option>
+        <option value="bass">{tr("ベース(4 弦)", "Bass (4-string)")}</option>
       </select>
     {/if}
     {#if pane === "main"}
-      <label class="sel-ic" title="別のクリップを下に開いて見比べ・コピペ(Ctrl+C → 下をクリック → Ctrl+V)">
+      <label class="sel-ic" title={tr("別のクリップを下に開いて見比べ・コピペ(Ctrl+C → 下をクリック → Ctrl+V)", "Open another clip below to compare and copy/paste (Ctrl+C → click below → Ctrl+V)")}>
         <Icon name="rows-2" size={14} />
         <select
           class="split"
@@ -126,79 +127,79 @@
             (e.currentTarget as HTMLSelectElement).value = "";
           }}
         >
-          <option value="">分割して開く…</option>
+          <option value="">{tr("分割して開く…", "Open split…")}</option>
           {#each otherClips as o (o.clip.id)}
             <option value={o.clip.id}>{o.track.name} / {o.clip.name}</option>
           {/each}
         </select>
       </label>
     {:else}
-      <button class="btn sm" onclick={onSwap} title="上下のクリップを入れ替える"><Icon name="arrow-up-down" />入れ替え</button>
+      <button class="btn sm" onclick={onSwap} title={tr("上下のクリップを入れ替える", "Swap the top and bottom clips")}><Icon name="arrow-up-down" />{tr("入れ替え", "Swap")}</button>
     {/if}
     <span class="sep"></span>
-    <span class="glabel">道具</span>
+    <span class="glabel">{tr("道具", "Tools")}</span>
     <button
       class="btn sm"
       class:on={curveMode}
       onclick={() => (curveMode = !curveMode)}
-      title="ピッチカーブを手で描く: ノートの上をなぞると、その高さのずれ(1 行 = 半音)がカーブになる。右クリックでカーブを消す"
-      ><Icon name="pencil-line" />カーブ</button
+      title={tr("ピッチカーブを手で描く: ノートの上をなぞると、その高さのずれ(1 行 = 半音)がカーブになる。右クリックでカーブを消す", "Draw a pitch curve by hand: trace over a note and the pitch offset (1 row = 1 semitone) becomes a curve. Right-click to clear it")}
+      ><Icon name="pencil-line" />{tr("カーブ", "Curve")}</button
     >
     <span class="sep"></span>
     <label class="snap">
-      スナップ
+      {tr("スナップ", "Snap")}
       <select bind:value={snapTicks}>
         {#each SNAP_OPTIONS as o (o.ticks)}
           <option value={o.ticks}>{o.label}</option>
         {/each}
       </select>
     </label>
-    <label class="snap" title="ノートの開始位置をスナップの格子へ寄せる(選択中のノート、無ければクリップ全体)。長さは変えない。Q キーで 100%、Shift+Q で 50%">
+    <label class="snap" title={tr("ノートの開始位置をスナップの格子へ寄せる(選択中のノート、無ければクリップ全体)。長さは変えない。Q キーで 100%、Shift+Q で 50%", "Move note starts to the snap grid (selected notes, or the whole clip). Lengths are kept. Q for 100%, Shift+Q for 50%")}>
       <select
         value=""
-        aria-label="クオンタイズ"
+        aria-label={tr("クオンタイズ", "Quantize")}
         onchange={(e) => {
           const el = e.currentTarget as HTMLSelectElement;
           if (el.value) onQuantize(Number(el.value));
           el.value = "";
         }}
       >
-        <option value="">クオンタイズ…</option>
-        <option value="1">格子にそろえる(100%)</option>
-        <option value="0.75">75%(少し残す)</option>
-        <option value="0.5">50%(人間味を残す)</option>
+        <option value="">{tr("クオンタイズ…", "Quantize…")}</option>
+        <option value="1">{tr("格子にそろえる(100%)", "Snap to grid (100%)")}</option>
+        <option value="0.75">{tr("75%(少し残す)", "75% (keep a little)")}</option>
+        <option value="0.5">{tr("50%(人間味を残す)", "50% (keep the human feel)")}</option>
       </select>
     </label>
-    <label class="snap" title="裏拍の音をハネさせる(選択中のノート、無ければクリップ全体)。表の音と長さは変えない。同じ設定なら何度掛けても同じ">
-      スウィング
-      <select bind:value={swingGrid} aria-label="スウィングの単位">
+    <label class="snap" title={tr("裏拍の音をハネさせる(選択中のノート、無ければクリップ全体)。表の音と長さは変えない。同じ設定なら何度掛けても同じ", "Swing the off-beat notes (selected notes, or the whole clip). On-beat notes and lengths are kept. Applying the same setting again gives the same result")}>
+      {tr("スウィング", "Swing")}
+      <select bind:value={swingGrid} aria-label={tr("スウィングの単位", "Swing unit")}>
         <option value={480}>1/8</option>
         <option value={240}>1/16</option>
       </select>
       <select
         value=""
-        aria-label="スウィングを掛ける"
+        aria-label={tr("スウィングを掛ける", "Apply swing")}
         onchange={(e) => {
           const el = e.currentTarget as HTMLSelectElement;
           onSwing(el.value);
           el.value = "";
         }}
       >
-        <option value="">掛ける…</option>
-        <option value="0.5">ストレート(50%)</option>
-        <option value="0.58">軽め(58%)</option>
-        <option value="0.62">中くらい(62%)</option>
-        <option value="0.6667">3 連シャッフル(67%)</option>
-        <option value="0.75">付点(75%)</option>
+        <option value="">{tr("掛ける…", "Apply…")}</option>
+        <option value="0.5">{tr("ストレート(50%)", "Straight (50%)")}</option>
+        <option value="0.58">{tr("軽め(58%)", "Light (58%)")}</option>
+        <option value="0.62">{tr("中くらい(62%)", "Medium (62%)")}</option>
+        <option value="0.6667">{tr("3 連シャッフル(67%)", "Triplet shuffle (67%)")}</option>
+        <option value="0.75">{tr("付点(75%)", "Dotted (75%)")}</option>
       </select>
     </label>
     {#if swingMsg}<span class="swing-msg">{swingMsg}</span>{/if}
     {#if portaCount > 0}
-      <label class="snap" title="選んだポルタメント(P)のノートが直前の音から滑る時間。トラック全体の既定はインスペクターの「つなぎ」で">
-        滑る時間
+      <label class="snap" title={tr("選んだポルタメント(P)のノートが直前の音から滑る時間。トラック全体の既定はインスペクターの「つなぎ」で", "How long the selected portamento (P) notes glide from the previous note. The track default is set in the Inspector's Glide")}>
+        {tr("滑る時間", "Glide time")}
         <select value={glideValue} onchange={(e) => onGlide((e.currentTarget as HTMLSelectElement).value)}>
-          {#if glideValue === ""}<option value="">(ばらばら)</option>{/if}
-          <option value="0">トラックの設定</option>
+          {#if glideValue === ""}<option value="">{tr("(ばらばら)", "(mixed)")}</option>{/if}
+          <option value="0">{tr("トラックの設定", "Track setting")}</option>
           {#each GLIDE_CHOICES as ms (ms)}
             <option value={String(ms)}>{ms}ms</option>
           {/each}
@@ -210,38 +211,38 @@
     {/if}
     </div>
     <div class="head-end">
-    <button class="btn sm icon ghost" class:on={helpOpen} onclick={() => (helpOpen = !helpOpen)} title="操作のヘルプ" aria-label="操作のヘルプ"
+    <button class="btn sm icon ghost" class:on={helpOpen} onclick={() => (helpOpen = !helpOpen)} title={tr("操作のヘルプ", "Controls help")} aria-label={tr("操作のヘルプ", "Controls help")}
       ><Icon name="circle-help" /></button
     >
-    <button class="btn sm icon ghost" onclick={onClose} title={pane === "main" ? "閉じる(Esc)" : "この分割ペインを閉じる(Esc)"} aria-label="閉じる"
+    <button class="btn sm icon ghost" onclick={onClose} title={pane === "main" ? tr("閉じる(Esc)", "Close (Esc)") : tr("この分割ペインを閉じる(Esc)", "Close this split pane (Esc)")} aria-label={tr("閉じる", "Close")}
       ><Icon name="x" /></button
     >
     </div>
   </div>
 </div>
 {#if helpOpen}
-  <div class="help-pop" role="dialog" aria-label="ピアノロールの操作">
+  <div class="help-pop" role="dialog" aria-label={tr("ピアノロールの操作", "Piano roll controls")}>
     <div class="help-h">
-      <b>ピアノロールの操作</b>
-      <button class="btn sm icon ghost" onclick={() => (helpOpen = false)} aria-label="閉じる"><Icon name="x" /></button>
+      <b>{tr("ピアノロールの操作", "Piano roll controls")}</b>
+      <button class="btn sm icon ghost" onclick={() => (helpOpen = false)} aria-label={tr("閉じる", "Close")}><Icon name="x" /></button>
     </div>
     <table>
       <tbody>
-        <tr><td>追加</td><td>空きをダブルクリック(長さはスナップの幅)</td></tr>
-        <tr><td>選ぶ</td><td>クリック / <kbd>Shift</kbd>+クリックで追加 / 空きをドラッグで囲む / <kbd>Ctrl</kbd>+<kbd>A</kbd></td></tr>
-        <tr><td>動かす・長さ</td><td>ドラッグ / 右端をドラッグ / <kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd></td></tr>
-        <tr><td>音の高さ</td><td><kbd>↑</kbd><kbd>↓</kbd>(<kbd>Shift</kbd> でオクターブ)</td></tr>
-        <tr><td>消す</td><td><kbd>Delete</kbd> / 右クリック</td></tr>
-        <tr><td>コピー</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd>(マウスの位置へ。別のクリップにも)</td></tr>
-        <tr><td>挿入カーソル</td><td>空きをクリック / <kbd>←</kbd><kbd>→</kbd>(キット・フレットの打ち込み先)</td></tr>
+        <tr><td>{tr("追加", "Add")}</td><td>{tr("空きをダブルクリック(長さはスナップの幅)", "Double-click an empty spot (length = snap width)")}</td></tr>
+        <tr><td>{tr("選ぶ", "Select")}</td><td>{tr("クリック / ", "Click / ")}<kbd>Shift</kbd>{tr("+クリックで追加 / 空きをドラッグで囲む / ", "+click to add / drag on empty space to box-select / ")}<kbd>Ctrl</kbd>+<kbd>A</kbd></td></tr>
+        <tr><td>{tr("動かす・長さ", "Move / length")}</td><td>{tr("ドラッグ / 右端をドラッグ / ", "Drag / drag the right edge / ")}<kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd></td></tr>
+        <tr><td>{tr("音の高さ", "Pitch")}</td><td><kbd>↑</kbd><kbd>↓</kbd>{tr("(", " (")}<kbd>Shift</kbd>{tr(" でオクターブ)", " for an octave)")}</td></tr>
+        <tr><td>{tr("消す", "Delete")}</td><td><kbd>Delete</kbd>{tr(" / 右クリック", " / right-click")}</td></tr>
+        <tr><td>{tr("コピー", "Copy")}</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd>{tr("(マウスの位置へ。別のクリップにも)", " (pastes at the mouse, also into another clip)")}</td></tr>
+        <tr><td>{tr("挿入カーソル", "Insert cursor")}</td><td>{tr("空きをクリック / ", "Click an empty spot / ")}<kbd>←</kbd><kbd>→</kbd>{tr("(キット・フレットの打ち込み先)", " (where the kit and fretboard enter notes)")}</td></tr>
         <tr>
-          <td>奏法</td>
-          <td>{#each availableArts as a (a.key)}<span class="art"><kbd>{a.key}</kbd>{a.label}</span>{/each}(選択中のノートに。もう一度で外す)</td>
+          <td>{tr("奏法", "Articulation")}</td>
+          <td>{#each availableArts as a (a.key)}<span class="art"><kbd>{a.key}</kbd>{a.label}</span>{/each}{tr("(選択中のノートに。もう一度で外す)", " (on selected notes; press again to remove)")}</td>
         </tr>
-        <tr><td>固定</td><td><kbd>K</kbd>(選択中のノートを固定する。もう一度で外す。固定の音は AI が変えない。点線の縁と鍵の印)</td></tr>
-        <tr><td>強さ</td><td>下の帯の縦棒を上下にドラッグ</td></tr>
-        <tr><td>ズーム</td><td><kbd>Ctrl</kbd>+ホイール(横)/ <kbd>Shift</kbd>+ホイール(縦)</td></tr>
-        <tr><td>閉じる</td><td><kbd>Esc</kbd>(選択を外してから)</td></tr>
+        <tr><td>{tr("固定", "Lock")}</td><td><kbd>K</kbd>{tr("(選択中のノートを固定する。もう一度で外す。固定の音は AI が変えない。点線の縁と鍵の印)", " (locks the selected notes; press again to unlock. AI won't change locked notes. Shown with a dotted outline and a lock mark)")}</td></tr>
+        <tr><td>{tr("強さ", "Velocity")}</td><td>{tr("下の帯の縦棒を上下にドラッグ", "Drag the bars in the lower lane up/down")}</td></tr>
+        <tr><td>{tr("ズーム", "Zoom")}</td><td><kbd>Ctrl</kbd>{tr("+ホイール(横)/ ", "+wheel (horizontal) / ")}<kbd>Shift</kbd>{tr("+ホイール(縦)", "+wheel (vertical)")}</td></tr>
+        <tr><td>{tr("閉じる", "Close")}</td><td><kbd>Esc</kbd>{tr("(選択を外してから)", " (after clearing the selection)")}</td></tr>
       </tbody>
     </table>
   </div>

@@ -1,5 +1,6 @@
 // タイムラインの純粋な計算(クリップの複製・ループの展開・拍子とテンポの列・マーカー)。
 // 画面の状態に触れないので、Timeline と子のメニューから共通に使う
+import { tr } from "./i18n.svelte";
 import { newClipId, newNoteId } from "./ids";
 import type { Clip, Project } from "./types";
 
@@ -84,9 +85,14 @@ export interface Marker {
 /// マーカーに乗せたときに出す、計画書の中身(無ければ空)。中身は曲全体の計画の区間の設計
 export function planText(m: Pick<Marker, "energy" | "tracks" | "note">): string {
   const lines: string[] = [];
-  if (m.energy !== undefined && m.energy !== null) lines.push(`計画の盛り上がり: ${Math.round(m.energy * 10) / 10} / 10`);
-  if (m.tracks && m.tracks.length > 0) lines.push(`鳴らすトラック: ${m.tracks.join("・")}`);
-  if (m.note) lines.push(`役割: ${m.note}`);
+  if (m.energy !== undefined && m.energy !== null) {
+    const e = Math.round(m.energy * 10) / 10;
+    lines.push(tr(`計画の盛り上がり: ${e} / 10`, `Planned energy: ${e} / 10`));
+  }
+  if (m.tracks && m.tracks.length > 0) {
+    lines.push(tr(`鳴らすトラック: ${m.tracks.join("・")}`, `Tracks playing: ${m.tracks.join(", ")}`));
+  }
+  if (m.note) lines.push(tr(`役割: ${m.note}`, `Role: ${m.note}`));
   return lines.length > 0 ? `\n${lines.join("\n")}` : "";
 }
 

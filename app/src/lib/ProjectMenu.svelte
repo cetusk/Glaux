@@ -4,6 +4,7 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
+  import { tr } from "./i18n.svelte";
   import { newClipId, newTrackId } from "./ids";
   import { builtinDevice } from "./instruments";
   import { PHRASE_LEN, PHRASE_NAME, phraseNotes } from "./phrase";
@@ -104,7 +105,7 @@
   }
 
   async function browseMoveParent() {
-    const dir = await pickFolder({ directory: true, title: "プロジェクトの移動先フォルダ" });
+    const dir = await pickFolder({ directory: true, title: tr("プロジェクトの移動先フォルダ", "Destination folder for the project") });
     if (typeof dir === "string") moveParent = dir;
   }
 
@@ -157,7 +158,10 @@
   async function browseAndOpen() {
     const dir = await pickFolder({
       directory: true,
-      title: "曲のフォルダ(○○.glaux)か、曲をまとめたフォルダを選ぶ",
+      title: tr(
+        "曲のフォルダ(○○.glaux)か、曲をまとめたフォルダを選ぶ",
+        "Choose a song folder (*.glaux) or a folder containing songs",
+      ),
     });
     if (typeof dir !== "string") return;
     candidates = null;
@@ -188,7 +192,10 @@
   }
 
   async function browseParentDir() {
-    const dir = await pickFolder({ directory: true, title: "作業フォルダ(新規プロジェクトの作成先)" });
+    const dir = await pickFolder({
+      directory: true,
+      title: tr("作業フォルダ(新規プロジェクトの作成先)", "Working folder (where new projects are created)"),
+    });
     if (typeof dir === "string") {
       parentDir = dir;
       // 次回起動後も同じ場所を使えるよう既定として保存する
@@ -270,7 +277,7 @@
 <svelte:window onkeydown={(e) => e.key === "Escape" && openMenu && (openMenu = false)} />
 
 <div class="menu-root">
-  <button class="title-btn" bind:this={titleBtn} onclick={toggle} title={`${title} — プロジェクトを切り替える`}>
+  <button class="title-btn" bind:this={titleBtn} onclick={toggle} title={tr(`${title} — プロジェクトを切り替える`, `${title} — switch project`)}>
     <span class="title-text">{title}</span>
     <span class="chev"><Icon name="chevron-down" size={14} /></span>
   </button>
@@ -284,20 +291,20 @@
       {/if}
 
       <div class="section">
-        <div class="section-title">新規プロジェクト</div>
+        <div class="section-title">{tr("新規プロジェクト", "New project")}</div>
         <div class="new-row">
           <input
             type="text"
-            placeholder="曲名"
+            placeholder={tr("曲名", "Song title")}
             bind:this={nameInput}
             bind:value={newName}
             onkeydown={onNameKeydown}
             disabled={busy}
           />
-          <button onclick={createNew} disabled={busy || !newName.trim() || !!newPreview?.error}>作成</button>
+          <button onclick={createNew} disabled={busy || !newName.trim() || !!newPreview?.error}>{tr("作成", "Create")}</button>
         </div>
         <div class="loc-row">
-          <span class="loc-label">場所</span>
+          <span class="loc-label">{tr("場所", "Location")}</span>
           <span class="loc-path" title={soundLab ? soundLabDir() : parentDir || defaultDir}
             >{soundLab ? soundLabDir() : parentDir || defaultDir}</span
           >
@@ -305,7 +312,8 @@
             class="loc-btn"
             onclick={browseParentDir}
             disabled={busy}
-            title="新しい曲を作る場所を選ぶ(次からもこの場所が既定になります)"><Icon name="folder-open" size={13} />変更…</button
+            title={tr("新しい曲を作る場所を選ぶ(次からもこの場所が既定になります)", "Choose where new songs are created (it becomes the default from now on)")}
+            ><Icon name="folder-open" size={13} />{tr("変更…", "Change…")}</button
           >
         </div>
         {#if newName.trim() && newPreview}
@@ -313,26 +321,41 @@
             <div class="move-warn">{newPreview.error}</div>
           {:else if newPreview.renamed}
             <div class="move-warn">
-              同じ名前のフォルダ({folderName(newName)}.glaux)があるので「{newPreview.folder}」になります。曲名か場所を変えると避けられます
+              {tr(
+                `同じ名前のフォルダ(${folderName(newName)}.glaux)があるので「${newPreview.folder}」になります。曲名か場所を変えると避けられます`,
+                `A folder with the same name (${folderName(newName)}.glaux) exists, so it will be "${newPreview.folder}". Change the title or location to avoid this`,
+              )}
             </div>
           {:else}
-            <div class="move-note" title="曲名はそのまま。フォルダ名だけ、空白や使えない記号を _ にして付けます">
-              フォルダ: {newPreview.folder}
+            <div class="move-note" title={tr(
+                "曲名はそのまま。フォルダ名だけ、空白や使えない記号を _ にして付けます",
+                "The title is kept as is; only the folder name replaces spaces and invalid characters with _",
+              )}
+            >
+              {tr("フォルダ:", "Folder:")} {newPreview.folder}
             </div>
           {/if}
         {/if}
-        <label class="lab-check" title="1 トラック + 試聴フレーズ + ループ ON + 音作りビューを開いた状態で作成(場所の中の SoundLab/ に置かれます)">
+        <label
+          class="lab-check"
+          title={tr(
+            "1 トラック + 試聴フレーズ + ループ ON + 音作りビューを開いた状態で作成(場所の中の SoundLab/ に置かれます)",
+            "Creates 1 track + a preview phrase + loop on, with the sound design view open (placed in SoundLab/ under the location)",
+          )}
+        >
           <input type="checkbox" bind:checked={soundLab} disabled={busy} />
-          音作り用テンプレートで作成
+          {tr("音作り用テンプレートで作成", "Create from sound design template")}
         </label>
       </div>
 
       <div class="section">
         <button class="wide" onclick={browseAndOpen} disabled={busy}>
-          フォルダを選択して開く…
+          {tr("フォルダを選択して開く…", "Open folder…")}
         </button>
         {#if candidates}
-          <div class="found-title">「{candidatesDir}」の中の曲({candidates.length})</div>
+          <div class="found-title">
+            {tr(`「${candidatesDir}」の中の曲(${candidates.length})`, `Songs in "${candidatesDir}" (${candidates.length})`)}
+          </div>
           {#each candidates as c (c.path)}
             <button class="recent-item" disabled={busy} onclick={() => openPath(c.path)} title={c.path}>
               <span class="recent-title">{c.title}</span>
@@ -341,54 +364,62 @@
           {/each}
         {/if}
         {#if emptyDir}
-          <div class="move-note">「{emptyDir}」には Glaux の曲がありません。</div>
-          <button class="wide" onclick={createHere} disabled={busy}>このフォルダに新しい曲を作る</button>
+          <div class="move-note">{tr(`「${emptyDir}」には Glaux の曲がありません。`, `"${emptyDir}" contains no Glaux songs.`)}</div>
+          <button class="wide" onclick={createHere} disabled={busy}>{tr("このフォルダに新しい曲を作る", "Create a new song in this folder")}</button>
         {/if}
       </div>
 
       <div class="section">
-        <div class="section-title">現在のプロジェクトの移動 / 曲名の変更</div>
+        <div class="section-title">{tr("現在のプロジェクトの移動 / 曲名の変更", "Move current project / rename")}</div>
         <div class="new-row">
           <input
             type="text"
-            placeholder="曲名"
+            placeholder={tr("曲名", "Song title")}
             bind:value={moveName}
             disabled={busy}
-            title="曲名(フォルダ名は曲名から自動で付けます)"
+            title={tr("曲名(フォルダ名は曲名から自動で付けます)", "Song title (the folder name is derived from it automatically)")}
           />
-          <button onclick={applyMove} disabled={busy || !moveDirty || !!movePreview?.error}>適用</button>
+          <button onclick={applyMove} disabled={busy || !moveDirty || !!movePreview?.error}>{tr("適用", "Apply")}</button>
         </div>
-        <button class="loc" onclick={browseMoveParent} title="クリックで移動先フォルダを選択">
-          移動先: {moveParent}
+        <button class="loc" onclick={browseMoveParent} title={tr("クリックで移動先フォルダを選択", "Click to choose the destination folder")}>
+          {tr("移動先:", "Move to:")} {moveParent}
         </button>
         {#if movePreview?.error}
           <div class="move-warn">{movePreview.error}</div>
         {:else if movePreview?.renamed}
-          <div class="move-warn">同じ名前のフォルダがあるので「{movePreview.folder}」になります</div>
+          <div class="move-warn">
+            {tr(
+              `同じ名前のフォルダがあるので「${movePreview.folder}」になります`,
+              `A folder with the same name exists, so it will be "${movePreview.folder}"`,
+            )}
+          </div>
         {/if}
         <div class="move-note">
-          フォルダ: {movePreview?.folder && !movePreview.error
+          {tr("フォルダ:", "Folder:")} {movePreview?.folder && !movePreview.error
             ? movePreview.folder
             : moveName.trim() && moveName.trim() !== title
               ? `${folderName(moveName)}.glaux`
               : `${curStem}.glaux`}<br />
-          履歴・AI との会話ごとフォルダを移動します(元に戻すには再度移動)。
+          {tr(
+            "履歴・AI との会話ごとフォルダを移動します(元に戻すには再度移動)。",
+            "Moves the folder together with its history and AI conversations (move again to undo).",
+          )}
         </div>
       </div>
 
       {#if recent.length > 0}
         <div class="section">
-          <div class="section-title">最近使ったプロジェクト</div>
+          <div class="section-title">{tr("最近使ったプロジェクト", "Recent projects")}</div>
           {#each recent as r (r.path)}
             <button
               class="recent-item"
               class:current={r.current}
               disabled={busy || r.current || !r.exists}
               onclick={() => openPath(r.path)}
-              title={r.exists ? r.path : `見つかりません: ${r.path}`}
+              title={r.exists ? r.path : tr(`見つかりません: ${r.path}`, `Not found: ${r.path}`)}
             >
               <span class="recent-title">
-                {r.title}{r.current ? "(開いています)" : ""}{r.exists ? "" : "(見つかりません)"}
+                {r.title}{r.current ? tr("(開いています)", " (open)") : ""}{r.exists ? "" : tr("(見つかりません)", " (not found)")}
               </span>
               <span class="recent-path">{r.path}</span>
             </button>

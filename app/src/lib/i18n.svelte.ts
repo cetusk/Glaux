@@ -12,3 +12,8 @@ export function isEn(): boolean {
 export function tr(ja: string, en: string): string {
   return settings.lang === "en" ? en : ja;
 }
+
+/** 英語の数と名詞(1 なら単数形): plural(3, "edit") → "3 edits" */
+export function plural(n: number, word: string, many = `${word}s`): string {
+  return `${n} ${n === 1 ? word : many}`;
+}

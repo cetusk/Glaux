@@ -7,6 +7,7 @@
   import { aiHighlight } from "./aiHighlight.svelte";
   import { harmonyStore } from "./harmony.svelte";
   import { showError, showToast } from "./toast.svelte";
+  import { plural, tr } from "./i18n.svelte";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
   import { barAtTick, barsEndTick, buildBars, fmtBpm, meterLabel } from "./barMap";
   import AudioClipPreview from "./AudioClipPreview.svelte";
@@ -347,7 +348,12 @@
     else list.push({ tick, name: n });
     sigMenu = null;
     markerName = "";
-    commitSections(list, hit ? `マーカーの名前を「${n}」に変更` : `${barIndex + 1} 小節目にマーカー「${n}」を追加`);
+    commitSections(
+      list,
+      hit
+        ? tr(`マーカーの名前を「${n}」に変更`, `Rename marker to "${n}"`)
+        : tr(`${barIndex + 1} 小節目にマーカー「${n}」を追加`, `Add marker "${n}" at bar ${barIndex + 1}`),
+    );
   }
 
   function removeMarker(tick: number) {
@@ -357,7 +363,7 @@
     sigMenu = null;
     commitSections(
       list.filter((m) => m.tick !== tick),
-      `マーカー「${hit.name}」を削除`,
+      tr(`マーカー「${hit.name}」を削除`, `Delete marker "${hit.name}"`),
     );
   }
 
@@ -374,7 +380,7 @@
     if (!hit || !n || n === hit.name) return;
     const old = hit.name;
     hit.name = n;
-    commitSections(list, `マーカーの名前を「${old}」から「${n}」に変更`);
+    commitSections(list, tr(`マーカーの名前を「${old}」から「${n}」に変更`, `Rename marker "${old}" to "${n}"`));
   }
 
   /// マーカーのドラッグ(移動)。動かさずに離したら、その区間を範囲選択にする
@@ -419,7 +425,8 @@
     const hit = list.find((x) => x.tick === m.tick);
     if (!hit) return;
     hit.tick = d.to;
-    commitSections(list, `マーカー「${m.name}」を ${barAtTick(barList, d.to).index + 1} 小節目へ移動`);
+    const toBar = barAtTick(barList, d.to).index + 1;
+    commitSections(list, tr(`マーカー「${m.name}」を ${toBar} 小節目へ移動`, `Move marker "${m.name}" to bar ${toBar}`));
   }
 
   function openSigMenu(e: MouseEvent, barIndex: number) {
@@ -454,7 +461,7 @@
     api
       .applyEdit(
         [{ op: "set_track_prop", id: t.id, prop: "volume_db", value: v }],
-        `${t.name} の音量を ${v.toFixed(1)} dB に変更`,
+        tr(`${t.name} の音量を ${v.toFixed(1)} dB に変更`, `Set ${t.name} volume to ${v.toFixed(1)} dB`),
       )
       .catch(() => {});
   }
@@ -463,7 +470,7 @@
     api
       .applyEdit(
         [{ op: "set_track_prop", id: t.id, prop: "mute", value: !t.mute }],
-        `${t.name} を${t.mute ? "ミュート解除" : "ミュート"}`,
+        tr(`${t.name} を${t.mute ? "ミュート解除" : "ミュート"}`, `${t.mute ? "Unmute" : "Mute"} ${t.name}`),
       )
       .catch(() => {});
   }
@@ -495,7 +502,7 @@
         anchorTick: 0,
       };
     } catch (e) {
-      showError("譜起こしできませんでした", e);
+      showError(tr("譜起こしできませんでした", "Couldn't transcribe"), e);
     } finally {
       transcribing = null;
     }
@@ -509,7 +516,7 @@
     try {
       await api.separateClip(clip.id, method);
     } catch (e) {
-      showError("パートに分けられませんでした", e);
+      showError(tr("パートに分けられませんでした", "Couldn't separate into parts"), e);
     } finally {
       separating = null;
     }
@@ -518,19 +525,19 @@
   /// 音声トラックの空きレーン: 音声ファイルを選んでその小節に音声クリップとして置く
   async function importAudioAt(track: Track, startTick: number) {
     const file = await pickFile({
-      title: "音声ファイルをクリップとして配置",
-      filters: [{ name: "音声(WAV / MP3 / FLAC / OGG / M4A)", extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
+      title: tr("音声ファイルをクリップとして配置", "Place an audio file as a clip"),
+      filters: [{ name: tr("音声(WAV / MP3 / FLAC / OGG / M4A)", "Audio (WAV / MP3 / FLAC / OGG / M4A)"), extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
     });
     if (typeof file !== "string") return;
-    await api.importAudioClip(track.id, file, startTick).catch((e) => showError("取り込めませんでした", e));
+    await api.importAudioClip(track.id, file, startTick).catch((e) => showError(tr("取り込めませんでした", "Couldn't import"), e));
   }
 
   /// MIDI ファイル(.mid)・MusicXML(.musicxml / .xml / .mxl)を読み込む: パートごとに新しいトラックを足す(1 回の undo で戻る)
   async function importMidiFile() {
     const file = await pickFile({
-      title: "MIDI ファイル・MusicXML を読み込む",
+      title: tr("MIDI ファイル・MusicXML を読み込む", "Import a MIDI file / MusicXML"),
       filters: [
-        { name: "MIDI・MusicXML", extensions: ["mid", "midi", "musicxml", "mxl", "xml"] },
+        { name: tr("MIDI・MusicXML", "MIDI / MusicXML"), extensions: ["mid", "midi", "musicxml", "mxl", "xml"] },
         { name: "MIDI", extensions: ["mid", "midi"] },
         { name: "MusicXML", extensions: ["musicxml", "mxl", "xml"] },
       ],
@@ -539,9 +546,16 @@
     try {
       const r = await api.importMidi({ path: file });
       const extra = r.report && r.report.length ? `。${r.report.join("。")}` : "";
-      showToast("ok", `読み込みました: トラック ${r.tracks} 本・ノート ${r.notes} 個${r.tempo_set ? "(テンポと拍子も)" : ""}${extra}`);
+      const extraEn = r.report && r.report.length ? `. ${r.report.join(". ")}` : "";
+      showToast(
+        "ok",
+        tr(
+          `読み込みました: トラック ${r.tracks} 本・ノート ${r.notes} 個${r.tempo_set ? "(テンポと拍子も)" : ""}${extra}`,
+          `Imported: ${plural(r.tracks, "track")}, ${plural(r.notes, "note")}${r.tempo_set ? " (with tempo and time signature)" : ""}${extraEn}`,
+        ),
+      );
     } catch (e) {
-      showError("読み込めませんでした", e);
+      showError(tr("読み込めませんでした", "Couldn't import"), e);
     }
   }
 
@@ -577,7 +591,7 @@
     if (length < 240) return; // 置く隙間がない
 
     const clipId = newClipId();
-    const name = `クリップ ${bar.index + 1}`;
+    const name = tr(`クリップ ${bar.index + 1}`, `Clip ${bar.index + 1}`);
     api
       .applyEdit(
         [
@@ -587,7 +601,7 @@
             clip: { id: clipId, name, start, length, kind: "midi", notes: [] },
           },
         ],
-        `${track.name} の ${bar.index + 1} 小節目にクリップを追加`,
+        tr(`${track.name} の ${bar.index + 1} 小節目にクリップを追加`, `Add clip to ${track.name} at bar ${bar.index + 1}`),
       )
       .then(() => {
         pianoRollStore.focus = {
@@ -699,7 +713,7 @@
       const cmds = allClips()
         .filter((c) => d.group.has(c.clip.id))
         .map((c) => ({ op: "move_clip", id: c.clip.id, start: Math.max(0, c.clip.start + delta) }));
-      api.applyEdit(cmds, `クリップ ${cmds.length} 個を移動`).catch(() => {});
+      api.applyEdit(cmds, tr(`クリップ ${cmds.length} 個を移動`, `Move ${plural(cmds.length, "clip")}`)).catch(() => {});
       return;
     }
     suppressOpen = true;
@@ -709,7 +723,10 @@
         api
           .applyEdit(
             [{ op: "resize_clip", id: d.clip.id, length: d.previewLength }],
-            `${d.clip.name} の長さを ${(d.previewLength / (project.ppq * 4)).toFixed(2)} 小節相当に変更`,
+            tr(
+              `${d.clip.name} の長さを ${(d.previewLength / (project.ppq * 4)).toFixed(2)} 小節相当に変更`,
+              `Resize ${d.clip.name} to ${(d.previewLength / (project.ppq * 4)).toFixed(2)} bars`,
+            ),
           )
           .catch(() => {});
       }
@@ -725,8 +742,8 @@
         .applyEdit(
           [cmd],
           d.previewTrackId !== d.trackId
-            ? `${d.clip.name} を ${destName} へ移動`
-            : `${d.clip.name} を移動`,
+            ? tr(`${d.clip.name} を ${destName} へ移動`, `Move ${d.clip.name} to ${destName}`)
+            : tr(`${d.clip.name} を移動`, `Move ${d.clip.name}`),
         )
         .catch(() => {});
     }
@@ -762,7 +779,7 @@
     api
       .applyEdit(
         ids.map((id) => ({ op: "remove_clip", id })),
-        ids.length === 1 ? "クリップを削除" : `クリップ ${ids.length} 個を削除`,
+        ids.length === 1 ? tr("クリップを削除", "Delete clip") : tr(`クリップ ${ids.length} 個を削除`, `Delete ${plural(ids.length, "clip")}`),
       )
       .catch(() => {});
     selectedClips = new Set();
@@ -773,7 +790,7 @@
     api
       .applyEdit(
         [{ op: "set_clip_loop", id: clip.id, loop_len: on ? clip.length : null }],
-        on ? `${clip.name} をループにする` : `${clip.name} のループを解除`,
+        on ? tr(`${clip.name} をループにする`, `Loop ${clip.name}`) : tr(`${clip.name} のループを解除`, `Unloop ${clip.name}`),
       )
       .catch(() => {});
   }
@@ -789,8 +806,11 @@
       }));
     if (cmds.length === 0) return;
     const label = on
-      ? `${cmds.length === 1 ? targets[0].name : `音声クリップ ${cmds.length} 個`} をテンポに追従させる`
-      : "テンポ追従を解除";
+      ? tr(
+          `${cmds.length === 1 ? targets[0].name : `音声クリップ ${cmds.length} 個`} をテンポに追従させる`,
+          `Make ${cmds.length === 1 ? targets[0].name : `${cmds.length} audio clips`} follow tempo`,
+        )
+      : tr("テンポ追従を解除", "Stop following tempo");
     api.applyEdit(cmds, label).catch(() => {});
   }
 
@@ -814,19 +834,28 @@
         found.push(`${c.name}: ${r.bpm} BPM`);
       }
     } catch (e) {
-      showError("テンポを検出できませんでした", e);
+      showError(tr("テンポを検出できませんでした", "Couldn't detect the tempo"), e);
       return;
     } finally {
       detectingTempo = null;
     }
     if (failed.length > 0) {
-      showToast("warn", `テンポを検出できませんでした(拍のはっきりしない音か、短すぎます): ${failed.join("、")}`);
+      showToast(
+        "warn",
+        tr(
+          `テンポを検出できませんでした(拍のはっきりしない音か、短すぎます): ${failed.join("、")}`,
+          `Couldn't detect the tempo (the beat is unclear or the audio is too short): ${failed.join(", ")}`,
+        ),
+      );
     }
     if (cmds.length === 0) return;
     const label =
       cmds.length === 1
-        ? `${found[0]} の素材としてテンポに追従させる`
-        : `音声クリップ ${cmds.length} 個をテンポに追従させる(元のテンポを検出)`;
+        ? tr(`${found[0]} の素材としてテンポに追従させる`, `Follow tempo as ${found[0]} material`)
+        : tr(
+            `音声クリップ ${cmds.length} 個をテンポに追従させる(元のテンポを検出)`,
+            `Make ${cmds.length} audio clips follow tempo (original tempo detected)`,
+          );
     api.applyEdit(cmds, label).catch(() => {});
   }
 
@@ -842,11 +871,15 @@
       const r = await api.matchClipSound(clip.id);
       showToast(
         "ok",
-        `「${r.track_name}」を作りました(音源: ${r.instrument}${r.reverb ? " + リバーブ" : ""}、近さ: ${r.verdict}、距離 ${r.initial_distance.toFixed(2)} → ${r.distance.toFixed(2)})。\n` +
-          "音作りビューでつまみを微調整できます(Ctrl+Z で取り消し)。",
+        tr(
+          `「${r.track_name}」を作りました(音源: ${r.instrument}${r.reverb ? " + リバーブ" : ""}、近さ: ${r.verdict}、距離 ${r.initial_distance.toFixed(2)} → ${r.distance.toFixed(2)})。\n` +
+            "音作りビューでつまみを微調整できます(Ctrl+Z で取り消し)。",
+          `Created "${r.track_name}" (instrument: ${r.instrument}${r.reverb ? " + reverb" : ""}, match: ${r.verdict}, distance ${r.initial_distance.toFixed(2)} → ${r.distance.toFixed(2)}).\n` +
+            "Fine-tune the knobs in the Inspector (Ctrl+Z to undo).",
+        ),
       );
     } catch (e) {
-      showError("似た音を作れませんでした", e);
+      showError(tr("似た音を作れませんでした", "Couldn't create a similar sound"), e);
     } finally {
       matching = null;
     }
@@ -855,7 +888,7 @@
   function expandLoop(clip: Clip) {
     const cmd = expandLoopCommand(clip);
     if (!cmd) return;
-    api.applyEdit([cmd], `${clip.name} の繰り返しをノートに展開`).catch(() => {});
+    api.applyEdit([cmd], tr(`${clip.name} の繰り返しをノートに展開`, `Expand ${clip.name} loop into notes`)).catch(() => {});
   }
 
   /// `at`(絶対 tick)で分割。範囲外のクリップは対象外。
@@ -871,7 +904,7 @@
     if (cmds.length === 0) return false;
     const n = cmds.filter((c) => c.op === "split_clip").length;
     api
-      .applyEdit(cmds, n === 1 ? "クリップを分割" : `クリップ ${n} 個を分割`)
+      .applyEdit(cmds, n === 1 ? tr("クリップを分割", "Split clip") : tr(`クリップ ${n} 個を分割`, `Split ${plural(n, "clip")}`))
       .catch(() => {});
     return true;
   }
@@ -900,7 +933,7 @@
       .filter((b) => tracks.has(b.trackId))
       .map((b) => ({ op: "add_clip", track: b.trackId, clip: cloneClip(b.clip, at + b.offset) }));
     if (cmds.length === 0) return;
-    api.applyEdit(cmds, `クリップ ${cmds.length} 個を貼り付け`).catch(() => {});
+    api.applyEdit(cmds, tr(`クリップ ${cmds.length} 個を貼り付け`, `Paste ${plural(cmds.length, "clip")}`)).catch(() => {});
     selectedClips = new Set(cmds.map((c) => c.clip.id as string));
   }
 
@@ -915,7 +948,7 @@
       track: c.track.id,
       clip: cloneClip(c.clip, maxEnd + (c.clip.start - minStart)),
     }));
-    api.applyEdit(cmds, `クリップ ${cmds.length} 個を複製`).catch(() => {});
+    api.applyEdit(cmds, tr(`クリップ ${cmds.length} 個を複製`, `Duplicate ${plural(cmds.length, "clip")}`)).catch(() => {});
     selectedClips = new Set(cmds.map((c) => c.clip.id as string));
   }
 
@@ -1038,7 +1071,7 @@
   function barLabel(tick: number): string {
     const b = barAtTick(barList, tick);
     const beat = Math.floor((tick - b.tick) / project.ppq) + 1;
-    return `${b.index + 1} 小節 ${beat} 拍`;
+    return tr(`${b.index + 1} 小節 ${beat} 拍`, `Bar ${b.index + 1} beat ${beat}`);
   }
 
   // ---- オートメーションレーンの開閉 ----
@@ -1065,7 +1098,7 @@
   /// マスターのオートメーションレーン用の擬似トラック(AutomationLaneRow に渡す)
   const masterTrack = $derived<Track>({
     id: MASTER_FOCUS_ID,
-    name: "マスター",
+    name: tr("マスター", "Master"),
     kind: "audio",
     mute: false,
     solo: false,
@@ -1135,9 +1168,12 @@
     optimisticOrder = ids;
     clearTimeout(optimisticTimer);
     optimisticTimer = setTimeout(() => (optimisticOrder = null), 3000);
-    const name = project.tracks[from]?.name ?? "トラック";
+    const name = project.tracks[from]?.name ?? tr("トラック", "Track");
     api
-      .applyEdit([{ op: "move_track", id, to_index: to }], `${name} を ${to + 1} 番目へ移動`)
+      .applyEdit(
+        [{ op: "move_track", id, to_index: to }],
+        tr(`${name} を ${to + 1} 番目へ移動`, `Move ${name} to position ${to + 1}`),
+      )
       .catch(() => (optimisticOrder = null));
   }
 
@@ -1158,7 +1194,7 @@
     api
       .applyEdit(
         [{ op: "set_track_prop", id: track.id, prop: "name", value: name }],
-        `トラック名を「${track.name}」から「${name}」に変更`,
+        tr(`トラック名を「${track.name}」から「${name}」に変更`, `Rename track "${track.name}" to "${name}"`),
       )
       .catch(() => {});
   }
@@ -1171,7 +1207,10 @@
     api
       .applyEdit(
         [{ op: "set_track_prop", id: menu.trackId, prop: "color", value: color }],
-        `${track?.name ?? "トラック"} の色を${color ? "変更" : "元に戻す"}`,
+        tr(
+          `${track?.name ?? "トラック"} の色を${color ? "変更" : "元に戻す"}`,
+          `${color ? "Change" : "Reset"} ${track?.name ?? "track"} color`,
+        ),
       )
       .catch(() => {});
   }
@@ -1195,12 +1234,21 @@
     if (!menu || bouncing) return;
     const track = project.tracks[menu.index];
     bouncing = menu.trackId;
-    showToast("ok", `「${track?.name ?? "トラック"}」を音声に描き出しています…`);
+    showToast(
+      "ok",
+      tr(`「${track?.name ?? "トラック"}」を音声に描き出しています…`, `Rendering "${track?.name ?? "track"}" to audio…`),
+    );
     try {
       const r = await api.bounceTrack(menu.trackId);
-      showToast("ok", `「${track?.name}」を音声にしました(${r.seconds.toFixed(1)} 秒。元のトラックはミュート、Ctrl+Z で戻せます)`);
+      showToast(
+        "ok",
+        tr(
+          `「${track?.name}」を音声にしました(${r.seconds.toFixed(1)} 秒。元のトラックはミュート、Ctrl+Z で戻せます)`,
+          `Rendered "${track?.name}" to audio (${r.seconds.toFixed(1)} s. The original track is muted; Ctrl+Z to undo)`,
+        ),
+      );
     } catch (e) {
-      showError("音声にできませんでした", e);
+      showError(tr("音声にできませんでした", "Couldn't render to audio"), e);
     } finally {
       bouncing = null;
     }
@@ -1214,7 +1262,7 @@
     api
       .applyEdit(
         [{ op: "remove_track", id: menu.trackId }],
-        `${track?.name ?? "トラック"} を削除`,
+        tr(`${track?.name ?? "トラック"} を削除`, `Delete ${track?.name ?? "track"}`),
       )
       .catch(() => {});
   }
@@ -1260,7 +1308,7 @@
 
   function openClapGui(trackId: string) {
     trackMenu = null;
-    api.clapOpenGui(trackId).catch((err) => showError("プラグインの画面を開けませんでした", err));
+    api.clapOpenGui(trackId).catch((err) => showError(tr("プラグインの画面を開けませんでした", "Couldn't open the plugin window"), err));
   }
 
   // ---- トラックの並べ替え(見出しのつまみをつかんで上下にドラッグ) ----
@@ -1337,12 +1385,18 @@
     const v = Number((e.currentTarget as HTMLInputElement).value);
     masterDrag = null;
     api
-      .applyEdit([{ op: "set_master_volume", volume_db: v }], `マスター音量を ${v.toFixed(1)} dB に変更`)
+      .applyEdit(
+        [{ op: "set_master_volume", volume_db: v }],
+        tr(`マスター音量を ${v.toFixed(1)} dB に変更`, `Set master volume to ${v.toFixed(1)} dB`),
+      )
       .catch(() => {});
   }
 
   const KIND_ICON = { midi: "piano", audio: "audio-lines", bus: "merge" } as const;
-  const KIND_LABEL = { midi: "MIDI トラック", audio: "音声トラック", bus: "バス" } as const;
+  /// トラックの種類の表示名(言語の切り替えに追従するよう、使う所で呼ぶ)
+  function kindLabel(kind: "midi" | "audio" | "bus"): string {
+    return kind === "midi" ? tr("MIDI トラック", "MIDI track") : kind === "audio" ? tr("音声トラック", "Audio track") : tr("バス", "Bus");
+  }
 
   function addTrack(kind: "midi" | "audio" | "bus" = "midi") {
     const id = newTrackId();
@@ -1352,26 +1406,26 @@
       api
         .applyEdit(
           [
-            { op: "add_track", track: { id, name: `リバーブ バス ${n}`, kind } },
+            { op: "add_track", track: { id, name: tr(`リバーブ バス ${n}`, `Reverb bus ${n}`), kind } },
             {
               op: "add_effect",
               track: id,
               effect: { id: newFxId(), type: "builtin", name: "reverb", params: { mix: 1.0 } },
             },
           ],
-          "バスを追加",
+          tr("バスを追加", "Add bus"),
         )
         .catch(() => {});
       return;
     }
     const name =
       kind === "audio"
-        ? `音声 ${project.tracks.filter((t) => t.kind === "audio").length + 1}`
-        : `トラック ${project.tracks.length + 1}`;
+        ? tr(`音声 ${project.tracks.filter((t) => t.kind === "audio").length + 1}`, `Audio ${project.tracks.filter((t) => t.kind === "audio").length + 1}`)
+        : tr(`トラック ${project.tracks.length + 1}`, `Track ${project.tracks.length + 1}`);
     api
       .applyEdit(
         [{ op: "add_track", track: kind === "midi" ? { id, name, kind, device: builtinDevice("subtractive") } : { id, name, kind } }],
-        kind === "audio" ? "音声トラックを追加" : "トラックを追加",
+        kind === "audio" ? tr("音声トラックを追加", "Add audio track") : tr("トラックを追加", "Add track"),
       )
       .catch(() => {});
   }
@@ -1385,7 +1439,7 @@
     api
       .applyEdit(
         [{ op: "set_track_prop", id: t.id, prop: "solo", value: !t.solo }],
-        `${t.name} のソロを${t.solo ? "解除" : "オン"}`,
+        tr(`${t.name} のソロを${t.solo ? "解除" : "オン"}`, `${t.solo ? "Unsolo" : "Solo"} ${t.name}`),
       )
       .catch(() => {});
   }
@@ -1393,15 +1447,19 @@
   // ---- 設計データの状態の印 ----
   function clipMarkTitle(st: ClipState): string {
     const out: string[] = [];
-    if (st.plan === "ahead") out.push("計画が先に進んだ(この計画の今の版から作り直せる)");
-    if (st.plan === "in_sync") out.push("計画どおり");
-    if (st.plan === "missing") out.push("作った元の計画が無い");
+    if (st.plan === "ahead")
+      out.push(tr("計画が先に進んだ(この計画の今の版から作り直せる)", "The plan has moved ahead (can be rebuilt from the current plan)"));
+    if (st.plan === "in_sync") out.push(tr("計画どおり", "Matches the plan"));
+    if (st.plan === "missing") out.push(tr("作った元の計画が無い", "The plan it was made from is gone"));
     if (st.edited_bars?.length)
       out.push(
-        `手で直した小節: ${st.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}〜${b}`)).join("・")}(AI の作り直しで残す)`,
+        tr(
+          `手で直した小節: ${st.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}〜${b}`)).join("・")}(AI の作り直しで残す)`,
+          `Hand-edited bars: ${st.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", ")} (kept when AI rebuilds)`,
+        ),
       );
-    if (st.locked_notes) out.push(`固定の音 ${st.locked_notes} 個(AI は変えない)`);
-    return out.join(" / ") + "。押すと設計画面のこのパートへ";
+    if (st.locked_notes) out.push(tr(`固定の音 ${st.locked_notes} 個(AI は変えない)`, `${st.locked_notes} locked notes (AI won't change them)`));
+    return out.join(" / ") + tr("。押すと設計画面のこのパートへ", ". Click to open this part in the Design view");
   }
   function openDesignFor(track: { id: string }, e: MouseEvent) {
     e.stopPropagation();
@@ -1445,7 +1503,10 @@
               : at === sec.tick
                 ? `right:0`
                 : `width:120px`}"
-            title={`${sec.name}(${barAtTick(barList, sec.tick).index + 1} 小節目〜)${planText((sec.id && designStore.sectionDesign[sec.id]) || {})}\nクリックでこの区間を選択 / ドラッグで移動 / ダブルクリックで名前を変更 / 右クリックで削除`}
+            title={tr(
+              `${sec.name}(${barAtTick(barList, sec.tick).index + 1} 小節目〜)${planText((sec.id && designStore.sectionDesign[sec.id]) || {})}\nクリックでこの区間を選択 / ドラッグで移動 / ダブルクリックで名前を変更 / 右クリックで削除`,
+              `${sec.name} (from bar ${barAtTick(barList, sec.tick).index + 1})${planText((sec.id && designStore.sectionDesign[sec.id]) || {})}\nClick to select this section / drag to move / double-click to rename / right-click to delete`,
+            )}
             onpointerdown={(e) => onMarkerDown(e, sec)}
             onpointermove={onMarkerMove}
             onpointerup={(e) => onMarkerUp(e, sec, next)}
@@ -1479,7 +1540,7 @@
   <!-- 小節ルーラー(クリックでシーク、ドラッグで範囲選択) -->
   <div class="ruler-row" style="top:{project.sections && project.sections.length > 0 ? SECTION_ROW_H : 0}px">
     <div class="track-head ruler-head">
-      <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
+      <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title={tr("ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)", "Drag to change the header width (double-click to reset)")}></span>
       <TimelineZoom headW={HEAD_W} trackH={defaultTrackH} onZoomBy={zoomBy} onFit={zoomToFit} onSetZoom={(z) => setZoom(z)} />
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1490,16 +1551,16 @@
       onpointermove={onRulerMove}
       onpointerup={onRulerUp}
       oncontextmenu={onRulerContext}
-      title="クリックで移動、ドラッグで範囲選択、右クリックでその小節から拍子を変更"
+      title={tr("クリックで移動、ドラッグで範囲選択、右クリックでその小節から拍子を変更", "Click to move, drag to select a range, right-click to change the time signature from that bar")}
     >
       {#each barList as bar (bar.index)}
         <div class="bar-mark" class:quiet={bar.index % barLabelEvery !== 0} style="left:{bar.tick * pxPerTick}px">
           {#if bar.index % barLabelEvery === 0}{bar.index + 1}{/if}{#if barLabelEvery === 1 && chordAt.get(bar.tick)}<span class="chord-chip">{chordAt.get(bar.tick)}</span>{/if}{#if barLabelEvery === 1 && tempoAt.get(bar.tick)}<span
               class="tempo-chip"
-              title="この小節からのテンポ(右クリックで変更・削除)">♩={fmtBpm(tempoAt.get(bar.tick) ?? 0)}</span
+              title={tr("この小節からのテンポ(右クリックで変更・削除)", "Tempo from this bar (right-click to change or delete)")}>♩={fmtBpm(tempoAt.get(bar.tick) ?? 0)}</span
             >{/if}{#if bar.sigChange && barLabelEvery === 1}<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions --><span
               class="sig-chip"
-              title="クリックで拍子を編集・削除"
+              title={tr("クリックで拍子を編集・削除", "Click to edit or delete the time signature")}
               onpointerdown={(e) => e.stopPropagation()}
               onpointerup={(e) => e.stopPropagation()}
               onclick={(e) => openSigMenu(e, bar.index)}>{meterLabel(bar)}</span
@@ -1513,25 +1574,31 @@
        (以前は一番下で、音量のつまみも短かった) -->
   <div class="track-row master-row">
     <div class="track-head">
-      <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
+      <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title={tr("ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)", "Drag to change the header width (double-click to reset)")}></span>
       <div class="head-row">
-        <span class="track-name master-name" title="曲全体の音量・エフェクト(書き出しにも入る)">マスター</span>
+        <span class="track-name master-name" title={tr("曲全体の音量・エフェクト(書き出しにも入る)", "Volume and effects for the whole song (included in exports)")}>{tr("マスター", "Master")}</span>
         <span class="db master-db">{(masterDrag ?? project.master.volume_db).toFixed(1)} dB</span>
         <button
           class="btn sm icon"
           class:on={autoLanes[MASTER_FOCUS_ID] !== undefined}
           onclick={() => toggleAutoLane(MASTER_FOCUS_ID)}
-          title={`マスターのオートメーション(フェードアウト、マスターのエフェクトの時間変化)${masterLaneCount > 0 ? `。描いてあるレーン ${masterLaneCount} 本` : ""}`}
-          aria-label="マスターのオートメーション"><Icon name="spline" /></button
+          title={tr(
+            `マスターのオートメーション(フェードアウト、マスターのエフェクトの時間変化)${masterLaneCount > 0 ? `。描いてあるレーン ${masterLaneCount} 本` : ""}`,
+            `Master automation (fade-outs, master effect changes over time)${masterLaneCount > 0 ? `. ${masterLaneCount} lanes drawn` : ""}`,
+          )}
+          aria-label={tr("マスターのオートメーション", "Master automation")}><Icon name="spline" /></button
         >
         <button
           class="btn sm icon"
           class:on={soundDesignStore.focus?.trackId === MASTER_FOCUS_ID}
           onclick={() =>
             (soundDesignStore.focus =
-              soundDesignStore.focus?.trackId === MASTER_FOCUS_ID ? null : { trackId: MASTER_FOCUS_ID, trackName: "マスター" })}
-          title={`マスターのエフェクト(曲全体に掛かるコンプ・EQ・リバーブなど)${project.master.effects.length > 0 ? `。${project.master.effects.length} 個` : ""}`}
-          aria-label="マスターのエフェクト"><Icon name="sliders-horizontal" /></button
+              soundDesignStore.focus?.trackId === MASTER_FOCUS_ID ? null : { trackId: MASTER_FOCUS_ID, trackName: tr("マスター", "Master") })}
+          title={tr(
+            `マスターのエフェクト(曲全体に掛かるコンプ・EQ・リバーブなど)${project.master.effects.length > 0 ? `。${project.master.effects.length} 個` : ""}`,
+            `Master effects (compressor, EQ, reverb, etc. on the whole song)${project.master.effects.length > 0 ? `. ${project.master.effects.length} effects` : ""}`,
+          )}
+          aria-label={tr("マスターのエフェクト", "Master effects")}><Icon name="sliders-horizontal" /></button
         >
       </div>
       <input
@@ -1541,8 +1608,8 @@
         max="6"
         step="0.5"
         value={project.master.volume_db}
-        title="マスター音量(曲全体。書き出しにも入る。ダブルクリックで 0 dB)"
-        aria-label="マスター音量"
+        title={tr("マスター音量(曲全体。書き出しにも入る。ダブルクリックで 0 dB)", "Master volume (whole song, included in exports; double-click for 0 dB)")}
+        aria-label={tr("マスター音量", "Master volume")}
         oninput={(e) => {
           masterDrag = Number(e.currentTarget.value);
           api.previewEdit([{ op: "set_master_volume", volume_db: masterDrag }]);
@@ -1550,7 +1617,7 @@
         onchange={setMasterVolume}
         ondblclick={() => {
           masterDrag = null;
-          api.applyEdit([{ op: "set_master_volume", volume_db: 0 }], "マスター音量を 0.0 dB に変更").catch(() => {});
+          api.applyEdit([{ op: "set_master_volume", volume_db: 0 }], tr("マスター音量を 0.0 dB に変更", "Set master volume to 0.0 dB")).catch(() => {});
         }}
       />
     </div>
@@ -1569,7 +1636,7 @@
 
   {#if project.tracks.length === 0}
     <div class="empty">
-      トラックがありません。AI に「トラックを追加して」と頼んでみてください。
+      {tr("トラックがありません。AI に「トラックを追加して」と頼んでみてください。", "No tracks yet. Try asking the AI to \"add a track\".")}
     </div>
   {/if}
 
@@ -1591,13 +1658,13 @@
         style={track.color ? `--tc:${track.color}` : ""}
         oncontextmenu={(e) => openTrackMenu(e, track)}
       >
-        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title="ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)"></span>
-        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="h-grip" onpointerdown={(e) => startLayoutDrag(e, "h", track.id)} ondblclick={() => resetLayout("h", track.id)} title="ドラッグでこのトラックの高さを変える(ダブルクリックで既定の高さに戻す)"></span>
+        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title={tr("ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)", "Drag to change the header width (double-click to reset)")}></span>
+        <!-- svelte-ignore a11y_no_static_element_interactions --><span class="h-grip" onpointerdown={(e) => startLayoutDrag(e, "h", track.id)} ondblclick={() => resetLayout("h", track.id)} title={tr("ドラッグでこのトラックの高さを変える(ダブルクリックで既定の高さに戻す)", "Drag to change this track's height (double-click to reset)")}></span>
         <div class="head-row">
-          <span class="grip" role="button" tabindex="-1" aria-label="並べ替え" title="つかんで上下にドラッグで並べ替え" onpointerdown={(e) => onGripDown(e, track, ti)}
+          <span class="grip" role="button" tabindex="-1" aria-label={tr("並べ替え", "Reorder")} title={tr("つかんで上下にドラッグで並べ替え", "Grab and drag up/down to reorder")} onpointerdown={(e) => onGripDown(e, track, ti)}
             ><Icon name="grip-vertical" size={14} /></span
           >
-          <span class="kind-ic" title={KIND_LABEL[track.kind]}><Icon name={KIND_ICON[track.kind]} size={14} /></span>
+          <span class="kind-ic" title={kindLabel(track.kind)}><Icon name={KIND_ICON[track.kind]} size={14} /></span>
           {#if renaming === track.id}
             <input
               class="track-name-input"
@@ -1612,22 +1679,22 @@
             />
           {:else}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="track-name" title={`${track.name}(ダブルクリックで名前を変更)`} ondblclick={() => (renaming = track.id)}>
+            <div class="track-name" title={tr(`${track.name}(ダブルクリックで名前を変更)`, `${track.name} (double-click to rename)`)} ondblclick={() => (renaming = track.id)}>
               {track.name}
             </div>
           {/if}
           <button
             class="btn sm icon ghost"
             onclick={(e) => openTrackMenuAt(e, track)}
-            title="トラックのメニュー(名前・色・並べ替え・複製・音声にする・削除)"
-            aria-label="トラックのメニュー"><Icon name="ellipsis" /></button
+            title={tr("トラックのメニュー(名前・色・並べ替え・複製・音声にする・削除)", "Track menu (name, color, reorder, duplicate, render to audio, delete)")}
+            aria-label={tr("トラックのメニュー", "Track menu")}><Icon name="ellipsis" /></button
           >
         </div>
         <div class="head-row">
-          <button class="btn letter" class:m-on={track.mute} onclick={() => toggleMute(track)} title="ミュート" aria-pressed={track.mute}
+          <button class="btn letter" class:m-on={track.mute} onclick={() => toggleMute(track)} title={tr("ミュート", "Mute")} aria-pressed={track.mute}
             >M</button
           >
-          <button class="btn letter" class:s-on={track.solo} onclick={() => toggleSolo(track)} title="ソロ" aria-pressed={track.solo}
+          <button class="btn letter" class:s-on={track.solo} onclick={() => toggleSolo(track)} title={tr("ソロ", "Solo")} aria-pressed={track.solo}
             >S</button
           >
           <input
@@ -1638,24 +1705,28 @@
             step="0.5"
             value={track.volume_db}
             disabled={hasVolumeLane(track)}
-            title={hasVolumeLane(track) ? "音量オートメーション使用中(フェーダーより優先されます)" : "音量"}
-            aria-label="音量"
+            title={hasVolumeLane(track)
+              ? tr("音量オートメーション使用中(フェーダーより優先されます)", "Volume automation in use (overrides the fader)")
+              : tr("音量", "Volume")}
+            aria-label={tr("音量", "Volume")}
             onchange={(e) => setVolume(track, e)}
           />
-          <span class="db" title="音量(dB)">{volumeText(track)}</span>
+          <span class="db" title={tr("音量(dB)", "Volume (dB)")}>{volumeText(track)}</span>
         </div>
         <div class="head-row">
           {#if track.kind === "bus"}
-            <span class="dev plain" title="インスペクターの「送り」で、各トラックからこのバスへ送る量を決めます"
-              >受けている: {sendersOf(track)} 本</span
+            <span class="dev plain" title={tr("インスペクターの「送り」で、各トラックからこのバスへ送る量を決めます", "Set how much each track sends to this bus with Sends in the Inspector")}
+              >{tr("受けている:", "Receiving:")} {sendersOf(track)}{tr(" 本", "")}</span
             >
           {:else if track.kind === "audio"}
-            <span class="dev plain">音声</span>
+            <span class="dev plain">{tr("音声", "Audio")}</span>
           {:else}
             <button
               class="dev"
               onclick={(e) => openPicker(e, track)}
-              title={track.device ? "クリックで音源を変える" : "音源未設定(既定の subtractive で発音)。クリックで選ぶ"}
+              title={track.device
+                ? tr("クリックで音源を変える", "Click to change the instrument")
+                : tr("音源未設定(既定の subtractive で発音)。クリックで選ぶ", "No instrument set (plays with the default subtractive). Click to choose")}
             >
               <Icon name={deviceIcon(track.device)} size={12} /><span>{deviceName(track.device, clapNames)}</span><Icon
                 name="chevron-down"
@@ -1669,8 +1740,8 @@
               class:on={midiArmStore.trackId === track.id}
               class:arm={midiArmStore.trackId === track.id}
               onclick={() => (midiArmStore.trackId = midiArmStore.trackId === track.id ? null : track.id)}
-              title="MIDI キーボードでこのトラックを弾く(ON の間は録音が MIDI 録音になります)"
-              aria-label="MIDI キーボードで弾く"
+              title={tr("MIDI キーボードでこのトラックを弾く(ON の間は録音が MIDI 録音になります)", "Play this track from a MIDI keyboard (while on, recording becomes MIDI recording)")}
+              aria-label={tr("MIDI キーボードで弾く", "Play from MIDI keyboard")}
               aria-pressed={midiArmStore.trackId === track.id}><Icon name="keyboard-music" /></button
             >
           {:else}
@@ -1680,8 +1751,8 @@
             class="btn sm icon"
             class:on={autoLanes[track.id] !== undefined}
             onclick={() => toggleAutoLane(track.id)}
-            title="オートメーション(音量・パン・つまみを時間で動かす)"
-            aria-label="オートメーション"
+            title={tr("オートメーション(音量・パン・つまみを時間で動かす)", "Automation (move volume, pan and knobs over time)")}
+            aria-label={tr("オートメーション", "Automation")}
             aria-pressed={autoLanes[track.id] !== undefined}><Icon name="spline" /></button
           >
           <button
@@ -1690,8 +1761,8 @@
             onclick={() =>
               (soundDesignStore.focus =
                 soundDesignStore.focus?.trackId === track.id ? null : { trackId: track.id, trackName: track.name })}
-            title="インスペクター(音源・エフェクト・送り)"
-            aria-label="インスペクター"
+            title={tr("インスペクター(音源・エフェクト・送り)", "Inspector (instrument, effects, sends)")}
+            aria-label={tr("インスペクター", "Inspector")}
             aria-pressed={soundDesignStore.focus?.trackId === track.id}><Icon name="sliders-horizontal" /></button
           >
         </div>
@@ -1711,11 +1782,11 @@
           }
         }}
         title={track.kind === "bus"
-          ? "バス: 他のトラックのセンドを受けて、エフェクト → 音量/パン → マスターへ(クリップは置けません)"
+          ? tr("バス: 他のトラックのセンドを受けて、エフェクト → 音量/パン → マスターへ(クリップは置けません)", "Bus: receives sends from other tracks, then effects → volume/pan → master (no clips)")
           : track.kind === "audio"
-          ? "ダブルクリックで音声ファイル(WAV / MP3 等)をその小節に配置(録音はヘッダーの録音ボタン)"
+          ? tr("ダブルクリックで音声ファイル(WAV / MP3 等)をその小節に配置(録音はヘッダーの録音ボタン)", "Double-click to place an audio file (WAV / MP3, etc.) at that bar (record with the record button in the header)")
           : track.clips.length === 0
-            ? "ダブルクリックでクリップを作成してピアノロールを開く"
+            ? tr("ダブルクリックでクリップを作成してピアノロールを開く", "Double-click to create a clip and open the piano roll")
             : ""}
       >
         {#each track.clips as clip (clip.id)}
@@ -1727,7 +1798,10 @@
             class:selected={selectedClips.has(clip.id)}
             class:ai-changed={aiHighlight.clips.has(clip.id)}
             style={clipStyle(clip)}
-            title={`${clip.name} (${clip.id})${clip.kind === "midi" ? " — ダブルクリックでピアノロール" : ""} / クリックで選択(Ctrl・Shift で複数)/ ドラッグで移動(Alt でスナップ解除)/ 右端で長さ変更 / 右クリックで分割・複製・削除 / S: 再生ヘッドで分割、Delete: 削除、Ctrl+C/X/V/D`}
+            title={tr(
+              `${clip.name} (${clip.id})${clip.kind === "midi" ? " — ダブルクリックでピアノロール" : ""} / クリックで選択(Ctrl・Shift で複数)/ ドラッグで移動(Alt でスナップ解除)/ 右端で長さ変更 / 右クリックで分割・複製・削除 / S: 再生ヘッドで分割、Delete: 削除、Ctrl+C/X/V/D`,
+              `${clip.name} (${clip.id})${clip.kind === "midi" ? " — double-click for the piano roll" : ""} / click to select (Ctrl/Shift for multiple) / drag to move (Alt to disable snap) / right edge to resize / right-click to split, duplicate or delete / S: split at playhead, Delete: delete, Ctrl+C/X/V/D`,
+            )}
             ondblclick={(e) => openPianoRoll(track, clip, e)}
             oncontextmenu={(e) => onClipContext(e, clip)}
             onpointerdown={(e) => onClipDown(e, track, clip)}
@@ -1737,8 +1811,8 @@
           >
             <span class="clip-name"
               >{#if clip.kind === "audio"}<Icon name="audio-lines" size={12} />{:else if clip.loop && clip.loop_len}<span
-                  title="ループのクリップ"><Icon name="infinity" size={12} /></span
-                >{/if}{clip.name}{#if followBpm(clip) !== null}<span class="follow" title="テンポに追従中(元の素材の BPM)"
+                  title={tr("ループのクリップ", "Loop clip")}><Icon name="infinity" size={12} /></span
+                >{/if}{clip.name}{#if followBpm(clip) !== null}<span class="follow" title={tr("テンポに追従中(元の素材の BPM)", "Following tempo (original BPM of the source)")}
                   ><Icon name="move-horizontal" size={12} />{followBpm(clip)}</span
                 >{/if}
               {#if designStore.clips[clip.id]}
@@ -1779,11 +1853,11 @@
               />
             {/if}
             {#if separating === clip.id}
-              <div class="clip-busy">パートに分離中…</div>
+              <div class="clip-busy">{tr("パートに分離中…", "Separating parts…")}</div>
             {:else if detectingTempo === clip.id}
-              <div class="clip-busy">テンポを検出中…</div>
+              <div class="clip-busy">{tr("テンポを検出中…", "Detecting tempo…")}</div>
             {:else if matching === clip.id}
-              <div class="clip-busy">音色を合わせています…</div>
+              <div class="clip-busy">{tr("音色を合わせています…", "Matching the sound…")}</div>
             {/if}
             <div class="clip-resize"></div>
           </div>
@@ -1859,8 +1933,8 @@
 
 
   <div class="add-track-row">
-    <button class="btn add-track" onclick={openAddMenu} title="トラックを追加(MIDI・音声・バス・MIDI ファイル)"
-      ><Icon name="plus" />トラックを追加<Icon name="chevron-down" size={14} /></button
+    <button class="btn add-track" onclick={openAddMenu} title={tr("トラックを追加(MIDI・音声・バス・MIDI ファイル)", "Add track (MIDI, audio, bus, MIDI file)")}
+      ><Icon name="plus" />{tr("トラックを追加", "Add track")}<Icon name="chevron-down" size={14} /></button
     >
   </div>
 </div>

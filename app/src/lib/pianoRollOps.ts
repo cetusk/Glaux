@@ -1,4 +1,5 @@
 // ピアノロールの定数と純粋な計算(奏法の表・スナップの選択肢・音名・ピッチカーブの間引き・描画の色)
+import { tr } from "./i18n.svelte";
 import type { Articulation } from "./types";
 
 /// ブラウザの Canvas 実サイズ上限(超えると描画が黙って全部消える)。
@@ -8,87 +9,120 @@ export const MAX_CANVAS_PX = 15000;
 
 export type ArtEntry = { art: Articulation; key: string; label: string };
 
+/// 奏法の表の 1 行。表示名(label)は読むたびに今の言語で選ぶ(言語を切り替えたら描き直される)
+function artEntry(art: Articulation, key: string, ja: string, en: string): ArtEntry {
+  return {
+    art,
+    key,
+    get label() {
+      return tr(ja, en);
+    },
+  };
+}
+
 // この楽器で効く奏法(glaux-dsp params.rs の articulations_for と同期を保つこと)
 export const ARTS_BY_INSTRUMENT: Record<string, ArtEntry[]> = {
   subtractive: [
-    { art: "palm_mute", key: "M", label: "ミュート" },
-    { art: "staccato", key: "S", label: "スタッカート" },
-    { art: "accent", key: "A", label: "アクセント" },
-    { art: "vibrato", key: "V", label: "ビブラート" },
-    { art: "bend", key: "B", label: "チョーキング" },
-    { art: "legato", key: "T", label: "レガート" },
-    { art: "portamento", key: "P", label: "ポルタメント" },
+    artEntry("palm_mute", "M", "ミュート", "Mute"),
+    artEntry("staccato", "S", "スタッカート", "Staccato"),
+    artEntry("accent", "A", "アクセント", "Accent"),
+    artEntry("vibrato", "V", "ビブラート", "Vibrato"),
+    artEntry("bend", "B", "チョーキング", "Bend"),
+    artEntry("legato", "T", "レガート", "Legato"),
+    artEntry("portamento", "P", "ポルタメント", "Portamento"),
   ],
-  drum: [{ art: "accent", key: "A", label: "アクセント" }],
+  drum: [artEntry("accent", "A", "アクセント", "Accent")],
   pluck: [
-    { art: "palm_mute", key: "M", label: "ブリッジミュート" },
-    { art: "staccato", key: "S", label: "スタッカート" },
-    { art: "accent", key: "A", label: "アクセント" },
-    { art: "vibrato", key: "V", label: "ビブラート" },
-    { art: "bend", key: "B", label: "チョーキング" },
-    { art: "legato", key: "T", label: "ハンマリング" },
-    { art: "portamento", key: "P", label: "スライド" },
+    artEntry("palm_mute", "M", "ブリッジミュート", "Palm mute"),
+    artEntry("staccato", "S", "スタッカート", "Staccato"),
+    artEntry("accent", "A", "アクセント", "Accent"),
+    artEntry("vibrato", "V", "ビブラート", "Vibrato"),
+    artEntry("bend", "B", "チョーキング", "Bend"),
+    artEntry("legato", "T", "ハンマリング", "Hammer-on"),
+    artEntry("portamento", "P", "スライド", "Slide"),
   ],
   sampler: [
-    { art: "staccato", key: "S", label: "スタッカート" },
-    { art: "accent", key: "A", label: "アクセント" },
-    { art: "vibrato", key: "V", label: "ビブラート" },
-    { art: "bend", key: "B", label: "チョーキング" },
-    { art: "legato", key: "T", label: "レガート" },
-    { art: "portamento", key: "P", label: "ポルタメント" },
+    artEntry("staccato", "S", "スタッカート", "Staccato"),
+    artEntry("accent", "A", "アクセント", "Accent"),
+    artEntry("vibrato", "V", "ビブラート", "Vibrato"),
+    artEntry("bend", "B", "チョーキング", "Bend"),
+    artEntry("legato", "T", "レガート", "Legato"),
+    artEntry("portamento", "P", "ポルタメント", "Portamento"),
   ],
   sf2: [
-    { art: "staccato", key: "S", label: "スタッカート" },
-    { art: "accent", key: "A", label: "アクセント" },
-    { art: "vibrato", key: "V", label: "ビブラート" },
-    { art: "bend", key: "B", label: "チョーキング" },
-    { art: "legato", key: "T", label: "レガート" },
-    { art: "portamento", key: "P", label: "ポルタメント" },
+    artEntry("staccato", "S", "スタッカート", "Staccato"),
+    artEntry("accent", "A", "アクセント", "Accent"),
+    artEntry("vibrato", "V", "ビブラート", "Vibrato"),
+    artEntry("bend", "B", "チョーキング", "Bend"),
+    artEntry("legato", "T", "レガート", "Legato"),
+    artEntry("portamento", "P", "ポルタメント", "Portamento"),
   ],
   fm: [
-    { art: "palm_mute", key: "M", label: "ミュート" },
-    { art: "staccato", key: "S", label: "スタッカート" },
-    { art: "accent", key: "A", label: "アクセント" },
-    { art: "vibrato", key: "V", label: "ビブラート" },
-    { art: "bend", key: "B", label: "チョーキング" },
-    { art: "legato", key: "T", label: "レガート" },
-    { art: "portamento", key: "P", label: "ポルタメント" },
+    artEntry("palm_mute", "M", "ミュート", "Mute"),
+    artEntry("staccato", "S", "スタッカート", "Staccato"),
+    artEntry("accent", "A", "アクセント", "Accent"),
+    artEntry("vibrato", "V", "ビブラート", "Vibrato"),
+    artEntry("bend", "B", "チョーキング", "Bend"),
+    artEntry("legato", "T", "レガート", "Legato"),
+    artEntry("portamento", "P", "ポルタメント", "Portamento"),
   ],
   wavetable: [
-    { art: "palm_mute", key: "M", label: "ミュート" },
-    { art: "staccato", key: "S", label: "スタッカート" },
-    { art: "accent", key: "A", label: "アクセント" },
-    { art: "vibrato", key: "V", label: "ビブラート" },
-    { art: "bend", key: "B", label: "チョーキング" },
-    { art: "legato", key: "T", label: "レガート" },
-    { art: "portamento", key: "P", label: "ポルタメント" },
+    artEntry("palm_mute", "M", "ミュート", "Mute"),
+    artEntry("staccato", "S", "スタッカート", "Staccato"),
+    artEntry("accent", "A", "アクセント", "Accent"),
+    artEntry("vibrato", "V", "ビブラート", "Vibrato"),
+    artEntry("bend", "B", "チョーキング", "Bend"),
+    artEntry("legato", "T", "レガート", "Legato"),
+    artEntry("portamento", "P", "ポルタメント", "Portamento"),
   ],
   // CLAP 音源: ビブラート・ベンドは音程の変化として送り、ミュート・アクセントは長さと強さで近づける
   clap: [
-    { art: "palm_mute", key: "M", label: "ミュート(短く弱く)" },
-    { art: "staccato", key: "S", label: "スタッカート" },
-    { art: "accent", key: "A", label: "アクセント" },
-    { art: "vibrato", key: "V", label: "ビブラート" },
-    { art: "bend", key: "B", label: "チョーキング" },
-    { art: "legato", key: "T", label: "レガート(重ねて送る)" },
-    { art: "portamento", key: "P", label: "ポルタメント" },
+    artEntry("palm_mute", "M", "ミュート(短く弱く)", "Mute (short and soft)"),
+    artEntry("staccato", "S", "スタッカート", "Staccato"),
+    artEntry("accent", "A", "アクセント", "Accent"),
+    artEntry("vibrato", "V", "ビブラート", "Vibrato"),
+    artEntry("bend", "B", "チョーキング", "Bend"),
+    artEntry("legato", "T", "レガート(重ねて送る)", "Legato (overlapped)"),
+    artEntry("portamento", "P", "ポルタメント", "Portamento"),
   ],
 };
 
+/// 奏法の表示名。値は読むたびに今の言語で選ぶ(getter)
 export const ART_LABELS: Record<Articulation, string> = {
-  normal: "通常",
-  palm_mute: "ブリッジミュート",
-  staccato: "スタッカート",
-  accent: "アクセント",
-  vibrato: "ビブラート",
-  bend: "チョーキング",
-  legato: "レガート",
-  portamento: "ポルタメント",
+  get normal() {
+    return tr("通常", "Normal");
+  },
+  get palm_mute() {
+    return tr("ブリッジミュート", "Palm mute");
+  },
+  get staccato() {
+    return tr("スタッカート", "Staccato");
+  },
+  get accent() {
+    return tr("アクセント", "Accent");
+  },
+  get vibrato() {
+    return tr("ビブラート", "Vibrato");
+  },
+  get bend() {
+    return tr("チョーキング", "Bend");
+  },
+  get legato() {
+    return tr("レガート", "Legato");
+  },
+  get portamento() {
+    return tr("ポルタメント", "Portamento");
+  },
 };
 
 // T = 3 連符(PPQ 960: 1/4T=640, 1/8T=320, 1/16T=160)
 export const SNAP_OPTIONS = [
-  { label: "1 小節", ticks: 3840 },
+  {
+    get label() {
+      return tr("1 小節", "1 bar");
+    },
+    ticks: 3840,
+  },
   { label: "1/2", ticks: 1920 },
   { label: "1/4", ticks: 960 },
   { label: "1/4T", ticks: 640 },

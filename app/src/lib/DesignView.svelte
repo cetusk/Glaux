@@ -11,9 +11,9 @@
   import { transportSeek } from "./api";
   import type { Project } from "./types";
   import {
-    ARCS,
-    FUNCTIONS,
-    PRESENCE,
+    arcLabels,
+    functionLabels,
+    presenceLabels,
     MAX_PROPOSALS_AB,
     abLetter,
     abProposals,
@@ -50,10 +50,15 @@
   import { selectionStore } from "./selection.svelte";
   import { transportStore } from "./transport.svelte";
   import { showToast } from "./toast.svelte";
+  import { isEn, plural, tr } from "./i18n.svelte";
 
   let { project }: { project: Project } = $props();
 
   const d = $derived(designStore.data);
+  // 働き・存在の段階・盛り上がりの型の表示名(画面の言語で。言語を切り替えると作り直される)
+  const functionNames = $derived(functionLabels());
+  const presenceNames = $derived(presenceLabels());
+  const arcNames = $derived(arcLabels());
   const sel = $derived(designSel.sel);
 
   // ---- 開け閉め・大きさ(覚えておく) ----
@@ -250,7 +255,7 @@
   const estimated = $derived(!!d && (d.song_estimated || d.parts.some((p) => p.estimated)));
   const tempo = $derived.by(() => {
     const t = project.tempo_map ?? [];
-    if (t.length > 1) return "途中で変わる";
+    if (t.length > 1) return tr("途中で変わる", "Varies");
     return `${t[0]?.bpm ?? 120} BPM`;
   });
 
@@ -321,7 +326,13 @@
   const joinOf = (i: number) => d?.sections[i]?.join ?? "smooth";
   function needSections(): boolean {
     if (hasSections) return true;
-    showToast("warn", "区間がありません。タイムラインでマーカーを置くか、AI に set_song_plan で計画書を書いてもらうと直せます");
+    showToast(
+      "warn",
+      tr(
+        "区間がありません。タイムラインでマーカーを置くか、AI に set_song_plan で計画書を書いてもらうと直せます",
+        "No sections. Place markers on the timeline, or have the AI write a plan with set_song_plan, to edit this",
+      ),
+    );
     return false;
   }
   /** 下書きの形を区間に書き込む(1 件の編集。曲の履歴に残る) */
@@ -380,7 +391,7 @@
         curveDraft = { ...curveDraft, ...structuredClone(draft) };
       },
       () => {
-        if (moved) commitCurves([...changed], `「${d?.sections[i]?.name}」の盛り上がりの形を変える`);
+        if (moved) commitCurves([...changed], tr(`「${d?.sections[i]?.name}」の盛り上がりの形を変える`, `Change energy shape of "${d?.sections[i]?.name}"`));
       },
     );
   }
@@ -399,7 +410,7 @@
       c.push([Math.round(p.t * 1000) / 1000, clamp10(p.v)]);
       c.sort((a, b) => a[0] - b[0]);
       curveDraft = { ...curveDraft, [i]: c };
-      commitCurves([i], `「${d?.sections[i]?.name}」の盛り上がりに点を足す`);
+      commitCurves([i], tr(`「${d?.sections[i]?.name}」の盛り上がりに点を足す`, `Add energy point to "${d?.sections[i]?.name}"`));
       return;
     }
     lastDown = { t: now, x: e.clientX, y: e.clientY };
@@ -427,7 +438,13 @@
         curveDraft = { ...curveDraft, ...draft };
       },
       () => {
-        if (moved) commitCurves([...changed], all ? "盛り上がり全体を平行に動かす" : `「${d?.sections[i]?.name}」の盛り上がりを平行に動かす`);
+        if (moved)
+          commitCurves(
+            [...changed],
+            all
+              ? tr("盛り上がり全体を平行に動かす", "Shift whole energy curve")
+              : tr(`「${d?.sections[i]?.name}」の盛り上がりを平行に動かす`, `Shift energy of "${d?.sections[i]?.name}"`),
+          );
       },
     );
   }
@@ -435,13 +452,13 @@
     e.preventDefault();
     const c = editBase(i);
     if (k === 0 || k === c.length - 1) {
-      showToast("warn", "区間の両端の点は消せません");
+      showToast("warn", tr("区間の両端の点は消せません", "Can't remove a section's end points"));
       return;
     }
     if (!needSections()) return;
     c.splice(k, 1);
     curveDraft = { ...curveDraft, [i]: c };
-    commitCurves([i], `「${d?.sections[i]?.name}」の盛り上がりの点を消す`);
+    commitCurves([i], tr(`「${d?.sections[i]?.name}」の盛り上がりの点を消す`, `Remove energy point from "${d?.sections[i]?.name}"`));
   }
   async function toggleJoin(i: number) {
     if (!needSections()) return;
@@ -458,7 +475,9 @@
           secs[i + 1].energy = Math.round(avgCurve(b) * 10) / 10;
         }
       },
-      toStep ? `「${d?.sections[i]?.name}」の次との境目を段差に` : `「${d?.sections[i]?.name}」の次との境目をつなぐ`,
+      toStep
+        ? tr(`「${d?.sections[i]?.name}」の次との境目を段差に`, `Make boundary after "${d?.sections[i]?.name}" a step`)
+        : tr(`「${d?.sections[i]?.name}」の次との境目をつなぐ`, `Smooth boundary after "${d?.sections[i]?.name}"`),
     );
   }
   /** 盛り上がり全体: 上げ下げ(dv)か、平均を中心に起伏を大きく・小さく(scale) */
@@ -487,7 +506,7 @@
       draft[i] = c.map(([t, v]) => [t, clamp10(v + dv)] as [number, number]);
     });
     curveDraft = draft;
-    await commitCurves(Object.keys(draft).map(Number), `盛り上がりの型(${ARCS[arc]})を当てる`);
+    await commitCurves(Object.keys(draft).map(Number), tr(`盛り上がりの型(${arcNames[arc]})を当てる`, `Apply energy arc (${arcNames[arc]})`));
   }
 
   // ---- 音域の帯(選んだパート) ----
@@ -530,7 +549,10 @@
           (b, dd) => {
             for (const k of idx) if (draft[k]) partCell(b, dd, selPart, k).register = draft[k];
           },
-          `「${part.name}」の${all ? "全区間" : `「${d?.sections[i]?.name}」`}の音域の帯を変える`,
+          tr(
+            `「${part.name}」の${all ? "全区間" : `「${d?.sections[i]?.name}」`}の音域の帯を変える`,
+            `Change register band of "${part.name}" (${all ? "all sections" : `"${d?.sections[i]?.name}"`})`,
+          ),
         );
       },
     );
@@ -558,10 +580,15 @@
             partCell(b, dd, pi, i).register = [Math.max(0, lo), Math.min(127, hi)];
           });
         },
-        dw ? `「${p.name}」の音域の幅を${dw > 0 ? "広げる" : "狭める"}` : `「${p.name}」の音域を${dp > 0 ? "上げる" : "下げる"}(${Math.abs(dp) === 12 ? "オクターブ" : "半音"})`,
+        dw
+          ? tr(`「${p.name}」の音域の幅を${dw > 0 ? "広げる" : "狭める"}`, `${dw > 0 ? "Widen" : "Narrow"} register of "${p.name}"`)
+          : tr(
+              `「${p.name}」の音域を${dp > 0 ? "上げる" : "下げる"}(${Math.abs(dp) === 12 ? "オクターブ" : "半音"})`,
+              `${dp > 0 ? "Raise" : "Lower"} register of "${p.name}" (${Math.abs(dp) === 12 ? "octave" : "semitone"})`,
+            ),
       );
     }
-    if (!n) showToast("warn", "計画の音域の帯がまだありません(「実際の音域を計画に」で作れます)");
+    if (!n) showToast("warn", tr("計画の音域の帯がまだありません(「実際の音域を計画に」で作れます)", "No planned register bands yet (create them with \"Match plan to actual\")"));
   }
   /** 選んだパートの実際の音域を、計画の帯にする(鳴っている区間だけ) */
   async function bandFromReal() {
@@ -575,7 +602,7 @@
           if (c.register) partCell(b, dd, selPart, i).register = c.register;
         });
       },
-      `「${p.name}」の実際の音域を計画の帯にする`,
+      tr(`「${p.name}」の実際の音域を計画の帯にする`, `Set planned register of "${p.name}" from actual`),
     );
   }
 
@@ -590,7 +617,7 @@
     const p = d?.parts[pi];
     if (!p) return;
     const keep = idx.filter((i) => !p.cells[i]?.locked);
-    if (keep.length < idx.length) showToast("warn", "固定のマスは変えませんでした(固定を外すと変えられます)");
+    if (keep.length < idx.length) showToast("warn", tr("固定のマスは変えませんでした(固定を外すと変えられます)", "Locked cells were left unchanged (unlock them to change)"));
     if (!keep.length) return;
     cellDraft = { ...cellDraft, ...Object.fromEntries(keep.map((i) => [`${pi}:${i}`, lv])) };
     await editPartPlan(
@@ -599,7 +626,10 @@
       (b, dd) => {
         for (const i of keep) partCell(b, dd, pi, i).presence = lv;
       },
-      `「${p.name}」の${keep.length > 1 ? `${keep.length} 区間` : `「${d?.sections[keep[0]]?.name}」`}を「${PRESENCE[lv]}」に`,
+      tr(
+        `「${p.name}」の${keep.length > 1 ? `${keep.length} 区間` : `「${d?.sections[keep[0]]?.name}」`}を「${presenceNames[lv]}」に`,
+        `Set "${p.name}" ${keep.length > 1 ? `(${keep.length} sections)` : `"${d?.sections[keep[0]]?.name}"`} to "${presenceNames[lv]}"`,
+      ),
     );
   }
   async function setCellProp(pi: number, i: number, prop: "function" | "locked", v: string | boolean | undefined) {
@@ -616,8 +646,8 @@
         } else c.locked = v ? true : undefined;
       },
       prop === "locked"
-        ? `「${p.name}」の「${d?.sections[i]?.name}」を${v ? "固定する" : "固定を外す"}`
-        : `「${p.name}」の「${d?.sections[i]?.name}」の働きを変える`,
+        ? tr(`「${p.name}」の「${d?.sections[i]?.name}」を${v ? "固定する" : "固定を外す"}`, `${v ? "Lock" : "Unlock"} "${p.name}" / "${d?.sections[i]?.name}"`)
+        : tr(`「${p.name}」の「${d?.sections[i]?.name}」の働きを変える`, `Change function of "${p.name}" / "${d?.sections[i]?.name}"`),
     );
   }
   async function setPartFunction(pi: number, f: string) {
@@ -630,7 +660,7 @@
         if (f) b.function = f;
         else delete b.function;
       },
-      `「${p.name}」の働きを「${f ? FUNCTIONS[f] : "未設定"}」に`,
+      tr(`「${p.name}」の働きを「${f ? functionNames[f] : "未設定"}」に`, `Set function of "${p.name}" to "${f ? functionNames[f] : "unset"}"`),
     );
   }
   // 選択肢(マスの ▾ で開き、∧ で閉じる)
@@ -839,23 +869,29 @@
 
 <div class="design" class:dragging>
   {#if designStore.error && !d}
-    <div class="empty-all">設計データを読めませんでした: {designStore.error}</div>
+    <div class="empty-all">{tr("設計データを読めませんでした", "Couldn't load design data")}: {designStore.error}</div>
   {:else if !d}
-    <div class="empty-all">読み込み中…</div>
+    <div class="empty-all">{tr("読み込み中…", "Loading…")}</div>
   {:else}
     {#if estimated}
       <div class="estimate" role="status">
-        <b>推定した計画(未確認)があります</b>
-        <span>今の音から推定した計画です。採用するまで、AI は参考としてだけ使います。</span>
+        <b>{tr("推定した計画(未確認)があります", "There are estimated (unconfirmed) plans")}</b>
+        <span
+          >{tr(
+            "今の音から推定した計画です。採用するまで、AI は参考としてだけ使います。",
+            "Plans estimated from the current audio. Until adopted, the AI uses them only as a reference.",
+          )}</span
+        >
         <span class="spacer"></span>
-        <button class="btn sm primary" type="button" onclick={() => settleEstimated(true)}>この計画を採用</button>
+        <button class="btn sm primary" type="button" onclick={() => settleEstimated(true)}>{tr("この計画を採用", "Adopt plans")}</button>
         <button
           class="btn sm"
           type="button"
-          title="画面で直してから「この計画を採用」を押すと、直した計画が今の計画になります"
-          onclick={() => showToast("warn", "直してから「この計画を採用」を押すと、直した計画が今の計画になります")}>直してから採用</button
+          title={tr("画面で直してから「この計画を採用」を押すと、直した計画が今の計画になります", "Edit here, then press \"Adopt plans\" to make the edited plans current")}
+          onclick={() => showToast("warn", tr("直してから「この計画を採用」を押すと、直した計画が今の計画になります", "Edit first, then press \"Adopt plans\" to make the edited plans current"))}
+          >{tr("直してから採用", "Edit, then adopt")}</button
         >
-        <button class="btn sm" type="button" onclick={() => settleEstimated(false)}>捨てる</button>
+        <button class="btn sm" type="button" onclick={() => settleEstimated(false)}>{tr("捨てる", "Discard")}</button>
         <label
           ><input
             type="checkbox"
@@ -864,16 +900,19 @@
               settings.autoAdoptEstimated = (e.currentTarget as HTMLInputElement).checked;
               saveSettings();
             }}
-          /> 次から確認せずに採用する</label
+          /> {tr("次から確認せずに採用する", "Adopt without asking next time")}</label
         >
       </div>
     {/if}
     {#if propList.length}
-      <div class="proposals" role="region" aria-label="AI の案">
+      <div class="proposals" role="region" aria-label={tr("AI の案", "AI proposals")}>
         <div class="phead">
-          <b>AI の案({propList.length})</b>
+          <b>{tr(`AI の案(${propList.length})`, `AI proposals (${propList.length})`)}</b>
           <span class="hint"
-            >今の曲と計画は変わっていません。聴き比べて、よければ採用してください。聴き比べ中は範囲を繰り返し鳴らし、A / B でいつでも切り替えられます</span
+            >{tr(
+              "今の曲と計画は変わっていません。聴き比べて、よければ採用してください。聴き比べ中は範囲を繰り返し鳴らし、A / B でいつでも切り替えられます",
+              "The current song and plan are unchanged. Compare, and adopt if you like it. While comparing, the range loops and you can switch A / B anytime",
+            )}</span
           >
         </div>
         {#if allIds.length >= 2}
@@ -881,52 +920,66 @@
             {#if multi}
               {@const info = proposalAb.info}
               <div class="prow">
-                <span class="abswitch" role="group" aria-label="今と案を切り替える">
-                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>A 今</button>
+                <span class="abswitch" role="group" aria-label={tr("今と案を切り替える", "Switch between now and proposal")}>
+                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>A {tr("今", "Now")}</button>
                   {#each proposalAb.planIds as id, k (id)}
                     <button class="btn sm" class:on={proposalAb.side === k + 1} type="button" title={planName(id)} onclick={() => setProposalSide(k + 1)}
-                      >{abLetter(k + 1)} {planName(id) ?? "案"}</button
+                      >{abLetter(k + 1)} {planName(id) ?? tr("案", "Proposal")}</button
                     >
                   {/each}
                 </span>
-                <button class="btn sm" type="button" title="聴いている範囲の頭から聴き直す" onclick={restartProposalAb}>⏮ 頭から</button>
+                <button class="btn sm" type="button" title={tr("聴いている範囲の頭から聴き直す", "Replay from the start of the range")} onclick={restartProposalAb}
+                  >⏮ {tr("頭から", "From start")}</button
+                >
                 <span class="spacer"></span>
-                <button class="btn sm" type="button" onclick={endProposalAb}>聴き比べを終える</button>
+                <button class="btn sm" type="button" onclick={endProposalAb}>{tr("聴き比べを終える", "End compare")}</button>
               </div>
               <div class="prow">
-                <span class="plabel">範囲</span>
+                <span class="plabel">{tr("範囲", "Range")}</span>
                 {#each allChanged as si (si)}
                   <button
                     class="btn sm secchip"
                     class:on={proposalAb.section === si}
                     type="button"
-                    title="この区間でまとめて聴き比べる(変わる案 {changedBy.get(si)} つ)"
+                    title={tr(`この区間でまとめて聴き比べる(変わる案 ${changedBy.get(si)} つ)`, `Compare all in this section (${plural(changedBy.get(si) ?? 0, "proposal")} change)`)}
                     disabled={proposalAb.busy != null}
-                    onclick={() => listenAll(si)}>{d.sections[si]?.name ?? `区間 ${si + 1}`}</button
+                    onclick={() => listenAll(si)}>{d.sections[si]?.name ?? tr(`区間 ${si + 1}`, `Section ${si + 1}`)}</button
                   >
                 {/each}
                 <span class="abnote"
-                  >{proposalAb.section != null ? `「${d.sections[proposalAb.section]?.name}」を聴いています` : "選んだ範囲を聴いています"}{#if info}{" "}· {info.lufs
-                      .map((l, k) => `${k === 0 ? "今" : abLetter(k)} ${l?.toFixed(1) ?? "—"}`)
-                      .join(" / ")} LUFS(音量はいちばん小さいものにそろえてあります){/if}</span
+                  >{proposalAb.section != null
+                    ? tr(`「${d.sections[proposalAb.section]?.name}」を聴いています`, `Playing "${d.sections[proposalAb.section]?.name}"`)
+                    : tr("選んだ範囲を聴いています", "Playing the selected range")}{#if info}{" "}· {info.lufs
+                      .map((l, k) => `${k === 0 ? tr("今", "Now") : abLetter(k)} ${l?.toFixed(1) ?? "—"}`)
+                      .join(" / ")} LUFS{tr("(音量はいちばん小さいものにそろえてあります)", " (levels matched to the quietest)")}{/if}</span
                 >
               </div>
-              <span class="pnote">切り替えても、同じ位置から続けて鳴ります(頭から聴くなら「頭から」)</span>
+              <span class="pnote">{tr("切り替えても、同じ位置から続けて鳴ります(頭から聴くなら「頭から」)", "Switching keeps playing from the same position (use \"From start\" to replay)")}</span>
               {#if info}
                 {#each proposalAb.planIds as id, k (id)}
                   {#if info.first_diff_secs[k + 1] === null}
-                    <span class="pwarn">{abLetter(k + 1)}「{planName(id)}」はこの範囲では今と同じ音です(範囲の区間を変えてみてください)</span>
+                    <span class="pwarn"
+                      >{abLetter(k + 1)}{tr(
+                        `「${planName(id)}」はこの範囲では今と同じ音です(範囲の区間を変えてみてください)`,
+                        ` "${planName(id)}" sounds the same as now in this range (try another section)`,
+                      )}</span
+                    >
                   {/if}
                 {/each}
               {/if}
             {:else}
               <div class="prow">
                 <button class="btn sm" type="button" disabled={proposalAb.busy != null} onclick={() => listenAll()}
-                  >{proposalAb.busy === "all" ? "用意しています…" : `まとめて聴き比べる(今 + 案 ${allIds.length} つ)`}</button
+                  >{proposalAb.busy === "all"
+                    ? tr("用意しています…", "Preparing…")
+                    : tr(`まとめて聴き比べる(今 + 案 ${allIds.length} つ)`, `Compare all (now + ${plural(allIds.length, "proposal")})`)}</button
                 >
                 <span class="pnote"
-                  >A = 今、{allIds.map((id, k) => `${abLetter(k + 1)} = ${planName(id)}`).join("、")} を同じ範囲で切り替えて聴けます{listenable.length > allIds.length
-                    ? `(いっしょに聴けるのは ${MAX_PROPOSALS_AB} つまで)`
+                  >{tr(
+                    `A = 今、${allIds.map((id, k) => `${abLetter(k + 1)} = ${planName(id)}`).join("、")} を同じ範囲で切り替えて聴けます`,
+                    `Switch between A = now, ${allIds.map((id, k) => `${abLetter(k + 1)} = ${planName(id)}`).join(", ")} over the same range`,
+                  )}{listenable.length > allIds.length
+                    ? tr(`(いっしょに聴けるのは ${MAX_PROPOSALS_AB} つまで)`, ` (up to ${MAX_PROPOSALS_AB} at once)`)
                     : ""}</span
                 >
               </div>
@@ -942,63 +995,83 @@
               {#if letter}<span class="pletter" class:cur={proposalAb.side === proposalAb.planIds.indexOf(pr.plan_id) + 1}>{letter}</span>{/if}
               <span class="pname">{pr.name}</span>
               <span class="pbase"
-                >{pr.derived_from ? `「${planName(pr.derived_from.id) ?? "元の計画"}」の案` : "新しい計画の案"}{pr.edits
-                  ? ` · 編集 ${pr.edits} 件`
-                  : " · 計画だけ"}</span
+                >{pr.derived_from
+                  ? tr(`「${planName(pr.derived_from.id) ?? "元の計画"}」の案`, `Proposal for "${planName(pr.derived_from.id) ?? "the original plan"}"`)
+                  : tr("新しい計画の案", "Proposal for a new plan")}{pr.edits
+                  ? tr(` · 編集 ${pr.edits} 件`, ` · ${plural(pr.edits, "edit")}`)
+                  : tr(" · 計画だけ", " · plan only")}</span
               >
             </div>
             {#if proposalWhy(pr.plan_id)}<div class="pwhy">{proposalWhy(pr.plan_id)}</div>{/if}
             <div class="prow">
-              <span class="plabel">変わる所</span>
+              <span class="plabel">{tr("変わる所", "Changes")}</span>
               {#if ch?.stale}
-                <span class="pwarn">{ch.why ?? "案を出した後で曲が変わったので、今の曲に当てられません(AI に作り直してもらってください)"}</span>
+                <span class="pwarn"
+                  >{ch.why ??
+                    tr(
+                      "案を出した後で曲が変わったので、今の曲に当てられません(AI に作り直してもらってください)",
+                      "The song changed after this proposal was made, so it can't be applied (ask the AI to redo it)",
+                    )}</span
+                >
               {:else if !pr.edits}
-                <span class="pnote">音は変わりません(計画だけの案)</span>
+                <span class="pnote">{tr("音は変わりません(計画だけの案)", "No change to the sound (plan-only proposal)")}</span>
               {:else}
                 {#each ch?.sections ?? [] as si (si)}
                   <button
                     class="btn sm secchip"
                     class:on={on && proposalAb.section === si}
                     type="button"
-                    title="この区間で聴き比べる"
+                    title={tr("この区間で聴き比べる", "Compare in this section")}
                     disabled={proposalAb.busy != null}
-                    onclick={() => listen(pr.plan_id, si)}>{d.sections[si]?.name ?? `区間 ${si + 1}`}</button
+                    onclick={() => listen(pr.plan_id, si)}>{d.sections[si]?.name ?? tr(`区間 ${si + 1}`, `Section ${si + 1}`)}</button
                   >
                 {:else}
-                  {#if ch?.ranges?.length}<span class="pnote">区間の外({ch.ranges.length} か所)</span>{/if}
+                  {#if ch?.ranges?.length}<span class="pnote">{tr(`区間の外(${ch.ranges.length} か所)`, `Outside sections (${plural(ch.ranges.length, "place")})`)}</span>{/if}
                 {/each}
-                {#if ch?.whole}<span class="pnote">+ 音色・ミックスなど曲全体</span>{/if}
+                {#if ch?.whole}<span class="pnote">{tr("+ 音色・ミックスなど曲全体", "+ whole song (sounds, mix, etc.)")}</span>{/if}
                 {#if !ch?.sections?.length && !ch?.ranges?.length && !ch?.whole}<span class="pnote"
-                    >{ch?.silent_only ? "違いは今鳴っていないトラック(ミュート中など)だけです" : "音の違いは見つかりませんでした"}</span
+                    >{ch?.silent_only
+                      ? tr("違いは今鳴っていないトラック(ミュート中など)だけです", "Differences are only in tracks not currently heard (muted, etc.)")
+                      : tr("音の違いは見つかりませんでした", "No audible difference found")}</span
                   >{/if}
               {/if}
             </div>
             <div class="prow">
               {#if on}
-                <span class="abswitch" role="group" aria-label="今と案を切り替える">
-                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>A 今</button>
-                  <button class="btn sm" class:on={proposalAb.side === 1} type="button" onclick={() => setProposalSide(1)}>B 案</button>
+                <span class="abswitch" role="group" aria-label={tr("今と案を切り替える", "Switch between now and proposal")}>
+                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>A {tr("今", "Now")}</button>
+                  <button class="btn sm" class:on={proposalAb.side === 1} type="button" onclick={() => setProposalSide(1)}>B {tr("案", "Proposal")}</button>
                 </span>
-                <button class="btn sm" type="button" title="聴いている範囲の頭から聴き直す" onclick={restartProposalAb}>⏮ 頭から</button>
-                <span class="pnote">A / B を切り替えても、同じ位置から続けて鳴ります(頭から聴くなら「頭から」)</span>
+                <button class="btn sm" type="button" title={tr("聴いている範囲の頭から聴き直す", "Replay from the start of the range")} onclick={restartProposalAb}
+                  >⏮ {tr("頭から", "From start")}</button
+                >
+                <span class="pnote">{tr("A / B を切り替えても、同じ位置から続けて鳴ります(頭から聴くなら「頭から」)", "Switching A / B keeps playing from the same position (use \"From start\" to replay)")}</span>
                 <span class="abnote"
-                  >{proposalAb.section != null ? `「${d.sections[proposalAb.section]?.name}」を聴いています` : "選んだ範囲を聴いています"}{#if proposalAb.info}{" "}· 今 {proposalAb.info.lufs[0]?.toFixed(1) ?? "—"} / 案 {proposalAb.info.lufs[1]?.toFixed(1) ?? "—"} LUFS(音量はそろえてあります){/if}</span
+                  >{proposalAb.section != null
+                    ? tr(`「${d.sections[proposalAb.section]?.name}」を聴いています`, `Playing "${d.sections[proposalAb.section]?.name}"`)
+                    : tr("選んだ範囲を聴いています", "Playing the selected range")}{#if proposalAb.info}{" "}· {tr("今", "Now")}
+                    {proposalAb.info.lufs[0]?.toFixed(1) ?? "—"} / {tr("案", "Proposal")}
+                    {proposalAb.info.lufs[1]?.toFixed(1) ?? "—"} LUFS{tr("(音量はそろえてあります)", " (levels matched)")}{/if}</span
                 >
                 {@const fd = proposalAb.info?.first_diff_secs[1]}
                 {#if proposalAb.info && fd === null}
-                  <span class="pwarn">この範囲では今と案の音が同じです(変わる所の区間を押して聴いてください)</span>
+                  <span class="pwarn"
+                    >{tr("この範囲では今と案の音が同じです(変わる所の区間を押して聴いてください)", "Now and the proposal sound the same in this range (press a section under Changes)")}</span
+                  >
                 {:else if fd != null && fd > 1}
-                  <span class="pnote">違いは範囲の頭から {fd.toFixed(1)} 秒あたりから</span>
+                  <span class="pnote">{tr(`違いは範囲の頭から ${fd.toFixed(1)} 秒あたりから`, `Differences start about ${fd.toFixed(1)} s into the range`)}</span>
                 {/if}
                 <span class="spacer"></span>
-                <button class="btn sm" type="button" onclick={endProposalAb}>聴き比べを終える</button>
+                <button class="btn sm" type="button" onclick={endProposalAb}>{tr("聴き比べを終える", "End compare")}</button>
               {:else}
                 <button
                   class="btn sm"
                   type="button"
                   disabled={proposalAb.busy != null || !pr.edits || !!ch?.stale}
-                  title={pr.edits ? "今と案を、音量をそろえて切り替えて聴く(範囲は変わる所の区間)" : "音の変わらない案です(計画だけ)"}
-                  onclick={() => listen(pr.plan_id)}>{proposalAb.busy === pr.plan_id ? "用意しています…" : "聴き比べる"}</button
+                  title={pr.edits
+                    ? tr("今と案を、音量をそろえて切り替えて聴く(範囲は変わる所の区間)", "Switch between now and the proposal at matched levels (range: a changed section)")
+                    : tr("音の変わらない案です(計画だけ)", "This proposal doesn't change the sound (plan only)")}
+                  onclick={() => listen(pr.plan_id)}>{proposalAb.busy === pr.plan_id ? tr("用意しています…", "Preparing…") : tr("聴き比べる", "Compare")}</button
                 >
                 <span class="spacer"></span>
               {/if}
@@ -1006,10 +1079,13 @@
                 class="btn sm primary"
                 type="button"
                 disabled={!!ch?.stale}
-                title="案の音を曲に当て、案の計画を今の計画にする。同じ元の計画・同じ頼みから出たほかの案と、いっしょに聴き比べていた案は捨てる"
-                onclick={() => adoptProposal(pr.plan_id, pr.name)}>採用</button
+                title={tr(
+                  "案の音を曲に当て、案の計画を今の計画にする。同じ元の計画・同じ頼みから出たほかの案と、いっしょに聴き比べていた案は捨てる",
+                  "Apply the proposal's sound to the song and make its plan current. Other proposals from the same plan or request, and those being compared, are discarded",
+                )}
+                onclick={() => adoptProposal(pr.plan_id, pr.name)}>{tr("採用", "Adopt")}</button
               >
-              <button class="btn sm" type="button" onclick={() => discardProposal(pr.plan_id, pr.name)}>捨てる</button>
+              <button class="btn sm" type="button" onclick={() => discardProposal(pr.plan_id, pr.name)}>{tr("捨てる", "Discard")}</button>
             </div>
           </div>
         {/each}
@@ -1022,52 +1098,53 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="lanehead main-head" onclick={(e) => toggleFold("song", e)}>
-            <button class="fold" type="button" aria-label="折りたたむ・開く" aria-expanded={!folded.song}
+            <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} aria-expanded={!folded.song}
               ><Icon name="chevron-down" size={14} /></button
             >
-            <h2>曲全体</h2>
+            <h2>{tr("曲全体", "Whole song")}</h2>
             <button class="btn sm pickall" class:on={isWhole("song")} type="button" onclick={(e) => pickWhole("song", e)}
-              >{isWhole("song") ? "全体を選択中" : "全体を選ぶ"}</button
+              >{isWhole("song") ? tr("全体を選択中", "All selected") : tr("全体を選ぶ", "Select all")}</button
             >
             {#if folded.song}
               <span class="summary"
-                >{[d.song?.genre, (d.song?.mood ?? []).join("・"), d.song?.key, tempo, `${totalBars} 小節`, d.song?.arc ? ARCS[d.song.arc] : null]
+                >{[d.song?.genre, (d.song?.mood ?? []).join("・"), d.song?.key, tempo, tr(`${totalBars} 小節`, `${plural(totalBars, "bar")}`), d.song?.arc ? arcNames[d.song.arc] : null]
                   .filter(Boolean)
                   .join(" · ")}</span
               >
             {/if}
-            {#if d.song_estimated}<span class="tag">推定</span>{/if}
+            {#if d.song_estimated}<span class="tag">{tr("推定", "Estimated")}</span>{/if}
           </div>
           {#if !folded.song}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="songgrid" onclick={() => pick({ kind: "song" })}>
               <label class="field"
-                ><span>ジャンル</span><input
+                ><span>{tr("ジャンル", "Genre")}</span><input
                   type="text"
                   value={d.song?.genre ?? ""}
-                  onchange={(e) => songField("genre", (e.currentTarget as HTMLInputElement).value.trim(), "ジャンルを変える")}
+                  onchange={(e) => songField("genre", (e.currentTarget as HTMLInputElement).value.trim(), tr("ジャンルを変える", "Change genre"))}
                 /></label
               >
               <div class="field">
-                <span>雰囲気の言葉</span>
+                <span>{tr("雰囲気の言葉", "Mood words")}</span>
                 <div class="tags">
                   {#each d.song?.mood ?? [] as m (m)}<span class="word"
                       >{m}<button
                         class="wx"
                         type="button"
-                        aria-label="{m} を外す"
-                        onclick={() => songField("mood", (d?.song?.mood ?? []).filter((x) => x !== m), `雰囲気の言葉「${m}」を外す`)}>×</button
+                        aria-label={tr(`${m} を外す`, `Remove ${m}`)}
+                        onclick={() => songField("mood", (d?.song?.mood ?? []).filter((x) => x !== m), tr(`雰囲気の言葉「${m}」を外す`, `Remove mood word "${m}"`))}
+                        >×</button
                       ></span
                     >{/each}
                   <input
                     class="wordin"
                     type="text"
-                    placeholder="+ 足す"
+                    placeholder={tr("+ 足す", "+ Add")}
                     bind:value={moodInput}
                     onkeydown={(e) => {
                       if (e.key === "Enter" && !e.isComposing && moodInput.trim()) {
-                        songField("mood", [...(d?.song?.mood ?? []), moodInput.trim()], `雰囲気の言葉「${moodInput.trim()}」を足す`);
+                        songField("mood", [...(d?.song?.mood ?? []), moodInput.trim()], tr(`雰囲気の言葉「${moodInput.trim()}」を足す`, `Add mood word "${moodInput.trim()}"`));
                         moodInput = "";
                       }
                     }}
@@ -1075,14 +1152,14 @@
                 </div>
               </div>
               <label class="field"
-                ><span>キー・旋法</span><input
+                ><span>{tr("キー・旋法", "Key / mode")}</span><input
                   type="text"
                   value={d.song?.key ?? ""}
-                  onchange={(e) => songField("key", (e.currentTarget as HTMLInputElement).value.trim(), "キーの狙いを変える")}
+                  onchange={(e) => songField("key", (e.currentTarget as HTMLInputElement).value.trim(), tr("キーの狙いを変える", "Change target key"))}
                 /></label
               >
               <label class="field"
-                ><span>テンポ(タイムラインと同じ値)</span>
+                ><span>{tr("テンポ(タイムラインと同じ値)", "Tempo (same as timeline)")}</span>
                 {#if tempoSingle}
                   <span class="row"
                     ><input
@@ -1097,19 +1174,22 @@
                       }}
                     /> BPM</span
                   >
-                {:else}<div>途中で変わる <small>(タイムラインで直す)</small></div>{/if}
+                {:else}<div>{tr("途中で変わる", "Varies")} <small>{tr("(タイムラインで直す)", "(edit on the timeline)")}</small></div>{/if}
               </label>
-              <div class="field"><span>長さ</span><div>{totalBars} 小節 <small>(タイムラインから)</small></div></div>
+              <div class="field">
+                <span>{tr("長さ", "Length")}</span>
+                <div>{tr(`${totalBars} 小節`, `${plural(totalBars, "bar")}`)} <small>{tr("(タイムラインから)", "(from the timeline)")}</small></div>
+              </div>
               <label class="field"
-                ><span>盛り上がりの型</span><select
+                ><span>{tr("盛り上がりの型", "Energy arc")}</span><select
                   value={d.song?.arc ?? ""}
-                  onchange={(e) => songField("arc", (e.currentTarget as HTMLSelectElement).value, "盛り上がりの型を変える")}
-                  ><option value="">―</option>{#each Object.entries(ARCS) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
+                  onchange={(e) => songField("arc", (e.currentTarget as HTMLSelectElement).value, tr("盛り上がりの型を変える", "Change energy arc"))}
+                  ><option value="">―</option>{#each Object.entries(arcNames) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
                 ></label
               >
-              {#each [["brightness", "明るさ", d.song?.brightness, "暗い", "明るい"], ["density", "音の密度", d.song?.density, "まばら", "ぎっしり"], ["organic", "質感", d.song?.organic, "無機質", "有機的"]] as [key, name, v, lo, hi] (key)}
+              {#each [["brightness", tr("明るさ", "Brightness"), d.song?.brightness, tr("暗い", "Dark"), tr("明るい", "Bright")], ["density", tr("音の密度", "Density"), d.song?.density, tr("まばら", "Sparse"), tr("ぎっしり", "Dense")], ["organic", tr("質感", "Texture"), d.song?.organic, tr("無機質", "Synthetic"), tr("有機的", "Organic")]] as [key, name, v, lo, hi] (key)}
                 <label class="field">
-                  <span>{name}{v == null ? "(未設定)" : `  ${v}`}</span>
+                  <span>{name}{v == null ? tr("(未設定)", " (unset)") : `  ${v}`}</span>
                   <input
                     type="range"
                     min="0"
@@ -1117,42 +1197,42 @@
                     step="1"
                     value={v ?? 5}
                     class:unset={v == null}
-                    onchange={(e) => songField(String(key), Number((e.currentTarget as HTMLInputElement).value), `${name}を変える`)}
+                    onchange={(e) => songField(String(key), Number((e.currentTarget as HTMLInputElement).value), tr(`${name}を変える`, `Change ${String(name).toLowerCase()}`))}
                   />
                   <div class="ends"><span>{lo}</span><span>{hi}</span></div>
                 </label>
               {/each}
               <label class="field"
-                ><span>音量の目標</span><select
+                ><span>{tr("音量の目標", "Target loudness")}</span><select
                   value={d.song?.loudness != null ? String(d.song.loudness) : ""}
                   onchange={(e) => {
                     const v = (e.currentTarget as HTMLSelectElement).value;
-                    songField("loudness", v === "" ? null : Number(v), "音量の目標を変える");
+                    songField("loudness", v === "" ? null : Number(v), tr("音量の目標を変える", "Change target loudness"));
                   }}
                   ><option value="">―</option>{#each [-14, -11, -10, -9, -8, -7, -6] as l (l)}<option value={String(l)}
-                      >{l} LUFS{l === -14 ? "(配信)" : l <= -9 ? "(クラブ)" : ""}</option
+                      >{l} LUFS{l === -14 ? tr("(配信)", " (streaming)") : l <= -9 ? tr("(クラブ)", " (club)") : ""}</option
                     >{/each}</select
                 ></label
               >
               <div class="field">
-                <span>守ること</span>
+                <span>{tr("守ること", "Must-haves")}</span>
                 <div class="tags">
                   {#each d.song?.musts ?? [] as m (m)}<span class="word must"
                       >{m}<button
                         class="wx"
                         type="button"
-                        aria-label="{m} を外す"
-                        onclick={() => songField("musts", (d?.song?.musts ?? []).filter((x) => x !== m), `守ることを外す`)}>×</button
+                        aria-label={tr(`${m} を外す`, `Remove ${m}`)}
+                        onclick={() => songField("musts", (d?.song?.musts ?? []).filter((x) => x !== m), tr(`守ることを外す`, `Remove must-have`))}>×</button
                       ></span
                     >{/each}
                   <input
                     class="wordin"
                     type="text"
-                    placeholder="+ 足す"
+                    placeholder={tr("+ 足す", "+ Add")}
                     bind:value={mustInput}
                     onkeydown={(e) => {
                       if (e.key === "Enter" && !e.isComposing && mustInput.trim()) {
-                        songField("musts", [...(d?.song?.musts ?? []), mustInput.trim()], "守ることを足す");
+                        songField("musts", [...(d?.song?.musts ?? []), mustInput.trim()], tr("守ることを足す", "Add must-have"));
                         mustInput = "";
                       }
                     }}
@@ -1160,7 +1240,7 @@
                 </div>
               </div>
               <label class="field"
-                ><span>参考曲(、で区切る)</span><input
+                ><span>{tr("参考曲(、で区切る)", "References (comma-separated)")}</span><input
                   type="text"
                   value={(d.song?.refs ?? []).join("、")}
                   onchange={(e) =>
@@ -1170,15 +1250,15 @@
                         .split(/[、,]/)
                         .map((x) => x.trim())
                         .filter(Boolean),
-                      "参考曲を変える",
+                      tr("参考曲を変える", "Change references"),
                     )}
                 /></label
               >
               <label class="field wide"
-                ><span>全体のメモ</span><input
+                ><span>{tr("全体のメモ", "Overall note")}</span><input
                   type="text"
                   value={d.song?.note ?? ""}
-                  onchange={(e) => songField("note", (e.currentTarget as HTMLInputElement).value.trim(), "全体のメモを変える")}
+                  onchange={(e) => songField("note", (e.currentTarget as HTMLInputElement).value.trim(), tr("全体のメモを変える", "Change overall note"))}
                 /></label
               >
             </div>
@@ -1189,27 +1269,32 @@
         <div class="timegroup" bind:this={group} onscroll={() => fitSlack(false)}>
           <div class="gtop">
             <div class="grouphead">
-              区間ごとの計画<span>左から右へ曲の時間の流れ</span>
+              {tr("区間ごとの計画", "Plan by section")}<span>{tr("左から右へ曲の時間の流れ", "Song time flows left to right")}</span>
               {#if missingPlans > 0 && (project.sections ?? []).length}
                 <button
                   class="btn sm"
                   type="button"
-                  title="計画の無いパート(と曲全体)を、今の音から推定する。推定は未確認の扱いで、確かめて採用するまで AI は参考としてだけ使う"
-                  onclick={() => estimatePlans(project)}>計画の無い所を推定({missingPlans})</button
+                  title={tr(
+                    "計画の無いパート(と曲全体)を、今の音から推定する。推定は未確認の扱いで、確かめて採用するまで AI は参考としてだけ使う",
+                    "Estimate plans for parts without one (and the whole song) from the current audio. Estimates are unconfirmed; the AI uses them only as a reference until adopted",
+                  )}
+                  onclick={() => estimatePlans(project)}>{tr(`計画の無い所を推定(${missingPlans})`, `Estimate missing plans (${missingPlans})`)}</button
                 >
               {/if}
-              <div class="zoom" role="group" aria-label="横の縮尺">
-                <button class="btn sm" class:on={zoom == null} type="button" title="曲全体が見える幅にする" onclick={() => setZoom(null)}>全体</button>
-                <button class="btn sm icon" type="button" title="縮小" aria-label="縮小" onclick={() => setZoom(pxb / 1.5)}><Icon name="zoom-out" size={13} /></button>
-                <button class="btn sm icon" type="button" title="拡大" aria-label="拡大" onclick={() => setZoom(pxb * 1.5)}><Icon name="zoom-in" size={13} /></button>
+              <div class="zoom" role="group" aria-label={tr("横の縮尺", "Horizontal zoom")}>
+                <button class="btn sm" class:on={zoom == null} type="button" title={tr("曲全体が見える幅にする", "Fit the whole song")} onclick={() => setZoom(null)}
+                  >{tr("全体", "Fit")}</button
+                >
+                <button class="btn sm icon" type="button" title={tr("縮小", "Zoom out")} aria-label={tr("縮小", "Zoom out")} onclick={() => setZoom(pxb / 1.5)}><Icon name="zoom-out" size={13} /></button>
+                <button class="btn sm icon" type="button" title={tr("拡大", "Zoom in")} aria-label={tr("拡大", "Zoom in")} onclick={() => setZoom(pxb * 1.5)}><Icon name="zoom-in" size={13} /></button>
               </div>
             </div>
             <section class="lane">
               <div class="lbody">
                 <div class="labels">
                   <div class="lab1 sechead" class:on={isWhole("sections")}>
-                    区間<button class="btn sm pickall mini" class:on={isWhole("sections")} type="button" onclick={(e) => pickWhole("sections", e)}
-                      >{isWhole("sections") ? "全体を選択中" : "全体を選ぶ"}</button
+                    {tr("区間", "Sections")}<button class="btn sm pickall mini" class:on={isWhole("sections")} type="button" onclick={(e) => pickWhole("sections", e)}
+                      >{isWhole("sections") ? tr("全体を選択中", "All selected") : tr("全体を選ぶ", "Select all")}</button
                     >
                   </div>
                 </div>
@@ -1223,7 +1308,7 @@
                         type="button"
                         title={s.name}
                         onclick={() => pick({ kind: "section", i })}
-                        ><b>{s.name}</b> {s.bars}{#if hasMemo(`section:${s.id ?? s.name}`)}<span class="cm" title="メモがあります">💬</span>{/if}</button
+                        ><b>{s.name}</b> {s.bars}{#if hasMemo(`section:${s.id ?? s.name}`)}<span class="cm" title={tr("メモがあります", "Has notes")}>💬</span>{/if}</button
                       >
                     {/each}
                   </div>
@@ -1237,23 +1322,35 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="lanehead main-head" onclick={(e) => toggleFold("curve", e)}>
-              <button class="fold" type="button" aria-label="折りたたむ・開く" aria-expanded={!folded.curve}
+              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} aria-expanded={!folded.curve}
                 ><Icon name="chevron-down" size={14} /></button
               >
-              <h2>盛り上がり</h2>
+              <h2>{tr("盛り上がり", "Energy")}</h2>
               <button class="btn sm pickall" class:on={isWhole("curve")} type="button" onclick={(e) => pickWhole("curve", e)}
-                >{isWhole("curve") ? "全体を選択中" : "全体を選ぶ"}</button
+                >{isWhole("curve") ? tr("全体を選択中", "All selected") : tr("全体を選ぶ", "Select all")}</button
               >
               {#if folded.curve}
-                <span class="summary">区間ごとの盛り上がりの計画と実測(開くと見えます)</span>
+                <span class="summary">{tr("区間ごとの盛り上がりの計画と実測(開くと見えます)", "Planned and measured energy per section (expand to view)")}</span>
               {:else}
-                <button type="button" class="qmark" aria-label="説明" title="区間ごとの盛り上がりの計画(実線)と実測(点線)。● は実測とずれた区間。&#10;点をドラッグで動かす。ダブルクリックで点を足し、右クリックで消す。&#10;区間の面を上下にドラッグでその区間ごと、Shift + ドラッグで全体を平行に動かす。境目の ⌇ を押すと「つなぐ / 段差」">?</button>
+                <button type="button" class="qmark" aria-label={tr("説明", "Help")} title={tr(
+                    "区間ごとの盛り上がりの計画(実線)と実測(点線)。● は実測とずれた区間。\n点をドラッグで動かす。ダブルクリックで点を足し、右クリックで消す。\n区間の面を上下にドラッグでその区間ごと、Shift + ドラッグで全体を平行に動かす。境目の ⌇ を押すと「つなぐ / 段差」",
+                    "Planned (solid) and measured (dotted) energy per section. ● marks sections off from the measurement.\nDrag a point to move it. Double-click to add a point, right-click to remove it.\nDrag a section's area up/down to shift that section; Shift + drag shifts all. Click ⌇ at a boundary to toggle Smooth / Step",
+                  )}>?</button
+                >
                 <div class="tools">
-                  <button class="btn sm" type="button" title="盛り上がり全体を 0.5 上げる" onclick={() => curveAll({ dv: 0.5 }, "盛り上がり全体を上げる")}>▲ 全体</button>
-                  <button class="btn sm" type="button" title="盛り上がり全体を 0.5 下げる" onclick={() => curveAll({ dv: -0.5 }, "盛り上がり全体を下げる")}>▼ 全体</button>
+                  <button class="btn sm" type="button" title={tr("盛り上がり全体を 0.5 上げる", "Raise the whole curve by 0.5")}
+                    onclick={() => curveAll({ dv: 0.5 }, tr("盛り上がり全体を上げる", "Raise whole energy"))}>▲ {tr("全体", "All")}</button
+                  >
+                  <button class="btn sm" type="button" title={tr("盛り上がり全体を 0.5 下げる", "Lower the whole curve by 0.5")}
+                    onclick={() => curveAll({ dv: -0.5 }, tr("盛り上がり全体を下げる", "Lower whole energy"))}>▼ {tr("全体", "All")}</button
+                  >
                   <span class="sep"></span>
-                  <button class="btn sm" type="button" title="平均を中心に起伏を大きく" onclick={() => curveAll({ scale: 1.2 }, "盛り上がりの起伏を大きく")}>起伏 ＋</button>
-                  <button class="btn sm" type="button" title="平均を中心に起伏を小さく" onclick={() => curveAll({ scale: 1 / 1.2 }, "盛り上がりの起伏を小さく")}>起伏 −</button>
+                  <button class="btn sm" type="button" title={tr("平均を中心に起伏を大きく", "Increase contrast around the average")}
+                    onclick={() => curveAll({ scale: 1.2 }, tr("盛り上がりの起伏を大きく", "Increase energy contrast"))}>{tr("起伏 ＋", "Contrast ＋")}</button
+                  >
+                  <button class="btn sm" type="button" title={tr("平均を中心に起伏を小さく", "Decrease contrast around the average")}
+                    onclick={() => curveAll({ scale: 1 / 1.2 }, tr("盛り上がりの起伏を小さく", "Decrease energy contrast"))}>{tr("起伏 −", "Contrast −")}</button
+                  >
                 </div>
                 <div class="legend">
                   <label
@@ -1261,7 +1358,7 @@
                       type="checkbox"
                       bind:checked={showMeasured}
                       onchange={() => store("glaux.design.measured", showMeasured ? "1" : "0")}
-                    /> 実測を表示</label
+                    /> {tr("実測を表示", "Show measured")}</label
                   >
                 </div>
               {/if}
@@ -1270,12 +1367,14 @@
               <div class="lbody">
                 <div class="labels" style="height:{CH}px">
                   <div class="cvlegend" class:nomeasure={!showMeasured} style="top:{CT}px;height:{cy(0) - CT}px">
-                    <div title="計画した盛り上がり"><i class="ln"></i>計画</div>
-                    <div class="m" title="今の音から測った盛り上がり"><i class="ln dash"></i>実測</div>
+                    <div title={tr("計画した盛り上がり", "Planned energy")}><i class="ln"></i>{tr("計画", "Plan")}</div>
+                    <div class="m" title={tr("今の音から測った盛り上がり", "Energy measured from the current audio")}><i class="ln dash"></i>{tr("実測", "Measured")}</div>
                     <hr />
-                    <div title="次の区間となめらかにつなぐ境目"><span class="mk">⌇</span>つなぐ</div>
-                    <div title="次の区間で急に変わる境目"><span class="mk warn">↕</span>段差</div>
-                    <div class="m" title="計画と実測が 1.5 以上ずれた区間(上の点)"><span class="dot"></span>ずれ</div>
+                    <div title={tr("次の区間となめらかにつなぐ境目", "Boundary that blends smoothly into the next section")}><span class="mk">⌇</span>{tr("つなぐ", "Smooth")}</div>
+                    <div title={tr("次の区間で急に変わる境目", "Boundary that changes abruptly into the next section")}><span class="mk warn">↕</span>{tr("段差", "Step")}</div>
+                    <div class="m" title={tr("計画と実測が 1.5 以上ずれた区間(上の点)", "Sections where plan and measurement differ by 1.5 or more (dot at top)")}>
+                      <span class="dot"></span>{tr("ずれ", "Off")}
+                    </div>
                   </div>
                   <div class="axisline" style="top:{CT}px;height:{cy(0) - CT}px"></div>
                   {#each [0, 2, 4, 6, 8, 10] as v (v)}
@@ -1284,7 +1383,7 @@
                 </div>
                 <div class="hwin" onwheel={onWheel}>
                   <div class="hcontent" style="width:{W}px;transform:translateX({-sx}px)">
-                    <svg width={W} height={CH} viewBox="0 0 {W} {CH}" role="img" aria-label="盛り上がりの計画と実測">
+                    <svg width={W} height={CH} viewBox="0 0 {W} {CH}" role="img" aria-label={tr("盛り上がりの計画と実測", "Planned and measured energy")}>
                       <rect x="0" y="0" width={W} height={CT} class="outside" />
                       <rect x="0" y={cy(0)} width={W} height={CH - cy(0)} class="outside" />
                       {#each [0, 2, 4, 6, 8, 10] as v (v)}
@@ -1303,7 +1402,12 @@
                         {#if showMeasured}
                           <line x1={x0(i) + 2} x2={x0(i) + xw(i) - 2} y1={cy(s.measured)} y2={cy(s.measured)} class="measured" />
                           {#if offSection(i)}
-                            <circle cx={X(0.5)} cy="7" r="3.5" class="offdot"><title>実測とずれている(計画 {s.planned?.toFixed(1)} / 実測 {s.measured.toFixed(1)})</title></circle>
+                            <circle cx={X(0.5)} cy="7" r="3.5" class="offdot"><title
+                              >{tr(
+                                `実測とずれている(計画 ${s.planned?.toFixed(1)} / 実測 ${s.measured.toFixed(1)})`,
+                                `Off from measured (plan ${s.planned?.toFixed(1)} / measured ${s.measured.toFixed(1)})`,
+                              )}</title
+                            ></circle>
                           {/if}
                         {/if}
                         {#if c}
@@ -1339,7 +1443,11 @@
                           <g class="join" class:step={s.join === "step"} onclick={() => toggleJoin(i)}>
                             <rect x={bx - 8} y={CH - 15} width="16" height="12" rx="3" />
                             <text x={bx} y={CH - 6}>{s.join === "step" ? "↕" : "⌇"}</text>
-                            <title>{s.join === "step" ? "段差(急に変わる)。押すとつなぐ" : "つなぐ(なめらか)。押すと段差に"}</title>
+                            <title
+                              >{s.join === "step"
+                                ? tr("段差(急に変わる)。押すとつなぐ", "Step (abrupt). Click to smooth")
+                                : tr("つなぐ(なめらか)。押すと段差に", "Smooth. Click to make a step")}</title
+                            >
                           </g>
                         {/if}
                       {/each}
@@ -1352,7 +1460,7 @@
                 class="vgrip"
                 role="separator"
                 aria-orientation="horizontal"
-                title="ドラッグで盛り上がりの段の高さを変える(ダブルクリックで元に戻す)"
+                title={tr("ドラッグで盛り上がりの段の高さを変える(ダブルクリックで元に戻す)", "Drag to resize the energy lane (double-click to reset)")}
                 onpointerdown={(e) => grip("curve", e)}
                 ondblclick={() => resetGrip("curve")}
               ></div>
@@ -1364,34 +1472,40 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="lanehead main-head" onclick={(e) => toggleFold("band", e)}>
-              <button class="fold" type="button" aria-label="折りたたむ・開く" aria-expanded={!folded.band}
+              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} aria-expanded={!folded.band}
                 ><Icon name="chevron-down" size={14} /></button
               >
-              <h2>パートごとの音域</h2>
+              <h2>{tr("パートごとの音域", "Register by part")}</h2>
               <button class="btn sm pickall" class:on={isWhole("band")} type="button" onclick={(e) => pickWhole("band", e)}
-                >{isWhole("band") ? "全体を選択中" : "全体を選ぶ"}</button
+                >{isWhole("band") ? tr("全体を選択中", "All selected") : tr("全体を選ぶ", "Select all")}</button
               >
               {#if folded.band}
-                <span class="summary">選んでいるパート: {d.parts[selPart]?.name ?? "―"}</span>
+                <span class="summary">{tr("選んでいるパート", "Selected part")}: {d.parts[selPart]?.name ?? "―"}</span>
               {:else}
-                <button type="button" class="qmark" aria-label="説明" title="左の一覧(か役割の段のパート名)でパートを選ぶと、そのパートの音域の帯(計画)が色付きで前に出て、動かせる。点線の枠は実際の音域(下 10%〜上 90%)。&#10;帯を上下にドラッグで移す、上下の端で幅(Shift で全区間まとめて)。下の端のつまみで段の高さ">?</button>
+                <button type="button" class="qmark" aria-label={tr("説明", "Help")} title={tr(
+                    "左の一覧(か役割の段のパート名)でパートを選ぶと、そのパートの音域の帯(計画)が色付きで前に出て、動かせる。点線の枠は実際の音域(下 10%〜上 90%)。\n帯を上下にドラッグで移す、上下の端で幅(Shift で全区間まとめて)。下の端のつまみで段の高さ",
+                    "Pick a part in the list on the left (or a part name in the role lane) to bring its planned register band forward in color and edit it. The dotted box is the actual register (10th to 90th percentile).\nDrag a band up/down to move it, drag its top/bottom edge to change its width (Shift for all sections). Use the grip at the bottom to resize the lane",
+                  )}>?</button
+                >
                 <div class="tools">
-                  <select bind:value={bandTarget} aria-label="まとめて動かす対象"
-                    ><option value="one">選んだパート</option><option value="all">全パート</option></select
+                  <select bind:value={bandTarget} aria-label={tr("まとめて動かす対象", "Apply to")}
+                    ><option value="one">{tr("選んだパート", "Selected part")}</option><option value="all">{tr("全パート", "All parts")}</option></select
                   >
-                  <button class="btn sm" type="button" onclick={() => bandBulk(1, 0)}>▲ 半音</button>
-                  <button class="btn sm" type="button" onclick={() => bandBulk(-1, 0)}>▼ 半音</button>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(1, 0)}>▲ {tr("半音", "Semi")}</button>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(-1, 0)}>▼ {tr("半音", "Semi")}</button>
                   <button class="btn sm" type="button" onclick={() => bandBulk(12, 0)}>▲ 8va</button>
                   <button class="btn sm" type="button" onclick={() => bandBulk(-12, 0)}>▼ 8va</button>
                   <span class="sep"></span>
-                  <button class="btn sm" type="button" onclick={() => bandBulk(0, 2)}>幅 ＋</button>
-                  <button class="btn sm" type="button" onclick={() => bandBulk(0, -2)}>幅 −</button>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(0, 2)}>{tr("幅 ＋", "Width ＋")}</button>
+                  <button class="btn sm" type="button" onclick={() => bandBulk(0, -2)}>{tr("幅 −", "Width −")}</button>
                   <span class="sep"></span>
-                  <button class="btn sm" type="button" title="選んだパートの実際の音域を、計画の帯にする" onclick={bandFromReal}>実際を計画に</button>
+                  <button class="btn sm" type="button" title={tr("選んだパートの実際の音域を、計画の帯にする", "Set the selected part's planned band from its actual register")}
+                    onclick={bandFromReal}>{tr("実際を計画に", "Match plan to actual")}</button
+                  >
                 </div>
                 <div class="legend">
-                  <label title="強いパートどうしの計画の音域の重なりを斜線で(参考。警告ではない)"
-                    ><input type="checkbox" bind:checked={showOverlap} /> 重なり</label
+                  <label title={tr("強いパートどうしの計画の音域の重なりを斜線で(参考。警告ではない)", "Hatch where strong parts' planned registers overlap (for reference, not a warning)")}
+                    ><input type="checkbox" bind:checked={showOverlap} /> {tr("重なり", "Overlap")}</label
                   >
                 </div>
               {/if}
@@ -1408,7 +1522,7 @@
                       ><span class="chip" style="background:{colorOf(pi)}"></span>{p.name}</button
                     >
                   {:else}
-                    <div class="emptyrow">MIDI のトラックがありません</div>
+                    <div class="emptyrow">{tr("MIDI のトラックがありません", "No MIDI tracks")}</div>
                   {/each}
                 </div>
                 <div class="hwin" onwheel={onWheel}>
@@ -1418,7 +1532,7 @@
                     {/each}
                   </div>
                   <div class="hcontent" style="width:{W}px;transform:translateX({-sx}px)">
-                    <svg width={W} height={BH} viewBox="0 0 {W} {BH}" role="img" aria-label="パートごとの音域">
+                    <svg width={W} height={BH} viewBox="0 0 {W} {BH}" role="img" aria-label={tr("パートごとの音域", "Register by part")}>
                       <defs>
                         <pattern id="glaux-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
                           <line x1="0" y1="0" x2="0" y2="6" class="hatch" />
@@ -1485,7 +1599,7 @@
                               height={Math.max(2, BY(c.register[0]) - BY(c.register[1]) + 2)}
                               class="real"
                               pointer-events="none"
-                            ><title>実際の音域 {noteName(c.register[0])}〜{noteName(c.register[1])}</title></rect>
+                            ><title>{tr("実際の音域", "Actual register")} {noteName(c.register[0])}〜{noteName(c.register[1])}</title></rect>
                           {/if}
                         {/each}
                       {/if}
@@ -1498,7 +1612,7 @@
                 class="vgrip"
                 role="separator"
                 aria-orientation="horizontal"
-                title="ドラッグで音域の段の高さ(音高の縦の大きさ)を変える(ダブルクリックで元に戻す)"
+                title={tr("ドラッグで音域の段の高さ(音高の縦の大きさ)を変える(ダブルクリックで元に戻す)", "Drag to resize the register lane (pitch scale; double-click to reset)")}
                 onpointerdown={(e) => grip("band", e)}
                 ondblclick={() => resetGrip("band")}
               ></div>
@@ -1510,18 +1624,22 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="lanehead main-head" onclick={(e) => toggleFold("table", e)}>
-              <button class="fold" type="button" aria-label="折りたたむ・開く" aria-expanded={!folded.table}
+              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} aria-expanded={!folded.table}
                 ><Icon name="chevron-down" size={14} /></button
               >
-              <h2>パートの役割</h2>
+              <h2>{tr("パートの役割", "Part roles")}</h2>
               <button class="btn sm pickall" class:on={isWhole("table")} type="button" onclick={(e) => pickWhole("table", e)}
-                >{isWhole("table") ? "全体を選択中" : "全体を選ぶ"}</button
+                >{isWhole("table") ? tr("全体を選択中", "All selected") : tr("全体を選ぶ", "Select all")}</button
               >
               {#if folded.table}
-                <span class="summary">{d.parts.length} パート × {d.sections.length} 区間</span>
+                <span class="summary">{tr(`${d.parts.length} パート × ${d.sections.length} 区間`, `${plural(d.parts.length, "part")} × ${plural(d.sections.length, "section")}`)}</span>
               {:else}
-                <button type="button" class="qmark" aria-label="説明" title="マスは区間ごとの存在の段階(計画)。計画の無いマスは、測った段階を薄く出す。&#10;マスを押すと選ぶ。役割を変えるのはマスの ▾(選ぶと出る)か数字キー 0〜5。押したまま横へドラッグで同じ段階を塗る。&#10;● は計画と実際がずれたマス。🔒 は固定(AI が作り直さない。固定のマスは塗らない)">?</button>
-                <span class="hint">🔒 固定 · 💬 メモ · ● 実際とずれ · 薄い字 = 計画なし(実測)</span>
+                <button type="button" class="qmark" aria-label={tr("説明", "Help")} title={tr(
+                    "マスは区間ごとの存在の段階(計画)。計画の無いマスは、測った段階を薄く出す。\nマスを押すと選ぶ。役割を変えるのはマスの ▾(選ぶと出る)か数字キー 0〜5。押したまま横へドラッグで同じ段階を塗る。\n● は計画と実際がずれたマス。🔒 は固定(AI が作り直さない。固定のマスは塗らない)",
+                    "Each cell is the planned presence per section. Cells without a plan show the measured level faintly.\nClick a cell to select it. Change the role with the cell's ▾ (shown when selected) or number keys 0–5. Hold and drag sideways to paint the same level.\n● marks cells where plan and actual differ. 🔒 means locked (the AI won't redo it; locked cells aren't painted)",
+                  )}>?</button
+                >
+                <span class="hint">{tr("🔒 固定 · 💬 メモ · ● 実際とずれ · 薄い字 = 計画なし(実測)", "🔒 Locked · 💬 Note · ● Off from actual · Faint = no plan (measured)")}</span>
               {/if}
             </div>
             {#if !folded.table}
@@ -1537,10 +1655,14 @@
                         onclick={() => pick({ kind: "part", p: pi })}
                       >
                         <span class="trackname"><span class="chip" style="background:{colorOf(pi)}"></span>{p.name}</span>
-                        <small>{p.function ? FUNCTIONS[p.function] ?? p.function : p.plan_id ? "" : "計画なし"}{p.estimated ? "(推定)" : ""}</small>
+                        <small
+                          >{p.function ? (functionNames[p.function] ?? p.function) : p.plan_id ? "" : tr("計画なし", "No plan")}{p.estimated
+                            ? tr("(推定)", " (estimated)")
+                            : ""}</small
+                        >
                       </button>
                     {:else}
-                      <div class="emptyrow">MIDI のトラックがありません</div>
+                      <div class="emptyrow">{tr("MIDI のトラックがありません", "No MIDI tracks")}</div>
                     {/each}
                   </div>
                   <div class="hwin" onwheel={onWheel}>
@@ -1559,7 +1681,9 @@
                               style="left:{x0(i)}px;width:{xw(i)}px;height:{rowH - 1}px"
                               role="button"
                               tabindex="0"
-                              aria-label="{p.name} / {d.sections[i]?.name}: {planned != null ? PRESENCE[planned] : `計画なし(実測 ${PRESENCE[c.measured]})`}"
+                              aria-label="{p.name} / {d.sections[i]?.name}: {planned != null
+                                ? presenceNames[planned]
+                                : tr(`計画なし(実測 ${presenceNames[c.measured]})`, `No plan (measured: ${presenceNames[c.measured]})`)}"
                               onclick={() => pick({ kind: "cell", p: pi, i })}
                               onkeydown={(e) => {
                                 if (e.key === "Enter" || e.key === " ") {
@@ -1570,18 +1694,26 @@
                               onpointerdown={(e) => paintStart(e, pi, i)}
                               onpointerenter={(e) => paintEnter(e, pi, i)}
                             >
-                              {#if c.locked}<span class="lock" title="固定(AI が作り直さない)">🔒</span>{/if}
-                              {#if hasMemo(`cell:${p.track_id}:${d.sections[i]?.id ?? d.sections[i]?.name}`)}<span class="cm" title="メモがあります">💬</span>{/if}
+                              {#if c.locked}<span class="lock" title={tr("固定(AI が作り直さない)", "Locked (the AI won't redo it)")}>🔒</span>{/if}
+                              {#if hasMemo(`cell:${p.track_id}:${d.sections[i]?.id ?? d.sections[i]?.name}`)}<span class="cm" title={tr("メモがあります", "Has notes")}>💬</span>{/if}
                               <span class="steps">
                                 {#each [1, 2, 3, 4, 5] as n (n)}<i class:on={n <= lv}></i>{/each}
                               </span>
-                              <span class="lab">{planned != null ? PRESENCE[planned] : c.notes > 0 ? `実測 ${PRESENCE[c.measured]}` : "―"}</span>
+                              <span class="lab"
+                                >{planned != null
+                                  ? presenceNames[planned]
+                                  : c.notes > 0
+                                    ? tr(`実測 ${presenceNames[c.measured]}`, `Measured: ${presenceNames[c.measured]}`)
+                                    : "―"}</span
+                              >
                               <button
                                 class="cellbtn"
                                 class:open={pop?.p === pi && pop?.i === i}
                                 type="button"
-                                title={pop?.p === pi && pop?.i === i ? "選択肢を閉じる" : "役割を変える(数字キー 0〜5 でも)"}
-                                aria-label="{p.name} / {d.sections[i]?.name} の役割を変える"
+                                title={pop?.p === pi && pop?.i === i
+                                  ? tr("選択肢を閉じる", "Close options")
+                                  : tr("役割を変える(数字キー 0〜5 でも)", "Change role (or number keys 0–5)")}
+                                aria-label={tr(`${p.name} / ${d.sections[i]?.name} の役割を変える`, `Change role of ${p.name} / ${d.sections[i]?.name}`)}
                                 onclick={(e) => togglePop(e, pi, i)}><Icon name="chevron-down" size={12} /></button
                               >
                             </div>
@@ -1597,14 +1729,14 @@
                 class="vgrip"
                 role="separator"
                 aria-orientation="horizontal"
-                title="ドラッグで役割の段の高さ(行の高さ)を変える(ダブルクリックで元に戻す)"
+                title={tr("ドラッグで役割の段の高さ(行の高さ)を変える(ダブルクリックで元に戻す)", "Drag to resize the role lane (row height; double-click to reset)")}
                 onpointerdown={(e) => grip("table", e)}
                 ondblclick={() => resetGrip("table")}
               ></div>
             {/if}
           </section>
           <div style="height:{slack}px;flex:none" aria-hidden="true"></div>
-          <div class="hbar" bind:this={hbar} onscroll={onHbar} aria-label="横スクロール">
+          <div class="hbar" bind:this={hbar} onscroll={onHbar} aria-label={tr("横スクロール", "Horizontal scroll")}>
             <div style="width:{W}px;height:1px"></div>
           </div>
         </div>
@@ -1613,13 +1745,15 @@
       <!-- 詳しい情報 -->
       <aside class="panel" aria-live="polite">
         {#if sel.kind === "none"}
-          <h3>選んでいません</h3>
+          <h3>{tr("選んでいません", "Nothing selected")}</h3>
           <p class="empty">
-            区間・パート・マスをクリックするか、段の見出しの「全体を選ぶ」で選ぶと、ここに詳しく出ます。何も選んでいないときの AI
-            への指示は、曲全体が対象になります。
+            {tr(
+              "区間・パート・マスをクリックするか、段の見出しの「全体を選ぶ」で選ぶと、ここに詳しく出ます。何も選んでいないときの AI への指示は、曲全体が対象になります。",
+              "Click a section, part or cell, or use \"Select all\" in a lane header, to see details here. With nothing selected, instructions to the AI apply to the whole song.",
+            )}
           </p>
           {#if d.deviations.length}
-            <h4>計画と実際のずれ({d.deviations.length})</h4>
+            <h4>{tr(`計画と実際のずれ(${d.deviations.length})`, `Plan vs. actual (${d.deviations.length})`)}</h4>
             {#each d.deviations.slice(0, 8) as x, k (k)}
               <div class="finding {x.severity}"><span class="dot"></span><span>{x.what}</span></div>
             {/each}
@@ -1628,61 +1762,79 @@
           <h3>{designTargetLabel(d, sel)}</h3>
           {#if sel.kind === "song"}
             <dl class="kv">
-              <dt>ジャンル</dt><dd>{d.song?.genre ?? "―"}</dd>
-              <dt>盛り上がりの型</dt><dd>{d.song?.arc ? ARCS[d.song.arc] : "―"}</dd>
-              <dt>テンポ</dt><dd>{tempo}</dd>
-              <dt>守ること</dt><dd>{(d.song?.musts ?? []).join("、") || "―"}</dd>
-              <dt>状態</dt><dd>{d.song ? (d.song_estimated ? "推定(未確認)" : "採用済み") : "計画なし"}</dd>
+              <dt>{tr("ジャンル", "Genre")}</dt><dd>{d.song?.genre ?? "―"}</dd>
+              <dt>{tr("盛り上がりの型", "Energy arc")}</dt><dd>{d.song?.arc ? arcNames[d.song.arc] : "―"}</dd>
+              <dt>{tr("テンポ", "Tempo")}</dt><dd>{tempo}</dd>
+              <dt>{tr("守ること", "Must-haves")}</dt><dd>{(d.song?.musts ?? []).join(tr("、", ", ")) || "―"}</dd>
+              <dt>{tr("状態", "Status")}</dt>
+              <dd>{d.song ? (d.song_estimated ? tr("推定(未確認)", "Estimated (unconfirmed)") : tr("採用済み", "Adopted")) : tr("計画なし", "No plan")}</dd>
             </dl>
             <div class="actions">
               <button
                 class="btn sm"
                 type="button"
                 disabled={!d.song?.arc}
-                title="盛り上がりの型に合わせて、区間ごとの盛り上がりの高さを動かす(区間の中の形は残す。取り消せる)"
-                onclick={applyArc}>型を盛り上がりに当てる</button
+                title={tr(
+                  "盛り上がりの型に合わせて、区間ごとの盛り上がりの高さを動かす(区間の中の形は残す。取り消せる)",
+                  "Shift each section's energy level to fit the arc (shapes within sections are kept; can be undone)",
+                )}
+                onclick={applyArc}>{tr("型を盛り上がりに当てる", "Apply arc to energy")}</button
               >
             </div>
           {:else if sel.kind === "lane"}
             {#if sel.lane === "curve"}
               {@const hi = d.sections.reduce((a, s, i) => (s.measured > (d.sections[a]?.measured ?? -1) ? i : a), 0)}
               <dl class="kv">
-                <dt>区間</dt><dd>{d.sections.length}</dd>
-                <dt>いちばん高い(実測)</dt><dd>{d.sections[hi]?.name}({d.sections[hi]?.measured.toFixed(1)})</dd>
-                <dt>段差</dt><dd>{d.sections.filter((s, i) => s.join === "step" && i < d.sections.length - 1).map((s) => `${s.name} → 次`).join("、") || "なし"}</dd>
-                <dt>盛り上がりの型</dt><dd>{d.song?.arc ? ARCS[d.song.arc] : "―"}</dd>
+                <dt>{tr("区間", "Sections")}</dt><dd>{d.sections.length}</dd>
+                <dt>{tr("いちばん高い(実測)", "Highest (measured)")}</dt><dd>{d.sections[hi]?.name}({d.sections[hi]?.measured.toFixed(1)})</dd>
+                <dt>{tr("段差", "Steps")}</dt>
+                <dd>
+                  {d.sections
+                    .filter((s, i) => s.join === "step" && i < d.sections.length - 1)
+                    .map((s) => tr(`${s.name} → 次`, `${s.name} → next`))
+                    .join(tr("、", ", ")) || tr("なし", "None")}
+                </dd>
+                <dt>{tr("盛り上がりの型", "Energy arc")}</dt><dd>{d.song?.arc ? arcNames[d.song.arc] : "―"}</dd>
               </dl>
               {#each d.sections.filter((_, i) => offSection(i)) as s (s.name)}
-                <div class="finding warn"><span class="dot"></span><span>「{s.name}」が計画とずれている(計画 {s.planned?.toFixed(1)} / 実測 {s.measured.toFixed(1)})</span></div>
+                <div class="finding warn">
+                  <span class="dot"></span><span
+                    >{tr(
+                      `「${s.name}」が計画とずれている(計画 ${s.planned?.toFixed(1)} / 実測 ${s.measured.toFixed(1)})`,
+                      `"${s.name}" is off from the plan (plan ${s.planned?.toFixed(1)} / measured ${s.measured.toFixed(1)})`,
+                    )}</span
+                  >
+                </div>
               {/each}
             {:else if sel.lane === "band"}
               <dl class="kv">
-                <dt>パート</dt><dd>{d.parts.length}</dd>
-                <dt>計画のあるパート</dt><dd>{d.parts.filter((p) => p.plan_id).length}</dd>
+                <dt>{tr("パート", "Parts")}</dt><dd>{d.parts.length}</dd>
+                <dt>{tr("計画のあるパート", "Parts with a plan")}</dt><dd>{d.parts.filter((p) => p.plan_id).length}</dd>
               </dl>
               {#each devOf((x) => !!x.track && x.what.includes("音域")) as x, k (k)}
                 <div class="finding {x.severity}"><span class="dot"></span><span>{x.what}</span></div>
               {/each}
             {:else if sel.lane === "table"}
               <dl class="kv">
-                <dt>大きさ</dt><dd>{d.parts.length} パート × {d.sections.length} 区間</dd>
-                <dt>固定</dt><dd>{d.parts.reduce((a, p) => a + p.cells.filter((c) => c.locked).length, 0)} マス</dd>
-                <dt>ずれ</dt><dd>{d.parts.reduce((a, p) => a + p.cells.filter(cellOff).length, 0)} マス</dd>
+                <dt>{tr("大きさ", "Size")}</dt><dd>{tr(`${d.parts.length} パート × ${d.sections.length} 区間`, `${plural(d.parts.length, "part")} × ${plural(d.sections.length, "section")}`)}</dd>
+                <dt>{tr("固定", "Locked")}</dt><dd>{d.parts.reduce((a, p) => a + p.cells.filter((c) => c.locked).length, 0)} {tr("マス", "cells")}</dd>
+                <dt>{tr("ずれ", "Off")}</dt><dd>{d.parts.reduce((a, p) => a + p.cells.filter(cellOff).length, 0)} {tr("マス", "cells")}</dd>
               </dl>
             {:else}
               <dl class="kv">
-                <dt>並び</dt><dd>{d.sections.map((s) => `${s.name}(${s.bars})`).join(" → ")}</dd>
-                <dt>長さ</dt><dd>{totalBars} 小節</dd>
+                <dt>{tr("並び", "Order")}</dt><dd>{d.sections.map((s) => `${s.name}(${s.bars})`).join(" → ")}</dd>
+                <dt>{tr("長さ", "Length")}</dt><dd>{tr(`${totalBars} 小節`, `${plural(totalBars, "bar")}`)}</dd>
               </dl>
             {/if}
           {:else if sel.kind === "section"}
             {@const s = d.sections[sel.i]}
             {#if s}
               <dl class="kv">
-                <dt>位置</dt><dd>{s.start_bar} 小節目から {s.bars} 小節</dd>
-                <dt>盛り上がり</dt><dd>計画 {s.planned != null ? s.planned.toFixed(1) : "―"} / 実測 {s.measured.toFixed(1)}</dd>
-                <dt>次との境目</dt><dd>{sel.i < d.sections.length - 1 ? (s.join === "step" ? "段差" : "つなぐ") : "―"}</dd>
-                <dt>意図</dt><dd>{project.sections?.find((m) => m.name === s.name)?.note ?? "―"}</dd>
+                <dt>{tr("位置", "Position")}</dt><dd>{tr(`${s.start_bar} 小節目から ${s.bars} 小節`, `${plural(s.bars, "bar")} from bar ${s.start_bar}`)}</dd>
+                <dt>{tr("盛り上がり", "Energy")}</dt>
+                <dd>{tr("計画", "Plan")} {s.planned != null ? s.planned.toFixed(1) : "―"} / {tr("実測", "Measured")} {s.measured.toFixed(1)}</dd>
+                <dt>{tr("次との境目", "Next boundary")}</dt><dd>{sel.i < d.sections.length - 1 ? (s.join === "step" ? tr("段差", "Step") : tr("つなぐ", "Smooth")) : "―"}</dd>
+                <dt>{tr("意図", "Intent")}</dt><dd>{project.sections?.find((m) => m.name === s.name)?.note ?? "―"}</dd>
               </dl>
               {#each devOf((x) => x.section === sectionKey(sel.i)) as x, k (k)}
                 <div class="finding {x.severity}"><span class="dot"></span><span>{x.what}</span></div>
@@ -1694,44 +1846,56 @@
               {#if sel.kind === "cell"}
                 {@const c = p.cells[sel.i]}
                 <dl class="kv">
-                  <dt>働き</dt><dd>{c.function ? FUNCTIONS[c.function] : p.function ? FUNCTIONS[p.function] : "―"}</dd>
-                  <dt>存在(計画)</dt><dd>{c.planned != null ? `${c.planned} ${PRESENCE[c.planned]}` : "計画なし"}</dd>
-                  <dt>存在(実測)</dt><dd>{c.measured} {PRESENCE[c.measured]}({c.notes} 音)</dd>
-                  <dt>音域(計画)</dt><dd>{c.planned_register ? `${noteName(c.planned_register[0])}〜${noteName(c.planned_register[1])}` : "―"}</dd>
-                  <dt>音域(実際)</dt><dd>{c.register ? `${noteName(c.register[0])}〜${noteName(c.register[1])}` : "―"}</dd>
-                  <dt>密度</dt><dd>{c.density}</dd>
-                  <dt>固定</dt><dd>{c.locked ? "🔒 この区間は固定" : "なし"}</dd>
+                  <dt>{tr("働き", "Function")}</dt><dd>{c.function ? functionNames[c.function] : p.function ? functionNames[p.function] : "―"}</dd>
+                  <dt>{tr("存在(計画)", "Presence (plan)")}</dt><dd>{c.planned != null ? `${c.planned} ${presenceNames[c.planned]}` : tr("計画なし", "No plan")}</dd>
+                  <dt>{tr("存在(実測)", "Presence (measured)")}</dt><dd>{c.measured} {presenceNames[c.measured]}{tr(`(${c.notes} 音)`, ` (${plural(c.notes, "note")})`)}</dd>
+                  <dt>{tr("音域(計画)", "Register (plan)")}</dt><dd>{c.planned_register ? `${noteName(c.planned_register[0])}〜${noteName(c.planned_register[1])}` : "―"}</dd>
+                  <dt>{tr("音域(実際)", "Register (actual)")}</dt><dd>{c.register ? `${noteName(c.register[0])}〜${noteName(c.register[1])}` : "―"}</dd>
+                  <dt>{tr("密度", "Density")}</dt><dd>{c.density == null ? "" : Math.round(c.density * 100) / 100}</dd>
+                  <dt>{tr("固定", "Locked")}</dt><dd>{c.locked ? tr("🔒 この区間は固定", "🔒 This section is locked") : tr("なし", "No")}</dd>
                 </dl>
                 {#each devOf((x) => x.track === p.name && x.section === c.section) as x, k (k)}
                   <div class="finding {x.severity}"><span class="dot"></span><span>{x.what}</span></div>
                 {/each}
               {:else}
                 <dl class="kv">
-                  <dt>働き</dt>
+                  <dt>{tr("働き", "Function")}</dt>
                   <dd>
                     <select
                       value={p.function ?? ""}
-                      aria-label="このパートの既定の働き"
+                      aria-label={tr("このパートの既定の働き", "Default function of this part")}
                       onchange={(e) => setPartFunction(sel.kind === "part" ? sel.p : 0, (e.currentTarget as HTMLSelectElement).value)}
-                      ><option value="">―</option>{#each Object.entries(FUNCTIONS) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
+                      ><option value="">―</option>{#each Object.entries(functionNames) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
                     >
                   </dd>
-                  <dt>計画</dt><dd>{p.plan_id ? (p.estimated ? "推定(未確認)" : "採用済み") : "なし(直すと作られる)"}</dd>
-                  <dt>鳴っている区間</dt><dd>{p.cells.filter((c) => c.notes > 0).length} / {p.cells.length}</dd>
+                  <dt>{tr("計画", "Plan")}</dt>
+                  <dd>
+                    {p.plan_id
+                      ? p.estimated
+                        ? tr("推定(未確認)", "Estimated (unconfirmed)")
+                        : tr("採用済み", "Adopted")
+                      : tr("なし(直すと作られる)", "None (created when you edit)")}
+                  </dd>
+                  <dt>{tr("鳴っている区間", "Sections playing")}</dt><dd>{p.cells.filter((c) => c.notes > 0).length} / {p.cells.length}</dd>
                 </dl>
                 {#each devOf((x) => x.track === p.name) as x, k (k)}
                   <div class="finding {x.severity}"><span class="dot"></span><span>{x.what}</span></div>
                 {/each}
               {/if}
               {#if partClips(p.name).length}
-                <h4>クリップの状態</h4>
+                <h4>{tr("クリップの状態", "Clip status")}</h4>
                 {#each partClips(p.name) as c (c.clip_id)}
                   <div class="clipstate">
-                    {#if c.plan === "ahead"}<span class="badge ahead">計画が先に進んだ</span>{:else if c.plan === "in_sync"}<span class="badge">計画どおり</span>{/if}
-                    {#if c.edited_bars?.length}<span class="badge edited"
-                        >手で直した: {c.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}〜${b}`)).join("・")} 小節</span
+                    {#if c.plan === "ahead"}<span class="badge ahead">{tr("計画が先に進んだ", "Plan is ahead")}</span>{:else if c.plan === "in_sync"}<span class="badge"
+                        >{tr("計画どおり", "Matches plan")}</span
                       >{/if}
-                    {#if c.locked_notes}<span class="badge">🔒 {c.locked_notes} 音</span>{/if}
+                    {#if c.edited_bars?.length}<span class="badge edited"
+                        >{tr(
+                          `手で直した: ${c.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}〜${b}`)).join("・")} 小節`,
+                          `Hand-edited bars: ${c.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", ")}`,
+                        )}</span
+                      >{/if}
+                    {#if c.locked_notes}<span class="badge">🔒 {tr(`${c.locked_notes} 音`, `${plural(c.locked_notes, "note")}`)}</span>{/if}
                   </div>
                 {/each}
               {/if}
@@ -1739,37 +1903,47 @@
           {/if}
           <!-- メモ: 所に付く人の言葉(AI はその所を作る・直すときに読む)。AI とのやりとりは下のチャット -->
           <div class="memo-box">
-            <h4>メモ({memos.length})</h4>
+            <h4>{tr(`メモ(${memos.length})`, `Notes (${memos.length})`)}</h4>
             {#if memos.length}
               <div class="thread">
                 {#each memos as m, k (k)}
                   <div class="memo">
-                    <div class="who">あなた{m.when ? ` · ${new Date(m.when).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}</div>
+                    <div class="who">
+                      {tr("あなた", "You")}{m.when
+                        ? ` · ${new Date(m.when).toLocaleString(isEn() ? "en-US" : "ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+                        : ""}
+                    </div>
                     {m.text}
                   </div>
                 {/each}
               </div>
             {:else}
-              <p class="empty">この所のメモはまだありません。AI は作る・直すときにここを読みます</p>
+              <p class="empty">{tr("この所のメモはまだありません。AI は作る・直すときにここを読みます", "No notes here yet. The AI reads these when creating or editing")}</p>
             {/if}
-            <textarea bind:value={memoText} rows="2" placeholder="例: ここはもっと沈んだ感じに / ハットは抜きたい"></textarea>
+            <textarea bind:value={memoText} rows="2" placeholder={tr("例: ここはもっと沈んだ感じに / ハットは抜きたい", "e.g. Make this feel darker / drop the hi-hat")}></textarea>
             <div class="actions">
-              <button class="btn sm" type="button" disabled={!memoText.trim()} onclick={saveMemo}>メモを残す</button>
-              <button class="btn sm" type="button" onclick={askAi} title="下のチャットの入力欄へ(選んだ所が対象として添わる)"
-                >この所について AI に頼む ↓</button
+              <button class="btn sm" type="button" disabled={!memoText.trim()} onclick={saveMemo}>{tr("メモを残す", "Add note")}</button>
+              <button class="btn sm" type="button" onclick={askAi} title={tr("下のチャットの入力欄へ(選んだ所が対象として添わる)", "Go to the chat input below (the selection is attached as the target)")}
+                >{tr("この所について AI に頼む ↓", "Ask AI about this ↓")}</button
               >
             </div>
           </div>
           <div class="actions two">
-            <button class="btn sm" type="button" title="計画の今の版から作り直すよう AI に頼む(手で直した小節と固定の音は残す)" onclick={() => remake(false)}
-              >この版から作り直す</button
+            <button
+              class="btn sm"
+              type="button"
+              title={tr("計画の今の版から作り直すよう AI に頼む(手で直した小節と固定の音は残す)", "Ask the AI to regenerate from the current plan (keeps hand-edited bars and locked notes)")}
+              onclick={() => remake(false)}>{tr("この版から作り直す", "Regenerate from plan")}</button
             >
             <button
               class="btn sm"
               class:danger={overwriteArmed}
               type="button"
-              title="手で直した所も含めて作り直すよう AI に頼む(固定の音は残る)。押すと確かめの表示になり、もう一度で送る"
-              onclick={() => remake(true)}>{overwriteArmed ? "もう一度押すと送ります" : "手直しも含めて上書き"}</button
+              title={tr(
+                "手で直した所も含めて作り直すよう AI に頼む(固定の音は残る)。押すと確かめの表示になり、もう一度で送る",
+                "Ask the AI to regenerate including hand edits (locked notes are kept). Click once to arm, again to send",
+              )}
+              onclick={() => remake(true)}>{overwriteArmed ? tr("もう一度押すと送ります", "Click again to send") : tr("手直しも含めて上書き", "Overwrite hand edits")}</button
             >
           </div>
         {/if}
@@ -1779,9 +1953,9 @@
       {@const p = d.parts[pop.p]}
       {@const c = p.cells[pop.i]}
       {@const cur = lvOf(pop.p, pop.i)}
-      <div class="pop" style="left:{pop.x}px;{pop.up ? `bottom:${window.innerHeight - pop.y}px` : `top:${pop.y}px`}" role="dialog" aria-label="役割を変える">
+      <div class="pop" style="left:{pop.x}px;{pop.up ? `bottom:${window.innerHeight - pop.y}px` : `top:${pop.y}px`}" role="dialog" aria-label={tr("役割を変える", "Change role")}>
         <h4>{p.name} / {d.sections[pop.i]?.name}</h4>
-        {#each PRESENCE as name, n (n)}
+        {#each presenceNames as name, n (n)}
           <button
             class="opt"
             class:on={cur === n}
@@ -1797,14 +1971,14 @@
           </button>
         {/each}
         <label class="row"
-          >働き <select
+          >{tr("働き", "Function")} <select
             value={c.function ?? p.function ?? ""}
             onchange={(e) => {
               const t = pop;
               pop = null;
               if (t) setCellProp(t.p, t.i, "function", (e.currentTarget as HTMLSelectElement).value);
             }}
-            ><option value="">―</option>{#each Object.entries(FUNCTIONS) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
+            ><option value="">―</option>{#each Object.entries(functionNames) as [k, n] (k)}<option value={k}>{n}</option>{/each}</select
           ></label
         >
         <label class="row"
@@ -1816,9 +1990,14 @@
               pop = null;
               if (t) setCellProp(t.p, t.i, "locked", (e.currentTarget as HTMLInputElement).checked);
             }}
-          /> 🔒 固定する</label
+          /> 🔒 {tr("固定する", "Lock")}</label
         >
-        <p class="help">固定した所は、AI が作り直すとき(「手直しも含めて上書き」でも)変えません。あなたはいつでも変えられます。</p>
+        <p class="help">
+          {tr(
+            "固定した所は、AI が作り直すとき(「手直しも含めて上書き」でも)変えません。あなたはいつでも変えられます。",
+            "Locked parts are not changed when the AI regenerates (even with \"Overwrite hand edits\"). You can still change them anytime.",
+          )}
+        </p>
       </div>
     {/if}
   {/if}

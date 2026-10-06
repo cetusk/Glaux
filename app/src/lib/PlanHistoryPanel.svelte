@@ -3,42 +3,60 @@
   // 「この変更だけ取り消す」(後の変更は残す)。設計画面の Ctrl+Z も計画に効く
   import Icon from "./Icon.svelte";
   import { designStore, restorePlan, revertPlanEntry, type PlanHistoryEntry } from "./design.svelte";
+  import { isEn, tr } from "./i18n.svelte";
 
   const d = $derived(designStore.data);
   const nameOf = (id: string) => d?.plans.find((p) => p.plan_id === id)?.name ?? id;
   const isProposal = (id: string) => d?.plans.find((p) => p.plan_id === id)?.state === "proposal";
   const kindOf = (id: string) => {
-    if (isProposal(id)) return "案";
+    if (isProposal(id)) return tr("案", "Proposal");
     const k = d?.plans.find((p) => p.plan_id === id)?.kind;
-    return k === "song" ? "曲全体" : k === "part" ? "パート" : k === "melody" ? "旋律" : "";
+    return k === "song" ? tr("曲全体", "Whole song") : k === "part" ? tr("パート", "Part") : k === "melody" ? tr("旋律", "Melody") : "";
   };
   function who(e: PlanHistoryEntry): string {
     switch (e.author.kind) {
       case "ai":
         return `AI (${e.author.model})`;
       case "human":
-        return "人間";
+        return tr("人間", "Human");
       default:
-        return "システム";
+        return tr("システム", "System");
     }
   }
-  const OPS: Record<string, string> = { create: "作る", replace: "置き換え", edit: "直す", delete: "消す" };
-  const TRIGGERS: Record<string, string> = { user: "人の言葉", finding: "点検の指摘", listening: "聴き比べ" };
+  // 表示名は画面の言語で(表示のたびに作る。言語を切り替えたら描き直される)
+  const ops = (): Record<string, string> => ({
+    create: tr("作る", "Create"),
+    replace: tr("置き換え", "Replace"),
+    edit: tr("直す", "Edit"),
+    delete: tr("消す", "Delete"),
+  });
+  const triggers = (): Record<string, string> => ({
+    user: tr("人の言葉", "User request"),
+    finding: tr("点検の指摘", "Check finding"),
+    listening: tr("聴き比べ", "Listening"),
+  });
   function timeText(ts: string): string {
     const t = new Date(ts);
-    return t.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    return t.toLocaleString(isEn() ? "en-US" : "ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 </script>
 
 <div class="panel">
   <h2>
-    <Icon name="history" size={15} />計画の履歴 <span class="count">{d?.history_total ?? 0}</span>
-    {#if d?.redoable}<span class="redo" title="取り消した計画の変更(AI に「やり直して」と頼めます)">取り消し済み {d.redoable}</span>{/if}
+    <Icon name="history" size={15} />{tr("計画の履歴", "Plan history")} <span class="count">{d?.history_total ?? 0}</span>
+    {#if d?.redoable}<span class="redo" title={tr("取り消した計画の変更(AI に「やり直して」と頼めます)", "Undone plan changes (you can ask the AI to redo them)")}
+        >{tr("取り消し済み", "Undone")} {d.redoable}</span
+      >{/if}
   </h2>
   {#if !d}
-    <div class="empty">読み込み中…</div>
+    <div class="empty">{tr("読み込み中…", "Loading…")}</div>
   {:else if d.history.length === 0}
-    <div class="empty">まだ計画の変更はありません。計画は AI が set_song_plan・save_plan などで書くと、ここに理由と一緒に残ります。</div>
+    <div class="empty">
+      {tr(
+        "まだ計画の変更はありません。計画は AI が set_song_plan・save_plan などで書くと、ここに理由と一緒に残ります。",
+        "No plan changes yet. When the AI writes a plan with set_song_plan, save_plan, etc., it appears here with the reason.",
+      )}
+    </div>
   {:else}
     <ul>
       {#each d.history as e, k (e.entry_id)}
@@ -46,28 +64,34 @@
           <div class="head">
             <span class="badge {e.author.kind}">{who(e)}</span>
             <span class="head-right">
-              {#if k === 0}<span class="now">今</span>{/if}
+              {#if k === 0}<span class="now">{tr("今", "Now")}</span>{/if}
               <span class="time">{timeText(e.time)}</span>
             </span>
           </div>
           <div class="label">
-            <span class="plan">{kindOf(e.plan_id)}「{nameOf(e.plan_id)}」</span>
-            {OPS[e.op] ?? e.op}{e.rev != null ? `(版 ${e.rev})` : ""}{e.reverts ? "・取り消し" : ""}
+            <span class="plan">{kindOf(e.plan_id)}{tr(`「${nameOf(e.plan_id)}」`, ` "${nameOf(e.plan_id)}" `)}</span>
+            {ops()[e.op] ?? e.op}{e.rev != null ? tr(`(版 ${e.rev})`, ` (rev ${e.rev})`) : ""}{e.reverts ? tr("・取り消し", " · revert") : ""}
           </div>
           {#if e.why}<div class="why">{e.why}</div>{/if}
           {#if e.trigger}
-            <div class="trigger">{TRIGGERS[e.trigger.kind] ?? e.trigger.kind}: {e.trigger.text}</div>
+            <div class="trigger">{triggers()[e.trigger.kind] ?? e.trigger.kind}: {e.trigger.text}</div>
           {/if}
           {#if e.song_entry}
-            <div class="linked" title="曲の履歴の {e.song_entry} と一組">曲の編集と一組(曲の側で取り消す・やり直すと、一緒に戻ります)</div>
+            <div class="linked" title={tr(`曲の履歴の ${e.song_entry} と一組`, `Paired with ${e.song_entry} in the song history`)}>
+              {tr("曲の編集と一組(曲の側で取り消す・やり直すと、一緒に戻ります)", "Paired with a song edit (undo / redo it on the song side to revert both)")}
+            </div>
           {:else if k > 0 && !e.reverts}
             <div class="ops">
               {#if e.rev != null && e.op !== "delete" && d.plans.some((p) => p.plan_id === e.plan_id) && !isProposal(e.plan_id)}
-                <button type="button" title="この計画をこの版の中身に戻す(戻したことも新しい版として残る)" onclick={() => restorePlan(e.plan_id, e.rev!)}
-                  >この版に戻す</button
+                <button
+                  type="button"
+                  title={tr("この計画をこの版の中身に戻す(戻したことも新しい版として残る)", "Restore this plan to this revision (the restore is kept as a new revision)")}
+                  onclick={() => restorePlan(e.plan_id, e.rev!)}>{tr("この版に戻す", "Restore this rev")}</button
                 >
               {/if}
-              <button type="button" title="この変更だけを取り消す(後の変更は残す)" onclick={() => revertPlanEntry(e.entry_id)}>この変更だけ取り消す</button>
+              <button type="button" title={tr("この変更だけを取り消す(後の変更は残す)", "Revert only this change (later changes are kept)")} onclick={() => revertPlanEntry(e.entry_id)}
+                >{tr("この変更だけ取り消す", "Revert this only")}</button
+              >
             </div>
           {/if}
         </li>

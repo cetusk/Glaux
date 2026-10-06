@@ -29,6 +29,7 @@
   import StatusBar from "./lib/StatusBar.svelte";
   import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
+  import { plural, tr } from "./lib/i18n.svelte";
   import {
     inspectorStore,
     midiArmStore,
@@ -361,7 +362,10 @@
       }
       if (settings.outputDevice) {
         await api.setOutputDevice(settings.outputDevice).catch(() => {
-          error = `前回の出力デバイス「${settings.outputDevice}」が見つからないため、既定のデバイスを使います`;
+          error = tr(
+            `前回の出力デバイス「${settings.outputDevice}」が見つからないため、既定のデバイスを使います`,
+            `Previous output device "${settings.outputDevice}" was not found. Using the default device`,
+          );
         });
       }
       if (settings.inputDevice) {
@@ -371,7 +375,10 @@
         await api.setMidiInput(settings.midiInput).catch(() => {
           showToast(
             "warn",
-            `前回の MIDI 入力「${settings.midiInput}」が見つかりません(接続して設定で選び直してください)`,
+            tr(
+              `前回の MIDI 入力「${settings.midiInput}」が見つかりません(接続して設定で選び直してください)`,
+              `Previous MIDI input "${settings.midiInput}" was not found (connect it and select it again in Settings)`,
+            ),
           );
         });
       }
@@ -389,7 +396,7 @@
       pendingChanges.push(ev);
       scheduleRefresh();
     }).catch((e) => {
-      error = `変更イベントの購読に失敗: ${e}`;
+      error = tr(`変更イベントの購読に失敗: ${e}`, `Failed to subscribe to change events: ${e}`);
       return undefined;
     });
     const unlistenActivity = api
@@ -404,7 +411,7 @@
         }
       })
       .catch((e) => {
-        error = `AI イベントの購読に失敗: ${e}`;
+        error = tr(`AI イベントの購読に失敗: ${e}`, `Failed to subscribe to AI events: ${e}`);
         return undefined;
       });
 
@@ -516,20 +523,29 @@
   async function finishMidiRecording() {
     const r = await api.midiRecordStop(midiArmStore.trackId, settings.midiQuantize);
     await pollTransport();
-    showToast("ok", `MIDI 録音を配置しました: ${r.notes} ノート`);
+    showToast("ok", tr(`MIDI 録音を配置しました: ${r.notes} ノート`, `MIDI recording placed: ${plural(r.notes, "note")}`));
   }
 
   async function finishRecording() {
     const r = await api.recordStop(null, settings.autoGain);
     await pollTransport();
     const warn =
-      r.clipped > 0 ? `(${r.clipped} サンプルがクリップしました。入力レベルを下げてください)` : "";
-    const gain = r.gain_db > 0.5 ? `、音量 +${r.gain_db.toFixed(0)}dB` : "";
+      r.clipped > 0
+        ? tr(
+            `(${r.clipped} サンプルがクリップしました。入力レベルを下げてください)`,
+            ` (${plural(r.clipped, "sample")} clipped. Lower the input level)`,
+          )
+        : "";
+    const gain = r.gain_db > 0.5 ? tr(`、音量 +${r.gain_db.toFixed(0)}dB`, `, gain +${r.gain_db.toFixed(0)} dB`) : "";
     const target = { clipId: r.clip_id, trackId: r.track_id };
-    showToast(r.clipped > 0 ? "warn" : "ok", `録音を配置しました: ${r.seconds.toFixed(1)} 秒${gain}${warn}`, {
-      action: { label: "MIDI にする", run: () => transcribeRecorded(target) },
-      ms: 20000,
-    });
+    showToast(
+      r.clipped > 0 ? "warn" : "ok",
+      tr(`録音を配置しました: ${r.seconds.toFixed(1)} 秒${gain}${warn}`, `Recording placed: ${r.seconds.toFixed(1)} s${gain}${warn}`),
+      {
+        action: { label: tr("MIDI にする", "To MIDI"), run: () => transcribeRecorded(target) },
+        ms: 20000,
+      },
+    );
   }
 
   /// 録音した鼻歌をそのまま MIDI にしてピアノロールで開く
@@ -544,7 +560,13 @@
         trackName: track?.name ?? "MIDI",
         anchorTick: 0,
       };
-      showToast("ok", `${r.note_count} ノートを MIDI にしました。AI に「キーを確認して整えて」と頼めます`);
+      showToast(
+        "ok",
+        tr(
+          `${r.note_count} ノートを MIDI にしました。AI に「キーを確認して整えて」と頼めます`,
+          `Converted ${plural(r.note_count, "note")} to MIDI. You can ask the AI to "check the key and tidy it up"`,
+        ),
+      );
     } catch (e) {
       error = String(e);
     }
@@ -554,9 +576,16 @@
   const monitorLabel = $derived.by(() => {
     const m = transport.monitor;
     if (!m) return null;
-    const mode = { stereo: "", mono: "モノ", side: "サイド", swap: "左右入替" }[m.mode] ?? "";
-    const spk = { off: "", phone: "スマホ", laptop: "ノート PC", front: "仮想スピーカー" }[m.speaker ?? "off"] ?? "";
-    const parts = [mode, m.crossfeed ? "クロスフィード" : "", spk].filter(Boolean);
+    const mode =
+      { stereo: "", mono: tr("モノ", "Mono"), side: tr("サイド", "Side"), swap: tr("左右入替", "L/R swap") }[m.mode] ?? "";
+    const spk =
+      {
+        off: "",
+        phone: tr("スマホ", "Phone"),
+        laptop: tr("ノート PC", "Laptop"),
+        front: tr("仮想スピーカー", "Virtual speakers"),
+      }[m.speaker ?? "off"] ?? "";
+    const parts = [mode, m.crossfeed ? tr("クロスフィード", "Crossfeed") : "", spk].filter(Boolean);
     return parts.length ? parts.join("+") : null;
   });
   async function resetMonitor() {
@@ -609,7 +638,13 @@
         }
         await pollTransport();
         if (settings.countInBars > 0) {
-          showToast("ok", `カウントイン ${settings.countInBars} 小節のあと録音位置になります`);
+          showToast(
+            "ok",
+            tr(
+              `カウントイン ${settings.countInBars} 小節のあと録音位置になります`,
+              `Recording starts after a ${settings.countInBars}-bar count-in`,
+            ),
+          );
         }
       }
     } catch (e) {
@@ -721,7 +756,7 @@
 
   // ---- 聴く音量(アプリから鳴る音だけ。曲・書き出しには入らない) ----
   function fmtListen(db: number): string {
-    return db <= -60 ? "無音" : `${db > 0 ? "+" : ""}${db} dB`;
+    return db <= -60 ? tr("無音", "Silent") : `${db > 0 ? "+" : ""}${db} dB`;
   }
 
   function setListenVolume(db: number, save: boolean) {
@@ -759,56 +794,61 @@
     <div class="h-left">
       <img class="owl" src="/glaux-icon.png" alt="Glaux" width="28" height="28" />
       <ProjectMenu title={project?.meta.title ?? "…"} />
-      <div class="view-switch" role="tablist" aria-label="表示の切り替え">
+      <div class="view-switch" role="tablist" aria-label={tr("表示の切り替え", "Switch view")}>
         <button
           role="tab"
           aria-selected={viewStore.main === "timeline"}
           class:on={viewStore.main === "timeline"}
           onclick={() => (viewStore.main = "timeline")}
-          aria-label="タイムライン"
-          title="タイムライン(曲の流れ・クリップ・ピアノロール)"><Icon name="rows-2" /><span class="lbl">タイムライン</span></button
+          aria-label={tr("タイムライン", "Timeline")}
+          title={tr("タイムライン(曲の流れ・クリップ・ピアノロール)", "Timeline (song flow, clips, piano roll)")}><Icon name="rows-2" /><span class="lbl">{tr("タイムライン", "Timeline")}</span></button
         >
         <button
           role="tab"
           aria-selected={viewStore.main === "mixer"}
           class:on={viewStore.main === "mixer"}
           onclick={() => (viewStore.main = "mixer")}
-          aria-label="ミキサー"
-          title="ミキサー(音量・パン・送り・エフェクトのつなぎ方)"><Icon name="sliders-horizontal" /><span class="lbl">ミキサー</span></button
+          aria-label={tr("ミキサー", "Mixer")}
+          title={tr("ミキサー(音量・パン・送り・エフェクトのつなぎ方)", "Mixer (volume, pan, sends, effect routing)")}><Icon name="sliders-horizontal" /><span class="lbl">{tr("ミキサー", "Mixer")}</span></button
         >
         <button
           role="tab"
           aria-selected={viewStore.main === "design"}
           class:on={viewStore.main === "design"}
           onclick={() => (viewStore.main = "design")}
-          aria-label="設計"
-          title="設計(曲の計画と実際: 盛り上がり・パートごとの音域・パートの役割)"><Icon name="spline" /><span class="lbl">設計</span></button
+          aria-label={tr("設計", "Design")}
+          title={tr(
+            "設計(曲の計画と実際: 盛り上がり・パートごとの音域・パートの役割)",
+            "Design (song plan vs. actual: energy, range per part, part roles)",
+          )}><Icon name="spline" /><span class="lbl">{tr("設計", "Design")}</span></button
         >
       </div>
     </div>
     <div class="h-center">
       <div class="tp">
-        <button class="btn icon" onclick={seekStart} disabled={!transport.available} title="先頭へ(Home)" aria-label="先頭へ"
+        <button class="btn icon" onclick={seekStart} disabled={!transport.available} title={tr("先頭へ(Home)", "Go to start (Home)")} aria-label={tr("先頭へ", "Go to start")}
           ><Icon name="skip-back" /></button
         >
-        <button class="btn icon bar-step" onclick={prevBar} disabled={!transport.available} title="前の小節へ(←)" aria-label="前の小節へ"
+        <button class="btn icon bar-step" onclick={prevBar} disabled={!transport.available} title={tr("前の小節へ(←)", "Previous bar (←)")} aria-label={tr("前の小節へ", "Previous bar")}
           ><Icon name="rewind" /></button
         >
         <button
           class="btn icon play"
-          aria-label={transport.playing ? "一時停止" : "再生"}
+          aria-label={transport.playing ? tr("一時停止", "Pause") : tr("再生", "Play")}
           onclick={togglePlay}
           disabled={!transport.available}
-          title={transport.available ? "再生 / 一時停止(Space)" : "オーディオデバイスが利用できません"}
+          title={transport.available
+            ? tr("再生 / 一時停止(Space)", "Play / Pause (Space)")
+            : tr("オーディオデバイスが利用できません", "No audio device available")}
           ><Icon name={transport.playing ? "pause" : "play"} /></button
         >
-        <button class="btn icon" onclick={stopPlayback} disabled={!transport.available} title="停止" aria-label="停止"
+        <button class="btn icon" onclick={stopPlayback} disabled={!transport.available} title={tr("停止", "Stop")} aria-label={tr("停止", "Stop")}
           ><Icon name="square" /></button
         >
-        <button class="btn icon bar-step" onclick={nextBar} disabled={!transport.available} title="次の小節へ(→)" aria-label="次の小節へ"
+        <button class="btn icon bar-step" onclick={nextBar} disabled={!transport.available} title={tr("次の小節へ(→)", "Next bar (→)")} aria-label={tr("次の小節へ", "Next bar")}
           ><Icon name="fast-forward" /></button
         >
-        <button class="btn icon" onclick={seekEnd} disabled={!transport.available} title="終端へ(End)" aria-label="終端へ"
+        <button class="btn icon" onclick={seekEnd} disabled={!transport.available} title={tr("終端へ(End)", "Go to end (End)")} aria-label={tr("終端へ", "Go to end")}
           ><Icon name="skip-forward" /></button
         >
       </div>
@@ -816,45 +856,57 @@
         <button
           class="btn icon"
           class:on={loopOn}
-          aria-label="ループ再生"
+          aria-label={tr("ループ再生", "Loop")}
           aria-pressed={loopOn}
           onclick={toggleLoop}
           disabled={!transport.available}
-          title="ループ再生(L)。ルーラーで範囲を選ぶとその区間、なければ曲全体"
+          title={tr(
+            "ループ再生(L)。ルーラーで範囲を選ぶとその区間、なければ曲全体",
+            "Loop (L). Loops the range selected on the ruler, or the whole song",
+          )}
           ><Icon name="repeat" /></button
         >
         <button
           class="btn icon"
           class:on={transport.metronome}
-          aria-label="メトロノーム"
+          aria-label={tr("メトロノーム", "Metronome")}
           aria-pressed={!!transport.metronome}
           onclick={toggleMetronome}
           disabled={!transport.available}
-          title="メトロノーム(拍ごとにクリック。小節頭は高い音)"
+          title={tr("メトロノーム(拍ごとにクリック。小節頭は高い音)", "Metronome (click on each beat, higher pitch on the downbeat)")}
           ><Icon name="metronome" /></button
         >
         {#if monitorLabel}
           <button
             class="btn icon monitor-on"
-            aria-label={`聴き方: ${monitorLabel}(押すとステレオに戻す)`}
+            aria-label={tr(`聴き方: ${monitorLabel}(押すとステレオに戻す)`, `Monitoring: ${monitorLabel} (click to return to stereo)`)}
             onclick={resetMonitor}
-            title={`聴き方を「${monitorLabel}」に切り替えています(ミキサーのモニター列)。押すとふつうのステレオに戻します。書き出しには入りません`}
+            title={tr(
+              `聴き方を「${monitorLabel}」に切り替えています(ミキサーのモニター列)。押すとふつうのステレオに戻します。書き出しには入りません`,
+              `Monitoring is set to "${monitorLabel}" (Mixer monitor column). Click to return to normal stereo. Not included in exports`,
+            )}
             ><Icon name="headphones" /></button
           >
         {/if}
         <button
           class="btn icon rec"
-          aria-label={transport.recording ? "録音を止める" : "録音"}
+          aria-label={transport.recording ? tr("録音を止める", "Stop recording") : tr("録音", "Record")}
           class:rec-on={transport.recording}
           onclick={toggleRecord}
           disabled={!transport.available}
           title={transport.midi_recording
-            ? "MIDI 録音を止めてクリップとして配置"
+            ? tr("MIDI 録音を止めてクリップとして配置", "Stop MIDI recording and place it as a clip")
             : transport.recording
-              ? "録音を止めて音声トラックにクリップとして配置"
+              ? tr("録音を止めて音声トラックにクリップとして配置", "Stop recording and place it as a clip on an audio track")
               : midiArm
-                ? `MIDI 録音(${midiArm.name})。再生ヘッドの位置から録り、止めるとそのトラックに置かれます`
-                : "録音(既定の入力デバイス)。再生ヘッドの位置から録り、止めると音声トラックに置かれます"}
+                ? tr(
+                    `MIDI 録音(${midiArm.name})。再生ヘッドの位置から録り、止めるとそのトラックに置かれます`,
+                    `MIDI record (${midiArm.name}). Records from the playhead; stopping places it on that track`,
+                  )
+                : tr(
+                    "録音(既定の入力デバイス)。再生ヘッドの位置から録り、止めると音声トラックに置かれます",
+                    "Record (default input device). Records from the playhead; stopping places it on an audio track",
+                  )}
           ><Icon name="circle" fill /></button
         >
       </div>
@@ -864,14 +916,19 @@
       {#if indicator !== "idle"}
         <div class="ai-indicator" class:thinking={indicator === "session"}>
           <Icon name="sparkles" size={14} />
-          <span class="ai-text">{indicator === "calling" ? `AI が${toolDoing(aiTool)}…` : "AI が作業中です…"}</span>
+          <span class="ai-text">{indicator === "calling"
+            ? tr(`AI が${toolDoing(aiTool)}…`, `AI is ${toolDoing(aiTool)}…`)
+            : tr("AI が作業中です…", "AI is working…")}</span>
         </div>
       {/if}
       <!-- 聴く音量: アプリから鳴る音だけ(曲のマスター音量・書き出しとは別) -->
       <div
         class="listen-vol"
         class:changed={settings.outputVolumeDb !== 0}
-        title={`聴く音量 ${fmtListen(settings.outputVolumeDb)}(このアプリから鳴る音だけ。曲のマスター音量・書き出しには影響しません。ダブルクリックで 0 dB)`}
+        title={tr(
+          `聴く音量 ${fmtListen(settings.outputVolumeDb)}(このアプリから鳴る音だけ。曲のマスター音量・書き出しには影響しません。ダブルクリックで 0 dB)`,
+          `Listening volume ${fmtListen(settings.outputVolumeDb)} (this app's output only; does not affect the song's master volume or exports. Double-click for 0 dB)`,
+        )}
       >
         <Icon name="volume-2" size={15} />
         <input
@@ -884,31 +941,35 @@
           oninput={(e) => setListenVolume(Number(e.currentTarget.value), false)}
           onchange={(e) => setListenVolume(Number(e.currentTarget.value), true)}
           ondblclick={() => setListenVolume(0, true)}
-          aria-label="聴く音量(曲には影響しない)"
+          aria-label={tr("聴く音量(曲には影響しない)", "Listening volume (does not affect the song)")}
         />
       </div>
       <button
         class="btn icon"
         onclick={doUndo}
         disabled={entries.length === 0}
-        title={entries.length > 0 ? `取り消す: ${entries[entries.length - 1].label}(Ctrl+Z)` : "取り消せる編集はありません"}
-        aria-label="取り消し"><Icon name="undo-2" /></button
+        title={entries.length > 0
+          ? tr(`取り消す: ${entries[entries.length - 1].label}(Ctrl+Z)`, `Undo: ${entries[entries.length - 1].label} (Ctrl+Z)`)
+          : tr("取り消せる編集はありません", "Nothing to undo")}
+        aria-label={tr("取り消し", "Undo")}><Icon name="undo-2" /></button
       >
       <button
         class="btn icon"
         onclick={doRedo}
         disabled={redoable.length === 0}
-        title={redoable.length > 0 ? `やり直す: ${redoable[0].label}(Ctrl+Shift+Z / Ctrl+Y)` : "やり直せる編集はありません"}
-        aria-label="やり直し"><Icon name="redo-2" /></button
+        title={redoable.length > 0
+          ? tr(`やり直す: ${redoable[0].label}(Ctrl+Shift+Z / Ctrl+Y)`, `Redo: ${redoable[0].label} (Ctrl+Shift+Z / Ctrl+Y)`)
+          : tr("やり直せる編集はありません", "Nothing to redo")}
+        aria-label={tr("やり直し", "Redo")}><Icon name="redo-2" /></button
       >
       <span class="sep"></span>
       <button
         class="btn"
         onclick={() => (showExport = true)}
-        title="書き出し(WAV・トラックごと・MIDI。形式・範囲・音量を選べる)"
-        aria-label="書き出し"><Icon name="download" /><span class="export-label">書き出し</span></button
+        title={tr("書き出し(WAV・トラックごと・MIDI。形式・範囲・音量を選べる)", "Export (WAV, per-track stems, MIDI; choose format, range and level)")}
+        aria-label={tr("書き出し", "Export")}><Icon name="download" /><span class="export-label">{tr("書き出し", "Export")}</span></button
       >
-      <button class="btn icon" onclick={() => openSettings()} title="設定" aria-label="設定"><Icon name="settings" /></button>
+      <button class="btn icon" onclick={() => openSettings()} title={tr("設定", "Settings")} aria-label={tr("設定", "Settings")}><Icon name="settings" /></button>
     </div>
   </header>
 
@@ -917,8 +978,10 @@
   {/if}
   {#if saveError}
     <div class="error save-error" role="alert">
-      保存できませんでした。編集は画面上には残っていますが、このまま閉じると失われます。
-      ほかのアプリがファイルを使っていないか(OneDrive の同期など)確かめてください。次の編集で保存し直します。
+      {tr(
+        "保存できませんでした。編集は画面上には残っていますが、このまま閉じると失われます。ほかのアプリがファイルを使っていないか(OneDrive の同期など)確かめてください。次の編集で保存し直します。",
+        "Could not save. Your edits are still on screen, but they will be lost if you close now. Check that no other app (such as OneDrive sync) is using the files. Saving will be retried on the next edit.",
+      )}
       <br /><small>{saveError}</small>
     </div>
   {/if}
@@ -981,7 +1044,7 @@
         <SoundDesignPanel {project} />
         <InstrumentPicker {project} />
       {:else}
-        <div class="loading">読み込み中…</div>
+        <div class="loading">{tr("読み込み中…", "Loading…")}</div>
       {/if}
     </section>
     <div
@@ -990,31 +1053,33 @@
       aria-orientation="horizontal"
       class:collapsed={bottomCollapsed}
       onpointerdown={(e) => !bottomCollapsed && startRowResize(e)}
-      title={bottomCollapsed ? undefined : "ドラッグで高さを調整"}
+      title={bottomCollapsed ? undefined : tr("ドラッグで高さを調整", "Drag to resize height")}
     >
       <button
         class="btn collapse-btn"
         onpointerdown={(e) => e.stopPropagation()}
         onclick={toggleBottom}
-        title={bottomCollapsed ? "チャットと履歴を表示する" : "チャットと履歴を隠して、タイムライン・ピアノロールを広く使う"}
-        aria-label={bottomCollapsed ? "下のパネルを表示" : "下のパネルを隠す"}
+        title={bottomCollapsed
+          ? tr("チャットと履歴を表示する", "Show chat and history")
+          : tr("チャットと履歴を隠して、タイムライン・ピアノロールを広く使う", "Hide chat and history to give the timeline and piano roll more room")}
+        aria-label={bottomCollapsed ? tr("下のパネルを表示", "Show bottom panel") : tr("下のパネルを隠す", "Hide bottom panel")}
         aria-expanded={!bottomCollapsed}
-      ><Icon name={bottomCollapsed ? "chevron-up" : "chevron-down"} />{#if bottomCollapsed}チャット・履歴{/if}</button>
+      ><Icon name={bottomCollapsed ? "chevron-up" : "chevron-down"} />{#if bottomCollapsed}{tr("チャット・履歴", "Chat / History")}{/if}</button>
     </div>
     <!-- 隠しても部品は残す(チャットの表示中の会話が消えないように) -->
     <section class="bottom-area" class:collapsed={bottomCollapsed} style="height:{bottomHeight}px">
       <div class="chat-section" style="flex:0 0 {chatFrac * 100}%">
         <ChatPanel {project} />
       </div>
-      <div class="col-handle" role="separator" aria-orientation="vertical" onpointerdown={startColResize} title="ドラッグで幅を調整"></div>
+      <div class="col-handle" role="separator" aria-orientation="vertical" onpointerdown={startColResize} title={tr("ドラッグで幅を調整", "Drag to resize width")}></div>
       <div class="history-section">
         {#if viewStore.main === "design"}
-          <div class="history-tabs" role="tablist" aria-label="履歴の切り替え">
+          <div class="history-tabs" role="tablist" aria-label={tr("履歴の切り替え", "Switch history")}>
             <button role="tab" class="btn sm" class:on={historyTab === "plan"} aria-selected={historyTab === "plan"} onclick={() => (historyTab = "plan")}
-              >計画の履歴</button
+              >{tr("計画の履歴", "Plan history")}</button
             >
             <button role="tab" class="btn sm" class:on={historyTab === "song"} aria-selected={historyTab === "song"} onclick={() => (historyTab = "song")}
-              >曲の履歴</button
+              >{tr("曲の履歴", "Song history")}</button
             >
           </div>
         {/if}

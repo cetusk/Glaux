@@ -1,4 +1,6 @@
-// AI(MCP)のツール名の日本語表示。ヘッダーの作業中表示とチャットの ⚙ 表示で共通。
+import { isEn } from "./i18n.svelte";
+
+// AI(MCP)のツール名の日本語表示(英語は LABELS_EN)。ヘッダーの作業中表示とチャットの ⚙ 表示で共通。
 // 以前は 36 個のうち 7〜9 個にしか訳が無く(今は 41 個)、2 か所に別々に書かれていた。
 
 interface ToolLabel {
@@ -140,6 +142,139 @@ const LABELS: Record<string, ToolLabel> = {
   web_search: { short: "Web を検索", doing: "Web を検索しています" },
 };
 
+/** 英語の表示(short はチャットの行、doing は「AI is …」に続く現在分詞の句) */
+const LABELS_EN: Record<string, ToolLabel> = {
+  // 基本
+  get_project: { short: "Read the project", doing: "reading the project" },
+  apply_commands: { short: "Apply edits", doing: "editing" },
+  undo: { short: "Undo", doing: "undoing" },
+  redo: { short: "Redo", doing: "redoing" },
+  checkpoint: { short: "Create checkpoint", doing: "creating a checkpoint" },
+  revert_to: { short: "Revert to checkpoint", doing: "reverting" },
+  revert: { short: "Revert edits", doing: "reverting edits" },
+  get_history: { short: "Check history", doing: "checking the history" },
+  list_params: { short: "Check parameters", doing: "checking parameters" },
+  get_changes: { short: "Check changes", doing: "checking changes" },
+  get_guide: { short: "Read the guide", doing: "reading the guide" },
+  // 構成
+  duplicate_clips: { short: "Duplicate clips", doing: "duplicating clips" },
+  insert_bars: { short: "Insert bars", doing: "inserting bars" },
+  change_meter: { short: "Change meter", doing: "changing the time signature" },
+  delete_bars: { short: "Delete bars", doing: "deleting bars" },
+  bounce_track: { short: "Bounce track", doing: "bouncing a track to audio" },
+  resample_to_sampler: { short: "Resample to sampler", doing: "resampling a track into the sampler" },
+  export_audio: { short: "Export", doing: "exporting to WAV" },
+  export_midi: { short: "Export MIDI", doing: "exporting a MIDI file" },
+  import_midi: { short: "Import MIDI", doing: "importing a MIDI file" },
+  import_musicxml: { short: "Import MusicXML", doing: "importing MusicXML" },
+  // 分析
+  analyze_audio: { short: "Listen and check", doing: "listening" },
+  analyze_harmony: { short: "Check key and chords", doing: "analyzing key and chords" },
+  analyze_rhythm: { short: "Check rhythm", doing: "analyzing the rhythm" },
+  analyze_beats: { short: "Detect tempo", doing: "detecting the tempo" },
+  analyze_reference: { short: "Analyze reference structure", doing: "analyzing the reference's structure" },
+  analyze_sound: { short: "Check timbre", doing: "analyzing the timbre" },
+  compare_sounds: { short: "Compare sounds", doing: "comparing sounds" },
+  compare_mix: { short: "Compare before/after", doing: "comparing before and after" },
+  master_mix: { short: "Mastering", doing: "mastering" },
+  import_ir: { short: "Load IR", doing: "loading an impulse response" },
+  refine_by_words: { short: "Refine sound by words", doing: "refining the sound to match the words" },
+  match_sound: { short: "Match timbre", doing: "matching the timbre" },
+  // ノート
+  transpose_notes: { short: "Transpose", doing: "transposing" },
+  shift_notes: { short: "Move notes", doing: "moving notes" },
+  swing_notes: { short: "Swing", doing: "adding swing" },
+  apply_groove: { short: "Groove", doing: "applying groove" },
+  add_ghost_notes: { short: "Ghost notes", doing: "adding ghost notes" },
+  transform_notes: { short: "Transform melody", doing: "transforming the melody" },
+  shape_automation: { short: "Add movement", doing: "writing automation" },
+  write_wobble: { short: "Write wobble", doing: "writing a wobble rhythm" },
+  critique_arrangement: { short: "Review arrangement", doing: "reviewing the arrangement" },
+  critique_mix: { short: "Review sound and mix", doing: "reviewing the sound and mix" },
+  apply_recipe: { short: "Standard recipe", doing: "building a standard recipe" },
+  set_character: { short: "Sound macros", doing: "adjusting the sound" },
+  design_sound: { short: "Sound from words", doing: "designing a sound from words" },
+  mutate_sound: { short: "Sound variations", doing: "making sound variations" },
+  set_song_plan: { short: "Song plan", doing: "planning the song" },
+  get_design: { short: "Check design", doing: "reading the song design (plan and actual)" },
+  propose_design: { short: "Propose options", doing: "proposing options" },
+  ask_user: { short: "Question", doing: "preparing a question" },
+  write_chords: { short: "Chord accompaniment", doing: "writing an accompaniment from chords" },
+  write_arpeggio: { short: "Arpeggio", doing: "writing an arpeggio" },
+  write_bassline: { short: "Bassline", doing: "writing a bassline" },
+  write_drums: { short: "Drum pattern", doing: "laying down drums" },
+  write_transition: { short: "Transition", doing: "adding a transition" },
+  suggest_progression: { short: "Progression ideas", doing: "looking for chord progressions" },
+  critique_melody: { short: "Review melody", doing: "reviewing the melody" },
+  analyze_melody: { short: "Melody structure", doing: "analyzing the melody's structure" },
+  plan_melody: { short: "Melody plan", doing: "planning the melody" },
+  realize_melody: { short: "Melody from plan", doing: "writing a melody from the plan" },
+  revise_melody: { short: "Revise melody", doing: "revising the melody" },
+  save_plan: { short: "Save plan", doing: "saving the melody plan" },
+  edit_plan: { short: "Edit plan", doing: "editing the melody plan" },
+  delete_plan: { short: "Delete plan", doing: "deleting the melody plan" },
+  get_plan: { short: "Read plan", doing: "reading the melody plan" },
+  plan_log: { short: "Plan history", doing: "reading the plan's history" },
+  undo_plan: { short: "Undo plan change", doing: "undoing a plan change" },
+  develop_motif: { short: "Develop motif", doing: "developing a melody from a motif" },
+  write_melody: { short: "Write melody", doing: "writing and choosing melody ideas" },
+  write_polyrhythm: { short: "Polyrhythm", doing: "adding a polyrhythm" },
+  write_polymeter: { short: "Polymeter", doing: "adding a polymeter" },
+  set_meter_feel: { short: "Beat feel", doing: "changing the long/short beat ratio" },
+  pitch_gesture: { short: "Pitch gestures", doing: "adding scoops and falls" },
+  set_vibrato: { short: "Vibrato", doing: "adding vibrato" },
+  add_ornament: { short: "Ornaments", doing: "adding ornaments" },
+  melody_lead: { short: "Melody lead", doing: "pushing the melody slightly ahead" },
+  note_dynamics: { short: "In-note dynamics", doing: "shaping dynamics and brightness within notes" },
+  strum_chord: { short: "Strum", doing: "strumming chords" },
+  drum_rudiment: { short: "Rudiments", doing: "adding flams and rolls" },
+  articulate_notes: { short: "Articulation", doing: "setting articulation" },
+  tremolo: { short: "Tremolo", doing: "adding tremolo" },
+  glissando: { short: "Glissando", doing: "adding a glissando" },
+  shape_phrase: { short: "Phrase breathing", doing: "adding tempo rubato to phrases" },
+  metric_modulation: { short: "Metric modulation", doing: "changing the tempo by metric modulation" },
+  hemiola: { short: "Hemiola", doing: "phrasing triple meter in twos" },
+  write_tihai: { short: "Tihai", doing: "adding a thrice-repeated cadence" },
+  export_musicxml: { short: "Export score", doing: "exporting MusicXML" },
+  modulate: { short: "Modulation (LFO)", doing: "modulating a parameter with an LFO" },
+  set_layer: { short: "Layer instruments", doing: "layering instruments" },
+  set_macro: { short: "Macro", doing: "setting up macros" },
+  sustain_pedal: { short: "Pedal", doing: "baking in the sustain pedal" },
+  set_note_condition: { short: "Conditional notes", doing: "setting per-loop note conditions" },
+  quantize_notes: { short: "Quantize", doing: "quantizing timing" },
+  scale_velocity: { short: "Adjust velocity", doing: "adjusting velocity" },
+  // 音色
+  list_presets: { short: "List sound presets", doing: "browsing sound presets" },
+  save_preset: { short: "Save sound preset", doing: "saving a sound preset" },
+  load_preset: { short: "Apply sound preset", doing: "loading a sound preset" },
+  delete_preset: { short: "Delete sound preset", doing: "deleting a sound preset" },
+  list_effect_presets: { short: "List effect presets", doing: "browsing effect presets" },
+  save_effect_preset: { short: "Save effect preset", doing: "saving an effect preset" },
+  load_effect_preset: { short: "Add effect preset", doing: "adding an effect preset" },
+  delete_effect_preset: { short: "Delete effect preset", doing: "deleting an effect preset" },
+  find_similar_presets: { short: "Find similar presets", doing: "finding similar presets" },
+  list_soundfonts: { short: "List SoundFonts", doing: "checking SoundFonts" },
+  set_soundfont_instrument: { short: "Set SoundFont instrument", doing: "setting the instrument" },
+  // CLAP
+  list_plugins: { short: "List plugins", doing: "checking plugins" },
+  list_plugin_presets: { short: "List plugin presets", doing: "browsing plugin presets" },
+  load_plugin_preset: { short: "Apply plugin preset", doing: "loading a plugin preset" },
+  refine_plugin_params: { short: "Tweak plugin params", doing: "fine-tuning plugin parameters" },
+  // 素材
+  import_sample: { short: "Import sample", doing: "importing a sample" },
+  import_wavetable: { short: "Make wavetable", doing: "making a wavetable from audio" },
+  review_edits: { short: "Check edited parts", doing: "checking around the edited parts" },
+  make_wavetable: { short: "Build wavetable", doing: "building a wavetable" },
+  describe_wavetable: { short: "Inspect wavetable", doing: "inspecting a wavetable" },
+  wavetable_library: { short: "Wavetable library", doing: "using the wavetable library" },
+  import_audio_clip: { short: "Place audio", doing: "importing audio" },
+  transcribe_audio: { short: "Transcribe", doing: "transcribing" },
+  separate_audio: { short: "Separate stems", doing: "separating into stems" },
+  // GPT(Codex)の組み込みの動作
+  command_execution: { short: "Run command", doing: "running a command" },
+  web_search: { short: "Search the web", doing: "searching the web" },
+};
+
 /** `mcp__glaux__` などの接頭辞を外したツール名 */
 function bare(name: string): string {
   return name.replace(/^mcp__[^_]+__/, "");
@@ -147,11 +282,13 @@ function bare(name: string): string {
 
 /** チャットの ⚙ 表示用(訳が無ければツール名のまま) */
 export function toolShort(name: string): string {
-  return LABELS[bare(name)]?.short ?? bare(name);
+  const n = bare(name);
+  return (isEn() ? LABELS_EN : LABELS)[n]?.short ?? n;
 }
 
-/** ヘッダーの作業中表示用(訳が無ければ「<ツール名> を実行しています」) */
+/** ヘッダーの作業中表示用(訳が無ければ「<ツール名> を実行しています」/ "running <ツール名>") */
 export function toolDoing(name: string): string {
   const n = bare(name);
+  if (isEn()) return LABELS_EN[n]?.doing ?? `running ${n}`;
   return LABELS[n]?.doing ?? `${n} を実行しています`;
 }

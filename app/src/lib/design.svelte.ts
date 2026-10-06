@@ -6,6 +6,7 @@ import { abClear, abSetSide, applyEdit, getHistory, redo as songRedo, undo as so
 import { claimAb, endAbLoop, ensureAbPlaying, releaseAb, restartAb, startAbLoop } from "./abLoop";
 import { addBars, defaultAbRange, rangeFromChanges } from "./abRange";
 import { showToast } from "./toast.svelte";
+import { tr } from "./i18n.svelte";
 import type { Project } from "./types";
 
 export interface DesignSection {
@@ -155,6 +156,45 @@ export const ARCS: Record<string, string> = {
   flat: "平ら(ループ向け)",
 };
 
+// 画面に出す名前(画面の言語で。上の表は日本語の名前のまま残す)。表示のたびに呼ぶ(言語を切り替えたら描き直される)
+/** 働きの表示名(キーは FUNCTIONS と同じ) */
+export function functionLabels(): Record<string, string> {
+  return {
+    beat: tr("ビート(拍の土台)", "Beat (rhythmic base)"),
+    bass: tr("低音の土台", "Bass (low-end base)"),
+    sub: tr("サブ", "Sub"),
+    harmony: tr("和声の支え", "Harmony (support)"),
+    rhythm: tr("リズムの彩り", "Rhythm (color)"),
+    lead: tr("主役", "Lead"),
+    hook: tr("フック", "Hook"),
+    answer: tr("合いの手", "Answer"),
+    texture: tr("質感・空気", "Texture / air"),
+    ear_candy: tr("飾り(一度きりの小技)", "Ear candy (one-off)"),
+    transition: tr("つなぎ", "Transition"),
+  };
+}
+/** 存在の段階の表示名(0〜5。PRESENCE と同じ並び) */
+export function presenceLabels(): string[] {
+  return [
+    tr("鳴らさない", "Off"),
+    tr("気配", "Hint"),
+    tr("背景", "Background"),
+    tr("支え", "Support"),
+    tr("前面", "Front"),
+    tr("主役", "Lead"),
+  ];
+}
+/** 盛り上がりの型の表示名(キーは ARCS と同じ) */
+export function arcLabels(): Record<string, string> {
+  return {
+    rise: tr("段々に上がる", "Gradual rise"),
+    waves: tr("波を 2 回", "Two waves"),
+    peak: tr("山を 1 つ", "Single peak"),
+    sink: tr("沈んでいく", "Sinking"),
+    flat: tr("平ら(ループ向け)", "Flat (for loops)"),
+  };
+}
+
 export const designStore = $state<{
   data: DesignData | null;
   loading: boolean;
@@ -222,19 +262,26 @@ export type DesignSel =
 
 export const designSel = $state<{ sel: DesignSel; part: number }>({ sel: { kind: "none" }, part: 0 });
 
-/** 選んでいる所の名前(チャットの対象の表示)。何も選んでいなければ null */
-export function designTargetLabel(d: DesignData | null, sel: DesignSel): string | null {
+/** 選んでいる所の名前(チャットの対象の表示)。何も選んでいなければ null。
+ *  `ja` なら画面の言語によらず日本語(AI への説明に使う) */
+export function designTargetLabel(d: DesignData | null, sel: DesignSel, ja = false): string | null {
+  const t = (j: string, e: string) => (ja ? j : tr(j, e));
   switch (sel.kind) {
     case "none":
       return null;
     case "song":
-      return "曲全体";
+      return t("曲全体", "Whole song");
     case "lane":
-      return { sections: "区間の構成全体", curve: "盛り上がり全体", band: "音域全体(全パート)", table: "役割全体" }[sel.lane];
+      return {
+        sections: t("区間の構成全体", "All sections"),
+        curve: t("盛り上がり全体", "Whole energy curve"),
+        band: t("音域全体(全パート)", "All registers (all parts)"),
+        table: t("役割全体", "All roles"),
+      }[sel.lane];
     case "section":
-      return d?.sections[sel.i] ? `区間「${d.sections[sel.i].name}」` : null;
+      return d?.sections[sel.i] ? t(`区間「${d.sections[sel.i].name}」`, `Section "${d.sections[sel.i].name}"`) : null;
     case "part":
-      return d?.parts[sel.p] ? `パート「${d.parts[sel.p].name}」` : null;
+      return d?.parts[sel.p] ? t(`パート「${d.parts[sel.p].name}」`, `Part "${d.parts[sel.p].name}"`) : null;
     case "cell":
       return d?.parts[sel.p] && d.sections[sel.i] ? `${d.parts[sel.p].name} / ${d.sections[sel.i].name}` : null;
   }
@@ -242,7 +289,7 @@ export function designTargetLabel(d: DesignData | null, sel: DesignSel): string 
 
 /** チャットに添える対象の説明(AI が読む。ID も添える) */
 export function designTargetPrompt(d: DesignData | null, sel: DesignSel): string | null {
-  const label = designTargetLabel(d, sel);
+  const label = designTargetLabel(d, sel, true);
   if (!label || !d) return null;
   let ids = "";
   if (sel.kind === "section") ids = d.sections[sel.i]?.id ? `(区間 ${d.sections[sel.i].id})` : "";
@@ -323,11 +370,11 @@ async function moved(u: UndoUnit, redo: boolean): Promise<string | null> {
   if (u.song && u.songEntry) {
     const h = await getHistory(1);
     const at = redo ? h.redoable[0]?.id : h.entries[h.entries.length - 1]?.id;
-    if (at !== u.songEntry) return "曲";
+    if (at !== u.songEntry) return tr("曲", "the song");
   }
   if (u.plan && u.planEntries?.length) {
     const h = await invoke<{ applied: string[]; redoable: string[] }>("plan_head", { n: u.planEntries.length });
-    if (!sameSet(redo ? h.redoable : h.applied, u.planEntries)) return "計画";
+    if (!sameSet(redo ? h.redoable : h.applied, u.planEntries)) return tr("計画", "the plan");
   }
   return null;
 }
@@ -358,7 +405,7 @@ export async function designUndo(): Promise<void> {
   let u = undoStack.pop();
   if (!u && had) {
     // 覚えていた操作はどれもほかの画面で戻されていた(ここで計画を 1 件戻すと、曲と食い違うことがある)
-    showToast("warn", "設計画面で直した所は、ほかの画面ですでに戻されています");
+    showToast("warn", tr("設計画面で直した所は、ほかの画面ですでに戻されています", "Edits made in the design view were already undone elsewhere"));
     return;
   }
   u ??= { song: 0, plan: 1 };
@@ -366,22 +413,28 @@ export async function designUndo(): Promise<void> {
     const m = await moved(u, false);
     if (m) {
       undoStack.push(u);
-      showToast("warn", `${u.label ?? "この操作"}の後に${m}が直されているので、ここでは取り消せません(履歴パネル・計画の履歴で戻してください)`);
+      showToast(
+        "warn",
+        tr(
+          `${u.label ?? "この操作"}の後に${m}が直されているので、ここでは取り消せません(履歴パネル・計画の履歴で戻してください)`,
+          `Can't undo here: ${m} was changed after ${u.label ?? "this edit"} (undo it from the history panel or plan history)`,
+        ),
+      );
       return;
     }
     // 後に書いた方(計画)から戻す
     if (u.plan) {
       const r = await invoke<{ done: number }>("plan_step", { n: u.plan, redo: false });
       if (!r.done && !u.song) {
-        showToast("warn", "取り消せる計画の変更はありません");
+        showToast("warn", tr("取り消せる計画の変更はありません", "No plan changes to undo"));
         return;
       }
     }
     for (let k = 0; k < u.song; k++) await songUndo();
     redoStack.push(u);
-    if (u.label) showToast("ok", `${u.label}を取り消しました`);
+    if (u.label) showToast("ok", tr(`${u.label}を取り消しました`, `Undid: ${u.label}`));
   } catch (e) {
-    showToast("error", `取り消せませんでした: ${e}`);
+    showToast("error", tr(`取り消せませんでした: ${e}`, `Couldn't undo: ${e}`));
   }
 }
 
@@ -390,7 +443,7 @@ export async function designRedo(): Promise<void> {
   await reconcile();
   let u = redoStack.pop();
   if (!u && had) {
-    showToast("warn", "設計画面で取り消した所は、ほかの画面ですでにやり直されています");
+    showToast("warn", tr("設計画面で取り消した所は、ほかの画面ですでにやり直されています", "Undos made in the design view were already redone elsewhere"));
     return;
   }
   u ??= { song: 0, plan: 1 };
@@ -398,21 +451,21 @@ export async function designRedo(): Promise<void> {
     const m = await moved(u, true);
     if (m) {
       redoStack.length = 0;
-      showToast("warn", `取り消した後に${m}が直されているので、やり直せません`);
+      showToast("warn", tr(`取り消した後に${m}が直されているので、やり直せません`, `Can't redo: ${m} was changed after the undo`));
       return;
     }
     for (let k = 0; k < u.song; k++) await songRedo();
     if (u.plan) {
       const r = await invoke<{ done: number }>("plan_step", { n: u.plan, redo: true });
       if (!r.done && !u.song) {
-        showToast("warn", "やり直せる計画の変更はありません");
+        showToast("warn", tr("やり直せる計画の変更はありません", "No plan changes to redo"));
         return;
       }
     }
     undoStack.push(u);
-    if (u.label) showToast("ok", `${u.label}をやり直しました`);
+    if (u.label) showToast("ok", tr(`${u.label}をやり直しました`, `Redid: ${u.label}`));
   } catch (e) {
-    showToast("error", `やり直せませんでした: ${e}`);
+    showToast("error", tr(`やり直せませんでした: ${e}`, `Couldn't redo: ${e}`));
   }
 }
 
@@ -431,7 +484,7 @@ export async function savePlan(
     refreshDesign();
     return r.plan_id;
   } catch (e) {
-    showToast("error", `「${label}」を保存できませんでした: ${e}`);
+    showToast("error", tr(`「${label}」を保存できませんでした: ${e}`, `Couldn't save "${label}": ${e}`));
     return null;
   }
 }
@@ -452,7 +505,7 @@ export async function editSections(
     else if (r.plan_entry_id) noteUnit({ song: 0, plan: 1, planEntries: [r.plan_entry_id] });
     return true;
   } catch (e) {
-    showToast("error", `「${label}」を保存できませんでした: ${e}`);
+    showToast("error", tr(`「${label}」を保存できませんでした: ${e}`, `Couldn't save "${label}": ${e}`));
     return false;
   }
 }
@@ -460,7 +513,7 @@ export async function editSections(
 /** テンポ(曲のデータ。途中で変わらない曲だけ) */
 export async function setTempo(bpm: number): Promise<void> {
   try {
-    const r = await applyEdit([{ op: "set_tempo", events: [{ tick: 0, bpm }] }], `テンポを ${bpm} BPM に`);
+    const r = await applyEdit([{ op: "set_tempo", events: [{ tick: 0, bpm }] }], tr(`テンポを ${bpm} BPM に`, `Set tempo to ${bpm} BPM`));
     noteEdit("song", [r?.entry_id]);
   } catch {
     // applyEdit がエラーを出す
@@ -470,7 +523,7 @@ export async function setTempo(bpm: number): Promise<void> {
 /** 区間に ID が無ければ付ける(パートの計画は区間を ID で指すため)。付けたら読み直して true */
 export async function ensureSectionIds(project: Project): Promise<boolean> {
   if ((project.sections ?? []).every((s) => s.id)) return false;
-  await editSections(project, () => {}, "区間に ID を付ける");
+  await editSections(project, () => {}, tr("区間に ID を付ける", "Assign section IDs"));
   await refreshDesign();
   return true;
 }
@@ -481,13 +534,23 @@ export async function estimatePlans(project: Project, auto = false): Promise<voi
   try {
     await ensureSectionIds(project);
     const r = await invoke<{ created: string[]; song: boolean; entries: string[] }>("plan_estimate");
-    if (r.entries.length) noteUnit({ song: 0, plan: r.entries.length, planEntries: r.entries, label: "計画の推定" });
-    const what = [r.song ? "曲全体" : "", r.created.length ? `${r.created.length} パート` : ""].filter(Boolean).join("と ");
-    if (what) showToast("ok", `今の音から${what}の計画を推定しました。上の帯で確かめて、採用してください`);
-    else if (!auto) showToast("warn", "推定できる所がありませんでした(計画の無い、音のあるパートがありません)");
+    if (r.entries.length) noteUnit({ song: 0, plan: r.entries.length, planEntries: r.entries, label: tr("計画の推定", "plan estimation") });
+    const what = [r.song ? tr("曲全体", "the whole song") : "", r.created.length ? tr(`${r.created.length} パート`, `${r.created.length} part(s)`) : ""]
+      .filter(Boolean)
+      .join(tr("と ", " and "));
+    if (what)
+      showToast(
+        "ok",
+        tr(
+          `今の音から${what}の計画を推定しました。上の帯で確かめて、採用してください`,
+          `Estimated plans for ${what} from the current audio. Review them in the bar above and adopt`,
+        ),
+      );
+    else if (!auto)
+      showToast("warn", tr("推定できる所がありませんでした(計画の無い、音のあるパートがありません)", "Nothing to estimate (no parts with notes but no plan)"));
     refreshDesign();
   } catch (e) {
-    if (!auto) showToast("error", `推定できませんでした: ${e}`);
+    if (!auto) showToast("error", tr(`推定できませんでした: ${e}`, `Couldn't estimate: ${e}`));
   }
 }
 
@@ -522,7 +585,13 @@ export async function editPartPlan(
   const part = d?.parts[partIndex];
   if (!d || !part) return;
   if (d.sections.some((s) => !s.id)) {
-    showToast("error", "区間が無いので、パートの計画を作れません(set_song_plan か、タイムラインでマーカーを置いてください)");
+    showToast(
+      "error",
+      tr(
+        "区間が無いので、パートの計画を作れません(set_song_plan か、タイムラインでマーカーを置いてください)",
+        "No sections, so a part plan can't be made (use set_song_plan or place markers on the timeline)",
+      ),
+    );
     return;
   }
   const body = (planBody(d, part.plan_id) ?? { track: part.track_id, sections: [] }) as {
@@ -567,7 +636,7 @@ export async function addMemo(target: string, text: string): Promise<void> {
     const list = (b.memos as Memo[] | undefined) ?? [];
     list.push({ target, text, when: new Date().toISOString() });
     b.memos = list;
-  }, "メモを残す");
+  }, tr("メモを残す", "Add note"));
 }
 
 /** 推定した計画をまとめて採用する・捨てる */
@@ -575,10 +644,10 @@ export async function settleEstimated(adopt: boolean): Promise<void> {
   try {
     const r = await invoke<{ entries: string[] }>("plan_settle_estimated", { adopt });
     noteEdit("plan", r.entries);
-    showToast("ok", adopt ? "推定した計画を採用しました" : "推定した計画を捨てました");
+    showToast("ok", adopt ? tr("推定した計画を採用しました", "Adopted the estimated plans") : tr("推定した計画を捨てました", "Discarded the estimated plans"));
     refreshDesign();
   } catch (e) {
-    showToast("error", `${adopt ? "採用" : "捨てる"}できませんでした: ${e}`);
+    showToast("error", tr(`${adopt ? "採用" : "捨てる"}できませんでした: ${e}`, `Couldn't ${adopt ? "adopt" : "discard"}: ${e}`));
   }
 }
 
@@ -587,10 +656,10 @@ export async function restorePlan(planId: string, rev: number): Promise<void> {
   try {
     const r = await invoke<{ entry_id?: string }>("plan_restore", { planId, rev });
     noteEdit("plan", [r?.entry_id]);
-    showToast("ok", `版 ${rev} に戻しました(戻したことも新しい版として残ります)`);
+    showToast("ok", tr(`版 ${rev} に戻しました(戻したことも新しい版として残ります)`, `Restored revision ${rev} (the restore is kept as a new revision)`));
     refreshDesign();
   } catch (e) {
-    showToast("error", `戻せませんでした: ${e}`);
+    showToast("error", tr(`戻せませんでした: ${e}`, `Couldn't restore: ${e}`));
   }
 }
 
@@ -602,12 +671,15 @@ export async function revertPlanEntry(entryId: string): Promise<void> {
     showToast(
       "ok",
       r.conflicts.length
-        ? `取り消しました(後で同じ計画を ${r.conflicts.length} 回直しています。結果を確かめてください)`
-        : "この変更だけ取り消しました",
+        ? tr(
+            `取り消しました(後で同じ計画を ${r.conflicts.length} 回直しています。結果を確かめてください)`,
+            `Reverted (the same plan was edited ${r.conflicts.length} more time(s) afterwards; check the result)`,
+          )
+        : tr("この変更だけ取り消しました", "Reverted just this change"),
     );
     refreshDesign();
   } catch (e) {
-    showToast("error", `取り消せませんでした: ${e}`);
+    showToast("error", tr(`取り消せませんでした: ${e}`, `Couldn't undo: ${e}`));
   }
 }
 
@@ -689,7 +761,7 @@ export async function abProposals(planIds: string[], start: number, end: number,
     proposalAb.section = section;
     await startAbLoop(start, e);
   } catch (e) {
-    showToast("error", `聴き比べを用意できませんでした: ${e}`);
+    showToast("error", tr(`聴き比べを用意できませんでした: ${e}`, `Couldn't prepare the comparison: ${e}`));
   } finally {
     proposalAb.busy = null;
   }
@@ -761,21 +833,29 @@ export async function adoptProposal(planId: string, name: string): Promise<void>
     // 計画の変更は曲の採用の編集と一組で記録してあるので、曲の編集を戻せば(どの画面からでも)計画も一緒に戻る
     noteUnit(
       r?.entry_id
-        ? { song: 1, plan: 0, songEntry: r.entry_id, label: `案「${name}」の採用` }
-        : { song: 0, plan: r?.plan_entries ?? 1, planEntries: r?.plan_entry_ids, label: `案「${name}」の採用` },
+        ? { song: 1, plan: 0, songEntry: r.entry_id, label: tr(`案「${name}」の採用`, `adopting proposal "${name}"`) }
+        : { song: 0, plan: r?.plan_entries ?? 1, planEntries: r?.plan_entry_ids, label: tr(`案「${name}」の採用`, `adopting proposal "${name}"`) },
     );
     showToast(
       "ok",
-      `案「${name}」を採用しました${gone.length ? `。ほかの案(${gone.map((n) => `「${n}」`).join("")})は捨てました` : ""}(曲と計画の履歴に残り、取り消せます)`,
+      tr(
+        `案「${name}」を採用しました${gone.length ? `。ほかの案(${gone.map((n) => `「${n}」`).join("")})は捨てました` : ""}(曲と計画の履歴に残り、取り消せます)`,
+        `Adopted proposal "${name}"${gone.length ? `; discarded the other proposals (${gone.map((n) => `"${n}"`).join(", ")})` : ""} (kept in the song and plan history; can be undone)`,
+      ),
     );
     // 固定の音を守るために外した編集(採用はしたが、聴き比べた音とは一部違う)
     if (r?.kept_locked?.length)
-      showToast("warn", `固定の音を守るため、案の編集の一部は当てませんでした(${r.kept_locked.map((k) => k.what).join(" / ")})`, {
-        ms: 9000,
-      });
+      showToast(
+        "warn",
+        tr(
+          `固定の音を守るため、案の編集の一部は当てませんでした(${r.kept_locked.map((k) => k.what).join(" / ")})`,
+          `Some of the proposal's edits were not applied, to protect locked notes (${r.kept_locked.map((k) => k.what).join(" / ")})`,
+        ),
+        { ms: 9000 },
+      );
     refreshDesign();
   } catch (e) {
-    showToast("error", `採用できませんでした: ${e}`);
+    showToast("error", tr(`採用できませんでした: ${e}`, `Couldn't adopt: ${e}`));
   }
 }
 
@@ -783,11 +863,11 @@ export async function adoptProposal(planId: string, name: string): Promise<void>
 export async function discardProposal(planId: string, name: string): Promise<void> {
   if (proposalAb.planIds.includes(planId)) await endProposalAb();
   try {
-    const r = await invoke<{ entry_id?: string }>("plan_delete", { planId, label: `案「${name}」を捨てる` });
-    noteUnit({ song: 0, plan: 1, planEntries: r?.entry_id ? [r.entry_id] : undefined, label: `案「${name}」を捨てたこと` });
-    showToast("ok", `案「${name}」を捨てました`);
+    const r = await invoke<{ entry_id?: string }>("plan_delete", { planId, label: tr(`案「${name}」を捨てる`, `Discard proposal "${name}"`) });
+    noteUnit({ song: 0, plan: 1, planEntries: r?.entry_id ? [r.entry_id] : undefined, label: tr(`案「${name}」を捨てたこと`, `discarding proposal "${name}"`) });
+    showToast("ok", tr(`案「${name}」を捨てました`, `Discarded proposal "${name}"`));
     refreshDesign();
   } catch (e) {
-    showToast("error", `捨てられませんでした: ${e}`);
+    showToast("error", tr(`捨てられませんでした: ${e}`, `Couldn't discard: ${e}`));
   }
 }

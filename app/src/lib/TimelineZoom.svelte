@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from "./i18n.svelte";
   // ルーラーの左(見出しの列)の表示の操作: 横の拡大・縮小・全体表示と、トラックの高さ・見出しの幅のポップアップ
   import Icon from "./Icon.svelte";
   import {
@@ -30,23 +31,23 @@
   let layoutMenu = $state(false);
 </script>
 
-<div class="zoom" title="横の拡大・縮小(タイムラインの上で Ctrl+ホイールでも)">
-  <button class="btn sm icon-only" onclick={() => onZoomBy(1 / 1.5)} disabled={timelineZoom.value <= TIMELINE_ZOOM_MIN} aria-label="縮小" title="縮小"
+<div class="zoom" title={tr("横の拡大・縮小(タイムラインの上で Ctrl+ホイールでも)", "Horizontal zoom (also Ctrl+wheel over the timeline)")}>
+  <button class="btn sm icon-only" onclick={() => onZoomBy(1 / 1.5)} disabled={timelineZoom.value <= TIMELINE_ZOOM_MIN} aria-label={tr("縮小", "Zoom out")} title={tr("縮小", "Zoom out")}
     ><Icon name="zoom-out" size={13} /></button
   >
-  <button class="btn sm icon-only" onclick={() => onZoomBy(1.5)} disabled={timelineZoom.value >= TIMELINE_ZOOM_MAX} aria-label="拡大" title="拡大"
+  <button class="btn sm icon-only" onclick={() => onZoomBy(1.5)} disabled={timelineZoom.value >= TIMELINE_ZOOM_MAX} aria-label={tr("拡大", "Zoom in")} title={tr("拡大", "Zoom in")}
     ><Icon name="zoom-in" size={13} /></button
   >
-  <button class="btn sm" onclick={onFit} title="曲全体が横に収まるようにする">全体</button>
+  <button class="btn sm" onclick={onFit} title={tr("曲全体が横に収まるようにする", "Fit the whole song horizontally")}>{tr("全体", "Fit")}</button>
   <button
     class="btn sm icon-only"
     class:on={layoutMenu}
     onclick={() => (layoutMenu = !layoutMenu)}
-    aria-label="トラックの表示の大きさ"
-    title="トラックの高さと見出しの幅"><Icon name="rows-2" size={13} /></button
+    aria-label={tr("トラックの表示の大きさ", "Track display size")}
+    title={tr("トラックの高さと見出しの幅", "Track height and header width")}><Icon name="rows-2" size={13} /></button
   >
   {#if Math.abs(timelineZoom.value - 1) > 0.01}
-    <button class="btn sm" onclick={() => onSetZoom(1)} title="元の拡大率(100%)に戻す">{Math.round(timelineZoom.value * 100)}%</button>
+    <button class="btn sm" onclick={() => onSetZoom(1)} title={tr("元の拡大率(100%)に戻す", "Reset zoom to 100%")}>{Math.round(timelineZoom.value * 100)}%</button>
   {/if}
 </div>
 {#if layoutMenu}
@@ -54,7 +55,7 @@
   <div class="menu-backdrop" role="presentation" onclick={() => (layoutMenu = false)}></div>
   <div class="layout-pop">
     <label>
-      <span>トラックの高さ(全部) <b>{trackH}px</b></span>
+      <span>{tr("トラックの高さ(全部)", "Track height (all)")} <b>{trackH}px</b></span>
       <input
         type="range"
         min={TIMELINE_TRACK_H.min}
@@ -67,11 +68,11 @@
           timelineLayout.trackHeights = {};
         }}
         onchange={saveTimelineLayout}
-        aria-label="トラックの高さ"
+        aria-label={tr("トラックの高さ", "Track height")}
       />
     </label>
     <label>
-      <span>見出しの幅 <b>{headW}px</b></span>
+      <span>{tr("見出しの幅", "Header width")} <b>{headW}px</b></span>
       <input
         type="range"
         min={TIMELINE_HEAD_W.min}
@@ -80,7 +81,7 @@
         value={headW}
         oninput={(e) => (timelineLayout.headW = Number(e.currentTarget.value))}
         onchange={saveTimelineLayout}
-        aria-label="見出しの幅"
+        aria-label={tr("見出しの幅", "Header width")}
       />
     </label>
     <button
@@ -90,7 +91,7 @@
         timelineLayout.trackHeights = {};
         timelineLayout.headW = TIMELINE_HEAD_W.def;
         saveTimelineLayout();
-      }}>元に戻す</button
+      }}>{tr("元に戻す", "Reset")}</button
     >
   </div>
 {/if}

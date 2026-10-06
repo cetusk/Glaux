@@ -4,6 +4,7 @@
   import * as api from "./api";
   import { buildBars, fmtBpm, formatPosition, formatSeconds, tickToSeconds } from "./barMap";
   import { harmonyStore } from "./harmony.svelte";
+  import { tr } from "./i18n.svelte";
   import { transportStore } from "./transport.svelte";
   import type { Project } from "./types";
 
@@ -138,15 +139,15 @@
 
 <!-- 表示窓: 押せるのはテンポと拍子だけ(▾ の付いた欄) -->
 <div class="lcd" class:recording={transport.recording}>
-  <div class="f pos" title="位置(小節.拍.16 分)">
-    <span class="lbl">位置</span><span class="val">{posText}</span>
+  <div class="f pos" title={tr("位置(小節.拍.16 分)", "Position (bar.beat.16th)")}>
+    <span class="lbl">{tr("位置", "Position")}</span><span class="val">{posText}</span>
   </div>
-  <div class="f time" title="時間(分:秒)">
-    <span class="lbl">時間</span><span class="val">{timeText}</span>
+  <div class="f time" title={tr("時間(分:秒)", "Time (min:sec)")}>
+    <span class="lbl">{tr("時間", "Time")}</span><span class="val">{timeText}</span>
   </div>
   {#if transport.recording && !transport.midi_recording}
-    <div class="f" title={`入力レベル ${recLevel.toFixed(0)} dBFS(目安: -12〜-6dB)`}>
-      <span class="lbl rec-lbl">録音中 · 入力</span>
+    <div class="f" title={tr(`入力レベル ${recLevel.toFixed(0)} dBFS(目安: -12〜-6dB)`, `Input level ${recLevel.toFixed(0)} dBFS (aim for -12 to -6 dB)`)}>
+      <span class="lbl rec-lbl">{tr("録音中 · 入力", "Rec · Input")}</span>
       <span class="rec-meter"
         ><span
           class="rec-meter-fill"
@@ -156,11 +157,11 @@
       >
     </div>
   {:else if transport.midi_recording}
-    <div class="f"><span class="lbl rec-lbl">MIDI 録音中</span><span class="val">{midiArmName ?? ""}</span></div>
+    <div class="f"><span class="lbl rec-lbl">{tr("MIDI 録音中", "MIDI rec")}</span><span class="val">{midiArmName ?? ""}</span></div>
   {/if}
   {#if editingBpm}
     <div class="f">
-      <span class="lbl">テンポ</span>
+      <span class="lbl">{tr("テンポ", "Tempo")}</span>
       <!-- svelte-ignore a11y_autofocus -->
       <input
         class="lcd-input"
@@ -179,15 +180,21 @@
       class="f edit"
       onclick={startBpmEdit}
       title={(project?.tempo_map.length ?? 0) > 1
-        ? "クリックで先頭のテンポ(BPM)を編集(曲の途中にテンポの変更あり。途中の変更はルーラーの右クリックで)"
-        : "クリックでテンポ(BPM)を編集(曲の途中から変えるときはルーラーを右クリック)"}
+        ? tr(
+            "クリックで先頭のテンポ(BPM)を編集(曲の途中にテンポの変更あり。途中の変更はルーラーの右クリックで)",
+            "Click to edit the starting tempo (BPM) (the song has tempo changes; right-click the ruler to edit those)",
+          )
+        : tr(
+            "クリックでテンポ(BPM)を編集(曲の途中から変えるときはルーラーを右クリック)",
+            "Click to edit the tempo (BPM) (right-click the ruler to change it mid-song)",
+          )}
     >
-      <span class="lbl">テンポ</span><span class="val">{fmtBpm(bpm)}{#if (project?.tempo_map.length ?? 0) > 1}*{/if}</span>
+      <span class="lbl">{tr("テンポ", "Tempo")}</span><span class="val">{fmtBpm(bpm)}{#if (project?.tempo_map.length ?? 0) > 1}*{/if}</span>
     </button>
   {/if}
   {#if editingSig}
     <div class="f">
-      <span class="lbl">拍子</span>
+      <span class="lbl">{tr("拍子", "Time sig")}</span>
       <span class="sig-edit">
         <!-- svelte-ignore a11y_autofocus -->
         <input
@@ -215,18 +222,27 @@
       class="f edit"
       onclick={startSigEdit}
       title={hasSigChanges
-        ? "クリックで先頭の拍子を編集(曲の途中に拍子の変更あり。途中の変更はルーラーの右クリックで)"
-        : "クリックで拍子を編集(曲の途中から変えるときはルーラーを右クリック)"}
+        ? tr(
+            "クリックで先頭の拍子を編集(曲の途中に拍子の変更あり。途中の変更はルーラーの右クリックで)",
+            "Click to edit the starting time signature (the song has meter changes; right-click the ruler to edit those)",
+          )
+        : tr(
+            "クリックで拍子を編集(曲の途中から変えるときはルーラーを右クリック)",
+            "Click to edit the time signature (right-click the ruler to change it mid-song)",
+          )}
     >
-      <span class="lbl">拍子</span><span class="val">{timeSig}{#if hasSigChanges}*{/if}</span>
+      <span class="lbl">{tr("拍子", "Time sig")}</span><span class="val">{timeSig}{#if hasSigChanges}*{/if}</span>
     </button>
   {/if}
   {#if harmonyStore.view?.key}
     <div
       class="f key"
-      title={`キー(ノートからの推定。確からしさ ${Math.round(harmonyStore.view.key.confidence * 100)}%)。ルーラーに小節ごとのコード`}
+      title={tr(
+        `キー(ノートからの推定。確からしさ ${Math.round(harmonyStore.view.key.confidence * 100)}%)。ルーラーに小節ごとのコード`,
+        `Key (estimated from notes, ${Math.round(harmonyStore.view.key.confidence * 100)}% confidence). Chords per bar are shown on the ruler`,
+      )}
     >
-      <span class="lbl">キー(推定)</span><span class="val">{harmonyStore.view.key.name}</span>
+      <span class="lbl">{tr("キー(推定)", "Key (est.)")}</span><span class="val">{harmonyStore.view.key.name}</span>
     </div>
   {/if}
 </div>

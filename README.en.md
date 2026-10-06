@@ -12,7 +12,7 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 > [!NOTE]
 > This is an experimental personal project, mainly tested on Windows 11 (on Linux only the core and engine are built and tested; macOS is untested).
 > Features and the file format may change without notice. The UI and the in-code documentation are in Japanese.
-> The AI can chat in English: Settings (設定) → AI → "AI の返答の言語" → English.
+> Switch to English in Settings (設定) → Display (表示) → Language (言語). The AI then replies in English, and the main screens (timeline, chat, design view, piano roll) are shown in English; other screens are being translated.
 
 ## Features
 

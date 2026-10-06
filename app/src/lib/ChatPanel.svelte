@@ -4,6 +4,7 @@
   import * as api from "./api";
   import { chatStatus } from "./aiStatus.svelte";
   import { toolShort } from "./toolLabels";
+  import { plural, tr } from "./i18n.svelte";
   import { clearAiHighlight, setAiHighlight } from "./aiHighlight.svelte";
   import { renderMarkdown } from "./markdown";
   import { showError, showToast } from "./toast.svelte";
@@ -42,6 +43,41 @@
   function pickModel(e: Event) {
     const v = (e.currentTarget as HTMLSelectElement).value;
     if (v !== "__current") setChatModel(v);
+  }
+
+  // モデル・考える深さの表示名(settings の表は日本語なので、英語の表示はここで引く)
+  const MODEL_TEXT_EN: Record<string, string> = {
+    既定: "Default",
+    "Claude Code の既定のモデル": "Claude Code's default model",
+    "Codex CLI の既定のモデル": "Codex CLI's default model",
+    "長い文脈(100 万トークン)": "Long context (1M tokens)",
+    速くて軽い: "Fast and light",
+    最も高度な作業に: "For the most advanced work",
+    普段の作業に: "For everyday work",
+    速くて安い: "Fast and cheap",
+    前の世代: "Previous generation",
+    "前の世代・速い": "Previous generation, fast",
+    旧版: "Legacy",
+  };
+  const EFFORT_LABELS_EN: Record<string, string> = {
+    "": "Default",
+    minimal: "minimal",
+    low: "low (light, fast)",
+    medium: "medium (standard)",
+    high: "high (careful)",
+    xhigh: "xhigh (more careful)",
+    max: "max (maximum)",
+    ultra: "ultra (deepest, slow)",
+  };
+  /** モデルの名前・説明の表示(英語の表示では、日本語の所だけ訳す。モデル名はそのまま) */
+  function modelText(t: string | undefined): string | undefined {
+    if (t == null) return t;
+    const en = MODEL_TEXT_EN[t] ?? t.replace("(1M)", " (1M)");
+    return tr(t, en);
+  }
+  function effortLabel(ef: string): string {
+    const ja = EFFORT_LABELS[ef] ?? ef;
+    return tr(ja, EFFORT_LABELS_EN[ef] ?? ef);
   }
 
   function pickEffort(e: Event) {
@@ -114,7 +150,12 @@
       const ch = await api.turnChanges(turnStart);
       if (ch.entry_ids.length > 0) {
         setAiHighlight(ch);
-        push({ role: "turn", text: `このターンの編集 ${ch.entry_ids.length} 件`, since: turnStart, first: ch.entry_ids[0] });
+        push({
+          role: "turn",
+          text: tr(`このターンの編集 ${ch.entry_ids.length} 件`, `${plural(ch.entry_ids.length, "edit")} in this turn`),
+          since: turnStart,
+          first: ch.entry_ids[0],
+        });
       }
     } catch {
       // 数えられなくても会話には影響しない
@@ -151,7 +192,7 @@
     try {
       let first = m.first;
       if (!first) first = (await api.turnChanges(m.since ?? null)).entry_ids[0];
-      if (!first) throw new Error("このターンの編集が見つかりません");
+      if (!first) throw new Error(tr("このターンの編集が見つかりません", "No edits found in this turn"));
       // 範囲: このターンで音が変わった所(最初の所から)。分からなければ今の位置から
       let range: { start: number; end: number } | null = null;
       let r: { ranges: [number, number][]; whole: boolean; silent_only?: boolean } | null = null;
@@ -164,7 +205,13 @@
       if (r?.silent_only) {
         // 鳴っていないトラックだけの編集: 聴き比べても同じ音なので始めない
         releaseAb("chat");
-        showToast("warn", "このターンの編集は、今鳴っていないトラック(ミュート中・ほかのトラックのソロ中)だけでした。聴き比べても違いはありません");
+        showToast(
+          "warn",
+          tr(
+            "このターンの編集は、今鳴っていないトラック(ミュート中・ほかのトラックのソロ中)だけでした。聴き比べても違いはありません",
+            "This turn only edited tracks that aren't sounding (muted, or another track is soloed), so A/B would sound the same",
+          ),
+        );
         return;
       }
       range ??= defaultAbRange(project);
@@ -175,7 +222,7 @@
       revealAb();
     } catch (e) {
       releaseAb("chat");
-      showToast("error", `聴き比べを用意できませんでした: ${e}`);
+      showToast("error", tr(`聴き比べを用意できませんでした: ${e}`, `Couldn't prepare the A/B comparison: ${e}`));
     } finally {
       turnAbBusy = null;
     }
@@ -206,7 +253,13 @@
     }
     if (p !== abProject) {
       endTurnAb();
-      showToast("warn", "曲が変わったので聴き比べを終えました(もう一度「聴き比べる」で聴けます)");
+      showToast(
+        "warn",
+        tr(
+          "曲が変わったので聴き比べを終えました(もう一度「聴き比べる」で聴けます)",
+          "The song changed, so A/B was ended (press “Compare” again to listen)",
+        ),
+      );
     }
   });
 
@@ -246,11 +299,17 @@
       showToast(
         r.conflicts.length > 0 ? "warn" : "ok",
         r.conflicts.length > 0
-          ? `${r.reverted} 件を取り消しました。後から同じ所を触った編集があります(履歴で確認してください)`
-          : `このターンの編集 ${r.reverted} 件を取り消しました(Ctrl+Z で取り消しを戻せます)`,
+          ? tr(
+              `${r.reverted} 件を取り消しました。後から同じ所を触った編集があります(履歴で確認してください)`,
+              `Reverted ${plural(r.reverted, "edit")}. Some later edits touched the same places (check the history)`,
+            )
+          : tr(
+              `このターンの編集 ${r.reverted} 件を取り消しました(Ctrl+Z で取り消しを戻せます)`,
+              `Reverted ${plural(r.reverted, "edit")} from this turn (Ctrl+Z brings them back)`,
+            ),
       );
     } catch (e) {
-      showError("このターンを取り消せませんでした", e);
+      showError(tr("このターンを取り消せませんでした", "Couldn't revert this turn"), e);
     }
   }
 
@@ -475,37 +534,40 @@
       prefix +=
         `【対象クリップ(ユーザーがピアノロールで開いている)】トラック「${focus.trackName}」(${focus.trackId})の` +
         `クリップ「${focus.clipName}」(${focus.clipId})。特に指定がなければ、このクリップ内のノートへの操作として解釈してください。\n`;
-      shown = `〔${focus.clipName}〕 ${shown}`;
+      shown = tr(`〔${focus.clipName}〕 ${shown}`, `[${focus.clipName}] ${shown}`);
     }
     if (range) {
       prefix +=
         `【対象範囲の指定(ユーザーが UI で選択)】小節 ${range.startBar + 1}〜${range.endBar + 1}` +
         `(tick ${range.startTick}〜${range.endTick})。` +
         `編集・分析はこの範囲内に限定し、範囲外のノートやクリップは変更しないでください。\n`;
-      shown = `〔小節 ${range.startBar + 1}〜${range.endBar + 1}〕 ${shown}`;
+      shown = tr(
+        `〔小節 ${range.startBar + 1}〜${range.endBar + 1}〕 ${shown}`,
+        `[Bars ${range.startBar + 1}–${range.endBar + 1}] ${shown}`,
+      );
     }
     if (designTarget) {
       prefix += designTargetPrompt(designStore.data, designSel.sel) ?? "";
-      shown = `〔${designTarget}〕 ${shown}`;
+      shown = tr(`〔${designTarget}〕 ${shown}`, `[${designTarget}] ${shown}`);
     }
     const sd = soundDesignStore.focus;
     if (sd && sd.trackId === MASTER_FOCUS_ID) {
       prefix +=
         "【音作り中: マスターバス(ユーザーがマスターのエフェクトを開いている)】" +
         "エフェクトに関する指示は、特に指定がなければマスター(add_master_effect / set_master_param)が対象です。\n";
-      shown = `〔音作り: マスター〕 ${shown}`;
+      shown = tr(`〔音作り: マスター〕 ${shown}`, `[Sound design: Master] ${shown}`);
     } else if (sd) {
       prefix +=
         `【音作り中のトラック(ユーザーが音作りビューで開いている)】「${sd.trackName}」(${sd.trackId})。` +
         `音色・エフェクトに関する指示は、特に指定がなければこのトラックが対象です。\n`;
-      shown = `〔音作り: ${sd.trackName}〕 ${shown}`;
+      shown = tr(`〔音作り: ${sd.trackName}〕 ${shown}`, `[Sound design: ${sd.trackName}] ${shown}`);
     }
     // /goal: 質問せずに AI が決め手を選んで最後まで作る(何も無ければ、何でもよいので 1 曲)。設定で「途中で尋ねない」なら毎回
     const goal = prompt.match(/^\/(goal|おまかせ)(?:\s+|$)([\s\S]*)$/);
     let body = prompt;
     if (goal) {
       body = goal[2].trim() || (settings.lang === "en" ? GOAL_DEFAULT_EN : GOAL_DEFAULT_JA);
-      shown = shown.replace(prompt, `${settings.lang === "en" ? "[Up to you]" : "〔おまかせ〕"} ${body}`);
+      shown = shown.replace(prompt, `${tr("〔おまかせ〕", "[Up to you]")} ${body}`);
     }
     if (goal || settings.chatAsk === "never") prefix = OMAKASE + prefix;
     const fullPrompt = prefix ? `${prefix}\n${body}` : body;
@@ -700,14 +762,17 @@
 
 <div class="chat" bind:clientHeight={chatH}>
   <div class="chat-head">
-    <h2><Icon name="sparkles" size={15} />AI に指示</h2>
+    <h2><Icon name="sparkles" size={15} />{tr("AI に指示", "AI assistant")}</h2>
     <div class="head-right">
       <select
         class="provider"
         value={provider}
         onchange={pickProvider}
         disabled={chatStatus.running}
-        title="チャットの相手(Claude = Claude Code、GPT = Codex CLI。どちらもインストールしてログインしておく)。切り替えると新しい会話になります"
+        title={tr(
+          "チャットの相手(Claude = Claude Code、GPT = Codex CLI。どちらもインストールしてログインしておく)。切り替えると新しい会話になります",
+          "Who to chat with (Claude = Claude Code, GPT = Codex CLI; install and sign in to either first). Switching starts a new conversation",
+        )}
       >
         {#each PROVIDERS as p (p.value)}
           <option value={p.value}>{p.label}</option>
@@ -718,10 +783,10 @@
         value={isCustomModel ? "__current" : currentModel}
         onchange={pickModel}
         disabled={chatStatus.running}
-        title="AI のモデル(次の指示から反映。会話の文脈はそのまま引き継がれます)"
+        title={tr("AI のモデル(次の指示から反映。会話の文脈はそのまま引き継がれます)", "AI model (applies from the next message; the conversation context is kept)")}
       >
         {#each MODELS[provider] as m (m.value)}
-          <option value={m.value} title={m.note}>{m.label}</option>
+          <option value={m.value} title={modelText(m.note)}>{modelText(m.label)}</option>
         {/each}
         {#if isCustomModel}
           <option value="__current">{currentModel}</option>
@@ -732,16 +797,19 @@
         value={efforts.includes(currentEffort) ? currentEffort : ""}
         onchange={pickEffort}
         disabled={chatStatus.running}
-        title="考える深さ(effort)。深いほど丁寧だが時間と使用量が増える。次の指示から反映"
-        aria-label="考える深さ"
+        title={tr(
+          "考える深さ(effort)。深いほど丁寧だが時間と使用量が増える。次の指示から反映",
+          "Reasoning effort. Deeper is more careful but takes more time and usage. Applies from the next message",
+        )}
+        aria-label={tr("考える深さ", "Reasoning effort")}
       >
-        <option value="">深さ: 既定</option>
+        <option value="">{tr("深さ: 既定", "Effort: default")}</option>
         {#each efforts as ef (ef)}
-          <option value={ef}>{EFFORT_LABELS[ef] ?? ef}</option>
+          <option value={ef}>{effortLabel(ef)}</option>
         {/each}
       </select>
-      <button class="btn sm" onclick={newConversation} disabled={chatStatus.running} title="会話の文脈をリセットする(表示中の会話も消えます)"
-        ><Icon name="message-square-plus" />新しい会話</button
+      <button class="btn sm" onclick={newConversation} disabled={chatStatus.running} title={tr("会話の文脈をリセットする(表示中の会話も消えます)", "Reset the conversation context (also clears the shown conversation)")}
+        ><Icon name="message-square-plus" />{tr("新しい会話", "New chat")}</button
       >
     </div>
   </div>
@@ -749,7 +817,10 @@
   <div class="messages" bind:this={scroller} onscroll={onScroll}>
     {#if messages.length === 0}
       <div class="hint">
-        例:「4小節のベースラインを作って」「もっと音を明るくして」「さっきの編集を取り消して」
+        {tr(
+          "例:「4小節のベースラインを作って」「もっと音を明るくして」「さっきの編集を取り消して」",
+          "e.g. “Write a 4-bar bassline”, “Make it brighter”, “Undo that last edit”",
+        )}
       </div>
     {/if}
     {#each messages as m}
@@ -757,37 +828,55 @@
         <div class="msg tool"><Icon name="sparkles" size={12} />{m.text}</div>
       {:else if m.role === "turn"}
         <div class="msg turn">
-          <span>{m.text}{m.reverted ? "(取り消し済み)" : ""}</span>
+          <span>{m.text}{m.reverted ? tr("(取り消し済み)", " (reverted)") : ""}</span>
           {#if !m.reverted}
             <button
               class="btn sm"
               onclick={() => revertTurnAt(m)}
-              title="このターンで AI が行った編集をまとめて打ち消す(後から人間が行った編集は残す)"
-              ><Icon name="eraser" />このターンを取り消す</button
+              title={tr(
+                "このターンで AI が行った編集をまとめて打ち消す(後から人間が行った編集は残す)",
+                "Undo all of the AI's edits from this turn (later edits by you are kept)",
+              )}
+              ><Icon name="eraser" />{tr("このターンを取り消す", "Revert this turn")}</button
             >
             {#if turnAb?.key !== turnKey(m)}
               <button
                 class="btn sm"
                 disabled={turnAbBusy != null}
                 onclick={() => startTurnAb(m)}
-                title="このターンの前と今を、音量をそろえて切り替えて聴く(範囲はこのターンで音が変わった所)"
-                ><Icon name="headphones" />{turnAbBusy === turnKey(m) ? "用意しています…" : "前と今を聴き比べる"}</button
+                title={tr(
+                  "このターンの前と今を、音量をそろえて切り替えて聴く(範囲はこのターンで音が変わった所)",
+                  "Switch between before and after this turn at matched loudness (over the range where the sound changed)",
+                )}
+                ><Icon name="headphones" />{turnAbBusy === turnKey(m)
+                  ? tr("用意しています…", "Preparing…")
+                  : tr("前と今を聴き比べる", "Compare before/after")}</button
               >
             {/if}
           {/if}
         </div>
         {#if turnAb && turnAb.key === turnKey(m)}
-          <div class="msg abrow" data-ab-live role="group" aria-label="このターンの前と今を切り替える">
-            <button class="btn sm" class:on={turnAb.side === "a"} type="button" onclick={() => setTurnSide("a")}>A 前</button>
-            <button class="btn sm" class:on={turnAb.side === "b"} type="button" onclick={() => setTurnSide("b")}>B 今</button>
-            <button class="btn sm" type="button" title="範囲の頭から聴き直す" onclick={() => turnAb && restartAb(turnAb.start)}>⏮ 頭から</button>
-            <button class="btn sm" type="button" onclick={endTurnAb}>終える</button>
+          <div class="msg abrow" data-ab-live role="group" aria-label={tr("このターンの前と今を切り替える", "Switch between before and after this turn")}>
+            <button class="btn sm" class:on={turnAb.side === "a"} type="button" onclick={() => setTurnSide("a")}>{tr("A 前", "A Before")}</button>
+            <button class="btn sm" class:on={turnAb.side === "b"} type="button" onclick={() => setTurnSide("b")}>{tr("B 今", "B Now")}</button>
+            <button class="btn sm" type="button" title={tr("範囲の頭から聴き直す", "Play again from the start of the range")} onclick={() => turnAb && restartAb(turnAb.start)}
+              >⏮ {tr("頭から", "Restart")}</button
+            >
+            <button class="btn sm" type="button" onclick={endTurnAb}>{tr("終える", "End")}</button>
             {#if turnAb.info.first_diff_secs == null}
               <span class="abnote warn"
-                >この範囲では、前と今の音が同じです。このターンの編集は、ミュートしたトラックなど今は聞こえない所だけかもしれません</span
+                >{tr(
+                  "この範囲では、前と今の音が同じです。このターンの編集は、ミュートしたトラックなど今は聞こえない所だけかもしれません",
+                  "Before and after sound the same in this range. This turn may only have edited parts you can't hear now, such as muted tracks",
+                )}</span
               >
             {:else}
-              <span class="abnote">音量はそろえてあります。切り替えても同じ位置から続けて鳴ります</span>
+              <span class="abnote"
+                >{tr(
+                  "音量はそろえてあります。切り替えても同じ位置から続けて鳴ります",
+                  "Loudness is matched. Switching keeps playing from the same position",
+                )}</span
+              >
             {/if}
           </div>
         {/if}
@@ -795,7 +884,7 @@
         {@const live = liveProposals(m.planIds)}
         {@const on = comparing(live)}
         <div class="msg choices" data-ab-live={on ? "" : undefined}>
-          <div class="ch-head"><Icon name="split" size={13} />AI の案({m.planIds?.length ?? 0})</div>
+          <div class="ch-head"><Icon name="split" size={13} />{tr(`AI の案(${m.planIds?.length ?? 0})`, `AI proposals (${m.planIds?.length ?? 0})`)}</div>
           {#each m.planIds ?? [] as id (id)}
             {@const k = live.indexOf(id)}
             <div class="ch-row">
@@ -803,47 +892,64 @@
                 <span class="pletter" class:cur={on && proposalAb.side === proposalAb.planIds.indexOf(id) + 1}>{abLetter(k + 1)}</span>
                 <span class="ch-name">{planName(id)}</span>
                 <span class="spacer"></span>
-                <button class="btn sm primary" type="button" title="案の音を曲に当て、案の計画を今の計画にする(同じ頼みのほかの案は片付ける)" onclick={() => adoptProposal(id, planName(id) ?? "案")}
-                  >採用</button
+                <button class="btn sm primary" type="button" title={tr(
+                    "案の音を曲に当て、案の計画を今の計画にする(同じ頼みのほかの案は片付ける)",
+                    "Apply this proposal to the song and make its plan current (other proposals for the same request are discarded)",
+                  )}
+                  onclick={() => adoptProposal(id, planName(id) ?? tr("案", "proposal"))}
+                  >{tr("採用", "Adopt")}</button
                 >
               {:else}
-                <span class="ch-gone">採用したか、片付けた案</span>
+                <span class="ch-gone">{tr("採用したか、片付けた案", "Adopted or discarded")}</span>
               {/if}
             </div>
           {/each}
           {#if live.length}
             <div class="ch-row">
               {#if on}
-                <span class="abswitch" role="group" aria-label="今と案を切り替える">
-                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>A 今</button>
+                <span class="abswitch" role="group" aria-label={tr("今と案を切り替える", "Switch between now and the proposals")}>
+                  <button class="btn sm" class:on={proposalAb.side === 0} type="button" onclick={() => setProposalSide(0)}>{tr("A 今", "A Now")}</button>
                   {#each proposalAb.planIds as pid, j (pid)}
                     <button class="btn sm" class:on={proposalAb.side === j + 1} type="button" title={planName(pid)} onclick={() => setProposalSide(j + 1)}
                       >{abLetter(j + 1)}</button
                     >
                   {/each}
                 </span>
-                <button class="btn sm" type="button" title="範囲の頭から聴き直す" onclick={restartProposalAb}>⏮ 頭から</button>
-                <button class="btn sm" type="button" onclick={() => endProposalAb()}>終える</button>
+                <button class="btn sm" type="button" title={tr("範囲の頭から聴き直す", "Play again from the start of the range")} onclick={restartProposalAb}
+                  >⏮ {tr("頭から", "Restart")}</button
+                >
+                <button class="btn sm" type="button" onclick={() => endProposalAb()}>{tr("終える", "End")}</button>
               {:else}
                 <button class="btn sm" type="button" disabled={proposalAb.busy != null} onclick={() => listenProposals(live)}
-                  ><Icon name="headphones" />{live.length >= 2 ? `まとめて聴き比べる(今 + 案 ${Math.min(live.length, MAX_PROPOSALS_AB)} つ)` : "今と聴き比べる"}</button
+                  ><Icon name="headphones" />{live.length >= 2
+                    ? tr(
+                        `まとめて聴き比べる(今 + 案 ${Math.min(live.length, MAX_PROPOSALS_AB)} つ)`,
+                        `Compare all (now + ${plural(Math.min(live.length, MAX_PROPOSALS_AB), "proposal")})`,
+                      )
+                    : tr("今と聴き比べる", "Compare with now")}</button
                 >
               {/if}
-              <button class="btn sm" type="button" onclick={() => (viewStore.main = "design")}>設計画面で見る</button>
+              <button class="btn sm" type="button" onclick={() => (viewStore.main = "design")}>{tr("設計画面で見る", "View in Design")}</button>
             </div>
-            {#if on}<div class="abnote">音量はいちばん小さいものにそろえてあります。切り替えても同じ位置から続けて鳴ります</div>{/if}
+            {#if on}<div class="abnote">{tr(
+                  "音量はいちばん小さいものにそろえてあります。切り替えても同じ位置から続けて鳴ります",
+                  "Loudness is matched to the quietest one. Switching keeps playing from the same position",
+                )}</div>{/if}
           {:else}
-            <div class="abnote">どの案も、もう残っていません</div>
+            <div class="abnote">{tr("どの案も、もう残っていません", "No proposals are left")}</div>
           {/if}
         </div>
       {:else if m.role === "question" && m.question}
         {@const open = qOpen(m)}
         {@const st = qState(m)}
-        <div class="msg question" class:closed={!open} role="group" aria-label="AI からの質問">
-          <div class="ch-head"><Icon name="message-circle-question-mark" size={13} />AI からの質問{m.question.why ? `(${m.question.why})` : ""}</div>
+        <div class="msg question" class:closed={!open} role="group" aria-label={tr("AI からの質問", "Question from the AI")}>
+          <div class="ch-head"><Icon name="message-circle-question-mark" size={13} />{tr("AI からの質問", "Question from the AI")}{m.question.why
+              ? tr(`(${m.question.why})`, ` (${m.question.why})`)
+              : ""}</div
+          >
           {#each m.question.questions as q, qi (qi)}
             <div class="q-item">
-              <div class="q-text"><span class="q-tag">{q.header}</span>{q.question}{q.multi ? "(いくつでも)" : ""}</div>
+              <div class="q-text"><span class="q-tag">{q.header}</span>{q.question}{q.multi ? tr("(いくつでも)", " (pick any)") : ""}</div>
               <div class="q-opts">
                 {#each q.options as o (o.label)}
                   <button
@@ -861,7 +967,7 @@
                 <input
                   class="q-other"
                   type="text"
-                  placeholder="その他(自由に書く)"
+                  placeholder={tr("その他(自由に書く)", "Other (write freely)")}
                   bind:value={st[qi].other}
                   onkeydown={(e) => {
                     if (e.key === "Enter" && !e.isComposing) answerQuestion(m);
@@ -872,14 +978,16 @@
           {/each}
           {#if open}
             <div class="ch-row">
-              <button class="btn sm primary" type="button" onclick={() => answerQuestion(m)}><Icon name="send" />答えを送る</button>
-              <button class="btn sm" type="button" title="決め手は AI が選び、選んだものを報告に書きます" onclick={() => answerQuestion(m, true)}
-                >おまかせで進める</button
+              <button class="btn sm primary" type="button" onclick={() => answerQuestion(m)}><Icon name="send" />{tr("答えを送る", "Send answers")}</button>
+              <button class="btn sm" type="button" title={tr("決め手は AI が選び、選んだものを報告に書きます", "The AI decides and reports what it chose")}
+                onclick={() => answerQuestion(m, true)}>{tr("おまかせで進める", "Leave it to AI")}</button
               >
-              <span class="abnote">選ばなかった質問は AI に任せます</span>
+              <span class="abnote">{tr("選ばなかった質問は AI に任せます", "Unanswered questions are left to the AI")}</span>
             </div>
           {:else}
-            <div class="abnote">{m.skipped ? "答えずに次の指示へ進みました" : `答え: ${m.answer}`}</div>
+            <div class="abnote">{m.skipped
+                ? tr("答えずに次の指示へ進みました", "Moved on to the next message without answering")
+                : tr(`答え: ${m.answer}`, `Answer: ${m.answer}`)}</div>
           {/if}
         </div>
       {:else if m.role === "assistant"}
@@ -887,7 +995,7 @@
       {:else if m.role === "user" && m.dropped}
         <div class="msg user dropped">
           <span class="struck">{m.text}</span>
-          <div class="queue-note">停止したので送っていません</div>
+          <div class="queue-note">{tr("停止したので送っていません", "Not sent (stopped)")}</div>
         </div>
       {:else}
         <div class="msg {m.role}">{m.text}</div>
@@ -900,8 +1008,12 @@
       <div class="msg user waiting">
         {p.text}
         <div class="queue-note">
-          送信待ち(今の指示が終わったら送ります)
-          <button class="chip-x" onclick={() => dropPending(i)} title="この指示を送らない" aria-label="この指示を送らない"
+          {tr("送信待ち(今の指示が終わったら送ります)", "Queued (sends when the current message finishes)")}
+          <button
+            class="chip-x"
+            onclick={() => dropPending(i)}
+            title={tr("この指示を送らない", "Don't send this message")}
+            aria-label={tr("この指示を送らない", "Don't send this message")}
             ><Icon name="x" size={11} /></button
           >
         </div>
@@ -913,29 +1025,35 @@
   {#if pianoRollStore.focus || soundDesignStore.focus || selectionStore.range || designLabel}
     <div class="chips">
       {#if designTarget}
-        <span class="chip" title="設計画面で選んでいる所が指示の対象になります(その所の計画と実際を AI が読み、直すのはその所だけ)"
+        <span
+          class="chip"
+          title={tr(
+            "設計画面で選んでいる所が指示の対象になります(その所の計画と実際を AI が読み、直すのはその所だけ)",
+            "Messages target the part selected in Design (the AI reads its plan and actual content, and only changes that part)",
+          )}
           ><Icon name="target" size={12} />{designTarget}<button
             class="chip-x"
             onclick={() => (designDetached = designSel.sel)}
-            title="この所に限らない指示にする(設計画面の選択はそのまま)"
-            aria-label="対象から外す"><Icon name="x" size={11} /></button
+            title={tr("この所に限らない指示にする(設計画面の選択はそのまま)", "Don't limit messages to this part (the Design selection is kept)")}
+            aria-label={tr("対象から外す", "Remove target")}><Icon name="x" size={11} /></button
           ></span
         >
       {:else if designLabel}
         <button
           class="chip off"
           type="button"
-          title="設計画面で選んでいる所を、指示の対象として添え直す"
-          onclick={() => (designDetached = null)}><Icon name="target" size={12} />{designLabel} を対象にする</button
+          title={tr("設計画面で選んでいる所を、指示の対象として添え直す", "Target the part selected in Design again")}
+          onclick={() => (designDetached = null)}
+          ><Icon name="target" size={12} />{tr(`${designLabel} を対象にする`, `Target ${designLabel}`)}</button
         >
       {/if}
       {#if pianoRollStore.focus}
-        <span class="chip" title="ピアノロールで開いているクリップが指示の対象になります"
+        <span class="chip" title={tr("ピアノロールで開いているクリップが指示の対象になります", "Messages target the clip open in the piano roll")}
           ><Icon name="piano" size={12} />{pianoRollStore.focus.clipName}<button
             class="chip-x"
             onclick={() => (pianoRollStore.focus = null)}
-            title="ピアノロールを閉じる"
-            aria-label="ピアノロールを閉じる"><Icon name="x" size={11} /></button
+            title={tr("ピアノロールを閉じる", "Close the piano roll")}
+            aria-label={tr("ピアノロールを閉じる", "Close the piano roll")}><Icon name="x" size={11} /></button
           ></span
         >
       {/if}
@@ -943,30 +1061,38 @@
         <span
           class="chip"
           title={soundDesignStore.focus.trackId === MASTER_FOCUS_ID
-            ? "エフェクトの指示はマスターへ"
-            : "音色・エフェクトの指示はこのトラックへ"}
-          ><Icon name="sliders-horizontal" size={12} />{soundDesignStore.focus.trackName} の音作り<button
+            ? tr("エフェクトの指示はマスターへ", "Effect requests go to the master")
+            : tr("音色・エフェクトの指示はこのトラックへ", "Sound and effect requests go to this track")}
+          ><Icon name="sliders-horizontal" size={12} />{tr(`${soundDesignStore.focus.trackName} の音作り`, `Sound design: ${soundDesignStore.focus.trackName}`)}<button
             class="chip-x"
             onclick={() => (soundDesignStore.focus = null)}
-            title="インスペクターを閉じる"
-            aria-label="インスペクターを閉じる"><Icon name="x" size={11} /></button
+            title={tr("インスペクターを閉じる", "Close the inspector")}
+            aria-label={tr("インスペクターを閉じる", "Close the inspector")}><Icon name="x" size={11} /></button
           ></span
         >
       {/if}
       {#if selectionStore.range}
-        <span class="chip" title="この範囲に限定して指示されます"
-          ><Icon name="ruler" size={12} />小節 {selectionStore.range.startBar + 1}〜{selectionStore.range.endBar + 1}<button
+        <span class="chip" title={tr("この範囲に限定して指示されます", "Messages are limited to this range")}
+          ><Icon name="ruler" size={12} />{tr(
+            `小節 ${selectionStore.range.startBar + 1}〜${selectionStore.range.endBar + 1}`,
+            `Bars ${selectionStore.range.startBar + 1}–${selectionStore.range.endBar + 1}`,
+          )}<button
             class="chip-x"
             onclick={() => (selectionStore.range = null)}
-            title="範囲の指定を外す"
-            aria-label="範囲の指定を外す"><Icon name="x" size={11} /></button
+            title={tr("範囲の指定を外す", "Clear the range")}
+            aria-label={tr("範囲の指定を外す", "Clear the range")}><Icon name="x" size={11} /></button
           ></span
         >
       {/if}
       {#if designTarget || pianoRollStore.focus || soundDesignStore.focus || selectionStore.range}
-        <span class="chips-note">指示はこの対象だけに効きます。ほかの所も頼むときは ✕ で外してください</span>
+        <span class="chips-note"
+          >{tr(
+            "指示はこの対象だけに効きます。ほかの所も頼むときは ✕ で外してください",
+            "Messages only affect this target. Remove it with ✕ to work on other parts",
+          )}</span
+        >
       {:else}
-        <span class="chips-note">指示は曲全体に効きます</span>
+        <span class="chips-note">{tr("指示は曲全体に効きます", "Messages affect the whole song")}</span>
       {/if}
     </div>
   {/if}
@@ -977,9 +1103,9 @@
     class="input-split"
     role="separator"
     aria-orientation="horizontal"
-    aria-label="入力欄の高さ"
+    aria-label={tr("入力欄の高さ", "Input height")}
     tabindex="0"
-    title="ドラッグで入力欄の高さを変える(ダブルクリックで自動に戻す)"
+    title={tr("ドラッグで入力欄の高さを変える(ダブルクリックで自動に戻す)", "Drag to resize the input (double-click to reset to auto)")}
     onpointerdown={startInputResize}
     ondblclick={resetInputH}
     onkeydown={onResizeKey}
@@ -989,18 +1115,25 @@
       bind:this={inputEl}
       rows="2"
       placeholder={chatStatus.running
-        ? "次の指示を書けます(今の指示が終わったら送ります)"
-        : "AI への指示を入力(Enter で送信 / Shift+Enter で改行 / ↑ で前の指示)"}
+        ? tr("次の指示を書けます(今の指示が終わったら送ります)", "You can write the next message (it sends when the current one finishes)")
+        : tr(
+            "AI への指示を入力(Enter で送信 / Shift+Enter で改行 / ↑ で前の指示)",
+            "Message the AI (Enter to send / Shift+Enter for a new line / ↑ for previous)",
+          )}
       bind:value={input}
       onkeydown={onKeydown}
     ></textarea>
     {#if chatStatus.running}
       {#if input.trim()}
-        <button class="send" onclick={send} title="今の指示が終わったら送ります">予約</button>
+        <button class="send" onclick={send} title={tr("今の指示が終わったら送ります", "Sends when the current message finishes")}
+          >{tr("予約", "Queue")}</button
+        >
       {/if}
-      <button class="stop" onclick={cancel} title="実行中の指示を中断する(送信待ちの指示も送りません)">停止</button>
+      <button class="stop" onclick={cancel} title={tr("実行中の指示を中断する(送信待ちの指示も送りません)", "Stop the running message (queued messages won't be sent either)")}
+        >{tr("停止", "Stop")}</button
+      >
     {:else}
-      <button class="send" onclick={send} disabled={!input.trim()}>送信</button>
+      <button class="send" onclick={send} disabled={!input.trim()}>{tr("送信", "Send")}</button>
     {/if}
   </div>
 </div>

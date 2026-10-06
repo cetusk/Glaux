@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { plural, tr } from "./i18n.svelte";
   // ピアノロールの下端のベロシティの帯(縦スクロールしても下端に残り、横スクロールはノートと連動)。
   // 縦棒を上下にドラッグで強さを変え、選択中のノートを掴むと選択中すべてを同じ量だけ増減する
   import * as api from "./api";
@@ -159,11 +160,11 @@
       .map(([id, v]) => ({ id, vel: Math.max(1, Math.min(127, v + d.delta)) }))
       .filter((c) => c.vel !== d.base.get(c.id));
     if (changes.length > 0) {
-      const one = changes.length === 1 ? `(${changes[0].vel})` : `(${changes.length} 個)`;
+      const one = changes.length === 1 ? `(${changes[0].vel})` : tr(`(${changes.length} 個)`, ` (${plural(changes.length, "note")})`);
       // 反映されるまでのちらつきを避けるため、ドラッグ表示は編集の完了後に消す
       // (失敗は api.applyEdit がトーストで知らせる)
       api
-        .applyEdit([{ op: "update_notes", clip: currentClip.id, changes }], `ベロシティを変更${one}`)
+        .applyEdit([{ op: "update_notes", clip: currentClip.id, changes }], tr(`ベロシティを変更${one}`, `Change velocity${one}`))
         .catch(() => {})
         .finally(() => (velDrag = null));
     } else {
@@ -173,15 +174,15 @@
 </script>
 
 <div class="vel-row" style="height:{VEL_H}px">
-  <div class="vel-corner" style="width:{keyW}px" title="ベロシティ(音の強さ 1〜127)">Vel</div>
+  <div class="vel-corner" style="width:{keyW}px" title={tr("ベロシティ(音の強さ 1〜127)", "Velocity (note strength, 1–127)")}>Vel</div>
   <div class="vel-track" style="width:{contentW}px;height:{VEL_H}px">
   <canvas
     class="vel-layer"
     bind:this={velEl}
     style="left:{win.x}px;width:{win.w}px;height:{VEL_H}px"
     title={velDrag
-      ? `ベロシティ ${Math.max(1, Math.min(127, (velDrag.base.get(velDrag.anchor) ?? 0) + velDrag.delta))}`
-      : "縦棒を上下にドラッグで音の強さを変更(選択中のノートはまとめて変わる)"}
+      ? `${tr("ベロシティ", "Velocity")} ${Math.max(1, Math.min(127, (velDrag.base.get(velDrag.anchor) ?? 0) + velDrag.delta))}`
+      : tr("縦棒を上下にドラッグで音の強さを変更(選択中のノートはまとめて変わる)", "Drag the bars up or down to change note strength (selected notes change together)")}
     onpointerdown={onVelDown}
     onpointermove={onVelMove}
     onpointerup={onVelUp}

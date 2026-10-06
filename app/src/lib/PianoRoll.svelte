@@ -4,6 +4,7 @@
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
   import { settings } from "./settings.svelte";
+  import { plural, tr } from "./i18n.svelte";
   import { aiHighlight } from "./aiHighlight.svelte";
   import { harmonyStore } from "./harmony.svelte";
   import { buildBars, groupHeads } from "./barMap";
@@ -738,7 +739,7 @@
     if (!currentClip) return;
     applyEdit(
       [{ op: "update_notes", clip: currentClip.id, changes: [{ id: noteId, pitch_curve: curve }] }],
-      curve.length === 0 ? "ピッチカーブを削除" : "ピッチカーブを描画",
+      curve.length === 0 ? tr("ピッチカーブを削除", "Delete pitch curve") : tr("ピッチカーブを描画", "Draw pitch curve"),
     );
   }
 
@@ -776,9 +777,15 @@
       dp !== 0
         ? `${Math.abs(dp) === 12 ? "1 オクターブ" : "半音"}${dp > 0 ? "上げる" : "下げる"}`
         : `${dt > 0 ? "後ろ" : "前"}へずらす`;
+    const whatEn =
+      dp !== 0
+        ? `${dp > 0 ? "up" : "down"} ${Math.abs(dp) === 12 ? "an octave" : "a semitone"}`
+        : dt > 0
+          ? "later"
+          : "earlier";
     applyEdit(
       [{ op: "update_notes", clip: currentClip.id, changes }],
-      `ノート ${targets.length} 個を${what}`,
+      tr(`ノート ${targets.length} 個を${what}`, `Move ${plural(targets.length, "note")} ${whatEn}`),
     );
   }
 
@@ -804,8 +811,14 @@
         },
       ],
       ms > 0
-        ? `ポルタメントの滑る時間を ${ms}ms に(${selectedPorta.length} ノート)`
-        : `ポルタメントの滑る時間をトラックの設定に戻す(${selectedPorta.length} ノート)`,
+        ? tr(
+            `ポルタメントの滑る時間を ${ms}ms に(${selectedPorta.length} ノート)`,
+            `Set portamento glide time to ${ms}ms (${plural(selectedPorta.length, "note")})`,
+          )
+        : tr(
+            `ポルタメントの滑る時間をトラックの設定に戻す(${selectedPorta.length} ノート)`,
+            `Reset portamento glide time to the track setting (${plural(selectedPorta.length, "note")})`,
+          ),
     );
   }
 
@@ -828,13 +841,16 @@
       .map(({ id, pos }) => ({ id, pos }));
     const unit = SNAP_OPTIONS.find((o) => o.ticks === g)?.label ?? `${g} tick`;
     if (changes.length === 0) {
-      swingMsg = "もう格子にそろっています";
+      swingMsg = tr("もう格子にそろっています", "Already on the grid");
       setTimeout(() => (swingMsg = null), 3000);
       return;
     }
     applyEdit(
       [{ op: "update_notes", clip: currentClip.id, changes }],
-      `クオンタイズ ${unit}${strength < 1 ? ` ${Math.round(strength * 100)}%` : ""}(${changes.length} ノート)`,
+      tr(
+        `クオンタイズ ${unit}${strength < 1 ? ` ${Math.round(strength * 100)}%` : ""}(${changes.length} ノート)`,
+        `Quantize ${unit}${strength < 1 ? ` ${Math.round(strength * 100)}%` : ""} (${plural(changes.length, "note")})`,
+      ),
     );
   }
 
@@ -847,7 +863,10 @@
     const ids = selected.size > 0 ? [...selected] : null;
     try {
       const r = await api.swingClip(clip.id, ids, swingGrid, swing);
-      swingMsg = r.changed > 0 ? `${r.changed} ノートを動かしました(Ctrl+Z で戻せます)` : "動かすノート(裏拍の音)がありません";
+      swingMsg =
+        r.changed > 0
+          ? tr(`${r.changed} ノートを動かしました(Ctrl+Z で戻せます)`, `Moved ${plural(r.changed, "note")} (Ctrl+Z to undo)`)
+          : tr("動かすノート(裏拍の音)がありません", "No notes to move (no off-beat notes)");
     } catch (e) {
       swingMsg = String(e);
     }
@@ -1007,7 +1026,7 @@
       if (changes.length > 0) {
         applyEdit(
           [{ op: "update_notes", clip: currentClip.id, changes }],
-          `ノートを移動(${changes.length} 個)`,
+          tr(`ノートを移動(${changes.length} 個)`, `Move notes (${changes.length})`),
         );
       }
       return;
@@ -1024,8 +1043,8 @@
         applyEdit(
           [{ op: "update_notes", clip: currentClip.id, changes }],
           changes.length === 1
-            ? "ノートの長さを変更"
-            : `ノートの長さを変更(${changes.length} 個)`,
+            ? tr("ノートの長さを変更", "Change note length")
+            : tr(`ノートの長さを変更(${changes.length} 個)`, `Change note length (${changes.length})`),
         );
       }
     }
@@ -1050,7 +1069,7 @@
           notes: [{ id, pos, dur, pitch, vel: 100 }],
         },
       ],
-      `ノートを追加(${noteName(pitch)})`,
+      tr(`ノートを追加(${noteName(pitch)})`, `Add note (${noteName(pitch)})`),
     );
   }
 
@@ -1060,7 +1079,7 @@
     selected = new Set();
     applyEdit(
       [{ op: "remove_notes", clip: currentClip.id, ids }],
-      `ノートを削除(${ids.length} 個)`,
+      tr(`ノートを削除(${ids.length} 個)`, `Delete notes (${ids.length})`),
     );
   }
 
@@ -1099,7 +1118,7 @@
     preview(notes[0].pitch);
     applyEdit(
       [{ op: "add_notes", clip: currentClip.id, notes }],
-      `ノートを貼り付け(${notes.length} 個)`,
+      tr(`ノートを貼り付け(${notes.length} 個)`, `Paste notes (${notes.length})`),
     );
   }
 
@@ -1122,7 +1141,7 @@
     selected = new Set([id]);
     applyEdit(
       [{ op: "add_notes", clip: currentClip.id, notes: [{ id, pos, dur, pitch, vel: 100 }] }],
-      `ドラムを打ち込み(${drumName(pitch)?.name ?? pitch})`,
+      tr(`ドラムを打ち込み(${drumName(pitch)?.name ?? pitch})`, `Enter drum hit (${drumName(pitch)?.name ?? pitch})`),
     );
   }
 
@@ -1144,7 +1163,7 @@
     selected = new Set([id]);
     applyEdit(
       [{ op: "add_notes", clip: currentClip.id, notes: [{ id, pos, dur, pitch, vel: 100 }] }],
-      `ノートを打ち込み(${noteName(pitch)})`,
+      tr(`ノートを打ち込み(${noteName(pitch)})`, `Enter note (${noteName(pitch)})`),
     );
   }
 
@@ -1171,7 +1190,9 @@
     const allLocked = notes.every((n) => n.locked);
     applyEdit(
       [{ op: "update_notes", clip: currentClip.id, changes: notes.map((n) => ({ id: n.id, locked: !allLocked })) }],
-      allLocked ? `固定を外す(${notes.length} 音)` : `固定する(${notes.length} 音。AI が変えない)`,
+      allLocked
+        ? tr(`固定を外す(${notes.length} 音)`, `Unlock notes (${notes.length})`)
+        : tr(`固定する(${notes.length} 音。AI が変えない)`, `Lock notes (${notes.length}; AI won't change them)`),
     );
   }
 
@@ -1192,8 +1213,8 @@
         },
       ],
       allHave
-        ? `${ART_LABELS[art]}を解除(${notes.length} ノート)`
-        : `${ART_LABELS[art]}を設定(${notes.length} ノート)`,
+        ? tr(`${ART_LABELS[art]}を解除(${notes.length} ノート)`, `Remove ${ART_LABELS[art]} (${plural(notes.length, "note")})`)
+        : tr(`${ART_LABELS[art]}を設定(${notes.length} ノート)`, `Set ${ART_LABELS[art]} (${plural(notes.length, "note")})`),
     );
   }
 
@@ -1382,7 +1403,7 @@
                 <span
                   class="roll-mark"
                   style="left:{m.x}px;width:{m.w}px;height:{MARK_H}px"
-                  title={`${m.name}(${m.bar} 小節目〜)`}>{m.name}</span
+                  title={tr(`${m.name}(${m.bar} 小節目〜)`, `${m.name} (from bar ${m.bar})`)}>{m.name}</span
                 >
               {/each}
             {/if}
