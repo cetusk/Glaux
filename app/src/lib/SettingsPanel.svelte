@@ -281,7 +281,7 @@
   }
 
   const TABS = $derived<{ key: SettingsTab; label: string; icon: IconName }[]>([
-    { key: "display", label: tr("表示", "Display"), icon: "palette" },
+    { key: "display", label: tr("一般", "General"), icon: "sliders-horizontal" },
     { key: "audio", label: tr("オーディオ", "Audio"), icon: "speaker" },
     { key: "midi", label: "MIDI", icon: "keyboard-music" },
     { key: "record", label: tr("録音", "Recording"), icon: "circle" },
@@ -349,7 +349,7 @@
 
     <div class="page">
       {#if settingsUi.tab === "display"}
-        <h3>{tr("表示", "Display")}</h3>
+        <h3>{tr("一般", "General")}</h3>
         <div class="srow">
           {@render row(tr("言語", "Language"), tr("画面の表示と、AI の返答(チャットの返事・質問・AI が付ける名前)の言語", "Language of the app and of the AI's replies (chat, questions, and names it creates)"))}
           <div class="sc seg">

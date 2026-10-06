@@ -143,7 +143,7 @@ function t(ja: string, en: string): string {
 export type SettingsTab = "display" | "audio" | "midi" | "record" | "ai" | "about";
 export const settingsUi = $state<{ open: boolean; tab: SettingsTab }>({ open: false, tab: "display" });
 
-/// はじめの確認の開閉(初回は自動で開く。設定の「表示」からいつでも開ける)
+/// はじめの確認の開閉(初回は自動で開く。設定の「一般」からいつでも開ける)
 export const welcomeUi = $state<{ open: boolean }>({ open: !settings.welcomeDone });
 
 export function openSettings(tab?: SettingsTab) {

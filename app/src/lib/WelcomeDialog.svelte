@@ -1,7 +1,7 @@
 <script lang="ts">
   // はじめの確認: 初めて起動したときに、音が出るか・AI のチャットが使えるか・SoundFont があるかを確かめ、
   // 足りないものをその場で用意できるようにする(以前は空の曲が開くだけで、CLI が無いことは送信して初めて分かった)。
-  // 設定の「表示」からいつでも開き直せる。
+  // 設定の「一般」からいつでも開き直せる。
   import { onMount } from "svelte";
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
@@ -218,7 +218,7 @@
     <button class="btn sm ghost" onclick={check} disabled={busy}><Icon name="refresh-cw" />{tr("確かめ直す", "Check again")}</button>
     <button class="go" onclick={close}>{tr("始める", "Get started")}</button>
   </div>
-  <div class="note small">{tr("この画面は設定の「表示」の「はじめの確認」からいつでも開けます", "You can open this screen anytime from Settings > Display > Setup check")}</div>
+  <div class="note small">{tr("この画面は設定の「一般」の「はじめの確認」からいつでも開けます", "You can open this screen anytime from Settings > General > Setup check")}</div>
 </div>
 
 <style>
