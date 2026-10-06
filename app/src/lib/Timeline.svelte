@@ -1,6 +1,6 @@
 <script lang="ts">
   import { designSel, designStore, type ClipState } from "./design.svelte";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
@@ -260,9 +260,48 @@
   let dragging = false;
 
   function barAt(e: PointerEvent): number {
-    const lane = e.currentTarget as HTMLElement;
-    const x = e.clientX - lane.getBoundingClientRect().left;
+    return barAtX(e.currentTarget as HTMLElement, e.clientX);
+  }
+
+  function barAtX(lane: HTMLElement, clientX: number): number {
+    const x = clientX - lane.getBoundingClientRect().left;
     return barAtTick(barList, Math.max(0, x / pxPerTick)).index;
+  }
+
+  // ---- 範囲選択のドラッグで、見えている範囲の端を越えたら自動でスクロールする ----
+  let autoScroll: { lane: HTMLElement; clientX: number; over: number } | null = null;
+  let autoRaf = 0;
+  /** 端からこの距離(px)に入ったらスクロールを始める */
+  const AUTO_EDGE = 24;
+
+  function kickAutoScroll(lane: HTMLElement, clientX: number) {
+    const scroller = root?.parentElement;
+    if (!scroller) return;
+    const r = scroller.getBoundingClientRect();
+    const left = r.left + HEAD_W + AUTO_EDGE;
+    const right = r.right - AUTO_EDGE;
+    const over = clientX < left ? clientX - left : clientX > right ? clientX - right : 0;
+    autoScroll = { lane, clientX, over };
+    if (over !== 0 && !autoRaf) autoRaf = requestAnimationFrame(stepAutoScroll);
+  }
+
+  function stepAutoScroll() {
+    autoRaf = 0;
+    const a = autoScroll;
+    const scroller = root?.parentElement;
+    if (!a || a.over === 0 || !dragStart || !dragging || !scroller) return;
+    // 越えた量が大きいほど速く(1 コマ 4〜40px)
+    const speed = Math.sign(a.over) * Math.min(40, 4 + Math.abs(a.over) * 0.5);
+    const before = scroller.scrollLeft;
+    scroller.scrollLeft = Math.max(0, before + speed);
+    if (scroller.scrollLeft !== before) setRange(dragStart.bar, barAtX(a.lane, a.clientX));
+    autoRaf = requestAnimationFrame(stepAutoScroll);
+  }
+
+  function stopAutoScroll() {
+    autoScroll = null;
+    if (autoRaf) cancelAnimationFrame(autoRaf);
+    autoRaf = 0;
   }
 
   function setRange(a: number, b: number) {
@@ -291,10 +330,12 @@
     }
     if (dragging) {
       setRange(dragStart.bar, barAt(e));
+      kickAutoScroll(e.currentTarget as HTMLElement, e.clientX);
     }
   }
 
   function onRulerUp(e: PointerEvent) {
+    stopAutoScroll();
     if (!dragStart) return;
     if (!dragging) {
       // クリック = シーク + 選択解除
@@ -467,10 +508,16 @@
   }
 
   function toggleMute(t: Track) {
+    // 選んだトラックのどれかを押したら、選んだ全部を押したトラックの新しい状態にそろえる
+    const ts = targetsOf(t);
+    const value = !t.mute;
+    const who = ts.length === 1 ? t.name : null;
     api
       .applyEdit(
-        [{ op: "set_track_prop", id: t.id, prop: "mute", value: !t.mute }],
-        tr(`${t.name} を${t.mute ? "ミュート解除" : "ミュート"}`, `${t.mute ? "Unmute" : "Mute"} ${t.name}`),
+        ts.map((x) => ({ op: "set_track_prop", id: x.id, prop: "mute", value })),
+        who
+          ? tr(`${who} を${t.mute ? "ミュート解除" : "ミュート"}`, `${t.mute ? "Unmute" : "Mute"} ${who}`)
+          : tr(`${ts.length} トラックを${value ? "ミュート" : "ミュート解除"}`, `${value ? "Mute" : "Unmute"} ${plural(ts.length, "track")}`),
       )
       .catch(() => {});
   }
@@ -753,6 +800,52 @@
 
   let selectedClips = $state<Set<string>>(new Set());
 
+  // ---- トラックの複数選択(まとめて削除・ミュート・ソロ)。クリップの選択とはどちらか一方 ----
+  let selectedTracks = $state<Set<string>>(new Set());
+  /** Shift+クリックで範囲を選ぶときの起点 */
+  let trackAnchor: string | null = null;
+  $effect(() => {
+    if (selectedClips.size > 0) untrack(() => selectedTracks.size > 0 && (selectedTracks = new Set()));
+  });
+  $effect(() => {
+    // 消えたトラックは選択から外す
+    const ids = new Set(project.tracks.map((t) => t.id));
+    const cur = untrack(() => selectedTracks);
+    if ([...cur].some((id) => !ids.has(id))) selectedTracks = new Set([...cur].filter((id) => ids.has(id)));
+  });
+  /** 見出しのクリックで選ぶ: そのトラックだけ / Ctrl で足す・外す / Shift で範囲 */
+  function onTrackHeadClick(e: MouseEvent, track: Track) {
+    if ((e.target as HTMLElement).closest("button, input, select, .grip, .w-grip, .h-grip")) return;
+    const ids = project.tracks.map((t) => t.id);
+    if (e.shiftKey && trackAnchor && ids.includes(trackAnchor)) {
+      const [a, b] = [ids.indexOf(trackAnchor), ids.indexOf(track.id)].sort((x, y) => x - y);
+      selectedTracks = new Set(ids.slice(a, b + 1));
+    } else if (e.ctrlKey || e.metaKey) {
+      const next = new Set(selectedTracks);
+      if (next.has(track.id)) next.delete(track.id);
+      else next.add(track.id);
+      selectedTracks = next;
+      trackAnchor = track.id;
+    } else {
+      selectedTracks = new Set([track.id]);
+      trackAnchor = track.id;
+    }
+    if (selectedTracks.size > 0) selectedClips = new Set();
+  }
+  /** 操作の対象: 押したトラックが選択の中なら選んだ全部、そうでなければそのトラックだけ */
+  const targetsOf = (t: Track): Track[] =>
+    selectedTracks.has(t.id) && selectedTracks.size > 1 ? project.tracks.filter((x) => selectedTracks.has(x.id)) : [t];
+
+  function deleteTracks(tracks: Track[]) {
+    if (!tracks.length) return;
+    const label =
+      tracks.length === 1
+        ? tr(`${tracks[0].name} を削除`, `Delete ${tracks[0].name}`)
+        : tr(`${tracks.length} トラックを削除`, `Delete ${plural(tracks.length, "track")}`);
+    api.applyEdit(tracks.map((t) => ({ op: "remove_track", id: t.id })), label).catch(() => {});
+    selectedTracks = new Set();
+  }
+
   function allClips(): { track: Track; clip: Clip }[] {
     return project.tracks.flatMap((track) => track.clips.map((clip) => ({ track, clip })));
   }
@@ -967,6 +1060,18 @@
       if (shouldYieldKey(e)) return;
       if (pianoRollStore.focus) return;
       const mod = e.ctrlKey || e.metaKey;
+      // 選んだトラック: Delete でまとめて削除、Esc で選択を外す
+      if (selectedTracks.size > 0 && selectedClips.size === 0) {
+        if (e.key === "Delete" || e.key === "Backspace") {
+          e.preventDefault();
+          deleteTracks(project.tracks.filter((t) => selectedTracks.has(t.id)));
+          return;
+        }
+        if (e.key === "Escape") {
+          selectedTracks = new Set();
+          return;
+        }
+      }
       if (mod && e.code === "KeyA") {
         e.preventDefault();
         selectedClips = new Set(allClips().map((c) => c.clip.id));
@@ -1258,13 +1363,9 @@
     const menu = trackMenu;
     trackMenu = null;
     if (!menu) return;
-    const track = project.tracks[menu.index];
-    api
-      .applyEdit(
-        [{ op: "remove_track", id: menu.trackId }],
-        tr(`${track?.name ?? "トラック"} を削除`, `Delete ${track?.name ?? "track"}`),
-      )
-      .catch(() => {});
+    const track = project.tracks.find((t) => t.id === menu.trackId);
+    if (!track) return;
+    deleteTracks(targetsOf(track));
   }
 
   // ---- 音源(デバイス)の選択メニュー ----
@@ -1436,10 +1537,15 @@
   }
 
   function toggleSolo(t: Track) {
+    const ts = targetsOf(t);
+    const value = !t.solo;
+    const who = ts.length === 1 ? t.name : null;
     api
       .applyEdit(
-        [{ op: "set_track_prop", id: t.id, prop: "solo", value: !t.solo }],
-        tr(`${t.name} のソロを${t.solo ? "解除" : "オン"}`, `${t.solo ? "Unsolo" : "Solo"} ${t.name}`),
+        ts.map((x) => ({ op: "set_track_prop", id: x.id, prop: "solo", value })),
+        who
+          ? tr(`${who} のソロを${t.solo ? "解除" : "オン"}`, `${t.solo ? "Unsolo" : "Solo"} ${who}`)
+          : tr(`${ts.length} トラックのソロを${value ? "オン" : "解除"}`, `${value ? "Solo" : "Unsolo"} ${plural(ts.length, "track")}`),
       )
       .catch(() => {});
   }
@@ -1550,6 +1656,11 @@
       onpointerdown={onRulerDown}
       onpointermove={onRulerMove}
       onpointerup={onRulerUp}
+      onpointercancel={() => {
+        stopAutoScroll();
+        dragStart = null;
+        dragging = false;
+      }}
       oncontextmenu={onRulerContext}
       title={tr("クリックで移動、ドラッグで範囲選択、右クリックでその小節から拍子を変更", "Click to move, drag to select a range, right-click to change the time signature from that bar")}
     >
@@ -1652,11 +1763,13 @@
     <div class="track-row" class:alt={ti % 2 === 1} style="--track-h:{trackHeight(track.id)}px">
       <!-- 見出し: 1 段目 = つかむ所・種類・名前・⋯ / 2 段目 = M・S・音量 / 3 段目 = 音源と固定の 3 つ
            (アーム・オートメーション・インスペクター。無いものは空けて、どのトラックでも同じ位置に) -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
       <div
         class="track-head"
+        class:t-sel={selectedTracks.has(track.id)}
         style={track.color ? `--tc:${track.color}` : ""}
         oncontextmenu={(e) => openTrackMenu(e, track)}
+        onclick={(e) => onTrackHeadClick(e, track)}
       >
         <!-- svelte-ignore a11y_no_static_element_interactions --><span class="w-grip" onpointerenter={() => (wGripHot = true)} onpointerleave={() => (wGripHot = !!document.body.classList.contains("resizing-w"))} onpointerdown={(e) => startLayoutDrag(e, "w")} ondblclick={() => resetLayout("w")} title={tr("ドラッグで見出しの幅を変える(ダブルクリックで元に戻す)", "Drag to change the header width (double-click to reset)")}></span>
         <!-- svelte-ignore a11y_no_static_element_interactions --><span class="h-grip" onpointerdown={(e) => startLayoutDrag(e, "h", track.id)} ondblclick={() => resetLayout("h", track.id)} title={tr("ドラッグでこのトラックの高さを変える(ダブルクリックで既定の高さに戻す)", "Drag to change this track's height (double-click to reset)")}></span>
@@ -1924,6 +2037,7 @@
       onOpenGui={() => openClapGui(trackMenu!.trackId)}
       onDelete={deleteTrack}
       onClose={() => (trackMenu = null)}
+      deleteCount={selectedTracks.has(trackMenu.trackId) ? selectedTracks.size : 1}
     />
   {/if}
 
@@ -2026,6 +2140,12 @@
     left: 0;
     /* 横にスクロールしたとき、再生ヘッド(3)やクリップの中の印(〜4)を見出しの下に隠す */
     z-index: 5;
+  }
+
+  /* 選んだトラック(まとめて削除・ミュート・ソロの対象) */
+  .track-head.t-sel {
+    background: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
+    box-shadow: inset 3px 0 0 var(--accent);
   }
 
   .head-row {

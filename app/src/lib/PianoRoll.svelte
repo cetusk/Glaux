@@ -211,7 +211,7 @@
   let showFret = $state(true);
   let drumHighlight = $state<number | null>(null);
 
-  let snapTicks = $state(480); // 1/8
+  let snapTicks = $state(240); // 1/16(Alt を押しながらの操作はスナップなし)
 
   // ---- 選択・ドラッグ状態 ----
 
@@ -687,9 +687,11 @@
 
   // ---- ヒットテスト・編集 ----
 
-  function snapFloor(t: number): number {
-    return Math.floor(t / snapTicks) * snapTicks;
+  function snapFloor(t: number, free = false): number {
+    return free ? Math.floor(t) : Math.floor(t / snapTicks) * snapTicks;
   }
+  /** ドラッグの刻み: Alt を押していればスナップなし(1 tick) */
+  const gridOf = (e: { altKey: boolean }) => (e.altKey ? 1 : snapTicks);
 
   function noteAt(x: number, y: number): Note | null {
     const currentClip = clip;
@@ -963,12 +965,12 @@
       }
       drag = {
         ...drag,
-        dt: Math.round(rawDt / snapTicks) * snapTicks,
+        dt: Math.round(rawDt / gridOf(e)) * gridOf(e),
         dp,
       };
     } else if (drag.mode === "resize") {
       const rawDt = x / pxPerTick - drag.startTick;
-      drag = { ...drag, dt: Math.round(rawDt / snapTicks) * snapTicks };
+      drag = { ...drag, dt: Math.round(rawDt / gridOf(e)) * gridOf(e) };
     } else {
       drag = { ...drag, x1: x, y1: y };
     }
@@ -1055,7 +1057,7 @@
     const currentClip = clip;
     if (!currentClip) return;
     if (noteAt(ex(e), ey(e))) return;
-    const pos = Math.max(0, Math.min(snapFloor(ex(e) / pxPerTick), lenOf(currentClip) - 60));
+    const pos = Math.max(0, Math.min(snapFloor(ex(e) / pxPerTick, e.altKey), lenOf(currentClip) - 60));
     const pitch = Math.max(0, Math.min(127, 127 - Math.floor(ey(e) / rowH)));
     const dur = Math.min(snapTicks, lenOf(currentClip) - pos);
     const id = newNoteId();

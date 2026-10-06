@@ -19,6 +19,7 @@
     onOpenGui,
     onDelete,
     onClose,
+    deleteCount = 1,
   }: {
     project: Project;
     x: number;
@@ -35,6 +36,8 @@
     onOpenGui: () => void;
     onDelete: () => void;
     onClose: () => void;
+    /// 削除で消すトラックの数(選んだトラックの中で開いたら、選んだ全部)
+    deleteCount?: number;
   } = $props();
 
   const TRACK_COLORS = ["#25bdb1", "#5da2e8", "#b07ce8", "#e87ca8", "#e8a07c", "#e8d27c", "#7cc47c", null];
@@ -79,7 +82,7 @@
     <button onclick={onOpenGui}><Icon name="app-window" />{tr("プラグインの画面を開く", "Open plugin window")}</button>
   {/if}
   <div class="menu-sep"></div>
-  <button class="danger" onclick={onDelete}><Icon name="trash-2" />{tr("削除", "Delete")}<span class="key"
+  <button class="danger" onclick={onDelete}><Icon name="trash-2" />{deleteCount > 1 ? tr(`選んだ ${deleteCount} トラックを削除`, `Delete ${deleteCount} selected tracks`) : tr("削除", "Delete")}<span class="key"
       >{tr("Ctrl+Z で戻せます", "Ctrl+Z to undo")}</span
     ></button
   >

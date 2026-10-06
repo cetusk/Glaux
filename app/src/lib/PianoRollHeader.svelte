@@ -230,7 +230,7 @@
       <tbody>
         <tr><td>{tr("追加", "Add")}</td><td>{tr("空きをダブルクリック(長さはスナップの幅)", "Double-click an empty spot (length = snap width)")}</td></tr>
         <tr><td>{tr("選ぶ", "Select")}</td><td>{tr("クリック / ", "Click / ")}<kbd>Shift</kbd>{tr("+クリックで追加 / 空きをドラッグで囲む / ", "+click to add / drag on empty space to box-select / ")}<kbd>Ctrl</kbd>+<kbd>A</kbd></td></tr>
-        <tr><td>{tr("動かす・長さ", "Move / length")}</td><td>{tr("ドラッグ / 右端をドラッグ / ", "Drag / drag the right edge / ")}<kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd></td></tr>
+        <tr><td>{tr("動かす・長さ", "Move / length")}</td><td>{tr("ドラッグ / 右端をドラッグ(Alt を押しながらでスナップなし)/ ", "Drag / drag the right edge (hold Alt for no snap) / ")}<kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd></td></tr>
         <tr><td>{tr("音の高さ", "Pitch")}</td><td><kbd>↑</kbd><kbd>↓</kbd>{tr("(", " (")}<kbd>Shift</kbd>{tr(" でオクターブ)", " for an octave)")}</td></tr>
         <tr><td>{tr("消す", "Delete")}</td><td><kbd>Delete</kbd>{tr(" / 右クリック", " / right-click")}</td></tr>
         <tr><td>{tr("コピー", "Copy")}</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd>{tr("(マウスの位置へ。別のクリップにも)", " (pastes at the mouse, also into another clip)")}</td></tr>
