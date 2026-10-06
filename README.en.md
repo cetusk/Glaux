@@ -12,6 +12,7 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 > [!NOTE]
 > This is an experimental personal project, mainly tested on Windows 11 (on Linux only the core and engine are built and tested; macOS is untested).
 > Features and the file format may change without notice. The UI and the in-code documentation are in Japanese.
+> The AI can chat in English: Settings (設定) → AI → "AI の返答の言語" → English.
 
 ## Features
 

@@ -813,8 +813,9 @@ export function sendChat(
   model: string | null = null,
   provider: "claude" | "codex" = "claude",
   effort: string | null = null,
+  language: "ja" | "en" = "ja",
 ): Promise<void> {
-  return invoke("send_chat", { prompt, model: model || null, provider, effort: effort || null });
+  return invoke("send_chat", { prompt, model: model || null, provider, effort: effort || null, language });
 }
 
 export function cancelChat(): Promise<void> {

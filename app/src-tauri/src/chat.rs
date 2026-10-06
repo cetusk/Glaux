@@ -238,6 +238,7 @@ pub fn codex_args(
     resume: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
+    lang: ReplyLang,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into()];
     if resume.is_some() {
@@ -254,7 +255,10 @@ pub fn codex_args(
         "features.unified_exec=false".to_owned(),
         format!("mcp_servers.glaux.url={}", toml_string(mcp_url)),
         "mcp_servers.glaux.default_tools_approval_mode=\"approve\"".to_owned(),
-        format!("developer_instructions={}", toml_string(system_prompt())),
+        format!(
+            "developer_instructions={}",
+            toml_string(system_prompt(lang))
+        ),
     ];
     // 考える深さ(model_reasoning_effort。値は valid_effort で確かめ済み)
     let effort = effort.map(|e| format!("model_reasoning_effort={}", toml_string(e)));
@@ -291,6 +295,8 @@ pub struct ChatManager {
     model: Mutex<Option<String>>,
     /// 考える深さ(`claude --effort` / Codex の `model_reasoning_effort`)。None なら各 CLI の既定
     effort: Mutex<Option<String>>,
+    /// AI の返答の言語
+    lang: Mutex<ReplyLang>,
     /// 今動いている AI のモデル名(MCP サーバーと共有し、履歴の作者名に使う)。
     /// Claude は init イベントの model(既定のモデルでも実際の名前が分かる)、Codex は選んだモデル
     pub chat_model: glaux_mcp::server::ChatModel,
@@ -333,13 +339,41 @@ const CHAT_PROMPT: &str = "あなたは DAW『Glaux』に組み込まれた作�
     直す範囲はその対象に限り、確かめる範囲(前後の小節・同じ小節のほかのパート・繰り返しの所)は広く取ってください。\
     会話の前の方の指示(「〜はまだしない」「〜は使わない」など)とぶつかるときは、今の指示を優先してください。\
     決め手(ジャンル・雰囲気・長さ・編成など)が読み取れない新しい曲・大きな作り変えは、作る前に ask_user で尋ねてターンを終える。\
-    【おまかせ】が付いた指示では尋ねず、決め手を選んで最後まで作る。\
-    返答は簡潔な日本語で、行った編集の要点だけ述べてください。途中の経過の一言も日本語で書き、英語に切り替えないでください。";
+    【おまかせ】が付いた指示では尋ねず、決め手を選んで最後まで作る。";
 
-/// システムプロンプト(チャット固有の指示 + 共通の進め方)
-fn system_prompt() -> &'static str {
-    static PROMPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PROMPT.get_or_init(|| format!("{CHAT_PROMPT}\n\n{}", glaux_mcp::guide::CORE))
+/// 返答の言語ごとの指示(チャットの指示文の最後に付ける)
+const REPLY_JA: &str = "返答は簡潔な日本語で、行った編集の要点だけ述べてください。途中の経過の一言も日本語で書き、英語に切り替えないでください。";
+const REPLY_EN: &str = "Reply to the user in concise English, stating only the key points of your edits. Write everything the user sees in \
+    English: short progress notes, final reports, ask_user questions and options, and names you create (sections, tracks, clips, plans). \
+    Tool results are in Japanese; translate what you report.";
+
+/// AI の返答の言語(設定 → AI)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReplyLang {
+    #[default]
+    Ja,
+    En,
+}
+
+impl ReplyLang {
+    /// UI から届く名前を解釈する(未指定・不明は日本語)
+    pub fn parse(s: Option<&str>) -> Self {
+        match s {
+            Some("en") => ReplyLang::En,
+            _ => ReplyLang::Ja,
+        }
+    }
+}
+
+/// システムプロンプト(チャット固有の指示 + 返答の言語 + 共通の進め方)
+fn system_prompt(lang: ReplyLang) -> &'static str {
+    static JA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    static EN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let (cell, reply) = match lang {
+        ReplyLang::Ja => (&JA, REPLY_JA),
+        ReplyLang::En => (&EN, REPLY_EN),
+    };
+    cell.get_or_init(|| format!("{CHAT_PROMPT}{reply}\n\n{}", glaux_mcp::guide::CORE))
 }
 
 impl ChatManager {
@@ -364,6 +398,15 @@ impl ChatManager {
         }
         *self.model.lock().expect("model lock") = model;
         Ok(())
+    }
+
+    /// 次のターンから使う返答の言語を設定する。
+    pub fn set_language(&self, lang: ReplyLang) {
+        *self.lang.lock().expect("lang lock") = lang;
+    }
+
+    fn lang(&self) -> ReplyLang {
+        *self.lang.lock().expect("lang lock")
     }
 
     /// 次のターンから使う考える深さを設定する(None / 空文字で既定)。
@@ -397,6 +440,7 @@ impl ChatManager {
             running: AtomicBool::new(false),
             model: Mutex::new(None),
             effort: Mutex::new(None),
+            lang: Mutex::new(ReplyLang::default()),
             chat_model: Default::default(),
         }
     }
@@ -553,6 +597,7 @@ impl ChatManager {
                     self.resume_id().as_deref(),
                     model.as_deref(),
                     effort.as_deref(),
+                    self.lang(),
                 ));
             }
         }
@@ -580,7 +625,7 @@ impl ChatManager {
             .arg("--strict-mcp-config")
             .args(["--allowedTools", "mcp__glaux"])
             .arg("--append-system-prompt")
-            .arg(system_prompt());
+            .arg(system_prompt(self.lang()));
         if let Some(sid) = self.resume_id() {
             cmd.args(["--resume", &sid]);
         }
@@ -1003,7 +1048,7 @@ mod tests {
     #[test]
     fn codex_args_are_built_in_order() {
         let url = "http://127.0.0.1:41920/mcp";
-        let args = codex_args(url, None, Some("gpt-6-astra"), Some("high"));
+        let args = codex_args(url, None, Some("gpt-6-astra"), Some("high"), ReplyLang::Ja);
         assert_eq!(
             &args[..4],
             [
@@ -1023,7 +1068,7 @@ mod tests {
                 && !valid_effort("")
         );
 
-        let args = codex_args(url, Some("01a0d570-4eae"), None, None);
+        let args = codex_args(url, Some("01a0d570-4eae"), None, None, ReplyLang::En);
         assert_eq!(&args[..2], ["exec", "resume"]);
         assert_eq!(&args[args.len() - 2..], ["01a0d570-4eae", "-"]);
 
@@ -1033,14 +1078,21 @@ mod tests {
             .find_map(|a| a.strip_prefix("developer_instructions="))
             .expect("developer_instructions");
         let back: String = serde_json::from_str(dev).expect("TOML/JSON 文字列");
-        assert_eq!(back, system_prompt());
+        assert_eq!(back, system_prompt(ReplyLang::En));
+        assert!(back.contains("Reply to the user in concise English"));
     }
 
     /// システムプロンプトは短く保つ(毎ターン送る。定石は get_guide で必要なときに読ませる)
     #[test]
     fn system_prompt_stays_short() {
-        let n = system_prompt().chars().count();
-        assert!(n <= 1_700, "システムプロンプトが長すぎます({n} 字)");
+        for lang in [ReplyLang::Ja, ReplyLang::En] {
+            let n = system_prompt(lang).chars().count();
+            assert!(
+                n <= 1_900,
+                "システムプロンプトが長すぎます({lang:?}: {n} 字)"
+            );
+        }
+        assert!(system_prompt(ReplyLang::Ja).contains("英語に切り替えないで"));
     }
 
     /// Windows で npm 版(codex.cmd)を起動すると cmd.exe を通るので、コマンドライン全体が
@@ -1052,6 +1104,7 @@ mod tests {
             Some("01a0d570-4eae-7923-ae85-8c56e471244d"),
             Some("gpt-6-astra-2026-09-01"),
             Some("xhigh"),
+            ReplyLang::En,
         );
         // 引数ごとの引用符と、内側の " を 2 重にする分を見込む(文字数は UTF-16 単位)
         let len: usize = args
@@ -1076,7 +1129,7 @@ mod tests {
             panic!("GLAUX_CODEX_BIN / GLAUX_CODEX_MOCK / GLAUX_CODEX_MCP を設定してください");
         };
         let run = |resume: Option<&str>| {
-            let mut args = codex_args(&mcp, resume, None, None);
+            let mut args = codex_args(&mcp, resume, None, None, ReplyLang::Ja);
             let at = if resume.is_some() { 2 } else { 1 };
             let provider = [
                 "model_provider=\"mock\"".to_owned(),

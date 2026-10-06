@@ -55,6 +55,8 @@ interface Settings {
   autoAdoptEstimated: boolean;
   /// 作る前に AI が質問する: auto = 決め手が読み取れないとき / never = 途中で尋ねない(いつもおまかせ。最後まで AI が決める)
   chatAsk: "auto" | "never";
+  /// AI の返答の言語(チャットの返事・途中の一言・質問・AI が付ける名前)。アプリの表示は変わらない
+  chatLang: "ja" | "en";
 }
 
 function load(): Settings {
@@ -84,6 +86,7 @@ function load(): Settings {
         outputVolumeDb: typeof v.outputVolumeDb === "number" ? v.outputVolumeDb : 0,
         autoAdoptEstimated: v.autoAdoptEstimated === true,
         chatAsk: v.chatAsk === "never" ? "never" : "auto",
+        chatLang: v.chatLang === "en" ? "en" : "ja",
       };
     }
   } catch {
@@ -111,6 +114,7 @@ function load(): Settings {
     outputVolumeDb: 0,
     autoAdoptEstimated: false,
     chatAsk: "auto",
+    chatLang: "ja",
   };
 }
 

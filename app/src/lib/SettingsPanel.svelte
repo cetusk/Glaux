@@ -603,6 +603,21 @@
             {/each}
           </div>
         </div>
+        <div class="srow">
+          {@render row("AI の返答の言語", "チャットの返事・途中の一言・質問と選択肢・AI が付ける名前(区間・トラックなど)の言語。次の指示から。アプリの表示は変わりません")}
+          <div class="sc seg">
+            {#each [{ v: "ja", l: "日本語" }, { v: "en", l: "English" }] as o (o.v)}
+              <button
+                class="btn sm"
+                class:on={settings.chatLang === o.v}
+                onclick={() => {
+                  settings.chatLang = o.v as "ja" | "en";
+                  saveSettings();
+                }}>{o.l}</button
+              >
+            {/each}
+          </div>
+        </div>
         <label class="srow">
           {@render row("作業が終わったら音で知らせる", "AI のターンが終わったとき(失敗したときは低い音)")}
           <input class="sc" type="checkbox" checked={settings.notifyOnAiDone} onchange={toggleNotify} />

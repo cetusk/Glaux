@@ -2687,6 +2687,7 @@ async fn send_chat(
     model: Option<String>,
     provider: Option<String>,
     effort: Option<String>,
+    language: Option<String>,
 ) -> Result<(), String> {
     let provider = chat::Provider::parse(provider.as_deref())?;
     let prompt = prompt.trim().to_owned();
@@ -2699,6 +2700,9 @@ async fn send_chat(
     state.chat.set_model(model)?;
     state.chat.set_effort(effort)?;
     state.chat.set_provider(provider);
+    state
+        .chat
+        .set_language(chat::ReplyLang::parse(language.as_deref()));
     let full_prompt = match build_chat_context(&state).await {
         Some(ctx) => format!("{ctx}\n{prompt}"),
         None => prompt,

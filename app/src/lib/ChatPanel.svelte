@@ -504,8 +504,8 @@
     const goal = prompt.match(/^\/(goal|おまかせ)(?:\s+|$)([\s\S]*)$/);
     let body = prompt;
     if (goal) {
-      body = goal[2].trim() || GOAL_DEFAULT;
-      shown = shown.replace(prompt, `〔おまかせ〕 ${body}`);
+      body = goal[2].trim() || (settings.chatLang === "en" ? GOAL_DEFAULT_EN : GOAL_DEFAULT_JA);
+      shown = shown.replace(prompt, `${settings.chatLang === "en" ? "[Up to you]" : "〔おまかせ〕"} ${body}`);
     }
     if (goal || settings.chatAsk === "never") prefix = OMAKASE + prefix;
     const fullPrompt = prefix ? `${prefix}\n${body}` : body;
@@ -530,7 +530,8 @@
   // ---- AI からの質問(ask_user)----
   const OMAKASE =
     "【おまかせ】ask_user で質問せず、決め手(ジャンル・雰囲気・長さ・編成など)は自分で選んで最後まで作る。選んだ決め手は報告に書く。\n";
-  const GOAL_DEFAULT = "何でもよいので、1 曲作ってください(ジャンル・雰囲気・長さ・編成は自由に選んでください)。";
+  const GOAL_DEFAULT_JA = "何でもよいので、1 曲作ってください(ジャンル・雰囲気・長さ・編成は自由に選んでください)。";
+  const GOAL_DEFAULT_EN = "Make any song you like (choose the genre, mood, length and instruments freely).";
   /** 質問ごとの選んだ選択肢とその他の言葉(質問の ID → 質問の番号ごと) */
   let qPick = $state<Record<string, { picks: string[]; other: string }[]>>({});
   /** 選んだ内容の入れ物を作る(質問が届いたとき・会話の記録を読んだとき。描画の途中では作らない) */
@@ -550,12 +551,15 @@
     if (!qOpen(m)) return;
     const q = m.question!;
     const st = qState(m);
+    // 会話に残る答えの行は、返答の言語に合わせる(AI へ送る指示の決まり文句は日本語のまま)
+    const en = settings.chatLang === "en";
+    const upToYou = en ? "up to you" : "おまかせ";
     const lines = q.questions.map((qq, i) => {
       const v = all ? [] : [...st[i].picks, ...(st[i].other.trim() ? [st[i].other.trim()] : [])];
-      return `- ${qq.header}: ${v.length ? v.join("・") : "おまかせ"}`;
+      return `- ${qq.header}: ${v.length ? v.join(en ? ", " : "・") : upToYou}`;
     });
-    const summary = all ? "すべておまかせ" : lines.map((l) => l.slice(2)).join(" / ");
-    const shown = `【質問への答え】${summary}`;
+    const summary = all ? (en ? "All up to you" : "すべておまかせ") : lines.map((l) => l.slice(2)).join(" / ");
+    const shown = `${en ? "Answers: " : "【質問への答え】"}${summary}`;
     const full =
       (all ? OMAKASE : "") +
       `【質問への答え】\n${lines.join("\n")}\nこの答えをもとに、これ以上は質問せずに作る(「おまかせ」の項目は自分で選び、選んだものを報告に書く)。`;
@@ -585,7 +589,7 @@
       turnStart = null;
     }
     try {
-      await api.sendChat(fullPrompt, currentModel, provider, currentEffort);
+      await api.sendChat(fullPrompt, currentModel, provider, currentEffort, settings.chatLang);
     } catch (e) {
       push({ role: "error", text: String(e) });
       chatStatus.running = false;
