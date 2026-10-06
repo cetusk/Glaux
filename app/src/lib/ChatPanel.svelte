@@ -504,8 +504,8 @@
     const goal = prompt.match(/^\/(goal|おまかせ)(?:\s+|$)([\s\S]*)$/);
     let body = prompt;
     if (goal) {
-      body = goal[2].trim() || (settings.chatLang === "en" ? GOAL_DEFAULT_EN : GOAL_DEFAULT_JA);
-      shown = shown.replace(prompt, `${settings.chatLang === "en" ? "[Up to you]" : "〔おまかせ〕"} ${body}`);
+      body = goal[2].trim() || (settings.lang === "en" ? GOAL_DEFAULT_EN : GOAL_DEFAULT_JA);
+      shown = shown.replace(prompt, `${settings.lang === "en" ? "[Up to you]" : "〔おまかせ〕"} ${body}`);
     }
     if (goal || settings.chatAsk === "never") prefix = OMAKASE + prefix;
     const fullPrompt = prefix ? `${prefix}\n${body}` : body;
@@ -552,7 +552,7 @@
     const q = m.question!;
     const st = qState(m);
     // 会話に残る答えの行は、返答の言語に合わせる(AI へ送る指示の決まり文句は日本語のまま)
-    const en = settings.chatLang === "en";
+    const en = settings.lang === "en";
     const upToYou = en ? "up to you" : "おまかせ";
     const lines = q.questions.map((qq, i) => {
       const v = all ? [] : [...st[i].picks, ...(st[i].other.trim() ? [st[i].other.trim()] : [])];
@@ -589,7 +589,7 @@
       turnStart = null;
     }
     try {
-      await api.sendChat(fullPrompt, currentModel, provider, currentEffort, settings.chatLang);
+      await api.sendChat(fullPrompt, currentModel, provider, currentEffort, settings.lang);
     } catch (e) {
       push({ role: "error", text: String(e) });
       chatStatus.running = false;

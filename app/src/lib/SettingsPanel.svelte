@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from "./i18n.svelte";
   import Icon from "./Icon.svelte";
   import { APP_VERSION, APP_VERSION_DETAIL } from "./appVersion";
   import {
@@ -340,7 +341,22 @@
 
     <div class="page">
       {#if settingsUi.tab === "display"}
-        <h3>表示</h3>
+        <h3>{tr("表示", "Display")}</h3>
+        <div class="srow">
+          {@render row(tr("言語", "Language"), tr("画面の表示と、AI の返答(チャットの返事・質問・AI が付ける名前)の言語", "Language of the app and of the AI's replies (chat, questions, and names it creates)"))}
+          <div class="sc seg">
+            {#each [{ v: "ja", l: "日本語" }, { v: "en", l: "English" }] as o (o.v)}
+              <button
+                class="btn sm"
+                class:on={settings.lang === o.v}
+                onclick={() => {
+                  settings.lang = o.v as "ja" | "en";
+                  saveSettings();
+                }}>{o.l}</button
+              >
+            {/each}
+          </div>
+        </div>
         <div class="srow top">
           {@render row("テーマカラー", "ボタン・選択・再生ヘッドなどの色")}
           <div class="sc swatches">
@@ -597,21 +613,6 @@
                 class:on={settings.chatAsk === o.v}
                 onclick={() => {
                   settings.chatAsk = o.v as "auto" | "never";
-                  saveSettings();
-                }}>{o.l}</button
-              >
-            {/each}
-          </div>
-        </div>
-        <div class="srow">
-          {@render row("AI の返答の言語", "チャットの返事・途中の一言・質問と選択肢・AI が付ける名前(区間・トラックなど)の言語。次の指示から。アプリの表示は変わりません")}
-          <div class="sc seg">
-            {#each [{ v: "ja", l: "日本語" }, { v: "en", l: "English" }] as o (o.v)}
-              <button
-                class="btn sm"
-                class:on={settings.chatLang === o.v}
-                onclick={() => {
-                  settings.chatLang = o.v as "ja" | "en";
                   saveSettings();
                 }}>{o.l}</button
               >
