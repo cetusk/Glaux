@@ -6,6 +6,7 @@
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
   import * as api from "./api";
+  import { tr } from "./i18n.svelte";
   import { chatStatus } from "./aiStatus.svelte";
   import { selectionStore } from "./selection.svelte";
   import { openSettings, saveSettings, settings, welcomeUi } from "./settings.svelte";
@@ -19,7 +20,7 @@
     try {
       status = await api.setupStatus();
     } catch (e) {
-      showError("状態を確かめられませんでした", e);
+      showError(tr("状態を確かめられませんでした", "Couldn't check the status"), e);
     }
   }
 
@@ -42,9 +43,15 @@
     const un = await api.onSoundFontDownload((p) => (sfProgress = p)).catch(() => undefined);
     try {
       await api.downloadSoundFont();
-      showToast("ok", "GM 音源の SoundFont を入れました。音源の選択で「SoundFont」から使えます");
+      showToast(
+        "ok",
+        tr(
+          "GM 音源の SoundFont を入れました。音源の選択で「SoundFont」から使えます",
+          "Installed the GM SoundFont. Use it from \"SoundFont\" in the instrument picker",
+        ),
+      );
     } catch (e) {
-      showError("SoundFont を取得できませんでした", e);
+      showError(tr("SoundFont を取得できませんでした", "Couldn't download the SoundFont"), e);
     } finally {
       un?.();
       sfProgress = null;
@@ -54,13 +61,13 @@
   }
 
   async function addSf() {
-    const file = await pickFile({ title: "SoundFont(.sf2)をライブラリに追加", filters: [{ name: "SoundFont", extensions: ["sf2"] }] });
+    const file = await pickFile({ title: tr("SoundFont(.sf2)をライブラリに追加", "Add a SoundFont (.sf2) to the library"), filters: [{ name: "SoundFont", extensions: ["sf2"] }] });
     if (typeof file !== "string") return;
     try {
       await api.addSoundfont(file);
       check();
     } catch (e) {
-      showError("SoundFont を追加できませんでした", e);
+      showError(tr("SoundFont を追加できませんでした", "Couldn't add the SoundFont"), e);
     }
   }
 
@@ -72,10 +79,16 @@
       // プロジェクトの切り替えと同じ後始末(会話の表示・選んだ範囲はプロジェクトごと)
       chatStatus.epoch += 1;
       selectionStore.range = null;
-      showToast("ok", `デモ曲「${r.title}」を開きました(写しなので自由に直せます)。スペースで再生`);
+      showToast(
+        "ok",
+        tr(
+          `デモ曲「${r.title}」を開きました(写しなので自由に直せます)。スペースで再生`,
+          `Opened the demo song "${r.title}" (it's a copy, so feel free to edit it). Press Space to play`,
+        ),
+      );
       close();
     } catch (e) {
-      showError("デモ曲を開けませんでした", e);
+      showError(tr("デモ曲を開けませんでした", "Couldn't open the demo song"), e);
     } finally {
       busy = false;
     }
@@ -85,27 +98,37 @@
 </script>
 
 <div class="backdrop" role="presentation" onclick={close}></div>
-<div class="panel" role="dialog" aria-label="はじめの確認">
+<div class="panel" role="dialog" aria-label={tr("はじめの確認", "Setup check")}>
   <div class="head">
-    <h2><Icon name="sparkles" />Glaux へようこそ</h2>
-    <button class="btn sm icon ghost" onclick={close} title="閉じる" aria-label="閉じる"><Icon name="x" /></button>
+    <h2><Icon name="sparkles" />{tr("Glaux へようこそ", "Welcome to Glaux")}</h2>
+    <button class="btn sm icon ghost" onclick={close} title={tr("閉じる", "Close")} aria-label={tr("閉じる", "Close")}><Icon name="x" /></button>
   </div>
-  <p class="lead">使い始める前に、この PC で必要なものがそろっているかを確かめます。足りないものはここで用意できます。</p>
+  <p class="lead">
+    {tr(
+      "使い始める前に、この PC で必要なものがそろっているかを確かめます。足りないものはここで用意できます。",
+      "Before you start, let's check that this PC has everything needed. You can set up anything missing right here.",
+    )}
+  </p>
 
   {#if !status}
-    <div class="note">確かめています…</div>
+    <div class="note">{tr("確かめています…", "Checking…")}</div>
   {:else}
     <div class="item">
       <span class="mark" class:ok={!!status.audio_output} class:ng={!status.audio_output}
         ><Icon name={status.audio_output ? "check" : "triangle-alert"} size={14} /></span
       >
       <div class="body">
-        <div class="title">音の出力</div>
+        <div class="title">{tr("音の出力", "Audio output")}</div>
         {#if status.audio_output}
-          <div class="note">{status.audio_output} から鳴ります</div>
+          <div class="note">{tr(`${status.audio_output} から鳴ります`, `Playing through ${status.audio_output}`)}</div>
         {:else}
-          <div class="note">オーディオの出力を開けませんでした。スピーカー・ヘッドホンをつないで、設定の「オーディオ」で選び直してください</div>
-          <button class="btn sm" onclick={() => openSettings("audio")}>オーディオの設定を開く</button>
+          <div class="note">
+            {tr(
+              "オーディオの出力を開けませんでした。スピーカー・ヘッドホンをつないで、設定の「オーディオ」で選び直してください",
+              "Couldn't open the audio output. Connect speakers or headphones, then choose it again in Settings > Audio",
+            )}
+          </div>
+          <button class="btn sm" onclick={() => openSettings("audio")}>{tr("オーディオの設定を開く", "Open audio settings")}</button>
         {/if}
       </div>
     </div>
@@ -115,22 +138,31 @@
         ><Icon name={aiReady ? "check" : "info"} size={14} /></span
       >
       <div class="body">
-        <div class="title">AI のチャット</div>
+        <div class="title">{tr("AI のチャット", "AI chat")}</div>
         <div class="cli">
-          <span class:found={!!status.claude}>Claude Code: {status.claude ? "見つかりました" : "見つかりません"}</span>
-          <span class:found={!!status.codex}>Codex CLI(GPT): {status.codex ? "見つかりました" : "見つかりません"}</span>
+          <span class:found={!!status.claude}>Claude Code: {status.claude ? tr("見つかりました", "Found") : tr("見つかりません", "Not found")}</span>
+          <span class:found={!!status.codex}
+            >{tr("Codex CLI(GPT)", "Codex CLI (GPT)")}: {status.codex ? tr("見つかりました", "Found") : tr("見つかりません", "Not found")}</span
+          >
         </div>
         {#if !aiReady}
           <div class="note">
-            チャットには、どちらかをこの PC に入れてログインしておく必要があります(入れた後は Glaux を起動し直す)。
-            AI 無しでも、打ち込み・ミックス・書き出しはすべて使えます。
+            {tr(
+              "チャットには、どちらかをこの PC に入れてログインしておく必要があります(入れた後は Glaux を起動し直す)。 AI 無しでも、打ち込み・ミックス・書き出しはすべて使えます。",
+              "To chat, install one of these on this PC and sign in (restart Glaux afterwards). Without AI, note entry, mixing, and export all still work.",
+            )}
           </div>
           <ul class="how">
-            <li>Claude Code: <code>npm i -g @anthropic-ai/claude-code</code> → <code>claude</code> でログイン</li>
+            <li>Claude Code: <code>npm i -g @anthropic-ai/claude-code</code> → {tr("", "sign in with ")}<code>claude</code>{tr(" でログイン", "")}</li>
             <li>Codex CLI: <code>npm i -g @openai/codex</code> → <code>codex login</code></li>
           </ul>
         {:else}
-          <div class="note">右のチャット欄で「4 小節のベースを作って」のように頼めます。相手はチャット欄の左上で切り替えます</div>
+          <div class="note">
+            {tr(
+              "右のチャット欄で「4 小節のベースを作って」のように頼めます。相手はチャット欄の左上で切り替えます",
+              "In the chat panel on the right, ask things like \"Make a 4-bar bassline\". Switch the AI at the top left of the chat panel",
+            )}
+          </div>
         {/if}
       </div>
     </div>
@@ -140,13 +172,15 @@
         ><Icon name={status.soundfont.files.length > 0 ? "check" : "info"} size={14} /></span
       >
       <div class="body">
-        <div class="title">SoundFont(ピアノ・ストリングス・ブラスなどの GM 音源一式)</div>
+        <div class="title">{tr("SoundFont(ピアノ・ストリングス・ブラスなどの GM 音源一式)", "SoundFont (a full GM sound set: piano, strings, brass, and more)")}</div>
         {#if status.soundfont.files.length > 0}
-          <div class="note">{status.soundfont.files.join("、")} が使えます</div>
+          <div class="note">{tr(`${status.soundfont.files.join("、")} が使えます`, `Available: ${status.soundfont.files.join(", ")}`)}</div>
         {:else}
           <div class="note">
-            無くても内蔵のシンセ・ドラムで曲を作れます。生楽器の音が欲しいときは入れてください
-            (GeneralUser GS。S. Christian Collins 作、音楽制作に私用・商用とも自由に使えます)
+            {tr(
+              "無くても内蔵のシンセ・ドラムで曲を作れます。生楽器の音が欲しいときは入れてください (GeneralUser GS。S. Christian Collins 作、音楽制作に私用・商用とも自由に使えます)",
+              "You can make songs with the built-in synths and drums without it. Install it if you want acoustic instrument sounds (GeneralUser GS by S. Christian Collins, free for personal and commercial music production)",
+            )}
           </div>
         {/if}
         {#if sfProgress}
@@ -155,9 +189,9 @@
         {:else if !status.soundfont.files.includes(status.soundfont.download_file)}
           <div class="row">
             <button class="btn sm" onclick={downloadSf} disabled={busy}
-              ><Icon name="download" />GM 音源を取得({mb(status.soundfont.download_bytes)})</button
+              ><Icon name="download" />{tr(`GM 音源を取得(${mb(status.soundfont.download_bytes)})`, `Download GM sounds (${mb(status.soundfont.download_bytes)})`)}</button
             >
-            <button class="btn sm" onclick={addSf} disabled={busy}>手持ちの .sf2 を追加…</button>
+            <button class="btn sm" onclick={addSf} disabled={busy}>{tr("手持ちの .sf2 を追加…", "Add your own .sf2…")}</button>
           </div>
         {/if}
       </div>
@@ -166,20 +200,25 @@
     <div class="item">
       <span class="mark"><Icon name="music" size={14} /></span>
       <div class="body">
-        <div class="title">デモ曲</div>
-        <div class="note">内蔵の音源だけで作ったドラムンベース(CyberNeon、174 BPM)を、写しとして開きます。AI に「もっと明るく」などと頼んで試せます</div>
+        <div class="title">{tr("デモ曲", "Demo song")}</div>
+        <div class="note">
+          {tr(
+            "内蔵の音源だけで作ったドラムンベース(CyberNeon、174 BPM)を、写しとして開きます。AI に「もっと明るく」などと頼んで試せます",
+            "Opens a copy of a drum and bass track (CyberNeon, 174 BPM) made only with built-in instruments. Try asking the AI things like \"make it brighter\"",
+          )}
+        </div>
         <div class="row">
-          <button class="btn sm" onclick={openDemo} disabled={busy}><Icon name="folder-open" />デモ曲を開く</button>
+          <button class="btn sm" onclick={openDemo} disabled={busy}><Icon name="folder-open" />{tr("デモ曲を開く", "Open demo song")}</button>
         </div>
       </div>
     </div>
   {/if}
 
   <div class="foot">
-    <button class="btn sm ghost" onclick={check} disabled={busy}><Icon name="refresh-cw" />確かめ直す</button>
-    <button class="go" onclick={close}>始める</button>
+    <button class="btn sm ghost" onclick={check} disabled={busy}><Icon name="refresh-cw" />{tr("確かめ直す", "Check again")}</button>
+    <button class="go" onclick={close}>{tr("始める", "Get started")}</button>
   </div>
-  <div class="note small">この画面は設定の「表示」の「はじめの確認」からいつでも開けます</div>
+  <div class="note small">{tr("この画面は設定の「表示」の「はじめの確認」からいつでも開けます", "You can open this screen anytime from Settings > Display > Setup check")}</div>
 </div>
 
 <style>

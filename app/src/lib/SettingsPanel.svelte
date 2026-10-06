@@ -1,13 +1,15 @@
 <script lang="ts">
   import { tr } from "./i18n.svelte";
   import Icon from "./Icon.svelte";
-  import { APP_VERSION, APP_VERSION_DETAIL } from "./appVersion";
+  import { APP_VERSION, appVersionDetail } from "./appVersion";
   import {
+    accentLabel,
     ACCENT_PRESETS,
     applyTheme,
     CHAT_MODELS,
     CHAT_PROVIDERS,
-    EFFORT_LABELS,
+    chatModelText,
+    effortLabel,
     effortsFor,
     playDoneChime,
     saveSettings,
@@ -40,14 +42,14 @@
 
   async function pickOutput(e: Event) {
     const v = (e.currentTarget as HTMLSelectElement).value;
-    deviceMsg = "切り替え中…";
+    deviceMsg = tr("切り替え中…", "Switching…");
     try {
       await api.setOutputDevice(v || null);
       settings.outputDevice = v;
       saveSettings();
       deviceMsg = null;
     } catch (err) {
-      deviceMsg = `切り替えられませんでした(既定に戻しました): ${err}`;
+      deviceMsg = tr(`切り替えられませんでした(既定に戻しました): ${err}`, `Couldn't switch (reverted to the default): ${err}`);
       settings.outputDevice = "";
       saveSettings();
     }
@@ -63,14 +65,17 @@
   const msOf = (frames: number) => (devices?.sample_rate ? (frames / devices.sample_rate) * 1000 : 0);
   async function pickBuffer(e: Event) {
     const v = Number((e.currentTarget as HTMLSelectElement).value);
-    deviceMsg = "開き直し中…";
+    deviceMsg = tr("開き直し中…", "Reopening…");
     try {
       const r = await api.setBufferSize(v);
       settings.bufferFrames = v;
       saveSettings();
-      deviceMsg = r.applied === null ? "このデバイスは大きさを指定できないため、OS に任せています" : null;
+      deviceMsg =
+        r.applied === null
+          ? tr("このデバイスは大きさを指定できないため、OS に任せています", "This device doesn't accept a buffer size, so the OS decides")
+          : null;
     } catch (err) {
-      deviceMsg = `変えられませんでした: ${err}`;
+      deviceMsg = tr(`変えられませんでした: ${err}`, `Couldn't change it: ${err}`);
     }
     await loadDevices();
   }
@@ -159,12 +164,12 @@
 
   const levelAdvice = $derived(
     levelPeakHold > -1
-      ? "大きすぎます(音割れ)。マイクの音量を下げてください"
+      ? tr("大きすぎます(音割れ)。マイクの音量を下げてください", "Too loud (clipping). Lower the mic volume")
       : levelPeakHold > -12
-        ? "ちょうど良い音量です"
+        ? tr("ちょうど良い音量です", "Good level")
         : levelPeakHold > -30
-          ? "少し小さめです。もう少し上げると判定が安定します"
-          : "かなり小さいです。Windows のマイク音量を上げてください",
+          ? tr("少し小さめです。もう少し上げると判定が安定します", "A bit quiet. Raise it a little for more reliable detection")
+          : tr("かなり小さいです。Windows のマイク音量を上げてください", "Very quiet. Raise the mic volume in Windows"),
   );
 
   // ---- 遅延の自動測定 ----
@@ -201,10 +206,13 @@
       settings.recordLatencyMs = Math.round(r.latency_ms / 5) * 5;
       saveSettings();
       calibMsg =
-        `遅延 ${Math.round(r.latency_ms)}ms(${r.detected}/${r.beats} 拍を検出、ばらつき ±${Math.round(r.spread_ms)}ms)。` +
+        tr(
+          `遅延 ${Math.round(r.latency_ms)}ms(${r.detected}/${r.beats} 拍を検出、ばらつき ±${Math.round(r.spread_ms)}ms)。`,
+          `Latency ${Math.round(r.latency_ms)} ms (detected ${r.detected}/${r.beats} beats, spread ±${Math.round(r.spread_ms)} ms). `,
+        ) +
         (r.spread_ms > 40
-          ? "ばらつきが大きいので、もう一度測ると精度が上がります。"
-          : "レイテンシ補正に設定しました。");
+          ? tr("ばらつきが大きいので、もう一度測ると精度が上がります。", "The spread is large; measuring again will improve accuracy.")
+          : tr("レイテンシ補正に設定しました。", "Set as latency compensation."));
     } catch (e) {
       calibMsg = String(e);
     }
@@ -231,7 +239,7 @@
     const un = await api.onModelDownload((p) => (clapProgress = p));
     try {
       await api.downloadClapModel();
-      clapMsg = "取得しました。AI が音を言葉でも捉えられるようになりました";
+      clapMsg = tr("取得しました。AI が音を言葉でも捉えられるようになりました", "Downloaded. The AI can now describe sounds in words too");
       await loadModels();
     } catch (e) {
       clapMsg = String(e);
@@ -272,14 +280,14 @@
     }
   }
 
-  const TABS: { key: SettingsTab; label: string; icon: IconName }[] = [
-    { key: "display", label: "表示", icon: "palette" },
-    { key: "audio", label: "オーディオ", icon: "speaker" },
+  const TABS = $derived<{ key: SettingsTab; label: string; icon: IconName }[]>([
+    { key: "display", label: tr("表示", "Display"), icon: "palette" },
+    { key: "audio", label: tr("オーディオ", "Audio"), icon: "speaker" },
     { key: "midi", label: "MIDI", icon: "keyboard-music" },
-    { key: "record", label: "録音", icon: "circle" },
+    { key: "record", label: tr("録音", "Recording"), icon: "circle" },
     { key: "ai", label: "AI", icon: "sparkles" },
-    { key: "about", label: "Glaux について", icon: "info" },
-  ];
+    { key: "about", label: tr("Glaux について", "About Glaux"), icon: "info" },
+  ]);
 
   const REPO_URL = "https://github.com/cetusk/Glaux";
   let urlCopied = $state(false);
@@ -324,14 +332,14 @@
 {/snippet}
 
 <div class="backdrop" role="presentation" onclick={onClose}></div>
-<div class="panel" role="dialog" aria-label="設定">
+<div class="panel" role="dialog" aria-label={tr("設定", "Settings")}>
   <div class="head">
-    <h2><Icon name="settings" />設定</h2>
-    <button class="btn sm icon ghost" onclick={onClose} title="閉じる(Esc)" aria-label="閉じる"><Icon name="x" /></button>
+    <h2><Icon name="settings" />{tr("設定", "Settings")}</h2>
+    <button class="btn sm icon ghost" onclick={onClose} title={tr("閉じる(Esc)", "Close (Esc)")} aria-label={tr("閉じる", "Close")}><Icon name="x" /></button>
   </div>
 
   <div class="body">
-    <nav class="tabs" aria-label="設定の分類">
+    <nav class="tabs" aria-label={tr("設定の分類", "Settings categories")}>
       {#each TABS as t (t.key)}
         <button class="tab" class:sel={settingsUi.tab === t.key} aria-current={settingsUi.tab === t.key} onclick={() => (settingsUi.tab = t.key)}>
           <Icon name={t.icon} />{t.label}
@@ -358,76 +366,93 @@
           </div>
         </div>
         <div class="srow top">
-          {@render row("テーマカラー", "ボタン・選択・再生ヘッドなどの色")}
+          {@render row(tr("テーマカラー", "Theme color"), tr("ボタン・選択・再生ヘッドなどの色", "Color of buttons, selections, the playhead, etc."))}
           <div class="sc swatches">
             {#each ACCENT_PRESETS as p (p.name)}
-              <button class="swatch" class:on={settings.accent === p.name} style="--sw:{p.accent}" onclick={() => pickAccent(p.name)} title={p.label}>
-                <span class="dot"></span>{p.label}
+              <button class="swatch" class:on={settings.accent === p.name} style="--sw:{p.accent}" onclick={() => pickAccent(p.name)} title={accentLabel(p)}>
+                <span class="dot"></span>{accentLabel(p)}
               </button>
             {/each}
           </div>
         </div>
         <div class="srow">
-          {@render row("はじめの確認", "音の出力・AI のチャット・SoundFont がそろっているかの確認と、デモ曲")}
+          {@render row(
+            tr("はじめの確認", "Setup check"),
+            tr("音の出力・AI のチャット・SoundFont がそろっているかの確認と、デモ曲", "Check that audio output, AI chat, and SoundFont are ready, plus a demo song"),
+          )}
           <div class="sc">
             <button
               class="btn sm"
               onclick={() => {
                 welcomeUi.open = true;
                 onClose();
-              }}>開く</button
+              }}>{tr("開く", "Open")}</button
             >
           </div>
         </div>
       {:else if settingsUi.tab === "audio"}
         <h3>
-          オーディオ
-          <button class="btn sm ghost" onclick={loadDevices} title="USB 機器を抜き差しした後など"><Icon name="refresh-cw" />一覧を更新</button>
+          {tr("オーディオ", "Audio")}
+          <button class="btn sm ghost" onclick={loadDevices} title={tr("USB 機器を抜き差しした後など", "E.g. after plugging in or unplugging a USB device")}
+            ><Icon name="refresh-cw" />{tr("一覧を更新", "Refresh")}</button
+          >
         </h3>
         {#if devices}
           <div class="srow">
             {@render row(
-              "出力(再生)",
-              `使用中: ${devices.current_output ?? "なし"}${devices.sample_rate ? `(${(devices.sample_rate / 1000).toFixed(1)} kHz)` : ""}`,
+              tr("出力(再生)", "Output (playback)"),
+              tr(
+                `使用中: ${devices.current_output ?? "なし"}${devices.sample_rate ? `(${(devices.sample_rate / 1000).toFixed(1)} kHz)` : ""}`,
+                `In use: ${devices.current_output ?? "none"}${devices.sample_rate ? ` (${(devices.sample_rate / 1000).toFixed(1)} kHz)` : ""}`,
+              ),
             )}
-            <select class="sc" value={settings.outputDevice} onchange={pickOutput} aria-label="出力デバイス">
-              <option value="">OS の既定({devices.default_output ?? "なし"})</option>
+            <select class="sc" value={settings.outputDevice} onchange={pickOutput} aria-label={tr("出力デバイス", "Output device")}>
+              <option value="">{tr(`OS の既定(${devices.default_output ?? "なし"})`, `OS default (${devices.default_output ?? "none"})`)}</option>
               {#each devices.outputs as d (d)}<option value={d}>{d}</option>{/each}
             </select>
           </div>
           <div class="srow">
             {@render row(
-              "バッファの大きさ",
-              `小さいほど鍵盤やつまみから音までが速く、大きいほど途切れにくい。途切れるときは大きく` +
-                (devices.buffer?.block ? `(いま 1 回に ${devices.buffer.block} フレーム ≒ ${msOf(devices.buffer.block).toFixed(1)} ms で処理)` : ""),
+              tr("バッファの大きさ", "Buffer size"),
+              tr(
+                `小さいほど鍵盤やつまみから音までが速く、大きいほど途切れにくい。途切れるときは大きく` +
+                  (devices.buffer?.block ? `(いま 1 回に ${devices.buffer.block} フレーム ≒ ${msOf(devices.buffer.block).toFixed(1)} ms で処理)` : ""),
+                `Smaller responds faster to keys and knobs; larger is less likely to drop out. Increase it if audio drops out` +
+                  (devices.buffer?.block ? ` (now processing ${devices.buffer.block} frames ≈ ${msOf(devices.buffer.block).toFixed(1)} ms at a time)` : ""),
+              ),
             )}
-            <select class="sc" value={settings.bufferFrames || 512} onchange={pickBuffer} aria-label="バッファの大きさ">
+            <select class="sc" value={settings.bufferFrames || 512} onchange={pickBuffer} aria-label={tr("バッファの大きさ", "Buffer size")}>
               {#each bufferChoices as n (n)}
-                <option value={n}>{n} フレーム({msOf(n).toFixed(1)} ms){n === 512 ? " — 既定" : ""}</option>
+                <option value={n}
+                  >{tr(`${n} フレーム(${msOf(n).toFixed(1)} ms)`, `${n} frames (${msOf(n).toFixed(1)} ms)`)}{n === 512 ? tr(" — 既定", " — default") : ""}</option
+                >
               {/each}
             </select>
           </div>
           <div class="srow">
-            {@render row("入力(録音)", `使用中: ${devices.current_input ?? "なし"}`)}
-            <select class="sc" value={settings.inputDevice} onchange={pickInput} aria-label="入力デバイス">
-              <option value="">OS の既定({devices.default_input ?? "なし"})</option>
+            {@render row(tr("入力(録音)", "Input (recording)"), tr(`使用中: ${devices.current_input ?? "なし"}`, `In use: ${devices.current_input ?? "none"}`))}
+            <select class="sc" value={settings.inputDevice} onchange={pickInput} aria-label={tr("入力デバイス", "Input device")}>
+              <option value="">{tr(`OS の既定(${devices.default_input ?? "なし"})`, `OS default (${devices.default_input ?? "none"})`)}</option>
               {#each devices.inputs as d (d)}<option value={d}>{d}</option>{/each}
             </select>
           </div>
         {:else}
-          <div class="note">読み込み中…</div>
+          <div class="note">{tr("読み込み中…", "Loading…")}</div>
         {/if}
         <div class="srow">
-          {@render row("入力テスト", "マイクの音量を確かめる(目安: 声の一番大きい所が -12〜-6dB の帯に入る)")}
+          {@render row(
+            tr("入力テスト", "Input test"),
+            tr("マイクの音量を確かめる(目安: 声の一番大きい所が -12〜-6dB の帯に入る)", "Check the mic level (aim for the loudest part of your voice to land in the -12 to -6 dB band)"),
+          )}
           <div class="sc">
             <button class="btn sm" class:on={monitoring} onclick={toggleMonitor}
-              ><Icon name={monitoring ? "square" : "mic"} />{monitoring ? "止める" : "始める"}</button
+              ><Icon name={monitoring ? "square" : "mic"} />{monitoring ? tr("止める", "Stop") : tr("始める", "Start")}</button
             >
           </div>
         </div>
         {#if monitoring}
           <div class="meter-row">
-            <div class="meter" title={`直近のピーク ${levelPeakHold.toFixed(1)} dBFS`}>
+            <div class="meter" title={tr(`直近のピーク ${levelPeakHold.toFixed(1)} dBFS`, `Recent peak ${levelPeakHold.toFixed(1)} dBFS`)}>
               <div class="meter-fill" style="width:{meterPct(levelDb)}%"></div>
               <div class="meter-hold" style="left:{meterPct(levelPeakHold)}%"></div>
               <div class="meter-zone" style="left:{meterPct(-12)}%;width:{meterPct(-6) - meterPct(-12)}%"></div>
@@ -438,31 +463,35 @@
         {#if deviceMsg}<div class="note warn">{deviceMsg}</div>{/if}
       {:else if settingsUi.tab === "midi"}
         <h3>
-          MIDI キーボード
-          <button class="btn sm ghost" onclick={loadMidi} title="USB 機器を抜き差しした後など"><Icon name="refresh-cw" />一覧を更新</button>
+          {tr("MIDI キーボード", "MIDI keyboard")}
+          <button class="btn sm ghost" onclick={loadMidi} title={tr("USB 機器を抜き差しした後など", "E.g. after plugging in or unplugging a USB device")}
+            ><Icon name="refresh-cw" />{tr("一覧を更新", "Refresh")}</button
+          >
         </h3>
         {#if midi}
           <div class="srow">
             {@render row(
-              "入力",
-              midi.inputs.length === 0 ? "MIDI 機器が見つかりません。接続してから「一覧を更新」を押してください" : "鍵盤を弾くと右のランプが光る",
+              tr("入力", "Input"),
+              midi.inputs.length === 0
+                ? tr("MIDI 機器が見つかりません。接続してから「一覧を更新」を押してください", "No MIDI devices found. Connect one, then press \"Refresh\"")
+                : tr("鍵盤を弾くと右のランプが光る", "The lamp on the right lights up when you play"),
             )}
             <div class="sc">
-              <span class="lamp" class:lit={midiActive} title="受信ランプ"></span>
-              <select value={settings.midiInput} onchange={pickMidi} aria-label="MIDI 入力">
-                <option value="">使わない</option>
+              <span class="lamp" class:lit={midiActive} title={tr("受信ランプ", "Activity lamp")}></span>
+              <select value={settings.midiInput} onchange={pickMidi} aria-label={tr("MIDI 入力", "MIDI input")}>
+                <option value="">{tr("使わない", "None")}</option>
                 {#each midi.inputs as d (d)}<option value={d}>{d}</option>{/each}
                 {#if settings.midiInput && !midi.inputs.includes(settings.midiInput)}
-                  <option value={settings.midiInput}>{settings.midiInput}(未接続)</option>
+                  <option value={settings.midiInput}>{settings.midiInput}{tr("(未接続)", " (not connected)")}</option>
                 {/if}
               </select>
             </div>
           </div>
         {:else}
-          <div class="note">読み込み中…</div>
+          <div class="note">{tr("読み込み中…", "Loading…")}</div>
         {/if}
         <div class="srow">
-          {@render row("MIDI 録音の位置合わせ", "録ったノートの位置をそろえる")}
+          {@render row(tr("MIDI 録音の位置合わせ", "MIDI record quantize"), tr("録ったノートの位置をそろえる", "Snap recorded notes to the grid"))}
           <select
             class="sc"
             value={String(settings.midiQuantize)}
@@ -470,23 +499,25 @@
               settings.midiQuantize = Number((e.currentTarget as HTMLSelectElement).value);
               saveSettings();
             }}
-            aria-label="MIDI 録音の位置合わせ"
+            aria-label={tr("MIDI 録音の位置合わせ", "MIDI record quantize")}
           >
-            <option value="0">しない(弾いたまま)</option>
-            <option value="240">16 分音符</option>
-            <option value="480">8 分音符</option>
-            <option value="160">3 連 8 分</option>
+            <option value="0">{tr("しない(弾いたまま)", "Off (as played)")}</option>
+            <option value="240">{tr("16 分音符", "1/16 note")}</option>
+            <option value="480">{tr("8 分音符", "1/8 note")}</option>
+            <option value="160">{tr("3 連 8 分", "1/8 triplet")}</option>
           </select>
         </div>
         <div class="note box">
-          <Icon name="keyboard-music" size={14} />トラックの見出しの鍵盤のボタン(MIDI キーボードで弾く)で、鳴らすトラックを選びます
-          (選んでいなければ、ピアノロールで開いているトラック → 最初の MIDI トラックの音)。そのボタンが ON のトラックがあるとき、録音は MIDI 録音になります。
+          <Icon name="keyboard-music" size={14} />{tr(
+            "トラックの見出しの鍵盤のボタン(MIDI キーボードで弾く)で、鳴らすトラックを選びます(選んでいなければ、ピアノロールで開いているトラック → 最初の MIDI トラックの音)。そのボタンが ON のトラックがあるとき、録音は MIDI 録音になります。",
+            "Use the keyboard button in a track header (play with MIDI keyboard) to choose which track sounds (if none is chosen: the track open in the piano roll, then the first MIDI track). While any track has that button on, recording becomes MIDI recording.",
+          )}
         </div>
         {#if midiMsg}<div class="note warn">{midiMsg}</div>{/if}
       {:else if settingsUi.tab === "record"}
-        <h3>録音</h3>
+        <h3>{tr("録音", "Recording")}</h3>
         <div class="srow">
-          {@render row("カウントイン", "録音を始める前に鳴らす小節")}
+          {@render row(tr("カウントイン", "Count-in"), tr("録音を始める前に鳴らす小節", "Bars played before recording starts"))}
           <select
             class="sc"
             value={String(settings.countInBars)}
@@ -494,15 +525,15 @@
               settings.countInBars = Number((e.currentTarget as HTMLSelectElement).value);
               saveSettings();
             }}
-            aria-label="カウントイン"
+            aria-label={tr("カウントイン", "Count-in")}
           >
-            <option value="0">なし</option>
-            <option value="1">1 小節</option>
-            <option value="2">2 小節</option>
+            <option value="0">{tr("なし", "Off")}</option>
+            <option value="1">{tr("1 小節", "1 bar")}</option>
+            <option value="2">{tr("2 小節", "2 bars")}</option>
           </select>
         </div>
         <label class="srow">
-          {@render row("録音中はメトロノームを鳴らす", null)}
+          {@render row(tr("録音中はメトロノームを鳴らす", "Play metronome while recording"), null)}
           <input
             class="sc"
             type="checkbox"
@@ -514,7 +545,7 @@
           />
         </label>
         <label class="srow">
-          {@render row("録音の音量を自動で整える", "一番大きい所を -6dB に(元の録音は変えません)")}
+          {@render row(tr("録音の音量を自動で整える", "Auto-level recordings"), tr("一番大きい所を -6dB に(元の録音は変えません)", "Sets the peak to -6 dB (the original recording is kept)"))}
           <input
             class="sc"
             type="checkbox"
@@ -526,7 +557,7 @@
           />
         </label>
         <label class="srow">
-          {@render row("ステレオで録音する", "入力が 2 ch 以上のとき。マイク 1 本ならオフのままで")}
+          {@render row(tr("ステレオで録音する", "Record in stereo"), tr("入力が 2 ch 以上のとき。マイク 1 本ならオフのままで", "When the input has 2 or more channels. Leave off for a single mic"))}
           <input
             class="sc"
             type="checkbox"
@@ -538,7 +569,10 @@
           />
         </label>
         <div class="srow">
-          {@render row("レイテンシ補正", "録音が拍より遅れて置かれるなら増やし、早すぎるなら減らす")}
+          {@render row(
+            tr("レイテンシ補正", "Latency compensation"),
+            tr("録音が拍より遅れて置かれるなら増やし、早すぎるなら減らす", "Increase if recordings land behind the beat; decrease if they land too early"),
+          )}
           <div class="sc">
             <input
               class="num"
@@ -551,31 +585,40 @@
                 settings.recordLatencyMs = Math.max(0, Number((e.currentTarget as HTMLInputElement).value) || 0);
                 saveSettings();
               }}
-              aria-label="レイテンシ補正(ms)"
+              aria-label={tr("レイテンシ補正(ms)", "Latency compensation (ms)")}
             />
             ms
           </div>
         </div>
         <div class="srow">
           {@render row(
-            "遅延を自動で測る",
+            tr("遅延を自動で測る", "Measure latency"),
             calib === "countin"
-              ? "カウントイン中… 次の 1 小節から、クリックに合わせて手を叩くか「タッ」と言ってください"
+              ? tr(
+                  "カウントイン中… 次の 1 小節から、クリックに合わせて手を叩くか「タッ」と言ってください",
+                  "Counting in… From the next bar, clap or say \"ta\" along with the click",
+                )
               : calib === "tapping"
-                ? `クリックに合わせて! ${tapCount} / 8`
+                ? tr(`クリックに合わせて! ${tapCount} / 8`, `Along with the click! ${tapCount} / 8`)
                 : calib === "analyzing"
-                  ? "解析中…"
+                  ? tr("解析中…", "Analyzing…")
                   : (calibMsg ??
-                    "メトロノームだけが鳴ります(曲は鳴りません)。スピーカーで聴いている場合は、クリック音がマイクに入るので叩かなくても測れます"),
+                    tr(
+                      "メトロノームだけが鳴ります(曲は鳴りません)。スピーカーで聴いている場合は、クリック音がマイクに入るので叩かなくても測れます",
+                      "Only the metronome plays (not the song). If you're listening on speakers, the click reaches the mic, so you can measure without clapping",
+                    )),
           )}
           <div class="sc">
-            <button class="btn sm" onclick={startCalibration} disabled={calib !== "idle"}><Icon name="target" />測る</button>
+            <button class="btn sm" onclick={startCalibration} disabled={calib !== "idle"}><Icon name="target" />{tr("測る", "Measure")}</button>
           </div>
         </div>
       {:else if settingsUi.tab === "ai"}
         <h3>AI</h3>
         <div class="srow">
-          {@render row("チャットの相手", "この PC にインストールしてログインしておく。チャットの見出しでも切り替えられます")}
+          {@render row(
+            tr("チャットの相手", "Chat AI"),
+            tr("この PC にインストールしてログインしておく。チャットの見出しでも切り替えられます", "Install and sign in on this PC. You can also switch it in the chat header"),
+          )}
           <div class="sc seg">
             {#each CHAT_PROVIDERS as p (p.value)}
               <button class="btn sm" class:on={provider === p.value} onclick={() => pickProvider(p.value)} title={p.cli}>{p.label}<small>{p.cli}</small></button>
@@ -583,31 +626,42 @@
           </div>
         </div>
         <div class="srow">
-          {@render row("モデル", "次の指示から使われます(会話の文脈はそのまま)")}
+          {@render row(tr("モデル", "Model"), tr("次の指示から使われます(会話の文脈はそのまま)", "Used from your next instruction (the conversation context is kept)"))}
           <div class="sc col">
-            <select value={isPresetModel ? currentModel : "__current"} onchange={pickModel} aria-label="モデル">
-              {#each CHAT_MODELS[provider] as m (m.value)}<option value={m.value}>{m.label}{m.note ? `(${m.note})` : ""}</option>{/each}
-              {#if !isPresetModel}<option value="__current">以前の指定: {currentModel}</option>{/if}
+            <select value={isPresetModel ? currentModel : "__current"} onchange={pickModel} aria-label={tr("モデル", "Model")}>
+              {#each CHAT_MODELS[provider] as m (m.value)}<option value={m.value}
+                  >{chatModelText(m.label)}{m.note ? tr(`(${chatModelText(m.note)})`, ` (${chatModelText(m.note)})`) : ""}</option
+                >{/each}
+              {#if !isPresetModel}<option value="__current">{tr("以前の指定", "Previously set")}: {currentModel}</option>{/if}
             </select>
           </div>
         </div>
         <div class="srow">
-          {@render row("考える深さ(effort)", "深いほど丁寧だが、時間と使用量が増える。選べる段階はモデルによって違います")}
+          {@render row(
+            tr("考える深さ(effort)", "Thinking depth (effort)"),
+            tr("深いほど丁寧だが、時間と使用量が増える。選べる段階はモデルによって違います", "Deeper is more thorough but takes more time and usage. Available levels depend on the model"),
+          )}
           <div class="sc col">
             <select
               value={efforts.includes(currentEffort) ? currentEffort : ""}
               onchange={(e) => setChatEffort((e.currentTarget as HTMLSelectElement).value)}
-              aria-label="考える深さ"
+              aria-label={tr("考える深さ", "Thinking depth")}
             >
-              <option value="">既定(モデルの標準)</option>
-              {#each efforts as ef (ef)}<option value={ef}>{EFFORT_LABELS[ef] ?? ef}</option>{/each}
+              <option value="">{tr("既定(モデルの標準)", "Default (model standard)")}</option>
+              {#each efforts as ef (ef)}<option value={ef}>{effortLabel(ef)}</option>{/each}
             </select>
           </div>
         </div>
         <div class="srow">
-          {@render row("作る前に AI が質問する", "曲の決め手(ジャンル・雰囲気・長さ・編成など)が指示から読み取れないとき、作る前に選択肢で尋ねます。「途中で尋ねない」なら、いつも AI が決め手を選んで最後まで作ります(1 回だけなら指示の頭に /goal)")}
+          {@render row(
+            tr("作る前に AI が質問する", "AI asks before creating"),
+            tr(
+              "曲の決め手(ジャンル・雰囲気・長さ・編成など)が指示から読み取れないとき、作る前に選択肢で尋ねます。「途中で尋ねない」なら、いつも AI が決め手を選んで最後まで作ります(1 回だけなら指示の頭に /goal)",
+              "When key choices for the song (genre, mood, length, instrumentation, etc.) can't be read from your instruction, the AI asks with options before creating. With \"Never ask\", the AI always makes those choices itself and finishes (for a single request, start it with /goal)",
+            ),
+          )}
           <div class="sc seg">
-            {#each [{ v: "auto", l: "必要なとき" }, { v: "never", l: "途中で尋ねない" }] as o (o.v)}
+            {#each [{ v: "auto", l: tr("必要なとき", "When needed") }, { v: "never", l: tr("途中で尋ねない", "Never ask") }] as o (o.v)}
               <button
                 class="btn sm"
                 class:on={settings.chatAsk === o.v}
@@ -620,17 +674,20 @@
           </div>
         </div>
         <label class="srow">
-          {@render row("作業が終わったら音で知らせる", "AI のターンが終わったとき(失敗したときは低い音)")}
+          {@render row(tr("作業が終わったら音で知らせる", "Chime when AI finishes"), tr("AI のターンが終わったとき(失敗したときは低い音)", "When the AI's turn ends (a low tone if it fails)"))}
           <input class="sc" type="checkbox" checked={settings.notifyOnAiDone} onchange={toggleNotify} />
         </label>
 
-        <h3 class="sub">外から AI をつなぐ(MCP)</h3>
+        <h3 class="sub">{tr("外から AI をつなぐ(MCP)", "Connect external AI (MCP)")}</h3>
         <div class="srow">
-          {@render row("MCP サーバー", "アプリの起動中、ほかの AI クライアントからこのアドレスでつなげます")}
+          {@render row(tr("MCP サーバー", "MCP server"), tr("アプリの起動中、ほかの AI クライアントからこのアドレスでつなげます", "While the app is running, other AI clients can connect at this address"))}
           <code class="sc url">{info?.mcp_url ?? "…"}</code>
         </div>
         <div class="srow">
-          {@render row("登録の仕方", "コピーして、ターミナル(Claude Code)か設定ファイル(Codex の ~/.codex/config.toml)に貼る")}
+          {@render row(
+            tr("登録の仕方", "How to register"),
+            tr("コピーして、ターミナル(Claude Code)か設定ファイル(Codex の ~/.codex/config.toml)に貼る", "Copy and paste into a terminal (Claude Code) or a config file (Codex's ~/.codex/config.toml)"),
+          )}
           <div class="sc">
             <button class="btn sm" disabled={!info} onclick={() => info && copy("claude", `claude mcp add --transport http glaux ${info.mcp_url}`)}
               ><Icon name={copied === "claude" ? "check" : "copy"} />Claude Code</button
@@ -641,17 +698,20 @@
           </div>
         </div>
 
-        <h3 class="sub">追加モデル</h3>
+        <h3 class="sub">{tr("追加モデル", "Additional models")}</h3>
         <div class="srow">
-          {@render row("音色を言葉で捉えるモデル(CLAP)", "AI が「明るい」「こもった」などの言葉で音色を比べられるようになる")}
+          {@render row(
+            tr("音色を言葉で捉えるモデル(CLAP)", "Sound-to-words model (CLAP)"),
+            tr("AI が「明るい」「こもった」などの言葉で音色を比べられるようになる", "Lets the AI compare sounds using words like \"bright\" or \"muffled\""),
+          )}
           <div class="sc">
             {#if clapModel?.available}
-              <span class="ok"><Icon name="check" size={14} />取得済み</span>
+              <span class="ok"><Icon name="check" size={14} />{tr("取得済み", "Downloaded")}</span>
             {:else if clapProgress}
-              <span class="note">取得中… {mb(clapProgress.got)} / {mb(clapProgress.total)}</span>
+              <span class="note">{tr("取得中…", "Downloading…")} {mb(clapProgress.got)} / {mb(clapProgress.total)}</span>
             {:else}
               <button class="btn sm" onclick={downloadClap} disabled={!clapModel}
-                ><Icon name="download" />取得する({clapModel ? mb(clapModel.bytes) : "…"})</button
+                ><Icon name="download" />{tr(`取得する(${clapModel ? mb(clapModel.bytes) : "…"})`, `Download (${clapModel ? mb(clapModel.bytes) : "…"})`)}</button
               >
             {/if}
           </div>
@@ -661,33 +721,61 @@
       {:else if settingsUi.tab === "about"}
         <div class="about">
           <img class="about-logo" src="/glaux-logo.png" alt="Glaux" width="320" height="132" />
-          <div class="about-ver" title={APP_VERSION_DETAIL}>バージョン {APP_VERSION}</div>
-          <p>Glaux は、AI と一緒に曲を作れる、シンプルで軽いデスクトップの DAW です。画面で手を動かしても、チャットで AI に頼んでも、同じ曲を同じように編集できます。</p>
+          <div class="about-ver" title={appVersionDetail()}>{tr("バージョン", "Version")} {APP_VERSION}</div>
+          <p>
+            {tr(
+              "Glaux は、AI と一緒に曲を作れる、シンプルで軽いデスクトップの DAW です。画面で手を動かしても、チャットで AI に頼んでも、同じ曲を同じように編集できます。",
+              "Glaux is a simple, lightweight desktop DAW for making music together with AI. Whether you edit by hand or ask the AI in chat, you edit the same song in the same way.",
+            )}
+          </p>
           <ul>
-            <li>編集はすべて履歴に残り、人と AI のどちらが何をしたかが分かります。どの編集も後から打ち消せます</li>
-            <li>AI はアプリ内のチャットからも、外の AI(Claude Code・Codex など)から MCP でもつなげます</li>
-            <li>内蔵の音源とエフェクトに加えて、SoundFont と CLAP プラグインを使えます</li>
-            <li>作った曲は WAV・FLAC・MIDI に書き出せるほか、Godot のゲームの中でそのまま鳴らせます</li>
+            <li>
+              {tr(
+                "編集はすべて履歴に残り、人と AI のどちらが何をしたかが分かります。どの編集も後から打ち消せます",
+                "Every edit is kept in the history, showing whether you or the AI made it. Any edit can be undone later",
+              )}
+            </li>
+            <li>
+              {tr(
+                "AI はアプリ内のチャットからも、外の AI(Claude Code・Codex など)から MCP でもつなげます",
+                "Use AI from the in-app chat, or connect external AI (Claude Code, Codex, etc.) via MCP",
+              )}
+            </li>
+            <li>{tr("内蔵の音源とエフェクトに加えて、SoundFont と CLAP プラグインを使えます", "Besides the built-in instruments and effects, you can use SoundFonts and CLAP plugins")}</li>
+            <li>
+              {tr(
+                "作った曲は WAV・FLAC・MIDI に書き出せるほか、Godot のゲームの中でそのまま鳴らせます",
+                "Export songs to WAV, FLAC, or MIDI, or play them directly inside Godot games",
+              )}
+            </li>
           </ul>
-          <p class="note">名前はギリシャ語で「フクロウ」(γλαύξ)。知恵の象徴のフクロウのように、曲作りにそっと寄り添う道具を目指しています。</p>
+          <p class="note">
+            {tr(
+              "名前はギリシャ語で「フクロウ」(γλαύξ)。知恵の象徴のフクロウのように、曲作りにそっと寄り添う道具を目指しています。",
+              "The name is Greek for \"owl\" (γλαύξ). Like the owl, a symbol of wisdom, it aims to be a tool that quietly supports your music-making.",
+            )}
+          </p>
           <div class="srow">
-            {@render row("ソースコード・使い方・更新", "不具合の報告や要望もこちらへ")}
+            {@render row(tr("ソースコード・使い方・更新", "Source code, docs, and updates"), tr("不具合の報告や要望もこちらへ", "Bug reports and requests are welcome here too"))}
             <div class="sc about-link">
               <span class="url">{REPO_URL}</span>
-              <button class="btn sm icon ghost" onclick={copyRepoUrl} title="URL をコピー" aria-label="URL をコピー"
+              <button class="btn sm icon ghost" onclick={copyRepoUrl} title={tr("URL をコピー", "Copy URL")} aria-label={tr("URL をコピー", "Copy URL")}
                 ><Icon name={urlCopied ? "check" : "copy"} /></button
               >
             </div>
           </div>
           <div class="srow">
-            {@render row("ライセンス", "同梱している素材(アイコン・音源・学習済みモデル・グルーブの型)の出典は README に記載")}
-            <div class="sc">MIT または Apache-2.0</div>
+            {@render row(
+              tr("ライセンス", "License"),
+              tr("同梱している素材(アイコン・音源・学習済みモデル・グルーブの型)の出典は README に記載", "Sources of bundled assets (icons, sounds, trained models, groove templates) are listed in the README"),
+            )}
+            <div class="sc">{tr("MIT または Apache-2.0", "MIT or Apache-2.0")}</div>
           </div>
         </div>
       {/if}
     </div>
   </div>
-  <div class="foot">設定はこの PC に保存されます(プロジェクトには含まれません)</div>
+  <div class="foot">{tr("設定はこの PC に保存されます(プロジェクトには含まれません)", "Settings are saved on this PC (not in the project)")}</div>
 </div>
 
 <style>

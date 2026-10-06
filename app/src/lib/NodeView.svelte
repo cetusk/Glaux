@@ -15,7 +15,8 @@
     fxIcon,
     fxKind,
     fxName,
-    FX_KIND_JA,
+    fxKindDesc,
+    fxKindName,
     IN,
     insertBeforeOutput,
     linkKey,
@@ -29,6 +30,8 @@
     unlinkBridging,
   } from "./fx";
   import { loadIrFromFile } from "./ir";
+  import { plural, tr } from "./i18n.svelte";
+  import { paramDesc, paramLabel } from "./paramText";
   import { fxDrag, fxDropTargets, isOverShelf } from "./fxDrag.svelte";
   import { deviceName } from "./instruments";
   import { focusNow, keepInView } from "./menu";
@@ -47,7 +50,7 @@
 
   const isMaster = $derived(targetId === MASTER_FOCUS_ID);
   const track = $derived(isMaster ? null : (project.tracks.find((t) => t.id === targetId) ?? null));
-  const targetName = $derived(isMaster ? "マスター" : (track?.name ?? ""));
+  const targetName = $derived(isMaster ? tr("マスター", "Master") : (track?.name ?? ""));
 
   // ---- つまみの一覧(インスペクターと同じ取り方。どの編集でも取り直す = AI の編集も反映) ----
   let info = $state<TrackParams | null>(null);
@@ -183,7 +186,7 @@
     return out;
   }
   const linkBez = (l: FxLink) => bez(outPort(l.from), inPort(l.to));
-  const nameOf = (id: string) => (id === IN ? "入力" : id === OUT ? "出口" : fxName(all.find((e) => e.id === id) ?? { id, name: "?", type: "builtin" }));
+  const nameOf = (id: string) => (id === IN ? tr("入力", "Input") : id === OUT ? tr("出口", "Output") : fxName(all.find((e) => e.id === id) ?? { id, name: "?", type: "builtin" }));
 
   /** 点に近い線(24px 以内) */
   function linkNear(pt: [number, number]): FxLink | null {
@@ -221,7 +224,7 @@
     try {
       await api.applyEdit(commands, label);
     } catch (err) {
-      showError("変更できませんでした", err);
+      showError(tr("変更できませんでした", "Couldn't apply the change"), err);
     }
   }
   const linksCmd = (next: FxLink[]) =>
@@ -295,10 +298,10 @@
           // 線に入れたら、置き場所はつながりの順の自動に任せる(隣のカードに重ならないように)
           const { [e.id]: _, ...rest } = localPos;
           localPos = rest;
-          setLinks(splitLink(links, d.hot.from, d.hot.to, e.id), `${nameOf(e.id)} を「${nameOf(d.hot.from)}」と「${nameOf(d.hot.to)}」の間に入れる`, [posCmd(e.id, null)]);
+          setLinks(splitLink(links, d.hot.from, d.hot.to, e.id), tr(`${nameOf(e.id)} を「${nameOf(d.hot.from)}」と「${nameOf(d.hot.to)}」の間に入れる`, `Insert ${nameOf(e.id)} between "${nameOf(d.hot.from)}" and "${nameOf(d.hot.to)}"`), [posCmd(e.id, null)]);
         } else {
           localPos = { ...localPos, [e.id]: pos };
-          edit([posCmd(e.id, pos)], `${targetName} の ${nameOf(e.id)} を動かす`);
+          edit([posCmd(e.id, pos)], tr(`${targetName} の ${nameOf(e.id)} を動かす`, `Move ${nameOf(e.id)} on ${targetName}`));
         }
       },
     );
@@ -332,7 +335,7 @@
         drag = null;
         edit(
           [isMaster ? { op: "set_fx_io_pos", pos: next } : { op: "set_fx_io_pos", track: targetId, pos: next }],
-          `${targetName} の${id === IN ? "入力" : "出口"}を動かす`,
+          tr(`${targetName} の${id === IN ? "入力" : "出口"}を動かす`, `Move ${id === IN ? "input" : "output"} on ${targetName}`),
         );
       },
     );
@@ -364,7 +367,7 @@
         drag = null;
         if (d?.kind !== "port" || !d.target) return;
         const [a, b] = side === "out" ? [id, d.target] : [d.target, id];
-        setLinks([...links, { from: a, to: b }], `${targetName}: ${nameOf(a)} → ${nameOf(b)} をつなぐ`);
+        setLinks([...links, { from: a, to: b }], tr(`${targetName}: ${nameOf(a)} → ${nameOf(b)} をつなぐ`, `${targetName}: connect ${nameOf(a)} → ${nameOf(b)}`));
       },
     );
   }
@@ -387,7 +390,7 @@
         const d = drag;
         drag = null;
         if (d?.kind !== "knife" || d.cut.size === 0) return;
-        setLinks(links.filter((l) => !d.cut.has(linkKey(l))), `${targetName} の線を ${d.cut.size} 本切る`);
+        setLinks(links.filter((l) => !d.cut.has(linkKey(l))), tr(`${targetName} の線を ${d.cut.size} 本切る`, `Cut ${plural(d.cut.size, "wire")} on ${targetName}`));
       },
     );
   }
@@ -400,14 +403,17 @@
     sel = null;
     setLinks(
       links.filter((x) => linkKey(x) !== linkKey(l)),
-      `${targetName}: ${nameOf(l.from)} → ${nameOf(l.to)} を切る`,
+      tr(`${targetName}: ${nameOf(l.from)} → ${nameOf(l.to)} を切る`, `${targetName}: cut ${nameOf(l.from)} → ${nameOf(l.to)}`),
     );
   }
   function commitGain(l: FxLink, db: number) {
     selGain = null;
     setLinks(
       links.map((x) => (linkKey(x) === linkKey(l) ? { ...x, gain_db: db } : x)),
-      `${targetName}: ${nameOf(l.from)} → ${nameOf(l.to)} の音量を ${db.toFixed(1)} dB に`,
+      tr(
+        `${targetName}: ${nameOf(l.from)} → ${nameOf(l.to)} の音量を ${db.toFixed(1)} dB に`,
+        `${targetName}: set ${nameOf(l.from)} → ${nameOf(l.to)} gain to ${db.toFixed(1)} dB`,
+      ),
     );
   }
   function onKey(ev: KeyboardEvent) {
@@ -447,7 +453,7 @@
     try {
       await api.applyFxPreset(targetId, name, hot ? { split: [hot.from, hot.to] } : { parked: true, pos });
     } catch (err) {
-      showError("エフェクトを足せませんでした", err);
+      showError(tr("エフェクトを足せませんでした", "Couldn't add the effect"), err);
     }
   }
   $effect(() => {
@@ -459,7 +465,7 @@
 
   // ---- カードの操作 ----
   function toggleBypass(e: EffectView) {
-    edit([{ op: "set_effect_bypass", id: e.id, bypass: !e.bypass }], `${targetName} の ${fxName(e)} を${e.bypass ? "有効に" : "バイパス"}`);
+    edit([{ op: "set_effect_bypass", id: e.id, bypass: !e.bypass }], tr(`${targetName} の ${fxName(e)} を${e.bypass ? "有効に" : "バイパス"}`, `${e.bypass ? "Enable" : "Bypass"} ${fxName(e)} on ${targetName}`));
   }
 
   let renaming = $state<string | null>(null);
@@ -469,7 +475,10 @@
     renaming = null;
     const label = v.trim();
     if ((label || undefined) === e.label) return;
-    edit([{ op: "set_effect_prop", id: e.id, prop: "label", value: label || null }], `${targetName} の ${fxName(e)} の名前を「${label || fxName({ ...e, label: undefined })}」に`);
+    edit([{ op: "set_effect_prop", id: e.id, prop: "label", value: label || null }], tr(
+        `${targetName} の ${fxName(e)} の名前を「${label || fxName({ ...e, label: undefined })}」に`,
+        `Rename ${fxName(e)} on ${targetName} to "${label || fxName({ ...e, label: undefined })}"`,
+      ));
   }
 
   let noting = $state<string | null>(null);
@@ -478,32 +487,32 @@
     noting = null;
     const note = v.trim();
     if ((note || undefined) === e.note) return;
-    edit([{ op: "set_effect_prop", id: e.id, prop: "note", value: note || null }], `${targetName} の ${fxName(e)} のメモ`);
+    edit([{ op: "set_effect_prop", id: e.id, prop: "note", value: note || null }], tr(`${targetName} の ${fxName(e)} のメモ`, `Note on ${fxName(e)} on ${targetName}`));
   }
 
   function cutAll(e: EffectView) {
     menu = null;
-    setLinks(links.filter((l) => l.from !== e.id && l.to !== e.id), `${targetName} の ${fxName(e)} の線を全部切る`);
+    setLinks(links.filter((l) => l.from !== e.id && l.to !== e.id), tr(`${targetName} の ${fxName(e)} の線を全部切る`, `Cut all wires of ${fxName(e)} on ${targetName}`));
   }
   function bridge(e: EffectView) {
     menu = null;
-    setLinks(unlinkBridging(links, e.id), `${targetName} の ${fxName(e)} を抜いて前後をつなぐ`);
+    setLinks(unlinkBridging(links, e.id), tr(`${targetName} の ${fxName(e)} を抜いて前後をつなぐ`, `Remove ${fxName(e)} from the chain and bridge on ${targetName}`));
   }
   function connectToOut(e: EffectView) {
     menu = null;
-    setLinks(insertBeforeOutput(unlinkBridging(links, e.id), e.id), `${targetName} の ${fxName(e)} を出口の前につなぐ`);
+    setLinks(insertBeforeOutput(unlinkBridging(links, e.id), e.id), tr(`${targetName} の ${fxName(e)} を出口の前につなぐ`, `Connect ${fxName(e)} before the output on ${targetName}`));
   }
   function arrange() {
     const cmds: unknown[] = all.filter((e) => e.pos).map((e) => posCmd(e.id, null));
     if (ioSaved) cmds.push(isMaster ? { op: "set_fx_io_pos", pos: null } : { op: "set_fx_io_pos", track: targetId, pos: null });
     localPos = {};
     localIo = {};
-    if (cmds.length > 0) edit(cmds, `${targetName} のエフェクトを並べ直す`);
+    if (cmds.length > 0) edit(cmds, tr(`${targetName} のエフェクトを並べ直す`, `Arrange effects on ${targetName}`));
   }
 
   function remove(e: EffectView) {
     menu = null;
-    edit([{ op: "remove_effect", id: e.id }], `${targetName} の ${fxName(e)} を削除`);
+    edit([{ op: "remove_effect", id: e.id }], tr(`${targetName} の ${fxName(e)} を削除`, `Delete ${fxName(e)} on ${targetName}`));
   }
 
   function paramCommand(p: ParamView, raw: string | number | boolean): unknown {
@@ -514,8 +523,13 @@
     return isMaster ? { op: "set_master_param", path: p.path, value } : { op: "set_param", track: targetId, path: p.path, value };
   }
   function commitParam(p: ParamView, raw: string | number | boolean) {
-    edit([paramCommand(p, raw)], `${targetName} の ${p.display_name} を変更`);
+    const owner = all.find((e) => p.path.startsWith(`fx/${e.id}/`));
+    const pn = owner ? pName(owner, p) : p.display_name;
+    edit([paramCommand(p, raw)], tr(`${targetName} の ${pn} を変更`, `Change ${pn} on ${targetName}`));
   }
+  /** カードのつまみの表示名・説明(CLAP はプラグイン自身の名前のまま) */
+  const pName = (e: EffectView, p: ParamView) => (fxKind(e) === "clap" ? p.display_name : paramLabel(fxKind(e), p.name, p.display_name));
+  const pDesc = (e: EffectView, p: ParamView) => (fxKind(e) === "clap" ? p.description : paramDesc(fxKind(e), p.name, p.description));
   /** ドラッグ中: 表示と音だけ変える(離したときに 1 回だけ確定する) */
   function dragParam(p: ParamView, v: number) {
     dragValues[p.path] = v;
@@ -547,34 +561,40 @@
           isMaster ? { op: "add_master_effect", effect } : { op: "add_effect", track: targetId, effect },
           linksCmd(splitLink(links, split.from, split.to, id)),
         ],
-        `${targetName} の ${nameOf(split.from)} と ${nameOf(split.to)} の間に ${label} を追加`,
+        tr(
+          `${targetName} の ${nameOf(split.from)} と ${nameOf(split.to)} の間に ${label} を追加`,
+          `Add ${label} between ${nameOf(split.from)} and ${nameOf(split.to)} on ${targetName}`,
+        ),
       );
       return;
     }
     // つながりの表があれば出口の直前に、無ければ並びの最後に入る(どちらでも鳴る)
     edit(
       [isMaster ? { op: "add_master_effect", effect: base } : { op: "add_effect", track: targetId, effect: base }],
-      `${targetName} に ${label} を追加`,
+      tr(`${targetName} に ${label} を追加`, `Add ${label} to ${targetName}`),
     );
   }
 
   // ---- 入力・出口 ----
   const inputLabel = $derived(
     isMaster
-      ? "全トラック"
+      ? tr("全トラック", "All tracks")
       : track?.kind === "bus"
-        ? "送られてきた音"
+        ? tr("送られてきた音", "Incoming sends")
         : track?.kind === "audio"
-          ? "音声"
+          ? tr("音声", "Audio")
           : track?.device?.type === "clap"
             ? (clapNames.get(track.device.plugin_id ?? "") ?? deviceName(track.device))
             : deviceName(track?.device ?? null),
   );
   const outputLabel = $derived.by(() => {
-    if (isMaster) return "出力";
+    if (isMaster) return tr("出力", "Output");
     if (!track) return "";
     const sends = (track.sends ?? []).length;
-    return `音量 ${track.volume_db.toFixed(1)} dB${sends ? `・送り ${sends}` : ""}`;
+    return tr(
+      `音量 ${track.volume_db.toFixed(1)} dB${sends ? `・送り ${sends}` : ""}`,
+      `Volume ${track.volume_db.toFixed(1)} dB${sends ? ` · ${plural(sends, "send")}` : ""}`,
+    );
   });
   const inCount = (id: string) => links.filter((l) => l.to === id).length;
   const outCount = (id: string) => links.filter((l) => l.from === id).length;
@@ -605,7 +625,7 @@
 
 <div class="wrap">
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-<div class="nodes" bind:this={canvasEl} role="application" aria-label="エフェクトのノード表示" tabindex="0" onkeydown={onKey}>
+<div class="nodes" bind:this={canvasEl} role="application" aria-label={tr("エフェクトのノード表示", "Effect node view")} tabindex="0" onkeydown={onKey}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="space" class:knife={drag?.kind === "knife"} style="width:{size.w}px;height:{size.h}px" onpointerdown={onCanvasDown}>
     <svg class="wires" width={size.w} height={size.h}>
@@ -651,9 +671,9 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="io" class:lifted={drag?.kind === "io" && drag.id === IN && drag.moved} data-node={IN} style="left:{inPos[0]}px;top:{inPos[1]}px;width:{IO_W}px" onpointerdown={(ev) => onIoDown(ev, IN)}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <span class="port out" data-port onpointerdown={(ev) => onPortDown(ev, IN, "out")} title="ここから線を引いてつなぐ"></span>
+      <span class="port out" data-port onpointerdown={(ev) => onPortDown(ev, IN, "out")} title={tr("ここから線を引いてつなぐ", "Drag from here to wire")}></span>
       <Icon name={isMaster ? "merge" : "plug"} />
-      <b>入力</b><small>{inputLabel}</small>
+      <b>{tr("入力", "Input")}</b><small>{inputLabel}</small>
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -666,12 +686,12 @@
       onpointerdown={(ev) => onIoDown(ev, OUT)}
     >
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <span class="port in" data-port onpointerdown={(ev) => onPortDown(ev, OUT, "in")} title="ここへ線を引いてつなぐ"></span>
-      {#if inCount(OUT) > 1}<span class="sum">{inCount(OUT)} 本</span>{/if}
+      <span class="port in" data-port onpointerdown={(ev) => onPortDown(ev, OUT, "in")} title={tr("ここへ線を引いてつなぐ", "Drag a wire here to connect")}></span>
+      {#if inCount(OUT) > 1}<span class="sum">{tr(`${inCount(OUT)} 本`, `${inCount(OUT)} in`)}</span>{/if}
       <Icon name="volume-2" />
-      <b>出口</b><small>{outConnected ? outputLabel : "何もつながっていない(鳴らない)"}</small>
+      <b>{tr("出口", "Output")}</b><small>{outConnected ? outputLabel : tr("何もつながっていない(鳴らない)", "Nothing connected (silent)")}</small>
     </div>
-    <button class="add" style="left:{outPos[0] - GAP / 2 - 12}px;top:{outPos[1] + PORT_Y + 24}px" onclick={(e) => (addMenu = at(e))} title="エフェクトを足す(出口の前に入る)" aria-label="エフェクトを足す"
+    <button class="add" style="left:{outPos[0] - GAP / 2 - 12}px;top:{outPos[1] + PORT_Y + 24}px" onclick={(e) => (addMenu = at(e))} title={tr("エフェクトを足す(出口の前に入る)", "Add effect (before the output)")} aria-label={tr("エフェクトを足す", "Add effect")}
       ><Icon name="plus" size={14} /></button
     >
 
@@ -691,15 +711,18 @@
         onpointerdown={(ev) => onCardDown(ev, e)}
       >
         {#if !sounding}
-          <span class="badge"><Icon name="unplug" size={11} />鳴らない({reached.has(e.id) ? "出口まで届いていない" : "入力から来ていない"})</span>
+          <span class="badge"><Icon name="unplug" size={11} />{reached.has(e.id)
+              ? tr("鳴らない(出口まで届いていない)", "Silent (doesn't reach the output)")
+              : tr("鳴らない(入力から来ていない)", "Silent (not fed from the input)")}</span
+          >
         {:else if outCount(e.id) > 1}
-          <span class="badge dim"><Icon name="split" size={11} />{outCount(e.id)} つに分かれる</span>
+          <span class="badge dim"><Icon name="split" size={11} />{tr(`${outCount(e.id)} つに分かれる`, `Splits into ${outCount(e.id)}`)}</span>
         {/if}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <span class="port in" data-port onpointerdown={(ev) => onPortDown(ev, e.id, "in")} title="線を引いてつなぐ(ここへ入る音)"></span>
+        <span class="port in" data-port onpointerdown={(ev) => onPortDown(ev, e.id, "in")} title={tr("線を引いてつなぐ(ここへ入る音)", "Drag to wire (audio in)")}></span>
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <span class="port out" data-port onpointerdown={(ev) => onPortDown(ev, e.id, "out")} title="線を引いてつなぐ(ここから出る音)"></span>
-        {#if inCount(e.id) > 1}<span class="sum">{inCount(e.id)} 本</span>{/if}
+        <span class="port out" data-port onpointerdown={(ev) => onPortDown(ev, e.id, "out")} title={tr("線を引いてつなぐ(ここから出る音)", "Drag to wire (audio out)")}></span>
+        {#if inCount(e.id) > 1}<span class="sum">{tr(`${inCount(e.id)} 本`, `${inCount(e.id)} in`)}</span>{/if}
         <div class="bar">
           <span class="kind"><Icon name={fxIcon(e)} size={13} /></span>
           {#if renaming === e.id}
@@ -717,23 +740,24 @@
             />
           {:else}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <b title={`${fxName(e)}(ダブルクリックで名前を変える)`} ondblclick={() => (renaming = e.id)}>{fxName(e)}</b>
+            <b title={tr(`${fxName(e)}(ダブルクリックで名前を変える)`, `${fxName(e)} (double-click to rename)`)} ondblclick={() => (renaming = e.id)}>{fxName(e)}</b>
           {/if}
           {#if sounding}
-            <button class="btn sm icon" class:on={!e.bypass} onclick={() => toggleBypass(e)} title={e.bypass ? "バイパス中(押すと有効)" : "有効(押すとバイパス)"} aria-label="有効 / バイパス"
+            <button class="btn sm icon" class:on={!e.bypass} onclick={() => toggleBypass(e)} title={e.bypass ? tr("バイパス中(押すと有効)", "Bypassed (click to enable)") : tr("有効(押すとバイパス)", "On (click to bypass)")}
+              aria-label={tr("有効 / バイパス", "On / bypass")}
               ><Icon name="power" /></button
             >
           {/if}
-          <button class="btn sm icon ghost" onclick={(ev) => (menu = { fx: e, ...at(ev) })} title="その他" aria-label="その他"><Icon name="ellipsis" /></button>
+          <button class="btn sm icon ghost" onclick={(ev) => (menu = { fx: e, ...at(ev) })} title={tr("その他", "More")} aria-label={tr("その他", "More")}><Icon name="ellipsis" /></button>
         </div>
         <div class="body">
-          <span class="kind-label">{fxKind(e) === "clap" ? "CLAP" : (FX_KIND_JA[fxKind(e)] ?? fxKind(e))}{#if e.label}<span class="dim"> · {fxName({ ...e, label: undefined })}</span>{/if}</span>
+          <span class="kind-label">{fxKind(e) === "clap" ? "CLAP" : (fxKindName(fxKind(e)) ?? fxKind(e))}{#if e.label}<span class="dim"> · {fxName({ ...e, label: undefined })}</span>{/if}</span>
           {#if noting === e.id}
             <textarea
               class="note-input"
               rows="2"
               use:focusNow
-              placeholder="メモ(なぜ取っておいたかなど)"
+              placeholder={tr("メモ(なぜ取っておいたかなど)", "Note (e.g. why you kept it)")}
               value={e.note ?? ""}
               onkeydown={(ev) => {
                 if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) commitNote(e, ev.currentTarget.value);
@@ -743,12 +767,12 @@
             ></textarea>
           {:else if e.note}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="note" ondblclick={() => (noting = e.id)} title="ダブルクリックで書き直す"><Icon name="pin" size={11} />{e.note}</div>
+            <div class="note" ondblclick={() => (noting = e.id)} title={tr("ダブルクリックで書き直す", "Double-click to edit")}><Icon name="pin" size={11} />{e.note}</div>
           {/if}
           {#each shownParams(e) as p (p.path)}
-            <div class="pm" title={p.description}>
+            <div class="pm" title={pDesc(e, p)}>
               <!-- 値の文字は数値のつまみだけ(選ぶつまみは選択欄に名前が出る。以前はトラックの ID がそのまま出ていた) -->
-              <div class="top"><span>{p.display_name}</span>{#if p.range.kind === "float" || p.range.kind === "int"}<span>{fmtValue(p, dragValues[p.path])}</span>{/if}</div>
+              <div class="top"><span>{pName(e, p)}</span>{#if p.range.kind === "float" || p.range.kind === "int"}<span>{fmtValue(p, dragValues[p.path])}</span>{/if}</div>
               {#if p.range.kind === "float" || p.range.kind === "int"}
                 <input
                   type="range"
@@ -760,7 +784,7 @@
                     delete dragValues[p.path];
                     commitParam(p, fromPos(p, Number(ev.currentTarget.value)));
                   }}
-                  aria-label={p.display_name}
+                  aria-label={pName(e, p)}
                 />
               {:else if p.range.kind === "enum"}
                 {@const tc = trackChoices(p, project.tracks) ?? irChoices(p, project.assets)}
@@ -773,7 +797,7 @@
                       loadIrFromFile(isMaster ? null : targetId, p.path);
                     } else commitParam(p, v);
                   }}
-                  aria-label={p.display_name}
+                  aria-label={pName(e, p)}
                 >
                   {#if tc}
                     {#each tc as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
@@ -785,7 +809,12 @@
             </div>
           {/each}
           {#if e.params.length > shownParams(e).length}
-            <span class="more">ほか {(e.param_total ?? e.params.length) - shownParams(e).length} 個(インスペクターで)</span>
+            <span class="more"
+              >{tr(
+                `ほか ${(e.param_total ?? e.params.length) - shownParams(e).length} 個(インスペクターで)`,
+                `${(e.param_total ?? e.params.length) - shownParams(e).length} more (in the inspector)`,
+              )}</span
+            >
           {/if}
         </div>
       </div>
@@ -793,24 +822,28 @@
 
     {#if ghost}
       <div class="drop-ghost" style="left:{ghost.x}px;top:{ghost.y}px;width:{CARD_W}px">
-        <Icon name="archive" size={13} />{ghost.hot ? `「${nameOf(ghost.hot.from)}」と「${nameOf(ghost.hot.to)}」の間に入れる` : "ここに置く(つながずに)"}
+        <Icon name="archive" size={13} />{ghost.hot
+          ? tr(`「${nameOf(ghost.hot.from)}」と「${nameOf(ghost.hot.to)}」の間に入れる`, `Insert between "${nameOf(ghost.hot.from)}" and "${nameOf(ghost.hot.to)}"`)
+          : tr("ここに置く(つながずに)", "Place here (unconnected)")}
       </div>
     {/if}
     {#if drag?.kind === "card" && drag.moved && (drag.hot || fxDrag.overShelf)}
       <div class="tip" style="left:{drag.x + 20}px;top:{drag.y - 28}px">
-        {fxDrag.overShelf ? "離すとエフェクトのプリセットに保存(ここには残る)" : `離すと「${nameOf(drag.hot!.from)}」と「${nameOf(drag.hot!.to)}」の間に入る`}
+        {fxDrag.overShelf
+          ? tr("離すとエフェクトのプリセットに保存(ここには残る)", "Drop to save as an effect preset (stays here)")
+          : tr(`離すと「${nameOf(drag.hot!.from)}」と「${nameOf(drag.hot!.to)}」の間に入る`, `Drop to insert between "${nameOf(drag.hot!.from)}" and "${nameOf(drag.hot!.to)}"`)}
       </div>
     {/if}
     {#if drag?.kind === "port" && (drag.target || drag.problem)}
       <div class="tip" class:bad={!!drag.problem} style="left:{drag.x + 14}px;top:{drag.y - 30}px">
         {#if drag.problem}{drag.problem}{:else}
           {@const [a, b] = drag.side === "out" ? [drag.id, drag.target!] : [drag.target!, drag.id]}
-          離すと「{nameOf(a)} → {nameOf(b)}」をつなぐ
+          {tr(`離すと「${nameOf(a)} → ${nameOf(b)}」をつなぐ`, `Drop to connect "${nameOf(a)} → ${nameOf(b)}"`)}
         {/if}
       </div>
     {/if}
     {#if drag?.kind === "knife" && drag.cut.size > 0}
-      <div class="tip bad" style="left:{drag.b[0] + 12}px;top:{drag.b[1] - 28}px">離すと {drag.cut.size} 本切る</div>
+      <div class="tip bad" style="left:{drag.b[0] + 12}px;top:{drag.b[1] - 28}px">{tr(`離すと ${drag.cut.size} 本切る`, `Drop to cut ${plural(drag.cut.size, "wire")}`)}</div>
     {/if}
 
     {#if selLink}
@@ -830,7 +863,7 @@
             oninput={(ev) => (selGain = Number(ev.currentTarget.value))}
             onchange={(ev) => commitGain(selLink, Number(ev.currentTarget.value))}
             ondblclick={() => commitGain(selLink, 0)}
-            aria-label="この線の音量"
+            aria-label={tr("この線の音量", "Wire gain")}
           />
           <span class="v">{g > 0 ? "+" : ""}{g.toFixed(1)} dB</span>
         </div>
@@ -842,18 +875,22 @@
               sel = null;
               addMenu = { ...at(ev), split: l };
             }}
-            title="この線の間にエフェクトを入れる"><Icon name="plus" />ここにエフェクトを足す</button
+            title={tr("この線の間にエフェクトを入れる", "Insert an effect on this wire")}><Icon name="plus" />{tr("ここにエフェクトを足す", "Add effect here")}</button
           >
-          <button class="btn sm danger" onclick={() => cut(selLink)}><Icon name="scissors" />切る</button>
+          <button class="btn sm danger" onclick={() => cut(selLink)}><Icon name="scissors" />{tr("切る", "Cut")}</button>
         </div>
         <div class="row">
-          <span class="dim small">Delete でも切れる・ダブルクリックでもすぐ切れる</span>
+          <span class="dim small">{tr("Delete でも切れる・ダブルクリックでもすぐ切れる", "Delete key or double-click also cuts")}</span>
         </div>
       </div>
     {/if}
   </div>
 </div>
-<button class="btn sm arrange" onclick={arrange} title="置き場所を自動に戻す(入力と出口も。鳴るカードはつながりの順、鳴らないカードは下に)"><Icon name="layout-grid" />整列</button>
+<button class="btn sm arrange" onclick={arrange} title={tr(
+    "置き場所を自動に戻す(入力と出口も。鳴るカードはつながりの順、鳴らないカードは下に)",
+    "Reset to automatic layout (incl. input/output; sounding cards in wiring order, silent ones below)",
+  )}><Icon name="layout-grid" />{tr("整列", "Arrange")}</button
+>
 </div>
 
 {#if menu || addMenu}
@@ -867,21 +904,21 @@
       onclick={() => {
         renaming = e.id;
         menu = null;
-      }}><Icon name="pencil" />名前を変える</button
+      }}><Icon name="pencil" />{tr("名前を変える", "Rename")}</button
     >
     <button
       onclick={() => {
         noting = e.id;
         menu = null;
-      }}><Icon name="pin" />メモを書く</button
+      }}><Icon name="pin" />{tr("メモを書く", "Write note")}</button
     >
     <div class="menu-sep"></div>
     {#if !on.has(e.id)}
-      <button onclick={() => connectToOut(e)}><Icon name="plug" />出口の前につなぐ</button>
+      <button onclick={() => connectToOut(e)}><Icon name="plug" />{tr("出口の前につなぐ", "Connect before output")}</button>
     {/if}
     {#if links.some((l) => l.from === e.id || l.to === e.id)}
-      <button onclick={() => bridge(e)}><Icon name="unplug" />抜いて前後をつなぐ</button>
-      <button onclick={() => cutAll(e)}><Icon name="scissors" />線を全部切る</button>
+      <button onclick={() => bridge(e)}><Icon name="unplug" />{tr("抜いて前後をつなぐ", "Remove and bridge")}</button>
+      <button onclick={() => cutAll(e)}><Icon name="scissors" />{tr("線を全部切る", "Cut all wires")}</button>
     {/if}
     {#if onSavePreset}
       <div class="menu-sep"></div>
@@ -890,7 +927,7 @@
           const fx = e;
           menu = null;
           onSavePreset(fx);
-        }}><Icon name="archive" />エフェクトのプリセットに保存</button
+        }}><Icon name="archive" />{tr("エフェクトのプリセットに保存", "Save as effect preset")}</button
       >
     {/if}
     {#if fxKind(e) === "clap" && !e.missing}
@@ -898,27 +935,29 @@
         onclick={() => {
           const id = e.id;
           menu = null;
-          api.clapOpenGui(null, id).catch((err) => showError("プラグインの画面を開けませんでした", err));
-        }}><Icon name="app-window" />プラグインの画面を開く</button
+          api.clapOpenGui(null, id).catch((err) => showError(tr("プラグインの画面を開けませんでした", "Couldn't open the plugin window"), err));
+        }}><Icon name="app-window" />{tr("プラグインの画面を開く", "Open plugin window")}</button
       >
     {/if}
     <div class="menu-sep"></div>
-    <button class="danger" onclick={() => remove(e)}><Icon name="trash-2" />削除<span class="key">Ctrl+Z で戻せます</span></button>
+    <button class="danger" onclick={() => remove(e)}><Icon name="trash-2" />{tr("削除", "Delete")}<span class="key">{tr("Ctrl+Z で戻せます", "Ctrl+Z to undo")}</span></button>
   </div>
 {/if}
 {#if addMenu && info}
   <div class="menu" use:keepInView style="left:{addMenu.x}px;top:{addMenu.y}px">
     {#if addMenu.split}
-      <div class="menu-h">{nameOf(addMenu.split.from)} と {nameOf(addMenu.split.to)} の間に入れる</div>
+      <div class="menu-h">
+        {tr(`${nameOf(addMenu.split.from)} と ${nameOf(addMenu.split.to)} の間に入れる`, `Insert between ${nameOf(addMenu.split.from)} and ${nameOf(addMenu.split.to)}`)}
+      </div>
       <div class="menu-sep"></div>
     {/if}
-    <div class="menu-h">内蔵</div>
+    <div class="menu-h">{tr("内蔵", "Built-in")}</div>
     {#each info.available_effects as fx (fx.name)}
-      <button class="rich" onclick={() => addEffect(fx.name)}><span>{FX_KIND_JA[fx.name] ?? fx.name}<small>{fx.name} · {fx.description}</small></span></button>
+      <button class="rich" onclick={() => addEffect(fx.name)}><span>{fxKindName(fx.name) ?? fx.name}<small>{fx.name} · {fxKindDesc(fx.name, fx.description)}</small></span></button>
     {/each}
     {#if clapEffects.length > 0}
       <div class="menu-sep"></div>
-      <div class="menu-h">CLAP プラグイン</div>
+      <div class="menu-h">{tr("CLAP プラグイン", "CLAP plugins")}</div>
       {#each clapEffects as p (p.id)}
         <button class="rich" onclick={() => addEffect(`clap:${p.id}`)}><Icon name="plug" /><span>{p.name}<small>{p.vendor} {p.version}</small></span></button>
       {/each}

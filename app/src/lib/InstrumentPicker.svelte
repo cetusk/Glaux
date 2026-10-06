@@ -10,17 +10,18 @@
   import { keepInView } from "./menu";
   import { instrumentPickerStore } from "./selection.svelte";
   import { showError, showToast } from "./toast.svelte";
+  import { tr } from "./i18n.svelte";
   import type { PresetInfo, Project } from "./types";
 
   let { project }: { project: Project } = $props();
 
   type Tab = "builtin" | "preset" | "sf2" | "clap" | "sample";
-  const TABS: { key: Tab; label: string; icon: IconName }[] = [
-    { key: "builtin", label: "内蔵", icon: "audio-waveform" },
-    { key: "preset", label: "音色のプリセット", icon: "save" },
-    { key: "sf2", label: "SoundFont・SFZ", icon: "library" },
+  const TABS: { key: Tab; readonly label: string; icon: IconName }[] = [
+    { key: "builtin", get label() { return tr("内蔵", "Built-in"); }, icon: "audio-waveform" },
+    { key: "preset", get label() { return tr("音色のプリセット", "Sound presets"); }, icon: "save" },
+    { key: "sf2", get label() { return tr("SoundFont・SFZ", "SoundFont / SFZ"); }, icon: "library" },
     { key: "clap", label: "CLAP", icon: "plug" },
-    { key: "sample", label: "サンプル(WAV)", icon: "file-audio" },
+    { key: "sample", get label() { return tr("サンプル(WAV)", "Sample (WAV)"); }, icon: "file-audio" },
   ];
 
   const open = $derived(instrumentPickerStore.open);
@@ -95,7 +96,7 @@
     try {
       sfPresets = (await api.listSoundfontPresets(file)).presets;
     } catch (e) {
-      showError("SoundFont を読めませんでした", e);
+      showError(tr("SoundFont を読めませんでした", "Couldn't read the SoundFont"), e);
     } finally {
       sfBusy = false;
     }
@@ -119,14 +120,17 @@
     if (!t) return;
     if (t.device?.type !== "clap" && t.device?.type !== "sf2" && t.device?.name === name) return close();
     run(
-      api.applyEdit([{ op: "set_device", track: t.id, device: builtinDevice(name) }], `${t.name} の音源を ${name} に変更`),
-      "音源を変えられませんでした",
+      api.applyEdit(
+        [{ op: "set_device", track: t.id, device: builtinDevice(name) }],
+        tr(`${t.name} の音源を ${name} に変更`, `Change ${t.name} instrument to ${name}`),
+      ),
+      tr("音源を変えられませんでした", "Couldn't change the instrument"),
     );
   }
 
   function applyPreset(name: string) {
     const t = track;
-    if (t) run(api.loadPreset(t.id, name), "プリセットを読み込めませんでした");
+    if (t) run(api.loadPreset(t.id, name), tr("プリセットを読み込めませんでした", "Couldn't load the preset"));
   }
 
   function setSf(bank: number, preset: number, name: string) {
@@ -135,9 +139,9 @@
     run(
       api.applyEdit(
         [{ op: "set_device", track: t.id, device: { type: "sf2", soundfont: sfFile, bank, preset } }],
-        `${t.name} の音源を「${name}」(SoundFont)に変更`,
+        tr(`${t.name} の音源を「${name}」(SoundFont)に変更`, `Change ${t.name} instrument to "${name}" (SoundFont)`),
       ),
-      "SoundFont にできませんでした",
+      tr("SoundFont にできませんでした", "Couldn't switch to the SoundFont"),
     );
   }
 
@@ -151,9 +155,9 @@
     run(
       api.applyEdit(
         [{ op: "set_device", track: t.id, device }],
-        `${t.name} の音源を「${instrument}」(SFZ)に変更`,
+        tr(`${t.name} の音源を「${instrument}」(SFZ)に変更`, `Change ${t.name} instrument to "${instrument}" (SFZ)`),
       ),
-      "SFZ にできませんでした",
+      tr("SFZ にできませんでした", "Couldn't switch to the SFZ"),
     );
   }
 
@@ -170,9 +174,9 @@
       const r = await api.listSoundfonts();
       sfzFiles = r.sfz ?? [];
       packs = r.packs ?? [];
-      showToast("ok", `「${p.name}」を入れました。SFZ の楽器の一覧から選べます`);
+      showToast("ok", tr(`「${p.name}」を入れました。SFZ の楽器の一覧から選べます`, `Installed "${p.name}". Choose it from the SFZ instrument list`));
     } catch (e) {
-      showError(`「${p.name}」を取得できませんでした`, e);
+      showError(tr(`「${p.name}」を取得できませんでした`, `Couldn't download "${p.name}"`), e);
     } finally {
       un?.();
       packBusy = null;
@@ -180,14 +184,14 @@
   }
 
   async function addSf() {
-    const file = await pickFile({ title: "SoundFont(.sf2)をライブラリに追加", filters: [{ name: "SoundFont", extensions: ["sf2"] }] });
+    const file = await pickFile({ title: tr("SoundFont(.sf2)をライブラリに追加", "Add a SoundFont (.sf2) to the library"), filters: [{ name: "SoundFont", extensions: ["sf2"] }] });
     if (typeof file !== "string") return;
     try {
       const r = await api.addSoundfont(file);
       sfFiles = (await api.listSoundfonts()).files;
       pickSf(r.file);
     } catch (e) {
-      showError("SoundFont を追加できませんでした", e);
+      showError(tr("SoundFont を追加できませんでした", "Couldn't add the SoundFont"), e);
     }
   }
 
@@ -196,8 +200,11 @@
     if (!t) return;
     if (t.device?.type === "clap" && t.device.plugin_id === p.id) return close();
     run(
-      api.applyEdit([{ op: "set_device", track: t.id, device: { type: "clap", plugin_id: p.id } }], `${t.name} の音源を ${p.name}(CLAP)に変更`),
-      "プラグインを読み込めませんでした",
+      api.applyEdit(
+        [{ op: "set_device", track: t.id, device: { type: "clap", plugin_id: p.id } }],
+        tr(`${t.name} の音源を ${p.name}(CLAP)に変更`, `Change ${t.name} instrument to ${p.name} (CLAP)`),
+      ),
+      tr("プラグインを読み込めませんでした", "Couldn't load the plugin"),
     );
   }
 
@@ -205,16 +212,22 @@
     const t = track;
     if (!t) return;
     const file = await pickFile({
-      title: "サンプル(WAV / MP3 等)を読み込む",
-      filters: [{ name: "音声(WAV / MP3 / FLAC / OGG / M4A)", extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
+      title: tr("サンプル(WAV / MP3 等)を読み込む", "Load a sample (WAV, MP3, etc.)"),
+      filters: [{ name: tr("音声(WAV / MP3 / FLAC / OGG / M4A)", "Audio (WAV / MP3 / FLAC / OGG / M4A)"), extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
     });
     if (typeof file !== "string") return;
     close();
     try {
       await api.importSample(t.id, file);
-      showToast("ok", "サンプルを設定しました(インスペクターの「元の音程」をサンプルの実音に合わせてください)");
+      showToast(
+        "ok",
+        tr(
+          "サンプルを設定しました(インスペクターの「元の音程」をサンプルの実音に合わせてください)",
+          "Sample set. Match the root note in the inspector to the sample's actual pitch",
+        ),
+      );
     } catch (e) {
-      showError("サンプルを読み込めませんでした", e);
+      showError(tr("サンプルを読み込めませんでした", "Couldn't load the sample"), e);
     }
   }
 
@@ -236,12 +249,12 @@
 {#if open && track}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="backdrop" role="presentation" onclick={close} oncontextmenu={(e) => { e.preventDefault(); close(); }}></div>
-  <div class="picker" role="dialog" aria-label="音源を選ぶ" use:keepInView style="left:{open.x}px;top:{open.y}px">
+  <div class="picker" role="dialog" aria-label={tr("音源を選ぶ", "Choose instrument")} use:keepInView style="left:{open.x}px;top:{open.y}px">
     <div class="pk-head">
       <Icon name="audio-waveform" />
-      <b>音源を選ぶ — {track.name}</b>
-      <input type="search" placeholder="絞り込む" bind:value={query} />
-      <button class="btn sm icon ghost" onclick={close} title="閉じる(Esc)" aria-label="閉じる"><Icon name="x" /></button>
+      <b>{tr("音源を選ぶ", "Choose instrument")} — {track.name}</b>
+      <input type="search" placeholder={tr("絞り込む", "Filter")} bind:value={query} />
+      <button class="btn sm icon ghost" onclick={close} title={tr("閉じる(Esc)", "Close (Esc)")} aria-label={tr("閉じる", "Close")}><Icon name="x" /></button>
     </div>
     <div class="pk-body">
       <div class="tabs" role="tablist">
@@ -259,31 +272,36 @@
               <span><b>{b.name}</b><small>{b.desc}</small></span>
             </button>
           {/each}
-          <div class="note">切り替えるとつまみは初期値に戻ります(Ctrl+Z で戻せます)</div>
+          <div class="note">{tr("切り替えるとつまみは初期値に戻ります(Ctrl+Z で戻せます)", "Switching resets the parameters to defaults (Ctrl+Z to undo)")}</div>
         {:else if tab === "preset"}
           {#if presets === null}
-            <div class="note">読み込んでいます…</div>
+            <div class="note">{tr("読み込んでいます…", "Loading…")}</div>
           {:else if presets.length === 0}
-            <div class="note">まだありません。インスペクターの「音源」の保存ボタンで、今の音を保存できます。</div>
+            <div class="note">
+              {tr(
+                "まだありません。インスペクターの「音源」の保存ボタンで、今の音を保存できます。",
+                "None yet. Save the current sound with the Save button under Instrument in the inspector.",
+              )}
+            </div>
           {:else}
             {#each presets.filter((p) => hit(p.name) || hit(p.instrument)) as p (p.name)}
               <button class="item" onclick={() => applyPreset(p.name)} title={p.description ?? ""}>
                 <Icon name="save" size={20} />
-                <span><b>{p.name}</b><small>{p.instrument}{p.effects.length ? ` + ${p.effects.join("・")}` : ""}</small></span>
+                <span><b>{p.name}</b><small>{p.instrument}{p.effects.length ? ` + ${p.effects.join(tr("・", ", "))}` : ""}</small></span>
               </button>
             {/each}
-            <div class="note">音源とエフェクトが丸ごと置き換わります(全プロジェクト共通)</div>
+            <div class="note">{tr("音源とエフェクトが丸ごと置き換わります(全プロジェクト共通)", "Replaces the instrument and all effects (shared by all projects)")}</div>
           {/if}
         {:else if tab === "sf2"}
           <div class="row">
             <select value={sfFile} onchange={(e) => pickSf((e.currentTarget as HTMLSelectElement).value)}>
-              <option value="">.sf2 を選ぶ…</option>
+              <option value="">{tr(".sf2 を選ぶ…", "Choose .sf2…")}</option>
               {#each sfFiles ?? [] as f (f)}<option value={f}>{f}</option>{/each}
             </select>
-            <button class="btn sm" onclick={addSf} title=".sf2 をライブラリフォルダへコピーして追加"><Icon name="plus" />追加</button>
+            <button class="btn sm" onclick={addSf} title={tr(".sf2 をライブラリフォルダへコピーして追加", "Copy a .sf2 into the library folder")}><Icon name="plus" />{tr("追加", "Add")}</button>
           </div>
           {#if sfBusy}
-            <div class="note">プリセットを読み込んでいます…</div>
+            <div class="note">{tr("プリセットを読み込んでいます…", "Loading presets…")}</div>
           {:else if sfFile}
             {#each sfPresets.filter((p) => hit(p.name)) as p (`${p.bank}:${p.preset}`)}
               <button class="item compact" onclick={() => setSf(p.bank, p.preset, p.name)}>
@@ -292,10 +310,15 @@
             {/each}
           {:else}
             {#if (sfFiles ?? []).length === 0}
-              <div class="note">まだ .sf2 がありません。設定 → 表示 →「はじめの確認」の「GM 音源を取得」か、手持ちの .sf2 を「追加」から登録すると、ピアノ・ストリングス等の GM 音源一式が使えます。</div>
+              <div class="note">
+                {tr(
+                  "まだ .sf2 がありません。設定 → 表示 →「はじめの確認」の「GM 音源を取得」か、手持ちの .sf2 を「追加」から登録すると、ピアノ・ストリングス等の GM 音源一式が使えます。",
+                  "No .sf2 yet. Use Get GM sounds in Settings → View → First-run check, or register your own .sf2 with Add, to get a full GM set (piano, strings, etc.).",
+                )}
+              </div>
             {/if}
             {#if sfzFiles.length > 0}
-              <div class="note">SFZ の楽器</div>
+              <div class="note">{tr("SFZ の楽器", "SFZ instruments")}</div>
               {#each sfzFiles.filter((f) => hit(f)) as f (f)}
                 <button class="item compact" class:sel={track.device?.type === "sfz" && track.device.instrument === f} onclick={() => setSfz(f)}>
                   <code>SFZ</code><span><b>{f.replace(/\.sfz$/i, "")}</b></span>
@@ -303,14 +326,19 @@
               {/each}
             {/if}
             {#if packs.some((p) => !p.installed)}
-              <div class="note">無料の音源(取得して使う。CC-BY の音源は、曲を公開するときに作者名を書いてください)</div>
+              <div class="note">
+                {tr(
+                  "無料の音源(取得して使う。CC-BY の音源は、曲を公開するときに作者名を書いてください)",
+                  "Free instruments (download to use; credit the author of CC-BY instruments when you publish a song)",
+                )}
+              </div>
               {#each packs.filter((p) => !p.installed && (hit(p.name) || hit(p.kind))) as p (p.id)}
                 <div class="pack">
-                  <span class="grow"><b>{p.name}</b><small>{p.kind}・{p.author}・{p.license}・約 {p.approx_mb} MB</small></span>
+                  <span class="grow"><b>{p.name}</b><small>{tr(`${p.kind}・${p.author}・${p.license}・約 ${p.approx_mb} MB`, `${p.kind} · ${p.author} · ${p.license} · ~${p.approx_mb} MB`)}</small></span>
                   {#if packBusy?.id === p.id}
                     <span class="pct">{Math.round(packBusy.ratio * 100)}%</span>
                   {:else}
-                    <button class="btn sm" disabled={packBusy !== null} onclick={() => getPack(p)} title="sfzinstruments(GitHub)から取得して SFZ ライブラリに入れる"><Icon name="download" />取得</button>
+                    <button class="btn sm" disabled={packBusy !== null} onclick={() => getPack(p)} title={tr("sfzinstruments(GitHub)から取得して SFZ ライブラリに入れる", "Download from sfzinstruments (GitHub) into the SFZ library")}><Icon name="download" />{tr("取得", "Get")}</button>
                   {/if}
                 </div>
               {/each}
@@ -318,13 +346,20 @@
           {/if}
         {:else if tab === "clap"}
           <div class="row">
-            <span class="note grow">インストール済みの CLAP 音源</span>
-            <button class="btn sm" disabled={clapBusy} onclick={() => loadClap(true)} title="探し直す(インストールした後など)"><Icon name="refresh-cw" />探し直す</button>
+            <span class="note grow">{tr("インストール済みの CLAP 音源", "Installed CLAP instruments")}</span>
+            <button class="btn sm" disabled={clapBusy} onclick={() => loadClap(true)} title={tr("探し直す(インストールした後など)", "Rescan (e.g. after installing)")}
+              ><Icon name="refresh-cw" />{tr("探し直す", "Rescan")}</button
+            >
           </div>
           {#if clapList === null || clapBusy}
-            <div class="note">探しています…</div>
+            <div class="note">{tr("探しています…", "Scanning…")}</div>
           {:else if clapList.length === 0}
-            <div class="note">見つかりません。Surge XT などの CLAP 版をインストールしてから「探し直す」を押してください(探す場所: {clapDirs.join(" / ")})</div>
+            <div class="note">
+              {tr(
+                `見つかりません。Surge XT などの CLAP 版をインストールしてから「探し直す」を押してください(探す場所: ${clapDirs.join(" / ")})`,
+                `None found. Install a CLAP version of e.g. Surge XT, then press Rescan (searched: ${clapDirs.join(" / ")})`,
+              )}
+            </div>
           {:else}
             {#each clapList.filter((p) => hit(p.name) || hit(p.vendor)) as p (p.id)}
               <button class="item" class:sel={track.device?.type === "clap" && track.device.plugin_id === p.id} onclick={() => setClap(p)} title={`${p.id}\n${p.path}`}>
@@ -334,12 +369,17 @@
             {/each}
           {/if}
         {:else}
-          <div class="note">音声ファイル(WAV / MP3 など)を取り込み、音程を付けて鳴らすサンプラーにします(ワンショット・声ネタ向け)。</div>
-          <button class="btn" onclick={importSample}><Icon name="folder-open" />ファイルを選ぶ…</button>
+          <div class="note">
+            {tr(
+              "音声ファイル(WAV / MP3 など)を取り込み、音程を付けて鳴らすサンプラーにします(ワンショット・声ネタ向け)。",
+              "Import an audio file (WAV, MP3, etc.) and play it pitched as a sampler (good for one-shots and vocal chops).",
+            )}
+          </div>
+          <button class="btn" onclick={importSample}><Icon name="folder-open" />{tr("ファイルを選ぶ…", "Choose file…")}</button>
         {/if}
       </div>
     </div>
-    <div class="pk-foot">今: {current}</div>
+    <div class="pk-foot">{tr("今", "Current")}: {current}</div>
   </div>
 {/if}
 

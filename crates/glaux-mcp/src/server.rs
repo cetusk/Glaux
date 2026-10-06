@@ -5624,7 +5624,10 @@ impl GlauxServer {
                 index: None,
             },
         });
-        let label = format!("畳み込みリバーブ「{name}」を足す");
+        let label = glaux_core::tr!(
+            "畳み込みリバーブ「{name}」を足す",
+            "Add convolution reverb \"{name}\""
+        );
         let command = glaux_core::Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -5689,15 +5692,32 @@ impl GlauxServer {
                     })
                 })
                 .collect();
-            let words: Vec<&str> = outcome.toward.iter().map(|w| w.ja.as_str()).collect();
+            let words: Vec<&str> = outcome
+                .toward
+                .iter()
+                .map(|w| {
+                    if glaux_core::i18n::is_en() {
+                        w.word.as_str()
+                    } else {
+                        w.ja.as_str()
+                    }
+                })
+                .collect();
             let name = project
                 .track(&track_id)
                 .map(|t| t.name.clone())
                 .unwrap_or_default();
             let label = if words.is_empty() {
-                format!("「{name}」のエフェクトを言葉で追い込む")
+                glaux_core::tr!(
+                    "「{name}」のエフェクトを言葉で追い込む",
+                    "Shape the effects on \"{name}\" by words"
+                )
             } else {
-                format!("「{name}」を「{}」に寄せる", words.join("・"))
+                glaux_core::tr!(
+                    "「{name}」を「{}」に寄せる",
+                    "Move \"{name}\" toward \"{}\"",
+                    words.join(glaux_core::i18n::t("・", ", "))
+                )
             };
             let command = glaux_core::Command::batch(label.clone(), cmds);
             let author = self.author(&ctx);
@@ -5800,9 +5820,17 @@ impl GlauxServer {
                 });
             }
             let label = if v["reference"].is_null() {
-                "マスタリング(音量と釣り合いを整える)".to_owned()
+                glaux_core::i18n::t(
+                    "マスタリング(音量と釣り合いを整える)",
+                    "Mastering (loudness and balance)",
+                )
+                .to_owned()
             } else {
-                "マスタリング(参照曲に寄せる)".to_owned()
+                glaux_core::i18n::t(
+                    "マスタリング(参照曲に寄せる)",
+                    "Mastering (match the reference)",
+                )
+                .to_owned()
             };
             let command = glaux_core::Command::batch(label.clone(), cmds);
             let author = self.author(&ctx);
@@ -6310,7 +6338,10 @@ impl GlauxServer {
                 index: None,
             });
         }
-        let edit_label = format!("{label}に似せて「{track_name}」の音色を自動調整");
+        let edit_label = glaux_core::tr!(
+            "{label}に似せて「{track_name}」の音色を自動調整",
+            "Auto-match the sound of \"{track_name}\" to {label}"
+        );
         let command = if cmds.len() == 1 {
             cmds.remove(0)
         } else {
@@ -6446,8 +6477,9 @@ impl GlauxServer {
             v["note"] = json!("今の値のままが最も近かったため、つまみは変えませんでした");
             return Ok(JsonText(v));
         }
-        let label = format!(
+        let label = glaux_core::tr!(
             "「{}」の CLAP のつまみを目標の音に合わせる({} 個)",
+            "Match the CLAP knobs of \"{}\" to the target sound ({} params)",
             v["track"].as_str().unwrap_or(""),
             refined.commands.len()
         );
@@ -6694,9 +6726,17 @@ impl GlauxServer {
             .await
             .map_err(|e| e.to_string())??;
             let label = if current.as_ref().is_some_and(|c| c.0 == sfz) {
-                format!("{} の SFZ「{sfz}」の調整つまみを変更", track.name)
+                glaux_core::tr!(
+                    "{} の SFZ「{sfz}」の調整つまみを変更",
+                    "Change the controls of SFZ \"{sfz}\" on {}",
+                    track.name
+                )
             } else {
-                format!("{} の音源を「{sfz}」(SFZ)に変更", track.name)
+                glaux_core::tr!(
+                    "{} の音源を「{sfz}」(SFZ)に変更",
+                    "Set the instrument of {} to \"{sfz}\" (SFZ)",
+                    track.name
+                )
             };
             let command = Command::SetDevice {
                 track: track_id,
@@ -6738,7 +6778,11 @@ impl GlauxServer {
         .await
         .map_err(|e| e.to_string())??;
 
-        let label = format!("{} の音源を「{preset_name}」(SoundFont)に変更", track.name);
+        let label = glaux_core::tr!(
+            "{} の音源を「{preset_name}」(SoundFont)に変更",
+            "Set the instrument of {} to \"{preset_name}\" (SoundFont)",
+            track.name
+        );
         let command = Command::SetDevice {
             track: track_id,
             device: Some(glaux_core::Device {
@@ -6839,7 +6883,11 @@ impl GlauxServer {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "sample".to_owned());
-        let label = format!("{} にサンプル「{file_name}」を設定", track.name);
+        let label = glaux_core::tr!(
+            "{} にサンプル「{file_name}」を設定",
+            "Set sample \"{file_name}\" on {}",
+            track.name
+        );
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -6921,7 +6969,11 @@ impl GlauxServer {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "wavetable".to_owned());
-        let label = format!("{} のウェーブテーブルを「{file_name}」から作る", track.name);
+        let label = glaux_core::tr!(
+            "{} のウェーブテーブルを「{file_name}」から作る",
+            "Build the wavetable of {} from \"{file_name}\"",
+            track.name
+        );
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -6992,7 +7044,11 @@ impl GlauxServer {
         .await
         .map_err(|e| e.to_string())??;
         let cmds = crate::wavetables::set_table_commands(&project, &track, &imported)?;
-        let label = format!("{} のウェーブテーブルを作る", track.name);
+        let label = glaux_core::tr!(
+            "{} のウェーブテーブルを作る",
+            "Build the wavetable of {}",
+            track.name
+        );
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -7110,7 +7166,11 @@ impl GlauxServer {
                 let recipe = meta.and_then(|m| m.recipe);
                 let imported = crate::wavetables::write_asset(dir, &cycles, recipe.as_ref())?;
                 let cmds = crate::wavetables::set_table_commands(&project, &track, &imported)?;
-                let label = format!("{} のウェーブテーブルを棚の「{name}」に", track.name);
+                let label = glaux_core::tr!(
+                    "{} のウェーブテーブルを棚の「{name}」に",
+                    "Set the wavetable of {} to \"{name}\" from the shelf",
+                    track.name
+                );
                 let command = Command::batch(label.clone(), cmds);
                 let author = self.author(&ctx);
                 let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -7184,7 +7244,10 @@ impl GlauxServer {
             .track(&track_id)
             .map(|t| t.name.clone())
             .unwrap_or_default();
-        let label = format!("{track_name} に音声クリップ「{name}」を配置");
+        let label = glaux_core::tr!(
+            "{track_name} に音声クリップ「{name}」を配置",
+            "Place audio clip \"{name}\" on {track_name}"
+        );
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -7239,7 +7302,11 @@ impl GlauxServer {
         })
         .await
         .map_err(|e| e.to_string())??;
-        let label = format!("音声クリップを譜起こし({} ノート)", t.note_count);
+        let label = glaux_core::tr!(
+            "音声クリップを譜起こし({} ノート)",
+            "Transcribe audio clip ({} notes)",
+            t.note_count
+        );
         let command = Command::batch(label.clone(), t.commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -7282,7 +7349,11 @@ impl GlauxServer {
         .await
         .map_err(|e| e.to_string())??;
         let names: Vec<&str> = s.tracks.iter().map(|(n, _)| n.as_str()).collect();
-        let label = format!("音声クリップをパートに分離({})", names.join(" / "));
+        let label = glaux_core::tr!(
+            "音声クリップをパートに分離({})",
+            "Separate audio clip into parts ({})",
+            names.join(" / ")
+        );
         let command = Command::batch(label.clone(), s.commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -7364,7 +7435,12 @@ impl GlauxServer {
             .track(&track_id)
             .ok_or_else(|| format!("track not found: {track_id}"))?;
         let preset = crate::presets::load(&crate::presets::default_dir(), &p.name)?;
-        let label = format!("{} にプリセット「{}」を適用", track.name, preset.name);
+        let label = glaux_core::tr!(
+            "{} にプリセット「{}」を適用",
+            "Apply preset \"{1}\" to {0}",
+            track.name,
+            preset.name
+        );
         let cmds = crate::presets::apply_commands(track, &preset);
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
@@ -7449,7 +7525,11 @@ impl GlauxServer {
             p.parked.unwrap_or(false),
             None,
         )?;
-        let label = format!("エフェクトのプリセット「{}」を追加", preset.name);
+        let label = glaux_core::tr!(
+            "エフェクトのプリセット「{}」を追加",
+            "Add effect preset \"{}\"",
+            preset.name
+        );
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
@@ -7580,7 +7660,7 @@ impl GlauxServer {
         };
         let made = glaux_core::arrange::duplicate_clips(&project, &ids, offset, track.as_ref())?;
         let new_ids: Vec<String> = made.iter().map(|(id, _)| id.to_string()).collect();
-        let label = format!("クリップ {} 個を複製", made.len());
+        let label = glaux_core::tr!("クリップ {} 個を複製", "Duplicate {} clips", made.len());
         let command = Command::batch(label.clone(), made.into_iter().map(|(_, c)| c).collect());
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -7606,7 +7686,12 @@ impl GlauxServer {
         let (at, len) = glaux_core::arrange::bar_range(&project, p.bar, p.count)
             .ok_or("bar と count は 1 以上")?;
         let cmds = glaux_core::arrange::insert_time(&project, at, len);
-        let label = format!("{} 小節目に {} 小節を挿入", p.bar, p.count);
+        let label = glaux_core::tr!(
+            "{} 小節目に {} 小節を挿入",
+            "Insert {1} bars at bar {0}",
+            p.bar,
+            p.count
+        );
         self.apply_arrangement(cmds, label, at, len, &ctx).await
     }
 
@@ -7626,7 +7711,12 @@ impl GlauxServer {
         let (from, len) = glaux_core::arrange::bar_range(&project, p.bar, p.count)
             .ok_or("bar と count は 1 以上")?;
         let cmds = glaux_core::arrange::delete_time(&project, from, len);
-        let label = format!("{} 小節目から {} 小節を削除", p.bar, p.count);
+        let label = glaux_core::tr!(
+            "{} 小節目から {} 小節を削除",
+            "Delete {1} bars from bar {0}",
+            p.bar,
+            p.count
+        );
         self.apply_arrangement(cmds, label, from, len, &ctx).await
     }
 
@@ -7901,7 +7991,12 @@ impl GlauxServer {
             .filter(|(n, new)| n.pitch != *new)
             .map(|(n, new)| glaux_core::NoteChange::new(n.id.clone()).pitch(new))
             .collect();
-        let label = format!("{:+} 半音移調({} ノート)", p.semitones, changes.len());
+        let label = glaux_core::tr!(
+            "{:+} 半音移調({} ノート)",
+            "Transpose {:+} semitones ({} notes)",
+            p.semitones,
+            changes.len()
+        );
         self.apply_note_changes(clip, changes, clamped, label, version, &ctx)
             .await
     }
@@ -7960,7 +8055,12 @@ impl GlauxServer {
             .filter(|(n, new)| n.pos.0 != *new)
             .map(|(n, new)| glaux_core::NoteChange::new(n.id.clone()).pos(glaux_core::Tick(new)))
             .collect();
-        let label = format!("{:+} tick 移動({} ノート)", p.delta_ticks, changes.len());
+        let label = glaux_core::tr!(
+            "{:+} tick 移動({} ノート)",
+            "Move {:+} ticks ({} notes)",
+            p.delta_ticks,
+            changes.len()
+        );
         self.apply_note_changes(clip, changes, clamped, label, version, &ctx)
             .await
     }
@@ -8118,10 +8218,15 @@ impl GlauxServer {
             })));
         }
         let label = if ids.len() == 1 {
-            format!("{} のグルーブ({total} ノート)", p.style)
+            glaux_core::tr!(
+                "{} のグルーブ({total} ノート)",
+                "Groove: {} ({total} notes)",
+                p.style
+            )
         } else {
-            format!(
+            glaux_core::tr!(
                 "{} のグルーブ({} クリップ・{total} ノート)",
+                "Groove: {} ({} clips, {total} notes)",
                 p.style,
                 ids.len()
             )
@@ -8211,7 +8316,10 @@ impl GlauxServer {
             clip: clip_id,
             notes: new_notes,
         };
-        let label = format!("ゴーストノートを {added} 個({name} の置き方)");
+        let label = glaux_core::tr!(
+            "ゴーストノートを {added} 個({name} の置き方)",
+            "{added} ghost notes ({name} placement)"
+        );
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
         let mut v = mutated_json(&m);
@@ -8304,7 +8412,11 @@ impl GlauxServer {
                 notes: r.added,
             });
         }
-        let label = format!("旋律の変形 {}({key_name})", p.op);
+        let label = glaux_core::tr!(
+            "旋律の変形 {}({key_name})",
+            "Melody transform {} ({key_name})",
+            p.op
+        );
         let command = if cmds.len() == 1 {
             cmds.pop().expect("1 件")
         } else {
@@ -8494,7 +8606,12 @@ impl GlauxServer {
                 "bass": v.bass.map(chord::note_name),
             }));
         }
-        let label = format!("コード進行({} 小節・{} 和音)", n_bars, chords_list.len());
+        let label = glaux_core::tr!(
+            "コード進行({} 小節・{} 和音)",
+            "Chord progression ({} bars, {} chords)",
+            n_bars,
+            chords_list.len()
+        );
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -8700,7 +8817,12 @@ impl GlauxServer {
                 Some(json!({"bar": span_bar[si], "chord": chords_list[ci].name, "first_notes": first}))
             })
             .collect();
-        let label = format!("アルペジオ({}・{} 小節)", style_name, n_bars);
+        let label = glaux_core::tr!(
+            "アルペジオ({}・{} 小節)",
+            "Arpeggio ({}, {} bars)",
+            style_name,
+            n_bars
+        );
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -8881,7 +9003,7 @@ impl GlauxServer {
                 Some(json!({ "bar": bar, "chord": chords[ci].name, "root": chord::note_name(first.pitch) }))
             })
             .collect();
-        let label = format!("ベースライン({n_bars} 小節)");
+        let label = glaux_core::tr!("ベースライン({n_bars} 小節)", "Bassline ({n_bars} bars)");
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -9042,7 +9164,12 @@ impl GlauxServer {
                 .map(|b| first_bar + b - 1)
                 .collect()
         };
-        let label = format!("ドラム({} の型・{} 小節)", style.name, p.bars);
+        let label = glaux_core::tr!(
+            "ドラム({} の型・{} 小節)",
+            "Drums ({} pattern, {} bars)",
+            style.name,
+            p.bars
+        );
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -9226,7 +9353,7 @@ impl GlauxServer {
         if commands.is_empty() {
             return Err("置くものがありません(gap_beats か drum_track_id を指定)".to_owned());
         }
-        let label = format!("{bar} 小節目へのつなぎ");
+        let label = glaux_core::tr!("{bar} 小節目へのつなぎ", "Fill into bar {bar}");
         let command = if commands.len() == 1 {
             commands.pop().expect("1 つある")
         } else {
@@ -9451,7 +9578,7 @@ impl GlauxServer {
             .apply_plan(
                 plan::PlanCommand::Create { plan },
                 self.author(&ctx),
-                format!("計画を提案: {name}"),
+                glaux_core::tr!("計画を提案: {name}", "Propose plan: {name}"),
                 note,
             )
             .await?;
@@ -9560,7 +9687,7 @@ impl GlauxServer {
                         ops: draft.skeleton_ops.clone(),
                     },
                     self.author(&ctx),
-                    format!("骨格を書き戻す: {}", stored.name),
+                    glaux_core::tr!("骨格を書き戻す: {}", "Write back skeleton: {}", stored.name),
                     note,
                 )
                 .await?;
@@ -9573,7 +9700,11 @@ impl GlauxServer {
                 .ok_or("計画が見つかりません")?
                 .reference();
         }
-        let label = format!("計画から旋律を作る: {}", stored.name);
+        let label = glaux_core::tr!(
+            "計画から旋律を作る: {}",
+            "Melody from plan: {}",
+            stored.name
+        );
         let (remake, protected) = self
             .protect_remake(draft.command, p.overwrite_edits.unwrap_or(false))
             .await?;
@@ -9825,7 +9956,13 @@ impl GlauxServer {
                             ops: all_ops,
                         },
                         self.author(&ctx),
-                        format!("改稿: {op}({})", section.as_deref().unwrap_or("全体")),
+                        glaux_core::tr!(
+                            "改稿: {op}({})",
+                            "Revise: {op} ({})",
+                            section
+                                .as_deref()
+                                .unwrap_or(glaux_core::i18n::t("全体", "whole"))
+                        ),
                         note,
                     )
                     .await?;
@@ -9836,7 +9973,7 @@ impl GlauxServer {
                     .get(&pid)
                     .ok_or("計画が見つかりません")?
                     .reference();
-                let label = format!("旋律の改稿: {op}");
+                let label = glaux_core::tr!("旋律の改稿: {op}", "Melody revision: {op}");
                 let (remake, protected) = self
                     .protect_remake(draft.command, p.overwrite_edits.unwrap_or(false))
                     .await?;
@@ -9956,7 +10093,8 @@ impl GlauxServer {
                         body
                     },
                 };
-                let subject = format!("計画を置き換える: {}", plan.name);
+                let subject =
+                    glaux_core::tr!("計画を置き換える: {}", "Replace plan: {}", plan.name);
                 (PlanCommand::Replace { plan }, subject)
             }
             None => {
@@ -9978,7 +10116,7 @@ impl GlauxServer {
                     derived_from,
                     body: p.body,
                 };
-                let subject = format!("計画を作る: {}", plan.name);
+                let subject = glaux_core::tr!("計画を作る: {}", "Create plan: {}", plan.name);
                 (PlanCommand::Create { plan }, subject)
             }
         };
@@ -10043,7 +10181,7 @@ impl GlauxServer {
             .clone();
         let subject = p.subject.unwrap_or_else(|| {
             let paths: Vec<&str> = ops.iter().map(|o| o.path()).collect();
-            format!("計画を変える: {}", paths.join(", "))
+            glaux_core::tr!("計画を変える: {}", "Change plan: {}", paths.join(", "))
         });
         let entry = self
             .handle
@@ -10094,7 +10232,7 @@ impl GlauxServer {
             .apply_plan(
                 PlanCommand::Delete { id: id.clone() },
                 self.author(&ctx),
-                format!("計画を消す: {name}"),
+                glaux_core::tr!("計画を消す: {name}", "Delete plan: {name}"),
                 note,
             )
             .await?;
@@ -10438,7 +10576,11 @@ impl GlauxServer {
         let genre =
             melody::genre(p.genre.as_deref().unwrap_or("pop")).unwrap_or(&melody::GENRES[0]);
         let crit = melody_critique(&project, &track.name, &out, clip_start, &look, key, genre);
-        let label = format!("旋律の展開({} 小節)", total_bars);
+        let label = glaux_core::tr!(
+            "旋律の展開({} 小節)",
+            "Melody development ({} bars)",
+            total_bars
+        );
         let command = Command::AddClip { track: tid, clip };
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -10751,7 +10893,12 @@ impl GlauxServer {
                 "findings": c.crit.findings.iter().filter(|f| f.severity == "warn").map(|f| f.what.clone()).collect::<Vec<_>>(),
             })
         };
-        let label = format!("旋律を作る({} 小節・{} 案から)", total_bars, cands.len());
+        let label = glaux_core::tr!(
+            "旋律を作る({} 小節・{} 案から)",
+            "Melody ({} bars, from {} candidates)",
+            total_bars,
+            cands.len()
+        );
         let command = Command::Batch {
             commands,
             label: label.clone(),
@@ -10856,11 +11003,12 @@ impl GlauxServer {
         if cmds.is_empty() {
             return Err("変更がありません".to_owned());
         }
-        let label = format!(
+        let label = glaux_core::tr!(
             "{} 小節目{}を {}/{}{} に",
+            "Set bar {}{} to {}/{}{}",
             p.bar,
             if count > 1 {
-                format!("から {count} 小節")
+                glaux_core::tr!("から {count} 小節", " (+{count} bars)")
             } else {
                 String::new()
             },
@@ -10868,7 +11016,7 @@ impl GlauxServer {
             den,
             grouping
                 .as_ref()
-                .map(|g| format!("({})", glaux_core::meter::grouping_text(g)))
+                .map(|g| glaux_core::tr!("({})", " ({})", glaux_core::meter::grouping_text(g)))
                 .unwrap_or_default()
         );
         let command = Command::batch(label.clone(), cmds);
@@ -10962,7 +11110,10 @@ impl GlauxServer {
         let name = p.name.clone().unwrap_or_else(|| format!("Poly {a}:{b}"));
         let clip = simple_clip(name, clip_start, clip_len, &notes);
         let clip_id = clip.id.clone();
-        let label = format!("ポリリズム {a}:{b}({bars} 小節)");
+        let label = glaux_core::tr!(
+            "ポリリズム {a}:{b}({bars} 小節)",
+            "Polyrhythm {a}:{b} ({bars} bars)"
+        );
         let author = self.author(&ctx);
         let (entry_id, m) = flatten(
             self.handle
@@ -11052,7 +11203,11 @@ impl GlauxServer {
         let name = p.name.clone().unwrap_or_else(|| "Polymeter".to_owned());
         let clip = simple_clip(name, clip_start, clip_len, &notes);
         let clip_id = clip.id.clone();
-        let label = format!("ポリメーター({} ステップの周期、{bars} 小節)", cycle.len());
+        let label = glaux_core::tr!(
+            "ポリメーター({} ステップの周期、{bars} 小節)",
+            "Polymeter ({}-step cycle, {bars} bars)",
+            cycle.len()
+        );
         let author = self.author(&ctx);
         let (entry_id, m) = flatten(
             self.handle
@@ -11154,7 +11309,10 @@ impl GlauxServer {
                 "note": "変わる音がありません(拍のまとまりが 2 と 3 の小節が無いか、比が 1.5・1.0)",
             })));
         }
-        let label = format!("拍の揺れ(長い拍 ×{long_ratio:.2}、{total} ノート)");
+        let label = glaux_core::tr!(
+            "拍の揺れ(長い拍 ×{long_ratio:.2}、{total} ノート)",
+            "Uneven beats (long beat ×{long_ratio:.2}, {total} notes)"
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -11275,7 +11433,11 @@ impl GlauxServer {
                 "note": "付ける音がありませんでした(target・probability・note_ids を確かめる)",
             })));
         }
-        let label = format!("音程の表情 {}({total} ノート)", p.kind);
+        let label = glaux_core::tr!(
+            "音程の表情 {}({total} ノート)",
+            "Pitch expression {} ({total} notes)",
+            p.kind
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -11391,9 +11553,15 @@ impl GlauxServer {
             })));
         }
         let label = if remove {
-            format!("ビブラートを外す({total} ノート)")
+            glaux_core::tr!(
+                "ビブラートを外す({total} ノート)",
+                "Remove vibrato ({total} notes)"
+            )
         } else {
-            format!("ビブラート {style}({total} ノート)")
+            glaux_core::tr!(
+                "ビブラート {style}({total} ノート)",
+                "Vibrato {style} ({total} notes)"
+            )
         };
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
@@ -11581,7 +11749,11 @@ impl GlauxServer {
                 "note": "付けられる音がありませんでした(音が短すぎるか、target・probability・note_ids を確かめる)",
             })));
         }
-        let label = format!("装飾音 {}({total} ノート)", p.kind);
+        let label = glaux_core::tr!(
+            "装飾音 {}({total} ノート)",
+            "Ornament {} ({total} notes)",
+            p.kind
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -11647,7 +11819,10 @@ impl GlauxServer {
                 json!({ "project_version": version, "changed": 0 }),
             ));
         }
-        let label = format!("旋律を {lead_ms:.0}ms 先に({total} ノート)");
+        let label = glaux_core::tr!(
+            "旋律を {lead_ms:.0}ms 先に({total} ノート)",
+            "Melody {lead_ms:.0}ms ahead ({total} notes)"
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -11770,9 +11945,17 @@ impl GlauxServer {
             })));
         }
         let label = if remove {
-            format!("音の中の動きを外す {}({total} ノート)", p.kind)
+            glaux_core::tr!(
+                "音の中の動きを外す {}({total} ノート)",
+                "Remove in-note motion {} ({total} notes)",
+                p.kind
+            )
         } else {
-            format!("音の中の動き {}({total} ノート)", p.kind)
+            glaux_core::tr!(
+                "音の中の動き {}({total} ノート)",
+                "In-note motion {} ({total} notes)",
+                p.kind
+            )
         };
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
@@ -11885,7 +12068,10 @@ impl GlauxServer {
                 "note": "同時に鳴る和音がありませんでした",
             })));
         }
-        let label = format!("ストローク {style}({chords} 和音)");
+        let label = glaux_core::tr!(
+            "ストローク {style}({chords} 和音)",
+            "Strum {style} ({chords} chords)"
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -12107,7 +12293,7 @@ impl GlauxServer {
         if commands.is_empty() {
             return Err("付ける音がありません(pitch・note_ids・区間を確かめる)".to_owned());
         }
-        let label = format!("ルーディメント {kind_name}");
+        let label = glaux_core::tr!("ルーディメント {kind_name}", "Rudiment {kind_name}");
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -12213,7 +12399,11 @@ impl GlauxServer {
                 json!({ "project_version": version, "changed": 0 }),
             ));
         }
-        let label = format!("音の切り方 {}({total} ノート)", p.style);
+        let label = glaux_core::tr!(
+            "音の切り方 {}({total} ノート)",
+            "Articulation {} ({total} notes)",
+            p.style
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -12333,7 +12523,11 @@ impl GlauxServer {
         }
         let count = changes.len();
         let added_n = added.len();
-        let label = format!("トレモロ {}({count} ノート)", p.kind);
+        let label = glaux_core::tr!(
+            "トレモロ {}({count} ノート)",
+            "Tremolo {} ({count} notes)",
+            p.kind
+        );
         let command = Command::batch(
             label.clone(),
             vec![
@@ -12526,12 +12720,13 @@ impl GlauxServer {
                 notes: added,
             });
         }
-        let label = format!(
+        let label = glaux_core::tr!(
             "グリッサンド({})",
+            "Glissando ({})",
             if continuous {
-                "滑らか"
+                glaux_core::i18n::t("滑らか", "smooth")
             } else {
-                "音を並べる"
+                glaux_core::i18n::t("音を並べる", "stepped")
             }
         );
         let command = Command::batch(label.clone(), commands);
@@ -12623,7 +12818,11 @@ impl GlauxServer {
                 }
             }
         }
-        let label = format!("句の呼吸({} 小節目から {bars} 小節)", p.bar);
+        let label = glaux_core::tr!(
+            "句の呼吸({} 小節目から {bars} 小節)",
+            "Phrase breathing ({bars} bars from bar {})",
+            p.bar
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -12728,7 +12927,11 @@ impl GlauxServer {
             sigs.sort_by_key(|e| e.tick);
             commands.push(Command::SetTimeSig { events: sigs });
         }
-        let label = format!("{} 小節目からテンポ {old} → {new}", p.bar);
+        let label = glaux_core::tr!(
+            "{} 小節目からテンポ {old} → {new}",
+            "Tempo {old} → {new} from bar {}",
+            p.bar
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -12841,7 +13044,11 @@ impl GlauxServer {
                     .to_owned(),
             );
         }
-        let label = format!("ヘミオラ({} 小節目から 2 小節)", p.bar);
+        let label = glaux_core::tr!(
+            "ヘミオラ({} 小節目から 2 小節)",
+            "Hemiola (2 bars from bar {})",
+            p.bar
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -12920,7 +13127,11 @@ impl GlauxServer {
             .collect();
         let clip = simple_clip("Tihai".to_owned(), clip_start, clip_len, &notes);
         let clip_id = clip.id.clone();
-        let label = format!("ティハイ({} 小節目に着地)", p.land_bar);
+        let label = glaux_core::tr!(
+            "ティハイ({} 小節目に着地)",
+            "Tihai (landing on bar {})",
+            p.land_bar
+        );
         let author = self.author(&ctx);
         let (entry_id, m) = flatten(
             self.handle
@@ -12976,7 +13187,7 @@ impl GlauxServer {
         if p.remove.unwrap_or(false) {
             let i = idx.ok_or("外す層の index を指定してください")?;
             layers.remove(i - 1);
-            label = format!("{} の層 {i} を外す", track.name);
+            label = glaux_core::tr!("{} の層 {i} を外す", "Remove layer {i} from {}", track.name);
         } else {
             // 音源(新しい層は必須、置き換えは省けば今のまま)
             let chosen = [
@@ -13078,11 +13289,15 @@ impl GlauxServer {
             match idx {
                 Some(i) => {
                     layers[i - 1] = layer;
-                    label = format!("{} の層 {i} を変える", track.name);
+                    label = glaux_core::tr!(
+                        "{} の層 {i} を変える",
+                        "Change layer {i} of {}",
+                        track.name
+                    );
                 }
                 None => {
                     layers.push(layer);
-                    label = format!("{} に層を重ねる", track.name);
+                    label = glaux_core::tr!("{} に層を重ねる", "Add a layer to {}", track.name);
                 }
             }
             glaux_core::check_layers(&layers)?;
@@ -13137,7 +13352,11 @@ impl GlauxServer {
                 ));
             }
             macros.pop();
-            label = format!("{} のマクロ {i} を外す", track.name);
+            label = glaux_core::tr!(
+                "{} のマクロ {i} を外す",
+                "Remove macro {i} from {}",
+                track.name
+            );
             // 外したマクロのオートメーション(macro/N)も消す(後から足したマクロを動かさないように)
             if track
                 .automation
@@ -13207,7 +13426,11 @@ impl GlauxServer {
                     macros.len()
                 }
             };
-            label = format!("{} のマクロ {n}(macro/{n})", track.name);
+            label = glaux_core::tr!(
+                "{} のマクロ {n}(macro/{n})",
+                "Macro {n} on {} (macro/{n})",
+                track.name
+            );
             glaux_core::check_macros(&macros)?;
         }
         let mut cmds = vec![Command::SetTrackProp {
@@ -13317,7 +13540,11 @@ impl GlauxServer {
                 value: glaux_core::ParamValue::Float(*val),
             });
         }
-        let label = format!("変種 {k} を当てる({})", v.words.join("・"));
+        let label = if glaux_core::i18n::is_en() {
+            format!("Apply variant {k}")
+        } else {
+            format!("変種 {k} を当てる({})", v.words.join("・"))
+        };
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -13411,7 +13638,7 @@ impl GlauxServer {
                 id
             }
         };
-        let label = format!("音色を作る「{}」", p.text.trim());
+        let label = glaux_core::tr!("音色を作る「{}」", "Design a sound \"{}\"", p.text.trim());
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -13546,15 +13773,23 @@ impl GlauxServer {
             prop: glaux_core::TrackProp::Macros(macros.clone()),
         });
         let label = if wanted.is_empty() {
-            "音のつまみを作る".to_owned()
+            glaux_core::i18n::t("音のつまみを作る", "Create sound knobs").to_owned()
         } else {
-            format!(
+            glaux_core::tr!(
                 "音のつまみ: {}",
+                "Sound knobs: {}",
                 wanted
                     .iter()
-                    .map(|(k, v)| format!("{} {v:.0}", name_of(k)))
+                    .map(|(k, v)| {
+                        let name = if glaux_core::i18n::is_en() {
+                            k
+                        } else {
+                            name_of(k)
+                        };
+                        format!("{name} {v:.0}")
+                    })
                     .collect::<Vec<_>>()
-                    .join("・")
+                    .join(glaux_core::i18n::t("・", ", "))
             )
         };
         let command = Command::batch(label.clone(), cmds);
@@ -13734,14 +13969,15 @@ impl GlauxServer {
                     if mods.len() == before {
                         return Err(format!("{t} の変調はありません"));
                     }
-                    label = format!("変調を外す({t})");
+                    label = glaux_core::tr!("変調を外す({t})", "Remove modulation ({t})");
                 }
                 None => {
                     if mods.is_empty() {
                         return Err("変調はありません".to_owned());
                     }
                     mods.clear();
-                    label = "変調をすべて外す".to_owned();
+                    label =
+                        glaux_core::i18n::t("変調をすべて外す", "Remove all modulation").to_owned();
                 }
             }
         } else {
@@ -13815,7 +14051,7 @@ impl GlauxServer {
             mods.retain(|x| x.target != path);
             mods.push(m);
             glaux_core::check_modulators(&mods)?;
-            label = format!("変調 {t}");
+            label = glaux_core::tr!("変調 {t}", "Modulation {t}");
             target_json = json!({ "path": path.to_string(), "min": lo, "max": hi });
         }
         let command = Command::SetTrackProp {
@@ -13901,7 +14137,10 @@ impl GlauxServer {
                 "note": "伸ばす音がありませんでした(もう十分長いか、ループのクリップ)",
             })));
         }
-        let label = format!("サステインペダル({total} ノート)");
+        let label = glaux_core::tr!(
+            "サステインペダル({total} ノート)",
+            "Sustain pedal ({total} notes)"
+        );
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -13988,9 +14227,15 @@ impl GlauxServer {
             ));
         }
         let label = if cond.is_always() {
-            format!("条件を外す({total} ノート)")
+            glaux_core::tr!(
+                "条件を外す({total} ノート)",
+                "Remove conditions ({total} notes)"
+            )
         } else {
-            format!("条件付きの発音({total} ノート)")
+            glaux_core::tr!(
+                "条件付きの発音({total} ノート)",
+                "Conditional notes ({total} notes)"
+            )
         };
         let command = Command::batch(label.clone(), commands);
         let author = self.author(&ctx);
@@ -14065,7 +14310,11 @@ impl GlauxServer {
             .iter()
             .filter(|(s, _)| *s < content_end)
             .count();
-        let label = format!("曲の計画書({} 区間・{total_bars} 小節)", made.len());
+        let label = glaux_core::tr!(
+            "曲の計画書({} 区間・{total_bars} 小節)",
+            "Song plan ({} sections, {total_bars} bars)",
+            made.len()
+        );
         let markers: Vec<glaux_core::SectionMarker> = made.into_iter().map(|(m, _, _)| m).collect();
         let command = Command::SetSections {
             sections: markers.clone(),
@@ -14397,10 +14646,16 @@ impl GlauxServer {
             },
             None => Command::SetMasterAutomationPoints { target, points },
         };
-        let who = track.map_or("マスター".to_owned(), |t| t.name.clone());
-        let label = format!(
+        let who = track.map_or(
+            glaux_core::i18n::t("マスター", "Master").to_owned(),
+            |t| t.name.clone(),
+        );
+        let label = glaux_core::tr!(
             "{who} の {} を {} 小節目から{}の形で動かす",
-            p.target, p.start, p.shape
+            "Automate {} on {who} from bar {} ({} shape)",
+            p.target,
+            p.start,
+            p.shape
         );
         let author = self.author(&ctx);
         let (entry_id, m) = self.apply_checked(command, author, label).await?;
@@ -14593,9 +14848,12 @@ impl GlauxServer {
                 });
             }
         }
-        let label = format!(
+        let label = glaux_core::tr!(
             "{} のワブルの速さを {} 小節目から {} 小節ぶん書く",
-            track.name, p.start, p.bars
+            "Write the wobble rate of {} ({2} bars from bar {1})",
+            track.name,
+            p.start,
+            p.bars
         );
         let command = Command::batch(label.clone(), cmds);
         let author = self.author(&ctx);
@@ -14696,14 +14954,16 @@ impl GlauxServer {
             })));
         }
         let label = if ids.len() == 1 {
-            format!(
+            glaux_core::tr!(
                 "スウィング {:.0}%(1/{}、{total} ノート)",
+                "Swing {:.0}% (1/{}, {total} notes)",
                 used_swing * 100.0,
                 3840 / grid
             )
         } else {
-            format!(
+            glaux_core::tr!(
                 "スウィング {:.0}%(1/{}、{} クリップ・{total} ノート)",
+                "Swing {:.0}% (1/{}, {} clips, {total} notes)",
                 used_swing * 100.0,
                 3840 / grid,
                 ids.len()
@@ -14756,8 +15016,9 @@ impl GlauxServer {
             .filter(|(n, new)| n.pos.0 != *new)
             .map(|(n, new)| glaux_core::NoteChange::new(n.id.clone()).pos(glaux_core::Tick(new)))
             .collect();
-        let label = format!(
+        let label = glaux_core::tr!(
             "クオンタイズ 1/{}({} ノート)",
+            "Quantize 1/{} ({} notes)",
             3840 / p.grid_ticks.max(1),
             changes.len()
         );
@@ -14801,8 +15062,9 @@ impl GlauxServer {
             .filter(|(n, new)| n.vel != *new)
             .map(|(n, new)| glaux_core::NoteChange::new(n.id.clone()).vel(new))
             .collect();
-        let label = format!(
+        let label = glaux_core::tr!(
             "ベロシティ調整 ×{factor}{}({} ノート)",
+            "Velocity ×{factor}{} ({} notes)",
             if offset != 0.0 {
                 format!(" {offset:+}")
             } else {

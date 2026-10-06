@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from "./i18n.svelte";
   // ギターの指板(pluck トラック用の入力盤)。ドラムキットと同じ発想で、
   // フレットをクリックすると挿入カーソル位置にそのピッチを打ち込む。
   let {
@@ -57,7 +58,10 @@
           class="fret"
           class:nut={f === 0}
           class:hl={highlight === pitch}
-          title={`${noteName(pitch)} — ${s.label} 弦 ${f === 0 ? "開放" : `${f} フレット`}(クリックで挿入カーソル位置に打ち込み)`}
+          title={tr(
+            `${noteName(pitch)} — ${s.label} 弦 ${f === 0 ? "開放" : `${f} フレット`}(クリックで挿入カーソル位置に打ち込み)`,
+            `${noteName(pitch)} — ${s.label} string, ${f === 0 ? "open" : `fret ${f}`} (click to enter at the insert cursor)`,
+          )}
           onclick={() => onHit(pitch)}
         >
           <span class="dot"></span>

@@ -251,7 +251,7 @@
               },
             },
           ],
-          "音作りテンプレートを作成",
+          tr("音作りテンプレートを作成", "Create sound design template"),
         );
         soundDesignStore.focus = { trackId, trackName: "Sound" };
         // ループ ON(オーディオデバイスが無い環境では黙って諦める)

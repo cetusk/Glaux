@@ -18,6 +18,7 @@ mod projects;
 
 use anyhow::{Context, Result};
 use chat::ChatManager;
+use glaux_core::i18n::t;
 use glaux_core::{Author, Command, EntryId, Tick};
 use glaux_engine::EngineHandle;
 use glaux_mcp::actor::SessionHandle;
@@ -40,7 +41,8 @@ struct AppState {
     project_dir: std::sync::Mutex<String>,
     mcp_url: String,
     /// 起動時に知らせること(開こうとした曲が別の Glaux で開かれていた、窓口のポートを変えた、など)
-    startup_notice: Option<String>,
+    /// 起動時の知らせ(日本語, 英語)。言語の設定は起動後に画面から届くので、両方持って読むときに選ぶ
+    startup_notice: Option<(String, String)>,
     chat: Arc<ChatManager>,
     /// オーディオデバイスが無い環境では None(再生なしで動作を続ける)
     engine: Option<EngineHandle>,
@@ -56,9 +58,13 @@ impl AppState {
 
 impl AppState {
     fn engine(&self) -> Result<&EngineHandle, String> {
-        self.engine
-            .as_ref()
-            .ok_or_else(|| "オーディオデバイスが利用できません".to_owned())
+        self.engine.as_ref().ok_or_else(|| {
+            t(
+                "オーディオデバイスが利用できません",
+                "Audio device is not available",
+            )
+            .to_owned()
+        })
     }
 }
 
@@ -156,10 +162,13 @@ async fn duplicate_track(state: State<'_, AppState>, track_id: String) -> Result
         .tracks
         .iter()
         .position(|t| t.id == tid)
-        .ok_or("トラックが見つかりません")?;
+        .ok_or_else(|| t("トラックが見つかりません", "Track not found").to_owned())?;
     let src = &project.tracks[index];
-    let copy = glaux_mcp::server::duplicate_track(src, format!("{} のコピー", src.name));
-    let label = format!("{} を複製", src.name);
+    let copy = glaux_mcp::server::duplicate_track(
+        src,
+        glaux_core::tr!("{} のコピー", "{} copy", src.name),
+    );
+    let label = glaux_core::tr!("{} を複製", "Duplicate {}", src.name);
     let command = Command::AddTrack {
         track: copy,
         index: Some(index + 1),
@@ -217,7 +226,10 @@ fn app_info(state: State<'_, AppState>) -> Value {
     json!({
         "project_dir": state.project_dir(),
         "mcp_url": state.mcp_url,
-        "startup_notice": state.startup_notice,
+        "startup_notice": state
+            .startup_notice
+            .as_ref()
+            .map(|(ja, en)| if glaux_core::i18n::is_en() { en } else { ja }),
     })
 }
 
@@ -265,9 +277,12 @@ async fn import_sample(
 ) -> Result<Value, String> {
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
     let (project, _) = state.handle.get_project_shared().await?;
-    let track = project
-        .track(&tid)
-        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let track = project.track(&tid).ok_or_else(|| {
+        glaux_core::tr!(
+            "トラックが見つかりません: {track_id}",
+            "Track not found: {track_id}"
+        )
+    })?;
     let dir = state.project_dir();
     let imported =
         glaux_mcp::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))?;
@@ -297,7 +312,11 @@ async fn import_sample(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "sample".to_owned());
-    let label = format!("{} にサンプル「{file_name}」を設定", track.name);
+    let label = glaux_core::tr!(
+        "{} にサンプル「{file_name}」を設定",
+        "Set sample \"{file_name}\" on {}",
+        track.name
+    );
     let (_, m) = state
         .handle
         .apply(Command::batch(label.clone(), cmds), Author::Human, label)
@@ -341,7 +360,10 @@ async fn import_ir(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "IR".to_owned());
-    let label = format!("畳み込みリバーブの響きを「{file_name}」に");
+    let label = glaux_core::tr!(
+        "畳み込みリバーブの響きを「{file_name}」に",
+        "Set convolution reverb IR to \"{file_name}\""
+    );
     let (_, m) = state
         .handle
         .apply(Command::batch(label.clone(), cmds), Author::Human, label)
@@ -380,7 +402,10 @@ async fn import_audio_clip(
         .track(&tid)
         .map(|t| t.name.clone())
         .unwrap_or_default();
-    let label = format!("{track_name} に音声クリップ「{name}」を配置");
+    let label = glaux_core::tr!(
+        "{track_name} に音声クリップ「{name}」を配置",
+        "Place audio clip \"{name}\" on {track_name}"
+    );
     let (_, m) = state
         .handle
         .apply(Command::batch(label.clone(), cmds), Author::Human, label)
@@ -419,7 +444,11 @@ async fn match_clip_sound(state: State<'_, AppState>, clip_id: String) -> Result
     })
     .await
     .map_err(|e| e.to_string())??;
-    let label = format!("「{}」を作る(音色を自動で合わせる)", m.track_name);
+    let label = glaux_core::tr!(
+        "「{}」を作る(音色を自動で合わせる)",
+        "Create \"{}\" (auto-matched sound)",
+        m.track_name
+    );
     let (_, applied) = state
         .handle
         .apply(
@@ -502,8 +531,9 @@ async fn refine_clap_params(
     if refined.commands.is_empty() {
         return Ok(v);
     }
-    let label = format!(
+    let label = glaux_core::tr!(
         "「{}」の CLAP のつまみを音声クリップの音に合わせる({} 個)",
+        "Match CLAP parameters of \"{}\" to the audio clip ({})",
         v["track"].as_str().unwrap_or(""),
         refined.commands.len()
     );
@@ -572,8 +602,8 @@ async fn open_demo_song(
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     const DEMO: &str = include_str!("../demo/CyberNeon.json");
-    let project: glaux_core::Project =
-        serde_json::from_str(DEMO).map_err(|e| format!("デモ曲を読めません: {e}"))?;
+    let project: glaux_core::Project = serde_json::from_str(DEMO)
+        .map_err(|e| glaux_core::tr!("デモ曲を読めません: {e}", "Can't read the demo song: {e}"))?;
     let parent = projects::default_projects_dir();
     let dir = glaux_mcp::store::unique_project_dir(
         std::path::Path::new(&parent),
@@ -612,12 +642,15 @@ async fn swing_clip(
 ) -> Result<Value, String> {
     let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
     let (project, _) = state.handle.get_project_shared().await?;
-    let (_, clip) = project
-        .clip(&cid)
-        .ok_or_else(|| format!("クリップが見つかりません: {clip_id}"))?;
+    let (_, clip) = project.clip(&cid).ok_or_else(|| {
+        glaux_core::tr!(
+            "クリップが見つかりません: {clip_id}",
+            "Clip not found: {clip_id}"
+        )
+    })?;
     let notes = clip
         .notes()
-        .ok_or_else(|| "MIDI クリップではありません".to_owned())?;
+        .ok_or_else(|| t("MIDI クリップではありません", "Not a MIDI clip").to_owned())?;
     let chosen: Vec<glaux_core::Note> = match &note_ids {
         Some(ids) if !ids.is_empty() => notes
             .iter()
@@ -642,8 +675,9 @@ async fn swing_clip(
     if n == 0 {
         return Ok(json!({ "changed": 0 }));
     }
-    let label = format!(
+    let label = glaux_core::tr!(
         "スウィング {:.0}%(1/{}、{n} ノート)",
+        "Swing {:.0}% (1/{}, {n} notes)",
         swing * 100.0,
         3840 / grid.max(60)
     );
@@ -690,7 +724,11 @@ async fn transcribe_clip(
     })
     .await
     .map_err(|e| e.to_string())??;
-    let label = format!("音声クリップを譜起こし({} ノート)", t.note_count);
+    let label = glaux_core::tr!(
+        "音声クリップを譜起こし({} ノート)",
+        "Transcribe audio clip ({} notes)",
+        t.note_count
+    );
     let (_, m) = state
         .handle
         .apply(
@@ -763,7 +801,11 @@ async fn separate_clip(
     .await
     .map_err(|e| e.to_string())??;
     let names: Vec<String> = s.tracks.iter().map(|(n, _)| n.clone()).collect();
-    let label = format!("音声クリップをパートに分離({})", names.join(" / "));
+    let label = glaux_core::tr!(
+        "音声クリップをパートに分離({})",
+        "Separate audio clip into parts ({})",
+        names.join(" / ")
+    );
     let (_, m) = state
         .handle
         .apply(
@@ -824,7 +866,11 @@ fn plugin_owner(
         (None, Some(t)) => Ok(PluginOwner::Track(
             glaux_core::TrackId::parse(&t).map_err(|e| e.to_string())?,
         )),
-        (None, None) => Err("track_id か fx_id を指定してください".to_owned()),
+        (None, None) => Err(t(
+            "track_id か fx_id を指定してください",
+            "Specify track_id or fx_id",
+        )
+        .to_owned()),
     }
 }
 
@@ -898,9 +944,9 @@ async fn clap_open_gui(
     let (project, _) = state.handle.get_project_shared().await?;
     let (source, place) = match &owner {
         PluginOwner::Track(tid) => {
-            let track = project
-                .track(tid)
-                .ok_or_else(|| format!("トラックが見つかりません: {tid}"))?;
+            let track = project.track(tid).ok_or_else(|| {
+                glaux_core::tr!("トラックが見つかりません: {tid}", "Track not found: {tid}")
+            })?;
             (
                 track.device.as_ref().map(|d| d.source.clone()),
                 track.name.clone(),
@@ -917,7 +963,7 @@ async fn clap_open_gui(
                 .map(|p| p.name)
                 .unwrap_or(plugin_id)
         }
-        _ => return Err("CLAP プラグインではありません".to_owned()),
+        _ => return Err(t("CLAP プラグインではありません", "Not a CLAP plugin").to_owned()),
     };
     let title = format!("{plugin_name} — {place}");
     tokio::task::spawn_blocking(move || engine.open_plugin_gui(&owner, &title))
@@ -943,7 +989,7 @@ fn find_effect<'a>(
     fx: &glaux_core::FxId,
 ) -> Result<(&'a glaux_core::Effect, String), String> {
     if let Some(e) = project.master.effects.iter().find(|e| &e.id == fx) {
-        return Ok((e, "マスター".to_owned()));
+        return Ok((e, t("マスター", "Master").to_owned()));
     }
     project
         .tracks
@@ -954,7 +1000,9 @@ fn find_effect<'a>(
                 .find(|e| &e.id == fx)
                 .map(|e| (e, t.name.clone()))
         })
-        .ok_or_else(|| format!("エフェクトが見つかりません: {fx}"))
+        .ok_or_else(|| {
+            glaux_core::tr!("エフェクトが見つかりません: {fx}", "Effect not found: {fx}")
+        })
 }
 
 /// プラグインの今の状態をプロジェクトに書く(履歴 1 件。変化が無ければ何もしない)。
@@ -988,14 +1036,18 @@ async fn save_clap_state(
     };
     let (command, label) = match &owner {
         PluginOwner::Track(tid) => {
-            let track = project
-                .track(tid)
-                .ok_or_else(|| format!("トラックが見つかりません: {tid}"))?;
+            let track = project.track(tid).ok_or_else(|| {
+                glaux_core::tr!("トラックが見つかりません: {tid}", "Track not found: {tid}")
+            })?;
             let Some(mut device) = track.device.clone() else {
-                return Err("音源がありません".to_owned());
+                return Err(t("音源がありません", "No instrument").to_owned());
             };
             let glaux_core::PluginSource::Clap { state: cur, .. } = &mut device.source else {
-                return Err("CLAP プラグインの音源ではありません".to_owned());
+                return Err(t(
+                    "CLAP プラグインの音源ではありません",
+                    "Not a CLAP instrument",
+                )
+                .to_owned());
             };
             let state_changed = cur.as_deref() != Some(saved.as_str());
             *cur = Some(saved.clone());
@@ -1009,13 +1061,21 @@ async fn save_clap_state(
                     track: tid.clone(),
                     device: Some(device),
                 },
-                format!("{} のプラグインの設定を保存", track.name),
+                glaux_core::tr!(
+                    "{} のプラグインの設定を保存",
+                    "Save plugin settings of {}",
+                    track.name
+                ),
             )
         }
         PluginOwner::Effect(fx) => {
             let (effect, place) = find_effect(&project, fx)?;
             let glaux_core::PluginSource::Clap { state: cur, .. } = &effect.source else {
-                return Err("CLAP プラグインのエフェクトではありません".to_owned());
+                return Err(t(
+                    "CLAP プラグインのエフェクトではありません",
+                    "Not a CLAP effect",
+                )
+                .to_owned());
             };
             let state_changed = cur.as_deref() != Some(saved.as_str());
             let params = changed_params(&effect.params);
@@ -1043,7 +1103,10 @@ async fn save_clap_state(
                     _ => Command::SetMasterParam { path, value: v },
                 });
             }
-            let label = format!("{place} のエフェクトの設定を保存");
+            let label = glaux_core::tr!(
+                "{place} のエフェクトの設定を保存",
+                "Save effect settings on {place}"
+            );
             (Command::batch(label.clone(), cmds), label)
         }
     };
@@ -1136,7 +1199,11 @@ async fn midi_record_stop(
         quantize_ticks.unwrap_or(0),
     );
     if notes.is_empty() {
-        return Err("カウントインより後に弾かれたノートがありませんでした".to_owned());
+        return Err(t(
+            "カウントインより後に弾かれたノートがありませんでした",
+            "No notes were played after the count-in",
+        )
+        .to_owned());
     }
     let (project, _) = state.handle.get_project_shared().await?;
     let is_midi = |id: &glaux_core::TrackId| {
@@ -1164,7 +1231,11 @@ async fn midi_record_stop(
         None => {
             let id = glaux_core::TrackId::new();
             cmds.push(Command::AddTrack {
-                track: glaux_core::Track::new(id.clone(), "MIDI 録音", glaux_core::TrackKind::Midi),
+                track: glaux_core::Track::new(
+                    id.clone(),
+                    t("MIDI 録音", "MIDI Recording"),
+                    glaux_core::TrackKind::Midi,
+                ),
                 index: None,
             });
             id
@@ -1176,7 +1247,11 @@ async fn midi_record_stop(
     let played = outcome.stop_tick.0.saturating_sub(outcome.clip_start.0);
     let length = Tick(last_end.max(played).div_ceil(bar).max(1) * bar);
     let clip_id = glaux_core::ClipId::new();
-    let name = format!("MIDI 録音 {}", chrono::Local::now().format("%H:%M"));
+    let name = glaux_core::tr!(
+        "MIDI 録音 {}",
+        "MIDI Recording {}",
+        chrono::Local::now().format("%H:%M")
+    );
     let count = notes.len();
     let mut clip =
         glaux_core::Clip::new_midi(clip_id.clone(), name.clone(), outcome.clip_start, length);
@@ -1187,7 +1262,10 @@ async fn midi_record_stop(
         track: tid.clone(),
         clip,
     });
-    let label = format!("{name}(ノート {count} 個)を配置");
+    let label = glaux_core::tr!(
+        "{name}(ノート {count} 個)を配置",
+        "Place {name} ({count} notes)"
+    );
     let (_, m) = state
         .handle
         .apply(Command::batch(label.clone(), cmds), Author::Human, label)
@@ -1215,11 +1293,19 @@ async fn record_stop(
     let (result, start_tick, offset) = (outcome.result, outcome.clip_start, outcome.offset_samples);
     if result.frames <= offset {
         let _ = std::fs::remove_file(&result.path);
-        return Err("カウントインより後に録音データがありません".to_owned());
+        return Err(t(
+            "カウントインより後に録音データがありません",
+            "No recorded audio after the count-in",
+        )
+        .to_owned());
     }
     if result.frames == 0 {
         let _ = std::fs::remove_file(&result.path);
-        return Err("録音データが空でした(入力デバイスの設定を確認してください)".to_owned());
+        return Err(t(
+            "録音データが空でした(入力デバイスの設定を確認してください)",
+            "The recording was empty (check the input device settings)",
+        )
+        .to_owned());
     }
     let dir = state.project_dir();
     let imported = glaux_mcp::assets::import_wav(std::path::Path::new(&dir), &result.path)?;
@@ -1239,7 +1325,11 @@ async fn record_stop(
             None => {
                 let id = glaux_core::TrackId::new();
                 cmds.push(Command::AddTrack {
-                    track: glaux_core::Track::new(id.clone(), "録音", glaux_core::TrackKind::Audio),
+                    track: glaux_core::Track::new(
+                        id.clone(),
+                        t("録音", "Recording"),
+                        glaux_core::TrackKind::Audio,
+                    ),
                     index: None,
                 });
                 id
@@ -1252,7 +1342,11 @@ async fn record_stop(
         project_view.tracks.push(track.clone());
     }
     let clip_id = glaux_core::ClipId::new();
-    let name = format!("録音 {}", chrono::Local::now().format("%H:%M"));
+    let name = glaux_core::tr!(
+        "録音 {}",
+        "Recording {}",
+        chrono::Local::now().format("%H:%M")
+    );
     cmds.extend(glaux_mcp::assets::audio_clip_commands_with_offset(
         &project_view,
         &tid,
@@ -1287,7 +1381,7 @@ async fn record_stop(
             }
         }
     }
-    let label = format!("{name}(録音)を配置");
+    let label = glaux_core::tr!("{name}(録音)を配置", "Place {name} (recording)");
     let (_, m) = state
         .handle
         .apply(Command::batch(label.clone(), cmds), Author::Human, label)
@@ -1411,7 +1505,7 @@ fn input_monitor(state: State<'_, AppState>, on: bool) -> Result<(), String> {
 async fn calibrate_start(state: State<'_, AppState>) -> Result<Value, String> {
     let engine = state.engine()?.clone();
     if engine.is_recording() {
-        return Err("録音中は較正できません".to_owned());
+        return Err(t("録音中は較正できません", "Can't calibrate while recording").to_owned());
     }
     let (project, _) = state.handle.get_project_shared().await?;
     let saved = engine.playhead_tick();
@@ -1462,7 +1556,7 @@ async fn calibrate_stop(state: State<'_, AppState>) -> Result<Value, String> {
     let outcome = engine.stop_recording();
     engine.set_click_only(false);
     let Some((saved, beats)) = taken else {
-        return Err("較正を開始していません".to_owned());
+        return Err(t("較正を開始していません", "Calibration hasn't started").to_owned());
     };
     engine.seek_tick(saved);
     let outcome = outcome.map_err(|e| e.to_string())?;
@@ -1485,9 +1579,12 @@ async fn calibrate_stop(state: State<'_, AppState>) -> Result<Value, String> {
 async fn get_track_params(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
     let (project, version) = state.handle.get_project_shared().await?;
-    let track = project
-        .track(&tid)
-        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let track = project.track(&tid).ok_or_else(|| {
+        glaux_core::tr!(
+            "トラックが見つかりません: {track_id}",
+            "Track not found: {track_id}"
+        )
+    })?;
     let mut v = glaux_mcp::server::track_params_json(track)?;
     v["project_version"] = json!(version);
     v["track_id"] = json!(track_id);
@@ -1570,7 +1667,7 @@ async fn add_soundfont(path: String) -> Result<Value, String> {
     let name = src
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| "ファイル名が取れません".to_owned())?;
+        .ok_or_else(|| t("ファイル名が取れません", "Can't get the file name").to_owned())?;
     let dir = glaux_engine::sf2::default_dir();
     let dest = dir.join(&name);
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
@@ -1602,9 +1699,12 @@ async fn save_preset(
 ) -> Result<Value, String> {
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
     let (project, _) = state.handle.get_project_shared().await?;
-    let track = project
-        .track(&tid)
-        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let track = project.track(&tid).ok_or_else(|| {
+        glaux_core::tr!(
+            "トラックが見つかりません: {track_id}",
+            "Track not found: {track_id}"
+        )
+    })?;
     let preset = glaux_mcp::presets::save(
         &glaux_mcp::presets::default_dir(),
         track,
@@ -1624,11 +1724,19 @@ async fn load_preset(
 ) -> Result<Value, String> {
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
     let (project, _) = state.handle.get_project_shared().await?;
-    let track = project
-        .track(&tid)
-        .ok_or_else(|| format!("トラックが見つかりません: {track_id}"))?;
+    let track = project.track(&tid).ok_or_else(|| {
+        glaux_core::tr!(
+            "トラックが見つかりません: {track_id}",
+            "Track not found: {track_id}"
+        )
+    })?;
     let preset = glaux_mcp::presets::load(&glaux_mcp::presets::default_dir(), &name)?;
-    let label = format!("{} にプリセット「{}」を適用", track.name, preset.name);
+    let label = glaux_core::tr!(
+        "{} にプリセット「{}」を適用",
+        "Apply preset \"{1}\" to {0}",
+        track.name,
+        preset.name
+    );
     let cmds = glaux_mcp::presets::apply_commands(track, &preset);
     let (_, m) = state
         .handle
@@ -1705,7 +1813,11 @@ async fn apply_fx_preset(
             glaux_mcp::fx_presets::split_command(&project, &target, command, &fx_id, &from, &to)?
         }
     };
-    let label = format!("エフェクトのプリセット「{}」を追加", preset.name);
+    let label = glaux_core::tr!(
+        "エフェクトのプリセット「{}」を追加",
+        "Add effect preset \"{}\"",
+        preset.name
+    );
     let (_, m) = state
         .handle
         .apply(command, Author::Human, label)
@@ -1738,13 +1850,15 @@ async fn open_project(
 ) -> Result<Value, String> {
     let path = path.trim().trim_end_matches(['/', '\\']).to_owned();
     if path.is_empty() {
-        return Err("パスが空です".to_owned());
+        return Err(t("パスが空です", "The path is empty").to_owned());
     }
     let p = std::path::Path::new(&path);
     if !create && !p.join("project.json").exists() {
-        return Err(format!(
+        return Err(glaux_core::tr!(
             "Glaux の曲のフォルダではありません(project.json が見つかりません): {path}\n\
-             曲のフォルダ(例 MySong.glaux)そのものを選んでください"
+             曲のフォルダ(例 MySong.glaux)そのものを選んでください",
+            "Not a Glaux song folder (project.json not found): {path}\n\
+             Select the song folder itself (e.g. MySong.glaux)"
         ));
     }
 
@@ -1772,7 +1886,11 @@ async fn move_project(
     new_name: Option<String>,
 ) -> Result<Value, String> {
     if state.chat.is_running() {
-        return Err("AI が作業中は移動できません。完了を待つか停止してください".to_owned());
+        return Err(t(
+            "AI が作業中は移動できません。完了を待つか停止してください",
+            "Can't move while the AI is working. Wait for it to finish or stop it",
+        )
+        .to_owned());
     }
     let current = state.project_dir();
     let cur = std::path::PathBuf::from(&current);
@@ -1790,10 +1908,13 @@ async fn move_project(
         .filter(|s| !s.is_empty())
     {
         Some(p) => std::path::PathBuf::from(p),
-        None => cur
-            .parent()
-            .map(|p| p.to_path_buf())
-            .ok_or_else(|| "現在のプロジェクトの親フォルダが分かりません".to_owned())?,
+        None => cur.parent().map(|p| p.to_path_buf()).ok_or_else(|| {
+            t(
+                "現在のプロジェクトの親フォルダが分かりません",
+                "Can't determine the current project's parent folder",
+            )
+            .to_owned()
+        })?,
     };
     // new_name は曲名。フォルダ名は曲名から作る(空白は _ など。同じ名前があれば -2 …)
     let new_title = new_name
@@ -1844,7 +1965,10 @@ async fn move_project(
             .apply(
                 cmd,
                 glaux_core::Author::System,
-                format!("プロジェクト名を「{name}」に変更"),
+                glaux_core::tr!(
+                    "プロジェクト名を「{name}」に変更",
+                    "Rename project to \"{name}\""
+                ),
             )
             .await
         {
@@ -1886,7 +2010,7 @@ fn preview_project_dir(parent_dir: String, name: String, current: Option<String>
         return json!({ "error": e });
     }
     if !parent.is_dir() {
-        return json!({ "error": format!("フォルダが見つかりません: {}", parent.display()) });
+        return json!({ "error": glaux_core::tr!("フォルダが見つかりません: {}", "Folder not found: {}", parent.display()) });
     }
     let dir = glaux_mcp::store::unique_project_dir(parent, &folder);
     let name = dir
@@ -1906,7 +2030,7 @@ async fn create_project(
 ) -> Result<Value, String> {
     let title = name.trim();
     if title.is_empty() {
-        return Err("曲名が空です".to_owned());
+        return Err(t("曲名が空です", "The song name is empty").to_owned());
     }
     let parent = if parent_dir.trim().is_empty() {
         projects::default_projects_dir()
@@ -1933,12 +2057,16 @@ async fn apply_edit(
     label: String,
 ) -> Result<Value, String> {
     if commands.is_empty() {
-        return Err("commands が空です".to_owned());
+        return Err(t("commands が空です", "commands is empty").to_owned());
     }
     let mut parsed = Vec::with_capacity(commands.len());
     for (i, value) in commands.into_iter().enumerate() {
-        let cmd: Command = serde_json::from_value(value)
-            .map_err(|e| format!("commands[{i}] を Command として解釈できません: {e}"))?;
+        let cmd: Command = serde_json::from_value(value).map_err(|e| {
+            glaux_core::tr!(
+                "commands[{i}] を Command として解釈できません: {e}",
+                "Can't parse commands[{i}] as a Command: {e}"
+            )
+        })?;
         parsed.push(cmd);
     }
     let command = if parsed.len() == 1 {
@@ -1962,8 +2090,12 @@ async fn preview_edit(state: State<'_, AppState>, commands: Vec<Value>) -> Resul
     let engine = state.engine()?.clone();
     let (mut project, _) = state.handle.get_project().await?;
     for (i, value) in commands.into_iter().enumerate() {
-        let cmd: Command = serde_json::from_value(value)
-            .map_err(|e| format!("commands[{i}] を Command として解釈できません: {e}"))?;
+        let cmd: Command = serde_json::from_value(value).map_err(|e| {
+            glaux_core::tr!(
+                "commands[{i}] を Command として解釈できません: {e}",
+                "Can't parse commands[{i}] as a Command: {e}"
+            )
+        })?;
         project.apply(&cmd).map_err(|e| e.to_string())?;
     }
     let dir = state.project_dir();
@@ -2221,7 +2353,13 @@ async fn revert_turn(state: State<'_, AppState>, since: Option<String>) -> Resul
             .handle
             .revert_entry(e.id.clone(), Author::Human)
             .await?
-            .map_err(|err| format!("「{}」を取り消せませんでした: {err}", e.label))?;
+            .map_err(|err| {
+                glaux_core::tr!(
+                    "「{}」を取り消せませんでした: {err}",
+                    "Couldn't undo \"{}\": {err}",
+                    e.label
+                )
+            })?;
         conflicts.extend(c.into_iter().map(|x| x.to_string()));
         reverted += 1;
     }
@@ -2295,8 +2433,12 @@ fn transport_set_monitor(
     mode: String,
     crossfeed: bool,
 ) -> Result<(), String> {
-    let mode = glaux_engine::monitor::MonitorMode::from_name(&mode)
-        .ok_or_else(|| format!("聴き方「{mode}」は分かりません"))?;
+    let mode = glaux_engine::monitor::MonitorMode::from_name(&mode).ok_or_else(|| {
+        glaux_core::tr!(
+            "聴き方「{mode}」は分かりません",
+            "Unknown monitor mode \"{mode}\""
+        )
+    })?;
     state.engine()?.set_monitor(mode, crossfeed);
     Ok(())
 }
@@ -2321,11 +2463,12 @@ async fn ab_prepare_proposals(
     end_tick: u64,
 ) -> Result<Value, String> {
     if end_tick <= start_tick {
-        return Err("聴き比べる範囲がありません".into());
+        return Err(t("聴き比べる範囲がありません", "No range to compare").into());
     }
     if plan_ids.is_empty() || plan_ids.len() >= glaux_engine::ab::MAX_TAKES {
-        return Err(format!(
+        return Err(glaux_core::tr!(
             "いっしょに聴き比べられる案は 1〜{} 個です",
+            "You can compare 1 to {} proposals at once",
             glaux_engine::ab::MAX_TAKES - 1
         ));
     }
@@ -2353,7 +2496,12 @@ async fn ab_prepare_proposals(
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| format!("聴き比べを用意できません: {e}"))?;
+    .map_err(|e| {
+        glaux_core::tr!(
+            "聴き比べを用意できません: {e}",
+            "Can't prepare the comparison: {e}"
+        )
+    })?;
     engine.set_ab_clip(Some(clip));
     engine.set_ab_side(glaux_engine::ab::AbSide::B);
     let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
@@ -2447,7 +2595,7 @@ async fn ab_prepare(
         (None, None) => glaux_core::HistoryPoint::Back(1),
     };
     if end_tick <= start_tick {
-        return Err("聴き比べる範囲がありません".into());
+        return Err(t("聴き比べる範囲がありません", "No range to compare").into());
     }
     let (before, after, _version, back) = state
         .handle
@@ -2455,7 +2603,11 @@ async fn ab_prepare(
         .await?
         .map_err(|e| e.to_string())?;
     if back == 0 {
-        return Err("比べる編集がありません(その地点は今と同じです)".into());
+        return Err(t(
+            "比べる編集がありません(その地点は今と同じです)",
+            "No edits to compare (that point is the same as now)",
+        )
+        .into());
     }
     let engine = state.engine()?.clone();
     let sr = engine.sample_rate();
@@ -2474,7 +2626,12 @@ async fn ab_prepare(
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| format!("聴き比べを用意できません: {e}"))?;
+    .map_err(|e| {
+        glaux_core::tr!(
+            "聴き比べを用意できません: {e}",
+            "Can't prepare the comparison: {e}"
+        )
+    })?;
     engine.set_ab_clip(Some(clip));
     engine.set_ab_side(glaux_engine::ab::AbSide::B);
     let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
@@ -2512,8 +2669,12 @@ fn transport_reset_loudness(state: State<'_, AppState>) -> Result<(), String> {
 /// 小さなスピーカーのシミュレーション(off / phone / laptop)。書き出しには入らない
 #[tauri::command]
 fn transport_set_speaker(state: State<'_, AppState>, speaker: String) -> Result<(), String> {
-    let sp = glaux_engine::monitor::Speaker::from_name(&speaker)
-        .ok_or_else(|| format!("スピーカー「{speaker}」は分かりません"))?;
+    let sp = glaux_engine::monitor::Speaker::from_name(&speaker).ok_or_else(|| {
+        glaux_core::tr!(
+            "スピーカー「{speaker}」は分かりません",
+            "Unknown speaker \"{speaker}\""
+        )
+    })?;
     state.engine()?.set_speaker(sp);
     Ok(())
 }
@@ -2698,10 +2859,14 @@ async fn send_chat(
     let provider = chat::Provider::parse(provider.as_deref())?;
     let prompt = prompt.trim().to_owned();
     if prompt.is_empty() {
-        return Err("指示が空です".to_owned());
+        return Err(t("指示が空です", "The instruction is empty").to_owned());
     }
     if state.chat.is_running() {
-        return Err("前の指示がまだ実行中です".to_owned());
+        return Err(t(
+            "前の指示がまだ実行中です",
+            "The previous instruction is still running",
+        )
+        .to_owned());
     }
     state.chat.set_model(model)?;
     state.chat.set_effort(effort)?;
@@ -2848,12 +3013,17 @@ fn main() -> Result<()> {
             tracing::warn!("{e:#}");
             let temp = glaux_mcp::store::unique_project_dir(&std::env::temp_dir(), "Glaux_temp");
             let opened = Store::open_or_create(&temp).context("一時的な曲を作れません")?;
-            notices.push(format!(
-                "「{}」は別の Glaux で開かれているので、一時的な空の曲で起動しました。上の曲名のメニューから、別の曲を開くか新しく作ってください",
-                std::path::Path::new(&project_dir)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| project_dir.clone())
+            let name = std::path::Path::new(&project_dir)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| project_dir.clone());
+            notices.push((
+                format!(
+                    "「{name}」は別の Glaux で開かれているので、一時的な空の曲で起動しました。上の曲名のメニューから、別の曲を開くか新しく作ってください"
+                ),
+                format!(
+                    "\"{name}\" is open in another Glaux, so a temporary empty song was opened. Open another song or create a new one from the song title menu above"
+                ),
             ));
             project_dir = temp.to_string_lossy().into_owned();
             opened
@@ -2869,14 +3039,22 @@ fn main() -> Result<()> {
             tracing::error!(
                 "MCP ポート {preferred_port}〜 がすべて使われています。AI とつなぐ窓口を開けません"
             );
-            notices.push("AI とつなぐ窓口(MCP)を開けませんでした。Glaux をいくつも起動していないか確かめてください".to_owned());
+            notices.push((
+                "AI とつなぐ窓口(MCP)を開けませんでした。Glaux をいくつも起動していないか確かめてください".to_owned(),
+                "Couldn't open the AI connection (MCP). Check that Glaux isn't running multiple times".to_owned(),
+            ));
             // 別の Glaux の窓口につながないよう、つながらない URL にしておく
             0
         }
     };
     if port != preferred_port && port != 0 {
-        notices.push(format!(
-            "ほかの Glaux が起動しているため、AI とつなぐ窓口(MCP)は http://127.0.0.1:{port}/mcp です(アプリ内のチャットはそのまま使えます)"
+        notices.push((
+            format!(
+                "ほかの Glaux が起動しているため、AI とつなぐ窓口(MCP)は http://127.0.0.1:{port}/mcp です(アプリ内のチャットはそのまま使えます)"
+            ),
+            format!(
+                "Another Glaux is running, so the AI connection (MCP) is http://127.0.0.1:{port}/mcp (the in-app chat works as usual)"
+            ),
         ));
     }
     tracing::info!(
@@ -2905,7 +3083,10 @@ fn main() -> Result<()> {
         handle: handle.clone(),
         project_dir: std::sync::Mutex::new(project_dir.clone()),
         mcp_url: mcp_url.clone(),
-        startup_notice: (!notices.is_empty()).then(|| notices.join("\n")),
+        startup_notice: (!notices.is_empty()).then(|| {
+            let (ja, en): (Vec<String>, Vec<String>) = notices.into_iter().unzip();
+            (ja.join("\n"), en.join("\n"))
+        }),
         chat: Arc::new(ChatManager::new(mcp_url, project_dir.clone())),
         engine: engine.clone(),
         calib: std::sync::Mutex::new(None),

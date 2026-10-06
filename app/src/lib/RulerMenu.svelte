@@ -5,6 +5,7 @@
   import Icon from "./Icon.svelte";
   import TimelineMenu from "./TimelineMenu.svelte";
   import { normalizeSigs, type RulerMenuState } from "./timelineOps";
+  import { isEn, tr } from "./i18n.svelte";
   import type { Project } from "./types";
 
   let {
@@ -27,7 +28,12 @@
   } = $props();
 
   const DENS = [1, 2, 4, 8, 16, 32];
-  const MARKER_PRESETS = ["intro", "Aメロ", "Bメロ", "サビ", "間奏", "outro"];
+  // 押すとそのままマーカーの名前になる。英語の表示では英語の名前を置く
+  const MARKER_PRESETS = $derived(
+    isEn()
+      ? ["intro", "verse", "pre-chorus", "chorus", "interlude", "outro"]
+      : ["intro", "Aメロ", "Bメロ", "サビ", "間奏", "outro"],
+  );
 
   /// メニューを開いた小節にあるマーカー
   const markerHere = $derived((project.sections ?? []).find((m) => m.tick === barList[menu.barIndex]?.tick));
@@ -51,7 +57,10 @@
     if (events.length === 0 || events[0].tick !== 0) events.unshift({ tick: 0, bpm: project.tempo_map[0]?.bpm ?? 120 });
     onClose();
     api
-      .applyEdit([{ op: "set_tempo", events }], `${bar.index + 1} 小節目からテンポを ${bpm} に変更`)
+      .applyEdit(
+        [{ op: "set_tempo", events }],
+        tr(`${bar.index + 1} 小節目からテンポを ${bpm} に変更`, `Set tempo to ${bpm} from bar ${bar.index + 1}`),
+      )
       .catch(() => {});
   }
 
@@ -60,7 +69,10 @@
     onClose();
     const events = project.tempo_map.filter((e) => e.tick !== bar.tick);
     api
-      .applyEdit([{ op: "set_tempo", events }], `${bar.index + 1} 小節目のテンポ変更を削除`)
+      .applyEdit(
+        [{ op: "set_tempo", events }],
+        tr(`${bar.index + 1} 小節目のテンポ変更を削除`, `Delete tempo change at bar ${bar.index + 1}`),
+      )
       .catch(() => {});
   }
 
@@ -87,7 +99,10 @@
     api
       .applyEdit(
         [{ op: "set_time_sig", events }],
-        `${bar.index + 1} 小節目から拍子を ${num}/${den}${grouping ? `(${grouping.join("+")})` : ""} に変更`,
+        tr(
+          `${bar.index + 1} 小節目から拍子を ${num}/${den}${grouping ? `(${grouping.join("+")})` : ""} に変更`,
+          `Set time signature to ${num}/${den}${grouping ? ` (${grouping.join("+")})` : ""} from bar ${bar.index + 1}`,
+        ),
       )
       .catch(() => {});
   }
@@ -97,13 +112,18 @@
     onClose();
     const events = normalizeSigs(project.time_sig_map.filter((e) => e.tick !== bar.tick));
     api
-      .applyEdit([{ op: "set_time_sig", events }], `${bar.index + 1} 小節目の拍子変更を削除`)
+      .applyEdit(
+        [{ op: "set_time_sig", events }],
+        tr(`${bar.index + 1} 小節目の拍子変更を削除`, `Delete time signature change at bar ${bar.index + 1}`),
+      )
       .catch(() => {});
   }
 </script>
 
 <TimelineMenu x={menu.x} y={menu.y} extraClass="sig-menu" {onClose}>
-  <div class="preset-title">{menu.barIndex + 1} 小節目から拍子を変更</div>
+  <div class="preset-title">
+    {tr(`${menu.barIndex + 1} 小節目から拍子を変更`, `Time signature from bar ${menu.barIndex + 1}`)}
+  </div>
   <div class="sig-form">
     <input
       class="sig-num"
@@ -119,17 +139,17 @@
         <option value={String(d)}>{d}</option>
       {/each}
     </select>
-    <button class="sig-apply" onclick={applySig}>適用</button>
+    <button class="sig-apply" onclick={applySig}>{tr("適用", "Apply")}</button>
   </div>
   <div class="sig-form">
-    <span class="sig-group-label">拍のまとまり</span>
+    <span class="sig-group-label">{tr("拍のまとまり", "Beat grouping")}</span>
     <input
       class="sig-group"
       type="text"
       placeholder={defaultGrouping(Number(menu.num) || 4, Number(menu.den) || 4).join("+")}
       bind:value={menu.grouping}
       onkeydown={(e) => e.key === "Enter" && applySig()}
-      aria-label="拍のまとまり(例 2+2+3)"
+      aria-label={tr("拍のまとまり(例 2+2+3)", "Beat grouping (e.g. 2+2+3)")}
     />
   </div>
   <div class="sig-presets">
@@ -149,11 +169,24 @@
   </div>
   {#if menu.barIndex > 0 && project.time_sig_map.some((e) => e.tick === barList[menu.barIndex].tick)}
     <div class="menu-sep"></div>
-    <button class="danger" onclick={removeSig}><Icon name="trash-2" />この拍子の変更を削除(前の拍子に戻す)</button>
+    <button class="danger" onclick={removeSig}><Icon name="trash-2" />{tr(
+        "この拍子の変更を削除(前の拍子に戻す)",
+        "Delete this time signature change (revert to previous)",
+      )}</button
+    >
   {/if}
-  <div class="menu-note">ノートの位置は変わらず、この小節から先の小節線だけが変わります(Ctrl+Z で戻せます)</div>
+  <div class="menu-note">
+    {tr(
+      "ノートの位置は変わらず、この小節から先の小節線だけが変わります(Ctrl+Z で戻せます)",
+      "Notes stay in place; only bar lines from this bar on change (Ctrl+Z to undo)",
+    )}
+  </div>
   <div class="menu-sep"></div>
-  <div class="preset-title">{menu.barIndex === 0 ? "曲の頭のテンポ" : `${menu.barIndex + 1} 小節目からテンポを変更`}</div>
+  <div class="preset-title">
+    {menu.barIndex === 0
+      ? tr("曲の頭のテンポ", "Starting tempo")
+      : tr(`${menu.barIndex + 1} 小節目からテンポを変更`, `Tempo from bar ${menu.barIndex + 1}`)}
+  </div>
   <div class="sig-form">
     <input
       class="sig-num tempo-num"
@@ -163,28 +196,39 @@
       step="0.5"
       bind:value={menu.bpm}
       onkeydown={(e) => e.key === "Enter" && applyTempo()}
-      aria-label="テンポ(BPM)"
+      aria-label={tr("テンポ(BPM)", "Tempo (BPM)")}
     />
     <span>BPM</span>
-    <button class="sig-apply" onclick={applyTempo}>適用</button>
+    <button class="sig-apply" onclick={applyTempo}>{tr("適用", "Apply")}</button>
   </div>
   {#if menu.barIndex > 0 && project.tempo_map.some((e) => e.tick === barList[menu.barIndex].tick)}
-    <button class="danger" onclick={removeTempo}><Icon name="trash-2" />このテンポの変更を削除(前のテンポに戻す)</button>
+    <button class="danger" onclick={removeTempo}><Icon name="trash-2" />{tr(
+        "このテンポの変更を削除(前のテンポに戻す)",
+        "Delete this tempo change (revert to previous)",
+      )}</button
+    >
   {/if}
-  <div class="menu-note">ノートは拍の位置のまま、この小節から先の速さが変わります</div>
+  <div class="menu-note">
+    {tr(
+      "ノートは拍の位置のまま、この小節から先の速さが変わります",
+      "Notes keep their beat positions; the speed changes from this bar on",
+    )}
+  </div>
   <div class="menu-sep"></div>
   <div class="preset-title">
-    {markerHere ? `マーカー「${markerHere.name}」` : `${menu.barIndex + 1} 小節目にマーカーを置く`}
+    {markerHere
+      ? tr(`マーカー「${markerHere.name}」`, `Marker "${markerHere.name}"`)
+      : tr(`${menu.barIndex + 1} 小節目にマーカーを置く`, `Add marker at bar ${menu.barIndex + 1}`)}
   </div>
   <div class="sig-form">
     <input
       class="marker-name"
-      placeholder={markerHere ? "新しい名前" : "名前(例: サビ)"}
+      placeholder={markerHere ? tr("新しい名前", "New name") : tr("名前(例: サビ)", "Name (e.g. chorus)")}
       bind:value={markerName}
       onkeydown={(e) => e.key === "Enter" && onPutMarker(menu.barIndex, markerName)}
     />
     <button class="sig-apply" onclick={() => onPutMarker(menu.barIndex, markerName)}>
-      {markerHere ? "名前を変更" : "追加"}
+      {markerHere ? tr("名前を変更", "Rename") : tr("追加", "Add")}
     </button>
   </div>
   <div class="sig-presets">
@@ -193,7 +237,8 @@
     {/each}
   </div>
   {#if markerHere}
-    <button class="danger" onclick={() => onRemoveMarker(markerHere!.tick)}><Icon name="trash-2" />このマーカーを削除</button>
+    <button class="danger" onclick={() => onRemoveMarker(markerHere!.tick)}><Icon name="trash-2" />{tr("このマーカーを削除", "Delete this marker")}</button
+    >
   {/if}
 </TimelineMenu>
 

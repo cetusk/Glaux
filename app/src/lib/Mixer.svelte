@@ -6,6 +6,7 @@
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { effectiveLinks, fxColor, fxName, processingOrder, serialOrder } from "./fx";
+  import { isEn, tr } from "./i18n.svelte";
   import { deviceIcon, deviceName } from "./instruments";
   import NodeView from "./NodeView.svelte";
   import FxPresetShelf from "./FxPresetShelf.svelte";
@@ -76,7 +77,12 @@
     next[MASTER_FOCUS_ID] = ease(MASTER_FOCUS_ID, lv.master_load ?? 0);
     loads = next;
   });
-  const LOAD_TITLE = "処理の重さ(音の長さに対する処理時間の割合。音源の発音は鳴らした声の数で按分した目安)";
+  const LOAD_TITLE = $derived(
+    tr(
+      "処理の重さ(音の長さに対する処理時間の割合。音源の発音は鳴らした声の数で按分した目安)",
+      "Processing load (processing time as a share of audio time; instrument voices are an estimate split by voice count)",
+    ),
+  );
 
   // ---- 編集 ----
   function edit(commands: unknown[], label: string) {
@@ -89,7 +95,9 @@
   function setVolume(t: Track | null, v: number) {
     const key = t?.id ?? MASTER_FOCUS_ID;
     delete dragVol[key];
-    edit([volumeCommand(t, v)], t ? `${t.name} の音量を ${v.toFixed(1)} dB に` : `マスター音量を ${v.toFixed(1)} dB に`);
+    edit([volumeCommand(t, v)], t
+        ? tr(`${t.name} の音量を ${v.toFixed(1)} dB に`, `Set ${t.name} volume to ${v.toFixed(1)} dB`)
+        : tr(`マスター音量を ${v.toFixed(1)} dB に`, `Set master volume to ${v.toFixed(1)} dB`));
   }
   /** ドラッグ中: 表示と音だけ変える(離したときに 1 回だけ確定する) */
   function dragVolume(t: Track | null, v: number) {
@@ -97,22 +105,25 @@
     api.previewEdit([volumeCommand(t, v)]);
   }
   function setPan(t: Track, v: number) {
-    edit([{ op: "set_track_prop", id: t.id, prop: "pan", value: v }], `${t.name} のパンを ${v.toFixed(2)} に`);
+    edit([{ op: "set_track_prop", id: t.id, prop: "pan", value: v }], tr(`${t.name} のパンを ${v.toFixed(2)} に`, `Set ${t.name} pan to ${v.toFixed(2)}`));
   }
   function toggle(t: Track, prop: "mute" | "solo") {
-    edit([{ op: "set_track_prop", id: t.id, prop, value: !t[prop] }], `${t.name} の${prop === "mute" ? "ミュート" : "ソロ"}を${t[prop] ? "解除" : "オン"}`);
+    edit([{ op: "set_track_prop", id: t.id, prop, value: !t[prop] }], tr(
+        `${t.name} の${prop === "mute" ? "ミュート" : "ソロ"}を${t[prop] ? "解除" : "オン"}`,
+        `${prop === "mute" ? "Mute" : "Solo"} ${t[prop] ? "off" : "on"}: ${t.name}`,
+      ));
   }
   let dragSend = $state<Record<string, number>>({});
   function setSend(t: Track, bus: Track, v: number) {
     delete dragSend[`${t.id}>${bus.id}`];
     const cur = t.sends?.find((s) => s.target === bus.id);
     if (v <= -60) {
-      if (cur) edit([{ op: "set_send", track: t.id, target: bus.id }], `${t.name} から ${bus.name} への送りを外す`);
+      if (cur) edit([{ op: "set_send", track: t.id, target: bus.id }], tr(`${t.name} から ${bus.name} への送りを外す`, `Remove send from ${t.name} to ${bus.name}`));
       return;
     }
     edit(
       [{ op: "set_send", track: t.id, target: bus.id, level_db: v, pre_fader: cur?.pre_fader ?? false }],
-      `${t.name} から ${bus.name} への送りを ${v.toFixed(1)} dB に`,
+      tr(`${t.name} から ${bus.name} への送りを ${v.toFixed(1)} dB に`, `Set send from ${t.name} to ${bus.name} to ${v.toFixed(1)} dB`),
     );
   }
   function openPicker(e: MouseEvent, t: Track) {
@@ -144,7 +155,7 @@
     const bus = buses.find((b) => b.id === target);
     edit(
       [{ op: "set_track_prop", id: t.id, prop: "output", value: bus ? bus.id : null }],
-      `${t.name} の出力先を ${bus ? bus.name : "マスター"} に`,
+      tr(`${t.name} の出力先を ${bus ? bus.name : "マスター"} に`, `Set ${t.name} output to ${bus ? bus.name : "Master"}`),
     );
   }
   /** 列に出すエフェクト: 鳴るものを処理の順に。分岐・合流があるか、鳴らないものの数も */
@@ -197,7 +208,7 @@
     }
     soundDesignStore.focus = {
       trackId: selected,
-      trackName: selected === MASTER_FOCUS_ID ? "マスター" : (selectedTrack?.name ?? ""),
+      trackName: selected === MASTER_FOCUS_ID ? tr("マスター", "Master") : (selectedTrack?.name ?? ""),
     };
   }
 
@@ -210,7 +221,7 @@
 
 {#snippet slots(effects: ProjectEffect[], fxLinks: FxLink[] | null | undefined, ownerId: string)}
   {@const c = chainOf(effects, fxLinks)}
-  <div class="s-sec"><span>エフェクト</span><span>{c.list.length}</span></div>
+  <div class="s-sec"><span>{tr("エフェクト", "Effects")}</span><span>{c.list.length}</span></div>
   <div class="slots">
     {#each c.list as e (e.id)}
       <button
@@ -218,7 +229,7 @@
         class:bypass={e.bypass}
         class:hl={viewStore.highlightFx === e.id}
         style="--nc:{fxColor(e)}"
-        title={`${fxName(e, clapNames)}(押すと下のカードが光る)`}
+        title={tr(`${fxName(e, clapNames)}(押すと下のカードが光る)`, `${fxName(e, clapNames)} (click to highlight its card below)`)}
         onclick={(ev) => {
           ev.stopPropagation();
           select(ownerId, e.id);
@@ -226,17 +237,27 @@
       >
     {/each}
     {#if c.branched}
-      <div class="folded" title="分かれたり合流したりしている(並びは処理の順。つながりはノード表示で)"><Icon name="split" size={11} />分岐あり</div>
+      <div
+        class="folded"
+        title={tr("分かれたり合流したりしている(並びは処理の順。つながりはノード表示で)", "Splits or merges (listed in processing order; see the node view for wiring)")}
+      >
+        <Icon name="split" size={11} />{tr("分岐あり", "Branched")}
+      </div>
     {/if}
     {#if c.mute > 0}
-      <div class="folded" title="入力から出口まで線でたどれないカード(設定は残っていて、音は通らない)"><Icon name="unplug" size={11} />鳴らない {c.mute}</div>
+      <div
+        class="folded"
+        title={tr("入力から出口まで線でたどれないカード(設定は残っていて、音は通らない)", "Cards not wired from input to output (settings kept, no sound passes)")}
+      >
+        <Icon name="unplug" size={11} />{tr(`鳴らない ${c.mute}`, `Silent ${c.mute}`)}
+      </div>
     {/if}
   </div>
 {/snippet}
 
 {#snippet sendsOf(t: Track)}
   {#if targetsFor(t).length > 0 || (t.sends?.length ?? 0) > 0}
-    <div class="s-sec"><span>送り</span></div>
+    <div class="s-sec"><span>{tr("送り", "Sends")}</span></div>
     <div class="sends">
       {#each buses.filter((b) => b.id !== t.id && (t.sends?.some((s) => s.target === b.id) || !reaches(b.id, t.id))) as b (b.id)}
         {@const snd = t.sends?.find((s) => s.target === b.id)}
@@ -262,8 +283,8 @@
               ]);
             }}
             onchange={(e) => setSend(t, b, Number(e.currentTarget.value))}
-            aria-label={`${b.name} へ送る量`}
-            title={`${b.name} へ送る量(左端で送らない)`}
+            aria-label={tr(`${b.name} へ送る量`, `Send level to ${b.name}`)}
+            title={tr(`${b.name} へ送る量(左端で送らない)`, `Send level to ${b.name} (far left = no send)`)}
           />
         </div>
       {/each}
@@ -272,14 +293,14 @@
   {#if buses.length > 0 && (targetsFor(t).length > 0 || t.output)}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="out" role="presentation" onclick={(e) => e.stopPropagation()}>
-      <span>出力</span>
+      <span>{tr("出力", "Output")}</span>
       <select
         value={t.output ?? ""}
         onchange={(e) => setOutput(t, e.currentTarget.value)}
-        aria-label="出力先"
-        title="出力先(バスにまとめるとグループになる)"
+        aria-label={tr("出力先", "Output")}
+        title={tr("出力先(バスにまとめるとグループになる)", "Output (route to a bus to group tracks)")}
       >
-        <option value="">マスター</option>
+        <option value="">{tr("マスター", "Master")}</option>
         {#each buses.filter((b) => b.id === t.output || targetsFor(t).includes(b)) as b (b.id)}
           <option value={b.id}>{b.name}</option>
         {/each}
@@ -302,10 +323,10 @@
       oninput={(e) => dragVolume(t, Number(e.currentTarget.value))}
       onchange={(e) => setVolume(t, Number(e.currentTarget.value))}
       ondblclick={() => setVolume(t, 0)}
-      aria-label="音量"
-      title="音量(ダブルクリックで 0 dB)"
+      aria-label={tr("音量", "Volume")}
+      title={tr("音量(ダブルクリックで 0 dB)", "Volume (double-click for 0 dB)")}
     />
-    <div class="meter" title="レベル"><i style="height:{100 - meterPct(meters[key] ?? -120)}%"></i></div>
+    <div class="meter" title={tr("レベル", "Level")}><i style="height:{100 - meterPct(meters[key] ?? -120)}%"></i></div>
   </div>
   <span class="s-db">{vol > 0 ? "+" : ""}{vol.toFixed(1)} dB</span>
 {/snippet}
@@ -321,11 +342,11 @@
           {#if (loads[t.id] ?? 0) >= 0.5}<small class="load" class:heavy={loads[t.id] >= 20} title={LOAD_TITLE}>{loads[t.id].toFixed(0)}%</small>{/if}
         </div>
         {#if t.kind === "midi"}
-          <button class="s-dev" onclick={(e) => openPicker(e, t)} title="音源を変える"
+          <button class="s-dev" onclick={(e) => openPicker(e, t)} title={tr("音源を変える", "Change instrument")}
             ><Icon name={deviceIcon(t.device)} size={12} /><span>{deviceName(t.device, clapNames)}</span></button
           >
         {:else}
-          <div class="s-dev plain">音声</div>
+          <div class="s-dev plain">{tr("音声", "Audio")}</div>
         {/if}
         {@render slots(t.effects, t.fx_links, t.id)}
         {@render sendsOf(t)}
@@ -342,21 +363,21 @@
               oninput={(e) => api.previewEdit([{ op: "set_track_prop", id: t.id, prop: "pan", value: Number(e.currentTarget.value) }])}
               onchange={(e) => setPan(t, Number(e.currentTarget.value))}
               ondblclick={() => setPan(t, 0)}
-              aria-label="パン"
-              title="パン(ダブルクリックで中央)"
+              aria-label={tr("パン", "Pan")}
+              title={tr("パン(ダブルクリックで中央)", "Pan (double-click to center)")}
             />
             <span>R</span>
           </div>
           <div class="ms">
-            <button class="btn letter" class:m-on={t.mute} onclick={(e) => (e.stopPropagation(), toggle(t, "mute"))} title="ミュート">M</button>
-            <button class="btn letter" class:s-on={t.solo} onclick={(e) => (e.stopPropagation(), toggle(t, "solo"))} title="ソロ">S</button>
+            <button class="btn letter" class:m-on={t.mute} onclick={(e) => (e.stopPropagation(), toggle(t, "mute"))} title={tr("ミュート", "Mute")}>M</button>
+            <button class="btn letter" class:s-on={t.solo} onclick={(e) => (e.stopPropagation(), toggle(t, "solo"))} title={tr("ソロ", "Solo")}>S</button>
           </div>
           {@render fader(t)}
         </div>
       </div>
     {/each}
 
-    {#if buses.length > 0}<span class="grp-label">バス</span>{/if}
+    {#if buses.length > 0}<span class="grp-label">{tr("バス", "Buses")}</span>{/if}
     {#each buses as t (t.id)}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
       <div class="strip bus" role="group" aria-label={t.name} class:sel={selected === t.id} style="--c:{t.color ?? '#e8a07c'}" onclick={() => select(t.id)}>
@@ -365,56 +386,64 @@
           <Icon name="merge" size={13} /><span title={t.name}>{t.name}</span>
           {#if (loads[t.id] ?? 0) >= 0.5}<small class="load" class:heavy={loads[t.id] >= 20} title={LOAD_TITLE}>{loads[t.id].toFixed(0)}%</small>{/if}
         </div>
-        <div class="s-dev plain" title="このバスへ送っているトラック">受けている: {receivers(t).map((r) => r.name).join("・") || "なし"}</div>
+        <div class="s-dev plain" title={tr("このバスへ送っているトラック", "Tracks sending to this bus")}>
+          {tr("受けている", "From")}: {receivers(t).map((r) => r.name).join(tr("・", ", ")) || tr("なし", "none")}
+        </div>
         {@render slots(t.effects, t.fx_links, t.id)}
         {@render sendsOf(t)}
         <div class="s-bottom">
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div class="pan" role="presentation" onclick={(e) => e.stopPropagation()}>
             <span>L</span>
-            <input type="range" min="-1" max="1" step="0.02" value={t.pan} oninput={(e) => api.previewEdit([{ op: "set_track_prop", id: t.id, prop: "pan", value: Number(e.currentTarget.value) }])} onchange={(e) => setPan(t, Number(e.currentTarget.value))} ondblclick={() => setPan(t, 0)} aria-label="パン" />
+            <input type="range" min="-1" max="1" step="0.02" value={t.pan} oninput={(e) => api.previewEdit([{ op: "set_track_prop", id: t.id, prop: "pan", value: Number(e.currentTarget.value) }])} onchange={(e) => setPan(t, Number(e.currentTarget.value))} ondblclick={() => setPan(t, 0)} aria-label={tr("パン", "Pan")} />
             <span>R</span>
           </div>
           <div class="ms">
-            <button class="btn letter" class:m-on={t.mute} onclick={(e) => (e.stopPropagation(), toggle(t, "mute"))} title="ミュート">M</button>
-            <button class="btn letter" class:s-on={t.solo} onclick={(e) => (e.stopPropagation(), toggle(t, "solo"))} title="ソロ">S</button>
+            <button class="btn letter" class:m-on={t.mute} onclick={(e) => (e.stopPropagation(), toggle(t, "mute"))} title={tr("ミュート", "Mute")}>M</button>
+            <button class="btn letter" class:s-on={t.solo} onclick={(e) => (e.stopPropagation(), toggle(t, "solo"))} title={tr("ソロ", "Solo")}>S</button>
           </div>
           {@render fader(t)}
         </div>
       </div>
     {/each}
 
-    <span class="grp-label">出口</span>
+    <span class="grp-label">{tr("出口", "Output")}</span>
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-    <div class="strip master" role="group" aria-label="マスター" class:sel={selected === MASTER_FOCUS_ID} onclick={() => select(MASTER_FOCUS_ID)}>
+    <div class="strip master" role="group" aria-label={tr("マスター", "Master")} class:sel={selected === MASTER_FOCUS_ID} onclick={() => select(MASTER_FOCUS_ID)}>
       <div class="s-top" style="background:var(--accent)"></div>
       <div class="s-name">
-        <Icon name="volume-2" size={13} /><span>マスター</span>
+        <Icon name="volume-2" size={13} /><span>{tr("マスター", "Master")}</span>
         {#if (loads[MASTER_FOCUS_ID] ?? 0) >= 0.5}<small class="load" class:heavy={loads[MASTER_FOCUS_ID] >= 20} title={LOAD_TITLE}
             >{loads[MASTER_FOCUS_ID].toFixed(0)}%</small
           >{/if}
       </div>
-      <div class="s-dev plain">曲全体</div>
+      <div class="s-dev plain">{tr("曲全体", "Whole song")}</div>
       {@render slots(project.master.effects, project.master.fx_links, MASTER_FOCUS_ID)}
       <div class="s-bottom">{@render fader(null)}</div>
     </div>
     <MonitorStrip />
   </div>
 
-  <div class="split" role="separator" aria-orientation="horizontal" title="ドラッグで高さを変える" onpointerdown={startSplit}></div>
+  <div class="split" role="separator" aria-orientation="horizontal" title={tr("ドラッグで高さを変える", "Drag to resize")} onpointerdown={startSplit}></div>
 
   <div class="detail">
     <div class="d-head">
       <span class="dot" style="background:{selected === MASTER_FOCUS_ID ? 'var(--accent)' : (selectedTrack?.color ?? '#777')}"></span>
-      <b>{selected === MASTER_FOCUS_ID ? "マスター" : selectedTrack?.name}</b><span class="dim">のエフェクト</span>
+      {#if isEn()}<span class="dim">Effects on</span>{/if}<b>{selected === MASTER_FOCUS_ID ? tr("マスター", "Master") : selectedTrack?.name}</b>{#if !isEn()}<span class="dim">のエフェクト</span>{/if}
       <span class="sp"></span>
-      <span class="dim hint">口から線を引いてつなぐ・線をクリックで音量 / 間に足す / 切る・Ctrl+ドラッグでまとめて切る・名前はダブルクリック</span>
+      <span class="dim hint"
+        >{tr(
+          "口から線を引いてつなぐ・線をクリックで音量 / 間に足す / 切る・Ctrl+ドラッグでまとめて切る・名前はダブルクリック",
+          "Drag from a port to wire · click a wire for gain / insert / cut · Ctrl+drag to cut several · double-click to rename",
+        )}</span
+      >
       <button
         class="btn sm"
         class:on={inspectorOpen}
         aria-pressed={inspectorOpen}
         onclick={toggleInspector}
-        title={inspectorOpen ? "インスペクターを閉じる" : "インスペクターで開く(つまみを全部見る)"}><Icon name="sliders-horizontal" />インスペクター</button
+        title={inspectorOpen ? tr("インスペクターを閉じる", "Close inspector") : tr("インスペクターで開く(つまみを全部見る)", "Open in inspector (see all parameters)")}
+        ><Icon name="sliders-horizontal" />{tr("インスペクター", "Inspector")}</button
       >
     </div>
     <div class="d-body">

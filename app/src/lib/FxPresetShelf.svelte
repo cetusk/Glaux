@@ -5,7 +5,8 @@
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { focusNow } from "./menu";
-  import { FX_COLORS, FX_KIND_JA, fxName } from "./fx";
+  import { FX_COLORS, FX_KIND_EN, FX_KIND_JA, fxKindName, fxName } from "./fx";
+  import { tr } from "./i18n.svelte";
   import { fxDrag, fxDropTargets } from "./fxDrag.svelte";
   import { projectRev } from "./selection.svelte";
   import { showError, showToast } from "./toast.svelte";
@@ -48,18 +49,18 @@
     const q = query.trim().toLowerCase();
     if (!q) return presets;
     return presets.filter((p) =>
-      [p.name, p.note ?? "", p.origin ?? "", p.kind, FX_KIND_JA[p.kind] ?? ""].some((s) => s.toLowerCase().includes(q)),
+      [p.name, p.note ?? "", p.origin ?? "", p.kind, FX_KIND_JA[p.kind] ?? "", FX_KIND_EN[p.kind] ?? ""].some((s) => s.toLowerCase().includes(q)),
     );
   });
 
-  const kindLabel = (p: api.FxPresetInfo) => (p.kind === "clap" ? (p.plugin_id?.split(".").pop() ?? "CLAP") : (FX_KIND_JA[p.kind] ?? p.kind));
+  const kindLabel = (p: api.FxPresetInfo) => (p.kind === "clap" ? (p.plugin_id?.split(".").pop() ?? "CLAP") : (fxKindName(p.kind) ?? p.kind));
   const colorOf = (p: api.FxPresetInfo) => FX_COLORS[p.kind] ?? "#777";
 
   async function add(p: api.FxPresetInfo, parked: boolean) {
     try {
       await api.applyFxPreset(targetId, p.name, { parked });
     } catch (e) {
-      showError("エフェクトを足せませんでした", e);
+      showError(tr("エフェクトを足せませんでした", "Couldn't add the effect"), e);
     }
   }
 
@@ -74,7 +75,7 @@
       await api.deleteFxPreset(p.name);
       reload();
     } catch (e) {
-      showError("削除できませんでした", e);
+      showError(tr("削除できませんでした", "Couldn't delete"), e);
     }
   }
 
@@ -134,36 +135,36 @@
     try {
       await api.saveFxPreset(s.target, s.fx.id, name, s.note.trim() || null, overwrite);
       saving = null;
-      showToast("ok", `エフェクトのプリセット「${name}」を保存しました`);
+      showToast("ok", tr(`エフェクトのプリセット「${name}」を保存しました`, `Saved effect preset "${name}"`));
       reload();
     } catch (e) {
-      showError("保存できませんでした", e);
+      showError(tr("保存できませんでした", "Couldn't save"), e);
     }
   }
 </script>
 
 <div class="shelf" class:open class:drop={fxDrag.overShelf} bind:this={rootEl}>
   {#if fxDrag.overShelf}
-    <div class="drop-msg"><Icon name="archive" />離すとエフェクトのプリセットに保存</div>
+    <div class="drop-msg"><Icon name="archive" />{tr("離すとエフェクトのプリセットに保存", "Drop to save as an effect preset")}</div>
   {/if}
   {#if !open}
-    <button class="rail" onclick={toggle} title="エフェクトのプリセットを開く" aria-expanded="false">
-      <Icon name="archive" /><span>エフェクトのプリセット</span><span class="count">{presets.length}</span>
+    <button class="rail" onclick={toggle} title={tr("エフェクトのプリセットを開く", "Open effect presets")} aria-expanded="false">
+      <Icon name="archive" /><span>{tr("エフェクトのプリセット", "Effect presets")}</span><span class="count">{presets.length}</span>
     </button>
   {:else}
     <div class="head">
-      <Icon name="archive" /><b>エフェクトのプリセット</b><span class="count">{presets.length}</span>
+      <Icon name="archive" /><b>{tr("エフェクトのプリセット", "Effect presets")}</b><span class="count">{presets.length}</span>
       <span class="sp"></span>
-      <button class="btn sm icon ghost" onclick={toggle} aria-expanded="true" title="たたむ" aria-label="たたむ"><Icon name="chevron-right" /></button>
+      <button class="btn sm icon ghost" onclick={toggle} aria-expanded="true" title={tr("たたむ", "Collapse")} aria-label={tr("たたむ", "Collapse")}><Icon name="chevron-right" /></button>
     </div>
-    <input class="search" type="search" placeholder="名前・メモ・種類で探す" bind:value={query} aria-label="エフェクトのプリセットを探す" />
+    <input class="search" type="search" placeholder={tr("名前・メモ・種類で探す", "Search by name, note, or type")} bind:value={query} aria-label={tr("エフェクトのプリセットを探す", "Search effect presets")} />
 
     {#if saving}
       <div class="save">
-        <span class="dim">{fxName(saving.fx)} を保存</span>
+        <span class="dim">{tr(`${fxName(saving.fx)} を保存`, `Save ${fxName(saving.fx)}`)}</span>
         <input
           use:focusNow
-          placeholder="名前"
+          placeholder={tr("名前", "Name")}
           bind:value={saving.name}
           oninput={() => saving && (saving.exists = false)}
           onkeydown={(e) => {
@@ -174,7 +175,7 @@
         />
         <textarea
           rows="2"
-          placeholder="メモ(どんな音か・何に使うか)"
+          placeholder={tr("メモ(どんな音か・何に使うか)", "Note (what it sounds like, what it's for)")}
           bind:value={saving.note}
           onkeydown={(e) => {
             if (e.isComposing) return;
@@ -184,12 +185,12 @@
         ></textarea>
         <div class="save-row">
           {#if saving.exists}
-            <span class="warn">同じ名前があります</span>
-            <button class="btn sm danger" onclick={() => commitSave(true)}>上書き</button>
+            <span class="warn">{tr("同じ名前があります", "Name already exists")}</span>
+            <button class="btn sm danger" onclick={() => commitSave(true)}>{tr("上書き", "Overwrite")}</button>
           {:else}
-            <button class="btn sm primary" onclick={() => commitSave()} disabled={!saving.name.trim()}>保存</button>
+            <button class="btn sm primary" onclick={() => commitSave()} disabled={!saving.name.trim()}>{tr("保存", "Save")}</button>
           {/if}
-          <button class="btn sm ghost" onclick={() => (saving = null)}>やめる</button>
+          <button class="btn sm ghost" onclick={() => (saving = null)}>{tr("やめる", "Cancel")}</button>
         </div>
       </div>
     {/if}
@@ -200,32 +201,40 @@
           <div class="top">
             <span class="kind">{kindLabel(p)}</span>
             <span class="sp"></span>
-            <button class="btn sm icon ghost" onclick={() => add(p, false)} title="線の最後に足す" aria-label="線の最後に足す"><Icon name="plus" size={13} /></button>
-            <button class="btn sm icon ghost" onclick={() => add(p, true)} title="つながずに置く(線を引くまで鳴らない)" aria-label="つながずに置く"><Icon name="unplug" size={13} /></button>
+            <button class="btn sm icon ghost" onclick={() => add(p, false)} title={tr("線の最後に足す", "Add to end of chain")} aria-label={tr("線の最後に足す", "Add to end of chain")}><Icon name="plus" size={13} /></button>
+            <button class="btn sm icon ghost" onclick={() => add(p, true)} title={tr("つながずに置く(線を引くまで鳴らない)", "Place unconnected (silent until wired)")} aria-label={tr("つながずに置く", "Place unconnected")}><Icon name="unplug" size={13} /></button>
             <button
               class="btn sm icon ghost"
               class:armed={confirmDelete === p.name}
               onclick={() => remove(p)}
               onblur={() => confirmDelete === p.name && (confirmDelete = null)}
-              title={confirmDelete === p.name ? "もう一度押すと削除(元に戻せません)" : "削除"}
-              aria-label="削除"><Icon name="trash-2" size={13} /></button
+              title={confirmDelete === p.name ? tr("もう一度押すと削除(元に戻せません)", "Click again to delete (can't be undone)") : tr("削除", "Delete")}
+              aria-label={tr("削除", "Delete")}><Icon name="trash-2" size={13} /></button
             >
           </div>
           <b>{p.name}</b>
           {#if p.note}<span class="pnote">{p.note}</span>{/if}
-          {#if p.origin}<span class="origin">{p.origin} から</span>{/if}
+          {#if p.origin}<span class="origin">{tr(`${p.origin} から`, `From ${p.origin}`)}</span>{/if}
         </div>
       {:else}
         <div class="empty">
           {#if presets.length === 0}
-            まだありません。左のカードをここへドラッグするか、カードの「…」→「エフェクトのプリセットに保存」で入れられます。どのトラック・曲でも使えます
+            {tr(
+              "まだありません。左のカードをここへドラッグするか、カードの「…」→「エフェクトのプリセットに保存」で入れられます。どのトラック・曲でも使えます",
+              "None yet. Drag a card from the left here, or use \"…\" → \"Save as effect preset\" on a card. Usable in any track or song",
+            )}
           {:else}
-            見つかりません
+            {tr("見つかりません", "No matches")}
           {/if}
         </div>
       {/each}
       {#if shown.length > 0}
-        <div class="hint">左へドラッグして置く(線の上なら間に入る)。左のカードをここへ落とすと保存。どのトラック・曲でも使える</div>
+        <div class="hint">
+          {tr(
+            "左へドラッグして置く(線の上なら間に入る)。左のカードをここへ落とすと保存。どのトラック・曲でも使える",
+            "Drag left to place (drop on a wire to insert). Drop a card from the left here to save. Usable in any track or song",
+          )}
+        </div>
       {/if}
     </div>
   {/if}

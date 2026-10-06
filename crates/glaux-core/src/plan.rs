@@ -361,7 +361,7 @@ pub fn section_design_command(
             Some(PlanCommand::Create {
                 plan: Plan {
                     id: new_id,
-                    name: "曲全体".to_owned(),
+                    name: crate::i18n::t("曲全体", "Whole song").to_owned(),
                     kind: "song".to_owned(),
                     rev: 1,
                     derived_from: None,

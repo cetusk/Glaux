@@ -2,6 +2,7 @@
 //! (MCP の get_design・plan_log と同じ中身を、画面で使う形で返す)。
 
 use crate::actor::SessionHandle;
+use glaux_core::i18n::t;
 use glaux_core::plan::PlanCommand;
 use glaux_core::HistoryEntry;
 use serde_json::{json, Value};
@@ -172,17 +173,28 @@ fn apply_proposal(
 ) -> Result<glaux_core::Project, String> {
     let changed = glaux_core::designcheck::patch_base_changed(project, &p.patch_base);
     if !changed.is_empty() {
-        return Err(format!(
-            "案を出した後に{}が直されたので、案の音を当てません(直した所を案で上書きしないため)。\
-             AI に案を作り直してもらってください",
-            changed.join("・")
-        ));
+        return Err(if glaux_core::i18n::is_en() {
+            format!(
+                "{} changed after the proposal was made, so its notes are not applied (to avoid overwriting your edits). \
+                 Ask the AI to remake the proposal",
+                changed.join(", ")
+            )
+        } else {
+            format!(
+                "案を出した後に{}が直されたので、案の音を当てません(直した所を案で上書きしないため)。\
+                 AI に案を作り直してもらってください",
+                changed.join("・")
+            )
+        });
     }
     let mut alt = project.clone();
     if !p.patch.is_empty() {
         alt.apply(&glaux_core::Command::batch("案", p.patch.clone()))
             .map_err(|e| {
-                format!("案を作った後に曲が変わったので、案の音を当てられません({e})。AI に案を作り直してもらってください")
+                glaux_core::tr!(
+                    "案を作った後に曲が変わったので、案の音を当てられません({e})。AI に案を作り直してもらってください",
+                    "The song changed after the proposal was made, so its notes can't be applied ({e}). Ask the AI to remake the proposal"
+                )
             })?;
     }
     Ok(alt)
@@ -235,11 +247,9 @@ pub async fn save(
     let command = match plan_id {
         Some(pid) => {
             let id = parse_plan_id(pid)?;
-            let old = plans
-                .doc()
-                .plans
-                .get(&id)
-                .ok_or_else(|| format!("計画が見つかりません: {pid}"))?;
+            let old = plans.doc().plans.get(&id).ok_or_else(|| {
+                glaux_core::tr!("計画が見つかりません: {pid}", "Plan not found: {pid}")
+            })?;
             let state = match state {
                 None => old.state.clone(),
                 Some("adopted") => None,
@@ -321,13 +331,18 @@ pub async fn estimate(handle: &SessionHandle) -> Result<Value, String> {
     use glaux_core::plan::Plan;
     let (project, _) = handle.get_project_shared().await?;
     if project.sections.is_empty() {
-        return Err(
-            "区間がありません。ルーラーの右クリックで区間を置くか、AI に曲の計画書を頼んでください"
-                .to_owned(),
-        );
+        return Err(t(
+            "区間がありません。ルーラーの右クリックで区間を置くか、AI に曲の計画書を頼んでください",
+            "No sections. Add sections by right-clicking the ruler, or ask the AI for a song plan",
+        )
+        .to_owned());
     }
     if project.sections.iter().any(|s| s.id.is_none()) {
-        return Err("区間に ID がありません(設計画面で区間を直すと付きます)".to_owned());
+        return Err(t(
+            "区間に ID がありません(設計画面で区間を直すと付きます)",
+            "Sections have no IDs (editing sections in the design view adds them)",
+        )
+        .to_owned());
     }
     let plans = handle.get_plans().await?;
     let doc = plans.doc().clone();
@@ -335,11 +350,14 @@ pub async fn estimate(handle: &SessionHandle) -> Result<Value, String> {
         tokio::task::spawn_blocking(move || glaux_core::planestimate::estimate(&project, &doc))
             .await
             .map_err(|e| e.to_string())?;
-    let why = "今の音から推定した計画(人が確かめて採用するまで、AI は参考としてだけ使う)";
+    let why = t(
+        "今の音から推定した計画(人が確かめて採用するまで、AI は参考としてだけ使う)",
+        "Plan estimated from the current notes (the AI uses it only as reference until you review and adopt it)",
+    );
     let mut todo: Vec<(String, &str, Value)> = Vec::new();
     let song = est.song.is_some();
     if let Some(sp) = est.song {
-        todo.push(("曲全体".to_owned(), "song", json!(sp)));
+        todo.push((t("曲全体", "Whole song").to_owned(), "song", json!(sp)));
     }
     let mut created = Vec::new();
     for (name, pp) in est.parts {
@@ -349,9 +367,9 @@ pub async fn estimate(handle: &SessionHandle) -> Result<Value, String> {
     let mut entries = Vec::new();
     for (name, kind, body) in todo {
         let label = if kind == "song" {
-            "曲全体の計画を推定".to_owned()
+            t("曲全体の計画を推定", "Estimate whole-song plan").to_owned()
         } else {
-            format!("「{name}」の計画を推定")
+            glaux_core::tr!("「{name}」の計画を推定", "Estimate plan for \"{name}\"")
         };
         let plan = Plan {
             id: glaux_core::PlanId::new(),
@@ -391,7 +409,10 @@ pub async fn revert(handle: &SessionHandle, entry_id: &str) -> Result<Value, Str
         .revert_plan(
             id,
             glaux_core::Author::Human,
-            note("画面で「この変更だけ取り消す」"),
+            note(t(
+                "画面で「この変更だけ取り消す」",
+                "\"Undo only this change\" in the app",
+            )),
         )
         .await?;
     Ok(json!({ "entry_id": entry, "conflicts": conflicts }))
@@ -401,10 +422,18 @@ pub async fn revert(handle: &SessionHandle, entry_id: &str) -> Result<Value, Str
 pub async fn restore(handle: &SessionHandle, plan_id: &str, rev: u64) -> Result<Value, String> {
     let id = parse_plan_id(plan_id)?;
     let plans = handle.get_plans().await?;
-    let old = glaux_core::plan::plan_at_rev(&plans, &id, rev)
-        .ok_or_else(|| format!("版 {rev} が履歴に見つかりません"))?;
+    let old = glaux_core::plan::plan_at_rev(&plans, &id, rev).ok_or_else(|| {
+        glaux_core::tr!(
+            "版 {rev} が履歴に見つかりません",
+            "Revision {rev} not found in history"
+        )
+    })?;
     let cur_rev = plans.doc().plans.get(&id).map(|p| p.rev);
-    let label = format!("「{}」を版 {rev} に戻す", old.name);
+    let label = glaux_core::tr!(
+        "「{}」を版 {rev} に戻す",
+        "Restore \"{}\" to revision {rev}",
+        old.name
+    );
     let command = match cur_rev {
         Some(r) => PlanCommand::Replace {
             plan: glaux_core::plan::Plan { rev: r + 1, ..old },
@@ -440,7 +469,12 @@ pub async fn settle_estimated(handle: &SessionHandle, adopt: bool) -> Result<Val
         .filter(|p| p.state.is_none());
     for p in targets {
         if let (true, "song", Some(base)) = (adopt, p.kind.as_str(), adopted_song.as_ref()) {
-            let label = format!("推定した計画「{}」を「{}」に足して採用", p.name, base.name);
+            let label = glaux_core::tr!(
+                "推定した計画「{}」を「{}」に足して採用",
+                "Adopt estimated plan \"{}\" by merging into \"{}\"",
+                p.name,
+                base.name
+            );
             let mut body = base.body.clone();
             if let (Some(to), Some(from)) = (body.as_object_mut(), p.body.as_object()) {
                 for (k, v) in from {
@@ -471,7 +505,11 @@ pub async fn settle_estimated(handle: &SessionHandle, adopt: bool) -> Result<Val
             continue;
         }
         let (command, label) = if adopt {
-            let label = format!("推定した計画「{}」を採用", p.name);
+            let label = glaux_core::tr!(
+                "推定した計画「{}」を採用",
+                "Adopt estimated plan \"{}\"",
+                p.name
+            );
             (
                 PlanCommand::Replace {
                     plan: glaux_core::plan::Plan {
@@ -483,7 +521,11 @@ pub async fn settle_estimated(handle: &SessionHandle, adopt: bool) -> Result<Val
                 label,
             )
         } else {
-            let label = format!("推定した計画「{}」を捨てる", p.name);
+            let label = glaux_core::tr!(
+                "推定した計画「{}」を捨てる",
+                "Discard estimated plan \"{}\"",
+                p.name
+            );
             (PlanCommand::Delete { id: p.id }, label)
         };
         entries.push(
@@ -593,7 +635,7 @@ pub async fn propose(
         .apply_plan(
             PlanCommand::Create { plan },
             author,
-            format!("案「{name}」"),
+            glaux_core::tr!("案「{name}」", "Proposal \"{name}\""),
             note,
         )
         .await?;
@@ -610,7 +652,9 @@ pub async fn proposal_projects(
     plan_id: &str,
 ) -> Result<(glaux_core::Project, glaux_core::Project), String> {
     let (now, mut alts) = proposal_projects_many(handle, &[plan_id.to_owned()]).await?;
-    let alt = alts.pop().ok_or("案が見つかりません")?;
+    let alt = alts
+        .pop()
+        .ok_or_else(|| t("案が見つかりません", "Proposal not found").to_owned())?;
     Ok((now, alt))
 }
 
@@ -630,8 +674,13 @@ pub async fn proposal_projects_many(
             .plans
             .get(&id)
             .filter(|p| p.state.as_deref() == Some("proposal"))
-            .ok_or_else(|| format!("案が見つかりません: {pid}"))?;
-        alts.push(apply_proposal(&now, p).map_err(|e| format!("案「{}」: {e}", p.name))?);
+            .ok_or_else(|| {
+                glaux_core::tr!("案が見つかりません: {pid}", "Proposal not found: {pid}")
+            })?;
+        alts.push(
+            apply_proposal(&now, p)
+                .map_err(|e| glaux_core::tr!("案「{}」: {e}", "Proposal \"{}\": {e}", p.name))?,
+        );
     }
     Ok((now, alts))
 }
@@ -689,13 +738,13 @@ pub async fn adopt_proposal(
         .get(&id)
         .filter(|p| p.state.as_deref() == Some("proposal"))
         .cloned()
-        .ok_or("案が見つかりません")?;
+        .ok_or_else(|| t("案が見つかりません", "Proposal not found").to_owned())?;
     // 案を出した後に、案が触る所が直されていたら当てない(手直しを上書きしない)。当てられるかもここで確かめる
     {
         let (project, _) = handle.get_project_shared().await?;
         apply_proposal(&project, &p)?;
     }
-    let label = format!("案「{}」を採用", p.name);
+    let label = glaux_core::tr!("案「{}」を採用", "Adopt proposal \"{}\"", p.name);
     let mut song_entry = None;
     let mut kept_locked = Vec::new();
     if !p.patch.is_empty() {
@@ -705,7 +754,7 @@ pub async fn adopt_proposal(
             .apply(
                 glaux_core::Command::batch(label.clone(), p.patch.clone()),
                 glaux_core::Author::Ai {
-                    model: "案(人が採用)".to_owned(),
+                    model: t("案(人が採用)", "Proposal (adopted by you)").to_owned(),
                 },
                 label.clone(),
             )
@@ -716,13 +765,15 @@ pub async fn adopt_proposal(
                 kept_locked = m.locks;
             }
             Err(glaux_core::CoreError::Locked(what)) => {
-                return Err(format!(
-                    "案の編集は全部が固定の音に当たるので、当てられません({what})。固定は人が外すまで変えません"
+                return Err(glaux_core::tr!(
+                    "案の編集は全部が固定の音に当たるので、当てられません({what})。固定は人が外すまで変えません",
+                    "All of the proposal's edits touch locked notes, so it can't be applied ({what}). Locked notes stay until you unlock them"
                 ));
             }
             Err(e) => {
-                return Err(format!(
-                    "案を作った後に曲が変わったので、案の音を当てられません({e})。AI に案を作り直してもらってください"
+                return Err(glaux_core::tr!(
+                    "案を作った後に曲が変わったので、案の音を当てられません({e})。AI に案を作り直してもらってください",
+                    "The song changed after the proposal was made, so its notes can't be applied ({e}). Ask the AI to remake the proposal"
                 ));
             }
         }
@@ -769,7 +820,11 @@ pub async fn adopt_proposal(
                     .apply_plan(
                         PlanCommand::Delete { id: p.id.clone() },
                         human,
-                        format!("採用した案「{}」をしまう", p.name),
+                        glaux_core::tr!(
+                            "採用した案「{}」をしまう",
+                            "Put away adopted proposal \"{}\"",
+                            p.name
+                        ),
                         linked(&label),
                     )
                     .await?,
@@ -827,7 +882,11 @@ pub async fn adopt_proposal(
         .collect();
     let mut discarded = Vec::new();
     for (id, name) in others {
-        let l = format!("案「{}」を採用したので、案「{name}」を捨てる", p.name);
+        let l = glaux_core::tr!(
+            "案「{}」を採用したので、案「{name}」を捨てる",
+            "Discard proposal \"{name}\" (adopted \"{}\")",
+            p.name
+        );
         plan_entry_ids.push(
             handle
                 .apply_plan(

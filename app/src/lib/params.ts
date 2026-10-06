@@ -1,4 +1,5 @@
 // つまみ(パラメータ)のスライダーの位置と値の変換、値の表示(インスペクターとノード表示で共通)。
+import { unitText } from "./paramText";
 import type { ParamView } from "./types";
 
 export function fmtValue(p: ParamView, dragging?: number): string {
@@ -7,7 +8,7 @@ export function fmtValue(p: ParamView, dragging?: number): string {
   const v = dragging ?? p.current;
   if (typeof v === "number") {
     const digits = p.range.kind === "int" ? 0 : Math.abs(v) >= 100 ? 0 : 2;
-    return `${v.toFixed(digits)}${p.unit ?? ""}`;
+    return `${v.toFixed(digits)}${unitText(p.unit)}`;
   }
   return `${v}`;
 }

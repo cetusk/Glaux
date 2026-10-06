@@ -16,6 +16,7 @@
 //! `-c mcp_servers.glaux.url=...` で渡す([`codex_args`])。会話の継続は `codex exec resume <thread_id>`、
 //! 出力の JSONL は [`parse_codex_line`] で同じ UI イベントに変換する。認証はホストの Codex のログインを使う。
 
+use glaux_core::i18n::t;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,7 +59,10 @@ impl Provider {
         match s.unwrap_or("") {
             "" | "claude" => Ok(Provider::Claude),
             "codex" => Ok(Provider::Codex),
-            other => Err(format!("チャットの相手が不正です: {other}")),
+            other => Err(glaux_core::tr!(
+                "チャットの相手が不正です: {other}",
+                "Invalid chat provider: {other}"
+            )),
         }
     }
 
@@ -204,7 +208,7 @@ pub fn parse_codex_line(line: &str) -> (Vec<ChatEvent>, Option<String>) {
                 ok: false,
                 text: v["error"]["message"]
                     .as_str()
-                    .unwrap_or("GPT の実行に失敗しました")
+                    .unwrap_or(t("GPT の実行に失敗しました", "GPT run failed"))
                     .to_owned(),
             }],
             None,
@@ -393,7 +397,10 @@ impl ChatManager {
             .map(|m| m.trim().to_owned());
         if let Some(m) = &model {
             if !valid_model_name(m) {
-                return Err(format!("モデル名が不正です: {m}"));
+                return Err(glaux_core::tr!(
+                    "モデル名が不正です: {m}",
+                    "Invalid model name: {m}"
+                ));
             }
         }
         *self.model.lock().expect("model lock") = model;
@@ -416,7 +423,10 @@ impl ChatManager {
             .map(|e| e.trim().to_owned());
         if let Some(e) = &effort {
             if !valid_effort(e) {
-                return Err(format!("effort が不正です: {e}"));
+                return Err(glaux_core::tr!(
+                    "effort が不正です: {e}",
+                    "Invalid effort: {e}"
+                ));
             }
         }
         *self.effort.lock().expect("effort lock") = effort;
@@ -727,7 +737,11 @@ pub async fn run_turn(app: tauri::AppHandle, mgr: std::sync::Arc<ChatManager>, p
         emit(
             &app,
             &ChatEvent::Error {
-                message: "前の指示がまだ実行中です".to_owned(),
+                message: t(
+                    "前の指示がまだ実行中です",
+                    "The previous instruction is still running",
+                )
+                .to_owned(),
             },
         );
         return;
@@ -740,8 +754,9 @@ pub async fn run_turn(app: tauri::AppHandle, mgr: std::sync::Arc<ChatManager>, p
         emit(
             &app,
             &ChatEvent::Notice {
-                text: format!(
+                text: glaux_core::tr!(
                     "相手を {} に切り替えたので、新しい会話を始めます",
+                    "Switched to {}, so starting a new conversation",
                     provider.label()
                 ),
             },
@@ -758,7 +773,11 @@ pub async fn run_turn(app: tauri::AppHandle, mgr: std::sync::Arc<ChatManager>, p
         emit(
             &app,
             &ChatEvent::Notice {
-                text: "前回の会話を再開できなかったため、新しい会話で続けます".to_owned(),
+                text: t(
+                    "前回の会話を再開できなかったため、新しい会話で続けます",
+                    "Couldn't resume the previous conversation, so continuing in a new one",
+                )
+                .to_owned(),
             },
         );
         result = run_turn_inner(&app, &mgr, &prompt, &mut saw_init).await;
@@ -783,29 +802,47 @@ async fn run_turn_inner(
     let mut child = mgr.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             match provider {
-                Provider::Claude => "claude コマンドが見つかりません。Claude Code をインストールして PATH を通してください".to_owned(),
-                Provider::Codex => "codex コマンドが見つかりません。Codex CLI をインストールしてください(npm i -g @openai/codex の後、codex login でログイン)".to_owned(),
+                Provider::Claude => t(
+                    "claude コマンドが見つかりません。Claude Code をインストールして PATH を通してください",
+                    "claude command not found. Install Claude Code and add it to PATH",
+                )
+                .to_owned(),
+                Provider::Codex => t(
+                    "codex コマンドが見つかりません。Codex CLI をインストールしてください(npm i -g @openai/codex の後、codex login でログイン)",
+                    "codex command not found. Install Codex CLI (npm i -g @openai/codex, then log in with codex login)",
+                )
+                .to_owned(),
             }
         } else {
-            format!("{command} を起動できません: {e}")
+            glaux_core::tr!("{command} を起動できません: {e}", "Can't start {command}: {e}")
         }
     })?;
 
     // 指示本文を stdin で渡す(書き終えたら閉じて EOF を伝える)
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .map_err(|e| format!("指示の送信に失敗: {e}"))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| format!("指示の送信に失敗: {e}"))?;
+        stdin.write_all(prompt.as_bytes()).await.map_err(|e| {
+            glaux_core::tr!(
+                "指示の送信に失敗: {e}",
+                "Failed to send the instruction: {e}"
+            )
+        })?;
+        stdin.shutdown().await.map_err(|e| {
+            glaux_core::tr!(
+                "指示の送信に失敗: {e}",
+                "Failed to send the instruction: {e}"
+            )
+        })?;
     }
 
-    let stdout = child.stdout.take().ok_or("stdout を取得できません")?;
-    let mut stderr = child.stderr.take().ok_or("stderr を取得できません")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| t("stdout を取得できません", "Can't get stdout").to_owned())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| t("stderr を取得できません", "Can't get stderr").to_owned())?;
     *mgr.child.lock().expect("child lock") = Some(child);
 
     // stderr は別タスクで吸っておき、異常終了時のエラーメッセージに使う
@@ -847,7 +884,7 @@ async fn run_turn_inner(
     };
 
     match status {
-        None => Err("キャンセルしました".to_owned()),
+        None => Err(t("キャンセルしました", "Cancelled").to_owned()),
         Some(s) if s.success() || got_result => Ok(()),
         Some(s) => {
             let stderr_text = stderr_task.await.unwrap_or_default();
@@ -861,12 +898,16 @@ async fn run_turn_inner(
                 .collect::<Vec<_>>()
                 .join("\n");
             let hint = match provider {
-                Provider::Codex => {
-                    "\n(codex login でログインしてあるか、モデル名が正しいかも確認してください)"
-                }
+                Provider::Codex => t(
+                    "\n(codex login でログインしてあるか、モデル名が正しいかも確認してください)",
+                    "\n(Also check that you're logged in with codex login and the model name is correct)",
+                ),
                 Provider::Claude => "",
             };
-            Err(format!("{command} が異常終了しました({s})\n{tail}{hint}"))
+            Err(glaux_core::tr!(
+                "{command} が異常終了しました({s})\n{tail}{hint}",
+                "{command} exited abnormally ({s})\n{tail}{hint}"
+            ))
         }
     }
 }

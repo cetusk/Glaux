@@ -4,6 +4,8 @@
   // 開いている間、タイムラインとピアノロールはこの幅だけ押し縮められる(App)。幅は左端をドラッグで変える。
   // すべての編集は Command API(apply_edit)経由なので履歴に載り undo できる。
   import { showError } from "./toast.svelte";
+  import { plural, tr } from "./i18n.svelte";
+  import { paramDesc, paramLabel } from "./paramText";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { flip } from "svelte/animate";
@@ -22,6 +24,8 @@
     serialOrder,
     trackChoices,
     unlinkBridging,
+    fxKindDesc,
+    fxKindName,
   } from "./fx";
   import { loadIrFromFile } from "./ir";
   import { keepInView } from "./menu";
@@ -90,7 +94,7 @@
   async function applyClapPreset(p: api.ClapPreset) {
     if (!track || clapPresetBusy) return;
     clapPresetBusy = true;
-    clapPresetMsg = `「${p.name}」を読み込み中…`;
+    clapPresetMsg = tr(`「${p.name}」を読み込み中…`, `Loading "${p.name}"…`);
     try {
       await api.clapLoadPreset(track.id, p.id);
       clapPresetMsg = null;
@@ -104,7 +108,7 @@
   /// マスターバスを開いている(エフェクトチェーンだけを扱う)
   const isMaster = $derived(soundDesignStore.focus?.trackId === MASTER_FOCUS_ID);
   /// 履歴ラベル用の対象名
-  const targetName = $derived(isMaster ? "マスター" : (track?.name ?? ""));
+  const targetName = $derived(isMaster ? tr("マスター", "Master") : (track?.name ?? ""));
 
   // トラックが消えたら閉じる
   $effect(() => {
@@ -141,8 +145,11 @@
   function setLegato(name: "glide_ms" | "legato_ms", value: number) {
     const t = track;
     if (!t) return;
-    const what = name === "glide_ms" ? "ポルタメントの滑る時間" : "レガートのつなぎ目";
-    applyEdit([{ op: "set_param", track: t.id, path: `track/${name}`, value }], `${t.name} の${what}を ${value}ms に`);
+    const what = name === "glide_ms" ? tr("ポルタメントの滑る時間", "glide time") : tr("レガートのつなぎ目", "legato overlap");
+    applyEdit(
+      [{ op: "set_param", track: t.id, path: `track/${name}`, value }],
+      tr(`${t.name} の${what}を ${value}ms に`, `Set ${t.name} ${what} to ${value}ms`),
+    );
   }
 
   function resetLegato() {
@@ -151,7 +158,7 @@
     const cmds = (["glide_ms", "legato_ms"] as const)
       .filter((n) => t[n] !== undefined)
       .map((n) => ({ op: "unset_param", track: t.id, path: `track/${n}` }));
-    if (cmds.length > 0) applyEdit(cmds, `${t.name} のつなぎ方を既定に戻す`);
+    if (cmds.length > 0) applyEdit(cmds, tr(`${t.name} のつなぎ方を既定に戻す`, `Reset ${t.name} legato settings`));
   }
 
   async function applyEdit(commands: unknown[], label: string) {
@@ -177,9 +184,24 @@
       : { op: "set_param", track: t!.id, path: p.path, value };
   }
 
-  function commitParam(p: ParamView, raw: string | number | boolean) {
+  /** つまみの表示名・説明(CLAP のつまみはプラグインの名前のまま)。kind は音源・エフェクトの種類 */
+  function pLabel(p: ParamView, kind: string | null): string {
+    return kind === "clap" ? p.display_name : paramLabel(kind, p.name, p.display_name);
+  }
+  function pDesc(p: ParamView, kind: string | null): string {
+    return kind === "clap" ? p.description : paramDesc(kind, p.name, p.description);
+  }
+
+  /// 音源のつまみの種類(内蔵は音源名、それ以外は device の type)
+  const instKind = $derived.by((): string => {
+    const d = track?.device;
+    if (!d) return "subtractive";
+    return !d.type || d.type === "builtin" ? (d.name ?? "subtractive") : d.type;
+  });
+
+  function commitParam(p: ParamView, raw: string | number | boolean, kind: string | null = null) {
     const cmd = paramCommand(p, raw);
-    if (cmd) applyEdit([cmd], `${targetName} の ${p.display_name} を変更`);
+    if (cmd) applyEdit([cmd], tr(`${targetName} の ${p.display_name} を変更`, `Change ${targetName} ${pLabel(p, kind)}`));
   }
 
   /// ドラッグ中の値(パラメータのパス → 値)。離すまで表示だけ変える
@@ -193,33 +215,33 @@
     if (cmd) api.previewEdit([cmd]);
   }
 
-  function onSliderChange(p: ParamView, e: Event) {
+  function onSliderChange(p: ParamView, e: Event, kind: string | null = null) {
     const v = fromPos(p, Number((e.currentTarget as HTMLInputElement).value));
     delete dragValues[p.path];
-    commitParam(p, v);
+    commitParam(p, v, kind);
   }
 
   // ---- つまみのグループ(名前で分ける。知らない名前は「その他」) ----
-  const GROUPS: [string, string[]][] = [
-    ["音の元", ["waveform", "unison", "detune", "sub", "noise", "table", "position", "ratio", "feedback", "pick", "root", "tune", "algorithm", "sample", "partials"]],
-    ["オペレーター", ["op1_ratio", "op1_level", "op1_attack", "op1_decay", "op1_sustain", "op2_ratio", "op2_level", "op2_attack", "op2_decay", "op2_sustain", "op3_ratio", "op3_level", "op3_attack", "op3_decay", "op3_sustain", "op4_ratio", "op4_level", "op4_attack", "op4_decay", "op4_sustain"]],
-    ["粒", ["grain_ms", "density", "spray_ms", "pitch_rand", "window", "scan"]],
-    ["倍音", ["tilt", "odd_even", "formant_hz", "formant_db", "formant_width", "damping", "inharmonic"]],
-    ["再生(ループ・スライス)", ["loop", "loop_start", "loop_end", "loop_xfade_ms", "slices", "orig_bpm", "stereo"]],
-    ["広がり・揺らぎ", ["spread", "analog", "wobble"]],
-    ["変調", ["index", "index_decay", "index_sustain", "pos_env", "pos_decay", "lfo_rate", "lfo_depth"]],
-    ["音色", ["filter_type", "cutoff", "resonance", "drive", "filter_env", "vel_cutoff", "key_track", "tone", "brightness", "vel_bright"]],
-    ["フィルタのエンベロープ", ["filter_attack", "filter_decay", "filter_sustain"]],
-    ["LFO", ["lfo1_target", "lfo1_shape", "lfo1_rate", "lfo1_depth", "lfo2_target", "lfo2_shape", "lfo2_rate", "lfo2_depth"]],
-    ["エンベロープ", ["attack", "decay", "sustain", "release", "attack_ms", "decay_ms", "release_ms"]],
-    ["奏法の効き", ["staccato", "accent", "vibrato", "bend", "legato", "portamento", "palm_mute"]],
-    ["出力", ["gain_db"]],
+  const GROUPS: [string, string, string[]][] = [
+    ["音の元", "Source", ["waveform", "unison", "detune", "sub", "noise", "table", "position", "ratio", "feedback", "pick", "root", "tune", "algorithm", "sample", "partials"]],
+    ["オペレーター", "Operators", ["op1_ratio", "op1_level", "op1_attack", "op1_decay", "op1_sustain", "op2_ratio", "op2_level", "op2_attack", "op2_decay", "op2_sustain", "op3_ratio", "op3_level", "op3_attack", "op3_decay", "op3_sustain", "op4_ratio", "op4_level", "op4_attack", "op4_decay", "op4_sustain"]],
+    ["粒", "Grains", ["grain_ms", "density", "spray_ms", "pitch_rand", "window", "scan"]],
+    ["倍音", "Harmonics", ["tilt", "odd_even", "formant_hz", "formant_db", "formant_width", "damping", "inharmonic"]],
+    ["再生(ループ・スライス)", "Playback (loop/slice)", ["loop", "loop_start", "loop_end", "loop_xfade_ms", "slices", "orig_bpm", "stereo"]],
+    ["広がり・揺らぎ", "Width & drift", ["spread", "analog", "wobble"]],
+    ["変調", "Modulation", ["index", "index_decay", "index_sustain", "pos_env", "pos_decay", "lfo_rate", "lfo_depth"]],
+    ["音色", "Tone", ["filter_type", "cutoff", "resonance", "drive", "filter_env", "vel_cutoff", "key_track", "tone", "brightness", "vel_bright"]],
+    ["フィルタのエンベロープ", "Filter envelope", ["filter_attack", "filter_decay", "filter_sustain"]],
+    ["LFO", "LFO", ["lfo1_target", "lfo1_shape", "lfo1_rate", "lfo1_depth", "lfo2_target", "lfo2_shape", "lfo2_rate", "lfo2_depth"]],
+    ["エンベロープ", "Envelope", ["attack", "decay", "sustain", "release", "attack_ms", "decay_ms", "release_ms"]],
+    ["奏法の効き", "Articulations", ["staccato", "accent", "vibrato", "bend", "legato", "portamento", "palm_mute"]],
+    ["出力", "Output", ["gain_db"]],
   ];
 
   function grouped(params: ParamView[]): { name: string; params: ParamView[] }[] {
-    const out = GROUPS.map(([name, keys]) => ({ name, params: params.filter((p) => keys.includes(p.name)) }));
-    const known = new Set(GROUPS.flatMap(([, keys]) => keys));
-    out.push({ name: "その他", params: params.filter((p) => !known.has(p.name)) });
+    const out = GROUPS.map(([ja, en, keys]) => ({ name: tr(ja, en), params: params.filter((p) => keys.includes(p.name)) }));
+    const known = new Set(GROUPS.flatMap(([, , keys]) => keys));
+    out.push({ name: tr("その他", "Other"), params: params.filter((p) => !known.has(p.name)) });
     return out.filter((g) => g.params.length > 0);
   }
 
@@ -265,7 +287,10 @@
     const on = !t[prop];
     applyEdit(
       [{ op: "set_track_prop", id: t.id, prop, value: on }],
-      `${t.name} の${prop === "mute" ? "ミュート" : "ソロ"}を${on ? "オン" : "解除"}`,
+      tr(
+        `${t.name} の${prop === "mute" ? "ミュート" : "ソロ"}を${on ? "オン" : "解除"}`,
+        `${on ? (prop === "mute" ? "Mute" : "Solo") : prop === "mute" ? "Unmute" : "Unsolo"} ${t.name}`,
+      ),
     );
   }
 
@@ -289,7 +314,7 @@
       presetName = "";
       savingPreset = false;
     } catch (e) {
-      showError("プリセットを保存できませんでした", e);
+      showError(tr("プリセットを保存できませんでした", "Couldn't save the preset"), e);
     }
   }
 
@@ -312,14 +337,20 @@
     if (!t) return;
     applyEdit(
       [{ op: "set_send", track: t.id, target: bus.id, level_db: levelDb, pre_fader: preFader }],
-      `${t.name} から ${bus.name} への送りを ${levelDb.toFixed(1)} dB に`,
+      tr(
+        `${t.name} から ${bus.name} への送りを ${levelDb.toFixed(1)} dB に`,
+        `Set send from ${t.name} to ${bus.name} to ${levelDb.toFixed(1)} dB`,
+      ),
     );
   }
 
   function removeSend(bus: Track) {
     const t = track;
     if (!t) return;
-    applyEdit([{ op: "set_send", track: t.id, target: bus.id }], `${t.name} から ${bus.name} への送りを外す`);
+    applyEdit(
+      [{ op: "set_send", track: t.id, target: bus.id }],
+      tr(`${t.name} から ${bus.name} への送りを外す`, `Remove send from ${t.name} to ${bus.name}`),
+    );
   }
 
   /// 送る量のドラッグ中の値(バス ID → dB)。離すまで表示だけ変える
@@ -327,9 +358,9 @@
 
   const sendSummary = $derived.by(() => {
     const t = track;
-    if (!t || buses.length === 0) return "バスなし";
+    if (!t || buses.length === 0) return tr("バスなし", "No buses");
     const on = buses.filter((b) => t.sends?.some((s) => s.target === b.id));
-    return on.length === 0 ? "送っていない" : on.map((b) => b.name).join("・");
+    return on.length === 0 ? tr("送っていない", "Not sending") : on.map((b) => b.name).join(tr("・", ", "));
   });
 
   // ---- エフェクト ----
@@ -356,7 +387,7 @@
 
   function openFxGui(fx: EffectView) {
     fxMenu = null;
-    api.clapOpenGui(null, fx.id).catch((e) => showError("プラグインの画面を開けませんでした", e));
+    api.clapOpenGui(null, fx.id).catch((e) => showError(tr("プラグインの画面を開けませんでした", "Couldn't open the plugin window"), e));
   }
 
   /// `name` は内蔵エフェクト名か "clap:<plugin_id>"(CLAP プラグイン)
@@ -371,19 +402,25 @@
     const label = clapId ? (clapEffects.find((p) => p.id === clapId)?.name ?? clapId) : name;
     applyEdit(
       [isMaster ? { op: "add_master_effect", effect } : { op: "add_effect", track: t!.id, effect }],
-      `${targetName} に ${label} を追加`,
+      tr(`${targetName} に ${label} を追加`, `Add ${label} to ${targetName}`),
     );
   }
 
   function removeEffect(fx: EffectView) {
     fxMenu = null;
-    applyEdit([{ op: "remove_effect", id: fx.id }], `${targetName} の ${fxLabel(fx)} を削除`);
+    applyEdit(
+      [{ op: "remove_effect", id: fx.id }],
+      tr(`${targetName} の ${fxLabel(fx)} を削除`, `Remove ${fxLabel(fx)} from ${targetName}`),
+    );
   }
 
   function toggleBypass(fx: EffectView) {
     applyEdit(
       [{ op: "set_effect_bypass", id: fx.id, bypass: !fx.bypass }],
-      `${targetName} の ${fxLabel(fx)} を${fx.bypass ? "有効に" : "バイパス"}`,
+      tr(
+        `${targetName} の ${fxLabel(fx)} を${fx.bypass ? "有効に" : "バイパス"}`,
+        `${fx.bypass ? "Enable" : "Bypass"} ${fxLabel(fx)} on ${targetName}`,
+      ),
     );
   }
 
@@ -417,7 +454,7 @@
     try {
       const r = await api.clapPresets(null, false, fx.id);
       fxPresetList = r.presets;
-      fxPresetMsg = r.current_preset ? `今: ${r.current_preset}` : null;
+      fxPresetMsg = r.current_preset ? tr(`今: ${r.current_preset}`, `Current: ${r.current_preset}`) : null;
     } catch (e) {
       fxPresetList = [];
       fxPresetMsg = String(e);
@@ -436,10 +473,10 @@
   async function loadFxPreset(fx: EffectView, presetId: string) {
     if (!presetId || fxPresetBusy) return;
     fxPresetBusy = true;
-    fxPresetMsg = "読み込み中…";
+    fxPresetMsg = tr("読み込み中…", "Loading…");
     try {
       const r = await api.clapLoadPreset(null, presetId, fx.id);
-      fxPresetMsg = `今: ${r.preset}(Ctrl+Z で戻せます)`;
+      fxPresetMsg = tr(`今: ${r.preset}(Ctrl+Z で戻せます)`, `Current: ${r.preset} (Ctrl+Z to undo)`);
     } catch (e) {
       fxPresetMsg = String(e);
     } finally {
@@ -528,7 +565,10 @@
       clearTimeout(fxOrderTimer);
       fxOrderTimer = setTimeout(() => (fxOrder = null), 3000);
       api
-        .applyEdit([cmd], `${targetName} の ${fxLabel(fx)} を ${d.to + 1} 番目へ`)
+        .applyEdit(
+          [cmd],
+          tr(`${targetName} の ${fxLabel(fx)} を ${d.to + 1} 番目へ`, `Move ${fxLabel(fx)} on ${targetName} to position ${d.to + 1}`),
+        )
         .catch((e) => {
           fxOrder = null;
           loadError = String(e);
@@ -544,7 +584,7 @@
       const next = insertBeforeOutput(unlinkBridging(fxLinks, fx.id), fx.id);
       applyEdit(
         [isMaster ? { op: "set_fx_links", links: next } : { op: "set_fx_links", track: track?.id, links: next }],
-        `${targetName} の ${fxLabel(fx)} を出口の前につなぐ`,
+        tr(`${targetName} の ${fxLabel(fx)} を出口の前につなぐ`, `Connect ${fxLabel(fx)} on ${targetName} before the output`),
       );
       return;
     }
@@ -555,7 +595,7 @@
       { op: "set_effect_prop", id: fx.id, prop: "pos", value: null },
     ];
     if (to !== null) cmds.push({ op: "move_effect", id: fx.id, to_index: to });
-    applyEdit(cmds, `${targetName} の ${fxLabel(fx)} を線に戻す`);
+    applyEdit(cmds, tr(`${targetName} の ${fxLabel(fx)} を線に戻す`, `Reconnect ${fxLabel(fx)} on ${targetName}`));
   }
 
   /// ミキサーのノード表示で開く(並べ替え・外す・名前やメモ)
@@ -596,7 +636,7 @@
           clip: { id: newClipId(), name: PHRASE_NAME, start, length: PHRASE_LEN, kind: "midi", notes: phraseNotes() },
         },
       ],
-      `${t.name} に試聴フレーズを挿入`,
+      tr(`${t.name} に試聴フレーズを挿入`, `Insert audition phrase into ${t.name}`),
     );
   }
 
@@ -605,7 +645,7 @@
     const t = track;
     const c = phraseClip;
     if (!t || !c) return;
-    applyEdit([{ op: "remove_clip", id: c.id }], `${t.name} の試聴フレーズを削除`);
+    applyEdit([{ op: "remove_clip", id: c.id }], tr(`${t.name} の試聴フレーズを削除`, `Remove audition phrase from ${t.name}`));
   }
 
   function closeMenus() {
@@ -614,13 +654,14 @@
     srcMenu = null;
   }
 
-  const KIND_LABEL = { midi: "MIDI", audio: "音声", bus: "バス" } as const;
+  const KIND_LABEL = { midi: ["MIDI", "MIDI"], audio: ["音声", "Audio"], bus: ["バス", "Bus"] } as const;
+  const kindLabel = (k: keyof typeof KIND_LABEL) => tr(KIND_LABEL[k][0], KIND_LABEL[k][1]);
 </script>
 
-{#snippet paramCell(p: ParamView)}
-  <div class="pm" title={p.description}>
+{#snippet paramCell(p: ParamView, kind: string | null)}
+  <div class="pm" title={pDesc(p, kind)}>
     <div class="pm-top">
-      <span class="pm-name">{p.display_name}</span>
+      <span class="pm-name">{pLabel(p, kind)}</span>
       {#if p.range.kind === "float" || p.range.kind === "int"}<span class="pm-val">{fmtValue(p, dragValues[p.path])}</span>{/if}
     </div>
     {#if p.range.kind === "float" || p.range.kind === "int"}
@@ -631,13 +672,13 @@
         step="1"
         value={toPos(p, Number(p.current))}
         oninput={(e) => onSliderInput(p, e)}
-        onchange={(e) => onSliderChange(p, e)}
-        aria-label={p.display_name}
+        onchange={(e) => onSliderChange(p, e, kind)}
+        aria-label={pLabel(p, kind)}
       />
     {:else if p.range.kind === "bool"}
       <label class="pm-bool"
-        ><input type="checkbox" checked={Boolean(p.current)} onchange={(e) => commitParam(p, (e.currentTarget as HTMLInputElement).checked)} />
-        {p.current ? "オン" : "オフ"}</label
+        ><input type="checkbox" checked={Boolean(p.current)} onchange={(e) => commitParam(p, (e.currentTarget as HTMLInputElement).checked, kind)} />
+        {p.current ? tr("オン", "On") : tr("オフ", "Off")}</label
       >
     {:else}
       {@const tc = trackChoices(p, project.tracks) ?? irChoices(p, project.assets) ?? sampleChoices(p, project.assets)}
@@ -648,16 +689,16 @@
           if (el.value === IR_FROM_FILE) {
             el.value = String(p.current);
             loadIrFromFile(isMaster ? null : (track?.id ?? null), p.path);
-          } else commitParam(p, el.value);
+          } else commitParam(p, el.value, kind);
         }}
-        aria-label={p.display_name}
+        aria-label={pLabel(p, kind)}
       >
         {#if tc}
           {#each tc as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
         {:else}
           {#if !p.range.choices.includes(String(p.current))}
             <!-- 選択肢に無い値(import_wavetable で音声から作ったテーブル = 素材の ID) -->
-            <option value={String(p.current)}>{p.name === "table" && String(p.current).startsWith("sha256:") ? "音声から作ったテーブル" : String(p.current)}</option>
+            <option value={String(p.current)}>{p.name === "table" && String(p.current).startsWith("sha256:") ? tr("音声から作ったテーブル", "Table from audio") : String(p.current)}</option>
           {/if}
           {#each p.range.choices as c (c)}
             <option value={c}>{c}</option>
@@ -677,23 +718,23 @@
 {/snippet}
 
 {#if track || isMaster}
-  <aside class="sd-panel" style="width:{inspectorStore.width}px" aria-label="インスペクター">
-    <div class="resize" role="separator" aria-orientation="vertical" title="ドラッグで幅を変える" onpointerdown={startResize}></div>
+  <aside class="sd-panel" style="width:{inspectorStore.width}px" aria-label={tr("インスペクター", "Inspector")}>
+    <div class="resize" role="separator" aria-orientation="vertical" title={tr("ドラッグで幅を変える", "Drag to resize")} onpointerdown={startResize}></div>
     <div class="sd-head">
       {#if isMaster}
         <Icon name="sliders-horizontal" />
-        <b class="sd-title">マスター</b>
-        <span class="sd-kind">曲全体に掛かるエフェクト</span>
+        <b class="sd-title">{tr("マスター", "Master")}</b>
+        <span class="sd-kind">{tr("曲全体に掛かるエフェクト", "Effects on the whole song")}</span>
       {:else if track}
         <span class="dot" style={track.color ? `background:${track.color}` : ""}></span>
         <b class="sd-title" title={track.name}>{track.name}</b>
-        <span class="sd-kind">{KIND_LABEL[track.kind]}</span>
-        <button class="btn letter" class:m-on={track.mute} onclick={() => toggleProp("mute")} title="ミュート" aria-pressed={track.mute}>M</button>
-        <button class="btn letter" class:s-on={track.solo} onclick={() => toggleProp("solo")} title="ソロ(このトラックだけ聴く)" aria-pressed={track.solo}
+        <span class="sd-kind">{kindLabel(track.kind)}</span>
+        <button class="btn letter" class:m-on={track.mute} onclick={() => toggleProp("mute")} title={tr("ミュート", "Mute")} aria-pressed={track.mute}>M</button>
+        <button class="btn letter" class:s-on={track.solo} onclick={() => toggleProp("solo")} title={tr("ソロ(このトラックだけ聴く)", "Solo (hear only this track)")} aria-pressed={track.solo}
           >S</button
         >
       {/if}
-      <button class="btn sm icon ghost" onclick={close} title="閉じる" aria-label="閉じる"><Icon name="x" /></button>
+      <button class="btn sm icon ghost" onclick={close} title={tr("閉じる", "Close")} aria-label={tr("閉じる", "Close")}><Icon name="x" /></button>
     </div>
 
     {#if loadError}
@@ -703,14 +744,19 @@
     <div class="sd-body">
       {#if track && track.kind === "bus"}
         <section class="sec">
-          {@render secHead("bus", "バス", `受けている ${busSenders.length} 本`)}
+          {@render secHead("bus", tr("バス", "Bus"), tr(`受けている ${busSenders.length} 本`, plural(busSenders.length, "sender")))}
           {#if !closed.bus}
             <div class="sec-b">
-              <div class="hint">各トラックのインスペクターの「送り」で、このバスへ送る量を決めます。ここに挿したエフェクト(リバーブ・ディレイ等)を複数のトラックで共有できます。</div>
+              <div class="hint">
+                {tr(
+                  "各トラックのインスペクターの「送り」で、このバスへ送る量を決めます。ここに挿したエフェクト(リバーブ・ディレイ等)を複数のトラックで共有できます。",
+                  "Set how much each track sends here under Sends in its inspector. Effects inserted here (reverb, delay, etc.) are shared by those tracks.",
+                )}
+              </div>
               {#each busSenders as s (s.name)}
-                <div class="kv"><span>{s.name}</span><span>{s.level_db.toFixed(1)} dB{s.pre ? "・フェーダー前" : ""}</span></div>
+                <div class="kv"><span>{s.name}</span><span>{s.level_db.toFixed(1)} dB{s.pre ? tr("・フェーダー前", " · pre-fader") : ""}</span></div>
               {:else}
-                <div class="hint">まだどのトラックからも送られていません。</div>
+                <div class="hint">{tr("まだどのトラックからも送られていません。", "No tracks send to this bus yet.")}</div>
               {/each}
             </div>
           {/if}
@@ -720,35 +766,41 @@
       {#if track && track.kind === "midi"}
         <!-- 音源 -->
         <section class="sec">
-          {@render secHead("src", "音源", deviceName(track.device))}
+          {@render secHead("src", tr("音源", "Instrument"), deviceName(track.device))}
           {#if !closed.src}
             <div class="sec-b">
               <div class="src-card">
                 <span class="src-ic"><Icon name={deviceIcon(track.device)} size={22} /></span>
                 <span class="src-nm"
                   ><b>{track.device?.type === "clap" ? (info?.device.name ?? deviceName(track.device)) : deviceName(track.device)}</b><small
-                    >{deviceKind(track.device)}{info?.device.is_default_fallback ? "(未設定なので既定の音)" : ""}</small
+                    >{deviceKind(track.device)}{info?.device.is_default_fallback ? tr("(未設定なので既定の音)", " (not set; default sound)") : ""}</small
                   ></span
                 >
-                <button class="btn sm" onclick={(e) => openPicker(e)} title="音源を変える(内蔵・音色のプリセット・SoundFont・CLAP・サンプル)"
-                  >変更<Icon name="chevron-down" /></button
+                <button class="btn sm" onclick={(e) => openPicker(e)} title={tr(
+                    "音源を変える(内蔵・音色のプリセット・SoundFont・CLAP・サンプル)",
+                    "Change the instrument (built-in, sound presets, SoundFont, CLAP, sample)",
+                  )}
+                  >{tr("変更", "Change")}<Icon name="chevron-down" /></button
                 >
               </div>
               <div class="row">
-                <button class="btn sm" onclick={(e) => openPicker(e, "preset")} title="保存した音色のプリセット(音源 + エフェクト一式。全プロジェクト共通)から選ぶ"
-                  ><Icon name="save" />音色のプリセット</button
+                <button class="btn sm" onclick={(e) => openPicker(e, "preset")} title={tr(
+                    "保存した音色のプリセット(音源 + エフェクト一式。全プロジェクト共通)から選ぶ",
+                    "Choose a saved sound preset (instrument + effects; shared by all projects)",
+                  )}
+                  ><Icon name="save" />{tr("音色のプリセット", "Sound presets")}</button
                 >
                 {#if track.device?.type !== "clap"}
-                  <button class="btn sm" class:on={savingPreset} onclick={() => (savingPreset = !savingPreset)} title="今の音(音源とエフェクト)を音色のプリセットとして保存"
-                    ><Icon name="plus" />保存</button
+                  <button class="btn sm" class:on={savingPreset} onclick={() => (savingPreset = !savingPreset)} title={tr("今の音(音源とエフェクト)を音色のプリセットとして保存", "Save the current sound (instrument and effects) as a sound preset")}
+                    ><Icon name="plus" />{tr("保存", "Save")}</button
                   >
                 {:else}
-                  <button class="btn sm" onclick={() => api.clapOpenGui(track!.id).catch((e) => showError("プラグインの画面を開けませんでした", e))}
-                    ><Icon name="app-window" />プラグインの画面</button
+                  <button class="btn sm" onclick={() => api.clapOpenGui(track!.id).catch((e) => showError(tr("プラグインの画面を開けませんでした", "Couldn't open the plugin window"), e))}
+                    ><Icon name="app-window" />{tr("プラグインの画面", "Plugin window")}</button
                   >
                 {/if}
                 <span class="grow"></span>
-                <button class="btn sm icon ghost" onclick={(e) => (srcMenu = menuAt(e))} title="その他(試聴フレーズなど)" aria-label="その他"
+                <button class="btn sm icon ghost" onclick={(e) => (srcMenu = menuAt(e))} title={tr("その他(試聴フレーズなど)", "More (audition phrase, etc.)")} aria-label={tr("その他", "More")}
                   ><Icon name="ellipsis" /></button
                 >
               </div>
@@ -758,7 +810,7 @@
                   <input
                     class="grow"
                     type="text"
-                    placeholder="プリセットの名前"
+                    placeholder={tr("プリセットの名前", "Preset name")}
                     autofocus
                     bind:value={presetName}
                     onkeydown={(e) => {
@@ -768,38 +820,46 @@
                       } else if (e.key === "Escape") savingPreset = false;
                     }}
                   />
-                  <button class="btn sm primary" disabled={!presetName.trim()} onclick={savePreset}>保存</button>
+                  <button class="btn sm primary" disabled={!presetName.trim()} onclick={savePreset}>{tr("保存", "Save")}</button>
                 </div>
               {/if}
 
               {#if track.device?.type === "clap"}
                 <!-- CLAP: 音作りはプラグイン自身の画面で。ここではプリセットを選ぶ -->
                 <div class="grp-t">
-                  プリセット{currentClapPreset ? `(今: ${currentClapPreset})` : ""}
-                  <button class="btn sm icon ghost" disabled={clapPresetBusy} title="プリセットを探し直す(追加した後など)" aria-label="探し直す" onclick={() => track && loadClapPresets(track.id, true)}
+                  {tr("プリセット", "Presets")}{currentClapPreset ? tr(`(今: ${currentClapPreset})`, ` (current: ${currentClapPreset})`) : ""}
+                  <button class="btn sm icon ghost" disabled={clapPresetBusy} title={tr("プリセットを探し直す(追加した後など)", "Rescan presets (e.g. after adding some)")} aria-label={tr("探し直す", "Rescan")} onclick={() => track && loadClapPresets(track.id, true)}
                     ><Icon name="refresh-cw" /></button
                   >
                   <button
                     class="btn sm icon ghost"
-                    title="プラグインの今の設定をプロジェクトに保存する(画面を閉じたときや操作の後にも自動で保存されます)"
-                    aria-label="設定を保存"
-                    onclick={() => api.clapSaveState(track!.id).catch((e) => showError("プラグインの状態を保存できませんでした", e))}
+                    title={tr(
+                      "プラグインの今の設定をプロジェクトに保存する(画面を閉じたときや操作の後にも自動で保存されます)",
+                      "Save the plugin's current settings to the project (also saved automatically when its window closes or after edits)",
+                    )}
+                    aria-label={tr("設定を保存", "Save settings")}
+                    onclick={() => api.clapSaveState(track!.id).catch((e) => showError(tr("プラグインの状態を保存できませんでした", "Couldn't save the plugin state"), e))}
                     ><Icon name="save" /></button
                   >
                 </div>
                 {#if clapPresetList === null}
-                  <div class="hint">プリセットを探しています…</div>
+                  <div class="hint">{tr("プリセットを探しています…", "Looking for presets…")}</div>
                 {:else if clapPresetList.length === 0}
-                  <div class="hint">このプラグインはプリセットを Glaux に公開していません。プラグインの画面のプリセットメニューから選んでください(選んだ設定は自動でプロジェクトに保存され、Ctrl+Z で戻せます)。</div>
+                  <div class="hint">
+                    {tr(
+                      "このプラグインはプリセットを Glaux に公開していません。プラグインの画面のプリセットメニューから選んでください(選んだ設定は自動でプロジェクトに保存され、Ctrl+Z で戻せます)。",
+                      "This plugin doesn't expose its presets to Glaux. Pick one from the preset menu in the plugin window (the choice is saved to the project automatically and can be undone with Ctrl+Z).",
+                    )}
+                  </div>
                 {:else}
                   <div class="row">
-                    <select bind:value={clapCategory} title="カテゴリ(フォルダ)">
-                      <option value="">すべて({clapPresetList.length})</option>
+                    <select bind:value={clapCategory} title={tr("カテゴリ(フォルダ)", "Category (folder)")}>
+                      <option value="">{tr(`すべて(${clapPresetList.length})`, `All (${clapPresetList.length})`)}</option>
                       {#each clapCategories as c (c.name)}
-                        <option value={c.name}>{c.name || "(未分類)"}({c.count})</option>
+                        <option value={c.name}>{tr(`${c.name || "(未分類)"}(${c.count})`, `${c.name || "(Uncategorized)"} (${c.count})`)}</option>
                       {/each}
                     </select>
-                    <input class="grow" type="search" placeholder="名前で絞り込み" bind:value={clapSearch} />
+                    <input class="grow" type="search" placeholder={tr("名前で絞り込み", "Filter by name")} bind:value={clapSearch} />
                   </div>
                   <div class="preset-list">
                     {#each shownClapPresets.slice(0, 500) as p (p.id)}
@@ -815,7 +875,12 @@
                       </button>
                     {/each}
                     {#if shownClapPresets.length > 500}
-                      <div class="hint">…ほか {shownClapPresets.length - 500} 件(絞り込んでください)</div>
+                      <div class="hint">
+                        {tr(
+                          `…ほか ${shownClapPresets.length - 500} 件(絞り込んでください)`,
+                          `…and ${shownClapPresets.length - 500} more (narrow the search)`,
+                        )}
+                      </div>
                     {/if}
                   </div>
                 {/if}
@@ -825,7 +890,7 @@
                   <div class="grp-t">{g.name}</div>
                   <div class="params">
                     {#each g.params as p (p.path)}
-                      {@render paramCell(p)}
+                      {@render paramCell(p, instKind)}
                     {/each}
                   </div>
                 {/each}
@@ -838,7 +903,7 @@
       {#if info}
         <!-- エフェクト(トラック・マスター共通) -->
         <section class="sec">
-          {@render secHead("fx", "エフェクト", shownEffects.length === 0 ? "なし" : shownEffects.map((f) => fxLabel(f)).join(" → "))}
+          {@render secHead("fx", tr("エフェクト", "Effects"), shownEffects.length === 0 ? tr("なし", "None") : shownEffects.map((f) => fxLabel(f)).join(" → "))}
           {#if !closed.fx}
             <div class="sec-b">
               <div class="fx-list" bind:this={fxList}>
@@ -852,29 +917,29 @@
                     animate:flip={{ duration: 180 }}
                   >
                     <div class="fx-h">
-                      <span class="grip" class:off={!serial} role="button" tabindex="-1" aria-label="並べ替え" title={serial ? "つかんで上下にドラッグで並べ替え" : "分かれたり合流したりしているので、並べ替えはノード表示で"} onpointerdown={(e) => onFxGripDown(e, fx, i)}
+                      <span class="grip" class:off={!serial} role="button" tabindex="-1" aria-label={tr("並べ替え", "Reorder")} title={serial ? tr("つかんで上下にドラッグで並べ替え", "Drag up or down to reorder") : tr("分かれたり合流したりしているので、並べ替えはノード表示で", "The chain splits or merges; reorder it in the node view")} onpointerdown={(e) => onFxGripDown(e, fx, i)}
                         ><Icon name="grip-vertical" size={14} /></span
                       >
                       <button
                         class="btn sm icon"
                         class:on={!fx.bypass}
                         onclick={() => toggleBypass(fx)}
-                        title={fx.bypass ? "バイパス中(クリックで有効に)" : "有効(クリックでバイパス)"}
-                        aria-label="有効 / バイパス"
+                        title={fx.bypass ? tr("バイパス中(クリックで有効に)", "Bypassed (click to enable)") : tr("有効(クリックでバイパス)", "Enabled (click to bypass)")}
+                        aria-label={tr("有効 / バイパス", "Enable / bypass")}
                         aria-pressed={!fx.bypass}><Icon name="power" /></button
                       >
-                      <button class="fx-name" onclick={() => (fxFolded[fx.id] = !fxFolded[fx.id])} title={fx.plugin_id ?? "クリックで開く / 畳む"}>
+                      <button class="fx-name" onclick={() => (fxFolded[fx.id] = !fxFolded[fx.id])} title={fx.plugin_id ?? tr("クリックで開く / 畳む", "Click to expand / collapse")}>
                         <b>{fxLabel(fx)}</b>{#if fx.name === "clap"}<span class="clap-chip">CLAP</span>{/if}
                       </button>
                       {#if fx.name === "clap" && !fx.missing}
-                        <button class="btn sm icon ghost" onclick={() => openFxGui(fx)} title="プラグインの画面を開く" aria-label="プラグインの画面"
+                        <button class="btn sm icon ghost" onclick={() => openFxGui(fx)} title={tr("プラグインの画面を開く", "Open the plugin window")} aria-label={tr("プラグインの画面", "Plugin window")}
                           ><Icon name="app-window" /></button
                         >
                       {/if}
-                      <button class="btn sm icon ghost" onclick={() => (fxFolded[fx.id] = !fxFolded[fx.id])} aria-label={fxFolded[fx.id] ? "開く" : "畳む"}
+                      <button class="btn sm icon ghost" onclick={() => (fxFolded[fx.id] = !fxFolded[fx.id])} aria-label={fxFolded[fx.id] ? tr("開く", "Expand") : tr("畳む", "Collapse")}
                         ><Icon name={fxFolded[fx.id] ? "chevron-right" : "chevron-down"} /></button
                       >
-                      <button class="btn sm icon ghost" onclick={(e) => (fxMenu = { fx, ...menuAt(e) })} title="その他(プリセット・削除)" aria-label="その他"
+                      <button class="btn sm icon ghost" onclick={(e) => (fxMenu = { fx, ...menuAt(e) })} title={tr("その他(プリセット・削除)", "More (presets, remove)")} aria-label={tr("その他", "More")}
                         ><Icon name="ellipsis" /></button
                       >
                     </div>
@@ -883,14 +948,19 @@
                         {#if fxPresetOpen === fx.id}
                           <div class="fx-presets">
                             {#if fxPresetList === null}
-                              <div class="hint">プリセットを探しています…</div>
+                              <div class="hint">{tr("プリセットを探しています…", "Looking for presets…")}</div>
                             {:else if fxPresetList.length === 0}
-                              <div class="hint">このプラグインはプリセットを Glaux に公開していません(例: Surge XT Effects)。プラグインの画面のプリセットメニューから選んでください。選んだ設定は自動でプロジェクトに保存され、Ctrl+Z で戻せます。</div>
+                              <div class="hint">
+                                {tr(
+                                  "このプラグインはプリセットを Glaux に公開していません(例: Surge XT Effects)。プラグインの画面のプリセットメニューから選んでください。選んだ設定は自動でプロジェクトに保存され、Ctrl+Z で戻せます。",
+                                  "This plugin doesn't expose its presets to Glaux (e.g. Surge XT Effects). Pick one from the preset menu in the plugin window. The choice is saved to the project automatically and can be undone with Ctrl+Z.",
+                                )}
+                              </div>
                             {:else}
                               <select class="grow" disabled={fxPresetBusy} onchange={(e) => loadFxPreset(fx, (e.currentTarget as HTMLSelectElement).value)}>
-                                <option value="">プリセットを選ぶ…({fxPresetList.length})</option>
+                                <option value="">{tr(`プリセットを選ぶ…(${fxPresetList.length})`, `Choose a preset… (${fxPresetList.length})`)}</option>
                                 {#each fxPresetGroups as [cat, list] (cat)}
-                                  <optgroup label={cat || "(未分類)"}>
+                                  <optgroup label={cat || tr("(未分類)", "(Uncategorized)")}>
                                     {#each list as p (p.id)}
                                       <option value={p.id}>{p.name}</option>
                                     {/each}
@@ -902,15 +972,25 @@
                           </div>
                         {/if}
                         {#if fx.missing}
-                          <div class="hint warn">このプラグインはこの PC に見つかりません(音は素通し)。インストールすると元の設定で鳴ります。</div>
+                          <div class="hint warn">
+                            {tr(
+                              "このプラグインはこの PC に見つかりません(音は素通し)。インストールすると元の設定で鳴ります。",
+                              "This plugin isn't installed on this PC (audio passes through). Install it to hear it with its saved settings.",
+                            )}
+                          </div>
                         {/if}
                         <div class="params">
                           {#each fx.params as p (p.path)}
-                            {@render paramCell(p)}
+                            {@render paramCell(p, fx.name)}
                           {/each}
                         </div>
                         {#if fx.name === "clap" && (fx.param_total ?? 0) > fx.params.length}
-                          <div class="hint">ほか {(fx.param_total ?? 0) - fx.params.length} 個のつまみはプラグインの画面か AI から操作できます。</div>
+                          <div class="hint">
+                            {tr(
+                              `ほか ${(fx.param_total ?? 0) - fx.params.length} 個のつまみはプラグインの画面か AI から操作できます。`,
+                              `${plural((fx.param_total ?? 0) - fx.params.length, "more parameter")} can be controlled from the plugin window or by the AI.`,
+                            )}
+                          </div>
                         {/if}
                       </div>
                     {/if}
@@ -919,22 +999,34 @@
               </div>
               {#if parkedEffects.length > 0}
                 <div class="parked">
-                  <div class="parked-h" title="入力から出口まで線でたどれないエフェクト。設定は残っていて、音は通らない">
-                    <Icon name="unplug" size={12} />鳴らない {parkedEffects.length}(線がつながっていない)
+                  <div
+                    class="parked-h"
+                    title={tr(
+                      "入力から出口まで線でたどれないエフェクト。設定は残っていて、音は通らない",
+                      "Effects not on a path from input to output. Their settings are kept, but no audio passes through",
+                    )}
+                  >
+                    <Icon name="unplug" size={12} />{tr(
+                      `鳴らない ${parkedEffects.length}(線がつながっていない)`,
+                      `${parkedEffects.length} silent (not connected)`,
+                    )}
                   </div>
                   {#each parkedEffects as fx (fx.id)}
                     <div class="parked-row" title={fx.note ?? ""}>
                       <span class="parked-nm">{fxLabel(fx)}{#if fx.note}<small>{fx.note}</small>{/if}</span>
-                      <button class="btn sm ghost" onclick={() => unpark(fx)} title="出口の前につなぐ"><Icon name="plug" />つなぐ</button>
-                      <button class="btn sm icon ghost" onclick={() => removeEffect(fx)} title="削除(Ctrl+Z で戻せます)" aria-label="削除"><Icon name="trash-2" /></button>
+                      <button class="btn sm ghost" onclick={() => unpark(fx)} title={tr("出口の前につなぐ", "Connect before the output")}><Icon name="plug" />{tr("つなぐ", "Connect")}</button>
+                      <button class="btn sm icon ghost" onclick={() => removeEffect(fx)} title={tr("削除(Ctrl+Z で戻せます)", "Remove (Ctrl+Z to undo)")} aria-label={tr("削除", "Remove")}><Icon name="trash-2" /></button>
                     </div>
                   {/each}
                 </div>
               {/if}
               <div class="row">
-                <button class="btn sm add-fx" onclick={(e) => (addMenu = menuAt(e))}><Icon name="plus" />エフェクトを追加<Icon name="chevron-down" /></button>
-                <button class="btn sm ghost" onclick={openInMixer} title="ミキサーのノード表示で開く(線でつなぐ・分ける・混ぜる・名前やメモ)"
-                  ><Icon name="sliders-horizontal" />ノード表示</button
+                <button class="btn sm add-fx" onclick={(e) => (addMenu = menuAt(e))}><Icon name="plus" />{tr("エフェクトを追加", "Add effect")}<Icon name="chevron-down" /></button>
+                <button class="btn sm ghost" onclick={openInMixer} title={tr(
+                    "ミキサーのノード表示で開く(線でつなぐ・分ける・混ぜる・名前やメモ)",
+                    "Open in the mixer's node view (connect, split, mix, names and notes)",
+                  )}
+                  ><Icon name="sliders-horizontal" />{tr("ノード表示", "Node view")}</button
                 >
               </div>
             </div>
@@ -945,13 +1037,19 @@
       {#if track && track.kind !== "bus"}
         <!-- 送り(バスへ送る量) -->
         <section class="sec">
-          {@render secHead("send", "送り", sendSummary)}
+          {@render secHead("send", tr("送り", "Sends"), sendSummary)}
           {#if !closed.send}
             <div class="sec-b">
               {#each buses as bus (bus.id)}
                 {@const snd = track.sends?.find((s) => s.target === bus.id)}
                 {@const shown = sendDrag[bus.id] ?? snd?.level_db}
-                <div class="send" title="このトラックの音をバスへ送る量。フェーダー後はトラックの音量に追従します">
+                <div
+                  class="send"
+                  title={tr(
+                    "このトラックの音をバスへ送る量。フェーダー後はトラックの音量に追従します",
+                    "How much of this track to send to the bus. Post-fader follows the track volume",
+                  )}
+                >
                   <span class="send-nm">{bus.name}</span>
                   <input
                     type="range"
@@ -959,7 +1057,7 @@
                     max="6"
                     step="0.5"
                     value={snd?.level_db ?? -60}
-                    aria-label={`${bus.name} へ送る量`}
+                    aria-label={tr(`${bus.name} へ送る量`, `Send level to ${bus.name}`)}
                     oninput={(e) => {
                       const v = Number((e.currentTarget as HTMLInputElement).value);
                       sendDrag[bus.id] = v;
@@ -973,21 +1071,28 @@
                       setSend(bus, Number((e.currentTarget as HTMLInputElement).value), snd?.pre_fader ?? false);
                     }}
                   />
-                  <span class="pm-val">{shown !== undefined ? `${shown.toFixed(1)} dB` : "送らない"}</span>
+                  <span class="pm-val">{shown !== undefined ? `${shown.toFixed(1)} dB` : tr("送らない", "Off")}</span>
                   <button
                     class="btn sm icon ghost"
                     class:on={snd?.pre_fader}
                     disabled={!snd}
                     onclick={() => snd && setSend(bus, snd.level_db, !(snd.pre_fader ?? false))}
-                    title={snd?.pre_fader ? "フェーダー前から送っている(クリックでフェーダー後に)" : "フェーダー後から送っている(クリックでフェーダー前に)"}
-                    aria-label="フェーダー前から送る"><Icon name="arrow-up" /></button
+                    title={snd?.pre_fader
+                      ? tr("フェーダー前から送っている(クリックでフェーダー後に)", "Sending pre-fader (click for post-fader)")
+                      : tr("フェーダー後から送っている(クリックでフェーダー前に)", "Sending post-fader (click for pre-fader)")}
+                    aria-label={tr("フェーダー前から送る", "Send pre-fader")}><Icon name="arrow-up" /></button
                   >
-                  <button class="btn sm icon ghost" disabled={!snd} onclick={() => removeSend(bus)} title="送らない" aria-label="送らない"
+                  <button class="btn sm icon ghost" disabled={!snd} onclick={() => removeSend(bus)} title={tr("送らない", "Remove send")} aria-label={tr("送らない", "Remove send")}
                     ><Icon name="x" /></button
                   >
                 </div>
               {:else}
-                <div class="hint">バスがありません。タイムラインの「トラックを追加」からバスを作ると、複数のトラックで同じリバーブを共有できます。</div>
+                <div class="hint">
+                  {tr(
+                    "バスがありません。タイムラインの「トラックを追加」からバスを作ると、複数のトラックで同じリバーブを共有できます。",
+                    "No buses yet. Create one with Add track in the timeline to share one reverb across several tracks.",
+                  )}
+                </div>
               {/each}
             </div>
           {/if}
@@ -999,27 +1104,47 @@
         <section class="sec">
           {@render secHead(
             "legato",
-            "つなぎ",
-            `滑る時間 ${track.glide_ms ?? 150}ms · つなぎ目 ${track.legato_ms ?? 30}ms${track.glide_ms === undefined && track.legato_ms === undefined ? "(既定)" : ""}`,
+            tr("つなぎ", "Legato"),
+            tr(
+              `滑る時間 ${track.glide_ms ?? 150}ms · つなぎ目 ${track.legato_ms ?? 30}ms${track.glide_ms === undefined && track.legato_ms === undefined ? "(既定)" : ""}`,
+              `Glide ${track.glide_ms ?? 150}ms · Overlap ${track.legato_ms ?? 30}ms${track.glide_ms === undefined && track.legato_ms === undefined ? " (default)" : ""}`,
+            ),
           )}
           {#if !closed.legato}
             <div class="sec-b">
               <div class="params">
-                <div class="pm" title="ポルタメント(P)のノートが直前の音から滑る時間。ゆったりした弦は 250〜400、速いリードは 50〜80">
-                  <div class="pm-top"><span class="pm-name">滑る時間</span><span class="pm-val">{track.glide_ms ?? 150}ms</span></div>
-                  <input type="range" min="10" max="1000" step="10" value={track.glide_ms ?? 150} aria-label="滑る時間"
+                <div
+                  class="pm"
+                  title={tr(
+                    "ポルタメント(P)のノートが直前の音から滑る時間。ゆったりした弦は 250〜400、速いリードは 50〜80",
+                    "How long portamento (P) notes glide from the previous note. Slow strings 250–400, fast leads 50–80",
+                  )}
+                >
+                  <div class="pm-top"><span class="pm-name">{tr("滑る時間", "Glide time")}</span><span class="pm-val">{track.glide_ms ?? 150}ms</span></div>
+                  <input type="range" min="10" max="1000" step="10" value={track.glide_ms ?? 150} aria-label={tr("滑る時間", "Glide time")}
                     onchange={(e) => setLegato("glide_ms", Number((e.currentTarget as HTMLInputElement).value))} />
                 </div>
-                <div class="pm" title="レガート(T)・ポルタメント(P)で前の音と入れ替わる長さ。長いほどふんわり重なる">
-                  <div class="pm-top"><span class="pm-name">つなぎ目</span><span class="pm-val">{track.legato_ms ?? 30}ms</span></div>
-                  <input type="range" min="5" max="200" step="5" value={track.legato_ms ?? 30} aria-label="つなぎ目"
+                <div
+                  class="pm"
+                  title={tr(
+                    "レガート(T)・ポルタメント(P)で前の音と入れ替わる長さ。長いほどふんわり重なる",
+                    "How long legato (T) and portamento (P) notes overlap the previous note. Longer blends more softly",
+                  )}
+                >
+                  <div class="pm-top"><span class="pm-name">{tr("つなぎ目", "Overlap")}</span><span class="pm-val">{track.legato_ms ?? 30}ms</span></div>
+                  <input type="range" min="5" max="200" step="5" value={track.legato_ms ?? 30} aria-label={tr("つなぎ目", "Overlap")}
                     onchange={(e) => setLegato("legato_ms", Number((e.currentTarget as HTMLInputElement).value))} />
                 </div>
               </div>
               <div class="row">
-                <span class="hint grow">ピアノロールでノートに T(レガート)/ P(ポルタメント)を付けたときのつながり方</span>
+                <span class="hint grow"
+                  >{tr(
+                    "ピアノロールでノートに T(レガート)/ P(ポルタメント)を付けたときのつながり方",
+                    "How notes marked T (legato) / P (portamento) in the piano roll connect",
+                  )}</span
+                >
                 {#if track.glide_ms !== undefined || track.legato_ms !== undefined}
-                  <button class="btn sm" onclick={resetLegato}>既定に戻す</button>
+                  <button class="btn sm" onclick={resetLegato}>{tr("既定に戻す", "Reset")}</button>
                 {/if}
               </div>
             </div>
@@ -1037,22 +1162,22 @@
     {@const fx = fxMenu.fx}
     <div class="menu" use:keepInView style="left:{fxMenu.x}px;top:{fxMenu.y}px">
       {#if fx.name === "clap" && !fx.missing}
-        <button onclick={() => toggleFxPresets(fx)}><Icon name="save" />プリセットから選ぶ</button>
-        <button onclick={() => openFxGui(fx)}><Icon name="app-window" />プラグインの画面を開く</button>
+        <button onclick={() => toggleFxPresets(fx)}><Icon name="save" />{tr("プリセットから選ぶ", "Choose a preset")}</button>
+        <button onclick={() => openFxGui(fx)}><Icon name="app-window" />{tr("プラグインの画面を開く", "Open plugin window")}</button>
         <div class="menu-sep"></div>
       {/if}
-      <button class="danger" onclick={() => removeEffect(fx)}><Icon name="trash-2" />削除<span class="key">Ctrl+Z で戻せます</span></button>
+      <button class="danger" onclick={() => removeEffect(fx)}><Icon name="trash-2" />{tr("削除", "Remove")}<span class="key">{tr("Ctrl+Z で戻せます", "Ctrl+Z to undo")}</span></button>
     </div>
   {/if}
   {#if addMenu && info}
     <div class="menu" use:keepInView style="left:{addMenu.x}px;top:{addMenu.y}px">
-      <div class="menu-h">内蔵</div>
+      <div class="menu-h">{tr("内蔵", "Built-in")}</div>
       {#each info.available_effects as fx (fx.name)}
-        <button class="rich" onclick={() => addEffect(fx.name)}><span>{fx.name}<small>{fx.description}</small></span></button>
+        <button class="rich" onclick={() => addEffect(fx.name)}><span>{fxKindName(fx.name) ?? fx.name}<small>{fxKindDesc(fx.name, fx.description)}</small></span></button>
       {/each}
       {#if clapEffects.length > 0}
         <div class="menu-sep"></div>
-        <div class="menu-h">CLAP プラグイン</div>
+        <div class="menu-h">{tr("CLAP プラグイン", "CLAP plugins")}</div>
         {#each clapEffects as p (p.id)}
           <button class="rich" onclick={() => addEffect(`clap:${p.id}`)}><Icon name="plug" /><span>{p.name}<small>{p.vendor} {p.version}</small></span></button>
         {/each}
@@ -1062,10 +1187,14 @@
   {#if srcMenu && track}
     <div class="menu" use:keepInView style="left:{srcMenu.x}px;top:{srcMenu.y}px">
       {#if phraseClip}
-        <button onclick={removePhrase}><Icon name="trash-2" />試聴フレーズを消す</button>
+        <button onclick={removePhrase}><Icon name="trash-2" />{tr("試聴フレーズを消す", "Remove audition phrase")}</button>
       {:else}
-        <button class="rich" onclick={insertPhrase} title="ロングトーン → 刻み → 分散和音 → オクターブ上の 4 小節"
-          ><Icon name="music" /><span>試聴フレーズを入れる<small>末尾に 4 小節。再生とループを回しながら調整する</small></span></button
+        <button class="rich" onclick={insertPhrase} title={tr("ロングトーン → 刻み → 分散和音 → オクターブ上の 4 小節", "4 bars: long tone → repeated notes → arpeggio → octave up")}
+          ><Icon name="music" /><span
+            >{tr("試聴フレーズを入れる", "Insert audition phrase")}<small
+              >{tr("末尾に 4 小節。再生とループを回しながら調整する", "4 bars at the end. Tweak while it loops")}</small
+            ></span
+          ></button
         >
       {/if}
     </div>

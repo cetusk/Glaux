@@ -103,7 +103,10 @@ fn save_settings(s: &AppSettings) -> Result<(), String> {
 /// 既定の作業フォルダを保存する(存在しないフォルダはエラー)。
 pub fn set_projects_dir(path: &str) -> Result<(), String> {
     if !std::path::Path::new(path).is_dir() {
-        return Err(format!("フォルダが見つかりません: {path}"));
+        return Err(glaux_core::tr!(
+            "フォルダが見つかりません: {path}",
+            "Folder not found: {path}"
+        ));
     }
     let mut s = load_settings();
     s.projects_dir = Some(path.to_owned());
@@ -141,7 +144,7 @@ fn project_title(dir: &std::path::Path) -> Option<String> {
     Some(
         v.pointer("/meta/title")
             .and_then(|t| t.as_str())
-            .unwrap_or("(無題)")
+            .unwrap_or(glaux_core::i18n::t("(無題)", "(Untitled)"))
             .to_owned(),
     )
 }

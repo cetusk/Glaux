@@ -3,6 +3,7 @@
   // 譜起こしのボタン。ドラッグ中は試聴だけ(previewEdit)して、離したときに 1 回の編集にする
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import { tr } from "./i18n.svelte";
   import { bpmAt } from "./timelineOps";
   import type { Clip, Project } from "./types";
 
@@ -98,8 +99,14 @@
     if (h.value === h.orig) return;
     const label =
       h.which === "gain"
-        ? `${h.clip.name} の音量を ${h.value > 0 ? "+" : ""}${h.value.toFixed(1)} dB に`
-        : `${h.clip.name} のフェード${h.which === "in" ? "イン" : "アウト"}を ${Math.round(h.value)}ms に`;
+        ? tr(
+            `${h.clip.name} の音量を ${h.value > 0 ? "+" : ""}${h.value.toFixed(1)} dB に`,
+            `Set ${h.clip.name} gain to ${h.value > 0 ? "+" : ""}${h.value.toFixed(1)} dB`,
+          )
+        : tr(
+            `${h.clip.name} のフェード${h.which === "in" ? "イン" : "アウト"}を ${Math.round(h.value)}ms に`,
+            `Set ${h.clip.name} fade ${h.which === "in" ? "in" : "out"} to ${Math.round(h.value)}ms`,
+          );
     api.applyEdit([handleCommand(h)], label).catch(() => {});
   }
 
@@ -109,7 +116,8 @@
     const key = which === "in" ? "fade_in_ms" : which === "out" ? "fade_out_ms" : "gain_db";
     if ((clip[key] ?? 0) === 0) return;
     const what = which === "gain" ? "音量を 0 dB に戻す" : `フェード${which === "in" ? "イン" : "アウト"}をなくす`;
-    api.applyEdit([{ op: "replace_clip", id: clip.id, clip: { ...clip, [key]: 0 } }], `${clip.name} の${what}`).catch(() => {});
+    const whatEn = which === "gain" ? `Reset ${clip.name} gain to 0 dB` : `Remove ${clip.name} fade ${which === "in" ? "in" : "out"}`;
+    api.applyEdit([{ op: "replace_clip", id: clip.id, clip: { ...clip, [key]: 0 } }], tr(`${clip.name} の${what}`, whatEn)).catch(() => {});
   }
 
   const fiPx = $derived(Math.min(fadePx(clip, "in"), clip.length * pxPerTick));
@@ -129,7 +137,10 @@
   class="fade-h in"
   class:active={clipHandle?.clip.id === clip.id && clipHandle.which === "in"}
   style="left:{fiPx}px"
-  title="フェードイン {Math.round(fadeMs(clip, 'in'))}ms(横にドラッグ。ダブルクリックでなくす)"
+  title={tr(
+    `フェードイン ${Math.round(fadeMs(clip, "in"))}ms(横にドラッグ。ダブルクリックでなくす)`,
+    `Fade in ${Math.round(fadeMs(clip, "in"))}ms (drag sideways; double-click to remove)`,
+  )}
   onpointerdown={(e) => onHandleDown(e, "in")}
   onpointermove={onHandleMove}
   onpointerup={onHandleUp}
@@ -144,7 +155,10 @@
   class="fade-h out"
   class:active={clipHandle?.clip.id === clip.id && clipHandle.which === "out"}
   style="right:{foPx}px"
-  title="フェードアウト {Math.round(fadeMs(clip, 'out'))}ms(横にドラッグ。ダブルクリックでなくす)"
+  title={tr(
+    `フェードアウト ${Math.round(fadeMs(clip, "out"))}ms(横にドラッグ。ダブルクリックでなくす)`,
+    `Fade out ${Math.round(fadeMs(clip, "out"))}ms (drag sideways; double-click to remove)`,
+  )}
   onpointerdown={(e) => onHandleDown(e, "out")}
   onpointermove={onHandleMove}
   onpointerup={onHandleUp}
@@ -159,7 +173,7 @@
   class="gain-h"
   class:active={clipHandle?.clip.id === clip.id && clipHandle.which === "gain"}
   class:set={gain !== 0}
-  title="クリップの音量(上下にドラッグ、Shift で細かく。ダブルクリックで 0 dB)"
+  title={tr("クリップの音量(上下にドラッグ、Shift で細かく。ダブルクリックで 0 dB)", "Clip gain (drag up/down, Shift for fine; double-click for 0 dB)")}
   onpointerdown={(e) => onHandleDown(e, "gain")}
   onpointermove={onHandleMove}
   onpointerup={onHandleUp}
@@ -172,7 +186,7 @@
 <button
   class="transcribe"
   disabled={transcribing !== null}
-  title="譜起こし(単旋律): 鼻歌・歌・単音の音声を MIDI クリップにする"
+  title={tr("譜起こし(単旋律): 鼻歌・歌・単音の音声を MIDI クリップにする", "Transcribe (melody): turn humming, singing or a single line into a MIDI clip")}
   onpointerdown={(e) => e.stopPropagation()}
   ondblclick={(e) => e.stopPropagation()}
   onclick={(e) => {
@@ -185,7 +199,10 @@
 <button
   class="transcribe poly"
   disabled={transcribing !== null}
-  title="譜起こし(和音): ピアノ・ギターのコードや伴奏入りの音声を MIDI クリップにする(学習済みモデル basic-pitch)"
+  title={tr(
+    "譜起こし(和音): ピアノ・ギターのコードや伴奏入りの音声を MIDI クリップにする(学習済みモデル basic-pitch)",
+    "Transcribe (chords): turn piano/guitar chords or accompanied audio into a MIDI clip (basic-pitch model)",
+  )}
   onpointerdown={(e) => e.stopPropagation()}
   ondblclick={(e) => e.stopPropagation()}
   onclick={(e) => {

@@ -16,6 +16,20 @@ export const ACCENT_PRESETS: AccentPreset[] = [
   { name: "lime", label: "ライム", accent: "#a3e635", dim: "#7cae28" },
 ];
 
+const ACCENT_LABELS_EN: Record<string, string> = {
+  turquoise: "Turquoise",
+  amber: "Amber",
+  violet: "Violet",
+  sky: "Sky",
+  rose: "Rose",
+  lime: "Lime",
+};
+
+/** テーマカラーの表示名(今の表示の言語) */
+export function accentLabel(p: AccentPreset): string {
+  return t(p.label, ACCENT_LABELS_EN[p.name] ?? p.label);
+}
+
 interface Settings {
   accent: string;
   notifyOnAiDone: boolean;
@@ -120,6 +134,11 @@ function load(): Settings {
 
 export const settings = $state<Settings>(load());
 
+/// 表示の言語の対訳(i18n.svelte.ts の tr と同じ。i18n がこのモジュールを読むので、循環を避けてここにも持つ)
+function t(ja: string, en: string): string {
+  return settings.lang === "en" ? en : ja;
+}
+
 /// 設定画面の開閉と、開くページ(ステータスバーのデバイスから開くとオーディオのページなど)
 export type SettingsTab = "display" | "audio" | "midi" | "record" | "ai" | "about";
 export const settingsUi = $state<{ open: boolean; tab: SettingsTab }>({ open: false, tab: "display" });
@@ -186,6 +205,42 @@ export const EFFORT_LABELS: Record<string, string> = {
   max: "max(最大)",
   ultra: "ultra(最も深く・遅い)",
 };
+
+// 表の表示名は日本語のまま(値・照合にも使う)。英語の表示は使う所で下の関数を通す
+const MODEL_TEXT_EN: Record<string, string> = {
+  既定: "Default",
+  "Claude Code の既定のモデル": "Claude Code's default model",
+  "Codex CLI の既定のモデル": "Codex CLI's default model",
+  "長い文脈(100 万トークン)": "Long context (1M tokens)",
+  速くて軽い: "Fast and light",
+  最も高度な作業に: "For the most advanced work",
+  普段の作業に: "For everyday work",
+  速くて安い: "Fast and cheap",
+  前の世代: "Previous generation",
+  "前の世代・速い": "Previous generation, fast",
+  旧版: "Legacy",
+};
+
+const EFFORT_LABELS_EN: Record<string, string> = {
+  "": "Default",
+  minimal: "minimal",
+  low: "low (light, fast)",
+  medium: "medium (standard)",
+  high: "high (careful)",
+  xhigh: "xhigh (more careful)",
+  max: "max (maximum)",
+  ultra: "ultra (deepest, slow)",
+};
+
+/** モデルの名前・説明(CHAT_MODELS の label / note)の表示。英語では日本語の所だけ訳す(モデル名はそのまま) */
+export function chatModelText(text: string): string {
+  return t(text, MODEL_TEXT_EN[text] ?? text.replace("(1M)", " (1M)"));
+}
+
+/** 考える深さの表示名(今の表示の言語) */
+export function effortLabel(ef: string): string {
+  return t(EFFORT_LABELS[ef] ?? ef, EFFORT_LABELS_EN[ef] ?? ef);
+}
 
 /** 今の相手のモデル名("" = 既定) */
 export function currentChatModel(): string {

@@ -9,6 +9,7 @@
 
 use crate::plan_store::{PlanSession, PlanStore};
 use crate::store::Store;
+use glaux_core::i18n::t;
 use glaux_core::plan::PlanCommand;
 use glaux_core::{
     Author, Change, Command, CoreError, EntryId, EntryNote, HistoryEntry, Project, Session,
@@ -95,8 +96,14 @@ pub struct Mutated {
 pub type RevertOutcome = (EntryId, Vec<EntryId>, Mutated);
 
 /// 曲の編集と一組の計画の変更を、計画の側だけで動かそうとしたとき
-pub const LINKED_PLAN_MSG: &str = "この計画の変更は、曲の編集(案の採用など)と一組なので、計画の側だけでは取り消せません。\
-    曲の側でその編集を取り消す・やり直すと、計画も一緒に戻ります(Ctrl+Z・履歴パネルの「この変更だけ取り消す」・undo / redo)";
+pub fn linked_plan_msg() -> &'static str {
+    t(
+        "この計画の変更は、曲の編集(案の採用など)と一組なので、計画の側だけでは取り消せません。\
+         曲の側でその編集を取り消す・やり直すと、計画も一緒に戻ります(Ctrl+Z・履歴パネルの「この変更だけ取り消す」・undo / redo)",
+        "This plan change is paired with a song edit (such as adopting a proposal), so it can't be undone from the plan side alone. \
+         Undo or redo that edit on the song side and the plan follows (Ctrl+Z, \"Undo only this change\" in the history panel, undo / redo)",
+    )
+}
 
 /// 旋律の計画への要求(曲とは別の文書・別の履歴。曲のフォルダが変わったら開き直す)
 pub enum PlanRequest {
@@ -151,8 +158,9 @@ fn open_plans(plans: &mut Option<Plans>, dir: &std::path::Path) -> Result<(), St
         *plans = None;
     }
     if plans.is_none() {
-        let (store, session) =
-            PlanStore::open(dir).map_err(|e| format!("計画を開けません: {e:#}"))?;
+        let (store, session) = PlanStore::open(dir).map_err(|e| {
+            glaux_core::tr!("計画を開けません: {e:#}", "Can't open the plans: {e:#}")
+        })?;
         *plans = Some(Plans {
             store,
             session,
@@ -200,7 +208,11 @@ fn migrate_section_design(
         match session.apply(
             glaux_core::Command::SetSections { sections },
             Author::System,
-            "区間に ID を付ける(区間の設計を計画へ移すため)".to_owned(),
+            t(
+                "区間に ID を付ける(区間の設計を計画へ移すため)",
+                "Give sections IDs (to move section design into the plan)",
+            )
+            .to_owned(),
         ) {
             Ok((_, changes)) => {
                 let _ = mutated(session, store, events, changes);
@@ -223,13 +235,21 @@ fn migrate_section_design(
         glaux_core::PlanId::new(),
     )?;
     let note = glaux_core::EntryNote {
-        why: "区間の設計(盛り上がり・形・境目・鳴らすトラック・メモ)の持ち主を曲から曲全体の計画へ移した".to_owned(),
+        why: t(
+            "区間の設計(盛り上がり・形・境目・鳴らすトラック・メモ)の持ち主を曲から曲全体の計画へ移した",
+            "Moved section design (energy, shape, joins, active tracks, memos) from the song into the whole-song plan",
+        )
+        .to_owned(),
         ..Default::default()
     };
     match p.session.apply_with_note(
         command,
         Author::System,
-        "区間の設計を計画へ移す".to_owned(),
+        t(
+            "区間の設計を計画へ移す",
+            "Move section design into the plan",
+        )
+        .to_owned(),
         note,
     ) {
         Ok(_) => {
@@ -393,8 +413,12 @@ impl Drop for ActivityGuard {
 }
 
 /// アクターが要求に応答しなかった(内部エラーで処理を打ち切った、またはスレッドが無い)ときのエラー文言。
-const ACTOR_GONE: &str =
-    "セッションが要求を処理できませんでした(内部エラー。直前の保存済みの状態に戻しました)";
+fn actor_gone() -> &'static str {
+    t(
+        "セッションが要求を処理できませんでした(内部エラー。直前の保存済みの状態に戻しました)",
+        "The session couldn't handle the request (internal error; reverted to the last saved state)",
+    )
+}
 
 impl SessionHandle {
     /// アクタースレッドを起動してハンドルを返す。
@@ -465,8 +489,8 @@ impl SessionHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(make(reply))
-            .map_err(|_| ACTOR_GONE.to_owned())?;
-        rx.await.map_err(|_| ACTOR_GONE.to_owned())
+            .map_err(|_| actor_gone().to_owned())?;
+        rx.await.map_err(|_| actor_gone().to_owned())
     }
 
     /// 今のプロジェクトの複製(書き換えて使う用。読むだけなら [`Self::get_project_shared`])
@@ -552,7 +576,11 @@ impl SessionHandle {
             .collect();
         for id in live.into_iter().rev() {
             let note = EntryNote {
-                why: "一組の曲の編集を取り消した・やり直したので、計画の変更も合わせる".to_owned(),
+                why: t(
+                    "一組の曲の編集を取り消した・やり直したので、計画の変更も合わせる",
+                    "The paired song edit was undone or redone, so the plan change follows",
+                )
+                .to_owned(),
                 song_entry: Some(link.clone()),
                 ..Default::default()
             };
@@ -699,7 +727,7 @@ impl SessionHandle {
                 .any(|e| e.note.as_ref().is_some_and(|n| n.song_entry.is_some()))
         };
         if linked {
-            return Err(LINKED_PLAN_MSG.to_owned());
+            return Err(linked_plan_msg().to_owned());
         }
         self.request(|reply| Request::Plan(PlanRequest::Step { n, redo, reply }))
             .await?
@@ -721,7 +749,7 @@ impl SessionHandle {
             .find(|e| e.id == id)
             .is_some_and(|e| e.note.as_ref().is_some_and(|n| n.song_entry.is_some()));
         if linked {
-            return Err(LINKED_PLAN_MSG.to_owned());
+            return Err(linked_plan_msg().to_owned());
         }
         self.revert_plan_raw(id, author, note).await
     }
@@ -761,9 +789,14 @@ fn move_dir(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> 
         return Ok(());
     }
     // 別ドライブなどで rename できない場合のフォールバック
-    copy_dir_recursive(from, to).map_err(|e| format!("コピーに失敗しました: {e}"))?;
-    std::fs::remove_dir_all(from)
-        .map_err(|e| format!("移動元の削除に失敗しました(コピーは完了): {e}"))
+    copy_dir_recursive(from, to)
+        .map_err(|e| glaux_core::tr!("コピーに失敗しました: {e}", "Copy failed: {e}"))?;
+    std::fs::remove_dir_all(from).map_err(|e| {
+        glaux_core::tr!(
+            "移動元の削除に失敗しました(コピーは完了): {e}",
+            "Failed to delete the source (copy completed): {e}"
+        )
+    })
 }
 
 fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
@@ -847,7 +880,7 @@ fn actor_loop(
         // 1 件の要求の panic(コマンドの不具合など)でアクターごと止まると、以後は再起動まで
         // 編集も保存もできなくなる。受け止めて、保存済みの状態から読み直して動き続ける
         // (適用の途中で止まったセッションは信用できないため)。要求の応答は届かず、
-        // 呼び出し側には ACTOR_GONE のエラーが返る
+        // 呼び出し側には actor_gone() のエラーが返る
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handle(&mut session, &mut store, &events, req)
         }));
@@ -896,9 +929,12 @@ fn handle_plan(plans: &mut Option<Plans>, dir: &std::path::Path, req: PlanReques
     let p = plans.as_mut()?;
     let mut changed = false;
     let save = |p: &mut Plans| {
-        p.store
-            .save(&p.session)
-            .map_err(|e| format!("計画の保存に失敗しました(メモリ上は反映済み): {e:#}"))
+        p.store.save(&p.session).map_err(|e| {
+            glaux_core::tr!(
+                "計画の保存に失敗しました(メモリ上は反映済み): {e:#}",
+                "Failed to save the plans (applied in memory): {e:#}"
+            )
+        })
     };
     match req {
         PlanRequest::Get { reply } => {
@@ -1186,12 +1222,16 @@ fn handle(
             let to = std::path::PathBuf::from(&dest);
             let result = (|| {
                 if to.exists() {
-                    return Err(format!("移動先が既に存在します: {dest}"));
+                    return Err(glaux_core::tr!(
+                        "移動先が既に存在します: {dest}",
+                        "Destination already exists: {dest}"
+                    ));
                 }
                 if let Some(parent) = to.parent() {
                     if !parent.is_dir() {
-                        return Err(format!(
+                        return Err(glaux_core::tr!(
                             "移動先のフォルダがありません: {}",
+                            "Destination folder doesn't exist: {}",
                             parent.display()
                         ));
                     }
@@ -1200,9 +1240,12 @@ fn handle(
                 }
                 let previous = version(session, store);
                 // 裏で書きかけの project.json を元の場所で済ませてから動かす
-                store
-                    .flush()
-                    .map_err(|e| format!("移動の前の保存に失敗しました: {e:#}"))?;
+                store.flush().map_err(|e| {
+                    glaux_core::tr!(
+                        "移動の前の保存に失敗しました: {e:#}",
+                        "Failed to save before moving: {e:#}"
+                    )
+                })?;
                 // 開いているロックファイルを含むフォルダは Windows では動かせない
                 crate::store::release_lock(&from);
                 if let Err(e) = move_dir(&from, &to) {
@@ -1231,7 +1274,10 @@ fn handle(
                         crate::store::release_lock(&to);
                         let _ = move_dir(&to, &from);
                         let _ = crate::store::acquire_lock(&from);
-                        Err(format!("移動先で開けません(元に戻しました): {e:#}"))
+                        Err(glaux_core::tr!(
+                            "移動先で開けません(元に戻しました): {e:#}",
+                            "Can't open at the destination (moved back): {e:#}"
+                        ))
                     }
                 }
             })();
@@ -1356,7 +1402,7 @@ mod tests {
             .request(|reply| Request::Panic { reply })
             .await
             .unwrap_err();
-        assert_eq!(err, ACTOR_GONE);
+        assert_eq!(err, actor_gone());
 
         // アクターは動き続け、保存済みの状態(トラックあり・壊す前の題名)に戻っている
         let (project, version) = handle.get_project().await.unwrap();

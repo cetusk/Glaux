@@ -1,4 +1,5 @@
 import { showError } from "./toast.svelte";
+import { tr } from "./i18n.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
@@ -117,7 +118,7 @@ export async function applyEdit(
   try {
     return await invoke("apply_edit", { commands, label });
   } catch (e) {
-    showError(`「${label}」を適用できませんでした`, e);
+    showError(tr(`「${label}」を適用できませんでした`, `Couldn't apply "${label}"`), e);
     throw e;
   }
 }

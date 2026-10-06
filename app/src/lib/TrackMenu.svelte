@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import TimelineMenu from "./TimelineMenu.svelte";
   import type { Project } from "./types";
+  import { tr } from "./i18n.svelte";
 
   let {
     project,
@@ -42,38 +43,46 @@
 </script>
 
 <TimelineMenu {x} {y} {onClose}>
-  <button onclick={onRename}><Icon name="pencil" />名前を変更</button>
-  <div class="color-row" role="group" aria-label="トラックの色">
+  <button onclick={onRename}><Icon name="pencil" />{tr("名前を変更", "Rename")}</button>
+  <div class="color-row" role="group" aria-label={tr("トラックの色", "Track color")}>
     <Icon name="palette" />
     {#each TRACK_COLORS as c (c)}
       <button
         class="color-chip"
         class:none={!c}
         style={c ? `background:${c}` : ""}
-        title={c ? `色: ${c}` : "色を元に戻す"}
-        aria-label={c ? `色 ${c}` : "色を元に戻す"}
+        title={c ? tr(`色: ${c}`, `Color: ${c}`) : tr("色を元に戻す", "Reset color")}
+        aria-label={c ? tr(`色 ${c}`, `Color ${c}`) : tr("色を元に戻す", "Reset color")}
         onclick={() => onColor(c)}
       ></button>
     {/each}
   </div>
   <div class="menu-sep"></div>
-  <button disabled={index === 0} onclick={() => onMove(index - 1)}><Icon name="arrow-up" />上へ移動</button>
+  <button disabled={index === 0} onclick={() => onMove(index - 1)}><Icon name="arrow-up" />{tr("上へ移動", "Move up")}</button>
   <button disabled={index >= project.tracks.length - 1} onclick={() => onMove(index + 1)}
-    ><Icon name="arrow-down" />下へ移動</button
+    ><Icon name="arrow-down" />{tr("下へ移動", "Move down")}</button
   >
-  <div class="menu-note">見出しの左端をつかんでドラッグしても並べ替えられます</div>
-  <button onclick={onDuplicate}><Icon name="copy" />複製</button>
+  <div class="menu-note">
+    {tr("見出しの左端をつかんでドラッグしても並べ替えられます", "You can also reorder by dragging the left edge of the header")}
+  </div>
+  <button onclick={onDuplicate}><Icon name="copy" />{tr("複製", "Duplicate")}</button>
   <button
     onclick={onBounce}
     disabled={bouncing || menuTrack?.kind === "bus"}
-    title="エフェクト・音量・パン・送りの響きまで込みで音声に描き出し、直後に音声トラックとして置く(元はミュート)。CLAP の音源の曲をゲームで鳴らすとき・重いトラックを軽くするときに"
-    ><Icon name="snowflake" />音声にする(フリーズ)</button
+    title={tr(
+      "エフェクト・音量・パン・送りの響きまで込みで音声に描き出し、直後に音声トラックとして置く(元はミュート)。CLAP の音源の曲をゲームで鳴らすとき・重いトラックを軽くするときに",
+      "Render to audio including effects, volume, pan and sends, and place it as an audio track right below (the original is muted). Useful for playing CLAP instruments in games or lightening heavy tracks",
+    )}
+    ><Icon name="snowflake" />{tr("音声にする(フリーズ)", "Bounce to audio (freeze)")}</button
   >
   {#if menuTrack?.device?.type === "clap"}
-    <button onclick={onOpenGui}><Icon name="app-window" />プラグインの画面を開く</button>
+    <button onclick={onOpenGui}><Icon name="app-window" />{tr("プラグインの画面を開く", "Open plugin window")}</button>
   {/if}
   <div class="menu-sep"></div>
-  <button class="danger" onclick={onDelete}><Icon name="trash-2" />削除<span class="key">Ctrl+Z で戻せます</span></button>
+  <button class="danger" onclick={onDelete}><Icon name="trash-2" />{tr("削除", "Delete")}<span class="key"
+      >{tr("Ctrl+Z で戻せます", "Ctrl+Z to undo")}</span
+    ></button
+  >
 </TimelineMenu>
 
 <style>

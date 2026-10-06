@@ -113,7 +113,7 @@ pub fn load_clip(project: &Project, dir: &Path, clip_id: &ClipId) -> Result<Load
     Ok(LoadedSound {
         frames: data.frames[from..to].to_vec(),
         sample_rate: data.sample_rate,
-        label: format!("音声クリップ「{}」", clip.name),
+        label: glaux_core::tr!("音声クリップ「{}」", "audio clip \"{}\"", clip.name),
     })
 }
 
@@ -123,8 +123,9 @@ pub fn load_file(path: &Path) -> Result<LoadedSound, String> {
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let label = format!(
+    let label = glaux_core::tr!(
         "ファイル「{}」",
+        "file \"{}\"",
         path.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
@@ -178,8 +179,9 @@ pub fn render_note(
     Ok(LoadedSound {
         frames,
         sample_rate: RENDER_RATE as f32,
-        label: format!(
+        label: glaux_core::tr!(
             "トラック「{}」の音(MIDI {pitch}、ベロシティ {velocity})",
+            "the sound of track \"{}\" (MIDI {pitch}, velocity {velocity})",
             t.name
         ),
     })

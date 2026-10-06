@@ -555,7 +555,7 @@
       const track = project?.tracks.find((t) => t.id === r.track_id);
       pianoRollStore.focus = {
         clipId: r.clip_id,
-        clipName: "録音 (MIDI)",
+        clipName: tr("録音 (MIDI)", "Recording (MIDI)"),
         trackId: r.track_id,
         trackName: track?.name ?? "MIDI",
         anchorTick: 0,

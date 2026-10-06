@@ -1,16 +1,28 @@
 // 音源の名前・アイコン・説明(トラックの見出し・インスペクター・音源ピッカーで共通)。
+import { tr } from "./i18n.svelte";
 import type { IconName } from "./icons";
 import type { Track } from "./types";
 
-export const BUILTIN_INSTRUMENTS: { name: string; icon: IconName; desc: string }[] = [
-  { name: "subtractive", icon: "audio-waveform", desc: "シンセ全般(リード・ベース・パッド)" },
-  { name: "drum", icon: "drum", desc: "ドラムシンセ(GM 配置、キット表示)" },
-  { name: "pluck", icon: "guitar", desc: "撥弦(ギター・ベース・ハープ)" },
-  { name: "fm", icon: "bell", desc: "FM(エレピ・ベル・マレット・FM ベース)" },
-  { name: "wavetable", icon: "waves", desc: "ウェーブテーブル(うねるベース・変化するパッド・母音)" },
-  { name: "fm4", icon: "bell", desc: "4 オペレーター FM(DX のエレピ・ベル・ブラス・オルガン)" },
-  { name: "additive", icon: "audio-waveform", desc: "加算合成(澄んだパッド・オルガン・声のような音)" },
-  { name: "granular", icon: "waves", desc: "グラニュラー(取り込んだ音声から粒の雲・パッド。素材は音作りで選ぶ)" },
+/** 説明は表示の言語で返す(読むたびに選ぶ) */
+function builtin(name: string, icon: IconName, ja: string, en: string): { name: string; icon: IconName; readonly desc: string } {
+  return {
+    name,
+    icon,
+    get desc() {
+      return tr(ja, en);
+    },
+  };
+}
+
+export const BUILTIN_INSTRUMENTS: { name: string; icon: IconName; readonly desc: string }[] = [
+  builtin("subtractive", "audio-waveform", "シンセ全般(リード・ベース・パッド)", "General synth (leads, basses, pads)"),
+  builtin("drum", "drum", "ドラムシンセ(GM 配置、キット表示)", "Drum synth (GM layout, kit view)"),
+  builtin("pluck", "guitar", "撥弦(ギター・ベース・ハープ)", "Plucked strings (guitar, bass, harp)"),
+  builtin("fm", "bell", "FM(エレピ・ベル・マレット・FM ベース)", "FM (e-piano, bells, mallets, FM bass)"),
+  builtin("wavetable", "waves", "ウェーブテーブル(うねるベース・変化するパッド・母音)", "Wavetable (wobbly basses, evolving pads, vowels)"),
+  builtin("fm4", "bell", "4 オペレーター FM(DX のエレピ・ベル・ブラス・オルガン)", "4-operator FM (DX e-piano, bells, brass, organ)"),
+  builtin("additive", "audio-waveform", "加算合成(澄んだパッド・オルガン・声のような音)", "Additive (clear pads, organs, voice-like tones)"),
+  builtin("granular", "waves", "グラニュラー(取り込んだ音声から粒の雲・パッド。素材は音作りで選ぶ)", "Granular (grain clouds and pads from imported audio; pick the source in the inspector)"),
 ];
 
 type Device = Track["device"];
@@ -41,7 +53,7 @@ export function deviceIcon(device: Device): IconName {
 
 /** 音源の表示名。CLAP はプラグイン名(一覧があれば)、SoundFont はファイル名とプリセット番号 */
 export function deviceName(device: Device, clapNames?: Map<string, string>): string {
-  if (!device) return "subtractive(未設定)";
+  if (!device) return tr("subtractive(未設定)", "subtractive (not set)");
   if (device.type === "clap") {
     const id = device.plugin_id ?? "";
     return clapNames?.get(id) ?? id.split(".").pop() ?? "CLAP";
@@ -60,10 +72,10 @@ export function deviceName(device: Device, clapNames?: Map<string, string>): str
 
 /** 音源の種類の説明(カードの 2 行目) */
 export function deviceKind(device: Device): string {
-  if (!device) return "内蔵シンセ(既定)";
-  if (device.type === "clap") return "CLAP プラグイン";
+  if (!device) return tr("内蔵シンセ(既定)", "Built-in synth (default)");
+  if (device.type === "clap") return tr("CLAP プラグイン", "CLAP plugin");
   if (device.type === "sf2") return "SoundFont";
   if (device.type === "sfz") return "SFZ";
-  if (device.type === "sampler") return "サンプル(WAV)";
-  return "内蔵";
+  if (device.type === "sampler") return tr("サンプル(WAV)", "Sample (WAV)");
+  return tr("内蔵", "Built-in");
 }

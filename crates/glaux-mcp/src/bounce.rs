@@ -109,7 +109,11 @@ pub fn bounce_track(
         commands,
         new_track: new_id,
         seconds: stereo.len() as f64 / 2.0 / RATE as f64,
-        label: format!("「{}」を音声にする(元のトラックはミュート)", track.name),
+        label: glaux_core::tr!(
+            "「{}」を音声にする(元のトラックはミュート)",
+            "Bounce \"{}\" to audio (original muted)",
+            track.name
+        ),
     })
 }
 
@@ -307,7 +311,11 @@ pub fn resample_to_sampler(
         track: target,
         asset: imported.id,
         seconds: (to - from) as f64 / RATE as f64,
-        label: format!("「{}」をサンプラーの音源にする(リサンプリング)", track.name),
+        label: glaux_core::tr!(
+            "「{}」をサンプラーの音源にする(リサンプリング)",
+            "Resample \"{}\" into a sampler",
+            track.name
+        ),
     })
 }
 

@@ -7,6 +7,8 @@
   // マスター(track.id が MASTER_FOCUS_ID の擬似トラック)では音量とマスターのエフェクトが対象で、
   // set_master_automation_points を使う。
   import * as api from "./api";
+  import { tr } from "./i18n.svelte";
+  import { paramLabel, unitText } from "./paramText";
   import { MASTER_FOCUS_ID } from "./selection.svelte";
   import type { AutomationPoint, Track } from "./types";
 
@@ -44,42 +46,62 @@
     log: boolean;
   }
 
+  /// 音源・エフェクトのつまみ(表示名は言語に合わせて後から作る)
+  interface RawTarget extends Omit<Target, "label"> {
+    /** null = 音源のつまみ。それ以外はエフェクト名(内蔵の種類名か "clap") */
+    fx: string | null;
+    /** 音源・エフェクトの種類(paramLabel の kind) */
+    kind: string | null;
+    name: string;
+    ja: string;
+  }
+
+  /** つまみの表示名(CLAP はプラグイン自身の名前のまま) */
+  function rawLabel(t: RawTarget): string {
+    const nm = t.kind === "clap" ? t.ja : paramLabel(t.kind, t.name, t.ja);
+    return t.fx === null ? `${tr("音色", "Sound")}: ${nm}` : `${t.fx}: ${nm}`;
+  }
+
   const isMaster = $derived(track.id === MASTER_FOCUS_ID);
 
   const BUILTIN: Target[] = $derived([
-    { path: "track/volume_db", label: "音量", min: -60, max: 6, unit: " dB", current: track.volume_db, int: false, log: false },
+    { path: "track/volume_db", label: tr("音量", "Volume"), min: -60, max: 6, unit: " dB", current: track.volume_db, int: false, log: false },
     ...(isMaster
       ? []
-      : [{ path: "track/pan", label: "パン", min: -1, max: 1, unit: "", current: track.pan, int: false, log: false }]),
+      : [{ path: "track/pan", label: tr("パン", "Pan"), min: -1, max: 1, unit: "", current: track.pan, int: false, log: false }]),
   ]);
 
-  let paramTargets = $state<Target[]>([]);
+  let rawTargets = $state<RawTarget[]>([]);
+  const paramTargets: Target[] = $derived(rawTargets.map((t) => ({ ...t, label: rawLabel(t) })));
   $effect(() => {
     // 音源・エフェクトの構成が変わったら一覧を取り直す
     void track.device;
     void track.effects;
     (isMaster ? api.getMasterParams() : api.getTrackParams(track.id))
       .then((info) => {
-        const out: Target[] = [];
-        const add = (prefix: string, p: import("./types").ParamView) => {
+        const out: RawTarget[] = [];
+        const add = (fx: string | null, kind: string | null, p: import("./types").ParamView) => {
           if (p.range.kind !== "float" && p.range.kind !== "int") return;
           const { min, max } = p.range;
           out.push({
             path: p.path,
-            label: `${prefix}${p.display_name}`,
+            fx,
+            kind,
+            name: p.name,
+            ja: p.display_name,
             min,
             max,
-            unit: p.unit ? ` ${p.unit}` : "",
+            unit: p.unit ? ` ${unitText(p.unit)}` : "",
             current: Number(p.current),
             int: p.range.kind === "int",
             log: min > 0 && max / min >= 100,
           });
         };
-        for (const p of info.params) add("音色: ", p);
-        for (const fx of info.effects) for (const p of fx.params) add(`${fx.name}: `, p);
-        paramTargets = out;
+        for (const p of info.params) add(null, info.device?.name ?? null, p);
+        for (const fx of info.effects) for (const p of fx.params) add(fx.name, fx.name, p);
+        rawTargets = out;
       })
-      .catch(() => (paramTargets = []));
+      .catch(() => (rawTargets = []));
   });
 
   const allTargets = $derived([...BUILTIN, ...paramTargets]);
@@ -297,14 +319,14 @@
     const next = points.map((p, i) =>
       i === d.index ? { ...p, tick: d.tick, value: d.value } : p,
     );
-    commit(next, `${track.name} の「${label(target)}」オートメーションを編集`);
+    commit(next, tr(`${track.name} の「${label(target)}」オートメーションを編集`, `Edit "${label(target)}" automation on ${track.name}`));
   }
 
   function onDblClick(e: MouseEvent) {
     if (hitPoint(e.offsetX, e.offsetY) >= 0) return;
     const tick = Math.max(0, Math.round(e.offsetX / pxPerTick / SNAP) * SNAP);
     const value = roundValue(valueOf(e.offsetY));
-    commit([...points, { tick, value }], `${track.name} の「${label(target)}」に点を追加`);
+    commit([...points, { tick, value }], tr(`${track.name} の「${label(target)}」に点を追加`, `Add point to "${label(target)}" on ${track.name}`));
   }
 
   function onContextMenu(e: MouseEvent) {
@@ -315,8 +337,8 @@
     commit(
       next,
       next.length === 0
-        ? `${track.name} の「${label(target)}」オートメーションを削除`
-        : `${track.name} の「${label(target)}」の点を削除`,
+        ? tr(`${track.name} の「${label(target)}」オートメーションを削除`, `Delete "${label(target)}" automation on ${track.name}`)
+        : tr(`${track.name} の「${label(target)}」の点を削除`, `Delete point on "${label(target)}" on ${track.name}`),
     );
   }
 
@@ -329,14 +351,14 @@
   <div class="auto-head">
     <div class="tabs">
       <button class:active={target === "track/volume_db"} onclick={() => onTarget("track/volume_db")}>
-        音量{#if lanePaths.has("track/volume_db")}<span class="dot" title="描いてある"></span>{/if}
+        {tr("音量", "Volume")}{#if lanePaths.has("track/volume_db")}<span class="dot" title={tr("描いてある", "Has automation")}></span>{/if}
       </button>
       {#if !isMaster}
         <button class:active={target === "track/pan"} onclick={() => onTarget("track/pan")}>
-          パン{#if lanePaths.has("track/pan")}<span class="dot" title="描いてある"></span>{/if}
+          {tr("パン", "Pan")}{#if lanePaths.has("track/pan")}<span class="dot" title={tr("描いてある", "Has automation")}></span>{/if}
         </button>
       {/if}
-      <button class="btn sm icon ghost close" onclick={onClose} title="レーンを閉じる" aria-label="レーンを閉じる"><Icon name="x" /></button>
+      <button class="btn sm icon ghost close" onclick={onClose} title={tr("レーンを閉じる", "Close lane")} aria-label={tr("レーンを閉じる", "Close lane")}><Icon name="x" /></button>
     </div>
     {#if paramTargets.length > 0}
       <select
@@ -346,30 +368,35 @@
           const v = (e.currentTarget as HTMLSelectElement).value;
           if (v) onTarget(v);
         }}
-        title="音色・エフェクトのつまみを時間で動かす(● はレーンが描かれているもの)"
+        title={tr("音色・エフェクトのつまみを時間で動かす(● はレーンが描かれているもの)", "Automate sound/effect parameters over time (● = has automation)")}
       >
-        <option value="">{isMaster ? "マスターのエフェクトのつまみ…" : "音色・エフェクトのつまみ…"}</option>
+        <option value="">{isMaster ? tr("マスターのエフェクトのつまみ…", "Master effect parameters…") : tr("音色・エフェクトのつまみ…", "Sound/effect parameters…")}</option>
         {#each shownTargets.slice(0, 300) as t (t.path)}
           <option value={t.path}>{lanePaths.has(t.path) ? "● " : ""}{t.label}</option>
         {/each}
         {#if shownTargets.length > 300}
-          <option value="" disabled>…ほか {shownTargets.length - 300} 個(下の欄で絞り込み)</option>
+          <option value="" disabled
+            >{tr(
+              `…ほか ${shownTargets.length - 300} 個(下の欄で絞り込み)`,
+              `…${shownTargets.length - 300} more (filter below)`,
+            )}</option
+          >
         {/if}
       </select>
       {#if paramTargets.length > 40}
         <input
           class="param-filter"
           type="search"
-          placeholder={`つまみを絞り込み(${paramTargets.length} 個)`}
+          placeholder={tr(`つまみを絞り込み(${paramTargets.length} 個)`, `Filter parameters (${paramTargets.length})`)}
           bind:value={paramFilter}
         />
       {/if}
     {/if}
     <div class="hint">
       {#if points.length === 0}
-        ダブルクリックで点を追加(破線 = 今の値)
+        {tr("ダブルクリックで点を追加(破線 = 今の値)", "Double-click to add a point (dashed = current value)")}
       {:else}
-        ドラッグ: 移動 / 右クリック: 削除 / レーンがつまみより優先
+        {tr("ドラッグ: 移動 / 右クリック: 削除 / レーンがつまみより優先", "Drag: move / right-click: delete / lane overrides the knob")}
       {/if}
     </div>
     <div class="range-label">

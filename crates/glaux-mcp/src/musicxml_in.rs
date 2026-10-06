@@ -1236,8 +1236,9 @@ pub fn import_file(
         req.set_tempo,
         &inst,
     )?;
-    imp.label = format!(
+    imp.label = glaux_core::tr!(
         "MusicXML「{}」を読み込み(トラック {} 本)",
+        "Import MusicXML \"{}\" ({} tracks)",
         r.title.as_deref().unwrap_or(&file_name),
         imp.tracks.len()
     );

@@ -57,7 +57,7 @@
     try {
       await api.applyEdit(
         [{ op: "set_tempo", events }],
-        `BPM を ${clamped} に変更`,
+        tr(`BPM を ${clamped} に変更`, `Change BPM to ${clamped}`),
       );
     } catch (e) {
       onError(String(e));
@@ -104,7 +104,7 @@
     try {
       await api.applyEdit(
         [{ op: "set_time_sig", events }],
-        `拍子を ${num}/${den} に変更`,
+        tr(`拍子を ${num}/${den} に変更`, `Change time signature to ${num}/${den}`),
       );
     } catch (e) {
       onError(String(e));

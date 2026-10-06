@@ -5,29 +5,62 @@
   import { untrack } from "svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import { tr } from "./i18n.svelte";
   import { pollTransport, transportStore } from "./transport.svelte";
   import type { MonitorMode, SpeakerSim } from "./types";
 
-  const MODES: { id: MonitorMode; label: string; title: string }[] = [
-    { id: "stereo", label: "ステレオ", title: "そのまま聴く" },
-    { id: "mono", label: "モノ", title: "左右を足して聴く(スマホのスピーカーなど、モノラルで鳴らしたときに音が消えないかの確認)" },
-    { id: "side", label: "サイド", title: "左右の差だけを聴く(広がり・リバーブ・位相のずれの確認)" },
-    { id: "swap", label: "入替", title: "左右を入れ替える(耳や部屋の癖を打ち消して、左右の偏りを確かめる)" },
-  ];
+  const MODES: { id: MonitorMode; label: string; title: string }[] = $derived([
+    { id: "stereo", label: tr("ステレオ", "Stereo"), title: tr("そのまま聴く", "Listen as is") },
+    {
+      id: "mono",
+      label: tr("モノ", "Mono"),
+      title: tr(
+        "左右を足して聴く(スマホのスピーカーなど、モノラルで鳴らしたときに音が消えないかの確認)",
+        "Sum left and right (check nothing disappears on mono playback, e.g. phone speakers)",
+      ),
+    },
+    {
+      id: "side",
+      label: tr("サイド", "Side"),
+      title: tr("左右の差だけを聴く(広がり・リバーブ・位相のずれの確認)", "Listen to the L/R difference only (check width, reverb, phase issues)"),
+    },
+    {
+      id: "swap",
+      label: tr("入替", "Swap"),
+      title: tr("左右を入れ替える(耳や部屋の癖を打ち消して、左右の偏りを確かめる)", "Swap L/R (cancel ear/room bias to check left-right balance)"),
+    },
+  ]);
 
   const mode = $derived(transportStore.state.monitor?.mode ?? "stereo");
   const crossfeed = $derived(transportStore.state.monitor?.crossfeed ?? false);
   const speaker = $derived<SpeakerSim>(transportStore.state.monitor?.speaker ?? "off");
-  const SPEAKERS: { id: SpeakerSim; label: string; title: string }[] = [
-    { id: "off", label: "なし", title: "そのまま" },
-    { id: "phone", label: "スマホ", title: "スマホの内蔵スピーカーで鳴らしたときの聞こえ方(モノラル、低音と高音が出ない)。低音が消えてもベースやキックが聞こえるかの確認に" },
-    { id: "laptop", label: "PC", title: "ノート PC の内蔵スピーカーで鳴らしたときの聞こえ方(左右が狭く、低音が出ない)" },
+  const SPEAKERS: { id: SpeakerSim; label: string; title: string }[] = $derived([
+    { id: "off", label: tr("なし", "Off"), title: tr("そのまま", "As is") },
+    {
+      id: "phone",
+      label: tr("スマホ", "Phone"),
+      title: tr(
+        "スマホの内蔵スピーカーで鳴らしたときの聞こえ方(モノラル、低音と高音が出ない)。低音が消えてもベースやキックが聞こえるかの確認に",
+        "How it sounds on a phone speaker (mono, no lows or highs). Check bass and kick still come through without low end",
+      ),
+    },
+    {
+      id: "laptop",
+      label: "PC",
+      title: tr(
+        "ノート PC の内蔵スピーカーで鳴らしたときの聞こえ方(左右が狭く、低音が出ない)",
+        "How it sounds on laptop speakers (narrow stereo, no lows)",
+      ),
+    },
     {
       id: "front",
-      label: "前",
-      title: "ヘッドホンで、前に置いた 2 本のスピーカー(左右 30°)で聴いているように。頭の模型で左右の耳への時間差と頭の陰を計算する(ヘッドホン特有の頭の中で鳴る感じをやわらげる)",
+      label: tr("前", "Front"),
+      title: tr(
+        "ヘッドホンで、前に置いた 2 本のスピーカー(左右 30°)で聴いているように。頭の模型で左右の耳への時間差と頭の陰を計算する(ヘッドホン特有の頭の中で鳴る感じをやわらげる)",
+        "On headphones, sound like two speakers in front (±30°). A head model computes interaural delay and head shadow (eases the in-head feel of headphones)",
+      ),
     },
-  ];
+  ]);
   function setSpeaker(s: SpeakerSim) {
     api
       .transportSetSpeaker(s)
@@ -185,19 +218,25 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-<div class="strip mon" role="group" aria-label="モニター" onclick={(e) => e.stopPropagation()}>
+<div class="strip mon" role="group" aria-label={tr("モニター", "Monitor")} onclick={(e) => e.stopPropagation()}>
   <div class="s-top"></div>
-  <div class="s-name"><Icon name="headphones" size={13} /><span>モニター</span></div>
+  <div class="s-name"><Icon name="headphones" size={13} /><span>{tr("モニター", "Monitor")}</span></div>
   <div class="cols">
     <div class="col">
       <canvas
         bind:this={canvas}
         style="width:{SIZE}px;height:{SIZE}px"
-        title="ゴニオメーター: 縦に伸びるほど中央(モノラル寄り)、横に広がるほど左右の差が大きい。横に寝るのは逆相(モノで消える)の印"
+        title={tr(
+          "ゴニオメーター: 縦に伸びるほど中央(モノラル寄り)、横に広がるほど左右の差が大きい。横に寝るのは逆相(モノで消える)の印",
+          "Goniometer: taller = more centered (mono-ish), wider = larger L/R difference. Lying flat means out of phase (cancels in mono)",
+        )}
       ></canvas>
       <div
         class="corr"
-        title="相関: +1 = モノラル、0 = 左右が無関係(広い)、マイナス = 逆相(モノラルで再生すると音が消える)。ふつうのミックスは 0〜+1 の間"
+        title={tr(
+          "相関: +1 = モノラル、0 = 左右が無関係(広い)、マイナス = 逆相(モノラルで再生すると音が消える)。ふつうのミックスは 0〜+1 の間",
+          "Correlation: +1 = mono, 0 = unrelated L/R (wide), negative = out of phase (cancels in mono). Typical mixes sit between 0 and +1",
+        )}
       >
         <div class="bar">
           <span class="mid"></span>
@@ -209,7 +248,10 @@
     <div class="col">
       <button
         class="loud"
-        title={`マスターのラウドネス(LUFS)と True Peak。M = 瞬時(0.4 秒)、S = 短期(3 秒)、I = 統合(再生を始めてから)、TP = True Peak の最大(サンプルの間の山も含む)。\n配信の目安: I が -14 前後、TP が -1 以下。押すと測り直す`}
+        title={tr(
+          `マスターのラウドネス(LUFS)と True Peak。M = 瞬時(0.4 秒)、S = 短期(3 秒)、I = 統合(再生を始めてから)、TP = True Peak の最大(サンプルの間の山も含む)。\n配信の目安: I が -14 前後、TP が -1 以下。押すと測り直す`,
+          `Master loudness (LUFS) and True Peak. M = momentary (0.4 s), S = short-term (3 s), I = integrated (since playback started), TP = max True Peak (incl. inter-sample peaks).\nStreaming guide: I around -14, TP at or below -1. Click to reset`,
+        )}
         onclick={resetLoudness}
       >
         <span>M</span><b>{fmt(loud?.momentary)}</b>
@@ -221,9 +263,12 @@
         bind:this={specCanvas}
         class="spec"
         style="width:{SIZE}px;height:{SPEC_H}px"
-        title="スペクトル(1/3 オクターブ、25Hz〜20kHz)。高域を持ち上げて表示している(FFT 表示の解析器で定番の 4.5dB/oct と同じ見え方)ので、バランスの良いミックスはおおむね平らに見える。白い線は直近の最大"
+        title={tr(
+          "スペクトル(1/3 オクターブ、25Hz〜20kHz)。高域を持ち上げて表示している(FFT 表示の解析器で定番の 4.5dB/oct と同じ見え方)ので、バランスの良いミックスはおおむね平らに見える。白い線は直近の最大",
+          "Spectrum (1/3 octave, 25 Hz–20 kHz). Highs are tilted up (same look as the common 4.5 dB/oct FFT analyzer), so a balanced mix looks roughly flat. White line = recent max",
+        )}
       ></canvas>
-      <div class="modes" role="radiogroup" aria-label="聴き方">
+      <div class="modes" role="radiogroup" aria-label={tr("聴き方", "Listening mode")}>
         {#each MODES as m (m.id)}
           <button
             class="btn sm"
@@ -240,10 +285,17 @@
         class="btn sm xf"
         class:on={crossfeed}
         aria-pressed={crossfeed}
-        title="クロスフィード: ヘッドホンで聴くときに、左右の極端な分離をやわらげる(スピーカーで聴いたときの広がりに近づける)"
-        onclick={() => setMode(mode, !crossfeed)}>クロスフィード</button
+        title={tr(
+          "クロスフィード: ヘッドホンで聴くときに、左右の極端な分離をやわらげる(スピーカーで聴いたときの広がりに近づける)",
+          "Crossfeed: on headphones, softens extreme L/R separation (closer to listening on speakers)",
+        )}
+        onclick={() => setMode(mode, !crossfeed)}>{tr("クロスフィード", "Crossfeed")}</button
       >
-      <div class="spk" role="radiogroup" aria-label="小さなスピーカー" title="聴く機器で鳴らしたときの聞こえ方(設計値のフィルタと頭の模型。実際の機種の測定ではない)">
+      <div class="spk" role="radiogroup" aria-label={tr("小さなスピーカー", "Small speakers")}
+        title={tr(
+          "聴く機器で鳴らしたときの聞こえ方(設計値のフィルタと頭の模型。実際の機種の測定ではない)",
+          "How it sounds on other devices (designed filters and a head model, not measurements of real models)",
+        )}>
         {#each SPEAKERS as s (s.id)}
           <button
             class="btn sm"
@@ -256,7 +308,7 @@
           >
         {/each}
       </div>
-      <div class="note">聴き方は書き出しに入りません</div>
+      <div class="note">{tr("聴き方は書き出しに入りません", "Listening modes aren't included in exports")}</div>
     </div>
   </div>
 </div>

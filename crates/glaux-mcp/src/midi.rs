@@ -440,8 +440,9 @@ pub fn import_commands(
     }
     Ok(Imported {
         commands,
-        label: format!(
+        label: glaux_core::tr!(
             "MIDI ファイル「{file_name}」を読み込み(トラック {} 本)",
+            "Import MIDI file \"{file_name}\" ({} tracks)",
             song.parts.len()
         ),
         tracks,

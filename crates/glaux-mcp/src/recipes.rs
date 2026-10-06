@@ -284,7 +284,7 @@ pub fn build(project: &Project, recipe: &str, args: &RecipeArgs) -> Result<Recip
                     args.level_db.unwrap_or(-12.0),
                 );
             }
-            format!("センドのリバーブ({space})")
+            glaux_core::tr!("センドのリバーブ({space})", "Send reverb ({space})")
         }
         "send_delay" => {
             let ts = targets(project, args)?;
@@ -321,7 +321,7 @@ pub fn build(project: &Project, recipe: &str, args: &RecipeArgs) -> Result<Recip
                     args.level_db.unwrap_or(-16.0),
                 );
             }
-            format!("センドのディレイ({note})")
+            glaux_core::tr!("センドのディレイ({note})", "Send delay ({note})")
         }
         "kick_bass" => {
             let kick = match &args.kick {
@@ -387,7 +387,7 @@ pub fn build(project: &Project, recipe: &str, args: &RecipeArgs) -> Result<Recip
                 effect: e,
                 index: None,
             });
-            "キックとベースのすみ分け".to_owned()
+            glaux_core::i18n::t("キックとベースのすみ分け", "Kick and bass separation").to_owned()
         }
         "vocal_chain" => {
             let ts = targets(project, args)?;
@@ -466,7 +466,7 @@ pub fn build(project: &Project, recipe: &str, args: &RecipeArgs) -> Result<Recip
                 &bus,
                 args.level_db.unwrap_or(-14.0),
             );
-            "ボーカルのチェーン".to_owned()
+            glaux_core::i18n::t("ボーカルのチェーン", "Vocal chain").to_owned()
         }
         "supersaw" => {
             let ts = targets(project, args)?;
@@ -536,7 +536,7 @@ pub fn build(project: &Project, recipe: &str, args: &RecipeArgs) -> Result<Recip
                 &mut steps,
             );
             send(&mut cmds, &mut steps, t, &del, -18.0);
-            "スーパーソー".to_owned()
+            glaux_core::i18n::t("スーパーソー", "Supersaw").to_owned()
         }
         "parallel_drums" => {
             let mut ts = targets(project, args)?;
@@ -585,7 +585,7 @@ pub fn build(project: &Project, recipe: &str, args: &RecipeArgs) -> Result<Recip
                     args.level_db.unwrap_or(-8.0),
                 );
             }
-            "ドラムの並列コンプ".to_owned()
+            glaux_core::i18n::t("ドラムの並列コンプ", "Parallel drum compression").to_owned()
         }
         other => return Err(format!("recipe は {}(got: {other})", RECIPES.join(" / "))),
     };

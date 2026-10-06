@@ -136,8 +136,9 @@ pub fn enclosing_project(dir: &Path) -> Option<PathBuf> {
 /// 新しい曲を置けない場所なら、その理由(曲のフォルダの中)
 pub fn check_project_parent(parent: &Path) -> std::result::Result<(), String> {
     match enclosing_project(parent) {
-        Some(p) => Err(format!(
+        Some(p) => Err(glaux_core::tr!(
             "曲のフォルダ({})の中には、別の曲を作ったり移したりできません。曲のフォルダの外を選んでください",
+            "You can't create or move a song inside another song's folder ({}). Choose a place outside it",
             p.display()
         )),
         None => Ok(()),
@@ -147,10 +148,19 @@ pub fn check_project_parent(parent: &Path) -> std::result::Result<(), String> {
 /// 新しい曲を、曲名を付けて作る(project.json と空の履歴)。開くのは呼び出し側
 pub fn create_project(dir: &Path, title: &str) -> Result<()> {
     if dir.join("project.json").exists() {
-        anyhow::bail!("既に存在します: {}", dir.display());
+        anyhow::bail!(glaux_core::tr!(
+            "既に存在します: {}",
+            "Already exists: {}",
+            dir.display()
+        ));
     }
-    fs::create_dir_all(dir)
-        .with_context(|| format!("プロジェクトフォルダを作成できません: {}", dir.display()))?;
+    fs::create_dir_all(dir).with_context(|| {
+        glaux_core::tr!(
+            "プロジェクトフォルダを作成できません: {}",
+            "Can't create the project folder: {}",
+            dir.display()
+        )
+    })?;
     let store = Store {
         dir: dir.to_path_buf(),
         saved_entries: Cell::new(0),
@@ -165,10 +175,19 @@ pub fn create_project(dir: &Path, title: &str) -> Result<()> {
 /// 中身のあるプロジェクト(デモ曲など)を、履歴が空の新しいプロジェクトとして `dir` に作る。
 pub fn create_project_from(dir: &Path, project: Project) -> Result<()> {
     if dir.join("project.json").exists() {
-        anyhow::bail!("既に存在します: {}", dir.display());
+        anyhow::bail!(glaux_core::tr!(
+            "既に存在します: {}",
+            "Already exists: {}",
+            dir.display()
+        ));
     }
-    fs::create_dir_all(dir)
-        .with_context(|| format!("プロジェクトフォルダを作成できません: {}", dir.display()))?;
+    fs::create_dir_all(dir).with_context(|| {
+        glaux_core::tr!(
+            "プロジェクトフォルダを作成できません: {}",
+            "Can't create the project folder: {}",
+            dir.display()
+        )
+    })?;
     let store = Store {
         dir: dir.to_path_buf(),
         saved_entries: Cell::new(0),
@@ -192,8 +211,13 @@ impl Store {
     }
 
     fn open_or_create_inner(dir: PathBuf) -> Result<(Store, Session)> {
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("プロジェクトフォルダを作成できません: {}", dir.display()))?;
+        fs::create_dir_all(&dir).with_context(|| {
+            glaux_core::tr!(
+                "プロジェクトフォルダを作成できません: {}",
+                "Can't create the project folder: {}",
+                dir.display()
+            )
+        })?;
         acquire_lock(&dir)?;
         let store = Store {
             dir,

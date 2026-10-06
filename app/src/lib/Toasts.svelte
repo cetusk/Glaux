@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import { tr } from "./i18n.svelte";
   import { dismissToast, toasts } from "./toast.svelte";
 </script>
 
@@ -16,7 +17,7 @@
           }}>{t.action.label}</button
         >
       {/if}
-      <button class="btn sm icon ghost" onclick={() => dismissToast(t.id)} aria-label="閉じる" title="閉じる"
+      <button class="btn sm icon ghost" onclick={() => dismissToast(t.id)} aria-label={tr("閉じる", "Close")} title={tr("閉じる", "Close")}
         ><Icon name="x" /></button
       >
     </div>

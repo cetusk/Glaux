@@ -1,7 +1,7 @@
 <script lang="ts">
   // ステータスバー: プロジェクトフォルダ・音の処理の負荷・デバイス・MCP・版数(押すと設定・コピー)
   import Icon from "./Icon.svelte";
-  import { APP_VERSION, APP_VERSION_DETAIL } from "./appVersion";
+  import { APP_VERSION, appVersionDetail } from "./appVersion";
   import { tr } from "./i18n.svelte";
   import { openSettings } from "./settings.svelte";
   import { transportStore } from "./transport.svelte";
@@ -107,7 +107,7 @@
     <span class="it" title={tr("この曲の編集の回数(編集・取り消し・やり直しのたびに増える)", "Edit count for this song (increases with every edit, undo and redo)")}
       ><Icon name="history" size={12} />{tr("編集", "Edits")} {projectVersion}</span
     >
-    <button class="it" onclick={() => openSettings("about")} title={tr(`${APP_VERSION_DETAIL}(クリックで「Glaux について」)`, `${APP_VERSION_DETAIL} (click for "About Glaux")`)}
+    <button class="it" onclick={() => openSettings("about")} title={tr(`${appVersionDetail()}(クリックで「Glaux について」)`, `${appVersionDetail()} (click for "About Glaux")`)}
       >v{APP_VERSION}</button
     >
   </div>

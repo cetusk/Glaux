@@ -8,6 +8,7 @@
 //!
 //! 推定した計画(state: estimated)は参考として並べるが、ずれの基準にはしない
 
+use crate::i18n::{is_en, t};
 use crate::id::{PlanId, TrackId};
 use crate::model::{Project, SectionJoin, Track};
 use crate::plan::{PartPlan, PlanSet, SongPlan, PRESENCE};
@@ -396,31 +397,35 @@ pub fn patch_base_changed(
         .map(|(k, _)| {
             let (kind, id) = k.split_once(':').unwrap_or((k, ""));
             match kind {
-                "track" => format!(
-                    "トラック「{}」",
-                    project
+                "track" => {
+                    let name = project
                         .tracks
                         .iter()
                         .find(|t| t.id.to_string() == id)
-                        .map_or(id, |t| t.name.as_str())
-                ),
+                        .map_or(id, |t| t.name.as_str());
+                    crate::tr!("トラック「{name}」", "Track \"{name}\"")
+                }
                 "clip" => project
                     .tracks
                     .iter()
                     .find_map(|t| {
-                        t.clips
-                            .iter()
-                            .find(|c| c.id.to_string() == id)
-                            .map(|c| format!("「{}」のクリップ「{}」", t.name, c.name))
+                        t.clips.iter().find(|c| c.id.to_string() == id).map(|c| {
+                            crate::tr!(
+                                "「{}」のクリップ「{}」",
+                                "Clip \"{}\" on \"{}\"",
+                                t.name,
+                                c.name
+                            )
+                        })
                     })
-                    .unwrap_or_else(|| format!("クリップ({id})")),
-                "fx" => "エフェクト".to_owned(),
-                "asset" => "素材".to_owned(),
-                "tempo" => "テンポ".to_owned(),
-                "time_sig" => "拍子".to_owned(),
-                "master" => "マスター".to_owned(),
-                "meta" => "曲の情報".to_owned(),
-                "sections" => "区間".to_owned(),
+                    .unwrap_or_else(|| crate::tr!("クリップ({id})", "Clip ({id})")),
+                "fx" => t("エフェクト", "Effect").to_owned(),
+                "asset" => t("素材", "Asset").to_owned(),
+                "tempo" => t("テンポ", "Tempo").to_owned(),
+                "time_sig" => t("拍子", "Time signature").to_owned(),
+                "master" => t("マスター", "Master").to_owned(),
+                "meta" => t("曲の情報", "Song info").to_owned(),
+                "sections" => t("区間", "Sections").to_owned(),
                 _ => k.clone(),
             }
         })
@@ -477,6 +482,17 @@ fn percentile(sorted: &[u8], q: f64) -> u8 {
     }
     let i = ((sorted.len() - 1) as f64 * q).round() as usize;
     sorted[i.min(sorted.len() - 1)]
+}
+
+/// 存在の段階の表示名(人に見せる。PRESENCE と同じ並び。英語は画面の表示名と揃える)
+fn presence_label(v: u8) -> &'static str {
+    const EN: [&str; 6] = ["Off", "Hint", "Background", "Support", "Front", "Lead"];
+    let i = (v as usize).min(PRESENCE.len() - 1);
+    if is_en() {
+        EN[i]
+    } else {
+        PRESENCE[i]
+    }
 }
 
 fn note_name(p: u8) -> String {
@@ -539,7 +555,7 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
     let section_name = |i: usize| -> String {
         marks
             .get(i)
-            .map_or_else(|| "曲全体".to_owned(), |m| m.name.clone())
+            .map_or_else(|| t("曲全体", "Whole song").to_owned(), |m| m.name.clone())
     };
     let sections: Vec<SectionView> = spans
         .iter()
@@ -689,15 +705,28 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
                     severity: "warn",
                     section: Some(section_key(i)),
                     track: None,
-                    what: format!(
-                        "「{}」の盛り上がりが計画より{}(計画 {:.1} / 実際 {:.1})",
-                        s.name,
-                        if d > 0.0 { "高い" } else { "低い" },
-                        p,
-                        s.measured
-                    ),
-                    fix: "計画の曲線を実際に合わせる(set_song_plan の energy・curve)か、パートの出入り・音の数を計画に合わせる"
-                        .to_owned(),
+                    what: if is_en() {
+                        format!(
+                            "Energy of \"{}\" is {} than planned (plan {:.1} / actual {:.1})",
+                            s.name,
+                            if d > 0.0 { "higher" } else { "lower" },
+                            p,
+                            s.measured
+                        )
+                    } else {
+                        format!(
+                            "「{}」の盛り上がりが計画より{}(計画 {:.1} / 実際 {:.1})",
+                            s.name,
+                            if d > 0.0 { "高い" } else { "低い" },
+                            p,
+                            s.measured
+                        )
+                    },
+                    fix: t(
+                        "計画の曲線を実際に合わせる(set_song_plan の energy・curve)か、パートの出入り・音の数を計画に合わせる",
+                        "Match the planned curve to the actual one (energy/curve in set_song_plan), or match parts entering/leaving and note counts to the plan",
+                    )
+                    .to_owned(),
                 });
             }
         }
@@ -720,44 +749,64 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
             let name = &sections[i].name;
             if planned == 0 && c.notes > 0 {
                 deviations.push(at(
-                    format!(
+                    crate::tr!(
                         "「{name}」の {} は鳴らさない計画なのに鳴っている({} 音)",
-                        part.name, c.notes
+                        "{} plays in \"{name}\" though planned to be off ({} notes)",
+                        part.name,
+                        c.notes
                     ),
-                    "計画の段階を上げるか、その区間の音を消す",
+                    t(
+                        "計画の段階を上げるか、その区間の音を消す",
+                        "Raise the planned level, or remove the notes in that section",
+                    ),
                     "warn",
                 ));
             } else if planned > 0 && c.notes == 0 {
                 deviations.push(at(
-                    format!(
+                    crate::tr!(
                         "「{name}」の {} は「{}」の計画なのに鳴っていない",
-                        part.name, PRESENCE[planned as usize]
+                        "{} is silent in \"{name}\" though planned as \"{}\"",
+                        part.name,
+                        presence_label(planned)
                     ),
-                    "その区間に書く(write_* の道具)か、計画を「鳴らさない」にする",
+                    t(
+                        "その区間に書く(write_* の道具)か、計画を「鳴らさない」にする",
+                        "Write that section (write_* tools), or set the plan to \"Off\"",
+                    ),
                     "warn",
                 ));
             } else if planned > 0 && (planned as i32 - c.measured as i32).abs() >= 2 {
                 deviations.push(at(
-                    format!(
+                    crate::tr!(
                         "「{name}」の {} は計画「{}」に対して、実際は「{}」くらい",
-                        part.name, PRESENCE[planned as usize], PRESENCE[c.measured as usize]
+                        "{} in \"{name}\" is planned as \"{}\" but sounds about \"{}\"",
+                        part.name,
+                        presence_label(planned),
+                        presence_label(c.measured)
                     ),
-                    "音量・音の数・音域で前後を整えるか、計画の段階を実際に合わせる",
+                    t(
+                        "音量・音の数・音域で前後を整えるか、計画の段階を実際に合わせる",
+                        "Adjust depth with volume, note count and register, or match the planned level to the actual",
+                    ),
                     "info",
                 ));
             }
             if let (Some([lo, hi]), Some([a, b])) = (c.planned_register, c.register) {
                 if (a as i32) < lo as i32 - 2 || (b as i32) > hi as i32 + 2 {
                     deviations.push(at(
-                        format!(
+                        crate::tr!(
                             "「{name}」の {} が音域の帯から外れている(計画 {}〜{} / 実際 {}〜{})",
+                            "{} in \"{name}\" is outside its register band (plan {}–{} / actual {}–{})",
                             part.name,
                             note_name(lo),
                             note_name(hi),
                             note_name(a),
                             note_name(b)
                         ),
-                        "音を帯の中へ移す(transpose_notes)か、計画の帯を広げる",
+                        t(
+                            "音を帯の中へ移す(transpose_notes)か、計画の帯を広げる",
+                            "Move the notes into the band (transpose_notes), or widen the planned band",
+                        ),
                         "warn",
                     ));
                 }
@@ -780,11 +829,16 @@ pub fn design_view(project: &Project, plans: &PlanSet) -> DesignView {
                 severity: "info",
                 section: Some(section_key(i)),
                 track: None,
-                what: format!(
+                what: crate::tr!(
                     "「{}」で前面・主役の計画のパートが {front} つ(同時に前に出るのは 3〜4 つまでが目安)",
+                    "{front} parts are planned as front/lead in \"{}\" (3–4 at once is a good maximum)",
                     s.name
                 ),
-                fix: "いくつかを「支え」「背景」に下げる".to_owned(),
+                fix: t(
+                    "いくつかを「支え」「背景」に下げる",
+                    "Lower some of them to \"Support\" or \"Background\"",
+                )
+                .to_owned(),
             });
         }
     }

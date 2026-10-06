@@ -1,6 +1,7 @@
 // エフェクトの名前・色・アイコン(ミキサーの列・ノード表示・インスペクターで共通)。
 import type { IconName } from "./icons";
 import type { EffectView, FxLink, ProjectEffect } from "./types";
+import { tr } from "./i18n.svelte";
 
 /** 種類ごとの色(カードの帯・列の印) */
 export const FX_COLORS: Record<string, string> = {
@@ -75,13 +76,95 @@ export const FX_KIND_JA: Record<string, string> = {
   sidechain: "サイドチェイン",
 };
 
+/** 種類の英語名(表示用。FX_KIND_JA と同じキー) */
+export const FX_KIND_EN: Record<string, string> = {
+  eq: "EQ",
+  compressor: "Compressor",
+  distortion: "Distortion",
+  amp: "Amp",
+  reverb: "Reverb",
+  delay: "Delay",
+  chorus: "Chorus",
+  tape: "Tape",
+  multiband: "Multiband",
+  transient: "Transient",
+  limiter: "Limiter",
+  width: "Width",
+  dynamic_eq: "Dynamic EQ",
+  convolution: "Convolution reverb",
+  resonance: "Resonance suppressor",
+  virtual_bass: "Virtual bass",
+  clipper: "Clipper",
+  bitcrush: "Bitcrush",
+  tremolo: "Tremolo",
+  phaser: "Phaser",
+  flanger: "Flanger",
+  trance_gate: "Trance gate",
+  auto_filter: "Auto filter",
+  volume_shaper: "Volume shaper",
+  eq8: "8-band EQ",
+  saturation: "Saturation",
+  deesser: "De-esser",
+  gate: "Gate",
+  pitch_shift: "Pitch shift",
+  harmonizer: "Harmonizer",
+  pitch_correct: "Pitch correct",
+  sidechain: "Sidechain",
+};
+
+/** 種類の説明の英語(追加メニューの小さな説明。日本語は裏側の説明〈AI 向けを兼ねる〉をそのまま出す) */
+export const FX_DESC_EN: Record<string, string> = {
+  eq: "EQ (high-pass, low shelf, mid peak, high shelf, low-pass). Adjusts tonal balance.",
+  compressor: "Compressor. Evens out level and adds loudness and density.",
+  distortion: "Distortion / saturation pedal. Gritty texture, thicker drums, or a boost before an amp.",
+  amp: "Guitar amp simulator (multi-stage clipping, tone, presence, cabinet).",
+  reverb: "Reverb. Adds depth and space.",
+  delay: "Delay. Tempo-synced echoes for depth and tails; ping-pong spreads left and right.",
+  chorus: "Chorus. Layers delayed, modulated copies for thickness and stereo width.",
+  tape: "Tape / lo-fi. Wow and flutter, tape saturation, dulled highs, hiss and bit reduction for a vintage feel.",
+  multiband: "Multiband compressor. Controls dynamics per frequency band.",
+  transient: "Transient shaper. Boosts or cuts attack and sustain separately, regardless of level.",
+  limiter: "Limiter. Raises loudness while keeping peaks under the ceiling.",
+  width: "Stereo width (M/S). Narrows or widens the image, centers the lows; stays mono-safe.",
+  dynamic_eq: "Dynamic EQ. Cuts or boosts a band only when it gets loud.",
+  convolution: "Convolution reverb. Reverb from a recorded impulse response.",
+  resonance: "Resonance suppressor. Automatically dips narrow, harsh peaks only while they ring.",
+  virtual_bass: "Virtual bass. Adds harmonics so bass and kick are heard on phones and laptops.",
+  clipper: "Clipper. Shaves peaks for loudness and punch (soft / hard / fold).",
+  bitcrush: "Bitcrusher. Lowers bit depth and sample rate for a gritty lo-fi / game-console sound.",
+  tremolo: "Tremolo / auto-pan. Tempo-synced volume wobble (stereo 1 pans left and right).",
+  phaser: "Phaser. Swirling, swooshing movement.",
+  flanger: "Flanger. Metallic, jet-like sweeps.",
+  trance_gate: "Trance gate. Chops the sound in a 16th-note pattern synced to tempo.",
+  auto_filter: "Auto filter. Cutoff moved by a tempo-synced LFO or the input level (risers, auto-wah).",
+  volume_shaper: "Volume shaper. Ducks and recovers each cycle (kick-style pumping without a sidechain).",
+  eq8: "8-band parametric EQ with per-band types, dynamics and stereo / mid / side processing.",
+  saturation: "Saturation (tape / tube / transistor / soft clip). Adds harmonics, warmth and density.",
+  deesser: "De-esser. Turns down vocal sibilance only while it occurs.",
+  gate: "Gate. Closes below a threshold; with a source track, opens only while that track plays.",
+  pitch_shift: "Pitch shifter. Moves pitch without changing length (±24 semitones + cents).",
+  harmonizer: "Harmonizer. Layers 1–2 voices at a fixed interval (3rds, 5ths…) for harmonies.",
+  pitch_correct: "Pitch correction. Pulls a monophonic voice toward the nearest note of the key and scale.",
+  sidechain: "Sidechain compressor. Ducks this track when another track (usually the kick) hits.",
+};
+
+/** 種類の説明(日本語のときは `ja` のまま。英語の対訳が無ければ空) */
+export function fxKindDesc(kind: string, ja: string): string {
+  return tr(ja, FX_DESC_EN[kind] ?? "");
+}
+
+/** 種類の表示名(今の表示の言語。表に無ければ undefined)。テンプレート・$derived の中で呼べば言語の切り替えで描き直される */
+export function fxKindName(kind: string): string | undefined {
+  return tr(FX_KIND_JA[kind], FX_KIND_EN[kind]) ?? FX_KIND_JA[kind];
+}
+
 /** 選択肢が空の「検出のトラック」(サイドチェイン・ダイナミック EQ・ゲートの source)は、曲のトラックから選ばせる */
 export function trackChoices(
   p: { name: string; range: { kind: string; choices?: readonly string[] } },
   tracks: { id: string; name: string }[],
 ): { value: string; label: string }[] | null {
   if (p.name !== "source" || p.range.kind !== "enum" || (p.range.choices?.length ?? 0) > 0) return null;
-  return [{ value: "", label: "なし(自分の音)" }, ...tracks.map((t) => ({ value: t.id, label: t.name }))];
+  return [{ value: "", label: tr("なし(自分の音)", "None (own signal)") }, ...tracks.map((t) => ({ value: t.id, label: t.name }))];
 }
 
 /** 選択肢の「ファイルから読み込む…」 */
@@ -97,7 +180,7 @@ export function irChoices(
     const path = (a as { path?: string })?.path ?? id;
     return { value: id, label: path.split(/[\\/]/).pop() ?? path };
   });
-  return [{ value: "", label: "なし(素通し)" }, ...items, { value: IR_FROM_FILE, label: "ファイルから読み込む…" }];
+  return [{ value: "", label: tr("なし(素通し)", "None (bypass)") }, ...items, { value: IR_FROM_FILE, label: tr("ファイルから読み込む…", "Load from file…") }];
 }
 
 /** 選択肢が空の「素材」(グラニュラーの sample)は、プロジェクトの音声素材から選ぶ */
@@ -110,7 +193,7 @@ export function sampleChoices(
     const path = (a as { path?: string })?.path ?? id;
     return { value: id, label: path.split(/[\\/]/).pop() ?? path };
   });
-  return [{ value: "", label: "なし(無音)" }, ...items];
+  return [{ value: "", label: tr("なし(無音)", "None (silent)") }, ...items];
 }
 
 /** 種類のキー(内蔵エフェクト名。CLAP は "clap") */
@@ -231,10 +314,10 @@ export function processingOrder(effects: { id: string }[], links: FxLink[]): str
 
 /** a → b をつなげるか。つなげなければ理由 */
 export function connectProblem(links: FxLink[], a: string, b: string): string | null {
-  if (a === b) return "自分自身にはつなげない";
-  if (a === OUT || b === IN) return "向きが逆";
-  if (links.some((l) => l.from === a && l.to === b)) return "もうつながっている";
-  if (reach(links, b, true).has(a)) return "輪になるのでつなげない";
+  if (a === b) return tr("自分自身にはつなげない", "Can't connect to itself");
+  if (a === OUT || b === IN) return tr("向きが逆", "Wrong direction");
+  if (links.some((l) => l.from === a && l.to === b)) return tr("もうつながっている", "Already connected");
+  if (reach(links, b, true).has(a)) return tr("輪になるのでつなげない", "Would create a loop");
   return null;
 }
 

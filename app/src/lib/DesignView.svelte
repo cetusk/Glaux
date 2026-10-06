@@ -1811,7 +1811,7 @@
                 <dt>{tr("パート", "Parts")}</dt><dd>{d.parts.length}</dd>
                 <dt>{tr("計画のあるパート", "Parts with a plan")}</dt><dd>{d.parts.filter((p) => p.plan_id).length}</dd>
               </dl>
-              {#each devOf((x) => !!x.track && x.what.includes("音域")) as x, k (k)}
+              {#each devOf((x) => !!x.track && (x.what.includes("音域") || x.what.includes("register"))) as x, k (k)}
                 <div class="finding {x.severity}"><span class="dot"></span><span>{x.what}</span></div>
               {/each}
             {:else if sel.lane === "table"}

@@ -71,7 +71,11 @@ pub(crate) fn clap_site<'a>(
         PluginOwner::Effect(fx) => {
             let (effect, place, fx_track) =
                 match project.master.effects.iter().find(|e| &e.id == fx) {
-                    Some(e) => (e, "マスター".to_owned(), None),
+                    Some(e) => (
+                        e,
+                        glaux_core::i18n::t("マスター", "Master").to_owned(),
+                        None,
+                    ),
                     None => project
                         .tracks
                         .iter()
@@ -192,7 +196,11 @@ pub fn load_command(
                 .unwrap_or_else(|| preset_id.to_owned())
         });
     let new_state = glaux_engine::plugins::state_with_preset(plugin_id, site.state, preset_id)?;
-    let label = format!("{} の音色をプリセット「{name}」に", site.place);
+    let label = glaux_core::tr!(
+        "{} の音色をプリセット「{name}」に",
+        "Set the sound of {} to preset \"{name}\"",
+        site.place
+    );
     let command = match owner {
         PluginOwner::Track(tid) => {
             let (_, device, _, _) = clap_track(project, tid)?;
