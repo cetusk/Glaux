@@ -371,10 +371,12 @@
         g.fillRect((t - clipStart) * pxPerTick, 0, 1, contentH);
       }
     }
-    // スナップグリッド(拍より細かいときだけ)
+    // スナップグリッド(拍より細かいときだけ。線が詰まりすぎる倍率では 2 倍ずつ間引く)
     if (snapTicks < 960) {
+      let step = snapTicks;
+      while (step * pxPerTick < 5 && step * 2 < 960) step *= 2;
       g.fillStyle = "#2a2a2a";
-      for (let t = 0; t <= lenOf(currentClip); t += snapTicks) {
+      for (let t = 0; t <= lenOf(currentClip); t += step) {
         if (t % 960 !== 0) g.fillRect(t * pxPerTick, 0, 1, contentH);
       }
     }
@@ -662,7 +664,8 @@
         const rect = el.getBoundingClientRect();
         const cx = e.clientX - rect.left;
         const tickAt = (el.scrollLeft + cx - KEY_W) / (pxPerBeat / 960);
-        const next = Math.min(240, Math.max(12, pxPerBeat * (e.deltaY < 0 ? 1.25 : 0.8)));
+        // 最大は 1 拍 480px(1/64 が 30px)
+        const next = Math.min(480, Math.max(12, pxPerBeat * (e.deltaY < 0 ? 1.25 : 0.8)));
         if (next === pxPerBeat) return;
         pxPerBeat = next;
         sveltick().then(() => {

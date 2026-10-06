@@ -115,7 +115,7 @@ export const ART_LABELS: Record<Articulation, string> = {
   },
 };
 
-// T = 3 連符(PPQ 960: 1/4T=640, 1/8T=320, 1/16T=160)
+// T = 3 連符(PPQ 960: 1/4T=640, 1/8T=320, 1/16T=160, 1/32T=80)
 export const SNAP_OPTIONS = [
   {
     get label() {
@@ -130,6 +130,9 @@ export const SNAP_OPTIONS = [
   { label: "1/8T", ticks: 320 },
   { label: "1/16", ticks: 240 },
   { label: "1/16T", ticks: 160 },
+  { label: "1/32", ticks: 120 },
+  { label: "1/32T", ticks: 80 },
+  { label: "1/64", ticks: 60 },
 ];
 
 /// ポルタメントの滑る時間の選択肢(ms)
