@@ -29,7 +29,7 @@
   import StatusBar from "./lib/StatusBar.svelte";
   import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
-  import { plural, tr } from "./lib/i18n.svelte";
+  import { plural, syncBackendLanguage, tr } from "./lib/i18n.svelte";
   import {
     inspectorStore,
     midiArmStore,
@@ -713,6 +713,12 @@
   // ループ中に選択を変えると区間も追従する。
 
   let loopOn = $state(false);
+
+  // 裏側(Rust)で作る、人に見せる文(履歴の名前・ずれの説明・エラー)の言語を、設定の「言語」に合わせる
+  $effect(() => {
+    void settings.lang;
+    syncBackendLanguage();
+  });
 
   // エンジン側の実状態に追従(プロジェクト切り替えでの自動解除など)
   $effect(() => {

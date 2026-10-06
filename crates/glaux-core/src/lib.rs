@@ -27,6 +27,7 @@ pub mod gesture;
 pub mod groove;
 pub mod harmony;
 pub mod history;
+pub mod i18n;
 pub mod id;
 pub mod made;
 pub mod melexpr;

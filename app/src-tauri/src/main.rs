@@ -2389,6 +2389,12 @@ async fn plan_adopt_proposal(
         .await
 }
 
+/// 人に見せる文(履歴の名前・計画と実際のずれの説明・エラーなど、裏側で作る文)の言語を設定する(設定の「言語」)
+#[tauri::command]
+fn set_ui_language(lang: String) {
+    glaux_core::i18n::set_english(lang == "en");
+}
+
 /// 設計画面で区間を直す: 区間の位置・名前・数が変わったら曲の区間を置き換え(曲の履歴)、盛り上がり・形・境目・
 /// 鳴らすトラック・メモは曲全体の計画に書く(計画の履歴。曲も変えたなら一組)。返り値は書いた履歴の項目
 #[tauri::command]
@@ -3123,6 +3129,7 @@ fn main() -> Result<()> {
             ab_prepare_proposals,
             plan_adopt_proposal,
             design_edit_sections,
+            set_ui_language,
             plan_head,
             plan_estimate,
             change_ranges,
