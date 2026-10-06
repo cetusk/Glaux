@@ -2341,6 +2341,124 @@ async fn turn_changes(state: State<'_, AppState>, since: Option<String>) -> Resu
     Ok(v)
 }
 
+/// 送った指示を直して送り直すときに戻す所: 曲の履歴の `since` より後の項目(AI も人も)と、計画の履歴のうち
+/// その時刻より後で、曲の編集と一組でないもの(一組のものは曲を戻すと一緒に戻る)
+async fn rewind_targets(
+    state: &AppState,
+    since: Option<String>,
+    after_ms: Option<f64>,
+) -> Result<(Vec<glaux_core::HistoryEntry>, Vec<(EntryId, bool)>), String> {
+    let since_id = match &since {
+        Some(s) => Some(EntryId::parse(s).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let song = state
+        .handle
+        .get_entries(since_id.clone(), 1000)
+        .await?
+        .map_err(|e| e.to_string())?;
+    // 計画は時刻で切る(指示を送った時刻。無ければ since の項目の時刻、それも無ければ全部)
+    let after: Option<chrono::DateTime<chrono::Utc>> = match after_ms {
+        Some(ms) => chrono::DateTime::from_timestamp_millis(ms as i64),
+        None => match since_id {
+            Some(id) => state
+                .handle
+                .get_entries(None, 100_000)
+                .await?
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|e| e.id == id)
+                .map(|e| e.timestamp),
+            None => None,
+        },
+    };
+    let plans = state.handle.get_plans().await?;
+    let plan: Vec<(EntryId, bool)> = plans
+        .history()
+        .applied()
+        .iter()
+        .filter(|e| after.is_none_or(|t| e.timestamp >= t))
+        .filter(|e| !e.note.as_ref().is_some_and(|n| n.song_entry.is_some()))
+        .map(|e| (e.id.clone(), matches!(e.author, Author::Human)))
+        .collect();
+    Ok((song, plan))
+}
+
+/// 送った指示を直して送り直す前に、戻る編集の数(人の分も)を数える(確かめの表示用)
+#[tauri::command]
+async fn chat_rewind_preview(
+    state: State<'_, AppState>,
+    since: Option<String>,
+    after_ms: Option<f64>,
+) -> Result<Value, String> {
+    let (song, plan) = rewind_targets(&state, since, after_ms).await?;
+    let human = song
+        .iter()
+        .filter(|e| matches!(e.author, Author::Human))
+        .count()
+        + plan.iter().filter(|(_, h)| *h).count();
+    Ok(json!({ "song": song.len(), "plan": plan.len(), "human": human }))
+}
+
+/// 送った指示を直して送り直す: その指示より後の編集を、AI も人も新しい順に取り消し(取り消しも履歴に残る)、
+/// 会話もその指示の前まで戻す(Claude は一つ前のターンの終わり `chain_end` から再開。無ければ新しい会話)
+#[tauri::command]
+async fn chat_rewind(
+    state: State<'_, AppState>,
+    since: Option<String>,
+    after_ms: Option<f64>,
+    chain_end: Option<String>,
+) -> Result<Value, String> {
+    if state.chat.is_running() {
+        return Err(glaux_core::i18n::t(
+            "AI が作業中です。止めてから送り直してください",
+            "The AI is working. Stop it before resending",
+        )
+        .to_owned());
+    }
+    // 計画は先に数えておく(曲を戻すと、一組の計画の変更が新しい項目として積まれるため)
+    let (song, plan) = rewind_targets(&state, since, after_ms).await?;
+    for e in song.iter().rev() {
+        state
+            .handle
+            .revert_entry(e.id.clone(), Author::Human)
+            .await?
+            .map_err(|err| {
+                glaux_core::tr!(
+                    "「{}」を取り消せませんでした: {err}",
+                    "Couldn't undo \"{}\": {err}",
+                    e.label
+                )
+            })?;
+    }
+    let note = glaux_core::EntryNote {
+        why: glaux_core::i18n::t(
+            "送った指示を直して送り直すため、その指示より後の変更を戻す",
+            "Rewinding to resend an edited instruction",
+        )
+        .to_owned(),
+        ..Default::default()
+    };
+    for (id, _) in plan.iter().rev() {
+        // 前に戻した項目などで取り消せないものは飛ばす
+        let _ = state
+            .handle
+            .revert_plan(id.clone(), Author::Human, note.clone())
+            .await;
+    }
+    // 会話を巻き戻す。戻した編集(人の取り消し)は AI に「人の編集」として見せない
+    state.chat.rewind(chain_end);
+    let latest = state
+        .handle
+        .get_entries(None, 100_000)
+        .await?
+        .map_err(|e| e.to_string())?
+        .last()
+        .map(|e| e.id.to_string());
+    state.chat.set_last_seen_entry(latest);
+    Ok(json!({ "song": song.len(), "plan": plan.len() }))
+}
+
 /// チャットの 1 ターンで AI が行った編集を、新しい順に取り消す(revert。途中の人間の編集は残る)。
 /// 取り消し自体も履歴に載るので undo できる
 #[tauri::command]
@@ -3295,6 +3413,8 @@ fn main() -> Result<()> {
             revert_entry,
             turn_changes,
             revert_turn,
+            chat_rewind,
+            chat_rewind_preview,
             bounce_track,
             import_midi,
             export_midi,

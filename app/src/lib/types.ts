@@ -381,6 +381,6 @@ export type ChatEvent =
   | { kind: "started" }
   | { kind: "assistant_text"; text: string }
   | { kind: "tool_use"; name: string }
-  | { kind: "result"; ok: boolean; text: string }
+  | { kind: "result"; ok: boolean; text: string; chain_end?: string }
   | { kind: "notice"; text: string }
   | { kind: "error"; message: string };

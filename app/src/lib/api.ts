@@ -893,6 +893,16 @@ export function revertTurn(since: string | null): Promise<{ reverted: number; co
   return invoke("revert_turn", { since });
 }
 
+/** 送った指示を直して送り直す前に、戻る編集の数を数える(song = 曲、plan = 計画、human = そのうち人の編集) */
+export function chatRewindPreview(since: string | null, afterMs: number): Promise<{ song: number; plan: number; human: number }> {
+  return invoke("chat_rewind_preview", { since, afterMs });
+}
+
+/** 送った指示より後の編集を(人の分も)取り消し、会話もその前まで戻す。chainEnd が無ければ新しい会話になる */
+export function chatRewind(since: string | null, afterMs: number, chainEnd: string | null): Promise<{ song: number; plan: number }> {
+  return invoke("chat_rewind", { since, afterMs, chainEnd });
+}
+
 /** 会話をリセットする(次の送信が新しいセッションになる)。 */
 export function resetChat(): Promise<void> {
   return invoke("reset_chat");

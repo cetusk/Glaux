@@ -35,8 +35,14 @@ pub enum ChatEvent {
     AssistantText { text: String },
     /// ツール呼び出し(名前は `mcp__glaux__` プレフィックスを剥がしたもの)
     ToolUse { name: String },
-    /// ターン完了。`text` は最終応答の全文
-    Result { ok: bool, text: String },
+    /// ターン完了。`text` は最終応答の全文。`chain_end` は Claude の会話のこのターンの最後のメッセージの ID
+    /// (送った指示を直して送り直すとき、一つ前のターンの終わりから会話を再開するのに使う。Codex には無い)
+    Result {
+        ok: bool,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        chain_end: Option<String>,
+    },
     /// 補足情報(会話のフォールバックなど。エラーほど深刻ではない)
     Notice { text: String },
     /// 起動失敗・異常終了など
@@ -145,11 +151,23 @@ pub fn parse_line(line: &str) -> (Vec<ChatEvent>, Option<String>) {
             let ok = !v["is_error"].as_bool().unwrap_or(false)
                 && v["subtype"].as_str() == Some("success");
             let text = v["result"].as_str().unwrap_or_default().to_owned();
-            vec![ChatEvent::Result { ok, text }]
+            vec![ChatEvent::Result {
+                ok,
+                text,
+                chain_end: None,
+            }]
         }
         _ => vec![],
     };
     (events, session_id)
+}
+
+/// stream-json の会話の行(user / assistant)の uuid。会話を途中から再開する目印
+pub fn chain_uuid(line: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    matches!(v["type"].as_str(), Some("user" | "assistant"))
+        .then(|| v["uuid"].as_str().map(str::to_owned))
+        .flatten()
 }
 
 /// `codex exec --json` の 1 行(JSONL)を UI イベントに変換する。thread_id を拾ったら返す。
@@ -200,6 +218,7 @@ pub fn parse_codex_line(line: &str) -> (Vec<ChatEvent>, Option<String>) {
             vec![ChatEvent::Result {
                 ok: true,
                 text: String::new(),
+                chain_end: None,
             }],
             None,
         ),
@@ -210,6 +229,7 @@ pub fn parse_codex_line(line: &str) -> (Vec<ChatEvent>, Option<String>) {
                     .as_str()
                     .unwrap_or(t("GPT の実行に失敗しました", "GPT run failed"))
                     .to_owned(),
+                chain_end: None,
             }],
             None,
         ),
@@ -301,6 +321,8 @@ pub struct ChatManager {
     effort: Mutex<Option<String>>,
     /// AI の返答の言語
     lang: Mutex<ReplyLang>,
+    /// 次のターンを、会話のこのメッセージ(一つ前のターンの終わり)から再開する(送った指示を直して送り直す)
+    rewind_at: Mutex<Option<String>>,
     /// 今動いている AI のモデル名(MCP サーバーと共有し、履歴の作者名に使う)。
     /// Claude は init イベントの model(既定のモデルでも実際の名前が分かる)、Codex は選んだモデル
     pub chat_model: glaux_mcp::server::ChatModel,
@@ -407,6 +429,16 @@ impl ChatManager {
         Ok(())
     }
 
+    /// 送った指示を直して送り直す: 次のターンを、会話のメッセージ `at`(一つ前のターンの終わり)から再開する。
+    /// `at` が無い(最初の指示・Codex・記録の無い古い会話)なら新しい会話にする
+    pub fn rewind(&self, at: Option<String>) {
+        let at = at.filter(|_| self.provider() == Provider::Claude && self.has_session());
+        if at.is_none() {
+            self.reset();
+        }
+        *self.rewind_at.lock().expect("rewind lock") = at;
+    }
+
     /// 次のターンから使う返答の言語を設定する。
     pub fn set_language(&self, lang: ReplyLang) {
         *self.lang.lock().expect("lang lock") = lang;
@@ -451,6 +483,7 @@ impl ChatManager {
             model: Mutex::new(None),
             effort: Mutex::new(None),
             lang: Mutex::new(ReplyLang::default()),
+            rewind_at: Mutex::new(None),
             chat_model: Default::default(),
         }
     }
@@ -638,6 +671,10 @@ impl ChatManager {
             .arg(system_prompt(self.lang()));
         if let Some(sid) = self.resume_id() {
             cmd.args(["--resume", &sid]);
+            // 送った指示を直して送り直す: その前のターンの終わりまでの会話から、別の会話として続ける
+            if let Some(at) = self.rewind_at.lock().expect("rewind lock").as_ref() {
+                cmd.args(["--resume-session-at", at, "--fork-session"]);
+            }
         }
         if let Some(model) = self.model.lock().expect("model lock").as_ref() {
             cmd.args(["--model", model]);
@@ -854,8 +891,20 @@ async fn run_turn_inner(
 
     let mut lines = BufReader::new(stdout).lines();
     let mut got_result = false;
+    // このターンの会話の最後のメッセージ(user / assistant の行の uuid)
+    let mut chain_end: Option<String> = None;
     while let Ok(Some(line)) = lines.next_line().await {
-        let (events, session_id) = provider.parse_line(&line);
+        let (mut events, session_id) = provider.parse_line(&line);
+        if provider == Provider::Claude {
+            if let Some(uuid) = chain_uuid(&line) {
+                chain_end = Some(uuid);
+            }
+            for ev in events.iter_mut() {
+                if let ChatEvent::Result { chain_end: c, .. } = ev {
+                    *c = chain_end.clone();
+                }
+            }
+        }
         if provider == Provider::Claude {
             if let Some(model) = init_model(&line) {
                 mgr.set_chat_model(Some(model));
@@ -866,7 +915,11 @@ async fn run_turn_inner(
         }
         for ev in &events {
             match ev {
-                ChatEvent::Started => *saw_init = true,
+                ChatEvent::Started => {
+                    *saw_init = true;
+                    // 巻き戻しての再開は 1 回だけ(以後はふつうに続ける)
+                    *mgr.rewind_at.lock().expect("rewind lock") = None;
+                }
                 ChatEvent::Result { .. } => got_result = true,
                 _ => {}
             }
@@ -951,6 +1004,25 @@ mod tests {
     }
 
     #[test]
+    fn chain_uuid_reads_only_conversation_lines() {
+        assert_eq!(
+            chain_uuid(r#"{"type":"assistant","uuid":"u-1","message":{"content":[]}}"#).as_deref(),
+            Some("u-1")
+        );
+        assert_eq!(
+            chain_uuid(r#"{"type":"user","uuid":"u-2","message":{"content":[]}}"#).as_deref(),
+            Some("u-2")
+        );
+        // 結果や初期化の行は会話の位置にならない
+        assert_eq!(chain_uuid(r#"{"type":"result","uuid":"r-1"}"#), None);
+        assert_eq!(
+            chain_uuid(r#"{"type":"system","subtype":"init","uuid":"s-1"}"#),
+            None
+        );
+        assert_eq!(chain_uuid("not json"), None);
+    }
+
+    #[test]
     fn parses_init_and_captures_session_id() {
         let (events, sid) =
             parse_line(r#"{"type":"system","subtype":"init","session_id":"abc-123","tools":[]}"#);
@@ -986,7 +1058,8 @@ mod tests {
             events,
             vec![ChatEvent::Result {
                 ok: true,
-                text: "完了".to_owned()
+                text: "完了".to_owned(),
+                chain_end: None
             }]
         );
 
@@ -997,7 +1070,8 @@ mod tests {
             events,
             vec![ChatEvent::Result {
                 ok: false,
-                text: String::new()
+                text: String::new(),
+                chain_end: None
             }]
         );
     }
@@ -1038,7 +1112,8 @@ mod tests {
             parse_codex_line(completed).0,
             vec![ChatEvent::Result {
                 ok: true,
-                text: String::new()
+                text: String::new(),
+                chain_end: None
             }]
         );
     }
@@ -1051,7 +1126,8 @@ mod tests {
             parse_codex_line(failed).0,
             vec![ChatEvent::Result {
                 ok: false,
-                text: "unexpected status 401 Unauthorized".to_owned()
+                text: "unexpected status 401 Unauthorized".to_owned(),
+                chain_end: None
             }]
         );
         // 再接続中などの途中経過は補足として出す(致命的なら続けて turn.failed が来る)

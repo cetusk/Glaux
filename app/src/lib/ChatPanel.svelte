@@ -127,12 +127,26 @@
     question?: api.AiQuestion;
     answer?: string;
     skipped?: boolean;
+    /** role "user": 書いたままの指示と、送ったときの対象(直して送り直すときに使う) */
+    raw?: string;
+    ctx?: PromptCtx;
+    /** role "user": 送ったターンの開始前の最後の履歴エントリと、開始の時刻(ms) */
+    sent?: { since: string | null; at: number };
+    /** role "user": このターンの会話の終わり(Claude のセッションの位置。巻き戻すときに使う) */
+    chainEnd?: string;
+  }
+
+  /// 指示に添える対象(範囲・クリップ・設計の所・音作り): AI へ送る前置きと、会話に出す頭書き
+  interface PromptCtx {
+    prefix: string;
+    deco: string;
   }
 
   /// 送信待ちの指示(実行中に書いたもの)。会話の下に並べ、前のターンが終わったら順に送る
   interface Pending {
     text: string;
     fullPrompt: string;
+    edit?: { raw: string; ctx: PromptCtx };
   }
   let pending = $state<Pending[]>([]);
 
@@ -142,6 +156,8 @@
   /// 実行中のターンを始めた時刻と、そのターンで AI が案を出したか
   let turnStartedAt = 0;
   let turnProposed = false;
+  /// 実行中のターンを始めた指示(ターンの終わりに会話の位置を書き込む)
+  let turnUser: Msg | null = null;
 
   /// ターンが終わったら、AI の編集の件数を数えて「取り消す」「聴き比べる」を出し、変わった所を縁取る。
   /// 案を出していたら、その案の選択肢(聴き比べる・採用)を並べる
@@ -515,21 +531,30 @@
     scroller?.scrollTo({ top: scroller.scrollHeight });
   }
 
-  function push(msg: Msg, force = false) {
+  /** 会話に足す。足したもの(状態として見張られる版)を返す */
+  function push(msg: Msg, force = false): Msg {
     messages.push(msg);
     scrollToBottom(force);
     saveLog();
+    return messages[messages.length - 1];
   }
 
   async function send() {
     const prompt = input.trim();
     if (!prompt) return;
+    const ctx = promptContext();
+    const { shown, fullPrompt } = composePrompt(prompt, ctx);
+    rememberPrompt(prompt);
+    input = "";
+    await sendPrompt(shown, fullPrompt, { raw: prompt, ctx });
+  }
 
-    // タイムラインの小節範囲・ピアノロールで開いているクリップを対象として指示に添える(マスク)
+  /** 今選んでいる対象を指示の前置きにする(タイムラインの小節範囲・ピアノロールで開いているクリップなど = マスク) */
+  function promptContext(): PromptCtx {
     const range = selectionStore.range;
     const focus = pianoRollStore.focus;
     let prefix = "";
-    let shown = prompt;
+    let shown = "";
     if (focus) {
       prefix +=
         `【対象クリップ(ユーザーがピアノロールで開いている)】トラック「${focus.trackName}」(${focus.trackId})の` +
@@ -562,31 +587,35 @@
         `音色・エフェクトに関する指示は、特に指定がなければこのトラックが対象です。\n`;
       shown = tr(`〔音作り: ${sd.trackName}〕 ${shown}`, `[Sound design: ${sd.trackName}] ${shown}`);
     }
+    return { prefix, deco: shown };
+  }
+
+  /** 書いた指示と対象から、会話に出す文と AI へ送る文を作る */
+  function composePrompt(prompt: string, ctx: PromptCtx): { shown: string; fullPrompt: string } {
+    let prefix = ctx.prefix;
+    let shown = ctx.deco + prompt;
     // /goal: 質問せずに AI が決め手を選んで最後まで作る(何も無ければ、何でもよいので 1 曲)。設定で「途中で尋ねない」なら毎回
     const goal = prompt.match(/^\/(goal|おまかせ)(?:\s+|$)([\s\S]*)$/);
     let body = prompt;
     if (goal) {
       body = goal[2].trim() || (settings.lang === "en" ? GOAL_DEFAULT_EN : GOAL_DEFAULT_JA);
-      shown = shown.replace(prompt, `${tr("〔おまかせ〕", "[Up to you]")} ${body}`);
+      shown = `${ctx.deco}${tr("〔おまかせ〕", "[Up to you]")} ${body}`;
     }
     if (goal || settings.chatAsk === "never") prefix = OMAKASE + prefix;
-    const fullPrompt = prefix ? `${prefix}\n${body}` : body;
-    rememberPrompt(prompt);
-    input = "";
-    await sendPrompt(shown, fullPrompt);
+    return { shown, fullPrompt: prefix ? `${prefix}\n${body}` : body };
   }
 
   /** 送る(実行中なら送信待ちに並べる)。答えていない質問は「答えずに次へ進んだ」にする */
-  async function sendPrompt(shown: string, fullPrompt: string) {
+  async function sendPrompt(shown: string, fullPrompt: string, edit?: { raw: string; ctx: PromptCtx }) {
     for (const m of messages) if (m.role === "question" && !m.answer && !m.skipped) m.skipped = true;
     if (chatStatus.running || pending.length > 0) {
       // 実行中に書いた指示は、今のターンが終わってから送る
-      pending.push({ text: shown, fullPrompt });
+      pending.push({ text: shown, fullPrompt, edit });
       scrollToBottom(true);
       return;
     }
-    push({ role: "user", text: shown }, true);
-    await start(fullPrompt);
+    const user = push({ role: "user", text: shown, ...edit }, true);
+    await start(fullPrompt, user);
   }
 
   // ---- AI からの質問(ask_user)----
@@ -635,18 +664,21 @@
   function sendNext() {
     const next = pending.shift();
     if (!next) return;
-    push({ role: "user", text: next.text }, true);
-    start(next.fullPrompt);
+    const user = push({ role: "user", text: next.text, ...next.edit }, true);
+    start(next.fullPrompt, user);
   }
 
-  async function start(fullPrompt: string) {
+  async function start(fullPrompt: string, user: Msg) {
     chatStatus.running = true;
     clearAiHighlight();
     turnStartedAt = Date.now();
     turnProposed = false;
+    turnUser = user;
     try {
       const h = await api.getHistory(1);
       turnStart = h.entries.length > 0 ? h.entries[h.entries.length - 1].id : null;
+      user.sent = { since: turnStart, at: turnStartedAt };
+      saveLog();
     } catch {
       turnStart = null;
     }
@@ -655,6 +687,86 @@
     } catch (e) {
       push({ role: "error", text: String(e) });
       chatStatus.running = false;
+    }
+  }
+
+  // ---- 送った指示を直して送り直す(その指示より後の編集を人の分も戻し、会話もその前まで戻す) ----
+  let editing = $state<{
+    m: Msg;
+    text: string;
+    preview: { song: number; plan: number; human: number } | null;
+    busy: boolean;
+    error: string | null;
+  } | null>(null);
+  let editEl = $state<HTMLTextAreaElement | undefined>();
+  const canEdit = (m: Msg) => m.role === "user" && !m.dropped && m.raw != null && m.sent != null;
+
+  async function beginEdit(m: Msg) {
+    if (chatStatus.running || pending.length > 0 || !canEdit(m)) return;
+    editing = { m, text: m.raw!, preview: null, busy: false, error: null };
+    await tick();
+    editEl?.focus();
+    try {
+      const p = await api.chatRewindPreview(m.sent!.since, m.sent!.at);
+      if (editing?.m === m) editing.preview = p;
+    } catch (e) {
+      if (editing?.m === m) editing.error = String(e);
+    }
+  }
+
+  async function resendEdited() {
+    const ed = editing;
+    if (!ed || ed.busy || chatStatus.running) return;
+    const text = ed.text.trim();
+    const idx = messages.indexOf(ed.m);
+    if (!text || idx < 0 || !ed.m.sent) return;
+    // 会話は一つ前の指示のターンの終わりから続ける(無ければ新しい会話)
+    let prev: Msg | undefined;
+    for (let i = idx - 1; i >= 0 && !prev; i--) if (messages[i].role === "user" && messages[i].sent) prev = messages[i];
+    const chainEnd = provider === "claude" ? (prev?.chainEnd ?? null) : null;
+    const ctx = ed.m.ctx ?? { prefix: "", deco: "" };
+    ed.busy = true;
+    ed.error = null;
+    try {
+      await api.chatRewind(ed.m.sent.since, ed.m.sent.at, chainEnd);
+    } catch (e) {
+      ed.busy = false;
+      ed.error = String(e);
+      return;
+    }
+    editing = null;
+    clearAiHighlight();
+    messages.splice(idx);
+    if (prev && !chainEnd) {
+      push({
+        role: "notice",
+        text:
+          provider === "claude"
+            ? tr(
+                "前のやりとりの終わりの位置が分からないため、新しい会話として送ります(曲と計画は戻してあります)",
+                "Couldn't find where the previous exchange ended, so this is sent as a new conversation (the song and plan are rewound)",
+              )
+            : tr(
+                "GPT では会話を途中まで戻せないため、新しい会話として送ります(曲と計画は戻してあります)",
+                "GPT can't rewind a conversation partway, so this is sent as a new conversation (the song and plan are rewound)",
+              ),
+      });
+    }
+    saveLog();
+    const { shown, fullPrompt } = composePrompt(text, ctx);
+    rememberPrompt(text);
+    await sendPrompt(shown, fullPrompt, { raw: text, ctx });
+  }
+
+  function onEditKeydown(e: KeyboardEvent) {
+    if (e.isComposing) return;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void resendEdited();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      editing = null;
     }
   }
 
@@ -728,6 +840,11 @@
             break;
           case "result":
             chatStatus.running = false;
+            if (turnUser && ev.chain_end) {
+              turnUser.chainEnd = ev.chain_end;
+              saveLog();
+            }
+            turnUser = null;
             // 成功時の最終テキストは assistant_text で受信済みなので出さない
             if (!ev.ok && ev.text) {
               push({ role: "error", text: ev.text });
@@ -744,6 +861,7 @@
             break;
           case "error":
             chatStatus.running = false;
+            turnUser = null;
             push({ role: "error", text: ev.message });
             playErrorChime();
             sendNext();
@@ -997,6 +1115,60 @@
           <span class="struck">{m.text}</span>
           <div class="queue-note">{tr("停止したので送っていません", "Not sent (stopped)")}</div>
         </div>
+      {:else if m.role === "user" && editing?.m === m}
+        <div class="msg user editing">
+          <textarea
+            bind:this={editEl}
+            bind:value={editing.text}
+            rows="3"
+            disabled={editing.busy}
+            aria-label={tr("直した指示", "Edited message")}
+            onkeydown={onEditKeydown}
+          ></textarea>
+          <div class="edit-note">
+            {#if editing.error}
+              <span class="edit-err">{editing.error}</span>
+            {:else if !editing.preview}
+              {tr("この指示より後の編集を数えています…", "Counting the edits after this message…")}
+            {:else if editing.preview.song + editing.preview.plan > 0}
+              {tr(
+                `この指示より後の編集 ${editing.preview.song + editing.preview.plan} 件` +
+                  (editing.preview.human ? `(うち人の編集 ${editing.preview.human} 件)` : "") +
+                  "を取り消し、会話もこの指示の前まで戻してから送ります。取り消しは履歴に残ります",
+                `Undoes ${plural(editing.preview.song + editing.preview.plan, "edit")} made after this message` +
+                  (editing.preview.human ? ` (${editing.preview.human} by you)` : "") +
+                  ", rewinds the conversation to before it, then sends. The undo stays in the history",
+              )}
+            {:else}
+              {tr(
+                "この指示より後の編集はありません。会話をこの指示の前まで戻してから送ります",
+                "No edits since this message. Rewinds the conversation to before it, then sends",
+              )}
+            {/if}
+          </div>
+          <div class="ch-row">
+            <button class="btn sm primary" type="button" disabled={editing.busy || !editing.text.trim()} onclick={resendEdited}
+              ><Icon name="send" />{tr("戻して送り直す", "Rewind and resend")}</button
+            >
+            <button class="btn sm" type="button" disabled={editing.busy} onclick={() => (editing = null)}>{tr("やめる", "Cancel")}</button>
+          </div>
+        </div>
+      {:else if m.role === "user" && canEdit(m)}
+        <div class="msg user editable">
+          {m.text}<button
+            class="edit-btn"
+            type="button"
+            disabled={chatStatus.running || pending.length > 0 || editing != null}
+            title={chatStatus.running || pending.length > 0
+              ? tr("AI の作業が終わってから直せます", "You can edit after the AI finishes")
+              : tr(
+                  "この指示を直して送り直す(この指示より後の編集と会話を戻します)",
+                  "Edit and resend this message (rewinds later edits and the conversation)",
+                )}
+            aria-label={tr("指示を直す", "Edit message")}
+            onclick={() => beginEdit(m)}><Icon name="pencil" size={12} /></button
+          >
+        </div>
       {:else}
         <div class="msg {m.role}">{m.text}</div>
       {/if}
@@ -1227,6 +1399,75 @@
   .msg.user.waiting {
     opacity: 0.7;
     border: 1px dashed var(--border);
+  }
+
+  .msg.user.editable {
+    position: relative;
+  }
+
+  .edit-btn {
+    position: absolute;
+    left: -24px;
+    top: 4px;
+    display: inline-flex;
+    padding: 3px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .msg.user.editable:hover .edit-btn,
+  .edit-btn:focus-visible {
+    opacity: 1;
+  }
+
+  .edit-btn:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--bg-hover, color-mix(in srgb, var(--text) 10%, transparent));
+  }
+
+  .edit-btn:disabled {
+    cursor: default;
+    opacity: 0;
+  }
+
+  .msg.user.editable:hover .edit-btn:disabled {
+    opacity: 0.35;
+  }
+
+  .msg.user.editing {
+    align-self: stretch;
+    max-width: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    white-space: normal;
+  }
+
+  .msg.user.editing textarea {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  .edit-note {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+  }
+
+  .edit-err {
+    color: var(--danger, #e5534b);
   }
 
   .msg.user.dropped {
