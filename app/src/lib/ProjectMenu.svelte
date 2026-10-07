@@ -43,10 +43,22 @@
       newPreview = null;
       return;
     }
+    // 打ち直している間に前の下見の応答が後から届いても、古い名前の結果で上書きしない
+    let stale = false;
     const t = setTimeout(() => {
-      api.previewProjectDir(parent, name).then((p) => (newPreview = p)).catch(() => (newPreview = null));
+      api
+        .previewProjectDir(parent, name)
+        .then((p) => {
+          if (!stale) newPreview = p;
+        })
+        .catch(() => {
+          if (!stale) newPreview = null;
+        });
     }, 150);
-    return () => clearTimeout(t);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
   });
   $effect(() => {
     const name = moveName.trim() || title;
@@ -55,13 +67,21 @@
       movePreview = null;
       return;
     }
+    let stale = false;
     const t = setTimeout(() => {
       api
         .previewProjectDir(parent, name, curPath)
-        .then((p) => (movePreview = p))
-        .catch(() => (movePreview = null));
+        .then((p) => {
+          if (!stale) movePreview = p;
+        })
+        .catch(() => {
+          if (!stale) movePreview = null;
+        });
     }, 150);
-    return () => clearTimeout(t);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
   });
 
   function splitProjectPath(path: string) {

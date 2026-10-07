@@ -57,12 +57,20 @@
   $effect(() => {
     const id = targetId;
     void projectRev.value;
+    // 取り直している間に次の編集・対象の切り替えがあったら、前の要求の応答は捨てる(古い値で上書きしない)
+    let stale = false;
     (id === MASTER_FOCUS_ID ? api.getMasterParams() : api.getTrackParams(id))
       .then((r) => {
+        if (stale) return;
         info = r;
         localPos = {};
       })
-      .catch(() => (info = null));
+      .catch(() => {
+        if (!stale) info = null;
+      });
+    return () => {
+      stale = true;
+    };
   });
 
   let clapEffects = $state<api.ClapPluginInfo[]>([]);

@@ -77,8 +77,11 @@
     // 音源・エフェクトの構成が変わったら一覧を取り直す
     void track.device;
     void track.effects;
+    // 取り直している間に構成やトラックが変わったら、前の要求の応答は捨てる(古い一覧で上書きしない)
+    let stale = false;
     (isMaster ? api.getMasterParams() : api.getTrackParams(track.id))
       .then((info) => {
+        if (stale) return;
         const out: RawTarget[] = [];
         const add = (fx: string | null, kind: string | null, p: import("./types").ParamView) => {
           if (p.range.kind !== "float" && p.range.kind !== "int") return;
@@ -101,7 +104,12 @@
         for (const fx of info.effects) for (const p of fx.params) add(fx.name, fx.name, p);
         rawTargets = out;
       })
-      .catch(() => (rawTargets = []));
+      .catch(() => {
+        if (!stale) rawTargets = [];
+      });
+    return () => {
+      stale = true;
+    };
   });
 
   const allTargets = $derived([...BUILTIN, ...paramTargets]);

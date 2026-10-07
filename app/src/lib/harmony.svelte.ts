@@ -11,14 +11,17 @@ export interface HarmonyView {
 export const harmonyStore = $state<{ view: HarmonyView | null }>({ view: null });
 
 let timer: ReturnType<typeof setTimeout> | undefined;
+let seq = 0;
 
-/** 取り直す(編集が続くときは 400ms まとめる) */
+/** 取り直す(編集が続くときは 400ms まとめる。後から届いた古い応答では上書きしない) */
 export function refreshHarmony() {
   if (timer) clearTimeout(timer);
   timer = setTimeout(async () => {
     timer = undefined;
+    const my = ++seq;
     try {
-      harmonyStore.view = await api.harmony();
+      const view = await api.harmony();
+      if (my === seq) harmonyStore.view = view;
     } catch {
       // 表示だけなので、取れなくても何もしない
     }

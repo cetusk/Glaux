@@ -134,12 +134,20 @@
       info = null;
       return;
     }
+    // 取り直している間に次の編集・トラックの切り替えがあったら、前の要求の応答は捨てる(古い値で上書きしない)
+    let stale = false;
     (master ? api.getMasterParams() : api.getTrackParams(t!.id))
       .then((r) => {
+        if (stale) return;
         info = r;
         loadError = null;
       })
-      .catch((e) => (loadError = String(e)));
+      .catch((e) => {
+        if (!stale) loadError = String(e);
+      });
+    return () => {
+      stale = true;
+    };
   });
 
   function setLegato(name: "glide_ms" | "legato_ms", value: number) {
