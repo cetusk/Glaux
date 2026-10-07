@@ -445,6 +445,12 @@ struct Voice {
     shape: glaux_dsp::NoteShape,
     /// 0 = 本体の音源、1 以上 = `TrackMix::layers` の番号 + 1
     layer: u8,
+    /// 今鳴らしている音程(レガートで次の音へ移ると変わる)と、鳴らし始めたときの強さ
+    pitch: u8,
+    amp0: f32,
+    /// レガートで移った音の強さ(鳴らし始めの強さに対する倍率)。今の値と目標
+    gain: f32,
+    gain_to: f32,
 }
 
 /// 同時発音数の上限に達したとき、奪うボイスを選ぶ(奪われ中のものは除く)。
@@ -456,6 +462,60 @@ fn steal_victim(voices: &[Voice]) -> Option<usize> {
         .filter(|(_, v)| !v.stolen)
         .max_by_key(|(_, v)| (v.released, v.age))
         .map(|(i, _)| i)
+}
+
+/// レガートで、直前の音の声のまま次の音へ移る(シンセ系の音源・層の無いトラック)。
+/// 声は発音し直さず、エンベロープ・波の位相・フィルタの状態はそのままで高さが変わる(ポルタメントは
+/// 次の音のピッチカーブで前の高さから滑る)。強さの違いは数 ms かけて寄せる。
+/// 同じトラックで先に離された音の余韻は、受け渡しのときと同じく、つなぎ目の長さで消す。
+/// 直前の音の声が見つからない・移れない音源なら false(受け渡しでつなぐ)
+fn legato_continue(
+    voices: &mut [Voice],
+    e: &crate::data::NoteEvent,
+    x: &crate::data::NoteExpr,
+    mix: &crate::data::TrackMix,
+    pos: u64,
+    sr: f32,
+) -> bool {
+    if !mix.layers.is_empty() {
+        return false;
+    }
+    let Some(k) = voices.iter().position(|v| {
+        v.track == e.track
+            && v.layer == 0
+            && !v.released
+            && !v.stolen
+            && v.end == e.start
+            && v.pitch == e.legato_prev
+            && v.state.can_glide()
+    }) else {
+        return false;
+    };
+    if e.choke > 0 {
+        for v in voices.iter_mut() {
+            if v.track == e.track && v.released {
+                v.released = false;
+                v.end = pos;
+                v.fade_out = e.choke;
+            }
+        }
+    }
+    let v = &mut voices[k];
+    v.state.glide_to(e.freq, e.articulation, sr);
+    if !x.curve.is_empty() {
+        v.state.set_curve(&x.curve);
+    }
+    if x.vibrato.is_active() {
+        v.state.set_vibrato(&x.vibrato);
+    }
+    v.end = e.end;
+    v.fade_out = e.fade_out;
+    v.fade_in = 0;
+    v.age = 0;
+    v.shape = x.shape;
+    v.pitch = e.pitch;
+    v.gain_to = e.amp / v.amp0.max(1e-6);
+    true
 }
 
 /// 再生中の音声クリップ。波形は `data.audio_events[idx]` を参照する
@@ -1443,6 +1503,7 @@ impl Renderer {
         }
 
         let hard_limit = (VOICE_HARD_LIMIT_SECS * sr) as u64;
+        let legato_gain_k = 1.0 - (-1.0 / (0.01 * sr)).exp();
         let frames = out.len() / channels;
         // テンポに合わせるエフェクト(トランスゲート・音量シェイパーなど)に渡す曲の位置
         self.blk_tick = data.sample_to_tick(self.pos);
@@ -1712,6 +1773,13 @@ impl Renderer {
                 let mix = data.tracks.get(e.track as usize);
                 // プラグインのトラックは collect_plugin_notes で送る
                 if let Some(mix) = mix.filter(|m| m.audible && m.plugin.is_none()) {
+                    // レガート・ポルタメント: 直前の音の声が鳴り続けていれば、その声のまま次の高さへ移る
+                    if !replay && e.legato_prev != crate::data::NO_LEGATO {
+                        let x = data.expr(&e);
+                        if legato_continue(&mut self.voices, &e, &x, mix, self.pos, sr) {
+                            continue;
+                        }
+                    }
                     // 本体と、範囲に合う層の数だけ空きを作る(上限を超えたら古い音を奪う)
                     let vel_midi = (e.amp * 127.0).round().clamp(1.0, 127.0) as u8;
                     let needed = 1 + mix
@@ -1806,6 +1874,10 @@ impl Renderer {
                             state,
                             shape: data.expr(&e).shape,
                             layer: 0,
+                            pitch: e.pitch,
+                            amp0: e.amp,
+                            gain: 1.0,
+                            gain_to: 1.0,
                         });
                         // 重ねる音源: 元のノートの音程・強さで範囲を判定し、移調して鳴らす
                         for (li, layer) in mix.layers.iter().enumerate() {
@@ -1860,6 +1932,10 @@ impl Renderer {
                                 state,
                                 shape: data.expr(&e).shape,
                                 layer: li as u8 + 1,
+                                pitch,
+                                amp0: e.amp,
+                                gain: 1.0,
+                                gain_to: 1.0,
                             });
                         }
                     }
@@ -1925,6 +2001,17 @@ impl Renderer {
                 }
                 // 左右に広がる音源(ユニゾンの広がり・パンの LFO)は左右の差も出す
                 let (mut sample, mut vside) = v.state.next_stereo(inst);
+                // レガートで移った音の強さ(約 10ms で寄せる)
+                if v.gain != v.gain_to {
+                    v.gain += (v.gain_to - v.gain) * legato_gain_k;
+                    if (v.gain - v.gain_to).abs() < 1e-4 {
+                        v.gain = v.gain_to;
+                    }
+                }
+                if v.gain != 1.0 {
+                    sample *= v.gain;
+                    vside *= v.gain;
+                }
                 sample *= fade;
                 vside *= fade;
                 if v.shape.is_active() {
@@ -3865,6 +3952,83 @@ impl Drop for Renderer {
 mod tests {
     use super::*;
 
+    /// レガートの続き: シンセは直前の音の声のまま次の音へ移り(声は 1 つ・強さはなめらかに寄る)、
+    /// 撥弦は今までどおり 2 つの声の受け渡しでつなぐ
+    #[test]
+    fn legato_moves_the_same_synth_voice_and_plucks_still_crossfade() {
+        use glaux_core::{
+            Articulation as A, Clip, ClipContent, ClipId, Device, Note, NoteId, Project, Tick,
+            Track, TrackId, TrackKind,
+        };
+        let note = |pos: u64, pitch: u8, vel: u8, art: A| Note {
+            locked: false,
+            articulation: art,
+            pitch_curve: vec![],
+            id: NoteId::new(),
+            pos: Tick(pos),
+            dur: Tick(1920),
+            pitch,
+            vel,
+            glide_ms: None,
+            vibrato: None,
+            volume_curve: vec![],
+            brightness_curve: vec![],
+            condition: None,
+        };
+        let song = |inst: &str| {
+            let mut p = Project::new("legato");
+            let mut t = Track::new(TrackId::new(), "Lead", TrackKind::Midi);
+            t.device = Some(Device::builtin(inst));
+            let mut c = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(5760));
+            if let ClipContent::Midi { notes, .. } = &mut c.content {
+                // 120bpm: 1920 tick = 1 秒。2 つ目は弱く(レガート)、3 つ目は滑る(ポルタメント)
+                notes.push(note(0, 60, 110, A::Normal));
+                notes.push(note(1920, 64, 55, A::Legato));
+                notes.push(note(3840, 67, 110, A::Portamento));
+            }
+            t.clips.push(c);
+            p.tracks.push(t);
+            p
+        };
+        // (つなぎ目の 5ms 後の声の数, モノの出力)
+        let run = |p: &Project| {
+            let data = crate::data::build_playback_data(p, 48_000.0, &Default::default());
+            let shared = Arc::new(Shared::new(data));
+            shared.playing.store(true, Ordering::Release);
+            let mut r = Renderer::new(shared);
+            let mut buf = vec![0.0f32; 240 * 2];
+            let mut out = Vec::new();
+            let mut at_joint = 0;
+            for blk in 0..(48_000 * 3 / 240) {
+                r.process(&mut buf, 2);
+                out.extend(buf.chunks(2).map(|c| c[0] + c[1]));
+                if blk * 240 == 48_000 + 240 {
+                    at_joint = r.voices.len();
+                }
+            }
+            (at_joint, out)
+        };
+        let (synth_voices, synth) = run(&song("subtractive"));
+        let (pluck_voices, _) = run(&song("pluck"));
+        assert_eq!(synth_voices, 1, "シンセは同じ声のまま移る");
+        assert_eq!(pluck_voices, 2, "撥弦は受け渡し(つなぎ目の間は 2 つ)");
+        // 強さ: 2 つ目(弱い)は 1 つ目のおよそ半分。つなぎ目で段差(クリック)が出ない
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let first = rms(&synth[24_000..46_000]);
+        let second = rms(&synth[60_000..94_000]);
+        let ratio = second / first;
+        assert!(ratio > 0.3 && ratio < 0.75, "強さの比 {ratio}");
+        let jump = synth[47_000..50_000]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        let usual = synth[30_000..33_000]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(jump < usual * 1.5, "つなぎ目の段差 {jump} / ふだん {usual}");
+    }
+
     #[test]
     fn ring_writes_ahead_and_reads_back_once() {
         let mut ring = [vec![0.0f32; 16], vec![0.0f32; 16]];
@@ -3943,6 +4107,7 @@ mod tests {
                 fade_out: 0,
                 glide: 0.0,
                 choke: 0,
+                legato_prev: crate::data::NO_LEGATO,
                 variant: 0,
                 start,
                 end,

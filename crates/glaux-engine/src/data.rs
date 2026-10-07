@@ -78,6 +78,9 @@ pub struct NoteEvent {
     /// レガート・ポルタメント: 同じトラックで先に離された音の余韻を、このサンプル数で消す(0 = 消さない)。
     /// 押さえたままの音(和音の伴奏など)には触れない
     pub choke: u32,
+    /// レガート・ポルタメントでつながった直前の音の音程(つながっていなければ [`NO_LEGATO`])。
+    /// シンセ系の音源は、その音の声のまま次の高さへ移る(発音し直さない)
+    pub legato_prev: u8,
     /// SF2/SFZ のゾーン選び: 下位 16 ビット = 同じトラック・同じ音高の何回目か(ラウンドロビン)、
     /// 上位 16 ビット = ノートごとに決まった乱数
     pub variant: u32,
@@ -85,6 +88,9 @@ pub struct NoteEvent {
 
 /// 表情を持たないノートの `NoteEvent::expr`
 pub const NO_EXPR: u32 = u32::MAX;
+
+/// レガートでつながっていないノートの `NoteEvent::legato_prev`
+pub const NO_LEGATO: u8 = u8::MAX;
 
 /// ノートの表情(ピッチカーブ・ビブラート・音量と明るさの曲線)。1 つで約 500 バイトあり、
 /// ほとんどのノートは持たないので、イベントの外に置いて添字で引く(イベントを小さく保つ)
@@ -212,6 +218,7 @@ pub fn link_legato(
                     events[j].end = e.start;
                     events[j].fade_out = xf as u32;
                     events[i].fade_in = xf as u32;
+                    events[i].legato_prev = events[j].pitch;
                     Some(events[j].pitch as f32)
                 }
                 None if e.articulation == A::Portamento => {
@@ -2078,6 +2085,7 @@ fn build_track_notes(
                 fade_out: 0,
                 glide: note.glide_ms.map_or(0.0, |ms| ms / 1000.0),
                 choke: 0,
+                legato_prev: NO_LEGATO,
                 variant: variant_hash(&note.id, start),
             });
         }

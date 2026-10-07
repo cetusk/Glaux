@@ -664,6 +664,18 @@ impl WavetableVoice {
         }
     }
 
+    /// レガートで次の音へ移る: 発音し直さず(エンベロープ・波の位相・フィルタはそのまま)高さだけを変える。
+    /// 音程の表現(奏法のビブラートなど)は次の音のものにする
+    pub fn glide_to(
+        &mut self,
+        freq: f32,
+        articulation: glaux_core::Articulation,
+        sample_rate: f32,
+    ) {
+        self.freq = freq;
+        self.expr = crate::expr::PitchExpr::new(articulation, sample_rate);
+    }
+
     pub fn note_off(&mut self) {
         self.stage = Stage::Release;
     }

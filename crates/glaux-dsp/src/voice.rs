@@ -227,6 +227,36 @@ impl VoiceState {
         }
     }
 
+    /// レガートで、同じ声のまま次の音へ移れる音源か(シンセ系。サンプル・撥弦・ドラムは受け渡しでつなぐ)
+    pub fn can_glide(&self) -> bool {
+        matches!(
+            self,
+            VoiceState::Subtractive(_)
+                | VoiceState::Wavetable(_)
+                | VoiceState::Fm(_)
+                | VoiceState::Fm4(_)
+                | VoiceState::Additive(_)
+        )
+    }
+
+    /// レガートで次の音へ移る(発音し直さず高さだけ変える)。移れない音源なら false
+    pub fn glide_to(
+        &mut self,
+        freq: f32,
+        articulation: glaux_core::Articulation,
+        sample_rate: f32,
+    ) -> bool {
+        match self {
+            VoiceState::Subtractive(v) => v.glide_to(freq, articulation, sample_rate),
+            VoiceState::Wavetable(v) => v.glide_to(freq, articulation, sample_rate),
+            VoiceState::Fm(v) => v.glide_to(freq, articulation, sample_rate),
+            VoiceState::Fm4(v) => v.glide_to(freq, articulation, sample_rate),
+            VoiceState::Additive(v) => v.glide_to(freq, articulation, sample_rate),
+            _ => return false,
+        }
+        true
+    }
+
     /// SF2/SFZ のゾーン選び(ラウンドロビン・乱数)付きで鳴らす。他の楽器は `start` と同じ
     pub fn start_variant(
         params: &InstrumentParams,
