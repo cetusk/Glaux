@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { designSel, designStore, type ClipState } from "./design.svelte";
+  import { designSel, designStore } from "./design.svelte";
   import { tick, untrack } from "svelte";
-  import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import { shouldYieldKey } from "./keys";
   import { aiHighlight } from "./aiHighlight.svelte";
@@ -19,6 +18,23 @@
   import AddTrackMenu from "./AddTrackMenu.svelte";
   import AudioClipHandles from "./AudioClipHandles.svelte";
   import TimelineZoom from "./TimelineZoom.svelte";
+  import TimelineSections from "./TimelineSections.svelte";
+  import {
+    KIND_ICON,
+    addClipAt,
+    addTrack,
+    clipMarkTitle,
+    importAudioAt,
+    importMidiFile,
+    kindLabel,
+    renameTrack,
+    sendersOf,
+    setMasterVolume,
+    setTrackColor,
+    setTrackVolume,
+    toggleTrackFlag,
+  } from "./trackActions";
+  import { commitSections, markersOf, removeMarker } from "./sectionOps";
   import {
     bpmAt,
     cloneClip,
@@ -30,7 +46,7 @@
     type Marker,
     type RulerMenuState,
   } from "./timelineOps";
-  import { newClipId, newFxId, newTrackId } from "./ids";
+  import { newClipId } from "./ids";
   import {
     instrumentPickerStore,
     MASTER_FOCUS_ID,
@@ -50,7 +66,7 @@
   } from "./selection.svelte";
   import Icon from "./Icon.svelte";
   import { flip } from "svelte/animate";
-  import { builtinDevice, deviceIcon, deviceName } from "./instruments";
+  import { deviceIcon, deviceName } from "./instruments";
   import type { Clip, Project, Track } from "./types";
 
   let {
@@ -369,21 +385,12 @@
   /// マーカーの名前の入力欄(ルーラーのメニュー。閉じても残す)
   let markerName = $state("");
 
-  function commitSections(list: Marker[], label: string) {
-    const sorted = [...list].sort((a, b) => a.tick - b.tick);
-    api.applyEdit([{ op: "set_sections", sections: sorted }], label).catch(() => {});
-  }
-
-  function markers(): Marker[] {
-    return (project.sections ?? []).map((m) => ({ ...m }));
-  }
-
   /// 小節の頭にマーカーを置く(既にあれば名前を変える)
   function putMarker(barIndex: number, name: string) {
     const n = name.trim();
     if (!n) return;
     const tick = barList[Math.min(barIndex, barList.length - 1)].tick;
-    const list = markers();
+    const list = markersOf(project);
     const hit = list.find((m) => m.tick === tick);
     if (hit) hit.name = n;
     else list.push({ tick, name: n });
@@ -397,77 +404,8 @@
     );
   }
 
-  function removeMarker(tick: number) {
-    const list = markers();
-    const hit = list.find((m) => m.tick === tick);
-    if (!hit) return;
-    sigMenu = null;
-    commitSections(
-      list.filter((m) => m.tick !== tick),
-      tr(`マーカー「${hit.name}」を削除`, `Delete marker "${hit.name}"`),
-    );
-  }
-
-  /// 名前を変更中のマーカーの tick
-  let renamingMarker = $state<number | null>(null);
-
-  function renameMarker(tick: number, name: string) {
-    // Enter の後に入力欄が消えてフォーカスが外れても、Escape で取り消した後でも、2 回目は確定しない
-    if (renamingMarker !== tick) return;
-    renamingMarker = null;
-    const list = markers();
-    const hit = list.find((m) => m.tick === tick);
-    const n = name.trim();
-    if (!hit || !n || n === hit.name) return;
-    const old = hit.name;
-    hit.name = n;
-    commitSections(list, tr(`マーカーの名前を「${old}」から「${n}」に変更`, `Rename marker "${old}" to "${n}"`));
-  }
-
-  /// マーカーのドラッグ(移動)。動かさずに離したら、その区間を範囲選択にする
-  let markerDrag = $state<{ tick: number; x0: number; to: number; moved: boolean } | null>(null);
-
-  function laneBar(e: PointerEvent): number {
-    const lane = (e.currentTarget as HTMLElement).parentElement!;
-    const x = e.clientX - lane.getBoundingClientRect().left;
-    return barAtTick(barList, Math.max(0, x / pxPerTick)).index;
-  }
-
-  function onMarkerDown(e: PointerEvent, m: Marker) {
-    if (e.button !== 0 || renamingMarker !== null) return;
-    e.stopPropagation();
-    markerDrag = { tick: m.tick, x0: e.clientX, to: m.tick, moved: false };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }
-
-  function onMarkerMove(e: PointerEvent) {
-    const d = markerDrag;
-    if (!d) return;
-    if (!d.moved && Math.abs(e.clientX - d.x0) < 4) return;
-    d.moved = true;
-    d.to = barList[laneBar(e)].tick;
-  }
-
-  function onMarkerUp(e: PointerEvent, m: Marker, next: number | undefined) {
-    const d = markerDrag;
-    markerDrag = null;
-    if (!d) return;
-    if (!d.moved) {
-      // クリック: この区間(次のマーカーの手前まで)を範囲選択 = AI への指示の対象
-      const a = barAtTick(barList, m.tick).index;
-      const endTick = next ?? project.tracks.reduce((mx, t) => Math.max(mx, ...t.clips.map((c) => c.start + c.length)), m.tick + 1);
-      const b = barAtTick(barList, Math.max(m.tick, endTick - 1)).index;
-      setRange(a, b);
-      return;
-    }
-    if (d.to === m.tick) return;
-    const list = markers();
-    if (list.some((x) => x.tick === d.to)) return; // 別のマーカーと重なる所には置かない
-    const hit = list.find((x) => x.tick === m.tick);
-    if (!hit) return;
-    hit.tick = d.to;
-    const toBar = barAtTick(barList, d.to).index + 1;
-    commitSections(list, tr(`マーカー「${m.name}」を ${toBar} 小節目へ移動`, `Move marker "${m.name}" to bar ${toBar}`));
+  function removeMarkerAt(tick: number) {
+    if (removeMarker(project, tick)) sigMenu = null;
   }
 
   function openSigMenu(e: MouseEvent, barIndex: number) {
@@ -498,28 +436,12 @@
   // ---- トラック操作(Command API 経由、author: human) ----
 
   function setVolume(t: Track, e: Event) {
-    const v = Number((e.currentTarget as HTMLInputElement).value);
-    api
-      .applyEdit(
-        [{ op: "set_track_prop", id: t.id, prop: "volume_db", value: v }],
-        tr(`${t.name} の音量を ${v.toFixed(1)} dB に変更`, `Set ${t.name} volume to ${v.toFixed(1)} dB`),
-      )
-      .catch(() => {});
+    setTrackVolume(t, Number((e.currentTarget as HTMLInputElement).value));
   }
 
   function toggleMute(t: Track) {
     // 選んだトラックのどれかを押したら、選んだ全部を押したトラックの新しい状態にそろえる
-    const ts = targetsOf(t);
-    const value = !t.mute;
-    const who = ts.length === 1 ? t.name : null;
-    api
-      .applyEdit(
-        ts.map((x) => ({ op: "set_track_prop", id: x.id, prop: "mute", value })),
-        who
-          ? tr(`${who} を${t.mute ? "ミュート解除" : "ミュート"}`, `${t.mute ? "Unmute" : "Mute"} ${who}`)
-          : tr(`${ts.length} トラックを${value ? "ミュート" : "ミュート解除"}`, `${value ? "Mute" : "Unmute"} ${plural(ts.length, "track")}`),
-      )
-      .catch(() => {});
+    toggleTrackFlag("mute", t, targetsOf(t));
   }
 
   function openPianoRoll(track: Track, clip: Clip, e: MouseEvent) {
@@ -569,43 +491,6 @@
     }
   }
 
-  /// 音声トラックの空きレーン: 音声ファイルを選んでその小節に音声クリップとして置く
-  async function importAudioAt(track: Track, startTick: number) {
-    const file = await pickFile({
-      title: tr("音声ファイルをクリップとして配置", "Place an audio file as a clip"),
-      filters: [{ name: tr("音声(WAV / MP3 / FLAC / OGG / M4A)", "Audio (WAV / MP3 / FLAC / OGG / M4A)"), extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
-    });
-    if (typeof file !== "string") return;
-    await api.importAudioClip(track.id, file, startTick).catch((e) => showError(tr("取り込めませんでした", "Couldn't import"), e));
-  }
-
-  /// MIDI ファイル(.mid)・MusicXML(.musicxml / .xml / .mxl)を読み込む: パートごとに新しいトラックを足す(1 回の undo で戻る)
-  async function importMidiFile() {
-    const file = await pickFile({
-      title: tr("MIDI ファイル・MusicXML を読み込む", "Import a MIDI file / MusicXML"),
-      filters: [
-        { name: tr("MIDI・MusicXML", "MIDI / MusicXML"), extensions: ["mid", "midi", "musicxml", "mxl", "xml"] },
-        { name: "MIDI", extensions: ["mid", "midi"] },
-        { name: "MusicXML", extensions: ["musicxml", "mxl", "xml"] },
-      ],
-    });
-    if (typeof file !== "string") return;
-    try {
-      const r = await api.importMidi({ path: file });
-      const extra = r.report && r.report.length ? `。${r.report.join("。")}` : "";
-      const extraEn = r.report && r.report.length ? `. ${r.report.join(". ")}` : "";
-      showToast(
-        "ok",
-        tr(
-          `読み込みました: トラック ${r.tracks} 本・ノート ${r.notes} 個${r.tempo_set ? "(テンポと拍子も)" : ""}${extra}`,
-          `Imported: ${plural(r.tracks, "track")}, ${plural(r.notes, "note")}${r.tempo_set ? " (with tempo and time signature)" : ""}${extraEn}`,
-        ),
-      );
-    } catch (e) {
-      showError(tr("読み込めませんでした", "Couldn't import"), e);
-    }
-  }
-
   /// 空きレーンのダブルクリック: その小節にクリップを作ってピアノロールを開く
   /// (音声トラックなら WAV を選んで配置)
   function onLaneDblClick(e: MouseEvent, track: Track) {
@@ -620,40 +505,12 @@
       void importAudioAt(track, bar.tick);
       return;
     }
-    let start = bar.tick;
-    // 小節頭が前のクリップに食われていたらその終端から
-    const covering = track.clips.find((c) => start >= c.start && start < c.start + c.length);
-    if (covering) start = covering.start + covering.length;
-    // 長さ: 4 小節ぶん(拍子を考慮)。次のクリップの手前まででクランプ
-    let length = 0;
-    for (let i = bar.index; i < Math.min(bar.index + 4, barList.length); i++) {
-      length += barList[i].len;
-    }
-    if (length === 0) length = 3840 * 4;
-    const nextStart = track.clips
-      .map((c) => c.start)
-      .filter((s) => s >= start + 1)
-      .sort((a, b) => a - b)[0];
-    if (nextStart !== undefined) length = Math.min(length, nextStart - start);
-    if (length < 240) return; // 置く隙間がない
-
-    const clipId = newClipId();
-    const name = tr(`クリップ ${bar.index + 1}`, `Clip ${bar.index + 1}`);
-    api
-      .applyEdit(
-        [
-          {
-            op: "add_clip",
-            track: track.id,
-            clip: { id: clipId, name, start, length, kind: "midi", notes: [] },
-          },
-        ],
-        tr(`${track.name} の ${bar.index + 1} 小節目にクリップを追加`, `Add clip to ${track.name} at bar ${bar.index + 1}`),
-      )
-      .then(() => {
+    addClipAt(track, barList, tick)
+      .then((c) => {
+        if (!c) return;
         pianoRollStore.focus = {
-          clipId,
-          clipName: name,
+          clipId: c.clipId,
+          clipName: c.name,
           trackId: track.id,
           trackName: track.name,
           anchorTick: 0,
@@ -1294,30 +1151,14 @@
 
   function commitRename(track: Track, value: string) {
     renaming = null;
-    const name = value.trim();
-    if (!name || name === track.name) return;
-    api
-      .applyEdit(
-        [{ op: "set_track_prop", id: track.id, prop: "name", value: name }],
-        tr(`トラック名を「${track.name}」から「${name}」に変更`, `Rename track "${track.name}" to "${name}"`),
-      )
-      .catch(() => {});
+    renameTrack(track, value);
   }
 
-  function setTrackColor(color: string | null) {
+  function setMenuTrackColor(color: string | null) {
     const menu = trackMenu;
     trackMenu = null;
     if (!menu) return;
-    const track = project.tracks[menu.index];
-    api
-      .applyEdit(
-        [{ op: "set_track_prop", id: menu.trackId, prop: "color", value: color }],
-        tr(
-          `${track?.name ?? "トラック"} の色を${color ? "変更" : "元に戻す"}`,
-          `${color ? "Change" : "Reset"} ${track?.name ?? "track"} color`,
-        ),
-      )
-      .catch(() => {});
+    setTrackColor(menu.trackId, project.tracks[menu.index], color);
   }
 
   /// トラックを複製して直後に置く(クリップ・ノート・エフェクトの ID は新しく振る)
@@ -1476,97 +1317,22 @@
   function addFromMenu(kind: "midi" | "audio" | "bus" | "midi-file") {
     addMenu = null;
     if (kind === "midi-file") importMidiFile();
-    else addTrack(kind);
+    else addTrack(project, kind);
   }
 
   /// マスター音量のドラッグ中の値(離すまで表示と試聴だけ)
   let masterDrag = $state<number | null>(null);
 
-  function setMasterVolume(e: Event) {
-    const v = Number((e.currentTarget as HTMLInputElement).value);
+  function onMasterVolume(e: Event) {
     masterDrag = null;
-    api
-      .applyEdit(
-        [{ op: "set_master_volume", volume_db: v }],
-        tr(`マスター音量を ${v.toFixed(1)} dB に変更`, `Set master volume to ${v.toFixed(1)} dB`),
-      )
-      .catch(() => {});
-  }
-
-  const KIND_ICON = { midi: "piano", audio: "audio-lines", bus: "merge" } as const;
-  /// トラックの種類の表示名(言語の切り替えに追従するよう、使う所で呼ぶ)
-  function kindLabel(kind: "midi" | "audio" | "bus"): string {
-    return kind === "midi" ? tr("MIDI トラック", "MIDI track") : kind === "audio" ? tr("音声トラック", "Audio track") : tr("バス", "Bus");
-  }
-
-  function addTrack(kind: "midi" | "audio" | "bus" = "midi") {
-    const id = newTrackId();
-    if (kind === "bus") {
-      // バス: 共有リバーブとして使えるよう、リバーブ(ウェット 100%)を挿して作る
-      const n = project.tracks.filter((t) => t.kind === "bus").length + 1;
-      api
-        .applyEdit(
-          [
-            { op: "add_track", track: { id, name: tr(`リバーブ バス ${n}`, `Reverb bus ${n}`), kind } },
-            {
-              op: "add_effect",
-              track: id,
-              effect: { id: newFxId(), type: "builtin", name: "reverb", params: { mix: 1.0 } },
-            },
-          ],
-          tr("バスを追加", "Add bus"),
-        )
-        .catch(() => {});
-      return;
-    }
-    const name =
-      kind === "audio"
-        ? tr(`音声 ${project.tracks.filter((t) => t.kind === "audio").length + 1}`, `Audio ${project.tracks.filter((t) => t.kind === "audio").length + 1}`)
-        : tr(`トラック ${project.tracks.length + 1}`, `Track ${project.tracks.length + 1}`);
-    api
-      .applyEdit(
-        [{ op: "add_track", track: kind === "midi" ? { id, name, kind, device: builtinDevice("subtractive") } : { id, name, kind } }],
-        kind === "audio" ? tr("音声トラックを追加", "Add audio track") : tr("トラックを追加", "Add track"),
-      )
-      .catch(() => {});
-  }
-
-  /// このバスへ送っているトラックの数
-  function sendersOf(bus: Track): number {
-    return project.tracks.filter((t) => t.sends?.some((s) => s.target === bus.id)).length;
+    setMasterVolume(Number((e.currentTarget as HTMLInputElement).value));
   }
 
   function toggleSolo(t: Track) {
-    const ts = targetsOf(t);
-    const value = !t.solo;
-    const who = ts.length === 1 ? t.name : null;
-    api
-      .applyEdit(
-        ts.map((x) => ({ op: "set_track_prop", id: x.id, prop: "solo", value })),
-        who
-          ? tr(`${who} のソロを${t.solo ? "解除" : "オン"}`, `${t.solo ? "Unsolo" : "Solo"} ${who}`)
-          : tr(`${ts.length} トラックのソロを${value ? "オン" : "解除"}`, `${value ? "Solo" : "Unsolo"} ${plural(ts.length, "track")}`),
-      )
-      .catch(() => {});
+    toggleTrackFlag("solo", t, targetsOf(t));
   }
 
   // ---- 設計データの状態の印 ----
-  function clipMarkTitle(st: ClipState): string {
-    const out: string[] = [];
-    if (st.plan === "ahead")
-      out.push(tr("計画が先に進んだ(この計画の今の版から作り直せる)", "The plan has moved ahead (can be rebuilt from the current plan)"));
-    if (st.plan === "in_sync") out.push(tr("計画どおり", "Matches the plan"));
-    if (st.plan === "missing") out.push(tr("作った元の計画が無い", "The plan it was made from is gone"));
-    if (st.edited_bars?.length)
-      out.push(
-        tr(
-          `手で直した小節: ${st.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}〜${b}`)).join("・")}(AI の作り直しで残す)`,
-          `Hand-edited bars: ${st.edited_bars.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", ")} (kept when AI rebuilds)`,
-        ),
-      );
-    if (st.locked_notes) out.push(tr(`固定の音 ${st.locked_notes} 個(AI は変えない)`, `${st.locked_notes} locked notes (AI won't change them)`));
-    return out.join(" / ") + tr("。押すと設計画面のこのパートへ", ". Click to open this part in the Design view");
-  }
   function openDesignFor(track: { id: string }, e: MouseEvent) {
     e.stopPropagation();
     const idx = project.tracks.filter((t) => t.kind === "midi").findIndex((t) => t.id === track.id);
@@ -1593,55 +1359,7 @@
   {/if}
 
   <!-- セクションマーカー(曲の構成。AI が set_sections で管理) -->
-  {#if project.sections && project.sections.length > 0}
-    <div class="section-row">
-      <div class="track-head section-head"></div>
-      <div class="lane" style="width:{totalPx}px">
-        {#each project.sections as sec, i (sec.tick)}
-          {@const next = project.sections?.[i + 1]?.tick}
-          {@const at = markerDrag?.tick === sec.tick ? markerDrag.to : sec.tick}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="section-band"
-            class:dragging={markerDrag?.tick === sec.tick && markerDrag.moved}
-            style="left:{at * pxPerTick}px;{next !== undefined && at === sec.tick
-              ? `width:${(next - sec.tick) * pxPerTick}px`
-              : at === sec.tick
-                ? `right:0`
-                : `width:120px`}"
-            title={tr(
-              `${sec.name}(${barAtTick(barList, sec.tick).index + 1} 小節目〜)${planText((sec.id && designStore.sectionDesign[sec.id]) || {})}\nクリックでこの区間を選択 / ドラッグで移動 / ダブルクリックで名前を変更 / 右クリックで削除`,
-              `${sec.name} (from bar ${barAtTick(barList, sec.tick).index + 1})${planText((sec.id && designStore.sectionDesign[sec.id]) || {})}\nClick to select this section / drag to move / double-click to rename / right-click to delete`,
-            )}
-            onpointerdown={(e) => onMarkerDown(e, sec)}
-            onpointermove={onMarkerMove}
-            onpointerup={(e) => onMarkerUp(e, sec, next)}
-            ondblclick={() => (renamingMarker = sec.tick)}
-            oncontextmenu={(e) => {
-              e.preventDefault();
-              removeMarker(sec.tick);
-            }}
-          >
-            {#if renamingMarker === sec.tick}
-              <input
-                class="marker-input"
-                value={sec.name}
-                use:focusSelect
-                onpointerdown={(e) => e.stopPropagation()}
-                onkeydown={(e) => {
-                  if (e.key === "Enter" && !e.isComposing) renameMarker(sec.tick, e.currentTarget.value);
-                  else if (e.key === "Escape") renamingMarker = null;
-                }}
-                onblur={(e) => renameMarker(sec.tick, e.currentTarget.value)}
-              />
-            {:else}
-              {sec.name}
-            {/if}
-          </div>
-        {/each}
-      </div>
-    </div>
-  {/if}
+  <TimelineSections {project} {barList} {pxPerTick} {totalPx} onSelect={setRange} />
 
   <!-- 小節ルーラー(クリックでシーク、ドラッグで範囲選択) -->
   <div class="ruler-row" style="top:{project.sections && project.sections.length > 0 ? SECTION_ROW_H : 0}px">
@@ -1725,7 +1443,7 @@
           masterDrag = Number(e.currentTarget.value);
           api.previewEdit([{ op: "set_master_volume", volume_db: masterDrag }]);
         }}
-        onchange={setMasterVolume}
+        onchange={onMasterVolume}
         ondblclick={() => {
           masterDrag = null;
           api.applyEdit([{ op: "set_master_volume", volume_db: 0 }], tr("マスター音量を 0.0 dB に変更", "Set master volume to 0.0 dB")).catch(() => {});
@@ -1829,7 +1547,7 @@
         <div class="head-row">
           {#if track.kind === "bus"}
             <span class="dev plain" title={tr("インスペクターの「送り」で、各トラックからこのバスへ送る量を決めます", "Set how much each track sends to this bus with Sends in the Inspector")}
-              >{tr("受けている:", "Receiving:")} {sendersOf(track)}{tr(" 本", "")}</span
+              >{tr("受けている:", "Receiving:")} {sendersOf(project, track)}{tr(" 本", "")}</span
             >
           {:else if track.kind === "audio"}
             <span class="dev plain">{tr("音声", "Audio")}</span>
@@ -1998,7 +1716,7 @@
       bind:markerName
       onClose={() => (sigMenu = null)}
       onPutMarker={putMarker}
-      onRemoveMarker={removeMarker}
+      onRemoveMarker={removeMarkerAt}
     />
   {/if}
 
@@ -2030,7 +1748,7 @@
       index={trackMenu.index}
       bouncing={!!bouncing}
       onRename={() => startRename(trackMenu!.trackId)}
-      onColor={setTrackColor}
+      onColor={setMenuTrackColor}
       onMove={moveTrack}
       onDuplicate={duplicateTrack}
       onBounce={bounceTrack}
@@ -2265,69 +1983,16 @@
     height: 24px;
   }
 
-  /* セクション行とルーラーは、縦にスクロールしても上端に残す(トラックが多いとシーク・範囲選択・
-     小節番号の確認ができなくなっていた)。ルーラーの top はセクション行の高さ(マークアップで指定) */
-  .section-row {
-    display: flex;
-    border-bottom: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    z-index: 7;
-  }
-
+  /* ルーラーは、縦にスクロールしても上端(区間の帯の下)に残す(トラックが多いとシーク・範囲選択・
+     小節番号の確認ができなくなっていた)。top は区間の帯の高さ(マークアップで指定) */
   /* 縦にスクロールしたとき、トラックの見出し(5)や持ち上げたトラック(6)より上に残す */
   .ruler-row {
     position: sticky;
     z-index: 7;
   }
 
-  .section-row .track-head,
   .ruler-row .track-head {
     z-index: 5;
-  }
-
-  .section-head {
-    padding: 0;
-    height: 18px;
-  }
-
-  .section-row .lane {
-    height: 18px;
-    position: relative;
-    background: var(--bg-panel);
-  }
-
-  .section-band {
-    position: absolute;
-    top: 2px;
-    bottom: 2px;
-    padding: 0 6px;
-    font-size: 10px;
-    line-height: 14px;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-    border-left: 2px solid var(--accent);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: grab;
-    user-select: none;
-  }
-
-  .section-band.dragging {
-    cursor: grabbing;
-    opacity: 0.8;
-    z-index: 1;
-  }
-
-  .marker-input {
-    width: 100%;
-    font: inherit;
-    font-size: 10px;
-    padding: 0 2px;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--accent-dim);
   }
 
   .ruler-row .lane {
