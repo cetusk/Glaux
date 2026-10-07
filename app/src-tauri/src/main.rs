@@ -255,7 +255,9 @@ fn list_recent_projects(state: State<'_, AppState>) -> Value {
 }
 
 /// 同期のコマンドは画面のスレッドで動くので、ファイルを読む重い処理は別のスレッドで行う
-async fn off_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+async fn off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| e.to_string())
@@ -304,8 +306,7 @@ async fn import_sample(
         )
     })?;
     let dir = state.project_dir();
-    let imported =
-        import_audio_off_thread(dir.clone(), path.clone()).await?;
+    let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
 
     let mut cmds = Vec::new();
     if !project.assets.contains_key(&imported.id) {
@@ -357,8 +358,7 @@ async fn import_ir(
     let fx = glaux_core::FxId::parse(&fx_id).map_err(|e| e.to_string())?;
     let (project, _) = state.handle.get_project_shared().await?;
     let dir = state.project_dir();
-    let imported =
-        import_audio_off_thread(dir.clone(), path.clone()).await?;
+    let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
     let mut cmds = Vec::new();
     if !project.assets.contains_key(&imported.id) {
         cmds.push(Command::AddAsset {
@@ -403,8 +403,7 @@ async fn import_audio_clip(
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
     let (project, _) = state.handle.get_project_shared().await?;
     let dir = state.project_dir();
-    let imported =
-        import_audio_off_thread(dir.clone(), path.clone()).await?;
+    let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
     let name = std::path::Path::new(&path)
         .file_stem()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1735,8 +1734,10 @@ async fn add_soundfont(path: String) -> Result<Value, String> {
 /// 音色プリセットの一覧(プリセットのファイルを全部読むので、別のスレッドで)
 #[tauri::command]
 async fn list_presets() -> Result<Value, String> {
-    off_thread(|| json!({ "presets": glaux_mcp::presets::list(&glaux_mcp::presets::default_dir()) }))
-        .await
+    off_thread(
+        || json!({ "presets": glaux_mcp::presets::list(&glaux_mcp::presets::default_dir()) }),
+    )
+    .await
 }
 
 /// トラックの現在の音(音源 + エフェクトチェーン)をプリセット保存する。
@@ -3089,7 +3090,11 @@ async fn load_chat_log(state: State<'_, AppState>) -> Result<ChatLog, String> {
 /// 画面の会話ログを保存する。読んだときとプロジェクトが変わっていたら保存しない(false)。
 /// (会話が長いと大きくなるので、別のスレッドで書く)
 #[tauri::command]
-async fn save_chat_log(state: State<'_, AppState>, dir: String, log: String) -> Result<bool, String> {
+async fn save_chat_log(
+    state: State<'_, AppState>,
+    dir: String,
+    log: String,
+) -> Result<bool, String> {
     let chat = state.chat.clone();
     off_thread(move || chat.save_log(&dir, &log)).await
 }

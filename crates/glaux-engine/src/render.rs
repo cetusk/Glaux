@@ -1776,7 +1776,7 @@ impl Renderer {
                     // レガート・ポルタメント: 直前の音の声が鳴り続けていれば、その声のまま次の高さへ移る
                     if !replay && e.legato_prev != crate::data::NO_LEGATO {
                         let x = data.expr(&e);
-                        if legato_continue(&mut self.voices, &e, &x, mix, self.pos, sr) {
+                        if legato_continue(&mut self.voices, &e, x, mix, self.pos, sr) {
                             continue;
                         }
                     }
