@@ -47,6 +47,15 @@ const AUTO_FRAMES: usize = 128;
 
 /// 処理単位の頭で評価するオートメーション(音色・エフェクト)があるか。
 /// 音量・パンはサンプルごとに評価するので含めない
+/// 1 回の処理単位の長さ(フレーム)。音色・エフェクトのオートメーションがある曲は細かく分ける
+pub fn block_step(data: &PlaybackData) -> usize {
+    if has_block_automation(data) {
+        AUTO_FRAMES
+    } else {
+        MAX_FRAMES
+    }
+}
+
 fn has_block_automation(data: &PlaybackData) -> bool {
     !data.master_fx_auto.is_empty()
         || data
@@ -674,6 +683,42 @@ fn process_order(data: &PlaybackData, ntracks: usize) -> ([u32; MAX_TRACKS], usi
     (order, ntracks)
 }
 
+/// 書き出しを並べて描くときの、バスとマスターの入口の音の受け渡し(オフライン専用。再生では使わない)。
+/// 位置は [`OfflineRoute::base`] からのフレーム数(呼び出し側が 1 回の `process` ごとに入れ替える)
+#[derive(Default, Debug)]
+pub struct OfflineRoute {
+    /// 入口の音を取っておくバス(トラックの添字)。取っておいたバスはチェーンを通さず鳴らさない
+    pub capture: Vec<usize>,
+    /// 取っておいた音(`capture` と同じ並び。左・右)
+    pub captured: Vec<[Vec<f32>; 2]>,
+    /// マスターの入口(エフェクトの前)の音も取っておく
+    pub capture_master: bool,
+    pub master_out: [Vec<f32>; 2],
+    /// バスの入口に足す音(トラックの添字, 左右)
+    pub inject: Vec<(usize, [Vec<f32>; 2])>,
+    /// マスターの入口に足す音
+    pub master_in: Option<[Vec<f32>; 2]>,
+    /// 受け渡しの位置の起点(レンダラの時計)
+    pub base: u64,
+    /// 処理単位の長さ(曲全体を 1 つで描いたときと同じ刻みにそろえる)
+    pub step: Option<usize>,
+}
+
+/// `dst[at..]` に `src` を書く(足りなければ 0 で伸ばす)
+fn put_at(dst: &mut Vec<f32>, at: usize, src: &[f32]) {
+    if dst.len() < at + src.len() {
+        dst.resize(at + src.len(), 0.0);
+    }
+    dst[at..at + src.len()].copy_from_slice(src);
+}
+
+/// `dst` に `src[at..]` を足す(`src` が短ければその分だけ)
+fn add_from(dst: &mut [f32], src: &[f32], at: usize) {
+    for (d, s) in dst.iter_mut().zip(src.get(at..).unwrap_or(&[])) {
+        *d += *s;
+    }
+}
+
 /// 送っている CLAP のつまみの変調の上限(全トラック)
 const MAX_MOD_SENT: usize = 256;
 
@@ -707,6 +752,8 @@ pub struct Renderer {
     /// 曲のデータを差し替えた後に波形の最後の持ち主になっていると、ここで捨てると大きな解放が
     /// オーディオスレッドで起きるので、別のスレッドへ渡す(None ならその場で捨てる。書き出しなど)
     retired: Option<std::sync::mpsc::SyncSender<glaux_dsp::InstrumentParams>>,
+    /// 書き出しを並べて描くときの受け渡し(再生では None)
+    offline: Option<Box<OfflineRoute>>,
     /// この呼び出しで受け取った MIDI キーボードのイベントと、呼び出しの頭からの位置(前もって確保して再確保しない)
     live_pending: Vec<(LiveEvent, u32)>,
     /// live_pending のうち、反映し終えた数
@@ -926,6 +973,17 @@ impl Renderer {
         self
     }
 
+    /// 書き出しを並べて描くときの受け渡しを設定する
+    pub fn with_offline_route(mut self, route: OfflineRoute) -> Self {
+        self.offline = Some(Box::new(route));
+        self
+    }
+
+    /// 受け渡し(取っておいた音を読む・足す音を入れ替える)
+    pub fn offline_route(&mut self) -> Option<&mut OfflineRoute> {
+        self.offline.as_deref_mut()
+    }
+
     /// 内蔵エフェクト(トラック・マスター)・畳み込みリバーブ・合流のバッファの鳴り残りを消す(アロケーションなし)
     fn flush_effects(&mut self, data: &PlaybackData) {
         for fx in data
@@ -981,6 +1039,7 @@ impl Renderer {
             last_preview: 0,
             live_voices: Vec::with_capacity(MAX_LIVE_VOICES),
             retired: None,
+            offline: None,
             live_pending: Vec::with_capacity(MAX_LIVE_EVENTS_PER_BLOCK),
             live_head: 0,
             live_chunk_start: 0,
@@ -1105,10 +1164,9 @@ impl Renderer {
         // プラグインのバッファ長を超えないよう、長いブロックは分けて処理する。
         // 音色・エフェクトのオートメーションは処理単位の頭で評価するので、それがある曲では
         // 細かく分ける(以前は書き出しで 85ms 刻みの階段になり、再生とも音が違っていた)
-        let step = if has_block_automation(&self.shared.data.load()) {
-            AUTO_FRAMES
-        } else {
-            MAX_FRAMES
+        let step = match self.offline.as_ref().and_then(|o| o.step) {
+            Some(s) => s,
+            None => block_step(&self.shared.data.load()),
         };
         // MIDI キーボードのライブ演奏: この呼び出しの分をまとめて受け取り、押した時刻からブロックの中の位置を決める
         self.fetch_live(out.len() / channels.max(1));
@@ -2115,6 +2173,22 @@ impl Renderer {
                     &mut self.bus_l[ti][..frames],
                     &mut self.bus_r[ti][..frames],
                 );
+                // 書き出しを並べて描くとき: 入口の音を取っておく(このバスは後でまとめて鳴らす)か、
+                // ほかで描いた入口の音を足す
+                if let Some(off) = self.offline.as_deref_mut() {
+                    let at = (self.clock - off.base) as usize;
+                    if let Some(k) = off.capture.iter().position(|&b| b == ti) {
+                        put_at(&mut off.captured[k][0], at, &self.bus_l[ti][..frames]);
+                        put_at(&mut off.captured[k][1], at, &self.bus_r[ti][..frames]);
+                        continue;
+                    }
+                    for (b, src) in &off.inject {
+                        if *b == ti {
+                            add_from(&mut self.bus_l[ti][..frames], &src[0], at);
+                            add_from(&mut self.bus_r[ti][..frames], &src[1], at);
+                        }
+                    }
+                }
                 // ミュートしたバス(バスには発音が無いので、ここで止める)
                 if !mix.audible {
                     continue;
@@ -2148,6 +2222,17 @@ impl Renderer {
             &mut mix_l[..frames],
             &mut mix_r[..frames],
         );
+        if let Some(off) = self.offline.as_deref_mut() {
+            let at = (self.clock - off.base) as usize;
+            if let Some(src) = &off.master_in {
+                add_from(&mut mix_l[..frames], &src[0], at);
+                add_from(&mut mix_r[..frames], &src[1], at);
+            }
+            if off.capture_master {
+                put_at(&mut off.master_out[0], at, &mix_l[..frames]);
+                put_at(&mut off.master_out[1], at, &mix_r[..frames]);
+            }
+        }
         // 読まれなかった送り先(バスでなくなった添字など)の区間を消しておく(古い音が後で出ないように)
         for ring in self.route_ring.iter_mut() {
             for side in ring.iter_mut() {
@@ -2459,6 +2544,10 @@ impl Renderer {
                 .filter(|t| !data.tracks[*t].is_bus)
                 .and_then(|t| self.track_plugin[t]);
             let state = &mut self.effect_states[slot];
+            // まとめて通せるエフェクト(EQ)はブロックで処理する
+            if state.process_block(&params, &mut fl[..frames], &mut fr[..frames]) {
+                return;
+            }
             state.set_clock(self.blk_tick, self.blk_tps);
             for f in 0..frames {
                 let key = match (key_track, key_bus) {

@@ -93,6 +93,34 @@ fn render_inner(
     range: Option<(u64, u64)>,
     master_clip: bool,
 ) -> Result<Vec<f32>, ExportError> {
+    // 曲全体なら、まずいくつかのスレッドに分けて描く(並べられない曲は 1 つで)
+    if range.is_none() {
+        if let Some(out) = crate::parallel::render_whole(project, sample_rate, bank, master_clip) {
+            return Ok(trim_tail(out, sample_rate));
+        }
+    }
+    render_serial(project, sample_rate, bank, range, master_clip)
+}
+
+/// 曲全体を 1 つのレンダラで描く(並べて描いた結果と比べる試験用)
+#[cfg(test)]
+pub(crate) fn render_serial_for_test(
+    project: &Project,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+    master_clip: bool,
+) -> Result<Vec<f32>, ExportError> {
+    render_serial(project, sample_rate, bank, None, master_clip)
+}
+
+/// 1 つのレンダラで描く
+fn render_serial(
+    project: &Project,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+    range: Option<(u64, u64)>,
+    master_clip: bool,
+) -> Result<Vec<f32>, ExportError> {
     let slots = Arc::new(crate::plugins::new_slots());
     // CLAP の音源・エフェクトがあれば、このスレッドで書き出し専用のインスタンスを作る
     let has_plugins = !crate::plugins::project_plugins(project).is_empty();
@@ -178,14 +206,18 @@ fn render_inner(
         return Ok(out);
     }
 
-    // 末尾の無音を切り詰める(+0.5 秒の余白を残す)
+    Ok(trim_tail(out, sample_rate))
+}
+
+/// 末尾の無音を切り詰める(+0.5 秒の余白を残す)
+pub(crate) fn trim_tail(mut out: Vec<f32>, sample_rate: f64) -> Vec<f32> {
     let last_audible = out
         .iter()
         .rposition(|s| s.abs() > 1e-4)
         .unwrap_or(out.len().saturating_sub(1));
     let keep = (last_audible / 2 + 1 + (0.5 * sample_rate) as usize) * 2;
     out.truncate(keep.min(out.len()));
-    Ok(out)
+    out
 }
 
 /// トラックの音源(とエフェクト)で 1 音だけ鳴らした音(モノラル)。音色の解析・比較用。

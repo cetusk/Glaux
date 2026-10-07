@@ -29,6 +29,7 @@ pub mod midi;
 pub mod mixcheck;
 pub mod monitor;
 pub mod output;
+mod parallel;
 pub mod plugins;
 pub mod record;
 pub mod render;

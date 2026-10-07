@@ -38,6 +38,11 @@ impl SvfCoeffs {
         }
     }
 
+    /// 出力が入力そのものになる係数(0dB のシェルフ・ベル)
+    pub fn is_identity(&self) -> bool {
+        self.m0 == 1.0 && self.m1 == 0.0 && self.m2 == 0.0
+    }
+
     pub(crate) fn g_of(sr: f32, freq: f32) -> f32 {
         (std::f32::consts::PI * (freq / sr).clamp(0.0001, 0.49)).tan()
     }
@@ -242,6 +247,35 @@ impl SvfState {
         let c = &self.cur;
         c.m0 * v0 + c.m1 * v1 + c.m2 * v2
     }
+
+    /// 区間をまとめて処理する([`Self::process`] を 1 サンプルずつ呼ぶのと同じ結果)。
+    /// 係数が目標に落ち着くまでは 1 サンプルずつ、落ち着いた後は係数を固定した速い繰り返しで回す
+    pub fn process_block(&mut self, target: &SvfCoeffs, smooth: f32, buf: &mut [f32]) {
+        let mut i = 0;
+        while i < buf.len() && !(self.settled && self.cur == *target) {
+            buf[i] = self.process(target, smooth, buf[i]);
+            i += 1;
+        }
+        let [a1, a2, a3] = self.a;
+        let SvfCoeffs { m0, m1, m2, .. } = self.cur;
+        let (mut ic1, mut ic2) = (self.ic1, self.ic2);
+        for s in &mut buf[i..] {
+            let v0 = *s;
+            let v3 = v0 - ic2;
+            let v1 = a1 * ic1 + a2 * v3;
+            let v2 = ic2 + a2 * ic1 + a3 * v3;
+            ic1 = 2.0 * v1 - ic1;
+            ic2 = 2.0 * v2 - ic2;
+            *s = m0 * v0 + m1 * v1 + m2 * v2;
+        }
+        self.ic1 = ic1;
+        self.ic2 = ic2;
+    }
+
+    /// 係数が目標に落ち着いていて、その目標が素通し(出力 = 入力)か。素通しの間は通さなくても同じ音
+    fn idle_at(&self, target: &SvfCoeffs) -> bool {
+        self.settled && self.cur == *target && target.is_identity()
+    }
 }
 
 /// 係数の平滑化の時定数(秒)
@@ -336,6 +370,22 @@ impl EqParams {
             smooth: smooth_coef(sample_rate),
             raw: r,
         }
+    }
+
+    /// バンド `b` を通すか。切ってあるハイパス・ローパスは通さない。0dB のシェルフ・ベルは、係数が素通しに
+    /// 落ち着いていれば通さない(出力は同じ)。そのとき中の状態は 0 に戻す(ゲインが動き出したら、
+    /// フィルタを今から始めたのと同じ形で効き始める。ゲインは 0 の近くから動くので段差は聞こえない)
+    #[inline]
+    fn runs(&self, b: usize, state: &mut SvfState) -> bool {
+        if !self.active[b] {
+            return false;
+        }
+        if (1..=3).contains(&b) && state.idle_at(&self.bands[b]) {
+            state.ic1 = 0.0;
+            state.ic2 = 0.0;
+            return false;
+        }
+        true
     }
 
     /// 周波数 `freq` での利得(dB)。オフラインで EQ を当てはめるときに、音を通さずに特性を求める用
@@ -1014,6 +1064,22 @@ impl EffectState {
         }
     }
 
+    /// 区間をまとめて処理できるエフェクトなら処理して true(今は EQ。1 サンプルずつ通すのと同じ結果)。
+    /// できなければ何もせず false(呼び出し側が [`Self::process`] で 1 サンプルずつ通す)
+    pub fn process_block(&mut self, p: &EffectParams, l: &mut [f32], r: &mut [f32]) -> bool {
+        let EffectParams::Eq(eq) = p else {
+            return false;
+        };
+        for (buf, st) in [l, r].into_iter().zip(self.eq.iter_mut()) {
+            for (b, state) in st.iter_mut().enumerate() {
+                if eq.runs(b, state) {
+                    state.process_block(&eq.bands[b], eq.smooth, buf);
+                }
+            }
+        }
+        true
+    }
+
     /// ステレオ 1 サンプル処理。`key` はサイドチェインの検出信号
     /// (通常はソーストラックのモノ合算。サイドチェイン以外は無視する)。
     pub fn process(&mut self, p: &EffectParams, l: f32, r: f32, key: f32) -> (f32, f32) {
@@ -1033,7 +1099,7 @@ impl EffectState {
             EffectParams::Eq(eq) => {
                 let ch = |mut s: f32, st: &mut [SvfState; EQ_BANDS]| {
                     for (b, state) in st.iter_mut().enumerate() {
-                        if eq.active[b] {
+                        if eq.runs(b, state) {
                             s = state.process(&eq.bands[b], eq.smooth, s);
                         }
                     }
