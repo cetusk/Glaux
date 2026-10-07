@@ -342,6 +342,50 @@
     if (id && project && !project.tracks.some((t) => t.id === id)) midiArmStore.trackId = null;
   });
 
+  /// ヘッダーが 1 行に入りきらないとき、段階的にしまう(画面の幅ではなく、実際に入りきるかで決める)。
+  /// 0 = 全部出す、1 = 書き出しの文字をしまう、2 = AI の作業表示の文字もしまう、3 = 2 段にする。
+  /// AI の作業表示・キーの表示などが出たり消えたりしたときも測り直す
+  function fitHeader(el: HTMLElement) {
+    // 欄の中身(見えているもの)の幅と間の合計が、欄の幅を超えるか。右の欄は右寄せで、はみ出しが左(中央の欄の下)へ
+    // 出るため scrollWidth では分からない
+    const over = (sel: string) => {
+      const e = el.querySelector<HTMLElement>(sel);
+      if (!e) return false;
+      const kids = [...e.children].filter((k) => (k as HTMLElement).offsetWidth > 0) as HTMLElement[];
+      const gap = parseFloat(getComputedStyle(e).columnGap) || 0;
+      const need = kids.reduce((w, k) => w + k.getBoundingClientRect().width, 0) + gap * Math.max(0, kids.length - 1);
+      return need > e.clientWidth + 1;
+    };
+    const fit = () => {
+      for (let lv = 0; lv <= 3; lv++) {
+        el.dataset.fit = String(lv);
+        if (lv === 3 || !(over(".h-left") || over(".h-right"))) break;
+      }
+    };
+    let raf = 0;
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(() => ((raf = 0), fit()));
+    };
+    fit();
+    // 窓の幅と、中央の欄の幅(キーの表示の出し入れなど)の変化
+    const ro = new ResizeObserver(schedule);
+    ro.observe(el);
+    const center = el.querySelector(".h-center");
+    if (center) ro.observe(center);
+    // 左右の欄の中身の出し入れ(AI の作業表示・曲名など)。再生中に毎回変わる位置・時間の表示(中央)は見ない
+    const mo = new MutationObserver(schedule);
+    for (const side of el.querySelectorAll(".h-left, .h-right")) {
+      mo.observe(side, { childList: true, subtree: true, characterData: true });
+    }
+    return {
+      destroy() {
+        ro.disconnect();
+        mo.disconnect();
+        if (raf) cancelAnimationFrame(raf);
+      },
+    };
+  }
+
   onMount(() => {
     applyTheme();
     api.appInfo().then((i) => {
@@ -796,7 +840,7 @@
   <!-- ヘッダー: 左 = 曲 / 中央 = 再生と表示窓 / 右 = 取り消し・書き出し・設定
        (以前は 1 行にすべてを並べて横にはみ出していた。負荷・デバイス・MCP はステータスバーへ、
        マスターの音量とエフェクトはタイムラインのマスター行へ) -->
-  <header>
+  <header use:fitHeader>
     <div class="h-left">
       <img class="owl" src="/glaux-icon.png" alt="Glaux" width="28" height="28" />
       <ProjectMenu title={project?.meta.title ?? "…"} />
@@ -920,11 +964,11 @@
     </div>
     <div class="h-right">
       {#if indicator !== "idle"}
-        <div class="ai-indicator" class:thinking={indicator === "session"}>
+        {@const aiLabel = indicator === "calling" ? tr(`AI が${toolDoing(aiTool)}…`, `AI is ${toolDoing(aiTool)}…`) : tr("AI が作業中です…", "AI is working…")}
+        <!-- 狭いときは文字をしまってアイコンだけ(吹き出しで中身が分かる) -->
+        <div class="ai-indicator" class:thinking={indicator === "session"} title={aiLabel}>
           <Icon name="sparkles" size={14} />
-          <span class="ai-text">{indicator === "calling"
-            ? tr(`AI が${toolDoing(aiTool)}…`, `AI is ${toolDoing(aiTool)}…`)
-            : tr("AI が作業中です…", "AI is working…")}</span>
+          <span class="ai-text">{aiLabel}</span>
         </div>
       {/if}
       <!-- 聴く音量: アプリから鳴る音だけ(曲のマスター音量・書き出しとは別) -->
@@ -1175,6 +1219,10 @@
   .h-right {
     justify-content: flex-end;
   }
+  /* 右の欄は縮めない(入りきらなければ、文字をしまう・2 段にする: fitHeader) */
+  .h-right > * {
+    flex-shrink: 0;
+  }
 
   .h-center {
     display: flex;
@@ -1253,8 +1301,6 @@
     gap: 4px;
     height: 28px;
     padding: 0 6px;
-    min-width: 0;
-    flex-shrink: 1;
     border: 1px solid var(--border);
     border-radius: var(--r-sm);
     color: var(--text-dim);
@@ -1266,8 +1312,6 @@
 
   .listen-vol input {
     width: 72px;
-    min-width: 36px;
-    flex-shrink: 1;
   }
 
   .monitor-on {
@@ -1299,7 +1343,6 @@
     background: color-mix(in srgb, var(--ai) 16%, transparent);
     color: var(--ai);
     font-size: var(--fs-sm);
-    min-width: 0;
     animation: ai-pulse 1.2s ease-in-out infinite;
   }
 
@@ -1320,42 +1363,35 @@
     }
   }
 
-  /* 狭い画面(ノート PC の 150% 表示など)では文字を減らす */
-  @media (max-width: 1280px) {
-    .export-label {
-      display: none;
-    }
+  /* 入りきらないとき(ノート PC の 150% 表示・画面の半分など。fitHeader が data-fit を決める):
+     まず書き出しの文字、次に AI の作業表示の文字をしまう(AI の表示はアイコンだけになり、吹き出しで中身が分かる) */
+  header:global(:is([data-fit="1"], [data-fit="2"], [data-fit="3"])) .export-label {
+    display: none;
+  }
+  header:global(:is([data-fit="2"], [data-fit="3"])) .ai-text {
+    display: none;
   }
 
-  @media (max-width: 1150px) {
-    .ai-text {
-      display: none;
-    }
+  /* それでも入らなければ 2 段にして、上の段に左右の欄、下の段に中央(再生・位置の表示)を置く(どのボタンも隠さない) */
+  header:global([data-fit="3"]) {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "left right"
+      "center center";
+    row-gap: 4px;
+    padding-block: 6px;
   }
-
-  /* さらに狭い(画面の半分など): 1 行に収まらず、左右の欄が中央(再生・位置の表示)に重なっていた。
-     2 段にして、上の段に左右の欄、下の段に中央を置く(どのボタンも隠さない) */
-  @media (max-width: 1060px) {
-    header {
-      height: auto;
-      grid-template-columns: minmax(0, 1fr) auto;
-      grid-template-areas:
-        "left right"
-        "center center";
-      row-gap: 4px;
-      padding-block: 6px;
-    }
-    .h-left {
-      grid-area: left;
-    }
-    .h-right {
-      grid-area: right;
-    }
-    .h-center {
-      grid-area: center;
-      justify-content: center;
-      min-width: 0;
-    }
+  header:global([data-fit="3"]) .h-left {
+    grid-area: left;
+  }
+  header:global([data-fit="3"]) .h-right {
+    grid-area: right;
+  }
+  header:global([data-fit="3"]) .h-center {
+    grid-area: center;
+    justify-content: center;
+    min-width: 0;
   }
   /* とても狭い: 前・次の小節のボタンをしまう(← → キーで動かせる。時間の表示もしまう: TransportLcd) */
   @media (max-width: 640px) {
