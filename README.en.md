@@ -11,13 +11,15 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 
 > [!NOTE]
 > This is an experimental personal project, mainly tested on Windows 11 (on Linux only the core and engine are built and tested; macOS is untested).
-> Features and the file format may change without notice. The UI and the in-code documentation are in Japanese.
+> Features and the file format may change without notice. The UI defaults to Japanese, and the in-code documentation is in Japanese.
 > Switch to English in Settings (設定) → General (一般) → Language (言語). The whole app and the AI's replies then switch to English.
 
 ## Features
 
 - **Compose with AI** — Work with Claude (Claude Code) or GPT (Codex CLI). Human and AI edits share one history, and you can undo an AI's whole turn at once.
-  For any edit in the history, you can compare before and now at matched loudness
+  For any edit in the history, or any AI turn, you can compare before and now at matched loudness. When the key decisions are unclear, the AI asks you with
+  multiple-choice questions before writing (or type `/goal` to leave it up to the AI). You can edit and resend a message you sent; the conversation and the song
+  rewind to just before it. The UI and the AI's replies can be in Japanese or English
 - **The AI can listen** — It measures loudness, frequency balance, key and chords, rhythm and timbre by itself, and checks its work before reporting
 - **Song design** — See the plan for the whole song (genre, mood, the shape of the energy) and, per section, the energy curve, each part's register and each part's role,
   side by side with what the song actually does, and edit them in place. The AI reads where the song drifts from the plan when it writes and revises, and keeps the notes you locked and the bars you edited by hand
