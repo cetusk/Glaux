@@ -7,6 +7,8 @@
   import { plural, tr } from "./i18n.svelte";
   import { clearAiHighlight, setAiHighlight } from "./aiHighlight.svelte";
   import { renderMarkdown } from "./markdown";
+  import { OMAKASE, composePrompt, promptContext, type PromptCtx } from "./chatPrompt";
+  import QuestionCard from "./QuestionCard.svelte";
   import { showError, showToast } from "./toast.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { claimAb, endAbLoop, ensureAbPlaying, releaseAb, restartAb, startAbLoop } from "./abLoop";
@@ -93,7 +95,6 @@
     designStore,
     designWatch,
     designTargetLabel,
-    designTargetPrompt,
     endProposalAb,
     proposalAb,
     proposalsRange,
@@ -134,12 +135,6 @@
     sent?: { since: string | null; at: number };
     /** role "user": このターンの会話の終わり(Claude のセッションの位置。巻き戻すときに使う) */
     chainEnd?: string;
-  }
-
-  /// 指示に添える対象(範囲・クリップ・設計の所・音作り): AI へ送る前置きと、会話に出す頭書き
-  interface PromptCtx {
-    prefix: string;
-    deco: string;
   }
 
   /// 送信待ちの指示(実行中に書いたもの)。会話の下に並べ、前のターンが終わったら順に送る
@@ -542,67 +537,11 @@
   async function send() {
     const prompt = input.trim();
     if (!prompt) return;
-    const ctx = promptContext();
+    const ctx = promptContext(designTarget);
     const { shown, fullPrompt } = composePrompt(prompt, ctx);
     rememberPrompt(prompt);
     input = "";
     await sendPrompt(shown, fullPrompt, { raw: prompt, ctx });
-  }
-
-  /** 今選んでいる対象を指示の前置きにする(タイムラインの小節範囲・ピアノロールで開いているクリップなど = マスク) */
-  function promptContext(): PromptCtx {
-    const range = selectionStore.range;
-    const focus = pianoRollStore.focus;
-    let prefix = "";
-    let shown = "";
-    if (focus) {
-      prefix +=
-        `【対象クリップ(ユーザーがピアノロールで開いている)】トラック「${focus.trackName}」(${focus.trackId})の` +
-        `クリップ「${focus.clipName}」(${focus.clipId})。特に指定がなければ、このクリップ内のノートへの操作として解釈してください。\n`;
-      shown = tr(`〔${focus.clipName}〕 ${shown}`, `[${focus.clipName}] ${shown}`);
-    }
-    if (range) {
-      prefix +=
-        `【対象範囲の指定(ユーザーが UI で選択)】小節 ${range.startBar + 1}〜${range.endBar + 1}` +
-        `(tick ${range.startTick}〜${range.endTick})。` +
-        `編集・分析はこの範囲内に限定し、範囲外のノートやクリップは変更しないでください。\n`;
-      shown = tr(
-        `〔小節 ${range.startBar + 1}〜${range.endBar + 1}〕 ${shown}`,
-        `[Bars ${range.startBar + 1}–${range.endBar + 1}] ${shown}`,
-      );
-    }
-    if (designTarget) {
-      prefix += designTargetPrompt(designStore.data, designSel.sel) ?? "";
-      shown = tr(`〔${designTarget}〕 ${shown}`, `[${designTarget}] ${shown}`);
-    }
-    const sd = soundDesignStore.focus;
-    if (sd && sd.trackId === MASTER_FOCUS_ID) {
-      prefix +=
-        "【音作り中: マスターバス(ユーザーがマスターのエフェクトを開いている)】" +
-        "エフェクトに関する指示は、特に指定がなければマスター(add_master_effect / set_master_param)が対象です。\n";
-      shown = tr(`〔音作り: マスター〕 ${shown}`, `[Sound design: Master] ${shown}`);
-    } else if (sd) {
-      prefix +=
-        `【音作り中のトラック(ユーザーが音作りビューで開いている)】「${sd.trackName}」(${sd.trackId})。` +
-        `音色・エフェクトに関する指示は、特に指定がなければこのトラックが対象です。\n`;
-      shown = tr(`〔音作り: ${sd.trackName}〕 ${shown}`, `[Sound design: ${sd.trackName}] ${shown}`);
-    }
-    return { prefix, deco: shown };
-  }
-
-  /** 書いた指示と対象から、会話に出す文と AI へ送る文を作る */
-  function composePrompt(prompt: string, ctx: PromptCtx): { shown: string; fullPrompt: string } {
-    let prefix = ctx.prefix;
-    let shown = ctx.deco + prompt;
-    // /goal: 質問せずに AI が決め手を選んで最後まで作る(何も無ければ、何でもよいので 1 曲)。設定で「途中で尋ねない」なら毎回
-    const goal = prompt.match(/^\/(goal|おまかせ)(?:\s+|$)([\s\S]*)$/);
-    let body = prompt;
-    if (goal) {
-      body = goal[2].trim() || (settings.lang === "en" ? GOAL_DEFAULT_EN : GOAL_DEFAULT_JA);
-      shown = `${ctx.deco}${tr("〔おまかせ〕", "[Up to you]")} ${body}`;
-    }
-    if (goal || settings.chatAsk === "never") prefix = OMAKASE + prefix;
-    return { shown, fullPrompt: prefix ? `${prefix}\n${body}` : body };
   }
 
   /** 送る(実行中なら送信待ちに並べる)。答えていない質問は「答えずに次へ進んだ」にする */
@@ -619,10 +558,6 @@
   }
 
   // ---- AI からの質問(ask_user)----
-  const OMAKASE =
-    "【おまかせ】ask_user で質問せず、決め手(ジャンル・雰囲気・長さ・編成など)は自分で選んで最後まで作る。選んだ決め手は報告に書く。\n";
-  const GOAL_DEFAULT_JA = "何でもよいので、1 曲作ってください(ジャンル・雰囲気・長さ・編成は自由に選んでください)。";
-  const GOAL_DEFAULT_EN = "Make any song you like (choose the genre, mood, length and instruments freely).";
   /** 質問ごとの選んだ選択肢とその他の言葉(質問の ID → 質問の番号ごと) */
   let qPick = $state<Record<string, { picks: string[]; other: string }[]>>({});
   /** 選んだ内容の入れ物を作る(質問が届いたとき・会話の記録を読んだとき。描画の途中では作らない) */
@@ -631,12 +566,6 @@
   }
   const qState = (m: Msg) => qPick[m.question!.id] ?? m.question!.questions.map(() => ({ picks: [], other: "" }));
   const qOpen = (m: Msg) => !m.answer && !m.skipped;
-  function togglePick(m: Msg, qi: number, label: string) {
-    initQuestion(m.question!);
-    const st = qPick[m.question!.id][qi];
-    const multi = m.question!.questions[qi].multi;
-    st.picks = st.picks.includes(label) ? st.picks.filter((x) => x !== label) : multi ? [...st.picks, label] : [label];
-  }
   /** 答えを送る(`all` なら全部おまかせ)。選ばなかった質問は AI に任せる */
   async function answerQuestion(m: Msg, all = false) {
     if (!qOpen(m)) return;
@@ -1058,56 +987,7 @@
           {/if}
         </div>
       {:else if m.role === "question" && m.question}
-        {@const open = qOpen(m)}
-        {@const st = qState(m)}
-        <div class="msg question" class:closed={!open} role="group" aria-label={tr("AI からの質問", "Question from the AI")}>
-          <div class="ch-head"><Icon name="message-circle-question-mark" size={13} />{tr("AI からの質問", "Question from the AI")}{m.question.why
-              ? tr(`(${m.question.why})`, ` (${m.question.why})`)
-              : ""}</div
-          >
-          {#each m.question.questions as q, qi (qi)}
-            <div class="q-item">
-              <div class="q-text"><span class="q-tag">{q.header}</span>{q.question}{q.multi ? tr("(いくつでも)", " (pick any)") : ""}</div>
-              <div class="q-opts">
-                {#each q.options as o (o.label)}
-                  <button
-                    class="btn sm q-opt"
-                    class:on={st[qi].picks.includes(o.label)}
-                    type="button"
-                    disabled={!open}
-                    title={o.description ?? undefined}
-                    onclick={() => togglePick(m, qi, o.label)}
-                    >{o.label}{#if o.description}<small>{o.description}</small>{/if}</button
-                  >
-                {/each}
-              </div>
-              {#if open}
-                <input
-                  class="q-other"
-                  type="text"
-                  placeholder={tr("その他(自由に書く)", "Other (write freely)")}
-                  bind:value={st[qi].other}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter" && !e.isComposing) answerQuestion(m);
-                  }}
-                />
-              {/if}
-            </div>
-          {/each}
-          {#if open}
-            <div class="ch-row">
-              <button class="btn sm primary" type="button" onclick={() => answerQuestion(m)}><Icon name="send" />{tr("答えを送る", "Send answers")}</button>
-              <button class="btn sm" type="button" title={tr("決め手は AI が選び、選んだものを報告に書きます", "The AI decides and reports what it chose")}
-                onclick={() => answerQuestion(m, true)}>{tr("おまかせで進める", "Leave it to AI")}</button
-              >
-              <span class="abnote">{tr("選ばなかった質問は AI に任せます", "Unanswered questions are left to the AI")}</span>
-            </div>
-          {:else}
-            <div class="abnote">{m.skipped
-                ? tr("答えずに次の指示へ進みました", "Moved on to the next message without answering")
-                : tr(`答え: ${m.answer}`, `Answer: ${m.answer}`)}</div>
-          {/if}
-        </div>
+        <QuestionCard question={m.question} answer={m.answer} skipped={m.skipped} open={qOpen(m)} st={qState(m)} onAnswer={(all) => answerQuestion(m, all)} />
       {:else if m.role === "assistant"}
         <div class="msg assistant md">{@html renderMarkdown(m.text)}</div>
       {:else if m.role === "user" && m.dropped}
@@ -1603,68 +1483,6 @@
   .abnote.warn {
     color: var(--warn);
   }
-  .msg.question {
-    align-self: stretch;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px 10px;
-    border: 1px solid var(--accent-dim);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--accent) 6%, transparent);
-  }
-  .msg.question.closed {
-    border-color: var(--border);
-    background: transparent;
-  }
-  .q-item {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .q-text {
-    font-size: var(--fs-sm);
-    color: var(--text);
-  }
-  .q-tag {
-    display: inline-block;
-    margin-right: 6px;
-    padding: 0 6px;
-    border-radius: 4px;
-    background: var(--bg-elev, var(--bg-lane));
-    color: var(--text-dim);
-    font-size: 11px;
-  }
-  .q-opts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-  }
-  .btn.sm.q-opt {
-    height: auto;
-    min-height: 24px;
-    padding: 3px 9px;
-    display: inline-flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1px;
-    text-align: left;
-    line-height: 1.35;
-  }
-  .q-opt small {
-    color: var(--text-faint);
-    font-size: 10.5px;
-    white-space: normal;
-  }
-  .btn.q-opt.on {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-  }
-  .q-other {
-    font-size: var(--fs-sm);
-    padding: 3px 8px;
-  }
   .msg.choices {
     align-self: stretch;
     display: flex;
@@ -1754,7 +1572,7 @@
 
   @keyframes blink {
     0%,
-    100% {
+  100% {
       opacity: 0.3;
     }
     50% {
