@@ -5107,149 +5107,154 @@ impl GlauxServer {
     async fn get_project(&self, params: Parameters<GetProjectParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("get_project");
         let p = params.0;
-        let (mut project, version) = self.handle.get_project().await?;
-        let compact = match p.note_format.as_deref() {
-            None | Some("full") => false,
-            Some("compact") => true,
-            Some(other) => return Err(format!("note_format は full / compact(got: {other})")),
-        };
-        let range = match (p.start_tick, p.end_tick) {
-            (None, None) => None,
-            (s, e) => {
-                let (s, e) = (s.unwrap_or(0), e.unwrap_or(u64::MAX));
-                if e <= s {
-                    return Err("end_tick は start_tick より大きくすること".to_owned());
-                }
-                Some((s, e))
-            }
-        };
-        // JSON にする前に、型のまま絞り込む(全体を JSON にしてから削ると、大きな曲で毎回重い)
-        if let Some(ids) = &p.track_ids {
-            project
-                .tracks
-                .retain(|t| ids.iter().any(|x| x == t.id.as_str()));
-        }
-        // 範囲で削ったクリップ(ID → 元のノート数)
-        let mut trimmed: std::collections::HashMap<String, usize> = Default::default();
-        if p.clip_ids.is_some() || range.is_some() {
-            for t in &mut project.tracks {
-                t.clips.retain(|c| {
-                    let by_id = p
-                        .clip_ids
-                        .as_ref()
-                        .is_none_or(|ids| ids.iter().any(|x| x == c.id.as_str()));
-                    let by_range =
-                        range.is_none_or(|(s, e)| c.start.0 < e && c.start.0 + c.length.0 > s);
-                    by_id && by_range
-                });
-                if let Some((s, e)) = range {
-                    for c in &mut t.clips {
-                        let start = c.start.0;
-                        let looped = c.loop_len().is_some();
-                        let id = c.id.to_string();
-                        if let Some(notes) = c.notes_mut() {
-                            // ループクリップは繰り返しの位置が分かりにくいので削らない
-                            if looped {
-                                continue;
-                            }
-                            let before = notes.len();
-                            notes.retain(|n| {
-                                let a = start + n.pos.0;
-                                a < e && a + n.dur.0 > s
-                            });
-                            if notes.len() != before {
-                                trimmed.insert(id, before);
-                            }
-                        }
+        let (shared, version) = self.handle.get_project_shared().await?;
+        // 曲の複製と JSON にする処理は大きな曲では重いので、ほかの要求を止めないよう包む
+        cpu_bound(move || {
+            let mut project = (*shared).clone();
+            let compact = match p.note_format.as_deref() {
+                None | Some("full") => false,
+                Some("compact") => true,
+                Some(other) => return Err(format!("note_format は full / compact(got: {other})")),
+            };
+            let range = match (p.start_tick, p.end_tick) {
+                (None, None) => None,
+                (s, e) => {
+                    let (s, e) = (s.unwrap_or(0), e.unwrap_or(u64::MAX));
+                    if e <= s {
+                        return Err("end_tick は start_tick より大きくすること".to_owned());
                     }
+                    Some((s, e))
                 }
+            };
+            // JSON にする前に、型のまま絞り込む(全体を JSON にしてから削ると、大きな曲で毎回重い)
+            if let Some(ids) = &p.track_ids {
+                project
+                    .tracks
+                    .retain(|t| ids.iter().any(|x| x == t.id.as_str()));
             }
-            if p.clip_ids.is_some() {
-                project.tracks.retain(|t| !t.clips.is_empty());
-            }
-        }
-        let mut v = serde_json::to_value(&project).map_err(|e| e.to_string())?;
-        // 拍子: まとまり(省略時は既定値)・1 小節の tick・16 分の数を添える(AI が拍を数え間違えないように)
-        if let Some(arr) = v.get_mut("time_sig_map").and_then(Value::as_array_mut) {
-            for (e, sig) in arr.iter_mut().zip(&project.time_sig_map) {
-                let len = glaux_core::PPQ * 4 * sig.num as u64 / sig.den.max(1) as u64;
-                let m = glaux_core::meter::BarMeter::from_sig(sig, sig.tick.0, len);
-                e["meter"] = json!(m.label());
-                e["bar_ticks"] = json!(m.len);
-                e["steps_16th"] = json!(m.steps());
-            }
-        }
-        let include_notes = p.include_notes.unwrap_or(true);
-        let include_automation = p.include_automation.unwrap_or(true);
-        // CLAP プラグインの状態は巨大な不透明データなので省略して見せる
-        let elide = |d: &mut Value| {
-            if d.get("type").and_then(Value::as_str) != Some("clap") {
-                return;
-            }
-            if let Some(state) = d.get_mut("state") {
-                let len = state.as_str().map_or(0, str::len);
-                *state = json!(format!("{ELIDED_CLAP_STATE}{len} 文字)"));
-            }
-        };
-        if let Some(fx) = v
-            .get_mut("master")
-            .and_then(|m| m.get_mut("effects"))
-            .and_then(Value::as_array_mut)
-        {
-            fx.iter_mut().for_each(elide);
-        }
-        if let Some(tracks) = v.get_mut("tracks").and_then(Value::as_array_mut) {
-            for track in tracks {
-                if let Some(d) = track.get_mut("device") {
-                    elide(d);
-                }
-                if let Some(fx) = track.get_mut("effects").and_then(Value::as_array_mut) {
-                    fx.iter_mut().for_each(elide);
-                }
-                if !include_automation {
-                    if let Some(a) = track.get_mut("automation") {
-                        *a = json!([]);
-                    }
-                }
-                if let Some(clips) = track.get_mut("clips").and_then(Value::as_array_mut) {
-                    for clip in clips.iter_mut() {
-                        let id = clip.get("id").and_then(Value::as_str).unwrap_or_default();
-                        if let Some(total) = trimmed.get(id) {
-                            clip["notes_in_range"] = json!(true);
-                            clip["note_count"] = json!(total);
-                        }
-                        if compact && include_notes {
-                            if let Some(notes) = clip.get_mut("notes").and_then(Value::as_array_mut)
-                            {
-                                for n in notes.iter_mut() {
-                                    *n = compact_note(n);
+            // 範囲で削ったクリップ(ID → 元のノート数)
+            let mut trimmed: std::collections::HashMap<String, usize> = Default::default();
+            if p.clip_ids.is_some() || range.is_some() {
+                for t in &mut project.tracks {
+                    t.clips.retain(|c| {
+                        let by_id = p
+                            .clip_ids
+                            .as_ref()
+                            .is_none_or(|ids| ids.iter().any(|x| x == c.id.as_str()));
+                        let by_range =
+                            range.is_none_or(|(s, e)| c.start.0 < e && c.start.0 + c.length.0 > s);
+                        by_id && by_range
+                    });
+                    if let Some((s, e)) = range {
+                        for c in &mut t.clips {
+                            let start = c.start.0;
+                            let looped = c.loop_len().is_some();
+                            let id = c.id.to_string();
+                            if let Some(notes) = c.notes_mut() {
+                                // ループクリップは繰り返しの位置が分かりにくいので削らない
+                                if looped {
+                                    continue;
+                                }
+                                let before = notes.len();
+                                notes.retain(|n| {
+                                    let a = start + n.pos.0;
+                                    a < e && a + n.dur.0 > s
+                                });
+                                if notes.len() != before {
+                                    trimmed.insert(id, before);
                                 }
                             }
                         }
                     }
                 }
-                if !include_notes {
+                if p.clip_ids.is_some() {
+                    project.tracks.retain(|t| !t.clips.is_empty());
+                }
+            }
+            let mut v = serde_json::to_value(&project).map_err(|e| e.to_string())?;
+            // 拍子: まとまり(省略時は既定値)・1 小節の tick・16 分の数を添える(AI が拍を数え間違えないように)
+            if let Some(arr) = v.get_mut("time_sig_map").and_then(Value::as_array_mut) {
+                for (e, sig) in arr.iter_mut().zip(&project.time_sig_map) {
+                    let len = glaux_core::PPQ * 4 * sig.num as u64 / sig.den.max(1) as u64;
+                    let m = glaux_core::meter::BarMeter::from_sig(sig, sig.tick.0, len);
+                    e["meter"] = json!(m.label());
+                    e["bar_ticks"] = json!(m.len);
+                    e["steps_16th"] = json!(m.steps());
+                }
+            }
+            let include_notes = p.include_notes.unwrap_or(true);
+            let include_automation = p.include_automation.unwrap_or(true);
+            // CLAP プラグインの状態は巨大な不透明データなので省略して見せる
+            let elide = |d: &mut Value| {
+                if d.get("type").and_then(Value::as_str) != Some("clap") {
+                    return;
+                }
+                if let Some(state) = d.get_mut("state") {
+                    let len = state.as_str().map_or(0, str::len);
+                    *state = json!(format!("{ELIDED_CLAP_STATE}{len} 文字)"));
+                }
+            };
+            if let Some(fx) = v
+                .get_mut("master")
+                .and_then(|m| m.get_mut("effects"))
+                .and_then(Value::as_array_mut)
+            {
+                fx.iter_mut().for_each(elide);
+            }
+            if let Some(tracks) = v.get_mut("tracks").and_then(Value::as_array_mut) {
+                for track in tracks {
+                    if let Some(d) = track.get_mut("device") {
+                        elide(d);
+                    }
+                    if let Some(fx) = track.get_mut("effects").and_then(Value::as_array_mut) {
+                        fx.iter_mut().for_each(elide);
+                    }
+                    if !include_automation {
+                        if let Some(a) = track.get_mut("automation") {
+                            *a = json!([]);
+                        }
+                    }
                     if let Some(clips) = track.get_mut("clips").and_then(Value::as_array_mut) {
-                        for clip in clips {
-                            if clip.get("kind").and_then(Value::as_str) == Some("midi") {
-                                let count = clip
-                                    .get("notes")
-                                    .and_then(Value::as_array)
-                                    .map_or(0, Vec::len);
-                                clip["note_count"] = json!(count);
-                                clip["notes"] = json!([]);
+                        for clip in clips.iter_mut() {
+                            let id = clip.get("id").and_then(Value::as_str).unwrap_or_default();
+                            if let Some(total) = trimmed.get(id) {
+                                clip["notes_in_range"] = json!(true);
+                                clip["note_count"] = json!(total);
+                            }
+                            if compact && include_notes {
+                                if let Some(notes) =
+                                    clip.get_mut("notes").and_then(Value::as_array_mut)
+                                {
+                                    for n in notes.iter_mut() {
+                                        *n = compact_note(n);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !include_notes {
+                        if let Some(clips) = track.get_mut("clips").and_then(Value::as_array_mut) {
+                            for clip in clips {
+                                if clip.get("kind").and_then(Value::as_str) == Some("midi") {
+                                    let count = clip
+                                        .get("notes")
+                                        .and_then(Value::as_array)
+                                        .map_or(0, Vec::len);
+                                    clip["note_count"] = json!(count);
+                                    clip["notes"] = json!([]);
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        let mut out = json!({ "project_version": version, "project": v });
-        if compact {
-            out["note_fields"] = json!(["id", "pos", "dur", "pitch", "vel", "extra?"]);
-        }
-        Ok(JsonText(out))
+            let mut out = json!({ "project_version": version, "project": v });
+            if compact {
+                out["note_fields"] = json!(["id", "pos", "dur", "pitch", "vel", "extra?"]);
+            }
+            Ok(JsonText(out))
+        })
     }
 
     #[tool(
@@ -6062,7 +6067,9 @@ impl GlauxServer {
                 glaux_core::Tick(e.unwrap_or(u64::MAX)),
             )),
         };
-        let analysis = glaux_core::harmony::analyze(&project, track_ids.as_deref(), range);
+        // 曲全体の和音の推定(小節 × ノートの数で重くなる)
+        let analysis =
+            cpu_bound(|| glaux_core::harmony::analyze(&project, track_ids.as_deref(), range));
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
         Ok(JsonText(v))
@@ -6096,7 +6103,8 @@ impl GlauxServer {
                 glaux_core::Tick(e.unwrap_or(u64::MAX)),
             )),
         };
-        let analysis = glaux_core::rhythm::analyze(&project, track_ids.as_deref(), range);
+        let analysis =
+            cpu_bound(|| glaux_core::rhythm::analyze(&project, track_ids.as_deref(), range));
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
         Ok(JsonText(v))
@@ -6626,13 +6634,16 @@ impl GlauxServer {
         let dir = glaux_engine::sf2::default_dir();
         match params.0.file {
             None => {
+                // SFZ のフォルダを 4 段まで見て回る(ほかの要求を止めないよう包む)
                 let sfz_dir = glaux_engine::sfz::default_dir();
-                Ok(JsonText(json!({
-                    "dir": dir.to_string_lossy(),
-                    "files": glaux_engine::sf2::list_files(&dir),
-                    "sfz_dir": sfz_dir.to_string_lossy(),
-                    "sfz": glaux_engine::sfz::list_files(&sfz_dir),
-                    "packs": crate::sfz_packs::status(&sfz_dir),
+                Ok(JsonText(cpu_bound(|| {
+                    json!({
+                        "dir": dir.to_string_lossy(),
+                        "files": glaux_engine::sf2::list_files(&dir),
+                        "sfz_dir": sfz_dir.to_string_lossy(),
+                        "sfz": glaux_engine::sfz::list_files(&sfz_dir),
+                        "packs": crate::sfz_packs::status(&sfz_dir),
+                    })
                 })))
             }
             Some(file) => {
@@ -7075,36 +7086,41 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
         let dir = std::path::Path::new(&dir);
-        let (cycles, recipe, from) = match (&p.track_id, &p.library) {
-            (Some(t), None) => {
-                let id = glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?;
-                let track = project
-                    .track(&id)
-                    .ok_or_else(|| format!("track not found: {id}"))?;
-                let c = crate::wavetables::current_cycles(track, &project, dir)?;
-                let recipe = track
-                    .device
-                    .as_ref()
-                    .and_then(|d| match d.params.get("table") {
-                        Some(glaux_core::ParamValue::Enum(v)) => glaux_core::AssetId::parse(v).ok(),
-                        _ => None,
-                    })
-                    .and_then(|a| crate::wavetables::asset_recipe(&project, dir, &a));
-                (c, recipe, json!({ "track_id": t }))
+        // テーブルの WAV の読み込みと要約(ほかの要求を止めないよう包む)
+        cpu_bound(|| {
+            let (cycles, recipe, from) = match (&p.track_id, &p.library) {
+                (Some(t), None) => {
+                    let id = glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?;
+                    let track = project
+                        .track(&id)
+                        .ok_or_else(|| format!("track not found: {id}"))?;
+                    let c = crate::wavetables::current_cycles(track, &project, dir)?;
+                    let recipe = track
+                        .device
+                        .as_ref()
+                        .and_then(|d| match d.params.get("table") {
+                            Some(glaux_core::ParamValue::Enum(v)) => {
+                                glaux_core::AssetId::parse(v).ok()
+                            }
+                            _ => None,
+                        })
+                        .and_then(|a| crate::wavetables::asset_recipe(&project, dir, &a));
+                    (c, recipe, json!({ "track_id": t }))
+                }
+                (None, Some(name)) => {
+                    let (c, meta) = crate::wavetables::load_library(name)?;
+                    (c, meta.and_then(|m| m.recipe), json!({ "library": name }))
+                }
+                _ => return Err("track_id か library のどちらか 1 つを指定すること".to_owned()),
+            };
+            let mut v = crate::wavetables::summary_json(&cycles, rows);
+            v["from"] = from;
+            if let Some(r) = recipe {
+                v["recipe"] = r;
             }
-            (None, Some(name)) => {
-                let (c, meta) = crate::wavetables::load_library(name)?;
-                (c, meta.and_then(|m| m.recipe), json!({ "library": name }))
-            }
-            _ => return Err("track_id か library のどちらか 1 つを指定すること".to_owned()),
-        };
-        let mut v = crate::wavetables::summary_json(&cycles, rows);
-        v["from"] = from;
-        if let Some(r) = recipe {
-            v["recipe"] = r;
-        }
-        v["shapes"] = crate::wavetables::shapes_json();
-        Ok(JsonText(v))
+            v["shapes"] = crate::wavetables::shapes_json();
+            Ok(JsonText(v))
+        })
     }
 
     #[tool(
@@ -7137,12 +7153,13 @@ impl GlauxServer {
         match p.action.as_str() {
             "list" => Ok(JsonText(json!({
                 "dir": crate::wavetables::library_dir().to_string_lossy(),
-                "tables": crate::wavetables::list_library(),
+                "tables": cpu_bound(crate::wavetables::list_library),
             }))),
             "save" => {
                 let name = need(&p.name, "name")?;
                 let track = track_of(&need(&p.track_id, "track_id")?)?;
-                let cycles = crate::wavetables::current_cycles(&track, &project, dir)?;
+                let cycles =
+                    cpu_bound(|| crate::wavetables::current_cycles(&track, &project, dir))?;
                 let recipe = track
                     .device
                     .as_ref()
@@ -7151,20 +7168,26 @@ impl GlauxServer {
                         _ => None,
                     })
                     .and_then(|a| crate::wavetables::asset_recipe(&project, dir, &a));
-                let e = crate::wavetables::save_library(
-                    &name,
-                    &cycles,
-                    p.note.as_deref().unwrap_or(""),
-                    recipe,
-                )?;
+                let e = cpu_bound(|| {
+                    crate::wavetables::save_library(
+                        &name,
+                        &cycles,
+                        p.note.as_deref().unwrap_or(""),
+                        recipe,
+                    )
+                })?;
                 Ok(JsonText(json!({ "saved": e.name, "frames": e.frames })))
             }
             "load" => {
                 let name = need(&p.name, "name")?;
                 let track = track_of(&need(&p.track_id, "track_id")?)?;
-                let (cycles, meta) = crate::wavetables::load_library(&name)?;
-                let recipe = meta.and_then(|m| m.recipe);
-                let imported = crate::wavetables::write_asset(dir, &cycles, recipe.as_ref())?;
+                // 棚の WAV を読んで曲に写す(ほかの要求を止めないよう包む)
+                let (cycles, imported) = cpu_bound(|| {
+                    let (cycles, meta) = crate::wavetables::load_library(&name)?;
+                    let recipe = meta.and_then(|m| m.recipe);
+                    let imported = crate::wavetables::write_asset(dir, &cycles, recipe.as_ref())?;
+                    Ok::<_, String>((cycles, imported))
+                })?;
                 let cmds = crate::wavetables::set_table_commands(&project, &track, &imported)?;
                 let label = glaux_core::tr!(
                     "{} のウェーブテーブルを棚の「{name}」に",
@@ -7187,14 +7210,20 @@ impl GlauxServer {
             }
             "export" => {
                 let path = need(&p.path, "path")?;
-                let cycles = match (&p.track_id, &p.name) {
-                    (Some(t), None) => {
-                        crate::wavetables::current_cycles(&track_of(t)?, &project, dir)?
-                    }
-                    (None, Some(n)) => crate::wavetables::load_library(n)?.0,
-                    _ => return Err("export には track_id か name のどちらか 1 つを".to_owned()),
-                };
-                crate::wavetables::export_wav(&cycles, std::path::Path::new(&path))?;
+                // テーブルを読んで WAV に書く(ほかの要求を止めないよう包む)
+                let cycles = cpu_bound(|| {
+                    let cycles = match (&p.track_id, &p.name) {
+                        (Some(t), None) => {
+                            crate::wavetables::current_cycles(&track_of(t)?, &project, dir)?
+                        }
+                        (None, Some(n)) => crate::wavetables::load_library(n)?.0,
+                        _ => {
+                            return Err("export には track_id か name のどちらか 1 つを".to_owned())
+                        }
+                    };
+                    crate::wavetables::export_wav(&cycles, std::path::Path::new(&path))?;
+                    Ok(cycles)
+                })?;
                 Ok(JsonText(json!({
                     "path": path,
                     "frames": glaux_dsp::wtedit::frame_count(&cycles),
@@ -7912,8 +7941,10 @@ impl GlauxServer {
                 p
             }
         });
-        let v =
-            crate::musicxml::export_file(&project, std::path::Path::new(&dir), path.as_deref())?;
+        // 全部のノートから組み立ててファイルに書く(ほかの要求を止めないよう包む)
+        let v = cpu_bound(|| {
+            crate::musicxml::export_file(&project, std::path::Path::new(&dir), path.as_deref())
+        })?;
         Ok(JsonText(v))
     }
 
@@ -7926,11 +7957,14 @@ impl GlauxServer {
         let _activity = self.handle.begin_activity("export_midi");
         let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
-        let v = crate::midi::export_file(
-            &project,
-            std::path::Path::new(&dir),
-            params.0.path.as_deref(),
-        )?;
+        // 全部のノートから組み立ててファイルに書く(ほかの要求を止めないよう包む)
+        let v = cpu_bound(|| {
+            crate::midi::export_file(
+                &project,
+                std::path::Path::new(&dir),
+                params.0.path.as_deref(),
+            )
+        })?;
         Ok(JsonText(v))
     }
 
@@ -8369,7 +8403,7 @@ impl GlauxServer {
         let (project, _) = self.handle.get_project_shared().await?;
         let (scale, key_name) = match &p.key {
             Some(k) => (parse_key(k)?, k.clone()),
-            None => match glaux_core::harmony::analyze(&project, None, None).key {
+            None => match cpu_bound(|| glaux_core::harmony::analyze(&project, None, None)).key {
                 Some(k) => (
                     glaux_core::transform::Scale::new(glaux_core::harmony::scale_pitch_classes(
                         k.tonic, k.mode,
@@ -9425,7 +9459,8 @@ impl GlauxServer {
         use glaux_core::melody;
         let _activity = self.handle.begin_activity("critique_melody");
         let (project, _) = self.handle.get_project_shared().await?;
-        let m = melody_inputs(&project, &params.0)?;
+        // 旋律と曲全体の和音の推定(重い計算は、ほかの要求を止めないよう包む)
+        let m = cpu_bound(|| melody_inputs(&project, &params.0))?;
         let chord_at = |t: u64| m.chord_at(t);
         let ctx = melody::Context {
             project: &project,
@@ -9655,20 +9690,23 @@ impl GlauxServer {
                 }
             }
         }
-        let prep = mel_prep(&project, &mp, &tid)?;
         let seed = p.seed.or(mp.seed).unwrap_or(1);
-        let draft = draft_melody(
-            &project,
-            &mp,
-            &prep,
-            &pid,
-            &stored.name,
-            &tid,
-            p.sections.as_deref(),
-            seed,
-            p.regenerate_skeleton.unwrap_or(false),
-            p.velocity,
-        )?;
+        // 和音の推定・旋律の組み立て・測り直し(重い計算は、ほかの要求を止めないよう包む)
+        let draft = cpu_bound(|| {
+            let prep = mel_prep(&project, &mp, &tid)?;
+            draft_melody(
+                &project,
+                &mp,
+                &prep,
+                &pid,
+                &stored.name,
+                &tid,
+                p.sections.as_deref(),
+                seed,
+                p.regenerate_skeleton.unwrap_or(false),
+                p.velocity,
+            )
+        })?;
         // 骨格を計画に書き戻す(計画の履歴に残る)
         let mut plan_ref = stored.reference();
         let mut plan_entry = None;
@@ -9809,11 +9847,12 @@ impl GlauxServer {
                 .ok_or("トラックが見つかりません")?
                 .name
                 .clone();
-            let prep = mel_prep(&project, &mp, &tid)?;
+            let prep = cpu_bound(|| mel_prep(&project, &mp, &tid))?;
             let (mel, raw) = plan_clip_notes(&project, &tid, &pid).ok_or(
                 "この計画から作ったクリップがありません。先に realize_melody で作ってください",
             )?;
-            let before = measure_melody(&project, &mp, &prep, &mel, &raw, &track_name);
+            let before =
+                cpu_bound(|| measure_melody(&project, &mp, &prep, &mel, &raw, &track_name));
             // 手と区間を決める(auto は指摘を上の粒度から読む)
             let (op, section, op_args) = if p.op == "auto" {
                 match pick_revision(&before, &mp, &tried_ops) {
@@ -10390,7 +10429,8 @@ impl GlauxServer {
         use glaux_core::melody;
         let _activity = self.handle.begin_activity("analyze_melody");
         let (project, _) = self.handle.get_project_shared().await?;
-        let m = melody_inputs(&project, &params.0)?;
+        // 旋律と曲全体の和音の推定(重い計算は、ほかの要求を止めないよう包む)
+        let m = cpu_bound(|| melody_inputs(&project, &params.0))?;
         let chord_at = |t: u64| m.chord_at(t);
         let ctx = melody::Context {
             project: &project,
@@ -10400,7 +10440,7 @@ impl GlauxServer {
             sections: m.sections.clone(),
             target: m.target.clone(),
         };
-        let s = glaux_core::melstruct::analyze(&m.notes, &ctx);
+        let s = cpu_bound(|| glaux_core::melstruct::analyze(&m.notes, &ctx));
         let mut out = serde_json::to_value(&s).map_err(|e| e.to_string())?;
         // 表情の一様さ(強さ・切り方・ビブラートなどが全部同じだと機械的に聞こえる)
         let u = glaux_core::melexpr::uniformity(&m.raw, 0);
@@ -10495,16 +10535,19 @@ impl GlauxServer {
             .ok_or("小節を数えられません")?
             .1;
         // 和音(クリップの頭からの tick → 和音)
-        let (spans, chords_list) = melody_chords(
-            &project,
-            &tid,
-            p.chords.as_deref(),
-            p.key.as_deref(),
-            first_bar,
-            total_bars,
-            clip_start,
-            clip_len,
-        )?;
+        // 和音(指定が無ければ曲全体から推定する。重いので、ほかの要求を止めないよう包む)
+        let (spans, chords_list) = cpu_bound(|| {
+            melody_chords(
+                &project,
+                &tid,
+                p.chords.as_deref(),
+                p.key.as_deref(),
+                first_bar,
+                total_bars,
+                clip_start,
+                clip_len,
+            )
+        })?;
         let look = motif::chord_lookup(&spans, &chords_list);
         // キー: 指定 → 進行の最初の和音と動機から推定
         let key = match &p.key {
@@ -10687,16 +10730,19 @@ impl GlauxServer {
         let (clip_start, clip_len) =
             glaux_core::arrange::bar_range(&project, first_bar, total_bars)
                 .ok_or("小節を数えられません")?;
-        let (spans, chords_list) = melody_chords(
-            &project,
-            &tid,
-            p.chords.as_deref(),
-            p.key.as_deref(),
-            first_bar,
-            total_bars,
-            clip_start,
-            clip_len,
-        )?;
+        // 和音(指定が無ければ曲全体から推定する。重いので、ほかの要求を止めないよう包む)
+        let (spans, chords_list) = cpu_bound(|| {
+            melody_chords(
+                &project,
+                &tid,
+                p.chords.as_deref(),
+                p.key.as_deref(),
+                first_bar,
+                total_bars,
+                clip_start,
+                clip_len,
+            )
+        })?;
         let look = motif::chord_lookup(&spans, &chords_list);
         let key = match &p.key {
             Some(k) => {
@@ -13741,7 +13787,8 @@ impl GlauxServer {
         }
         // CLAP 音源のつまみ(名前から推定する)
         let clap: Vec<crate::character::ClapParam> = match work.device.as_ref().map(|d| &d.source) {
-            Some(glaux_core::PluginSource::Clap { plugin_id, .. }) => {
+            // 初めてのプラグインは読み込んでつまみを調べる(同じスレッドのまま、ほかの要求を逃がす)
+            Some(glaux_core::PluginSource::Clap { plugin_id, .. }) => cpu_bound(|| {
                 glaux_engine::plugins::param_infos(plugin_id)
                     .map(|infos| {
                         infos
@@ -13758,7 +13805,7 @@ impl GlauxServer {
                             .collect()
                     })
                     .unwrap_or_default()
-            }
+            }),
             _ => vec![],
         };
         let (mut macros, made, missing) = crate::character::build_macros(&work, &clap, &keys)?;
@@ -13984,7 +14031,8 @@ impl GlauxServer {
             let t = p.target.as_deref().ok_or("target を指定してください")?;
             let path = resolve(t)?;
             // CLAP のつまみ: 範囲と今の値をプラグインから読む(Glaux はつまみの範囲を持たないので、変調に付ける)
-            let clap_info = clap_param_range(track, &path);
+            // (初めてのプラグインは読み込む。同じスレッドのまま、ほかの要求を逃がす)
+            let clap_info = cpu_bound(|| clap_param_range(track, &path));
             // つまみの範囲(depth の既定と確認)
             let spec = match &path {
                 _ if clap_info.is_some() => None,
@@ -14528,7 +14576,8 @@ impl GlauxServer {
     async fn critique_arrangement(&self) -> ToolResult {
         let _activity = self.handle.begin_activity("critique_arrangement");
         let (project, version) = self.handle.get_project_shared().await?;
-        let c = glaux_core::critique::critique(&project);
+        // 曲全体の点検(重いので、ほかの要求を止めないよう包む)
+        let c = cpu_bound(|| glaux_core::critique::critique(&project));
         let warns = c.findings.iter().filter(|f| f.severity == "warn").count();
         let mut v = serde_json::to_value(&c).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
@@ -14606,12 +14655,13 @@ impl GlauxServer {
             "track/volume_db" => Some((-60.0, 12.0)),
             "track/pan" => Some((-1.0, 1.0)),
             path => {
-                let list = match track {
-                    Some(t) => track_params_json(t)?,
-                    None => {
-                        json!({ "effects": effects_json(&project.master.effects, project.master.fx_links.as_deref()) })
-                    }
-                };
+                // CLAP のつまみは、初めてのプラグインなら読み込んで調べる(同じスレッドのまま、ほかの要求を逃がす)
+                let list = cpu_bound(|| match track {
+                    Some(t) => track_params_json(t),
+                    None => Ok(
+                        json!({ "effects": effects_json(&project.master.effects, project.master.fx_links.as_deref()) }),
+                    ),
+                })?;
                 find_param_range(&list, path)
             }
         };

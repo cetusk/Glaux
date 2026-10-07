@@ -588,36 +588,14 @@ pub async fn propose(
         .unwrap_or_else(|| json!({}));
     // 案の音: 固定の音を守り、今の曲に当てられることを確かめる
     let (project, _) = handle.get_project_shared().await?;
-    let mut locks = Vec::new();
-    let patch: Vec<glaux_core::Command> = if commands.is_empty() {
-        vec![]
-    } else {
-        let (guarded, hits) =
-            glaux_core::made::guard_locks(&project, glaux_core::Command::batch("案", commands));
-        locks = hits;
-        let guarded =
-            guarded.ok_or("案の編集は全部が固定の音への変更でした(固定は人が外すまで変えない)")?;
-        let mut sim = (*project).clone();
-        sim.apply(&guarded)
-            .map_err(|e| format!("案の編集を今の曲に当てられません: {e}"))?;
-        // 案の音が今の曲と同じなら、聴き比べても違いが無い(同じ編集をすでに曲に当てた、など)。案として受け付けない
-        let diff = glaux_core::designcheck::song_diff(&project, &sim);
-        if diff.silent_only {
-            return Err("案で変わる所が、今は鳴っていないトラック(ミュート中・ほかのトラックのソロ中)だけなので、\
-                聴き比べても違いがありません。人にミュート・ソロを外すか尋ねるか、ミュートを外す編集\
-                (set_track_prop の mute: false)も案の commands に入れてください。ミュートしたトラックを足して案の代わりにしない"
-                .to_owned());
-        }
-        if diff.ranges.is_empty() && !diff.whole {
-            return Err("案の音が今の曲と同じです(聴き比べても違いがありません)。同じ編集をすでに曲に当てていないか確かめ、\
-                曲は変えずに、案で変える編集を commands に入れてください"
-                .to_owned());
-        }
-        match guarded {
-            glaux_core::Command::Batch { commands, .. } => commands,
-            c => vec![c],
-        }
+    // 当ててみて今の曲と比べる(曲の複製と、鳴る音の比べ。大きな曲では重いので別のスレッドで)
+    let checked = {
+        let project = project.clone();
+        tokio::task::spawn_blocking(move || check_proposal(&project, commands))
+            .await
+            .map_err(|e| e.to_string())?
     };
+    let (patch, locks) = checked?;
     let plan = Plan {
         id: glaux_core::PlanId::new(),
         name: name.to_owned(),
@@ -646,6 +624,42 @@ pub async fn propose(
     Ok(v)
 }
 
+/// 案の編集を確かめる: 固定の音への変更を外し、今の曲に当てられ、鳴る音が変わることを確かめる。
+/// 戻り値は (案の編集, 外した固定の音)
+fn check_proposal(
+    project: &glaux_core::Project,
+    commands: Vec<glaux_core::Command>,
+) -> Result<(Vec<glaux_core::Command>, Vec<glaux_core::made::LockHit>), String> {
+    if commands.is_empty() {
+        return Ok((vec![], vec![]));
+    }
+    let (guarded, locks) =
+        glaux_core::made::guard_locks(project, glaux_core::Command::batch("案", commands));
+    let guarded =
+        guarded.ok_or("案の編集は全部が固定の音への変更でした(固定は人が外すまで変えない)")?;
+    let mut sim = project.clone();
+    sim.apply(&guarded)
+        .map_err(|e| format!("案の編集を今の曲に当てられません: {e}"))?;
+    // 案の音が今の曲と同じなら、聴き比べても違いが無い(同じ編集をすでに曲に当てた、など)。案として受け付けない
+    let diff = glaux_core::designcheck::song_diff(project, &sim);
+    if diff.silent_only {
+        return Err("案で変わる所が、今は鳴っていないトラック(ミュート中・ほかのトラックのソロ中)だけなので、\
+            聴き比べても違いがありません。人にミュート・ソロを外すか尋ねるか、ミュートを外す編集\
+            (set_track_prop の mute: false)も案の commands に入れてください。ミュートしたトラックを足して案の代わりにしない"
+            .to_owned());
+    }
+    if diff.ranges.is_empty() && !diff.whole {
+        return Err("案の音が今の曲と同じです(聴き比べても違いがありません)。同じ編集をすでに曲に当てていないか確かめ、\
+            曲は変えずに、案で変える編集を commands に入れてください"
+            .to_owned());
+    }
+    let patch = match guarded {
+        glaux_core::Command::Batch { commands, .. } => commands,
+        c => vec![c],
+    };
+    Ok((patch, locks))
+}
+
 /// 案を聴き比べるための (今の曲, 案を当てた曲)
 pub async fn proposal_projects(
     handle: &SessionHandle,
@@ -665,8 +679,7 @@ pub async fn proposal_projects_many(
 ) -> Result<(glaux_core::Project, Vec<glaux_core::Project>), String> {
     let plans = handle.get_plans().await?;
     let (project, _) = handle.get_project_shared().await?;
-    let now = (*project).clone();
-    let mut alts = Vec::with_capacity(plan_ids.len());
+    let mut picked = Vec::with_capacity(plan_ids.len());
     for pid in plan_ids {
         let id = parse_plan_id(pid)?;
         let p = plans
@@ -677,12 +690,23 @@ pub async fn proposal_projects_many(
             .ok_or_else(|| {
                 glaux_core::tr!("案が見つかりません: {pid}", "Proposal not found: {pid}")
             })?;
-        alts.push(
-            apply_proposal(&now, p)
-                .map_err(|e| glaux_core::tr!("案「{}」: {e}", "Proposal \"{}\": {e}", p.name))?,
-        );
+        picked.push(p.clone());
     }
-    Ok((now, alts))
+    // 曲の複製と案を当てる処理(案ごとに曲全体を写す)は、別のスレッドで
+    tokio::task::spawn_blocking(move || {
+        let now = (*project).clone();
+        let mut alts = Vec::with_capacity(picked.len());
+        for p in &picked {
+            alts.push(
+                apply_proposal(&now, p).map_err(|e| {
+                    glaux_core::tr!("案「{}」: {e}", "Proposal \"{}\": {e}", p.name)
+                })?,
+            );
+        }
+        Ok((now, alts))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 計画の履歴の、いちばん新しい側の項目の ID(新しい順に `n` 件)と、やり直せる項目の ID(次にやり直す順に `n` 件)。
@@ -742,7 +766,10 @@ pub async fn adopt_proposal(
     // 案を出した後に、案が触る所が直されていたら当てない(手直しを上書きしない)。当てられるかもここで確かめる
     {
         let (project, _) = handle.get_project_shared().await?;
-        apply_proposal(&project, &p)?;
+        let p = p.clone();
+        tokio::task::spawn_blocking(move || apply_proposal(&project, &p).map(|_| ()))
+            .await
+            .map_err(|e| e.to_string())??;
     }
     let label = glaux_core::tr!("案「{}」を採用", "Adopt proposal \"{}\"", p.name);
     let mut song_entry = None;

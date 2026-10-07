@@ -254,10 +254,18 @@ fn list_recent_projects(state: State<'_, AppState>) -> Value {
     json!({ "recent": list, "default_dir": projects::default_projects_dir() })
 }
 
+/// 同期のコマンドは画面のスレッドで動くので、ファイルを読む重い処理は別のスレッドで行う
+async fn off_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// フォルダの中の Glaux の曲を探す(フォルダ自体が曲ならそれ 1 つ)。
+/// (曲の project.json を最大 50 個読む。別のスレッドで)
 #[tauri::command]
-fn find_projects(dir: String) -> Value {
-    json!({ "projects": projects::find_projects(&dir) })
+async fn find_projects(dir: String) -> Result<Value, String> {
+    off_thread(move || json!({ "projects": projects::find_projects(&dir) })).await
 }
 
 /// 既定の作業フォルダ(新規プロジェクトの作成先)を変更する。
@@ -266,6 +274,18 @@ fn set_projects_dir(path: String) -> Result<Value, String> {
     glaux_mcp::store::check_project_parent(std::path::Path::new(&path))?;
     projects::set_projects_dir(&path)?;
     Ok(json!({ "default_dir": path }))
+}
+
+/// 音声ファイルの取り込み(読み込み・変換・ハッシュ・コピー)を、画面の応答を止めないよう別のスレッドで行う
+async fn import_audio_off_thread(
+    dir: String,
+    path: String,
+) -> Result<glaux_mcp::assets::ImportedSample, String> {
+    tokio::task::spawn_blocking(move || {
+        glaux_mcp::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// WAV をプロジェクトに取り込み、トラックの音源を sampler にする(音作りビュー用)。
@@ -285,7 +305,7 @@ async fn import_sample(
     })?;
     let dir = state.project_dir();
     let imported =
-        glaux_mcp::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))?;
+        import_audio_off_thread(dir.clone(), path.clone()).await?;
 
     let mut cmds = Vec::new();
     if !project.assets.contains_key(&imported.id) {
@@ -338,7 +358,7 @@ async fn import_ir(
     let (project, _) = state.handle.get_project_shared().await?;
     let dir = state.project_dir();
     let imported =
-        glaux_mcp::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))?;
+        import_audio_off_thread(dir.clone(), path.clone()).await?;
     let mut cmds = Vec::new();
     if !project.assets.contains_key(&imported.id) {
         cmds.push(Command::AddAsset {
@@ -384,7 +404,7 @@ async fn import_audio_clip(
     let (project, _) = state.handle.get_project_shared().await?;
     let dir = state.project_dir();
     let imported =
-        glaux_mcp::assets::import_audio(std::path::Path::new(&dir), std::path::Path::new(&path))?;
+        import_audio_off_thread(dir.clone(), path.clone()).await?;
     let name = std::path::Path::new(&path)
         .file_stem()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1308,9 +1328,18 @@ async fn record_stop(
         .to_owned());
     }
     let dir = state.project_dir();
-    let imported = glaux_mcp::assets::import_wav(std::path::Path::new(&dir), &result.path)?;
-    // 一時ファイルはハッシュ名でコピー済みなので消す
-    let _ = std::fs::remove_file(&result.path);
+    // 取り込み(ハッシュとコピー。1 分で約 23MB)は画面の応答を止めないよう別のスレッドで
+    let imported = {
+        let (dir, tmp) = (dir.clone(), result.path.clone());
+        tokio::task::spawn_blocking(move || {
+            let r = glaux_mcp::assets::import_wav(std::path::Path::new(&dir), &tmp);
+            // 一時ファイルはハッシュ名でコピー済みなので消す
+            let _ = std::fs::remove_file(&tmp);
+            r
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
 
     let (project, _) = state.handle.get_project_shared().await?;
     let mut cmds = Vec::new();
@@ -1361,17 +1390,23 @@ async fn record_stop(
     let mut gain_db = 0.0f32;
     if auto_gain.unwrap_or(true) {
         let wav = std::path::Path::new(&dir).join(&imported.asset.path);
-        if let Ok(data) = glaux_engine::load_wav(&wav) {
+        // 録った音を全部読んでピークを測る(長い録音では重いので別のスレッドで)
+        let peak = tokio::task::spawn_blocking(move || {
+            let data = glaux_engine::load_wav(&wav).ok()?;
             // ステレオは左右それぞれのピーク
             let (l, r) = data.left_right();
             let from = (offset as usize).min(l.len());
-            let peak = l[from..]
-                .iter()
-                .chain(&r[from..])
-                .fold(0.0f32, |m, v| m.max(v.abs()));
-            if peak > 1e-4 {
-                gain_db = (-6.0 - 20.0 * peak.log10()).clamp(0.0, 30.0);
-            }
+            Some(
+                l[from..]
+                    .iter()
+                    .chain(&r[from..])
+                    .fold(0.0f32, |m, v| m.max(v.abs())),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if let Some(peak) = peak.filter(|p| *p > 1e-4) {
+            gain_db = (-6.0 - 20.0 * peak.log10()).clamp(0.0, 30.0);
         }
         for c in &mut cmds {
             if let Command::AddClip { clip, .. } = c {
@@ -1579,13 +1614,18 @@ async fn calibrate_stop(state: State<'_, AppState>) -> Result<Value, String> {
 async fn get_track_params(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
     let (project, version) = state.handle.get_project_shared().await?;
-    let track = project.track(&tid).ok_or_else(|| {
-        glaux_core::tr!(
+    if project.track(&tid).is_none() {
+        return Err(glaux_core::tr!(
             "トラックが見つかりません: {track_id}",
             "Track not found: {track_id}"
-        )
-    })?;
-    let mut v = glaux_mcp::server::track_params_json(track)?;
+        ));
+    }
+    // CLAP のつまみは初めてのとき、プラグインを読み込んで一覧を作るので別のスレッドで
+    let mut v = off_thread(move || {
+        let track = project.track(&tid).expect("確かめ済み");
+        glaux_mcp::server::track_params_json(track)
+    })
+    .await??;
     v["project_version"] = json!(version);
     v["track_id"] = json!(track_id);
     Ok(v)
@@ -1604,29 +1644,37 @@ fn get_effect_catalog() -> Value {
 #[tauri::command]
 async fn get_master_params(state: State<'_, AppState>) -> Result<Value, String> {
     let (project, version) = state.handle.get_project_shared().await?;
-    Ok(json!({
-        "track_id": "__master__",
-        "device": { "name": "master", "is_default_fallback": false },
-        "params": [],
-        "effects": glaux_mcp::server::effects_json(&project.master.effects, project.master.fx_links.as_deref()),
-        "fx_links": project.master.fx_links,
-        "project_version": version,
-    }))
+    // CLAP のエフェクトのつまみは初めてのとき、プラグインを読み込んで一覧を作るので別のスレッドで
+    off_thread(move || {
+        json!({
+            "track_id": "__master__",
+            "device": { "name": "master", "is_default_fallback": false },
+            "params": [],
+            "effects": glaux_mcp::server::effects_json(&project.master.effects, project.master.fx_links.as_deref()),
+            "fx_links": project.master.fx_links,
+            "project_version": version,
+        })
+    })
+    .await
 }
 
 // ---- SoundFont ------------------------------------------------------------
 
+/// SoundFont・SFZ の一覧(SFZ のフォルダを 4 段まで見て回るので、別のスレッドで)
 #[tauri::command]
-fn list_soundfonts() -> Value {
-    let dir = glaux_engine::sf2::default_dir();
-    let sfz_dir = glaux_engine::sfz::default_dir();
-    json!({
-        "dir": dir.to_string_lossy(),
-        "files": glaux_engine::sf2::list_files(&dir),
-        "sfz_dir": sfz_dir.to_string_lossy(),
-        "sfz": glaux_engine::sfz::list_files(&sfz_dir),
-        "packs": glaux_mcp::sfz_packs::status(&sfz_dir),
+async fn list_soundfonts() -> Result<Value, String> {
+    off_thread(|| {
+        let dir = glaux_engine::sf2::default_dir();
+        let sfz_dir = glaux_engine::sfz::default_dir();
+        json!({
+            "dir": dir.to_string_lossy(),
+            "files": glaux_engine::sf2::list_files(&dir),
+            "sfz_dir": sfz_dir.to_string_lossy(),
+            "sfz": glaux_engine::sfz::list_files(&sfz_dir),
+            "packs": glaux_mcp::sfz_packs::status(&sfz_dir),
+        })
     })
+    .await
 }
 
 /// 無料の SFZ 音源を取得して SFZ ライブラリに入れる(利用者の操作で)。
@@ -1684,9 +1732,11 @@ async fn add_soundfont(path: String) -> Result<Value, String> {
 
 // ---- 音色プリセット(glaux-mcp の presets モジュールを共用) ---------------
 
+/// 音色プリセットの一覧(プリセットのファイルを全部読むので、別のスレッドで)
 #[tauri::command]
-fn list_presets() -> Value {
-    json!({ "presets": glaux_mcp::presets::list(&glaux_mcp::presets::default_dir()) })
+async fn list_presets() -> Result<Value, String> {
+    off_thread(|| json!({ "presets": glaux_mcp::presets::list(&glaux_mcp::presets::default_dir()) }))
+        .await
 }
 
 /// トラックの現在の音(音源 + エフェクトチェーン)をプリセット保存する。
@@ -2178,26 +2228,30 @@ async fn import_midi(
 #[tauri::command]
 async fn export_midi(state: State<'_, AppState>, path: Option<String>) -> Result<Value, String> {
     let (project, _) = state.handle.get_project_shared().await?;
-    glaux_mcp::midi::export_file(
-        &project,
-        std::path::Path::new(&state.project_dir()),
-        path.as_deref(),
-    )
+    let dir = state.project_dir();
+    off_thread(move || {
+        glaux_mcp::midi::export_file(&project, std::path::Path::new(&dir), path.as_deref())
+    })
+    .await?
 }
 
 /// キーと小節ごとのコード(ノートからの推定)と、キーのスケールの音(ピッチクラス)。画面の表示用
 #[tauri::command]
 async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
     let (project, _) = state.handle.get_project_shared().await?;
-    let a = glaux_core::harmony::analyze(&project, None, None);
-    let scale = a
-        .key
-        .as_ref()
-        .map(|k| glaux_core::harmony::scale_pitch_classes(k.tonic, k.mode))
-        .unwrap_or_default();
-    let mut v = serde_json::to_value(&a).map_err(|e| e.to_string())?;
-    v["scale"] = json!(scale);
-    Ok(v)
+    // 曲全体の和音の推定(編集のたびに画面から呼ばれる。大きな曲では重いので別のスレッドで)
+    off_thread(move || {
+        let a = glaux_core::harmony::analyze(&project, None, None);
+        let scale = a
+            .key
+            .as_ref()
+            .map(|k| glaux_core::harmony::scale_pitch_classes(k.tonic, k.mode))
+            .unwrap_or_default();
+        let mut v = serde_json::to_value(&a).map_err(|e| e.to_string())?;
+        v["scale"] = json!(scale);
+        Ok(v)
+    })
+    .await?
 }
 
 /// 設計画面の中身: 曲の計画と実際の音(区間の盛り上がり・パート × 区間・ずれ・クリップの状態)、計画の一覧と計画の履歴
@@ -3001,9 +3055,11 @@ async fn send_chat(
     Ok(())
 }
 
+/// (Windows ではプロセスツリーを止める taskkill の終わりを待つので、別のスレッドで)
 #[tauri::command]
-fn cancel_chat(state: State<'_, AppState>) {
-    state.chat.cancel();
+async fn cancel_chat(state: State<'_, AppState>) -> Result<(), String> {
+    let chat = state.chat.clone();
+    off_thread(move || chat.cancel()).await
 }
 
 /// 会話をリセットする(次の送信が新しいセッションになる)。
@@ -3021,15 +3077,21 @@ struct ChatLog {
 }
 
 #[tauri::command]
-fn load_chat_log(state: State<'_, AppState>) -> ChatLog {
-    let (dir, log) = state.chat.load_log();
-    ChatLog { dir, log }
+async fn load_chat_log(state: State<'_, AppState>) -> Result<ChatLog, String> {
+    let chat = state.chat.clone();
+    off_thread(move || {
+        let (dir, log) = chat.load_log();
+        ChatLog { dir, log }
+    })
+    .await
 }
 
 /// 画面の会話ログを保存する。読んだときとプロジェクトが変わっていたら保存しない(false)。
+/// (会話が長いと大きくなるので、別のスレッドで書く)
 #[tauri::command]
-fn save_chat_log(state: State<'_, AppState>, dir: String, log: String) -> bool {
-    state.chat.save_log(&dir, &log)
+async fn save_chat_log(state: State<'_, AppState>, dir: String, log: String) -> Result<bool, String> {
+    let chat = state.chat.clone();
+    off_thread(move || chat.save_log(&dir, &log)).await
 }
 
 // ---- 起動 -----------------------------------------------------------------
