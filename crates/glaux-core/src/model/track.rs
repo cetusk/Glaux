@@ -54,9 +54,30 @@ pub enum PluginSource {
     /// 上書き(音源の `<control>` の set_cc の代わり。マイクの混ぜ方・スネアの snap など)
     Sfz {
         instrument: String,
-        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        #[serde(
+            default,
+            skip_serializing_if = "std::collections::BTreeMap::is_empty",
+            deserialize_with = "de_cc"
+        )]
         cc: std::collections::BTreeMap<u8, u8>,
     },
+}
+
+/// SFZ の調整つまみの読み込み。JSON のキーは文字列("20")になるが、タグ付きの enum の中では
+/// 数へ直してもらえないので、ここで直す(0〜127 でないキーは読めない)
+fn de_cc<'de, D>(d: D) -> Result<std::collections::BTreeMap<u8, u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let m: std::collections::BTreeMap<String, u8> = Deserialize::deserialize(d)?;
+    m.into_iter()
+        .map(|(k, v)| match k.trim().parse::<u8>() {
+            Ok(n) if n < 128 => Ok((n, v.min(127))),
+            _ => Err(serde::de::Error::custom(format!(
+                "cc のキーは 0〜127 の CC 番号(got: {k})"
+            ))),
+        })
+        .collect()
 }
 
 impl PluginSource {
@@ -857,5 +878,35 @@ mod layer_macro_tests {
         odd.key_lo = 80;
         odd.key_hi = 70;
         assert!(check_layers(&[odd]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sfz_cc_tests {
+    use super::*;
+
+    /// SFZ の調整つまみは JSON のキーが文字列になる。書いた物をそのまま読めること
+    #[test]
+    fn sfz_cc_round_trips_through_json() {
+        let d = Device {
+            source: PluginSource::Sfz {
+                instrument: "Kit/kit.sfz".into(),
+                cc: [(20u8, 90u8), (81, 100)].into_iter().collect(),
+            },
+            params: Default::default(),
+        };
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains(r#""cc":{"20":90,"81":100}"#), "{json}");
+        let back: Device = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, d);
+        // 読めないキーは誤りにする
+        assert!(
+            serde_json::from_str::<Device>(r#"{"type":"sfz","instrument":"a","cc":{"x":1}}"#)
+                .is_err()
+        );
+        assert!(serde_json::from_str::<Device>(
+            r#"{"type":"sfz","instrument":"a","cc":{"200":1}}"#
+        )
+        .is_err());
     }
 }
