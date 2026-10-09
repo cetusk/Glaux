@@ -63,8 +63,45 @@ pub fn resolve_source(src: &Value, frames: usize, ctx: &Ctx) -> Result<Cycles, S
             let id = AssetId::parse(id).map_err(|e| e.to_string())?;
             asset_cycles(&id, ctx.project, ctx.project_dir)
         }
+        // 内蔵のテーブル(analog・growl など)を枚数ぶん並べる(位置の間は内蔵と同じに補う)
+        "builtin" => {
+            let name = src
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or("builtin の source には name を")?;
+            let i = glaux_dsp::TABLE_NAMES
+                .iter()
+                .position(|n| *n == name)
+                .ok_or_else(|| format!("内蔵のテーブルにありません: {name}"))?;
+            let frames = frames.clamp(2, wtedit::MAX_FRAMES);
+            let mut out = Vec::with_capacity(frames * CYCLE);
+            for k in 0..frames {
+                out.extend(glaux_dsp::builtin_cycle(i, k as f32 / (frames - 1) as f32));
+            }
+            Ok(out)
+        }
+        // 曲の中の音声(素材)から 1 周期ずつ切り出す。from / to は使う範囲(素材の長さの割合)
+        "audio_asset" => {
+            let id = src
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or("audio_asset の source には id(sha256:…)を")?;
+            let id = AssetId::parse(id).map_err(|e| e.to_string())?;
+            let a = ctx
+                .project
+                .assets
+                .get(&id)
+                .ok_or_else(|| format!("素材がありません: {id}"))?;
+            let d = glaux_engine::load_wav_mono(&ctx.project_dir.join(&a.path))?;
+            let n = d.frames.len();
+            let from = src.get("from").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 1.0);
+            let to = src.get("to").and_then(Value::as_f64).unwrap_or(1.0).clamp(0.0, 1.0);
+            let (a0, b0) = if from <= to { (from, to) } else { (to, from) };
+            let (i0, i1) = ((a0 * n as f64) as usize, ((b0 * n as f64) as usize).max((a0 * n as f64) as usize + 1).min(n));
+            glaux_dsp::cycles_from_audio(&d.frames[i0..i1], d.sample_rate, frames)
+        }
         other => Err(format!(
-            "source の kind は shape / harmonics / audio / library / current / asset(got: {other})"
+            "source の kind は shape / harmonics / audio / library / current / asset / builtin / audio_asset(got: {other})"
         )),
     }
 }
@@ -72,6 +109,10 @@ pub fn resolve_source(src: &Value, frames: usize, ctx: &Ctx) -> Result<Cycles, S
 /// 加工の手順を当てる(mix / concat はほかのテーブルを読む)
 pub fn apply_steps(cycles: &mut Cycles, steps: &[Value], ctx: &Ctx) -> Result<(), String> {
     for (i, step) in steps.iter().enumerate() {
+        // 切った加工(音色エディタの入り切り)は飛ばす
+        if step.get("on").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
         let op = step.get("op").and_then(Value::as_str).unwrap_or("");
         let err = |e: String| format!("edits[{i}]({op}): {e}");
         match op {
@@ -102,15 +143,55 @@ pub fn apply_steps(cycles: &mut Cycles, steps: &[Value], ctx: &Ctx) -> Result<()
     Ok(())
 }
 
-/// 作り方の手順(元・枚数・加工)からテーブルを作る
-pub fn build(recipe: &Value, ctx: &Ctx) -> Result<Cycles, String> {
+/// 手で編集した波形(手順の keys)。位相は回転数(0〜1)
+fn recipe_keys(recipe: &Value) -> Result<Vec<wtedit::HarmonicKey>, String> {
+    match recipe.get("keys") {
+        Some(Value::Array(a)) if !a.is_empty() => a
+            .iter()
+            .map(|k| {
+                serde_json::from_value::<wtedit::HarmonicKey>(k.clone())
+                    .map_err(|e| format!("keys が読めません: {e}"))
+            })
+            .collect(),
+        _ => Ok(vec![]),
+    }
+}
+
+/// 加工の前の表: 元(source)に、手で編集した波形(keys)を重ねる。
+/// 倍音から作る(source が harmonics で keys を持たない)ときは、keys がそのまま倍音の設計図になる
+/// (編集した波形の間を混ぜてつなぐ。無ければサイン波から始める)。ほかの元は、なじませる幅(blend)で前後を寄せる
+pub fn build_pre(recipe: &Value, ctx: &Ctx) -> Result<Cycles, String> {
     let frames = recipe
         .get("frames")
         .and_then(Value::as_u64)
         .unwrap_or(64)
         .clamp(2, wtedit::MAX_FRAMES as u64) as usize;
     let src = recipe.get("source").ok_or("source を")?;
+    let keys = recipe_keys(recipe)?;
+    let harmonics = src.get("kind").and_then(Value::as_str) == Some("harmonics");
+    if harmonics && src.get("keys").is_none() {
+        let keys = if keys.is_empty() {
+            vec![wtedit::HarmonicKey {
+                pos: 0.0,
+                amps: vec![1.0],
+                phases: None,
+            }]
+        } else {
+            keys
+        };
+        return wtedit::generate(&wtedit::TableSource::Harmonics { keys }, frames);
+    }
     let mut c = resolve_source(src, frames, ctx)?;
+    if !keys.is_empty() {
+        let blend = recipe.get("blend").and_then(Value::as_f64).unwrap_or(0.15) as f32;
+        wtedit::overlay_keys(&mut c, &keys, blend.clamp(0.0, 0.5));
+    }
+    Ok(c)
+}
+
+/// 作り方の手順(元・手で編集した波形・枚数・加工)からテーブルを作る
+pub fn build(recipe: &Value, ctx: &Ctx) -> Result<Cycles, String> {
+    let mut c = build_pre(recipe, ctx)?;
     if let Some(steps) = recipe.get("edits").and_then(Value::as_array) {
         apply_steps(&mut c, steps, ctx)?;
     }
@@ -177,7 +258,12 @@ pub fn write_asset(
         std::process::id(),
         cycles.len()
     ));
-    std::fs::write(&tmp, wtedit::to_wav_bytes(cycles)).map_err(|e| e.to_string())?;
+    let rc = recipe.map(|r| serde_json::to_vec(r).unwrap_or_default());
+    std::fs::write(
+        &tmp,
+        wtedit::to_wav_bytes_with_recipe(cycles, rc.as_deref()),
+    )
+    .map_err(|e| e.to_string())?;
     let imported = crate::assets::import_wav(dir, &tmp);
     let _ = std::fs::remove_file(&tmp);
     let imported = imported?;
@@ -186,6 +272,44 @@ pub fn write_asset(
         let _ = std::fs::write(p, serde_json::to_vec_pretty(r).unwrap_or_default());
     }
     Ok(imported)
+}
+
+/// 試聴用の仮のテーブル(音色エディタでドラッグしている間)を cache/ に書き、素材として登録する形を返す。
+/// 履歴には残さない(preview_edit で当てるだけ)。古い仮のテーブルは新しい 4 つを残して消す
+pub fn write_preview(dir: &Path, cycles: &[f32]) -> Result<(AssetId, glaux_core::Asset), String> {
+    use sha2::Digest;
+    let bytes = wtedit::to_wav_bytes(cycles);
+    let hex = format!("{:x}", sha2::Sha256::digest(&bytes));
+    let id = AssetId::from_sha256_hex(&hex).map_err(|e| e.to_string())?;
+    let rel = format!("cache/wt-preview-{hex}.wav");
+    let cache = dir.join("cache");
+    std::fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
+    let dest = dir.join(&rel);
+    if !dest.is_file() {
+        std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+    }
+    if let Ok(rd) = std::fs::read_dir(&cache) {
+        let mut olds: Vec<(std::time::SystemTime, PathBuf)> = rd
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("wt-preview-"))
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect();
+        olds.sort_by_key(|o| std::cmp::Reverse(o.0));
+        for (_, p) in olds.into_iter().skip(4) {
+            if p != dest {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+    Ok((
+        id,
+        glaux_core::Asset {
+            path: rel,
+            sample_rate: 48_000,
+            channels: 1,
+            frames: cycles.len() as u64,
+        },
+    ))
 }
 
 fn recipe_path(dir: &Path, asset_path: &str) -> PathBuf {
@@ -237,6 +361,60 @@ pub fn set_table_commands(
         device: Some(device),
     });
     Ok(cmds)
+}
+
+/// 音色エディタの絵の材料: 重ねた絵(加工の後の `stack` 枚を `stack_points` 点に間引く)と、
+/// 選んだ 1 枚の加工の前(`pos_src` の位置)と後(`pos_out`)の波形(`points` 点)と倍音(`harm` 本の振幅と位相〈ラジアン〉)。
+/// どの波形も、いちばん大きい所を 0.9 にそろえて返す(形を見るため)
+#[allow(clippy::too_many_arguments)]
+pub fn view(
+    recipe: &Value,
+    ctx: &Ctx,
+    pos_out: f32,
+    pos_src: f32,
+    stack: usize,
+    stack_points: usize,
+    points: usize,
+    harm: usize,
+) -> Result<Value, String> {
+    let pre = build_pre(recipe, ctx)?;
+    let mut post = pre.clone();
+    if let Some(steps) = recipe.get("edits").and_then(Value::as_array) {
+        apply_steps(&mut post, steps, ctx)?;
+    }
+    let fp = wtedit::frame_count(&pre).max(1);
+    let fo = wtedit::frame_count(&post).max(1);
+    let frame = |c: &[f32], f: usize, pos: f32| -> Vec<f32> {
+        let i = ((pos.clamp(0.0, 1.0) * (f - 1) as f32).round() as usize).min(f - 1);
+        let cyc = &c[i * CYCLE..(i + 1) * CYCLE];
+        let peak = cyc.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let k = if peak > 1e-6 { 0.9 / peak } else { 1.0 };
+        cyc.iter().map(|v| v * k).collect()
+    };
+    let decimate =
+        |cyc: &[f32], n: usize| -> Vec<f32> { (0..n).map(|j| cyc[j * CYCLE / n.max(1)]).collect() };
+    let one = |cyc: Vec<f32>| {
+        let (amps, phases) = wtedit::harmonics_of(&cyc, harm);
+        json!({ "wave": decimate(&cyc, points), "amps": amps, "phases": phases })
+    };
+    let show = stack.clamp(1, fo);
+    let stack_waves: Vec<Vec<f32>> = (0..show)
+        .map(|j| {
+            let t = if show > 1 {
+                j as f32 / (show - 1) as f32
+            } else {
+                0.0
+            };
+            decimate(&frame(&post, fo, t), stack_points)
+        })
+        .collect();
+    Ok(json!({
+        "frames": fo,
+        "pre_frames": fp,
+        "stack": stack_waves,
+        "pre": one(frame(&pre, fp, pos_src)),
+        "post": one(frame(&post, fo, pos_out)),
+    }))
 }
 
 /// 要約を JSON に
@@ -499,5 +677,103 @@ mod tests {
         delete_library("細いパルス").unwrap();
         assert!(list_library().is_empty());
         assert!(load_library("細いパルス").is_err());
+    }
+}
+
+#[cfg(test)]
+mod editor_recipe_tests {
+    use super::*;
+
+    fn ctx(p: &Project) -> Ctx<'_> {
+        Ctx {
+            project: p,
+            project_dir: Path::new("."),
+            track: None,
+        }
+    }
+
+    /// よくある形の上に手で編集した波形を重ねると、その位置の 1 枚が編集した形になる。切った加工は掛からない
+    #[test]
+    fn keys_overlay_shape_and_off_edits_are_skipped() {
+        let p = Project::new("t");
+        let key = json!({ "pos": 0.5, "amps": [0.0, 1.0] });
+        let r = json!({ "source": { "kind": "shape", "name": "sine_to_saw" }, "frames": 9,
+                        "keys": [key], "blend": 0.2,
+                        "edits": [{ "op": "band", "from": 2, "to": 2, "gain_db": -100.0, "on": false, "who": "you", "id": 1 }] });
+        let c = build(&r, &ctx(&p)).unwrap();
+        let mid = &c[4 * CYCLE..5 * CYCLE];
+        let (a, _) = wtedit::harmonics_of(mid, 3);
+        assert!(a[0] < 1e-3 && a[1] > 0.5, "編集した形(2 倍音だけ): {a:?}");
+        // 加工を入れると 2 倍音が消える
+        let mut r2 = r.clone();
+        r2["edits"][0]["on"] = json!(true);
+        let c2 = build(&r2, &ctx(&p)).unwrap();
+        let (a2, _) = wtedit::harmonics_of(&c2[4 * CYCLE..5 * CYCLE], 3);
+        assert!(a2[1] < 1e-3, "{a2:?}");
+    }
+
+    /// 倍音から作る(keys が設計図)。keys が無ければサイン波。内蔵のテーブルも元にできる
+    #[test]
+    fn harmonics_from_keys_and_builtin_source() {
+        let p = Project::new("t");
+        let r = json!({ "source": { "kind": "harmonics" }, "frames": 4 });
+        let c = build(&r, &ctx(&p)).unwrap();
+        let (a, _) = wtedit::harmonics_of(&c[..CYCLE], 3);
+        assert!(a[0] > 0.5 && a[1] < 1e-3, "{a:?}");
+        let r = json!({ "source": { "kind": "builtin", "name": "analog" }, "frames": 8 });
+        assert_eq!(wtedit::frame_count(&build(&r, &ctx(&p)).unwrap()), 8);
+    }
+
+    /// 絵の材料: 重ねた絵の枚数・点の数、選んだ 1 枚の加工の前と後
+    #[test]
+    fn view_returns_stack_and_selected_frames() {
+        let p = Project::new("t");
+        let r = json!({ "source": { "kind": "shape", "name": "analog" }, "frames": 16,
+                        "edits": [{ "op": "lowpass", "max": 3 }] });
+        let v = view(&r, &ctx(&p), 1.0, 1.0, 40, 64, 128, 16).unwrap();
+        assert_eq!(v["frames"], 16);
+        assert_eq!(v["stack"].as_array().unwrap().len(), 16);
+        assert_eq!(v["stack"][0].as_array().unwrap().len(), 64);
+        assert_eq!(v["pre"]["wave"].as_array().unwrap().len(), 128);
+        let pre: Vec<f32> = serde_json::from_value(v["pre"]["amps"].clone()).unwrap();
+        let post: Vec<f32> = serde_json::from_value(v["post"]["amps"].clone()).unwrap();
+        // 位置 1 の analog(矩形)には 5 倍音がある。ローパス(3 番目まで)の後は無い
+        assert!(pre[4] > 0.05, "{pre:?}");
+        assert!(post[4] < pre[4] * 0.2, "{post:?}");
+    }
+}
+
+#[cfg(test)]
+mod recipe_identity_tests {
+    use super::*;
+
+    /// 同じ波形になる 2 つの手順は、別の素材になり、それぞれの手順が残る(隣の手順のファイルを取り合わない)
+    #[test]
+    fn same_cycles_with_different_recipes_become_different_assets() {
+        let dir = std::env::temp_dir().join(format!("glaux-wt-id-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        let p = Project::new("t");
+        let ctx = Ctx {
+            project: &p,
+            project_dir: &dir,
+            track: None,
+        };
+        let a = json!({ "source": { "kind": "shape", "name": "pwm" }, "frames": 4 });
+        let b = json!({ "source": { "kind": "shape", "name": "pwm" }, "frames": 4,
+                        "edits": [{ "op": "lowpass", "max": 24, "on": false, "who": "you", "id": 1 }] });
+        let ca = build(&a, &ctx).unwrap();
+        let cb = build(&b, &ctx).unwrap();
+        assert_eq!(ca, cb, "切った加工は掛からない(同じ波形)");
+        let ia = write_asset(&dir, &ca, Some(&a)).unwrap();
+        let ib = write_asset(&dir, &cb, Some(&b)).unwrap();
+        assert_ne!(ia.id, ib.id);
+        let mut q = Project::new("t");
+        q.assets.insert(ia.id.clone(), ia.asset.clone());
+        q.assets.insert(ib.id.clone(), ib.asset.clone());
+        assert_eq!(asset_recipe(&q, &dir, &ia.id), Some(a));
+        assert_eq!(asset_recipe(&q, &dir, &ib.id), Some(b));
+        // 手順の塊が入っていても、テーブルとして読める
+        assert_eq!(asset_cycles(&ib.id, &q, &dir).unwrap().len(), ca.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

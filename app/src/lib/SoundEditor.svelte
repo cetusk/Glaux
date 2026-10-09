@@ -81,6 +81,7 @@
   });
   $effect(() => {
     void listen.solo;
+    void listen.moveMod;
     untrack(() => syncPreview());
   });
 
@@ -360,6 +361,9 @@
     </div>
     <div style="display: flex; flex-direction: column; gap: 2px">
       <label class="small dim" style="display: flex; gap: 4px; align-items: center"><input type="checkbox" bind:checked={listen.chord} /> {tr("和音で鳴らす", "Play a chord")}</label>
+      <label class="small dim" style="display: flex; gap: 4px; align-items: center" title={tr("鳴らしている間、LFO などで音色を動かす(切ると止まった音色で鳴らす)", "Let the LFO etc. move the tone while playing (off = play a static tone)")}
+        ><input type="checkbox" bind:checked={listen.moveMod} /> {tr("LFO・エンベロープも動かす", "Move LFO / envelopes too")}</label
+      >
     </div>
     <span class="spacer"></span>
     {#if view.ab === "before"}

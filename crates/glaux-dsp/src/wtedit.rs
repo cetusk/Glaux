@@ -641,6 +641,79 @@ pub fn concat(a: &[f32], b: &[f32]) -> Cycles {
     out
 }
 
+/// 1 周期の倍音: 1 番目(基音)から `max` 本の (振幅, 位相)。位相はラジアンで、x = Σ a·sin(2π·h·x + φ) の φ
+pub fn harmonics_of(cycle: &[f32], max: usize) -> (Vec<f32>, Vec<f32>) {
+    if cycle.len() != CYCLE {
+        return (vec![0.0; max], vec![0.0; max]);
+    }
+    let spec = Fft::new().spectrum(cycle);
+    let n = max.min(MAX_HARMONIC);
+    let mut amps = vec![0.0f32; max];
+    let mut phases = vec![0.0f32; max];
+    for h in 1..=n {
+        let c = spec[h];
+        amps[h - 1] = c.norm();
+        // c = −i·a·e^{iφ} なので φ = arg(c) + π/2
+        phases[h - 1] = c.arg() + std::f32::consts::FRAC_PI_2;
+    }
+    (amps, phases)
+}
+
+/// 手で編集した波形を、作り方(定番の変化・録った音など)の並びに重ねる。
+/// 編集した位置にいちばん近い 1 枚は編集した形そのもの、前後 `blend`(位置の割合 0〜0.5)の中は少しずつ編集した形へ寄せ
+/// (寄せ方は raised cosine)、外は作り方のまま。倍音の振幅を混ぜ、位相は重みが 0.5 以上の編集した波形のもの
+/// (編集した波形が位相を持たなければ元のまま)
+pub fn overlay_keys(cycles: &mut Cycles, keys: &[HarmonicKey], blend: f32) {
+    let f = frame_count(cycles);
+    if keys.is_empty() || f == 0 {
+        return;
+    }
+    let half = 0.5 / (f.max(2) - 1) as f32;
+    let weight = |k: &HarmonicKey, t: f32| {
+        let dist = (t - k.pos).abs();
+        if dist <= half {
+            1.0
+        } else if dist >= blend {
+            0.0
+        } else {
+            0.5 * (1.0 + (std::f32::consts::PI * dist / blend).cos())
+        }
+    };
+    let fft = Fft::new();
+    for i in 0..f {
+        let t = if f > 1 {
+            i as f32 / (f - 1) as f32
+        } else {
+            0.0
+        };
+        let ws: Vec<f32> = keys.iter().map(|k| weight(k, t)).collect();
+        let sum: f32 = ws.iter().sum();
+        if sum <= 0.0 {
+            continue;
+        }
+        let norm = sum.max(1.0);
+        let cyc = &mut cycles[i * CYCLE..(i + 1) * CYCLE];
+        let spec = fft.spectrum(cyc);
+        let (j, wmax) = ws
+            .iter()
+            .enumerate()
+            .fold((0, 0.0f32), |a, (j, w)| if *w > a.1 { (j, *w) } else { a });
+        let mut out = spec.clone();
+        for (h, slot) in out.iter_mut().enumerate().skip(1) {
+            let mut amp = spec[h].norm() * (1.0 - sum / norm);
+            for (k, w) in keys.iter().zip(&ws) {
+                amp += k.amps.get(h - 1).copied().unwrap_or(0.0) * w / norm;
+            }
+            let phase = match (&keys[j].phases, wmax >= 0.5) {
+                (Some(p), true) => p.get(h - 1).copied().unwrap_or(0.0) * std::f32::consts::TAU,
+                _ => spec[h].arg() + std::f32::consts::FRAC_PI_2,
+            };
+            *slot = sin_c(amp) * Complex::from_polar(1.0, phase);
+        }
+        cyc.copy_from_slice(&fft.synth(&out));
+    }
+}
+
 /// 作り方の手順からテーブルを作る
 pub fn build(recipe: &TableRecipe) -> Result<Cycles, String> {
     let mut c = generate(&recipe.source, recipe.frames)?;
@@ -810,6 +883,13 @@ pub fn describe(cycles: &[f32], rows: usize) -> TableSummary {
 /// 配布形式のウェーブテーブルの WAV(32bit 浮動小数・モノラル・1 周期 2048 点の並び)の中身。
 /// 1 周期の長さを示す `clm ` の塊(Serum などが読む)を付ける
 pub fn to_wav_bytes(cycles: &[f32]) -> Vec<u8> {
+    to_wav_bytes_with_recipe(cycles, None)
+}
+
+/// [`to_wav_bytes`] に、作り方の手順(JSON)を `gxrc` の塊として入れる(ほかのシンセは知らない塊を読み飛ばす)。
+/// 素材は中身のハッシュで名前が付くので、波形が同じでも手順が違えば別の素材になる
+/// (同じ波形になる 2 つの手順が、隣に置いた手順のファイルを取り合わないように)
+pub fn to_wav_bytes_with_recipe(cycles: &[f32], recipe: Option<&[u8]>) -> Vec<u8> {
     let mut data = Vec::with_capacity(cycles.len() * 4);
     for v in cycles {
         data.extend_from_slice(&v.to_le_bytes());
@@ -819,8 +899,18 @@ pub fn to_wav_bytes(cycles: &[f32]) -> Vec<u8> {
     if clm_bytes.len() % 2 == 1 {
         clm_bytes.push(0);
     }
+    let mut rc = recipe.map(<[u8]>::to_vec).unwrap_or_default();
+    if rc.len() % 2 == 1 {
+        rc.push(b' ');
+    }
     let fmt_len = 16u32;
-    let riff_len = 4 + (8 + fmt_len) + (8 + clm_bytes.len() as u32) + (8 + data.len() as u32);
+    let rc_len = if rc.is_empty() {
+        0
+    } else {
+        8 + rc.len() as u32
+    };
+    let riff_len =
+        4 + (8 + fmt_len) + (8 + clm_bytes.len() as u32) + rc_len + (8 + data.len() as u32);
     let mut out = Vec::with_capacity(riff_len as usize + 8);
     out.extend_from_slice(b"RIFF");
     out.extend_from_slice(&riff_len.to_le_bytes());
@@ -836,6 +926,11 @@ pub fn to_wav_bytes(cycles: &[f32]) -> Vec<u8> {
     out.extend_from_slice(b"clm ");
     out.extend_from_slice(&(clm_bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&clm_bytes);
+    if !rc.is_empty() {
+        out.extend_from_slice(b"gxrc");
+        out.extend_from_slice(&(rc.len() as u32).to_le_bytes());
+        out.extend_from_slice(&rc);
+    }
     out.extend_from_slice(b"data");
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out.extend_from_slice(&data);
@@ -1060,5 +1155,59 @@ mod tests {
         assert_eq!(r.spec().channels, 1);
         let back: Vec<f32> = r.into_samples::<f32>().map(|v| v.unwrap()).collect();
         assert_eq!(back, c);
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    /// 倍音を測る: 振幅 0.5・位相 π/4 の 3 倍音
+    #[test]
+    fn harmonics_of_reads_amplitude_and_phase() {
+        let x: Vec<f32> = (0..CYCLE)
+            .map(|n| {
+                0.5 * (std::f32::consts::TAU * 3.0 * n as f32 / CYCLE as f32
+                    + std::f32::consts::FRAC_PI_4)
+                    .sin()
+            })
+            .collect();
+        let (a, p) = harmonics_of(&x, 4);
+        assert!((a[2] - 0.5).abs() < 1e-3, "{a:?}");
+        assert!(a[0] < 1e-3 && a[1] < 1e-3);
+        assert!((p[2] - std::f32::consts::FRAC_PI_4).abs() < 1e-3, "{p:?}");
+    }
+
+    /// 重ねる: 編集した位置は編集した形、なじませる幅の外は元のまま、間は寄せる
+    #[test]
+    fn overlay_replaces_the_nearest_frame_and_blends_around_it() {
+        let frames = 11;
+        // 元: どの枚も基音だけ(振幅 1)
+        let src = generate(
+            &TableSource::Harmonics {
+                keys: vec![HarmonicKey {
+                    pos: 0.0,
+                    amps: vec![1.0],
+                    phases: None,
+                }],
+            },
+            frames,
+        )
+        .unwrap();
+        let mut c = src.clone();
+        // 0.5 の所に 2 倍音だけの形を重ねる(なじませる幅 0.25)
+        let key = HarmonicKey {
+            pos: 0.5,
+            amps: vec![0.0, 1.0],
+            phases: None,
+        };
+        overlay_keys(&mut c, &[key], 0.25);
+        let at = |i: usize| harmonics_of(&c[i * CYCLE..(i + 1) * CYCLE], 2).0;
+        let mid = at(5);
+        assert!(mid[0] < 1e-3 && (mid[1] - 1.0).abs() < 1e-3, "{mid:?}");
+        let near = at(4);
+        assert!(near[0] > 0.2 && near[0] < 0.8 && near[1] > 0.2, "{near:?}");
+        let far = at(0);
+        assert!((far[0] - 1.0).abs() < 1e-3 && far[1] < 1e-3, "{far:?}");
     }
 }

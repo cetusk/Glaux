@@ -807,6 +807,45 @@ export function abClear(): Promise<void> {
 }
 
 /** ノートを 1 音だけ試聴する(そのトラックの音源・音量・パンで鳴る)。 */
+// ---- 音色エディタのウェーブテーブル(作り方の手順 → 絵の材料・試聴・確定) ----
+export interface WtFrame {
+  wave: number[];
+  amps: number[];
+  /** ラジアン。x = Σ a·sin(2πhx + φ) */
+  phases: number[];
+}
+export interface WtView {
+  frames: number;
+  pre_frames: number;
+  stack: number[][];
+  pre: WtFrame;
+  post: WtFrame;
+}
+export function wavetableView(trackId: string, recipe: unknown, posOut: number, posSrc: number): Promise<WtView> {
+  return invoke("wavetable_view", { trackId, recipe, posOut, posSrc, stack: 40, stackPoints: 128, points: 512, harm: 256 });
+}
+export function wavetablePreview(trackId: string, recipe: unknown): Promise<unknown[]> {
+  return invoke("wavetable_preview", { trackId, recipe });
+}
+export function wavetableCommit(trackId: string, recipe: unknown, label: string, extra: unknown[]): Promise<{ entry_id: string; asset_id: string }> {
+  return invoke("wavetable_commit", { trackId, recipe, label, extra });
+}
+export function wavetableRecipe(assetId: string): Promise<any> {
+  return invoke("wavetable_recipe", { assetId });
+}
+export function wavetableThumbs(trackId: string, sources: unknown[]): Promise<(number[][] | null)[]> {
+  return invoke("wavetable_thumbs", { trackId, sources, points: 64 });
+}
+export function wavetableLibrary(): Promise<{ name: string; note?: string; frames?: number }[]> {
+  return invoke("wavetable_library");
+}
+export function wavetableLibrarySave(trackId: string, name: string, recipe: unknown): Promise<{ saved: string }> {
+  return invoke("wavetable_library_save", { trackId, name, recipe });
+}
+export function wavetableExport(trackId: string, recipe: unknown, path: string): Promise<{ path: string }> {
+  return invoke("wavetable_export", { trackId, recipe, path });
+}
+
 /** 音色エディタの鍵盤: 押している間だけ鳴らす(離すのは liveNoteOff)。停止中でも鳴る */
 export function liveNoteOn(trackId: string, pitch: number, vel = 100): Promise<void> {
   return invoke("live_note_on", { trackId, pitch, vel });

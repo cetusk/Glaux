@@ -30,13 +30,21 @@ export interface Editor {
   kind: string;
   title: () => string;
   /** 音色の値を、つまみの今の値(と device)から作る。画面だけの設定は入れない */
-  load(l: Loaded): Data;
+  load(l: Loaded): Data | Promise<Data>;
   /** 画面だけの設定の初期値(初めて開いたとき) */
   uiInit?(): Data;
   /** 音色の値 → つまみの値(set_param する物。名前 → 値) */
   params(d: Data): Params;
   /** つまみ以外に当てる Command(device の差し替えなど)。prev → next */
   extraCommands?(trackId: string, prev: Data, next: Data): unknown[];
+  /** つまみ以外の中身の印(ウェーブテーブルの作り方の手順など)。変わったら commit で当てる */
+  signature?(d: Data): string;
+  /** 印が変わったときの確定(つまみの差 cmds も一緒に 1 件の編集にする)。entry_id と、確定した値へ足す物を返す */
+  commit?(cmds: unknown[], label: string, next: Data): Promise<{ entry_id: string; patch?: Data }>;
+  /** 印が変わっている間の試聴に足す Command(仮のテーブルなど) */
+  previewExtra?(next: Data): Promise<unknown[]>;
+  /** 「LFO・エンベロープも動かす」を切ったときに試聴で 0 にするつまみ */
+  staticParams?: Params;
   render(body: HTMLElement): void;
   draw(): void;
   refresh(): void;
@@ -155,7 +163,7 @@ export function rerender() {
 }
 /** 絵を描き直す(値が変わったら試聴にも当てる) */
 export function draw() {
-  if (!state.inst || !cur()) return;
+  if (!state.inst || !EDITORS[state.inst] || !cur()) return;
   ed().draw();
   syncPreview();
 }
@@ -245,10 +253,12 @@ function refreshUndo() {
 /** 離したとき: 確定した値との差を 1 件の編集として当てる(値が変わらない操作は積まない) */
 export function pushHist(label: string) {
   if (state.ab === "before" || ui.dragCancelled) return;
+  const e = ed();
   const next = soundOf(cur());
   const prev = state.committed[state.track];
   const cmds = toCommands(prev, next);
-  if (!cmds.length) return;
+  const custom = !!e.commit && !!e.signature && e.signature(prev) !== e.signature(next);
+  if (!cmds.length && !custom) return;
   state.committed[state.track] = clone(next);
   // 当てるとエンジンは曲の値に戻る(試聴の差は無くなる)
   lastPreview = "[]";
@@ -256,11 +266,19 @@ export function pushHist(label: string) {
     name = state.trackName;
   queue = queue.then(async () => {
     try {
-      const r = await api.applyEdit(cmds, `${name}: ${label}`);
+      const r = custom ? await e.commit!(cmds, `${name}: ${label}`, next) : await api.applyEdit(cmds, `${name}: ${label}`);
+      const patch = (r as { patch?: Data }).patch;
+      if (patch) {
+        Object.assign(state.committed[tid] ?? {}, patch);
+        if (state.data[tid]) Object.assign(state.data[tid], patch);
+      }
       ownIds.add(r.entry_id);
       seenIds.add(r.entry_id);
       const s = (stacks[tid] ??= { done: [], undone: [] });
-      s.done.push({ id: r.entry_id, label });
+      // 履歴の知らせが先に届いて「ほかからの変更」として積まれていたら、言葉だけ差し替える(2 回積まない)
+      const dup = s.done.find((x) => x.id === r.entry_id);
+      if (dup) dup.label = label;
+      else s.done.push({ id: r.entry_id, label });
       s.undone = [];
       refreshUndo();
     } catch {
@@ -338,6 +356,7 @@ export function noteHistory(entries: EntrySummary[]) {
     const clipOrNote = e.targets.some((t) => t.kind === "clip" || t.kind === "note");
     if (!mine || clipOrNote) continue;
     const s = stack();
+    if (s.done.some((x) => x.id === e.id)) continue;
     s.done.push({ id: e.id, label: e.label });
     s.undone = [];
   }
@@ -347,23 +366,49 @@ export function noteHistory(entries: EntrySummary[]) {
 // ---- 試聴(ドラッグ中の値・A の音・このトラックだけ) ----
 let lastPreview = "[]";
 let previewRaf = 0;
+let previewSeq = 0;
 /** 「このトラックだけ」(ほかのトラックを止めて聴く。曲には残さない) */
 export const listen = $state({ solo: false, chord: false, moveMod: true });
 export function syncPreview() {
   if (previewRaf) return;
-  previewRaf = requestAnimationFrame(() => {
+  previewRaf = requestAnimationFrame(async () => {
     previewRaf = 0;
-    if (!state.track || !cur()) return;
+    // 閉じた・楽器を切り替えた後に届いた予約は捨てる
+    if (!state.track || !cur() || !EDITORS[state.inst] || !view.open) return;
+    const seq = ++previewSeq;
+    const e = ed();
     const cmds: unknown[] = [];
     if (state.ab === "before") cmds.push({ op: "set_device", track: state.track, device: state.initialDevice[state.track] });
-    else cmds.push(...toCommands(state.committed[state.track], soundOf(cur())));
+    else {
+      cmds.push(...toCommands(state.committed[state.track], soundOf(cur())));
+      // 作り方の手順が変わっている間は、仮のテーブルなどを当てる(作るのに時間がかかるので、後から来た物だけ使う)
+      if (e.previewExtra && e.signature && e.signature(state.committed[state.track]) !== e.signature(cur())) {
+        const sig0 = e.signature(cur());
+        if (sig0 === lastExtraSig) cmds.push(...lastExtra);
+        else {
+          try {
+            const extra = await e.previewExtra(soundOf(cur()));
+            if (seq !== previewSeq) return;
+            lastExtraSig = sig0;
+            lastExtra = extra;
+            cmds.push(...extra);
+          } catch {
+            // 作れない手順(試聴しない)
+          }
+        }
+      }
+    }
     if (listen.solo) cmds.push({ op: "set_track_prop", id: state.track, prop: "solo", value: true });
+    // 「LFO・エンベロープも動かす」を切ったとき: 音色を動かすつまみを 0 にして鳴らす(曲には残さない)
+    if (!listen.moveMod) for (const [k, v] of Object.entries(e.staticParams ?? {})) cmds.push({ op: "set_param", track: state.track, path: `device/${k}`, value: v });
     const sig = JSON.stringify(cmds);
     if (sig === lastPreview) return;
     lastPreview = sig;
     api.previewEdit(cmds);
   });
 }
+let lastExtraSig = "";
+let lastExtra: unknown[] = [];
 /** 曲が変わった後(エンジンが曲の値に戻った)に、試聴をもう一度当てる */
 function resendPreview() {
   lastPreview = "";
@@ -433,7 +478,7 @@ async function loadTrack(): Promise<Data | null> {
   if (!p || !t) return null;
   const tp = await api.getTrackParams(state.track);
   const params: Params = Object.fromEntries(tp.params.map((x) => [x.name, x.current]));
-  return ed().load({ params, track: t, project: p });
+  return await ed().load({ params, track: t, project: p });
 }
 
 /** 音源の種類から、エディタの鍵(無ければ null) */
@@ -502,7 +547,12 @@ async function reloadFromTrack(force: boolean) {
   const d = await loadTrack().catch(() => null);
   if (!d) return;
   const committed = state.committed[state.track];
-  const same = committed && JSON.stringify(ed().params(d)) === JSON.stringify(ed().params(committed)) && JSON.stringify(ed().extraCommands?.(state.track, committed, d) ?? []) === "[]";
+  const e = ed();
+  const same =
+    committed &&
+    JSON.stringify(e.params(d)) === JSON.stringify(e.params(committed)) &&
+    JSON.stringify(e.extraCommands?.(state.track, committed, d) ?? []) === "[]" &&
+    (!e.signature || e.signature(d) === e.signature(committed));
   if (same && !force) return;
   state.committed[state.track] = clone(soundOf(d));
   if (state.ab === "before") {
@@ -559,7 +609,7 @@ export function revertAll() {
       ownIds.add(r.entry_id);
       seenIds.add(r.entry_id);
       const s = (stacks[tid] ??= { done: [], undone: [] });
-      s.done.push({ id: r.entry_id, label });
+      if (!s.done.some((x) => x.id === r.entry_id)) s.done.push({ id: r.entry_id, label });
       s.undone = [];
       refreshUndo();
     } catch {

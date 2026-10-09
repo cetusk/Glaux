@@ -3064,6 +3064,212 @@ async fn render_note_harmonics(
     .map_err(|e| e.to_string())?
 }
 
+// ---- 音色エディタのウェーブテーブル --------------------------------------
+// 作り方の手順(元・手で編集した波形・なじませる幅・加工)から、絵の材料・試聴の仮のテーブル・確定のテーブルを作る
+
+/// 手順を組み立てる場所(曲・フォルダ・トラック)。手順は重いので別のスレッドで
+async fn wt_run<T: Send + 'static>(
+    state: &AppState,
+    track_id: &str,
+    f: impl FnOnce(&glaux_mcp::wavetables::Ctx, &std::path::Path) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let tid = glaux_core::TrackId::parse(track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project_shared().await?;
+    let dir = state.project_dir();
+    tokio::task::spawn_blocking(move || {
+        let dir = std::path::Path::new(&dir);
+        let ctx = glaux_mcp::wavetables::Ctx {
+            project: &project,
+            project_dir: dir,
+            track: project.track(&tid),
+        };
+        f(&ctx, dir)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 絵の材料: 重ねた絵と、選んだ 1 枚の加工の前・後の波形と倍音
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn wavetable_view(
+    state: State<'_, AppState>,
+    track_id: String,
+    recipe: Value,
+    pos_out: f32,
+    pos_src: f32,
+    stack: Option<usize>,
+    stack_points: Option<usize>,
+    points: Option<usize>,
+    harm: Option<usize>,
+) -> Result<Value, String> {
+    wt_run(&state, &track_id, move |ctx, _| {
+        glaux_mcp::wavetables::view(
+            &recipe,
+            ctx,
+            pos_out,
+            pos_src,
+            stack.unwrap_or(40),
+            stack_points.unwrap_or(128),
+            points.unwrap_or(512),
+            harm.unwrap_or(256),
+        )
+    })
+    .await
+}
+
+/// ドラッグ中の試聴: 手順からテーブルを作って cache/ に書き、試聴に当てる編集(素材の登録 + table)を返す
+#[tauri::command]
+async fn wavetable_preview(
+    state: State<'_, AppState>,
+    track_id: String,
+    recipe: Value,
+) -> Result<Value, String> {
+    let tid = track_id.clone();
+    wt_run(&state, &track_id, move |ctx, dir| {
+        let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
+        let (id, asset) = glaux_mcp::wavetables::write_preview(dir, &cycles)?;
+        let mut cmds = vec![];
+        if !ctx.project.assets.contains_key(&id) {
+            cmds.push(json!({ "op": "add_asset", "id": id, "asset": asset }));
+        }
+        cmds.push(json!({ "op": "set_param", "track": tid, "path": "device/table", "value": id }));
+        Ok(json!(cmds))
+    })
+    .await
+}
+
+/// 確定: 手順からテーブルを作って audio/ に書き(手順は隣の .recipe.json)、table を差し替える(+ ほかのつまみ。1 件の編集)
+#[tauri::command]
+async fn wavetable_commit(
+    state: State<'_, AppState>,
+    track_id: String,
+    recipe: Value,
+    label: String,
+    extra: Option<Vec<Value>>,
+) -> Result<Value, String> {
+    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let r2 = recipe.clone();
+    let (imported, has) = wt_run(&state, &track_id, move |ctx, dir| {
+        let cycles = glaux_mcp::wavetables::build(&r2, ctx)?;
+        let imported = glaux_mcp::wavetables::write_asset(dir, &cycles, Some(&r2))?;
+        let has = ctx.project.assets.contains_key(&imported.id);
+        Ok((imported, has))
+    })
+    .await?;
+    let mut cmds = Vec::new();
+    if !has {
+        cmds.push(Command::AddAsset {
+            id: imported.id.clone(),
+            asset: imported.asset.clone(),
+        });
+    }
+    cmds.push(Command::SetParam {
+        track: tid,
+        path: glaux_core::ParamPath::parse("device/table").map_err(|e| e.to_string())?,
+        value: glaux_core::ParamValue::Enum(imported.id.to_string()),
+    });
+    for (i, v) in extra.unwrap_or_default().into_iter().enumerate() {
+        cmds.push(serde_json::from_value(v).map_err(|e| {
+            glaux_core::tr!(
+                "extra[{i}] を Command として解釈できません: {e}",
+                "Can't parse extra[{i}] as a Command: {e}"
+            )
+        })?);
+    }
+    let (entry, m) = state
+        .handle
+        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "entry_id": entry, "asset_id": imported.id, "project_version": m.project_version }))
+}
+
+/// 素材のテーブルの作り方の手順(残っていれば)
+#[tauri::command]
+async fn wavetable_recipe(state: State<'_, AppState>, asset_id: String) -> Result<Value, String> {
+    let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project_shared().await?;
+    let dir = state.project_dir();
+    Ok(
+        glaux_mcp::wavetables::asset_recipe(&project, std::path::Path::new(&dir), &id)
+            .unwrap_or(Value::Null),
+    )
+}
+
+/// 左の列の小さな絵: 元ごとの位置 0・0.5・1 の 3 周期(`points` 点に間引く)
+#[tauri::command]
+async fn wavetable_thumbs(
+    state: State<'_, AppState>,
+    track_id: String,
+    sources: Vec<Value>,
+    points: Option<usize>,
+) -> Result<Value, String> {
+    let n = points.unwrap_or(64).clamp(8, 512);
+    wt_run(&state, &track_id, move |ctx, _| {
+        let out: Vec<Value> = sources
+            .iter()
+            .map(
+                |src| match glaux_mcp::wavetables::resolve_source(src, 3, ctx) {
+                    Ok(c) => json!((0..3)
+                        .map(|k| {
+                            let f = glaux_dsp::wtedit::frame_count(&c).max(1);
+                            let i = (k * (f - 1) / 2).min(f - 1);
+                            let cyc = &c
+                                [i * glaux_dsp::wtedit::CYCLE..(i + 1) * glaux_dsp::wtedit::CYCLE];
+                            let peak = cyc.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+                            (0..n)
+                                .map(|j| cyc[j * glaux_dsp::wtedit::CYCLE / n] / peak)
+                                .collect::<Vec<f32>>()
+                        })
+                        .collect::<Vec<_>>()),
+                    Err(_) => Value::Null,
+                },
+            )
+            .collect();
+        Ok(json!(out))
+    })
+    .await
+}
+
+/// 保存した波形(全部の曲で使える棚)の一覧
+#[tauri::command]
+async fn wavetable_library() -> Result<Value, String> {
+    off_thread(|| json!(glaux_mcp::wavetables::list_library())).await
+}
+
+/// 棚に保存する(作り方の手順も一緒に)
+#[tauri::command]
+async fn wavetable_library_save(
+    state: State<'_, AppState>,
+    track_id: String,
+    name: String,
+    recipe: Value,
+) -> Result<Value, String> {
+    wt_run(&state, &track_id, move |ctx, _| {
+        let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
+        glaux_mcp::wavetables::save_library(&name, &cycles, "", Some(recipe))?;
+        Ok(json!({ "saved": name }))
+    })
+    .await
+}
+
+/// WAV に書き出す(1 周期 2048 点・Serum などで読める)
+#[tauri::command]
+async fn wavetable_export(
+    state: State<'_, AppState>,
+    track_id: String,
+    recipe: Value,
+    path: String,
+) -> Result<Value, String> {
+    wt_run(&state, &track_id, move |ctx, _| {
+        let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
+        glaux_mcp::wavetables::export_wav(&cycles, std::path::Path::new(&path))?;
+        Ok(json!({ "path": path }))
+    })
+    .await
+}
+
 // ---- チャット(UI → AI 指示) --------------------------------------------
 
 /// 前回のターン以降に人間が行った編集をまとめた、AI 向けのコンテキスト文を作る。
@@ -3676,6 +3882,14 @@ fn main() -> Result<()> {
             set_live_target,
             live_note_on,
             live_note_off,
+            wavetable_view,
+            wavetable_preview,
+            wavetable_commit,
+            wavetable_recipe,
+            wavetable_thumbs,
+            wavetable_library,
+            wavetable_library_save,
+            wavetable_export,
             asset_peaks,
             live_all_off,
             render_note_harmonics,
