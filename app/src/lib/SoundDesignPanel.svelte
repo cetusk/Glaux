@@ -295,14 +295,8 @@
   function toggleProp(prop: "mute" | "solo") {
     const t = track;
     if (!t) return;
-    const on = !t[prop];
-    applyEdit(
-      [{ op: "set_track_prop", id: t.id, prop, value: on }],
-      tr(
-        `${t.name} の${prop === "mute" ? "ミュート" : "ソロ"}を${on ? "オン" : "解除"}`,
-        `${on ? (prop === "mute" ? "Mute" : "Solo") : prop === "mute" ? "Unmute" : "Unsolo"} ${t.name}`,
-      ),
-    );
+    // 聴き方なので履歴に積まない
+    api.setListen([{ op: "set_track_prop", id: t.id, prop, value: !t[prop] }]).catch(() => {});
   }
 
   // ---- 音源 ----

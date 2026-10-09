@@ -336,6 +336,14 @@ impl<D: Document> Session<D> {
         Ok((id, changes))
     }
 
+    /// 履歴に積まずに当てる(redo の並びも捨てない)。曲の聴き方(ソロ・画面のボタンからのミュート)のように、
+    /// 取り消し・やり直しの対象にしない変更に使う。呼び出し側は、ほかの編集の逆コマンドとぶつからない変更だけを渡すこと
+    /// (曲の [`Command`] なら [`Command::is_listen_only`])
+    pub fn apply_unrecorded(&mut self, cmd: &Cmd<D>) -> Result<Vec<Ch<D>>> {
+        let (_, changes) = self.project.apply_command(cmd)?;
+        Ok(changes)
+    }
+
     pub fn can_undo(&self) -> bool {
         self.history.cursor > 0
     }

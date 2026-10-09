@@ -123,6 +123,16 @@ export async function applyEdit(
   }
 }
 
+/** 画面のミュート・ソロ: 聴き方なので履歴に積まずに変える(redo の並びも消えない)。set_track_prop の mute / solo だけ */
+export async function setListen(commands: unknown[]): Promise<{ project_version: number }> {
+  try {
+    return await invoke("set_listen", { commands });
+  } catch (e) {
+    showError(tr("ミュート・ソロを変えられませんでした", "Couldn't change mute / solo"), e);
+    throw e;
+  }
+}
+
 // ---- プロジェクト管理 ----
 
 export function listRecentProjects(): Promise<{

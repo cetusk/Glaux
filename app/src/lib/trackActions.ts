@@ -19,23 +19,11 @@ export function setTrackVolume(t: Track, v: number) {
 }
 
 /// ミュートかソロを切り替える。`ts` は対象(選んだトラック全部)で、押したトラック `t` の新しい状態にそろえる
+/// ミュートかソロを切り替える。`ts` は対象(選んだトラック全部)で、押したトラック `t` の新しい状態にそろえる。
+/// 聴き方なので履歴に積まない(いくつか undo してソロで聴き直してから redo できる)
 export function toggleTrackFlag(prop: "mute" | "solo", t: Track, ts: Track[]) {
   const value = !t[prop];
-  const who = ts.length === 1 ? t.name : null;
-  const label =
-    prop === "mute"
-      ? who
-        ? tr(`${who} を${t.mute ? "ミュート解除" : "ミュート"}`, `${t.mute ? "Unmute" : "Mute"} ${who}`)
-        : tr(`${ts.length} トラックを${value ? "ミュート" : "ミュート解除"}`, `${value ? "Mute" : "Unmute"} ${plural(ts.length, "track")}`)
-      : who
-        ? tr(`${who} のソロを${t.solo ? "解除" : "オン"}`, `${t.solo ? "Unsolo" : "Solo"} ${who}`)
-        : tr(`${ts.length} トラックのソロを${value ? "オン" : "解除"}`, `${value ? "Solo" : "Unsolo"} ${plural(ts.length, "track")}`);
-  api
-    .applyEdit(
-      ts.map((x) => ({ op: "set_track_prop", id: x.id, prop, value })),
-      label,
-    )
-    .catch(() => {});
+  api.setListen(ts.map((x) => ({ op: "set_track_prop", id: x.id, prop, value }))).catch(() => {});
 }
 
 export function renameTrack(track: Track, value: string) {

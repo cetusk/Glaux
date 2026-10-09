@@ -402,6 +402,46 @@ impl Command {
         }
     }
 
+    /// 曲の聴き方(トラックのミュート・ソロ)だけを変えるか(空の Batch は false)。
+    /// 聴き方は履歴に積まずに変えられる([`crate::Session::apply_unrecorded`]): ほかの編集の逆コマンドがミュート・ソロに触れないので、
+    /// 積まなくても取り消し・やり直しが食い違わない
+    pub fn is_listen_only(&self) -> bool {
+        match self {
+            Command::SetTrackProp {
+                prop: TrackProp::Mute(_) | TrackProp::Solo(_),
+                ..
+            } => true,
+            Command::Batch { commands, .. } => {
+                !commands.is_empty() && commands.iter().all(Command::is_listen_only)
+            }
+            _ => false,
+        }
+    }
+
+    /// ソロの変更を取り出す(ソロは聴き方なので、誰が変えても履歴に積まない)。(ソロ, 残り)。
+    /// 一番外の並びと Batch の中を見る(中身が全部ソロの Batch は丸ごとソロの側へ)
+    pub fn take_solo(commands: Vec<Command>) -> (Vec<Command>, Vec<Command>) {
+        let mut solo = Vec::new();
+        let mut rest = Vec::new();
+        for c in commands {
+            match c {
+                Command::SetTrackProp {
+                    prop: TrackProp::Solo(_),
+                    ..
+                } => solo.push(c),
+                Command::Batch { commands, label } => {
+                    let (s, r) = Command::take_solo(commands);
+                    solo.extend(s);
+                    if !r.is_empty() {
+                        rest.push(Command::Batch { commands: r, label });
+                    }
+                }
+                other => rest.push(other),
+            }
+        }
+        (solo, rest)
+    }
+
     /// コマンドが静的に(プロジェクトを見ずに)分かる範囲で触る対象。
     pub fn targets(&self) -> BTreeSet<Target> {
         let mut out = BTreeSet::new();

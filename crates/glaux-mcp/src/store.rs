@@ -1075,8 +1075,35 @@ struct BaseFile {
 
 /// 再生した結果を project.json に合わせる: 履歴が最大 [`RECOVER_STEPS`] 手先にあるなら、その手を undo して
 /// 一致させる(redo できる形で残す)。一致した手数を返す
+/// 履歴の外で変える聴き方(ミュート・ソロ)を `expected`(project.json)に合わせる。
+/// 聴き方は履歴に積まないので、履歴を再生した結果と project.json はそこだけ違ってよい
+fn align_listen(session: &mut Session, expected: &Project) {
+    let mut cmds = Vec::new();
+    for (a, b) in session.project().tracks.iter().zip(&expected.tracks) {
+        if a.id != b.id {
+            continue;
+        }
+        if a.mute != b.mute {
+            cmds.push(glaux_core::Command::SetTrackProp {
+                id: b.id.clone(),
+                prop: glaux_core::TrackProp::Mute(b.mute),
+            });
+        }
+        if a.solo != b.solo {
+            cmds.push(glaux_core::Command::SetTrackProp {
+                id: b.id.clone(),
+                prop: glaux_core::TrackProp::Solo(b.solo),
+            });
+        }
+    }
+    for c in cmds {
+        let _ = session.apply_unrecorded(&c);
+    }
+}
+
 fn settle(mut session: Session, expected: &Project) -> Option<(Session, usize)> {
     for step in 0..=RECOVER_STEPS {
+        align_listen(&mut session, expected);
         if session.project() == expected {
             return Some((session, step));
         }
@@ -1255,6 +1282,45 @@ mod tests {
         assert_eq!(st(&again), state('A'));
         again.undo().unwrap();
         assert_eq!(st(&again), state('B'));
+    }
+
+    /// 履歴に積まずに変えた聴き方(ミュート・ソロ)は project.json に残り、開き直しても履歴を退避しない
+    #[test]
+    fn listen_state_outside_the_history_survives_reopening() {
+        use glaux_core::{Author, Command, Track, TrackId, TrackKind, TrackProp};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("Song.glaux");
+        create_project(&dir, "Song").unwrap();
+        let (store, mut session) = Store::open_or_create(&dir).unwrap();
+        let tid = TrackId::new();
+        session
+            .apply(
+                Command::AddTrack {
+                    track: Track::new(tid.clone(), "Synth", TrackKind::Midi),
+                    index: None,
+                },
+                Author::Human,
+                "t",
+            )
+            .unwrap();
+        store.save_after_change(&session).unwrap();
+        for prop in [TrackProp::Solo(true), TrackProp::Mute(true)] {
+            session
+                .apply_unrecorded(&Command::SetTrackProp {
+                    id: tid.clone(),
+                    prop,
+                })
+                .unwrap();
+            store.save_after_change(&session).unwrap();
+        }
+        assert_eq!(session.history().len(), 1);
+        drop(store);
+        release_lock(&dir);
+        let (_, again) = Store::open_or_create(&dir).unwrap();
+        assert_eq!(again.history().len(), 1, "履歴を退避していない");
+        let t = again.project().track(&tid).unwrap();
+        assert!(t.solo && t.mute);
+        assert!(!dir.join("history.jsonl.orphan").exists());
     }
 
     #[test]

@@ -108,10 +108,8 @@
     edit([{ op: "set_track_prop", id: t.id, prop: "pan", value: v }], tr(`${t.name} のパンを ${v.toFixed(2)} に`, `Set ${t.name} pan to ${v.toFixed(2)}`));
   }
   function toggle(t: Track, prop: "mute" | "solo") {
-    edit([{ op: "set_track_prop", id: t.id, prop, value: !t[prop] }], tr(
-        `${t.name} の${prop === "mute" ? "ミュート" : "ソロ"}を${t[prop] ? "解除" : "オン"}`,
-        `${prop === "mute" ? "Mute" : "Solo"} ${t[prop] ? "off" : "on"}: ${t.name}`,
-      ));
+    // 聴き方なので履歴に積まない
+    api.setListen([{ op: "set_track_prop", id: t.id, prop, value: !t[prop] }]).catch(() => {});
   }
   let dragSend = $state<Record<string, number>>({});
   function setSend(t: Track, bus: Track, v: number) {

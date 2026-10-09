@@ -2248,6 +2248,28 @@ async fn apply_edit(
     Ok(json!({ "entry_id": entry_id, "project_version": m.project_version }))
 }
 
+/// 画面のミュート・ソロのボタン: 聴き方なので履歴に積まずに変える(いくつか undo してソロで聴き直してから redo できる)。
+/// `commands` は set_track_prop の mute / solo だけ
+#[tauri::command]
+async fn set_listen(state: State<'_, AppState>, commands: Vec<Value>) -> Result<Value, String> {
+    let mut parsed = Vec::with_capacity(commands.len());
+    for (i, value) in commands.into_iter().enumerate() {
+        let cmd: Command = serde_json::from_value(value).map_err(|e| {
+            glaux_core::tr!(
+                "commands[{i}] を Command として解釈できません: {e}",
+                "Can't parse commands[{i}] as a Command: {e}"
+            )
+        })?;
+        parsed.push(cmd);
+    }
+    let m = state
+        .handle
+        .set_listen(parsed)
+        .await?
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "project_version": m.project_version }))
+}
+
 /// スライダーをドラッグしている間の試聴: いまのプロジェクトの複製にコマンドを当てて、エンジンにだけ渡す。
 /// 履歴にもプロジェクトにも残らない(離したときに `apply_edit` で 1 回だけ確定する。
 /// 確定すると、いつもどおりプロジェクトの変更としてエンジンが作り直される)。
@@ -3891,6 +3913,7 @@ fn main() -> Result<()> {
             create_project,
             preview_project_dir,
             apply_edit,
+            set_listen,
             duplicate_track,
             preview_edit,
             revert_entry,

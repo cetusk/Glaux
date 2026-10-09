@@ -315,6 +315,11 @@ pub enum Request {
         label: String,
         reply: oneshot::Sender<Result<(EntryId, Mutated), CoreError>>,
     },
+    /// 曲の聴き方(ミュート・ソロ)を履歴に積まずに変える(redo の並びも捨てない)。聴き方だけの Command に限る
+    SetListen {
+        commands: Vec<Command>,
+        reply: oneshot::Sender<Result<Mutated, CoreError>>,
+    },
     Undo {
         n: usize,
         reply: oneshot::Sender<Result<(usize, Mutated), CoreError>>,
@@ -517,6 +522,15 @@ impl SessionHandle {
             reply,
         })
         .await
+    }
+
+    /// 曲の聴き方(ミュート・ソロ)を履歴に積まずに変える。いくつか undo してソロで聴き直してから redo できる
+    pub async fn set_listen(
+        &self,
+        commands: Vec<Command>,
+    ) -> Result<Result<Mutated, CoreError>, String> {
+        self.request(|reply| Request::SetListen { commands, reply })
+            .await
     }
 
     /// 曲の undo を n 回。取り消した編集と一組の計画の変更(案の採用など)も戻す
@@ -1128,6 +1142,28 @@ fn handle(
                 m.locks = locks;
                 (id, m)
             });
+            let _ = reply.send(result);
+        }
+        Request::SetListen { commands, reply } => {
+            let result = if let Some(c) = commands.iter().find(|c| !c.is_listen_only()) {
+                Err(CoreError::NotListenOnly(format!("{c:?}")))
+            } else {
+                let mut changes = Vec::new();
+                let mut err = None;
+                for c in &commands {
+                    match session.apply_unrecorded(c) {
+                        Ok(ch) => changes.extend(ch),
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    }
+                }
+                match err {
+                    Some(e) => Err(e),
+                    None => Ok(mutated(session, store, events, changes)),
+                }
+            };
             let _ = reply.send(result);
         }
         Request::Undo { n, reply } => {

@@ -1469,3 +1469,47 @@ fn update_notes_changes_curve_and_glide_and_track_legato_settings() {
         })
         .is_err());
 }
+
+/// 聴き方(ミュート・ソロ)は履歴に積まずに変えられ、redo の並びを捨てない
+/// (いくつか undo → ソロで聴き直す → redo ができる)
+#[test]
+fn listening_changes_keep_the_redo_stack() {
+    let p = seed_project();
+    let t0 = p.tracks[0].id.clone();
+    let mut s = Session::new(p);
+    let vol = |v: f32| Command::SetTrackProp {
+        id: t0.clone(),
+        prop: TrackProp::VolumeDb(v),
+    };
+    s.apply(vol(-3.0), Author::Human, "a").unwrap();
+    s.apply(vol(-6.0), Author::Human, "b").unwrap();
+    s.undo().unwrap();
+    let solo = Command::SetTrackProp {
+        id: t0.clone(),
+        prop: TrackProp::Solo(true),
+    };
+    assert!(solo.is_listen_only());
+    s.apply_unrecorded(&solo).unwrap();
+    assert!(s.can_redo(), "ソロで redo の並びが消えた");
+    s.redo().unwrap();
+    assert_eq!(s.project().tracks[0].volume_db, -6.0);
+    assert!(s.project().tracks[0].solo, "redo してもソロはそのまま");
+    assert_eq!(s.history().len(), 2);
+
+    // 判定と取り出し
+    let mute = Command::SetTrackProp {
+        id: t0.clone(),
+        prop: TrackProp::Mute(true),
+    };
+    assert!(Command::batch("m", vec![mute.clone(), solo.clone()]).is_listen_only());
+    assert!(!Command::batch("m", vec![mute.clone(), vol(0.0)]).is_listen_only());
+    assert!(!Command::batch("m", vec![]).is_listen_only());
+    let (so, rest) = Command::take_solo(vec![
+        Command::batch("x", vec![solo.clone(), vol(1.0)]),
+        mute.clone(),
+        solo.clone(),
+    ]);
+    assert_eq!(so.len(), 2);
+    assert_eq!(rest.len(), 2);
+    assert!(matches!(&rest[0], Command::Batch { commands, .. } if commands.len() == 1));
+}

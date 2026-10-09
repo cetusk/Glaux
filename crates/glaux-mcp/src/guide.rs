@@ -46,7 +46,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
   歌・スネア・パッドを同じ空間に置くのに。\n\
 - グループ(まとめ): set_track_prop {id, prop: \"output\", value: <バスの ID> | null} でトラックの出力先をバスにする(null でマスター)。\n\
   ドラムを 1 本のバスにまとめてコンプ・音量をまとめて動かすなど。バスの出力先を別のバスにして段にできる(輪は失敗)。\n\
-  遅れのあるエフェクトがあっても、合流するところで自動で揃える。バスをソロにすると流れ込むトラックも鳴る。\n\
+  遅れのあるエフェクトがあっても、合流するところで自動で揃える。バスをソロにすると流れ込むトラックも鳴る。ソロ(set_track_prop solo)は聴き方の設定なので履歴に残らない(undo で戻らない。戻すときはもう一度 solo false)。\n\
 - マスターのエフェクト: add_master_effect {effect, index?} / set_master_param {path: \"fx/<id>/<名前>\", value} / unset_master_param {path}。\n\
   削除・並べ替え・バイパスはトラックと同じ remove_effect / move_effect {id, to_index} / set_effect_bypass。チェーンは get_project の master.effects。\n\
 - set_effect_prop {id, prop: \"label\" | \"parked\" | \"note\" | \"pos\", value}: 表示名・線から外す・メモ・ノード表示の位置。\n\

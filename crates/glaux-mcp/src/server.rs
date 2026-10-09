@@ -5312,7 +5312,18 @@ impl GlauxServer {
         if p.commands.is_empty() {
             return Err("commands が空です".to_owned());
         }
-        let (mut commands, assigned) = self.parse_commands(p.commands).await?;
+        let (commands, assigned) = self.parse_commands(p.commands).await?;
+        // ソロは聴き方の設定なので履歴に積まない(undo の対象にせず、redo の並びも捨てない)
+        let (solo, mut commands) = Command::take_solo(commands);
+        if !solo.is_empty() {
+            let m = flatten(self.handle.set_listen(solo).await)?;
+            if commands.is_empty() {
+                let mut v = mutated_json(&m);
+                v["listen_only"] = json!(true);
+                v["note"] = json!("ソロは聴き方の設定なので履歴に残さない(undo の対象外)");
+                return Ok(JsonText(v));
+            }
+        }
         let command = if commands.len() == 1 {
             commands.pop().expect("len checked")
         } else {

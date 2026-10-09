@@ -44,6 +44,9 @@ pub enum CoreError {
     ClipKindMismatch,
     #[error("value out of range: {0}")]
     OutOfRange(String),
+    /// 履歴の外で変えられるのは聴き方(ミュート・ソロ)だけ
+    #[error("only mute / solo can change outside the history: {0}")]
+    NotListenOnly(String),
     /// AI の編集が固定の音にだけ当たって、何も変えなかった
     #[error(
         "固定の音への変更だけだったので、何も変えていません(固定は人が外すまで AI は変えない): {0}"
