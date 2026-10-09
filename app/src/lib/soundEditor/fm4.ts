@@ -62,6 +62,8 @@ let hKey = "";
 let hVal: { now: number[]; t0: number[] | null } | null = null;
 let hPending = "";
 let hTimer = 0;
+/** 倍音を描き出している間(返事が来るまで次は送らない。描き出しが遅いと要求が積み重なっていた) */
+let hBusy = false;
 
 const FM4: any = {
   kind: "fm4",
@@ -638,18 +640,29 @@ const FM4: any = {
       hPending = key;
       clearTimeout(hTimer);
       hTimer = window.setTimeout(async () => {
+        // 前の描き出しが終わっていなければ、終わった後に今の値で取り直す
+        if (hBusy) {
+          hPending = "";
+          return;
+        }
+        hBusy = true;
         const tr0 = state.project?.tracks.find((x) => x.id === state.track);
         const device = { ...(tr0?.device ?? { type: "builtin", name: "fm4" }), params: { ...(tr0?.device?.params ?? {}), ...FM4.params(d) } };
         try {
           const times = t ? [t, 0] : [0];
           const r = await api.renderNoteHarmonics(state.track, pitch, times, { device, step: 0.5, maxMult: 40 });
-          if (hPending !== key) return;
-          hKey = key;
-          hVal = { now: r[0], t0: t ? r[1] : null };
-          FM4.draw();
+          if (hPending === key) {
+            hKey = key;
+            hVal = { now: r[0], t0: t ? r[1] : null };
+          }
         } catch {
-          hPending = "";
+          // 描き出せない(取り直しを繰り返さない)
+          hBusy = false;
+          return;
         }
+        hBusy = false;
+        // 待っている間に値が変わっていれば、ここで取り直しを予約する(draw の中で)
+        if (state.inst === "fm4") FM4.draw();
       }, 60);
     }
     return hVal;
