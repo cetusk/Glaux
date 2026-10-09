@@ -150,19 +150,20 @@ pub fn fx_impact(
     range: Option<(Tick, Tick)>,
     bank: &crate::data::SampleBank,
 ) -> Result<FxImpact, String> {
-    let mut wet = project.clone();
-    wet.tracks.retain(|t| &t.id == track);
-    let Some(t) = wet.tracks.first_mut() else {
+    // 曲の中で聞こえるとおりに単体で(バス・センドの響きとサイドチェインは残し、マスターのエフェクトは外す)
+    let mut wet = crate::analyze::solo_view(project, std::slice::from_ref(track), false);
+    let Some(t) = wet.tracks.iter_mut().find(|t| &t.id == track) else {
         return Err(format!("track not found: {track}"));
     };
-    t.solo = false;
     t.mute = false;
     if t.effects.iter().all(|e| e.bypass || e.ui.parked) {
         return Err("このトラックには効いているエフェクトがありません".to_owned());
     }
     let mut dry = wet.clone();
-    dry.tracks[0].effects.clear();
-    dry.tracks[0].fx_links = None;
+    if let Some(t) = dry.tracks.iter_mut().find(|t| &t.id == track) {
+        t.effects.clear();
+        t.fx_links = None;
+    }
     let render = |p: &Project| -> Result<Vec<f32>, String> {
         render_for_analysis(p, range, bank).map_err(|e: ExportError| e.to_string())
     };

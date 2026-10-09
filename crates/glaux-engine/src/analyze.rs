@@ -250,22 +250,84 @@ pub fn analyze_project_tracks(
     analyze_mix(project, range, bank).tracks
 }
 
+/// トラックを、曲の中で聞こえるとおりに単体で鳴らす曲: 対象だけをソロにする(ほかのトラックを消さない)。
+/// 出力先のバスのエフェクト・センドの響きは残り、サイドチェインの元はキーとしてだけ鳴る(ダッキングが効く)。
+/// `master_fx` が false ならマスターのエフェクト(曲全体に合わせたリミッタなど)を外す
+/// 聞こえ方に関係しないトラック(と、そのプラグイン)は外す: 残すのは対象・対象から出力・センドをたどった先のバス・
+/// 対象がバスならそこへたどり着くトラック・残したトラックとマスターのサイドチェインの元(キーとしてだけ鳴る)
+pub fn solo_view(project: &Project, ids: &[TrackId], master_fx: bool) -> Project {
+    use std::collections::HashSet;
+    let tracks = &project.tracks;
+    // t から出力・センドをたどって届くバス
+    let down = |start: &TrackId| -> HashSet<TrackId> {
+        let mut seen = HashSet::new();
+        let mut stack = vec![start.clone()];
+        while let Some(id) = stack.pop() {
+            if let Some(t) = tracks.iter().find(|t| t.id == id) {
+                for b in t.output.iter().chain(t.sends.iter().map(|s| &s.target)) {
+                    if seen.insert(b.clone()) {
+                        stack.push(b.clone());
+                    }
+                }
+            }
+        }
+        seen
+    };
+    let mut keep: HashSet<TrackId> = ids.iter().cloned().collect();
+    for id in ids {
+        keep.extend(down(id));
+    }
+    for t in tracks {
+        if !keep.contains(&t.id) && down(&t.id).iter().any(|b| ids.contains(b)) {
+            keep.insert(t.id.clone());
+        }
+    }
+    let keys: Vec<TrackId> = tracks
+        .iter()
+        .filter(|t| keep.contains(&t.id))
+        .flat_map(|t| t.effects.iter())
+        .chain(project.master.effects.iter())
+        .filter_map(|e| match e.params.get("source") {
+            Some(glaux_core::ParamValue::Enum(id)) if !id.is_empty() => TrackId::parse(id).ok(),
+            _ => None,
+        })
+        .collect();
+    keep.extend(keys);
+    let mut p = project.clone();
+    p.tracks.retain(|t| keep.contains(&t.id));
+    for t in &mut p.tracks {
+        t.solo = ids.contains(&t.id);
+    }
+    if !master_fx {
+        p.master.effects.clear();
+        p.master.fx_links = None;
+    }
+    p
+}
+
 /// プロジェクトを解析する。`track_ids` で対象トラックを、`range` で tick 範囲を絞れる。
+/// トラックを絞るときは [`solo_view`](マスターのエフェクトは外す)。入れるなら [`analyze_project_with`]
 pub fn analyze_project(
     project: &Project,
     track_ids: Option<&[TrackId]>,
     range: Option<(Tick, Tick)>,
     bank: &crate::data::SampleBank,
 ) -> Result<Analysis, ExportError> {
-    // 対象トラックだけ残したコピーを作ってレンダする
-    let mut target = project.clone();
-    if let Some(ids) = track_ids {
-        target.tracks.retain(|t| ids.contains(&t.id));
-        // solo が対象外トラックに付いていた場合の影響を避ける
-        for t in &mut target.tracks {
-            t.solo = false;
-        }
-    }
+    analyze_project_with(project, track_ids, range, bank, false)
+}
+
+/// [`analyze_project`]。`master_fx` はトラックを絞るときにマスターのエフェクトも通すか
+pub fn analyze_project_with(
+    project: &Project,
+    track_ids: Option<&[TrackId]>,
+    range: Option<(Tick, Tick)>,
+    bank: &crate::data::SampleBank,
+    master_fx: bool,
+) -> Result<Analysis, ExportError> {
+    let target = match track_ids {
+        Some(ids) => solo_view(project, ids, master_fx),
+        None => project.clone(),
+    };
     let mut stereo = render_for_analysis(&target, range, bank)?;
     let clip = clip_for_listening(&mut stereo);
     let mut a = analyze_stereo(project, range, &stereo)?;
@@ -428,13 +490,10 @@ pub fn compare_projects(
     bank_after: &crate::data::SampleBank,
 ) -> Result<Comparison, ExportError> {
     let render = |p: &Project, bank| -> Result<(Analysis, Vec<f64>), ExportError> {
-        let mut target = p.clone();
-        if let Some(ids) = track_ids {
-            target.tracks.retain(|t| ids.contains(&t.id));
-            for t in &mut target.tracks {
-                t.solo = false;
-            }
-        }
+        let target = match track_ids {
+            Some(ids) => solo_view(p, ids, false),
+            None => p.clone(),
+        };
         let mut stereo = render_for_analysis(&target, range, bank)?;
         let clip = clip_for_listening(&mut stereo);
         let (mut a, power) = analyze_stereo_with_power(p, range, &stereo)?;
@@ -1036,17 +1095,17 @@ pub fn render_tracks_solo(
     range: Option<(Tick, Tick)>,
     bank: &crate::data::SampleBank,
 ) -> Vec<Option<Vec<f32>>> {
-    let solo = |t: &glaux_core::Track| {
-        let mut target = project.clone();
-        target.tracks.retain(|x| x.id == t.id);
-        for x in &mut target.tracks {
-            x.solo = false;
-        }
-        target
-    };
+    // 曲の中で聞こえるとおりに単体で(バス・センドの響きとサイドチェインは残し、マスターのエフェクトは外す)
+    let solo = |t: &glaux_core::Track| solo_view(project, std::slice::from_ref(&t.id), false);
     let rendered: Vec<Option<Vec<f32>>> = {
         let n = project.tracks.len();
         let targets: Vec<Project> = project.tracks.iter().map(solo).collect();
+        // バスは単体では鳴らさない(流れ込むトラックの和になり、トラックごとの比べ・かぶりの判定が二重になる)
+        let is_bus: Vec<bool> = project
+            .tracks
+            .iter()
+            .map(|t| t.kind == glaux_core::TrackKind::Bus)
+            .collect();
         let has_plugins: Vec<bool> = targets
             .iter()
             .map(|t| !crate::plugins::project_plugins(t).is_empty())
@@ -1065,7 +1124,7 @@ pub fn render_tracks_solo(
                     if i >= n {
                         break;
                     }
-                    if has_plugins[i] {
+                    if has_plugins[i] || is_bus[i] {
                         continue;
                     }
                     let r = render_for_analysis(&targets[i], range, bank).ok();
@@ -1079,7 +1138,7 @@ pub fn render_tracks_solo(
         for (i, r) in results.into_inner().unwrap_or_else(|e| e.into_inner()) {
             out[i] = r;
         }
-        for i in (0..n).filter(|&i| has_plugins[i]) {
+        for i in (0..n).filter(|&i| has_plugins[i] && !is_bus[i]) {
             out[i] = render_for_analysis(&targets[i], range, bank).ok();
         }
         out
@@ -1403,6 +1462,48 @@ fn detect_onsets(mono: &[f32], offset_seconds: f64, tempo: &glaux_core::TempoMap
 
 #[cfg(test)]
 mod tests {
+
+    /// 単体で鳴らす曲: 対象・流れ込むバス・サイドチェインの元を残し、関係ないトラックとマスターのエフェクトは外す
+    #[test]
+    fn solo_view_keeps_the_routing_and_keys() {
+        use glaux_core::{Effect, FxId, ParamValue, Send, Track, TrackKind};
+        let mut p = Project::new("t");
+        let bus = Track::new(TrackId::new(), "Verb", TrackKind::Bus);
+        let group = Track::new(TrackId::new(), "Group", TrackKind::Bus);
+        let kick = Track::new(TrackId::new(), "Kick", TrackKind::Midi);
+        let other = Track::new(TrackId::new(), "Other", TrackKind::Midi);
+        let mut pad = Track::new(TrackId::new(), "Pad", TrackKind::Midi);
+        pad.output = Some(group.id.clone());
+        pad.sends.push(Send {
+            target: bus.id.clone(),
+            level_db: -12.0,
+            pre_fader: false,
+        });
+        let mut sc = Effect::builtin(FxId::new(), "sidechain");
+        sc.params
+            .insert("source".into(), ParamValue::Enum(kick.id.to_string()));
+        pad.effects.push(sc);
+        p.master
+            .effects
+            .push(Effect::builtin(FxId::new(), "limiter"));
+        let ids = [&pad, &bus, &group, &kick, &other].map(|t| t.id.clone());
+        for t in [pad, bus, group, kick, other] {
+            p.tracks.push(t);
+        }
+        let v = solo_view(&p, &ids[..1], false);
+        let names: Vec<&str> = v.tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["Pad", "Verb", "Group", "Kick"]);
+        assert!(
+            v.tracks[0].solo && !v.tracks[3].solo,
+            "キーの元はソロにしない(キーとしてだけ鳴る)"
+        );
+        assert!(v.master.effects.is_empty());
+        assert_eq!(solo_view(&p, &ids[..1], true).master.effects.len(), 1);
+        // バスを対象にすると、そこへ流れ込むトラックも残す
+        let g = solo_view(&p, &ids[2..3], false);
+        assert!(g.tracks.iter().any(|t| t.name == "Pad"));
+        assert!(!g.tracks.iter().any(|t| t.name == "Other"));
+    }
 
     /// クリップ防止の前の振り切れと押さえ込みの量を測ってから、防止を通す
     #[test]

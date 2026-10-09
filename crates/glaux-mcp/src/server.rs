@@ -127,6 +127,9 @@ pub struct AnalyzeAudioParams {
     /// tracks 配列として追加で返す。ミックスバランスの診断はこれを使う。
     #[serde(default)]
     pub per_track: Option<bool>,
+    /// track_ids を渡したとき、マスターのエフェクト(曲全体に合わせたリミッタなど)も通すか。既定 false(外す)
+    #[serde(default)]
+    pub master_fx: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -5510,7 +5513,8 @@ impl GlauxServer {
         band_energy=low(<250Hz)/mid/high(>4kHz) の比率(low>0.6 はこもり気味、high>0.5 は刺さり気味。\
         バランスの取れた曲はおおむね low 0.3-0.5 / mid 0.3-0.5 / high 0.05-0.25)、\
         spectral_centroid_hz=明るさの重心、onsets_ticks=発音タイミング(リズムの確認用)。\
-        track_ids に 1 トラックだけ渡せば単体を聴ける。start/end_tick で範囲を絞れる(範囲指定の指示と併用推奨)。\
+        track_ids に 1 トラックだけ渡せば単体を聴ける(曲の中で聞こえるとおりにソロで鳴らす: 出力先のバス・センドの響きは入り、\
+        サイドチェインの元はキーとしてだけ鳴る。マスターのエフェクトは master_fx: true のときだけ通す)。start/end_tick で範囲を絞れる(範囲指定の指示と併用推奨)。\
         loudness_range_lu=曲中の音量の起伏(小さいと平板)、true_peak_dbtp=サンプル間のピーク(配信は -1 以下が目安)、\
         short_term_lufs=1 秒ごとの短期ラウドネスの推移(展開・盛り上がりの確認)、\
         plr_db=True Peak − 統合ラウドネス(小さいほど潰れている)、psr_min_db=いちばん詰まった所のピークと短期ラウドネスの差(実務の目安は 8 以上)、\
@@ -5522,7 +5526,7 @@ impl GlauxServer {
         無相関で約 -3、それより大きく下がるならモノラルで音が消えている)、\
         tonal_balance(third_octave=1/3 オクターブごとの量、slope_db_per_oct=傾き。0 = ピンクノイズと同じ・マイナスほど暗い、\
         deviations=傾きの直線から ±3dB 以上ずれた帯域。プラスはこもり・刺さりの候補。EQ で直す場所の目星に)。\
-        【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy/crest_factor_db/plr_db\
+        【ミックスバランスの診断】per_track: true で各トラック(曲の中で聞こえるとおりにソロで鳴らす。マスターのエフェクトは外す)の loudness/band_energy/crest_factor_db/plr_db\
         (クレスト・PLR が小さいほど潰れている。打楽器 15 以上・持続音 8〜12 がふつう、6 以下は潰れ気味)/sections(区間ごとの rms_db とクレスト)の一覧と、\
         masking(トラック間の周波数のかぶり。心理音響モデル(広がり・純音か雑音か・聞こえる最小の音・直後の残り)で、\
         track が masked_by に band_hz の帯域で time_ratio の時間覆われて聞こえない。band_share はその帯域が track の音に占める割合、\
@@ -5559,13 +5563,22 @@ impl GlauxServer {
 
         // レンダ + FFT は CPU バウンドなのでブロッキングスレッドで
         let per_track = p.per_track.unwrap_or(false);
+        let master_fx = p.master_fx.unwrap_or(false);
+        let solo_note = p.track_ids.is_some();
         let project_dir = self.handle.project_dir().await?;
         let (analysis, track_summaries) = tokio::task::spawn_blocking(move || {
             // サンプラー音源の WAV を読み込む(オフライン解析なのでキャッシュなしでよい)
             let bank =
                 glaux_engine::SampleBank::for_offline(&project, std::path::Path::new(&project_dir));
-            let whole =
-                || glaux_engine::analyze_project(&project, track_ids.as_deref(), range, &bank);
+            let whole = || {
+                glaux_engine::analyze::analyze_project_with(
+                    &project,
+                    track_ids.as_deref(),
+                    range,
+                    &bank,
+                    master_fx,
+                )
+            };
             if !per_track {
                 return (whole(), None);
             }
@@ -5590,6 +5603,13 @@ impl GlauxServer {
 
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
+        if solo_note {
+            v["listened"] = json!(if master_fx {
+                "対象のトラックをソロにして鳴らした(出力先のバスとセンドの響きは入り、サイドチェインはキーとして効く。マスターのエフェクトも通した)"
+            } else {
+                "対象のトラックをソロにして鳴らした(出力先のバスとセンドの響きは入り、サイドチェインはキーとして効く。マスターのエフェクトは外した)"
+            });
+        }
         if let Some(mix) = track_summaries {
             let mut tracks = mix.tracks;
             v["masking"] = serde_json::to_value(&mix.masking).map_err(|e| e.to_string())?;

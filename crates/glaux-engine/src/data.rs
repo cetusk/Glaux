@@ -298,8 +298,11 @@ impl PartialEq for AudioEvent {
 pub struct TrackMix {
     pub gain_l: f32,
     pub gain_r: f32,
-    /// mute / solo 判定の結果。false なら発音しない
+    /// mute / solo 判定の結果。false なら発音しない(`key_only` なら発音だけする)
     pub audible: bool,
+    /// ソロで外れたが、ほかのトラックのサイドチェイン(sidechain・dynamic_eq の source)の元なので、
+    /// 発音してキーとしてだけ使う(ミックス・センド・エフェクトには入れない)。ソロにしてもダッキングが残る
+    pub key_only: bool,
     /// 静的な音量(リニア)とパン。オートメーションと組み合わせるときに使う
     pub base_amp: f32,
     pub base_pan: f32,
@@ -343,6 +346,14 @@ pub struct TrackMix {
     /// 発音内容(このトラックのノートイベントと楽器の種類)のハッシュ。差し替えの前後で同じなら、
     /// 鳴っている音を切らずにそのまま鳴らし続ける
     pub content: u64,
+}
+
+impl TrackMix {
+    /// 発音するか(聞こえるか、サイドチェインのキーとしてだけ鳴らす)
+    #[inline]
+    pub fn plays(&self) -> bool {
+        self.audible || self.key_only
+    }
 }
 
 /// 焼き込み済みの層(重ねる音源)。
@@ -2435,6 +2446,19 @@ fn build_inner(
         }
         set
     };
+    // サイドチェインの元のトラック(sidechain・dynamic_eq の source。外したエフェクトは除く)
+    let key_sources: std::collections::HashSet<usize> = project
+        .tracks
+        .iter()
+        .flat_map(|t| t.effects.iter())
+        .chain(project.master.effects.iter())
+        .filter(|e| !e.bypass && !e.ui.parked)
+        .filter(|e| matches!(&e.source, glaux_core::PluginSource::Builtin { name } if name == "sidechain" || name == "dynamic_eq"))
+        .filter_map(|e| match e.params.get("source") {
+            Some(glaux_core::ParamValue::Enum(id)) if !id.is_empty() => resolve_track(id).map(|i| i as usize),
+            _ => None,
+        })
+        .collect();
     let mut tracks: Vec<TrackMix> = project
         .tracks
         .iter()
@@ -2490,15 +2514,20 @@ fn build_inner(
                     .find(|(f, b)| f == id && b.plugin.is_some())
                     .map(|(_, b)| b.slot)
             });
+            // バスはソロの影響を受けない(ソロにしたトラックのリバーブが消えないように)
+            let audible = !t.mute
+                && (!any_solo
+                    || t.solo
+                    || t.kind == glaux_core::TrackKind::Bus
+                    || solo_upstream.contains(&ti));
             TrackMix {
                 gain_l: gain * pl,
                 gain_r: gain * pr,
-                // バスはソロの影響を受けない(ソロにしたトラックのリバーブが消えないように)
-                audible: !t.mute
-                    && (!any_solo
-                        || t.solo
-                        || t.kind == glaux_core::TrackKind::Bus
-                        || solo_upstream.contains(&ti)),
+                audible,
+                key_only: !audible
+                    && !t.mute
+                    && t.kind != glaux_core::TrackKind::Bus
+                    && key_sources.contains(&ti),
                 base_amp: gain,
                 base_pan: t.pan,
                 vol_db_auto: bake_lane(t, "volume_db"),
@@ -2665,6 +2694,7 @@ fn build_inner(
             // ソロ・ミュートで聞こえる・聞こえないが変わったら鳴らし直す(聞こえなくなったトラックの
             // 鳴っている音を短いフェードで止め、聞こえるようになったトラックは位置をまたぐ音を途中から鳴らす)
             m.audible.hash(&mut c);
+            m.key_only.hash(&mut c);
             m.content = c.finish();
         }
     }
@@ -2878,6 +2908,63 @@ mod tests {
         track.clips.push(clip);
         project.tracks.push(track);
         project
+    }
+
+    /// ソロにしたトラックのサイドチェイン(ダッキング)は、元のトラックがソロで外れても効く(元はキーとしてだけ鳴らす)
+    #[test]
+    fn solo_keeps_the_sidechain_key_without_mixing_it() {
+        use crate::export::render_project;
+        // パッド(長い音)と、拍ごとの短い音(キー)。パッドに sidechain(source = キー)
+        let mut project = project_with_notes(vec![note(0, 3840, 57, 100)]);
+        let mut key = Track::new(TrackId::new(), "Kick", TrackKind::Midi);
+        let mut clip = Clip::new_midi(ClipId::new(), "k", Tick(0), Tick(3840));
+        if let ClipContent::Midi { notes, .. } = &mut clip.content {
+            *notes = (0..4).map(|b| note(b * 960, 120, 36, 127)).collect();
+        }
+        key.clips.push(clip);
+        let mut sc = glaux_core::Effect::builtin(glaux_core::FxId::new(), "sidechain");
+        sc.params.insert(
+            "source".into(),
+            glaux_core::ParamValue::Enum(key.id.to_string()),
+        );
+        sc.params
+            .insert("duck_db".into(), glaux_core::ParamValue::Float(18.0));
+        project.tracks[0].effects.push(sc);
+        project.tracks.push(key);
+        let bank = SampleBank::default();
+        // 比べる相手: キーのトラックを聞こえない大きさにした(キーはフェーダー前なので効く)もの
+        let mut quiet = project.clone();
+        quiet.tracks[1].volume_db = -150.0;
+        let reference = render_project(&quiet, 48_000.0, &bank).unwrap();
+        // サイドチェインが効いている(外すと音が変わる)ことを先に確かめる
+        let mut plain = quiet.clone();
+        plain.tracks[0].effects.clear();
+        let dry = render_project(&plain, 48_000.0, &bank).unwrap();
+        let m = dry.len().min(reference.len());
+        let ducked = (0..m)
+            .map(|i| (dry[i] - reference[i]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            ducked > 0.05,
+            "テストの曲でダッキングが効いていない: {ducked}"
+        );
+        let mut solo = project.clone();
+        solo.tracks[0].solo = true;
+        let got = render_project(&solo, 48_000.0, &bank).unwrap();
+        let n = reference.len().min(got.len());
+        let diff = (0..n)
+            .map(|i| (reference[i] - got[i]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            diff < 1e-3,
+            "ソロでもダッキングが同じ・キーは混ざらない: {diff}"
+        );
+        let data = build_playback_data(&solo, 48_000.0, &bank);
+        assert!(!data.tracks[1].audible && data.tracks[1].key_only);
+        // キーの元を外す(ミュート)とダッキングも消える
+        let mut muted = solo.clone();
+        muted.tracks[1].mute = true;
+        assert!(!build_playback_data(&muted, 48_000.0, &bank).tracks[1].key_only);
     }
 
     #[test]

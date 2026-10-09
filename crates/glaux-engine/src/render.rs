@@ -1205,7 +1205,7 @@ impl Renderer {
             if !data
                 .tracks
                 .get(ev.track as usize)
-                .is_some_and(|m| m.audible)
+                .is_some_and(|m| m.plays())
             {
                 continue;
             }
@@ -1745,7 +1745,7 @@ impl Renderer {
                 let audible = data
                     .tracks
                     .get(ev.track as usize)
-                    .is_some_and(|m| m.audible);
+                    .is_some_and(|m| m.plays());
                 if audible && self.audio_voices.len() < MAX_AUDIO_VOICES {
                     self.audio_voices.push(AudioVoice {
                         idx,
@@ -1772,7 +1772,7 @@ impl Renderer {
                 }
                 let mix = data.tracks.get(e.track as usize);
                 // プラグインのトラックは collect_plugin_notes で送る
-                if let Some(mix) = mix.filter(|m| m.audible && m.plugin.is_none()) {
+                if let Some(mix) = mix.filter(|m| m.plays() && m.plugin.is_none()) {
                     // レガート・ポルタメント: 直前の音の声が鳴り続けていれば、その声のまま次の高さへ移る
                     if !replay && e.legato_prev != crate::data::NO_LEGATO {
                         let x = data.expr(&e);
@@ -2283,6 +2283,9 @@ impl Renderer {
                 fl[..frames].copy_from_slice(&self.bus_l[ti][..frames]);
                 fr[..frames].copy_from_slice(&self.bus_r[ti][..frames]);
                 fl[..frames].iter().chain(&fr[..frames]).any(|v| *v != 0.0)
+            } else if mix.key_only {
+                // サイドチェインのキーとしてだけ鳴らす(楽器の音は blk_mono に残り、ほかのトラックのキーになる)
+                continue;
             } else {
                 let mut any = false;
                 for f in 0..frames {
@@ -3407,7 +3410,7 @@ impl Renderer {
                 let Some(slot) = self.track_plugin.get(ti).copied().flatten() else {
                     continue;
                 };
-                if !data.tracks[ti].audible {
+                if !data.tracks[ti].plays() {
                     continue;
                 }
                 // レガート・ポルタメント: つなぎ目の後で、先に離した音の余韻を切る
@@ -4120,6 +4123,7 @@ mod tests {
                 gain_l: 1.0,
                 gain_r: 1.0,
                 audible,
+                key_only: false,
                 base_amp: 1.0,
                 base_pan: 0.0,
                 vol_db_auto: vec![],
