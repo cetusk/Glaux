@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
-  import { shouldYieldKey } from "./lib/keys";
+  import { dropImeSpace, shouldYieldKey } from "./lib/keys";
   import { toolDoing } from "./lib/toolLabels";
   import Toasts from "./lib/Toasts.svelte";
   import Icon from "./lib/Icon.svelte";
@@ -23,7 +23,7 @@
   import Mixer from "./lib/Mixer.svelte";
   import DesignView from "./lib/DesignView.svelte";
   import PlanHistoryPanel from "./lib/PlanHistoryPanel.svelte";
-  import { designRedo, designUndo, designWatch, refreshClipStates, refreshDesign } from "./lib/design.svelte";
+  import { designRedo, designUndo, designWatch, endProposalAb, proposalAb, refreshClipStates, refreshDesign } from "./lib/design.svelte";
   import TransportLcd from "./lib/TransportLcd.svelte";
   import { abLooping } from "./lib/abLoop";
   import StatusBar from "./lib/StatusBar.svelte";
@@ -94,34 +94,46 @@
     }
   }
 
-  function startRowResize(e: PointerEvent) {
-    const startY = e.clientY;
-    const startH = bottomHeight;
-    const move = (ev: PointerEvent) => {
-      bottomHeight = Math.min(Math.max(startH + (startY - ev.clientY), 140), window.innerHeight - 200);
-    };
+  /** 下のパネルの高さの上限(CSS の max-height: 45vh と同じ。超えた分を覚えると、戻すときに動かない区間ができる) */
+  const maxBottomHeight = () => Math.max(140, Math.min(window.innerHeight - 200, window.innerHeight * 0.45));
+
+  /** 仕切りのドラッグ: 既定の動き(文字の選択)を止め、ポインタを仕切りにつかませる。
+   *  止めないと、選択のドラッグに合わせて近くのスクロール領域(タイムライン・ピアノロール)が動いていた */
+  function startResize(e: PointerEvent, cls: "resizing-h" | "resizing-w", move: (ev: PointerEvent) => void) {
+    e.preventDefault();
+    const handle = e.currentTarget as HTMLElement;
+    try {
+      handle.setPointerCapture(e.pointerId);
+    } catch {
+      // つかめなくても window で受ける
+    }
+    document.body.classList.add(cls);
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      document.body.classList.remove(cls);
       saveLayout();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
+  function startRowResize(e: PointerEvent) {
+    const startY = e.clientY;
+    const startH = Math.min(bottomHeight, maxBottomHeight());
+    startResize(e, "resizing-h", (ev) => {
+      bottomHeight = Math.min(Math.max(startH + (startY - ev.clientY), 140), maxBottomHeight());
+    });
   }
 
   function startColResize(e: PointerEvent) {
     const container = (e.currentTarget as HTMLElement).parentElement!;
     const rect = container.getBoundingClientRect();
-    const move = (ev: PointerEvent) => {
+    startResize(e, "resizing-w", (ev) => {
       chatFrac = Math.min(Math.max((ev.clientX - rect.left) / rect.width, 0.25), 0.8);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      saveLayout();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    });
   }
   // AI の作業表示:
   //   calling = ツール実行中(明るく点滅)
@@ -342,9 +354,9 @@
     if (id && project && !project.tracks.some((t) => t.id === id)) midiArmStore.trackId = null;
   });
 
-  /// ヘッダーが 1 行に入りきらないとき、段階的にしまう(画面の幅ではなく、実際に入りきるかで決める)。
-  /// 0 = 全部出す、1 = 書き出しの文字をしまう、2 = AI の作業表示の文字もしまう、3 = 2 段にする。
-  /// AI の作業表示・キーの表示などが出たり消えたりしたときも測り直す
+  /// ヘッダーの上の段に入りきらないとき、段階的にしまう(画面の幅ではなく、実際に入りきるかで決める)。
+  /// 0 = 全部出す、1 = 書き出しの文字をしまう、2 = AI の作業表示の文字もしまう。
+  /// AI の作業表示・曲名などが出たり消えたりしたときも測り直す(段の数・高さは変わらない)
   function fitHeader(el: HTMLElement) {
     // 欄の中身(見えているもの)の幅と間の合計が、欄の幅を超えるか。右の欄は右寄せで、はみ出しが左(中央の欄の下)へ
     // 出るため scrollWidth では分からない
@@ -357,9 +369,9 @@
       return need > e.clientWidth + 1;
     };
     const fit = () => {
-      for (let lv = 0; lv <= 3; lv++) {
+      for (let lv = 0; lv <= 2; lv++) {
         el.dataset.fit = String(lv);
-        if (lv === 3 || !(over(".h-left") || over(".h-right"))) break;
+        if (lv === 2 || !(over(".h-left") || over(".h-right"))) break;
       }
     };
     let raf = 0;
@@ -367,11 +379,9 @@
       if (!raf) raf = requestAnimationFrame(() => ((raf = 0), fit()));
     };
     fit();
-    // 窓の幅と、中央の欄の幅(キーの表示の出し入れなど)の変化
+    // 窓の幅の変化
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
-    const center = el.querySelector(".h-center");
-    if (center) ro.observe(center);
     // 左右の欄の中身の出し入れ(AI の作業表示・曲名など)。再生中に毎回変わる位置・時間の表示(中央)は見ない
     const mo = new MutationObserver(schedule);
     for (const side of el.querySelectorAll(".h-left, .h-right")) {
@@ -494,6 +504,7 @@
       switch (e.code) {
         case "Space":
           e.preventDefault();
+          dropImeSpace(e);
           togglePlay();
           break;
         case "KeyL":
@@ -804,6 +815,28 @@
     if (range) api.transportSetLoop(range.start, range.end).catch(() => {});
   });
 
+  // 案の聴き比べの途中で曲が変わったら終える。聴き比べは用意した時点の曲を書き出した音を鳴らすので、
+  // その後のソロ・ミュート・音量などの変更が聞こえず、古い音を聴き続けてしまう(履歴・チャットの聴き比べと同じ扱い)
+  let proposalAbRev = -1;
+  $effect(() => {
+    const r = projectRev.value;
+    if (!proposalAb.planIds.length) {
+      proposalAbRev = r;
+      return;
+    }
+    if (r !== proposalAbRev) {
+      proposalAbRev = r;
+      void endProposalAb();
+      showToast(
+        "warn",
+        tr(
+          "曲が変わったので案の聴き比べを終えました(もう一度「聴き比べる」で聴けます)",
+          "The song changed, so the proposal comparison was ended (press “Compare” again to listen)",
+        ),
+      );
+    }
+  });
+
   // ---- 聴く音量(アプリから鳴る音だけ。曲・書き出しには入らない) ----
   function fmtListen(db: number): string {
     return db <= -60 ? tr("無音", "Silent") : `${db > 0 ? "+" : ""}${db} dB`;
@@ -841,185 +874,194 @@
        (以前は 1 行にすべてを並べて横にはみ出していた。負荷・デバイス・MCP はステータスバーへ、
        マスターの音量とエフェクトはタイムラインのマスター行へ) -->
   <header use:fitHeader>
-    <div class="h-left">
-      <img class="owl" src="/glaux-icon.png" alt="Glaux" width="28" height="28" />
-      <ProjectMenu title={project?.meta.title ?? "…"} />
-      <div class="view-switch" role="tablist" aria-label={tr("表示の切り替え", "Switch view")}>
-        <button
-          role="tab"
-          aria-selected={viewStore.main === "timeline"}
-          class:on={viewStore.main === "timeline"}
-          onclick={() => (viewStore.main = "timeline")}
-          aria-label={tr("タイムライン", "Timeline")}
-          title={tr("タイムライン(曲の流れ・クリップ・ピアノロール)", "Timeline (song flow, clips, piano roll)")}><Icon name="rows-2" /><span class="lbl">{tr("タイムライン", "Timeline")}</span></button
-        >
-        <button
-          role="tab"
-          aria-selected={viewStore.main === "mixer"}
-          class:on={viewStore.main === "mixer"}
-          onclick={() => (viewStore.main = "mixer")}
-          aria-label={tr("ミキサー", "Mixer")}
-          title={tr("ミキサー(音量・パン・送り・エフェクトのつなぎ方)", "Mixer (volume, pan, sends, effect routing)")}><Icon name="sliders-horizontal" /><span class="lbl">{tr("ミキサー", "Mixer")}</span></button
-        >
-        <button
-          role="tab"
-          aria-selected={viewStore.main === "design"}
-          class:on={viewStore.main === "design"}
-          onclick={() => (viewStore.main = "design")}
-          aria-label={tr("設計", "Design")}
-          title={tr(
-            "設計(曲の計画と実際: 盛り上がり・パートごとの音域・パートの役割)",
-            "Design (song plan vs. actual: energy, range per part, part roles)",
-          )}><Icon name="spline" /><span class="lbl">{tr("設計", "Design")}</span></button
-        >
-      </div>
-    </div>
-    <div class="h-center">
-      <div class="tp">
-        <button class="btn icon" onclick={seekStart} disabled={!transport.available} title={tr("先頭へ(Home)", "Go to start (Home)")} aria-label={tr("先頭へ", "Go to start")}
-          ><Icon name="skip-back" /></button
-        >
-        <button class="btn icon bar-step" onclick={prevBar} disabled={!transport.available} title={tr("前の小節へ(←)", "Previous bar (←)")} aria-label={tr("前の小節へ", "Previous bar")}
-          ><Icon name="rewind" /></button
-        >
-        <button
-          class="btn icon play"
-          aria-label={transport.playing ? tr("一時停止", "Pause") : tr("再生", "Play")}
-          onclick={togglePlay}
-          disabled={!transport.available}
-          title={transport.available
-            ? tr("再生 / 一時停止(Space)", "Play / Pause (Space)")
-            : tr("オーディオデバイスが利用できません", "No audio device available")}
-          ><Icon name={transport.playing ? "pause" : "play"} /></button
-        >
-        <button class="btn icon" onclick={stopPlayback} disabled={!transport.available} title={tr("停止", "Stop")} aria-label={tr("停止", "Stop")}
-          ><Icon name="square" /></button
-        >
-        <button class="btn icon bar-step" onclick={nextBar} disabled={!transport.available} title={tr("次の小節へ(→)", "Next bar (→)")} aria-label={tr("次の小節へ", "Next bar")}
-          ><Icon name="fast-forward" /></button
-        >
-        <button class="btn icon" onclick={seekEnd} disabled={!transport.available} title={tr("終端へ(End)", "Go to end (End)")} aria-label={tr("終端へ", "Go to end")}
-          ><Icon name="skip-forward" /></button
-        >
-      </div>
-      <div class="tp">
-        <button
-          class="btn icon"
-          class:on={loopOn}
-          aria-label={tr("ループ再生", "Loop")}
-          aria-pressed={loopOn}
-          onclick={toggleLoop}
-          disabled={!transport.available}
-          title={tr(
-            "ループ再生(L)。ルーラーで範囲を選ぶとその区間、なければ曲全体",
-            "Loop (L). Loops the range selected on the ruler, or the whole song",
-          )}
-          ><Icon name="repeat" /></button
-        >
-        <button
-          class="btn icon"
-          class:on={transport.metronome}
-          aria-label={tr("メトロノーム", "Metronome")}
-          aria-pressed={!!transport.metronome}
-          onclick={toggleMetronome}
-          disabled={!transport.available}
-          title={tr("メトロノーム(拍ごとにクリック。小節頭は高い音)", "Metronome (click on each beat, higher pitch on the downbeat)")}
-          ><Icon name="metronome" /></button
-        >
-        {#if monitorLabel}
+    <!-- 2 段: 上 = 曲と画面の切り替え・AI の作業表示・取り消し・書き出し・設定 / 下 = 再生と位置の表示・聴く音量。
+         AI の作業表示が出入りしても高さが変わらないように、最初から 2 段にしている -->
+    <div class="h-row h-top">
+      <div class="h-left">
+        <img class="owl" src="/glaux-icon.png" alt="Glaux" width="28" height="28" />
+        <ProjectMenu title={project?.meta.title ?? "…"} />
+        <div class="view-switch" role="tablist" aria-label={tr("表示の切り替え", "Switch view")}>
           <button
-            class="btn icon monitor-on"
-            aria-label={tr(`聴き方: ${monitorLabel}(押すとステレオに戻す)`, `Monitoring: ${monitorLabel} (click to return to stereo)`)}
-            onclick={resetMonitor}
-            title={tr(
-              `聴き方を「${monitorLabel}」に切り替えています(ミキサーのモニター列)。押すとふつうのステレオに戻します。書き出しには入りません`,
-              `Monitoring is set to "${monitorLabel}" (Mixer monitor column). Click to return to normal stereo. Not included in exports`,
-            )}
-            ><Icon name="headphones" /></button
+            role="tab"
+            aria-selected={viewStore.main === "timeline"}
+            class:on={viewStore.main === "timeline"}
+            onclick={() => (viewStore.main = "timeline")}
+            aria-label={tr("タイムライン", "Timeline")}
+            title={tr("タイムライン(曲の流れ・クリップ・ピアノロール)", "Timeline (song flow, clips, piano roll)")}><Icon name="rows-2" /><span class="lbl">{tr("タイムライン", "Timeline")}</span></button
           >
+          <button
+            role="tab"
+            aria-selected={viewStore.main === "mixer"}
+            class:on={viewStore.main === "mixer"}
+            onclick={() => (viewStore.main = "mixer")}
+            aria-label={tr("ミキサー", "Mixer")}
+            title={tr("ミキサー(音量・パン・送り・エフェクトのつなぎ方)", "Mixer (volume, pan, sends, effect routing)")}><Icon name="sliders-horizontal" /><span class="lbl">{tr("ミキサー", "Mixer")}</span></button
+          >
+          <button
+            role="tab"
+            aria-selected={viewStore.main === "design"}
+            class:on={viewStore.main === "design"}
+            onclick={() => (viewStore.main = "design")}
+            aria-label={tr("設計", "Design")}
+            title={tr(
+              "設計(曲の計画と実際: 盛り上がり・パートごとの音域・パートの役割)",
+              "Design (song plan vs. actual: energy, range per part, part roles)",
+            )}><Icon name="spline" /><span class="lbl">{tr("設計", "Design")}</span></button
+          >
+        </div>
+      </div>
+      <div class="h-right">
+        {#if indicator !== "idle"}
+          {@const aiLabel = indicator === "calling" ? tr(`AI が${toolDoing(aiTool)}…`, `AI is ${toolDoing(aiTool)}…`) : tr("AI が作業中です…", "AI is working…")}
+          <!-- 狭いときは文字をしまってアイコンだけ(吹き出しで中身が分かる) -->
+          <div class="ai-indicator" class:thinking={indicator === "session"} title={aiLabel}>
+            <Icon name="sparkles" size={14} />
+            <span class="ai-text">{aiLabel}</span>
+          </div>
         {/if}
         <button
-          class="btn icon rec"
-          aria-label={transport.recording ? tr("録音を止める", "Stop recording") : tr("録音", "Record")}
-          class:rec-on={transport.recording}
-          onclick={toggleRecord}
-          disabled={!transport.available}
-          title={transport.midi_recording
-            ? tr("MIDI 録音を止めてクリップとして配置", "Stop MIDI recording and place it as a clip")
-            : transport.recording
-              ? tr("録音を止めて音声トラックにクリップとして配置", "Stop recording and place it as a clip on an audio track")
-              : midiArm
-                ? tr(
-                    `MIDI 録音(${midiArm.name})。再生ヘッドの位置から録り、止めるとそのトラックに置かれます`,
-                    `MIDI record (${midiArm.name}). Records from the playhead; stopping places it on that track`,
-                  )
-                : tr(
-                    "録音(既定の入力デバイス)。再生ヘッドの位置から録り、止めると音声トラックに置かれます",
-                    "Record (default input device). Records from the playhead; stopping places it on an audio track",
-                  )}
-          ><Icon name="circle" fill /></button
+          class="btn icon"
+          onclick={doUndo}
+          disabled={entries.length === 0}
+          title={entries.length > 0
+            ? tr(`取り消す: ${entries[entries.length - 1].label}(Ctrl+Z)`, `Undo: ${entries[entries.length - 1].label} (Ctrl+Z)`)
+            : tr("取り消せる編集はありません", "Nothing to undo")}
+          aria-label={tr("取り消し", "Undo")}><Icon name="undo-2" /></button
         >
+        <button
+          class="btn icon"
+          onclick={doRedo}
+          disabled={redoable.length === 0}
+          title={redoable.length > 0
+            ? tr(`やり直す: ${redoable[0].label}(Ctrl+Shift+Z / Ctrl+Y)`, `Redo: ${redoable[0].label} (Ctrl+Shift+Z / Ctrl+Y)`)
+            : tr("やり直せる編集はありません", "Nothing to redo")}
+          aria-label={tr("やり直し", "Redo")}><Icon name="redo-2" /></button
+        >
+        <span class="sep"></span>
+        <button
+          class="btn"
+          onclick={() => (showExport = true)}
+          title={tr("書き出し(WAV・トラックごと・MIDI。形式・範囲・音量を選べる)", "Export (WAV, per-track stems, MIDI; choose format, range and level)")}
+          aria-label={tr("書き出し", "Export")}><Icon name="download" /><span class="export-label">{tr("書き出し", "Export")}</span></button
+        >
+        <button class="btn icon" onclick={() => openSettings()} title={tr("設定", "Settings")} aria-label={tr("設定", "Settings")}><Icon name="settings" /></button>
       </div>
-      <TransportLcd {project} {contentEndTick} midiArmName={midiArm?.name ?? null} onError={(m) => (error = m)} />
     </div>
-    <div class="h-right">
-      {#if indicator !== "idle"}
-        {@const aiLabel = indicator === "calling" ? tr(`AI が${toolDoing(aiTool)}…`, `AI is ${toolDoing(aiTool)}…`) : tr("AI が作業中です…", "AI is working…")}
-        <!-- 狭いときは文字をしまってアイコンだけ(吹き出しで中身が分かる) -->
-        <div class="ai-indicator" class:thinking={indicator === "session"} title={aiLabel}>
-          <Icon name="sparkles" size={14} />
-          <span class="ai-text">{aiLabel}</span>
+    <div class="h-row h-bottom">
+      <span class="h-pad"></span>
+      <div class="h-center">
+        <div class="tp">
+          <button class="btn icon" onclick={seekStart} disabled={!transport.available} title={tr("先頭へ(Home)", "Go to start (Home)")} aria-label={tr("先頭へ", "Go to start")}
+            ><Icon name="skip-back" /></button
+          >
+          <button class="btn icon bar-step" onclick={prevBar} disabled={!transport.available} title={tr("前の小節へ(←)", "Previous bar (←)")} aria-label={tr("前の小節へ", "Previous bar")}
+            ><Icon name="rewind" /></button
+          >
+          <button
+            class="btn icon play"
+            aria-label={transport.playing ? tr("一時停止", "Pause") : tr("再生", "Play")}
+            onclick={togglePlay}
+            disabled={!transport.available}
+            title={transport.available
+              ? tr("再生 / 一時停止(Space)", "Play / Pause (Space)")
+              : tr("オーディオデバイスが利用できません", "No audio device available")}
+            ><Icon name={transport.playing ? "pause" : "play"} /></button
+          >
+          <button class="btn icon" onclick={stopPlayback} disabled={!transport.available} title={tr("停止", "Stop")} aria-label={tr("停止", "Stop")}
+            ><Icon name="square" /></button
+          >
+          <button class="btn icon bar-step" onclick={nextBar} disabled={!transport.available} title={tr("次の小節へ(→)", "Next bar (→)")} aria-label={tr("次の小節へ", "Next bar")}
+            ><Icon name="fast-forward" /></button
+          >
+          <button class="btn icon" onclick={seekEnd} disabled={!transport.available} title={tr("終端へ(End)", "Go to end (End)")} aria-label={tr("終端へ", "Go to end")}
+            ><Icon name="skip-forward" /></button
+          >
         </div>
-      {/if}
-      <!-- 聴く音量: アプリから鳴る音だけ(曲のマスター音量・書き出しとは別) -->
-      <div
-        class="listen-vol"
-        class:changed={settings.outputVolumeDb !== 0}
-        title={tr(
-          `聴く音量 ${fmtListen(settings.outputVolumeDb)}(このアプリから鳴る音だけ。曲のマスター音量・書き出しには影響しません。ダブルクリックで 0 dB)`,
-          `Listening volume ${fmtListen(settings.outputVolumeDb)} (this app's output only; does not affect the song's master volume or exports. Double-click for 0 dB)`,
-        )}
-      >
-        <Icon name="volume-2" size={15} />
-        <input
-          type="range"
-          min="-60"
-          max="6"
-          step="1"
-          value={settings.outputVolumeDb}
-          disabled={!transport.available}
-          oninput={(e) => setListenVolume(Number(e.currentTarget.value), false)}
-          onchange={(e) => setListenVolume(Number(e.currentTarget.value), true)}
-          ondblclick={() => setListenVolume(0, true)}
-          aria-label={tr("聴く音量(曲には影響しない)", "Listening volume (does not affect the song)")}
-        />
+        <div class="tp">
+          <button
+            class="btn icon"
+            class:on={loopOn}
+            aria-label={tr("ループ再生", "Loop")}
+            aria-pressed={loopOn}
+            onclick={toggleLoop}
+            disabled={!transport.available}
+            title={tr(
+              "ループ再生(L)。ルーラーで範囲を選ぶとその区間、なければ曲全体",
+              "Loop (L). Loops the range selected on the ruler, or the whole song",
+            )}
+            ><Icon name="repeat" /></button
+          >
+          <button
+            class="btn icon"
+            class:on={transport.metronome}
+            aria-label={tr("メトロノーム", "Metronome")}
+            aria-pressed={!!transport.metronome}
+            onclick={toggleMetronome}
+            disabled={!transport.available}
+            title={tr("メトロノーム(拍ごとにクリック。小節頭は高い音)", "Metronome (click on each beat, higher pitch on the downbeat)")}
+            ><Icon name="metronome" /></button
+          >
+          {#if monitorLabel}
+            <button
+              class="btn icon monitor-on"
+              aria-label={tr(`聴き方: ${monitorLabel}(押すとステレオに戻す)`, `Monitoring: ${monitorLabel} (click to return to stereo)`)}
+              onclick={resetMonitor}
+              title={tr(
+                `聴き方を「${monitorLabel}」に切り替えています(ミキサーのモニター列)。押すとふつうのステレオに戻します。書き出しには入りません`,
+                `Monitoring is set to "${monitorLabel}" (Mixer monitor column). Click to return to normal stereo. Not included in exports`,
+              )}
+              ><Icon name="headphones" /></button
+            >
+          {/if}
+          <button
+            class="btn icon rec"
+            aria-label={transport.recording ? tr("録音を止める", "Stop recording") : tr("録音", "Record")}
+            class:rec-on={transport.recording}
+            onclick={toggleRecord}
+            disabled={!transport.available}
+            title={transport.midi_recording
+              ? tr("MIDI 録音を止めてクリップとして配置", "Stop MIDI recording and place it as a clip")
+              : transport.recording
+                ? tr("録音を止めて音声トラックにクリップとして配置", "Stop recording and place it as a clip on an audio track")
+                : midiArm
+                  ? tr(
+                      `MIDI 録音(${midiArm.name})。再生ヘッドの位置から録り、止めるとそのトラックに置かれます`,
+                      `MIDI record (${midiArm.name}). Records from the playhead; stopping places it on that track`,
+                    )
+                  : tr(
+                      "録音(既定の入力デバイス)。再生ヘッドの位置から録り、止めると音声トラックに置かれます",
+                      "Record (default input device). Records from the playhead; stopping places it on an audio track",
+                    )}
+            ><Icon name="circle" fill /></button
+          >
+        </div>
+        <TransportLcd {project} {contentEndTick} midiArmName={midiArm?.name ?? null} onError={(m) => (error = m)} />
       </div>
-      <button
-        class="btn icon"
-        onclick={doUndo}
-        disabled={entries.length === 0}
-        title={entries.length > 0
-          ? tr(`取り消す: ${entries[entries.length - 1].label}(Ctrl+Z)`, `Undo: ${entries[entries.length - 1].label} (Ctrl+Z)`)
-          : tr("取り消せる編集はありません", "Nothing to undo")}
-        aria-label={tr("取り消し", "Undo")}><Icon name="undo-2" /></button
-      >
-      <button
-        class="btn icon"
-        onclick={doRedo}
-        disabled={redoable.length === 0}
-        title={redoable.length > 0
-          ? tr(`やり直す: ${redoable[0].label}(Ctrl+Shift+Z / Ctrl+Y)`, `Redo: ${redoable[0].label} (Ctrl+Shift+Z / Ctrl+Y)`)
-          : tr("やり直せる編集はありません", "Nothing to redo")}
-        aria-label={tr("やり直し", "Redo")}><Icon name="redo-2" /></button
-      >
-      <span class="sep"></span>
-      <button
-        class="btn"
-        onclick={() => (showExport = true)}
-        title={tr("書き出し(WAV・トラックごと・MIDI。形式・範囲・音量を選べる)", "Export (WAV, per-track stems, MIDI; choose format, range and level)")}
-        aria-label={tr("書き出し", "Export")}><Icon name="download" /><span class="export-label">{tr("書き出し", "Export")}</span></button
-      >
-      <button class="btn icon" onclick={() => openSettings()} title={tr("設定", "Settings")} aria-label={tr("設定", "Settings")}><Icon name="settings" /></button>
+      <div class="h-tail">
+        <!-- 聴く音量: アプリから鳴る音だけ(曲のマスター音量・書き出しとは別) -->
+        <div
+          class="listen-vol"
+          class:changed={settings.outputVolumeDb !== 0}
+          title={tr(
+            `聴く音量 ${fmtListen(settings.outputVolumeDb)}(このアプリから鳴る音だけ。曲のマスター音量・書き出しには影響しません。ダブルクリックで 0 dB)`,
+            `Listening volume ${fmtListen(settings.outputVolumeDb)} (this app's output only; does not affect the song's master volume or exports. Double-click for 0 dB)`,
+          )}
+        >
+          <Icon name="volume-2" size={15} />
+          <input
+            type="range"
+            min="-60"
+            max="6"
+            step="1"
+            value={settings.outputVolumeDb}
+            disabled={!transport.available}
+            oninput={(e) => setListenVolume(Number(e.currentTarget.value), false)}
+            onchange={(e) => setListenVolume(Number(e.currentTarget.value), true)}
+            ondblclick={() => setListenVolume(0, true)}
+            aria-label={tr("聴く音量(曲には影響しない)", "Listening volume (does not affect the song)")}
+          />
+        </div>
+      </div>
     </div>
   </header>
 
@@ -1164,18 +1206,40 @@
     height: 100%;
   }
 
-  /* ---- ヘッダー(左 / 中央 / 右の 3 つ。中央は常に真ん中) ---- */
+  /* ---- ヘッダー(2 段。上: 左 / 右、下: 中央は常に真ん中・右端に聴く音量) ---- */
   header {
-    height: 52px;
     flex-shrink: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    align-items: center;
-    gap: var(--sp-3);
-    padding: 0 var(--sp-3);
+    display: flex;
+    flex-direction: column;
+    padding: 2px var(--sp-3) 4px;
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
+  }
+
+  .h-top {
+    height: 36px;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .h-top .h-left {
+    flex: 1 1 auto;
+  }
+
+  /* 再生の部品は真ん中。入りきらないときは聴く音量の場所を残して左へ寄せる(重ならない) */
+  .h-bottom {
+    height: 40px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
+    align-items: center;
+    gap: var(--sp-3);
+  }
+
+  .h-tail {
+    display: flex;
+    justify-content: flex-end;
+    min-width: 0;
   }
 
   .h-left,
@@ -1313,6 +1377,12 @@
   .listen-vol input {
     width: 72px;
   }
+  /* 窓の最小幅(800px)より狭く表示されたとき(拡大表示など)も、下の段に収める */
+  @media (max-width: 780px) {
+    .listen-vol input {
+      width: 40px;
+    }
+  }
 
   .monitor-on {
     background: #5a4520;
@@ -1363,36 +1433,15 @@
     }
   }
 
-  /* 入りきらないとき(ノート PC の 150% 表示・画面の半分など。fitHeader が data-fit を決める):
+  /* 上の段に入りきらないとき(ノート PC の 150% 表示・画面の半分など。fitHeader が data-fit を決める):
      まず書き出しの文字、次に AI の作業表示の文字をしまう(AI の表示はアイコンだけになり、吹き出しで中身が分かる) */
-  header:global(:is([data-fit="1"], [data-fit="2"], [data-fit="3"])) .export-label {
+  header:global(:is([data-fit="1"], [data-fit="2"])) .export-label {
     display: none;
   }
-  header:global(:is([data-fit="2"], [data-fit="3"])) .ai-text {
+  header:global([data-fit="2"]) .ai-text {
     display: none;
   }
 
-  /* それでも入らなければ 2 段にして、上の段に左右の欄、下の段に中央(再生・位置の表示)を置く(どのボタンも隠さない) */
-  header:global([data-fit="3"]) {
-    height: auto;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "left right"
-      "center center";
-    row-gap: 4px;
-    padding-block: 6px;
-  }
-  header:global([data-fit="3"]) .h-left {
-    grid-area: left;
-  }
-  header:global([data-fit="3"]) .h-right {
-    grid-area: right;
-  }
-  header:global([data-fit="3"]) .h-center {
-    grid-area: center;
-    justify-content: center;
-    min-width: 0;
-  }
   /* とても狭い: 前・次の小節のボタンをしまう(← → キーで動かせる。時間の表示もしまう: TransportLcd) */
   @media (max-width: 640px) {
     .bar-step {

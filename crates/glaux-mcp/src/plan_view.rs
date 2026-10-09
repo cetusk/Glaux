@@ -272,6 +272,11 @@ pub async fn save(
                     } else {
                         vec![]
                     },
+                    group: if still_proposal {
+                        old.group.clone()
+                    } else {
+                        None
+                    },
                     id,
                     name: name.map_or_else(|| old.name.clone(), str::to_owned),
                     kind: kind.to_owned(),
@@ -286,6 +291,7 @@ pub async fn save(
             plan: Plan {
                 patch_base: Default::default(),
                 patch: vec![],
+                group: None,
                 id: glaux_core::PlanId::new(),
                 name: name.unwrap_or(kind).to_owned(),
                 kind: kind.to_owned(),
@@ -381,6 +387,7 @@ pub async fn estimate(handle: &SessionHandle) -> Result<Value, String> {
             body,
             patch: vec![],
             patch_base: Default::default(),
+            group: None,
         };
         entries.push(
             handle
@@ -555,6 +562,7 @@ pub async fn propose(
     kind: Option<&str>,
     body: Option<Value>,
     commands: Vec<glaux_core::Command>,
+    group: Option<&str>,
     note: glaux_core::EntryNote,
 ) -> Result<Value, String> {
     use glaux_core::plan::Plan;
@@ -606,6 +614,7 @@ pub async fn propose(
         body,
         patch_base: glaux_core::designcheck::patch_base(&project, &patch),
         patch,
+        group: group.map(|g| g.trim().to_owned()).filter(|g| !g.is_empty()),
     };
     let id = plan.id.clone();
     let edits = plan.patch.len();
@@ -745,9 +754,10 @@ pub async fn plan_head(handle: &SessionHandle, n: usize, ids: &[String]) -> Resu
 
 /// 案を採用する: 案の音を曲に当て(1 件の編集)、案の計画を今の計画にする(元の計画があれば中身を置き換えて案を消す)
 ///
-/// 採用したら、ほかの案のうち同じ組のもの(同じ元の計画から出た案〈元の計画が変わったので古くなる〉と、
-/// 同じきっかけ〈人の同じ言葉〉で出された案)と `also_discard`(いっしょに聴き比べていた案など)を捨てる
-/// (計画の履歴に 1 件ずつ残るので、取り消せる)
+/// 採用したら、同じ問いへの別案を捨てる(計画の履歴に 1 件ずつ残るので、取り消せる)。別案とみなすのは、同じ元の計画か
+/// 同じきっかけ〈人の同じ言葉〉から出た案のうち、問いの名前(`group`)が同じもの。問いの名前が無ければ、触る所
+/// (曲の所・計画の中身の所)が採用した案と重なるもの。`also_discard` に挙げた案は必ず捨てる。
+/// 残した案のうち同じ元の計画から出たものは、中身を新しい元の計画に付け直す(古い元の中身で、採用した変更を上書きしないように)
 pub async fn adopt_proposal(
     handle: &SessionHandle,
     plan_id: &str,
@@ -810,6 +820,9 @@ pub async fn adopt_proposal(
         .as_ref()
         .and_then(|r| plans.doc().plans.get(&r.id))
         .cloned();
+    // 採用する前の元の計画(ほかの案がどこを変えるかを比べる基準)と、採用した後の元の計画
+    let base_before = base.clone();
+    let mut base_after: Option<Plan> = None;
     let human = glaux_core::Author::Human;
     // 計画の変更は、曲に当てた採用の編集と一組にする(曲の側でどの画面から取り消しても、計画も一緒に戻るように)
     let linked = |why: &str| glaux_core::EntryNote {
@@ -820,22 +833,22 @@ pub async fn adopt_proposal(
     let mut plan_entry_ids = Vec::new();
     match base {
         Some(b) => {
+            let after = Plan {
+                rev: b.rev + 1,
+                body: {
+                    // 曲全体の計画の案が区間の設計を書いていなければ、今の区間の設計を引き継ぐ
+                    let mut body = p.body.clone();
+                    glaux_core::plan::keep_song_sections(&b, &mut body, false);
+                    body
+                },
+                state: None,
+                ..b
+            };
+            base_after = Some(after.clone());
             plan_entry_ids.push(
                 handle
                     .apply_plan(
-                        PlanCommand::Replace {
-                            plan: Plan {
-                                rev: b.rev + 1,
-                                body: {
-                                    // 曲全体の計画の案が区間の設計を書いていなければ、今の区間の設計を引き継ぐ
-                                    let mut body = p.body.clone();
-                                    glaux_core::plan::keep_song_sections(&b, &mut body, false);
-                                    body
-                                },
-                                state: None,
-                                ..b
-                            },
-                        },
+                        PlanCommand::Replace { plan: after },
                         human.clone(),
                         label.clone(),
                         linked(&label),
@@ -878,7 +891,7 @@ pub async fn adopt_proposal(
             );
         }
     }
-    // ほかの案を捨てる
+    // ほかの案: 同じ組(同じ元の計画・同じきっかけ)の中で、同じ問いへの別案を捨て、残りは元の計画に付け直す
     let extra: Vec<_> = also_discard
         .iter()
         .filter_map(|s| parse_plan_id(s).ok())
@@ -895,20 +908,72 @@ pub async fn adopt_proposal(
     };
     let mine = created(&p.id);
     let same_ask = |q: &glaux_core::PlanId| same_ask(mine.as_ref(), created(q).as_ref());
-    let others: Vec<(glaux_core::PlanId, String)> = plans
+    // 採用した案が元の計画のどこを変えたか(元の計画が無ければ無し)
+    let changes_of = |q: &Plan| -> Option<Vec<BodyChange>> {
+        let b = base_before.as_ref()?;
+        // 元の計画のその版から出た案だけ比べられる(古い元から出た案は、どこを変えたか分からない)
+        if q.derived_from.as_ref().map(|r| r.digest.as_str()) != Some(b.digest().as_str()) {
+            return None;
+        }
+        let mut body = q.body.clone();
+        glaux_core::plan::keep_song_sections(b, &mut body, false);
+        let mut out = Vec::new();
+        body_changes(&b.body, &body, &mut Vec::new(), &mut out);
+        Some(out)
+    };
+    let p_changes = changes_of(&p);
+    let p_keys: std::collections::BTreeSet<&String> = p.patch_base.keys().collect();
+    let mut discard: Vec<(glaux_core::PlanId, String)> = Vec::new();
+    let mut rebase: Vec<Plan> = Vec::new();
+    for q in plans
         .doc()
         .plans
         .values()
         .filter(|q| q.id != p.id && q.state.as_deref() == Some("proposal"))
-        .filter(|q| {
-            extra.contains(&q.id)
-                || (base_id.is_some() && q.derived_from.as_ref().map(|r| &r.id) == base_id.as_ref())
-                || same_ask(&q.id)
-        })
-        .map(|q| (q.id.clone(), q.name.clone()))
-        .collect();
+    {
+        let same_base =
+            base_id.is_some() && q.derived_from.as_ref().map(|r| &r.id) == base_id.as_ref();
+        if extra.contains(&q.id) {
+            discard.push((q.id.clone(), q.name.clone()));
+            continue;
+        }
+        if !(same_base || same_ask(&q.id)) {
+            continue;
+        }
+        let q_changes = if same_base {
+            changes_of(q)
+        } else {
+            Some(vec![])
+        };
+        // 計画の中身で重なるか(どこを変えたか分からない案は重なるとみなす)
+        let plan_overlap = match (&p_changes, &q_changes) {
+            (Some(a), Some(b)) => changes_overlap(a, b),
+            _ => same_base,
+        };
+        let song_overlap = q.patch_base.keys().any(|k| p_keys.contains(k));
+        let alternative = match (&p.group, &q.group) {
+            (Some(a), Some(b)) => a == b || plan_overlap || song_overlap,
+            _ => plan_overlap || song_overlap,
+        };
+        if alternative {
+            discard.push((q.id.clone(), q.name.clone()));
+            continue;
+        }
+        // 残す。同じ元の計画から出た案は、採用した後の元の計画に付け直す
+        if let (true, Some(after), Some(ch)) = (same_base, base_after.as_ref(), q_changes) {
+            match apply_changes(&after.body, &ch) {
+                Some(body) => rebase.push(Plan {
+                    rev: q.rev + 1,
+                    derived_from: Some(after.reference()),
+                    body,
+                    ..q.clone()
+                }),
+                None => discard.push((q.id.clone(), q.name.clone())),
+            }
+        }
+    }
     let mut discarded = Vec::new();
-    for (id, name) in others {
+    for (id, name) in discard {
         let l = glaux_core::tr!(
             "案「{}」を採用したので、案「{name}」を捨てる",
             "Discard proposal \"{name}\" (adopted \"{}\")",
@@ -926,12 +991,100 @@ pub async fn adopt_proposal(
         );
         discarded.push(name);
     }
-    let mut v = json!({ "entry_id": song_entry, "plan_entry_id": plan_entry_ids.first(), "discarded": discarded,
+    let mut kept = Vec::new();
+    for plan in rebase {
+        let l = glaux_core::tr!(
+            "案「{}」を採用したので、別の問いの案「{}」を新しい計画に合わせる",
+            "Rebase proposal \"{}\" onto the plan after adopting \"{}\"",
+            p.name,
+            plan.name
+        );
+        kept.push(plan.name.clone());
+        plan_entry_ids.push(
+            handle
+                .apply_plan(
+                    PlanCommand::Replace { plan },
+                    glaux_core::Author::Human,
+                    l.clone(),
+                    linked(&l),
+                )
+                .await?,
+        );
+    }
+    let mut v = json!({ "entry_id": song_entry, "plan_entry_id": plan_entry_ids.first(), "discarded": discarded, "kept": kept,
                         "plan_entries": plan_entry_ids.len(), "plan_entry_ids": plan_entry_ids });
     if !kept_locked.is_empty() {
         v["kept_locked"] = json!(kept_locked);
     }
     Ok(v)
+}
+
+/// 計画の中身の変わった所(JSON の中の位置 → 新しい値。None = 消した)
+type BodyChange = (Vec<String>, Option<Value>);
+
+/// `base` から `new` への変わった所を集める。オブジェクトは鍵ごと、長さの同じ配列は要素ごとに比べ、それ以外は丸ごと
+fn body_changes(base: &Value, new: &Value, path: &mut Vec<String>, out: &mut Vec<BodyChange>) {
+    if base == new {
+        return;
+    }
+    match (base, new) {
+        (Value::Object(a), Value::Object(b)) => {
+            let keys: std::collections::BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+            for k in keys {
+                path.push(k.clone());
+                match (a.get(k), b.get(k)) {
+                    (Some(x), Some(y)) => body_changes(x, y, path, out),
+                    (_, y) => out.push((path.clone(), y.cloned())),
+                }
+                path.pop();
+            }
+        }
+        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => {
+            for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                path.push(i.to_string());
+                body_changes(x, y, path, out);
+                path.pop();
+            }
+        }
+        _ => out.push((path.clone(), Some(new.clone()))),
+    }
+}
+
+/// 2 つの変更が同じ所(片方がもう片方の中を含む)を変えるか
+fn changes_overlap(a: &[BodyChange], b: &[BodyChange]) -> bool {
+    a.iter().any(|(x, _)| {
+        b.iter().any(|(y, _)| {
+            let n = x.len().min(y.len());
+            x[..n] == y[..n]
+        })
+    })
+}
+
+/// 変わった所を `base` に当てる。当てる所が無い(配列の長さが変わった・型が違う)ときは None
+fn apply_changes(base: &Value, changes: &[BodyChange]) -> Option<Value> {
+    let mut v = base.clone();
+    for (path, val) in changes {
+        let (last, parents) = path.split_last()?;
+        let mut cur = &mut v;
+        for k in parents {
+            cur = match cur {
+                Value::Object(o) => o.get_mut(k)?,
+                Value::Array(a) => a.get_mut(k.parse::<usize>().ok()?)?,
+                _ => return None,
+            };
+        }
+        match (cur, val) {
+            (Value::Object(o), Some(x)) => {
+                o.insert(last.clone(), x.clone());
+            }
+            (Value::Object(o), None) => {
+                o.remove(last);
+            }
+            (Value::Array(a), Some(x)) => *a.get_mut(last.parse::<usize>().ok()?)? = x.clone(),
+            _ => return None,
+        }
+    }
+    Some(v)
 }
 
 /// 同じきっかけの案を「同じ頼みの組」とみなす、出した時刻の近さ(分)

@@ -31,9 +31,11 @@ export function shouldYieldKey(e: KeyboardEvent): boolean {
     (el.tagName === "INPUT" && !NON_TEXT_INPUTS.has((el as HTMLInputElement).type));
   if (isText) {
     // 空の入力欄の Space は再生に回す(チャット欄などに入力先が残ったまま Space を押すと、見えない空白が入るだけで
-    // 再生されなかった。先頭の空白は使わないので、文字があるときだけ欄に任せる)
+    // 再生されなかった。先頭の空白は使わないので、文字があるときだけ欄に任せる)。
+    // 日本語入力がオンだと Space で全角の空白(U+3000)が入り、以後「空でない」になって効かなくなっていたので、
+    // 空白だけの欄も空とみなす(trim は U+3000 も取る)
     const value = el.isContentEditable ? (el.textContent ?? "") : (el as HTMLInputElement | HTMLTextAreaElement).value;
-    return !(plainSpace(e) && value === "");
+    return !(plainSpace(e) && value.trim() === "");
   }
   if (el.tagName === "SELECT") {
     // 選択肢は頭文字や矢印で選ぶので、修飾キーなしは譲る(Ctrl+Z 等はアプリへ)。
@@ -44,4 +46,24 @@ export function shouldYieldKey(e: KeyboardEvent): boolean {
     return (el as HTMLInputElement).type === "range" && SLIDER_KEYS.has(e.code);
   }
   return false;
+}
+
+/** 空の入力欄で Space を再生に回したとき、日本語入力が後から入れる全角の空白を消す。
+ *  日本語入力がオンの Space(keyCode 229)は preventDefault しても入力を止められないので、続く入力を見て空に戻す */
+export function dropImeSpace(e: KeyboardEvent): void {
+  const el = e.target as HTMLInputElement | HTMLTextAreaElement | null;
+  if (!el || (el.tagName !== "TEXTAREA" && el.tagName !== "INPUT")) return;
+  const clear = () => {
+    if (el.value !== "" && el.value.trim() === "") {
+      el.value = "";
+      // bind:value の側にも知らせる
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  };
+  const onInput = () => {
+    el.removeEventListener("input", onInput);
+    clear();
+  };
+  el.addEventListener("input", onInput);
+  setTimeout(() => el.removeEventListener("input", onInput), 500);
 }

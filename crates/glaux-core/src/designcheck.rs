@@ -982,6 +982,7 @@ mod tests {
                             { "section": s2.to_string(), "presence": 5, "register": [48, 60] }
                         ]
                     }),
+                    group: None,
                 },
             })
             .unwrap();

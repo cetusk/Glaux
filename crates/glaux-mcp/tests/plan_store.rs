@@ -10,6 +10,7 @@ fn plan(id: &PlanId, name: &str) -> Plan {
     Plan {
         patch_base: Default::default(),
         patch: vec![],
+        group: None,
         state: None,
         id: id.clone(),
         name: name.into(),

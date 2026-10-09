@@ -383,4 +383,6 @@ export type ChatEvent =
   | { kind: "tool_use"; name: string }
   | { kind: "result"; ok: boolean; text: string; chain_end?: string }
   | { kind: "notice"; text: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /** CLI のプロセスが終わり、次の指示を受け付けられる(result より後に届く) */
+  | { kind: "idle" };

@@ -4092,6 +4092,11 @@ pub struct ProposeDesignParams {
     /// 人が聴き比べて採用したときだけ曲に当たる。固定の音への編集は外す。
     #[serde(default)]
     pub commands: Option<Vec<Value>>,
+    /// どの問いへの案か(短い名前。例「サビのベース」)。1 つの頼みで別々の問いに案を並べるときは、同じ問いの別案に
+    /// 同じ名前を付ける。採用すると同じ問いの案は捨て、別の問いの案は残す(触る所が重なる案は問いに関係なく捨てる)。
+    /// 1 つの問いへの案だけなら省略してよい
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -9599,6 +9604,7 @@ impl GlauxServer {
         let plan = plan::Plan {
             patch_base: Default::default(),
             patch: vec![],
+            group: None,
             state: None,
             id: glaux_core::PlanId::new(),
             name: name.clone(),
@@ -10119,6 +10125,11 @@ impl GlauxServer {
                     } else {
                         vec![]
                     },
+                    group: if still_proposal {
+                        old.group.clone()
+                    } else {
+                        None
+                    },
                     state,
                     id,
                     name: p.name.unwrap_or_else(|| old.name.clone()),
@@ -10144,6 +10155,7 @@ impl GlauxServer {
                 let plan = Plan {
                     patch_base: Default::default(),
                     patch: vec![],
+                    group: None,
                     state: match p.state.as_deref() {
                         None | Some("adopted") => None,
                         Some(s) => Some(s.to_owned()),
@@ -14498,6 +14510,8 @@ impl GlauxServer {
         固定の音への編集は外す(kept_locked)。\
         別々の案を並べて聴き比べてもらうとき(低域・中域・高域を目立たせる 3 案 など)は、案ごとにこの道具を呼ぶ(まとめる指定は無い)。\
         案が 2 つ以上あると、人は設計画面の「まとめて聴き比べる」で、今(A)と案(B・C … 4 つまで)を同じ範囲で切り替えて聴ける。\
+        1 つの頼みで別々の問い(サビのベースと間奏のパッド など)に案を並べるときは、group に問いの名前を付ける\
+        (採用すると同じ問いの案だけ捨て、別の問いの案は残る)。\
         案を出したら、人に「案を出したので聴き比べて」と伝えて待つ。"
     )]
     async fn propose_design(
@@ -14520,6 +14534,7 @@ impl GlauxServer {
             p.kind.as_deref(),
             p.body,
             commands,
+            p.group.as_deref(),
             note,
         )
         .await?;

@@ -57,6 +57,10 @@ pub struct Plan {
     /// 鍵と指紋は [`crate::designcheck::patch_base`] が作る
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub patch_base: BTreeMap<String, String>,
+    /// 案がどの問いへの答えか(案だけが持つ。AI が 1 つの頼みで別々の問いに案を並べたとき、同じ問いの案に同じ名前)。
+    /// 採用すると、同じ問いの案は捨て、別の問いの案は(触る所が重ならなければ)残す
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// 計画の状態(省略 = 採用済み)
@@ -369,6 +373,7 @@ pub fn section_design_command(
                     body,
                     patch: vec![],
                     patch_base: BTreeMap::new(),
+                    group: None,
                 },
             })
         }
@@ -1244,6 +1249,7 @@ mod tests {
                     "phrases": [{ "label": "A", "bars": 4 }, { "label": "A′", "bars": 4 }]
                 }]
             }),
+            group: None,
         }
     }
 

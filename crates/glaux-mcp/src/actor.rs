@@ -575,12 +575,32 @@ impl SessionHandle {
             .map(|e| e.id.clone())
             .collect();
         for id in live.into_iter().rev() {
-            let note = EntryNote {
-                why: t(
-                    "一組の曲の編集を取り消した・やり直したので、計画の変更も合わせる",
-                    "The paired song edit was undone or redone, so the plan change follows",
+            // 取り消しの連なりをたどって、元の変更(理由・きっかけ)と、今効いているかを知る
+            let mut origin = linked.iter().find(|e| e.id == id).copied();
+            let mut undoing = true;
+            while let Some(r) = origin.and_then(|e| e.reverts.as_ref()) {
+                origin = applied.iter().find(|e| &e.id == r);
+                undoing = !undoing;
+            }
+            let base = origin.and_then(|e| e.note.as_ref());
+            let why = base.map(|n| n.why.as_str()).filter(|w| !w.is_empty());
+            let lead = if undoing {
+                t(
+                    "曲の編集を取り消したので、一組の計画の変更も戻す",
+                    "The paired song edit was undone, so this plan change is reverted",
                 )
-                .to_owned(),
+            } else {
+                t(
+                    "曲の編集をやり直したので、一組の計画の変更ももう一度効かせる",
+                    "The paired song edit was redone, so this plan change is applied again",
+                )
+            };
+            let note = EntryNote {
+                why: match why {
+                    Some(w) => format!("{lead}: {w}"),
+                    None => lead.to_owned(),
+                },
+                trigger: base.and_then(|n| n.trigger.clone()),
                 song_entry: Some(link.clone()),
                 ..Default::default()
             };

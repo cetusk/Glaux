@@ -163,3 +163,15 @@ code {
   border-color: var(--accent-dim);
   color: var(--accent);
 }
+
+/* 仕切りのドラッグ中: 文字を選ばない・カーソルを固定する(タイムラインの見出しの仕切りと、下のパネルの仕切りで共用) */
+body.resizing-h,
+body.resizing-h * {
+  cursor: row-resize !important;
+  user-select: none;
+}
+body.resizing-w,
+body.resizing-w * {
+  cursor: col-resize !important;
+  user-select: none;
+}

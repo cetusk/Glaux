@@ -812,23 +812,25 @@ export async function endProposalAb(): Promise<void> {
   await endAbLoop();
 }
 
-/** 案を採用する(案の音を曲に当て、案の計画を今の計画にする)。同じ元の計画・同じ頼みから出たほかの案と、
- *  いっしょに聴き比べていた案は捨てる(計画の履歴に残るので取り消せる) */
+/** 案を採用する(案の音を曲に当て、案の計画を今の計画にする)。同じ問いへの別案(同じ元の計画・同じ頼みから出て、
+ *  触る所が重なる案。AI が問いの名前を付けていればそれで分ける)は捨て、別の問いの案は残す(計画の履歴に残るので取り消せる)。
+ *  いっしょに聴き比べていただけの案は捨てない(別の問いの案をまとめて聴き比べることがある) */
 export async function adoptProposal(planId: string, name: string): Promise<void> {
-  const alsoDiscard = proposalAb.planIds.filter((id) => id !== planId);
   await endProposalAb();
   try {
     const r = await invoke<{
       discarded?: string[];
+      kept?: string[];
       entry_id?: string | null;
       plan_entries?: number;
       plan_entry_ids?: string[];
       kept_locked?: { what: string }[];
     }>("plan_adopt_proposal", {
       planId,
-      alsoDiscard,
+      alsoDiscard: [],
     });
     const gone = r?.discarded ?? [];
+    const kept = r?.kept ?? [];
     // 1 回の Ctrl+Z で、曲に当てた音と計画の変更(ほかの案を捨てたことも)をまとめて戻せるように。
     // 計画の変更は曲の採用の編集と一組で記録してあるので、曲の編集を戻せば(どの画面からでも)計画も一緒に戻る
     noteUnit(
@@ -839,8 +841,8 @@ export async function adoptProposal(planId: string, name: string): Promise<void>
     showToast(
       "ok",
       tr(
-        `案「${name}」を採用しました${gone.length ? `。ほかの案(${gone.map((n) => `「${n}」`).join("")})は捨てました` : ""}(曲と計画の履歴に残り、取り消せます)`,
-        `Adopted proposal "${name}"${gone.length ? `; discarded the other proposals (${gone.map((n) => `"${n}"`).join(", ")})` : ""} (kept in the song and plan history; can be undone)`,
+        `案「${name}」を採用しました${gone.length ? `。同じ問いのほかの案(${gone.map((n) => `「${n}」`).join("")})は捨てました` : ""}${kept.length ? `。別の問いの案(${kept.map((n) => `「${n}」`).join("")})は残しました` : ""}(曲と計画の履歴に残り、取り消せます)`,
+        `Adopted proposal "${name}"${gone.length ? `; discarded the other proposals for the same question (${gone.map((n) => `"${n}"`).join(", ")})` : ""}${kept.length ? `; kept the proposals for other questions (${kept.map((n) => `"${n}"`).join(", ")})` : ""} (kept in the song and plan history; can be undone)`,
       ),
     );
     // 固定の音を守るために外した編集(採用はしたが、聴き比べた音とは一部違う)

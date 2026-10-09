@@ -7883,6 +7883,33 @@ async fn adoption_undo_through_ai_tools_keeps_song_and_plans_together() {
     assert_eq!(state(&fx).await, s0);
     ok_json(&call(&fx, "redo", json!({})).await);
     assert_eq!(state(&fx).await, s1);
+    // 合わせた計画の変更の説明は、向き(取り消し・やり直し)と元の変更の理由から作る(全部同じ決まり文句にしない)
+    let log = ok_json(&call(&fx, "plan_log", json!({ "limit": 20 })).await);
+    let whys: Vec<String> = log["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["song_entry"].is_string())
+        .map(|e| e["why"].as_str().unwrap_or("").to_owned())
+        .collect();
+    let undone: Vec<_> = whys
+        .iter()
+        .filter(|w| w.starts_with("曲の編集を取り消したので"))
+        .collect();
+    let redone: Vec<_> = whys
+        .iter()
+        .filter(|w| w.starts_with("曲の編集をやり直したので"))
+        .collect();
+    assert!(
+        !undone.is_empty() && undone.len() == redone.len(),
+        "{whys:?}"
+    );
+    assert!(
+        undone.iter().chain(&redone).all(|w| w.contains(": ")),
+        "元の理由を添える: {whys:?}"
+    );
+    let distinct: std::collections::HashSet<_> = undone.iter().collect();
+    assert!(distinct.len() > 1 || undone.len() == 1, "{whys:?}");
     // チェックポイントまで戻す道具
     ok_json(&call(&fx, "revert_to", json!({ "label": "前" })).await);
     assert_eq!(state(&fx).await, s0);
@@ -8085,6 +8112,101 @@ async fn adoption_undo_from_anywhere_keeps_song_and_plans_together() {
         .unwrap();
     assert_eq!(song(&fx).await, s0);
     assert_eq!(props(&fx).await, 3);
+}
+
+/// 1 つの頼みで別々の問い(A・B)に 2 案ずつ出したとき、A1 を採用しても B の案は捨てない(同じ問いの A2 だけ捨てる)。
+/// 残した B の案は新しい計画に付け直され、後から採用しても A1 の計画の変更を消さない。問いの名前(group)があればそれで分ける
+#[tokio::test]
+async fn adopting_one_question_keeps_proposals_for_other_questions() {
+    use glaux_mcp::plan_view;
+    for with_group in [false, true] {
+        let fx = setup().await;
+        ok_json(&call(&fx, "apply_commands", add_track_args("trk_qa0001", "Wob")).await);
+        ok_json(&call(&fx, "apply_commands", add_track_args("trk_qb0001", "Pad")).await);
+        let song = ok_json(
+            &call(
+                &fx,
+                "save_plan",
+                json!({ "name": "曲", "kind": "song", "why": "元", "body": { "genre": "house", "mood": ["a0", "b0"], "note": "元" } }),
+            )
+            .await,
+        )["plan"]["plan_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut ids = vec![];
+        for (name, group, idx, word, track, db) in [
+            ("A1", "A", 0, "a1", "trk_qa0001", -1.0),
+            ("A2", "A", 0, "a2", "trk_qa0001", -2.0),
+            ("B1", "B", 1, "b1", "trk_qb0001", -3.0),
+            ("B2", "B", 1, "b2", "trk_qb0001", -4.0),
+        ] {
+            let mut mood = json!(["a0", "b0"]);
+            mood[idx] = json!(word);
+            let mut args = json!({ "name": name, "why": "試し", "base_plan_id": song,
+                "trigger": { "kind": "user", "text": "A と B に 2 案ずつ" },
+                "body": { "genre": "house", "mood": mood, "note": "元" },
+                "commands": [{ "op": "set_track_prop", "id": track, "prop": "volume_db", "value": db }] });
+            if with_group {
+                args["group"] = json!(group);
+            }
+            let r = ok_json(&call(&fx, "propose_design", args).await);
+            ids.push(r["plan_id"].as_str().unwrap().to_owned());
+        }
+        let proposals = |fx: &Fixture| {
+            let h = fx.handle.clone();
+            async move {
+                let p = h.get_plans().await.unwrap();
+                let mut v: Vec<String> = p
+                    .doc()
+                    .plans
+                    .values()
+                    .filter(|p| p.state.as_deref() == Some("proposal"))
+                    .map(|p| p.name.clone())
+                    .collect();
+                v.sort();
+                v
+            }
+        };
+        let r = plan_view::adopt_proposal(&fx.handle, &ids[0], &[])
+            .await
+            .unwrap();
+        assert_eq!(r["discarded"], json!(["A2"]), "group={with_group}");
+        assert_eq!(proposals(&fx).await, vec!["B1", "B2"]);
+        // 残した B の案は、A1 を採用した後の計画に付け直されている
+        let plans = fx.handle.get_plans().await.unwrap();
+        let b1 = plans
+            .doc()
+            .plans
+            .values()
+            .find(|p| p.name == "B1")
+            .unwrap()
+            .clone();
+        assert_eq!(b1.body["mood"], json!(["a1", "b1"]));
+        // B1 を採用: A1 の計画の変更も B1 の変更も残り、曲にも両方が当たる。同じ問いの B2 は捨てる
+        let r = plan_view::adopt_proposal(&fx.handle, &b1.id.to_string(), &[])
+            .await
+            .unwrap();
+        assert_eq!(r["discarded"], json!(["B2"]));
+        let plans = fx.handle.get_plans().await.unwrap();
+        let now = plans.doc().plans.values().find(|p| p.name == "曲").unwrap();
+        assert_eq!(now.body["mood"], json!(["a1", "b1"]));
+        let (project, _) = fx.handle.get_project().await.unwrap();
+        assert_eq!(project.tracks[0].volume_db, -1.0);
+        assert_eq!(project.tracks[1].volume_db, -3.0);
+        // 取り消すと、B の採用の前(B1・B2 が付け直された状態)に戻る。もう一度取り消すと最初の 4 案に戻る
+        fx.handle.undo(1).await.unwrap().unwrap();
+        assert_eq!(proposals(&fx).await, vec!["B1", "B2"]);
+        fx.handle.undo(1).await.unwrap().unwrap();
+        assert_eq!(proposals(&fx).await, vec!["A1", "A2", "B1", "B2"]);
+        let plans = fx.handle.get_plans().await.unwrap();
+        let b1 = plans.doc().plans.values().find(|p| p.name == "B1").unwrap();
+        assert_eq!(
+            b1.body["mood"],
+            json!(["a0", "b1"]),
+            "付け直しも取り消される"
+        );
+    }
 }
 
 /// 案を採用すると、同じ元の計画から出たほかの案と、指定した案(いっしょに聴き比べていた案)を捨てる。ほかの案は残す

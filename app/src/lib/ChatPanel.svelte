@@ -144,6 +144,10 @@
     edit?: { raw: string; ctx: PromptCtx };
   }
   let pending = $state<Pending[]>([]);
+  /** 裏の CLI のプロセスが終わっているか(返答の result は CLI が終わる前に届くので、送信待ちは idle を待ってから送る) */
+  let backendIdle = true;
+  /** 返答を受けてから、ターンの片付け(finishTurn)が終わるまで */
+  let finishing = false;
 
   /// 実行中のターンの開始前の最後の履歴エントリ(null = 履歴が空)
   let turnStart: string | null = null;
@@ -547,8 +551,8 @@
   /** 送る(実行中なら送信待ちに並べる)。答えていない質問は「答えずに次へ進んだ」にする */
   async function sendPrompt(shown: string, fullPrompt: string, edit?: { raw: string; ctx: PromptCtx }) {
     for (const m of messages) if (m.role === "question" && !m.answer && !m.skipped) m.skipped = true;
-    if (chatStatus.running || pending.length > 0) {
-      // 実行中に書いた指示は、今のターンが終わってから送る
+    if (chatStatus.running || pending.length > 0 || !backendIdle || finishing) {
+      // 実行中に書いた指示は、今のターンが終わってから送る(返答の後、裏の CLI が終わるまでの間も待つ)
       pending.push({ text: shown, fullPrompt, edit });
       scrollToBottom(true);
       return;
@@ -589,8 +593,9 @@
     await sendPrompt(shown, full);
   }
 
-  /// 送信待ちの次の指示を送る(ターンが終わったとき)
+  /// 送信待ちの次の指示を送る(ターンの片付けが済み、裏の CLI も終わったとき)
   function sendNext() {
+    if (chatStatus.running || !backendIdle || finishing) return;
     const next = pending.shift();
     if (!next) return;
     const user = push({ role: "user", text: next.text, ...next.edit }, true);
@@ -599,6 +604,7 @@
 
   async function start(fullPrompt: string, user: Msg) {
     chatStatus.running = true;
+    backendIdle = false;
     clearAiHighlight();
     turnStartedAt = Date.now();
     turnProposed = false;
@@ -616,6 +622,7 @@
     } catch (e) {
       push({ role: "error", text: String(e) });
       chatStatus.running = false;
+      backendIdle = true;
     }
   }
 
@@ -631,7 +638,7 @@
   const canEdit = (m: Msg) => m.role === "user" && !m.dropped && m.raw != null && m.sent != null;
 
   async function beginEdit(m: Msg) {
-    if (chatStatus.running || pending.length > 0 || !canEdit(m)) return;
+    if (chatStatus.running || !backendIdle || pending.length > 0 || !canEdit(m)) return;
     editing = { m, text: m.raw!, preview: null, busy: false, error: null };
     await tick();
     editEl?.focus();
@@ -645,7 +652,7 @@
 
   async function resendEdited() {
     const ed = editing;
-    if (!ed || ed.busy || chatStatus.running) return;
+    if (!ed || ed.busy || chatStatus.running || !backendIdle) return;
     const text = ed.text.trim();
     const idx = messages.indexOf(ed.m);
     if (!text || idx < 0 || !ed.m.sent) return;
@@ -780,10 +787,14 @@
             }
             if (ev.ok) playDoneChime();
             else playErrorChime();
-            finishTurn().then(() => {
-              questionsToEnd();
-              sendNext();
-            });
+            finishing = true;
+            finishTurn()
+              .catch(() => undefined)
+              .then(() => {
+                finishing = false;
+                questionsToEnd();
+                sendNext();
+              });
             break;
           case "notice":
             push({ role: "notice", text: ev.text });
@@ -793,6 +804,10 @@
             turnUser = null;
             push({ role: "error", text: ev.message });
             playErrorChime();
+            sendNext();
+            break;
+          case "idle":
+            backendIdle = true;
             sendNext();
             break;
         }

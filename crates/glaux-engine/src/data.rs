@@ -2662,6 +2662,9 @@ fn build_inner(
                 )
                     .hash(&mut c);
             }
+            // ソロ・ミュートで聞こえる・聞こえないが変わったら鳴らし直す(聞こえなくなったトラックの
+            // 鳴っている音を短いフェードで止め、聞こえるようになったトラックは位置をまたぐ音を途中から鳴らす)
+            m.audible.hash(&mut c);
             m.content = c.finish();
         }
     }
@@ -2981,6 +2984,27 @@ mod tests {
         let data = build_playback_data(&project, 48_000.0, &SampleBank::default());
         assert!(!data.tracks[0].audible);
         assert!(data.tracks[1].audible);
+    }
+
+    /// ソロ・ミュートを切り替えると発音内容のハッシュが変わる(再生中の差し替えで、聞こえなくなった
+    /// トラックの鳴っている音を止める)。聞こえ方の変わらないトラックはそのまま
+    #[test]
+    fn solo_change_alters_content_of_affected_tracks_only() {
+        let mut project = project_with_notes(vec![note(0, 480, 60, 100)]);
+        project
+            .tracks
+            .push(Track::new(TrackId::new(), "T2", TrackKind::Midi));
+        project
+            .tracks
+            .push(Track::new(TrackId::new(), "T3", TrackKind::Midi));
+        project.tracks[1].solo = true;
+        let before = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        project.tracks[2].solo = true;
+        let after = build_playback_data(&project, 48_000.0, &SampleBank::default());
+        // T1 は聞こえないまま・T2 は聞こえるまま → 変わらない。T3 は聞こえるようになった → 変わる
+        assert_eq!(before.tracks[0].content, after.tracks[0].content);
+        assert_eq!(before.tracks[1].content, after.tracks[1].content);
+        assert_ne!(before.tracks[2].content, after.tracks[2].content);
     }
 
     #[test]

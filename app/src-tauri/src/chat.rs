@@ -47,6 +47,9 @@ pub enum ChatEvent {
     Notice { text: String },
     /// 起動失敗・異常終了など
     Error { message: String },
+    /// 次の指示を受け付けられるようになった(CLI のプロセスが終わり、実行中の印を下ろした後に 1 回)。
+    /// `Result` は CLI が終わる前に届くので、画面は送信待ちの次の指示をこれを受けてから送る
+    Idle,
 }
 
 /// チャットの相手(起動する CLI)。
@@ -826,6 +829,7 @@ pub async fn run_turn(app: tauri::AppHandle, mgr: std::sync::Arc<ChatManager>, p
     if let Err(message) = result {
         emit(&app, &ChatEvent::Error { message });
     }
+    emit(&app, &ChatEvent::Idle);
 }
 
 async fn run_turn_inner(

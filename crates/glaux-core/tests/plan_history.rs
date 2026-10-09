@@ -29,6 +29,7 @@ fn new_plan(rng: &mut StdRng) -> Plan {
         rev: 1,
         derived_from: None,
         body: json!({ "genre": "house", "sections": sections }),
+        group: None,
     }
 }
 

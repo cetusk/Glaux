@@ -278,6 +278,7 @@ mod tests {
             body: serde_json::to_value(&pp).unwrap(),
             patch: vec![],
             patch_base: Default::default(),
+            group: None,
         };
         (p, pp)
     }

@@ -4264,6 +4264,40 @@ mod tests {
         post / pre
     }
 
+    /// 再生中にソロを切り替えると、聞こえなくなったトラックの鳴っている音は止まり、聞こえるトラックは鳴り続ける
+    /// (以前は発音内容が同じとみなされ、ソロで外したトラックの音が音の終わりまで鳴り続けた)
+    #[test]
+    fn solo_while_playing_silences_sounding_notes_of_other_tracks() {
+        let p = two_pads();
+        let mut solo = p.clone();
+        solo.tracks[1].solo = true;
+        // 比べる基準: 最初から B だけを鳴らしたときの音量
+        let reference = {
+            let shared = Arc::new(Shared::new((*build(&solo)).clone()));
+            shared.playing.store(true, Ordering::Release);
+            let mut r = Renderer::new(shared.clone());
+            let _ = render_block(&mut r, 48_000 / 2 + 4800);
+            rms(&render_block(&mut r, 2400))
+        };
+        let shared = Arc::new(Shared::new((*build(&p)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 48_000 / 2);
+        let both = rms(&render_block(&mut r, 240));
+        shared.data.store(build(&solo));
+        let _ = render_block(&mut r, 4800 - 240);
+        let after = rms(&render_block(&mut r, 2400));
+        assert!(after > 0.01, "ソロにしたトラックは鳴り続ける: {after}");
+        assert!(
+            after < both * 0.9,
+            "ほかのトラックの音が残っている: {after} / 2 トラック {both}"
+        );
+        assert!(
+            (after / reference - 1.0).abs() < 0.15,
+            "B だけのときと同じ大きさ: {after} / {reference}"
+        );
+    }
+
     /// 本物に近い流れ: 曲の途中の範囲で聴き比べを用意し、範囲をループにして途中から鳴らし、再生中に B → A → B と切り替える。
     /// どの側も、切り替えた後も鳴り続ける(ループで頭に戻った後も)
     #[test]

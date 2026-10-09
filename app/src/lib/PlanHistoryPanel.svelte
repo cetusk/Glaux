@@ -70,7 +70,7 @@
           </div>
           <div class="label">
             <span class="plan">{kindOf(e.plan_id)}{tr(`「${nameOf(e.plan_id)}」`, ` "${nameOf(e.plan_id)}" `)}</span>
-            {ops()[e.op] ?? e.op}{e.rev != null ? tr(`(版 ${e.rev})`, ` (rev ${e.rev})`) : ""}{e.reverts ? tr("・取り消し", " · revert") : ""}
+            {ops()[e.op] ?? e.op}{e.rev != null ? tr(`(版 ${e.rev})`, ` (rev ${e.rev})`) : ""}{e.reverts ? (d.history.find((x) => x.entry_id === e.reverts)?.reverts ? tr("・やり直し", " · redo") : tr("・取り消し", " · revert")) : ""}
           </div>
           {#if e.why}<div class="why">{e.why}</div>{/if}
           {#if e.trigger}

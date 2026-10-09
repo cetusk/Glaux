@@ -274,8 +274,8 @@
             type="button"
             disabled={!!ch?.stale}
             title={tr(
-              "案の音を曲に当て、案の計画を今の計画にする。同じ元の計画・同じ頼みから出たほかの案と、いっしょに聴き比べていた案は捨てる",
-              "Apply the proposal's sound to the song and make its plan current. Other proposals from the same plan or request, and those being compared, are discarded",
+              "案の音を曲に当て、案の計画を今の計画にする。同じ問いへのほかの案は捨て、別の問いの案は残す",
+              "Apply the proposal's sound to the song and make its plan current. Other proposals for the same question are discarded; proposals for other questions are kept",
             )}
             onclick={() => adoptProposal(pr.plan_id, pr.name)}>{tr("採用", "Adopt")}</button
           >
