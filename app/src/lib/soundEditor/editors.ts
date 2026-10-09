@@ -4,3 +4,4 @@ import "./granular";
 import "./wavetable";
 import "./sampler";
 import "./sfz";
+import "./additive";

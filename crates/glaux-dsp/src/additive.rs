@@ -23,6 +23,143 @@ use glaux_core::Articulation;
 pub const MAX_PARTIALS: usize = 64;
 /// 部分音の周波数・音量を求め直す間隔(サンプル)
 const CTRL: u32 = 32;
+/// 手で描いた山の点・山の数の上限
+pub const MAX_EDIT_POINTS: usize = 64;
+pub const MAX_EDIT_GROUPS: usize = 32;
+
+/// 手で描いた山(部分音の強さへの上乗せ。dB)。続けて描いた点のまとまりが 1 つの山。
+/// 周波数に付ける山(どの高さで弾いても同じ周波数が強い。声の母音・胴の響き)と、
+/// 何番目に付ける山(どの高さでも同じ番目の部分音が強い)のどちらか 1 つ
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartialEdits {
+    /// true = 周波数に付ける山(点の位置は log2(Hz))、false = 何番目に付ける山(点の位置は 0 からの番目)
+    pub hz: bool,
+    /// 点(位置, dB)。山ごとに続けて並べ、山の中は位置の順
+    pub pts: [(f32, f32); MAX_EDIT_POINTS],
+    pub n: u8,
+    /// 山(pts の中の始まり, 数)
+    pub groups: [(u8, u8); MAX_EDIT_GROUPS],
+    pub ng: u8,
+    /// 中身の印(部分音の形を求め直すかどうかに使う)
+    pub sig: u32,
+}
+
+impl Default for PartialEdits {
+    fn default() -> Self {
+        PartialEdits {
+            hz: true,
+            pts: [(0.0, 0.0); MAX_EDIT_POINTS],
+            n: 0,
+            groups: [(0, 0); MAX_EDIT_GROUPS],
+            ng: 0,
+            sig: 0,
+        }
+    }
+}
+
+impl PartialEdits {
+    /// 「hz|1800:6,2000:9|4000:-6」(周波数の山 2 つ)・「idx|7:12,8:6」(何番目の山 1 つ)を読む。
+    /// 先頭が形の種類、「|」で山を区切り、山の中は「位置:dB」を「,」で並べる。読めない点は飛ばす
+    pub fn parse(s: &str) -> PartialEdits {
+        let mut e = PartialEdits::default();
+        let mut parts = s.split('|');
+        match parts.next().map(str::trim) {
+            Some("idx") => e.hz = false,
+            Some("hz") => e.hz = true,
+            _ => return e,
+        }
+        for g in parts {
+            if e.ng as usize >= MAX_EDIT_GROUPS {
+                break;
+            }
+            let start = e.n;
+            let mut pts: Vec<(f32, f32)> = g
+                .split(',')
+                .filter_map(|p| {
+                    let (a, b) = p.split_once(':')?;
+                    let (at, db) = (a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?);
+                    if !at.is_finite() || !db.is_finite() {
+                        return None;
+                    }
+                    let at = if e.hz {
+                        if !(20.0..=20_000.0).contains(&at) {
+                            return None;
+                        }
+                        at.log2()
+                    } else {
+                        if !(0.0..MAX_PARTIALS as f32).contains(&at) {
+                            return None;
+                        }
+                        at.round()
+                    };
+                    Some((at, db.clamp(-60.0, 40.0)))
+                })
+                .collect();
+            pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for p in pts {
+                if e.n as usize >= MAX_EDIT_POINTS {
+                    break;
+                }
+                e.pts[e.n as usize] = p;
+                e.n += 1;
+            }
+            if e.n > start {
+                e.groups[e.ng as usize] = (start, e.n - start);
+                e.ng += 1;
+            }
+        }
+        // 印: 中身の FNV-1a
+        let mut h: u32 = 0x811c_9dc5;
+        for b in s.bytes() {
+            h ^= b as u32;
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        e.sig = h;
+        e
+    }
+
+    /// k 番目(0 から)・周波数 `f` の部分音への上乗せ(dB)。山ごとに足す(山と山の間は持ち上げない)
+    pub fn offset_db(&self, k: usize, f: f32) -> f32 {
+        if self.n == 0 {
+            return 0.0;
+        }
+        if !self.hz {
+            return self.pts[..self.n as usize]
+                .iter()
+                .filter(|p| p.0 as usize == k)
+                .map(|p| p.1)
+                .sum();
+        }
+        // 周波数の山: 山の中は周波数(対数)で直線につなぎ、外側は 2 半音かけて 0 へ
+        let lf = f.max(1.0).log2();
+        let taper = 2.0 / 12.0;
+        let mut sum = 0.0;
+        for &(st, len) in &self.groups[..self.ng as usize] {
+            let pts = &self.pts[st as usize..(st + len) as usize];
+            let (first, last) = (pts[0], pts[pts.len() - 1]);
+            sum += if lf <= first.0 {
+                let t = (first.0 - lf) / taper;
+                if t >= 1.0 {
+                    0.0
+                } else {
+                    first.1 * 0.5 * (1.0 + (std::f32::consts::PI * t).cos())
+                }
+            } else if lf >= last.0 {
+                let t = (lf - last.0) / taper;
+                if t >= 1.0 {
+                    0.0
+                } else {
+                    last.1 * 0.5 * (1.0 + (std::f32::consts::PI * t).cos())
+                }
+            } else {
+                let i = pts.windows(2).position(|w| lf <= w[1].0).unwrap_or(0);
+                let (a, b) = (pts[i], pts[i + 1]);
+                a.1 + (b.1 - a.1) * (lf - a.0) / (b.0 - a.0).max(1e-6)
+            };
+        }
+        sum
+    }
+}
 
 /// 焼き込み済みパラメータ(1 トラック分)
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,6 +185,8 @@ pub struct AdditiveParams {
     pub release: f32,
     /// リニアゲイン(dB から変換済み)
     pub gain: f32,
+    /// 手で描いた山
+    pub edits: PartialEdits,
 }
 
 /// −1..1 を 16 ビットに
@@ -77,7 +216,7 @@ pub struct AdditiveVoice {
     drift_to: [i16; MAX_PARTIALS],
     /// 部分音の形(傾き・奇数偶数・フォルマント)と、それを求めたときのつまみ・高さ、音量の補正
     shape: [f32; MAX_PARTIALS],
-    shape_key: [u32; 8],
+    shape_key: [u32; 9],
     shape_gain: f32,
     env: f32,
     stage: Stage,
@@ -125,7 +264,7 @@ impl AdditiveVoice {
             drift: [0.0; MAX_PARTIALS],
             drift_to: [0; MAX_PARTIALS],
             shape: [0.0; MAX_PARTIALS],
-            shape_key: [u32::MAX; 8],
+            shape_key: [u32::MAX; 9],
             shape_gain: 1.0,
             env: 0.0,
             stage: Stage::Attack,
@@ -215,6 +354,7 @@ impl AdditiveVoice {
             p.inharmonic.to_bits(),
             f0.to_bits(),
             n as u32,
+            p.edits.sig,
         ];
         if key != self.shape_key {
             self.shape_key = key;
@@ -237,9 +377,13 @@ impl AdditiveVoice {
                     let oct = (fk / p.formant_hz.max(20.0)).log2() / p.formant_width.max(0.05);
                     a *= 10f32.powf(p.formant_db / 20.0 * (-0.5 * oct * oct).exp());
                 }
-                self.shape[k] = a;
-                // 部分音の数・傾きを変えても音量がそろうように(2 乗和で割る)
+                // 部分音の数・傾きを変えても音量がそろうように(2 乗和で割る)。手で描いた山は、
+                // 描いた分だけ大きく・小さく聞こえるように、そろえた後に掛ける
                 norm += a * a;
+                if p.edits.n > 0 {
+                    a *= 10f32.powf(p.edits.offset_db(k, fk) / 20.0);
+                }
+                self.shape[k] = a;
             }
             self.shape_gain = 0.5 / norm.max(1e-9).sqrt();
         }
@@ -355,7 +499,39 @@ mod tests {
             sustain: 1.0,
             release: 0.2,
             gain: 1.0,
+            edits: PartialEdits::default(),
         }
+    }
+
+    /// 手で描いた山: 何番目の山はどの高さでも同じ番目、周波数の山は高さで当たる番目が変わる
+    #[test]
+    fn hand_drawn_hills_follow_index_or_frequency() {
+        let ratio = |p: &AdditiveParams, f0: f32, k: f32| {
+            let x = render(p, f0, 24_000);
+            bin(&x[4800..], f0 * k) / bin(&x[4800..], f0)
+        };
+        let plain = params();
+        // 何番目: 5 番目(0 からの 4)を +12 dB
+        let mut idx = params();
+        idx.edits = PartialEdits::parse("idx|4:12");
+        for f0 in [200.0, 400.0] {
+            let r = ratio(&idx, f0, 5.0) / ratio(&plain, f0, 5.0);
+            assert!((3.4..=4.6).contains(&r), "{f0}: 5 番目が約 4 倍のはず {r}");
+        }
+        // 周波数: 2 kHz に +12 dB の山。200 Hz なら 10 番目、400 Hz なら 5 番目が上がる
+        let mut hz = params();
+        hz.edits = PartialEdits::parse("hz|2000:12");
+        let r10 = ratio(&hz, 200.0, 10.0) / ratio(&plain, 200.0, 10.0);
+        let r5 = ratio(&hz, 400.0, 5.0) / ratio(&plain, 400.0, 5.0);
+        assert!(r10 > 3.4 && r5 > 3.4, "{r10} {r5}");
+        // 山の外(2 半音より遠い所)は変わらない
+        let far = ratio(&hz, 200.0, 5.0) / ratio(&plain, 200.0, 5.0);
+        assert!((far - 1.0).abs() < 0.05, "{far}");
+        // 読めない物は飛ばす
+        assert_eq!(PartialEdits::parse("").n, 0);
+        assert_eq!(PartialEdits::parse("x|1:2").n, 0);
+        let e = PartialEdits::parse("hz|2000:3,x,10:4|1000:2,1200:1");
+        assert_eq!((e.n, e.ng), (3, 2));
     }
 
     fn render(p: &AdditiveParams, f: f32, n: usize) -> Vec<f32> {

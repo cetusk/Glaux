@@ -2007,6 +2007,17 @@ pub static ADDITIVE_SPECS: &[ParamSpec] = &[
         },
         description: "楽器自体の音量。トラック音量と別。",
     },
+    ParamSpec {
+        name: "partial_edits",
+        display_name: "手で描いた山",
+        unit: None,
+        range: ParamRange::Enum { choices: &[""], default: "" },
+        description: "部分音の強さへの上乗せ(dB)を手で描いた山。先頭が山の種類(hz = 周波数に付ける山。\
+            どの高さで弾いても同じ周波数が強い〈声の母音・胴の響き〉/ idx = 何番目に付ける山。どの高さでも同じ番目が強い)、\
+            「|」で山を区切り、山の中は「位置:dB」を「,」で並べる(hz の位置は Hz、idx の位置は 0 からの番目)。\
+            例「hz|1800:6,2000:9,2200:6」は 2 kHz あたりを最大 9 dB 持ち上げる山、「idx|6:-12」は 7 番目を 12 dB 下げる。\
+            周波数の山は山の中を周波数(対数)でつなぎ、外側は 2 半音かけて 0 に戻る。傾き・フォルマントなどで作った形に掛ける。空なら無し。",
+    },
 ];
 
 pub static SAMPLER_SPECS: &[ParamSpec] = &[
@@ -3249,6 +3260,7 @@ pub fn bake_instrument(device: Option<&Device>) -> (InstrumentKind, InstrumentPa
                 sustain: get_f32(map, s, "sustain").clamp(0.0, 1.0),
                 release: get_f32(map, s, "release").clamp(0.01, 10.0),
                 gain: db_to_amp(get_f32(map, s, "gain_db").clamp(-24.0, 6.0)),
+                edits: crate::additive::PartialEdits::parse(get_enum(map, s, "partial_edits")),
             };
             (InstrumentKind::Additive, InstrumentParams::Additive(p))
         }
