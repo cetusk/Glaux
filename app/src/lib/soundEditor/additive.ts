@@ -369,10 +369,13 @@ const ADD: any = {
       el(
         "div",
         { class: "box" },
-        el("h3", {}, tr("始めの形", "Starting shape"), el("span", { class: "spacer" }), el("span", { class: "hint" }, tr("選ぶとつまみが変わる", "Sets the knobs"))),
+        el(
+          "h3",
+          { title: tr("選ぶとつまみがその形になる。そこから右のつまみと下の「倍音のバランスを調整」で作り込む", "Picking one sets the knobs; refine it with the knobs on the right and “Adjust the partial balance” below") },
+          tr("始めの形", "Starting shape"),
+        ),
         srcSeg,
         d.showShelf ? shelfList("additive") : list,
-        el("div", { class: "hint" }, tr("選んだ形から、右のつまみと下の「倍音のバランスを調整」で作り込みます。", "Refine it with the knobs on the right and “Adjust the partial balance” below.")),
       ),
     );
     // ---- 真ん中: 上 = 見る(鳴らしてからの変わり方・鳴っている音)/ 下 = 直す(倍音・包絡) ----

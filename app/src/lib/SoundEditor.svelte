@@ -24,6 +24,7 @@
     listen,
     mountBody,
     noteHistory,
+    primeHistory,
     noteOff,
     noteOn,
     onProjectChanged,
@@ -61,7 +62,10 @@
     const id = soundEditorStore.trackId;
     if (!id || !bodyEl) return;
     untrack(() => {
-      if (id !== seState.track || !view.open) openTrack(project, id);
+      if (id !== seState.track || !view.open) {
+        primeHistory(entries);
+        openTrack(project, id);
+      }
     });
   });
   // 曲が変わった(AI・取り消し・ほかの画面): 音色の値を読み直す

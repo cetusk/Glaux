@@ -346,6 +346,12 @@ export async function redo() {
   refreshUndo();
 }
 
+/** 開く直前の履歴を「見た」ことにする(開く前の編集〈トラックを足した編集など〉を取り消しの並びに積まない。
+ *  積むと、取り消しを続けたときにトラックそのものまで消えていた) */
+export function primeHistory(entries: EntrySummary[]) {
+  for (const e of entries) seenIds.add(e.id);
+}
+
 /** 履歴に入った、このトラックの音色の変更(AI・ほかの画面)を取り消しの並びに積む */
 export function noteHistory(entries: EntrySummary[]) {
   for (const e of entries) {
