@@ -208,12 +208,18 @@ export async function getMasterParams(): Promise<import("./types").TrackParams> 
   return { ...p, available_effects };
 }
 
-/** WAV を取り込んでトラックの音源を sampler にする(1 undo)。 */
+/** WAV を取り込んでトラックの音源を sampler にする(1 undo)。instrument が "granular" なら、音源はそのままで粒の素材にする */
 export function importSample(
   trackId: string,
   path: string,
+  instrument?: "granular",
 ): Promise<{ asset_id: string; project_version: number }> {
-  return invoke("import_sample", { trackId, path });
+  return invoke("import_sample", { trackId, path, instrument: instrument ?? null });
+}
+
+/** 素材の波形: peaks は最小・最大を交互に並べた物(2 × buckets 個)、seconds は長さ */
+export function assetPeaks(assetId: string, buckets: number, range?: [number, number]): Promise<{ peaks: number[]; seconds: number }> {
+  return invoke("asset_peaks", { assetId, buckets, fromSec: range?.[0] ?? null, toSec: range?.[1] ?? null });
 }
 
 /** 畳み込みリバーブの響き(IR)を音声ファイルから取り込み、エフェクトの ir に設定する(1 undo)。trackId が null ならマスター */

@@ -108,6 +108,35 @@ pub struct ImportedTable {
     pub as_is: bool,
 }
 
+/// 素材の波形(表示用): `range`(秒。省略で全体)を `buckets` 個に分けた最小・最大の組と、素材の長さ(秒)。
+/// 音色エディタのグラニュラー・サンプラーの素材の絵に使う
+pub fn asset_peaks(
+    project: &Project,
+    project_dir: &Path,
+    asset: &AssetId,
+    buckets: usize,
+    range: Option<(f64, f64)>,
+) -> Result<(Vec<(f32, f32)>, f64), String> {
+    let meta = project
+        .assets
+        .get(asset)
+        .ok_or_else(|| format!("アセットが見つかりません: {asset}"))?;
+    let data = glaux_engine::load_wav_mono(&project_dir.join(&meta.path))?;
+    let sr = data.sample_rate.max(1.0) as f64;
+    let secs = data.frames.len() as f64 / sr;
+    let (from, to) = match range {
+        Some((a, b)) => (
+            ((a.max(0.0) * sr) as usize).min(data.frames.len()),
+            ((b.max(0.0) * sr) as usize).min(data.frames.len()),
+        ),
+        None => (0, data.frames.len()),
+    };
+    Ok((
+        glaux_engine::wave_peaks(&data.frames[from..to.max(from)], buckets),
+        secs,
+    ))
+}
+
 /// 音声ファイルをウェーブテーブル(1 周期 2048 点 × N 枚を並べた浮動小数のモノラル WAV)にして
 /// プロジェクトの audio/ に取り込む。元のファイルは取り込まない(テーブルにしたものだけ)。
 /// 長さが 2048 の倍数の素材はそのまま、それ以外は音の高さを見つけて `frames` 箇所で 1 周期ずつ切り出す

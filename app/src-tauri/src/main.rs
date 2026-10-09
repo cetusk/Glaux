@@ -290,12 +290,42 @@ async fn import_audio_off_thread(
     .map_err(|e| e.to_string())?
 }
 
+/// 素材の波形(最小・最大を交互に並べた 2 × buckets 個)と長さ(秒)。音色エディタの素材の絵
+#[tauri::command]
+async fn asset_peaks(
+    state: State<'_, AppState>,
+    asset_id: String,
+    buckets: u32,
+    from_sec: Option<f64>,
+    to_sec: Option<f64>,
+) -> Result<Value, String> {
+    let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project_shared().await?;
+    let dir = state.project_dir();
+    let buckets = buckets.clamp(1, 8192) as usize;
+    let (peaks, secs) = tokio::task::spawn_blocking(move || {
+        glaux_mcp::assets::asset_peaks(
+            &project,
+            std::path::Path::new(&dir),
+            &id,
+            buckets,
+            from_sec.zip(to_sec),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let flat: Vec<f32> = peaks.into_iter().flat_map(|(lo, hi)| [lo, hi]).collect();
+    Ok(json!({ "peaks": flat, "seconds": secs }))
+}
+
 /// WAV をプロジェクトに取り込み、トラックの音源を sampler にする(音作りビュー用)。
+/// `instrument` が "granular" なら、音源はそのままで粒を取り出す素材(sample)にする
 #[tauri::command]
 async fn import_sample(
     state: State<'_, AppState>,
     track_id: String,
     path: String,
+    instrument: Option<String>,
 ) -> Result<Value, String> {
     let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
     let (project, _) = state.handle.get_project_shared().await?;
@@ -314,6 +344,28 @@ async fn import_sample(
             id: imported.id.clone(),
             asset: imported.asset.clone(),
         });
+    }
+    if instrument.as_deref() == Some("granular") {
+        cmds.push(Command::SetParam {
+            track: tid.clone(),
+            path: glaux_core::ParamPath::parse("device/sample").map_err(|e| e.to_string())?,
+            value: glaux_core::ParamValue::Enum(imported.id.to_string()),
+        });
+        let file_name = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sample".to_owned());
+        let label = glaux_core::tr!(
+            "{} の素材を「{file_name}」に",
+            "Set the source of {} to \"{file_name}\"",
+            track.name
+        );
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        return Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }));
     }
     // ステレオの素材は左右のまま鳴らす(つまみの既定はモノラルに合算 = 以前に取り込んだ音源の音を変えない)
     let mut params = glaux_core::ParamMap::new();
@@ -3624,6 +3676,7 @@ fn main() -> Result<()> {
             set_live_target,
             live_note_on,
             live_note_off,
+            asset_peaks,
             live_all_off,
             render_note_harmonics,
             midi_record_start,
