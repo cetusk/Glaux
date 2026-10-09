@@ -579,7 +579,19 @@ mod tests {
         }));
         let a = half.playback_notes();
         assert_eq!(a, half.playback_notes());
-        assert!(a.len() < 8);
+        // 種はノートの ID(作るたびに違う)なので、1 つのクリップでは 1/256 の確率で 8 回とも鳴る。
+        // 4 つ作って、どれかで鳴らない回があることを見る
+        let some_skip = std::iter::once(a.len())
+            .chain((0..3).map(|_| {
+                looped_clip(Some(NoteCondition {
+                    probability: 0.5,
+                    every: None,
+                }))
+                .playback_notes()
+                .len()
+            }))
+            .any(|n| n < 8);
+        assert!(some_skip);
         assert!(check_condition(&NoteCondition {
             probability: 1.0,
             every: Some([3, 2]),
