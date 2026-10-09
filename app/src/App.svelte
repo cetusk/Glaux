@@ -19,6 +19,7 @@
   import ExportDialog from "./lib/ExportDialog.svelte";
   import WelcomeDialog from "./lib/WelcomeDialog.svelte";
   import SoundDesignPanel from "./lib/SoundDesignPanel.svelte";
+  import SoundEditor from "./lib/SoundEditor.svelte";
   import InstrumentPicker from "./lib/InstrumentPicker.svelte";
   import Mixer from "./lib/Mixer.svelte";
   import DesignView from "./lib/DesignView.svelte";
@@ -37,6 +38,7 @@
     projectRev,
     selectionStore,
     soundDesignStore,
+    soundEditorStore,
     viewStore,
   } from "./lib/selection.svelte";
 
@@ -72,6 +74,10 @@
     }
   }
   let bottomHeight = $state(loadNum("glaux.bottomHeight", 280));
+  /** 音色エディタを開いている間の下のパネルの高さ(エディタに縦を譲る。別に覚える) */
+  let bottomHeightEditor = $state(loadNum("glaux.bottomHeightEditor", 112));
+  const editorOpen = $derived(soundEditorStore.trackId != null);
+  const shownBottom = $derived(editorOpen ? bottomHeightEditor : bottomHeight);
   /// 下のパネル(チャット・履歴)を隠しているか(狭い画面でピアノロールを広く使う)
   let bottomCollapsed = $state(loadNum("glaux.bottomCollapsed", 0) === 1);
 
@@ -88,6 +94,7 @@
   function saveLayout() {
     try {
       localStorage.setItem("glaux.bottomHeight", String(bottomHeight));
+      localStorage.setItem("glaux.bottomHeightEditor", String(bottomHeightEditor));
       localStorage.setItem("glaux.chatFrac", String(chatFrac));
     } catch {
       // localStorage が使えなくても動作に支障なし
@@ -122,9 +129,12 @@
 
   function startRowResize(e: PointerEvent) {
     const startY = e.clientY;
-    const startH = Math.min(bottomHeight, maxBottomHeight());
+    const editor = editorOpen;
+    const startH = Math.min(editor ? bottomHeightEditor : bottomHeight, maxBottomHeight());
     startResize(e, "resizing-h", (ev) => {
-      bottomHeight = Math.min(Math.max(startH + (startY - ev.clientY), 140), maxBottomHeight());
+      const h = Math.min(Math.max(startH + (startY - ev.clientY), editor ? 110 : 140), maxBottomHeight());
+      if (editor) bottomHeightEditor = h;
+      else bottomHeight = h;
     });
   }
 
@@ -1133,6 +1143,12 @@
           </div>
         {/if}
         {/if}
+        {#if soundEditorStore.trackId}
+          <!-- 音色エディタ: タイムライン(と、ミキサー・設計)の所を覆う。インスペクターの幅は空ける -->
+          <div class="sound-editor-host" style={soundDesignStore.focus ? `right:${inspectorStore.width}px` : ""}>
+            <SoundEditor {project} {entries} />
+          </div>
+        {/if}
         <SoundDesignPanel {project} />
         <InstrumentPicker {project} />
       {:else}
@@ -1159,7 +1175,7 @@
       ><Icon name={bottomCollapsed ? "chevron-up" : "chevron-down"} />{#if bottomCollapsed}{tr("チャット・履歴", "Chat / History")}{/if}</button>
     </div>
     <!-- 隠しても部品は残す(チャットの表示中の会話が消えないように) -->
-    <section class="bottom-area" class:collapsed={bottomCollapsed} style="height:{bottomHeight}px">
+    <section class="bottom-area" class:collapsed={bottomCollapsed} style="height:{shownBottom}px">
       <div class="chat-section" style="flex:0 0 {chatFrac * 100}%">
         <ChatPanel {project} />
       </div>
@@ -1458,6 +1474,13 @@
     z-index: 8;
     display: flex;
     flex-direction: column;
+  }
+
+  .sound-editor-host {
+    position: absolute;
+    inset: 0;
+    /* ピアノロール(8)より前、メニュー(30)より後ろ */
+    z-index: 9;
   }
 
   .roll-pane {

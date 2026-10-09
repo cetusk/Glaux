@@ -801,6 +801,39 @@ export function abClear(): Promise<void> {
 }
 
 /** ノートを 1 音だけ試聴する(そのトラックの音源・音量・パンで鳴る)。 */
+/** 音色エディタの鍵盤: 押している間だけ鳴らす(離すのは liveNoteOff)。停止中でも鳴る */
+export function liveNoteOn(trackId: string, pitch: number, vel = 100): Promise<void> {
+  return invoke("live_note_on", { trackId, pitch, vel });
+}
+
+export function liveNoteOff(pitch: number): Promise<void> {
+  return invoke("live_note_off", { pitch });
+}
+
+/** 押している音を全部離す */
+export function liveAllOff(): Promise<void> {
+  return invoke("live_all_off");
+}
+
+/** 1 音を鳴らして、鍵盤の高さの倍数ごとの強さ(線形)を測る。times = いちばん大きくなった所から何秒後か。
+ *  device を渡すとその音源で(ドラッグ中の値)。トラックのエフェクトは通さない */
+export function renderNoteHarmonics(
+  trackId: string,
+  pitch: number,
+  times: number[],
+  opts: { device?: unknown; vel?: number; step?: number; maxMult?: number } = {},
+): Promise<number[][]> {
+  return invoke("render_note_harmonics", {
+    trackId,
+    device: opts.device ?? null,
+    pitch,
+    vel: opts.vel ?? 100,
+    times,
+    step: opts.step ?? 0.5,
+    maxMult: opts.maxMult ?? 40,
+  });
+}
+
 export function previewNote(trackId: string, pitch: number): Promise<void> {
   return invoke("preview_note", { trackId, pitch });
 }

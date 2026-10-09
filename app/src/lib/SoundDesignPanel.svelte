@@ -37,8 +37,11 @@
     projectRev,
     saveInspectorWidth,
     soundDesignStore,
+    soundEditorStore,
     viewStore,
   } from "./selection.svelte";
+  import { editorKindOf } from "./soundEditor/core.svelte";
+  import "./soundEditor/editors";
   import type { EffectView, ParamView, Project, Track, TrackParams } from "./types";
 
   let { project }: { project: Project } = $props();
@@ -791,6 +794,17 @@
                   >{tr("変更", "Change")}<Icon name="chevron-down" /></button
                 >
               </div>
+              {#if editorKindOf(track)}
+                <button
+                  class="btn sm primary"
+                  class:on={soundEditorStore.trackId === track.id}
+                  onclick={() => (soundEditorStore.trackId = soundEditorStore.trackId === track!.id ? null : track!.id)}
+                  title={tr(
+                    "広いパネルで、絵を見ながら音色を作り込む(波形・倍音・音量の変わり方など)",
+                    "Shape the sound in a wide panel while looking at pictures (waveform, harmonics, envelope…)",
+                  )}><Icon name="sliders-horizontal" />{soundEditorStore.trackId === track.id ? tr("音色エディタを閉じる", "Close the sound editor") : tr("音色を作り込む", "Open the sound editor")}</button
+                >
+              {/if}
               <div class="row">
                 <button class="btn sm" onclick={(e) => openPicker(e, "preset")} title={tr(
                     "保存した音色のプリセット(音源 + エフェクト一式。全プロジェクト共通)から選ぶ",

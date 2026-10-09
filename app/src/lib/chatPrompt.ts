@@ -2,7 +2,7 @@
 // 音作りのトラック)と、/goal・設定「途中で尋ねない」の「おまかせ」
 import { designSel, designStore, designTargetPrompt } from "./design.svelte";
 import { tr } from "./i18n.svelte";
-import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore } from "./selection.svelte";
+import { MASTER_FOCUS_ID, pianoRollStore, selectionStore, soundDesignStore, soundEditorStore } from "./selection.svelte";
 import { settings } from "./settings.svelte";
 
 /// 指示に添える対象(範囲・クリップ・設計の所・音作り): AI へ送る前置きと、会話に出す頭書き
@@ -43,8 +43,16 @@ export function promptContext(designTarget: string | null): PromptCtx {
     prefix += designTargetPrompt(designStore.data, designSel.sel) ?? "";
     shown = tr(`〔${designTarget}〕 ${shown}`, `[${designTarget}] ${shown}`);
   }
+  const se = soundEditorStore.trackId ? soundEditorStore : null;
   const sd = soundDesignStore.focus;
-  if (sd && sd.trackId === MASTER_FOCUS_ID) {
+  if (se) {
+    prefix +=
+      `【音色エディタで作り込み中のトラック】「${se.trackName}」(${se.trackId})の音源。` +
+      (se.sel ? `選んでいる所: ${se.sel}。` : "") +
+      `音色に関する指示は、特に指定がなければこのトラックの音源(set_param など)が対象です。\n`;
+    const what = se.sel ? `${se.trackName} / ${se.sel}` : se.trackName;
+    shown = tr(`〔音色: ${what}〕 ${shown}`, `[Sound: ${what}] ${shown}`);
+  } else if (sd && sd.trackId === MASTER_FOCUS_ID) {
     prefix +=
       "【音作り中: マスターバス(ユーザーがマスターのエフェクトを開いている)】" +
       "エフェクトに関する指示は、特に指定がなければマスター(add_master_effect / set_master_param)が対象です。\n";

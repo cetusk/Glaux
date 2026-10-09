@@ -2917,6 +2917,101 @@ async fn preview_note(
     Ok(())
 }
 
+/// 音色エディタの試しの鍵盤: 押している間だけ鳴らす(離すのは live_note_off)。`vel` は 1〜127(既定 100)
+#[tauri::command]
+async fn live_note_on(
+    state: State<'_, AppState>,
+    track_id: String,
+    pitch: u8,
+    vel: Option<u8>,
+) -> Result<(), String> {
+    let engine = state.engine()?.clone();
+    let track_id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project_shared().await?;
+    let index = project
+        .track_index(&track_id)
+        .ok_or_else(|| format!("track not found: {track_id}"))?;
+    engine.live_note_on(index, pitch, vel.unwrap_or(100));
+    Ok(())
+}
+
+#[tauri::command]
+fn live_note_off(state: State<'_, AppState>, pitch: u8) -> Result<(), String> {
+    state.engine()?.live_note_off(pitch);
+    Ok(())
+}
+
+#[tauri::command]
+fn live_all_off(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine()?.live_all_off();
+    Ok(())
+}
+
+/// 音色エディタの「出口の音の倍音」: トラックの音源(`device` を渡せばその音源。ドラッグ中の値)で 1 音を鳴らし、
+/// いちばん大きくなった所から `times` 秒後の、鍵盤の高さの倍数ごとの強さ(`step` 刻み、`max_mult` 倍まで)を返す。
+/// トラックのエフェクトは通さない(音源そのものの音)
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn render_note_harmonics(
+    state: State<'_, AppState>,
+    track_id: String,
+    device: Option<Value>,
+    pitch: u8,
+    vel: Option<u8>,
+    times: Vec<f64>,
+    step: Option<f64>,
+    max_mult: Option<f64>,
+) -> Result<Vec<Vec<f32>>, String> {
+    let track_id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+    let (shared, _) = state.handle.get_project_shared().await?;
+    let mut project = (*shared).clone();
+    let device: Option<glaux_core::Device> = device
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    {
+        let t = project
+            .tracks
+            .iter_mut()
+            .find(|t| t.id == track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+        if let Some(d) = device {
+            t.device = Some(d);
+        }
+        t.effects.clear();
+        t.fx_links = None;
+    }
+    let dir = state.project_dir();
+    let pitch = pitch.min(127);
+    tauri::async_runtime::spawn_blocking(move || {
+        const RATE: f64 = 48_000.0;
+        let dir = std::path::Path::new(&dir);
+        let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+        let longest = times.iter().cloned().fold(0.0f64, f64::max);
+        let x = glaux_engine::render_track_note(
+            &project,
+            &track_id,
+            pitch,
+            vel.unwrap_or(100),
+            longest + 1.0,
+            RATE,
+            &bank,
+        )
+        .map_err(|e| e.to_string())?;
+        let f0 = 440.0 * 2f64.powf((pitch as f64 - 69.0) / 12.0);
+        Ok(glaux_engine::note_harmonics(
+            &x,
+            RATE,
+            f0,
+            &times,
+            step.unwrap_or(0.5),
+            max_mult.unwrap_or(40.0),
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ---- チャット(UI → AI 指示) --------------------------------------------
 
 /// 前回のターン以降に人間が行った編集をまとめた、AI 向けのコンテキスト文を作る。
@@ -3527,6 +3622,10 @@ fn main() -> Result<()> {
             clap_load_preset,
             set_midi_input,
             set_live_target,
+            live_note_on,
+            live_note_off,
+            live_all_off,
+            render_note_harmonics,
             midi_record_start,
             midi_record_stop,
             audio_devices,

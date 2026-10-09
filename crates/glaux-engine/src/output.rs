@@ -234,6 +234,30 @@ impl EngineHandle {
         self.shared.preview.store(packed, Ordering::Release);
     }
 
+    /// 画面の鍵盤から 1 音を押す(離すまで鳴る。停止中でも鳴る)。`track_index` のトラックの音源で鳴らす。
+    /// 音色エディタの試しの鍵盤・押している間鳴る絵に使う(MIDI キーボードと同じライブの列)
+    pub fn live_note_on(&self, track_index: usize, pitch: u8, vel: u8) {
+        self.shared.live.push(crate::midi::LiveEvent::NoteOn {
+            track: (track_index as u32).min(crate::midi::LIVE_NO_TRACK - 1),
+            pitch: pitch.min(127),
+            vel: vel.clamp(1, 127),
+            ch: 0,
+        });
+    }
+
+    /// [`live_note_on`](Self::live_note_on) で押した音を離す
+    pub fn live_note_off(&self, pitch: u8) {
+        self.shared.live.push(crate::midi::LiveEvent::NoteOff {
+            pitch: pitch.min(127),
+            ch: 0,
+        });
+    }
+
+    /// 押している音を全部離す(音色エディタを閉じる・取り消す・切り替えるとき)
+    pub fn live_all_off(&self) {
+        self.shared.live.push(crate::midi::LiveEvent::AllOff);
+    }
+
     /// 録音を開始する(既定の入力デバイス → `path` に WAV。`stereo` なら 2 ch 以上の入力をステレオで)。
     /// `count_in_ticks` ぶん先の位置にクリップを置き、その間はメトロノームで
     /// カウントインする(`metronome_on` なら録音中メトロノームを自動 ON)。

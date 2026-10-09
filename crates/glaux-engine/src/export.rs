@@ -285,6 +285,65 @@ pub fn render_track_note(
         .collect())
 }
 
+/// 1 音の音(モノラル)の、鍵盤の高さ `f0` の倍数ごとの強さ(線形の振幅)。音色エディタの「出口の音の倍音」用。
+/// `times` は「いちばん大きくなった所から何秒後」の列。倍数は `step` 刻みで `max_mult` まで(0.5 刻みなら 1 オクターブ下の成分も見える)。
+/// 窓は鍵盤の高さの 8 周期ぶんのハン窓で、倍数の所の成分を直に求める(Goertzel と同じ)
+pub fn note_harmonics(
+    samples: &[f32],
+    sample_rate: f64,
+    f0: f64,
+    times: &[f64],
+    step: f64,
+    max_mult: f64,
+) -> Vec<Vec<f32>> {
+    let n = ((sample_rate / f0.max(1.0)) * 8.0)
+        .round()
+        .clamp(256.0, 16384.0) as usize;
+    // いちばん大きくなった所(窓の長さの単位の音量で探す。最初の 2 秒の中)
+    let hop = (n / 4).max(1);
+    let search = samples.len().min((sample_rate * 2.0) as usize);
+    let mut peak_at = 0usize;
+    let mut peak = -1.0f64;
+    let mut i = 0;
+    while i + n <= search.max(n).min(samples.len()) {
+        let e: f64 = samples[i..i + n]
+            .iter()
+            .map(|v| (*v as f64) * (*v as f64))
+            .sum();
+        if e > peak {
+            peak = e;
+            peak_at = i;
+        }
+        i += hop;
+    }
+    let win: Vec<f64> = (0..n)
+        .map(|k| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * k as f64 / n as f64).cos())
+        .collect();
+    let wsum: f64 = win.iter().sum::<f64>().max(1e-9);
+    let count = (max_mult / step).floor().max(0.0) as usize;
+    times
+        .iter()
+        .map(|t| {
+            let start = peak_at + (t.max(0.0) * sample_rate) as usize;
+            (1..=count)
+                .map(|j| {
+                    if start + n > samples.len() {
+                        return 0.0;
+                    }
+                    let w = 2.0 * std::f64::consts::PI * f0 * (j as f64 * step) / sample_rate;
+                    let (mut re, mut im) = (0.0f64, 0.0f64);
+                    for (k, x) in samples[start..start + n].iter().enumerate() {
+                        let v = *x as f64 * win[k];
+                        re += v * (w * k as f64).cos();
+                        im -= v * (w * k as f64).sin();
+                    }
+                    (2.0 * (re * re + im * im).sqrt() / wsum) as f32
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// プロジェクトを 16bit ステレオ WAV に書き出す。返り値は書き出した秒数。
 pub fn export_wav(
     project: &Project,
@@ -1124,5 +1183,33 @@ mod tests {
             render_project(&project, 48_000.0, &Default::default()),
             Err(ExportError::Empty)
         ));
+    }
+}
+
+#[cfg(test)]
+mod harmonics_tests {
+    use super::note_harmonics;
+
+    /// 基音と半分の強さの 2 倍音の音: 1 倍 ≒ 1、1.5 倍 ≒ 0、2 倍 ≒ 0.5(いちばん大きい所から測る)
+    #[test]
+    fn measures_multiples_of_the_pitch() {
+        let sr = 48_000.0;
+        let f0 = 220.0;
+        let x: Vec<f32> = (0..48_000)
+            .map(|i| {
+                let t = i as f64 / sr;
+                let env = (t / 0.01).min(1.0);
+                (env * ((2.0 * std::f64::consts::PI * f0 * t).sin()
+                    + 0.5 * (2.0 * std::f64::consts::PI * 2.0 * f0 * t).sin()))
+                    as f32
+            })
+            .collect();
+        let h = note_harmonics(&x, sr, f0, &[0.0, 0.5], 0.5, 4.0);
+        assert_eq!(h.len(), 2);
+        assert_eq!(h[0].len(), 8);
+        assert!((h[0][1] - 1.0).abs() < 0.05, "{:?}", h[0]);
+        assert!(h[0][2] < 0.05, "{:?}", h[0]);
+        assert!((h[0][3] - 0.5).abs() < 0.05, "{:?}", h[0]);
+        assert!((h[1][1] - 1.0).abs() < 0.05, "{:?}", h[1]);
     }
 }

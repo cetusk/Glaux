@@ -1,0 +1,307 @@
+/* 音色エディタの見た目(試作 66 版のまま。.sound-editor の中だけに効かせる) */
+/* 音色エディタ: インスペクターの「音色を作り込む」から開く広いパネル(ピアノロールと同じく、タイムラインの所を覆う)。
+   共通の枠(見出し・作り込む前と今の聴き比べ・取り消し・AI に頼む・試しに鳴らす鍵盤)に、音源ごとの中身を差し替える */
+.sound-editor {
+  --bg: #141414; --panel: #1c1c1c; --head: #222; --raised: #282828; --inset: #0f0f0f;
+  --border: #303030; --border-strong: #464646; --grid: #262626;
+  --text: #e6e6e6; --dim: #8e8e8e; --faint: #5c5c5c;
+  --accent: #25bdb1; --accent-dim: #1b7f78; --accent-soft: rgba(37, 189, 177, 0.16);
+  --ai: #b07ce8; --ai-soft: rgba(176, 124, 232, 0.16); --human: #5da2e8; --warn: #d9926c; --new: #e8c46a;
+  --sans: "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --mono: Consolas, "Cascadia Mono", "Noto Sans Mono", monospace;
+  color-scheme: dark;
+}
+.sound-editor *, .sound-editor { box-sizing: border-box; }
+/* アプリ全体のボタンの指定(.btn の高さ・inline-flex、button の余白・角・マウスを置いたときの色)を、エディタの中では使わない */
+.sound-editor button { border-radius: 0; padding: 1px 6px; font-size: 13.333px; height: auto; }
+.sound-editor .btn { display: inline-block; height: auto; gap: 0; flex-shrink: 1; }
+.sound-editor .btn:hover:not(:disabled) { color: var(--text); }
+.sound-editor .btn.on:hover:not(:disabled) { color: var(--accent); }
+.sound-editor .btn.primary:hover:not(:disabled) { color: #062523; }
+.sound-editor .btn.ai:hover:not(:disabled) { color: var(--ai); }
+
+.sound-editor { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 var(--sans); overflow: hidden; }
+.sound-editor button { font: inherit; }
+.sound-editor .btn { background: var(--raised); color: var(--text); border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.sound-editor .btn:hover { border-color: var(--accent-dim); }
+.sound-editor .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.sound-editor .btn.primary { background: var(--accent); border-color: var(--accent); color: #062523; font-weight: 600; }
+.sound-editor .btn.quiet { background: transparent; }
+.sound-editor .btn.ai { border-color: rgba(176, 124, 232, 0.5); color: var(--ai); background: var(--ai-soft); }
+.sound-editor .btn:disabled { opacity: 0.4; cursor: default; }
+.sound-editor button:focus-visible, .sound-editor input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sound-editor .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+.sound-editor .seg button { background: transparent; color: var(--dim); border: 0; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.sound-editor .seg button + button { border-left: 1px solid var(--border-strong); }
+.sound-editor .seg button.on { background: var(--accent-soft); color: var(--accent); }
+.sound-editor .pill { display: inline-block; font-size: 10.5px; padding: 0 7px; border-radius: 9px; border: 1px solid var(--border-strong); color: var(--dim); line-height: 16px; }
+.sound-editor .pill.ai { border-color: rgba(176, 124, 232, 0.6); color: var(--ai); }
+.sound-editor .pill.you { border-color: rgba(93, 162, 232, 0.6); color: var(--human); }
+/* エンジンに足す必要がある所の印(試作で見せている機能のうち、今のエンジンに無いもの) */
+.sound-editor .new { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px dashed var(--new); color: var(--new); line-height: 15px; margin-left: 4px; vertical-align: 1px; }
+.sound-editor .dim { color: var(--dim); }
+.sound-editor .faint { color: var(--faint); }
+.sound-editor .hint { color: var(--dim); font-size: 11.5px; }
+.sound-editor .spacer { flex: 1; }
+.sound-editor .small { font-size: 11.5px; }
+
+/* ---- モックの説明と切り替え(実際の画面には無い) ---- */
+
+/* ---- アプリの見た目のなごり(上のヘッダーと下のチャット・履歴) ---- */
+
+/* ---- 音色エディタ(本体) ---- */
+.sound-editor { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); border-top: 2px solid var(--accent-dim); }
+.sound-editor .ed-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: nowrap; min-width: 0; }
+.sound-editor .ed-title { font-weight: 600; white-space: nowrap; }
+.sound-editor .ed-title small { color: var(--dim); font-weight: 400; margin-left: 4px; }
+.sound-editor .trackpick { background: var(--inset); color: var(--text); border: 1px solid var(--border-strong); border-radius: 5px; padding: 2px 6px; font: inherit; font-size: 12px; }
+.sound-editor .sep { width: 1px; height: 20px; background: var(--border); flex: none; }
+.sound-editor .icon { width: 26px; height: 24px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.sound-editor .ed-body { flex: 1 1 0; min-height: 0; overflow: hidden; display: flex; }
+.sound-editor .ed-foot { flex: none; display: flex; align-items: center; gap: 12px; padding: 6px 12px; background: var(--panel); border-top: 1px solid var(--border); }
+.sound-editor .abnote { font-size: 11.5px; color: var(--warn); }
+
+/* 試しに鳴らす鍵盤 */
+.sound-editor .kbd { position: relative; height: 46px; display: flex; user-select: none; }
+.sound-editor .kbd .w { width: 22px; height: 46px; background: #d9d9d9; border: 1px solid #555; border-radius: 0 0 3px 3px; position: relative; cursor: pointer; }
+.sound-editor .kbd .w.on { background: var(--accent); }
+.sound-editor .kbd .b { position: absolute; width: 14px; height: 28px; background: #1e1e1e; border: 1px solid #000; border-radius: 0 0 2px 2px; z-index: 1; cursor: pointer; }
+.sound-editor .kbd .b.on { background: var(--accent-dim); }
+.sound-editor .kbd .w span { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center; font-size: 8px; color: #555; }
+
+/* 列(左・中央・右) */
+.sound-editor .col { min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px; overflow-y: auto; }
+.sound-editor .col.left { width: 230px; flex: none; border-right: 1px solid var(--border); background: var(--panel); }
+.sound-editor .col.center { flex: 1; min-width: 0; }
+.sound-editor .col.right { width: 320px; flex: none; border-left: 1px solid var(--border); background: var(--panel); }
+.sound-editor .box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sound-editor .col.left .box, .sound-editor .col.right .box { background: var(--head); }
+.sound-editor .box > h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+.sound-editor .box > h3 .spacer { flex: 1; }
+.sound-editor canvas { display: block; width: 100%; background: var(--inset); border-radius: 6px; }
+
+/* つまみ(横のスライダー) */
+.sound-editor .kn { display: grid; grid-template-columns: 96px minmax(0, 1fr) 52px; align-items: center; gap: 6px; font-size: 12px; }
+.sound-editor .kn > span:first-child { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sound-editor .kn input[type="range"] { width: 100%; accent-color: var(--accent); }
+.sound-editor .kn output { font-family: var(--mono); font-size: 11px; text-align: right; color: var(--text); }
+.sound-editor .kn.ch > span:first-child { color: var(--accent); }
+
+/* ---- ウェーブテーブル ---- */
+.sound-editor .shapes { display: flex; flex-direction: column; gap: 3px; }
+.sound-editor .shape { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 6px; align-items: center; padding: 3px 4px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; font-size: 11.5px; }
+.sound-editor .shape:hover { border-color: var(--border-strong); }
+.sound-editor .shape.on { border-color: var(--accent); background: var(--accent-soft); }
+.sound-editor .shape canvas { height: 22px; background: var(--inset); }
+.sound-editor .shape small { display: block; color: var(--dim); font-size: 10.5px; line-height: 1.3; }
+.sound-editor .srcpanel { display: none; flex-direction: column; gap: 6px; }
+.sound-editor .srcpanel.on { display: flex; }
+.sound-editor .cliplist { display: flex; flex-direction: column; gap: 4px; }
+.sound-editor .clipitem { border: 1px solid var(--border-strong); border-radius: 5px; padding: 4px 6px; font-size: 11.5px; cursor: pointer; }
+.sound-editor .clipitem.on { border-color: var(--accent); background: var(--accent-soft); }
+.sound-editor .clipitem canvas { height: 22px; margin-top: 3px; }
+
+.sound-editor .stackwrap { position: relative; }
+.sound-editor .stackwrap canvas { height: 170px; }
+.sound-editor .posrow { display: grid; grid-template-columns: 116px minmax(0, 1fr) 128px; gap: 8px; align-items: center; font-size: 12px; }
+.sound-editor .posrow > :first-child { white-space: nowrap; }
+.sound-editor .posrow > :last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sound-editor .posrow input { width: 100%; accent-color: var(--accent); }
+.sound-editor .keys { position: relative; height: 26px; background: var(--inset); border-radius: 5px; border: 1px solid var(--border); }
+.sound-editor .keys { cursor: pointer; }
+/* 編集した波形 = 波形と同じ色で塗りつぶし / 自動で作られた所 = 同じ色の斜線 / 作り方のまま = 塗らない / 直している波形 = 白い線 */
+.sound-editor .keys .ed { position: absolute; top: 2px; bottom: 2px; min-width: 8px; transform: translateX(-50%); border-radius: 2px; background: var(--accent); z-index: 1; cursor: pointer; }
+.sound-editor .keys .ed.ai { background: var(--ai); }
+.sound-editor .keys .auto { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; pointer-events: none; background: repeating-linear-gradient(135deg, rgba(37, 189, 177, 0.35) 0 4px, rgba(37, 189, 177, 0.08) 4px 8px); }
+.sound-editor .keys .now { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: #fff; pointer-events: none; z-index: 2; box-shadow: 0 0 0 1px #000; }
+.sound-editor .sw { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 3px; }
+.sound-editor .sw.ed { background: var(--accent); }
+.sound-editor .sw.auto { background: repeating-linear-gradient(135deg, rgba(37, 189, 177, 0.6) 0 3px, rgba(37, 189, 177, 0.12) 3px 6px); }
+.sound-editor .sw.now { background: #fff; width: 3px; }
+.sound-editor .sw.src { background: var(--inset); border: 1px solid var(--border-strong); }
+.sound-editor .legendrow { grid-column: 2 / span 2; display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; font-size: 11px; color: var(--dim); }
+.sound-editor .legendrow > span { white-space: nowrap; }
+.sound-editor .legendrow label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sound-editor .legendrow label input { width: 110px; accent-color: var(--accent); }
+/* 直す枠の見出し: 上の白い線と同じ白で「どの波形か」をつなぐ */
+.sound-editor .edithead .nowmark { display: inline-block; width: 4px; height: 16px; border-radius: 1px; background: #fff; box-shadow: 0 0 0 1px #000; }
+.sound-editor .edithead b { color: var(--text); }
+/* 見出しは 1 行(右の説明は省略して …) */
+.sound-editor .box > h3 { white-space: nowrap; min-width: 0; }
+.sound-editor .box > h3 .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 400; }
+.sound-editor .col.right .kn { grid-template-columns: 116px minmax(0, 1fr) 76px; }
+.sound-editor .kn output { white-space: nowrap; }
+/* 絵の下の小さなつまみの行 */
+.sound-editor .toolrow .kn { display: grid; width: 250px; grid-template-columns: max-content minmax(60px, 1fr) 54px; }
+/* ほかの楽器: 下の枠の 3 つの欄・欄の中の道具の重ね・小さなボタンの並び */
+.sound-editor .editpanes.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.sound-editor .editpanes.wide-left { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+/* 消しゴムのカーソル(左下の角が当たる所) */
+.sound-editor canvas.erasing { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M14.5 3.5 21 10l-9.5 9.5H6L3 16.5z' fill='%23f2f2f2' stroke='%23111' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M8.5 9.5 15 16' stroke='%23111' stroke-width='1.5'/%3E%3Cpath d='M3 16.5 6 19.5h5.5L8.5 16.5z' fill='%235da2e8' stroke='%23111' stroke-width='1.2'/%3E%3C/svg%3E") 4 20, cell; }
+/* ボタンが 4 つ並ぶと狭い欄では入らないので 2 段に */
+.sound-editor .toolseg .seg.grid2 { display: grid; grid-template-columns: 1fr 1fr; }
+.sound-editor .toolseg .seg.grid2 button:nth-child(3) { border-left: 0; }
+.sound-editor .toolseg .seg.grid2 button:nth-child(n + 3) { border-top: 1px solid var(--border-strong); }
+.sound-editor .toolstack { display: flex; flex-direction: column; gap: 4px; }
+.sound-editor .chiprow { display: flex; flex-wrap: wrap; gap: 4px; }
+.sound-editor small, .sound-editor .hint, .sound-editor .paneinfo, .sound-editor .explain .small { text-wrap: balance; }
+/* 日本語は文節で折り返す(「ブ / ラス」「消 / え」のような語の途中の折り返しを防ぐ。html の lang="ja" が要る) */
+.sound-editor { word-break: auto-phrase; }
+.sound-editor .chiprow .btn { padding: 2px 7px; }
+.sound-editor .pane > .kn, .sound-editor .pane > .chiprow { flex: none; }
+.sound-editor table.facts { border-collapse: collapse; width: 100%; }
+.sound-editor table.facts td { padding: 3px 6px; border-bottom: 1px solid var(--border); vertical-align: top; word-break: break-all; }
+.sound-editor table.facts td:first-child { white-space: nowrap; width: 1%; }
+.sound-editor .pill.car { border-color: var(--accent); color: var(--accent); }
+.sound-editor .pill.mod { border-color: rgba(93, 162, 232, 0.6); color: var(--human); }
+.sound-editor .clipitem small { font-size: 10.5px; }
+.sound-editor .sw.base { background: #4a8f8a; }
+.sound-editor .sw.drawn { background: var(--human); }
+.sound-editor .sw.dash { background: transparent; border: 1px dashed rgba(230, 230, 230, 0.7); }
+.sound-editor .sw.mute { background: #3a3a3a; }
+.sound-editor .sw.mute2 { background: repeating-linear-gradient(45deg, #4a8f8a 0 2px, #16201f 2px 4px); } /* 高い側で聞こえない: 縞 */
+.sound-editor .sw.car { background: #262626; border: 2px solid var(--accent); }
+.sound-editor .sw.mod { background: #262626; border: 2px solid var(--human); }
+.sound-editor .sw.arrow { background: transparent; height: 0; border-top: 3px solid var(--human); vertical-align: 2px; }
+.sound-editor .sw.fb { background: transparent; border: 2px solid var(--warn); border-radius: 50%; width: 10px; }
+.sound-editor .sw.unused { background: #000; border: 1px solid var(--border-strong); }
+.sound-editor .sw.loopa { background: rgba(37, 189, 177, 0.3); }
+.sound-editor .sw.xf { background: rgba(37, 189, 177, 0.6); clip-path: polygon(0 100%, 100% 0, 100% 100%); }
+.sound-editor .sw.cutl { background: transparent; width: 3px; background: rgba(232, 196, 106, 0.95); }
+.sound-editor .sw.spray { background: repeating-linear-gradient(135deg, rgba(37, 189, 177, 0.6) 0 3px, rgba(37, 189, 177, 0.12) 3px 6px); }
+.sound-editor .sw.cutl2 { background: var(--accent); width: 3px; }
+.sound-editor .sw.off { background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0 2px, transparent 2px 5px); border: 1px solid var(--border-strong); }
+/* 違いを見せる小さな絵(切り替えのボタンにマウスを置くと出る) */
+.sound-editor .explain { display: none; position: fixed; z-index: 40; width: 340px; padding: 8px 10px; background: var(--raised); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55); flex-direction: column; gap: 6px; }
+.sound-editor .explain.open { display: flex; }
+.sound-editor .explain .small { color: var(--dim); line-height: 1.5; }
+.sound-editor .howbtn { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; font-weight: 400; color: var(--human); cursor: help; border: 1px solid rgba(93, 162, 232, 0.4); border-radius: 9px; padding: 0 7px 0 4px; }
+.sound-editor .howbtn .ico svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.sound-editor .sw.pad { background: #2a2f36; border: 1px solid #5a6470; }
+.sound-editor .artpick .seg button { padding: 2px 8px; }
+.sound-editor .sw.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--human); }
+.sound-editor .box > h3.withtools .toolseg .seg { width: auto; }
+.sound-editor .box > h3.withtools .toolseg .seg button { flex: none; padding: 2px 10px; font-weight: 400; }
+.sound-editor .kitwrap { position: relative; flex: 1 1 0; min-height: 0; display: flex; }
+.sound-editor .kitwrap canvas { flex: 1 1 0; height: auto; }
+/* キットの説明: キットの左の空いている所に折り返して置く(幅は描くときに決める) */
+.sound-editor .kitinfo { position: absolute; left: 6px; bottom: 4px; font-size: 10.5px; line-height: 1.35; color: var(--dim); pointer-events: none; white-space: normal; background: rgba(15, 15, 15, 0.75); border-radius: 4px; padding: 1px 4px; }
+/* 欄の中身が入りきらないときは、欄の中で縦にスクロール */
+.sound-editor .pane.scroll { overflow-y: auto; }
+.sound-editor .pane.scroll .panehead { position: sticky; top: -6px; background: var(--head); z-index: 1; padding: 0 0 2px; } /* 上に余白を足さない(隣の欄と題名の高さをそろえる) */
+.sound-editor .howpane { display: flex; flex-direction: column; gap: 4px; }
+.sound-editor .howpane .subhead { font-size: 12px; font-weight: 600; color: var(--dim); margin-top: 2px; }
+.sound-editor .knobs2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; }
+.sound-editor .knobs2 .kn { grid-template-columns: 56px minmax(0, 1fr) 64px; }
+.sound-editor .howpane > .kn { grid-template-columns: 104px minmax(0, 1fr) 64px; }
+/* 名前の長いつまみ(サンプラーの「録音どおりの鍵盤」「区分 1 の鍵盤」): 名前と値を上の行、つまみは下の行に幅いっぱい */
+.sound-editor .pane .kn.wide { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "l o" "s s"; row-gap: 0; }
+.sound-editor .pane .kn.wide > span:first-child { grid-area: l; }
+.sound-editor .pane .kn.wide > input { grid-area: s; }
+.sound-editor .pane .kn.wide > output { grid-area: o; }
+.sound-editor .howgrid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 14px; }
+.sound-editor .sw.hzband { background: rgba(93, 162, 232, 0.25); border-bottom: 3px solid rgba(93, 162, 232, 0.9); }
+.sound-editor .sw.grain { background: rgba(232, 196, 106, 0.9); }
+.sound-editor .sw.mclose { background: rgba(37, 189, 177, 0.55); }
+.sound-editor .sw.mover { background: rgba(232, 196, 106, 0.55); }
+.sound-editor .sw.mroom { background: rgba(176, 124, 232, 0.55); }
+.sound-editor .sw.lit { background: rgba(37, 189, 177, 0.95); box-shadow: 0 0 6px rgba(37, 189, 177, 0.8); }
+/* 道具のボタン: アイコン + 名前 */
+.sound-editor .seg button .ico { display: inline-flex; vertical-align: -3px; margin-right: 4px; }
+.sound-editor .menu button.opitem { display: flex; gap: 8px; align-items: center; }
+.sound-editor .menu button.opitem .ico svg { width: 20px; height: 20px; }
+.sound-editor .op .oh .ico { display: inline-flex; color: var(--accent); }
+.sound-editor .op.off .oh .ico { color: var(--faint); }
+.sound-editor .op .oh .ico svg { width: 16px; height: 16px; }
+.sound-editor .kn > span:first-child .ico { display: inline-flex; vertical-align: -3px; margin-right: 4px; color: var(--accent); opacity: 0.9; }
+.sound-editor .kn .ico svg, .sound-editor .seg button .ico svg, .sound-editor .menu .ico svg, .sound-editor .op .ico svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.sound-editor .keys .lbl { position: absolute; left: 8px; right: 8px; text-align: center; top: 5px; font-size: 10.5px; color: var(--faint); pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sound-editor .drawrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 8px; }
+.sound-editor .drawrow canvas { height: 150px; cursor: crosshair; }
+.sound-editor .toolrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sound-editor .toolrow label { font-size: 12px; color: var(--dim); display: flex; gap: 4px; align-items: center; }
+
+.sound-editor .ops { display: flex; flex-direction: column; gap: 6px; }
+.sound-editor .op { border: 1px solid var(--border-strong); border-radius: 6px; background: var(--raised); padding: 5px 7px; display: flex; flex-direction: column; gap: 4px; }
+.sound-editor .op.off { opacity: 0.45; }
+.sound-editor .op.ai { border-left: 3px solid var(--ai); }
+.sound-editor .op.you { border-left: 3px solid var(--human); }
+.sound-editor .op.drag { opacity: 0.5; }
+.sound-editor .op .oh { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.sound-editor .op .oh .grip { cursor: grab; color: var(--faint); user-select: none; }
+.sound-editor .op .oh .nm { font-weight: 600; }
+.sound-editor .op .oh input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+.sound-editor .op .x { margin-left: auto; background: transparent; border: 0; color: var(--faint); cursor: pointer; }
+.sound-editor .op .x:hover { color: var(--text); }
+.sound-editor .op .kn { grid-template-columns: 70px minmax(0, 1fr) 44px; }
+.sound-editor .addop { position: relative; }
+.sound-editor .menu { position: absolute; z-index: 20; left: 0; right: 0; top: 100%; margin-top: 4px; background: var(--raised); border: 1px solid var(--border-strong); border-radius: 6px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55); padding: 4px; display: none; max-height: 320px; overflow-y: auto; }
+.sound-editor .menu.open { display: block; }
+.sound-editor .menu button { display: block; width: 100%; text-align: left; background: transparent; border: 0; color: var(--text); padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.sound-editor .menu button:hover { background: var(--accent-soft); }
+.sound-editor .menu button small { display: block; color: var(--dim); font-size: 10.5px; }
+.sound-editor .shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; } /* 名前が折り返さない幅で並べる(狭いと 1 列) */
+.sound-editor .shelfitem { white-space: nowrap; border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 5px; font-size: 11px; cursor: pointer; }
+.sound-editor .shelfitem:hover { border-color: var(--accent-dim); }
+.sound-editor .shelfitem canvas { height: 26px; margin-top: 2px; }
+.sound-editor .row { display: flex; gap: 6px; align-items: center; }
+.sound-editor .row input[type="text"] { flex: 1; min-width: 0; background: var(--inset); color: var(--text); border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 6px; font: inherit; font-size: 12px; }
+.sound-editor .bigsel canvas { height: 300px; }
+/* ウェーブテーブルの真ん中: 画面の高さいっぱいに(上: 波形の移り変わり・鳴っている音 / 中: 描く道具 / 下: 今の位置の波形・倍音) */
+.sound-editor .col.center.wtcol { overflow: hidden; }
+.sound-editor .wtgrid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); grid-template-rows: minmax(170px, 1fr) minmax(230px, 1.25fr); gap: 8px; }
+/* 直す枠: 見出し(直している位置)の下に、波形と倍音の欄を並べる。今の位置の色(水色)でつながりを見せる */
+.sound-editor .editgroup { border-color: var(--accent-dim); }
+.sound-editor .edithead { display: flex; align-items: center; gap: 8px; }
+.sound-editor .editpanes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.sound-editor .pane { display: flex; flex-direction: column; gap: 4px; min-height: 0; border: 1px solid var(--border); border-radius: 6px; padding: 6px; background: var(--head); }
+.sound-editor .panehead { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--dim); min-width: 0; }
+.sound-editor .panehead > span:first-child, .sound-editor .panehead .seg button { white-space: nowrap; }
+/* 見出しの右の部品(目盛り・削り方など)が入りきらないときは、潰さずに次の行へ送る(字が縦に並ぶ崩れを防ぐ) */
+.sound-editor .panehead { flex-wrap: wrap; row-gap: 3px; align-content: flex-start; } /* 高さをそろえた見出しでも、題名は上の行にそろえる */
+.sound-editor .panehead > span:first-child { line-height: 24px; } /* 題名の行を選択欄(目盛りなど)と同じ高さに: 選択欄のある欄とない欄で題名の高さがずれない */
+.sound-editor .panehead .row > span, .sound-editor .panehead .row > label { white-space: nowrap; }
+/* 欄の道具: 見出しの下の行に、同じ幅で並べる */
+.sound-editor .toolseg .seg { display: flex; width: 100%; }
+.sound-editor .toolseg .seg button { flex: 1; white-space: nowrap; padding: 3px 4px; }
+.sound-editor .pane { container-type: inline-size; } /* 欄の幅で見た目を変える(@container) */
+@container (max-width: 250px) { .sound-editor .typerow .seg button .ico { display: none; } }
+.sound-editor .box { container: box / inline-size; } /* 上の箱の幅で見た目を変える */
+@container box (max-width: 470px) { .sound-editor .box > .toolseg .seg button .ico { display: none; } } /* 狭い箱では、上の道具の段のアイコンを省いて文字を入れる */ /* 狭い欄では種類のボタンのアイコンを省いて、文字を入れる */
+.sound-editor .typerow { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px; } /* フィルタの「種類」の名前 + ボタン */
+.sound-editor .toolseg .seg button.off { opacity: 0.35; cursor: not-allowed; text-decoration: line-through; } /* 今は使えない道具(理由はマウスを置くと出る) */
+/* 絵の下の行: マウスの下の値・説明(折り返して途切れない) */
+.sound-editor .paneinfo { flex: none; font-size: 11px; color: var(--dim); line-height: 1.35; min-height: 15px; white-space: normal; overflow: visible; }
+.sound-editor .panehead .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
+.sound-editor .wtgrid .box { min-height: 0; }
+.sound-editor canvas.fill { flex: 1 1 0; min-height: 36px; height: auto; }
+.sound-editor .legend { font-size: 11px; color: var(--dim); display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; font-weight: 400; }
+.sound-editor .legend i { display: inline-block; width: 18px; height: 0; border-top: 3px solid var(--accent); }
+.sound-editor .legend i.l-draw { border-top: 1px dashed var(--human); }
+.sound-editor .legend i.l-play2 { border-top: 2px dotted var(--accent); }
+/* 見出しの行に入りきらないときだけ、選択欄の後ろの文を短くする(fitRangePick が測って付ける) */
+.sound-editor .rangepick.no-tail .rp-tail { display: none; }
+.sound-editor .rangepick.no-say .rp-say { display: none; }
+.sound-editor .rp-view button { white-space: nowrap; }
+.sound-editor .legendrow i.legend-line { display: inline-block; width: 16px; height: 0; vertical-align: 3px; margin-right: 3px; }
+.sound-editor .meter { flex: 1; height: 6px; background: var(--inset); border-radius: 3px; overflow: hidden; }
+.sound-editor .meter div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), #e8c46a 80%, #e05555); }
+.sound-editor .keys { flex: 1; }
+/* 曲の再生(下の帯) */
+.sound-editor .songbar { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--head); }
+.sound-editor .songbar .pos { font-family: var(--mono); color: var(--accent); min-width: 54px; }
+.sound-editor .songbar select { background: var(--inset); color: var(--text); border: 1px solid var(--border-strong); border-radius: 5px; font: inherit; font-size: 12px; padding: 1px 4px; }
+.sound-editor .songbar label { font-size: 12px; color: var(--dim); display: flex; gap: 3px; align-items: center; white-space: nowrap; }
+.sound-editor .ed-foot label { white-space: nowrap; }
+.sound-editor .ed-foot > .hint { white-space: nowrap; }
+@media (max-width: 1600px) { .sound-editor .ed-foot > .hint { display: none; } }
+
+/* トースト */
+.sound-editor .toast { position: fixed; left: 50%; bottom: 170px; transform: translateX(-50%); background: var(--raised); border: 1px solid var(--accent-dim); padding: 6px 14px; border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55); font-size: 12.5px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 50; max-width: 70%; }
+.sound-editor .toast.show { opacity: 1; }
+/* 吹き出しの説明(? で開く) */
+.sound-editor .help { position: absolute; right: 12px; top: 40px; z-index: 30; width: 420px; background: var(--raised); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px 14px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55); font-size: 12px; display: none; }
+.sound-editor .help.open { display: block; }
+.sound-editor .help table { border-collapse: collapse; width: 100%; }
+.sound-editor .help td { padding: 2px 4px; vertical-align: top; }
+.sound-editor .help td:first-child { color: var(--dim); white-space: nowrap; }

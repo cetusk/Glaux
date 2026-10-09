@@ -46,6 +46,14 @@ export interface SoundDesignFocus {
 
 export const soundDesignStore = $state<{ focus: SoundDesignFocus | null }>({ focus: null });
 
+/// 音色エディタ(インスペクターの「音色を作り込む」で開く広いパネル)で作り込んでいるトラックと、選んでいる所
+/// (AI に頼むときの対象。ChatPanel が指示に添える)
+export const soundEditorStore = $state<{ trackId: string | null; trackName: string; sel: string | null }>({
+  trackId: null,
+  trackName: "",
+  sel: null,
+});
+
 /// 音作りビューをマスターバスで開くときの trackId
 export const MASTER_FOCUS_ID = "__master__";
 
