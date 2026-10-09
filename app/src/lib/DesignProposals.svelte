@@ -92,6 +92,31 @@
     const k = proposalAb.planIds.indexOf(planId);
     return multi && k >= 0 ? abLetter(k + 1) : null;
   };
+  // ---- 開け閉め: 帯全体(覚えておく)と案ごと(案が 4 つ以上なら畳んで始める。聴き比べ中の案は開く) ----
+  let stripFolded = $state(readFold());
+  function readFold(): boolean {
+    try {
+      return localStorage.getItem("glaux.design.fold.proposals") === "1";
+    } catch {
+      return false;
+    }
+  }
+  function toggleStrip(e: MouseEvent) {
+    if ((e.target as HTMLElement).closest(".pall, button:not(.fold)")) return;
+    stripFolded = !stripFolded;
+    try {
+      localStorage.setItem("glaux.design.fold.proposals", stripFolded ? "1" : "0");
+    } catch {
+      // 保存できなくても動作には関係しない
+    }
+  }
+  let openProps = $state<Record<string, boolean>>({});
+  const isOpen = (id: string) => abSingle(id) || letterOf(id) != null || (openProps[id] ?? propList.length < 4);
+  function toggleProp(id: string, e: MouseEvent) {
+    if ((e.target as HTMLElement).closest("button:not(.fold)")) return;
+    openProps[id] = !isOpen(id);
+  }
+
   // 案が無くなったら(採用・捨てる・AI が消した)聴き比べも終える
   $effect(() => {
     if (proposalAb.planIds.some((id) => !propList.some((p) => p.plan_id === id))) endProposalAb();
@@ -99,17 +124,22 @@
 </script>
 
 {#if d && propList.length}
-  <div class="proposals" role="region" aria-label={tr("AI の案", "AI proposals")}>
-    <div class="phead">
+  <div class="proposals" class:folded={stripFolded} role="region" aria-label={tr("AI の案", "AI proposals")}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="phead" onclick={toggleStrip}>
+      <button class="fold" type="button" aria-label={tr("案を折りたたむ・開く", "Collapse / expand proposals")} aria-expanded={!stripFolded}
+        ><Icon name="chevron-down" size={14} /></button
+      >
       <b>{tr(`AI の案(${propList.length})`, `AI proposals (${propList.length})`)}</b>
-      <span class="hint"
+      {#if stripFolded}<span class="hint">{tr("押すと開く", "Click to expand")}</span>{:else}<span class="hint"
         >{tr(
           "今の曲と計画は変わっていません。聴き比べて、よければ採用してください。聴き比べ中は範囲を繰り返し鳴らし、A / B でいつでも切り替えられます",
           "The current song and plan are unchanged. Compare, and adopt if you like it. While comparing, the range loops and you can switch A / B anytime",
         )}</span
-      >
+      >{/if}
     </div>
-    {#if allIds.length >= 2}
+    {#if allIds.length >= 2 && (!stripFolded || multi)}
       <div class="pall" class:on={multi}>
         {#if multi}
           {@const info = proposalAb.info}
@@ -180,12 +210,18 @@
         {/if}
       </div>
     {/if}
-    {#each propList as pr (pr.plan_id)}
+    {#each stripFolded ? [] : propList as pr (pr.plan_id)}
       {@const on = abSingle(pr.plan_id)}
       {@const ch = changesOf(pr.plan_id)}
       {@const letter = letterOf(pr.plan_id)}
-      <div class="prop" class:on={on || letter != null}>
-        <div class="prow">
+      {@const open = isOpen(pr.plan_id)}
+      <div class="prop" class:on={on || letter != null} class:closed={!open}>
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="prow ptitle" onclick={(e) => toggleProp(pr.plan_id, e)}>
+          <button class="fold" type="button" aria-label={tr("この案を折りたたむ・開く", "Collapse / expand this proposal")} aria-expanded={open}
+            ><Icon name="chevron-down" size={13} /></button
+          >
           {#if letter}<span class="pletter" class:cur={proposalAb.side === proposalAb.planIds.indexOf(pr.plan_id) + 1}>{letter}</span>{/if}
           <span class="pname">{pr.name}</span>
           <span class="pbase"
@@ -195,7 +231,20 @@
               ? tr(` · 編集 ${pr.edits} 件`, ` · ${plural(pr.edits, "edit")}`)
               : tr(" · 計画だけ", " · plan only")}</span
           >
+          {#if !open}
+            <span class="spacer"></span>
+            <button
+              class="btn sm"
+              type="button"
+              disabled={proposalAb.busy != null || !pr.edits || !!ch?.stale}
+              title={tr("今と案を、音量をそろえて切り替えて聴く", "Switch between now and the proposal at matched levels")}
+              onclick={() => listen(pr.plan_id)}>{proposalAb.busy === pr.plan_id ? tr("用意しています…", "Preparing…") : tr("聴き比べる", "Compare")}</button
+            >
+            <button class="btn sm primary" type="button" disabled={!!ch?.stale} onclick={() => adoptProposal(pr.plan_id, pr.name)}>{tr("採用", "Adopt")}</button>
+            <button class="btn sm" type="button" onclick={() => discardProposal(pr.plan_id, pr.name)}>{tr("捨てる", "Discard")}</button>
+          {/if}
         </div>
+        {#if open}
         {#if proposalWhy(pr.plan_id)}<div class="pwhy">{proposalWhy(pr.plan_id)}</div>{/if}
         <div class="prow">
           <span class="plabel">{tr("変わる所", "Changes")}</span>
@@ -281,6 +330,7 @@
           >
           <button class="btn sm" type="button" onclick={() => discardProposal(pr.plan_id, pr.name)}>{tr("捨てる", "Discard")}</button>
         </div>
+        {/if}
       </div>
     {/each}
   </div>
@@ -298,8 +348,38 @@
     padding: 6px 10px;
     background: var(--bg-panel);
     font-size: var(--fs-sm);
-    max-height: 40vh;
+    /* 設計画面の枠の高さに対して(画面全体の 40vh だと、狭い枠の大半を取って設計データに届かなかった) */
+    max-height: 35%;
     overflow-y: auto;
+  }
+  .phead,
+  .ptitle {
+    cursor: pointer;
+  }
+  .fold {
+    background: transparent;
+    border: 0;
+    color: var(--text);
+    width: 20px;
+    height: 20px;
+    margin-left: -4px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-sm);
+    flex: none;
+    align-self: center;
+  }
+  .fold :global(svg) {
+    transition: transform 0.12s;
+  }
+  .proposals.folded .phead .fold :global(svg),
+  .prop.closed .fold :global(svg) {
+    transform: rotate(-90deg);
+  }
+  .prop.closed {
+    padding: 3px 8px;
   }
 
   .phead {

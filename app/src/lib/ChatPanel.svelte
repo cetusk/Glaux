@@ -870,6 +870,21 @@
           <option value={ef}>{effortLabel(ef)}</option>
         {/each}
       </select>
+      <label
+        class="ask-never"
+        title={tr(
+          "オンにすると、曲の決め手(ジャンル・雰囲気・長さ・編成など)を尋ねずに、AI が選んで最後まで作る(設定の「途中で尋ねない」と同じ)。1 回だけなら指示の頭に /goal",
+          "When on, the AI doesn't ask about key choices (genre, mood, length, instrumentation…) and makes them itself (same as “Never ask” in Settings). For a single request, start it with /goal",
+        )}
+        ><input
+          type="checkbox"
+          checked={settings.chatAsk === "never"}
+          onchange={(e) => {
+            settings.chatAsk = (e.currentTarget as HTMLInputElement).checked ? "never" : "auto";
+            saveSettings();
+          }}
+        />{tr("途中で尋ねない", "Never ask")}</label
+      >
       <button class="btn sm" onclick={newConversation} disabled={chatStatus.running} title={tr("会話の文脈をリセットする(表示中の会話も消えます)", "Reset the conversation context (also clears the shown conversation)")}
         ><Icon name="message-square-plus" />{tr("新しい会話", "New chat")}</button
       >
@@ -1224,6 +1239,19 @@
     display: flex;
     gap: 6px;
     align-items: center;
+  }
+
+  .ask-never {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .ask-never input {
+    margin: 0;
   }
 
   .model,

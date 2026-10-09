@@ -1503,7 +1503,8 @@
   }
   .main {
     flex: 1 1 0;
-    min-height: 0;
+    /* 案の帯が伸びても、曲の設計データの欄は潰しきらない */
+    min-height: 200px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 300px;
     gap: var(--sp-2);
