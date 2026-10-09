@@ -12,11 +12,11 @@ apply_commands で編集。\
 相対編集: transpose_notes・shift_notes・quantize_notes・swing_notes・scale_velocity・transform_notes。構成: duplicate_clips・insert_bars・delete_bars。\
 曲作りは topic workflow の工程(set_song_plan で区間 → save_plan で曲全体とパートの計画 → 骨格 = suggest_progression・\
 write_drums・write_chords・write_bassline・write_transition → 旋律(critique_melody で点検)→ 表情 → 点検)に沿う。\
-旋律は write_melody か develop_motif。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio・analyze_sound。\
 人も並行して編集する。project_version が進んだら get_changes {since: 最後の entry_id}。\
-定石は get_guide {topic}(commands・workflow・revise・melody・groove・instruments・genres・expression・mix・audio・sound_match・clap)。\
-ハネ(swing_notes)の後は apply_groove(quantize 0)を重ねる。仕上げは master_mix。\
+定石は get_guide {topic}(commands・workflow・revise・melody・groove・arrangement・instruments・sound_design・genres・expression・mix・mastering・\
+audio・sound_match・clap。user: はユーザーの定石。あれば先に読む)。\
+仕上げは master_mix。\
 曲作りの報告前は critique_arrangement の warn を直し、analyze_harmony・analyze_audio の結果を添える。\
 修正は topic revise: 応答の aftercare の warn を直し、報告前に review_edits。\
 音・ミックスを変えたら critique_mix の warn を直し compare_mix。大きな試行の前は checkpoint。\
@@ -235,6 +235,31 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - critique_arrangement で「格子どおり」「強弱が平ら」「オートメーションが無い」「同じ型のまま」が消えたかを確かめる。",
     ),
     (
+        "arrangement",
+        "曲構成と展開(区間の役割・密度・緊張と解放・変わり目)",
+        "- 区間には役割がある: イントロ(期待させる。要素は絞る)/ A メロ・ヴァース(語る。低め・薄め)/ B メロ・プレコーラス・ビルド(高まる。\n\
+  密度・音域・リズムの細かさを少しずつ上げる)/ サビ・ドロップ(いちばん高い・広い・厚い)/ ブレイク(息をつく。抜いて対比を作る)/\n\
+  ブリッジ(新しい和声・景色)/ アウトロ(閉じる)。set_song_plan の energy(0〜10)で山と谷を先に決め、critique_arrangement で\n\
+  計画と実際(鳴らすトラック・盛り上がり)を突き合わせる。\n\
+- 対比が展開を作る: 次の区間は前の区間と 2 つ以上を変える(鳴らすトラック・音域・リズムの細かさ・和音の積み方・ステレオの広さ・\n\
+  リバーブの量・ベースの型)。同じ要素のまま音量だけ上げても山にならない。サビ・ドロップの前は 1 拍〜1 小節抜く(write_transition の gap_beats)。\n\
+- 密度の階段: 8 小節(EDM は 16 小節)ごとに 1 つ足すか抜く。ヴァース 2 回目は 1 回目と同じにせず、カウンターメロディ・ハットの刻み・\n\
+  パッドの動きなどを 1 つ足す。ラスサビは転調・ハーモニー・高いオクターブ・ドラムの手数のどれかで 1 段上げる。\n\
+- 周波数の席: 区間ごとに、低域(キック・ベース)・中低域(コード・パッド)・中域(主旋律)・高域(ハット・きらめき)の席に誰が座るかを決める。\n\
+  主旋律の音域にコード楽器を重ねない(write_chords の range を下げるか、主旋律の間はコードを短く刻む)。\n\
+- 主旋律と応答: 主旋律が休む所(フレーズの終わりの 1〜2 拍)に別の楽器の短い応答(コール・アンド・レスポンス)を入れる。\n\
+  主旋律が動いている間は伴奏を動かしすぎない。\n\
+- 緊張と解放: ビルドは「上げる」要素を重ねる(ハイパスを開く・スネアの連打を細かく・ライザー・ピッチを上げる・リバーブを長く)。\n\
+  shape_automation(exp でカットオフ、volume の swell)と write_transition(ロール・ライザー・リバースクラッシュ)。\n\
+  解放(ドロップ・サビの頭)はクラッシュ + キック + ベースの頭を揃え、ビルドの要素を一斉に止める。\n\
+- 変わり目のつなぎ: 区切りの前 1〜2 小節にフィル(write_drums の区切り・drum_rudiment)、区切りの頭にクラッシュ。\n\
+  雰囲気を変えるときは、前の区間の終わりの和音を次の区間の調の V や借用和音にしてつなぐ(suggest_progression)。\n\
+- 長さの目安: ポップ 3〜4 分(サビまで 1 分以内)/ EDM のクラブ用は 5〜7 分(DJ がつなげるよう頭と終わりの 16〜32 小節はドラム中心)/\n\
+  配信用の EDM は 3 分前後 / ゲーム・映像は ループの継ぎ目(最後の小節から頭へ自然に戻る)を確かめる。\n\
+- 確かめ方: critique_arrangement の warn を直す → analyze_audio の short_term_lufs で区間ごとの音量の推移が計画の energy と同じ形か\n\
+  (山の区間が 2〜4 LU 大きいのがふつう)→ per_track の sections で、各トラックが区間ごとに出入りしているか。",
+    ),
+    (
         "instruments",
         "音源の選び方",
         "- トラックの音源は set_device {track, device: {type: \"builtin\", name}}。つまみは list_params で意味・範囲・現在値を見て set_param。\n\
@@ -299,6 +324,29 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 音色プリセット: 音作りの依頼ではまず list_presets → load_preset → 微調整。良い音ができたら save_preset(全プロジェクト共通)。\n\
 - エフェクトのプリセット: エフェクト 1 つ分(list_effect_presets → load_effect_preset)。エフェクトを足す前に使える設定がないか見る。\n\
   外してある(parked: true)エフェクトは鳴らないが、ユーザーが取っておいたもの。頼まれない限り消さない。",
+    ),
+    (
+        "sound_design",
+        "音作りの定石(役割ごとの作り方・重ね方・歪みの使い分けと確かめ方)",
+        "- 役割から決める: ベース = 低域の芯(サイン・三角の基音)+ 中域の輪郭(倍音。小さいスピーカーで聞こえるのはこちら)/\n\
+  リード = 中域 1〜4 kHz の存在感・動き(ビブラート・グライド)/ パッド = 広さと時間の変化(遅い立ち上がり・フィルタの揺れ・spread)/\n\
+  プラック = 速い減衰(filter_decay + filter_env で頭だけ明るく)/ キー = 打鍵の頭と減衰(fm4 のエレピ・additive のベル)。\n\
+- 低域はモノで 1 つだけ: 150 Hz 以下はベースかキックのどちらかが主役。重ねたベースの低域側の層は spread 0。サブベースはサイン 1 本。\n\
+- 重ねる(set_layer): 頭の層(クリック・ノイズの短い音)+ 胴の層 + 尾の層(パッド・リバーブ)のように時間で分けるか、\n\
+  低域・中域・高域で分ける。同じ帯域に同じ役割の層を重ねると濁るだけ。\n\
+- 動き: 止まった音はプロっぽく聞こえない。analog 0.2〜0.4、ゆっくりした LFO(cutoff・position・pan)、modulate でテンポに合わせた揺れ、\n\
+  ノートの強さで明るさ(vel_cutoff)。長い音はオートメーションで区間ごとに開閉する。\n\
+- 歪みの使い分け: saturator(テープ・真空管の温かい偶数倍音。ベース・ボーカル・バスに薄く)/ distortion・clipper(硬い奇数倍音。\n\
+  ロック・ダブステップのベース、ドラムバスの音圧)/ bitcrush(ローファイ・ゲーム機)/ amp(ギター)。歪ませる前に低域を\n\
+  ハイパスで分け(低域は歪ませず中域だけ)、歪みの後に EQ で 3〜5 kHz の耳に痛い所と 8 kHz 以上のざらつきを整える。\n\
+  和音・ベースと重なるパートを強く歪ませると相互変調で濁る(単音のリード・ベースの上の帯域に使う)。\n\
+- 歪み・コンプ・リミッタの確かめ方: 掛けたら check_distortion。impact の crest_change_db・attack_change_db が −3 dB より下なら潰しすぎ\n\
+  (打楽器は芯が無くなり、ベースは平たくなる)、high_change_db が +3 dB を超えたらざらつき、probe で入力の大きさごとの歪み率・\n\
+  相互変調・押さえ込みを見て、トラックの実際のピーク(analyze_audio)の所で歪みすぎていないか。critique_mix の squashed_drums も見る。\n\
+- 言葉の調整: 「明るく・太く・遠く・柔らかく」は set_character、細かい追い込みは refine_by_words(聴き比べながらつまみを決める)。\n\
+  音色を数で確かめるなら analyze_sound、2 つの音を比べるなら compare_sounds、参考の音に寄せるなら match_sound。\n\
+- 音色エディタ(人が開く画面)で作り込まれた音は、つまみ・手で描いた形(ウェーブテーブルの作り方・加算合成の partial_edits・\n\
+  サンプラーの slice_points・SFZ の key_adjust)を壊さないよう、変えるつまみだけ set_param で動かす。",
     ),
     (
         "genres",
@@ -379,6 +427,9 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   オートメーション、LFO は depth)、ファンクのオートワウは auto_filter bandpass + env_amount 2〜3、エレピの揺れは tremolo\n\
   (stereo 1 でオートパン)・phaser。質感: 音圧は clipper(ドラムバス・マスターの前に drive 2〜6)、ローファイ・ゲーム機は bitcrush、\n\
   80 年代のスネアは reverb の gate_ms 150〜300。\n\
+- 歪み・コンプ・リミッタを掛けたら check_distortion で確かめる(エフェクトを外した音と比べたクレスト・音の頭・4 kHz 以上・\n\
+  雑音っぽさの変化と、入力の大きさごとの歪み率・相互変調・押さえ込み)。crest_change_db が −3 dB より下・attack_change_db が\n\
+  −3 dB より下なら潰しすぎ。和音のパート・ベースと重なるパートは imd_pct を低く(歪みは単音のリード・ベースの上の帯域に)。\n\
 - エフェクトのつながり(ノード表示の線): 並列(原音 + リバーブ、パラレル・コンプ)にしたいときは set_fx_links で\n\
   [in→eq, eq→out, eq→rev(gain_db で混ぜる量), rev→out] のように分けて合流させる。鳴るのは入力から出口までたどれるものだけ\n\
   (list_params の sounding)。ユーザーがつないだ表は読んでから、必要な線だけを足し引きする。\n\
@@ -402,6 +453,25 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 音量の仕上げ: 配信は正規化される(Spotify・YouTube -14 LUFS、Apple Music -16)。-14 より大きいマスターは下げて再生されるだけで、\n\
   潰した分ダイナミクスを失う(analyze_audio の streaming で予測が見られる)。True Peak は -1 dBTP 以下\n\
   (export_audio のリミッタが保証する)。plr_db・psr_min_db はおおむね 8 以上を保つ(下回ると潰しすぎの目安。規格ではない)。",
+    ),
+    (
+        "mastering",
+        "マスタリング(音量・ピーク・釣り合いの仕上げと確かめ方)",
+        "- 順番: ミックスを直してから(マスターで直さない)→ master_mix(EQ → コンプ → リミッタ。reference_file で参照曲に寄せる)→\n\
+  compare_mix で前後 → critique_mix {genre} で目安と比べる → export_audio。\n\
+- 音量: 配信は正規化される(Spotify・YouTube -14 LUFS、Apple Music -16)。-14 より大きいマスターは下げて再生されるだけで、\n\
+  潰した分ダイナミクスを失う(analyze_audio の streaming)。クラブ用の EDM は -9〜-6 LUFS も使われるが、PLR が 7 を下回らない範囲で。\n\
+  アコースティック・ジャズ・クラシック・映像は -18〜-14 LUFS で、ダイナミクスを残す。\n\
+- ピーク: True Peak -1 dBTP 以下(export_audio のリミッタが保証)。analyze_audio の master_clip が出たら(マスターの最後のクリップ防止が\n\
+  1 dB 以上押さえ込んでいる)、音量を下げるかリミッタで扱う。クリップ防止に頼ると歪む。\n\
+- 潰し具合: plr_db・psr_min_db はおおむね 8 以上(ジャンルの目安は critique_mix の genre)。リミッタのゲインリダクションは 3〜4 dB まで、\n\
+  それ以上要るならミックスの段でピークの元(キック・スネアの頭、ベースの低域)を整える。check_distortion をマスターに近いバスで使い、\n\
+  クレストと音の頭の変化を見る。\n\
+- 釣り合い: tonal_balance の slope_db_per_oct(ポップ・EDM はおおむね -4.5〜-3、アコースティックはもう少し暗い)と deviations\n\
+  (±3 dB の出っ張り)。EQ は ±1〜2 dB の広い山で。低域は stereo.low_correlation が 1 近く(150 Hz 以下はモノ)。\n\
+  mono_loudness_change_db が −3 より大きく下がるなら広げすぎ。\n\
+- 聴き比べ: 音量をそろえて比べる(compare_mix の match_gain_db の分を戻す)。大きいほうが良く聞こえるのは錯覚。\n\
+- 最後に: 曲の頭と終わりの無音・フェード、区間ごとの音量の推移(short_term_lufs)が計画どおりか、モノで聴いて主旋律が消えないか。",
     ),
     (
         "audio",
@@ -448,6 +518,60 @@ pub fn guide(topic: &str) -> Option<String> {
         .map(|(_, title, body)| format!("# {title}\n{body}"))
 }
 
+/// ユーザーが書いた定石の置き場所(設定フォルダの guides。中の .md が `user:<ファイル名>` のトピックになる)
+pub fn user_dir() -> std::path::PathBuf {
+    crate::presets::default_dir()
+        .parent()
+        .map(|p| p.join("guides"))
+        .unwrap_or_else(|| std::path::PathBuf::from("guides"))
+}
+
+/// ユーザーの定石の一覧(トピック名 `user:<ファイル名>`, 見出し = 最初の行の「# 」の後か、ファイル名)。名前順
+pub fn user_topics(dir: &std::path::Path) -> Vec<(String, String)> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut out: Vec<(String, String)> = rd
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if path
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+                != Some("md")
+            {
+                return None;
+            }
+            let stem = path.file_stem()?.to_str()?.to_owned();
+            let text = std::fs::read_to_string(&path).ok()?;
+            let title = text
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .and_then(|l| l.trim().strip_prefix("# "))
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .unwrap_or(&stem)
+                .to_owned();
+            Some((format!("user:{stem}"), title))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// ユーザーの定石を読む(`user:<ファイル名>`。長すぎるものは 12,000 字で切る)
+pub fn user_guide(dir: &std::path::Path, topic: &str) -> Option<String> {
+    let stem = topic.strip_prefix("user:")?;
+    // フォルダの外を読まない
+    if stem.is_empty() || stem.contains(['/', '\\']) || stem.contains("..") {
+        return None;
+    }
+    let text = std::fs::read_to_string(dir.join(format!("{stem}.md"))).ok()?;
+    Some(text.chars().take(12_000).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +587,34 @@ mod tests {
             assert!(guide(name).is_some());
         }
         assert!(guide("no_such").is_none());
+    }
+
+    #[test]
+    fn user_guides_are_listed_and_read_inside_the_folder() {
+        let dir = std::env::temp_dir().join(format!("glaux_guides_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("my_mix.md"),
+            "# 自分のミックスの決まり\n- キックは -6 dB",
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.md"), "見出しなし").unwrap();
+        std::fs::write(dir.join("skip.txt"), "x").unwrap();
+        let t = user_topics(&dir);
+        assert_eq!(
+            t,
+            vec![
+                (
+                    "user:my_mix".to_owned(),
+                    "自分のミックスの決まり".to_owned()
+                ),
+                ("user:notes".to_owned(), "notes".to_owned()),
+            ]
+        );
+        assert!(user_guide(&dir, "user:my_mix").unwrap().contains("キック"));
+        assert!(user_guide(&dir, "user:../x").is_none());
+        assert!(user_guide(&dir, "my_mix").is_none());
+        assert!(user_topics(&dir.join("none")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

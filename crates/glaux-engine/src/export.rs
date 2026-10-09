@@ -86,6 +86,21 @@ pub fn render_project_range(
     render_inner(project, sample_rate, bank, Some((from, to)), true)
 }
 
+/// 解析用: マスターのクリップ防止を通さずに描き出す(`range` は秒の範囲。無ければ曲全体)。
+/// 防止の掛かり方を測ってから、聞こえる音にするときは [`crate::render::soft_clip`] を通す
+pub(crate) fn render_for_analysis_raw(
+    project: &Project,
+    sample_rate: f64,
+    bank: &crate::data::SampleBank,
+    range: Option<(f64, f64)>,
+) -> Result<Vec<f32>, ExportError> {
+    let range = range.map(|(from_secs, to_secs)| {
+        let from = (from_secs.max(0.0) * sample_rate) as u64;
+        (from, ((to_secs * sample_rate) as u64).max(from))
+    });
+    render_inner(project, sample_rate, bank, range, false)
+}
+
 fn render_inner(
     project: &Project,
     sample_rate: f64,

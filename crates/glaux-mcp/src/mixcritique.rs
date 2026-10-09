@@ -70,12 +70,71 @@ fn mean_note_len(t: &Track) -> f64 {
     }
 }
 
-/// 測定と設定から指摘を組み立てる。`kick`・`bass` は低域の重なりを測ったトラック
+/// ジャンルごとの目安(経験則。規格ではない): (名前の並び, PLR の下限 dB, 250Hz 以下の割合の範囲)。
+/// PLR は True Peak − 統合ラウドネス(小さいほど潰れている)。低域の割合は analyze_audio の band_energy.low
+pub const GENRES: &[(&[&str], f64, (f64, f64))] = &[
+    (
+        &[
+            "edm",
+            "house",
+            "techno",
+            "trance",
+            "dubstep",
+            "dnb",
+            "drum_and_bass",
+            "future_bass",
+            "electro",
+        ],
+        7.0,
+        (0.35, 0.62),
+    ),
+    (
+        &["hiphop", "hip_hop", "trap", "rnb", "r&b"],
+        7.0,
+        (0.4, 0.66),
+    ),
+    (
+        &[
+            "pop", "jpop", "j-pop", "synthpop", "kpop", "rock", "funk", "disco",
+        ],
+        8.0,
+        (0.25, 0.52),
+    ),
+    (&["metal", "punk"], 7.0, (0.22, 0.5)),
+    (&["lofi", "lo-fi", "chill"], 9.0, (0.3, 0.56)),
+    (
+        &[
+            "jazz",
+            "acoustic",
+            "folk",
+            "classical",
+            "ambient",
+            "cinematic",
+            "orchestral",
+            "game",
+        ],
+        11.0,
+        (0.15, 0.46),
+    ),
+];
+
+/// ジャンルの名前 → 目安(PLR の下限, 低域の割合の範囲)。知らない名前は None
+pub fn genre_targets(genre: &str) -> Option<(f64, (f64, f64))> {
+    let g = genre.trim().to_lowercase().replace([' ', '-'], "_");
+    GENRES
+        .iter()
+        .find(|(names, _, _)| names.iter().any(|n| n.replace('-', "_") == g))
+        .map(|(_, plr, low)| (*plr, *low))
+}
+
+/// 測定と設定から指摘を組み立てる。`kick`・`bass` は低域の重なりを測ったトラック。
+/// `genre` を渡すと、そのジャンルの目安(潰し具合・低域の量)とも比べる
 pub fn findings(
     project: &Project,
     check: &MixCheck,
     kick: Option<&Track>,
     bass: Option<&Track>,
+    genre: Option<&str>,
 ) -> Vec<Value> {
     let mut out = Vec::new();
     let track_by_id = |id: &str| project.tracks.iter().find(|t| t.id.to_string() == id);
@@ -174,8 +233,63 @@ pub fn findings(
         }
     }
 
+    // ---- 潰れ(打楽器のクレスト) ----
+    for c in &check.tracks {
+        let Some(t) = track_by_id(&c.track_id) else {
+            continue;
+        };
+        if crate::recipes::is_drum(t) && c.peak_db > -40.0 && c.crest_db > 0.0 && c.crest_db < 9.0 {
+            out.push(json!({
+                "severity": "info",
+                "kind": "squashed_drums",
+                "track": t.name,
+                "track_id": t.id.to_string(),
+                "message": format!("「{}」のクレスト(ピーク − RMS)が {:.1} dB(打楽器はふつう 12 以上。音の頭が潰れて前に出ない)", t.name, c.crest_db),
+                "fix": { "tool": "check_distortion", "args": { "track_id": t.id.to_string() },
+                         "hint": "歪み・コンプ・リミッタを弱める(コンプは attack を 10〜30ms に)。check_distortion で、エフェクトを外した音と比べる" },
+            }));
+        }
+    }
+
     // ---- 曲全体 ----
     let mix = &check.mix;
+    if let Some(mc) = &mix.master_clip {
+        if mc.max_reduction_db >= 1.0 || mc.pre_clip_peak_db > 0.0 {
+            out.push(json!({
+                "severity": "warn",
+                "kind": "master_clip",
+                "message": format!(
+                    "マスターの最後のクリップ防止で最大 {:.1} dB 押さえ込まれている(防止の前のピーク {:+.1} dBFS、時間の {:.1}%)。ピークが潰れて歪む",
+                    mc.max_reduction_db, mc.pre_clip_peak_db, mc.engaged_ratio * 100.0
+                ),
+                "fix": { "tool": "master_mix", "args": {}, "hint": "マスターの音量か、大きいトラックの音量を下げる。音圧が要るなら master_mix の limiter で(クリップ防止に頼らない)" },
+            }));
+        }
+    }
+    if let Some((plr_min, (lo, hi))) = genre.and_then(genre_targets) {
+        let g = genre.unwrap_or_default();
+        if mix.plr_db.is_finite() && mix.plr_db < plr_min {
+            out.push(json!({
+                "severity": if mix.plr_db < plr_min - 2.0 { "warn" } else { "info" },
+                "kind": "genre_plr",
+                "message": format!("PLR が {:.1} dB({g} の目安は {plr_min:.0} 以上。下回ると潰しすぎで、正規化される配信では小さく聞こえる)", mix.plr_db),
+                "fix": { "hint": "マスターのリミッタ・クリッパの量を減らす(input_db・drive を下げる)。check_distortion で潰れの元を探す" },
+            }));
+        }
+        let low = mix.band_energy.low;
+        if low < lo || low > hi {
+            out.push(json!({
+                "severity": "info",
+                "kind": "genre_low",
+                "message": format!(
+                    "250Hz 以下の割合が {:.2}({g} の目安は {lo:.2}〜{hi:.2}。{})",
+                    low,
+                    if low < lo { "低音が足りず軽い" } else { "低音が多くこもる・ほかが埋もれる" }
+                ),
+                "fix": { "hint": if low < lo { "キック・ベースを上げるか、ベースに倍音(saturator)を足す" } else { "ベース以外にハイパス、ベースとキックの重なりを sidechain で" } },
+            }));
+        }
+    }
     if mix.true_peak_dbtp > -1.0 {
         out.push(json!({
             "severity": "warn",
@@ -332,5 +446,14 @@ mod tests {
         assert_eq!(bar_beat(&p, 0.0), "1:1");
         assert_eq!(bar_beat(&p, 2.0), "2:1");
         assert_eq!(bar_beat(&p, 2.75), "2:2.5");
+    }
+
+    #[test]
+    fn genre_names_are_forgiving() {
+        assert_eq!(genre_targets("House").map(|g| g.0), Some(7.0));
+        assert_eq!(genre_targets("J-POP").map(|g| g.0), Some(8.0));
+        assert_eq!(genre_targets(" drum and bass ").map(|g| g.0), Some(7.0));
+        assert_eq!(genre_targets("lo-fi").map(|g| g.0), Some(9.0));
+        assert!(genre_targets("polka").is_none());
     }
 }

@@ -130,6 +130,18 @@ pub struct AnalyzeAudioParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct CheckDistortionParams {
+    /// 調べるトラックの ID(そのトラックのエフェクトを調べる)
+    pub track_id: String,
+    /// 比べる範囲の開始 tick。省略で曲頭から(長い曲は範囲を絞ると速い)
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// 比べる範囲の終了 tick。省略で曲末まで
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ImportIrParams {
     /// インパルス応答(IR)の音声ファイルの絶対パス(WAV / MP3 / FLAC など。部屋・ホール・機材の響きを録ったもの)
     pub path: String,
@@ -2109,6 +2121,10 @@ pub struct CritiqueMixParams {
     pub start_tick: Option<u64>,
     #[serde(default)]
     pub end_tick: Option<u64>,
+    /// ジャンル(edm / house / techno / dubstep / dnb / hiphop / trap / pop / jpop / rock / metal / lofi / jazz / acoustic /
+    /// classical / ambient / cinematic など)。渡すと、そのジャンルの目安(PLR の下限・低域の量)とも比べる
+    #[serde(default)]
+    pub genre: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -4223,7 +4239,8 @@ fn find_param_range(v: &Value, path: &str) -> Option<(f64, f64)> {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct GetGuideParams {
-    /// workflow / melody / groove / instruments / genres / expression / mix / audio / sound_match / clap。省略で一覧。
+    /// workflow / melody / groove / arrangement / instruments / sound_design / genres / expression / mix / mastering /
+    /// audio / sound_match / clap、またはユーザーの定石 user:<名前>。省略で一覧。
     #[serde(default)]
     pub topic: Option<String>,
 }
@@ -5475,7 +5492,9 @@ impl GlauxServer {
         description = "あなたの「耳」。プロジェクトをオフラインレンダして音響指標を返す(音声そのものは返らない)。\
         編集 → analyze_audio → 微調整のループでミックスの質を上げるのに使う。指標の読み方: \
         loudness_lufs=統合ラウドネス(配信の目安 -14 前後。-30 以下はかなり小さい)、\
-        peak_db が 0 に近く clipped=true なら歪んでいるのでゲインを下げる、\
+        clipped=true なら振り切れている(マスターの最後のクリップ防止の前で 0 dBFS を超えた。防止で押さえ込まれていても潰れている)のでゲインを下げる。\
+        master_clip(pre_clip_peak_db=防止の前のピーク / engaged_ratio=防止が効いたサンプルの割合 / max_reduction_db=いちばん押さえ込んだ量。\
+        1 dB を超えるとピークの潰れが聞こえやすい)で潰れの量が分かる。\
         crest_factor_db=ダイナミクス(6 以下は潰れ気味、12 以上はスカスカかも)、\
         band_energy=low(<250Hz)/mid/high(>4kHz) の比率(low>0.6 はこもり気味、high>0.5 は刺さり気味。\
         バランスの取れた曲はおおむね low 0.3-0.5 / mid 0.3-0.5 / high 0.05-0.25)、\
@@ -5492,7 +5511,8 @@ impl GlauxServer {
         無相関で約 -3、それより大きく下がるならモノラルで音が消えている)、\
         tonal_balance(third_octave=1/3 オクターブごとの量、slope_db_per_oct=傾き。0 = ピンクノイズと同じ・マイナスほど暗い、\
         deviations=傾きの直線から ±3dB 以上ずれた帯域。プラスはこもり・刺さりの候補。EQ で直す場所の目星に)。\
-        【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy 一覧と、\
+        【ミックスバランスの診断】per_track: true で各トラックの loudness/band_energy/crest_factor_db/plr_db\
+        (クレスト・PLR が小さいほど潰れている。打楽器 15 以上・持続音 8〜12 がふつう、6 以下は潰れ気味)/sections(区間ごとの rms_db とクレスト)の一覧と、\
         masking(トラック間の周波数のかぶり。心理音響モデル(広がり・純音か雑音か・聞こえる最小の音・直後の残り)で、\
         track が masked_by に band_hz の帯域で time_ratio の時間覆われて聞こえない。band_share はその帯域が track の音に占める割合、\
         suggest_cut_db は masked_by をその帯域でどれだけ下げれば聞こえてくるかの目安)が返る。\
@@ -5571,6 +5591,59 @@ impl GlauxServer {
             v["tracks"] = serde_json::to_value(&tracks).map_err(|e| e.to_string())?;
         }
         Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "歪み・押さえ込みを数で確かめる(歪み系・コンプ・リミッタを掛けたあとに使う)。2 つを返す。\
+        impact: トラックをソロで、エフェクトありと全部外したものを描き出して比べる(loudness_change_db / crest_change_db=クレストの変化。\
+        −3 dB より下がるとピークが潰れている / attack_change_db=音の頭の強さの変化。−3 dB より下がると立ち上がりが丸く平ら / \
+        high_change_db=4 kHz 以上の量の変化。+3 dB を超えると歪みの倍音でざらつく・刺さる / flatness_change=雑音っぽさの変化。\
+        +0.05 を超えると濁っている / notes=分かったことの短い文)。\
+        probe: トラックのエフェクトの列(内蔵のもの)に試験の音を -30〜0 dBFS で通す(points: thd_pct=1 音の歪み率 / \
+        imd_pct=2 音〈440+554 Hz〉の相互変調。高いと和音・ベースの重なりが濁る / compression_db=小さい音に対する押さえ込み / \
+        even_minus_odd_db=偶数倍音−奇数倍音。プラスは温かい、マイナスは硬い)。どの大きさから歪む・潰れるかが分かるので、\
+        drive やゲインを決めるときに、トラックの実際のピーク(analyze_audio)と突き合わせる。和音のパートは imd_pct を低く保つ。"
+    )]
+    async fn check_distortion(&self, params: Parameters<CheckDistortionParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("check_distortion");
+        let p = params.0;
+        let (project, version) = self.handle.get_project_shared().await?;
+        let track_id = glaux_core::TrackId::parse(&p.track_id).map_err(|e| e.to_string())?;
+        let track = project
+            .track(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?
+            .clone();
+        let range = match (p.start_tick, p.end_tick) {
+            (None, None) => None,
+            (s, e) => {
+                let start = s.unwrap_or(0);
+                let end = e.unwrap_or(u64::MAX);
+                if end <= start {
+                    return Err("end_tick は start_tick より大きくすること".to_owned());
+                }
+                Some((glaux_core::Tick(start), glaux_core::Tick(end)))
+            }
+        };
+        let project_dir = self.handle.project_dir().await?;
+        let (impact, probe) = tokio::task::spawn_blocking(move || {
+            let bank =
+                glaux_engine::SampleBank::for_offline(&project, std::path::Path::new(&project_dir));
+            let probe = glaux_engine::distortion::fx_probe(&track);
+            (
+                glaux_engine::distortion::fx_impact(&project, &track_id, range, &bank),
+                probe,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(JsonText(json!({
+            "project_version": version,
+            "impact": match impact {
+                Ok(i) => serde_json::to_value(i).map_err(|e| e.to_string())?,
+                Err(e) => json!({ "error": e }),
+            },
+            "probe": probe,
+        })))
     }
 
     #[tool(
@@ -7584,27 +7657,46 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "曲の作り方の工程・旋律・グルーブ・音作り・ジャンル・奏法・ミックス・音声素材・似た音作り・CLAP の定石を読む。\
+        description = "曲の作り方の工程・旋律・グルーブ・構成・音作り・ジャンル・奏法・ミックス・マスタリング・音声素材・似た音作り・CLAP の定石を読む。\
         topic: workflow(曲を作る工程と点検表。曲を作るときは最初に読む)/ melody(旋律の工程・良い旋律の性質・ジャンルの語法)/ groove(グルーブの型・前ノリ後ノリ・ゴースト・オートメーションの形)/\
-        instruments(音源の選び方・エレキギター・SoundFont)/ genres(テンポ・ドラムの型・進行・ベース・構成・EDM の音作り)/\
+        arrangement(区間の役割・対比・密度の階段・周波数の席・緊張と解放・変わり目)/\
+        instruments(音源の選び方・エレキギター・SoundFont)/ sound_design(役割ごとの作り方・重ね方・歪みの使い分けと確かめ方)/\
+        genres(テンポ・ドラムの型・進行・ベース・構成・EDM の音作り)/\
         expression(奏法・レガート・ポルタメント・ピッチカーブ)/ mix(エフェクト・バス・バランス・オートメーション)/\
+        mastering(音量・ピーク・潰し具合・釣り合いの仕上げ)/\
         audio(音声素材・分離・譜起こし・テンポ追従)/ sound_match(似た音を作る)/ clap(プラグイン)。\
+        user: で始まるトピックはユーザーが設定フォルダの guides に書いた定石(*.md)で、一覧にあればその分野の作業の前に必ず読み、組み込みの定石より優先する。\
         省略で一覧。その分野の作業を始める前に読むと、道具の選び方と値の目安が分かる。"
     )]
     async fn get_guide(&self, params: Parameters<GetGuideParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("get_guide");
+        let user_dir = crate::guide::user_dir();
         match params.0.topic.as_deref() {
             None => Ok(JsonText(json!({
                 "topics": crate::guide::TOPICS
                     .iter()
                     .map(|(name, title, _)| json!({ "topic": name, "title": title }))
+                    .chain(
+                        crate::guide::user_topics(&user_dir)
+                            .into_iter()
+                            .map(|(name, title)| json!({ "topic": name, "title": title, "user": true })),
+                    )
                     .collect::<Vec<_>>(),
+                "user_guides_dir": user_dir.to_string_lossy(),
             }))),
             Some(t) => crate::guide::guide(t)
+                .or_else(|| crate::guide::user_guide(&user_dir, t))
                 .map(|text| JsonText(json!({ "topic": t, "guide": text })))
                 .ok_or_else(|| {
-                    let names: Vec<&str> =
-                        crate::guide::TOPICS.iter().map(|(n, _, _)| *n).collect();
+                    let names: Vec<String> = crate::guide::TOPICS
+                        .iter()
+                        .map(|(n, _, _)| n.to_string())
+                        .chain(
+                            crate::guide::user_topics(&user_dir)
+                                .into_iter()
+                                .map(|(n, _)| n),
+                        )
+                        .collect();
                     format!("topic は {} のいずれか(got: {t})", names.join(" / "))
                 }),
         }
@@ -13885,7 +13977,8 @@ impl GlauxServer {
         直した方がよいもの(warn)と好みで検討するもの(info)を、直し方の案(fix: {tool, args} か hint)付きで返す。\
         見るもの: 低域(150Hz 以下)の左右の広がり、音の頭・終わりのクリック(位置は小節:拍)、キックとベースの低域のぶつかり、\
         True Peak、モノにしたときの減り、2〜5kHz の刺さり・200〜400Hz のこもり、トラックどうしのかぶり、\
-        中央に重なったユニゾン、まったく動かない長い音、空間(リバーブ・ディレイ)の無さ。\
+        中央に重なったユニゾン、まったく動かない長い音、空間(リバーブ・ディレイ)の無さ、\
+        マスターのクリップ防止による潰れ、打楽器のクレストの低さ(潰れ)。genre を渡すとジャンルの目安(PLR・低域の量)とも比べる。\
         範囲を省略すると、長い曲はノートが最も多い 16 小節を調べる(重い描き出しを避ける)。\
         ミックスや音作りを変えたら呼び、warn を fix で直して、もう一度呼んで確かめる。"
     )]
@@ -13918,7 +14011,21 @@ impl GlauxServer {
         .map_err(|e| e.to_string())?;
         let kick_t = kick.as_ref().and_then(|id| project.track(id));
         let bass_t = bass.as_ref().and_then(|id| project.track(id));
-        let findings = crate::mixcritique::findings(&project, &check, kick_t, bass_t);
+        if let Some(g) = p.genre.as_deref() {
+            if crate::mixcritique::genre_targets(g).is_none() {
+                return Err(format!(
+                    "genre は {} のどれか(got: {g})",
+                    crate::mixcritique::GENRES
+                        .iter()
+                        .flat_map(|(n, _, _)| n.iter())
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                ));
+            }
+        }
+        let findings =
+            crate::mixcritique::findings(&project, &check, kick_t, bass_t, p.genre.as_deref());
         let warns = findings.iter().filter(|f| f["severity"] == "warn").count();
         Ok(JsonText(json!({
             "range": check.range.map(|(a, b)| json!({

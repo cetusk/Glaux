@@ -36,6 +36,7 @@ const LABELS: Record<string, ToolLabel> = {
   import_musicxml: { short: "MusicXML の読み込み", doing: "MusicXML を読み込んでいます" },
   // 分析
   analyze_audio: { short: "音を聴いて確認", doing: "音を聴いています" },
+  check_distortion: { short: "歪み・潰れを確認", doing: "歪みと潰れを測っています" },
   analyze_harmony: { short: "キーとコードを確認", doing: "キーとコードを調べています" },
   analyze_rhythm: { short: "リズムを確認", doing: "リズムを調べています" },
   analyze_beats: { short: "テンポを測定", doing: "テンポを測っています" },
@@ -169,6 +170,7 @@ const LABELS_EN: Record<string, ToolLabel> = {
   import_musicxml: { short: "Import MusicXML", doing: "importing MusicXML" },
   // 分析
   analyze_audio: { short: "Listen and check", doing: "listening" },
+  check_distortion: { short: "Check distortion", doing: "measuring distortion and squashing" },
   analyze_harmony: { short: "Check key and chords", doing: "analyzing key and chords" },
   analyze_rhythm: { short: "Check rhythm", doing: "analyzing the rhythm" },
   analyze_beats: { short: "Detect tempo", doing: "detecting the tempo" },

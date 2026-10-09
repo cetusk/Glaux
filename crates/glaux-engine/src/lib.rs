@@ -22,6 +22,7 @@ pub mod ab;
 pub mod analyze;
 pub mod calibrate;
 pub mod data;
+pub mod distortion;
 pub mod export;
 pub mod loudness;
 pub mod mastering;

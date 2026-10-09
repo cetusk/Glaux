@@ -12,7 +12,7 @@
 //!
 //! 解析は常に 48kHz でレンダする(K 特性フィルタ係数が 48kHz 定義のため)。
 
-use crate::export::{render_project, ExportError};
+use crate::export::ExportError;
 use glaux_core::{Project, Tick, TrackId};
 use rustfft::{num_complex::Complex, FftPlanner};
 use serde::Serialize;
@@ -43,8 +43,12 @@ pub struct Analysis {
     /// 発音位置(絶対 tick、最大 200 個)
     pub onsets_ticks: Vec<u64>,
     pub onset_count: usize,
-    /// サンプルが振り切れている(歪んでいる可能性)
+    /// 振り切れている(歪んでいる)。マスターの最後のクリップ防止の前で 0 dBFS を超えていれば true
+    /// (防止で 0 dBFS の手前に押さえ込まれていても、その押さえ込みで潰れている)。押さえ込みの量は `master_clip`
     pub clipped: bool,
+    /// マスターの最後のクリップ防止(-0.9 dBFS を超えた分をなめらかに押さえる)の掛かり方。曲全体・範囲の解析だけ
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub master_clip: Option<MasterClip>,
     /// ラウドネスレンジ(LU。EBU R128 の LRA)。曲中の音量の起伏の大きさ(小さい = 平板)
     pub loudness_range_lu: f64,
     /// True Peak(dBTP。サンプル間のピークも含む。配信の目安は -1 以下)
@@ -64,6 +68,39 @@ pub struct Analysis {
     pub stereo: StereoInfo,
     /// 音色の釣り合い(1/3 オクターブの長時間平均と、その傾き・出っ張り)
     pub tonal_balance: TonalBalance,
+}
+
+/// マスターの最後のクリップ防止が掛かった量。
+#[derive(Clone, Debug, Serialize)]
+pub struct MasterClip {
+    /// 防止の前のピーク(dBFS)。0 を超えるなら、防止が無ければ振り切れている
+    pub pre_clip_peak_db: f64,
+    /// 防止が効いた(-0.9 dBFS を超えた)サンプルの割合
+    pub engaged_ratio: f64,
+    /// 防止がいちばん押さえ込んだ量(dB)。1 を超えるとピークの潰れが聞こえやすい
+    pub max_reduction_db: f64,
+}
+
+/// 防止の前の音を測ってから、防止を通して聞こえる音にする(その場で書き換える)
+pub(crate) fn clip_for_listening(stereo: &mut [f32]) -> MasterClip {
+    let mut peak = 0.0f32;
+    let mut engaged = 0usize;
+    let mut max_red = 0.0f64;
+    for s in stereo.iter_mut() {
+        let a = s.abs();
+        peak = peak.max(a);
+        let y = crate::render::soft_clip(*s);
+        if a > 0.9 {
+            engaged += 1;
+            max_red = max_red.max(amp_db(a as f64) - amp_db(y.abs() as f64));
+        }
+        *s = y;
+    }
+    MasterClip {
+        pre_clip_peak_db: (amp_db(peak as f64) * 10.0).round() / 10.0,
+        engaged_ratio: engaged as f64 / stereo.len().max(1) as f64,
+        max_reduction_db: (max_red * 10.0).round() / 10.0,
+    }
 }
 
 /// 音色の釣り合い。
@@ -144,6 +181,62 @@ pub struct TrackAnalysis {
     pub peak_db: f64,
     pub spectral_centroid_hz: f64,
     pub band_energy: BandEnergy,
+    /// ピークと RMS の差(dB)。歪み・コンプで潰すと小さくなる(打楽器 15 以上・持続音 8〜12 がふつう、6 以下は潰れ気味)
+    pub crest_factor_db: f64,
+    /// True Peak − 統合ラウドネス(dB)。小さいほどピークが潰れている
+    pub plr_db: f64,
+    /// 区間(曲の区間の印)ごとの音量とクレスト。鳴っていない区間は省く
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<SectionLevel>,
+}
+
+/// 区間 1 つの音量とクレスト
+#[derive(Clone, Debug, Serialize)]
+pub struct SectionLevel {
+    pub name: String,
+    pub rms_db: f64,
+    pub crest_factor_db: f64,
+}
+
+/// 描き出した音(範囲 `range` の分)を、曲の区間の印で分けて、区間ごとの音量とクレストを求める
+fn section_levels(
+    project: &Project,
+    range: Option<(Tick, Tick)>,
+    stereo: &[f32],
+) -> Vec<SectionLevel> {
+    let secs = &project.sections;
+    if secs.is_empty() {
+        return vec![];
+    }
+    let t0 = range.map_or(0.0, |(s, _)| project.tempo_map.tick_to_seconds(s));
+    let frames = stereo.len() / 2;
+    let mut out = Vec::new();
+    for (i, m) in secs.iter().enumerate() {
+        let a = project.tempo_map.tick_to_seconds(m.tick) - t0;
+        let b = secs.get(i + 1).map_or(f64::INFINITY, |n| {
+            project.tempo_map.tick_to_seconds(n.tick) - t0
+        });
+        let (fa, fb) = (
+            (a.max(0.0) * SAMPLE_RATE) as usize,
+            ((b.max(0.0) * SAMPLE_RATE).min(frames as f64)) as usize,
+        );
+        if fb <= fa + 4800 {
+            continue;
+        }
+        let part = &stereo[fa * 2..fb * 2];
+        let peak = part.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let ms = part.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / part.len() as f64;
+        let rms_db = 10.0 * ms.max(1e-12).log10();
+        if rms_db < -70.0 {
+            continue;
+        }
+        out.push(SectionLevel {
+            name: m.name.clone(),
+            rms_db: (rms_db * 10.0).round() / 10.0,
+            crest_factor_db: ((amp_db(peak as f64) - rms_db) * 10.0).round() / 10.0,
+        });
+    }
+    out
 }
 
 /// 各トラックをソロでレンダして要約を返す(音が出ないトラックは省く)。
@@ -173,8 +266,12 @@ pub fn analyze_project(
             t.solo = false;
         }
     }
-    let stereo = render_for_analysis(&target, range, bank)?;
-    analyze_stereo(project, range, &stereo)
+    let mut stereo = render_for_analysis(&target, range, bank)?;
+    let clip = clip_for_listening(&mut stereo);
+    let mut a = analyze_stereo(project, range, &stereo)?;
+    a.clipped |= clip.pre_clip_peak_db >= 0.0;
+    a.master_clip = Some(clip);
+    Ok(a)
 }
 
 /// レンダ済みのステレオ(48kHz、インターリーブ)を解析する
@@ -246,6 +343,7 @@ fn analyze_stereo_with_power(
         onsets_ticks: onsets_ticks.into_iter().take(200).collect(),
         onset_count,
         clipped,
+        master_clip: None,
         loudness_range_lu: r128.0,
         true_peak_dbtp: r128.1,
         short_term_lufs: r128.2,
@@ -337,8 +435,11 @@ pub fn compare_projects(
                 t.solo = false;
             }
         }
-        let stereo = render_for_analysis(&target, range, bank)?;
-        let (a, power) = analyze_stereo_with_power(p, range, &stereo)?;
+        let mut stereo = render_for_analysis(&target, range, bank)?;
+        let clip = clip_for_listening(&mut stereo);
+        let (mut a, power) = analyze_stereo_with_power(p, range, &stereo)?;
+        a.clipped |= clip.pre_clip_peak_db >= 0.0;
+        a.master_clip = Some(clip);
         Ok((a, octave_levels_of(&power)))
     };
     // 前と後のレンダは互いに独立なので並列に(CLAP を含むものはプラグインのインスタンスを作るので 1 つずつ)
@@ -468,7 +569,7 @@ const BALANCE_N: usize = 8192;
 
 /// Welch 法のパワースペクトル(長さ `n` のハン窓、半分ずつ重ねる。0〜n/2 未満のビンの和)。
 /// 窓は互いに独立なので区間に分けて並列に求め、最後に足す
-fn welch_power(mono: &[f32], n: usize) -> Vec<f64> {
+pub(crate) fn welch_power(mono: &[f32], n: usize) -> Vec<f64> {
     let hop = n / 2;
     let windows = if mono.len() >= n {
         (mono.len() - n) / hop + 1
@@ -912,7 +1013,19 @@ pub fn analyze_mix(
     bank: &crate::data::SampleBank,
 ) -> MixAnalysis {
     let rendered = render_tracks_solo(project, range, bank);
-    analyze_mix_rendered(project, &rendered)
+    let mut mix = analyze_mix_rendered(project, &rendered);
+    // 区間ごとの音量とクレスト(範囲の頭がどこかは描き出した側しか知らないので、ここで)
+    for t in &mut mix.tracks {
+        if let Some(Some(stereo)) = project
+            .tracks
+            .iter()
+            .position(|x| x.id.to_string() == t.track_id)
+            .and_then(|i| rendered.get(i))
+        {
+            t.sections = section_levels(project, range, stereo);
+        }
+    }
+    mix
 }
 
 /// トラックごとにソロで描き出す(48kHz、インターリーブのステレオ。鳴らないトラックは None)。
@@ -995,14 +1108,24 @@ pub fn analyze_mix_rendered(project: &Project, rendered: &[Option<Vec<f32>>]) ->
         let peak = sliced.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         let mean_sq = sliced.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / sliced.len() as f64;
         let (centroid, band_energy) = spectrum_stats(&mono);
+        let lufs = integrated_lufs(sliced);
+        let rms_db = 10.0 * mean_sq.max(1e-12).log10();
+        let r1 = |v: f64| (v * 10.0).round() / 10.0;
         tracks.push(TrackAnalysis {
             track_id: t.id.to_string(),
             name: t.name.clone(),
-            loudness_lufs: integrated_lufs(sliced),
-            rms_db: 10.0 * mean_sq.max(1e-12).log10(),
+            loudness_lufs: lufs,
+            rms_db,
             peak_db: amp_db(peak as f64),
             spectral_centroid_hz: centroid,
             band_energy,
+            crest_factor_db: r1(amp_db(peak as f64) - rms_db),
+            plr_db: if lufs.is_finite() {
+                r1(crate::loudness::true_peak_db(sliced) - lufs)
+            } else {
+                f64::NAN
+            },
+            sections: vec![],
         });
         frames.push((t.name.clone(), band_frames(&mono)));
     }
@@ -1064,20 +1187,21 @@ pub fn analyze_mix_rendered(project: &Project, rendered: &[Option<Vec<f32>>]) ->
     MixAnalysis { tracks, masking }
 }
 
-/// 解析用に描き出す。範囲の指定があれば、その範囲だけ(曲全体を描き出してから切るより速い)
-fn render_for_analysis(
+/// 解析用に描き出す。範囲の指定があれば、その範囲だけ(曲全体を描き出してから切るより速い)。
+/// マスターのクリップ防止の前の音(防止の掛かり方は [`clip_for_listening`] で測ってから通す。
+/// トラックごとのソロは、ミックスの中での本当の大きさを見るため防止を通さない)
+pub(crate) fn render_for_analysis(
     project: &Project,
     range: Option<(Tick, Tick)>,
     bank: &crate::data::SampleBank,
 ) -> Result<Vec<f32>, ExportError> {
-    match range {
-        Some((start, end)) => {
-            let s0 = project.tempo_map.tick_to_seconds(start);
-            let s1 = project.tempo_map.tick_to_seconds(end);
-            crate::export::render_project_range(project, SAMPLE_RATE, bank, s0, s1)
-        }
-        None => render_project(project, SAMPLE_RATE, bank),
-    }
+    let secs = range.map(|(start, end)| {
+        (
+            project.tempo_map.tick_to_seconds(start),
+            project.tempo_map.tick_to_seconds(end),
+        )
+    });
+    crate::export::render_for_analysis_raw(project, SAMPLE_RATE, bank, secs)
 }
 
 fn amp_db(a: f64) -> f64 {
@@ -1279,6 +1403,34 @@ fn detect_onsets(mono: &[f32], offset_seconds: f64, tempo: &glaux_core::TempoMap
 
 #[cfg(test)]
 mod tests {
+
+    /// クリップ防止の前の振り切れと押さえ込みの量を測ってから、防止を通す
+    #[test]
+    fn master_clip_is_measured_before_the_soft_clip() {
+        let sine = |amp: f32| -> Vec<f32> {
+            (0..9600)
+                .flat_map(|i| {
+                    let v = amp * (i as f32 * 0.05).sin();
+                    [v, v]
+                })
+                .collect()
+        };
+        let mut loud = sine(1.2);
+        let c = clip_for_listening(&mut loud);
+        assert!((c.pre_clip_peak_db - 1.6).abs() < 0.1, "{c:?}");
+        assert!(c.engaged_ratio > 0.1 && c.max_reduction_db > 1.0, "{c:?}");
+        assert!(
+            loud.iter().all(|v| v.abs() < 1.0),
+            "防止を通した音は 0 dBFS の手前"
+        );
+        // -0.9 dBFS を超えない音には何もしない
+        let mut quiet = sine(0.5);
+        let before = quiet.clone();
+        let c = clip_for_listening(&mut quiet);
+        assert_eq!((c.engaged_ratio, c.max_reduction_db), (0.0, 0.0));
+        assert_eq!(quiet, before);
+    }
+
     use super::*;
     use glaux_core::{Clip, ClipContent, ClipId, Device, Note, NoteId, Track, TrackKind};
 
@@ -1505,7 +1657,7 @@ mod tests {
             }
             project.tracks.push(t);
             let bank = Default::default();
-            let full = render_project(&project, SAMPLE_RATE, &bank).unwrap();
+            let full = crate::export::render_project(&project, SAMPLE_RATE, &bank).unwrap();
             let s0 = project.tempo_map.tick_to_seconds(Tick(3840 * 5));
             let s1 = project.tempo_map.tick_to_seconds(Tick(3840 * 6));
             let expected = &full[(s0 * SAMPLE_RATE) as usize * 2..(s1 * SAMPLE_RATE) as usize * 2];

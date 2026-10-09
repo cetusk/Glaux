@@ -64,6 +64,8 @@ pub struct TrackCheck {
     pub low_side_to_mid_db: Option<f64>,
     /// 150Hz より下のエネルギーがトラック全体に占める割合
     pub low_share: f64,
+    /// ピークと RMS の差(dB)。歪み・コンプで潰すと小さくなる
+    pub crest_db: f64,
     /// 無音から段差で立ち上がった所(秒。曲の頭から)
     pub abrupt_starts: Vec<f64>,
     /// 鳴っている途中でいきなり無音になった所(秒)
@@ -296,6 +298,7 @@ pub fn check_mix(
     for c in &mut tracks {
         if let Some(a) = ma.tracks.iter().find(|a| a.track_id == c.track_id) {
             c.centroid_hz = a.spectral_centroid_hz;
+            c.crest_db = a.crest_factor_db;
         }
     }
     let masking = ma.masking;
