@@ -217,6 +217,29 @@ export function importSample(
   return invoke("import_sample", { trackId, path, instrument: instrument ?? null });
 }
 
+/** SFZ の鍵盤 1 つの強さの段(rr = ラウンドロビンの数、stack = 重ねて鳴らす録音の数) */
+export interface SfzLayer {
+  vel_lo: number;
+  vel_hi: number;
+  rr: number;
+  stack: number;
+  samples: string[];
+}
+/** SFZ の楽器の中身(音色エディタの SFZ) */
+export interface SfzInspect {
+  controls: { cc: number; label: string; default: number }[];
+  keys: { key: number; layers: SfzLayer[]; ccs: number[] }[];
+  regions: number;
+  samples: number;
+}
+export function sfzInspect(instrument: string, cc: Record<string, number>): Promise<SfzInspect> {
+  return invoke("sfz_inspect", { instrument, cc });
+}
+/** SFZ の鍵盤をその強さで弾いたとき(rr 回目。0 始まり)に鳴る録音の波形。peaks は (最小, 最大) の組 */
+export function sfzKeyWave(instrument: string, cc: Record<string, number>, key: number, vel: number, rr: number, buckets: number): Promise<{ peaks: [number, number][]; seconds: number; sample: string }> {
+  return invoke("sfz_key_wave", { instrument, cc, key, vel, rr, buckets });
+}
+
 /** 音の頭で自動に引く区分の線(長さの割合。使う所の中だけ、区分 1 の頭を除く) */
 export function samplerAutoCuts(assetId: string, start: number, end: number): Promise<number[]> {
   return invoke("sampler_auto_cuts", { assetId, start, end });

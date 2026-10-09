@@ -64,7 +64,8 @@ pub use granular::{GrainWindow, GranularParams, GranularVoice};
 pub use multi::{MultiSamplerParams, MultiVoice, Zone, ZoneEnv, ZoneMod, ZonePlay, MAX_LAYERS};
 pub use params::{
     articulations_for, bake_granular, bake_instrument, bake_sampler, bake_sf2, instrument_catalog,
-    instrument_params, sampler_orig_bpm, ArticulationInfo, InstrumentInfo,
+    instrument_params, parse_key_adjust, sampler_orig_bpm, ArticulationInfo, InstrumentInfo,
+    KeyAdjust,
 };
 pub use pluck::PluckParams;
 pub use sampler::{detect_slices, hermite, Mips, SampleData, SamplerParams, SamplerVoice};

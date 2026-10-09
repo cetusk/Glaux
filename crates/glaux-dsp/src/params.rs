@@ -2273,18 +2273,122 @@ pub static SAMPLER_SPECS: &[ParamSpec] = &[
     },
 ];
 
-pub static SF2_SPECS: &[ParamSpec] = &[ParamSpec {
-    name: "gain_db",
-    display_name: "ゲイン",
-    unit: Some("dB"),
-    range: ParamRange::Float {
-        min: -24.0,
-        max: 12.0,
-        default: 0.0,
-        skew: None,
+pub static SF2_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "gain_db",
+        display_name: "ゲイン",
+        unit: Some("dB"),
+        range: ParamRange::Float {
+            min: -24.0,
+            max: 12.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "楽器自体の音量。トラック音量と別。",
     },
-    description: "楽器自体の音量。トラック音量と別。",
-}];
+    ParamSpec {
+        name: "key_adjust",
+        display_name: "鍵盤ごとの調整",
+        unit: None,
+        range: ParamRange::Enum { choices: &[""], default: "" },
+        description: "鍵盤 1 つずつの音量・音程・長さ・強さの効き方(ドラムのパーツ・叩く所ごとの調整)。\
+            「鍵盤:音量dB:音程半音:長さ%:強さの効き方%」を「,」で並べる。例「38:-3:0.5:60:100,42:2:0:100:50」は\
+            鍵盤 38(スネア)を 3 dB 下げて半音の半分上げ、長さを 60 %(後ろを消す)に、鍵盤 42 を 2 dB 上げて\
+            弱く叩いたときの小さくなり方を半分にする。長さ 100 %・強さの効き方 100 % が音源のまま。空なら調整しない。",
+    },
+];
+
+/// 鍵盤 1 つの調整(SoundFont・SFZ の key_adjust の 1 項目)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeyAdjust {
+    pub key: u8,
+    pub volume_db: f32,
+    pub tune_semis: f32,
+    /// 長さ(0.05〜1。1 = 音源のまま)
+    pub length: f32,
+    /// 強さの効き方(0〜1。1 = 音源のまま)
+    pub veltrack: f32,
+}
+
+/// key_adjust の文字列を読む(読めない項目は飛ばす。同じ鍵盤は後のものを使う)
+pub fn parse_key_adjust(s: &str) -> Vec<KeyAdjust> {
+    let mut out: Vec<KeyAdjust> = Vec::new();
+    for item in s.split(',') {
+        let f: Vec<&str> = item.trim().split(':').collect();
+        let Some(key) = f
+            .first()
+            .and_then(|k| k.trim().parse::<u8>().ok())
+            .filter(|k| *k < 128)
+        else {
+            continue;
+        };
+        let n = |i: usize, def: f32| {
+            f.get(i)
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .unwrap_or(def)
+        };
+        let a = KeyAdjust {
+            key,
+            volume_db: n(1, 0.0).clamp(-48.0, 24.0),
+            tune_semis: n(2, 0.0).clamp(-24.0, 24.0),
+            length: (n(3, 100.0) / 100.0).clamp(0.05, 1.0),
+            veltrack: (n(4, 100.0) / 100.0).clamp(0.0, 1.0),
+        };
+        out.retain(|x| x.key != key);
+        out.push(a);
+    }
+    out
+}
+
+/// ゾーンに鍵盤ごとの調整を掛ける。調整する鍵盤をまたぐゾーンは、その鍵盤だけのゾーンに分ける
+fn adjust_zones(zones: &[crate::multi::Zone], adj: &[KeyAdjust]) -> Vec<crate::multi::Zone> {
+    let mut out: Vec<crate::multi::Zone> = zones.to_vec();
+    for a in adj {
+        let mut next = Vec::with_capacity(out.len() + 2);
+        for z in out {
+            if a.key < z.key_lo || a.key > z.key_hi {
+                next.push(z);
+                continue;
+            }
+            if z.key_lo < a.key {
+                let mut lo = z.clone();
+                lo.key_hi = a.key - 1;
+                next.push(lo);
+            }
+            let mut m = z.clone();
+            m.key_lo = a.key;
+            m.key_hi = a.key;
+            m.gain *= db_to_amp(a.volume_db);
+            m.play.tune_semis += a.tune_semis;
+            if a.veltrack < 1.0 {
+                m.play.veltrack = Some(m.play.veltrack.unwrap_or(1.0) * a.veltrack);
+            }
+            // 長さ: 後ろを消す。頭はそのまま鳴らし、切る所の手前(長さの 1/4)で消えていく(ループする音は切らない)
+            if a.length < 1.0 && m.loop_range.is_none() && m.end > m.start {
+                let frames = ((m.end - m.start) as f32 * a.length).max(1.0) as usize;
+                m.end = m.start + frames;
+                let secs = frames as f32 / m.data.sample_rate.max(1.0);
+                let tail = (secs * 0.25).max(0.005);
+                let hold = (secs - tail - m.env.attack).max(0.0);
+                // もともと切る所より前に消える音(サスティン 0 で短い減衰)はそのまま
+                if m.env.sustain > 0.0 || m.env.attack + m.env.hold + m.env.decay > secs {
+                    m.env.hold = hold;
+                    m.env.decay = tail;
+                    m.env.sustain = 0.0;
+                }
+            }
+            next.push(m);
+            if z.key_hi > a.key {
+                let mut hi = z;
+                hi.key_lo = a.key + 1;
+                next.push(hi);
+            }
+        }
+        out = next;
+    }
+    out
+}
 
 /// 奏法(アーティキュレーション)の楽器別説明。
 /// 同じ奏法でも楽器によって効き方が違う(または効かない)ので、楽器ごとに持つ。
@@ -2692,6 +2796,12 @@ pub fn bake_sf2(
     zones: std::sync::Arc<Vec<crate::multi::Zone>>,
 ) -> crate::multi::MultiSamplerParams {
     let s = SF2_SPECS;
+    let adj = parse_key_adjust(get_enum(map, s, "key_adjust"));
+    let zones = if adj.is_empty() {
+        zones
+    } else {
+        std::sync::Arc::new(adjust_zones(&zones, &adj))
+    };
     // 高く鳴らすときの縮小版(オーディオスレッドの外のここで)。波形ごとに、それを使うゾーンが要る段数の
     // いちばん多い分だけ作る(作ってある段は作り直さない)。波形が多い音源(SFZ・SF2)は重いので並列に
     let mut need: std::collections::HashMap<*const crate::Wave, (&crate::Wave, usize)> =

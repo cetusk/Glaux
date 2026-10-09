@@ -318,6 +318,44 @@ async fn asset_peaks(
     Ok(json!({ "peaks": flat, "seconds": secs }))
 }
 
+/// SFZ の楽器の中身(鍵盤ごとの強さの段・ラウンドロビン・効く CC と、調整つまみ)。音色エディタの SFZ
+#[tauri::command]
+async fn sfz_inspect(
+    instrument: String,
+    cc: std::collections::BTreeMap<u8, u8>,
+) -> Result<glaux_engine::sfz::Inspect, String> {
+    tokio::task::spawn_blocking(move || {
+        glaux_engine::sfz::inspect(&glaux_engine::sfz::default_dir(), &instrument, &cc)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// SFZ の鍵盤をその強さで弾いたとき(rr 回目。0 始まり)に鳴る録音の波形。音色エディタの SFZ
+#[tauri::command]
+async fn sfz_key_wave(
+    instrument: String,
+    cc: std::collections::BTreeMap<u8, u8>,
+    key: u8,
+    vel: u8,
+    rr: u8,
+    buckets: usize,
+) -> Result<glaux_engine::sfz::KeyWave, String> {
+    tokio::task::spawn_blocking(move || {
+        glaux_engine::sfz::key_wave(
+            &glaux_engine::sfz::default_dir(),
+            &instrument,
+            &cc,
+            key,
+            vel,
+            rr,
+            buckets,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 音の頭で自動に引く区分の線(長さの割合。使う所の中だけ、区分 1 の頭を除く)。音色エディタのサンプラー
 #[tauri::command]
 async fn sampler_auto_cuts(
@@ -3908,6 +3946,8 @@ fn main() -> Result<()> {
             live_note_on,
             live_note_off,
             sampler_auto_cuts,
+            sfz_inspect,
+            sfz_key_wave,
             wavetable_view,
             wavetable_preview,
             wavetable_commit,

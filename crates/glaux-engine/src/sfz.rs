@@ -812,12 +812,7 @@ pub fn load_instrument(
     cache: &mut WaveCache,
 ) -> Result<Arc<Vec<Zone>>, String> {
     let (dir, mut regions, _) = read_instrument(library, name)?;
-    for r in regions.iter_mut() {
-        for (n, v) in cc {
-            r.remove(&format!("set_hdcc{n}"));
-            r.insert(format!("set_cc{n}"), v.min(&127).to_string());
-        }
-    }
+    apply_cc(&mut regions, cc);
     // 使う波形のうち、まだ読んでいないものを先に並列で読む(大きな音源は数百ファイルある)
     let missing: Vec<PathBuf> = used_samples(&regions)
         .into_iter()
@@ -850,6 +845,190 @@ fn read_instrument(library: &Path, name: &str) -> Result<(PathBuf, Vec<Region>, 
     let text = read_text(&path)?;
     let (regions, control) = parse_with_control(&text, &mut |inc| read_text(&dir.join(inc)))?;
     Ok((dir, regions, control))
+}
+
+/// 鍵盤 1 つの、強さの段 1 つ(その強さの範囲で鳴る録音の組)
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct KeyLayer {
+    pub vel_lo: u8,
+    pub vel_hi: u8,
+    /// 続けて弾くと順番に使う録音の数(ラウンドロビン。1 = 毎回同じ)
+    pub rr: u8,
+    /// 同時に重ねて鳴らす録音の数(近い・上・部屋のマイクなど)
+    pub stack: u8,
+    /// 使う録音のファイル(.sfz のあるフォルダからの相対。*silence などは「*」で始まる)
+    pub samples: Vec<String>,
+}
+
+/// 鍵盤 1 つの中身
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct KeyInfo {
+    pub key: u8,
+    /// 強さの段(弱い順)
+    pub layers: Vec<KeyLayer>,
+    /// この鍵盤の録音が使う CC(調整つまみのうち、この鍵盤に効くもの)
+    pub ccs: Vec<u8>,
+}
+
+/// SFZ の楽器の中身(音源の編集画面で使う)。波形は読まない
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Inspect {
+    pub controls: Vec<Control>,
+    /// 鳴る鍵盤(低い順)
+    pub keys: Vec<KeyInfo>,
+    /// 鳴る region の数と、使う録音のファイルの数
+    pub regions: usize,
+    pub samples: usize,
+}
+
+/// opcode の名前が使う CC の番号(amplitude_cc23・volume_oncc7・locc64 など)
+fn opcode_cc(name: &str) -> Option<u8> {
+    if name.starts_with("set_") || name.starts_with("label_") {
+        return None;
+    }
+    let i = name.rfind("cc")?;
+    let n = &name[i + 2..];
+    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    n.parse::<u8>().ok().filter(|n| *n < 128)
+}
+
+/// 調整つまみの上書きを region に書く(音源の set_cc の代わり)
+fn apply_cc(regions: &mut [Region], cc: &BTreeMap<u8, u8>) {
+    for r in regions.iter_mut() {
+        for (n, v) in cc {
+            r.remove(&format!("set_hdcc{n}"));
+            r.insert(format!("set_cc{n}"), v.min(&127).to_string());
+        }
+    }
+}
+
+/// 鳴る region の、鍵盤・強さの範囲とラウンドロビンの位置
+fn region_span(r: &Region) -> Option<(i32, i32, u8, u8, u8, u8)> {
+    let key = note(r, "key");
+    let lo = note(r, "lokey").or(key).unwrap_or(0).clamp(0, 127);
+    let hi = note(r, "hikey").or(key).unwrap_or(127).clamp(0, 127);
+    let vlo = num(r, "lovel").unwrap_or(1.0).clamp(0.0, 127.0) as u8;
+    let vhi = num(r, "hivel").unwrap_or(127.0).clamp(0.0, 127.0) as u8;
+    if lo > hi || vlo > vhi {
+        return None;
+    }
+    let int = |k: &str| num(r, k).map(|v| v.round().clamp(1.0, 255.0) as u8);
+    Some((
+        lo,
+        hi,
+        vlo,
+        vhi,
+        int("seq_length").unwrap_or(1),
+        int("seq_position").unwrap_or(1),
+    ))
+}
+
+fn region_sample(r: &Region) -> Option<String> {
+    sample_path(r).or_else(|| r.get("sample").map(|s| s.trim().to_owned()))
+}
+
+/// 楽器の中身: 鍵盤ごとの強さの段・ラウンドロビン・重ねる録音の数・効く CC と、調整つまみ。
+/// `cc` は調整つまみの上書き(CC の条件で鳴る region が変わる)
+pub fn inspect(library: &Path, name: &str, cc: &BTreeMap<u8, u8>) -> Result<Inspect, String> {
+    let (_, mut regions, _) = read_instrument(library, name)?;
+    apply_cc(&mut regions, cc);
+    let sw_default = default_switch(&regions);
+    // 鍵盤 → (強さの範囲 → (ラウンドロビンの数, 位置ごとの数, 録音)), CC
+    type Layers = BTreeMap<(u8, u8), (u8, BTreeMap<u8, u8>, Vec<String>)>;
+    let mut keys: BTreeMap<u8, (Layers, std::collections::BTreeSet<u8>)> = BTreeMap::new();
+    let mut n_regions = 0;
+    let mut files = std::collections::HashSet::new();
+    for r in regions.iter().filter(|r| region_plays(r, sw_default)) {
+        let Some((lo, hi, vlo, vhi, len, pos)) = region_span(r) else {
+            continue;
+        };
+        n_regions += 1;
+        let sample = region_sample(r).unwrap_or_default();
+        files.insert(sample.clone());
+        let ccs: Vec<u8> = r.keys().filter_map(|k| opcode_cc(k)).collect();
+        for k in lo..=hi {
+            let e = keys.entry(k as u8).or_default();
+            e.1.extend(ccs.iter().copied());
+            let l = e.0.entry((vlo, vhi)).or_default();
+            l.0 = l.0.max(len);
+            *l.1.entry(pos).or_default() += 1;
+            if !l.2.contains(&sample) {
+                l.2.push(sample.clone());
+            }
+        }
+    }
+    let controls = controls(library, name)?;
+    Ok(Inspect {
+        controls,
+        keys: keys
+            .into_iter()
+            .map(|(key, (layers, ccs))| KeyInfo {
+                key,
+                layers: layers
+                    .into_iter()
+                    .map(|((vel_lo, vel_hi), (rr, per, samples))| KeyLayer {
+                        vel_lo,
+                        vel_hi,
+                        rr,
+                        stack: per.values().copied().max().unwrap_or(1),
+                        samples,
+                    })
+                    .collect(),
+                ccs: ccs.into_iter().collect(),
+            })
+            .collect(),
+        regions: n_regions,
+        samples: files.len(),
+    })
+}
+
+/// 鍵盤 1 つの録音の波形
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct KeyWave {
+    /// (最小, 最大) の組
+    pub peaks: Vec<(f32, f32)>,
+    pub seconds: f64,
+    /// 録音のファイル(.sfz のあるフォルダからの相対)
+    pub sample: String,
+}
+
+/// その鍵盤をその強さで弾いたとき(`rr` 回目。0 始まり)に鳴る録音の波形。重ねる録音があれば最初のもの
+pub fn key_wave(
+    library: &Path,
+    name: &str,
+    cc: &BTreeMap<u8, u8>,
+    key: u8,
+    vel: u8,
+    rr: u8,
+    buckets: usize,
+) -> Result<KeyWave, String> {
+    let (dir, mut regions, _) = read_instrument(library, name)?;
+    apply_cc(&mut regions, cc);
+    let sw_default = default_switch(&regions);
+    let k = key as i32;
+    let r = regions
+        .iter()
+        .filter(|r| region_plays(r, sw_default))
+        .filter(|r| {
+            region_span(r).is_some_and(|(lo, hi, vlo, vhi, len, pos)| {
+                (lo..=hi).contains(&k) && (vlo..=vhi).contains(&vel) && (rr % len) + 1 == pos
+            })
+        })
+        .find(|r| sample_path(r).is_some())
+        .ok_or_else(|| format!("鍵盤 {key}・強さ {vel} で鳴る録音がありません"))?;
+    let rel = sample_path(r).unwrap_or_default();
+    let data = crate::data::load_audio_file(&dir.join(&rel))?;
+    let len = data.frames.len();
+    let off = (num(r, "offset").unwrap_or(0.0).clamp(0.0, len as f64)) as usize;
+    let end = num(r, "end").map_or(len, |e| (e.clamp(0.0, len as f64) as usize + 1).min(len));
+    let frames = &data.frames[off.min(end)..end];
+    Ok(KeyWave {
+        peaks: crate::data::wave_peaks(frames, buckets.clamp(1, 4000)),
+        seconds: frames.len() as f64 / data.sample_rate.max(1.0) as f64,
+        sample: rel,
+    })
 }
 
 /// 音源の調整つまみの一覧(名前の付いた CC。CC 番号順)。波形は読まない
@@ -1205,6 +1384,71 @@ mod tests {
         };
         assert!(crossings(0) < 30, "1 回目は低い音");
         assert!(crossings(1) > 60, "2 回目は高い音");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 楽器の中身: 鍵盤ごとの強さの段・ラウンドロビン・重ねる録音・効く CC。鍵盤の波形は強さと回数で選ぶ
+    #[test]
+    fn inspects_keys_and_reads_the_wave_of_a_key() {
+        let dir = std::env::temp_dir().join(format!("glaux_sfz_inspect_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("kit")).unwrap();
+        let write = |name: &str, secs: f32| {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut w = hound::WavWriter::create(dir.join("kit").join(name), spec).unwrap();
+            for i in 0..(48_000.0 * secs) as usize {
+                w.write_sample(((i as f32 * 0.05).sin() * 10_000.0) as i16)
+                    .unwrap();
+            }
+            w.finalize().unwrap();
+        };
+        write("soft.wav", 0.5);
+        write("hard1.wav", 1.0);
+        write("hard2.wav", 1.5);
+        write("room.wav", 2.0);
+        std::fs::write(
+            dir.join("kit/kit.sfz"),
+            "<control> label_cc20=Snap set_cc20=40\n\
+             <group> key=38\n\
+             <region> sample=soft.wav hivel=63 amplitude_cc20=100\n\
+             <region> sample=hard1.wav lovel=64 seq_length=2 seq_position=1\n\
+             <region> sample=hard2.wav lovel=64 seq_length=2 seq_position=2\n\
+             <region> sample=room.wav lovel=64 seq_length=2 seq_position=1 volume_oncc25=6\n\
+             <group> lokey=40 hikey=41\n\
+             <region> sample=soft.wav\n",
+        )
+        .unwrap();
+        let info = inspect(&dir, "kit/kit.sfz", &Default::default()).unwrap();
+        assert_eq!(info.controls.len(), 1);
+        assert_eq!(info.controls[0].default, 40);
+        assert_eq!(
+            info.keys.iter().map(|k| k.key).collect::<Vec<_>>(),
+            vec![38, 40, 41]
+        );
+        let k = &info.keys[0];
+        assert_eq!(k.ccs, vec![20, 25]);
+        assert_eq!(k.layers.len(), 2);
+        assert_eq!(
+            (k.layers[0].vel_lo, k.layers[0].vel_hi, k.layers[0].rr),
+            (1, 63, 1)
+        );
+        assert_eq!(
+            (k.layers[1].vel_lo, k.layers[1].rr, k.layers[1].stack),
+            (64, 2, 2)
+        );
+        assert_eq!(info.samples, 4);
+        let none = BTreeMap::new();
+        let w = key_wave(&dir, "kit/kit.sfz", &none, 38, 30, 0, 100).unwrap();
+        assert_eq!(w.sample, "soft.wav");
+        assert!((w.seconds - 0.5).abs() < 1e-3);
+        assert_eq!(w.peaks.len(), 100);
+        let w = key_wave(&dir, "kit/kit.sfz", &none, 38, 100, 1, 100).unwrap();
+        assert_eq!(w.sample, "hard2.wav", "2 回目は 2 つ目の録音");
+        assert!(key_wave(&dir, "kit/kit.sfz", &none, 39, 100, 0, 100).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

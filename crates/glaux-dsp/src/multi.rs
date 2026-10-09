@@ -717,6 +717,48 @@ mod tests {
         assert!(v.finished(), "1 秒で解放されるはず(以前は約 11.5 秒)");
     }
 
+    /// 鍵盤ごとの調整(key_adjust): 調整した鍵盤だけ音量・長さが変わり、またいだゾーンはほかの鍵盤のまま
+    #[test]
+    fn key_adjust_changes_only_that_key() {
+        let sr = 48_000.0;
+        let data = sine_data(220.0, 1.0, sr);
+        let zones = Arc::new(vec![zone(30, 50, 38.0, data)]);
+        let mut map = glaux_core::ParamMap::new();
+        map.insert(
+            "key_adjust".into(),
+            glaux_core::ParamValue::Enum("38:-6:0:40:100".into()),
+        );
+        let adj = crate::bake_sf2(&map, zones.clone());
+        let plain = crate::bake_sf2(&Default::default(), zones);
+        assert_eq!(adj.zones.len(), 3, "38 だけのゾーンに分かれるはず");
+        let render = |p: &MultiSamplerParams, key: u8| {
+            let mut v = MultiVoice::start(p, key, 1.0, Articulation::Normal, sr);
+            (0..(sr as usize)).map(|_| v.next(p)).collect::<Vec<f32>>()
+        };
+        let (a, b) = (render(&adj, 38), render(&plain, 38));
+        let db = 20.0 * (rms(&a[2_400..9_600]) / rms(&b[2_400..9_600])).log10();
+        assert!((-7.5..=-4.5).contains(&db), "頭は -6dB 前後のはず: {db:.1}");
+        // 長さ 40 %: 0.4 秒より後は鳴らない(元は 1 秒鳴る)
+        assert!(
+            rms(&a[(sr * 0.42) as usize..]) < 1e-4,
+            "40 % の所で消えるはず"
+        );
+        assert!(rms(&b[(sr * 0.5) as usize..(sr * 0.9) as usize]) > 0.1);
+        // ほかの鍵盤はそのまま
+        let (c, d) = (render(&adj, 37), render(&plain, 37));
+        assert!((rms(&c) - rms(&d)).abs() < 1e-4, "37 は変わらないはず");
+    }
+
+    #[test]
+    fn key_adjust_parses_and_ignores_bad_items() {
+        let a = crate::parse_key_adjust("38:-3:0.5:60:50, x:1, 200:0, 42:2,38:1");
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0].key, 42);
+        assert_eq!(a[0].length, 1.0);
+        assert_eq!(a[1].key, 38);
+        assert_eq!(a[1].volume_db, 1.0);
+    }
+
     #[test]
     fn selects_zone_by_key_range() {
         // 低音域と高音域で別サンプル(周波数で見分ける)
