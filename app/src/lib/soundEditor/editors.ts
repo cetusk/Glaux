@@ -2,3 +2,4 @@
 import "./fm4";
 import "./granular";
 import "./wavetable";
+import "./sampler";

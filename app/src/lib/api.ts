@@ -217,6 +217,11 @@ export function importSample(
   return invoke("import_sample", { trackId, path, instrument: instrument ?? null });
 }
 
+/** 音の頭で自動に引く区分の線(長さの割合。使う所の中だけ、区分 1 の頭を除く) */
+export function samplerAutoCuts(assetId: string, start: number, end: number): Promise<number[]> {
+  return invoke("sampler_auto_cuts", { assetId, start, end });
+}
+
 /** 素材の波形: peaks は最小・最大を交互に並べた物(2 × buckets 個)、seconds は長さ */
 export function assetPeaks(assetId: string, buckets: number, range?: [number, number]): Promise<{ peaks: number[]; seconds: number }> {
   return invoke("asset_peaks", { assetId, buckets, fromSec: range?.[0] ?? null, toSec: range?.[1] ?? null });

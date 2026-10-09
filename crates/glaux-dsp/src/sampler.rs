@@ -255,9 +255,12 @@ pub struct SamplerParams {
     pub stereo: bool,
     /// 鍵盤の高さに音程が付いていくか(false = どの鍵盤でも元の高さ。ドラムのワンショット・効果音)
     pub key_track: bool,
-    /// スライスの頭の位置(サンプル番号、昇順、先頭は 0)。空ならスライスしない。
-    /// root の鍵盤から順に 1 つずつ割り当て、元の高さで頭から次の頭まで鳴らす
+    /// スライスの頭の位置(サンプル番号、昇順、先頭は使う所の始まり)。空ならスライスしない。
+    /// root の鍵盤から順に 1 つずつ割り当て、元の高さで頭から次の頭(最後は使う所の終わり)まで鳴らす
     pub slices: Arc<[u32]>,
+    /// 使う所(波形の長さに対する割合 0..=1)。この外は鳴らさない(既定 0〜1 = 全部)
+    pub start: f32,
+    pub end: f32,
 }
 
 impl SamplerParams {
@@ -283,6 +286,8 @@ impl SamplerParams {
             stereo: false,
             key_track: true,
             slices: Arc::from(Vec::new()),
+            start: 0.0,
+            end: 1.0,
         }
     }
 }
@@ -308,6 +313,8 @@ impl PartialEq for SamplerParams {
             && self.stereo == other.stereo
             && self.key_track == other.key_track
             && self.slices == other.slices
+            && self.start == other.start
+            && self.end == other.end
     }
 }
 
@@ -366,8 +373,12 @@ impl SamplerVoice {
             1.0
         };
         let len = p.data.frames.len() as f64;
-        let mut pos = 0.0;
-        let mut end = len;
+        // 使う所(始まり・終わり)。区分のときも、最後の区分は使う所の終わりまで
+        let use_end = (p.end.clamp(0.0, 1.0) as f64 * len).clamp(1.0, len);
+        let mut pos = (p.start.clamp(0.0, 1.0) as f64 * len)
+            .min(use_end - 1.0)
+            .max(0.0);
+        let mut end = use_end;
         let mut sliced = false;
         let mut done = false;
         let semis = if !p.slices.is_empty() {
@@ -379,7 +390,7 @@ impl SamplerVoice {
             {
                 Some(k) => {
                     pos = p.slices[k] as f64;
-                    end = p.slices.get(k + 1).map_or(len, |e| *e as f64);
+                    end = p.slices.get(k + 1).map_or(use_end, |e| *e as f64);
                 }
                 None => done = true,
             }
@@ -458,7 +469,8 @@ impl SamplerVoice {
             }
         }
         let i = self.pos as usize;
-        if i + 1 >= frames.len() || (self.sliced && self.pos >= self.end) {
+        // 区分の終わり・使う所の終わり(ループしている間はループが決める)で止める
+        if i + 1 >= frames.len() || ((self.sliced || lp.is_none()) && self.pos >= self.end) {
             self.done = true;
             return (0.0, 0.0);
         }
@@ -513,8 +525,9 @@ impl SamplerVoice {
                 self.done = true;
             }
         }
-        // スライスの終わりの手前で短くフェード
-        let tail = if self.sliced {
+        // スライス・切った使う所の終わりの手前で短くフェード(素材の終わりまで鳴らすときは従来どおり)
+        let trimmed = lp.is_none() && self.end < frames.len() as f64 - 1.0;
+        let tail = if self.sliced || trimmed {
             let left = ((self.end - self.pos) / self.rate) as f32;
             (left / (SLICE_FADE * self.sample_rate)).clamp(0.0, 1.0)
         } else {
@@ -1046,5 +1059,64 @@ mod tests {
         let mut v = SamplerVoice::start(&p, 30, 1.0, Articulation::Normal, sr);
         assert_eq!(v.next(&p), 0.0);
         assert!(v.finished());
+    }
+
+    /// 使う所: 始まり〜終わりだけを鳴らす(1 つの音)。区分の線を手で決めると、その線で区分に分ける(自動で探さない)。
+    /// 使う所の外の線は使わない
+    #[test]
+    fn start_end_and_hand_slice_points() {
+        let sr = 48_000.0;
+        let (x, starts) = hits(sr);
+        let n = x.len() as f32;
+        let data = Arc::new(SampleData::mono(x, sr));
+        let mut map = glaux_core::ParamMap::new();
+        map.insert("root".into(), glaux_core::ParamValue::Float(60.0));
+        // 2 つ目の打音の頭〜3 つ目の打音の頭だけを使う
+        let a = starts[1] as f32 / n;
+        let b = starts[2] as f32 / n;
+        map.insert("start".into(), glaux_core::ParamValue::Float(a as f64));
+        map.insert("end".into(), glaux_core::ParamValue::Float(b as f64));
+        let p = crate::params::bake_sampler(&map, data.clone(), sr);
+        let mut v = SamplerVoice::start(&p, 60, 1.0, Articulation::Normal, sr);
+        let mut len = 0;
+        let out: Vec<f32> = (0..60_000)
+            .map(|k| {
+                let s = v.next(&p);
+                if !v.finished() {
+                    len = k + 1;
+                }
+                s
+            })
+            .collect();
+        let want = starts[2] - starts[1];
+        assert!(
+            (len as i64 - want as i64).abs() < 400,
+            "使う所の長さ {len} ≈ {want}"
+        );
+        // 400Hz の打音(2 つ目): 最初の 0.1 秒の上向きゼロ交差 ≈ 40
+        let c = crossings(&out[..4_800]);
+        assert!((35..=45).contains(&c), "{c}");
+        // 手で決めた線: 使う所(全部)の中の線 0.5 で 2 つの区分。外の線(1.5)は使わない
+        let mut map = glaux_core::ParamMap::new();
+        map.insert("root".into(), glaux_core::ParamValue::Float(60.0));
+        map.insert("slices".into(), glaux_core::ParamValue::Float(8.0));
+        map.insert(
+            "slice_points".into(),
+            glaux_core::ParamValue::Enum("0.5,1.5".into()),
+        );
+        let p = crate::params::bake_sampler(&map, data.clone(), sr);
+        assert_eq!(p.slices.len(), 2, "{:?}", p.slices);
+        assert_eq!(p.slices[0], 0);
+        assert!((p.slices[1] as f32 - n * 0.5).abs() < 2.0);
+        // 線が無ければ、使う所の中で音の頭を自動で探す
+        let mut map = glaux_core::ParamMap::new();
+        map.insert("slices".into(), glaux_core::ParamValue::Float(16.0));
+        map.insert("start".into(), glaux_core::ParamValue::Float(a as f64));
+        let p = crate::params::bake_sampler(&map, data, sr);
+        assert_eq!(
+            p.slices[0], starts[1] as u32,
+            "区分 1 の頭 = 使う所の始まり"
+        );
+        assert!(p.slices.len() >= 3, "{:?}", p.slices);
     }
 }

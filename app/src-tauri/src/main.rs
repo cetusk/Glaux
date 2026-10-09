@@ -318,6 +318,31 @@ async fn asset_peaks(
     Ok(json!({ "peaks": flat, "seconds": secs }))
 }
 
+/// 音の頭で自動に引く区分の線(長さの割合。使う所の中だけ、区分 1 の頭を除く)。音色エディタのサンプラー
+#[tauri::command]
+async fn sampler_auto_cuts(
+    state: State<'_, AppState>,
+    asset_id: String,
+    start: f64,
+    end: f64,
+) -> Result<Vec<f64>, String> {
+    let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
+    let (project, _) = state.handle.get_project_shared().await?;
+    let dir = state.project_dir();
+    tokio::task::spawn_blocking(move || {
+        glaux_mcp::assets::auto_slice_points(
+            &project,
+            std::path::Path::new(&dir),
+            &id,
+            start,
+            end,
+            64,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// WAV をプロジェクトに取り込み、トラックの音源を sampler にする(音作りビュー用)。
 /// `instrument` が "granular" なら、音源はそのままで粒を取り出す素材(sample)にする
 #[tauri::command]
@@ -3882,6 +3907,7 @@ fn main() -> Result<()> {
             set_live_target,
             live_note_on,
             live_note_off,
+            sampler_auto_cuts,
             wavetable_view,
             wavetable_preview,
             wavetable_commit,

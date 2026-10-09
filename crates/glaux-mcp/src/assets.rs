@@ -108,6 +108,43 @@ pub struct ImportedTable {
     pub as_is: bool,
 }
 
+/// 音の頭で自動に引く区分の線(サンプラーと同じ探し方)。使う所 `start`〜`end`(長さの割合)の中だけ、
+/// 区分 1 の頭(= 使う所の始まり)を除いた線の位置(長さの割合)を返す
+pub fn auto_slice_points(
+    project: &Project,
+    project_dir: &Path,
+    asset: &AssetId,
+    start: f64,
+    end: f64,
+    max: usize,
+) -> Result<Vec<f64>, String> {
+    let meta = project
+        .assets
+        .get(asset)
+        .ok_or_else(|| format!("アセットが見つかりません: {asset}"))?;
+    let data = glaux_engine::load_wav_mono(&project_dir.join(&meta.path))?;
+    let n = data.frames.len();
+    if n == 0 {
+        return Ok(vec![]);
+    }
+    let (a, b) = (start.clamp(0.0, 1.0), end.clamp(0.0, 1.0));
+    let (s0, e0) = (
+        ((a * n as f64) as usize).min(n),
+        ((b * n as f64) as usize).min(n),
+    );
+    if e0 <= s0 + 16 {
+        return Ok(vec![]);
+    }
+    Ok(
+        glaux_dsp::detect_slices(&data.frames[s0..e0], data.sample_rate, max.clamp(1, 64))
+            .into_iter()
+            .skip(1)
+            .map(|h| (h as usize + s0) as f64 / n as f64)
+            .filter(|p| *p > a + 0.005 && *p < b - 0.005)
+            .collect(),
+    )
+}
+
 /// 素材の波形(表示用): `range`(秒。省略で全体)を `buckets` 個に分けた最小・最大の組と、素材の長さ(秒)。
 /// 音色エディタのグラニュラー・サンプラーの素材の絵に使う
 pub fn asset_peaks(

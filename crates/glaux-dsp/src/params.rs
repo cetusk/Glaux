@@ -2224,6 +2224,40 @@ pub static SAMPLER_SPECS: &[ParamSpec] = &[
             次の頭まで鳴る。範囲外の鍵盤は鳴らない。頭が少ない素材ではスライスも少なくなる。",
     },
     ParamSpec {
+        name: "start",
+        display_name: "使う所の始まり",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            skew: None,
+        },
+        description: "素材のどこから鳴らすか(長さに対する割合)。頭の無音・雑音を飛ばすときに上げる。\
+            区分に分けるときは、ここが区分 1 の頭になる。",
+    },
+    ParamSpec {
+        name: "end",
+        display_name: "使う所の終わり",
+        unit: None,
+        range: ParamRange::Float {
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            skew: None,
+        },
+        description: "素材のどこまで鳴らすか(長さに対する割合)。終わりの余計な音を切るときに下げる。\
+            区分に分けるときは、最後の区分がここで終わる。",
+    },
+    ParamSpec {
+        name: "slice_points",
+        display_name: "区分の線",
+        unit: None,
+        range: ParamRange::Enum { choices: &[""], default: "" },
+        description: "区分の線の位置(素材の長さに対する割合を「,」で並べる。例「0.18,0.33,0.52」)。slices が 0 より大きいとき、\
+            使う所(start〜end)の中の線で区分に分け、音の頭を自動で探さない(使う所の外の線は使わない)。空なら音の頭で自動に切る。",
+    },
+    ParamSpec {
         name: "orig_bpm",
         display_name: "元のテンポ",
         unit: Some("BPM"),
@@ -2711,8 +2745,39 @@ pub fn bake_sampler(
     data.prepare_mips();
     let filter = get_enum(map, s, "filter_type");
     let slices = get_f32(map, s, "slices").round().clamp(0.0, 64.0) as usize;
+    // 使う所(始まり・終わり)。狭すぎるときは全部
+    let (mut start, mut end) = (
+        get_f32(map, s, "start").clamp(0.0, 1.0),
+        get_f32(map, s, "end").clamp(0.0, 1.0),
+    );
+    if end - start < 0.001 {
+        (start, end) = (0.0, 1.0);
+    }
     let slices: std::sync::Arc<[u32]> = if slices > 0 {
-        crate::sampler::detect_slices(&data.frames, data.sample_rate, slices).into()
+        let n = data.frames.len();
+        let at = |f: f32| ((f as f64 * n as f64) as usize).min(n);
+        let (s0, e0) = (at(start), at(end).max(at(start) + 1).min(n));
+        // 手で決めた線(使う所の中だけ。端に寄りすぎた線は使わない)。無ければ音の頭で自動に切る
+        let mut points: Vec<f32> = get_enum(map, s, "slice_points")
+            .split(',')
+            .filter_map(|t| t.trim().parse::<f32>().ok())
+            .filter(|p| p.is_finite() && *p > start + 0.005 && *p < end - 0.005)
+            .collect();
+        points.sort_by(f32::total_cmp);
+        points.dedup();
+        if points.is_empty() && get_enum(map, s, "slice_points").trim().is_empty() {
+            crate::sampler::detect_slices(&data.frames[s0..e0], data.sample_rate, slices)
+                .into_iter()
+                .map(|h| h + s0 as u32)
+                .collect::<Vec<u32>>()
+                .into()
+        } else {
+            std::iter::once(s0 as u32)
+                .chain(points.into_iter().map(|p| at(p) as u32))
+                .take(64)
+                .collect::<Vec<u32>>()
+                .into()
+        }
     } else {
         std::sync::Arc::from(Vec::new())
     };
@@ -2740,6 +2805,8 @@ pub fn bake_sampler(
         stereo: get_bool(map, s, "stereo"),
         key_track: get_bool(map, s, "key_track"),
         slices,
+        start,
+        end,
         data,
     }
 }
