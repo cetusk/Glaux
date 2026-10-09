@@ -7,7 +7,7 @@
   import { plural, tr } from "./i18n.svelte";
   import { aiHighlight } from "./aiHighlight.svelte";
   import { harmonyStore } from "./harmony.svelte";
-  import { buildBars, groupHeads } from "./barMap";
+  import { barAtTick, buildBars, groupHeads } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
   import Fretboard from "./Fretboard.svelte";
   import { drumName } from "./drumMap";
@@ -25,7 +25,7 @@
     simplifyCurve,
     SNAP_OPTIONS,
   } from "./pianoRollOps";
-  import { noteClipboard, pianoRollStore } from "./selection.svelte";
+  import { noteClipboard, pianoRollStore, selectionStore } from "./selection.svelte";
   import type { Articulation, CurveShape, MidiClip, Note, Project, Track } from "./types";
   import { applyCurveShape } from "./types";
 
@@ -1223,11 +1223,82 @@
     );
   }
 
-  function onRulerClick(e: MouseEvent) {
-    const currentClip = clip;
-    if (!currentClip || !onSeek) return;
-    onSeek(currentClip.start + e.offsetX / pxPerTick);
+  // ---- ルーラー: クリックで位置を移す(範囲の選択は外す)、横にドラッグで小節の範囲を選ぶ(タイムラインのルーラーと同じ) ----
+  let rulerDrag: { x: number; bar: number; moved: boolean; lane: HTMLElement } | null = null;
+  let rulerAutoX = 0;
+  let rulerRaf = 0;
+
+  /** ルーラーの横の位置(画面の x)にある曲の小節(曲の頭からの番号) */
+  function rulerBarAt(lane: HTMLElement, clientX: number): number {
+    const c = clip;
+    if (!c || songBars.length === 0) return 0;
+    const x = clientX - lane.getBoundingClientRect().left;
+    return barAtTick(songBars, c.start + Math.max(0, Math.min(x, contentW - 1)) / pxPerTick).index;
   }
+
+  function setRulerRange(a: number, b: number) {
+    const lo = songBars.find((x) => x.index === Math.min(a, b));
+    const hi = songBars.find((x) => x.index === Math.max(a, b));
+    if (!lo || !hi) return;
+    selectionStore.range = { startBar: lo.index, endBar: hi.index, startTick: lo.tick, endTick: hi.tick + hi.len };
+  }
+
+  function onRulerDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    const lane = e.currentTarget as HTMLElement;
+    rulerDrag = { x: e.clientX, bar: rulerBarAt(lane, e.clientX), moved: false, lane };
+    lane.setPointerCapture(e.pointerId);
+  }
+
+  function onRulerMove(e: PointerEvent) {
+    const d = rulerDrag;
+    if (!d) return;
+    if (!d.moved && Math.abs(e.clientX - d.x) > 4) d.moved = true;
+    if (!d.moved) return;
+    setRulerRange(d.bar, rulerBarAt(d.lane, e.clientX));
+    // 見えている範囲の端を越えたら、横にスクロールしながら選ぶ
+    const r = scroller?.getBoundingClientRect();
+    if (!r) return;
+    const left = r.left + KEY_W + 24;
+    const right = r.right - 24;
+    rulerAutoX = e.clientX < left ? e.clientX - left : e.clientX > right ? e.clientX - right : 0;
+    if (rulerAutoX !== 0 && !rulerRaf) rulerRaf = requestAnimationFrame(() => stepRulerScroll(e.clientX));
+  }
+
+  function stepRulerScroll(clientX: number) {
+    rulerRaf = 0;
+    const d = rulerDrag;
+    if (!d || !d.moved || rulerAutoX === 0 || !scroller) return;
+    const before = scroller.scrollLeft;
+    scroller.scrollLeft = Math.max(0, before + Math.sign(rulerAutoX) * Math.min(40, 4 + Math.abs(rulerAutoX) * 0.5));
+    if (scroller.scrollLeft !== before) setRulerRange(d.bar, rulerBarAt(d.lane, clientX));
+    rulerRaf = requestAnimationFrame(() => stepRulerScroll(clientX));
+  }
+
+  function onRulerUp(e: PointerEvent) {
+    const d = rulerDrag;
+    rulerDrag = null;
+    rulerAutoX = 0;
+    if (rulerRaf) cancelAnimationFrame(rulerRaf);
+    rulerRaf = 0;
+    const c = clip;
+    if (!d || d.moved || !c) return;
+    // クリック = 位置を移す + 範囲の選択を外す
+    selectionStore.range = null;
+    const x = e.clientX - d.lane.getBoundingClientRect().left;
+    onSeek?.(c.start + Math.max(0, x) / pxPerTick);
+  }
+
+  /** 選んでいる小節の範囲のうち、このクリップに掛かる所(クリップの頭からの px) */
+  const rangeBand = $derived.by(() => {
+    const r = selectionStore.range;
+    const c = clip;
+    if (!r || !c) return null;
+    const a = Math.max(r.startTick, c.start);
+    const b = Math.min(r.endTick, c.start + lenOf(c));
+    if (b <= a) return null;
+    return { x: (a - c.start) * pxPerTick, w: (b - a) * pxPerTick };
+  });
 
   // ルーラーの上に出すマーカー(区間)。クリップに掛かるものを、クリップの頭からの位置で
   const rollMarks = $derived.by(() => {
@@ -1400,8 +1471,17 @@
       <div class="grid" style="width:{KEY_W + contentW}px">
         <div class="top-row" style="height:{topH}px">
           <div class="corner" style="width:{KEY_W}px"></div>
-          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-          <div class="ruler" style="width:{contentW}px" onclick={onRulerClick}>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="ruler"
+            style="width:{contentW}px"
+            title={tr("クリックで位置を移す・横にドラッグで小節の範囲を選ぶ", "Click to move the playhead; drag sideways to select a bar range")}
+            onpointerdown={onRulerDown}
+            onpointermove={onRulerMove}
+            onpointerup={onRulerUp}
+            onpointercancel={onRulerUp}
+          >
+            {#if rangeBand}<span class="range-band" style="left:{rangeBand.x}px;width:{rangeBand.w}px"></span>{/if}
             <!-- マーカー(曲の区間)。クリップに掛かる所だけ、ピアノロールの横の縮尺で。見るだけ(編集はタイムライン) -->
             {#if hasMarks && clip}
               {#each rollMarks as m (m.tick)}
@@ -1439,6 +1519,7 @@
             {/each}
           </div>
           <div class="stack" style="width:{contentW}px;height:{contentH}px">
+            {#if rangeBand}<div class="range-band grid-band" style="left:{rangeBand.x}px;width:{rangeBand.w}px"></div>{/if}
             <canvas
               class="win-layer"
               bind:this={canvasEl}
@@ -1511,6 +1592,8 @@
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     cursor: pointer;
+    user-select: none;
+    touch-action: none;
   }
 
   /* マーカーの帯(タイムラインの .section-band と同じ見た目。名前はタイムラインと被らせない) */
@@ -1587,6 +1670,20 @@
   .stack {
     position: relative;
     flex-shrink: 0;
+  }
+
+  /* 選んでいる小節の範囲(タイムラインの選択と同じ。チャットの指示の対象・ループ・書き出しの範囲) */
+  .range-band {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-left: 1px solid var(--accent-dim);
+    border-right: 1px solid var(--accent-dim);
+    pointer-events: none;
+  }
+  .range-band.grid-band {
+    z-index: 3;
   }
 
   .note-layer.curve-mode {
