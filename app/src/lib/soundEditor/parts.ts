@@ -44,7 +44,7 @@ export const KNOB_EN: Record<string, string> = {
   元のテンポ: "Original BPM", カットオフ: "Cutoff", レゾナンス: "Resonance", 強さで開く: "Vel → cutoff", 時間で開く: "Env → cutoff", つなぎ目: "Crossfade",
   取り出す位置: "Position", 進む速さ: "Scan", 左右の広がり: "Spread", 位置のばらつき: "Spray", 粒の長さ: "Grain length", 音程のばらつき: "Pitch rand",
   スナップ: "Snap", パンチ: "Punch", 音程: "Tune", 近いマイク: "Close mic", 上のマイク: "Overhead mic", 部屋のマイク: "Room mic", 強さ: "Amount",
-  から: "From", まで: "To", 番目まで: "Up to", 量: "Amount", そろえ方: "Alignment", 使う範囲: "Range",
+  から: "From", まで: "To", 番目まで: "Up to", 量: "Amount", そろえ方: "Alignment", 使う範囲: "Range", 半音: "Semitones", 倍率: "Ratio",
 };
 /** やさしい名前にしたつまみの、元の名前と意味(マウスを置くと出る) */
 export const KNOB_TIPS: Record<string, () => string> = {

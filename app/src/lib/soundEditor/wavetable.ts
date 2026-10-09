@@ -49,7 +49,14 @@ const OPS = (): Record<string, OpDef> => ({
   select: { name: tr("切り出し", "Select"), desc: tr("位置の一部だけを使う", "Use only part of the positions"), params: [["from", "から", 0, 1, 0.01, 0.2], ["to", "まで", 0, 1, 0.01, 0.8]] },
   removedc: { name: tr("直流を除く", "Remove DC"), desc: tr("波形の上下のずれをなくす(録った音から作ったとき)", "Removes the up/down offset (for recorded sources)"), params: [] },
   normalize: { name: tr("正規化", "Normalize"), desc: tr("波形ごとに音量をそろえる", "Even out each frame's level"), params: [] },
+  formant: { name: tr("フォルマントずらし", "Formant shift"), desc: tr("倍音の山だけを上下(声・胴の響き。音の高さは変わらない)", "Move only the harmonic hills up or down (voice, body resonance; pitch stays)"), params: [["st", "半音", -24, 24, 0.5, 5]] },
+  blur: { name: tr("倍音のぼかし", "Spectral blur"), desc: tr("隣の倍音となじませて、くっきりした山・谷を丸める", "Blend neighboring harmonics to soften sharp peaks and dips"), params: [["amount", "量", 0, 1, 0.05, 0.3]] },
+  pd: { name: tr("位相歪み", "Phase distortion"), desc: tr("1 周期の読み方を曲げる(フィルタを開くような明るさ)", "Bends how the cycle is read (bright, like opening a filter)"), params: [["amount", "強さ", 0, 1, 0.05, 0.5]] },
+  sync: { name: tr("ハードシンク", "Hard sync"), desc: tr("1 周期の中で速く読み直す(ギラついた倍音)", "Re-reads faster within the cycle (edgy harmonics)"), params: [["ratio", "倍率", 1, 8, 0.1, 2]] },
 });
+
+/** 加工のアイコン(足した加工は近いアイコンを借りる) */
+const opIcon = (k: string) => ({ formant: "fpos", blur: "smooth", pd: "phase", sync: "loop" })[k as "formant"] ?? k;
 
 // ---- 作り方の手順(エンジンの make_wavetable と同じ形) ----
 const r5 = (v: number) => Math.round(v * 1e5) / 1e5;
@@ -67,7 +74,8 @@ function sourceOf(src: Data): Data {
 }
 function editOf(op: Data): Data {
   const p = op.p ?? {};
-  const meta = { on: op.on, who: op.who, id: op.id };
+  // AI が付けた位置ごとの効き方(fade)は画面で開き直しても残す
+  const meta = { on: op.on, who: op.who, id: op.id, ...(op.fade ? { fade: op.fade } : {}) };
   switch (op.type) {
     case "tilt":
       return { op: "tilt", db_per_octave: p.db, ...meta };
@@ -93,13 +101,21 @@ function editOf(op: Data): Data {
       return { op: "remove_dc", ...meta };
     case "normalize":
       return { op: "normalize", per_frame: true, ...meta };
+    case "formant":
+      return { op: "formant_shift", semitones: p.st, ...meta };
+    case "blur":
+      return { op: "spectral_blur", amount: p.amount, ...meta };
+    case "pd":
+      return { op: "phase_distort", amount: p.amount, ...meta };
+    case "sync":
+      return { op: "sync", ratio: p.ratio, ...meta };
     default:
       return { ...(op.raw ?? {}), ...meta };
   }
 }
 /** 手順の加工 → 画面の加工(知らない加工は名前だけのカードにする) */
 function opOf(e: Data, i: number): Data {
-  const base = { id: e.id ?? i + 1, on: e.on !== false, who: e.who ?? "ai" };
+  const base = { id: e.id ?? i + 1, on: e.on !== false, who: e.who ?? "ai", ...(e.fade ? { fade: e.fade } : {}) };
   switch (e.op) {
     case "tilt":
       return { ...base, type: "tilt", p: { db: e.db_per_octave ?? 0 } };
@@ -125,6 +141,14 @@ function opOf(e: Data, i: number): Data {
       return { ...base, type: "removedc", p: {} };
     case "normalize":
       return { ...base, type: "normalize", p: {} };
+    case "formant_shift":
+      return { ...base, type: "formant", p: { st: e.semitones ?? 0 } };
+    case "spectral_blur":
+      return { ...base, type: "blur", p: { amount: e.amount ?? 0.3 } };
+    case "phase_distort":
+      return { ...base, type: "pd", p: { amount: e.amount ?? 0.5 } };
+    case "sync":
+      return { ...base, type: "sync", p: { ratio: e.ratio ?? 2 } };
     default: {
       const raw = { ...e };
       delete raw.on;
@@ -919,7 +943,7 @@ const WT: any = {
               rerender();
             },
           },
-          ico(k),
+          ico(opIcon(k)),
           el("span", {}, o.name, el("small", {}, o.desc)),
         ),
       ),
@@ -1095,7 +1119,7 @@ const WT: any = {
           { class: "oh" },
           grip,
           cb,
-          ico(op.type),
+          ico(opIcon(op.type)),
           el("span", { class: "nm" }, `${i + 1}. ${o.name}`),
           el("span", { class: "pill " + op.who }, op.who === "ai" ? "AI" : tr("人", "You")),
           el(
@@ -1115,6 +1139,15 @@ const WT: any = {
           ),
         ),
       );
+      // 位置ごとの効き方(AI が fade で付けたもの)
+      if (Array.isArray(op.fade))
+        card.append(
+          el(
+            "div",
+            { class: "hint", title: tr("テーブルの位置によって効き方が変わる(位置 0 → 位置 1)", "The effect strength changes along the table position (position 0 → 1)") },
+            tr(`位置で効き方が変わる: ${Math.round(op.fade[0] * 100)}% → ${Math.round(op.fade[1] * 100)}%`, `Strength by position: ${Math.round(op.fade[0] * 100)}% → ${Math.round(op.fade[1] * 100)}%`),
+          ),
+        );
       o.params.forEach(([n, label, min, max, step]) =>
         card.append(
           knob(label, {

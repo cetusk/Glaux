@@ -113,6 +113,14 @@ pub enum EditOp {
     Saturate { drive: f32 },
     /// 波形を折り返す(1〜8。増えるほど荒れる)
     Fold { gain: f32 },
+    /// フォルマント(倍音の山の位置)を半音ずらす(−24〜24)。倍音の高さはそのままなので、声・胴の響きのような山だけが上下する
+    FormantShift { semitones: f32 },
+    /// 倍音の並びをぼかす(0〜1。隣の倍音となじませて、くっきりした山・谷を丸める)
+    SpectralBlur { amount: f32 },
+    /// 位相歪み(0〜1。1 周期の読み方を前半で速く・後半で遅く曲げる。フィルタを開くような明るさ。CZ の音)
+    PhaseDistort { amount: f32 },
+    /// ハードシンク(1〜8。1 周期の中で波形を ratio 倍の速さで読み直す。ギラついた倍音のリード)
+    Sync { ratio: f32 },
 }
 
 /// 作り方(元)
@@ -545,8 +553,170 @@ fn apply_edit(cycles: &mut Cycles, e: &EditOp) -> Result<(), String> {
             let g = gain.clamp(1.0, 8.0);
             shape_frames(cycles, |v| fold(g * v));
         }
+        EditOp::FormantShift { semitones } => {
+            let f = 2f32.powf(semitones.clamp(-24.0, 24.0) / 12.0);
+            map_spectra(cycles, &mut |_, s| {
+                let mags: Vec<f32> = s.iter().map(|c| c.norm()).collect();
+                let src = s.to_vec();
+                for h in 1..=MAX_HARMONIC {
+                    // h 番目の新しい大きさ = 元の h / f 番目のあたりの大きさ(間は直線で)
+                    let x = h as f32 / f;
+                    let m = if x < 1.0 {
+                        mags[1] * x
+                    } else {
+                        let i = (x as usize).min(MAX_HARMONIC);
+                        let j = (i + 1).min(MAX_HARMONIC);
+                        mags[i] + (mags[j] - mags[i]) * (x - i as f32)
+                    };
+                    s[h] = with_mag(src[h], m);
+                }
+            });
+        }
+        EditOp::SpectralBlur { amount } => {
+            let a = amount.clamp(0.0, 1.0);
+            if a > 0.0 {
+                let sigma = 0.5 + a * 6.0;
+                let r = (sigma * 3.0).ceil() as isize;
+                let k: Vec<f32> = (-r..=r)
+                    .map(|d| (-0.5 * (d as f32 / sigma).powi(2)).exp())
+                    .collect();
+                map_spectra(cycles, &mut |_, s| {
+                    let mags: Vec<f32> = s.iter().map(|c| c.norm()).collect();
+                    let src = s.to_vec();
+                    for h in 1..=MAX_HARMONIC as isize {
+                        let (mut sum, mut w) = (0.0f32, 0.0f32);
+                        for (i, kv) in k.iter().enumerate() {
+                            let j = h + i as isize - r;
+                            if (1..=MAX_HARMONIC as isize).contains(&j) {
+                                sum += mags[j as usize] * kv;
+                                w += kv;
+                            }
+                        }
+                        s[h as usize] = with_mag(src[h as usize], sum / w.max(1e-9));
+                    }
+                });
+            }
+        }
+        EditOp::PhaseDistort { amount } => {
+            let a = amount.clamp(0.0, 1.0);
+            // 折れ目 d: 0.5(歪まない)→ 0.025
+            let d = 0.5 * (1.0 - a * 0.95);
+            reshape_frames(cycles, |x| {
+                if x < d {
+                    x * 0.5 / d
+                } else {
+                    0.5 + (x - d) * 0.5 / (1.0 - d)
+                }
+            });
+        }
+        EditOp::Sync { ratio } => {
+            let r = ratio.clamp(1.0, 8.0);
+            reshape_frames(cycles, |x| (x * r).fract());
+        }
     }
     Ok(())
+}
+
+/// 倍音の向き(位相)はそのままで大きさだけ変える(元が 0 なら sin の向き)
+fn with_mag(c: Complex<f32>, m: f32) -> Complex<f32> {
+    if c.norm() > 1e-9 {
+        c * (m / c.norm())
+    } else {
+        sin_c(m)
+    }
+}
+
+/// 1 枚ずつ、1 周期の読む位置を `warp(x)`(0〜1 → 0〜1)で曲げて読み直す(折り返さないよう 8 倍の細かさで)
+fn reshape_frames(cycles: &mut Cycles, warp: impl Fn(f32) -> f32) {
+    for frame in cycles.chunks_mut(CYCLE) {
+        let src = frame.to_vec();
+        let read = |x: f32| {
+            let p = x.rem_euclid(1.0) * CYCLE as f32;
+            let i = (p as usize).min(CYCLE - 1);
+            let fr = p - i as f32;
+            src[i] + (src[(i + 1) % CYCLE] - src[i]) * fr
+        };
+        frame.copy_from_slice(&bandlimit(|x| read(warp(x))));
+    }
+}
+
+/// 点の並び(x = 1 周期の中の位置 0〜1、y = −1〜1。間は直線、終わりから頭へつなぐ)で描いた 1 周期を、
+/// 倍音の設計図の 1 点にする(位相は回転数 0〜1)
+pub fn key_from_points(pos: f32, points: &[(f32, f32)]) -> Result<HarmonicKey, String> {
+    if points.len() < 2 {
+        return Err("points は 2 点以上".to_owned());
+    }
+    let mut pts: Vec<(f32, f32)> = points
+        .iter()
+        .filter(|(x, y)| x.is_finite() && y.is_finite())
+        .map(|(x, y)| (x.clamp(0.0, 1.0), y.clamp(-1.0, 1.0)))
+        .collect();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    if pts.len() < 2 {
+        return Err("points は 2 点以上".to_owned());
+    }
+    let f = |x: f32| {
+        // 終わりの点から頭の点(x + 1)へつなぐ
+        let n = pts.len();
+        let i = pts.partition_point(|p| p.0 <= x);
+        let (a, b) = match i {
+            0 => ((pts[n - 1].0 - 1.0, pts[n - 1].1), pts[0]),
+            k if k == n => (pts[n - 1], (pts[0].0 + 1.0, pts[0].1)),
+            k => (pts[k - 1], pts[k]),
+        };
+        if (b.0 - a.0).abs() < 1e-9 {
+            b.1
+        } else {
+            a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0)
+        }
+    };
+    let cycle = bandlimit(f);
+    let (amps, phases) = harmonics_of(&cycle, MAX_HARMONIC);
+    Ok(HarmonicKey {
+        pos: pos.clamp(0.0, 1.0),
+        amps,
+        phases: Some(
+            phases
+                .iter()
+                .map(|p| (p / std::f32::consts::TAU).rem_euclid(1.0))
+                .collect(),
+        ),
+    })
+}
+
+/// 数式から並びを作る(`x` = 1 周期の中の位置 0〜1、`t` = テーブルの位置 0〜1)。
+/// 使えるもの: 数・x・t・pi・+ − * / ^・( )・sin cos tan abs sqrt exp log tanh floor sign・
+/// saw(x)(−1〜1 ののこぎり)tri(x)(三角)sqr(x)(矩形)・min max pow clamp(v, a, b)・mix(a, b, w)。
+/// いちばん大きい所が 1 を超えるときは 1 にそろえる
+pub fn expr_frames(formula: &str, frames: usize) -> Result<Cycles, String> {
+    let e = crate::wtexpr::parse(formula)?;
+    let frames = frames.clamp(2, MAX_FRAMES);
+    let mut out = Vec::with_capacity(frames * CYCLE);
+    for k in 0..frames {
+        let t = k as f32 / (frames - 1) as f32;
+        let bad = std::cell::Cell::new(false);
+        let c = bandlimit(|x| {
+            let v = e.eval(x, t);
+            if v.is_finite() {
+                v
+            } else {
+                bad.set(true);
+                0.0
+            }
+        });
+        if bad.get() {
+            return Err(format!("式が数にならない所があります(t = {t:.2})"));
+        }
+        out.extend(c);
+    }
+    let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    if peak < 1e-6 {
+        return Err("式が無音です".to_owned());
+    }
+    if peak > 1.0 {
+        out.iter_mut().for_each(|v| *v /= peak);
+    }
+    Ok(out)
 }
 
 /// 1 枚ずつ波形の値を写し、折り返さないように倍音を絞る(8 倍の細かさで写す)
@@ -939,6 +1109,78 @@ pub fn to_wav_bytes_with_recipe(cycles: &[f32], recipe: Option<&[u8]>) -> Vec<u8
 
 #[cfg(test)]
 mod tests {
+
+    /// 足した加工・点・式: フォルマントずらし・ぼかし・位相歪み・シンク・点で描いた形・式
+    #[test]
+    fn new_edits_points_and_formulas() {
+        let amps = |c: &[f32]| harmonics_of(c, 32).0;
+        // 5 番目だけの山を持つ形を、1 オクターブ上へずらすと 10 番目のあたりへ
+        let mut a: Vec<f32> = vec![0.0; 32];
+        a[0] = 0.2;
+        a[4] = 1.0;
+        let mut c = generate(
+            &TableSource::Harmonics {
+                keys: vec![HarmonicKey {
+                    pos: 0.0,
+                    amps: a,
+                    phases: None,
+                }],
+            },
+            2,
+        )
+        .unwrap();
+        apply_edits(&mut c, &[EditOp::FormantShift { semitones: 12.0 }]).unwrap();
+        let h = amps(&c[..CYCLE]);
+        let top = h
+            .iter()
+            .enumerate()
+            .max_by(|x, y| x.1.total_cmp(y.1))
+            .unwrap()
+            .0;
+        assert_eq!(top, 9, "山は 10 番目へ: {h:?}");
+        // ぼかすと山の隣が出てくる
+        let mut b = c.clone();
+        apply_edits(&mut b, &[EditOp::SpectralBlur { amount: 0.5 }]).unwrap();
+        let hb = amps(&b[..CYCLE]);
+        assert!(hb[12] > h[12] + 0.01 && hb[9] < h[9], "{hb:?}");
+        // サインに位相歪み・シンクを掛けると倍音が増える
+        let sine = generate(
+            &TableSource::Shape {
+                name: "sine_to_saw".into(),
+            },
+            2,
+        )
+        .unwrap();
+        for op in [
+            EditOp::PhaseDistort { amount: 0.8 },
+            EditOp::Sync { ratio: 2.5 },
+        ] {
+            let mut s = sine.clone();
+            apply_edits(&mut s, std::slice::from_ref(&op)).unwrap();
+            let hs = amps(&s[..CYCLE]);
+            assert!(hs[1..8].iter().sum::<f32>() > 0.2 * hs[0], "{op:?}: {hs:?}");
+        }
+        // 点で描いた矩形は奇数の倍音
+        let k =
+            key_from_points(0.5, &[(0.0, 1.0), (0.499, 1.0), (0.5, -1.0), (0.999, -1.0)]).unwrap();
+        assert!(
+            k.amps[2] > 0.25 * k.amps[0] && k.amps[1] < 0.05 * k.amps[0],
+            "{:?}",
+            &k.amps[..4]
+        );
+        assert!(key_from_points(0.0, &[(0.0, 1.0)]).is_err());
+        // 式: t で 3 倍音が増えていく
+        let f = expr_frames("sin(2*pi*x) + t*sin(6*pi*x)", 8).unwrap();
+        let first = amps(&f[..CYCLE]);
+        let last = amps(&f[7 * CYCLE..]);
+        assert!(
+            first[2] < 0.01 && last[2] > 0.3 * last[0],
+            "{first:?} {last:?}"
+        );
+        assert!(expr_frames("0*x", 4).is_err());
+        assert!(expr_frames("log(0*x)", 4).is_err());
+    }
+
     use super::*;
 
     fn centroid(c: &[f32], k: usize) -> f32 {

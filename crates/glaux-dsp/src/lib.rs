@@ -50,6 +50,7 @@ mod wave;
 mod wavetable;
 mod width;
 pub mod wtedit;
+mod wtexpr;
 
 pub use additive::{AdditiveParams, AdditiveVoice};
 pub use drum::{DrumKit, DrumParams};

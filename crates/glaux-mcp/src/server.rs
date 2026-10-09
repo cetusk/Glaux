@@ -340,7 +340,10 @@ pub struct ImportWavetableParams {
 pub struct MakeWavetableParams {
     /// 音源を設定するトラック ID(`trk_xxxxxx`)。音源が wavetable ならテーブルだけ差し替え、それ以外なら wavetable にする
     pub track_id: String,
-    /// 元。{kind: "shape", name}(定番の変化: sine_to_saw / sine_to_square / analog / pwm / sync / fm / fm_octave /
+    /// 元。{kind: "recipe"}(今のテーブルの作り方から続けて直す。音色エディタで描いた形・加工の並びを残したまま、keys・edits を足す。
+    /// 人が作り込んだテーブルを直すときはこれ)、{kind: "expr", formula}(数式。x = 1 周期の中の位置 0〜1、t = テーブルの位置 0〜1。
+    /// 例「sin(2*pi*x) + t*0.5*saw(3*x)」。関数 sin cos tan abs sqrt exp log tanh floor sign saw tri sqr min max pow clamp mix)、
+    /// {kind: "shape", name}(定番の変化: sine_to_saw / sine_to_square / analog / pwm / sync / fm / fm_octave /
     /// vowels / growl / fold / harmonic_sweep / digital / organ)、{kind: "harmonics", keys: [{pos, amps, phases?}]}
     /// (位置 pos 0〜1 ごとの倍音の振幅。amps[0] が基音。phases は回転数 0〜1。位置の間は補間)、
     /// {kind: "audio", path}(声・楽器の 1 音を切り出す)、{kind: "library", name}(棚)、{kind: "current"}(トラックの今のテーブル。
@@ -353,9 +356,21 @@ pub struct MakeWavetableParams {
     /// {op: "odd_even", odd, even} / {op: "band", from, to, gain_db} / {op: "lowpass", max} /
     /// {op: "phase", mode: zero | align | random, seed?} / {op: "smooth", amount} / {op: "reverse"} /
     /// {op: "resize", frames} / {op: "select", from, to} / {op: "saturate", drive} / {op: "fold", gain} /
-    /// {op: "mix", with: <元>, amount?} / {op: "concat", with: <元>}
+    /// {op: "formant_shift", semitones}(倍音の山だけを上下。声・胴の響き)/ {op: "spectral_blur", amount}(倍音をぼかす)/
+    /// {op: "phase_distort", amount}(位相歪み。CZ のような明るさ)/ {op: "sync", ratio}(ハードシンク 1〜8)/
+    /// {op: "mix", with: <元>, amount?} / {op: "concat", with: <元>}。
+    /// どの加工にも fade: [a, b] を付けると、位置 0 で a・位置 1 で b の効き方(0〜1)になる(例: 後半ほど強く歪ませる)。
+    /// source が recipe なら、今の加工の並びの後ろに足す
     #[serde(default)]
     pub edits: Option<Vec<Value>>,
+    /// 手で描く波形(音色エディタの「描いた形」と同じ)。{pos, points: [[x, y], …]}(1 周期を点の並びで。x 0〜1・y −1〜1。
+    /// 間は直線、終わりから頭へつなぐ)か {pos, amps, phases?}(倍音)。元の並びの、その位置に重ねる(前後は blend でなじませる)。
+    /// source が recipe なら、同じ位置の描いた形は置き換え、無ければ足す
+    #[serde(default)]
+    pub keys: Option<Vec<Value>>,
+    /// 描いた形を前後になじませる幅(位置の割合 0〜0.5。省略時 0.15)
+    #[serde(default)]
+    pub blend: Option<f32>,
     /// 棚にもこの名前で置く(全プロジェクト共通。同じ名前は上書き)
     #[serde(default)]
     pub save_as: Option<String>,
@@ -7109,11 +7124,13 @@ impl GlauxServer {
         description = "ウェーブテーブルを作り込んで、トラックの音源(内蔵 wavetable)の table にする。source(元)から作り、\
         edits(加工の手順)を順に当てる。元: 定番の変化 {kind: \"shape\", name}(sine_to_saw・pwm・sync・fm・vowels・growl・fold・\
         harmonic_sweep・digital など)、倍音の設計図 {kind: \"harmonics\", keys: [{pos, amps}]}(位置ごとの倍音の振幅。間は補間)、\
-        音声 {kind: \"audio\", path}、棚 {kind: \"library\", name}、今のテーブル {kind: \"current\"}(直すとき)。\
-        加工: tilt(明るさの傾き)・odd_even(奇数・偶数の倍音)・band / lowpass(倍音の帯)・saturate / fold(倍音を増やす)・\
-        phase(align で枚数の間をそろえる)・smooth(position の変化をなめらかに)・resize / select / reverse(並び)・\
-        mix / concat(ほかのテーブルと混ぜる・つなぐ)・normalize / remove_dc。\
-        結果の summary(位置ごとの明るさ・倍音の数・変わり方・注意)で仕上がりを確かめ、気になれば source: current でさらに直す。\
+        数式 {kind: \"expr\", formula}、音声 {kind: \"audio\", path}、棚 {kind: \"library\", name}、\
+        今の作り方から続ける {kind: \"recipe\"}(人が音色エディタで描いた形・加工を残して足す。人が作り込んだテーブルはこれで直す)。\
+        keys で波形を点の並びか倍音で描ける。\
+        加工: tilt・odd_even・band / lowpass(倍音の帯)・saturate / fold・formant_shift・spectral_blur・phase_distort・sync・\
+        phase(align で枚数の間をそろえる)・smooth・resize / select / reverse・mix / concat・normalize / remove_dc。\
+        fade: [a, b] で位置ごとの効き方。\
+        結果の summary(位置ごとの明るさ・倍音の数・変わり方・注意)で仕上がりを確かめ、気になれば source: recipe でさらに直す。\
         作り方の手順は素材の隣に残り、save_as で全プロジェクト共通の棚にも置ける。1 回の undo で戻る。\
         鳴らすときの変形(warp: bend / squeeze / sync / mirror / quantize / fm と warp_amount)は set_param で別に。"
     )]
@@ -7131,10 +7148,68 @@ impl GlauxServer {
             .ok_or_else(|| format!("track not found: {track_id}"))?
             .clone();
         let dir = self.handle.project_dir().await?;
-        let mut recipe =
-            json!({ "source": p.source, "edits": p.edits.clone().unwrap_or_default() });
+        let continuing = p.source.get("kind").and_then(Value::as_str) == Some("recipe");
+        let mut recipe = if continuing {
+            // 今のテーブルの作り方から続ける(音色エディタで描いた形・加工の入り切りを残す)
+            let id = track
+                .device
+                .as_ref()
+                .and_then(|d| match d.params.get("table") {
+                    Some(glaux_core::ParamValue::Enum(v)) => glaux_core::AssetId::parse(v).ok(),
+                    _ => None,
+                })
+                .ok_or("このトラックのテーブルは作ったものではありません(source に shape・builtin などを)")?;
+            crate::wavetables::asset_recipe(&project, std::path::Path::new(&dir), &id).ok_or(
+                "このトラックのテーブルには作り方が残っていません(source: current で今の形から作り直す)",
+            )?
+        } else {
+            json!({ "source": p.source, "edits": [] })
+        };
+        if let Some(edits) = p.edits.clone() {
+            match recipe.get_mut("edits").and_then(Value::as_array_mut) {
+                Some(a) => a.extend(edits),
+                None => recipe["edits"] = json!(edits),
+            }
+        }
         if let Some(f) = p.frames {
             recipe["frames"] = json!(f.clamp(2, 256));
+        }
+        if let Some(keys) = &p.keys {
+            let frames = recipe
+                .get("frames")
+                .and_then(Value::as_u64)
+                .unwrap_or(64)
+                .max(2) as f32;
+            let near = 0.5 / (frames - 1.0);
+            let mut cur: Vec<Value> = recipe
+                .get("keys")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for (i, k) in keys.iter().enumerate() {
+                let mut key =
+                    crate::wavetables::key_of(k).map_err(|e| format!("keys[{i}]: {e}"))?;
+                // 音色エディタと同じ 256 本に(画面で続きを描ける)
+                key.amps.truncate(256);
+                if let Some(ph) = key.phases.as_mut() {
+                    ph.truncate(256);
+                }
+                cur.retain(|c| {
+                    (c.get("pos").and_then(Value::as_f64).unwrap_or(-9.0) as f32 - key.pos).abs()
+                        > near
+                });
+                let mut v = serde_json::to_value(&key).map_err(|e| e.to_string())?;
+                v["who"] = json!("ai");
+                cur.push(v);
+            }
+            cur.sort_by(|a, b| {
+                let f = |x: &Value| x.get("pos").and_then(Value::as_f64).unwrap_or(0.0);
+                f(a).total_cmp(&f(b))
+            });
+            recipe["keys"] = json!(cur);
+        }
+        if let Some(b) = p.blend {
+            recipe["blend"] = json!(b.clamp(0.0, 0.5));
         }
         let save_as = p.save_as.clone();
         let note = p.note.clone().unwrap_or_default();

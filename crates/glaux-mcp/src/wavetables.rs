@@ -100,8 +100,16 @@ pub fn resolve_source(src: &Value, frames: usize, ctx: &Ctx) -> Result<Cycles, S
             let (i0, i1) = ((a0 * n as f64) as usize, ((b0 * n as f64) as usize).max((a0 * n as f64) as usize + 1).min(n));
             glaux_dsp::cycles_from_audio(&d.frames[i0..i1], d.sample_rate, frames)
         }
+        // 数式(x = 1 周期の中の位置 0〜1、t = テーブルの位置 0〜1)
+        "expr" => {
+            let f = src
+                .get("formula")
+                .and_then(Value::as_str)
+                .ok_or("expr の source には formula(例「sin(2*pi*x) + t*0.5*saw(3*x)」)を")?;
+            wtedit::expr_frames(f, frames)
+        }
         other => Err(format!(
-            "source の kind は shape / harmonics / audio / library / current / asset / builtin / audio_asset(got: {other})"
+            "source の kind は shape / harmonics / expr / audio / library / current / recipe / asset / builtin / audio_asset(got: {other})"
         )),
     }
 }
@@ -133,26 +141,79 @@ pub fn apply_steps(cycles: &mut Cycles, steps: &[Value], ctx: &Ctx) -> Result<()
                 let e: EditOp = serde_json::from_value(step.clone()).map_err(|e| {
                     err(format!(
                         "読めません({e})。op は normalize / remove_dc / tilt / odd_even / band / lowpass / \
-                         phase / smooth / reverse / resize / select / saturate / fold / mix / concat"
+                         phase / smooth / reverse / resize / select / saturate / fold / formant_shift / spectral_blur / \
+                         phase_distort / sync / mix / concat"
                     ))
                 })?;
-                wtedit::apply_edits(cycles, &[e]).map_err(err)?;
+                match fade_of(step).map_err(err)? {
+                    // 位置ごとに効き方を変える: 加工した並びと元の並びを、位置 0 で a・位置 1 で b の割合で混ぜる
+                    Some((a, b)) => {
+                        let mut done = cycles.clone();
+                        wtedit::apply_edits(&mut done, &[e]).map_err(err)?;
+                        let n = wtedit::frame_count(cycles);
+                        if wtedit::frame_count(&done) != n {
+                            return Err(err(
+                                "枚数が変わる加工(resize・select)には fade を付けられません"
+                                    .to_owned(),
+                            ));
+                        }
+                        for k in 0..n {
+                            let t = if n > 1 {
+                                k as f32 / (n - 1) as f32
+                            } else {
+                                0.0
+                            };
+                            let w = a + (b - a) * t;
+                            let (o, d) = (
+                                &mut cycles[k * CYCLE..(k + 1) * CYCLE],
+                                &done[k * CYCLE..(k + 1) * CYCLE],
+                            );
+                            for (x, y) in o.iter_mut().zip(d) {
+                                *x += (*y - *x) * w;
+                            }
+                        }
+                    }
+                    None => wtedit::apply_edits(cycles, &[e]).map_err(err)?,
+                }
             }
         }
     }
     Ok(())
 }
 
+/// 加工の `fade: [a, b]`(位置 0 での効き方 a、位置 1 での効き方 b。0〜1)。無ければ None
+fn fade_of(step: &Value) -> Result<Option<(f32, f32)>, String> {
+    match step.get("fade") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(v)) if v.len() == 2 => {
+            let f = |x: &Value| x.as_f64().map(|v| v.clamp(0.0, 1.0) as f32);
+            match (f(&v[0]), f(&v[1])) {
+                (Some(a), Some(b)) => Ok(Some((a, b))),
+                _ => {
+                    Err("fade は [位置 0 での効き方, 位置 1 での効き方](0〜1 の数 2 つ)".to_owned())
+                }
+            }
+        }
+        _ => Err("fade は [位置 0 での効き方, 位置 1 での効き方](0〜1 の数 2 つ)".to_owned()),
+    }
+}
+
+/// 手で編集した波形 1 つ: {pos, amps, phases?}(倍音)か {pos, points: [[x, y], …]}(1 周期を点の並びで。x 0〜1・y −1〜1)
+pub fn key_of(k: &Value) -> Result<wtedit::HarmonicKey, String> {
+    if let Some(pts) = k.get("points") {
+        let pos = k.get("pos").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+        let pts: Vec<(f32, f32)> = serde_json::from_value::<Vec<(f32, f32)>>(pts.clone())
+            .map_err(|e| format!("points は [[x, y], …](x 0〜1・y −1〜1): {e}"))?;
+        return wtedit::key_from_points(pos, &pts);
+    }
+    serde_json::from_value::<wtedit::HarmonicKey>(k.clone())
+        .map_err(|e| format!("keys が読めません: {e}"))
+}
+
 /// 手で編集した波形(手順の keys)。位相は回転数(0〜1)
 fn recipe_keys(recipe: &Value) -> Result<Vec<wtedit::HarmonicKey>, String> {
     match recipe.get("keys") {
-        Some(Value::Array(a)) if !a.is_empty() => a
-            .iter()
-            .map(|k| {
-                serde_json::from_value::<wtedit::HarmonicKey>(k.clone())
-                    .map_err(|e| format!("keys が読めません: {e}"))
-            })
-            .collect(),
+        Some(Value::Array(a)) if !a.is_empty() => a.iter().map(key_of).collect(),
         _ => Ok(vec![]),
     }
 }
@@ -710,6 +771,45 @@ mod editor_recipe_tests {
         let c2 = build(&r2, &ctx(&p)).unwrap();
         let (a2, _) = wtedit::harmonics_of(&c2[4 * CYCLE..5 * CYCLE], 3);
         assert!(a2[1] < 1e-3, "{a2:?}");
+    }
+
+    /// 式の元・点で描いた形・位置ごとの効き方(fade)
+    #[test]
+    fn expr_source_point_keys_and_fade() {
+        let p = Project::new("t");
+        // 式: t で 3 倍音が増える
+        let r = json!({ "source": { "kind": "expr", "formula": "sin(2*pi*x) + t*sin(6*pi*x)" }, "frames": 5 });
+        let c = build(&r, &ctx(&p)).unwrap();
+        let (a, _) = wtedit::harmonics_of(&c[4 * CYCLE..], 4);
+        assert!(a[2] > 0.3 * a[0], "{a:?}");
+        assert!(build(
+            &json!({ "source": { "kind": "expr", "formula": "sin(" } }),
+            &ctx(&p)
+        )
+        .is_err());
+        // 点で描いた矩形を真ん中に重ねる
+        let r = json!({ "source": { "kind": "shape", "name": "sine_to_saw" }, "frames": 9, "blend": 0.1,
+                        "keys": [{ "pos": 0.5, "points": [[0.0, 1.0], [0.499, 1.0], [0.5, -1.0], [0.999, -1.0]] }] });
+        let c = build(&r, &ctx(&p)).unwrap();
+        let (a, _) = wtedit::harmonics_of(&c[4 * CYCLE..5 * CYCLE], 4);
+        assert!(
+            a[2] > 0.25 * a[0] && a[1] < 0.05 * a[0],
+            "矩形(奇数だけ): {a:?}"
+        );
+        // fade [0, 1]: 位置 0 では効かず、位置 1 では効く(2 倍音を消す)
+        let r = json!({ "source": { "kind": "shape", "name": "analog" }, "frames": 5,
+                        "edits": [{ "op": "lowpass", "max": 2, "fade": [0.0, 1.0] }] });
+        let c = build(&r, &ctx(&p)).unwrap();
+        let plain = build(
+            &json!({ "source": { "kind": "shape", "name": "analog" }, "frames": 5 }),
+            &ctx(&p),
+        )
+        .unwrap();
+        assert_eq!(&c[..CYCLE], &plain[..CYCLE], "位置 0 は元のまま");
+        let (end, _) = wtedit::harmonics_of(&c[4 * CYCLE..], 4);
+        assert!(end[2] < 0.02 * end[0], "位置 1 は加工の後: {end:?}");
+        let bad = json!({ "source": { "kind": "shape", "name": "analog" }, "edits": [{ "op": "resize", "frames": 8, "fade": [0, 1] }] });
+        assert!(build(&bad, &ctx(&p)).is_err());
     }
 
     /// 倍音から作る(keys が設計図)。keys が無ければサイン波。内蔵のテーブルも元にできる

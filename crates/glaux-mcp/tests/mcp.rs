@@ -8407,3 +8407,71 @@ async fn proposals_branch_and_adopt() {
     .await;
     assert_eq!(e.is_error, Some(true));
 }
+
+/// 今の作り方から続けて直す(人が描いた形・加工の並びを残したまま、AI が点で描いた形と加工を足す)
+#[tokio::test]
+async fn make_wavetable_continues_the_recipe_with_point_keys() {
+    let fx = setup().await;
+    call(&fx, "apply_commands", add_track_args("trk_wtr001", "Lead")).await;
+    // 人が描いた形(倍音)と、切ってある加工
+    ok_json(
+        &call(
+            &fx,
+            "make_wavetable",
+            json!({
+                "track_id": "trk_wtr001",
+                "source": { "kind": "shape", "name": "sine_to_saw" },
+                "frames": 9,
+                "keys": [{ "pos": 0.0, "amps": [1.0, 0.0, 0.5] }],
+                "edits": [{ "op": "tilt", "db_per_octave": -6, "on": false, "who": "you", "id": 7 }]
+            }),
+        )
+        .await,
+    );
+    // 続けて: 後ろに矩形を点で描き、後半ほど効く位相歪みを足す
+    let v = ok_json(
+        &call(
+            &fx,
+            "make_wavetable",
+            json!({
+                "track_id": "trk_wtr001",
+                "source": { "kind": "recipe" },
+                "keys": [{ "pos": 1.0, "points": [[0.0, 1.0], [0.49, 1.0], [0.5, -1.0], [0.99, -1.0]] }],
+                "edits": [{ "op": "phase_distort", "amount": 0.6, "fade": [0.0, 1.0] }]
+            }),
+        )
+        .await,
+    );
+    assert_eq!(v["summary"]["frames"], 9);
+    let d = ok_json(
+        &call(
+            &fx,
+            "describe_wavetable",
+            json!({ "track_id": "trk_wtr001" }),
+        )
+        .await,
+    );
+    let r = &d["recipe"];
+    assert_eq!(r["source"]["name"], "sine_to_saw", "元はそのまま");
+    let keys = r["keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 2, "人の形を残して足す: {keys:?}");
+    assert_eq!(keys[1]["who"], "ai");
+    assert_eq!(
+        keys[1]["amps"].as_array().unwrap().len(),
+        256,
+        "画面と同じ 256 本"
+    );
+    let edits = r["edits"].as_array().unwrap();
+    assert_eq!(edits.len(), 2);
+    assert_eq!(edits[0]["on"], false, "人の加工の入り切りを残す");
+    assert_eq!(edits[1]["op"], "phase_distort");
+    // 作り方の無いテーブル(内蔵)では続けられない
+    call(&fx, "apply_commands", add_track_args("trk_wtr002", "Plain")).await;
+    let r = call(
+        &fx,
+        "make_wavetable",
+        json!({ "track_id": "trk_wtr002", "source": { "kind": "recipe" } }),
+    )
+    .await;
+    assert!(r.is_error.unwrap_or(false), "{r:?}");
+}

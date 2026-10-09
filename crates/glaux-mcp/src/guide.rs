@@ -346,7 +346,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 言葉の調整: 「明るく・太く・遠く・柔らかく」は set_character、細かい追い込みは refine_by_words(聴き比べながらつまみを決める)。\n\
   音色を数で確かめるなら analyze_sound、2 つの音を比べるなら compare_sounds、参考の音に寄せるなら match_sound。\n\
 - 音色エディタ(人が開く画面)で作り込まれた音は、つまみ・手で描いた形(ウェーブテーブルの作り方・加算合成の partial_edits・\n\
-  サンプラーの slice_points・SFZ の key_adjust)を壊さないよう、変えるつまみだけ set_param で動かす。",
+  サンプラーの slice_points・SFZ の key_adjust)を壊さないよう、変えるつまみだけ set_param で動かす。\n\
+  ウェーブテーブルを直すときは make_wavetable の source: recipe(描いた形と加工の並びを残して足す。current は焼き込んで消す)。",
     ),
     (
         "genres",
