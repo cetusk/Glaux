@@ -36,6 +36,23 @@ pub struct NoteMark {
     pub tick: u64,
     pub pitch: u8,
     pub vel: u8,
+    /// 表情(`TrackNotes::exprs` の添字。無ければ [`NO_EXPR`])
+    pub expr: u32,
+}
+
+/// 表情の無いノートの `NoteMark::expr`
+pub const NO_EXPR: u32 = u32::MAX;
+
+/// ノートの表情(奏法・ピッチカーブ・滑り・ビブラート)。ゲームで「しゃくった音」に演出を合わせるのに使う
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoteExpression {
+    pub articulation: glaux_core::Articulation,
+    /// 連続ピッチカーブ(ノートの頭からの秒, セント)。しゃくり・こぶし・フォールなどはここに入る
+    pub pitch_curve: Vec<(f64, f32)>,
+    /// ポルタメントで滑る時間(ms)。ノートに書いてあるときだけ
+    pub glide_ms: Option<f32>,
+    /// ノートにビブラートが書いてある(奏法のビブラートとは別)
+    pub vibrato: bool,
 }
 
 /// トラック 1 本分のノート(開始順)。
@@ -44,6 +61,15 @@ pub struct TrackNotes {
     pub name: String,
     pub id: String,
     pub notes: Vec<NoteMark>,
+    /// ノートの表情(表情のあるノートだけ)
+    pub exprs: Vec<NoteExpression>,
+}
+
+impl TrackNotes {
+    /// ノートの表情(無ければ None)
+    pub fn expr_of(&self, n: &NoteMark) -> Option<&NoteExpression> {
+        self.exprs.get(n.expr as usize)
+    }
 }
 
 /// 曲の時間軸。
@@ -79,6 +105,7 @@ impl Timeline {
             .tracks
             .iter()
             .map(|t| {
+                let mut exprs: Vec<NoteExpression> = Vec::new();
                 let mut notes: Vec<NoteMark> = t
                     .clips
                     .iter()
@@ -86,16 +113,36 @@ impl Timeline {
                     .flat_map(|c| {
                         c.playback_notes()
                             .into_iter()
-                            .map(move |n| (c.start.0 + n.pos.0, n.dur.0, n.pitch, n.vel))
+                            .map(move |n| (c.start.0 + n.pos.0, n))
                     })
-                    .map(|(start, dur, pitch, vel)| {
+                    .map(|(start, n)| {
                         let sec = to_sec(start);
+                        let has = !n.articulation.is_normal()
+                            || !n.pitch_curve.is_empty()
+                            || n.glide_ms.is_some()
+                            || n.vibrato.is_some();
+                        let expr = if has {
+                            exprs.push(NoteExpression {
+                                articulation: n.articulation,
+                                pitch_curve: n
+                                    .pitch_curve
+                                    .iter()
+                                    .map(|p| (to_sec(start + p.tick.0) - sec, p.cents))
+                                    .collect(),
+                                glide_ms: n.glide_ms,
+                                vibrato: n.vibrato.is_some(),
+                            });
+                            (exprs.len() - 1) as u32
+                        } else {
+                            NO_EXPR
+                        };
                         NoteMark {
                             sec,
-                            dur_sec: to_sec(start + dur) - sec,
+                            dur_sec: to_sec(start + n.dur.0) - sec,
                             tick: start,
-                            pitch,
-                            vel,
+                            pitch: n.pitch,
+                            vel: n.vel,
+                            expr,
                         }
                     })
                     .collect();
@@ -104,6 +151,7 @@ impl Timeline {
                     name: t.name.clone(),
                     id: t.id.to_string(),
                     notes,
+                    exprs,
                 }
             })
             .collect();
@@ -318,6 +366,38 @@ mod tests {
             brightness_curve: vec![],
             condition: None,
         }
+    }
+
+    /// ノートの表情(しゃくりのピッチカーブ・奏法)を秒に直して持つ。表情の無いノートは持たない
+    #[test]
+    fn notes_carry_their_expression() {
+        let mut p = Project::new("t");
+        let mut t = Track::new(TrackId::new(), "Vo", TrackKind::Midi);
+        let mut c = Clip::new_midi(ClipId::new(), "v", Tick(0), Tick(3840));
+        let mut sh = note(960, 64);
+        sh.pitch_curve = vec![
+            glaux_core::PitchPoint::new(Tick(0), -150.0),
+            glaux_core::PitchPoint::new(Tick(96), 0.0),
+        ];
+        let mut bend = note(1920, 67);
+        bend.articulation = glaux_core::Articulation::Bend;
+        if let ClipContent::Midi { notes, .. } = &mut c.content {
+            *notes = vec![note(0, 60), sh, bend];
+        }
+        t.clips.push(c);
+        p.tracks.push(t);
+        let tl = Timeline::from_project(&p);
+        let tn = &tl.tracks()[0];
+        assert_eq!(tn.exprs.len(), 2);
+        assert!(tn.expr_of(&tn.notes[0]).is_none());
+        let e = tn.expr_of(&tn.notes[1]).unwrap();
+        // 120BPM: 96 tick = 0.05 秒
+        assert_eq!(e.pitch_curve.len(), 2);
+        assert!((e.pitch_curve[1].0 - 0.05).abs() < 1e-9 && e.pitch_curve[0].1 == -150.0);
+        assert_eq!(
+            tn.expr_of(&tn.notes[2]).unwrap().articulation,
+            glaux_core::Articulation::Bend
+        );
     }
 
     /// 120BPM・4/4 で 2 小節、3 小節目から 3/4。キックはループ(1 小節 = 4 拍打ち)

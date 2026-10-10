@@ -34,6 +34,31 @@ pub enum Gesture {
 }
 
 impl Gesture {
+    /// 番号の順(`code` / `from_code`。ゲームから時刻指定のノートに載せるとき)
+    pub const ALL: [Gesture; 10] = [
+        Gesture::Scoop,
+        Gesture::Shakuri,
+        Gesture::Plop,
+        Gesture::SlideIn,
+        Gesture::Bend,
+        Gesture::PrebendRelease,
+        Gesture::Doit,
+        Gesture::Fall,
+        Gesture::Kobushi,
+        Gesture::Shake,
+    ];
+
+    /// 1 から始まる番号(0 は「無し」に使う)
+    pub fn code(self) -> u8 {
+        Gesture::ALL.iter().position(|g| *g == self).unwrap_or(0) as u8 + 1
+    }
+
+    pub fn from_code(c: u8) -> Option<Gesture> {
+        (c as usize)
+            .checked_sub(1)
+            .and_then(|i| Gesture::ALL.get(i).copied())
+    }
+
     pub fn parse(s: &str) -> Option<Gesture> {
         Some(match s.trim().to_lowercase().as_str() {
             "scoop" => Gesture::Scoop,
@@ -135,48 +160,124 @@ pub fn select(notes: &[Note], target: Target, beat: u64) -> Vec<usize> {
 /// 表情のピッチカーブ(ノート先頭からの tick, セント, 曲がり方)。`len` は音の長さ(tick)、
 /// `time` は表情の長さ(tick。音の長さの半分までに縮める)、`amount` は深さ(セント)
 pub fn curve(g: Gesture, len: u64, time: u64, amount: f32) -> Vec<(u64, f32, CurveShape)> {
+    let mut buf = [(0u64, 0.0f32, CurveShape::Linear); MAX_PITCH_POINTS];
+    let n = curve_into(g, len, time, amount, &mut buf);
+    buf[..n].to_vec()
+}
+
+/// [`curve`] を、割り当てずに `out` へ書く(オーディオスレッドで使う)。書いた点の数を返す。
+/// 時間の単位は何でもよい(tick でもサンプルでも、`len` と `time` が同じ単位なら)
+pub fn curve_into(
+    g: Gesture,
+    len: u64,
+    time: u64,
+    amount: f32,
+    out: &mut [(u64, f32, CurveShape); MAX_PITCH_POINTS],
+) -> usize {
     use CurveShape::*;
     let t = time.min(len / 2).max(1);
+    let mut n = 0usize;
+    let mut put = |p: (u64, f32, CurveShape)| {
+        if n < MAX_PITCH_POINTS {
+            out[n] = p;
+            n += 1;
+        }
+    };
     match g {
-        Gesture::Scoop => vec![(0, -amount, EaseOut), (t, 0.0, Linear)],
-        Gesture::Shakuri => vec![
-            (0, -amount, EaseOut),
-            (t * 4 / 5, amount * 0.06, EaseInOut),
-            (t, 0.0, Linear),
-        ],
-        Gesture::Plop => vec![(0, amount, EaseIn), (t, 0.0, Linear)],
-        Gesture::SlideIn => vec![(0, -amount, Linear), (t, 0.0, Linear)],
-        Gesture::Bend => vec![(0, -amount, EaseOut), (t, 0.0, Linear)],
-        Gesture::PrebendRelease => vec![
-            (0, amount, Hold),
-            (t * 2 / 5, amount, EaseInOut),
-            (t, 0.0, Linear),
-        ],
-        Gesture::Doit => vec![(len - t, 0.0, EaseIn), (len, amount, Linear)],
-        Gesture::Fall => vec![(len - t, 0.0, EaseIn), (len, -amount, Linear)],
+        Gesture::Scoop | Gesture::Bend => {
+            put((0, -amount, EaseOut));
+            put((t, 0.0, Linear));
+        }
+        Gesture::Shakuri => {
+            put((0, -amount, EaseOut));
+            put((t * 4 / 5, amount * 0.06, EaseInOut));
+            put((t, 0.0, Linear));
+        }
+        Gesture::Plop => {
+            put((0, amount, EaseIn));
+            put((t, 0.0, Linear));
+        }
+        Gesture::SlideIn => {
+            put((0, -amount, Linear));
+            put((t, 0.0, Linear));
+        }
+        Gesture::PrebendRelease => {
+            put((0, amount, Hold));
+            put((t * 2 / 5, amount, EaseInOut));
+            put((t, 0.0, Linear));
+        }
+        Gesture::Doit => {
+            put((len - t, 0.0, EaseIn));
+            put((len, amount, Linear));
+        }
+        Gesture::Fall => {
+            put((len - t, 0.0, EaseIn));
+            put((len, -amount, Linear));
+        }
         Gesture::Kobushi => {
             let a = (len * 3 / 10).min(len.saturating_sub(t));
-            vec![
-                (a, 0.0, EaseInOut),
-                (a + t / 2, amount, EaseInOut),
-                (a + t, 0.0, Linear),
-            ]
+            put((a, 0.0, EaseInOut));
+            put((a + t / 2, amount, EaseInOut));
+            put((a + t, 0.0, Linear));
         }
         Gesture::Shake => {
             // 音の 3 割から終わりまで、約 7 回/秒 の往復(点の上限まで)
             let a = len * 3 / 10;
             let half = (t / 6).max(1);
-            let mut v = vec![(a, 0.0, EaseInOut)];
+            put((a, 0.0, EaseInOut));
             let mut k = 1u64;
-            while a + k * half < len && v.len() < MAX_PITCH_POINTS - 1 {
+            while a + k * half < len && k < MAX_PITCH_POINTS as u64 - 1 {
                 let c = if k % 2 == 1 { amount } else { 0.0 };
-                v.push((a + k * half, c, EaseInOut));
+                put((a + k * half, c, EaseInOut));
                 k += 1;
             }
-            v.push((len, 0.0, Linear));
-            v
+            put((len, 0.0, Linear));
         }
     }
+    n
+}
+
+/// トラックの `[from, to)` tick に頭がある音のうち `target` に当たるものへ表情を付ける Command
+/// (クリップごとの UpdateNotes の Batch。付ける音が無ければ None)。`ms` は表情の長さ、`amount` は深さ(セント)。
+/// ゲーム(Godot)から曲の表情を足すときに使う(MCP の pitch_gesture と同じ曲線)
+#[allow(clippy::too_many_arguments)]
+pub fn command_for_track(
+    project: &crate::Project,
+    track: &crate::TrackId,
+    g: Gesture,
+    target: Target,
+    from: Tick,
+    to: Tick,
+    amount: f32,
+    ms: f32,
+) -> Option<crate::Command> {
+    let t = project.track(track)?;
+    let mut commands = Vec::new();
+    for clip in &t.clips {
+        let Some(notes) = clip.notes() else { continue };
+        let mut changes = Vec::new();
+        for i in select(notes, target, crate::PPQ) {
+            let n = &notes[i];
+            let abs = clip.start.0 + n.pos.0;
+            if abs < from.0 || abs >= to.0 {
+                continue;
+            }
+            let bpm = project.tempo_map.bpm_at(Tick(abs));
+            let time = (ms as f64 * crate::PPQ as f64 * bpm / 60_000.0).round() as u64;
+            let pts = curve(g, n.dur.0, time, amount);
+            let c = merge(&n.pitch_curve, &pts);
+            if c != n.pitch_curve {
+                changes.push(crate::NoteChange::new(n.id.clone()).pitch_curve(c));
+            }
+        }
+        if !changes.is_empty() {
+            commands.push(crate::Command::UpdateNotes {
+                clip: clip.id.clone(),
+                changes,
+            });
+        }
+    }
+    (!commands.is_empty()).then(|| crate::Command::batch("gesture", commands))
 }
 
 /// 今のピッチカーブに表情を重ねる。表情の範囲にある元の点は消し、範囲の外は残す(上限まで)
@@ -334,6 +435,56 @@ pub fn vibrato_style(name: &str) -> Option<Vibrato> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn codes_round_trip_and_track_command_marks_phrase_starts() {
+        for g in Gesture::ALL {
+            assert_eq!(Gesture::from_code(g.code()), Some(g));
+        }
+        assert_eq!(Gesture::from_code(0), None);
+        for c in 0..8u8 {
+            assert_eq!(crate::Articulation::from_code(c).code(), c);
+        }
+        // 2 つのフレーズ(間が空いている)の頭にしゃくり。範囲の外の音には付けない
+        let mut p = crate::Project::new("t");
+        let mut t = crate::Track::new(crate::TrackId::new(), "Vo", crate::TrackKind::Midi);
+        let mut clip = crate::Clip::new_midi(crate::ClipId::new(), "c", Tick(0), Tick(3840 * 4));
+        let mk = |pos: u64| note(pos, 960, 64);
+        if let crate::ClipContent::Midi { notes, .. } = &mut clip.content {
+            *notes = vec![mk(0), mk(960), mk(3840 * 2), mk(3840 * 2 + 960)];
+        }
+        t.clips.push(clip);
+        let id = t.id.clone();
+        p.tracks.push(t);
+        let c = command_for_track(
+            &p,
+            &id,
+            Gesture::Shakuri,
+            Target::PhraseStart,
+            Tick(0),
+            Tick(3840 * 4),
+            150.0,
+            120.0,
+        )
+        .expect("付ける音がある");
+        p.apply(&c).unwrap();
+        let notes = p.tracks[0].clips[0].notes().unwrap();
+        let marked: Vec<bool> = notes.iter().map(|n| !n.pitch_curve.is_empty()).collect();
+        assert_eq!(marked, vec![true, false, true, false]);
+        assert!(notes[0].pitch_curve[0].cents < -100.0, "下から入る");
+        assert!(command_for_track(
+            &p,
+            &id,
+            Gesture::Shakuri,
+            Target::All,
+            Tick(3840 * 3),
+            Tick(3840 * 4),
+            150.0,
+            120.0
+        )
+        .is_none());
+    }
+
     use super::*;
     use crate::id::NoteId;
 

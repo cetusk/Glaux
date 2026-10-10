@@ -3612,14 +3612,28 @@ impl Renderer {
             self.retire(v.instrument);
         }
         let instrument = mix.instrument.clone();
-        let state = VoiceState::start(
+        let mut state = VoiceState::start(
             &instrument,
             crate::data::pitch_to_freq(n.pitch),
             n.pitch,
             n.vel.min(127) as f32 / 127.0,
-            glaux_core::Articulation::Normal,
+            glaux_core::Articulation::from_code(n.art),
             sr,
         );
+        // 音程の表情(しゃくり・フォールなど)。長さはサンプルで(割り当てずに曲線を作る)
+        if let Some(g) = glaux_core::gesture::Gesture::from_code(n.gesture) {
+            let mut pts =
+                [(0u64, 0.0f32, glaux_core::CurveShape::Linear); glaux_core::MAX_PITCH_POINTS];
+            let len = n.dur.max(1) as u64;
+            let time = (n.gesture_ms as f64 * sr as f64 / 1000.0) as u64;
+            let k = glaux_core::gesture::curve_into(g, len, time, n.gesture_cents as f32, &mut pts);
+            let mut f =
+                [(0.0f32, 0.0f32, glaux_core::CurveShape::Linear); glaux_core::MAX_PITCH_POINTS];
+            for (o, p) in f.iter_mut().zip(&pts[..k]) {
+                *o = (p.0 as f32, p.1, p.2);
+            }
+            state.set_curve(&glaux_dsp::PitchCurve::from_shaped(&f[..k]));
+        }
         self.live_voices.push(LiveVoice {
             track: n.track as u32,
             pitch: n.pitch,
@@ -4165,6 +4179,45 @@ mod tests {
         (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt()
     }
 
+    /// 時刻指定のノートに表情(しゃくり)を載せると、出だしが低く、その後に書いた音程へ上がる
+    #[test]
+    fn timed_note_carries_a_shakuri() {
+        let render = |gesture: u8| {
+            let shared = Arc::new(Shared::new(data_with_note(10_000_000, 10_000_001, true)));
+            let mut r = Renderer::new(shared.clone());
+            assert!(shared.notes.push(crate::midi::TimedNote {
+                at: 0,
+                track: 0,
+                pitch: 69,
+                vel: 100,
+                dur: 24_000,
+                gesture,
+                gesture_cents: 1200,
+                gesture_ms: 200,
+                ..Default::default()
+            }));
+            let mut out = Vec::new();
+            let mut buf = vec![0.0f32; 1024 * 2];
+            for _ in 0..24 {
+                r.process(&mut buf, 2);
+                out.extend(buf.chunks(2).map(|c| c[0]));
+            }
+            out
+        };
+        let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        let plain = render(0);
+        let shak = render(glaux_core::gesture::Gesture::Shakuri.code());
+        // 頭の 50ms(2400 サンプル): しゃくりは 1 オクターブ下から入るので、山の数が少ない
+        let (a, b) = (crossings(&plain[200..2600]), crossings(&shak[200..2600]));
+        assert!(b * 10 < a * 8, "しゃくりの出だしは低い: {a} vs {b}");
+        // 300ms 以降は同じ高さ
+        let (c, d) = (
+            crossings(&plain[16_000..20_000]),
+            crossings(&shak[16_000..20_000]),
+        );
+        assert!(c.abs_diff(d) <= 1, "後は同じ高さ: {c} vs {d}");
+    }
+
     #[test]
     fn timed_notes_start_on_the_exact_sample_while_stopped() {
         // 曲は止めたまま(ゲームの効果音用)。時計 5000 から 2400 サンプル押す
@@ -4176,6 +4229,7 @@ mod tests {
             pitch: 69,
             vel: 100,
             dur: 2400,
+            ..Default::default()
         }));
         let mut out = Vec::new();
         let mut buf = vec![0.0f32; 1024 * 2];
@@ -4199,6 +4253,7 @@ mod tests {
             pitch: 72,
             vel: 100,
             dur: 480,
+            ..Default::default()
         }));
         r.process(&mut buf, 2);
         let head: Vec<f32> = buf[..800].chunks(2).map(|c| c[0]).collect();

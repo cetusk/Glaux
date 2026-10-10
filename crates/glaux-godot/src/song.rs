@@ -9,6 +9,10 @@ use godot::classes::FileAccess;
 pub struct LoadedSong {
     pub timeline: Timeline,
     pub data: PlaybackData,
+    /// 曲(ゲームの中で表情・テンポなどを変えるとき、ここに Command を当てて組み直す。ファイルは変えない)
+    pub project: Project,
+    /// 読み込んだ音声・SoundFont(組み直すときに使い回す)
+    pub bank: SampleBank,
     /// キーと小節ごとのコード(ノートからの推定。効果音の音程を曲に合わせるのに使う)
     pub harmony: glaux_core::harmony::HarmonyAnalysis,
     /// 読み込みで気づいた注意(CLAP の音源など)
@@ -41,8 +45,27 @@ pub fn load(dir: &str, sample_rate: f64) -> Result<LoadedSong, String> {
     let warnings = prepare(&mut project);
 
     let mut bank = SampleBank::default();
+    let (data, timeline) = rebuild(dir, &project, &mut bank, sample_rate);
+    Ok(LoadedSong {
+        timeline,
+        harmony: glaux_core::harmony::analyze(&project, None, None),
+        data,
+        project,
+        bank,
+        warnings,
+    })
+}
+
+/// 曲から鳴らすデータと時間軸を作る(足りない音声・SoundFont は `dir` から読む)。
+/// ゲームの中で曲を変えたとき(`GlauxPlayer.apply_command` など)も、これで組み直す
+pub fn rebuild(
+    dir: &str,
+    project: &Project,
+    bank: &mut SampleBank,
+    sample_rate: f64,
+) -> (PlaybackData, Timeline) {
     bank.sync_with(
-        &project,
+        project,
         &mut |rel| load_wav_bytes(&read_bytes(&join(dir, rel))?),
         // SoundFont は曲フォルダの soundfonts/ か res://soundfonts/ に置く
         &mut |file| {
@@ -56,13 +79,10 @@ pub fn load(dir: &str, sample_rate: f64) -> Result<LoadedSong, String> {
             glaux_engine::sf2::load_font_bytes(&read_bytes(&path)?)
         },
     );
-    let data = build_playback_data(&project, sample_rate, &bank);
-    Ok(LoadedSong {
-        timeline: Timeline::from_project(&project),
-        harmony: glaux_core::harmony::analyze(&project, None, None),
-        data,
-        warnings,
-    })
+    (
+        build_playback_data(project, sample_rate, bank),
+        Timeline::from_project(project),
+    )
 }
 
 /// ゲームで鳴らせないもの(CLAP プラグイン)を外し、注意を返す。

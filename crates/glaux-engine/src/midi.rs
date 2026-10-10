@@ -158,7 +158,7 @@ impl LiveQueue {
 
 /// 時刻を指定して鳴らすノート(ゲームの効果音など)。時刻はレンダラの時計
 /// ([`Renderer::clock`](crate::render::Renderer::clock)、再生・停止に関係なく進むサンプル数)。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TimedNote {
     /// 鳴らし始める時計の位置(サンプル)。過ぎていれば次のブロックの頭ですぐ鳴らす
     pub at: u64,
@@ -168,13 +168,20 @@ pub struct TimedNote {
     pub vel: u8,
     /// 鍵盤を押している長さ(サンプル)。その後はリリースで消える
     pub dur: u32,
+    /// 奏法(`glaux_core::Articulation::code`。0 = 通常)
+    pub art: u8,
+    /// 音程の表情(`glaux_core::gesture::Gesture::code`。0 = 無し。しゃくり・フォールなど)
+    pub gesture: u8,
+    /// 表情の深さ(セント)と長さ(ms)
+    pub gesture_cents: u16,
+    pub gesture_ms: u16,
 }
 
 const NOTE_QUEUE_CAP: usize = 512;
 
 /// [`TimedNote`] の固定容量のリングバッファ。取り出し(オーディオスレッド)はロックフリー・
 /// アロケーションなし。積む側は短いロックで直列化する([`LiveQueue`] と同じ作り。1 つのノートは
-/// 2 つの 64 bit の枠に入れる)。
+/// 3 つの 64 bit の枠に入れる)。
 pub struct NoteQueue {
     buf: Box<[AtomicU64]>,
     head: AtomicUsize,
@@ -185,7 +192,7 @@ pub struct NoteQueue {
 impl Default for NoteQueue {
     fn default() -> Self {
         NoteQueue {
-            buf: (0..NOTE_QUEUE_CAP * 2).map(|_| AtomicU64::new(0)).collect(),
+            buf: (0..NOTE_QUEUE_CAP * 3).map(|_| AtomicU64::new(0)).collect(),
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             push_lock: Mutex::new(()),
@@ -202,11 +209,16 @@ impl NoteQueue {
         if h.wrapping_sub(t) >= NOTE_QUEUE_CAP {
             return false;
         }
-        let i = (h & (NOTE_QUEUE_CAP - 1)) * 2;
+        let i = (h & (NOTE_QUEUE_CAP - 1)) * 3;
         let packed =
             (n.track as u64) << 48 | (n.pitch as u64) << 40 | (n.vel as u64) << 32 | n.dur as u64;
+        let expr = (n.art as u64) << 40
+            | (n.gesture as u64) << 32
+            | (n.gesture_cents as u64) << 16
+            | n.gesture_ms as u64;
         self.buf[i].store(n.at, Ordering::Relaxed);
         self.buf[i + 1].store(packed, Ordering::Relaxed);
+        self.buf[i + 2].store(expr, Ordering::Relaxed);
         self.head.store(h.wrapping_add(1), Ordering::Release);
         true
     }
@@ -218,9 +230,10 @@ impl NoteQueue {
         if t == h {
             return None;
         }
-        let i = (t & (NOTE_QUEUE_CAP - 1)) * 2;
+        let i = (t & (NOTE_QUEUE_CAP - 1)) * 3;
         let at = self.buf[i].load(Ordering::Relaxed);
         let p = self.buf[i + 1].load(Ordering::Relaxed);
+        let x = self.buf[i + 2].load(Ordering::Relaxed);
         self.tail.store(t.wrapping_add(1), Ordering::Release);
         Some(TimedNote {
             at,
@@ -228,6 +241,10 @@ impl NoteQueue {
             pitch: (p >> 40) as u8,
             vel: (p >> 32) as u8,
             dur: p as u32,
+            art: (x >> 40) as u8,
+            gesture: (x >> 32) as u8,
+            gesture_cents: (x >> 16) as u16,
+            gesture_ms: x as u16,
         })
     }
 }

@@ -15,3 +15,4 @@ glaux-core = { path = "../glaux-core" }
 glaux-engine = { path = "../glaux-engine" }
 godot.workspace = true
 godot-core.workspace = true
+serde_json.workspace = true

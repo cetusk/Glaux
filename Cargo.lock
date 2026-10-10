@@ -1748,6 +1748,7 @@ dependencies = [
  "glaux-engine",
  "godot",
  "godot-core",
+ "serde_json",
 ]
 
 [[package]]

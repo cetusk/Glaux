@@ -84,6 +84,7 @@ func _on_section(name: String, time: float) -> void:
 | `beat` | `bar, beat, time` | 拍の頭を通り過ぎた(小節・拍は 1 始まり。`time` はその拍の本来の時刻・秒) |
 | `section` | `name, time` | Glaux で打ったマーカー(「サビ」など)を通り過ぎた |
 | `note` | `track, pitch, velocity, time, duration` | `watch_track` したトラックの音が鳴った |
+| `note_ex` | `track, info` | `note` と同じ時に、表情つきで(`info` は `get_notes` の 1 要素と同じ辞書。しゃくり・チョーキングなどに演出を合わせる) |
 | `song_finished` | − | 曲が余韻まで鳴り終わった |
 | `jumped` | `from, to` | 再生位置が飛んだのが聞こえた(ループの折り返し・`queue_section` の切り替え。秒) |
 
@@ -136,6 +137,23 @@ func on_boss_defeated() -> void:
 - 切り替えたのが聞こえると `jumped` と、飛んだ先の `section`・`beat` が出ます。飛ぶ位置の先の拍は出ません
 - ループ中は曲の終わりでも止まりません(`song_finished` は出ない)
 
+### 曲を変える(ゲームの中だけ。曲のファイルは変えない)
+
+鳴っている途中でも差し替わります(次のミックスから)。失敗の理由は `get_last_error()`。
+
+| メソッド | 説明 |
+|---|---|
+| `apply_gesture(track, gesture, from, to, target = "", amount = 0, gesture_ms = 0) -> bool` | トラックの `from`〜`to` 秒に頭がある音に音程の表情を付ける(Glaux の pitch_gesture と同じ曲線)。`target` は `phrase_start`(フレーズの頭)`phrase_end` `leap_up` `long` `all`(`""` で表情ごとの既定) |
+| `set_tempo(bpm) -> bool` | 曲全体のテンポ(途中のテンポの変化は消える) |
+| `set_track_mute(track, mute) -> bool` | トラックを鳴らさない・鳴らす(`set_track_volume_db` と違い音源も止まる) |
+| `set_param(track, path, value) -> bool` | つまみを変える(`path` は `device/cutoff`・`fx/<ID>/mix`・`track/volume_db` など。Glaux の list_params と同じ) |
+| `apply_command(json) -> bool` | Glaux の Command(JSON。MCP の apply_commands の 1 つと同じ形)をそのまま当てる |
+
+- 組み直しは、22 トラック・1,700 音の曲で 1 ms 前後です(音源のつまみを変えると、その音源の作り直しで数十 ms かかることがあります)。
+  毎フレーム呼ぶのは避け、場面の切り替えなどで呼んでください
+- テンポを変えると、秒で指定したループ(`set_loop`)・予約(`queue_section`)の位置は、変える前の秒のままです。必要なら指定し直してください
+- 変えた内容はゲームを閉じると消えます(`load_song` で読み直しても元に戻ります)
+
 ### 位置・問い合わせ
 
 | メソッド | 返り値 |
@@ -147,7 +165,7 @@ func on_boss_defeated() -> void:
 | `get_next_beat_time()` | 次の拍の時刻(秒) |
 | `get_section()` | いまのマーカー名 |
 | `get_time_of(bar, beat)` | その小節・拍の時刻(秒) |
-| `get_notes(track, from, to)` | `[from, to)` 秒に始まる音の一覧 `{time, duration, pitch, velocity}`(先読み用) |
+| `get_notes(track, from, to)` | `[from, to)` 秒に始まる音の一覧(先読み用)。`{time, duration, pitch, velocity, articulation, pitch_curve, glide_ms, vibrato}`。`articulation` は奏法(通常は `""`、ほかに `palm_mute` `staccato` `accent` `vibrato` `bend` `legato` `portamento`)、`pitch_curve` は音程の動き(しゃくり・こぶし・フォールなど。`[[音の頭からの秒, セント], …]`、無ければ空)、`glide_ms` は滑る時間(無ければ `null`) |
 | `get_beats(from, to)` | `[from, to)` 秒の拍の一覧 `{time, bar, beat, beats_in_bar}` |
 | `get_sections()` | マーカーの一覧 `{time, name}` |
 | `get_track_names()` / `get_length()` | トラック名の一覧 / 曲の長さ(秒) |
@@ -178,6 +196,8 @@ func on_boss_defeated() -> void:
 | `play_note(track, pitch, velocity = 100, duration = 0.2)` | すぐ鳴らす(`duration` は押している秒数。その後は音源のリリースで消える) |
 | `play_note_at(track, pitch, time, velocity = 100, duration = 0.2)` | `time` 秒に**聞こえるように**鳴らす(出力の遅れを見込む。過ぎた時刻ならすぐ) |
 | `sync_to` | `play_note_at` の `time` の基準にする BGM の `GlauxPlayer`。未設定なら自分の曲の時刻 |
+| `play_note_ex(track, pitch, velocity = 100, duration = 0.2, articulation = "", gesture = "", amount = 0, gesture_ms = 0)` | 表情を付けてすぐ鳴らす。`articulation` は奏法、`gesture` は音程の表情(`shakuri`〈しゃくり〉`scoop` `plop` `slide_in` `bend` `prebend_release` `doit` `fall` `kobushi`〈こぶし〉`shake`)、`amount` は深さ(セント)、`gesture_ms` は長さ(ms)。0 はそれぞれの既定 |
+| `play_note_ex_at(track, pitch, time, velocity = 100, duration = 0.2, articulation = "", gesture = "", amount = 0, gesture_ms = 0)` | `play_note_ex` を時刻指定で |
 | `release_notes()` | 鳴らした音をすべて離す |
 
 ```gdscript

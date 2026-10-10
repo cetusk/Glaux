@@ -37,6 +37,7 @@ signal beat(bar: int, beat: int, time: float)        # 拍の頭を通り過ぎ�
 signal section(name: String, time: float)            # マーカー(「サビ」など)を通り過ぎた
 signal note(track: String, pitch: int, velocity: int, time: float, duration: float)
                                                      # watch_track したトラックの音が鳴った(pitch は MIDI 番号)
+signal note_ex(track: String, info: Dictionary)      # note と同時に、表情つき(info は get_notes の 1 要素と同じ)
 signal song_finished()                               # 曲が余韻まで鳴り終わった(ループ中は出ない)
 signal jumped(from: float, to: float)                # 再生位置が飛んだのが聞こえた(ループの折り返し・queue_section。秒)
 ```
@@ -68,7 +69,7 @@ signal jumped(from: float, to: float)                # 再生位置が飛んだ�
 | `get_length()` | `float` | 曲の長さ(秒。最後のクリップ・マーカーまで。余韻は含まない) |
 | `get_track_names()` | `PackedStringArray` | トラック名の一覧 |
 | `watch_track(track: String)` / `unwatch_track(track)` | − | `note` シグナルを出すトラック(名前か `trk_...` の ID)。同名が複数なら先頭 |
-| `get_notes(track: String, from: float, to: float)` | `Array` | `[from, to)` に始まる音。要素は `{time, duration, pitch, velocity}` の Dictionary |
+| `get_notes(track: String, from: float, to: float)` | `Array` | `[from, to)` に始まる音。要素は `{time, duration, pitch, velocity, articulation, pitch_curve, glide_ms, vibrato}` の Dictionary。`articulation`: `""`(通常)/ `palm_mute` / `staccato` / `accent` / `vibrato` / `bend` / `legato` / `portamento`。`pitch_curve`: しゃくり・こぶし・フォールなどの音程の動き `[[音の頭からの秒, セント], …]`(無ければ空。最初の点が負なら下から入る = しゃくり・スクープ)。`glide_ms`: 滑る時間(無ければ null)。`vibrato`: ノートにビブラートがあるか |
 | `get_beats(from: float, to: float)` | `Array` | `[from, to)` の拍。要素は `{time, bar, beat, beats_in_bar}` |
 | `get_sections()` | `Array` | マーカー全部。要素は `{time, name}` |
 | `get_key()` | `Dictionary` | キー `{name, tonic(C=0..B=11), mode("major"/"minor"), confidence}`。ノートが無ければ空 |
@@ -82,7 +83,14 @@ signal jumped(from: float, to: float)                # 再生位置が飛んだ�
 | `get_scale_note(index: int, base: int = 60)` | `int` | スケールの音を `base` 以上で下から数えた `index` 番目 |
 | `play_note(track: String, pitch: int, velocity: int = 100, duration: float = 0.2)` | `bool` | トラックの音源とエフェクトで 1 音をすぐ鳴らす(曲を再生していなくても鳴る)。鳴らせなければ false |
 | `play_note_at(track: String, pitch: int, time: float, velocity: int = 100, duration: float = 0.2)` | `bool` | `time`(`sync_to` の曲の時刻。未設定なら自分の曲)に**聞こえるように**鳴らす。過ぎていればすぐ |
+| `play_note_ex(track, pitch, velocity = 100, duration = 0.2, articulation = "", gesture = "", amount = 0.0, gesture_ms = 0.0)` | `bool` | 表情を付けて 1 音をすぐ鳴らす。`gesture`: `shakuri`(しゃくり)/ `scoop` / `plop` / `slide_in` / `bend` / `prebend_release` / `doit` / `fall` / `kobushi`(こぶし)/ `shake`。`amount` は深さ(セント)、`gesture_ms` は長さ(ms)、0 は既定。読めない名前は false |
+| `play_note_ex_at(track, pitch, time, velocity = 100, duration = 0.2, articulation = "", gesture = "", amount = 0.0, gesture_ms = 0.0)` | `bool` | `play_note_ex` を時刻指定で(`time` は `play_note_at` と同じ) |
 | `release_notes()` | − | 鳴らした音をすべて離す |
+| `apply_gesture(track, gesture, from: float, to: float, target = "", amount = 0.0, gesture_ms = 0.0)` | `bool` | 曲の `from`〜`to` 秒に頭がある音に音程の表情を付ける(ゲームの中だけ。ファイルは変えない)。`target`: `phrase_start` / `phrase_end` / `leap_up` / `long` / `all`(`""` で表情ごとの既定)。付ける音が無ければ false |
+| `set_tempo(bpm: float)` | `bool` | 曲全体のテンポ(ゲームの中だけ。途中のテンポの変化は消える。秒で指定したループ・予約は指定し直す) |
+| `set_track_mute(track: String, mute: bool)` | `bool` | トラックを鳴らさない・鳴らす(音源ごと止まる。ゲームの中だけ) |
+| `set_param(track: String, path: String, value)` | `bool` | つまみを変える(`device/cutoff` など。Glaux の list_params と同じパス。ゲームの中だけ) |
+| `apply_command(json: String)` | `bool` | Glaux の Command の JSON をそのまま当てる(ゲームの中だけ)。失敗理由は `get_last_error()` |
 | `set_loop_section(name: String)` | `bool` | マーカー `name` の区間(次のマーカーか曲の終わりの小節の頭まで)を繰り返す。無ければ false |
 | `set_loop(from: float, to: float)` | − | 秒で区間を指定して繰り返す(`to > from`) |
 | `clear_loop()` / `is_looping()` | − / `bool` | 繰り返しをやめる / 繰り返し中か |
@@ -277,6 +285,35 @@ func on_player_hit(combo: int) -> void:
   (予約するなら予約した時刻のコード、すぐ鳴らすなら `get_song_time()`)
 - `play_note_at` は BGM とサンプル単位でそろう。入力に反応する音は `play_note`(すぐ)でよい
 - トラック名は効果音用の曲の `get_track_names()` で確認してから書く
+
+
+### 3-9. 歌の表情(しゃくりなど)に演出を合わせる・ゲームの中で表情を足す
+
+```gdscript
+func _ready() -> void:
+	music.watch_track("Vocal")
+	music.note_ex.connect(_on_note_ex)
+
+func _on_note_ex(track: String, info: Dictionary) -> void:
+	var curve: Array = info["pitch_curve"]
+	# 下から入る音(しゃくり・スクープ)は、キャラを少し沈めてから跳ねさせる
+	if curve.size() > 0 and curve[0][1] < 0.0:
+		character.scoop(info["time"], curve[-1][0])
+	if info["articulation"] == "bend":
+		guitar_fx.play()
+
+# 盛り上がったら、サビの歌の頭にしゃくりを足す(ゲームの中だけ。ファイルは変えない)
+func _on_fever() -> void:
+	var t := music.get_time_of(music.get_bar() + 1, 1)
+	music.apply_gesture("Vocal", "shakuri", t, t + 16.0, "phrase_start")
+
+# 効果音にも表情を付ける: 下から 1 オクターブすくい上げる
+func _on_power_up() -> void:
+	sfx.play_note_ex("Lead", 72, 110, 0.4, "", "scoop", 1200.0, 150.0)
+```
+
+- `note_ex` は `note` と同じ時に出る。両方つないでも、片方だけでもよい
+- `apply_gesture` などの曲を変える関数は、組み直しに 1 ms 前後かかる(音源のつまみを変えると数十 ms のこともある)。毎フレーム呼ばない
 
 ## 4. 守ること・落とし穴
 

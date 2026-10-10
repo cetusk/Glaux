@@ -105,3 +105,15 @@ res://addons/glaux/AI_GUIDE.md の「3-8. 効果音を曲のコードに合わ�
 - 拍に合わせて動くものは beat シグナルに従い、jumped シグナルで先読みを作り直す
 - 曲のファイルは変えない(音量の足し引きは set_track_volume_db で)
 ```
+
+## 8. 歌の表情(しゃくりなど)に演出を合わせる・ゲームの中で表情を足す
+
+```text
+歌の表情に合わせて演出を付けたいです。res://addons/glaux/AI_GUIDE.md の「3-9」に従って実装してください。
+
+- 曲: [res://songs/Stage1.glaux]、歌のトラック: [Vocal]
+- note_ex シグナルで、しゃくり(pitch_curve の最初の点が負)の音ではキャラを [少し沈めてから跳ねさせる]
+- articulation が bend の音では [ギターの光の演出] を出す
+- [フィーバーの間] は apply_gesture でサビの歌のフレーズの頭にしゃくりを足す(曲のファイルは変えない)
+- 効果音は play_note_ex で [scoop] を付けて鳴らす
+```

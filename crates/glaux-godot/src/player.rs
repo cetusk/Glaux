@@ -47,6 +47,21 @@ struct Loaded {
     track_fade: Vec<Option<(f64, f64)>>,
     /// 予約している展開の切り替え先(マーカーの名前)
     queued: Option<String>,
+    /// 曲(ゲームの中で表情・テンポなどを変えるときに Command を当てる。ファイルは変えない)
+    project: glaux_core::Project,
+    bank: glaux_engine::data::SampleBank,
+    dir: String,
+    /// 差し替えた古い再生データ(オーディオスレッドが使い終えたらここで解放する)
+    graveyard: Vec<Arc<glaux_engine::data::PlaybackData>>,
+}
+
+/// `play_note_ex` の表情(奏法・音程の表情)
+#[derive(Clone, Copy, Default)]
+struct NoteExtra {
+    art: u8,
+    gesture: u8,
+    cents: u16,
+    ms: u16,
 }
 
 /// 小節ごとのコード。
@@ -161,6 +176,12 @@ impl GlauxPlayer {
     #[signal]
     fn note(track: GString, pitch: i64, velocity: i64, time: f64, duration: f64);
 
+    /// 監視しているトラックのノートが鳴った(表情つき)。`info` は `get_notes` の 1 要素と同じ
+    /// {time, duration, pitch, velocity, articulation, pitch_curve, glide_ms, vibrato}。
+    /// しゃくり・こぶしなどは pitch_curve([[ノートの頭からの秒, セント], …])に、チョーキングなどは articulation に出る
+    #[signal]
+    fn note_ex(track: GString, info: VarDictionary);
+
     /// 曲が最後まで鳴り終わった
     #[signal]
     fn song_finished();
@@ -225,6 +246,10 @@ impl GlauxPlayer {
                     track_db: Vec::new(),
                     track_fade: Vec::new(),
                     queued: None,
+                    project: s.project,
+                    bank: s.bank,
+                    dir: path.to_string(),
+                    graveyard: Vec::new(),
                 });
                 if let Some(l) = self.song.as_mut() {
                     let n = l.timeline.tracks().len();
@@ -443,8 +468,10 @@ impl GlauxPlayer {
         self.watched.retain(|w| *w != name);
     }
 
-    /// トラックの `[from, to)` 秒に始まるノート(先読み用)。
-    /// 各要素は {time, duration, pitch, velocity}
+    /// トラックの `[from, to)` 秒に始まるノート(先読み用)。各要素は {time, duration, pitch, velocity,
+    /// articulation(奏法。通常は ""、ほかに palm_mute / staccato / accent / vibrato / bend / legato / portamento),
+    /// pitch_curve(しゃくり・こぶし・フォールなどの音程の動き。[[ノートの頭からの秒, セント], …]。無ければ空),
+    /// glide_ms(ポルタメントで滑る時間。書いてあるときだけ、無ければ null), vibrato(ノートにビブラートがあるか)}
     #[func]
     fn get_notes(&self, track: GString, from: f64, to: f64) -> VarArray {
         let mut out = VarArray::new();
@@ -455,15 +482,7 @@ impl GlauxPlayer {
             return out;
         };
         for n in t.notes.iter().filter(|n| n.sec >= from && n.sec < to) {
-            out.push(
-                &dict_of(&[
-                    ("time", (n.sec).to_variant()),
-                    ("duration", (n.dur_sec).to_variant()),
-                    ("pitch", (n.pitch as i64).to_variant()),
-                    ("velocity", (n.vel as i64).to_variant()),
-                ])
-                .to_variant(),
-            );
+            out.push(&note_info(t, n).to_variant());
         }
         out
     }
@@ -645,7 +664,80 @@ impl GlauxPlayer {
         #[opt(default = 100)] velocity: i64,
         #[opt(default = 0.2)] duration: f64,
     ) -> bool {
-        self.schedule_note(&track.to_string(), pitch, velocity, duration, None)
+        self.schedule_note(
+            &track.to_string(),
+            pitch,
+            velocity,
+            duration,
+            None,
+            NoteExtra::default(),
+        )
+    }
+
+    /// `play_note` に表情を付けて鳴らす。`articulation` は奏法(palm_mute / staccato / accent / vibrato / bend /
+    /// legato / portamento。"" で通常)、`gesture` は音程の表情(shakuri〈しゃくり〉/ scoop / plop / slide_in / bend /
+    /// prebend_release / doit / fall / kobushi〈こぶし〉/ shake。"" で無し)、`amount` は深さ(セント、0 で既定)、
+    /// `gesture_ms` は表情の長さ(ms、0 で既定)。読めない名前なら false
+    #[func]
+    #[allow(clippy::too_many_arguments)]
+    fn play_note_ex(
+        &mut self,
+        track: GString,
+        pitch: i64,
+        #[opt(default = 100)] velocity: i64,
+        #[opt(default = 0.2)] duration: f64,
+        #[opt(default = "")] articulation: GString,
+        #[opt(default = "")] gesture: GString,
+        #[opt(default = 0.0)] amount: f64,
+        #[opt(default = 0.0)] gesture_ms: f64,
+    ) -> bool {
+        let Some(x) = note_extra(
+            &articulation.to_string(),
+            &gesture.to_string(),
+            amount,
+            gesture_ms,
+        ) else {
+            return false;
+        };
+        self.schedule_note(&track.to_string(), pitch, velocity, duration, None, x)
+    }
+
+    /// `play_note_ex` を時刻指定で鳴らす(`time` は `play_note_at` と同じ)
+    #[func]
+    #[allow(clippy::too_many_arguments)]
+    fn play_note_ex_at(
+        &mut self,
+        track: GString,
+        pitch: i64,
+        time: f64,
+        #[opt(default = 100)] velocity: i64,
+        #[opt(default = 0.2)] duration: f64,
+        #[opt(default = "")] articulation: GString,
+        #[opt(default = "")] gesture: GString,
+        #[opt(default = 0.0)] amount: f64,
+        #[opt(default = 0.0)] gesture_ms: f64,
+    ) -> bool {
+        let Some(x) = note_extra(
+            &articulation.to_string(),
+            &gesture.to_string(),
+            amount,
+            gesture_ms,
+        ) else {
+            return false;
+        };
+        let me = self.base().instance_id();
+        let now = match self.sync_to.clone() {
+            Some(mut other) if other.instance_id() != me => other.bind_mut().audible_time(),
+            _ => self.audible_time(),
+        };
+        self.schedule_note(
+            &track.to_string(),
+            pitch,
+            velocity,
+            duration,
+            Some(time - now),
+            x,
+        )
     }
 
     /// `play_note` を時刻指定で鳴らす。`time` は `sync_to` の曲(未設定なら自分の曲)の時刻(秒)で、
@@ -672,6 +764,7 @@ impl GlauxPlayer {
             velocity,
             duration,
             Some(time - now),
+            NoteExtra::default(),
         )
     }
 
@@ -875,6 +968,131 @@ impl GlauxPlayer {
             .as_ref()
             .map_or(0, |s| s.clock.mixes.load(Ordering::Relaxed) as i64)
     }
+
+    // ---- 曲を変える(ゲームの中だけ。曲のファイルは変えない。鳴っている途中でも差し替わる) ----
+
+    /// Glaux の Command(JSON。MCP の apply_commands の 1 つと同じ形。複数なら {"op": "batch", "commands": [...]})
+    /// を曲に当てる。例 `{"op": "set_param", "track": "trk_…", "path": "device/cutoff", "value": 0.3}`。
+    /// 読めない・当てられないなら false(理由は `get_last_error()`)
+    #[func]
+    fn apply_command(&mut self, json: GString) -> bool {
+        let cmd = match serde_json::from_str::<glaux_core::Command>(&json.to_string()) {
+            Ok(c) => c,
+            Err(e) => return self.fail(format!("Command を読めません: {e}")),
+        };
+        self.edit(cmd)
+    }
+
+    /// 曲全体のテンポを `bpm` にする(20〜400。途中のテンポの変化は消える)
+    #[func]
+    fn set_tempo(&mut self, bpm: f64) -> bool {
+        self.edit(glaux_core::Command::SetTempo {
+            events: vec![glaux_core::TempoEvent {
+                tick: glaux_core::Tick::ZERO,
+                bpm: bpm.clamp(20.0, 400.0),
+            }],
+        })
+    }
+
+    /// トラック(名前か ID)を鳴らさない・鳴らす(`set_track_volume_db` と違い、音源も止まる)
+    #[func]
+    fn set_track_mute(&mut self, track: GString, mute: bool) -> bool {
+        let Some(id) = self.track_id(&track.to_string()) else {
+            return self.fail(format!("トラック「{track}」が見つかりません"));
+        };
+        self.edit(glaux_core::Command::SetTrackProp {
+            id,
+            prop: glaux_core::TrackProp::Mute(mute),
+        })
+    }
+
+    /// トラック(名前か ID)のつまみを変える。`path` は `device/cutoff`・`fx/<id>/mix`・`track/volume_db` など
+    /// (Glaux の list_params と同じ)。`value` は数・真偽・文字列
+    #[func]
+    fn set_param(&mut self, track: GString, path: GString, value: Variant) -> bool {
+        let Some(id) = self.track_id(&track.to_string()) else {
+            return self.fail(format!("トラック「{track}」が見つかりません"));
+        };
+        let path = match glaux_core::ParamPath::parse(&path.to_string()) {
+            Ok(p) => p,
+            Err(e) => return self.fail(format!("path が読めません: {e}")),
+        };
+        let value = if let Ok(b) = value.try_to::<bool>() {
+            glaux_core::ParamValue::Bool(b)
+        } else if let Ok(f) = value.try_to::<f64>() {
+            glaux_core::ParamValue::Float(f)
+        } else if let Ok(s) = value.try_to::<GString>() {
+            glaux_core::ParamValue::Enum(s.to_string())
+        } else {
+            return self.fail("value は数・真偽・文字列".to_owned());
+        };
+        self.edit(glaux_core::Command::SetParam {
+            track: id,
+            path,
+            value,
+        })
+    }
+
+    /// トラック(名前か ID)の `from`〜`to` 秒に頭がある音に、音程の表情を付ける(MCP の pitch_gesture と同じ曲線)。
+    /// `gesture` は shakuri / scoop / plop / slide_in / bend / prebend_release / doit / fall / kobushi / shake、
+    /// `target` は phrase_start(フレーズの頭)/ phrase_end / leap_up / long / all("" で表情ごとの既定)、
+    /// `amount` は深さ(セント)、`gesture_ms` は長さ(ms。どちらも 0 で既定)。付けた音が無ければ false
+    #[func]
+    #[allow(clippy::too_many_arguments)]
+    fn apply_gesture(
+        &mut self,
+        track: GString,
+        gesture: GString,
+        from: f64,
+        to: f64,
+        #[opt(default = "")] target: GString,
+        #[opt(default = 0.0)] amount: f64,
+        #[opt(default = 0.0)] gesture_ms: f64,
+    ) -> bool {
+        use glaux_core::gesture::{command_for_track, Gesture, Target};
+        let Some(g) = Gesture::parse(&gesture.to_string()) else {
+            return self.fail(format!("gesture が読めません: {gesture}"));
+        };
+        let tg = match target.to_string().as_str() {
+            "" => g.default_target(),
+            t => match Target::parse(t) {
+                Some(x) => x,
+                None => return self.fail(format!("target が読めません: {t}")),
+            },
+        };
+        let Some(id) = self.track_id(&track.to_string()) else {
+            return self.fail(format!("トラック「{track}」が見つかりません"));
+        };
+        let Some(s) = self.song.as_ref() else {
+            return false;
+        };
+        let (def_amount, def_ms) = g.defaults();
+        let amount = if amount > 0.0 {
+            amount as f32
+        } else {
+            def_amount
+        };
+        let ms = if gesture_ms > 0.0 {
+            gesture_ms as f32
+        } else {
+            def_ms
+        };
+        let to_tick =
+            |sec: f64| glaux_core::Tick(s.timeline.sec_to_tick(sec.max(0.0)).max(0.0) as u64);
+        match command_for_track(
+            &s.project,
+            &id,
+            g,
+            tg,
+            to_tick(from),
+            to_tick(to),
+            amount,
+            ms,
+        ) {
+            Some(cmd) => self.edit(cmd),
+            None => self.fail("その範囲に表情を付ける音がありません".to_owned()),
+        }
+    }
 }
 
 /// (キー, 値)の並びから辞書を作る
@@ -886,7 +1104,109 @@ fn dict_of(items: &[(&str, Variant)]) -> VarDictionary {
     d
 }
 
+/// ノートの情報(`get_notes` の 1 要素・`note_ex` の info)
+fn note_info(
+    t: &glaux_engine::timeline::TrackNotes,
+    n: &glaux_engine::timeline::NoteMark,
+) -> VarDictionary {
+    let e = t.expr_of(n);
+    let art = e
+        .filter(|e| !e.articulation.is_normal())
+        .and_then(|e| serde_json::to_value(e.articulation).ok())
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let mut curve = VarArray::new();
+    for (sec, cents) in e.map_or(&[][..], |e| &e.pitch_curve[..]) {
+        let mut p = VarArray::new();
+        p.push(&sec.to_variant());
+        p.push(&(*cents as f64).to_variant());
+        curve.push(&p.to_variant());
+    }
+    dict_of(&[
+        ("time", n.sec.to_variant()),
+        ("duration", n.dur_sec.to_variant()),
+        ("pitch", (n.pitch as i64).to_variant()),
+        ("velocity", (n.vel as i64).to_variant()),
+        ("articulation", GString::from(art.as_str()).to_variant()),
+        ("pitch_curve", curve.to_variant()),
+        (
+            "glide_ms",
+            e.and_then(|e| e.glide_ms)
+                .map_or(Variant::nil(), |g| (g as f64).to_variant()),
+        ),
+        ("vibrato", e.is_some_and(|e| e.vibrato).to_variant()),
+    ])
+}
+
+/// `play_note_ex` の名前を番号にする(読めない名前は None)
+fn note_extra(articulation: &str, gesture: &str, amount: f64, ms: f64) -> Option<NoteExtra> {
+    let art = match articulation.trim() {
+        "" | "normal" => glaux_core::Articulation::Normal,
+        a => match serde_json::from_value::<glaux_core::Articulation>(serde_json::json!(a)) {
+            Ok(x) => x,
+            Err(_) => {
+                godot_warn!("Glaux: articulation が読めません: {a}");
+                return None;
+            }
+        },
+    };
+    let mut x = NoteExtra {
+        art: art.code(),
+        ..Default::default()
+    };
+    if !gesture.trim().is_empty() {
+        let Some(g) = glaux_core::gesture::Gesture::parse(gesture) else {
+            godot_warn!("Glaux: gesture が読めません: {gesture}");
+            return None;
+        };
+        let (da, dm) = g.defaults();
+        x.gesture = g.code();
+        x.cents = (if amount > 0.0 { amount as f32 } else { da }).clamp(0.0, 2400.0) as u16;
+        x.ms = (if ms > 0.0 { ms as f32 } else { dm }).clamp(1.0, 5000.0) as u16;
+    }
+    Some(x)
+}
+
 impl GlauxPlayer {
+    /// 失敗を記録して false
+    fn fail(&mut self, msg: String) -> bool {
+        godot_warn!("Glaux: {msg}");
+        self.last_error = GString::from(msg.as_str());
+        false
+    }
+
+    /// トラック(名前か ID)の ID
+    fn track_id(&self, track: &str) -> Option<glaux_core::TrackId> {
+        let i = self.track_index(track)?;
+        Some(self.song.as_ref()?.project.tracks.get(i)?.id.clone())
+    }
+
+    /// 曲に Command を当てて、鳴らすデータと時間軸を組み直して差し替える(ファイルは変えない)
+    fn edit(&mut self, cmd: glaux_core::Command) -> bool {
+        let Some(s) = self.song.as_mut() else {
+            return self.fail("曲を読み込んでから変えてください".to_owned());
+        };
+        if let Err(e) = s.project.apply(&cmd) {
+            let msg = format!("曲を変えられません: {e}");
+            return self.fail(msg);
+        }
+        let (data, timeline) = song::rebuild(&s.dir, &s.project, &mut s.bank, s.sample_rate);
+        let old = s.shared.data.swap(Arc::new(data));
+        s.timeline = timeline;
+        // トラックが増えた・減ったときは、ゲームが足した音量の欄も合わせる
+        let n = s.timeline.tracks().len();
+        s.track_db.resize(n, 0.0);
+        s.track_fade.resize(n, None);
+        for i in 0..n {
+            Self::apply_track_db(s, i);
+        }
+        // オーディオスレッドが使い終えた古いデータはここで解放する
+        s.graveyard.push(old);
+        s.graveyard.retain(|d| Arc::strong_count(d) > 1);
+        self.last_error = GString::new();
+        true
+    }
+
     /// 自分の子に AudioStreamPlayer を 1 つ持つ(Glaux のストリームを流す)
     fn ensure_audio(&mut self) {
         if self.audio.is_some() {
@@ -928,6 +1248,7 @@ impl GlauxPlayer {
         velocity: i64,
         duration: f64,
         delay: Option<f64>,
+        extra: NoteExtra,
     ) -> bool {
         let Some(s) = self.song.as_ref() else {
             godot_warn!("Glaux: 曲を読み込んでから鳴らしてください");
@@ -961,6 +1282,10 @@ impl GlauxPlayer {
             pitch: pitch.clamp(0, 127) as u8,
             vel: velocity.clamp(1, 127) as u8,
             dur: (duration.max(0.001) * s.sample_rate).min(u32::MAX as f64) as u32,
+            art: extra.art,
+            gesture: extra.gesture,
+            gesture_cents: extra.cents,
+            gesture_ms: extra.ms,
         };
         if !s.shared.notes.push(note) {
             godot_warn!("Glaux: 鳴らす予約が多すぎます(一度に 512 まで)");
@@ -1125,7 +1450,7 @@ impl GlauxPlayer {
         enum Ev {
             Beat(i64, i64, f64),
             Section(String, f64),
-            Note(String, i64, i64, f64, f64),
+            Note(String, i64, i64, f64, f64, VarDictionary),
         }
         let mut evs: Vec<(f64, u8, Ev)> = Vec::new();
         for m in s.timeline.sections_between(from, now) {
@@ -1140,7 +1465,14 @@ impl GlauxPlayer {
                     evs.push((
                         n.sec,
                         2,
-                        Ev::Note(w.clone(), n.pitch as i64, n.vel as i64, n.sec, n.dur_sec),
+                        Ev::Note(
+                            w.clone(),
+                            n.pitch as i64,
+                            n.vel as i64,
+                            n.sec,
+                            n.dur_sec,
+                            note_info(t, n),
+                        ),
                     ));
                 }
             }
@@ -1153,10 +1485,10 @@ impl GlauxPlayer {
                     .signals()
                     .section()
                     .emit(&GString::from(name.as_str()), t),
-                Ev::Note(track, pitch, vel, t, d) => {
-                    self.signals()
-                        .note()
-                        .emit(&GString::from(track.as_str()), pitch, vel, t, d)
+                Ev::Note(track, pitch, vel, t, d, info) => {
+                    let name = GString::from(track.as_str());
+                    self.signals().note().emit(&name, pitch, vel, t, d);
+                    self.signals().note_ex().emit(&name, &info)
                 }
             }
         }

@@ -38,6 +38,22 @@ impl Articulation {
     pub fn is_normal(&self) -> bool {
         *self == Articulation::Normal
     }
+
+    /// 番号(時刻指定のノートに載せるとき)
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// 番号から(知らない番号は Normal)
+    pub fn from_code(c: u8) -> Articulation {
+        use Articulation::*;
+        [
+            Normal, PalmMute, Staccato, Accent, Vibrato, Bend, Legato, Portamento,
+        ]
+        .get(c as usize)
+        .copied()
+        .unwrap_or(Normal)
+    }
 }
 
 /// ピッチカーブの区間の曲がり方(その点から次の点まで)
