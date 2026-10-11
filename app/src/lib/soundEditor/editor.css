@@ -62,10 +62,10 @@
 .sound-editor .abnote { font-size: 11.5px; color: var(--warn); }
 
 /* 試しに鳴らす鍵盤 */
-.sound-editor .kbd { position: relative; height: 46px; display: flex; user-select: none; }
-.sound-editor .kbd .w { width: 22px; height: 46px; background: #d9d9d9; border: 1px solid #555; border-radius: 0 0 3px 3px; position: relative; cursor: pointer; }
+.sound-editor .kbd { position: relative; height: 46px; display: flex; user-select: none; flex: 0 1 calc(var(--whites) * 22px); min-width: calc(var(--whites) * 12px); }
+.sound-editor .kbd .w { flex: 1 1 0; min-width: 0; height: 46px; background: #d9d9d9; border: 1px solid #555; border-radius: 0 0 3px 3px; position: relative; cursor: pointer; }
 .sound-editor .kbd .w.on { background: var(--accent); }
-.sound-editor .kbd .b { position: absolute; width: 14px; height: 28px; background: #1e1e1e; border: 1px solid #000; border-radius: 0 0 2px 2px; z-index: 1; cursor: pointer; }
+.sound-editor .kbd .b { position: absolute; height: 28px; background: #1e1e1e; border: 1px solid #000; border-radius: 0 0 2px 2px; z-index: 1; cursor: pointer; }
 .sound-editor .kbd .b.on { background: var(--accent-dim); }
 .sound-editor .kbd .w span { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center; font-size: 8px; color: #555; }
 

@@ -113,10 +113,12 @@
     window.dispatchEvent(new CustomEvent("glaux:focus-chat"));
   }
 
-  // ---- 試しに鳴らす鍵盤(C3〜C6。押している間鳴る。押したまま横へなぞると音を移る) ----
-  const KEYS = Array.from({ length: 37 }, (_, i) => 48 + i);
+  // ---- 試しに鳴らす鍵盤(C2〜B6。押している間鳴る。押したまま横へなぞると音を移る)。
+  //      帯の空きに合わせて縮む(白鍵 12〜22px)ので、黒鍵の位置と幅は白鍵の数に対する割合で置く ----
+  const KEYS = Array.from({ length: 60 }, (_, i) => 36 + i);
   const BLACK = new Set([1, 3, 6, 8, 10]);
-  const whiteX = (m: number) => KEYS.filter((k) => k < m && !BLACK.has(k % 12)).length * 22;
+  const N_WHITE = KEYS.filter((k) => !BLACK.has(k % 12)).length;
+  const whiteIdx = (m: number) => KEYS.filter((k) => k < m && !BLACK.has(k % 12)).length;
   let lit = $state<Record<number, boolean>>({});
   let down: number | null = null;
   const onKeyLight = (m: number, on: boolean) => {
@@ -373,10 +375,10 @@
       >
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="kbd" onpointerdown={kbdDown} onpointermove={kbdMove} onpointerup={kbdUp} onpointercancel={kbdUp} onlostpointercapture={kbdUp}>
+    <div class="kbd" style="--whites:{N_WHITE}" onpointerdown={kbdDown} onpointermove={kbdMove} onpointerup={kbdUp} onpointercancel={kbdUp} onlostpointercapture={kbdUp}>
       {#each KEYS as m (m)}
         {#if BLACK.has(m % 12)}
-          <div class="b" class:on={lit[m]} data-m={m} style="left:{whiteX(m) - 7}px"></div>
+          <div class="b" class:on={lit[m]} data-m={m} style="left:{((whiteIdx(m) - 0.32) / N_WHITE) * 100}%;width:{(0.64 / N_WHITE) * 100}%"></div>
         {:else}
           <div class="w" class:on={lit[m]} data-m={m}>{#if m % 12 === 0}<span>C{m / 12 - 1}</span>{/if}</div>
         {/if}

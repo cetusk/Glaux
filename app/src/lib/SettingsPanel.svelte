@@ -327,20 +327,21 @@
   }
   const STANDING_EXAMPLE = $derived(
     tr(
-      `いつもプロがリリースできる水準の仕上がりを目指す。
-- 曲構成: 区間ごとの役割と盛り上がりの差をはっきりさせ、イントロ・つなぎ・終わりまで作り込む。同じ繰り返しのままにしない。
-- 音作り: パートの役割に合った音色を選び、プリセットのままで終わらせず曲に合わせて追い込む。止まった音にしない。
+      `プロのリリースレベルの仕上がりを目指す。
+- 曲構成: 区間ごとの役割と盛り上がりの差をはっきりさせ、イントロ・つなぎ・終わりまで作り込む。
+- 音作り: 世界観やパートの役割に合った音色を選び、プリセットのままで終わらせず曲に合わせて追い込む。
 - ミキシング: 主役が埋もれず、低域が濁らず、パートどうしの帯域と音程がぶつからないこと。単体と全体の両方で聴いて決める。
 - 仕上げ: 配信の音量に整え、振り切れ・潰しすぎが無いこと。
-- 報告の前に点検の道具の warn を直し、妥協した所・残した課題は正直に伝える。`,
-      `Always aim for a finish good enough for a professional release.
-- Arrangement: make each section's role and energy clearly different; craft the intro, transitions and ending. Never leave plain repetition.
-- Sound design: choose sounds that fit each part's role and tailor them to the song rather than leaving presets as they are. Avoid static sounds.
+- 報告の前に点検の道具の warn を直し、妥協した所・残した課題は正直に伝える。/goal でない限り、わからないことは素直にユーザーに訊ねる。`,
+      `Aim for a professional, release-level finish.
+- Arrangement: make each section's role and energy clearly different; craft the intro, transitions and ending.
+- Sound design: choose sounds that fit the world of the song and each part's role, and tailor them to the song rather than leaving presets as they are.
 - Mixing: the lead must not be buried, the low end must stay clean, and parts must not clash in frequency or pitch. Decide by listening both solo and in the full mix.
 - Finishing: bring it to streaming loudness with no clipping or over-compression.
-- Before reporting, fix the warnings from the checking tools and be honest about compromises and remaining issues.`,
+- Before reporting, fix the warnings from the checking tools and be honest about compromises and remaining issues. Unless it is a /goal request, ask the user plainly when something is unclear.`,
     ),
   );
+
 
   onMount(() => {
     loadStanding();
