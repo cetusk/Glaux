@@ -880,12 +880,13 @@
 </script>
 
 <div class="layout">
-  <!-- ヘッダー: 左 = 曲 / 中央 = 再生と表示窓 / 右 = 取り消し・書き出し・設定
+  <!-- ヘッダー: 左 = 曲・画面の切り替え / 再生と表示窓、右 = 取り消し・書き出し・設定 / 聴く音量
        (以前は 1 行にすべてを並べて横にはみ出していた。負荷・デバイス・MCP はステータスバーへ、
        マスターの音量とエフェクトはタイムラインのマスター行へ) -->
   <header use:fitHeader>
     <!-- 2 段: 上 = 曲と画面の切り替え・AI の作業表示・取り消し・書き出し・設定 / 下 = 再生と位置の表示・聴く音量。
-         AI の作業表示が出入りしても高さが変わらないように、最初から 2 段にしている -->
+         AI の作業表示が出入りしても高さが変わらないように、最初から 2 段にしている。
+         2 段とも同じ左右の 2 列にそろえる(下の段だけ真ん中に寄せると、部品がばらばらに見えた) -->
     <div class="h-row h-top">
       <div class="h-left">
         <img class="owl" src="/glaux-icon.png" alt="Glaux" width="28" height="28" />
@@ -958,7 +959,6 @@
       </div>
     </div>
     <div class="h-row h-bottom">
-      <span class="h-pad"></span>
       <div class="h-center">
         <div class="tp">
           <button class="btn icon" onclick={seekStart} disabled={!transport.available} title={tr("先頭へ(Home)", "Go to start (Home)")} aria-label={tr("先頭へ", "Go to start")}
@@ -1222,7 +1222,7 @@
     height: 100%;
   }
 
-  /* ---- ヘッダー(2 段。上: 左 / 右、下: 中央は常に真ん中・右端に聴く音量) ---- */
+  /* ---- ヘッダー(2 段とも 左 / 右 の 2 列。下: 左に再生と表示窓・右端に聴く音量) ---- */
   header {
     flex-shrink: 0;
     display: flex;
@@ -1243,19 +1243,19 @@
     flex: 1 1 auto;
   }
 
-  /* 再生の部品は真ん中。入りきらないときは聴く音量の場所を残して左へ寄せる(重ならない) */
+  /* 再生の部品は左(上の段のロゴの左端にそろえる)、聴く音量は右端(設定の右端にそろえる)。重ならない */
   .h-bottom {
     height: 40px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
+    display: flex;
     align-items: center;
     gap: var(--sp-3);
   }
 
   .h-tail {
+    flex-shrink: 0;
+    margin-left: auto;
     display: flex;
     justify-content: flex-end;
-    min-width: 0;
   }
 
   .h-left,
@@ -1308,6 +1308,7 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
+    min-width: 0;
   }
 
   /* タイムライン / ミキサーの切り替え(2 つだけの切り替えなので、つながったボタン) */

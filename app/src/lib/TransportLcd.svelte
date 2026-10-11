@@ -387,8 +387,8 @@
     background: var(--danger);
   }
 
-  /* 狭い画面(ノート PC の 150% 表示など)ではキーを隠す(ヘッダーの「書き出し」の文字と同じ幅で) */
-  @media (max-width: 1280px) {
+  /* 狭い画面(窓の最小幅のあたり)ではキーを隠す。下の段は左詰めなので、聴く音量と重なる手前まで出せる */
+  @media (max-width: 840px) {
     .lcd .key {
       display: none;
     }
