@@ -2664,7 +2664,8 @@ impl Renderer {
                 .get(slot)
                 .and_then(|p| p.as_ref())
                 .filter(|p| gen.is_none_or(|g| p.gen == g))
-                .map(|p| p.clap.latency())
+                // 申告がでたらめなプラグイン(u32::MAX など)でも、遅れの足し算が桁あふれしないように
+                .map(|p| p.clap.latency().min(MAX_PDC as u32))
                 .unwrap_or(0)
         };
         let fx_lat = |fx: &crate::data::BakedEffect, plugins: &[Option<Box<Processor>>]| {

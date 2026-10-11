@@ -56,6 +56,8 @@ impl Expr {
                     ("min", [a, b]) => a.min(*b),
                     ("max", [a, b]) => a.max(*b),
                     ("pow", [a, b]) => a.powf(*b),
+                    // 端が NaN だと clamp が落ちる(sqrt(負) など、自然に書く式でも起きる)
+                    ("clamp", [_, a, b]) if a.is_nan() || b.is_nan() => f32::NAN,
                     ("clamp", [v, a, b]) => v.clamp(a.min(*b), a.max(*b)),
                     ("mix", [a, b, w]) => a + (b - a) * w,
                     _ => f32::NAN,
@@ -142,11 +144,15 @@ impl P<'_> {
     }
     // 符号(−x^2 は −(x^2))
     fn unary(&mut self, depth: u32) -> Result<Expr, String> {
+        // 符号・累乗の連なりも深さに数える(--…x や x^x^… が何千段もあると、読み取りでスタックがあふれて落ちていた)
+        if depth > 64 {
+            return Err(self.err("入れ子が深すぎます"));
+        }
         if self.eat(b'-') {
-            return Ok(Expr::Neg(Box::new(self.unary(depth)?)));
+            return Ok(Expr::Neg(Box::new(self.unary(depth + 1)?)));
         }
         if self.eat(b'+') {
-            return self.unary(depth);
+            return self.unary(depth + 1);
         }
         self.power(depth)
     }
@@ -154,7 +160,7 @@ impl P<'_> {
     fn power(&mut self, depth: u32) -> Result<Expr, String> {
         let a = self.atom(depth)?;
         if self.eat(b'^') {
-            let b = self.unary(depth)?;
+            let b = self.unary(depth + 1)?;
             return Ok(Expr::Bin('^', Box::new(a), Box::new(b)));
         }
         Ok(a)
@@ -262,6 +268,21 @@ pub fn parse(src: &str) -> Result<Expr, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 端が NaN の clamp・何千段もの符号や累乗でも落ちない(clamp の panic・スタックあふれ)
+    #[test]
+    fn hostile_expressions_do_not_crash() {
+        let e = parse("clamp(sin(2*pi*x), -sqrt(t-0.5), sqrt(t-0.5))").unwrap();
+        assert!(e.eval(0.25, 0.0).is_nan());
+        assert!((e.eval(0.25, 1.0) - 0.5f32.sqrt()).abs() < 1e-5);
+        for src in [
+            "-".repeat(1500) + "x",
+            "x^".repeat(600) + "x",
+            "(".repeat(900) + "x" + &")".repeat(900),
+        ] {
+            assert!(parse(&src).is_err(), "{}", &src[..10]);
+        }
+    }
 
     #[test]
     fn reads_and_evaluates() {

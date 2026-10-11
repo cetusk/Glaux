@@ -550,7 +550,8 @@ impl PlaybackData {
             }
             if i > 0 {
                 let len = 3840.0 * cur.1.max(1) as f64 / cur.2.max(1) as f64;
-                bars += ((t - cur.0) as f64 / len).ceil() as i64;
+                // 拍子の表が並んでいない曲(手で書いた project.json)でも負にはみ出さない
+                bars += (t.saturating_sub(cur.0) as f64 / len).ceil() as i64;
             }
             cur = (t, num, den);
         }
@@ -1226,12 +1227,27 @@ fn render_follow(
     let sr = src.sample_rate as f64;
     let start_sec = tm.tick_to_seconds(clip.start);
     let end_sec = tm.tick_to_seconds(clip.start + clip.length);
-    let out_len = ((end_sec - start_sec) * sr).max(0.0) as usize;
+    let mut out_len = ((end_sec - start_sec) * sr).max(0.0) as usize;
     let start_tick = clip.start.0 as f64;
     let src_pos = |i: usize| {
         let rel = tm.seconds_to_tick_f64(start_sec + i as f64 / sr) - start_tick;
         offset_samples as f64 + stretch.follow_seconds(rel).unwrap_or(0.0) * sr
     };
+    // 素材が尽きた先は無音なので作らない(クリップだけ長くすると、その長さの確保で落ちていた。編集のたびに通るので、
+    // 開き直しても落ち続ける)。素材の位置は時間とともに増えるので、尽きる所を二分探索で探す
+    let src_len = src.frames.len() as f64;
+    if out_len > 0 && src_pos(out_len - 1) >= src_len {
+        let (mut lo, mut hi) = (0usize, out_len - 1);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if src_pos(mid) >= src_len {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        out_len = lo + 1;
+    }
     // ステレオは左右差成分も同じ位置で伸縮する(位置は M で決める)
     let mut channels: Vec<&[f32]> = vec![&src.frames];
     if let Some(side) = &src.side {
@@ -1307,6 +1323,11 @@ pub fn load_wav_bytes(bytes: &[u8]) -> Result<SampleData, String> {
 
 fn decode_wav<R: std::io::Read>(mut reader: hound::WavReader<R>) -> Result<SampleData, String> {
     let spec = reader.spec();
+    // サンプルレート 0 の壊れた WAV は読まない(長さの計算・音色や構造の解析・リサンプルが 0 で割り、
+    // 巨大な確保や終わらない繰り返しになる)
+    if spec.sample_rate == 0 {
+        return Err("サンプルレートが 0 の WAV です".to_owned());
+    }
     let channels = spec.channels.max(1) as usize;
     let raw: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader
@@ -1314,6 +1335,13 @@ fn decode_wav<R: std::io::Read>(mut reader: hound::WavReader<R>) -> Result<Sampl
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?,
         hound::SampleFormat::Int => {
+            // 壊れた見出し(1〜32 ビット以外)はシフトが桁あふれするのではじく
+            if !(1..=32).contains(&spec.bits_per_sample) {
+                return Err(format!(
+                    "対応していないビット数です: {}",
+                    spec.bits_per_sample
+                ));
+            }
             let scale = 1.0 / (1i64 << (spec.bits_per_sample - 1)) as f32;
             reader
                 .samples::<i32>()
@@ -4673,6 +4701,25 @@ mod tests {
         assert!(rms(0.0, 0.4) < 1e-4, "クリップ前は無音");
         assert!(rms(0.6, 1.4) > 0.2, "クリップ区間は鳴る");
         assert!(rms(1.6, 1.9) < 1e-4, "波形を読み切ったら止まる");
+    }
+
+    /// テンポ追従のクリップだけを長くしても、素材の尽きた先は作らない(クリップの長さの確保で落ちていた)
+    #[test]
+    fn long_follow_clip_stops_where_the_source_ends() {
+        use glaux_core::Stretch;
+        let tmp = tempfile::tempdir().unwrap();
+        // 1 秒の素材を、長さ 3.8 億 tick(120BPM で約 55 時間)のクリップに置く
+        let mut project = audio_clip_project(tmp.path(), 0, 380_000_000);
+        if let ClipContent::Audio { stretch, .. } = &mut project.tracks[0].clips[0].content {
+            *stretch = Stretch::Follow {
+                original_bpm: 100.0,
+            };
+        }
+        let bank = SampleBank::load(&project, tmp.path());
+        let data = build_playback_data(&project, 48_000.0, &bank);
+        let n = data.audio_events[0].data.frames.len();
+        // 100BPM の素材を 120BPM で鳴らす → 1 秒の素材は約 0.83 秒
+        assert!((39_000..=41_000).contains(&n), "{n}");
     }
 
     #[test]

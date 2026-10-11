@@ -62,7 +62,7 @@ pub(crate) fn render_whole_with(
     let buckets = plan(&full, threads)?;
     let end = full.end_sample;
     let step = block_step(&full);
-    let cap = (end + (10.0 * sample_rate) as u64) as usize;
+    let cap = crate::export::render_cap(end, sample_rate) as usize;
     let bus_ids: Vec<_> = project
         .tracks
         .iter()
@@ -143,7 +143,9 @@ pub(crate) fn render_whole_with(
             ..Default::default()
         };
         let (shared, mut r) = start(data, route, master_clip);
-        let mut out: Vec<f32> = Vec::with_capacity(((end as usize).min(cap) + BLOCK) * 2);
+        let mut out: Vec<f32> = Vec::with_capacity(
+            ((end as usize).min(cap).min((600.0 * sample_rate) as usize) + BLOCK) * 2,
+        );
         let mut buf = vec![0.0f32; BLOCK * 2];
         let zero = || [vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]];
         while shared.playing.load(Ordering::Acquire) && out.len() / 2 < cap {

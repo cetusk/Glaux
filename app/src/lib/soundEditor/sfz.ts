@@ -76,7 +76,8 @@ const SFZ: any = {
   async load({ params, track }: Loaded): Promise<Data> {
     const dv: any = track.device ?? {};
     const instrument: string = dv.instrument ?? "";
-    if (instrument && !infos[instrument])
+    // 調べられなかったときは覚えたままにせず、次に開いたときに調べ直す(音源パックを取り込んでいる最中など)
+    if (instrument && (!infos[instrument] || "error" in infos[instrument]))
       infos[instrument] = await api.sfzInspect(instrument, {}).catch((e) => ({ error: String(e) }));
     if (!sfzDir)
       api

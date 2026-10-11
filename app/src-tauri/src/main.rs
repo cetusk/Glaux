@@ -14,6 +14,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod chat;
+mod guard;
 mod projects;
 
 use anyhow::{Context, Result};
@@ -3120,6 +3121,16 @@ async fn render_note_harmonics(
     }
     let dir = state.project_dir();
     let pitch = pitch.min(127);
+    // 測る時刻は 16 個・各 0〜10 秒まで(巨大な値で、描き出しの確保に失敗して落ちていた)
+    let mut times = times;
+    times.truncate(16);
+    times.iter_mut().for_each(|t| {
+        *t = if t.is_finite() {
+            t.clamp(0.0, 10.0)
+        } else {
+            0.0
+        }
+    });
     tauri::async_runtime::spawn_blocking(move || {
         const RATE: f64 = 48_000.0;
         let dir = std::path::Path::new(&dir);
@@ -3626,6 +3637,7 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+    guard::install_panic_log();
 
     let mut project_dir = resolve_project_dir();
     let mut notices = Vec::new();
@@ -3884,7 +3896,8 @@ fn main() -> Result<()> {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        // コマンドの panic でアプリごと落ちないように受け止める(guard.rs)
+        .invoke_handler(guard::guarded(tauri::generate_handler![
             get_project,
             get_tracks,
             get_history,
@@ -4016,7 +4029,7 @@ fn main() -> Result<()> {
             transport_stop,
             transport_seek,
             preview_note
-        ])
+        ]))
         .on_window_event(|window, event| {
             // 表示倍率の違うモニターへ移ったら、タスクバーのアイコンをその倍率の大きさに替える
             if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {

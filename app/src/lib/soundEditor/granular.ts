@@ -19,6 +19,7 @@ import {
   pane,
   pushHist,
   rerender,
+  rerenderWhenIdle,
   saveBox,
   setTool,
   shelfList,
@@ -128,7 +129,7 @@ const GRAN: any = {
         .assetPeaks(id, 1500)
         .then((r) => {
           waves[id] = { x: r.peaks, secs: r.seconds };
-          rerender();
+          if (state.inst === "granular") rerenderWhenIdle();
         })
         .catch(() => delete waves[id]);
     }

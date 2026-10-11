@@ -71,6 +71,9 @@
     } catch (e) {
       clapPresetList = [];
       clapPresetMsg = String(e);
+      // 失敗しても、このトラックは取りに行ったことにする(覚えないと $effect が取り直しを繰り返し、
+      // プラグインが無い・一覧を出せないときに探索と読み込みが止まらなかった)。取り直しは「探し直す」のボタンで
+      clapPresetTrack = trackId;
     } finally {
       clapPresetBusy = false;
     }

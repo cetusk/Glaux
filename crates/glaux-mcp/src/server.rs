@@ -3923,7 +3923,12 @@ fn bar_meters_in(
 fn chord_cuts(meter: Option<&glaux_core::meter::BarMeter>, blen: u64, k: u64) -> Vec<u64> {
     let k = k.max(1);
     let even: Vec<u64> = (0..=k).map(|i| blen * i / k).collect();
-    let Some(m) = meter.filter(|m| !m.is_common()) else {
+    // 16 分の格子に収まらないほど和音が多いときも等分(格子に丸めると変わり目が小節の外へ出て、
+    // 長さの引き算が負にはみ出していた。3/4 の小節に 14 個など)
+    let Some(m) = meter
+        .filter(|m| !m.is_common())
+        .filter(|_| k <= blen / glaux_core::meter::STEP)
+    else {
         return even;
     };
     let heads: Vec<u64> = m.groups().iter().map(|g| g.0).filter(|&h| h > 0).collect();
@@ -3945,7 +3950,35 @@ fn chord_cuts(meter: Option<&glaux_core::meter::BarMeter>, blen: u64, k: u64) ->
         });
     }
     cuts.push(blen);
+    // 念のため、小節の中で並ぶように(変わり目が前後しない・小節の外へ出ない)
+    let mut prev = 0;
+    for c in &mut cuts {
+        *c = (*c).clamp(prev, blen);
+        prev = *c;
+    }
     cuts
+}
+
+#[cfg(test)]
+mod chord_cuts_tests {
+    use super::chord_cuts;
+    use glaux_core::meter::BarMeter;
+    use glaux_core::{Tick, TimeSigEvent};
+
+    /// どの拍子・どの和音の数でも、変わり目は小節の中で前後せずに並ぶ(多すぎると負にはみ出して落ちていた)
+    #[test]
+    fn cuts_stay_inside_the_bar() {
+        for (num, den) in [(4u8, 4u8), (3, 4), (5, 4), (7, 8), (6, 8)] {
+            let blen = 3840 * num as u64 / den as u64;
+            let m = BarMeter::from_sig(&TimeSigEvent::new(Tick(0), num, den), 0, blen);
+            for k in 1..=40u64 {
+                let c = chord_cuts(Some(&m), blen, k);
+                assert_eq!(c.len() as u64, k + 1, "{num}/{den} {k}");
+                assert_eq!((c[0], *c.last().unwrap()), (0, blen));
+                assert!(c.windows(2).all(|w| w[0] <= w[1]), "{num}/{den} {k}: {c:?}");
+            }
+        }
+    }
 }
 
 /// GM のドラムの音程を楽器の分け方に(write_drums の parts)
@@ -14990,8 +15023,9 @@ impl GlauxServer {
         let key = |n: &str| format!("mod{k}_{n}");
         // 区間
         let start = glaux_core::shape::position_to_tick(&project, &p.start)?;
-        if p.bars.is_nan() || p.bars <= 0.0 {
-            return Err("bars は 0 より大きく".to_owned());
+        // 上限が無いと、点を何億も作って確保で落ちていた
+        if !(p.bars > 0.0 && p.bars <= 512.0) {
+            return Err("bars は 0 より大きく 512 まで".to_owned());
         }
         let start_bar: u32 = p
             .start

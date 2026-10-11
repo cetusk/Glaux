@@ -31,6 +31,7 @@
     openTrack,
     redo,
     revertAll,
+    stopAllSounds,
     setAB,
     state as seState,
     alignPaneCanvases,
@@ -143,28 +144,41 @@
     if (down != null) noteOff(down);
     down = null;
   }
+  /** 窓の切り替え・隠れたとき: 離す知らせが届かないので、鳴っている音をすべて止める */
+  function releaseAll() {
+    down = null;
+    stopAllSounds();
+  }
+  const onVisibility = () => {
+    if (document.hidden) releaseAll();
+  };
 
   // ---- キー操作(テキスト入力・選択欄の中では無視) ----
   const KEYMAP: Record<string, number> = { KeyA: 60, KeyW: 61, KeyS: 62, KeyE: 63, KeyD: 64, KeyF: 65, KeyT: 66, KeyG: 67, KeyY: 68, KeyH: 69, KeyU: 70, KeyJ: 71, KeyK: 72 };
   function onKeydown(e: KeyboardEvent) {
     if (!view.open) return;
     const t = e.target as HTMLElement | null;
-    if (t?.closest?.("input[type=text], input:not([type]), textarea, select, [contenteditable]")) return;
+    if (t?.closest?.("input[type=text], input:not([type]), textarea, [contenteditable]")) return;
     // チャットなど、エディタの外で打っている文字は横取りしない
     if (t && t !== document.body && root && !root.contains(t)) return;
     const mod = e.ctrlKey || e.metaKey;
+    // エディタの中の選択欄(トラック・区間など): 矢印などの操作はそのまま。取り消し・閉じる・鍵盤のキーはエディタで受ける
+    // (選択欄の頭文字の検索に渡ると、A〜K でトラックや区間が勝手に切り替わり、Ctrl+Z は曲全体の取り消しになっていた)
+    if (t?.closest?.("select") && !(mod && (e.code === "KeyZ" || e.code === "KeyY")) && e.code !== "Escape" && !KEYMAP[e.code]) return;
     // ドラッグ中は、そのドラッグをやめて元に戻す
     if (((mod && e.code === "KeyZ" && !e.shiftKey) || e.code === "Escape") && cancelDrag()) return stop(e);
     // ドラッグ中のやり直しは受け付けない
     if (seStateDragging() && mod && (e.code === "KeyZ" || e.code === "KeyY")) return stop(e);
     if (mod && e.code === "KeyZ") {
       stop(e);
+      if (e.repeat) return;
       if (e.shiftKey) redo();
       else undo();
       return;
     }
     if (mod && e.code === "KeyY") {
       stop(e);
+      if (e.repeat) return;
       redo();
       return;
     }
@@ -201,7 +215,8 @@
   function sectionRange(i: number): [number, number] | null {
     const s = sections[i];
     if (!s) return null;
-    const end = sections[i + 1]?.tick ?? buildBars(project, s.tick + 1, 1, 0).at(-1)!.tick + 3840 * 8;
+    // 最後の区間は 8 小節(曲の拍子・分解能で)
+    const end = sections[i + 1]?.tick ?? buildBars(project, s.tick + 1, 1, 0).at(-1)!.tick + project.ppq * 4 * 8;
     return [s.tick, end];
   }
   async function applySection() {
@@ -234,6 +249,8 @@
     window.addEventListener("pointerup", afterPointerUp);
     document.addEventListener("pointercancel", endDrag, true);
     window.addEventListener("blur", endDrag);
+    window.addEventListener("blur", releaseAll);
+    document.addEventListener("visibilitychange", onVisibility);
     const onResize = () => {
       alignPaneCanvases();
       draw();
@@ -261,6 +278,8 @@
       window.removeEventListener("pointerup", afterPointerUp);
       document.removeEventListener("pointercancel", endDrag, true);
       window.removeEventListener("blur", endDrag);
+      window.removeEventListener("blur", releaseAll);
+      document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("resize", onResize);
       ro.disconnect();
       clearInterval(specTimer);
@@ -344,7 +363,7 @@
       <span class="pos">{pos}</span>
       <select title={tr("ループする区間", "Section to loop")} bind:value={secIdx} onchange={applySection}>
         <option value={-1}>{tr("区間を選ぶ", "Pick a section")}</option>
-        {#each sections as s, i (s.tick)}
+        {#each sections as s, i (s.id ?? i)}
           <option value={i}>{s.name}</option>
         {/each}
       </select>
@@ -354,7 +373,7 @@
       >
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="kbd" onpointerdown={kbdDown} onpointermove={kbdMove} onpointerup={kbdUp} onpointercancel={kbdUp}>
+    <div class="kbd" onpointerdown={kbdDown} onpointermove={kbdMove} onpointerup={kbdUp} onpointercancel={kbdUp} onlostpointercapture={kbdUp}>
       {#each KEYS as m (m)}
         {#if BLACK.has(m % 12)}
           <div class="b" class:on={lit[m]} data-m={m} style="left:{whiteX(m) - 7}px"></div>

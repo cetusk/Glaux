@@ -128,6 +128,22 @@ pub(crate) fn render_serial_for_test(
     render_serial(project, sample_rate, bank, None, master_clip)
 }
 
+/// 描き出す長さの上限(秒)。曲の遠くに置いたクリップ・極端に遅いテンポで、何十 GB もの確保を試みて
+/// 受け止められない形で落ちていた
+pub const MAX_RENDER_SECS: f64 = 3600.0;
+
+/// 曲の終わり + 10 秒(上限 [`MAX_RENDER_SECS`])までのサンプル数
+pub(crate) fn render_cap(end_sample: u64, sample_rate: f64) -> u64 {
+    let cap = end_sample.saturating_add((10.0 * sample_rate) as u64);
+    let max = (MAX_RENDER_SECS * sample_rate) as u64;
+    if cap > max {
+        tracing::warn!(
+            "描き出しを {MAX_RENDER_SECS} 秒で打ち切ります(曲の終わり {end_sample} サンプル)"
+        );
+    }
+    cap.min(max)
+}
+
 /// 1 つのレンダラで描く
 fn render_serial(
     project: &Project,
@@ -156,6 +172,13 @@ fn render_serial(
         }
         return Err(ExportError::Empty);
     }
+    // 範囲は曲の終わり + 10 秒まで(終わりを省いた解析は終わりが u64::MAX になり、長さの計算が桁あふれ・
+    // 巨大な確保で落ちていた)
+    let song_end = render_cap(data.end_sample, sample_rate);
+    let range = range.map(|(from, to)| {
+        let to = to.min(song_end);
+        (from.min(to), to)
+    });
     // 範囲指定なら、描き出しの開始位置(範囲の頭で鳴っている音の頭まで遡る)
     let start = range.map(|(from, _)| {
         let preroll = (PREROLL_SECS * sample_rate) as u64;
@@ -189,10 +212,7 @@ fn render_serial(
     // 安全上限: 曲の終端 + 10 秒(自動停止が先に来るのが通常)。範囲指定なら範囲の終わりまで
     let cap = match (range, start) {
         (Some((_, to)), Some(start)) => (to - start) as usize,
-        _ => {
-            let d = shared.data.load();
-            (d.end_sample + (10.0 * sample_rate) as u64) as usize
-        }
+        _ => render_cap(shared.data.load().end_sample, sample_rate) as usize,
     };
 
     // 見込みの長さを先に確保する(伸ばすたびの写し直しを避ける。曲の終わり + 余韻 2 秒)
@@ -200,7 +220,10 @@ fn render_serial(
         (Some(_), Some(_)) => cap,
         _ => {
             let d = shared.data.load();
-            ((d.end_sample + (2.0 * sample_rate) as u64) as usize).min(cap)
+            // 先に確保するのは 10 分まで(それより長ければ伸ばしながら)
+            ((d.end_sample + (2.0 * sample_rate) as u64) as usize)
+                .min(cap)
+                .min((600.0 * sample_rate) as usize)
         }
     };
     let mut out: Vec<f32> = Vec::with_capacity((expected + BLOCK) * 2);
@@ -249,6 +272,12 @@ pub fn render_track_note(
 ) -> Result<Vec<f32>, ExportError> {
     use glaux_core::{
         Clip, ClipContent, ClipId, Note, NoteId, TempoEvent, TempoMap, Tick, TrackKind,
+    };
+    // 1 音の長さは 60 秒まで(巨大な値で、描き出しの確保に失敗して落ちていた)
+    let seconds = if seconds.is_finite() {
+        seconds.clamp(0.01, 60.0)
+    } else {
+        1.0
     };
     let track = project
         .track(track_id)
@@ -311,6 +340,17 @@ pub fn note_harmonics(
     step: f64,
     max_mult: f64,
 ) -> Vec<Vec<f32>> {
+    // 刻みが 0・NaN・極端に小さいと、点の数が巨大になって確保で落ちていた
+    let step = if step.is_finite() {
+        step.clamp(0.05, 4.0)
+    } else {
+        0.5
+    };
+    let max_mult = if max_mult.is_finite() {
+        max_mult.clamp(1.0, 128.0)
+    } else {
+        40.0
+    };
     let n = ((sample_rate / f0.max(1.0)) * 8.0)
         .round()
         .clamp(256.0, 16384.0) as usize;
@@ -339,7 +379,7 @@ pub fn note_harmonics(
     times
         .iter()
         .map(|t| {
-            let start = peak_at + (t.max(0.0) * sample_rate) as usize;
+            let start = peak_at.saturating_add((t.max(0.0) * sample_rate) as usize);
             (1..=count)
                 .map(|j| {
                     if start + n > samples.len() {
@@ -1075,6 +1115,17 @@ mod tests {
         let mut d = Tpdf::new();
         assert!((to_i16_dithered(0.5, &mut d) as i32 - 16_383).abs() <= 1);
         assert_eq!(to_i16_dithered(2.0, &mut d), i16::MAX);
+    }
+
+    /// 終わりを省いた範囲(終わりが u64::MAX)・曲より長い範囲でも描き出せる(桁あふれ・巨大な確保で落ちていた)
+    #[test]
+    fn huge_range_is_clamped_to_the_song() {
+        let p = test_project();
+        let bank = Default::default();
+        let a = crate::analyze::analyze_project(&p, None, Some((Tick(0), Tick(u64::MAX))), &bank);
+        assert!(a.is_ok(), "{:?}", a.err());
+        let out = render_project_range(&p, 48_000.0, &bank, 0.0, 1e12).unwrap();
+        assert!(out.len() < 48_000 * 2 * 60, "曲 + 10 秒まで: {}", out.len());
     }
 
     fn test_project() -> Project {

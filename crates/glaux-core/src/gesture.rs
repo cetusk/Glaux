@@ -175,6 +175,8 @@ pub fn curve_into(
     out: &mut [(u64, f32, CurveShape); MAX_PITCH_POINTS],
 ) -> usize {
     use CurveShape::*;
+    // 長さ 0・1 の音でも曲線を作れるように(`len - t` が負にはみ出していた。Godot の play_note_ex は長さ 0 も来る)
+    let len = len.max(2);
     let t = time.min(len / 2).max(1);
     let mut n = 0usize;
     let mut put = |p: (u64, f32, CurveShape)| {

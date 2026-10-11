@@ -20,6 +20,7 @@ import {
   pane,
   pushHist,
   rerender,
+  rerenderWhenIdle,
   saveBox,
   setTool,
   shelfList,
@@ -152,7 +153,7 @@ const SMP: any = {
         .assetPeaks(id, 2400)
         .then((r) => {
           waves[id] = { x: r.peaks, secs: r.seconds };
-          if (state.inst === "sampler") rerender();
+          if (state.inst === "sampler") rerenderWhenIdle();
         })
         .catch(() => delete waves[id]);
     }
@@ -241,6 +242,8 @@ const SMP: any = {
             onclick: async () => {
               if (!canEdit() || d.src === s.id) return;
               const cuts = d.sliceMode === "off" ? d.cuts : await api.samplerAutoCuts(s.id, 0, 1).catch(() => []);
+              // 待っている間に読み直された(AI の編集・A / B など)。古い値に書いても曲に届かないので、やめる
+              if (d !== cur()) return;
               Object.assign(d, { src: s.id, cuts, start: 0, end: 1, selSlice: null, selCut: null });
               pushHist(tr(`素材を「${s.name}」に`, `Source → "${s.name}"`));
               rerender();
@@ -303,6 +306,8 @@ const SMP: any = {
     const setMode = async (k: string) => {
       if (!canEdit() || d.sliceMode === k) return;
       const auto = k === "slice" && !d.cuts.length ? await api.samplerAutoCuts(d.src, d.start, d.end).catch(() => []) : null;
+      // 待っている間に読み直された(AI の編集・A / B など)。古い値に書いても曲に届かないので、やめる
+      if (d !== cur()) return;
       if (k !== "off" && toolOf("wave") === "loop") ui.tool[`${state.track}:wave`] = "view";
       if (k === "off" && toolOf("wave") === "cut") ui.tool[`${state.track}:wave`] = "view";
       d.sliceMode = k;
@@ -329,7 +334,10 @@ const SMP: any = {
         ),
         onclick: async () => {
           if (!canEdit()) return;
-          d.cuts = await api.samplerAutoCuts(d.src, d.start, d.end).catch(() => d.cuts);
+          const cuts = await api.samplerAutoCuts(d.src, d.start, d.end).catch(() => d.cuts);
+          // 待っている間に読み直された(AI の編集・A / B など)。古い値に書いても曲に届かないので、やめる
+          if (d !== cur()) return;
+          d.cuts = cuts;
           d.selSlice = null;
           d.selCut = null;
           pushHist(tr("音の頭で区分を切り直す", "Re-slice at the onsets"));
@@ -427,6 +435,8 @@ const SMP: any = {
             if (t === "cut" && d.sliceMode === "off") {
               if (!canEdit()) return;
               const auto = d.cuts.length ? null : await api.samplerAutoCuts(d.src, d.start, d.end).catch(() => []);
+              // 待っている間に読み直された(AI の編集・A / B など)。古い値に書いても曲に届かないので、やめる
+              if (d !== cur()) return;
               d.sliceMode = "slice";
               if (auto) d.cuts = auto;
               pushHist(tr("区分に分けて鍵盤に並べる", "Split into slices across the keys"));

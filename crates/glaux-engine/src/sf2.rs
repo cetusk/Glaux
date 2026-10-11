@@ -53,19 +53,70 @@ pub struct PresetMeta {
 }
 
 pub fn load_font(path: &Path) -> Result<Arc<SoundFont>, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("SoundFont を開けません({}): {e}", path.display()))?;
-    SoundFont::new(&mut file)
-        .map(Arc::new)
+    let mut file = std::io::BufReader::new(
+        std::fs::File::open(path)
+            .map_err(|e| format!("SoundFont を開けません({}): {e}", path.display()))?,
+    );
+    parse_font(&mut file)
         .map_err(|e| format!("SoundFont として読めません({}): {e}", path.display()))
 }
 
 /// バイト列から SoundFont を読む(ゲームエンジンのパック内のファイルなど、パスで開けないとき)。
 pub fn load_font_bytes(bytes: &[u8]) -> Result<Arc<SoundFont>, String> {
-    let mut cur = std::io::Cursor::new(bytes);
-    SoundFont::new(&mut cur)
-        .map(Arc::new)
+    parse_font(&mut std::io::Cursor::new(bytes))
         .map_err(|e| format!("SoundFont として読めません: {e}"))
+}
+
+/// 形を確かめてから rustysynth に渡す。壊れたファイルで rustysynth が添字の範囲外で落ちるものは Err にする
+fn parse_font<R: std::io::Read + std::io::Seek>(r: &mut R) -> Result<Arc<SoundFont>, String> {
+    check_riff(r)?;
+    r.seek(std::io::SeekFrom::Start(0))
+        .map_err(|e| e.to_string())?;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| SoundFont::new(r)))
+        .map_err(|_| "ファイルが壊れています".to_owned())?
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
+}
+
+/// RIFF の塊の大きさがファイルに収まり、波形(smpl)の大きさが偶数かを確かめる。
+/// rustysynth 1.3.6 は smpl の大きさが奇数だと、確保した長さより 1 バイト多く書いてメモリを壊す
+/// (落ちる前に受け止められない)ので、渡す前にはじく
+fn check_riff<R: std::io::Read + std::io::Seek>(r: &mut R) -> Result<(), String> {
+    use std::io::SeekFrom;
+    let err = |m: &str| m.to_owned();
+    let total = r.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
+    r.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut head = [0u8; 12];
+    r.read_exact(&mut head).map_err(|_| err("短すぎます"))?;
+    if &head[0..4] != b"RIFF" || &head[8..12] != b"sfbk" {
+        return Err(err("SoundFont(sf2)の形ではありません"));
+    }
+    let end = (u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as u64 + 8).min(total);
+    // (位置, 終わり, sdta の中か)
+    let mut stack = vec![(12u64, end, false)];
+    while let Some((mut pos, end, in_sdta)) = stack.pop() {
+        while pos + 8 <= end {
+            r.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
+            let mut ch = [0u8; 8];
+            r.read_exact(&mut ch)
+                .map_err(|_| err("塊の見出しを読めません"))?;
+            let size = u32::from_le_bytes([ch[4], ch[5], ch[6], ch[7]]) as u64;
+            if pos + 8 + size > end {
+                return Err(err("塊の大きさがファイルに収まっていません"));
+            }
+            if in_sdta && &ch[0..4] == b"smpl" && !size.is_multiple_of(2) {
+                return Err(err("波形(smpl)の大きさが奇数です"));
+            }
+            if &ch[0..4] == b"LIST" && size >= 4 {
+                let mut kind = [0u8; 4];
+                r.read_exact(&mut kind)
+                    .map_err(|_| err("LIST を読めません"))?;
+                stack.push((pos + 12, pos + 8 + size, &kind == b"sdta"));
+            }
+            pos += 8 + size + (size & 1);
+        }
+    }
+    Ok(())
 }
 
 /// フォント内のプリセット一覧(バンク・番号順)。
@@ -391,6 +442,35 @@ mod tests {
         body.extend(list(b"sdta", &sdta));
         body.extend(list(b"pdta", &pdta));
         chunk(b"RIFF", &body)
+    }
+
+    /// 壊れたファイルは Err で返し、落ちない(rustysynth は smpl が奇数だとメモリを壊し、添字の範囲外で落ちる)
+    #[test]
+    fn broken_sf2_is_an_error_not_a_crash() {
+        let good = minimal_sf2();
+        assert!(load_font_bytes(&good).is_ok());
+        // smpl の大きさを奇数にする
+        let at = good.windows(4).position(|w| w == b"smpl").unwrap();
+        let mut odd = good.clone();
+        let size = u32::from_le_bytes(odd[at + 4..at + 8].try_into().unwrap());
+        odd[at + 4..at + 8].copy_from_slice(&(size - 1).to_le_bytes());
+        assert!(load_font_bytes(&odd).is_err());
+        // 途中で切れたファイル・1 バイトずつ書き換えたファイル
+        for n in [0, 4, 12, 40, good.len() / 2, good.len() - 1] {
+            let _ = load_font_bytes(&good[..n]);
+        }
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..3000 {
+            let mut b = good.clone();
+            for _ in 0..3 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let i = (seed % b.len() as u64) as usize;
+                b[i] = (seed >> 32) as u8;
+            }
+            let _ = load_font_bytes(&b);
+        }
     }
 
     #[test]

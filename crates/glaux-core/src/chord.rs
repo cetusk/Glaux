@@ -115,6 +115,10 @@ pub fn parse_note(s: &str) -> Option<u8> {
     let s = s.trim();
     let (pc, used) = parse_pitch_class(s)?;
     let oct: i32 = s[used..].trim().parse().ok()?;
+    // MIDI の範囲(C-1〜G9)の外のオクターブは読まない(巨大な値で掛け算が桁あふれしていた)
+    if !(-1..=9).contains(&oct) {
+        return None;
+    }
     // 臨時記号で C の下へ出る Cb4 などは、ピッチクラスではなく音の高さで数える
     let letter = s.chars().next()?.to_ascii_uppercase();
     let natural = match letter {

@@ -77,6 +77,9 @@ fn stem(name: &str) -> &str {
 
 /// 区間の並びから、区間ごとの計画を提案する。`low`〜`high` は旋律の音域、`breath` はジャンルが息継ぎを
 /// 大きく取るか(歌・管)
+/// 区間の小節数・始まりの小節の上限(巨大な値で、句の長さの表の確保に失敗して落ちていた)
+pub const MAX_BARS: u32 = 4096;
+
 pub fn propose(
     sections: &[SectionSpec],
     low: u8,
@@ -85,6 +88,15 @@ pub fn propose(
     key: Option<Key>,
     seed: u64,
 ) -> Vec<SectionPlan> {
+    let clamped: Vec<SectionSpec> = sections
+        .iter()
+        .map(|s| SectionSpec {
+            start_bar: s.start_bar.min(MAX_BARS),
+            bars: s.bars.min(MAX_BARS),
+            ..s.clone()
+        })
+        .collect();
+    let sections = &clamped[..];
     // key があれば音域の点を音階の音にそろえる(読みやすさのため)
     let pcs_owned: Vec<u8> = key.map_or_else(Vec::new, |k| {
         crate::harmony::scale_pitch_classes(k.tonic, if k.minor { "minor" } else { "major" })
@@ -596,6 +608,17 @@ fn section_range(reg: &[(f64, f64, f64)], inp: &RealizeInput) -> (u8, u8) {
 }
 
 pub fn realize(inp: &RealizeInput) -> Result<Realized, String> {
+    if let Some(s) = inp
+        .plan
+        .sections
+        .iter()
+        .find(|s| s.bars > MAX_BARS || s.start_bar > MAX_BARS)
+    {
+        return Err(format!(
+            "区間「{}」の小節が大きすぎます(start_bar・bars は {MAX_BARS} まで)",
+            s.name
+        ));
+    }
     let mut rng = Rng::new(inp.seed);
     // 音度(1〜7)のピッチクラスは主音から数える
     let degrees = crate::harmony::scale_pitch_classes(

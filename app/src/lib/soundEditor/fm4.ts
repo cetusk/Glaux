@@ -656,8 +656,13 @@ const FM4: any = {
             hVal = { now: r[0], t0: t ? r[1] : null };
           }
         } catch {
-          // 描き出せない(取り直しを繰り返さない)
+          // 描き出せない(取り直しを繰り返さない)。前の音の倍音を出したままにしない
+          if (hPending === key) {
+            hKey = key;
+            hVal = null;
+          }
           hBusy = false;
+          if (state.inst === "fm4") FM4.draw();
           return;
         }
         hBusy = false;

@@ -63,7 +63,7 @@ pub enum TimeError {
     TempoMapMustStartAtZero,
     #[error("tempo map ticks must be strictly increasing")]
     TempoMapNotSorted,
-    #[error("bpm must be positive and finite (got {0})")]
+    #[error("bpm must be within 1..=1000 (got {0})")]
     InvalidBpm(f64),
     #[error("time signature denominator must be a power of two (got {0})")]
     InvalidTimeSig(u8),
@@ -120,6 +120,9 @@ impl Default for TempoMap {
 }
 
 impl TempoMap {
+    /// 受け付けるテンポ(BPM)。曲として使う範囲(20〜400)より広く、変換が桁あふれしない範囲
+    pub const BPM_LIMITS: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
+
     pub fn new(mut events: Vec<TempoEvent>) -> Result<Self, TimeError> {
         events.sort_by_key(|e| e.tick);
         match events.first() {
@@ -132,7 +135,9 @@ impl TempoMap {
             }
         }
         for e in &events {
-            if !(e.bpm.is_finite() && e.bpm > 0.0) {
+            // 極端なテンポ(0.01・1e18 など)は、秒とサンプルの変換で桁あふれや巨大な描き出しになり、
+            // 受け止められない形でアプリが落ちていた。曲として使う範囲より十分広く取る
+            if !(e.bpm.is_finite() && (Self::BPM_LIMITS).contains(&e.bpm)) {
                 return Err(TimeError::InvalidBpm(e.bpm));
             }
         }
@@ -198,7 +203,10 @@ impl TempoMap {
         let secs = seconds.max(0.0);
         let i = self.segment_at(secs);
         let ev = &self.events[i];
-        Tick(ev.tick.0 + ((secs - self.starts[i]) / Self::seconds_per_tick(ev.bpm)).round() as u64)
+        // 秒が巨大・無限のときも桁あふれしない(再生位置の問い合わせは画面から絶えず来る)
+        Tick(ev.tick.0.saturating_add(
+            ((secs - self.starts[i]) / Self::seconds_per_tick(ev.bpm)).round() as u64,
+        ))
     }
 }
 

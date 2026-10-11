@@ -611,18 +611,20 @@ impl Meter {
     /// 直近 8192 フレームのスペクトル(1/3 オクターブ、dB。フルスケールのサイン波が 0dB)
     pub fn spectrum(&mut self, shared: &MonitorShared, sample_rate: f64) -> Vec<f32> {
         let written = shared.audio_written.load(Ordering::Acquire);
+        // まだ 1 窓ぶん鳴らしていない(起動・作り直しの直後や、止めたまま鍵盤だけ鳴らしたとき)。
+        // 先に返さないと、下の位置の計算が桁あふれする(debug ビルドでは落ちる)
+        if written < FFT_LEN as u64 {
+            return vec![-120.0; SPECTRUM_BANDS.len()];
+        }
         let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..FFT_LEN)
             .map(|k| {
-                let n = written.wrapping_sub(FFT_LEN as u64) + k as u64;
+                let n = written - FFT_LEN as u64 + k as u64;
                 let i = (n % AUDIO_RING as u64) as usize;
                 let l = f32::from_bits(shared.audio[i * 2].load(Ordering::Relaxed));
                 let r = f32::from_bits(shared.audio[i * 2 + 1].load(Ordering::Relaxed));
                 rustfft::num_complex::Complex::new((l + r) * 0.5 * self.window[k], 0.0)
             })
             .collect();
-        if written < FFT_LEN as u64 {
-            return vec![-120.0; SPECTRUM_BANDS.len()];
-        }
         self.fft.process(&mut buf);
         let bin_hz = sample_rate as f32 / FFT_LEN as f32;
         // Hann 窓の山の高さ(N/4)の 2 乗 × 等価雑音帯域(1.5 ビン)で割ると、サイン波が帯域の中で 0dB になる
@@ -669,6 +671,22 @@ mod tests {
             "90° ずれは 0"
         );
         assert!(corr_of(|_| (0.0, 0.0)).is_none(), "無音は測れない");
+    }
+
+    #[test]
+    fn spectrum_before_first_window_is_silent() {
+        // 1 窓(8192 フレーム)に満たないうちに問い合わせても落ちない(debug ビルドの桁あふれ)
+        let shared = MonitorShared::default();
+        let mut st = MonitorState::default();
+        let mut meter = Meter::default();
+        for n in [0usize, 1, 100, FFT_LEN - 1] {
+            while (st.audio_written as usize) < n {
+                st.measure(&shared, 0.5, 0.5, 48_000.0);
+            }
+            st.publish(&shared);
+            let sp = meter.spectrum(&shared, 48_000.0);
+            assert!(sp.iter().all(|&d| d == -120.0), "{n} フレーム");
+        }
     }
 
     #[test]

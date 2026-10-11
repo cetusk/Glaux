@@ -16,7 +16,7 @@ pub struct RecentProject {
     pub last_opened: String,
 }
 
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     let base = std::env::var("APPDATA")
         .or_else(|_| std::env::var("XDG_CONFIG_HOME"))
         .map(PathBuf::from)

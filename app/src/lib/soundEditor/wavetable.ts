@@ -8,7 +8,7 @@ import { tr } from "../i18n.svelte";
 import { showToast } from "../toast.svelte";
 import { draw as drawAll, register, setSel, toast, type Data, type Loaded } from "./core.svelte";
 import { axisRow, byId, clamp, css, ctx2d, el, hzRange, ico, midiHz, noteSpan, stripe } from "./dom";
-import { canEdit, cur, knob, legendRow, pitchPick, pushHist, rangeOf, rerender, shown, specBox, state, ui } from "./parts";
+import { canEdit, cur, knob, legendRow, pitchPick, pushHist, rangeOf, rerender, rerenderWhenIdle, shown, specBox, state, ui } from "./parts";
 import { listen } from "./core.svelte";
 
 /** 倍音を描く欄の棒の数 */
@@ -400,7 +400,7 @@ const WT: any = {
       .wavetableThumbs(state.track, [sourceOf(src)])
       .then((r) => {
         thumbs.set(key, r[0]);
-        if (state.inst === "wavetable") rerender();
+        if (state.inst === "wavetable") rerenderWhenIdle();
       })
       .catch(() => thumbs.set(key, null));
     return null;
@@ -1548,7 +1548,7 @@ const WT: any = {
           return;
         }
         const now = performance.now();
-        WT.lfoT += ((now - last) / 1000) * 2 * Math.PI * (cur().lfoRate ?? 2);
+        WT.lfoT += ((now - last) / 1000) * 2 * Math.PI * (cur()?.lfoRate ?? 2);
         last = now;
         WT.draw();
         WT.anim = requestAnimationFrame(tick);

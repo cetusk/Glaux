@@ -335,7 +335,8 @@ impl Tremolo {
 /// 1 音(か和音)を `step` ごとの連打にする: (頭からのずれ, 長さ, 強さの割合, 交互の上の音か)。
 /// 1 打目の強さはそのまま、あとは 0.8〜0.9 を交互に(拍の頭を少し強く)
 pub fn tremolo_hits(len: u64, step: u64, alternating: bool) -> Vec<(u64, u64, f64, bool)> {
-    let step = step.max(10);
+    // 1 音から作るのは 4,096 打まで(とても長い音で何億もの音を作り、確保で落ちていた)。超えるときは刻みを粗くする
+    let step = step.max(10).max(len / 4096);
     let n = (len / step).max(1);
     (0..n)
         .map(|k| {

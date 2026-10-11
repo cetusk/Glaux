@@ -65,7 +65,11 @@ impl std::fmt::Debug for ConvEngine {
 
 /// 4 点補間でサンプルレートを変える(IR 用。オーディオスレッドの外で)
 fn resample(x: &[f32], from: f32, to: f32) -> Vec<f32> {
-    if (from - to).abs() < 0.5 || x.len() < 2 {
+    // 読めないサンプルレート(0・負・NaN)の WAV は変換しない(長さが usize::MAX になり、確保で落ちていた)
+    if (from - to).abs() < 0.5
+        || x.len() < 2
+        || !(from > 0.0 && to > 0.0 && from.is_finite() && to.is_finite())
+    {
         return x.to_vec();
     }
     let step = from as f64 / to as f64;
@@ -85,6 +89,11 @@ impl ConvEngine {
     pub fn new(ir_l: &[f32], ir_r: &[f32], ir_sr: f32, sr: f32, length: f32) -> Self {
         let mut l = resample(ir_l, ir_sr, sr);
         let mut r = resample(ir_r, ir_sr, sr);
+        // 空の IR(長さ 0 の WAV)は、素通しの 1 点にする(後ろを消す所で範囲外になっていた)
+        if l.is_empty() || r.is_empty() {
+            l = vec![1.0];
+            r = vec![1.0];
+        }
         let n = l.len().min(r.len());
         l.truncate(n);
         r.truncate(n);
@@ -279,6 +288,21 @@ impl ConvEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_or_broken_ir_does_not_panic() {
+        // 長さ 0 の IR、サンプルレート 0・NaN の IR でも作れる(範囲外・巨大な確保で落ちていた)
+        for (l, sr_ir) in [
+            (vec![], 48_000.0),
+            (vec![0.5; 100], 0.0),
+            (vec![0.5; 100], f32::NAN),
+            (vec![0.5], 44_100.0),
+        ] {
+            for len in [0.05, 0.5, 1.0] {
+                let _ = ConvEngine::new(&l, &l, sr_ir, 48_000.0, len);
+            }
+        }
+    }
 
     /// 畳み込みの答え(時間領域でそのまま)
     fn direct(x: &[f32], h: &[f32]) -> Vec<f32> {

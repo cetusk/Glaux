@@ -9,6 +9,7 @@
 // - 画面だけの設定(UI_KEYS: どれを調整しているか・音域・道具など)は音色に入れず、取り消しでも戻さない。
 import * as api from "../api";
 import { tr } from "../i18n.svelte";
+import { soundEditorStore } from "../selection.svelte";
 import { showToast } from "../toast.svelte";
 import type { EntrySummary, Project, Track } from "../types";
 import { clone } from "./dom";
@@ -161,6 +162,18 @@ export function rerender() {
     draw();
   });
 }
+/** 後から届いた物(素材の波形・縮小図)で作り直す。ドラッグ中・押して鳴らしている間は、終わってから
+ *  (作り直すと、つまんでいる部品が消えて確定されず、押している音も止まっていた) */
+let rerenderPending = false;
+export function rerenderWhenIdle() {
+  if (ui.drag || held.size) rerenderPending = true;
+  else rerender();
+}
+function flushRerender() {
+  if (!rerenderPending || ui.drag || held.size) return;
+  rerenderPending = false;
+  requestAnimationFrame(() => rerender());
+}
 /** 絵を描き直す(値が変わったら試聴にも当てる) */
 export function draw() {
   if (!state.inst || !EDITORS[state.inst] || !cur()) return;
@@ -289,8 +302,21 @@ export function pushHist(label: string) {
   syncPreview();
 }
 
-export async function undo() {
+/** 取り消し・やり直しの順番待ち(連打で並行に走ると、並びと曲の状態が食い違っていた) */
+let histQueue: Promise<unknown> = Promise.resolve();
+export function undo() {
   if (state.ab === "before") return showToast("warn", tr("A(作り込む前)を聴いている間は取り消せません", "You can't undo while listening to A (before)"));
+  histQueue = histQueue.then(doUndo, doUndo);
+  return histQueue;
+}
+export function redo() {
+  if (state.ab === "before") return showToast("warn", tr("A(作り込む前)を聴いている間はやり直せません", "You can't redo while listening to A (before)"));
+  histQueue = histQueue.then(doRedo, doRedo);
+  return histQueue;
+}
+/** 曲の履歴に無くなった項目(エディタの外で取り消された・捨てられた)。並びから外して次へ進む */
+const isGone = (e: unknown) => /entry not found/i.test(String(e));
+async function doUndo(): Promise<void> {
   await queue;
   const s = stack();
   const h = s.done.pop();
@@ -309,14 +335,18 @@ export async function undo() {
     }
     toast(tr(`取り消し: ${h.label}`, `Undo: ${h.label}`));
   } catch (e) {
+    if (isGone(e)) {
+      // 全体の取り消しなどで、もう曲の履歴に無い。外して、次の項目を取り消す
+      refreshUndo();
+      return s.done.length ? doUndo() : undefined;
+    }
     s.done.push(h);
     showToast("error", tr(`取り消せませんでした: ${e}`, `Couldn't undo: ${e}`));
   }
   refreshUndo();
 }
 
-export async function redo() {
-  if (state.ab === "before") return showToast("warn", tr("A(作り込む前)を聴いている間はやり直せません", "You can't redo while listening to A (before)"));
+async function doRedo(): Promise<void> {
   await queue;
   const s = stack();
   const u = s.undone.pop();
@@ -340,6 +370,11 @@ export async function redo() {
     }
     toast(tr(`やり直し: ${u.label}`, `Redo: ${u.label}`));
   } catch (e) {
+    if (isGone(e)) {
+      s.undone = [];
+      refreshUndo();
+      return showToast("warn", tr("取り消した後にほかの編集が入ったので、やり直せません", "Another edit came after the undo, so it can't be redone"));
+    }
     s.undone.push(u);
     showToast("error", tr(`やり直せませんでした: ${e}`, `Couldn't redo: ${e}`));
   }
@@ -391,7 +426,14 @@ export function syncPreview() {
       if (e.previewExtra && e.signature && e.signature(state.committed[state.track]) !== e.signature(cur())) {
         const sig0 = e.signature(cur());
         if (sig0 === lastExtraSig) cmds.push(...lastExtra);
-        else {
+        else if (extraBusy) {
+          // 作っている最中(描きながらだと毎フレーム要求が積み重なっていた)。終わったら最新の値で作り直す
+          // この回は無かったことにする(作っている最中の結果は捨てずに使う)
+          previewSeq = seq - 1;
+          extraAgain = true;
+          return;
+        } else {
+          extraBusy = true;
           try {
             const extra = await e.previewExtra(soundOf(cur()));
             if (seq !== previewSeq) return;
@@ -400,6 +442,12 @@ export function syncPreview() {
             cmds.push(...extra);
           } catch {
             // 作れない手順(試聴しない)
+          } finally {
+            extraBusy = false;
+            if (extraAgain) {
+              extraAgain = false;
+              requestAnimationFrame(() => syncPreview());
+            }
           }
         }
       }
@@ -415,6 +463,8 @@ export function syncPreview() {
 }
 let lastExtraSig = "";
 let lastExtra: unknown[] = [];
+let extraBusy = false;
+let extraAgain = false;
 /** 曲が変わった後(エンジンが曲の値に戻った)に、試聴をもう一度当てる */
 function resendPreview() {
   lastPreview = "";
@@ -435,6 +485,7 @@ export function holdVoice(v: Voice) {
 }
 export function releaseVoice(v: Voice | null | undefined) {
   if (v && held.delete(v)) v.stop();
+  flushRerender();
 }
 export function stopHeld() {
   held.forEach((v) => v.stop());
@@ -443,23 +494,40 @@ export function stopHeld() {
 /** 音を鳴らす(離すまで)。和音のときは +4・+7 も */
 export function playNotes(notes: number[], vel = 100): Voice {
   const tid = state.track;
-  const ms = notes.map((m) => Math.max(0, Math.min(127, Math.round(m))));
-  ms.forEach((m) => api.liveNoteOn(tid, m, vel).catch(() => undefined));
+  const ms = [...new Set(notes.map((m) => Math.max(0, Math.min(127, Math.round(m)))))];
+  // 押す(async。曲の取り出しを待つ)より、離す(同期)が先に届くと、離した後に鳴り始めて止まらなかった
+  const on = Promise.allSettled(ms.map((m) => api.liveNoteOn(tid, m, vel)));
+  pendingOn.add(on);
+  void on.then(() => pendingOn.delete(on));
+  ms.forEach((m) => sounding.set(m, (sounding.get(m) ?? 0) + 1));
   let stopped = false;
   return {
     stop() {
       if (stopped) return;
       stopped = true;
-      ms.forEach((m) => api.liveNoteOff(m).catch(() => undefined));
+      void on.then(() =>
+        ms.forEach((m) => {
+          // 同じ高さを別の鳴らし方(和音・絵の鍵盤)でも鳴らしているなら、最後の 1 つで離す(エンジンは高さで離す)
+          const n = (sounding.get(m) ?? 1) - 1;
+          if (n > 0) return void sounding.set(m, n);
+          sounding.delete(m);
+          api.liveNoteOff(m).catch(() => undefined);
+        }),
+      );
     },
   };
 }
+/** 押す要求の届き待ち(すべて止めるときも、届いてから止める) */
+const pendingOn = new Set<Promise<unknown>>();
+/** 高さごとに、いま鳴らしている数 */
+const sounding = new Map<number, number>();
 export const keyListeners = new Set<(m: number, on: boolean) => void>();
 export function noteOn(m: number) {
-  if (keyVoices.has(m) || !state.track) return;
+  if (keyVoices.has(m) || !state.track || !view.open) return;
   keyVoices.set(m, playNotes(listen.chord ? [m, m + 4, m + 7] : [m]));
   keyListeners.forEach((f) => f(m, true));
-  ed()?.onKey?.(m, true);
+  // 読み込み中(値がまだ無い)は鳴らすだけ
+  if (cur()) ed()?.onKey?.(m, true);
 }
 export function noteOff(m: number) {
   const v = keyVoices.get(m);
@@ -467,12 +535,15 @@ export function noteOff(m: number) {
   v.stop();
   keyVoices.delete(m);
   keyListeners.forEach((f) => f(m, false));
-  ed()?.onKey?.(m, false);
+  if (cur()) ed()?.onKey?.(m, false);
 }
 /** 鳴っている音をすべて止める(下の鍵盤・押している間の音) */
 export function stopAllSounds() {
   [...keyVoices.keys()].forEach((m) => noteOff(m));
   stopHeld();
+  sounding.clear();
+  // 届いていない押す要求があれば、届いてからも止める
+  void Promise.allSettled([...pendingOn]).then(() => api.liveAllOff().catch(() => undefined));
   api.liveAllOff().catch(() => undefined);
 }
 export const isSounding = () => keyVoices.size > 0 || held.size > 0;
@@ -480,12 +551,19 @@ export const isSounding = () => keyVoices.size > 0 || held.size > 0;
 // ---- 開く・閉じる・読み込み ----
 async function loadTrack(): Promise<Data | null> {
   const p = state.project;
-  const t = p?.tracks.find((x) => x.id === state.track);
-  if (!p || !t) return null;
-  const tp = await api.getTrackParams(state.track);
+  const tid = state.track,
+    inst = state.inst;
+  const t = p?.tracks.find((x) => x.id === tid);
+  if (!p || !t || !EDITORS[inst]) return null;
+  const e = ed();
+  const tp = await api.getTrackParams(tid);
+  if (state.track !== tid || state.inst !== inst) return null;
   const params: Params = Object.fromEntries(tp.params.map((x) => [x.name, x.current]));
-  return await ed().load({ params, track: t, project: p });
+  const d = await e.load({ params, track: t, project: p });
+  // 待っている間に別のトラック・楽器へ切り替えた(この結果を入れると、別のトラックに前の値が書き込まれる)
+  return state.track === tid && state.inst === inst ? d : null;
 }
+let loadSeq = 0;
 
 /** 音源の種類から、エディタの鍵(無ければ null) */
 export function editorKindOf(t: Track | undefined | null): string | null {
@@ -501,7 +579,9 @@ export async function openTrack(project: Project, trackId: string) {
   stopAllSounds();
   const t = project.tracks.find((x) => x.id === trackId);
   const kind = editorKindOf(t);
-  if (!t || !kind) return;
+  if (!t || !kind) return closeGone();
+  const seq = ++loadSeq;
+  lastDevice = JSON.stringify(t.device);
   state.project = project;
   state.track = trackId;
   state.trackName = t.name;
@@ -513,7 +593,7 @@ export async function openTrack(project: Project, trackId: string) {
   setSel(null);
   try {
     const d = await loadTrack();
-    if (!d) return;
+    if (!d || seq !== loadSeq || state.track !== trackId || !view.open) return;
     if (!state.initial[trackId]) {
       state.initial[trackId] = clone(d);
       state.initialDevice[trackId] = clone(t.device);
@@ -525,6 +605,7 @@ export async function openTrack(project: Project, trackId: string) {
   } finally {
     view.loading = false;
   }
+  if (seq !== loadSeq || state.track !== trackId || !view.open) return;
   refreshUndo();
   ed().reload?.();
   lastPreview = "";
@@ -536,22 +617,32 @@ export async function onProjectChanged(project: Project) {
   state.project = project;
   if (!view.open || !state.track) return;
   const t = project.tracks.find((x) => x.id === state.track);
-  if (!t) return close();
+  // トラックが消えた・エディタの無い音源に替わった(AI・取り消し・曲の切り替え)
+  if (!t || !editorKindOf(t)) return closeGone();
   if (editorKindOf(t) !== state.inst) {
     // 音源を差し替えた: 開き直す(作り込む前は今の音)
     delete state.initial[state.track];
     return openTrack(project, state.track);
   }
   state.trackName = t.name;
-  await reloadFromTrack(false);
+  // ほかのトラックの編集では読み直さない(エンジンは曲の値に戻るので、試聴だけ当て直す)
+  const dev = JSON.stringify(t.device);
+  if (dev !== lastDevice) {
+    lastDevice = dev;
+    await reloadFromTrack(false);
+  }
   // エンジンが曲の値に戻ったので、試聴(A・このトラックだけ)を当て直す
   resendPreview();
 }
 
+/** 開いているトラックの音源(曲の値)。変わったときだけ読み直す */
+let lastDevice = "";
 async function reloadFromTrack(force: boolean) {
   await queue;
+  const seq = ++loadSeq;
   const d = await loadTrack().catch(() => null);
-  if (!d) return;
+  // 後から始めた読み込みがあれば、そちらに任せる(古い応答で新しい値を上書きしない)
+  if (!d || seq !== loadSeq) return;
   const committed = state.committed[state.track];
   const e = ed();
   const same =
@@ -570,11 +661,22 @@ async function reloadFromTrack(force: boolean) {
   ed().refresh();
 }
 
+/** トラックが消えた・エディタの無い音源になった: 閉じて、パネルも下ろす */
+function closeGone() {
+  if (!view.open && !state.track) return;
+  close();
+  soundEditorStore.trackId = null;
+  soundEditorStore.sel = null;
+  showToast("warn", tr("開いていたトラックが消えたか、音色エディタの無い音源になったので、音色エディタを閉じました", "The track was removed or now uses a sound source without an editor, so the sound editor was closed"));
+}
+
 export function close() {
   if (state.ab === "before") setAB("now");
   stopAllSounds();
   view.open = false;
   state.inst = "";
+  state.track = "";
+  loadSeq++;
   if (listen.solo || lastPreview !== "[]") api.previewEdit([]);
   listen.solo = false;
   lastPreview = "[]";
@@ -634,6 +736,7 @@ export function dragStart(ev: PointerEvent) {
 }
 export function dragEnd() {
   ui.drag = null;
+  flushRerender();
 }
 /** 取り消したドラッグの「離した」が終わってから元に戻す */
 export function afterPointerUp() {

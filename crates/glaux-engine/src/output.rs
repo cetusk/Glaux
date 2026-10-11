@@ -24,6 +24,7 @@ pub enum EngineError {
 
 /// UI(Tauri)側から再生を操作するハンドル。クローン可能・Send + Sync。
 #[derive(Clone)]
+/// ロックは毒化しても中身を取り出して使い続ける(どこかで 1 回落ちた後、以後の操作がすべて落ちないように)
 pub struct EngineHandle {
     shared: Arc<Shared>,
     /// 出力のサンプルレート(f64 のビット列)。出力デバイスを切り替えると変わりうる
@@ -114,10 +115,16 @@ impl EngineHandle {
     /// `project_dir` はサンプラー音源の WAV 解決に使う。
     pub fn set_project(&self, project: &Project, project_dir: &std::path::Path) {
         let data = {
-            let mut bank = self.bank.lock().expect("bank lock");
+            let mut bank = self
+                .bank
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             bank.sync(project, project_dir);
             bank.plugin_slots = self.plugins.sync(project, self.sample_rate());
-            let mut notes = self.notes.lock().expect("notes lock");
+            let mut notes = self
+                .notes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             Arc::new(crate::data::build_playback_data_cached(
                 project,
                 self.sample_rate(),
@@ -126,15 +133,28 @@ impl EngineHandle {
             ))
         };
         let old = self.shared.data.swap(data);
-        *self.tempo.lock().expect("tempo lock") = project.tempo_map.clone();
-        *self.track_order.lock().expect("order lock") =
+        *self
+            .tempo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = project.tempo_map.clone();
+        *self
+            .track_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             project.tracks.iter().map(|t| t.id.clone()).collect();
         self.update_live_track();
         // テンポが変わっているかもしれないのでループ区間のサンプル位置を焼き直す
-        if let Some((start, end)) = *self.loop_ticks.lock().expect("loop lock") {
+        if let Some((start, end)) = *self
+            .loop_ticks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             self.write_loop_samples(start, end);
         }
-        let mut graveyard = self.graveyard.lock().expect("graveyard lock");
+        let mut graveyard = self
+            .graveyard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         graveyard.push(old);
         // ここだけが持っている(= オーディオスレッドがもう使っていない)ものを、このスレッドで解放する。
         // 差し替えた後のデータは ArcSwap から外れているので、参照が 1 から増えることはない。
@@ -171,9 +191,13 @@ impl EngineHandle {
     }
 
     pub fn seek_tick(&self, tick: Tick) {
-        let seconds = self.tempo.lock().expect("tempo lock").tick_to_seconds(tick);
-        let sample = (seconds * self.sample_rate()) as u64;
-        debug_assert_ne!(sample, NO_SEEK);
+        let seconds = self
+            .tempo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tick_to_seconds(tick);
+        // 巨大な tick(遅いテンポの曲の遠く)でも、「シークなし」の印と取り違えない
+        let sample = ((seconds * self.sample_rate()) as u64).min(NO_SEEK - 1);
         self.shared.seek.store(sample, Ordering::Release);
         self.shared.pos.store(sample, Ordering::Release);
     }
@@ -187,14 +211,20 @@ impl EngineHandle {
         if end <= start {
             return Err("ループ終端は始端より後にすること".to_owned());
         }
-        *self.loop_ticks.lock().expect("loop lock") = Some((start, end));
+        *self
+            .loop_ticks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((start, end));
         self.write_loop_samples(start, end);
         Ok(())
     }
 
     /// ループを解除する。
     pub fn clear_loop(&self) {
-        *self.loop_ticks.lock().expect("loop lock") = None;
+        *self
+            .loop_ticks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         // end を先に 0 にしてから start を消す(常に「無効」側へ倒れる)
         self.shared.loop_end.store(0, Ordering::Release);
         self.shared.loop_start.store(0, Ordering::Release);
@@ -202,11 +232,17 @@ impl EngineHandle {
 
     /// 現在のループ区間(tick)。
     pub fn loop_region(&self) -> Option<(Tick, Tick)> {
-        *self.loop_ticks.lock().expect("loop lock")
+        *self
+            .loop_ticks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn write_loop_samples(&self, start: Tick, end: Tick) {
-        let tempo = self.tempo.lock().expect("tempo lock");
+        let tempo = self
+            .tempo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let s = (tempo.tick_to_seconds(start) * self.sample_rate()) as u64;
         let e = (tempo.tick_to_seconds(end) * self.sample_rate()) as u64;
         drop(tempo);
@@ -272,21 +308,36 @@ impl EngineHandle {
         metronome_on: bool,
         stereo: bool,
     ) -> Result<Tick, EngineError> {
-        let mut slot = self.recording.lock().expect("recording lock");
+        let mut slot = self
+            .recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if slot.is_some() || self.is_midi_recording() {
             return Err(EngineError::Stream("既に録音中です".into()));
         }
         let now = self.playhead_tick();
         let clip_start = now + count_in_ticks;
         let count_in_secs = {
-            let tempo = self.tempo.lock().expect("tempo lock");
+            let tempo = self
+                .tempo
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             tempo.tick_to_seconds(clip_start) - tempo.tick_to_seconds(now)
         };
         // 入力テスト中なら止める(同じデバイスを二重に開かない)
-        if let Some(m) = self.monitor.lock().expect("monitor lock").take() {
+        if let Some(m) = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = m.stop();
         }
-        let device = self.input_device.lock().expect("input lock").clone();
+        let device = self
+            .input_device
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let rec = crate::record::start_input(Some(path), device.as_deref(), stereo)?;
         let metronome_auto = metronome_on && !self.shared.metronome.load(Ordering::Acquire);
         if metronome_on {
@@ -306,14 +357,23 @@ impl EngineHandle {
 
     /// 再生を始めた時刻を記録する(録音開始の準備時間を波形の頭から差し引くため)。
     pub fn mark_play_started(&self) {
-        if let Some(s) = self.recording.lock().expect("recording lock").as_mut() {
+        if let Some(s) = self
+            .recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
             s.play_at = Some(std::time::Instant::now());
         }
     }
 
     /// 録音を止めて WAV を確定する。
     pub fn stop_recording(&self) -> Result<RecordOutcome, EngineError> {
-        let taken = self.recording.lock().expect("recording lock").take();
+        let taken = self
+            .recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.shared.recording.store(false, Ordering::Release);
         let Some(s) = taken else {
             return Err(EngineError::Stream("録音していません".into()));
@@ -335,7 +395,10 @@ impl EngineHandle {
     }
 
     pub fn is_recording(&self) -> bool {
-        self.recording.lock().expect("recording lock").is_some()
+        self.recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     // ---- CLAP プラグイン ----
@@ -372,7 +435,10 @@ impl EngineHandle {
 
     /// MIDI 入力に接続する(None = 切断)。以前の接続は切る。
     pub fn set_midi_input(&self, name: Option<String>) -> Result<(), EngineError> {
-        let mut slot = self.midi.lock().expect("midi lock");
+        let mut slot = self
+            .midi
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *slot = None;
         // 押しっぱなしで切断されても音が残らないように
         self.shared.live.push(crate::midi::LiveEvent::AllOff);
@@ -395,7 +461,7 @@ impl EngineHandle {
     pub fn midi_input(&self) -> Option<String> {
         self.midi
             .lock()
-            .expect("midi lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|c| c.name.clone())
     }
@@ -410,21 +476,31 @@ impl EngineHandle {
     /// ライブ演奏(MIDI キーボード)の送り先トラック。None なら既定音色で鳴らす。
     /// 切り替えたら発音中の音は離す。
     pub fn set_live_target(&self, track: Option<TrackId>) {
-        *self.live_target.lock().expect("live lock") = track;
+        *self
+            .live_target
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = track;
         self.shared.live.push(crate::midi::LiveEvent::AllOff);
         self.update_live_track();
     }
 
     pub fn live_target(&self) -> Option<TrackId> {
-        self.live_target.lock().expect("live lock").clone()
+        self.live_target
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn update_live_track(&self) {
-        let target = self.live_target.lock().expect("live lock").clone();
+        let target = self
+            .live_target
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let index = target.and_then(|id| {
             self.track_order
                 .lock()
-                .expect("order lock")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .position(|t| *t == id)
         });
@@ -442,7 +518,10 @@ impl EngineHandle {
         count_in_ticks: Tick,
         metronome_on: bool,
     ) -> Result<Tick, EngineError> {
-        let mut rec = self.midi_rec.lock().expect("midi rec lock");
+        let mut rec = self
+            .midi_rec
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if rec.is_some() || self.is_recording() {
             return Err(EngineError::Stream("既に録音中です".into()));
         }
@@ -457,7 +536,10 @@ impl EngineHandle {
             self.shared.metronome.store(true, Ordering::Release);
         }
         self.shared.recording.store(true, Ordering::Release);
-        *self.midi_take.lock().expect("take lock") = Some(MidiTake::default());
+        *self
+            .midi_take
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(MidiTake::default());
         *rec = Some(MidiRecSession {
             clip_start,
             metronome_auto,
@@ -467,18 +549,26 @@ impl EngineHandle {
 
     /// MIDI 録音を止めてノートを組み立てる。
     pub fn stop_midi_recording(&self) -> Result<MidiRecordOutcome, EngineError> {
-        let Some(s) = self.midi_rec.lock().expect("midi rec lock").take() else {
+        let Some(s) = self
+            .midi_rec
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
             return Err(EngineError::Stream("MIDI 録音していません".into()));
         };
         let stop_tick = {
             let sample = self.shared.audible_pos();
-            let tempo = self.tempo.lock().expect("tempo lock");
+            let tempo = self
+                .tempo
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             tempo.seconds_to_tick(sample / self.sample_rate())
         };
         let take = self
             .midi_take
             .lock()
-            .expect("take lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .unwrap_or_default();
         self.shared.recording.store(false, Ordering::Release);
@@ -493,7 +583,10 @@ impl EngineHandle {
     }
 
     pub fn is_midi_recording(&self) -> bool {
-        self.midi_rec.lock().expect("midi rec lock").is_some()
+        self.midi_rec
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     /// オーディオ処理の負荷統計(直近区間の平均・最大はリセットされる)。
@@ -518,7 +611,10 @@ impl EngineHandle {
 
     /// 使用中の出力デバイス名。
     pub fn output_device(&self) -> String {
-        self.output_name.lock().expect("output lock").clone()
+        self.output_name
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// 出力デバイスを切り替える(None = OS の既定)。再生位置は保つ。
@@ -535,7 +631,10 @@ impl EngineHandle {
 
     /// 出力バッファの大きさ(フレーム)を変えて、同じデバイスを開き直す。再生位置は保つ
     pub fn set_buffer_frames(&self, frames: u32) -> Result<(), EngineError> {
-        self.buffer.lock().expect("buffer lock").requested = frames.clamp(16, 8192);
+        self.buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .requested = frames.clamp(16, 8192);
         let (reply, rx) = mpsc::channel();
         self.ctl
             .send(Ctl::Reopen { reply })
@@ -546,7 +645,10 @@ impl EngineHandle {
 
     /// 出力バッファの大きさの希望と、実際に開いたときの様子
     pub fn buffer_info(&self) -> BufferInfo {
-        *self.buffer.lock().expect("buffer lock")
+        *self
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// 直前のブロックの大きさ(フレーム。OS が実際に呼んできた大きさ)
@@ -563,9 +665,16 @@ impl EngineHandle {
                 )));
             }
         }
-        *self.input_device.lock().expect("input lock") = name;
+        *self
+            .input_device
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = name;
         // 入力テスト中なら新しいデバイスで開き直す
-        let was = self.monitor.lock().expect("monitor lock").take();
+        let was = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some(m) = was {
             let _ = m.stop();
             self.set_input_monitor(true)?;
@@ -577,14 +686,17 @@ impl EngineHandle {
     pub fn input_device(&self) -> Option<String> {
         self.input_device
             .lock()
-            .expect("input lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .or_else(crate::record::default_input_name)
     }
 
     /// 入力テスト(録音せずに入力レベルだけ測る)の開始・停止。録音中は何もしない。
     pub fn set_input_monitor(&self, on: bool) -> Result<(), EngineError> {
-        let mut slot = self.monitor.lock().expect("monitor lock");
+        let mut slot = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !on {
             if let Some(m) = slot.take() {
                 let _ = m.stop();
@@ -594,24 +706,36 @@ impl EngineHandle {
         if slot.is_some() || self.is_recording() {
             return Ok(());
         }
-        let device = self.input_device.lock().expect("input lock").clone();
+        let device = self
+            .input_device
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         *slot = Some(crate::record::start_input(None, device.as_deref(), false)?);
         Ok(())
     }
 
     pub fn input_monitoring(&self) -> bool {
-        self.monitor.lock().expect("monitor lock").is_some()
+        self.monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     /// 入力レベルのピーク(dBFS)を読み出してリセットする。録音も入力テストも
     /// していなければ None。
     pub fn take_input_peak_db(&self) -> Option<f32> {
-        if let Some(s) = self.recording.lock().expect("recording lock").as_ref() {
+        if let Some(s) = self
+            .recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             return Some(s.rec.take_peak_db());
         }
         self.monitor
             .lock()
-            .expect("monitor lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|m| m.take_peak_db())
     }
@@ -647,11 +771,10 @@ impl EngineHandle {
     /// マスターのラウドネス(M / S / I)と True Peak。前回から増えた音を読んで進める(再生を始めるたびに測り直す)
     pub fn loudness(&self) -> crate::monitor::LoudnessReading {
         let playing = self.shared.playing.load(Ordering::Acquire);
-        self.meter.lock().expect("meter lock").update(
-            &self.shared.monitor,
-            self.sample_rate(),
-            playing,
-        )
+        self.meter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .update(&self.shared.monitor, self.sample_rate(), playing)
     }
 
     /// 音量をそろえた A/B の聴き比べの音を置く(None で片付ける。片付けたらふつうの再生に戻る)
@@ -678,14 +801,17 @@ impl EngineHandle {
 
     /// 統合ラウドネスと True Peak の最大を測り直す
     pub fn reset_loudness(&self) {
-        self.meter.lock().expect("meter lock").reset();
+        self.meter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reset();
     }
 
     /// マスターの直近のスペクトル(1/3 オクターブ、dB)。帯域の中心は `monitor::SPECTRUM_BANDS`
     pub fn spectrum(&self) -> Vec<f32> {
         self.meter
             .lock()
-            .expect("meter lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .spectrum(&self.shared.monitor, self.sample_rate())
     }
 
@@ -708,7 +834,7 @@ impl EngineHandle {
         let seconds = pos as f64 / self.sample_rate();
         self.tempo
             .lock()
-            .expect("tempo lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .seconds_to_tick(seconds)
     }
 }
@@ -855,8 +981,14 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                 handle
                     .sample_rate
                     .store(o.sample_rate.to_bits(), Ordering::Release);
-                *handle.output_name.lock().expect("output lock") = o.name;
-                *handle.buffer.lock().expect("buffer lock") = o.buffer;
+                *handle
+                    .output_name
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = o.name;
+                *handle
+                    .buffer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = o.buffer;
             };
             while let Ok(req) = ctl_rx.recv() {
                 let reply = match req {
@@ -866,7 +998,11 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                     }
                     Ctl::Reopen { reply } => reply,
                 };
-                let frames = handle.buffer.lock().expect("buffer lock").requested;
+                let frames = handle
+                    .buffer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .requested;
                 // 再生位置を保つため、新しいレンダラに現在位置へのシークを渡す
                 let pos = shared.pos.load(Ordering::Acquire);
                 drop(stream.take());

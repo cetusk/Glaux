@@ -213,7 +213,10 @@ pub fn develop(
                     }
                 }
                 Op::Invert => {
-                    let axis = notes[0].pitch;
+                    // ずらし(displace)で音が無くなっていれば何もしない
+                    let Some(axis) = notes.first().map(|n| n.pitch) else {
+                        continue;
+                    };
                     for x in &mut notes {
                         x.pitch = scale.invert(x.pitch, axis).clamp(0, 127) as u8;
                     }
@@ -508,8 +511,13 @@ pub fn develop(
             let mut seen = false;
             for (o, keep) in out.iter_mut().zip(&keep_pc) {
                 if (o.pos / slot_len) as usize != peak_slot {
+                    // 下げられなくなったら(最低音 C-1 など)やめる(山が 0 だと終わらなかった)
                     while o.pitch >= peak {
-                        o.pitch = lower(o.pitch, *keep);
+                        let p = lower(o.pitch, *keep);
+                        if p >= o.pitch {
+                            break;
+                        }
+                        o.pitch = p;
                     }
                 } else if o.pitch == peak {
                     // 山のスロットの中でも最高音は 1 回だけ(2 回目以降は下げる)

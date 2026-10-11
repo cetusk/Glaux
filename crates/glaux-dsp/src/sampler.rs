@@ -115,6 +115,10 @@ impl SampleData {
     /// 音程を上げて鳴らすための縮小版を作っておく(1 回だけ。オーディオスレッドの外で呼ぶ)
     pub fn prepare_mips(&self) {
         let build = |x: &[f32]| {
+            // 短すぎる素材は縮小版を作らない(長さ 1 の版を読むと範囲外になる。wave.rs と同じ)
+            if x.len() < 8 {
+                return Vec::new();
+            }
             let mut out: Vec<Vec<f32>> = Vec::with_capacity(MIP_LEVELS);
             let mut cur = halve(x);
             for _ in 0..MIP_LEVELS {
@@ -374,13 +378,14 @@ impl SamplerVoice {
         };
         let len = p.data.frames.len() as f64;
         // 使う所(始まり・終わり)。区分のときも、最後の区分は使う所の終わりまで
-        let use_end = (p.end.clamp(0.0, 1.0) as f64 * len).clamp(1.0, len);
+        // 長さ 0・1 の素材(すぐ止めた録音・空のファイル)は鳴らさない(clamp の下限が上限を超えて落ちていた)
+        let use_end = (p.end.clamp(0.0, 1.0) as f64 * len).clamp(1.0, len.max(1.0));
         let mut pos = (p.start.clamp(0.0, 1.0) as f64 * len)
             .min(use_end - 1.0)
             .max(0.0);
         let mut end = use_end;
         let mut sliced = false;
-        let mut done = false;
+        let mut done = len < 2.0;
         let semis = if !p.slices.is_empty() {
             // スライス: root から順に 1 つずつ。範囲外の鍵盤は鳴らさない
             sliced = true;
@@ -644,6 +649,23 @@ pub fn hermite(frames: &[f32], i: usize, frac: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiny_sources_do_not_panic() {
+        // 長さ 0〜7 の素材を、いろいろな高さで鳴らしても落ちない(0 は clamp、2 は縮小版の範囲外で落ちていた)
+        for n in 0..8 {
+            let data = Arc::new(SampleData::mono(vec![0.5; n], 48_000.0));
+            data.prepare_mips();
+            let p = SamplerParams::one_shot(data, 60, 1.0, 0.01);
+            for pitch in [0u8, 60, 84, 127] {
+                let mut v = SamplerVoice::start(&p, pitch, 1.0, Articulation::Normal, 48_000.0);
+                for _ in 0..64 {
+                    let (m, s) = v.next_stereo(&p);
+                    assert!(m.is_finite() && s.is_finite());
+                }
+            }
+        }
+    }
 
     #[test]
     fn hermite_hits_the_points_and_is_smoother_than_linear() {

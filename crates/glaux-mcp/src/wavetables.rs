@@ -438,6 +438,9 @@ pub fn view(
     points: usize,
     harm: usize,
 ) -> Result<Value, String> {
+    // 絵の材料の点・倍音の数は画面に要る分まで(巨大な数で、確保に失敗して落ちていた)
+    let (stack, stack_points) = (stack.min(256), stack_points.clamp(2, 2048));
+    let (points, harm) = (points.clamp(2, 2048), harm.min(1024));
     let pre = build_pre(recipe, ctx)?;
     let mut post = pre.clone();
     if let Some(steps) = recipe.get("edits").and_then(Value::as_array) {

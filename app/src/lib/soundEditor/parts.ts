@@ -10,6 +10,7 @@ import {
   ed,
   pushHist,
   rerender,
+  rerenderWhenIdle,
   setTool,
   shown,
   state,
@@ -824,4 +825,4 @@ export function explainOn(btn: HTMLElement, cls: string, fill: (pop: HTMLElement
 }
 
 // 楽器の画面から使う物(まとめて引けるように)
-export { canEdit, cur, ed, pushHist, rerender, setTool, shown, state, toast, toolOf, ui };
+export { canEdit, cur, ed, pushHist, rerender, rerenderWhenIdle, setTool, shown, state, toast, toolOf, ui };
