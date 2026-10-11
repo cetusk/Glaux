@@ -301,7 +301,49 @@
     }
   }
 
+  // ---- AI にいつも守らせること(設定フォルダの instructions.md。チャットは毎ターン、外の AI はつないだときに読む) ----
+  let standing = $state({ text: "", saved: "", max: 2000, path: "", msg: null as string | null, busy: false });
+  async function loadStanding() {
+    try {
+      const r = await api.getStandingInstructions();
+      standing.text = standing.saved = r.text.trim();
+      standing.max = r.max;
+      standing.path = r.path;
+    } catch {
+      // 読めなければ空のまま(書けば作る)
+    }
+  }
+  async function saveStanding() {
+    standing.busy = true;
+    try {
+      await api.setStandingInstructions(standing.text);
+      standing.text = standing.saved = standing.text.trim();
+      standing.msg = tr("保存しました。次の指示から効きます", "Saved. Takes effect from your next instruction");
+    } catch (e) {
+      standing.msg = String(e);
+    } finally {
+      standing.busy = false;
+    }
+  }
+  const STANDING_EXAMPLE = $derived(
+    tr(
+      `いつもプロがリリースできる水準の仕上がりを目指す。
+- 曲構成: 区間ごとの役割と盛り上がりの差をはっきりさせ、イントロ・つなぎ・終わりまで作り込む。同じ繰り返しのままにしない。
+- 音作り: パートの役割に合った音色を選び、プリセットのままで終わらせず曲に合わせて追い込む。止まった音にしない。
+- ミキシング: 主役が埋もれず、低域が濁らず、パートどうしの帯域と音程がぶつからないこと。単体と全体の両方で聴いて決める。
+- 仕上げ: 配信の音量に整え、振り切れ・潰しすぎが無いこと。
+- 報告の前に点検の道具の warn を直し、妥協した所・残した課題は正直に伝える。`,
+      `Always aim for a finish good enough for a professional release.
+- Arrangement: make each section's role and energy clearly different; craft the intro, transitions and ending. Never leave plain repetition.
+- Sound design: choose sounds that fit each part's role and tailor them to the song rather than leaving presets as they are. Avoid static sounds.
+- Mixing: the lead must not be buried, the low end must stay clean, and parts must not clash in frequency or pitch. Decide by listening both solo and in the full mix.
+- Finishing: bring it to streaming loudness with no clipping or over-compression.
+- Before reporting, fix the warnings from the checking tools and be honest about compromises and remaining issues.`,
+    ),
+  );
+
   onMount(() => {
+    loadStanding();
     loadDevices();
     loadMidi();
     loadModels();
@@ -673,6 +715,43 @@
             {/each}
           </div>
         </div>
+        <div class="srow top standing">
+          {@render row(
+            tr("いつも守らせること", "Always keep in mind"),
+            tr(
+              "AI がすべての作業で守る指示(目指す品質・好み・避けること)。チャットの AI には毎回の指示に、外の AI クライアント(MCP)にはつないだときに渡します",
+              "Instructions the AI follows in every task (target quality, preferences, things to avoid). Sent with every chat instruction, and to external AI clients (MCP) when they connect",
+            ),
+          )}
+          <div class="sc col standing-edit">
+            <textarea
+              rows="8"
+              bind:value={standing.text}
+              oninput={() => (standing.msg = null)}
+              onkeydown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && standing.text !== standing.saved) saveStanding();
+              }}
+              placeholder={tr("例: いつもプロがリリースできる水準の仕上がりを目指す", "e.g. Always aim for a professional, release-ready finish")}
+              aria-label={tr("いつも守らせること", "Always keep in mind")}
+            ></textarea>
+            <div class="standing-foot">
+              <span class:over={[...standing.text].length > standing.max}>{[...standing.text].length} / {standing.max}</span>
+              {#if standing.msg}<span class="standing-msg">{standing.msg}</span>{/if}
+              <span class="grow"></span>
+              {#if !standing.text.trim()}
+                <button class="btn sm" onclick={() => ((standing.text = STANDING_EXAMPLE), (standing.msg = null))}
+                  >{tr("プロの仕上がりの例を入れる", "Insert a pro-quality example")}</button
+                >
+              {/if}
+              <button
+                class="btn sm primary"
+                disabled={standing.busy || standing.text.trim() === standing.saved || [...standing.text].length > standing.max}
+                onclick={saveStanding}
+                title={tr("保存(Ctrl+Enter)", "Save (Ctrl+Enter)")}>{tr("保存", "Save")}</button
+              >
+            </div>
+          </div>
+        </div>
         <label class="srow">
           {@render row(tr("作業が終わったら音で知らせる", "Chime when AI finishes"), tr("AI のターンが終わったとき(失敗したときは低い音)", "When the AI's turn ends (a low tone if it fails)"))}
           <input class="sc" type="checkbox" checked={settings.notifyOnAiDone} onchange={toggleNotify} />
@@ -932,6 +1011,44 @@
   .sc.col {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  /* いつも守らせること: 説明の下に、幅いっぱいの入力欄 */
+  .srow.standing {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .standing-edit textarea {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    min-height: 120px;
+    padding: 6px 8px;
+    background: var(--bg-inset);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    font: inherit;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+  }
+  .standing-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+  }
+  .standing-foot .over {
+    color: var(--danger);
+  }
+  .standing-msg {
+    color: var(--text-dim);
+  }
+  .standing-foot .grow {
+    flex: 1;
   }
 
   select,

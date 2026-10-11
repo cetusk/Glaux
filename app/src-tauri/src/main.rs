@@ -2393,6 +2393,41 @@ async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
     .await?
 }
 
+/// AI にいつも守らせる指示(設定 → AI)。チャットは毎ターン、外の MCP クライアントはつないだときに読む
+#[tauri::command]
+fn get_standing_instructions() -> Value {
+    json!({
+        "text": std::fs::read_to_string(glaux_mcp::guide::standing_path()).unwrap_or_default(),
+        "path": glaux_mcp::guide::standing_path().to_string_lossy(),
+        "max": glaux_mcp::guide::STANDING_MAX,
+    })
+}
+
+/// AI にいつも守らせる指示を書く(空なら消す)
+#[tauri::command]
+fn set_standing_instructions(text: String) -> Result<(), String> {
+    let path = glaux_mcp::guide::standing_path();
+    let text = text.trim();
+    if text.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        };
+    }
+    let n = text.chars().count();
+    if n > glaux_mcp::guide::STANDING_MAX {
+        return Err(glaux_core::tr!(
+            "長すぎます({n} 字。{} 字まで)",
+            "Too long ({n} characters; up to {})",
+            glaux_mcp::guide::STANDING_MAX
+        ));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, format!("{text}\n")).map_err(|e| e.to_string())
+}
+
 /// パートどうしの音のぶつかり(ピアノロール・タイムラインの印)。聞こえている(ミュートでない)トラックだけ
 #[tauri::command]
 async fn check_clashes(state: State<'_, AppState>) -> Result<Value, String> {
@@ -3953,6 +3988,8 @@ fn main() -> Result<()> {
             export_midi,
             harmony,
             check_clashes,
+            get_standing_instructions,
+            set_standing_instructions,
             get_design,
             clip_states,
             plan_save,

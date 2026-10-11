@@ -15551,8 +15551,13 @@ impl ServerHandler for GlauxServer {
     }
 
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(crate::guide::CORE)
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            match crate::guide::standing() {
+                // 人が設定で書いた「いつも守らせる指示」は、つないだときに読む(書き直したら、つなぎ直すと効く)
+                Some(t) => format!("{}{}", crate::guide::CORE, crate::guide::standing_block(&t)),
+                None => crate::guide::CORE.to_owned(),
+            },
+        )
     }
 }
 

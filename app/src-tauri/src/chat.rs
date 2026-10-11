@@ -265,7 +265,7 @@ pub fn codex_args(
     resume: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
-    lang: ReplyLang,
+    prompt: &str,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into()];
     if resume.is_some() {
@@ -282,10 +282,7 @@ pub fn codex_args(
         "features.unified_exec=false".to_owned(),
         format!("mcp_servers.glaux.url={}", toml_string(mcp_url)),
         "mcp_servers.glaux.default_tools_approval_mode=\"approve\"".to_owned(),
-        format!(
-            "developer_instructions={}",
-            toml_string(system_prompt(lang))
-        ),
+        format!("developer_instructions={}", toml_string(prompt)),
     ];
     // 考える深さ(model_reasoning_effort。値は valid_effort で確かめ済み)
     let effort = effort.map(|e| format!("model_reasoning_effort={}", toml_string(e)));
@@ -403,6 +400,16 @@ fn system_prompt(lang: ReplyLang) -> &'static str {
         ReplyLang::En => (&EN, REPLY_EN),
     };
     cell.get_or_init(|| format!("{CHAT_PROMPT}{reply}\n\n{}", glaux_mcp::guide::CORE))
+}
+
+/// 毎ターン渡すシステムプロンプト: 固定の部分に、人が設定で書いた「いつも守らせる指示」を付ける
+/// (ファイルをターンごとに読むので、書き直すと次の指示から効く)
+fn chat_prompt(lang: ReplyLang) -> String {
+    let base = system_prompt(lang);
+    match glaux_mcp::guide::standing() {
+        Some(t) => format!("{base}{}", glaux_mcp::guide::standing_block(&t)),
+        None => base.to_owned(),
+    }
 }
 
 impl ChatManager {
@@ -643,7 +650,7 @@ impl ChatManager {
                     self.resume_id().as_deref(),
                     model.as_deref(),
                     effort.as_deref(),
-                    self.lang(),
+                    &chat_prompt(self.lang()),
                 ));
             }
         }
@@ -671,7 +678,7 @@ impl ChatManager {
             .arg("--strict-mcp-config")
             .args(["--allowedTools", "mcp__glaux"])
             .arg("--append-system-prompt")
-            .arg(system_prompt(self.lang()));
+            .arg(chat_prompt(self.lang()));
         if let Some(sid) = self.resume_id() {
             cmd.args(["--resume", &sid]);
             // 送った指示を直して送り直す: その前のターンの終わりまでの会話から、別の会話として続ける
@@ -1169,7 +1176,13 @@ mod tests {
     #[test]
     fn codex_args_are_built_in_order() {
         let url = "http://127.0.0.1:41920/mcp";
-        let args = codex_args(url, None, Some("gpt-6-astra"), Some("high"), ReplyLang::Ja);
+        let args = codex_args(
+            url,
+            None,
+            Some("gpt-6-astra"),
+            Some("high"),
+            system_prompt(ReplyLang::Ja),
+        );
         assert_eq!(
             &args[..4],
             [
@@ -1189,7 +1202,13 @@ mod tests {
                 && !valid_effort("")
         );
 
-        let args = codex_args(url, Some("01a0d570-4eae"), None, None, ReplyLang::En);
+        let args = codex_args(
+            url,
+            Some("01a0d570-4eae"),
+            None,
+            None,
+            system_prompt(ReplyLang::En),
+        );
         assert_eq!(&args[..2], ["exec", "resume"]);
         assert_eq!(&args[args.len() - 2..], ["01a0d570-4eae", "-"]);
 
@@ -1225,7 +1244,14 @@ mod tests {
             Some("01a0d570-4eae-7923-ae85-8c56e471244d"),
             Some("gpt-6-astra-2026-09-01"),
             Some("xhigh"),
-            ReplyLang::En,
+            // いつも守らせる指示を上限まで書いても入る(引用符で 2 重になる " も入れておく)
+            &format!(
+                "{}{}",
+                system_prompt(ReplyLang::En),
+                glaux_mcp::guide::standing_block(
+                    &"\"あ".repeat(glaux_mcp::guide::STANDING_MAX / 2)
+                )
+            ),
         );
         // 引数ごとの引用符と、内側の " を 2 重にする分を見込む(文字数は UTF-16 単位)
         let len: usize = args
@@ -1250,7 +1276,7 @@ mod tests {
             panic!("GLAUX_CODEX_BIN / GLAUX_CODEX_MOCK / GLAUX_CODEX_MCP を設定してください");
         };
         let run = |resume: Option<&str>| {
-            let mut args = codex_args(&mcp, resume, None, None, ReplyLang::Ja);
+            let mut args = codex_args(&mcp, resume, None, None, system_prompt(ReplyLang::Ja));
             let at = if resume.is_some() { 2 } else { 1 };
             let provider = [
                 "model_provider=\"mock\"".to_owned(),

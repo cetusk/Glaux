@@ -991,6 +991,16 @@ export function harmony(): Promise<import("./harmony.svelte").HarmonyView> {
   return invoke("harmony");
 }
 
+/** AI にいつも守らせる指示(設定フォルダの instructions.md) */
+export function getStandingInstructions(): Promise<{ text: string; path: string; max: number }> {
+  return invoke("get_standing_instructions");
+}
+
+/** AI にいつも守らせる指示を書く(空なら消す) */
+export function setStandingInstructions(text: string): Promise<void> {
+  return invoke("set_standing_instructions", { text });
+}
+
 /** パートどうしの音のぶつかり(聞こえているトラックだけ。出てくる所すべて付き) */
 export function checkClashes(): Promise<import("./clash.svelte").ClashView> {
   return invoke("check_clashes");

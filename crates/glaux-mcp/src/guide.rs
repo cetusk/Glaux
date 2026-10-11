@@ -537,6 +537,34 @@ pub fn guide(topic: &str) -> Option<String> {
         .map(|(_, title, body)| format!("# {title}\n{body}"))
 }
 
+/// いつも守らせる指示(設定 → AI で人が書く)の上限の文字数。チャットでは毎ターン送り、Windows のコマンドライン
+/// (8191 文字)にも入るため、長くしすぎない
+pub const STANDING_MAX: usize = 2_000;
+
+/// いつも守らせる指示のファイル(設定フォルダの instructions.md)
+pub fn standing_path() -> std::path::PathBuf {
+    user_dir()
+        .parent()
+        .map(|p| p.join("instructions.md"))
+        .unwrap_or_else(|| std::path::PathBuf::from("instructions.md"))
+}
+
+/// いつも守らせる指示(無い・空なら None。上限を超えた分は切る)
+pub fn standing() -> Option<String> {
+    standing_from(&standing_path())
+}
+
+pub fn standing_from(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.chars().take(STANDING_MAX).collect())
+}
+
+/// 共通の指示の後ろに付ける形(MCP の instructions とチャットのシステムプロンプト)
+pub fn standing_block(text: &str) -> String {
+    format!("\n\nユーザーがいつも守るよう求めている指示(すべての作業で守る。個々の指示とぶつかるときは個々の指示を優先):\n{text}")
+}
+
 /// ユーザーが書いた定石の置き場所(設定フォルダの guides。中の .md が `user:<ファイル名>` のトピックになる)
 pub fn user_dir() -> std::path::PathBuf {
     crate::presets::default_dir()
@@ -606,6 +634,25 @@ mod tests {
             assert!(guide(name).is_some());
         }
         assert!(guide("no_such").is_none());
+    }
+
+    #[test]
+    fn standing_instructions_are_trimmed_and_capped() {
+        let dir = std::env::temp_dir().join(format!("glaux-standing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("instructions.md");
+        assert!(standing_from(&path).is_none());
+        std::fs::write(&path, "  \n").unwrap();
+        assert!(standing_from(&path).is_none());
+        std::fs::write(&path, "\n常にプロの仕上がりを目指す\n").unwrap();
+        assert_eq!(
+            standing_from(&path).as_deref(),
+            Some("常にプロの仕上がりを目指す")
+        );
+        std::fs::write(&path, "あ".repeat(STANDING_MAX + 50)).unwrap();
+        assert_eq!(standing_from(&path).unwrap().chars().count(), STANDING_MAX);
+        assert!(standing_block("x").ends_with("\nx"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
