@@ -7,6 +7,7 @@
   import Icon from "./lib/Icon.svelte";
   import { showToast } from "./lib/toast.svelte";
   import { refreshHarmony } from "./lib/harmony.svelte";
+  import { refreshClashes } from "./lib/clash.svelte";
   import { barAtTick, buildBars, nextBarHead, prevBarHead } from "./lib/barMap";
   import type { AppInfo, EntrySummary, Project } from "./lib/types";
   import { pollTransport, startTransportPolling, transportStore } from "./lib/transport.svelte";
@@ -181,6 +182,7 @@
       entries = h.entries;
       historyTotal = h.total;
       refreshHarmony();
+      refreshClashes();
       redoable = h.redoable ?? [];
       error = null;
       // プロジェクトの移動・切り替えでパスが変わることがあるのでフッターも更新
@@ -274,6 +276,7 @@
       historyTotal = h.total;
       redoable = h.redoable ?? [];
       refreshHarmony();
+      refreshClashes();
       error = null;
     } catch {
       refresh();

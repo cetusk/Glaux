@@ -26,6 +26,19 @@ export function toggleTrackFlag(prop: "mute" | "solo", t: Track, ts: Track[]) {
   api.setListen(ts.map((x) => ({ op: "set_track_prop", id: x.id, prop, value }))).catch(() => {});
 }
 
+/** すべてのトラックへの操作(トラックの右クリックメニュー) */
+export type AllAction = "mute" | "unmute" | "invert" | "unsolo" | "select" | "delete";
+
+/// すべてのトラックのミュート・ソロをまとめて変える(聴き方なので履歴に積まない)。変わるトラックだけ送る
+export function setAllListen(tracks: Track[], action: "mute" | "unmute" | "invert" | "unsolo") {
+  const cmds = tracks.flatMap((t) => {
+    const [prop, value] =
+      action === "unsolo" ? (["solo", false] as const) : (["mute", action === "mute" ? true : action === "unmute" ? false : !t.mute] as const);
+    return t[prop] === value ? [] : [{ op: "set_track_prop", id: t.id, prop, value }];
+  });
+  if (cmds.length) api.setListen(cmds).catch(() => {});
+}
+
 export function renameTrack(track: Track, value: string) {
   const name = value.trim();
   if (!name || name === track.name) return;

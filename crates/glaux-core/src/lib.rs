@@ -17,6 +17,7 @@ pub mod arp;
 pub mod arrange;
 pub mod bassline;
 pub mod chord;
+pub mod clash;
 pub mod command;
 pub mod comp;
 pub mod critique;

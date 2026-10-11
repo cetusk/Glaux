@@ -7,6 +7,7 @@
   import { plural, tr } from "./i18n.svelte";
   import { aiHighlight } from "./aiHighlight.svelte";
   import { harmonyStore } from "./harmony.svelte";
+  import { clashStore, clashTip, spansOf, type ClashItem } from "./clash.svelte";
   import { barAtTick, buildBars, groupHeads } from "./barMap";
   import DrumKit from "./DrumKit.svelte";
   import Fretboard from "./Fretboard.svelte";
@@ -157,6 +158,65 @@
     const rel = playheadTick - c.start;
     if (rel < 0 || rel > c.length) return -1;
     return c.loop && c.loop_len ? rel % c.loop_len : rel;
+  }
+
+  // ---- ほかのパートとぶつかり(glaux-core の clash と同じトラック = 聞こえている・ドラム以外) ----
+
+  /// ほかのトラックの鳴る音(クリップの編集範囲の中、クリップの頭からの tick)
+  const otherSounding = $derived.by(() => {
+    const out: { start: number; end: number; pitch: number }[] = [];
+    const view = clashStore.view;
+    if (!clip || !found || !view) return out;
+    const ids = new Set(view.track_ids);
+    const from = clip.start;
+    const to = clip.start + lenOf(clip);
+    for (const t of project.tracks) {
+      if (t.id === found.track.id || !ids.has(t.id)) continue;
+      for (const c of t.clips) {
+        if (c.kind !== "midi" || c.start >= to || c.start + c.length <= from) continue;
+        const rep = c.loop && c.loop_len ? c.loop_len : c.length;
+        for (let off = 0; off < c.length; off += rep) {
+          for (const n of c.notes) {
+            if (n.pos >= rep) continue;
+            const s = c.start + off + n.pos;
+            const e = Math.min(s + n.dur, c.start + off + rep, c.start + c.length);
+            if (e <= from || s >= to) continue;
+            out.push({ start: Math.max(s, from) - from, end: Math.min(e, to) - from, pitch: n.pitch });
+          }
+        }
+      }
+    }
+    return out;
+  });
+
+  /// このクリップの音が関わるぶつかり(出てくる所ごと)。ループのクリップは 1 回分の中に畳む
+  const clashMarks = $derived.by(() => {
+    const out: { start: number; end: number; mine: number; other: number; item: ClashItem }[] = [];
+    if (!clip || isDrum) return out;
+    const rep = lenOf(clip);
+    for (const item of clashStore.view?.clashes ?? []) {
+      for (const sp of spansOf(item)) {
+        const [mine, other] = sp.a_clip === clip.id ? [item.a.pitch, item.b.pitch] : sp.b_clip === clip.id ? [item.b.pitch, item.a.pitch] : [-1, -1];
+        if (mine < 0) continue;
+        const rel = sp.tick - clip.start;
+        if (rel < 0 || rel >= clip.length) continue;
+        const start = rel % rep;
+        out.push({ start, end: Math.min(start + sp.len, rep), mine, other, item });
+      }
+    }
+    return out;
+  });
+
+  /** 印の上なら吹き出しの文 */
+  function clashAt(x: number, y: number): string | null {
+    if (!showOthers) return null;
+    const tick = x / pxPerTick;
+    const pitch = 127 - Math.floor(y / rowH);
+    const m = clashMarks.find((k) => tick >= k.start && tick < k.end && (pitch === k.mine || pitch === k.other));
+    if (!m) return null;
+    const c = m.item;
+    const where = tr(`${c.bar} 小節 ${c.beat} 拍${c.chord ? ` · 和音 ${c.chord}` : ""}`, `bar ${c.bar} beat ${c.beat}${c.chord ? ` · chord ${c.chord}` : ""}`);
+    return `${clashTip(c)}\n(${where}${c.count > 1 ? tr(` ほか ${c.count - 1} か所`, ` and ${c.count - 1} more`) : ""})`;
   }
 
   const contentW = $derived(clip ? Math.max(lenOf(clip) * pxPerTick, 200) : 200);
@@ -381,6 +441,23 @@
       }
     }
 
+    // ほかのパート(聞こえているトラック)の音を薄く。クリップの範囲の分だけ(ループは展開しない近似: 鳴る音の位置で描く)
+    if (showOthers && !isDrum) {
+      g.fillStyle = "rgba(210, 210, 210, 0.13)";
+      g.strokeStyle = "rgba(210, 210, 210, 0.22)";
+      g.lineWidth = 1;
+      for (const o of otherSounding) {
+        const x = o.start * pxPerTick;
+        const w = Math.max((o.end - o.start) * pxPerTick, 3);
+        if (x + w < win.x || x > win.x + win.w) continue;
+        const y = (127 - o.pitch) * rowH;
+        g.beginPath();
+        g.roundRect(x, y + 2.5, w, rowH - 5, 2);
+        g.fill();
+        g.stroke();
+      }
+    }
+
     // ノート(素の位置。ドラッグ中のゴーストはオーバーレイ側で描く)
     for (const n of currentClip.notes) {
       const x = n.pos * pxPerTick;
@@ -474,6 +551,32 @@
         g.textBaseline = "middle";
         g.fillText(label, x + 3, y + rowH / 2 + 0.5);
       }
+    }
+    if (showOthers && !isDrum) drawClashes(g);
+  }
+
+  /** このクリップに掛かるぶつかりの印(相手の音の行にも)。ノートの上に描く */
+  function drawClashes(g: CanvasRenderingContext2D) {
+    for (const m of clashMarks) {
+      const x = m.start * pxPerTick;
+      const w = Math.max((m.end - m.start) * pxPerTick, 4);
+      const warn = m.item.severity === "warn";
+      g.save();
+      g.strokeStyle = warn ? "rgba(255, 82, 82, 0.95)" : "rgba(255, 170, 60, 0.9)";
+      g.lineWidth = warn ? 2 : 1.5;
+      if (!warn) g.setLineDash([3, 2]);
+      for (const p of [m.mine, m.other]) {
+        g.beginPath();
+        g.roundRect(x, (127 - p) * rowH + 0.5, w, rowH - 1, 3);
+        g.stroke();
+      }
+      // 2 つの行をつなぐ縦の線(どの音とぶつかっているか)
+      g.setLineDash([]);
+      g.globalAlpha = 0.6;
+      const [hi, lo] = m.mine > m.other ? [m.mine, m.other] : [m.other, m.mine];
+      g.fillStyle = g.strokeStyle as string;
+      g.fillRect(x + 1, (127 - hi) * rowH + rowH, 1.5, (hi - lo - 1) * rowH);
+      g.restore();
     }
   }
 
@@ -586,6 +689,9 @@
     void settings.accent;
     void aiHighlight.notes;
     void harmonyStore.view;
+    void showOthers;
+    void otherSounding;
+    void clashMarks;
     drawBase();
   });
 
@@ -760,6 +866,8 @@
 
   // ---- ベロシティの帯(下端に固定、横スクロールはノートと連動。描画と編集は VelocityLane) ----
   let showVel = $state(true);
+  /// ほかのパートの音を薄く重ね、ぶつかる所に印を付ける
+  let showOthers = $state(true);
 
   async function applyEdit(commands: unknown[], label: string) {
     // 失敗は api.applyEdit がトーストで知らせる
@@ -952,9 +1060,13 @@
     }
     updateHover(e);
     if (!drag) {
+      // ぶつかりの印の上なら、何とぶつかるか・どう直すかを吹き出しに
+      const tip = clashAt(ex(e), ey(e));
+      const el = e.currentTarget as HTMLElement;
+      if (tip) el.title = tip;
+      else if (el.title) el.removeAttribute("title");
       // カーソル形状
       const hit = noteAt(ex(e), ey(e));
-      const el = e.currentTarget as HTMLElement;
       el.style.cursor = hit ? (nearRightEdge(hit, ex(e)) ? "ew-resize" : "move") : "default";
       return;
     }
@@ -1443,6 +1555,7 @@
       portaCount={selectedPorta.length}
       {glideValue}
       bind:showVel
+      bind:showOthers
       bind:showKit
       bind:showFret
       bind:curveMode

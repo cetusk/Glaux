@@ -5,6 +5,7 @@
   import { shouldYieldKey } from "./keys";
   import { aiHighlight } from "./aiHighlight.svelte";
   import { harmonyStore } from "./harmony.svelte";
+  import { clashStore, clashTip, spansOf, type ClashItem } from "./clash.svelte";
   import { showError, showToast } from "./toast.svelte";
   import { plural, tr } from "./i18n.svelte";
   import AutomationLaneRow from "./AutomationLaneRow.svelte";
@@ -32,7 +33,9 @@
     setMasterVolume,
     setTrackColor,
     setTrackVolume,
+    setAllListen,
     toggleTrackFlag,
+    type AllAction,
   } from "./trackActions";
   import { commitSections, markersOf, removeMarker } from "./sectionOps";
   import {
@@ -372,6 +375,33 @@
 
   // ---- セクションマーカー(曲の構成)。以前は AI の set_sections でしか置けなかった ----
 
+  /// 直したいぶつかり(warn)のある小節: 小節頭 tick → その小節のぶつかり(ルーラーの赤い印)
+  const clashBars = $derived.by(() => {
+    const m = new Map<number, { tick: number; items: ClashItem[] }>();
+    for (const c of clashStore.view?.clashes ?? []) {
+      if (c.severity !== "warn") continue;
+      for (const sp of spansOf(c)) {
+        const bar = barAtTick(barList, sp.tick);
+        if (!bar) continue;
+        const e = m.get(bar.tick) ?? { tick: sp.tick, items: [] };
+        if (!e.items.includes(c)) e.items.push(c);
+        e.tick = Math.min(e.tick, sp.tick);
+        m.set(bar.tick, e);
+      }
+    }
+    return m;
+  });
+
+  /// ぶつかりの印を押す: その所へ移り、外れている方(a)の音のクリップをピアノロールで開く
+  function openClash(tick: number, c: ClashItem) {
+    onSeek?.(tick);
+    const sp = spansOf(c).find((x) => x.tick === tick) ?? spansOf(c)[0];
+    const track = project.tracks.find((t) => t.id === c.a.track_id);
+    const clip = track?.clips.find((x) => x.id === sp.a_clip);
+    if (!track || !clip) return;
+    pianoRollStore.focus = { clipId: clip.id, clipName: clip.name, trackId: track.id, trackName: track.name, anchorTick: Math.max(0, tick - clip.start) };
+  }
+
   /// 小節頭 tick → コード名(ノートからの推定。前の小節と同じ・ノートなしは出さない)
   const chordAt = $derived.by(() => {
     const m = new Map<number, string>();
@@ -693,6 +723,19 @@
   const targetsOf = (t: Track): Track[] =>
     selectedTracks.has(t.id) && selectedTracks.size > 1 ? project.tracks.filter((x) => selectedTracks.has(x.id)) : [t];
 
+  /** すべてのトラックへの操作(右クリックメニュー)。ミュート・ソロは選択に関係なく全部に効く */
+  function allTracks(action: AllAction) {
+    trackMenu = null;
+    if (action === "select") {
+      selectedTracks = new Set(project.tracks.map((t) => t.id));
+      selectedClips = new Set();
+    } else if (action === "delete") {
+      deleteTracks(project.tracks);
+    } else {
+      setAllListen(project.tracks, action);
+    }
+  }
+
   function deleteTracks(tracks: Track[]) {
     if (!tracks.length) return;
     const label =
@@ -929,7 +972,11 @@
           return;
         }
       }
-      if (mod && e.code === "KeyA") {
+      if (mod && e.code === "KeyA" && selectedTracks.size > 0 && selectedClips.size === 0) {
+        // トラックを選んでいるときは、トラックを全部選ぶ
+        e.preventDefault();
+        selectedTracks = new Set(project.tracks.map((t) => t.id));
+      } else if (mod && e.code === "KeyA") {
         e.preventDefault();
         selectedClips = new Set(allClips().map((c) => c.clip.id));
       } else if (selectedClips.size === 0 && !(mod && e.code === "KeyV")) {
@@ -1396,6 +1443,22 @@
             >{/if}
         </div>
       {/each}
+      {#each [...clashBars.values()] as cb (cb.tick)}
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <span
+          class="clash-mark"
+          style="left:{cb.tick * pxPerTick}px"
+          title={cb.items
+            .slice(0, 3)
+            .map(clashTip)
+            .join("\n\n") +
+            (cb.items.length > 3 ? tr(`\n\nほか ${cb.items.length - 3} 組`, `\n\n${cb.items.length - 3} more`) : "") +
+            tr("\n\n押すと、その音をピアノロールで開く", "\n\nClick to open that note in the piano roll")}
+          onpointerdown={(e) => e.stopPropagation()}
+          onpointerup={(e) => e.stopPropagation()}
+          onclick={() => openClash(cb.tick, cb.items[0])}
+        ></span>
+      {/each}
     </div>
   </div>
 
@@ -1754,6 +1817,7 @@
       onBounce={bounceTrack}
       onOpenGui={() => openClapGui(trackMenu!.trackId)}
       onDelete={deleteTrack}
+      onAll={allTracks}
       onClose={() => (trackMenu = null)}
       deleteCount={selectedTracks.has(trackMenu.trackId) ? selectedTracks.size : 1}
     />
@@ -1823,6 +1887,23 @@
   }
 
   /* 小節のコード(推定)。小節番号の横に小さく */
+  /* 直したいぶつかりのある所(ルーラーの下端の赤い印) */
+  .clash-mark {
+    position: absolute;
+    bottom: 1px;
+    width: 9px;
+    height: 9px;
+    margin-left: -4px;
+    border-radius: 50%;
+    background: #ff5252;
+    border: 1px solid color-mix(in srgb, #ff5252 40%, #000);
+    cursor: pointer;
+    z-index: 1;
+  }
+  .clash-mark:hover {
+    transform: scale(1.3);
+  }
+
   .chord-chip {
     margin-left: 5px;
     font-size: 10px;

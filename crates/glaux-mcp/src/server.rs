@@ -248,6 +248,22 @@ pub struct AnalyzeHarmonyParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct CheckClashesParams {
+    /// 対象トラック ID の配列。省略で全トラック(ドラムは自動で除外)
+    #[serde(default)]
+    pub track_ids: Option<Vec<String>>,
+    /// 範囲の開始 tick。省略で曲頭から
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// 範囲の終了 tick。省略で曲末まで
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+    /// ミュートのトラックも入れる(既定 false = 聞こえている音だけ)
+    #[serde(default)]
+    pub include_muted: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct AnalyzeRhythmParams {
     /// 対象トラック ID の配列。省略で全トラック(リズムはドラムも対象)。
     #[serde(default)]
@@ -6128,7 +6144,8 @@ impl GlauxServer {
         その差で良し悪しを決めないこと。tonal_balance(オクターブ帯域ごとの、それぞれ全体に対する dB。音量差の影響を受けない)・\
         stereo・plr_db / psr_min_db(ダイナミクス)・loudness_range_lu で比べる。match_gain_db は後の方に掛けると前と同じ音量になる量。\
         notes に目立つ違いの要約が入る。編集で音量まで変えたくなければ、音量(フェーダー・makeup)を match_gain_db の分だけ戻して\
-        もう一度比べるとよい。track_ids・start/end_tick は analyze_audio と同じ。"
+        もう一度比べるとよい。track_ids・start/end_tick は analyze_audio と同じ。\
+        単体と全体の両方を返す(in_mix / solo)。"
     )]
     async fn compare_mix(&self, params: Parameters<CompareMixParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("compare_mix");
@@ -6174,23 +6191,86 @@ impl GlauxServer {
             }
         };
         let project_dir = self.handle.project_dir().await?;
-        let cmp = tokio::task::spawn_blocking(move || {
+        // 単体と全体の両方で聴く: トラックを指定したら全体のミックスでも、全体を比べるなら変わったトラックを単体でも比べる
+        // (単体で良くなっても全体では埋もれる・ぶつかる、全体では分からない単体の傷がある)
+        let changed = changed_tracks(&before, &after);
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
             let dir = std::path::Path::new(&project_dir);
             let bank_before = glaux_engine::SampleBank::for_offline(&before, dir);
             let bank_after = glaux_engine::SampleBank::for_offline(&after, dir);
-            glaux_engine::compare_projects(
-                &before,
-                &after,
-                track_ids.as_deref(),
-                range,
-                &bank_before,
-                &bank_after,
-            )
+            let compare = |ids: Option<&[glaux_core::TrackId]>| {
+                glaux_engine::compare_projects(
+                    &before,
+                    &after,
+                    ids,
+                    range,
+                    &bank_before,
+                    &bank_after,
+                )
+            };
+            let brief = |c: &glaux_engine::Comparison| {
+                json!({
+                    "loudness_diff_db": c.loudness_diff_db,
+                    "match_gain_db": c.match_gain_db,
+                    "notes": c.notes,
+                })
+            };
+            let cmp = compare(track_ids.as_deref()).map_err(|e| format!("比べられません: {e}"))?;
+            let mut v = serde_json::to_value(&cmp).map_err(|e| e.to_string())?;
+            let name = |id: &glaux_core::TrackId| {
+                after
+                    .tracks
+                    .iter()
+                    .find(|t| &t.id == id)
+                    .map_or_else(|| id.to_string(), |t| t.name.clone())
+            };
+            match &track_ids {
+                Some(ids) => {
+                    v["listened"] = json!(format!(
+                        "単体({})と全体のミックスの両方",
+                        ids.iter().map(name).collect::<Vec<_>>().join("・")
+                    ));
+                    match compare(None) {
+                        Ok(m) => v["in_mix"] = brief(&m),
+                        Err(e) => v["in_mix_error"] = json!(e.to_string()),
+                    }
+                }
+                None => {
+                    let solo: Vec<Value> = changed
+                        .iter()
+                        .take(MAX_SOLO_COMPARE)
+                        .map(|id| match compare(Some(std::slice::from_ref(id))) {
+                            Ok(c) => {
+                                let mut b = brief(&c);
+                                b["track_id"] = json!(id.to_string());
+                                b["track"] = json!(name(id));
+                                b
+                            }
+                            Err(e) => json!({"track": name(id), "error": e.to_string()}),
+                        })
+                        .collect();
+                    v["listened"] = json!(if solo.is_empty() {
+                        "全体のミックス(音の変わったトラックは無い)".to_owned()
+                    } else {
+                        format!(
+                            "全体のミックスと、変わったトラックの単体({})",
+                            solo.iter()
+                                .filter_map(|s| s["track"].as_str())
+                                .collect::<Vec<_>>()
+                                .join("・")
+                        )
+                    });
+                    if changed.len() > MAX_SOLO_COMPARE {
+                        v["solo_omitted"] = json!(changed.len() - MAX_SOLO_COMPARE);
+                    }
+                    v["solo"] = json!(solo);
+                }
+            }
+            Ok(v)
         })
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("比べられません: {e}"))?;
-        let mut v = serde_json::to_value(&cmp).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())??;
+        let mut v = v;
         v["edits_compared"] = json!(back);
         v["project_version"] = json!(version);
         Ok(JsonText(v))
@@ -6228,6 +6308,44 @@ impl GlauxServer {
         let analysis =
             cpu_bound(|| glaux_core::harmony::analyze(&project, track_ids.as_deref(), range));
         let mut v = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
+        v["project_version"] = json!(version);
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "あなたの「和声の耳」。パートどうしの音のぶつかりと耳ざわりな所を曲全体から探す(ドラム・ミュートは除く)。\
+        warn は直す(読み方は get_guide revise)。"
+    )]
+    async fn check_clashes(&self, params: Parameters<CheckClashesParams>) -> ToolResult {
+        let _activity = self.handle.begin_activity("check_clashes");
+        let p = params.0;
+        let (project, version) = self.handle.get_project_shared().await?;
+        let tracks: Option<Vec<glaux_core::TrackId>> = match &p.track_ids {
+            None => None,
+            Some(ids) => Some(
+                ids.iter()
+                    .map(|s| glaux_core::TrackId::parse(s).map_err(|e| e.to_string()))
+                    .collect::<Result<_, _>>()?,
+            ),
+        };
+        let range = match (p.start_tick, p.end_tick) {
+            (None, None) => None,
+            (s, e) => {
+                let (s, e) = (s.unwrap_or(0), e.unwrap_or(u64::MAX));
+                if e <= s {
+                    return Err("end_tick は start_tick より大きくすること".to_owned());
+                }
+                Some((s, e))
+            }
+        };
+        let opts = glaux_core::clash::ClashOptions {
+            tracks,
+            range,
+            include_muted: p.include_muted.unwrap_or(false),
+            spans: false,
+        };
+        let report = cpu_bound(|| glaux_core::clash::check(&project, &opts));
+        let mut v = serde_json::to_value(&report).map_err(|e| e.to_string())?;
         v["project_version"] = json!(version);
         Ok(JsonText(v))
     }
@@ -15462,6 +15580,33 @@ async fn import_audio_blocking(
 /// CPU を長く使う計算を、マルチスレッドのランタイムなら `block_in_place` で包む
 /// (同じ worker に載っているほかの要求を別の worker へ逃がす)。それ以外(テストの
 /// current_thread など)ではそのまま呼ぶ
+/// compare_mix で単体でも比べるトラックの上限(1 つごとに前後を描き出すため)
+const MAX_SOLO_COMPARE: usize = 3;
+
+/// 前と後で音の変わったトラック(ミュート・ソロは聴き方なので見ない)。前に無かった・消えたトラックは除く
+fn changed_tracks(
+    before: &glaux_core::Project,
+    after: &glaux_core::Project,
+) -> Vec<glaux_core::TrackId> {
+    after
+        .tracks
+        .iter()
+        .filter(|t| {
+            before
+                .tracks
+                .iter()
+                .find(|b| b.id == t.id)
+                .is_some_and(|b| {
+                    let mut b = b.clone();
+                    b.mute = t.mute;
+                    b.solo = t.solo;
+                    b != **t
+                })
+        })
+        .map(|t| t.id.clone())
+        .collect()
+}
+
 fn cpu_bound<T>(f: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current() {
         Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {

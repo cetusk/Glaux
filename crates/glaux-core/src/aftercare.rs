@@ -376,7 +376,7 @@ pub fn check(before: &Project, after: &Project, clips: Option<&[ClipId]>) -> Aft
                                 other.name,
                                 pitch_name(o.pitch)
                             ),
-                            hint: "意図した濁りでなければ、どちらかを和音の音に寄せる(analyze_harmony でその小節の和音を見る)"
+                            hint: "意図した濁りでなければ、どちらかを和音の音に寄せる(check_clashes でどちらが伴奏の和音の外かを見る)"
                                 .to_owned(),
                         });
                     }

@@ -991,6 +991,11 @@ export function harmony(): Promise<import("./harmony.svelte").HarmonyView> {
   return invoke("harmony");
 }
 
+/** パートどうしの音のぶつかり(聞こえているトラックだけ。出てくる所すべて付き) */
+export function checkClashes(): Promise<import("./clash.svelte").ClashView> {
+  return invoke("check_clashes");
+}
+
 /** トラックを音声にする(フリーズ)。直後に音声トラックができ、元はミュートされる */
 export function bounceTrack(trackId: string): Promise<{ entry_id: string; new_track: string; seconds: number }> {
   return invoke("bounce_track", { trackId });

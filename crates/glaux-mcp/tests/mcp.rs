@@ -1119,6 +1119,21 @@ async fn compare_mix_reports_loudness_and_tone_separately() {
     assert!((v["match_gain_db"].as_f64().unwrap() - 6.0).abs() < 0.3);
     assert!(v["tonal_balance"].as_array().unwrap().len() >= 8);
     assert!(v["notes"][0].as_str().unwrap().contains("小さい"));
+    // 全体を比べると、音の変わったトラックを単体でも比べる
+    assert_eq!(v["solo"][0]["track"], "Pad");
+    assert!((v["solo"][0]["loudness_diff_db"].as_f64().unwrap() + 6.0).abs() < 0.3);
+    assert!(v["listened"].as_str().unwrap().contains("単体"));
+    // トラックを指定すると、全体のミックスでも比べる
+    let v3 = ok_json(
+        &call(
+            &fx,
+            "compare_mix",
+            json!({ "checkpoint": "mix_a", "track_ids": ["trk_pad001"] }),
+        )
+        .await,
+    );
+    assert!(v3["in_mix"]["loudness_diff_db"].is_number(), "{v3}");
+    assert!(v3.get("solo").is_none());
     // 省略時は直前の 1 編集の前と比べる(同じ結果)
     let v2 = ok_json(&call(&fx, "compare_mix", json!({})).await);
     assert_eq!(v2["loudness_diff_db"], v["loudness_diff_db"]);
@@ -2124,6 +2139,65 @@ async fn analyze_harmony_detects_key_and_chords() {
     assert_eq!(v["chords"][2]["chord"], "G");
     assert_eq!(v["chords"][3]["chord"], "C");
     assert_eq!(v["note_count"], 12);
+}
+
+#[tokio::test]
+async fn check_clashes_names_the_note_outside_the_accompaniment_chord() {
+    let fx = setup().await;
+    // 伴奏 Am(A3 C4 E4)を 2 小節、旋律は 1 小節目に F4(E4 と半音、伴奏の和音の外)、2 小節目に A4(和音の音)
+    let r = call(
+        &fx,
+        "apply_commands",
+        json!({
+            "commands": [
+                { "op": "add_track", "track": { "id": "trk_keys01", "name": "Keys", "kind": "midi" } },
+                { "op": "add_track", "track": { "id": "trk_lead01", "name": "Lead", "kind": "midi" } },
+                { "op": "add_clip", "track": "trk_keys01",
+                  "clip": { "id": "clp_keys01", "name": "Am", "start": 0, "length": 7680, "kind": "midi",
+                    "notes": [
+                        { "id": "nt_ka0001", "pos": 0, "dur": 7680, "pitch": 57, "vel": 100 },
+                        { "id": "nt_kc0001", "pos": 0, "dur": 7680, "pitch": 60, "vel": 100 },
+                        { "id": "nt_ke0001", "pos": 0, "dur": 7680, "pitch": 64, "vel": 100 }
+                    ] } },
+                { "op": "add_clip", "track": "trk_lead01",
+                  "clip": { "id": "clp_lead01", "name": "melody", "start": 0, "length": 7680, "kind": "midi",
+                    "notes": [
+                        { "id": "nt_lf0001", "pos": 0, "dur": 1920, "pitch": 65, "vel": 100 },
+                        { "id": "nt_la0001", "pos": 3840, "dur": 1920, "pitch": 69, "vel": 100 }
+                    ] } }
+            ],
+            "label": "伴奏と旋律",
+        }),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    let v = ok_json(&call(&fx, "check_clashes", json!({})).await);
+    let c = &v["clashes"][0];
+    assert_eq!(c["severity"], "warn", "{v}");
+    assert_eq!(c["chord"], "Am");
+    assert_eq!(c["off_chord"], "a");
+    assert_eq!(c["a"]["track"], "Lead");
+    assert_eq!(c["a"]["note_id"], "nt_lf0001");
+    assert_eq!(c["bars"], json!([1]));
+    assert_eq!(v["clashes"].as_array().unwrap().len(), 1);
+    // 2 小節目だけなら、ぶつかりは無い
+    let v = ok_json(
+        &call(
+            &fx,
+            "check_clashes",
+            json!({ "start_tick": 3840, "end_tick": 7680 }),
+        )
+        .await,
+    );
+    assert_eq!(v["clashes"].as_array().unwrap().len(), 0, "{v}");
+    // 範囲の向きが逆なら失敗
+    let r = call(
+        &fx,
+        "check_clashes",
+        json!({ "start_tick": 3840, "end_tick": 0 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
 }
 
 #[tokio::test]

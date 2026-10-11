@@ -21,6 +21,7 @@
     portaCount,
     glideValue,
     showVel = $bindable(),
+    showOthers = $bindable(),
     showKit = $bindable(),
     showFret = $bindable(),
     curveMode = $bindable(),
@@ -51,6 +52,8 @@
     /// 選んだポルタメントの滑る時間(みな同じならその値、ばらばらなら "")
     glideValue: string;
     showVel: boolean;
+    /// ほかのパートの音を薄く重ね、ぶつかる所に印を付ける
+    showOthers: boolean;
     showKit: boolean;
     showFret: boolean;
     curveMode: boolean;
@@ -93,6 +96,17 @@
       <button class="btn sm" class:on={showVel} onclick={() => (showVel = !showVel)} title={tr("ベロシティ(音の強さ)の帯。縦棒を上下にドラッグで変更、選択中のノートはまとめて変わる", "Velocity (note strength) lane. Drag bars up/down to change; selected notes change together")}
         ><Icon name="chart-no-axes-column" />{tr("ベロシティ", "Velocity")}</button
       >
+      {#if !isDrum}
+        <button
+          class="btn sm"
+          class:on={showOthers}
+          onclick={() => (showOthers = !showOthers)}
+          title={tr(
+            "ほかのパート(聞こえているトラック)の音を薄く重ねる。半音でぶつかる所は赤(長く重なる)・橙(短い経過)の枠で示し、枠に乗せると何とぶつかるか・どう直すかが出る",
+            "Overlay the notes of other audible parts. Semitone clashes are outlined in red (sustained) or orange (brief passing); hover an outline to see what it clashes with and how to fix it",
+          )}><Icon name="layers" />{tr("ほかのパート", "Other parts")}</button
+        >
+      {/if}
       {#if isDrum}
         <button class="btn sm" class:on={showKit} onclick={() => (showKit = !showKit)} title={tr("ドラムキットの図(押すと挿入カーソルの位置に打ち込む)", "Drum kit map (click to enter a hit at the insert cursor)")}
           ><Icon name="drum" />{tr("キット", "Kit")}</button

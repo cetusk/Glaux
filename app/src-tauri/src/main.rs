@@ -2393,6 +2393,20 @@ async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
     .await?
 }
 
+/// パートどうしの音のぶつかり(ピアノロール・タイムラインの印)。聞こえている(ミュートでない)トラックだけ
+#[tauri::command]
+async fn check_clashes(state: State<'_, AppState>) -> Result<Value, String> {
+    let (project, _) = state.handle.get_project_shared().await?;
+    off_thread(move || {
+        let opts = glaux_core::clash::ClashOptions {
+            spans: true,
+            ..Default::default()
+        };
+        serde_json::to_value(glaux_core::clash::check(&project, &opts)).map_err(|e| e.to_string())
+    })
+    .await?
+}
+
 /// 設計画面の中身: 曲の計画と実際の音(区間の盛り上がり・パート × 区間・ずれ・クリップの状態)、計画の一覧と計画の履歴
 #[tauri::command]
 async fn get_design(state: State<'_, AppState>, limit: Option<usize>) -> Result<Value, String> {
@@ -3938,6 +3952,7 @@ fn main() -> Result<()> {
             import_midi,
             export_midi,
             harmony,
+            check_clashes,
             get_design,
             clip_states,
             plan_save,

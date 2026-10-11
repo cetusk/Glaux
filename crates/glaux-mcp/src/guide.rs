@@ -17,7 +17,8 @@ write_drums・write_chords・write_bassline・write_transition → 旋律(critiq
 定石は get_guide {topic}(commands・workflow・revise・melody・groove・arrangement・instruments・sound_design・genres・expression・mix・mastering・\
 audio・sound_match・clap。user: はユーザーの定石。あれば先に読む)。\
 仕上げは master_mix。\
-曲作りの報告前は critique_arrangement の warn を直し、analyze_harmony・analyze_audio の結果を添える。\
+報告前は critique_arrangement と check_clashes の warn を直し、analyze_harmony・analyze_audio の結果を添える。\
+音は単体と全体の両方で聴く。\
 修正は topic revise: 応答の aftercare の warn を直し、報告前に review_edits。\
 音・ミックスを変えたら critique_mix の warn を直し compare_mix。大きな試行の前は checkpoint。\
 案・候補を頼まれたら(音色・型・ミックスも)曲は変えずに propose_design を案ごとに呼ぶ(ミュートのトラックや複製で代用しない)。";
@@ -81,6 +82,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    言ったときだけ省く)。作る道具はパートの計画に沿い(鳴らさない区間に書かない・帯へ寄せる)、設計画面に計画と実際が並ぶ。\n\
    計画より先に音を書くと、設計画面に音域の帯が無く「実際を計画に」しか出ない。get_design が計画と実際のずれを返す。\n\
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
+   パートを足したら check_clashes で、ほかのパートとぶつかる音(伴奏の和音の外で長く重なる音)を直す。\n\
    コード進行は suggest_progression で定番から選ぶ(区間ごとに変える)。\n\
    ドラムは write_drums(ジャンルの型・区間ごとに intensity を変える・区切りのフィル・ビルドのロールと gap_beats)。\n\
    キック・スネア・ハットを別トラックにするなら parts(kick / snare / hat / tom / cymbal / perc)で呼び分ける(同じ style・seed)。\n\
@@ -106,9 +108,10 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    add_ghost_notes。ベースは apply_groove as_part: kick、コードの刻みは hat。リード・弦・管のつながったフレーズに legato / portamento、伸ばしに vibrato(topic: expression)。\n\
 5. 動き: shape_automation でビルドアップ(カットオフを exp で開く)、区間の頭の音量の出し入れ、パッドの swell、ポンピング(pump)。\n\
 6. 音作り・ミックス(topic: instruments / mix)→ 仕上げに必ず master_mix でマスタリング(音量・ピーク・帯域の釣り合い)。\n\
-7. 点検(完了の報告の前に必ず): critique_arrangement の warn を直す → analyze_harmony で調性 → analyze_audio でバランス。\n\
+7. 点検(完了の報告の前に必ず): critique_arrangement の warn を直す → check_clashes の warn を直す → analyze_harmony で調性 →\n\
+   analyze_audio でバランス(全体と、主役・直したトラックの単体)。\n\
 点検表: 格子どおりが 95% を超えるトラックが無い / 強弱に幅がある / 3 分の曲でオートメーションが数本以上ある / \n\
-区間の energy に差がある(山と谷)/ 同じ型のまま 3 区間以上続くトラックが無い / 低い音域でトラックがぶつからない /\n\
+区間の energy に差がある(山と谷)/ 同じ型のまま 3 区間以上続くトラックが無い / check_clashes に warn が無い /\n\
 主旋律の critique_melody に warn が無い / マスターに master_mix の処理がある。",
     ),
     (
@@ -117,6 +120,15 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         "- 直す範囲は頼まれた所だけ(頼まれていないパート・区間を勝手に変えない)。確かめる範囲は広く取る。\n\
 - 直す前に読む: 対象のクリップに加え、前後 1〜2 小節、同じ小節のほかのパート(get_project の clip_ids で同じ区間のクリップ)、\n\
   その小節の和音(analyze_harmony の start_tick / end_tick)、区間の計画(sections の energy・tracks・note)。\n\
+- check_clashes の読み方: clashes は別のトラックの音と短 2 度・短 9 度で重なる所と、C3 より下で 3 半音以内に重なる所(low_mud)。\n\
+  同じ組の繰り返しは 1 つにまとめ count と bars に並べる。chord はその所の伴奏(和音を弾くトラックとベース)から推定した和音、\n\
+  off_chord はどちらが和音の外か(a = 動かす候補。None = どちらも和音の音で積み方の濁り)。a.note_id・a.clip_id で直す音が分かる。\n\
+  warn = 1 拍以上・拍の頭で半拍以上の重なり、info = 短い経過(意図した経過音・テンションが多い)。harsh は 1 音あたりのうなり\n\
+  (倍音ごとの Plomp-Levelt の粗さ)が曲のふつうの所の 2 倍以上の所と元の 2 音、roughness_by_bar は小節ごとの粗さ(最大 1)、\n\
+  pairs はトラックの組ごとの数。\n\
+- 「変な和音」「ぶつかる」「濁る」と言われたら、まず check_clashes をその範囲で呼ぶ。off_chord で外れている方の音を和音の音へ寄せ\n\
+  (旋律を直すか伴奏を直すかは、どちらが曲の和音を決めているかで選ぶ)、もう一度呼んで warn が消えたか確かめ、\n\
+  ぶつかっていた 2 つのトラックを analyze_audio の track_ids で一緒に聴き、最後に全体で聴く。\n\
 - ノートを変える道具の応答には aftercare が付く(変わった範囲 ranges と、その周りの点検 issues)。\n\
   warn(clash = ほかのパートと半音でぶつかる、stale_copy / stale_section = 直す前と同じ中身だった繰り返しが古いまま、\n\
   beyond_clip = クリップの外にはみ出す)は直すか、わざとなら報告で理由を言う。info(out_of_key・leap・velocity_step・\n\
@@ -127,6 +139,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
 - 厚さ: 音を足して厚くなったら critique_mix で住み分けと音量、薄くなったら critique_arrangement で区間の盛り上がりを見る。\n\
   ベース・キック・音色・エフェクトを変えたら compare_mix(render)で前後を比べる。\n\
 - 報告の前に review_edits(before_entry に今回の最初の編集、または back に今回の編集の数。音が変わったなら render: true)。\n\
+  ノートを変えたなら、変えた範囲で check_clashes も呼ぶ。\n\
   報告には「直した所」「確かめた所(checked)」「残した知らせとその理由」を短く添える。\n\
 - 大きく直す前は checkpoint。結果が悪ければ revert_to で戻して別の案を試す。\n\
 - 人の手直しと固定: 直す前に get_design の clips を見る。edited_bars(人が手で直した小節)と固定の音(locked)は人の意図。\n\
@@ -345,6 +358,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   相互変調・押さえ込みを見て、トラックの実際のピーク(analyze_audio)の所で歪みすぎていないか。critique_mix の squashed_drums も見る。\n\
 - 言葉の調整: 「明るく・太く・遠く・柔らかく」は set_character、細かい追い込みは refine_by_words(聴き比べながらつまみを決める)。\n\
   音色を数で確かめるなら analyze_sound、2 つの音を比べるなら compare_sounds、参考の音に寄せるなら match_sound。\n\
+- 音色は単体だけで決めない: analyze_sound(1 音)・analyze_audio の track_ids(曲の中のそのトラック単体)で作り、\n\
+  最後に全体(analyze_audio、compare_mix)で、ほかのパートの中で聞こえるか・かぶらないかを確かめる。単体で太く良い音ほど全体では邪魔になりやすい。\n\
 - 音色エディタ(人が開く画面)で作り込まれた音は、つまみ・手で描いた形(ウェーブテーブルの作り方・加算合成の partial_edits・\n\
   サンプラーの slice_points・SFZ の key_adjust)を壊さないよう、変えるつまみだけ set_param で動かす。\n\
   ウェーブテーブルを直すときは make_wavetable の source: recipe(描いた形と加工の並びを残して足す。current は焼き込んで消す)。",
@@ -439,6 +454,9 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - 時間変化: set_automation_points(target: track/volume_db・track/pan・device/<パラメータ>・fx/<id>/<パラメータ>)。\n\
   曲全体のフェードやマスターのエフェクトは set_master_automation_points。\n\
 - ミックス調整は「checkpoint → 編集 → compare_mix {checkpoint} で前後を比べる → 微調整」のループで行う。\n\
+- 単体と全体の両方で聴く: 1 つのトラックを直すときは、まず単体(analyze_audio track_ids に 1 つ)で傷(クリック・歪み・こもり)を見て、\n\
+  次に全体(track_ids なし、または per_track の masking)で埋もれ・かぶり・ぶつかりを見る。片方だけで決めない。\n\
+  compare_mix は track_ids を渡すと in_mix(全体での比較)、省略すると solo(変わったトラックの単体の比較)も返す。\n\
   人の耳は 0.5〜1dB 大きいだけで良く聞こえるので、loudness_diff_db ではなく tonal_balance・stereo・plr/psr で良し悪しを決める。\n\
   音量まで変わったなら match_gain_db の分だけ戻してから比べ直す。\n\
 - 自動ミキシングの研究の経験則: (1) まず各トラックのラウドネスをおおむね揃え、主役だけ 2〜4dB 上げる。\n\
