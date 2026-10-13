@@ -301,6 +301,35 @@
     }
   }
 
+  // ---- 記録(ログ)の詳しさ(設定フォルダの logs/glaux.log。既定は警告まで) ----
+  let log = $state<{ level: api.LogLevel; path: string; env: string | null; msg: string | null }>({ level: "warn", path: "", env: null, msg: null });
+  const LOG_LEVELS = $derived<{ v: api.LogLevel; l: string }[]>([
+    { v: "error", l: tr("エラーだけ", "Errors only") },
+    { v: "warn", l: tr("警告まで — 既定", "Warnings — default") },
+    { v: "info", l: tr("動きの記録まで", "Info") },
+    { v: "debug", l: tr("詳しく(調べるとき)", "Debug (for troubleshooting)") },
+  ]);
+  async function loadLog() {
+    try {
+      const r = await api.getLogLevel();
+      log.level = r.level;
+      log.path = r.path;
+      log.env = r.env;
+    } catch {
+      // 読めなければ既定のまま
+    }
+  }
+  async function pickLog(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value as api.LogLevel;
+    try {
+      await api.setLogLevel(v);
+      log.level = v;
+      log.msg = null;
+    } catch (err) {
+      log.msg = String(err);
+    }
+  }
+
   // ---- AI にいつも守らせること(設定フォルダの instructions.md。チャットは毎ターン、外の AI はつないだときに読む) ----
   let standing = $state({ text: "", saved: "", max: 2000, path: "", msg: null as string | null, busy: false });
   async function loadStanding() {
@@ -345,6 +374,7 @@
 
   onMount(() => {
     loadStanding();
+    loadLog();
     loadDevices();
     loadMidi();
     loadModels();
@@ -431,6 +461,25 @@
                 onClose();
               }}>{tr("開く", "Open")}</button
             >
+          </div>
+        </div>
+        <div class="srow top">
+          {@render row(
+            tr("記録の詳しさ", "Log detail"),
+            tr(
+              "動作の記録(ログ)にどこまで書くか。ふだんは「警告まで」で十分です。不具合を調べるときに詳しくします",
+              "How much the app writes to its log. \"Warnings\" is enough for everyday use; raise it when troubleshooting",
+            ),
+          )}
+          <div class="sc col">
+            <select value={log.level} onchange={pickLog} aria-label={tr("記録の詳しさ", "Log detail")}>
+              {#each LOG_LEVELS as o (o.v)}<option value={o.v}>{o.l}</option>{/each}
+            </select>
+            {#if log.env}
+              <span class="log-note">{tr(`いまは環境変数 GLAUX_LOG(${log.env})が優先されています`, `The GLAUX_LOG environment variable (${log.env}) currently takes precedence`)}</span>
+            {/if}
+            {#if log.path}<span class="log-note log-path" title={log.path}>{tr("記録の場所: ", "Log file: ")}{log.path}</span>{/if}
+            {#if log.msg}<span class="log-note">{log.msg}</span>{/if}
           </div>
         </div>
       {:else if settingsUi.tab === "audio"}
@@ -1070,6 +1119,16 @@
 
   .num {
     width: 72px;
+  }
+
+  /* 記録の詳しさの下の注記(場所は選んでコピーできる) */
+  .log-note {
+    width: 270px;
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    user-select: text;
   }
 
   input[type="checkbox"].sc {

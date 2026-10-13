@@ -103,5 +103,6 @@ CLI が入っていないか、PATH が通っていません。
 ## それでも解決しないとき
 
 [Issues](https://github.com/cetusk/Glaux/issues) に、症状・手順・OS の版を書いて知らせてください。
-ログを添えるときは、コマンドプロンプトで `set GLAUX_LOG=debug` の後に `Glaux.exe 2> glaux.log` と起動し、
-症状を起こしてから閉じると `glaux.log` に残ります。
+ログを添えるときは、設定 → 一般 の「記録の詳しさ」を「詳しく(調べるとき)」にしてから症状を起こし、
+その下に出る記録の場所(Windows では `%APPDATA%\glaux\logs\glaux.log`)のファイルを添えてください。
+ふだんは「警告まで」(既定)で十分です。環境変数 `GLAUX_LOG`(例: `set GLAUX_LOG=debug`)を指定して起動すると、そちらが優先されます。

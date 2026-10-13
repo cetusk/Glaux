@@ -991,6 +991,18 @@ export function harmony(): Promise<import("./harmony.svelte").HarmonyView> {
   return invoke("harmony");
 }
 
+/** 記録(ログ)の詳しさと記録のファイル。env は環境変数 GLAUX_LOG で決めているときの中身(そちらが優先) */
+export function getLogLevel(): Promise<{ level: LogLevel; path: string; env: string | null }> {
+  return invoke("get_log_level");
+}
+
+/** 記録の詳しさを変える(すぐ効き、次の起動でも使う) */
+export function setLogLevel(level: LogLevel): Promise<void> {
+  return invoke("set_log_level", { level });
+}
+
+export type LogLevel = "error" | "warn" | "info" | "debug";
+
 /** AI にいつも守らせる指示(設定フォルダの instructions.md) */
 export function getStandingInstructions(): Promise<{ text: string; path: string; max: number }> {
   return invoke("get_standing_instructions");

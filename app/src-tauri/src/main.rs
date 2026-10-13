@@ -15,6 +15,7 @@
 
 mod chat;
 mod guard;
+mod logging;
 mod projects;
 
 use anyhow::{Context, Result};
@@ -2903,6 +2904,23 @@ fn set_ui_language(lang: String) {
     glaux_core::i18n::set_english(lang == "en");
 }
 
+/// 記録(ログ)の詳しさと、記録のファイルの場所(設定の「一般 → 記録の詳しさ」)。
+/// `env` は環境変数 `GLAUX_LOG` で決めているときの中身(そちらが優先)
+#[tauri::command]
+fn get_log_level() -> Value {
+    json!({
+        "level": logging::saved_level(),
+        "path": logging::log_path().display().to_string(),
+        "env": logging::env_override(),
+    })
+}
+
+/// 記録の詳しさを変える(すぐ効き、次の起動でも使う)
+#[tauri::command]
+fn set_log_level(level: String) -> Result<(), String> {
+    logging::set_level(&level)
+}
+
 /// 設計画面で区間を直す: 区間の位置・名前・数が変わったら曲の区間を置き換え(曲の履歴)、盛り上がり・形・境目・
 /// 鳴らすトラック・メモは曲全体の計画に書く(計画の履歴。曲も変えたなら一組)。返り値は書いた履歴の項目
 #[tauri::command]
@@ -3679,13 +3697,7 @@ async fn serve_mcp(
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("GLAUX_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    logging::init();
     guard::install_panic_log();
 
     let mut project_dir = resolve_project_dir();
@@ -4002,6 +4014,8 @@ fn main() -> Result<()> {
             plan_adopt_proposal,
             design_edit_sections,
             set_ui_language,
+            get_log_level,
+            set_log_level,
             plan_head,
             plan_estimate,
             change_ranges,

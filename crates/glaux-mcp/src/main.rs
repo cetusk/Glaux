@@ -19,11 +19,12 @@ use rmcp::{transport::stdio, ServiceExt};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // 既定は警告まで(つなぎの記録などで埋めない)。詳しく見るときは GLAUX_LOG=info など
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("GLAUX_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         .init();
 

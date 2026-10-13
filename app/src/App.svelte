@@ -1074,6 +1074,23 @@
             aria-label={tr("聴く音量(曲には影響しない)", "Listening volume (does not affect the song)")}
           />
         </div>
+        <!-- 言語: 日本語を読めない人も設定を辿らずに切り替えられるよう、上の帯に置く(名前はそれぞれの言語で書く) -->
+        <div class="lang-switch" role="group" aria-label="Language / 言語" title="Language / 言語">
+          <Icon name="languages" size={14} />
+          {#each [{ v: "ja", l: "日本語", s: "JA" }, { v: "en", l: "English", s: "EN" }] as o (o.v)}
+            <button
+              class:on={settings.lang === o.v}
+              aria-pressed={settings.lang === o.v}
+              aria-label={o.l}
+              title={o.l}
+              lang={o.v}
+              onclick={() => {
+                settings.lang = o.v as "ja" | "en";
+                saveSettings();
+              }}><span class="full">{o.l}</span><span class="short">{o.s}</span></button
+            >
+          {/each}
+        </div>
       </div>
     </div>
   </header>
@@ -1258,7 +1275,9 @@
     flex-shrink: 0;
     margin-left: auto;
     display: flex;
+    align-items: center;
     justify-content: flex-end;
+    gap: var(--sp-2);
   }
 
   .h-left,
@@ -1401,6 +1420,66 @@
   @media (max-width: 780px) {
     .listen-vol input {
       width: 40px;
+    }
+  }
+
+  /* 言語の切り替え(画面の切り替えと同じ、つながったボタン) */
+  .lang-switch {
+    display: flex;
+    align-items: center;
+    height: 28px;
+    padding-left: 7px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+    color: var(--text-dim);
+  }
+
+  .lang-switch button {
+    height: 100%;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+  }
+
+  .lang-switch button:first-of-type {
+    margin-left: 5px;
+    border-left: 1px solid var(--border);
+  }
+
+  .lang-switch button + button {
+    border-left: 1px solid var(--border);
+  }
+
+  .lang-switch button.on {
+    background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+    color: var(--accent);
+  }
+
+  .lang-switch .short {
+    display: none;
+  }
+
+  /* 狭いときは地球のしるしをしまい、名前を JA / EN に縮める(再生の表示窓の幅を空ける) */
+  @media (max-width: 960px) {
+    .lang-switch .full {
+      display: none;
+    }
+    .lang-switch .short {
+      display: inline;
+    }
+    .lang-switch {
+      padding-left: 0;
+    }
+    .lang-switch :global(.icon) {
+      display: none;
+    }
+    .lang-switch button:first-of-type {
+      margin-left: 0;
+      border-left: 0;
     }
   }
 
