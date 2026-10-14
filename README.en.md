@@ -7,6 +7,15 @@
 **A simple, lightweight desktop DAW for making music together with AI** (Rust + Tauri + Svelte 5).
 Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — and the AI edits the project directly, with changes showing up on the timeline right away.
 
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#getting-started-windows">Getting started</a> ·
+  <a href="#connect-from-an-mcp-client">MCP</a> ·
+  <a href="#use-it-in-godot-4">Godot</a> ·
+  <a href="#structure">Structure</a> ·
+  <a href="#bundled-components-and-license">License</a>
+</p>
+
 ![The timeline with the AI chat and edit history (the UI is in Japanese)](docs/images/screenshot-timeline.png)
 
 > [!NOTE]
@@ -16,27 +25,67 @@ Ask in the chat — "write a 4-bar bassline", "make only the chorus bigger" — 
 
 ## Features
 
-- **Compose with AI** — Work with Claude (Claude Code) or GPT (Codex CLI). Human and AI edits share one history, and you can undo an AI's whole turn at once.
-  For any edit in the history, or any AI turn, you can compare before and now at matched loudness. When the key decisions are unclear, the AI asks you with
-  multiple-choice questions before writing (or type `/goal` to leave it up to the AI). You can edit and resend a message you sent; the conversation and the song
-  rewind to just before it. The UI and the AI's replies can be in Japanese or English
-- **The AI can listen** — It measures loudness, frequency balance, key and chords, rhythm and timbre by itself, and checks its work before reporting
-- **Song design** — See the plan for the whole song (genre, mood, the shape of the energy) and, per section, the energy curve, each part's register and each part's role,
-  side by side with what the song actually does, and edit them in place. The AI reads where the song drifts from the plan when it writes and revises, and keeps the notes you locked and the bars you edited by hand
-- **Compare proposals by ear** — For changes that come down to taste, the AI leaves the song untouched and offers "proposals". Switch between the current song and up to four proposals
-  at matched loudness without losing your place, then adopt the one you like. An adoption can be undone in one step from any screen
-- **Instruments and effects** — 10 built-in instruments (subtractive, FM, 4-operator FM, wavetable, additive, granular, drums, plucked string, sampler, SoundFont / SFZ), 32 effects (EQ, 8-band EQ, dynamic EQ, resonance suppressor, virtual bass, compressor, multiband compressor, transient shaper, limiter, clipper, gate, de-esser, saturation, stereo width, reverb, convolution reverb, delay, chorus, phaser, trance gate, pitch correction, harmonizer, amp, and more), and CLAP / VST3 plugins (e.g. Surge XT)
-- **Mixer and effect node view** — See every track as a vertical strip with volume, pan, sends and meters. Effects are cards you place freely and connect with cables, including splitting and merging (e.g. dry + reverb in parallel). Unconnected cards stay silent but keep their settings, and good settings can be saved as effect presets for other songs. The monitor strip on the right shows the stereo image (goniometer and correlation) and lets you listen in mono, side only, swapped, or with headphone crossfeed (never included in exports)
-- **Write and record** — Piano roll, drum kit, fretboard, MIDI keyboard, MIDI file import/export, audio recording, humming-to-MIDI, stem separation, tempo-following audio clips
-- **Designed for AI** — Projects are readable JSON. Every edit goes through the same command API with full undo. Built-in MCP server
-- **Play it in games** — A Godot 4 extension plays your songs in-game and syncs enemies or hit judgement to the beat
+The screenshots show the Japanese UI; the whole app can be switched to English.
+
+### Compose with AI
+
+Work with Claude (Claude Code) or GPT (Codex CLI). The AI edits the project directly through Glaux's own tools, and the results show up on screen right away.
+
+- **One shared history** — Human and AI edits sit in the same history, and you can undo an AI's whole turn at once. For any edit, you can compare before and now at matched loudness
+- **The AI can listen** — It measures loudness, frequency balance, key and chords, rhythm, timbre and clashing notes by itself, and checks its work before reporting
+- **It asks before writing** — When the key decisions are unclear, the AI asks with multiple-choice questions first (or type `/goal` to leave it up to the AI). You can edit and resend a message; the conversation and the song rewind to just before it
+- **Narrow the target** — Select a section, part or clip before asking, and the request applies only there
+- The UI and the AI's replies can be in Japanese or English
+
+### Design the song
 
 ![The design view: the plan for the whole song and for each section (energy, each part's register and role) next to what the song actually does](docs/images/screenshot-design.png)
 
+See the plan for the whole song (genre, mood, the shape of the energy) and, per section, the energy curve, each part's register and each part's role,
+side by side with what the song actually does, and edit them in place.
+The AI reads where the song drifts from the plan when it writes and revises, and keeps the notes you locked and the bars you edited by hand.
+
+### Compare proposals by ear
+
 ![Switching between the current song and the AI's proposals at matched loudness](docs/images/screenshot-proposals.png)
+
+For changes that come down to taste, the AI leaves the song untouched and offers "proposals". Switch between the current song and up to four proposals
+at matched loudness without losing your place, then adopt the one you like. An adoption can be undone in one step from any screen.
+
+### Write and record
+
+![The piano roll with the other parts shown faintly behind](docs/images/screenshot-pianoroll.png)
+
+- Piano roll (other parts shown behind, velocity, hand-drawn pitch curves, quantize, swing), drum kit, guitar fretboard
+- MIDI keyboard input and recording, MIDI file import/export
+- Audio recording, humming-to-MIDI, stem separation, tempo-following audio clips
+
+### Make sounds
+
+![The sound editor: shaping a wavetable while watching how the waveform and harmonics change](docs/images/screenshot-sound-editor.png)
+
+- **10 built-in instruments** — subtractive, FM, 4-operator FM, wavetable, additive, granular, drums, plucked string, sampler, SoundFont / SFZ
+- **Sound editor** — Shape wavetable, additive, 4-operator FM, granular, sampler and SFZ sounds while watching the waveform, harmonics and modulation routing. You can also ask the AI in words, like "make it fatter"
+- **Acoustic instruments** — A General MIDI SoundFont (128 instruments) is installed automatically on first launch. Free SFZ instruments can be downloaded from the instrument picker
+- **Plugins** — CLAP / VST3 support. Free plugins such as Surge XT, Dexed and OB-Xf can be installed from their authors' official releases with "Get free plugins" (Windows)
+
+### Mix and finish
 
 ![The mixer and the effect node view](docs/images/screenshot-mixer.png)
 
+- **Mixer** — See every track as a vertical strip with volume, pan, sends and meters
+- **32 effects** — EQ, 8-band EQ, dynamic EQ, resonance suppressor, virtual bass, compressor, multiband compressor, transient shaper, limiter, clipper, gate, de-esser, saturation, stereo width, reverb, convolution reverb, delay, chorus, phaser, trance gate, pitch correction, harmonizer, amp, and more
+- **Node view** — Effects are cards you place freely and connect with cables, including splitting and merging (e.g. dry + reverb in parallel). Good settings can be saved as effect presets for other songs
+- **Monitor** — See the stereo image (goniometer and correlation) and listen in mono, side only, swapped, or with headphone crossfeed (never included in exports)
+- **Export** — WAV / FLAC (full mix or per-track stems), loudness targets for streaming and broadcast (-14 / -16 / -23 LUFS), MIDI, for games, and as a sound-effect song
+
+### Play it in games
+
+A Godot 4 extension plays your songs in-game and syncs enemies or hit judgement to the beat. Sound effects can follow the chords of the background music ([details below](#use-it-in-godot-4)).
+
+### Designed for AI
+
+A project is a folder of readable JSON. Every edit goes through the same command API with full undo, and the built-in MCP server lets other MCP clients edit the same song.
 See [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) (Japanese) for what the AI can do and which genres it can make.
 
 ## Getting started (Windows)
