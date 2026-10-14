@@ -14,6 +14,7 @@
 
 pub mod beats;
 pub mod clap;
+pub mod dbn;
 pub mod pitch;
 
 use std::sync::OnceLock;

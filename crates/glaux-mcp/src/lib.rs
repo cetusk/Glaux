@@ -32,6 +32,7 @@ pub mod plugin_catalog;
 pub mod preset_index;
 pub mod presets;
 pub mod recipes;
+pub mod recon;
 pub mod server;
 pub mod sfz_packs;
 pub mod sound;

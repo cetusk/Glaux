@@ -67,6 +67,12 @@ pub struct Structure {
     pub key: Option<KeyEstimate>,
     /// 小節ごとの音量(dBFS、小数 1 桁)
     pub bar_energy_db: Vec<f64>,
+    /// 小節の (開始, 終了) 秒(区切りに使ったもの。JSON には出さない)
+    #[serde(skip)]
+    pub bar_bounds: Vec<(f64, f64)>,
+    /// 小節ごとのコードの推定(全小節。JSON には出さない。区間ごとの先頭 8 小節は `Section::chords`)
+    #[serde(skip)]
+    pub bar_chords: Vec<String>,
 }
 
 /// 構成を解析する。`downbeats` は小節頭の時刻(秒、昇順)。小節が 4 つに満たなければ Err
@@ -190,6 +196,8 @@ pub fn analyze(frames: &[f32], sample_rate: f32, downbeats: &[f64]) -> Result<St
         form_ja,
         key,
         bar_energy_db: feats.iter().map(|f| r1(f.rms_db)).collect(),
+        bar_bounds: bounds,
+        bar_chords: chords,
     })
 }
 

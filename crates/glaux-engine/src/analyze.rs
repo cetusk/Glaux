@@ -543,6 +543,137 @@ pub fn compare_projects(
     })
 }
 
+/// 曲を、解析と同じ条件(48kHz・マスターのクリップ防止込み)で描き出す(ステレオ・インターリーブ)。
+/// `track_ids` があればそのトラックを曲の中で聞こえるとおりにソロで
+pub fn render_song_for_analysis(
+    project: &Project,
+    track_ids: Option<&[TrackId]>,
+    range: Option<(Tick, Tick)>,
+    bank: &crate::data::SampleBank,
+) -> Result<Vec<f32>, ExportError> {
+    let target = match track_ids {
+        Some(ids) => solo_view(project, ids, false),
+        None => project.clone(),
+    };
+    let mut stereo = render_for_analysis(&target, range, bank)?;
+    clip_for_listening(&mut stereo);
+    Ok(stereo)
+}
+
+/// 参考曲(48kHz ステレオ)と自分の曲(同じ形。[`render_song_for_analysis`])を比べる。
+/// `before` が参考曲、`after` が自分の曲。音量の差と、音量をそろえたうえでの違い(音色・広がり・ダイナミクス)を分けて返す
+pub fn compare_with_reference(reference: &[f32], song: &[f32]) -> Result<Comparison, ExportError> {
+    let blank = Project::new("");
+    let (a0, p0) = analyze_stereo_with_power(&blank, None, reference)?;
+    let (a1, p1) = analyze_stereo_with_power(&blank, None, song)?;
+    let (o0, o1) = (octave_levels_of(&p0), octave_levels_of(&p1));
+    let r1 = |v: f64| (v * 10.0).round() / 10.0;
+    let diff = if a0.loudness_lufs.is_finite() && a1.loudness_lufs.is_finite() {
+        r1(a1.loudness_lufs - a0.loudness_lufs)
+    } else {
+        0.0
+    };
+    let tonal: Vec<OctaveLevel> = OCTAVES
+        .iter()
+        .zip(o0.iter().zip(&o1))
+        .map(|(hz, (b, a))| OctaveLevel {
+            hz: *hz,
+            before_db: r1(*b),
+            after_db: r1(*a),
+            diff_db: r1(a - b),
+        })
+        .collect();
+    let notes = reference_notes(&a0, &a1, diff, &tonal);
+    Ok(Comparison {
+        before: (&a0).into(),
+        after: (&a1).into(),
+        loudness_diff_db: diff,
+        match_gain_db: -diff,
+        tonal_balance: tonal,
+        notes,
+    })
+}
+
+/// 参考曲(a0)と自分の曲(a1)の目立つ違いを文章にする
+fn reference_notes(a0: &Analysis, a1: &Analysis, diff: f64, tonal: &[OctaveLevel]) -> Vec<String> {
+    let mut n = Vec::new();
+    if diff.abs() >= 0.5 {
+        n.push(format!(
+            "あなたの曲の方が {:.1} dB {}(統合ラウドネス 参考曲 {:.1} / あなたの曲 {:.1} LUFS)。\
+             聴き比べは音量をそろえて行い、以下の音色・広がり・ダイナミクスの違いで判断する",
+            diff.abs(),
+            if diff > 0.0 { "大きい" } else { "小さい" },
+            a0.loudness_lufs,
+            a1.loudness_lufs
+        ));
+    }
+    let bands: Vec<String> = tonal
+        .iter()
+        .filter(|o| o.diff_db.abs() >= 1.5 && o.before_db.max(o.after_db) > -40.0)
+        .map(|o| format!("{}Hz 帯 {:+.1} dB", o.hz, o.diff_db))
+        .collect();
+    if !bands.is_empty() {
+        n.push(format!(
+            "音色の釣り合い(音量をそろえて、参考曲に対するあなたの曲。プラスはあなたの曲の方が多い): {}",
+            bands.join("、")
+        ));
+    }
+    if a0.plr_db.is_finite() && a1.plr_db.is_finite() {
+        if a1.plr_db < a0.plr_db - 1.5 {
+            n.push(format!(
+                "あなたの曲の方がピークが潰れている(PLR 参考曲 {:.1} / あなたの曲 {:.1} dB)",
+                a0.plr_db, a1.plr_db
+            ));
+        } else if a1.plr_db > a0.plr_db + 3.0 {
+            n.push(format!(
+                "参考曲の方が音圧が高く、ピークを詰めている(PLR 参考曲 {:.1} / あなたの曲 {:.1} dB)",
+                a0.plr_db, a1.plr_db
+            ));
+        }
+    }
+    if a1.true_peak_dbtp > -1.0 {
+        n.push(format!(
+            "あなたの曲の True Peak が {:.1} dBTP(配信は -1 以下が目安)",
+            a1.true_peak_dbtp
+        ));
+    }
+    let (s0, s1) = (&a0.stereo, &a1.stereo);
+    if (s1.correlation - s0.correlation).abs() >= 0.15 {
+        n.push(format!(
+            "あなたの曲の方が{}(左右の相関 参考曲 {:.2} / あなたの曲 {:.2}。1 に近いほど狭い)",
+            if s1.correlation < s0.correlation {
+                "広い"
+            } else {
+                "狭い"
+            },
+            s0.correlation,
+            s1.correlation
+        ));
+    }
+    if s1.low_correlation < 0.7 && s1.low_correlation < s0.low_correlation - 0.1 {
+        n.push(format!(
+            "あなたの曲の低域(250Hz 以下)が広がっている(相関 参考曲 {:.2} / あなたの曲 {:.2}。低音は中央に集めるのが無難)",
+            s0.low_correlation, s1.low_correlation
+        ));
+    }
+    if (a1.loudness_range_lu - a0.loudness_range_lu).abs() >= 2.0 {
+        n.push(format!(
+            "曲中の音量の起伏(LRA)が参考曲より{}(参考曲 {:.1} / あなたの曲 {:.1} LU)",
+            if a1.loudness_range_lu < a0.loudness_range_lu {
+                "小さい"
+            } else {
+                "大きい"
+            },
+            a0.loudness_range_lu,
+            a1.loudness_range_lu
+        ));
+    }
+    if n.is_empty() {
+        n.push("聞いて分かるほどの違いは測れなかった".to_owned());
+    }
+    n
+}
+
 /// 目立つ違いを文章にする(しきい値は「聞いて分かる」程度の目安)
 fn compare_notes(a0: &Analysis, a1: &Analysis, diff: f64, tonal: &[OctaveLevel]) -> Vec<String> {
     let mut n = Vec::new();

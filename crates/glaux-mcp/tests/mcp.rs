@@ -6534,6 +6534,65 @@ async fn analyze_reference_reads_structure_of_file() {
 }
 
 #[tokio::test]
+async fn analyze_reference_skeleton_reads_tempo_meter_and_feel() {
+    let fx = setup().await;
+    let path = fx.dir.join("ref.wav");
+    write_drum_wav(&path, 120.0, 16, 44_100);
+    let v = ok_json(
+        &call(
+            &fx,
+            "analyze_reference_skeleton",
+            json!({ "file": path.to_string_lossy() }),
+        )
+        .await,
+    );
+    let bpm = v["bpm"].as_f64().unwrap();
+    assert!((bpm - 120.0).abs() < 1.5, "{v}");
+    assert_eq!(v["tempo_map"].as_array().unwrap().len(), 1, "{v}");
+    assert!(v["bars"].as_array().unwrap().len() >= 12, "{v}");
+    assert!(v["tuning_cents"].is_number());
+    assert!(v["summary"].as_str().unwrap().contains("BPM"));
+    let r = call(&fx, "analyze_reference_skeleton", json!({})).await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn compare_with_reference_measures_both_sides() {
+    let fx = setup().await;
+    let path = fx.dir.join("ref.wav");
+    write_drum_wav(&path, 120.0, 8, 44_100);
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_cmp001", "Arp")).await);
+    ok_json(
+        &call(
+            &fx,
+            "write_arpeggio",
+            json!({ "track_id": "trk_cmp001", "chords": "C | Am | F | G", "style": "up" }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "compare_with_reference",
+            json!({ "file": path.to_string_lossy() }),
+        )
+        .await,
+    );
+    assert!(v["before"]["loudness_lufs"].is_number(), "{v}");
+    assert!(v["after"]["loudness_lufs"].is_number(), "{v}");
+    assert_eq!(v["tonal_balance"].as_array().unwrap().len(), 10);
+    assert!(!v["notes"].as_array().unwrap().is_empty());
+    assert!(v["groove"].get("reference").is_some());
+    let r = call(
+        &fx,
+        "compare_with_reference",
+        json!({ "file": path.to_string_lossy(), "ref_start_sec": 2.0, "ref_end_sec": 1.0 }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn write_arpeggio_plays_chords_one_note_at_a_time() {
     let fx = setup().await;
     ok_json(&call(&fx, "apply_commands", add_track_args("trk_arp001", "Arp")).await);

@@ -78,6 +78,52 @@ pub fn load_stereo_48k(path: &Path) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
+/// 参考曲を 48kHz ステレオ(インターリーブ)で読む。音声クリップならクリップが参照している範囲
+pub fn load_stereo_source(
+    project: &Project,
+    dir: &Path,
+    source: &SoundSource,
+) -> Result<Vec<f32>, String> {
+    match source {
+        SoundSource::File(p) => load_stereo_48k(p),
+        SoundSource::Clip(clip_id) => {
+            let clip = project
+                .tracks
+                .iter()
+                .find_map(|t| t.clips.iter().find(|c| &c.id == clip_id))
+                .ok_or_else(|| format!("クリップが見つかりません: {clip_id}"))?;
+            let ClipContent::Audio {
+                asset,
+                offset_samples,
+                stretch,
+                ..
+            } = &clip.content
+            else {
+                return Err(format!("{clip_id} は音声クリップではありません"));
+            };
+            let meta = project
+                .assets
+                .get(asset)
+                .ok_or_else(|| format!("アセットが見つかりません: {asset}"))?;
+            let all = load_stereo_48k(&dir.join(&meta.path))?;
+            let secs = stretch
+                .follow_seconds(clip.length.0 as f64)
+                .unwrap_or_else(|| {
+                    project.tempo_map.tick_to_seconds(clip.start + clip.length)
+                        - project.tempo_map.tick_to_seconds(clip.start)
+                });
+            let from =
+                (*offset_samples as f64 * RENDER_RATE / meta.sample_rate.max(1) as f64) as usize;
+            let from = (from * 2).min(all.len());
+            let to = (from + (secs * RENDER_RATE) as usize * 2).min(all.len());
+            Ok(all[from..to].to_vec())
+        }
+        SoundSource::TrackNote { .. } => {
+            Err("参考曲には音声クリップか音声ファイルを指定してください".to_owned())
+        }
+    }
+}
+
 /// 試し鳴らしのサンプルレート
 pub const RENDER_RATE: f64 = 48_000.0;
 
@@ -318,17 +364,17 @@ pub fn beats(sound: &LoadedSound) -> Result<BeatReport, String> {
     })
 }
 
-/// 参考曲の構成を解析する(拍の推定で小節に区切ってから)。結果は JSON
+/// 参考曲の構成を解析する(拍の推定で小節に区切ってから)。結果は JSON。
+/// 拍・小節頭・調・和音は曲から起こすときの骨組みの解析([`crate::recon`])と同じものを使う
 pub fn reference_structure(sound: &LoadedSound) -> Result<serde_json::Value, String> {
-    let t = glaux_ml::beats::track(&sound.frames, sound.sample_rate).map_err(|e| e.to_string())?;
+    let sk = crate::recon::analyze(&sound.frames, sound.sample_rate, Default::default())?;
     let dur = sound.frames.len() as f64 / sound.sample_rate as f64;
-    let beats: Vec<f64> = t.beats.iter().map(|&b| b as f64).collect();
-    let bpb = t.beats_per_bar();
+    let bpb = sk.beats_per_bar;
     // 小節頭が取れなければビート 4 つごと、ビートも無ければ 2 秒ごと
-    let downbeats: Vec<f64> = if t.downbeats.len() >= 4 {
-        t.downbeats.iter().map(|&b| b as f64).collect()
-    } else if beats.len() >= 16 {
-        beats
+    let downbeats: Vec<f64> = if sk.downbeats.len() >= 4 {
+        sk.downbeats.clone()
+    } else if sk.beats.len() >= 16 {
+        sk.beats
             .iter()
             .step_by(bpb.unwrap_or(4).max(1) as usize)
             .copied()
@@ -336,8 +382,26 @@ pub fn reference_structure(sound: &LoadedSound) -> Result<serde_json::Value, Str
     } else {
         (0..(dur / 2.0) as usize).map(|i| i as f64 * 2.0).collect()
     };
-    let st = glaux_engine::structure::analyze(&sound.frames, sound.sample_rate, &downbeats)?;
-    let bpm = t.bpm().map(|b| (b as f64 * 10.0).round() / 10.0);
+    let mut st = glaux_engine::structure::analyze(&sound.frames, sound.sample_rate, &downbeats)?;
+    // 調と和音は骨組みの解析の方が確か(拍ごとの NNLS クロマ・転回形まで)
+    st.key = sk.key.as_ref().map(|k| glaux_core::harmony::KeyEstimate {
+        name: k.name.clone(),
+        tonic: k.tonic,
+        mode: if k.minor { "minor" } else { "major" },
+        confidence: k.confidence,
+    });
+    let names = crate::recon::bar_chord_names(&sk.chords, &st.bar_bounds);
+    let mut bar = 0;
+    for sec in st.sections.iter_mut() {
+        sec.chords = names
+            .iter()
+            .skip(bar)
+            .take(sec.bars.min(8))
+            .cloned()
+            .collect();
+        bar += sec.bars;
+    }
+    let bpm = sk.bpm.map(|b| (b * 10.0).round() / 10.0);
     let loudest = st
         .sections
         .iter()

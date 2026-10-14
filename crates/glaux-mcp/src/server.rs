@@ -604,6 +604,28 @@ pub struct AnalyzeBeatsParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct CompareWithReferenceParams {
+    /// 参考曲の音声クリップ ID(`clp_xxxxxx`、kind: "audio")。
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    /// 参考曲の音声ファイルのパス(WAV / MP3 / FLAC / OGG / M4A)。
+    #[serde(default)]
+    pub file: Option<String>,
+    /// 参考曲の比べる範囲の開始(秒)。省略で頭から(サビどうしを比べるときなどに)
+    #[serde(default)]
+    pub ref_start_sec: Option<f64>,
+    /// 参考曲の比べる範囲の終了(秒)。省略で終わりまで
+    #[serde(default)]
+    pub ref_end_sec: Option<f64>,
+    /// 自分の曲の比べる範囲の開始 tick。省略で曲頭から
+    #[serde(default)]
+    pub start_tick: Option<u64>,
+    /// 自分の曲の比べる範囲の終了 tick。省略で曲末まで
+    #[serde(default)]
+    pub end_tick: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ListPluginPresetsParams {
     /// CLAP プラグインを音源にしたトラック ID(`trk_xxxxxx`)。エフェクトなら fx_id を使う。
     #[serde(default)]
@@ -6776,14 +6798,9 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "あなたの「拍を感じる耳」。音声(音声クリップ・音声ファイル)のビート・小節頭・テンポを\
-        学習済みモデル(Beat This!)で推定する。返り値: bpm(平均テンポ、小数 2 桁)、bpm_alternatives(半分・倍。\
-        ビートの取り方の解釈違い。曲調に合う方を選ぶ)、tempo_variation(0.015 未満 = 打ち込み・クリックに合わせた演奏)、\
-        beats_per_bar(1 小節の拍数)、first_downbeat_sec(最初の小節頭。素材の先頭からの秒)、beats / downbeats(秒)、summary。\
-        対象は clip_id か file のどちらか 1 つ。\
-        使いどころ: 取り込んだ音声を曲のテンポに合わせる(set_clip_stretch の original_bpm に bpm を入れる。\
-        曲のテンポを素材に合わせるなら set_tempo)、ループ素材の小節頭をクリップの先頭にそろえる\
-        (first_downbeat_sec から offset を決める)、録音のテンポの揺れを確かめる。"
+        description = "あなたの「拍を感じる耳」。音声(音声クリップ・音声ファイル)のビート・小節頭・テンポを学習済みモデル(Beat This!)で\
+        推定する(bpm・半分 / 倍の候補・テンポの揺れ・拍子・最初の小節頭・beats / downbeats)。対象は clip_id か file。\
+        取り込んだ音声を曲のテンポに合わせる・ループの頭をそろえるのに使う(読み方は get_guide reference)。"
     )]
     async fn analyze_beats(&self, params: Parameters<AnalyzeBeatsParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("analyze_beats");
@@ -6808,14 +6825,9 @@ impl GlauxServer {
     }
 
     #[tool(
-        description = "参考曲(音声ファイル・音声クリップ)の構成を解析する。拍の推定で小節に区切り、小節どうしの似かた\
-        (和音の色・音色・音量)から区間の境目と繰り返し(A・B・C…)を見つけ、役割(イントロ・A メロ・B メロ・サビ・\
-        C メロ・間奏・アウトロ)を推し量る。返り値: sections(label・role_ja・start_bar・bars・start_sec・end_sec・\
-        energy_db〈いちばん大きい区間が 0〉・level・brightness_hz・chords〈小節ごと、先頭 8 小節。音声からの目安〉・\
-        similarity)、form(記号の並び)、form_ja、bpm、beats_per_bar、key、bar_energy_db(小節ごとの音量)、summary。\
-        対象は clip_id か file のどちらか 1 つ。使いどころ: 「この曲みたいな構成で」と言われたとき、小節数と並びと\
-        盛り上がりの差を写して曲の骨組み(マーカー・セクション)を作る。役割は推定なので、ユーザーの言葉を優先する。\
-        メロディや音そのものは写さない(構成・長さ・音量の起伏だけを参考にする)。"
+        description = "参考曲(音声ファイル・音声クリップ)の構成を解析する: 小節に区切り、似かたから区間の境目と繰り返し(A・B・C…)、\
+        役割(イントロ・A メロ・サビなど)、区間ごとの音量・明るさ・和音の目安、テンポ・拍子・調。対象は clip_id か file。\
+        構成と起伏だけを写し、メロディや音は写さない。読み方は get_guide reference。"
     )]
     async fn analyze_reference(&self, params: Parameters<AnalyzeBeatsParams>) -> ToolResult {
         let _activity = self.handle.begin_activity("analyze_reference");
@@ -6832,6 +6844,105 @@ impl GlauxServer {
         let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
             let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
             crate::sound::reference_structure(&sound)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "参考曲(音声ファイル・音声クリップ)の骨組みを読む: テンポの変化(tempo_map)・拍子・最初の小節頭・\
+        チューニングのずれ・調・小節ごとの和音(転回形まで)・ノリ(groove: ハネ・揺れ・細かさ・密度)。対象は clip_id か file。\
+        言葉で伝えきれない感じを数で読む。読み方と使い方は get_guide reference(旋律や和音の並びはそのまま写さない)。"
+    )]
+    async fn analyze_reference_skeleton(
+        &self,
+        params: Parameters<AnalyzeBeatsParams>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("analyze_reference_skeleton");
+        let p = params.0;
+        let source = match (&p.clip_id, &p.file) {
+            (Some(c), None) => crate::sound::SoundSource::Clip(
+                glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?,
+            ),
+            (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
+            _ => return Err("clip_id / file のどちらか 1 つを指定してください".to_owned()),
+        };
+        let (project, _) = self.handle.get_project_shared().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
+            let sk = crate::recon::analyze(&sound.frames, sound.sample_rate, Default::default())?;
+            Ok(crate::recon::skeleton_json(&sk, &sound.label))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "自分の曲を参考曲(音声ファイル・音声クリップ)と同じ条件で測って比べる: 音量・音色の釣り合い(音量をそろえて)・\
+        広がり・ダイナミクス・ノリ。before = 参考曲、after = 自分の曲。範囲は ref_start_sec / ref_end_sec と start_tick / end_tick。\
+        読み方は get_guide reference。"
+    )]
+    async fn compare_with_reference(
+        &self,
+        params: Parameters<CompareWithReferenceParams>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("compare_with_reference");
+        let p = params.0;
+        let source = match (&p.clip_id, &p.file) {
+            (Some(c), None) => crate::sound::SoundSource::Clip(
+                glaux_core::ClipId::parse(c).map_err(|e| e.to_string())?,
+            ),
+            (None, Some(f)) => crate::sound::SoundSource::File(std::path::PathBuf::from(f)),
+            _ => return Err("clip_id / file のどちらか 1 つを指定してください".to_owned()),
+        };
+        let range = match (p.start_tick, p.end_tick) {
+            (None, None) => None,
+            (s, e) => {
+                let start = s.unwrap_or(0);
+                let end = e.unwrap_or(u64::MAX);
+                if end <= start {
+                    return Err("end_tick は start_tick より大きくすること".to_owned());
+                }
+                Some((glaux_core::Tick(start), glaux_core::Tick(end)))
+            }
+        };
+        if let (Some(a), Some(b)) = (p.ref_start_sec, p.ref_end_sec) {
+            if b <= a {
+                return Err("ref_end_sec は ref_start_sec より大きくすること".to_owned());
+            }
+        }
+        let (project, _) = self.handle.get_project_shared().await?;
+        let dir = self.handle.project_dir().await?;
+        let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let dir = std::path::Path::new(&dir);
+            let all = crate::sound::load_stereo_source(&project, dir, &source)?;
+            let rate = crate::sound::RENDER_RATE;
+            let cut = |sec: Option<f64>, default: usize| -> usize {
+                sec.map_or(default, |s| {
+                    ((s.max(0.0) * rate) as usize * 2).min(all.len())
+                })
+            };
+            let (a, b) = (cut(p.ref_start_sec, 0), cut(p.ref_end_sec, all.len()));
+            let reference = &all[a.min(b)..b];
+            let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+            let song =
+                glaux_engine::analyze::render_song_for_analysis(&project, None, range, &bank)
+                    .map_err(|e| e.to_string())?;
+            let cmp = glaux_engine::analyze::compare_with_reference(reference, &song)
+                .map_err(|e| e.to_string())?;
+            // ノリ: 参考曲は拍の推定から、自分の曲はテンポの格子から
+            let mono: Vec<f32> = reference.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
+            let ref_groove = crate::recon::analyze(&mono, rate as f32, Default::default())
+                .ok()
+                .and_then(|sk| sk.groove);
+            let start_sec = range.map_or(0.0, |(s, _)| project.tempo_map.tick_to_seconds(s));
+            let song_groove = crate::recon::song_groove(&project, &song, start_sec);
+            let mut v = serde_json::to_value(&cmp).map_err(|e| e.to_string())?;
+            v["groove"] = json!({"reference": ref_groove, "song": song_groove});
+            Ok(v)
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -7921,7 +8032,7 @@ impl GlauxServer {
         genres(テンポ・ドラムの型・進行・ベース・構成・EDM の音作り)/\
         expression(奏法・レガート・ポルタメント・ピッチカーブ)/ mix(エフェクト・バス・バランス・オートメーション)/\
         mastering(音量・ピーク・潰し具合・釣り合いの仕上げ)/\
-        audio(音声素材・分離・譜起こし・テンポ追従)/ sound_match(似た音を作る)/ clap(プラグイン)。\
+        audio(音声素材・分離・譜起こし・テンポ追従)/ reference(参考曲を読む・近づける)/ sound_match(似た音を作る)/ clap(プラグイン)。\
         user: で始まるトピックはユーザーが設定フォルダの guides に書いた定石(*.md)で、一覧にあればその分野の作業の前に必ず読み、組み込みの定石より優先する。\
         省略で一覧。その分野の作業を始める前に読むと、道具の選び方と値の目安が分かる。"
     )]

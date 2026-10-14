@@ -196,6 +196,39 @@ pub fn track(frames: &[f32], sample_rate: f32) -> Result<BeatTrack, crate::MlErr
     Ok(BeatTrack { beats, downbeats })
 }
 
+/// フレームごと(50 フレーム/秒)の拍(小節頭を含む)と小節頭の確率(0〜1)。
+pub fn activations(
+    frames: &[f32],
+    sample_rate: f32,
+) -> Result<(Vec<f32>, Vec<f32>), crate::MlError> {
+    let audio = crate::resample(frames, sample_rate, SAMPLE_RATE);
+    let mel = log_mel(&audio);
+    let (beat, downbeat) = logits(&mel)?;
+    let sig =
+        |v: Vec<f32>| -> Vec<f32> { v.into_iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect() };
+    Ok((sig(beat), sig(downbeat)))
+}
+
+/// 拍の確率を動的ベイジアンネットワークでたどって、拍・小節頭・拍子を決める([`crate::dbn`])。
+/// 返り値の拍子は [`BeatTrack::beats_per_bar`] でも同じ値になる
+pub fn track_dbn(
+    frames: &[f32],
+    sample_rate: f32,
+    opts: &crate::dbn::DbnOptions,
+) -> Result<BeatTrack, crate::MlError> {
+    let (beat, down) = activations(frames, sample_rate)?;
+    let r = crate::dbn::decode(&beat, &down, opts);
+    Ok(BeatTrack {
+        beats: r.beats.iter().map(|b| b.0 as f32).collect(),
+        downbeats: r
+            .beats
+            .iter()
+            .filter(|b| b.1 == 1)
+            .map(|b| b.0 as f32)
+            .collect(),
+    })
+}
+
 /// 対数メルスペクトログラム(torchaudio の MelSpectrogram と同じ設定: 中心合わせ・反射パディング、
 /// 周期ハン窓、√フレーム長で割った振幅、Slaney のメル尺度(面積正規化なし)、log1p(1000x))。
 pub fn log_mel(audio: &[f32]) -> Vec<[f32; N_MELS]> {

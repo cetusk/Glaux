@@ -24,9 +24,11 @@ pub mod calibrate;
 pub mod data;
 pub mod distortion;
 pub mod export;
+pub mod feel;
 pub mod loudness;
 pub mod mastering;
 pub mod midi;
+pub mod mir_eval;
 pub mod mixcheck;
 pub mod monitor;
 pub mod output;
@@ -41,6 +43,7 @@ pub mod sound_match;
 pub mod structure;
 pub mod timbre;
 pub mod timeline;
+pub mod tonal;
 pub mod transcribe;
 
 pub use analyze::{

@@ -13,12 +13,12 @@ apply_commands で編集。\
 曲作りは topic workflow の工程(set_song_plan で区間 → save_plan で曲全体とパートの計画 → 骨格 = suggest_progression・\
 write_drums・write_chords・write_bassline・write_transition → 旋律(critique_melody で点検)→ 表情 → 点検)に沿う。\
 感覚: analyze_harmony・analyze_rhythm・analyze_audio・analyze_sound。\
-人も並行して編集する。project_version が進んだら get_changes {since: 最後の entry_id}。\
+人も並行して編集する。project_version が進んだら get_changes {since: entry_id}。\
 定石は get_guide {topic}(commands・workflow・revise・melody・groove・arrangement・instruments・sound_design・genres・expression・mix・mastering・\
-audio・sound_match・clap。user: はユーザーの定石。あれば先に読む)。\
+audio・reference・sound_match・clap。user: はユーザーの定石で、先に読む)。\
 仕上げは master_mix。\
 報告前は critique_arrangement と check_clashes の warn を直し、analyze_harmony・analyze_audio の結果を添える。\
-音は単体と全体の両方で聴く。\
+音は単体と全体で聴く。\
 修正は topic revise: 応答の aftercare の warn を直し、報告前に review_edits。\
 音・ミックスを変えたら critique_mix の warn を直し compare_mix。大きな試行の前は checkpoint。\
 案・候補を頼まれたら(音色・型・ミックスも)曲は変えずに propose_design を案ごとに呼ぶ(ミュートのトラックや複製で代用しない)。";
@@ -76,6 +76,8 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    (動かすもの = ビルドのフィルタ等も note に)。マーカーが置かれ、曲の長さ(秒)が返るので依頼の長さに合わせる。\n\
    critique_arrangement が計画と実際(盛り上がりの上がり下がり・鳴らすトラック)を突き合わせる。フレーズは 4 / 8 / 16 小節単位。山(サビ・ドロップ)の前に静かな区間を置くと山が立つ。\n\
    参考曲の音声があれば analyze_reference で区間の並び・小節数・音量の差を読み、計画に写す(メロディは写さない)。\n\
+   言葉で伝えきれない感じ(ノリ・コード感・テンポの揺れ)は analyze_reference_skeleton で数で読み、音作り・ミックスの\n\
+   近さは compare_with_reference で測る(借りるのは感覚。旋律や和音の並びをそのまま写さない)。\n\
    区間の中の盛り上がりの形は curve、ビルド → ドロップの落差のような急な変わり目は join: step。\n\
    続けて、音を書く前に必ず曲全体の狙い(save_plan kind song: 雰囲気・盛り上がりの型・明るさ・守ること)と、トラックごとの\n\
    パートの計画(kind part: 区間ごとの働き・存在の段階 0〜5・音域の帯)を書く(トラックを作ってから。人が「計画は作らない」と\n\
@@ -507,6 +509,30 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   キーを確認し、前後と 12 半音ずれた短い音(オクターブ誤検出)や外れた音を整えてから報告する。ベースだけなら分離 → 譜起こし。\n\
 - テンポを変えるときは、音声クリップに set_clip_stretch(follow、original_bpm = 録音時のテンポ)を付けると拍がずれない。\n\
   元のテンポが分からなければ analyze_beats(bpm・拍子・最初の小節頭)。",
+    ),
+    (
+        "reference",
+        "参考曲を読む・近づける",
+        "- 構成(区間の並び・小節数・盛り上がり)は analyze_reference。返り値: sections(label・role_ja・start_bar・bars・\n\
+  start_sec・end_sec・energy_db〈いちばん大きい区間が 0〉・level・brightness_hz・chords〈小節ごと、先頭 8 小節〉・similarity)、\n\
+  form・form_ja・bpm・beats_per_bar・key・bar_energy_db・summary。「この曲みたいな構成で」と言われたら、小節数と並びと\n\
+  盛り上がりの差を写して骨組み(マーカー・区間)を作る。役割は推定なので、ユーザーの言葉を優先する。\n\
+- 拍・テンポだけなら analyze_beats(bpm・bpm_alternatives〈半分・倍。曲調に合う方を選ぶ〉・tempo_variation〈0.015 未満 =\n\
+  打ち込み〉・beats_per_bar・first_downbeat_sec・beats / downbeats)。取り込んだ音声を曲のテンポに合わせるときは\n\
+  set_clip_stretch の original_bpm に bpm、ループの小節頭をそろえるときは first_downbeat_sec から offset を決める。\n\
+- 言葉で伝えきれない感じ(テンポの揺れ・コード感・ノリ)は\n\
+  analyze_reference_skeleton、音量・音色・広がり・ノリの近さは compare_with_reference で数で読む。\n\
+- analyze_reference_skeleton: tempo_map(小節・拍の位置と bpm。一定なら 1 つ)、beats_per_bar、first_downbeat_sec、\n\
+  tuning_cents(A=440Hz からのずれ)、key、bars(小節ごとの和音。\"C G/B\" のように並べ、転回形は分数)、groove、summary。\n\
+  groove: swing_8th_pct(8 分の裏の位置。50 = イーブン、58〜62 = 軽いハネ、67 = 3 連のハネ)・swing_16th_pct・\n\
+  timing_spread_ms(格子からのずれ。8 未満 = 打ち込み的、15 以上 = ゆったりした演奏)・subdivision(8分 / 16分 / 3連)・\n\
+  onsets_per_beat(低・中・高の帯域の 1 拍あたりの音の数 = 密度)。ハネは groove のテンプレートや音の置き方に、密度は打ち込みの細かさに写す。\n\
+- 和音・調は音声からの推定(作り込んだ曲で根音がおよそ 9 割の拍で合う。実際の録音では下がる)。目安にして、\n\
+  旋律や和音の並びをそのまま写さない(借りるのは感覚。公開する曲で問題にならないように)。\n\
+- compare_with_reference: before = 参考曲、after = 自分の曲。tonal_balance の diff_db がプラスなら自分の曲の方が多い、\n\
+  notes が目立つ違いの要約、match_gain_db が音量をそろえる補正量、groove が両方のノリ。サビどうしなど同じ役割の区間を\n\
+  ref_start_sec / ref_end_sec と start_tick / end_tick で選んで比べると確か。直したらもう一度比べて近づいたか確かめる。\n\
+  音量の差だけで判断しない(大きい方が良く聞こえる)。",
     ),
     (
         "sound_match",
