@@ -592,6 +592,136 @@ async fn import_audio_clip(
     .await
 }
 
+/// 参考曲を読み込む: 参考曲のトラック(いちばん上。曲の音には混ぜず、聴き比べのときだけ鳴る)を作り、
+/// 音声クリップを曲の頭に置く(履歴 1 件)
+#[tauri::command]
+async fn import_reference(state: State<'_, AppState>, path: String) -> Result<Value, String> {
+    guard::catching("import_reference", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
+        let name = std::path::Path::new(&path)
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "audio".to_owned());
+        let tid = glaux_core::TrackId::new();
+        let mut track = glaux_core::Track::new(
+            tid.clone(),
+            glaux_core::tr!("参考曲: {name}", "Reference: {name}"),
+            glaux_core::TrackKind::Audio,
+        );
+        track.reference = true;
+        // クリップのコマンドはトラックがある前提なので、足した後の曲で作る
+        let mut with_track = (*project).clone();
+        with_track.tracks.insert(0, track.clone());
+        let clip_id = glaux_core::ClipId::new();
+        let mut cmds = vec![Command::AddTrack {
+            track,
+            index: Some(0),
+        }];
+        cmds.extend(glaux_mcp::assets::audio_clip_commands(
+            &with_track,
+            &tid,
+            &imported,
+            clip_id.clone(),
+            Tick(0),
+            &name,
+        )?);
+        let label = glaux_core::tr!("参考曲「{name}」を読み込む", "Load reference \"{name}\"");
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "track_id": tid, "clip_id": clip_id, "project_version": m.project_version }))
+    })
+    .await
+}
+
+/// 参考曲の聴き方("off" = ふつう / "song" = 聴き比べの自分の曲 / "reference" = 参考曲 / "both" = 重ねる)
+#[tauri::command]
+fn reference_set_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    use glaux_engine::render::RefMode;
+    let m = match mode.as_str() {
+        "off" => RefMode::Off,
+        "song" => RefMode::Song,
+        "reference" => RefMode::Reference,
+        "both" => RefMode::Both,
+        _ => {
+            return Err(format!(
+                "mode は off / song / reference / both(got: {mode})"
+            ))
+        }
+    };
+    state.engine()?.set_reference_mode(m);
+    Ok(())
+}
+
+/// 参考曲と曲の音量をそろえる: 同じ範囲(省略で参考曲のクリップの範囲)の統合ラウドネスを測り、
+/// 聴き比べでは大きい方を下げ、重ねるときは参考曲を曲と同じ大きさにする
+#[tauri::command]
+async fn reference_match_loudness(
+    state: State<'_, AppState>,
+    start_tick: Option<u64>,
+    end_tick: Option<u64>,
+) -> Result<Value, String> {
+    guard::catching("reference_match_loudness", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let range = match (start_tick, end_tick) {
+            (Some(a), Some(b)) if b > a => Some((
+                project.tempo_map.tick_to_seconds(Tick(a)),
+                project.tempo_map.tick_to_seconds(Tick(b)),
+            )),
+            _ => None,
+        };
+        let (song, reference) = tokio::task::spawn_blocking(move || {
+            glaux_mcp::recon::reference_loudness(&project, std::path::Path::new(&dir), range)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let (song_db, ref_db) = glaux_engine::ab::match_gains(song, reference);
+        let overlay_db = match (song, reference) {
+            (Some(s), Some(r)) => (s - r).clamp(-24.0, 6.0),
+            _ => 0.0,
+        };
+        state
+            .engine()?
+            .set_reference_gains(song_db as f32, ref_db as f32, overlay_db as f32);
+        Ok(json!({
+            "song_lufs": song,
+            "reference_lufs": reference,
+            "song_gain_db": (song_db * 10.0).round() / 10.0,
+            "reference_gain_db": (ref_db * 10.0).round() / 10.0,
+            "overlay_gain_db": (overlay_db * 10.0).round() / 10.0,
+        }))
+    })
+    .await
+}
+
+/// 参考曲の骨組み(テンポ・拍子・調・小節ごとの和音・ノリ)。参考曲のトラックの最初の音声クリップから
+#[tauri::command]
+async fn reference_skeleton(state: State<'_, AppState>, clip_id: String) -> Result<Value, String> {
+    guard::catching("reference_skeleton", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let sound = glaux_mcp::sound::load(
+                &project,
+                std::path::Path::new(&dir),
+                &glaux_mcp::sound::SoundSource::Clip(cid),
+            )?;
+            let sk =
+                glaux_mcp::recon::analyze(&sound.frames, sound.sample_rate, Default::default())?;
+            Ok(glaux_mcp::recon::skeleton_json(&sk, &sound.label))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    })
+    .await
+}
+
 /// 音声クリップの波形ピーク(表示用)。
 #[tauri::command]
 async fn clip_peaks(
@@ -3509,6 +3639,13 @@ fn transport_set_speaker(state: State<'_, AppState>, speaker: String) -> Result<
     Ok(())
 }
 
+/// 再生の速さ(1.0 = ふつう、0.75・0.5 など。音程は変えない。聴く音だけで、書き出しには効かない)
+#[tauri::command]
+fn transport_set_speed(state: State<'_, AppState>, speed: f32) -> Result<(), String> {
+    state.engine()?.set_speed(speed);
+    Ok(())
+}
+
 /// アプリから鳴る音の音量(dB)。聴く音量だけで、曲・メーター・書き出しには入らない
 #[tauri::command]
 fn transport_set_output_volume(state: State<'_, AppState>, db: f32) -> Result<(), String> {
@@ -4608,7 +4745,12 @@ fn main() -> Result<()> {
             transport_spectrum,
             transport_set_speaker,
             transport_set_output_volume,
+            transport_set_speed,
             transport_reset_loudness,
+            import_reference,
+            reference_set_mode,
+            reference_match_loudness,
+            reference_skeleton,
             ab_prepare,
             ab_set_side,
             ab_clear,

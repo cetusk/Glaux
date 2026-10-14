@@ -29,6 +29,8 @@
   import TransportLcd from "./lib/TransportLcd.svelte";
   import { abLooping } from "./lib/abLoop";
   import StatusBar from "./lib/StatusBar.svelte";
+  import ReferenceSwitch from "./lib/ReferenceSwitch.svelte";
+  import { analyzeReference, referenceClipId, referenceStore, referenceTrack, resetReference, setSpeed, SPEEDS } from "./lib/reference.svelte";
   import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
   import { plural, syncBackendLanguage, tr } from "./lib/i18n.svelte";
@@ -814,6 +816,29 @@
     loopOn = transport.loop != null;
   });
 
+  // ---- 参考曲・遅い再生 ----
+  const hasReference = $derived(!!referenceTrack(project));
+  // 曲を開き直した・参考曲を消したら、ふつうの聴き方に戻す。参考曲があれば骨組み(テンポ・調)を読む
+  let refSongKey = "";
+  $effect(() => {
+    const key = project ? `${project.meta.created}` : "";
+    if (key !== refSongKey) {
+      refSongKey = key;
+      resetReference();
+    }
+    if (!hasReference) {
+      if (referenceStore.mode !== "off") resetReference();
+      return;
+    }
+    const id = referenceClipId(project);
+    if (id) void analyzeReference(id);
+  });
+
+  function cycleSpeed() {
+    const i = SPEEDS.indexOf(referenceStore.speed);
+    void setSpeed(SPEEDS[(i + 1) % SPEEDS.length]);
+  }
+
   function loopRange(): { start: number; end: number } | null {
     const r = selectionStore.range;
     const start = r ? r.startTick : 0;
@@ -1026,6 +1051,18 @@
             ><Icon name="repeat" /></button
           >
           <button
+            class="btn speed"
+            class:on={referenceStore.speed < 1}
+            aria-label={tr("再生の速さ", "Playback speed")}
+            onclick={cycleSpeed}
+            disabled={!transport.available}
+            title={tr(
+              `再生の速さ ${Math.round(referenceStore.speed * 100)}%(押すたびに 100% → 75% → 50%)。音程は変わりません。聴き取り・練習用で、書き出しには影響しません`,
+              `Playback speed ${Math.round(referenceStore.speed * 100)}% (click to cycle 100% → 75% → 50%). Pitch stays the same. For listening and practice; doesn't affect exports`,
+            )}
+            ><Icon name="gauge" /><span class="speed-txt" class:normal={referenceStore.speed >= 1}>{Math.round(referenceStore.speed * 100)}%</span></button
+          >
+          <button
             class="btn icon"
             class:on={transport.metronome}
             aria-label={tr("メトロノーム", "Metronome")}
@@ -1069,6 +1106,9 @@
             ><Icon name="circle" fill /></button
           >
         </div>
+        {#if hasReference}
+          <ReferenceSwitch {project} {projectVersion} range={selectionStore.range ? [selectionStore.range.startTick, selectionStore.range.endTick] : null} />
+        {/if}
         <TransportLcd {project} {contentEndTick} midiArmName={midiArm?.name ?? null} onError={(m) => (error = m)} />
       </div>
       <div class="h-tail">
@@ -1409,6 +1449,27 @@
     width: 38px;
   }
 
+  /* 再生の速さ(100% 以外のときは目立たせる) */
+  .tp .btn.speed {
+    width: auto;
+    padding: 0 6px;
+    gap: 3px;
+  }
+
+  .speed-txt {
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    min-width: 3.2ch;
+    text-align: right;
+  }
+
+  /* 狭いときは、ふつうの速さ(100%)の数字をしまう(遅くしているときは出す) */
+  @media (max-width: 1100px) {
+    .speed-txt.normal {
+      display: none;
+    }
+  }
+
   .rec {
     color: var(--danger);
   }
@@ -1437,8 +1498,9 @@
   .listen-vol input {
     width: 72px;
   }
-  /* 窓の最小幅(800px)より狭く表示されたとき(拡大表示など)も、下の段に収める */
-  @media (max-width: 780px) {
+  /* 窓の最小幅(800px)のあたりと、それより狭く表示されたとき(拡大表示など)も、下の段に収める
+     (参考曲の切り替えが出ているときに、再生の表示窓が詰まらないように) */
+  @media (max-width: 860px) {
     .listen-vol input {
       width: 40px;
     }

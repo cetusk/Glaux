@@ -22,6 +22,7 @@ file-audio pencil arrow-up arrow-down palette layers music list-music move-horiz
 chart-no-axes-column rows-2 arrow-up-down magnet link check piano headphones triangle-alert info
 loader-circle eye send square-stop message-square-plus message-circle-question-mark folder file-plus-2 hand-metal ruler target clapperboard
 unplug pin archive split scissors layout-grid zoom-in zoom-out eraser volume-x list-checks languages
+gauge disc-3
 """.split()
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -136,6 +136,13 @@ fn random_command(p: &Project, rng: &mut StdRng, depth: u8) -> Command {
                         prop: TrackProp::Output(rng.gen_bool(0.7).then(|| bus.id.clone())),
                     };
                 }
+                // 参考曲の印(音声トラック以外は失敗する)
+                if rng.gen_bool(0.05) {
+                    return Command::SetTrackProp {
+                        id: pick_track(rng),
+                        prop: TrackProp::Reference(rng.gen()),
+                    };
+                }
                 return Command::SetTrackProp {
                     id: pick_track(rng),
                     prop: match rng.gen_range(0..7) {

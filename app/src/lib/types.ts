@@ -127,6 +127,8 @@ export interface Track {
   solo: boolean;
   volume_db: number;
   pan: number;
+  /** 参考曲のトラック(音声トラックだけ)。曲の音には混ぜず、聴き比べのときだけ鳴る */
+  reference?: boolean;
   device?: {
     type?: string;
     name?: string;

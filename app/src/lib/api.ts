@@ -274,6 +274,48 @@ export function importAudioClip(
   return invoke("import_audio_clip", { trackId, path, startTick: Math.max(0, Math.round(startTick)) });
 }
 
+/** 参考曲を読み込む: 参考曲のトラック(いちばん上)を作り、音声クリップを曲の頭に置く(履歴 1 件) */
+export function importReference(path: string): Promise<{ track_id: string; clip_id: string; project_version: number }> {
+  return invoke("import_reference", { path });
+}
+
+/** 参考曲の聴き方: off = ふつう / song = 聴き比べの自分の曲 / reference = 参考曲 / both = 重ねる */
+export type ReferenceMode = "off" | "song" | "reference" | "both";
+
+export function referenceSetMode(mode: ReferenceMode): Promise<void> {
+  return invoke("reference_set_mode", { mode });
+}
+
+/** 参考曲と曲の音量をそろえる(同じ範囲の統合ラウドネスを測る。範囲は省略で参考曲のクリップ全体) */
+export function referenceMatchLoudness(
+  startTick?: number,
+  endTick?: number,
+): Promise<{
+  song_lufs: number | null;
+  reference_lufs: number | null;
+  song_gain_db: number;
+  reference_gain_db: number;
+  overlay_gain_db: number;
+}> {
+  return invoke("reference_match_loudness", { startTick: startTick ?? null, endTick: endTick ?? null });
+}
+
+/** 参考曲の骨組み(テンポ・拍子・調・小節ごとの和音・ノリ。summary が言葉の要約) */
+export function referenceSkeleton(clipId: string): Promise<{
+  summary: string;
+  bpm: number | null;
+  beats_per_bar: number | null;
+  key: { name: string; confidence: number } | null;
+  tuning_cents: number;
+}> {
+  return invoke("reference_skeleton", { clipId });
+}
+
+/** 再生の速さ(1 = ふつう、0.75・0.5。音程は変えない。書き出しには効かない) */
+export function transportSetSpeed(speed: number): Promise<void> {
+  return invoke("transport_set_speed", { speed });
+}
+
 /** 音声クリップの波形ピーク(表示用)。 */
 export function clipPeaks(clipId: string, buckets: number): Promise<{ peaks: [number, number][] }> {
   return invoke("clip_peaks", { clipId, buckets });
@@ -1050,6 +1092,8 @@ export type GameExport = {
   missing_soundfonts: string[];
   unbaked_effects: string[];
   solo_cleared: string[];
+  /** 外した参考曲のトラック(ゲームでは鳴らさず、音声も写さない) */
+  references_removed?: string[];
   plugins: string[];
 };
 

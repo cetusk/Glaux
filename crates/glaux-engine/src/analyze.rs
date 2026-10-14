@@ -1231,11 +1231,12 @@ pub fn render_tracks_solo(
     let rendered: Vec<Option<Vec<f32>>> = {
         let n = project.tracks.len();
         let targets: Vec<Project> = project.tracks.iter().map(solo).collect();
-        // バスは単体では鳴らさない(流れ込むトラックの和になり、トラックごとの比べ・かぶりの判定が二重になる)
+        // バスは単体では鳴らさない(流れ込むトラックの和になり、トラックごとの比べ・かぶりの判定が二重になる)。
+        // 参考曲は曲の音に入らないので鳴らさない
         let is_bus: Vec<bool> = project
             .tracks
             .iter()
-            .map(|t| t.kind == glaux_core::TrackKind::Bus)
+            .map(|t| t.kind == glaux_core::TrackKind::Bus || t.reference)
             .collect();
         let has_plugins: Vec<bool> = targets
             .iter()

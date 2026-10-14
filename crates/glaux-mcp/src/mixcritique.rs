@@ -404,6 +404,7 @@ pub fn findings(
         .iter()
         .filter(|t| {
             t.kind != TrackKind::Bus
+                && !t.reference
                 && t.clips
                     .iter()
                     .any(|c| c.notes().is_none_or(|n| !n.is_empty()))

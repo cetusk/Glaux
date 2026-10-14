@@ -47,6 +47,8 @@ pub enum TrackProp {
     Macros(Vec<crate::model::Macro>),
     /// 出力先のバス(グループ)。null でマスター
     Output(Option<TrackId>),
+    /// 参考曲のトラックにする / 戻す(音声トラックだけ)
+    Reference(bool),
 }
 
 /// ノートの部分更新。`None` のフィールドは変更しない。

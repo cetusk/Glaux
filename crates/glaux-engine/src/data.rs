@@ -424,6 +424,46 @@ pub struct PlaybackData {
     /// トラックを処理する順(`tracks` の添字。先頭 [`MAX_TRACKS`] 本)。送る側を受ける側より先に並べる。
     /// 空なら「通常のトラック → バス」の順(手で組んだテスト用のデータ)
     pub order: Vec<u32>,
+    /// 参考曲の音(`start` 昇順)。曲の音には混ぜず、聴き比べ([`crate::render::RefMode`])のときだけ鳴る。
+    /// 書き出し・解析は聴き比べをしないので入らない。マスターのエフェクトも通さない
+    pub reference: Vec<RefClip>,
+}
+
+/// 参考曲のトラックの音声クリップ 1 つ
+#[derive(Clone, Debug)]
+pub struct RefClip {
+    pub start: u64,
+    pub end: u64,
+    pub data: Arc<SampleData>,
+    /// 素材の読み始め(素材のサンプル)
+    pub offset: f64,
+    /// 素材のサンプルレート ÷ 再生のサンプルレート
+    pub rate: f64,
+    pub gain: f32,
+}
+
+impl RefClip {
+    /// 位置 `pos` の左右の値(範囲の外は無音)
+    #[inline]
+    pub fn frame(&self, pos: u64) -> (f32, f32) {
+        if pos < self.start || pos >= self.end {
+            return (0.0, 0.0);
+        }
+        let x = self.offset + (pos - self.start) as f64 * self.rate;
+        let i = x as usize;
+        let t = (x - i as f64) as f32;
+        let m = &self.data.frames;
+        if i + 1 >= m.len() {
+            return (0.0, 0.0);
+        }
+        let mid = m[i] + (m[i + 1] - m[i]) * t;
+        let side = self
+            .data
+            .side
+            .as_ref()
+            .map_or(0.0, |s| s[i] + (s[i + 1] - s[i]) * t);
+        ((mid + side) * self.gain, (mid - side) * self.gain)
+    }
 }
 
 /// 畳み込みリバーブの本体の使い回し(エフェクト ID → (条件のハッシュ, 本体))。
@@ -2544,6 +2584,7 @@ fn build_inner(
             });
             // バスはソロの影響を受けない(ソロにしたトラックのリバーブが消えないように)
             let audible = !t.mute
+                && !t.reference
                 && (!any_solo
                     || t.solo
                     || t.kind == glaux_core::TrackKind::Bus
@@ -2657,7 +2698,37 @@ fn build_inner(
     let master_effects: Vec<BakedEffect> = master_chain.into_iter().map(|(_, b)| b).collect();
 
     let mut audio_events = Vec::new();
+    let mut reference = Vec::new();
     for (ti, track) in project.tracks.iter().enumerate() {
+        if track.reference {
+            // 参考曲は曲の音に混ぜない(聴き比べのときだけレンダラが別に鳴らす)
+            if track.mute {
+                continue;
+            }
+            for clip in &track.clips {
+                if let ClipContent::Audio {
+                    asset,
+                    offset_samples,
+                    gain_db,
+                    ..
+                } = &clip.content
+                {
+                    let Some(data) = bank.get(asset) else {
+                        continue;
+                    };
+                    let start = to_sample(clip.start);
+                    reference.push(RefClip {
+                        start,
+                        end: to_sample(clip.start + clip.length).max(start + 1),
+                        data: data.clone(),
+                        offset: *offset_samples as f64,
+                        rate: data.sample_rate as f64 / sample_rate,
+                        gain: db_to_amp(*gain_db) * db_to_amp(track.volume_db),
+                    });
+                }
+            }
+            continue;
+        }
         for clip in &track.clips {
             if let ClipContent::Audio {
                 asset,
@@ -2782,6 +2853,7 @@ fn build_inner(
         conv: conv.out.into_inner(),
         order: routing_order(&tracks),
         tracks,
+        reference,
     }
 }
 
@@ -4701,6 +4773,59 @@ mod tests {
         assert!(rms(0.0, 0.4) < 1e-4, "クリップ前は無音");
         assert!(rms(0.6, 1.4) > 0.2, "クリップ区間は鳴る");
         assert!(rms(1.6, 1.9) < 1e-4, "波形を読み切ったら止まる");
+    }
+
+    /// 参考曲のトラックは曲の音(書き出し・解析)に入らず、聴き比べのときだけ鳴る。遅い再生は音程を変えずに遅くなる
+    #[test]
+    fn reference_track_plays_only_when_listening_and_slow_playback_keeps_pitch() {
+        use crate::render::{RefMode, Renderer, Shared};
+        use std::sync::atomic::Ordering;
+        let tmp = tempfile::tempdir().unwrap();
+        // 0.5 秒から 1 秒の 440Hz
+        let mut project = audio_clip_project(tmp.path(), 960, 1920);
+        project.tracks[0].reference = true;
+        let bank = SampleBank::load(&project, tmp.path());
+        let data = build_playback_data(&project, 48_000.0, &bank);
+        assert!(data.audio_events.is_empty());
+        assert_eq!(data.reference.len(), 1);
+        assert_eq!(data.end_sample, 0, "曲の長さに入らない");
+        // 書き出しは無音
+        let out = crate::export::render_project(&project, 48_000.0, &bank).unwrap_or_default();
+        assert!(out.iter().all(|v| v.abs() < 1e-6));
+
+        let shared = Arc::new(Shared::new(data));
+        let play = |mode: RefMode, speed: f32, secs: f64| -> (Vec<f32>, u64) {
+            shared.ref_mode.store(mode.code(), Ordering::Release);
+            shared.speed.store(speed.to_bits(), Ordering::Release);
+            shared.seek.store(0, Ordering::Release);
+            shared.playing.store(true, Ordering::Release);
+            let mut r = Renderer::new(shared.clone());
+            let mut out = Vec::new();
+            let mut buf = vec![0.0f32; 512 * 2];
+            for _ in 0..(secs * 48_000.0 / 512.0) as usize {
+                r.process(&mut buf, 2);
+                out.extend(buf.chunks(2).map(|c| c[0]));
+            }
+            (out, shared.pos.load(Ordering::Acquire))
+        };
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
+        let (off, _) = play(RefMode::Off, 1.0, 1.0);
+        assert!(rms(&off[26_000..46_000]) < 1e-4, "ふつうの再生では鳴らない");
+        let (on, _) = play(RefMode::Reference, 1.0, 1.0);
+        assert!(rms(&on[26_000..46_000]) > 0.2, "参考曲を聴くと鳴る");
+        // 半分の速さ: 1.4 秒で曲の位置は約 0.7 秒。0.5 秒からの参考曲が約 1 秒(倍の時間)後から鳴り、音程は 440Hz のまま
+        let (slow, pos) = play(RefMode::Reference, 0.5, 1.6);
+        assert!(
+            (pos as f64 / 48_000.0 - 0.8).abs() < 0.1,
+            "位置 {}",
+            pos as f64 / 48_000.0
+        );
+        assert!(rms(&slow[..40_000]) < 0.05, "まだ鳴らない");
+        let mid = &slow[56_000..72_000];
+        assert!(rms(mid) > 0.2, "伸ばした参考曲が鳴る");
+        let crossings = mid.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        let freq = crossings as f64 / (mid.len() as f64 / 48_000.0);
+        assert!((freq - 440.0).abs() < 10.0, "{freq} Hz");
     }
 
     /// テンポ追従のクリップだけを長くしても、素材の尽きた先は作らない(クリップの長さの確保で落ちていた)

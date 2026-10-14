@@ -26,6 +26,8 @@ pub struct GameExport {
     pub unbaked_effects: Vec<String>,
     /// ソロを外したトラック
     pub solo_cleared: Vec<String>,
+    /// 外した参考曲のトラック(ゲームでは鳴らさず、音声も写さない)
+    pub references_removed: Vec<String>,
     /// 使っていたプラグイン(CLAP の ID)。配るときの約束の確かめ用
     pub plugins: Vec<String>,
 }
@@ -140,6 +142,35 @@ pub fn export_for_game(
         ..Default::default()
     };
     let mut p = project.clone();
+
+    // 参考曲は聴き比べ用なので外し、その音声も写さない(ほかで使っていなければ)
+    let ref_assets: Vec<glaux_core::AssetId> = p
+        .tracks
+        .iter()
+        .filter(|t| t.reference)
+        .flat_map(|t| t.clips.iter())
+        .filter_map(|c| match &c.content {
+            glaux_core::ClipContent::Audio { asset, .. } => Some(asset.clone()),
+            _ => None,
+        })
+        .collect();
+    report.references_removed = p
+        .tracks
+        .iter()
+        .filter(|t| t.reference)
+        .map(|t| t.name.clone())
+        .collect();
+    p.tracks.retain(|t| !t.reference);
+    for a in ref_assets {
+        let mut q = p.clone();
+        q.assets.remove(&a);
+        let used = serde_json::to_string(&q)
+            .map(|j| j.contains(&a.to_string()))
+            .unwrap_or(true);
+        if !used {
+            p.assets.remove(&a);
+        }
+    }
 
     // 使っている音声を写す(フリーズで描き出すときは元のフォルダから読む)
     for asset in p.assets.values() {

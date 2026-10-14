@@ -364,6 +364,7 @@
       <div>{tr("音声にしたトラック", "Rendered to audio")}: {game.frozen.length ? game.frozen.join(tr("・", ", ")) : tr("なし", "none")}</div>
       <div>{tr("入れた SoundFont", "SoundFonts included")}: {game.soundfonts.length ? game.soundfonts.join(tr("・", ", ")) : tr("なし", "none")}</div>
       {#if game.solo_cleared.length}<div>{tr("ソロを外したトラック", "Solo cleared")}: {game.solo_cleared.join(tr("・", ", "))}</div>{/if}
+      {#if game.references_removed?.length}<div>{tr("外した参考曲", "Reference removed")}: {game.references_removed.join(tr("・", ", "))}</div>{/if}
       {#if game.missing_soundfonts.length}
         <div class="warn">{tr("見つからず入れられなかった SoundFont(ゲームでその音は鳴りません)", "SoundFonts not found (those sounds won't play in the game)")}: {game.missing_soundfonts.join(tr("・", ", "))}</div>
       {/if}

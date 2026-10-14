@@ -166,6 +166,14 @@ impl Project {
                         }
                         TrackProp::Output(old)
                     }
+                    TrackProp::Reference(v) => {
+                        if *v && t.kind != crate::model::TrackKind::Audio {
+                            return Err(CoreError::OutOfRange(
+                                "参考曲にできるのは音声トラックだけです".to_owned(),
+                            ));
+                        }
+                        TrackProp::Reference(std::mem::replace(&mut t.reference, *v))
+                    }
                 };
                 Ok(Applied {
                     inverse: SetTrackProp {

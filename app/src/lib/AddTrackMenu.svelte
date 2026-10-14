@@ -12,7 +12,7 @@
   }: {
     x: number;
     y: number;
-    onPick: (kind: "midi" | "audio" | "bus" | "midi-file") => void;
+    onPick: (kind: "midi" | "audio" | "bus" | "midi-file" | "reference") => void;
     onClose: () => void;
   } = $props();
 </script>
@@ -36,6 +36,16 @@
     ></button
   >
   <div class="menu-sep"></div>
+  <button class="rich" onclick={() => onPick("reference")}
+    ><Icon name="disc-3" /><span
+      >{tr("参考曲を読み込む…", "Load a reference song…")}<small
+        >{tr(
+          "曲の音には混ぜず、自分の曲と聴き比べる(音量は自動でそろえる)。テンポ・調・和音・ノリも読み取る",
+          "Not mixed into the song; compare it with yours (loudness matched automatically). Also reads its tempo, key, chords and feel",
+        )}</small
+      ></span
+    ></button
+  >
   <button class="rich" onclick={() => onPick("midi-file")}
     ><Icon name="file-music" /><span
       >{tr("MIDI・MusicXML から…", "From MIDI / MusicXML…")}<small

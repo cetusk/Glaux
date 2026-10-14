@@ -45,6 +45,7 @@ pub mod string_pool;
 mod studio;
 mod subtractive;
 pub mod tone;
+pub mod varispeed;
 mod voice;
 mod wave;
 mod wavetable;

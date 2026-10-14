@@ -68,6 +68,7 @@
     viewStore,
   } from "./selection.svelte";
   import Icon from "./Icon.svelte";
+  import { importReferenceFile } from "./reference.svelte";
   import { flip } from "svelte/animate";
   import { deviceIcon, deviceName } from "./instruments";
   import type { Clip, Project, Track } from "./types";
@@ -1345,9 +1346,10 @@
     addMenu = { x: r.left, y: r.bottom + 4 };
   }
 
-  function addFromMenu(kind: "midi" | "audio" | "bus" | "midi-file") {
+  function addFromMenu(kind: "midi" | "audio" | "bus" | "midi-file" | "reference") {
     addMenu = null;
     if (kind === "midi-file") importMidiFile();
+    else if (kind === "reference") void importReferenceFile();
     else addTrack(project, kind);
   }
 
@@ -1533,7 +1535,7 @@
       style={trackDrag ? `transform:translateY(${dragShift(ti)}px)` : ""}
       animate:flip={{ duration: 180 }}
     >
-    <div class="track-row" class:alt={ti % 2 === 1} style="--track-h:{trackHeight(track.id)}px">
+    <div class="track-row" class:alt={ti % 2 === 1} class:reference={track.reference} style="--track-h:{trackHeight(track.id)}px">
       <!-- 見出し: 1 段目 = つかむ所・種類・名前・⋯ / 2 段目 = M・S・音量 / 3 段目 = 音源と固定の 3 つ
            (アーム・オートメーション・インスペクター。無いものは空けて、どのトラックでも同じ位置に) -->
       <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
@@ -1580,9 +1582,14 @@
           <button class="btn letter" class:m-on={track.mute} onclick={() => toggleMute(track)} title={tr("ミュート", "Mute")} aria-pressed={track.mute}
             >M</button
           >
-          <button class="btn letter" class:s-on={track.solo} onclick={() => toggleSolo(track)} title={tr("ソロ", "Solo")} aria-pressed={track.solo}
-            >S</button
-          >
+          {#if track.reference}
+            <!-- 参考曲は曲の音に入らないのでソロは無い(聴き分けは上の帯の「参考曲」) -->
+            <span class="letter-slot"></span>
+          {:else}
+            <button class="btn letter" class:s-on={track.solo} onclick={() => toggleSolo(track)} title={tr("ソロ", "Solo")} aria-pressed={track.solo}
+              >S</button
+            >
+          {/if}
           <input
             class="vol"
             type="range"
@@ -1603,6 +1610,14 @@
           {#if track.kind === "bus"}
             <span class="dev plain" title={tr("インスペクターの「送り」で、各トラックからこのバスへ送る量を決めます", "Set how much each track sends to this bus with Sends in the Inspector")}
               >{tr("受けている:", "Receiving:")} {sendersOf(project, track)}{tr(" 本", "")}</span
+            >
+          {:else if track.reference}
+            <span
+              class="dev plain ref-badge"
+              title={tr(
+                "参考曲: 曲の音・書き出しには混ぜず、上の帯の「参考曲」「重ねる」で聴きます(音量は自動でそろえます)",
+                "Reference: not mixed into the song or exports. Listen with “Reference” or “Overlay” on the top bar (loudness is matched automatically)",
+              )}><Icon name="disc-3" size={12} /><span>{tr("参考曲", "Reference")}</span></span
             >
           {:else if track.kind === "audio"}
             <span class="dev plain">{tr("音声", "Audio")}</span>
@@ -2241,6 +2256,29 @@
     background: none;
     border-color: transparent;
     padding: 0 2px;
+  }
+
+  /* 参考曲のトラック: 見出しの印と、レーンの縁(曲の音に入らないことが見て分かるように) */
+  .dev.ref-badge {
+    color: var(--reference);
+  }
+
+  .track-row.reference .lane {
+    background-image: repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--reference) 6%, transparent) 0 6px,
+      transparent 6px 14px
+    );
+  }
+
+  .track-row.reference .clip.audio {
+    --clip-audio: var(--reference);
+  }
+
+  .letter-slot {
+    display: inline-block;
+    width: 20px;
+    flex: none;
   }
 
   /* 直前のチャットのターンで AI が変えたクリップ */

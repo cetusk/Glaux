@@ -134,12 +134,12 @@ pub fn run(
                 .join("export")
                 .join(format!("{title}_{stamp}_stems"))
         });
-        // 書き出すトラック(バスと空のトラックは除く)
+        // 書き出すトラック(バス・参考曲・空のトラックは除く)
         let targets: Vec<(usize, &glaux_core::Track)> = project
             .tracks
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.kind != TrackKind::Bus && !t.clips.is_empty())
+            .filter(|(_, t)| t.kind != TrackKind::Bus && !t.reference && !t.clips.is_empty())
             .collect();
         let one = |i: usize, t: &glaux_core::Track| -> StemResult {
             let stem = crate::bounce::stem_project(project, t);

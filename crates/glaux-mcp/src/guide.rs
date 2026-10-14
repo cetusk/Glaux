@@ -513,7 +513,9 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
     (
         "reference",
         "参考曲を読む・近づける",
-        "- 構成(区間の並び・小節数・盛り上がり)は analyze_reference。返り値: sections(label・role_ja・start_bar・bars・\n\
+        "- 人が読み込んだ参考曲は、reference: true の音声トラック(曲の音・書き出し・解析には入らず、人が上の帯で聴き比べる)。\n\
+  そのクリップの clip_id を下の道具に渡す。参考曲のトラックに音源・エフェクトを足したり、音符を写したりしない。\n\
+- 構成(区間の並び・小節数・盛り上がり)は analyze_reference。返り値: sections(label・role_ja・start_bar・bars・\n\
   start_sec・end_sec・energy_db〈いちばん大きい区間が 0〉・level・brightness_hz・chords〈小節ごと、先頭 8 小節〉・similarity)、\n\
   form・form_ja・bpm・beats_per_bar・key・bar_energy_db・summary。「この曲みたいな構成で」と言われたら、小節数と並びと\n\
   盛り上がりの差を写して骨組み(マーカー・区間)を作る。役割は推定なので、ユーザーの言葉を優先する。\n\

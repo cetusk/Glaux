@@ -208,6 +208,10 @@ pub struct Track {
     /// マクロ(最大 [`MAX_MACROS`] 個)。1 つの値で複数のつまみを動かす(再生データを作るときに焼き込む)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub macros: Vec<Macro>,
+    /// 参考曲のトラック(音声トラックだけ)。曲の音には混ぜず、聴き比べのときだけ鳴る
+    /// (書き出し・解析・ゲームでは鳴らない。マスターのエフェクトも通さない)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reference: bool,
 }
 
 /// 本体の音源に重ねる層の上限(本体と合わせて 4 層)
@@ -407,6 +411,7 @@ impl Track {
             modulators: self.modulators.clone(),
             layers: self.layers.clone(),
             macros: self.macros.clone(),
+            reference: self.reference,
         }
     }
 
@@ -657,6 +662,7 @@ impl Track {
             modulators: vec![],
             layers: vec![],
             macros: vec![],
+            reference: false,
         }
     }
 

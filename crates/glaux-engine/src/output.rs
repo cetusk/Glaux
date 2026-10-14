@@ -844,6 +844,39 @@ impl EngineHandle {
         crate::ab::AbSide::from_code(self.shared.ab_side.load(Ordering::Acquire))
     }
 
+    /// 参考曲の聴き方(参考曲のトラックが無ければ何をしても ふつう と同じ)
+    pub fn set_reference_mode(&self, mode: crate::render::RefMode) {
+        self.shared.ref_mode.store(mode.code(), Ordering::Release);
+    }
+
+    pub fn reference_mode(&self) -> crate::render::RefMode {
+        crate::render::RefMode::from_code(self.shared.ref_mode.load(Ordering::Acquire))
+    }
+
+    /// 参考曲と曲の音量をそろえる倍率(dB)。聴き比べの曲側・参考曲側と、重ねるときの参考曲
+    pub fn set_reference_gains(&self, song_db: f32, ref_db: f32, overlay_db: f32) {
+        let amp = |db: f32| 10f32.powf(db.clamp(-48.0, 12.0) / 20.0).to_bits();
+        self.shared
+            .ref_gain_song
+            .store(amp(song_db), Ordering::Relaxed);
+        self.shared
+            .ref_gain_ref
+            .store(amp(ref_db), Ordering::Relaxed);
+        self.shared
+            .ref_gain_overlay
+            .store(amp(overlay_db), Ordering::Relaxed);
+    }
+
+    /// 再生の速さ(1.0 = ふつう、0.5 = 半分。音程は変えない。書き出しには効かない)
+    pub fn set_speed(&self, speed: f32) {
+        let s = speed.clamp(glaux_dsp::varispeed::MIN_SPEED, 1.0);
+        self.shared.speed.store(s.to_bits(), Ordering::Release);
+    }
+
+    pub fn speed(&self) -> f32 {
+        f32::from_bits(self.shared.speed.load(Ordering::Acquire))
+    }
+
     /// 聴き比べの音が置いてあるか
     pub fn has_ab_clip(&self) -> bool {
         self.shared.ab.load().is_some()

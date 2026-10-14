@@ -349,6 +349,54 @@ pub fn song_groove(
     glaux_engine::feel::analyze(&onsets, &beats)
 }
 
+/// 参考曲と曲の統合ラウドネス(LUFS)を、同じ範囲で測る。範囲は曲の秒(None なら参考曲のクリップの範囲)。
+/// 参考曲は、参考曲のトラックの最初の音声クリップ。(曲, 参考曲)。測れなければ None
+pub fn reference_loudness(
+    project: &glaux_core::Project,
+    dir: &std::path::Path,
+    range: Option<(f64, f64)>,
+) -> Result<(Option<f64>, Option<f64>), String> {
+    use glaux_core::ClipContent;
+    let clip = project
+        .tracks
+        .iter()
+        .filter(|t| t.reference)
+        .flat_map(|t| t.clips.iter())
+        .find(|c| matches!(c.content, ClipContent::Audio { .. }))
+        .ok_or_else(|| "参考曲のトラックがありません".to_owned())?;
+    let tm = &project.tempo_map;
+    let (c0, c1) = (
+        tm.tick_to_seconds(clip.start),
+        tm.tick_to_seconds(clip.start + clip.length),
+    );
+    let (from, to) = match range {
+        Some((a, b)) => (a.max(c0), b.min(c1)),
+        None => (c0, c1),
+    };
+    if to - from < 1.0 {
+        return Err("参考曲と重なる範囲が短すぎます(1 秒以上)".to_owned());
+    }
+    let rate = crate::sound::RENDER_RATE;
+    let all = crate::sound::load_stereo_source(
+        project,
+        dir,
+        &crate::sound::SoundSource::Clip(clip.id.clone()),
+    )?;
+    let a = (((from - c0) * rate) as usize * 2).min(all.len());
+    let b = (((to - c0) * rate) as usize * 2).min(all.len());
+    let reference = &all[a..b];
+    let bank = glaux_engine::SampleBank::for_offline(project, dir);
+    let span = (tm.seconds_to_tick(from), tm.seconds_to_tick(to));
+    // 曲がまだ空(参考曲しか無い)なら曲側は測れない
+    let song =
+        glaux_engine::analyze::render_song_for_analysis(project, None, Some(span), &bank).ok();
+    let lufs = |x: &[f32]| {
+        let v = glaux_engine::export::lufs_at(x, rate as u32);
+        v.is_finite().then_some((v * 10.0).round() / 10.0)
+    };
+    Ok((song.as_deref().and_then(lufs), lufs(reference)))
+}
+
 /// 拍ごとの区間(秒)と、区間の頭が小節の何拍目か(0 始まり)。最初の拍の前・最後の拍の後も区間にする
 fn beat_segments(
     beats: &[f64],

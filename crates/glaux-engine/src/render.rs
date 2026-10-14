@@ -140,6 +140,14 @@ pub struct Shared {
     /// 音量をそろえた A/B の聴き比べ(書き出した 2 つの音)と、どちらを鳴らすか([`crate::ab::AbSide`] の番号)
     pub ab: arc_swap::ArcSwapOption<crate::ab::AbClip>,
     pub ab_side: std::sync::atomic::AtomicU8,
+    /// 参考曲の聴き方([`RefMode`] の番号)と、音量をそろえる倍率(リニアの f32 のビット。曲・参考曲)
+    pub ref_mode: std::sync::atomic::AtomicU8,
+    pub ref_gain_song: AtomicU32,
+    pub ref_gain_ref: AtomicU32,
+    /// 重ねて鳴らすときの参考曲の倍率(曲と同じ大きさにする。上げることもある)
+    pub ref_gain_overlay: AtomicU32,
+    /// 再生の速さ(f32 のビット。1.0 = ふつう、0.5 = 半分。音程は変えない。書き出しには効かない)
+    pub speed: AtomicU32,
     /// 入力テストの音を出力で聴く(自分の声の確認)。None なら聴かない
     pub listen: arc_swap::ArcSwapOption<ListenTap>,
     /// 負荷の統計(オーディオスレッドが書き、UI が読む)。[`DspStats`] 参照
@@ -384,11 +392,54 @@ pub fn flush_denormals() {
     }
 }
 
+/// 遅い再生で、1 回の呼び出しで取り出す最大の長さ(これを超える呼び出しは分けて処理する)
+const SLOW_MAX_BLOCK: usize = 4096;
+/// 遅い再生で、伸ばす前の音を 1 回に描く最大の長さ
+const SLOW_CHUNK: usize = 2048;
+
+/// 参考曲の聴き方
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefMode {
+    /// ふつう(参考曲は鳴らさない)
+    Off,
+    /// 聴き比べの「自分の曲」側(音量をそろえる倍率を掛ける)
+    Song,
+    /// 聴き比べの「参考曲」側(自分の曲は鳴らさない)
+    Reference,
+    /// 重ねて鳴らす(参考曲に音量をそろえる倍率を掛ける)
+    Both,
+}
+
+impl RefMode {
+    pub fn code(self) -> u8 {
+        match self {
+            RefMode::Off => 0,
+            RefMode::Song => 1,
+            RefMode::Reference => 2,
+            RefMode::Both => 3,
+        }
+    }
+
+    pub fn from_code(c: u8) -> RefMode {
+        match c {
+            1 => RefMode::Song,
+            2 => RefMode::Reference,
+            3 => RefMode::Both,
+            _ => RefMode::Off,
+        }
+    }
+}
+
 impl Shared {
     pub fn new(data: PlaybackData) -> Self {
         Shared {
             ab: arc_swap::ArcSwapOption::empty(),
             ab_side: std::sync::atomic::AtomicU8::new(0),
+            ref_mode: std::sync::atomic::AtomicU8::new(0),
+            ref_gain_song: AtomicU32::new(1.0f32.to_bits()),
+            ref_gain_ref: AtomicU32::new(1.0f32.to_bits()),
+            ref_gain_overlay: AtomicU32::new(1.0f32.to_bits()),
+            speed: AtomicU32::new(1.0f32.to_bits()),
             listen: arc_swap::ArcSwapOption::empty(),
             playing: AtomicBool::new(false),
             pos: AtomicU64::new(0),
@@ -939,6 +990,15 @@ pub struct Renderer {
     ab_prev: usize,
     ab_cur: usize,
     ab_x: f32,
+    /// 参考曲の聴き方の混ぜ具合(なめらかにした曲・参考曲の倍率)と、鳴らしている参考曲のクリップの番号
+    ref_song_w: f32,
+    ref_ref_w: f32,
+    ref_cursor: usize,
+    ref_last_pos: u64,
+    /// 遅い再生(音程そのまま)の伸縮と、伸ばす前の音の置き場(作るときに確保する)
+    stretcher: Option<Box<glaux_dsp::varispeed::TimeStretcher>>,
+    slow_buf: Vec<f32>,
+    slow_on: bool,
     /// このブロックでトラックごとに鳴らした声のサンプル数(発音の時間の按分用)
     voice_samples: [u32; MAX_TRACKS],
     /// 相関・ゴニオメーターの測定と、聴き方の切り替え([`crate::monitor`])
@@ -1114,6 +1174,7 @@ impl Renderer {
     pub fn new(shared: Arc<Shared>) -> Self {
         // 撥弦の弦の置き場(最初の 1 回だけ確保する。オーディオスレッドより前のここで)
         glaux_dsp::string_pool::init();
+        let sr = shared.data.load().sample_rate.max(8_000.0) as f32;
         Renderer {
             shared,
             voices: Vec::with_capacity(MAX_VOICES + STEAL_RESERVE),
@@ -1201,6 +1262,16 @@ impl Renderer {
             ab_prev: 1,
             ab_cur: 1,
             ab_x: 1.0,
+            ref_song_w: 1.0,
+            ref_ref_w: 0.0,
+            ref_cursor: 0,
+            ref_last_pos: 0,
+            stretcher: Some(Box::new(glaux_dsp::varispeed::TimeStretcher::new(
+                sr,
+                SLOW_MAX_BLOCK,
+            ))),
+            slow_buf: vec![0.0; SLOW_CHUNK * 2],
+            slow_on: false,
             voice_samples: [0; MAX_TRACKS],
             monitor: Default::default(),
             inst_scratch: vec![glaux_dsp::InstrumentParams::default(); MAX_TRACKS],
@@ -1259,9 +1330,24 @@ impl Renderer {
         };
         // MIDI キーボードのライブ演奏: この呼び出しの分をまとめて受け取り、押した時刻からブロックの中の位置を決める
         self.fetch_live(out.len() / channels.max(1));
-        for chunk in out.chunks_mut(step * channels.max(1)) {
-            self.process_inner(chunk, channels);
-            self.live_chunk_start += (chunk.len() / channels.max(1)) as u32;
+        let speed = f32::from_bits(self.shared.speed.load(Ordering::Relaxed));
+        let slow = self.offline.is_none()
+            && self.stretcher.is_some()
+            && self.shared.playing.load(Ordering::Relaxed)
+            && speed < 0.999;
+        if slow {
+            self.process_slow(out, channels, speed, step);
+        } else {
+            if self.slow_on {
+                self.slow_on = false;
+                if let Some(st) = self.stretcher.as_deref_mut() {
+                    st.reset();
+                }
+            }
+            for chunk in out.chunks_mut(step * channels.max(1)) {
+                self.process_inner(chunk, channels);
+                self.live_chunk_start += (chunk.len() / channels.max(1)) as u32;
+            }
         }
 
         if self.offline.is_none() {
@@ -1293,6 +1379,36 @@ impl Renderer {
             }
         }
         self.last_call = Some(t0);
+    }
+
+    /// 遅い再生(音程そのまま): 曲をふつうに描いてから [`glaux_dsp::varispeed::TimeStretcher`] で伸ばす。
+    /// 参考曲・メーターも伸ばす前の音で扱うので、曲と参考曲は同じ速さで遅くなる
+    fn process_slow(&mut self, out: &mut [f32], channels: usize, speed: f32, step: usize) {
+        let ch = channels.max(1);
+        let Some(mut st) = self.stretcher.take() else {
+            return;
+        };
+        if !self.slow_on {
+            self.slow_on = true;
+            st.reset();
+        }
+        st.set_speed(speed);
+        let mut buf = std::mem::take(&mut self.slow_buf);
+        for block in out.chunks_mut(SLOW_MAX_BLOCK * ch) {
+            let frames = block.len() / ch;
+            while st.available() < frames {
+                let want = st.input_wanted().clamp(1, SLOW_CHUNK);
+                let part = &mut buf[..want * 2];
+                for chunk in part.chunks_mut(step * 2) {
+                    self.process_inner(chunk, 2);
+                    self.live_chunk_start += (chunk.len() / 2) as u32;
+                }
+                st.push_interleaved(part);
+            }
+            st.pull(block, ch);
+        }
+        self.slow_buf = buf;
+        self.stretcher = Some(st);
     }
 
     /// 入力テストの音(自分の声)を出力に足す。曲の音・メーター・書き出しには入らない(聴く音量だけ掛ける)。
@@ -2295,8 +2411,8 @@ impl Renderer {
         if playing
             && !looping
             && !recording
-            && data.end_sample > 0
-            && self.pos > data.end_sample + tail
+            && data.end_sample.max(self.reference_end(data)) > 0
+            && self.pos > data.end_sample.max(self.reference_end(data)) + tail
         {
             self.shared.playing.store(false, Ordering::Release);
         }
@@ -2906,6 +3022,40 @@ impl Renderer {
     }
 
     /// マスターのエフェクト → マスター音量 → ソフトクリップ → 出力。
+    /// 参考曲を聴いている(参考曲・重ね)ときの参考曲の終わり。聴いていなければ 0
+    fn reference_end(&self, data: &PlaybackData) -> u64 {
+        match RefMode::from_code(self.shared.ref_mode.load(Ordering::Relaxed)) {
+            RefMode::Reference | RefMode::Both => {
+                data.reference.iter().map(|c| c.end).max().unwrap_or(0)
+            }
+            _ => 0,
+        }
+    }
+
+    /// 位置 `pos` の参考曲の音(クリップの番号を覚えて、先へ進めながら探す)
+    #[inline]
+    fn reference_frame(&mut self, data: &PlaybackData, pos: u64) -> (f32, f32) {
+        let refs = &data.reference;
+        if pos < self.ref_last_pos || self.ref_cursor >= refs.len() {
+            self.ref_cursor = 0;
+        }
+        self.ref_last_pos = pos;
+        while self.ref_cursor < refs.len() && refs[self.ref_cursor].end <= pos {
+            self.ref_cursor += 1;
+        }
+        let (mut l, mut r) = (0.0, 0.0);
+        // 重なったクリップも鳴らす(ふつうは 1 つ)
+        for c in refs[self.ref_cursor.min(refs.len())..].iter() {
+            if c.start > pos {
+                break;
+            }
+            let (a, b) = c.frame(pos);
+            l += a;
+            r += b;
+        }
+        (l, r)
+    }
+
     fn process_master(
         &mut self,
         data: &PlaybackData,
@@ -2965,6 +3115,21 @@ impl Renderer {
             }
         }
         let ab_k = 1.0 - (-1.0 / (0.01 * sr)).exp();
+        // 参考曲の聴き方(参考曲が無ければふつう)。切り替えは約 10ms でなめらかに
+        let ref_mode = if data.reference.is_empty() {
+            RefMode::Off
+        } else {
+            RefMode::from_code(self.shared.ref_mode.load(Ordering::Relaxed))
+        };
+        let gs = f32::from_bits(self.shared.ref_gain_song.load(Ordering::Relaxed));
+        let gr = f32::from_bits(self.shared.ref_gain_ref.load(Ordering::Relaxed));
+        let go = f32::from_bits(self.shared.ref_gain_overlay.load(Ordering::Relaxed));
+        let (song_target, ref_target) = match ref_mode {
+            RefMode::Off => (1.0, 0.0),
+            RefMode::Song => (gs, 0.0),
+            RefMode::Reference => (0.0, gr),
+            RefMode::Both => (1.0, go),
+        };
         for f in 0..frames {
             let pos = self.blk_pos[f];
             if f > 0 && pos < self.blk_pos[f - 1] {
@@ -3005,6 +3170,18 @@ impl Renderer {
                 or += (ar - or) * self.ab_on;
                 ab_full = self.ab_on > 0.999;
             }
+            // 参考曲: 曲と同じ位置の参考曲の音を混ぜる(マスターのエフェクトは通さない)
+            self.ref_song_w += (song_target - self.ref_song_w) * ab_k;
+            self.ref_ref_w += (ref_target - self.ref_ref_w) * ab_k;
+            if (self.ref_song_w - 1.0).abs() > 1e-5 || self.ref_ref_w > 1e-5 {
+                ol *= self.ref_song_w;
+                or *= self.ref_song_w;
+                if self.ref_ref_w > 1e-5 {
+                    let (rl, rr) = self.reference_frame(data, pos);
+                    ol += rl * self.ref_ref_w;
+                    or += rr * self.ref_ref_w;
+                }
+            }
             // メーター・相関はミックスそのもの(聴き方の切り替えの前)で測る
             self.monitor.measure(&self.shared.monitor, ol, or, sr);
             peak = peak.max((ol + click).abs()).max((or + click).abs());
@@ -3015,7 +3192,9 @@ impl Renderer {
             };
             let (ol, or) = (ol + click, or + click);
             // 聴き比べの音は書き出しでクリップ防止を通してあるので、二重に掛けない
-            let (ol, or) = if clip && !ab_full {
+            // 参考曲だけを聴いているときは、参考曲にクリップ防止を掛けない(仕上がった音のまま)
+            let ref_only = self.ref_song_w < 1e-3 && self.ref_ref_w > 1e-5;
+            let (ol, or) = if clip && !ab_full && !ref_only {
                 (soft_clip(ol), soft_clip(or))
             } else {
                 (ol, or)
@@ -4263,6 +4442,7 @@ mod tests {
             tempo: vec![],
             sigs: vec![],
             conv: vec![],
+            reference: vec![],
             order: vec![],
         }
     }

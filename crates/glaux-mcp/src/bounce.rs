@@ -62,6 +62,9 @@ pub fn bounce_track(
     if track.kind == TrackKind::Bus {
         return Err("バスは音声にできません(送っているトラックを音声にしてください)".to_owned());
     }
+    if track.reference {
+        return Err("参考曲のトラックは音声にできません(もともと音声です)".to_owned());
+    }
 
     let stem = stem_project(project, track);
     let stereo = glaux_engine::render_stem(&stem, RATE as f64, bank)
@@ -189,6 +192,9 @@ pub fn resample_to_sampler(
     let track = &project.tracks[index];
     if track.kind == TrackKind::Bus {
         return Err("バスは描き出せません(送っているトラックを指定してください)".to_owned());
+    }
+    if track.reference {
+        return Err("参考曲のトラックは描き出せません".to_owned());
     }
     if let Some(target) = &req.target {
         let t = project
