@@ -9,7 +9,7 @@ use crate::plugins::PluginOwner;
 use crate::render::{Renderer, Shared, NO_SEEK};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use glaux_core::{Project, TempoMap, Tick, TrackId};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +41,10 @@ pub struct EngineHandle {
     input_device: Arc<Mutex<Option<String>>>,
     /// 入力テスト(録音せずレベルだけ見る)
     monitor: Arc<Mutex<Option<crate::record::Recording>>>,
+    /// 入力テストの音を出力で聴くか(入力テストを開き直しても続ける)と、最後に渡した受け口
+    /// (オーディオスレッドで最後の参照が外れて解放されないよう、次に差し替えるまでここで持つ)
+    listen_on: Arc<AtomicBool>,
+    listen_keep: Arc<Mutex<Vec<Arc<crate::render::ListenTap>>>>,
     /// 再生ヘッドの tick 変換・シーク用に最新のテンポマップを持つ
     tempo: Arc<Mutex<TempoMap>>,
     /// ループ区間(tick)。テンポが変わったらサンプル位置を焼き直すために保持
@@ -324,7 +328,9 @@ impl EngineHandle {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             tempo.tick_to_seconds(clip_start) - tempo.tick_to_seconds(now)
         };
-        // 入力テスト中なら止める(同じデバイスを二重に開かない)
+        // 入力テスト中なら止める(同じデバイスを二重に開かない)。聴くのもやめる
+        self.listen_on.store(false, Ordering::Release);
+        self.attach_listen(None);
         if let Some(m) = self
             .monitor
             .lock()
@@ -698,6 +704,9 @@ impl EngineHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !on {
+            // 入力テストを止めたら、聴くのもやめる(次に始めたとき、いきなり鳴らさない)
+            self.listen_on.store(false, Ordering::Release);
+            self.attach_listen(None);
             if let Some(m) = slot.take() {
                 let _ = m.stop();
             }
@@ -711,8 +720,49 @@ impl EngineHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        *slot = Some(crate::record::start_input(None, device.as_deref(), false)?);
+        let m = crate::record::start_input(None, device.as_deref(), false)?;
+        if self.listen_on.load(Ordering::Acquire) {
+            self.attach_listen(Some(&m));
+        }
+        *slot = Some(m);
         Ok(())
+    }
+
+    /// 入力テストの音を出力で聴く(自分の声の確認。スピーカーだとハウリングするのでヘッドホンで)。
+    /// 入力テスト中だけ鳴る。聴く音量は掛かるが、曲・メーター・書き出しには入らない
+    pub fn set_input_listen(&self, on: bool) {
+        self.listen_on.store(on, Ordering::Release);
+        let slot = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.attach_listen(if on { slot.as_ref() } else { None });
+    }
+
+    /// 入力テストの音を聴いているか
+    pub fn input_listen(&self) -> bool {
+        self.listen_on.load(Ordering::Acquire)
+    }
+
+    fn attach_listen(&self, m: Option<&crate::record::Recording>) {
+        let tap = m.and_then(|m| {
+            Some(Arc::new(crate::render::ListenTap {
+                ring: m.tap.clone()?,
+                rate: m.sample_rate,
+            }))
+        });
+        self.shared.listen.store(tap.clone());
+        // 受け口はここ(UI 側のスレッド)で手放す。差し替えた直後はオーディオスレッドがまだ前のものを
+        // 読んでいることがあるので、直近のいくつかは持っておく
+        let mut keep = self
+            .listen_keep
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        keep.extend(tap);
+        let n = keep.len();
+        if n > 3 {
+            keep.drain(..n - 3);
+        }
     }
 
     pub fn input_monitoring(&self) -> bool {
@@ -951,6 +1001,8 @@ pub fn start_engine() -> Result<EngineHandle, EngineError> {
                 meter: Arc::new(Mutex::new(crate::monitor::Meter::default())),
                 input_device: Arc::new(Mutex::new(None)),
                 monitor: Arc::new(Mutex::new(None)),
+                listen_on: Arc::new(AtomicBool::new(false)),
+                listen_keep: Arc::new(Mutex::new(Vec::new())),
                 tempo: Arc::new(Mutex::new(TempoMap::default())),
                 loop_ticks: Arc::new(Mutex::new(None)),
                 graveyard: Arc::new(Mutex::new(Vec::new())),

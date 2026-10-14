@@ -1782,6 +1782,13 @@ async fn input_monitor(state: State<'_, AppState>, on: bool) -> Result<(), Strin
     .await
 }
 
+/// 入力テストの音を出力で聴く(自分の声の確認)。入力テスト中だけ鳴る
+#[tauri::command]
+fn input_listen(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    state.engine()?.set_input_listen(on);
+    Ok(())
+}
+
 /// 遅延の較正を開始する: 曲頭からメトロノームだけを鳴らし、1 小節のカウントイン後の
 /// 8 拍を録音する。戻り値の秒数が経ったら calibrate_stop を呼ぶ。
 #[tauri::command]
@@ -4396,6 +4403,7 @@ fn main() -> Result<()> {
             set_buffer_size,
             set_input_device,
             input_monitor,
+            input_listen,
             calibrate_start,
             calibrate_stop,
             transport_set_metronome,

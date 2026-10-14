@@ -90,6 +90,12 @@ const VOICE_HARD_LIMIT_SECS: f32 = 8.0;
 /// 最後のノートが終わってから自動停止するまでの余韻(秒)
 const TAIL_SECS: f64 = 2.0;
 
+/// 入力テストの音を出力で聴くための受け口(入力のリングとそのサンプルレート)。
+pub struct ListenTap {
+    pub ring: Arc<crate::record::Ring>,
+    pub rate: u32,
+}
+
 /// ハンドル(UI 側)とレンダラ(オーディオ側)が共有する制御データ。
 pub struct Shared {
     pub playing: AtomicBool,
@@ -134,6 +140,8 @@ pub struct Shared {
     /// 音量をそろえた A/B の聴き比べ(書き出した 2 つの音)と、どちらを鳴らすか([`crate::ab::AbSide`] の番号)
     pub ab: arc_swap::ArcSwapOption<crate::ab::AbClip>,
     pub ab_side: std::sync::atomic::AtomicU8,
+    /// 入力テストの音を出力で聴く(自分の声の確認)。None なら聴かない
+    pub listen: arc_swap::ArcSwapOption<ListenTap>,
     /// 負荷の統計(オーディオスレッドが書き、UI が読む)。[`DspStats`] 参照
     pub stats: StatsCounters,
     /// MIDI キーボードのライブ演奏イベント(MIDI 受信スレッドが積み、レンダラが取り出す)
@@ -379,6 +387,7 @@ impl Shared {
         Shared {
             ab: arc_swap::ArcSwapOption::empty(),
             ab_side: std::sync::atomic::AtomicU8::new(0),
+            listen: arc_swap::ArcSwapOption::empty(),
             playing: AtomicBool::new(false),
             pos: AtomicU64::new(0),
             seek: AtomicU64::new(NO_SEEK),
@@ -912,6 +921,13 @@ pub struct Renderer {
     gain_smooth: [(f32, f32); MAX_TRACKS],
     /// アプリの音量(`Shared::output_gain`)のなめらかな追従
     out_smooth: f32,
+    /// 入力を聴く: 読む位置の端数(入力と出力のサンプルレートの違いをならす)、前後の 2 サンプル、
+    /// 遅れが溜まるまで待っているか、なめらかに出し入れする量
+    listen_phase: f64,
+    listen_prev: f32,
+    listen_cur: f32,
+    listen_ready: bool,
+    listen_fade: f32,
     /// マスター音量のなめらかにした値(同上)
     master_smooth: f32,
     /// A/B の聴き比べ: 聴き比べの音の混ぜ具合(0 = ふつうの再生、1 = 聴き比べ)と、B の混ぜ具合(0 = A、1 = B)
@@ -1172,6 +1188,11 @@ impl Renderer {
             master_cursor: 0,
             gain_smooth: [(f32::NAN, f32::NAN); MAX_TRACKS],
             out_smooth: f32::NAN,
+            listen_phase: 0.0,
+            listen_prev: 0.0,
+            listen_cur: 0.0,
+            listen_ready: false,
+            listen_fade: 0.0,
             master_smooth: f32::NAN,
             ab_on: 0.0,
             ab_prev: 1,
@@ -1240,6 +1261,10 @@ impl Renderer {
             self.live_chunk_start += (chunk.len() / channels.max(1)) as u32;
         }
 
+        if self.offline.is_none() {
+            self.mix_listen(out, channels);
+        }
+
         // 負荷統計(ロック・アロケーションなし)
         let sr = self.shared.data.load().sample_rate.max(1.0);
         let frames = out.len() / channels.max(1);
@@ -1262,6 +1287,61 @@ impl Renderer {
             }
         }
         self.last_call = Some(t0);
+    }
+
+    /// 入力テストの音(自分の声)を出力に足す。曲の音・メーター・書き出しには入らない(聴く音量だけ掛ける)。
+    /// 約 40ms 溜まってから鳴らし始め、200ms を超えて溜まったら詰める(入力と出力の時計のずれで遅れが伸びないように)
+    fn mix_listen(&mut self, out: &mut [f32], channels: usize) {
+        let guard = self.shared.listen.load();
+        let tap = guard.as_deref();
+        let target = if tap.is_some() { 1.0 } else { 0.0 };
+        if tap.is_none() && self.listen_fade <= 0.0 {
+            self.listen_ready = false;
+            return;
+        }
+        let out_rate = self.shared.data.load().sample_rate.max(1.0);
+        let gain = f32::from_bits(self.shared.output_gain.load(Ordering::Relaxed));
+        let ch = channels.max(1);
+        let (step, ring) = match tap {
+            Some(t) => (t.rate as f64 / out_rate, Some(&*t.ring)),
+            None => (1.0, None),
+        };
+        if let Some(ring) = ring {
+            let rate = (step * out_rate) as usize;
+            if !self.listen_ready && ring.buffered() >= rate / 25 {
+                self.listen_ready = true;
+            }
+            if ring.buffered() > rate / 5 {
+                ring.keep_latest(rate / 25);
+            }
+        }
+        // 約 10ms で出し入れする
+        let k = 1.0 - (-1.0 / (0.01 * out_rate as f32)).exp();
+        for frame in out.chunks_mut(ch) {
+            self.listen_fade += (target - self.listen_fade) * k;
+            let mut v = 0.0;
+            if let (Some(ring), true) = (ring, self.listen_ready) {
+                self.listen_phase += step;
+                while self.listen_phase >= 1.0 {
+                    self.listen_phase -= 1.0;
+                    self.listen_prev = self.listen_cur;
+                    match ring.pop() {
+                        Some(x) => self.listen_cur = x,
+                        None => {
+                            // 足りなくなったら、また溜まるまで待つ(途切れは小さく)
+                            self.listen_cur = 0.0;
+                            self.listen_ready = false;
+                        }
+                    }
+                }
+                v = self.listen_prev
+                    + (self.listen_cur - self.listen_prev) * self.listen_phase as f32;
+            }
+            let add = v * gain * self.listen_fade;
+            for o in frame.iter_mut() {
+                *o = (*o + add).clamp(-1.0, 1.0);
+            }
+        }
     }
 
     fn process_inner(&mut self, out: &mut [f32], channels: usize) {
@@ -4838,6 +4918,70 @@ mod tests {
         assert_eq!((rec.seq, rec.from, rec.to), (2, 28_800, 24_000));
         // 曲の終わりを過ぎてもループ中は止まらない
         assert!(shared.playing.load(Ordering::Acquire));
+    }
+
+    /// 入力テストの音を出力で聴く: 入力のサンプルレートが違っても同じ高さ・大きさで鳴り、外すと消える
+    #[test]
+    fn listened_input_is_resampled_into_the_output_and_fades_out() {
+        let shared = Arc::new(Shared::new(PlaybackData {
+            sample_rate: 48_000.0,
+            ..Default::default()
+        }));
+        let mut r = Renderer::new(shared.clone());
+        let ring = Arc::new(crate::record::Ring::new(1 << 16));
+        // 44.1kHz の 441Hz のサイン(振幅 0.5)を 0.5 秒ぶん
+        let feed = |ring: &crate::record::Ring, from: usize, n: usize| {
+            for i in from..from + n {
+                ring.push(0.5 * (i as f32 * 441.0 / 44_100.0 * std::f32::consts::TAU).sin());
+            }
+        };
+        // 入力は実際の時間どおりに少しずつ届く(0.1 秒ごとに 4410 サンプル)
+        feed(&ring, 0, 2_000);
+        shared.listen.store(Some(Arc::new(ListenTap {
+            ring: ring.clone(),
+            rate: 44_100,
+        })));
+        let mut sent = 2_000;
+        for _ in 0..3 {
+            feed(&ring, sent, 4_410);
+            sent += 4_410;
+            let _ = render_block(&mut r, 4800);
+        }
+        feed(&ring, sent, 4_410);
+        let out = render_block(&mut r, 4800);
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        let level = rms(&left);
+        assert!((level - 0.5 / 2f32.sqrt()).abs() < 0.03, "{level}");
+        // 高さ: 0.1 秒(4800 サンプル @48k)に 441Hz なら上向きのゼロ交差が約 44 回
+        let ups = left
+            .windows(2)
+            .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+            .count();
+        assert!((43..=45).contains(&ups), "{ups}");
+        // 外すと、なめらかに消える
+        shared.listen.store(None);
+        let _ = render_block(&mut r, 4800);
+        assert!(rms(&render_block(&mut r, 4800)) < 1e-4);
+    }
+
+    #[test]
+    fn listening_catches_up_when_the_input_runs_ahead() {
+        let shared = Arc::new(Shared::new(PlaybackData {
+            sample_rate: 48_000.0,
+            ..Default::default()
+        }));
+        let mut r = Renderer::new(shared.clone());
+        let ring = Arc::new(crate::record::Ring::new(1 << 16));
+        for _ in 0..40_000 {
+            ring.push(0.25);
+        }
+        shared.listen.store(Some(Arc::new(ListenTap {
+            ring: ring.clone(),
+            rate: 48_000,
+        })));
+        let _ = render_block(&mut r, 480);
+        // 0.8 秒溜まっていても、40ms ほどに詰めて鳴らす(遅れが伸び続けない)
+        assert!(ring.buffered() < 48_000 / 20, "{}", ring.buffered());
     }
 
     #[test]

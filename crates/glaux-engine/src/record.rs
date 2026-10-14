@@ -97,6 +97,34 @@ impl Ring {
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
+
+    /// consumer。1 サンプル取り出す(空なら None。オーディオスレッドで使える: ロック・確保なし)
+    pub fn pop(&self) -> Option<f32> {
+        let cap = self.buf.len();
+        let t = self.tail.load(Ordering::Relaxed);
+        let h = self.head.load(Ordering::Acquire);
+        if t == h {
+            return None;
+        }
+        let v = f32::from_bits(self.buf[t % cap].load(Ordering::Relaxed));
+        self.tail.store(t + 1, Ordering::Release);
+        Some(v)
+    }
+
+    /// consumer。溜まっているサンプル数
+    pub fn buffered(&self) -> usize {
+        let t = self.tail.load(Ordering::Relaxed);
+        self.head.load(Ordering::Acquire).saturating_sub(t)
+    }
+
+    /// consumer。溜まりすぎた古い分を `keep` サンプルだけ残して捨てる(聴く音の遅れを詰める)
+    pub fn keep_latest(&self, keep: usize) {
+        let t = self.tail.load(Ordering::Relaxed);
+        let h = self.head.load(Ordering::Acquire);
+        if h - t > keep {
+            self.tail.store(h - keep, Ordering::Release);
+        }
+    }
 }
 
 /// 録音結果。
@@ -113,6 +141,9 @@ pub struct RecordResult {
     pub dropped: u64,
 }
 
+/// 聴く用に入力の音を写す小さなリング(約 1.4 秒 @48kHz。出力側が 40ms ほどの遅れで読む)
+const TAP_CAP: usize = 1 << 16;
+
 /// 進行中の録音(または入力テスト)。`stop` で確定する。
 pub struct Recording {
     stop: Arc<AtomicBool>,
@@ -120,6 +151,8 @@ pub struct Recording {
     pub path: Option<PathBuf>,
     pub sample_rate: u32,
     ring: Arc<Ring>,
+    /// 入力テストの音(モノラル)の写し。出力で鳴らして自分の声を聴く([`crate::render::ListenTap`])
+    pub tap: Option<Arc<Ring>>,
 }
 
 impl Recording {
@@ -159,13 +192,16 @@ pub fn default_input_name() -> Option<String> {
 }
 
 /// 入力を開始する。`path` があれば 16bit WAV に録音し、None なら
-/// レベル測定だけ(入力テスト)。`device` は入力デバイス名(None で OS 既定)。
+/// レベル測定だけ(入力テスト。音の写し `tap` も作り、出力で聴けるようにする)。
+/// `device` は入力デバイス名(None で OS 既定)。
 /// `stereo` なら入力が 2 ch 以上のとき最初の 2 ch をステレオで録る(1 ch の入力はモノラル)。
 pub fn start_input(
     path: Option<PathBuf>,
     device: Option<&str>,
     stereo: bool,
 ) -> Result<Recording, EngineError> {
+    let tap = path.is_none().then(|| Arc::new(Ring::new(TAP_CAP)));
+    let tap_in = tap.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(u32, Arc<Ring>), EngineError>>();
@@ -176,13 +212,14 @@ pub fn start_input(
     std::thread::Builder::new()
         .name("glaux-record".into())
         .spawn(move || {
-            let (stream, sample_rate, ring, out_ch) = match open_input(device.as_deref(), stereo) {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e));
-                    return;
-                }
-            };
+            let (stream, sample_rate, ring, out_ch) =
+                match open_input(device.as_deref(), stereo, tap_in) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
             if let Err(e) = stream.play() {
                 let _ = ready_tx.send(Err(EngineError::Stream(e.to_string())));
                 return;
@@ -207,6 +244,7 @@ pub fn start_input(
         path,
         sample_rate,
         ring,
+        tap,
     })
 }
 
@@ -234,7 +272,11 @@ fn discard_loop(
 
 type Input = (cpal::Stream, u32, Arc<Ring>, u16);
 
-fn open_input(name: Option<&str>, stereo: bool) -> Result<Input, EngineError> {
+fn open_input(
+    name: Option<&str>,
+    stereo: bool,
+    tap: Option<Arc<Ring>>,
+) -> Result<Input, EngineError> {
     let host = cpal::default_host();
     let device = match name {
         Some(n) => find_input_device(n)
@@ -253,19 +295,25 @@ fn open_input(name: Option<&str>, stereo: bool) -> Result<Input, EngineError> {
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let ring = ring.clone();
+            let tap = tap.clone();
             device.build_input_stream(
                 stream_config,
-                move |data: &[f32], _| push_frames(&ring, data, channels, out_ch, |v| v),
+                move |data: &[f32], _| {
+                    push_frames(&ring, data, channels, out_ch, |v| v);
+                    push_tap(tap.as_deref(), data, channels, |v| v);
+                },
                 err_fn,
                 None,
             )
         }
         cpal::SampleFormat::I16 => {
             let ring = ring.clone();
+            let tap = tap.clone();
             device.build_input_stream(
                 stream_config,
                 move |data: &[i16], _| {
-                    push_frames(&ring, data, channels, out_ch, |v| v as f32 / 32768.0)
+                    push_frames(&ring, data, channels, out_ch, |v| v as f32 / 32768.0);
+                    push_tap(tap.as_deref(), data, channels, |v| v as f32 / 32768.0);
                 },
                 err_fn,
                 None,
@@ -299,6 +347,18 @@ fn push_frames<T: Copy>(
         ring.push_pair(l, r);
     }
     ring.note_peak(peak);
+}
+
+/// 入力テストの音の写し(モノラル)をリングへ(オーディオスレッド。アロケーションなし)。
+/// 聴いていない間も積むが、溢れた分は捨てるだけ(出力側が読むときに古い分を詰める)
+fn push_tap<T: Copy>(tap: Option<&Ring>, data: &[T], channels: usize, conv: impl Fn(T) -> f32) {
+    let Some(tap) = tap else {
+        return;
+    };
+    for frame in data.chunks(channels) {
+        let sum: f32 = frame.iter().map(|v| conv(*v)).sum();
+        tap.push(sum / channels as f32);
+    }
 }
 
 /// 入力フレームをモノラル化してリングへ(オーディオスレッド。アロケーションなし)。

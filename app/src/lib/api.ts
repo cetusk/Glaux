@@ -621,6 +621,11 @@ export function inputMonitor(on: boolean): Promise<void> {
   return invoke("input_monitor", { on });
 }
 
+/** 入力テストの音を出力で聴く(自分の声の確認。入力テスト中だけ鳴る) */
+export function inputListen(on: boolean): Promise<void> {
+  return invoke("input_listen", { on });
+}
+
 /** 遅延の較正: メトロノームだけ鳴らして 1 小節のカウントイン後の 8 拍を録る。 */
 export function calibrateStart(): Promise<{ total_secs: number; count_in_secs: number; beats: number }> {
   return invoke("calibrate_start");

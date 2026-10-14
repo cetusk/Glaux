@@ -139,6 +139,19 @@
     try {
       await api.inputMonitor(!monitoring);
       monitoring = !monitoring;
+      // 止めたら聴くのもやめる(裏側も同じ)
+      if (!monitoring) listening = false;
+    } catch (e) {
+      deviceMsg = String(e);
+    }
+  }
+
+  // 入力テストの音を出力で聴く(自分の声の確認)。毎回オフから(スピーカーでいきなりハウリングさせない)
+  let listening = $state(false);
+  async function toggleListen() {
+    try {
+      await api.inputListen(!listening);
+      listening = !listening;
     } catch (e) {
       deviceMsg = String(e);
     }
@@ -550,6 +563,20 @@
               <div class="meter-zone" style="left:{meterPct(-12)}%;width:{meterPct(-6) - meterPct(-12)}%"></div>
             </div>
             <div class="note">{levelPeakHold.toFixed(0)} dB — {levelAdvice}</div>
+          </div>
+          <div class="srow listen-row">
+            {@render row(
+              tr("自分の声を聴く", "Hear yourself"),
+              tr(
+                "入力の音をそのまま出力で鳴らして、音質・雑音を確かめる(少し遅れて聞こえます。大きさは聴く音量で)。スピーカーで鳴らすとハウリングするので、ヘッドホンで",
+                "Play the input straight to the output to check quality and noise (you'll hear a slight delay; adjust with the listening volume). Use headphones: speakers will feed back",
+              ),
+            )}
+            <div class="sc">
+              <button class="btn sm" class:on={listening} aria-pressed={listening} onclick={toggleListen}
+                ><Icon name="headphones" />{listening ? tr("聴いています", "Listening") : tr("聴く", "Listen")}</button
+              >
+            </div>
           </div>
         {/if}
         {#if deviceMsg}<div class="note warn">{deviceMsg}</div>{/if}
