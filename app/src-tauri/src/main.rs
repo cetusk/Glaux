@@ -1749,23 +1749,37 @@ async fn set_buffer_size(state: State<'_, AppState>, frames: u32) -> Result<Valu
     .await
 }
 
-/// 録音に使う入力デバイス(name 省略 = OS 既定)。
+/// 録音に使う入力デバイス(name 省略 = OS 既定)。入力テスト中なら開き直す。
+/// 開き直しは最大 5 秒待つので、画面のスレッドを止めないよう裏のスレッドで行う(#67)
 #[tauri::command]
-fn set_input_device(state: State<'_, AppState>, name: Option<String>) -> Result<Value, String> {
-    let engine = state.engine()?;
-    engine
-        .set_input_device(name.filter(|n| !n.is_empty()))
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "current_input": engine.input_device() }))
+async fn set_input_device(
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> Result<Value, String> {
+    guard::catching("set_input_device", async move {
+        let engine = state.engine()?.clone();
+        tokio::task::spawn_blocking(move || {
+            engine
+                .set_input_device(name.filter(|n| !n.is_empty()))
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "current_input": engine.input_device() }))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    })
+    .await
 }
 
-/// 入力テスト(録音せずに入力レベルだけ測る)の開始・停止。
+/// 入力テスト(録音せずに入力レベルだけ測る)の開始・停止。入力を開くのを待つので裏のスレッドで行う(#67)
 #[tauri::command]
-fn input_monitor(state: State<'_, AppState>, on: bool) -> Result<(), String> {
-    state
-        .engine()?
-        .set_input_monitor(on)
-        .map_err(|e| e.to_string())
+async fn input_monitor(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    guard::catching("input_monitor", async move {
+        let engine = state.engine()?.clone();
+        tokio::task::spawn_blocking(move || engine.set_input_monitor(on).map_err(|e| e.to_string()))
+            .await
+            .map_err(|e| e.to_string())?
+    })
+    .await
 }
 
 /// 遅延の較正を開始する: 曲頭からメトロノームだけを鳴らし、1 小節のカウントイン後の
