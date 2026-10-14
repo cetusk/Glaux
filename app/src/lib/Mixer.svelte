@@ -3,6 +3,7 @@
   // 下 = 選んだ列のエフェクトのノード表示(NodeView)。上下の境目はドラッグで高さを変えられる。
   // 列のエフェクト名を押すと、下の同じカードが光る。すべての編集は Command を通る。
   import { untrack } from "svelte";
+  import AllTracksBar from "./AllTracksBar.svelte";
   import AllTracksItems from "./AllTracksItems.svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
@@ -351,6 +352,8 @@
 <div class="mixer" bind:this={rootEl} bind:clientHeight={rootH}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="strips" style="height:{shownTop}px" oncontextmenu={openAllMenu}>
+    <!-- すべてのトラックをまとめて(M・S・入れ替え・削除) -->
+    <div class="all-col"><AllTracksBar {project} vertical onDeleteAll={() => removeTracks(project.tracks)} /></div>
     {#each plain as t (t.id)}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
       <div class="strip" role="group" aria-label={t.name} class:sel={selected === t.id} style="--c:{t.color ?? '#555'}" onclick={() => select(t.id)}>
@@ -496,6 +499,15 @@
     gap: 6px;
     padding: 8px 10px;
     overflow: auto hidden;
+  }
+
+  .all-col {
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-end;
+    padding: 0 2px 34px;
+    border-right: 1px solid var(--border);
+    padding-right: 8px;
   }
 
   .grp-label {

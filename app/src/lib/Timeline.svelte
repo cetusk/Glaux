@@ -17,6 +17,7 @@
   import ClipMenu from "./ClipMenu.svelte";
   import TrackMenu from "./TrackMenu.svelte";
   import AddTrackMenu from "./AddTrackMenu.svelte";
+  import AllTracksBar from "./AllTracksBar.svelte";
   import AudioClipHandles from "./AudioClipHandles.svelte";
   import TimelineZoom from "./TimelineZoom.svelte";
   import TimelineSections from "./TimelineSections.svelte";
@@ -1829,6 +1830,10 @@
     <button class="btn add-track" onclick={openAddMenu} title={tr("トラックを追加(MIDI・音声・バス・MIDI ファイル)", "Add track (MIDI, audio, bus, MIDI file)")}
       ><Icon name="plus" />{tr("トラックを追加", "Add track")}<Icon name="chevron-down" size={14} /></button
     >
+    {#if project.tracks.length > 0}
+      <!-- すべてのトラックをまとめて(M・S・入れ替え・削除。見出しの右クリックのメニューと同じ) -->
+      <div class="all-row"><AllTracksBar {project} onDeleteAll={() => deleteTracks(project.tracks)} /></div>
+    {/if}
   </div>
 </div>
 
@@ -2367,6 +2372,11 @@
     position: sticky;
     left: 0;
     width: var(--head-w, 200px);
+  }
+
+  .all-row {
+    margin-top: 6px;
+    padding-left: 2px;
   }
 
   .add-track {
