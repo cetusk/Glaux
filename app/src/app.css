@@ -389,3 +389,21 @@ body.resizing-w * {
   cursor: col-resize !important;
   user-select: none;
 }
+
+/* マウスを載せたときの説明(tooltip.ts)。標準の吹き出しの代わり */
+.glaux-tip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 360px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: var(--shadow-pop);
+}
