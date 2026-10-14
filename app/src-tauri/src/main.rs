@@ -2589,6 +2589,34 @@ async fn export_midi(state: State<'_, AppState>, path: Option<String>) -> Result
     .await
 }
 
+/// ゲーム用(Glaux for Godot)に書き出す: CLAP・SFZ のトラックを音声にし、SoundFont を入れ、ソロを外した曲の写しを
+/// `dest`(省略でプロジェクトの export/)に作る。元の曲は変えない
+#[tauri::command]
+async fn export_for_game(
+    state: State<'_, AppState>,
+    dest: Option<String>,
+) -> Result<Value, String> {
+    guard::catching("export_for_game", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        off_thread(move || {
+            let dir = std::path::Path::new(&dir);
+            let dest = dest
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| dir.join("export"));
+            let r = glaux_mcp::game_export::export_for_game(
+                &project,
+                dir,
+                &dest,
+                &glaux_engine::sf2::default_dir(),
+            )?;
+            serde_json::to_value(&r).map_err(|e| e.to_string())
+        })
+        .await?
+    })
+    .await
+}
+
 /// キーと小節ごとのコード(ノートからの推定)と、キーのスケールの音(ピッチクラス)。画面の表示用
 #[tauri::command]
 async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
@@ -4332,6 +4360,7 @@ fn main() -> Result<()> {
             bounce_track,
             import_midi,
             export_midi,
+            export_for_game,
             harmony,
             check_clashes,
             get_standing_instructions,

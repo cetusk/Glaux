@@ -993,6 +993,22 @@ export function exportMidi(path?: string): Promise<{ path: string; tracks: numbe
   return invoke("export_midi", { path: path ?? null });
 }
 
+/** ゲーム用(Glaux for Godot)に書き出した結果 */
+export type GameExport = {
+  dir: string;
+  frozen: string[];
+  soundfonts: string[];
+  missing_soundfonts: string[];
+  unbaked_effects: string[];
+  solo_cleared: string[];
+  plugins: string[];
+};
+
+/** ゲーム用に書き出す(CLAP・SFZ を音声に、SoundFont を同梱、ソロを外す。dest 省略でプロジェクトの export/) */
+export function exportForGame(dest?: string): Promise<GameExport> {
+  return invoke("export_for_game", { dest: dest ?? null });
+}
+
 /** キーと小節ごとのコード(ノートからの推定)とスケールの音 */
 export function harmony(): Promise<import("./harmony.svelte").HarmonyView> {
   return invoke("harmony");

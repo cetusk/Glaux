@@ -115,7 +115,8 @@ To use it without the app, run the stdio server: `scripts\glaux-mcp.bat <song fo
 ## Use it in Godot 4
 
 The `GlauxPlayer` node plays a `.glaux` song and emits beats, markers and notes as signals, timed to what the player actually hears.
-It can also play sound effects in the key and chord of the background music. Unzip `glaux-godot-addon-<version>.zip` (Windows and Linux)
+It can also play sound effects in the key and chord of the background music. Songs that use CLAP plugins or SFZ can be exported
+with Export → For games, which writes a copy with those tracks rendered to audio into your game's `songs/`. Unzip `glaux-godot-addon-<version>.zip` (Windows and Linux)
 from [Releases](https://github.com/cetusk/Glaux/releases) and put `addons/glaux` in your game project.
 See [`docs/GODOT.md`](docs/GODOT.md) for building the add-on yourself
 and the add-on's [`README`](godot/demo/addons/glaux/README.md) for using it in a game (both in Japanese).

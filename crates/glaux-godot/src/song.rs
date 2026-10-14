@@ -170,7 +170,7 @@ fn missing_warnings(
     out
 }
 
-/// ゲームで鳴らせないもの(CLAP プラグイン)を外し、注意を返す。
+/// ゲームで鳴らせないもの(CLAP プラグイン)を外し、注意を返す(SFZ の音源も鳴らない)。
 fn prepare(project: &mut Project) -> Vec<String> {
     let mut warnings = Vec::new();
     // ソロは「聴き方」(アプリで聴き比べるためのもの)。ソロのまま保存した曲でも、ゲームでは曲の全体を鳴らす(#60)。
@@ -196,10 +196,21 @@ fn prepare(project: &mut Project) -> Vec<String> {
                 // プラグインが無いと既定のシンセの音で鳴ってしまうので、無音にする
                 t.mute = true;
                 warnings.push(format!(
-                    "トラック「{}」の音源は CLAP プラグインのため、ゲームでは鳴りません(Glaux でトラックの見出しを右クリック →「音声にする(フリーズ)」で音声にしてください)",
+                    "トラック「{}」の音源は CLAP プラグインのため、ゲームでは鳴りません(Glaux の「書き出し → ゲーム用」で書き出すか、トラックの見出しを右クリック →「音声にする(フリーズ)」で音声にしてください)",
                     t.name
                 ));
             }
+        }
+        // SFZ の音源は Glaux のライブラリのフォルダから読むので、ゲームを遊ぶパソコンには無い
+        if t.device
+            .iter()
+            .chain(t.layers.iter().map(|l| &l.device))
+            .any(|d| matches!(d.source, PluginSource::Sfz { .. }))
+        {
+            warnings.push(format!(
+                "トラック「{}」の音源は SFZ のため、ゲームでは鳴りません(Glaux の「書き出し → ゲーム用」で書き出すと音声にします)",
+                t.name
+            ));
         }
         // CLAP エフェクトはゲームでは用意できないので素通しになる(つながりを保つため、消さずに残す)
         if t.effects

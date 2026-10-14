@@ -22,6 +22,9 @@
   `set_param`・`apply_command`(Glaux の Command の JSON)
 
 - `get_load()`(音の処理の重さ)と `get_voice_count()`(いま鳴っている効果音の数)
+- Glaux 側に「書き出し → ゲーム用」: CLAP・SFZ のトラックを音声にし、SoundFont を入れ、ソロを外した曲の写しを作る
+  (元の曲は変えない。音声にできないバス・マスターの CLAP のエフェクトと、使ったプラグイン・SoundFont を一覧で出す)
+- SFZ の音源のトラックも、ゲームでは鳴らないことを `get_warnings()` に出す
 
 ### 確かめたこと
 

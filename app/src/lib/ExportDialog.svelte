@@ -16,7 +16,9 @@
     loop: [number, number] | null;
   } = $props();
 
-  let target = $state<"mix" | "stems" | "midi">("mix");
+  let target = $state<"mix" | "stems" | "midi" | "game">("mix");
+  /** ゲーム用に書き出した結果(一覧で見せる) */
+  let game = $state<api.GameExport | null>(null);
   let range = $state<"all" | "loop" | "selection">("all");
   let sampleRate = $state(48000);
   let bits = $state(16);
@@ -37,6 +39,7 @@
     void format;
     path = null;
     result = null;
+    game = null;
   });
 
   const LOUDNESS = $derived([
@@ -49,7 +52,9 @@
   async function choosePath() {
     try {
       const p =
-        target === "stems"
+        target === "game"
+          ? await pickDir({ directory: true, title: tr("ゲーム用の曲を置くフォルダ(Godot の songs など)", "Folder for the game song (e.g. your Godot songs folder)") })
+          : target === "stems"
           ? await pickDir({ directory: true, title: tr(`トラックごとの ${format.toUpperCase()} を書き出すフォルダ`, `Folder for per-track ${format.toUpperCase()} files`) })
           : target === "midi"
             ? await pickFile({ title: tr("書き出す MIDI ファイル", "Export MIDI file"), filters: [{ name: "MIDI", extensions: ["mid"] }] })
@@ -64,6 +69,21 @@
 
   async function run() {
     if (busy) return;
+    if (target === "game") {
+      busy = true;
+      result = null;
+      game = null;
+      try {
+        game = await api.exportForGame(path ?? undefined);
+        result = tr(`ゲーム用に書き出しました: ${game.dir}`, `Exported for games: ${game.dir}`);
+        showToast(game.unbaked_effects.length || game.missing_soundfonts.length ? "warn" : "ok", result);
+      } catch (e) {
+        showError(tr("書き出せませんでした", "Export failed"), e);
+      } finally {
+        busy = false;
+      }
+      return;
+    }
     if (target === "midi") {
       busy = true;
       result = null;
@@ -147,9 +167,16 @@
         "MIDI file (notes, tempo, time signature, markers; loops expanded)",
       )}</label
     >
+    <label class="row"
+      ><input type="radio" bind:group={target} value="game" />
+      {tr(
+        "ゲーム用(Glaux for Godot。CLAP・SFZ のトラックを音声にし、SoundFont を入れた曲の写しを作る。元の曲は変えない)",
+        "For games (Glaux for Godot: a copy with CLAP/SFZ tracks rendered to audio and SoundFonts included; the original is unchanged)",
+      )}</label
+    >
   </div>
 
-  {#if target !== "midi"}
+  {#if target !== "midi" && target !== "game"}
     <div class="section">
       <div class="section-title">{tr("範囲", "Range")}</div>
       <label class="row"><input type="radio" bind:group={range} value="all" /> {tr("曲全体", "Whole song")}</label>
@@ -220,7 +247,12 @@
   <div class="section">
     <div class="section-title">{tr("保存先", "Destination")}</div>
     <div class="row">
-      <code class="path" title={path ?? ""}>{path ?? tr("プロジェクトの export フォルダ(日時付きの名前)", "Project export folder (timestamped name)")}</code>
+      <code class="path" title={path ?? ""}
+        >{path ??
+          (target === "game"
+            ? tr("プロジェクトの export フォルダ(曲名.glaux)", "Project export folder (title.glaux)")
+            : tr("プロジェクトの export フォルダ(日時付きの名前)", "Project export folder (timestamped name)"))}</code
+      >
       <button onclick={choosePath}>{tr("選ぶ…", "Choose…")}</button>
       {#if path}<button class="btn sm icon ghost" onclick={() => (path = null)} title={tr("既定に戻す", "Reset to default")} aria-label={tr("既定に戻す", "Reset to default")}
           ><Icon name="x" /></button
@@ -230,9 +262,53 @@
 
   <button class="go" onclick={run} disabled={busy}>{busy ? tr("書き出し中…", "Exporting…") : tr("書き出す", "Export")}</button>
   {#if result}<div class="note result">{result}</div>{/if}
+  {#if game}
+    <!-- ゲーム用に書き出した中身。配る前に確かめること(プラグイン・SoundFont の約束)も出す -->
+    <div class="game-report">
+      <div>{tr("音声にしたトラック", "Rendered to audio")}: {game.frozen.length ? game.frozen.join(tr("・", ", ")) : tr("なし", "none")}</div>
+      <div>{tr("入れた SoundFont", "SoundFonts included")}: {game.soundfonts.length ? game.soundfonts.join(tr("・", ", ")) : tr("なし", "none")}</div>
+      {#if game.solo_cleared.length}<div>{tr("ソロを外したトラック", "Solo cleared")}: {game.solo_cleared.join(tr("・", ", "))}</div>{/if}
+      {#if game.missing_soundfonts.length}
+        <div class="warn">{tr("見つからず入れられなかった SoundFont(ゲームでその音は鳴りません)", "SoundFonts not found (those sounds won't play in the game)")}: {game.missing_soundfonts.join(tr("・", ", "))}</div>
+      {/if}
+      {#if game.unbaked_effects.length}
+        <div class="warn">
+          {tr("CLAP のエフェクトが掛からない所(バス・マスターは音声にできません)", "Where CLAP effects won't apply (buses and master can't be rendered)")}: {game.unbaked_effects.join(tr("・", ", "))}
+        </div>
+      {/if}
+      {#if game.plugins.length || game.soundfonts.length}
+        <div class="dim">
+          {tr(
+            `使ったプラグイン: ${game.plugins.join("・") || "なし"}。ゲームを配る前に、プラグイン・SoundFont・サンプルの配布の約束(ライセンス)を確かめてください(書き出した音声そのものは、ふつう自由に配れます)`,
+            `Plugins used: ${game.plugins.join(", ") || "none"}. Before shipping the game, check the distribution terms (licenses) of the plugins, SoundFonts and samples (rendered audio itself is usually free to distribute)`,
+          )}
+        </div>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
+  .game-report {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .game-report .warn {
+    color: var(--warn, #e0b050);
+  }
+
+  .game-report .dim {
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+  }
+
   .backdrop {
     position: fixed;
     inset: 0;

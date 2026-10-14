@@ -113,7 +113,8 @@ Codex なら `~/.codex/config.toml` に `[mcp_servers.glaux]` と `url = "http:/
 ## Godot 4 で使う
 
 `GlauxPlayer` ノードで `.glaux` の曲を鳴らし、「いま聞こえている位置」で拍・マーカー・ノートをシグナルとして受け取れます。
-効果音を BGM のコードに合わせて鳴らすこともできます。[Releases](https://github.com/cetusk/Glaux/releases) の
+効果音を BGM のコードに合わせて鳴らすこともできます。CLAP プラグインや SFZ を使った曲は、
+「書き出し → ゲーム用」で、それらを音声にした写しをゲームの `songs/` に書き出せます。[Releases](https://github.com/cetusk/Glaux/releases) の
 `glaux-godot-addon-<版>.zip`(Windows・Linux 用)を展開し、`addons/glaux` をゲームのプロジェクトに置くだけで使えます。
 自分でビルドするときの手順は [`docs/GODOT.md`](docs/GODOT.md)、
 ゲーム側での使い方はアドオンの [`README`](godot/demo/addons/glaux/README.md) を見てください。
