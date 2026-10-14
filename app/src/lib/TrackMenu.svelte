@@ -1,12 +1,10 @@
 <script lang="ts">
-  // トラックの右クリック(見出しの ⋯)メニュー: 名前・色・並べ替え・複製・音声にする・プラグインの画面・削除、
-  // すべてのトラックへの操作(まとめてミュート・ソロを外す・選ぶ・削除)
-  import AllTracksItems from "./AllTracksItems.svelte";
+  // トラックの右クリック(見出しの ⋯)メニュー: 名前・色・並べ替え・複製・音声にする・プラグインの画面・削除。
+  // すべてのトラックへの操作は、トラックの並びの一番上の「すべて」のボタン(AllTracksBar)
   import Icon from "./Icon.svelte";
   import TimelineMenu from "./TimelineMenu.svelte";
   import { TRACK_COLORS } from "./palette";
   import type { Project } from "./types";
-  import type { AllAction } from "./trackActions";
   import { tr } from "./i18n.svelte";
 
   let {
@@ -23,7 +21,6 @@
     onOpenGui,
     onDelete,
     onClose,
-    onAll,
     deleteCount = 1,
   }: {
     project: Project;
@@ -41,8 +38,6 @@
     onOpenGui: () => void;
     onDelete: () => void;
     onClose: () => void;
-    /// すべてのトラックへの操作
-    onAll: (action: AllAction) => void;
     /// 削除で消すトラックの数(選んだトラックの中で開いたら、選んだ全部)
     deleteCount?: number;
   } = $props();
@@ -87,8 +82,6 @@
   {#if menuTrack?.device?.type === "clap"}
     <button onclick={onOpenGui}><Icon name="app-window" />{tr("プラグインの画面を開く", "Open plugin window")}</button>
   {/if}
-  <div class="menu-sep"></div>
-  <AllTracksItems {project} {onAll} />
   <div class="menu-sep"></div>
   <button class="danger" onclick={onDelete}><Icon name="trash-2" />{deleteCount > 1 ? tr(`選んだ ${deleteCount} トラックを削除`, `Delete ${deleteCount} selected tracks`) : tr("削除", "Delete")}<span class="key"
       >{tr("Ctrl+Z で戻せます", "Ctrl+Z to undo")}</span

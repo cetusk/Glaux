@@ -35,9 +35,7 @@
     setMasterVolume,
     setTrackColor,
     setTrackVolume,
-    setAllListen,
     toggleTrackFlag,
-    type AllAction,
   } from "./trackActions";
   import { commitSections, markersOf, removeMarker } from "./sectionOps";
   import {
@@ -725,19 +723,6 @@
   /** 操作の対象: 押したトラックが選択の中なら選んだ全部、そうでなければそのトラックだけ */
   const targetsOf = (t: Track): Track[] =>
     selectedTracks.has(t.id) && selectedTracks.size > 1 ? project.tracks.filter((x) => selectedTracks.has(x.id)) : [t];
-
-  /** すべてのトラックへの操作(右クリックメニュー)。ミュート・ソロは選択に関係なく全部に効く */
-  function allTracks(action: AllAction) {
-    trackMenu = null;
-    if (action === "select") {
-      selectedTracks = new Set(project.tracks.map((t) => t.id));
-      selectedClips = new Set();
-    } else if (action === "delete") {
-      deleteTracks(project.tracks);
-    } else {
-      setAllListen(project.tracks, action);
-    }
-  }
 
   function deleteTracks(tracks: Track[]) {
     if (!tracks.length) return;
@@ -1824,7 +1809,6 @@
       onBounce={bounceTrack}
       onOpenGui={() => openClapGui(trackMenu!.trackId)}
       onDelete={deleteTrack}
-      onAll={allTracks}
       onClose={() => (trackMenu = null)}
       deleteCount={selectedTracks.has(trackMenu.trackId) ? selectedTracks.size : 1}
     />
