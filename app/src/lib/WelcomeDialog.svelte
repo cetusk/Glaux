@@ -178,8 +178,8 @@
         {:else}
           <div class="note">
             {tr(
-              "無くても内蔵のシンセ・ドラムで曲を作れます。生楽器の音が欲しいときは入れてください (GeneralUser GS。S. Christian Collins 作、音楽制作に私用・商用とも自由に使えます)",
-              "You can make songs with the built-in synths and drums without it. Install it if you want acoustic instrument sounds (GeneralUser GS by S. Christian Collins, free for personal and commercial music production)",
+              "初めて起動したときに自動で入れます(取得中・つながらなかったときは、ここから入れられます)。無くても内蔵のシンセ・ドラムで曲を作れます (GeneralUser GS。S. Christian Collins 作、音楽制作に私用・商用とも自由に使えます)",
+              "It is installed automatically on first launch (if that is still running or couldn't connect, you can install it here). You can make songs with the built-in synths and drums without it (GeneralUser GS by S. Christian Collins, free for personal and commercial music production)",
             )}
           </div>
         {/if}

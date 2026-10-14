@@ -65,7 +65,12 @@ pub fn soundfont_status() -> SoundFontStatus {
 }
 
 /// GM 音源一式の SoundFont をライブラリへ取得する(すでにあれば何もしない)。
+/// 起動時の自動の取得と「はじめの確認」のボタンが同時に動いても、1 つずつ取得する(2 つ目は取得済みを見て戻る)
 pub fn download_soundfont(progress: &mut dyn FnMut(u64, u64)) -> Result<PathBuf, String> {
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let path = glaux_engine::sf2::default_dir().join(SOUNDFONT_FILE);
     download_verified(
         SOUNDFONT_URL,
@@ -76,6 +81,26 @@ pub fn download_soundfont(progress: &mut dyn FnMut(u64, u64)) -> Result<PathBuf,
     )
     .map_err(|e| format!("SoundFont を取得できません: {e}"))?;
     Ok(path)
+}
+
+/// 初めて起動したときに GM 音源を自動で入れるかと、入れる場所の目印。
+/// 一度入れたら目印を残し、ユーザーが後で消しても入れ直さない(消したのは意図とみなす)。
+/// 環境変数 GLAUX_NO_AUTO_DOWNLOAD があれば入れない(試験・社内の環境など)
+pub fn soundfont_auto_install_needed() -> bool {
+    if std::env::var_os("GLAUX_NO_AUTO_DOWNLOAD").is_some() {
+        return false;
+    }
+    let dir = glaux_engine::sf2::default_dir();
+    !dir.join(SOUNDFONT_FILE).is_file() && !auto_marker().is_file()
+}
+
+fn auto_marker() -> PathBuf {
+    glaux_engine::sf2::default_dir().join(".gm-auto-installed")
+}
+
+/// 自動で入れ終えた目印を残す
+pub fn mark_soundfont_auto_installed() {
+    let _ = std::fs::write(auto_marker(), SOUNDFONT_FILE);
 }
 
 /// `url` を `path` へ取得する(すでにあれば何もしない)。一時ファイル(`.part`)に書き、

@@ -82,6 +82,8 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
    言ったときだけ省く)。作る道具はパートの計画に沿い(鳴らさない区間に書かない・帯へ寄せる)、設計画面に計画と実際が並ぶ。\n\
    計画より先に音を書くと、設計画面に音域の帯が無く「実際を計画に」しか出ない。get_design が計画と実際のずれを返す。\n\
 2. 骨格: テンポ・キー → コード進行 → ドラム → ベース → コード楽器 → 主旋律。フレーズを足す前に analyze_harmony / analyze_rhythm。\n\
+   生楽器のパート(ピアノ・ストリングス・ブラス・ギター・生ベースなど)は、内蔵シンセで真似るより、SoundFont・SFZ・CLAP の\n\
+   良い音源があればそれを使う(list_soundfonts・list_plugins で確かめる。既にシンセで置いた生楽器のパートも差し替えを検討する。topic instruments)。\n\
    パートを足したら check_clashes で、ほかのパートとぶつかる音(伴奏の和音の外で長く重なる音)を直す。\n\
    コード進行は suggest_progression で定番から選ぶ(区間ごとに変える)。\n\
    ドラムは write_drums(ジャンルの型・区間ごとに intensity を変える・区切りのフィル・ビルドのロールと gap_beats)。\n\
@@ -315,8 +317,11 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
 - エレキギター: pluck だけでは「アンプに繋いでいない生弦」なので、必ず amp エフェクトを後ろに挿す。amp の gain_db は\n\
   〜10 でクリーン、15〜25 でクランチ、30 前後でオーバードライブ、40 以上でメタル。メタルの刻みはノートに articulation: \"palm_mute\"。\n\
   出荷時プリセット(クリーンエレキ / クランチギター / メタルギター)を load_preset するのが早い。\n\
+- 生楽器のパートは、内蔵シンセで真似るより、SoundFont・SFZ・CLAP の良い音源があればそれに差し替えることを検討する(実録の SFZ >\n\
+  CLAP の専用音源 > GM の SoundFont > 内蔵シンセの順が目安。最後は聴いて決める)。\n\
 - 本物っぽい楽器一式(ピアノ・ストリングス・ブラス等): SoundFont。list_soundfonts で .sf2 とプリセットを見て\n\
-  set_soundfont_instrument。.sf2 が無ければ「アプリの設定 → 表示 →『はじめの確認』の『GM 音源を取得』で入れられる(手持ちの .sf2 の追加も可)」と案内する。\n\
+  set_soundfont_instrument。GM 音源(GeneralUser-GS.sf2)はアプリを初めて起動したときに自動で入る。.sf2 が無ければ\n\
+  「アプリの設定 → 一般 →『はじめの確認』の『GM 音源を取得』で入れられる(手持ちの .sf2 の追加も可)」と案内する。\n\
   SFZ の楽器(list_soundfonts の sfz。ラウンドロビン・ハイハットのチョーク付きの実録音源)は set_soundfont_instrument の sfz で。\n\
   返り値の controls が音源の調整つまみ(マイクの混ぜ方・スネアの音程や snap)。sfz_cc で上書き。生の録音は EQ・コンプで仕上げる。\n\
   無料の SFZ 音源(packs)は installed=false ならユーザーに「音源を選ぶ →『SoundFont・SFZ』から取得」を案内する。\n\

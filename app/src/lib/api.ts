@@ -698,6 +698,11 @@ export function onSoundFontDownload(cb: (p: { got: number; total: number }) => v
   return listen<{ got: number; total: number }>("soundfont-download", (e) => cb(e.payload));
 }
 
+/** 起動時に GM 音源を自動で入れ終えた */
+export function onSoundFontInstalled(cb: () => void): Promise<UnlistenFn> {
+  return listen("soundfont-installed", () => cb());
+}
+
 export function onSfzDownload(cb: (p: { id: string; got: number; total: number }) => void): Promise<UnlistenFn> {
   return listen<{ id: string; got: number; total: number }>("sfz-download", (e) => cb(e.payload));
 }

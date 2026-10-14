@@ -4212,6 +4212,30 @@ fn main() -> Result<()> {
                 }
             }
 
+            // GM 音源(GeneralUser GS)を初めての起動で自動で入れる(ピアノ・ストリングスなど 128 音色。
+            // 内蔵のシンセだけだと生楽器の音が出せないため)。つながらなければ次の起動でもう一度試す
+            if glaux_mcp::models::soundfont_auto_install_needed() {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let r = glaux_mcp::models::download_soundfont(&mut |got, total| {
+                        let _ = app_handle
+                            .emit("soundfont-download", json!({ "got": got, "total": total }));
+                    });
+                    match r {
+                        Ok(path) => {
+                            glaux_mcp::models::mark_soundfont_auto_installed();
+                            let _ = app_handle.emit(
+                                "soundfont-installed",
+                                json!({ "path": path.to_string_lossy() }),
+                            );
+                        }
+                        Err(e) => tracing::warn!(
+                            "GM 音源を自動で入れられませんでした(次の起動で再試行): {e}"
+                        ),
+                    }
+                });
+            }
+
             // アプリ内 MCP サーバー
             let mcp_handle = handle.clone();
             let mcp_chat_model = chat_model.clone();

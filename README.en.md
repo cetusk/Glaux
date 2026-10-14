@@ -52,7 +52,8 @@ Download one of these from [Releases](https://github.com/cetusk/Glaux/releases).
 
 The files are not code-signed, so Windows may show "Windows protected your PC" the first time. Click "More info" → "Run anyway".
 
-On first launch, a setup check shows whether audio output, the AI chat CLI and a SoundFont are available, and lets you
+On first launch, Glaux automatically downloads a General MIDI SoundFont (128 sounds such as piano, strings and brass).
+A setup check also shows whether audio output, the AI chat CLI and a SoundFont are available, and lets you
 fix what is missing on the spot (for example, download a General MIDI SoundFont). You can also open the demo song from there.
 A walkthrough (in Japanese) is in [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md), and common problems in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
@@ -149,7 +150,7 @@ The source code and documentation are dual-licensed under **MIT or Apache-2.0** 
 | Groove templates (aggregated and adapted from Google Magenta's [Groove MIDI Dataset](https://magenta.withgoogle.com/datasets/groove); `crates/glaux-core/data/grooves.json`) | Bundled | CC BY 4.0 |
 | LAION-CLAP audio model | Downloaded on first use | Apache-2.0 |
 | UI icons (Lucide) | Bundled ([full text](app/LICENSE-lucide.txt)) | ISC (partly MIT) |
-| General MIDI SoundFont (GeneralUser GS v2.0.3 by S. Christian Collins) | Not bundled; can be downloaded from the setup check | GeneralUser GS License v2.0 |
+| General MIDI SoundFont (GeneralUser GS v2.0.3 by S. Christian Collins) | Not bundled; downloaded automatically on first launch (also from the setup check) | GeneralUser GS License v2.0 |
 | Free SFZ instruments (8 from [sfzinstruments](https://github.com/sfzinstruments): Osiris Piano by Versilian Studios and Karoryfer Samples, E-Pianos by Greg Sullivan, Big Rusty Drums / Swagbass / Emilyguitar by Karoryfer Samples, Cello by Karoryfer Samples and Bigcat Instruments, MTG Solo Saxophones by MTG, Ixox Flute by Xavier Hosxe) | Not bundled; can be downloaded from the instrument picker (authors and licenses in each folder's `CREDITS.txt`) | CC0-1.0 / CC-BY-3.0 / CC-BY-4.0 |
 | Demo song (CyberNeon) | Bundled (made only with the built-in instruments and effects) | Same as above (MIT / Apache-2.0) |
 | Other SoundFonts, CLAP / VST3 plugins, Demucs | Not bundled (get them yourself) | Their own licenses |

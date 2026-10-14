@@ -50,8 +50,9 @@ AI ができること・作れるジャンルの詳細は [`docs/CAPABILITIES.md
 
 署名をしていないので、初めて開くと「Windows によって PC が保護されました」と出ることがあります。「詳細情報」→「実行」で開けます。
 
-初めて起動すると「はじめの確認」が開き、音の出力・AI のチャット・SoundFont がそろっているかを確かめて、
-足りないもの(GM 音源の SoundFont など)をその場で用意できます。デモ曲もここから開けます。
+初めて起動すると、ピアノ・ストリングス・ブラスなど 128 音色の GM 音源(SoundFont)を自動で取得して入れます。
+「はじめの確認」も開き、音の出力・AI のチャット・SoundFont がそろっているかを確かめて、足りないものをその場で用意できます。
+デモ曲もここから開けます。
 使い方の流れは [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)、困ったときは [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) にあります。
 
 ### 自分でビルドする
@@ -147,7 +148,7 @@ godot/          Godot のデモとアドオンのビルド
 | グルーブの型(Google Magenta の [Groove MIDI Dataset](https://magenta.withgoogle.com/datasets/groove) を集計して改変。`crates/glaux-core/data/grooves.json`) | 同梱 | CC BY 4.0 |
 | LAION-CLAP の音声側モデル | 初めて使うときに取得 | Apache-2.0 |
 | 画面のアイコン(Lucide) | 同梱([全文](app/LICENSE-lucide.txt)) | ISC(一部 MIT) |
-| GM 音源の SoundFont(GeneralUser GS v2.0.3、S. Christian Collins 作) | 同梱しない。はじめの確認で取得できる | GeneralUser GS License v2.0 |
+| GM 音源の SoundFont(GeneralUser GS v2.0.3、S. Christian Collins 作) | 同梱しない。初めて起動したときに自動で取得する(はじめの確認からも取得できる) | GeneralUser GS License v2.0 |
 | 無料の SFZ 音源([sfzinstruments](https://github.com/sfzinstruments) の 8 つ: Osiris Piano〈Versilian Studios・Karoryfer Samples〉、E-Pianos〈Greg Sullivan〉、Big Rusty Drums・Swagbass・Emilyguitar〈Karoryfer Samples〉、Cello〈Karoryfer Samples・Bigcat Instruments〉、MTG Solo Saxophones〈MTG〉、Ixox Flute〈Xavier Hosxe〉) | 同梱しない。音源の選択から取得できる(作者とライセンスは各フォルダの `CREDITS.txt`) | CC0-1.0 / CC-BY-3.0 / CC-BY-4.0 |
 | デモ曲(CyberNeon) | 同梱(内蔵の音源とエフェクトだけで作った曲) | 上と同じ(MIT / Apache-2.0) |
 | そのほかの SoundFont・CLAP / VST3 プラグイン・Demucs | 同梱しない(各自で入手) | それぞれによる |

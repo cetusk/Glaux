@@ -452,6 +452,18 @@
       refreshAudioDev();
     })();
 
+    // 初めての起動で GM 音源を自動で入れ終えたら知らせる
+    const unlistenGm = api.onSoundFontInstalled(() =>
+      showToast(
+        "ok",
+        tr(
+          "GM 音源(GeneralUser GS)を入れました。ピアノ・ストリングス・ブラスなど 128 音色を、音源の選択の「SoundFont・SFZ」から使えます",
+          "Installed the GM sound set (GeneralUser GS). 128 sounds such as piano, strings and brass are available under \"SoundFont / SFZ\" in the instrument picker",
+        ),
+        { ms: 12000 },
+      ),
+    );
+
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     const unlistenChanged = api.onProjectChanged((ev) => {
       // 計画だけの変更は曲の版が進まない。曲の再取得の判断(版の連続)を乱さないよう、曲は取り直さず、
@@ -551,6 +563,7 @@
 
     return () => {
       unlistenChanged.then((f) => f && f());
+      unlistenGm.then((f) => f && f());
       unlistenActivity.then((f) => f && f());
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("keydown", onKeydown);
