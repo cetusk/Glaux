@@ -11,6 +11,7 @@
   import { paramLabel, unitText } from "./paramText";
   import { MASTER_FOCUS_ID } from "./selection.svelte";
   import type { AutomationPoint, Track } from "./types";
+  import { color } from "./palette";
 
   let {
     track,
@@ -185,7 +186,7 @@
 
     // 基準線(音量 0dB / パン中央。0 を含む範囲のときだけ)
     if (range.min < 0 && range.max > 0) {
-      g.fillStyle = "rgba(255,255,255,0.12)";
+      g.fillStyle = color("--auto-zero");
       g.fillRect(0, yOf(0), totalPx, 1);
     }
 
@@ -197,7 +198,7 @@
 
     if (pts.length === 0) {
       // レーン未使用: フェーダー値の位置に破線
-      g.strokeStyle = "rgba(255,255,255,0.35)";
+      g.strokeStyle = color("--auto-unused");
       g.setLineDash([5, 5]);
       g.beginPath();
       g.moveTo(0, yOf(faderValue));

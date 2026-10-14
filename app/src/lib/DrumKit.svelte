@@ -25,18 +25,18 @@
   <svg viewBox="0 0 400 175" preserveAspectRatio="xMidYMid meet">
     <defs>
       <radialGradient id="cymbal-g" cx="0.4" cy="0.4">
-        <stop offset="0%" stop-color="#e5c46e" />
-        <stop offset="55%" stop-color="#c9a44e" />
-        <stop offset="100%" stop-color="#8a6d2f" />
+        <stop offset="0%" style="stop-color: var(--kit-cymbal-1)" />
+        <stop offset="55%" style="stop-color: var(--kit-cymbal-2)" />
+        <stop offset="100%" style="stop-color: var(--kit-cymbal-3)" />
       </radialGradient>
       <radialGradient id="head-g" cx="0.42" cy="0.4">
-        <stop offset="0%" stop-color="#f2ede4" />
-        <stop offset="70%" stop-color="#ddd6c9" />
-        <stop offset="100%" stop-color="#bcb4a5" />
+        <stop offset="0%" style="stop-color: var(--kit-head-1)" />
+        <stop offset="70%" style="stop-color: var(--kit-head-2)" />
+        <stop offset="100%" style="stop-color: var(--kit-head-3)" />
       </radialGradient>
       <radialGradient id="kick-g" cx="0.42" cy="0.4">
-        <stop offset="0%" stop-color="#555555" />
-        <stop offset="100%" stop-color="#2a2a2a" />
+        <stop offset="0%" style="stop-color: var(--kit-kick-1)" />
+        <stop offset="100%" style="stop-color: var(--kit-kick-2)" />
       </radialGradient>
     </defs>
 
@@ -52,12 +52,12 @@
         {#if p.kind === "cymbal"}
           <!-- シンバル: 金属光沢 + 溝 + ベル。ハイハットは二枚重ねに見せる -->
           {#if p.pitch === 42 || p.pitch === 46}
-            <circle cx={p.cx + 2.5} cy={p.cy + 3} r={p.r} fill="#7a6128" opacity="0.9" />
+            <circle cx={p.cx + 2.5} cy={p.cy + 3} r={p.r} style="fill: var(--kit-cymbal-under)" opacity="0.9" />
           {/if}
           <circle class="sel" cx={p.cx} cy={p.cy} r={p.r} fill="url(#cymbal-g)" />
-          <circle cx={p.cx} cy={p.cy} r={p.r * 0.72} fill="none" stroke="rgba(60,42,8,0.25)" />
-          <circle cx={p.cx} cy={p.cy} r={p.r * 0.45} fill="none" stroke="rgba(60,42,8,0.2)" />
-          <circle cx={p.cx} cy={p.cy} r={p.r * 0.16} fill="#e8cd85" stroke="rgba(60,42,8,0.35)" />
+          <circle cx={p.cx} cy={p.cy} r={p.r * 0.72} fill="none" style="stroke: var(--kit-groove-outer)" />
+          <circle cx={p.cx} cy={p.cy} r={p.r * 0.45} fill="none" style="stroke: var(--kit-groove-inner)" />
+          <circle cx={p.cx} cy={p.cy} r={p.r * 0.16} style="fill: var(--kit-cymbal-bell); stroke: var(--kit-bell-edge)" />
           {#if p.pitch === 46}
             <!-- オープンハットは隙間を示す破線 -->
             <circle cx={p.cx} cy={p.cy} r={p.r + 3} fill="none"
@@ -66,30 +66,29 @@
           <text x={p.cx} y={p.cy + 4} class="t-dark">{p.short}</text>
         {:else if p.kind === "pad"}
           <!-- 電子パッド(クラップ) -->
-          <rect class="sel" x={p.cx - p.r - 4} y={p.cy - p.r * 0.8} width={(p.r + 4) * 2}
-            height={p.r * 1.6} rx="6" fill="#383838" stroke="#555555" stroke-width="1.5" />
+          <rect class="sel pad" x={p.cx - p.r - 4} y={p.cy - p.r * 0.8} width={(p.r + 4) * 2}
+            height={p.r * 1.6} rx="6" stroke-width="1.5" />
           <rect x={p.cx - p.r + 1} y={p.cy - p.r * 0.8 + 5} width={p.r * 2 - 2}
-            height={p.r * 1.6 - 10} rx="3" fill="#4a4a4a" />
+            height={p.r * 1.6 - 10} rx="3" style="fill: var(--kit-pad-face)" />
           <text x={p.cx} y={p.cy + 4}>{p.short}</text>
         {:else}
           <!-- 太鼓: シェル(リム)+ ヘッド + ラグ -->
-          <circle class="sel" cx={p.cx} cy={p.cy} r={p.r}
-            fill={p.pitch === 36 ? "url(#kick-g)" : "#484848"} stroke="#1b1b1b" stroke-width="1.5" />
+          <circle class="sel shell" class:kick={p.pitch === 36} cx={p.cx} cy={p.cy} r={p.r} stroke-width="1.5" />
           <circle cx={p.cx} cy={p.cy} r={p.r - 3.5}
             fill={p.pitch === 36 ? "url(#kick-g)" : "url(#head-g)"} />
           {#if p.pitch === 38}
             <!-- スネアのスナッピー(響き線)の示唆 -->
-            <g stroke="rgba(120,110,95,0.55)" stroke-width="1">
+            <g style="stroke: var(--kit-snare-wire)" stroke-width="1">
               {#each [-6, -2, 2, 6] as off}
                 <line x1={p.cx - p.r + 7} y1={p.cy + off} x2={p.cx + p.r - 7} y2={p.cy + off} />
               {/each}
             </g>
           {/if}
           {#if p.pitch === 36}
-            <circle cx={p.cx} cy={p.cy} r={p.r * 0.32} fill="#1b1b1b" opacity="0.5" />
+            <circle cx={p.cx} cy={p.cy} r={p.r * 0.32} style="fill: var(--kit-rim)" opacity="0.5" />
           {/if}
           {#each lugs(p, p.r > 30 ? 10 : 8) as l}
-            <circle cx={l.x} cy={l.y} r="1.6" fill="#8c8c8c" />
+            <circle cx={l.x} cy={l.y} r="1.6" style="fill: var(--kit-lug)" />
           {/each}
           <text class={p.pitch === 36 ? "" : "t-dark"} x={p.cx} y={p.cy + 4}>{p.short}</text>
         {/if}
@@ -127,6 +126,21 @@
     filter: brightness(1.45);
   }
 
+  /* 電子パッド・太鼓の胴(選んだときの縁の色 .piece.hl .sel が優先されるよう、色はクラスで付ける) */
+  .pad {
+    fill: var(--kit-pad);
+    stroke: var(--kit-pad-edge);
+  }
+
+  .shell {
+    fill: var(--kit-shell);
+    stroke: var(--kit-rim);
+  }
+
+  .shell.kick {
+    fill: url(#kick-g);
+  }
+
   .piece.hl .sel {
     stroke: var(--accent);
     stroke-width: 2.5;
@@ -142,6 +156,6 @@
   }
 
   .piece text.t-dark {
-    fill: #2e2818;
+    fill: var(--kit-text-dark);
   }
 </style>

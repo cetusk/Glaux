@@ -6,7 +6,7 @@ import * as api from "../api";
 import { tr } from "../i18n.svelte";
 import { showToast } from "../toast.svelte";
 import { draw as drawAll, holdVoice, playNotes, register, releaseVoice, setSel, toast, type Data, type Loaded, type Voice } from "./core.svelte";
-import { byId, clamp, css, ctx2d, drawAudio, el, noteName, tag, timeRuler } from "./dom";
+import { byId, clamp, css, ctx2d, drawAudio, el, noteName, tag, timeRuler, ecol } from "./dom";
 import {
   canEdit,
   cur,
@@ -399,7 +399,7 @@ const SMP: any = {
       ...(sliced && d.cuts.length > SMP.inUse(d, d.cuts).length
         ? ([
             [
-              el("span", { class: "sw", style: "width: 3px; background: repeating-linear-gradient(180deg, #a0a0a0 0 3px, transparent 3px 6px)" }),
+              el("span", { class: "sw", style: "width: 3px; background: repeating-linear-gradient(180deg, var(--se-gray) 0 3px, transparent 3px 6px)" }),
               tr("使わない切れ目", "Unused cut"),
               tr("使う所の外の線。消さずに残すので、使う所を広げるとまた区分になる", "A line outside the used part. It's kept, so widening the used part makes it a slice again"),
             ],
@@ -407,7 +407,7 @@ const SMP: any = {
         : []),
       ...(sliced
         ? ([
-            [el("span", { class: "sw", style: "background: linear-gradient(90deg, #e8c46a, #e88a6a, #d46ab8, #9a7ae8)" }), tr("色 = 鳴らす鍵盤", "Color = key"), tr("区分の区間・帯・鍵盤は同じ色", "A slice's region, band and key share a color")],
+            [el("span", { class: "sw", style: "background: linear-gradient(90deg, var(--new), var(--se-coral), var(--se-pink), var(--se-violet))" }), tr("色 = 鳴らす鍵盤", "Color = key"), tr("区分の区間・帯・鍵盤は同じ色", "A slice's region, band and key share a color")],
             ["now", tr("選んだ区分", "Selected slice")],
           ] as LegendItem[])
         : []),
@@ -852,7 +852,7 @@ const SMP: any = {
           mid = w / 2,
           y0 = h / 2,
           A = h * 0.32;
-        g.strokeStyle = "#333";
+        g.strokeStyle = ecol("--se-line");
         g.beginPath();
         g.moveTo(mid, 0);
         g.lineTo(mid, h);
@@ -876,7 +876,7 @@ const SMP: any = {
         }
         g.stroke();
         if (k === 1) {
-          g.fillStyle = "rgba(37,189,177,0.15)";
+          g.fillStyle = ecol("--accent", 0.15);
           g.fillRect(mid - 26, 0, 52, h);
           g.fillStyle = css("--dim");
           g.fillText(tr("重ねる長さ", "overlap"), mid - 22, h - 3);
@@ -898,8 +898,8 @@ const SMP: any = {
   /** 「元の高さ」の名前(区分に分けているかで意味が変わるので言い分ける) */
   rootName: (d: Data) => (d.sliceMode === "off" ? "録音どおりの鍵盤" : "区分 1 の鍵盤"),
   /** 区分の色(波形の区間・帯・鍵盤で同じ色) */
-  SLICE_COLORS: ["232,196,106", "232,138,106", "212,106,184", "154,122,232", "106,154,232", "138,212,106", "232,163,58", "200,212,106"],
-  sliceColor: (i: number, a: number) => `rgba(${SMP.SLICE_COLORS[i % SMP.SLICE_COLORS.length]},${a})`,
+  SLICE_COLORS: ["--se-slice-1", "--se-slice-2", "--se-slice-3", "--se-slice-4", "--se-slice-5", "--se-slice-6", "--se-slice-7", "--se-slice-8"],
+  sliceColor: (i: number, a: number) => ecol(SMP.SLICE_COLORS[i % SMP.SLICE_COLORS.length], a),
   /** つながりの絵の鍵盤の並び: 区分のときは区分の数 + 前後、1 つの音のときは上下 1 オクターブ(0〜127 の中に収める) */
   linkKeys(d: Data, w: number) {
     const n = Math.min(128, d.sliceMode === "off" ? 25 : Math.max(12, SMP.cuts(d).length + 4)),
@@ -951,7 +951,7 @@ const SMP: any = {
     if (SMP.lit != null && cuts.length) {
       const li = SMP.lit - d.root;
       if (li >= 0 && li < cuts.length) {
-        g.fillStyle = "rgba(37,189,177,0.25)";
+        g.fillStyle = ecol("--accent", 0.25);
         g.fillRect(cuts[li] * w, top, ((cuts[li + 1] ?? d.end) - cuts[li]) * w, bot - top);
       }
     }
@@ -959,19 +959,19 @@ const SMP: any = {
     if (d.selSlice != null && cuts.length && d.selSlice < cuts.length) {
       const a = cuts[d.selSlice],
         b = cuts[d.selSlice + 1] ?? d.end;
-      g.fillStyle = "rgba(255,255,255,0.08)";
+      g.fillStyle = ecol("--white", 0.08);
       g.fillRect(a * w, top, (b - a) * w, bot - top);
-      g.strokeStyle = "#fff";
+      g.strokeStyle = ecol("--white");
       g.lineWidth = 2;
       g.strokeRect(a * w + 1, top, (b - a) * w - 2, bot - top);
     }
     // ループ(区分のときはループしないので描かない)
     const loopOn = d.loop && d.sliceMode === "off";
     if (loopOn) {
-      g.fillStyle = "rgba(37,189,177,0.13)";
+      g.fillStyle = ecol("--accent", 0.13);
       g.fillRect(d.ls * w, top, (d.le - d.ls) * w, bot - top);
       const xf = (d.xf / (SMP.len(d) * 1000)) * w;
-      g.fillStyle = "rgba(37,189,177,0.35)";
+      g.fillStyle = ecol("--accent", 0.35);
       g.beginPath();
       g.moveTo(d.le * w - xf, bot);
       g.lineTo(d.le * w, top);
@@ -985,7 +985,7 @@ const SMP: any = {
       g.fillText(d.src ? tr("素材を読み込んでいます…", "Loading the source…") : tr("素材がありません(左で選ぶか、ファイルから選ぶ)", "No source (pick one on the left or choose a file)"), 8, (top + bot) / 2);
     }
     // 使わない所
-    g.fillStyle = "rgba(0,0,0,0.62)";
+    g.fillStyle = ecol("--black", 0.62);
     g.fillRect(0, 0, d.start * w, h);
     g.fillRect(d.end * w, 0, w - d.end * w, h);
     // 区分の区間を、その区分の色で薄く塗る(下の帯・鍵盤と同じ色)
@@ -999,7 +999,7 @@ const SMP: any = {
         .filter((cc: number) => !SMP.inUse(d, [cc]).length)
         .forEach((cx: number) => {
           const picked = tool === "cut" && d.selCut != null && d.cuts[d.selCut] === cx;
-          g.strokeStyle = picked ? "#fff" : "rgba(160,160,160,0.6)";
+          g.strokeStyle = picked ? ecol("--white") : ecol("--se-gray", 0.6);
           g.lineWidth = picked ? 2 : 1;
           g.setLineDash([3, 3]);
           g.beginPath();
@@ -1012,13 +1012,13 @@ const SMP: any = {
     cuts.forEach((cx: number, i: number) => {
       const edit = tool === "cut" && i > 0,
         picked = edit && d.selCut != null && d.cuts[d.selCut] === cx;
-      g.strokeStyle = d.selSlice === i || picked ? "#fff" : `rgba(232,196,106,${edit ? 0.95 : 0.7})`;
+      g.strokeStyle = d.selSlice === i || picked ? ecol("--white") : ecol("--new", edit ? 0.95 : 0.7);
       g.lineWidth = picked ? 3 : edit ? 2 : 1;
       g.beginPath();
       g.moveTo(cx * w, top);
       g.lineTo(cx * w, bot);
       g.stroke();
-      g.fillStyle = "rgba(232,196,106,0.95)";
+      g.fillStyle = ecol("--new", 0.95);
       g.font = "10px sans-serif";
       g.fillText(String(i + 1), cx * w + 3, top + 11);
       if (edit) {
@@ -1051,8 +1051,8 @@ const SMP: any = {
       }
     };
     timeRuler(g, 0, w, ry, SMP.len(d), tr(" 秒", " s"));
-    tri(d.start, "#e6e6e6", tool === "trim" ? tr("始まり", "Start") : "", false, tool === "trim");
-    tri(d.end, "#e6e6e6", tool === "trim" ? tr("終わり", "End") : "", false, tool === "trim");
+    tri(d.start, ecol("--text"), tool === "trim" ? tr("始まり", "Start") : "", false, tool === "trim");
+    tri(d.end, ecol("--text"), tool === "trim" ? tr("終わり", "End") : "", false, tool === "trim");
     if (loopOn) {
       tri(d.ls, css("--accent"), tool === "loop" ? tr("ループ", "Loop") : "", true, tool === "loop");
       tri(d.le, css("--accent"), "", true, tool === "loop");
@@ -1098,9 +1098,9 @@ const SMP: any = {
         g3.lineTo(q.k1, q.ky);
         g3.lineTo(q.k0, q.ky);
         g3.closePath();
-        g3.fillStyle = lit ? "rgba(37,189,177,0.45)" : off ? "rgba(37,189,177,0.16)" : SMP.sliceColor(q.si, sel || hov ? 0.42 : 0.22);
+        g3.fillStyle = lit ? ecol("--accent", 0.45) : off ? ecol("--accent", 0.16) : SMP.sliceColor(q.si, sel || hov ? 0.42 : 0.22);
         g3.fill();
-        g3.strokeStyle = sel ? "#fff" : off ? "rgba(37,189,177,0.6)" : SMP.sliceColor(q.si, 0.75);
+        g3.strokeStyle = sel ? ecol("--white") : off ? ecol("--accent", 0.6) : SMP.sliceColor(q.si, 0.75);
         g3.lineWidth = sel ? 2 : 1;
         g3.stroke();
       });
@@ -1111,22 +1111,22 @@ const SMP: any = {
           black = [1, 3, 6, 8, 10].includes(m % 12),
           si = off ? null : m - d.root,
           has = off || (si != null && si >= 0 && si < cuts.length);
-        g3.fillStyle = black ? "#1c1c1c" : "#30302e";
+        g3.fillStyle = black ? ecol("--panel") : ecol("--se-key-dim");
         g3.fillRect(x0 + 0.5, ky, K.kw - 1, K.kh);
         if (has && !off && si != null) {
           g3.fillStyle = SMP.sliceColor(si, d.selSlice === si ? 0.85 : 0.55);
           g3.fillRect(x0 + 0.5, ky, K.kw - 1, K.kh);
         }
         if (off && m === d.root) {
-          g3.fillStyle = "rgba(37,189,177,0.6)";
+          g3.fillStyle = ecol("--accent", 0.6);
           g3.fillRect(x0 + 0.5, ky, K.kw - 1, K.kh);
         }
         if (SMP.lit === m && has) {
-          g3.fillStyle = "rgba(37,189,177,0.9)";
+          g3.fillStyle = ecol("--accent", 0.9);
           g3.fillRect(x0 + 0.5, ky, K.kw - 1, K.kh);
         }
         if (d.selSlice === si && !off) {
-          g3.strokeStyle = "#fff";
+          g3.strokeStyle = ecol("--white");
           g3.lineWidth = 2;
           g3.strokeRect(x0 + 1.5, ky + 1, K.kw - 3, K.kh - 2);
         }
@@ -1139,13 +1139,13 @@ const SMP: any = {
         g3.textAlign = "center";
         // 区分の番号は帯の下の端
         if (!off && has && si != null && K.kw >= 12) {
-          g3.fillStyle = "#fff";
+          g3.fillStyle = ecol("--white");
           g3.fillText(String(si + 1), x0 + K.kw / 2, ky - 4);
         }
         // 区分のある鍵盤は全部に音の名前
         const named = m % 12 === 0 || (off && m === d.root) || (!off && has && K.kw >= 26);
         if (named) {
-          g3.fillStyle = (off && m === d.root) || (!off && has) ? "#111" : css("--faint");
+          g3.fillStyle = (off && m === d.root) || (!off && has) ? ecol("--se-key-edge") : css("--faint");
           g3.fillText(noteName(m), x0 + K.kw / 2, ky + K.kh - 6);
         }
         g3.textAlign = "left";
@@ -1183,16 +1183,16 @@ const SMP: any = {
       K.forEach((k: any) => {
         const si = off ? null : k.m - d.root,
           has = !off && si != null && si >= 0 && si < cuts.length;
-        g4.fillStyle = k.black ? "#161616" : "#d8d6d0";
+        g4.fillStyle = k.black ? ecol("--se-key-black") : ecol("--se-key-white");
         if (has && si != null) g4.fillStyle = SMP.sliceColor(si, k.black ? 0.95 : 0.9);
-        if (off && k.m === d.root) g4.fillStyle = "rgba(37,189,177,0.95)";
-        if (SMP.lit === k.m && (off || has)) g4.fillStyle = "#25bdb1";
+        if (off && k.m === d.root) g4.fillStyle = ecol("--accent", 0.95);
+        if (SMP.lit === k.m && (off || has)) g4.fillStyle = ecol("--accent");
         g4.fillRect(k.x + 0.5, k.y, k.w - 1, k.h - (k.black ? 0 : 1));
-        g4.strokeStyle = "#111";
+        g4.strokeStyle = ecol("--se-key-edge");
         g4.lineWidth = 1;
         g4.strokeRect(k.x + 0.5, k.y + 0.5, k.w - 1, k.h - 1);
         if (has && d.selSlice === si) {
-          g4.strokeStyle = "#fff";
+          g4.strokeStyle = ecol("--white");
           g4.lineWidth = 2;
           g4.strokeRect(k.x + 1.5, k.y + 1.5, k.w - 3, k.h - 3);
         }
@@ -1204,7 +1204,7 @@ const SMP: any = {
         if (!k.black) {
           g4.font = "9px sans-serif";
           g4.textAlign = "center";
-          g4.fillStyle = "#222";
+          g4.fillStyle = ecol("--head");
           if (has && si != null && k.w >= 10) g4.fillText(String(si + 1), k.x + k.w / 2, h4 - 16);
           if (k.m % 12 === 0 || (off && k.m === d.root)) g4.fillText(noteName(k.m), k.x + k.w / 2, h4 - 4);
           g4.textAlign = "left";
@@ -1212,7 +1212,7 @@ const SMP: any = {
           // 黒鍵の番号は上寄せ(白鍵の番号と重ならないように)
           g4.font = "9px sans-serif";
           g4.textAlign = "center";
-          g4.fillStyle = "#111";
+          g4.fillStyle = ecol("--se-key-edge");
           g4.fillText(String(si + 1), k.x + k.w / 2, Math.min(k.h - 4, 11));
           g4.textAlign = "left";
         }

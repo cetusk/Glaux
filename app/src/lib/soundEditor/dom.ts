@@ -1,6 +1,7 @@
 // 音色エディタの小さな道具: 要素の組み立て・アイコン・canvas の描き方・音名。
 // 音色エディタの画面は、試作(66 版で了承)の組み立てをそのまま移すため、Svelte の部品ではなく要素を直に組み立てる
 // (canvas の絵が中心で、描き直しの頻度が高い)。外側の枠(見出し・下の帯)は SoundEditor.svelte
+import { color } from "../palette";
 import { SE_ICONS } from "./icons";
 
 type Attr = string | number | boolean | null | undefined | ((ev: any) => void);
@@ -41,6 +42,8 @@ export function setRoot(r: HTMLElement | null) {
 export const byId = <T extends HTMLElement = HTMLElement>(id: string): T | null => (root?.querySelector(`#${CSS.escape(id)}`) as T | null) ?? null;
 /** 色などの CSS の変数(音色エディタの中の値) */
 export const css = (n: string) => getComputedStyle(root ?? document.documentElement).getPropertyValue(n).trim();
+/** 音色エディタの色の名前の色(app.css の .sound-editor の配色)。`a` を渡すとその透明度にする */
+export const ecol = (n: string, a?: number) => color(n, a, root ?? document.documentElement);
 
 /** canvas を表示の大きさ × 画素比に合わせて、描く前の 2D の入れ物を返す */
 export function ctx2d(c: HTMLCanvasElement): { g: CanvasRenderingContext2D; w: number; h: number } {
@@ -65,7 +68,7 @@ export function ctx2d(c: HTMLCanvasElement): { g: CanvasRenderingContext2D; w: n
 }
 
 /** 素材(音声)の波形を描く。x は -1〜1 の配列 */
-export function drawAudio(g: CanvasRenderingContext2D, x: ArrayLike<number>, w: number, top: number, bot: number, color = "#7fd3cc") {
+export function drawAudio(g: CanvasRenderingContext2D, x: ArrayLike<number>, w: number, top: number, bot: number, color = ecol("--se-wave")) {
   const mid = (top + bot) / 2,
     amp = (bot - top) / 2 - 4;
   g.strokeStyle = color;
@@ -90,7 +93,7 @@ export function drawAudio(g: CanvasRenderingContext2D, x: ArrayLike<number>, w: 
 export function timeRuler(g: CanvasRenderingContext2D, x0: number, x1: number, y: number, len: number, secLabel = " 秒") {
   const steps = [0.05, 0.1, 0.25, 0.5, 1, 2, 5];
   const step = steps.find((st) => ((x1 - x0) / len) * st >= 46) ?? 5;
-  g.strokeStyle = "#3a3a3a";
+  g.strokeStyle = ecol("--se-bar-off");
   g.fillStyle = css("--faint");
   g.font = "9.5px sans-serif";
   g.lineWidth = 1;
@@ -121,7 +124,7 @@ export function stripe(g: CanvasRenderingContext2D, color: string): CanvasPatter
   c.width = c.height = 4;
   const p = c.getContext("2d");
   if (!p) return color;
-  p.fillStyle = "#16201f";
+  p.fillStyle = ecol("--se-wave-bg");
   p.fillRect(0, 0, 4, 4);
   p.strokeStyle = color;
   p.lineWidth = 1.6;
@@ -160,11 +163,11 @@ export function axisRow(g: CanvasRenderingContext2D, items: [string, number][], 
 }
 
 /** 名札(黒い下地に色の字)。描いた札の箱 [左, 上, 右, 下] を返す(ほかの札を避けるのに使う) */
-export function tag(g: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, color = "#fff"): [number, number, number, number] {
+export function tag(g: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, color = ecol("--white")): [number, number, number, number] {
   g.font = "11px sans-serif";
   const tw = g.measureText(text).width,
     lx = clamp(x, 2, w - tw - 8);
-  g.fillStyle = "rgba(0,0,0,0.78)";
+  g.fillStyle = ecol("--black", 0.78);
   g.fillRect(lx - 3, y - 11, tw + 6, 15);
   g.fillStyle = color;
   g.fillText(text, lx, y);

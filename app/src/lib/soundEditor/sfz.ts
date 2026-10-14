@@ -6,7 +6,7 @@ import * as api from "../api";
 import { tr } from "../i18n.svelte";
 import { instrumentPickerStore } from "../selection.svelte";
 import { draw as drawAll, playNotes, register, setSel, type Data, type Loaded } from "./core.svelte";
-import { byId, clamp, css, ctx2d, drawAudio, el, noteName, timeRuler } from "./dom";
+import { byId, clamp, css, ctx2d, drawAudio, el, noteName, timeRuler, ecol } from "./dom";
 import { canEdit, cur, editHead, knob, knobLabel, legendRow, pane, pushHist, rerender, saveBox, shelfList, shown, specBox, state, toolSeg, ui } from "./parts";
 
 // ---- ドラムの標準の並び(GM)で、鍵盤 → 何の物・どこを叩くか。SFZ の割り当てからキットの絵を組み立てる手がかり ----
@@ -692,19 +692,19 @@ const SFZ: any = {
       };
       if (p.kind === "perc") {
         outline(0);
-        g.fillStyle = on ? "rgba(37,189,177,0.6)" : "#2a2f36";
+        g.fillStyle = on ? ecol("--accent", 0.6) : ecol("--se-pad");
         g.fill();
-        g.strokeStyle = "#5a6470";
+        g.strokeStyle = ecol("--se-pad-edge");
         g.lineWidth = 1.5;
         g.stroke();
       } else if (p.kind === "kick") {
         outline(0);
-        g.fillStyle = on ? "rgba(37,189,177,0.5)" : "#3a3530";
+        g.fillStyle = on ? ecol("--accent", 0.5) : ecol("--se-wood-dark");
         g.fill();
-        g.strokeStyle = "#7a5a3a";
+        g.strokeStyle = ecol("--se-wood");
         g.lineWidth = 3;
         g.stroke();
-        g.strokeStyle = "rgba(255,255,255,0.12)";
+        g.strokeStyle = ecol("--white", 0.12);
         g.lineWidth = 1;
         [-0.5, 0, 0.5].forEach((f) => {
           g.beginPath();
@@ -714,31 +714,31 @@ const SFZ: any = {
         });
       } else if (cym) {
         outline(0);
-        g.fillStyle = on ? "rgba(37,189,177,0.55)" : p.id === "china" ? "rgba(214,150,90,0.38)" : "rgba(232,196,106,0.32)";
+        g.fillStyle = on ? ecol("--accent", 0.55) : p.id === "china" ? ecol("--se-wood-light", 0.38) : ecol("--new", 0.32);
         g.fill();
-        g.strokeStyle = "rgba(232,196,106,0.8)";
+        g.strokeStyle = ecol("--new", 0.8);
         g.lineWidth = 1.2;
         g.stroke();
-        g.strokeStyle = "rgba(232,196,106,0.35)";
+        g.strokeStyle = ecol("--new", 0.35);
         [0.7, 0.45].forEach((f) => {
           g.beginPath();
           g.ellipse(G.x, G.y, G.rx * f, G.ry * f, 0, 0, Math.PI * 2);
           g.stroke();
         });
-        g.fillStyle = "rgba(232,196,106,0.6)";
+        g.fillStyle = ecol("--new", 0.6);
         g.beginPath();
         g.ellipse(G.x, G.y, G.rx * 0.16, G.ry * 0.16, 0, 0, Math.PI * 2);
         g.fill();
       } else {
         outline(0);
-        g.fillStyle = "#2b2b2b";
+        g.fillStyle = ecol("--se-drum-dark");
         g.fill();
-        g.strokeStyle = "#6a6a6a";
+        g.strokeStyle = ecol("--se-metal");
         g.lineWidth = 3;
         g.stroke();
         g.beginPath();
         g.ellipse(G.x, G.y, G.rx * 0.84, G.ry * 0.84, 0, 0, Math.PI * 2);
-        g.fillStyle = on ? "rgba(37,189,177,0.55)" : "rgba(216,210,196,0.22)";
+        g.fillStyle = on ? ecol("--accent", 0.55) : ecol("--se-head-skin", 0.22);
         g.fill();
       }
       if (hov) {
@@ -748,7 +748,7 @@ const SFZ: any = {
         g.stroke();
       }
       if (sel) {
-        g.strokeStyle = "#fff";
+        g.strokeStyle = ecol("--white");
         g.lineWidth = 2.5;
         outline(5);
         g.stroke();
@@ -810,11 +810,11 @@ const SFZ: any = {
         }
         placed.push(box);
         hits.push({ id: p.id, box });
-        g.fillStyle = "rgba(0,0,0,0.72)";
+        g.fillStyle = ecol("--black", 0.72);
         g.beginPath();
         g.roundRect(box[0], box[1], box[2] - box[0], box[3] - box[1], 3);
         g.fill();
-        g.fillStyle = p.id === selPart?.id ? "#fff" : css("--text");
+        g.fillStyle = p.id === selPart?.id ? ecol("--white") : css("--text");
         g.fillText(name, box[0] + 3, box[3] - 3);
       });
     SFZ._labelHits = hits;
@@ -846,10 +846,10 @@ const SFZ: any = {
     const mapped = new Set(SFZ.info(d)?.keys.map((k: any) => k.key) ?? []);
     K.forEach((k: any) => {
       const has = mapped.has(k.m);
-      g.fillStyle = k.black ? (has ? "#2f4a48" : "#161616") : has ? "#cfe9e6" : "#6a6a66";
-      if (d.playing === k.m) g.fillStyle = "#25bdb1";
+      g.fillStyle = k.black ? (has ? ecol("--se-teal-dark") : ecol("--se-key-black")) : has ? ecol("--se-teal-light") : ecol("--se-metal-warm");
+      if (d.playing === k.m) g.fillStyle = ecol("--accent");
       g.fillRect(k.x + 0.5, top, k.w - 1, k.h - (k.black ? 0 : 1));
-      g.strokeStyle = "#111";
+      g.strokeStyle = ecol("--se-key-edge");
       g.lineWidth = 1;
       g.strokeRect(k.x + 0.5, top + 0.5, k.w - 1, k.h - 1);
       if (SFZ.edited(d, k.m)) {
@@ -859,7 +859,7 @@ const SFZ: any = {
         g.fill();
       }
       if (key === k.m) {
-        g.strokeStyle = "#fff";
+        g.strokeStyle = ecol("--white");
         g.lineWidth = 2;
         g.strokeRect(k.x + 1.5, top + 1.5, k.w - 3, k.h - 3);
       }
@@ -871,7 +871,7 @@ const SFZ: any = {
       if (!k.black && k.m % 12 === 0 && k.w >= 14) {
         g.font = "9px sans-serif";
         g.textAlign = "center";
-        g.fillStyle = "#222";
+        g.fillStyle = ecol("--head");
         g.fillText(noteName(k.m), k.x + k.w / 2, top + kh - 3);
         g.textAlign = "left";
       }
@@ -928,7 +928,7 @@ const SFZ: any = {
       } else {
         g2.save();
         g2.translate(4, 0);
-        drawAudio(g2, wv.peaks, w2 - 8, 6, h2 - 30, "rgba(127,211,204,0.25)");
+        drawAudio(g2, wv.peaks, w2 - 8, 6, h2 - 30, ecol("--se-wave", 0.25));
         const gain = Math.pow(10, P.vol / 20) * (gainAt(ev, P.vt) / Math.max(gainAt(ev, 100), 1e-3)),
           n = wv.peaks.length / 2,
           cut = P.len / 100,
@@ -939,7 +939,7 @@ const SFZ: any = {
           const f = t >= cut ? 0 : t > cut - tail ? Math.pow(1e-5, (t - (cut - tail)) / tail) : 1;
           return clamp(v * gain * f, -1, 1);
         });
-        drawAudio(g2, y2, w2 - 8, 6, h2 - 30, "rgb(37,189,177)");
+        drawAudio(g2, y2, w2 - 8, 6, h2 - 30, ecol("--accent"));
         g2.restore();
         timeRuler(g2, 4, w2 - 4, h2 - 15, wv.seconds, tr(" 秒", " s"));
         const rr = li >= 0 ? layers[li].rr : 1;
@@ -960,7 +960,7 @@ const SFZ: any = {
         y1 = h4 - 14,
         xs = (v: number) => x0 + (v / 127) * (x1 - x0),
         ys = (a: number) => y1 - a * (y1 - y0);
-      g4.strokeStyle = "#262626";
+      g4.strokeStyle = ecol("--grid");
       g4.fillStyle = css("--faint");
       g4.font = "9px sans-serif";
       [0, 0.5, 1].forEach((a) => {
@@ -976,7 +976,7 @@ const SFZ: any = {
         for (let v = 1; v <= 127; v += 2) (v === 1 ? g4.moveTo : g4.lineTo).call(g4, xs(v), ys(gainAt(v, vt)));
       };
       g4.setLineDash([3, 3]);
-      g4.strokeStyle = "rgba(230,230,230,0.45)";
+      g4.strokeStyle = ecol("--text", 0.45);
       line(100);
       g4.stroke();
       g4.setLineDash([]);
@@ -985,7 +985,7 @@ const SFZ: any = {
       line(P.vt);
       g4.stroke();
       g4.lineWidth = 1;
-      g4.fillStyle = "#fff";
+      g4.fillStyle = ecol("--white");
       g4.beginPath();
       g4.arc(xs(ev), ys(gainAt(ev, P.vt)), 3.5, 0, Math.PI * 2);
       g4.fill();
@@ -1015,7 +1015,7 @@ const SFZ: any = {
       const xs = (v: number) => 6 + (v / 127) * (w3 - 12);
       layers.forEach((l, i) => {
         const on = ev >= l.vel_lo && ev <= l.vel_hi;
-        g3.fillStyle = on ? "rgba(37,189,177,0.6)" : "rgba(37,189,177,0.18)";
+        g3.fillStyle = on ? ecol("--accent", 0.6) : ecol("--accent", 0.18);
         g3.fillRect(xs(l.vel_lo - 1) + 1, 4, xs(l.vel_hi) - xs(l.vel_lo - 1) - 2, h3 - 20);
         g3.fillStyle = css("--text");
         g3.font = "10px sans-serif";
@@ -1023,7 +1023,7 @@ const SFZ: any = {
         if (xs(l.vel_hi) - xs(l.vel_lo - 1) > 22) g3.fillText(lab, xs(l.vel_lo - 1) + 4, 16);
       });
       const vx = xs(ev);
-      g3.fillStyle = "#fff";
+      g3.fillStyle = ecol("--white");
       g3.fillRect(vx - 1, 2, 2, h3 - 16);
       g3.fillStyle = css("--faint");
       g3.font = "9px sans-serif";

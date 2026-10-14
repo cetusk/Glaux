@@ -225,7 +225,7 @@
   }
 
   .fade-shade polygon {
-    fill: rgba(0, 0, 0, 0.4);
+    fill: var(--shade-40);
   }
 
   .fade-h {
@@ -235,8 +235,8 @@
     height: 9px;
     margin-left: -1px;
     border-radius: 2px;
-    background: rgba(255, 255, 255, 0.85);
-    border: 1px solid rgba(0, 0, 0, 0.45);
+    background: var(--light-85);
+    border: 1px solid var(--shade-45);
     cursor: ew-resize;
     z-index: 3;
     opacity: 0;
@@ -257,8 +257,8 @@
     font-size: 10px;
     line-height: 13px;
     white-space: nowrap;
-    color: #fff;
-    background: rgba(0, 0, 0, 0.5);
+    color: var(--white);
+    background: var(--shade-50);
     cursor: ns-resize;
     z-index: 3;
     opacity: 0;
@@ -292,9 +292,9 @@
     line-height: 1;
     padding: 2px 3px;
     border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    background: rgba(0, 0, 0, 0.35);
-    color: #fff;
+    border: 1px solid var(--light-35);
+    background: var(--shade-35);
+    color: var(--white);
     cursor: pointer;
   }
 </style>

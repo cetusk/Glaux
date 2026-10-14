@@ -54,7 +54,7 @@
   });
 
   const kindLabel = (p: api.FxPresetInfo) => (p.kind === "clap" ? (p.plugin_id?.split(".").pop() ?? "CLAP") : (fxKindName(p.kind) ?? p.kind));
-  const colorOf = (p: api.FxPresetInfo) => FX_COLORS[p.kind] ?? "#777";
+  const colorOf = (p: api.FxPresetInfo) => FX_COLORS[p.kind] ?? "var(--fx-default)";
 
   async function add(p: api.FxPresetInfo, parked: boolean) {
     try {
@@ -241,7 +241,7 @@
 </div>
 
 {#if fxDrag.preset}
-  <div class="float" style="left:{fxDrag.x + 10}px;top:{fxDrag.y + 10}px;--nc:{FX_COLORS[fxDrag.preset.kind] ?? '#777'}">
+  <div class="float" style="left:{fxDrag.x + 10}px;top:{fxDrag.y + 10}px;--nc:{FX_COLORS[fxDrag.preset.kind] ?? 'var(--fx-default)'}">
     <Icon name="archive" size={13} />{fxDrag.preset.name}
   </div>
 {/if}
@@ -283,7 +283,7 @@
     gap: 6px;
     padding: 12px 6px;
     border-radius: var(--r-md);
-    background: rgba(10, 30, 28, 0.92);
+    background: var(--drop-msg-bg);
     color: var(--accent);
     font-size: var(--fs-sm);
     text-align: center;

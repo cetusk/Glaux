@@ -3,42 +3,44 @@ import type { IconName } from "./icons";
 import type { EffectView, FxLink, ProjectEffect } from "./types";
 import { tr } from "./i18n.svelte";
 
-/** 種類ごとの色(カードの帯・列の印) */
-export const FX_COLORS: Record<string, string> = {
-  eq: "#4f8fdd",
-  compressor: "#9aa3ad",
-  distortion: "#e07a2e",
-  amp: "#e05555",
-  reverb: "#a47ae0",
-  delay: "#3fbf9f",
-  chorus: "#38a9d6",
-  tape: "#c08a55",
-  multiband: "#7f9cc0",
-  transient: "#d0739a",
-  limiter: "#d9534f",
-  width: "#5fb3c9",
-  dynamic_eq: "#6f86e8",
-  convolution: "#8f6fd6",
-  resonance: "#c9a86a",
-  virtual_bass: "#b86a4c",
-  clipper: "#e0913a",
-  bitcrush: "#c47b3a",
-  tremolo: "#4fb0a0",
-  phaser: "#5aa0d8",
-  flanger: "#6f8fe0",
-  trance_gate: "#d6a33a",
-  auto_filter: "#7a9f4f",
-  volume_shaper: "#c9b04a",
-  eq8: "#5f9be6",
-  saturation: "#d9822b",
-  deesser: "#8fa6c9",
-  gate: "#8c96a3",
-  pitch_shift: "#b48be0",
-  harmonizer: "#c495d8",
-  pitch_correct: "#9b7fe0",
-  sidechain: "#caa43a",
-  clap: "#b07ce8",
-};
+/** 種類ごとの色(カードの帯・列の印)。値は app.css の --fx-<種類> */
+export const FX_COLORS: Record<string, string> = Object.fromEntries(
+  [
+    "eq",
+    "compressor",
+    "distortion",
+    "amp",
+    "reverb",
+    "delay",
+    "chorus",
+    "tape",
+    "multiband",
+    "transient",
+    "limiter",
+    "width",
+    "dynamic_eq",
+    "convolution",
+    "resonance",
+    "virtual_bass",
+    "clipper",
+    "bitcrush",
+    "tremolo",
+    "phaser",
+    "flanger",
+    "trance_gate",
+    "auto_filter",
+    "volume_shaper",
+    "eq8",
+    "saturation",
+    "deesser",
+    "gate",
+    "pitch_shift",
+    "harmonizer",
+    "pitch_correct",
+    "sidechain",
+    "clap",
+  ].map((k) => [k, `var(--fx-${k})`]),
+);
 
 /** 種類の日本語名 */
 export const FX_KIND_JA: Record<string, string> = {
@@ -204,7 +206,7 @@ export function fxKind(e: EffectView | ProjectEffect): string {
 }
 
 export function fxColor(e: EffectView | ProjectEffect): string {
-  return FX_COLORS[fxKind(e)] ?? "#777";
+  return FX_COLORS[fxKind(e)] ?? "var(--fx-default)";
 }
 
 export function fxIcon(e: EffectView | ProjectEffect): IconName {

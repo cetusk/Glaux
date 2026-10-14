@@ -4,6 +4,7 @@
   import AllTracksItems from "./AllTracksItems.svelte";
   import Icon from "./Icon.svelte";
   import TimelineMenu from "./TimelineMenu.svelte";
+  import { TRACK_COLORS } from "./palette";
   import type { Project } from "./types";
   import type { AllAction } from "./trackActions";
   import { tr } from "./i18n.svelte";
@@ -46,7 +47,6 @@
     deleteCount?: number;
   } = $props();
 
-  const TRACK_COLORS = ["#25bdb1", "#5da2e8", "#b07ce8", "#e87ca8", "#e8a07c", "#e8d27c", "#7cc47c", null];
 
   const menuTrack = $derived(project.tracks[index]);
 </script>

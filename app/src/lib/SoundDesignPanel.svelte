@@ -1295,13 +1295,13 @@
   .letter.m-on {
     background: var(--mute);
     border-color: var(--mute);
-    color: #1a1a1a;
+    color: var(--text-on-color);
   }
 
   .letter.s-on {
     background: var(--solo);
     border-color: var(--solo);
-    color: #1a1a1a;
+    color: var(--text-on-color);
   }
 
   .sd-error {
@@ -1513,7 +1513,7 @@
     position: relative;
     z-index: 2;
     border-color: var(--accent-dim);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 8px 20px var(--shade-50);
   }
 
   .fx.sliding {

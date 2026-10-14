@@ -75,7 +75,7 @@
   .fretboard {
     flex-shrink: 0;
     padding: 6px 12px 8px;
-    background: color-mix(in srgb, var(--bg-panel) 70%, #3a2a1a 30%);
+    background: color-mix(in srgb, var(--bg-panel) 70%, var(--fret-wood-tint) 30%);
     border-bottom: 1px solid var(--border);
     user-select: none;
   }
@@ -116,10 +116,10 @@
     height: 19px;
     padding: 0;
     margin: 0;
-    background: linear-gradient(#5a4632, #4c3a28);
+    background: linear-gradient(var(--fret-wood-1), var(--fret-wood-2));
     border: none;
     border-radius: 0;
-    border-right: 2px solid #8a8a92; /* フレットワイヤー */
+    border-right: 2px solid var(--fret-wire); /* フレットワイヤー */
     cursor: pointer;
   }
 
@@ -131,13 +131,13 @@
     right: 0;
     top: 50%;
     height: 1.5px;
-    background: linear-gradient(#d8d4c8, #9a968c);
+    background: linear-gradient(var(--fret-inlay-1), var(--fret-inlay-2));
     pointer-events: none;
   }
 
   .fret.nut {
-    background: #2a2118;
-    border-right: 4px solid #d8d4c8; /* ナット */
+    background: var(--fret-nut-bg);
+    border-right: 4px solid var(--fret-nut); /* ナット */
   }
 
   .fret:hover {

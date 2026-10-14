@@ -7,6 +7,7 @@
   import { accentRgb, MAX_CANVAS_PX } from "./pianoRollOps";
   import { settings } from "./settings.svelte";
   import type { MidiClip, Note } from "./types";
+  import { color } from "./palette";
 
   let {
     clip,
@@ -65,15 +66,15 @@
     const g = c.getContext("2d")!;
     g.setTransform(scale, 0, 0, scale, -win.x * scale, 0);
     g.clearRect(0, 0, contentW, VEL_H);
-    g.fillStyle = "#1b1b1b";
+    g.fillStyle = color("--roll-row-black");
     g.fillRect(0, 0, contentW, VEL_H);
     // 目安線(25 / 50 / 75 / 100%)
-    g.fillStyle = "#2a2a2a";
+    g.fillStyle = color("--roll-snap-line");
     for (const f of [0.25, 0.5, 0.75, 1]) {
       g.fillRect(0, Math.round(VEL_PAD + (1 - f) * (VEL_H - VEL_PAD * 2)), contentW, 1);
     }
     // 小節線
-    g.fillStyle = "#333333";
+    g.fillStyle = color("--roll-beat-line");
     for (const b of songBars) {
       g.fillRect((b.tick - currentClip.start) * pxPerTick, 0, 1, VEL_H);
     }
@@ -82,7 +83,7 @@
       const { x, w } = velBarRect(n);
       const bh = (v / 127) * (VEL_H - VEL_PAD * 2);
       const isSel = selected.has(n.id);
-      g.fillStyle = isSel ? `rgba(${accentRgb()}, 0.95)` : "rgba(94, 156, 224, 0.9)";
+      g.fillStyle = isSel ? `rgba(${accentRgb()}, 0.95)` : color("--note", 0.9);
       g.fillRect(x, VEL_H - VEL_PAD - bh, w, bh);
       // 頭に丸(掴む場所の目印)
       g.beginPath();

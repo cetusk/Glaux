@@ -8,6 +8,7 @@
   import { tr } from "./i18n.svelte";
   import { pollTransport, transportStore } from "./transport.svelte";
   import type { MonitorMode, SpeakerSim } from "./types";
+  import { color } from "./palette";
 
   const MODES: { id: MonitorMode; label: string; title: string }[] = $derived([
     { id: "stereo", label: tr("ステレオ", "Stereo"), title: tr("そのまま聴く", "Listen as is") },
@@ -112,7 +113,7 @@
     const bw = SIZE / n;
     const y = (v: number) => SPEC_H * (1 - Math.max(0, Math.min(1, (v + 60) / 60)));
     // 目盛り(-12 / -24 / -36 / -48 dB)
-    g.strokeStyle = "rgba(255,255,255,0.06)";
+    g.strokeStyle = color("--white", 0.06);
     for (const v of [-12, -24, -36, -48]) {
       g.beginPath();
       g.moveTo(0, y(v));
@@ -123,9 +124,9 @@
     for (let i = 0; i < n; i++) {
       const v = db[i] + TILT * Math.log2(bands[i] / 1000);
       hold[i] = Math.max(v, hold[i] - 10 * dt);
-      g.fillStyle = "rgba(37,189,177,0.6)";
+      g.fillStyle = color("--mon-trace", 0.6);
       g.fillRect(i * bw + 0.5, y(v), bw - 1, SPEC_H - y(v));
-      g.fillStyle = "rgba(255,255,255,0.5)";
+      g.fillStyle = color("--white", 0.5);
       g.fillRect(i * bw + 0.5, y(hold[i]), bw - 1, 1);
     }
   }
@@ -158,7 +159,7 @@
       g.clearRect(0, 0, SIZE, SIZE);
       const h = SIZE / 2;
       // 目盛り: 縦 = 中央(モノ)、斜め = 左だけ・右だけ、横 = 逆相
-      g.strokeStyle = "rgba(255,255,255,0.08)";
+      g.strokeStyle = color("--white", 0.08);
       g.lineWidth = 1;
       g.beginPath();
       g.moveTo(h, 4);
@@ -170,7 +171,7 @@
       g.moveTo(h + (h - 8) * 0.7, h - (h - 8) * 0.7);
       g.lineTo(h - (h - 8) * 0.7, h + (h - 8) * 0.7);
       g.stroke();
-      g.fillStyle = "rgba(255,255,255,0.25)";
+      g.fillStyle = color("--white", 0.25);
       g.font = "9px sans-serif";
       g.fillText("L", 6, 12);
       g.fillText("R", SIZE - 12, 12);
@@ -180,7 +181,7 @@
       const want = 1 / Math.max(peak, 0.02);
       scale = want < scale ? want : scale + (want - scale) * 0.1;
       const k = (h - 6) * scale * Math.SQRT1_2;
-      g.fillStyle = "rgba(37,189,177,0.55)";
+      g.fillStyle = color("--mon-trace", 0.55);
       for (const [l, r] of pts) {
         const x = h + (r - l) * k;
         const y = h - (l + r) * k;
@@ -364,7 +365,7 @@
   canvas {
     display: block;
     margin: 4px auto 2px;
-    background: #0e1a24;
+    background: var(--mon-bg);
     border-radius: 6px;
     flex-shrink: 0;
   }
@@ -377,7 +378,7 @@
     position: relative;
     height: 6px;
     border-radius: 3px;
-    background: linear-gradient(90deg, #6b2b2b 0%, #4a3a22 50%, #1f4a46 100%);
+    background: linear-gradient(90deg, var(--mon-corr-bad) 0%, var(--mon-corr-mid) 50%, var(--mon-corr-good) 100%);
   }
 
   .mid {
@@ -386,7 +387,7 @@
     top: -1px;
     bottom: -1px;
     width: 1px;
-    background: rgba(255, 255, 255, 0.3);
+    background: var(--light-30);
   }
 
   .mark {
@@ -404,11 +405,11 @@
   }
 
   .mark.warn {
-    background: #e0b050;
+    background: var(--caution);
   }
 
   .mark.bad {
-    background: #e06060;
+    background: var(--bad);
   }
 
   .scale {
@@ -425,11 +426,11 @@
   }
 
   .scale b.warn {
-    color: #e0b050;
+    color: var(--caution);
   }
 
   .scale b.bad {
-    color: #e06060;
+    color: var(--bad);
   }
 
   .loud {
@@ -439,7 +440,7 @@
     align-items: baseline;
     margin: 2px 6px 4px;
     padding: 4px 6px;
-    background: #0e1a24;
+    background: var(--mon-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 10px;
@@ -460,7 +461,7 @@
   }
 
   .loud b.bad {
-    color: #e06060;
+    color: var(--bad);
   }
 
   canvas.spec {
@@ -488,9 +489,9 @@
   }
 
   .spk .btn.alt {
-    background: #5a4520;
-    border-color: #e0b050;
-    color: #ffe2a8;
+    background: var(--caution-bg);
+    border-color: var(--caution);
+    color: var(--caution-text);
   }
 
   .modes .btn,
@@ -501,9 +502,9 @@
   }
 
   .modes .btn.alt {
-    background: #5a4520;
-    border-color: #e0b050;
-    color: #ffe2a8;
+    background: var(--caution-bg);
+    border-color: var(--caution);
+    color: var(--caution-text);
   }
 
   .xf {

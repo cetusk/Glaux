@@ -282,7 +282,7 @@
         {@const shown = dragSend[`${t.id}>${b.id}`] ?? snd?.level_db}
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
         <div class="send" role="presentation" class:none={!snd} onclick={(e) => e.stopPropagation()}>
-          <span class="sn" title={b.name}><i style="background:{b.color ?? '#888'}"></i>{b.name}</span>
+          <span class="sn" title={b.name}><i style="background:{b.color ?? 'var(--send-default)'}"></i>{b.name}</span>
           <span class="sv">{shown !== undefined ? shown.toFixed(0) : "—"}</span>
           <input
             type="range"
@@ -356,7 +356,7 @@
     <div class="all-col"><AllTracksBar {project} vertical onDeleteAll={() => removeTracks(project.tracks)} /></div>
     {#each plain as t (t.id)}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-      <div class="strip" role="group" aria-label={t.name} class:sel={selected === t.id} style="--c:{t.color ?? '#555'}" onclick={() => select(t.id)}>
+      <div class="strip" role="group" aria-label={t.name} class:sel={selected === t.id} style="--c:{t.color ?? 'var(--track-default)'}" onclick={() => select(t.id)}>
         <div class="s-top"></div>
         <div class="s-name">
           <Icon name={KIND_ICON[t.kind]} size={13} /><span title={t.name}>{t.name}</span>
@@ -401,7 +401,7 @@
     {#if buses.length > 0}<span class="grp-label">{tr("バス", "Buses")}</span>{/if}
     {#each buses as t (t.id)}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-      <div class="strip bus" role="group" aria-label={t.name} class:sel={selected === t.id} style="--c:{t.color ?? '#e8a07c'}" onclick={() => select(t.id)}>
+      <div class="strip bus" role="group" aria-label={t.name} class:sel={selected === t.id} style="--c:{t.color ?? 'var(--bus-default)'}" onclick={() => select(t.id)}>
         <div class="s-top"></div>
         <div class="s-name">
           <Icon name="merge" size={13} /><span title={t.name}>{t.name}</span>
@@ -449,7 +449,7 @@
 
   <div class="detail">
     <div class="d-head">
-      <span class="dot" style="background:{selected === MASTER_FOCUS_ID ? 'var(--accent)' : (selectedTrack?.color ?? '#777')}"></span>
+      <span class="dot" style="background:{selected === MASTER_FOCUS_ID ? 'var(--accent)' : (selectedTrack?.color ?? 'var(--dot-default)')}"></span>
       {#if isEn()}<span class="dim">Effects on</span>{/if}<b>{selected === MASTER_FOCUS_ID ? tr("マスター", "Master") : selectedTrack?.name}</b>{#if !isEn()}<span class="dim">のエフェクト</span>{/if}
       <span class="sp"></span>
       <span class="dim hint"
@@ -539,11 +539,11 @@
   }
 
   .strip.bus {
-    background: #1d1a17;
+    background: var(--strip-bus-bg);
   }
 
   .strip.master {
-    background: #16201f;
+    background: var(--strip-master-bg);
   }
 
   .s-top {
@@ -582,7 +582,7 @@
   }
 
   .s-name .load.heavy {
-    color: #e0b050;
+    color: var(--caution);
   }
 
   .s-dev {
@@ -664,7 +664,7 @@
   }
 
   .slot.bypass .led {
-    background: #444;
+    background: var(--led-off);
   }
 
   .slot.bypass .nm {
@@ -802,13 +802,13 @@
   .letter.m-on {
     background: var(--mute);
     border-color: var(--mute);
-    color: #1a1a1a;
+    color: var(--text-on-color);
   }
 
   .letter.s-on {
     background: var(--solo);
     border-color: var(--solo);
-    color: #1a1a1a;
+    color: var(--text-on-color);
   }
 
   .fader-wrap {
@@ -827,7 +827,7 @@
     height: auto;
     min-height: 0;
     margin: 0;
-    accent-color: #d8d8d8;
+    accent-color: var(--fader-thumb);
   }
 
   /* 色は枠の全高に対して固定し、鳴っていない上の部分を <i> で覆う */

@@ -101,13 +101,13 @@
   .letter.m-on {
     background: var(--mute);
     border-color: var(--mute);
-    color: #1a1a1a;
+    color: var(--text-on-color);
   }
 
   .letter.s-on {
     background: var(--solo);
     border-color: var(--solo);
-    color: #1a1a1a;
+    color: var(--text-on-color);
   }
 
   .danger:not(:disabled):hover {

@@ -1492,9 +1492,9 @@
   }
 
   .monitor-on {
-    background: #5a4520;
-    border-color: #e0b050;
-    color: #ffe2a8;
+    background: var(--caution-bg);
+    border-color: var(--caution);
+    color: var(--caution-text);
   }
 
   @keyframes rec-blink {

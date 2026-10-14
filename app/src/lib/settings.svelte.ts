@@ -1,4 +1,5 @@
 // DAW の設定(フロントエンドのみで完結するもの)。localStorage に保存。
+import { clearColorCache } from "./palette";
 
 export interface AccentPreset {
   name: string;
@@ -287,6 +288,8 @@ export function applyTheme() {
   const root = document.documentElement;
   root.style.setProperty("--accent", preset.accent);
   root.style.setProperty("--accent-dim", preset.dim);
+  // 絵(canvas)を描くコードが覚えた色を読み直させる
+  clearColorCache();
 }
 
 // ---- AI 完了通知(WebAudio の短いチャイム。プラグイン不要) ----

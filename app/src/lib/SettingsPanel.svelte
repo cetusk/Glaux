@@ -939,7 +939,7 @@
     position: fixed;
     inset: 0;
     z-index: 29;
-    background: rgba(0, 0, 0, 0.45);
+    background: var(--shade-45);
   }
 
   .panel {

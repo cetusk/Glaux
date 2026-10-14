@@ -45,9 +45,221 @@
   --r-md: 6px;
   --r-lg: 10px;
   --shadow-pop: 0 8px 28px rgba(0, 0, 0, 0.55);
+
+  /* ---- ピアノロール・強さのレーン(絵は palette.ts の color() で読む) ---- */
+  --roll-row-white: #232323;
+  --roll-row-black: #1b1b1b;
+  /* 曲のキーのスケールに無い音の行に重ねる影 */
+  --roll-row-off-scale: rgba(0, 0, 0, 0.28);
+  --roll-c-line: #3a3a3a;
+  --roll-bar-line: #4a4a4a;
+  /* 変拍子のまとまりの頭の拍線 / ふつうの拍線 / スナップの線 */
+  --roll-beat-head: #404040;
+  --roll-beat-line: #333333;
+  --roll-snap-line: #2a2a2a;
+  /* ほかのパートの音(薄く重ねる) */
+  --roll-other-fill: rgba(210, 210, 210, 0.13);
+  --roll-other-edge: rgba(210, 210, 210, 0.22);
+  /* 鍵盤(左端)の行の線と黒鍵の影 */
+  --roll-key-line: rgba(255, 255, 255, 0.04);
+  --roll-key-black: rgba(0, 0, 0, 0.35);
+  /* 音符(強さで透明度を変える)・縁・選んだ音の縁・固定の音の縁と鍵・奏法の文字・音程の曲線 */
+  --note: #5e9ce0;
+  --note-edge: rgba(255, 255, 255, 0.25);
+  --note-sel-edge: #ffd98a;
+  --note-locked: #ffffff;
+  --note-mark: rgba(12, 12, 12, 0.85);
+  --note-curve: #ff78c8;
+  /* 挿入カーソル */
+  --insert-cursor: #5da2e8;
+  /* ぶつかりの印(直したほうがよい / 気にしなくてよいことが多い) */
+  --clash-warn: #ff5252;
+  --clash-info: #ffaa3c;
+  /* オートメーションのレーンの基準線・未使用の破線 */
+  --auto-zero: rgba(255, 255, 255, 0.12);
+  --auto-unused: rgba(255, 255, 255, 0.35);
+
+  /* ---- 白・黒の重ね(影・薄い線。絵では color("--white", 透明度) / color("--black", 透明度)) ---- */
+  --white: #ffffff;
+  --black: #000000;
+  --light-25: rgba(255, 255, 255, 0.25);
+  --light-30: rgba(255, 255, 255, 0.3);
+  --light-35: rgba(255, 255, 255, 0.35);
+  --light-85: rgba(255, 255, 255, 0.85);
+  --shade-35: rgba(0, 0, 0, 0.35);
+  --shade-40: rgba(0, 0, 0, 0.4);
+  --shade-45: rgba(0, 0, 0, 0.45);
+  --shade-50: rgba(0, 0, 0, 0.5);
+  --shade-55: rgba(0, 0, 0, 0.55);
+  --shade-60: rgba(0, 0, 0, 0.6);
+  --shade-70: rgba(0, 0, 0, 0.7);
+  /* 色の付いたボタン(ミュート・ソロが点いたときなど)の上の文字 */
+  --text-on-color: #1a1a1a;
+  /* 色を付けていないときの既定の色(トラック・バス・送り先・設計のパート・エフェクト) */
+  --track-default: #555555;
+  --bus-default: #e8a07c;
+  --send-default: #888888;
+  --part-default: #9a9a9a;
+  --fx-default: #777777;
+  /* 止める・危険な操作のボタンの縁 */
+  --danger-edge: #8a4a54;
+
+  /* ---- エフェクトの種類の色(カードの帯・列の印。fx.ts の FX_COLORS) ---- */
+  --fx-eq: #4f8fdd;
+  --fx-compressor: #9aa3ad;
+  --fx-distortion: #e07a2e;
+  --fx-amp: #e05555;
+  --fx-reverb: #a47ae0;
+  --fx-delay: #3fbf9f;
+  --fx-chorus: #38a9d6;
+  --fx-tape: #c08a55;
+  --fx-multiband: #7f9cc0;
+  --fx-transient: #d0739a;
+  --fx-limiter: #d9534f;
+  --fx-width: #5fb3c9;
+  --fx-dynamic_eq: #6f86e8;
+  --fx-convolution: #8f6fd6;
+  --fx-resonance: #c9a86a;
+  --fx-virtual_bass: #b86a4c;
+  --fx-clipper: #e0913a;
+  --fx-bitcrush: #c47b3a;
+  --fx-tremolo: #4fb0a0;
+  --fx-phaser: #5aa0d8;
+  --fx-flanger: #6f8fe0;
+  --fx-trance_gate: #d6a33a;
+  --fx-auto_filter: #7a9f4f;
+  --fx-volume_shaper: #c9b04a;
+  --fx-eq8: #5f9be6;
+  --fx-saturation: #d9822b;
+  --fx-deesser: #8fa6c9;
+  --fx-gate: #8c96a3;
+  --fx-pitch_shift: #b48be0;
+  --fx-harmonizer: #c495d8;
+  --fx-pitch_correct: #9b7fe0;
+  --fx-sidechain: #caa43a;
+  --fx-clap: #b07ce8;
+  /* ミキサーで選んだ列の印(色の無いトラック) */
+  --dot-default: #777777;
+
+  /* ---- タイムライン ---- */
+  /* レーンの小節線(全レーン共通の背景の絵) */
+  --lane-bar-line: rgba(255, 255, 255, 0.05);
+
+  /* ---- ミキサー ---- */
+  --strip-bus-bg: #1d1a17;
+  --strip-master-bg: #16201f;
+  /* 素通しにしたエフェクトのランプ・フェーダーのつまみ */
+  --led-off: #444444;
+  --fader-thumb: #d8d8d8;
+  /* プリセットを置く所の知らせ */
+  --drop-msg-bg: rgba(10, 30, 28, 0.92);
+
+  /* ---- 指板(ピアノロールのギター・ベース) ---- */
+  --fret-wood-tint: #3a2a1a;
+  --fret-wood-1: #5a4632;
+  --fret-wood-2: #4c3a28;
+  --fret-wire: #8a8a92;
+  --fret-inlay-1: #d8d4c8;
+  --fret-inlay-2: #9a968c;
+  --fret-nut-bg: #2a2118;
+  --fret-nut: #d8d4c8;
+
+  /* ---- 注意の色(モニターの聴き方を切り替えている印・メーターの注意 / 危険) ---- */
+  --caution: #e0b050;
+  --caution-bg: #5a4520;
+  --caution-text: #ffe2a8;
+  --bad: #e06060;
+
+  /* ---- エフェクトのつなぎ図(ノード表示) ---- */
+  --node-bg: #121212;
+  --node-dot: #2b2b2b;
+  --node-part-bg: #181818;
+  --node-io-bg: #1a1a1a;
+  --wire: #6b6b6b;
+  --wire-hover: #cfcfcf;
+  --wire-flow: #a0a0a0;
+  --wire-dead: #4a4a4a;
+  --port-bg: #2a2a2a;
+  --port-edge: #9a9a9a;
+  --port-target: #117733;
+  /* 鳴らない(線から外した)カード */
+  --card-mute-edge: #5a5a5a;
+  --card-mute-bar: #1f1f1f;
+  --card-mute-port-edge: #555555;
+  --card-mute-port-bg: #151515;
+  /* 置き場所の影・吹き出し(つなげる / つなげない) */
+  --drop-ghost: rgba(10, 30, 28, 0.6);
+  --node-tip-bg: rgba(10, 30, 28, 0.94);
+  --node-tip-bad-bg: rgba(40, 14, 18, 0.94);
+
+  /* ---- モニターの列(スペクトル・位相の絵・ラウドネス) ---- */
+  --mon-bg: #0e1a24;
+  /* 絵の線と点(テーマカラーに関係なく青緑) */
+  --mon-trace: #25bdb1;
+  /* 位相の相関のバー(逆相 → 中 → 同相) */
+  --mon-corr-bad: #6b2b2b;
+  --mon-corr-mid: #4a3a22;
+  --mon-corr-good: #1f4a46;
+
+  /* ---- ドラムセットの絵(ピアノロールのドラム) ---- */
+  /* シンバルの金色(中心 → 縁)・重なりの影・ベル・溝 */
+  --kit-cymbal-1: #e5c46e;
+  --kit-cymbal-2: #c9a44e;
+  --kit-cymbal-3: #8a6d2f;
+  --kit-cymbal-under: #7a6128;
+  --kit-cymbal-bell: #e8cd85;
+  --kit-groove-outer: rgba(60, 42, 8, 0.25);
+  --kit-groove-inner: rgba(60, 42, 8, 0.2);
+  --kit-bell-edge: rgba(60, 42, 8, 0.35);
+  /* 太鼓のヘッド(中心 → 縁)・キックの面・胴・縁取り・スネアの響き線・ラグ */
+  --kit-head-1: #f2ede4;
+  --kit-head-2: #ddd6c9;
+  --kit-head-3: #bcb4a5;
+  --kit-kick-1: #555555;
+  --kit-kick-2: #2a2a2a;
+  --kit-shell: #484848;
+  --kit-rim: #1b1b1b;
+  --kit-snare-wire: rgba(120, 110, 95, 0.55);
+  --kit-lug: #8c8c8c;
+  /* 電子パッド(クラップ) */
+  --kit-pad: #383838;
+  --kit-pad-edge: #555555;
+  --kit-pad-face: #4a4a4a;
+  /* 明るい面の上の文字 */
+  --kit-text-dark: #2e2818;
   font-family: "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
   font-size: 14px;
   color-scheme: dark;
+}
+
+/* ---- 音色エディタの配色(.sound-editor の中だけ。テーマカラーに関係なく青緑。試作 66 版のまま) ---- */
+.sound-editor {
+  --bg: #141414; --panel: #1c1c1c; --head: #222; --raised: #282828; --inset: #0f0f0f;
+  --border: #303030; --border-strong: #464646; --grid: #262626;
+  --text: #e6e6e6; --dim: #8e8e8e; --faint: #5c5c5c;
+  --accent: #25bdb1; --accent-dim: #1b7f78; --accent-soft: rgba(37, 189, 177, 0.16);
+  --ai: #b07ce8; --ai-soft: rgba(176, 124, 232, 0.16); --human: #5da2e8; --warn: #d9926c; --new: #e8c46a;
+  /* 倍音・周波数の棒(ふつう / 鳴らない / マウスを置いた)・波形の線と背景・線(細い / 薄い) */
+  --se-bar: #4a8f8a; --se-bar-off: #3a3a3a; --se-bar-hover: #6fb3ad;
+  --se-wave: #7fd3cc; --se-wave-bg: #16201f;
+  --se-line: #333333; --se-line-dim: #2a2a2a;
+  /* 鍵盤(エディタの下の鍵盤 / 絵の中の鍵盤)・鳴らさない部品 */
+  --se-kbd-white: #d9d9d9; --se-kbd-black: #1e1e1e;
+  --se-key-white: #d8d6d0; --se-key-black: #161616; --se-key-dim: #30302e; --se-key-edge: #111111;
+  --se-mute: #555555; --se-gray: #a0a0a0; --se-light-gray: #c8c8c8;
+  /* 青緑のボタンの上の文字・パッド */
+  --se-on-accent: #062523;
+  --se-pad: #2a2f36; --se-pad-edge: #5a6470;
+  /* 見本・加工の段・区分に使う色 */
+  --se-gold-light: #f0c878; --se-violet: #9a7ae8; --se-green: #8fd16a; --se-orange: #e88a4a; --se-magenta: #d4508a;
+  --se-blue-dim: #5d8fc8; --se-amber: #e8a33a; --se-coral: #e88a6a; --se-pink: #d46ab8;
+  /* サンプラーの区分(8 色を順に使う) */
+  --se-slice-1: #e8c46a; --se-slice-2: #e88a6a; --se-slice-3: #d46ab8; --se-slice-4: #9a7ae8;
+  --se-slice-5: #6a9ae8; --se-slice-6: #8ad46a; --se-slice-7: #e8a33a; --se-slice-8: #c8d46a;
+  /* SFZ の楽器の絵(木・太鼓・金属・ヘッド) */
+  --se-wood-dark: #3a3530; --se-wood: #7a5a3a; --se-wood-light: #d6965a;
+  --se-drum-dark: #2b2b2b; --se-metal: #6a6a6a; --se-metal-warm: #6a6a66; --se-head-skin: #d8d2c4;
+  --se-teal-dark: #2f4a48; --se-teal-light: #cfe9e6;
 }
 
 * {

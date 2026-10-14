@@ -1390,7 +1390,7 @@
   }
 
   .edit-err {
-    color: var(--danger, #e5534b);
+    color: var(--danger);
   }
 
   .msg.user.dropped {
@@ -1725,7 +1725,7 @@
   }
 
   .stop {
-    border-color: #8a4a54;
+    border-color: var(--danger-edge);
     color: var(--danger-text);
   }
 </style>

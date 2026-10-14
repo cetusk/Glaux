@@ -1,6 +1,7 @@
 // ピアノロールの定数と純粋な計算(奏法の表・スナップの選択肢・音名・ピッチカーブの間引き・描画の色)
 import { tr } from "./i18n.svelte";
 import type { Articulation } from "./types";
+import { color } from "./palette";
 
 /// ブラウザの Canvas 実サイズ上限(超えると描画が黙って全部消える)。
 /// 長いクリップ × ズームで超えうるので、上限内に収まる解像度スケールに落とす
@@ -174,7 +175,7 @@ export function simplifyCurve(pts: { t: number; c: number }[]): { tick: number; 
 
 /// AI の編集の色(CSS の --ai)
 export function aiColor(): string {
-  return getComputedStyle(document.documentElement).getPropertyValue("--ai").trim() || "#b07ce8";
+  return color("--ai");
 }
 
 /// テーマのアクセント色("r, g, b")。選択・再生ヘッド・ホバーをタイムラインと同じ色で描く

@@ -2,6 +2,7 @@
   // 音声クリップの波形プレビュー(Canvas)。ピークはバックエンドで計算し、
   // クリップ ID + 範囲 + 幅ごとにキャッシュする(スクロールや再描画で再取得しない)。
   import * as api from "./api";
+  import { color } from "./palette";
 
   let {
     clipId,
@@ -57,7 +58,7 @@
         g.clearRect(0, 0, pw, ph);
         // ここから下は CSS px で描く
         g.setTransform(pw / w, 0, 0, ph / H, 0, 0);
-        g.fillStyle = "rgba(255,255,255,0.8)";
+        g.fillStyle = color("--white", 0.8);
         const mid = H / 2;
         const sx = w / peaks.length;
         for (let i = 0; i < peaks.length; i++) {

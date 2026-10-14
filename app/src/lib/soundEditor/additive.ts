@@ -3,7 +3,7 @@
 // 下 = 倍音のバランス(棒を描く・山を動かす・描いた山を消す。手で描いた山はエンジンの partial_edits)と音量の変わり方、右 = つまみ
 import { tr } from "../i18n.svelte";
 import { draw as drawAll, register, setSel, type Data, type Loaded } from "./core.svelte";
-import { axisRow, byId, clamp, css, ctx2d, el, envAt, hzRange, midiHz, noteName, stripe, tag } from "./dom";
+import { axisRow, byId, clamp, css, ctx2d, el, envAt, hzRange, midiHz, noteName, stripe, tag, ecol } from "./dom";
 import {
   canEdit,
   cur,
@@ -297,7 +297,7 @@ const ADD: any = {
       ...(ADD.hiDiffers(d)
         ? ([
             [
-              el("span", { class: "sw", style: "background: transparent; border: 1.5px solid rgba(240,200,120,0.95)" }),
+              el("span", { class: "sw", style: "background: transparent; border: 1.5px solid color-mix(in srgb, var(--se-gold-light) 95%, transparent)" }),
               tr(`${noteName(R.hi)} のときの強さ`, `Level at ${noteName(R.hi)}`),
               tr("音域の高い端で弾いたときの棒の高さ(輪郭)。周波数で決まる山は、高い鍵盤ほど下の番目へ移る", "Bar heights at the top of the range (outline). Frequency-fixed hills move to lower partials on higher keys"),
             ],
@@ -360,7 +360,7 @@ const ADD: any = {
         const am = ADD.base({ ...p, previewNote: 60 });
         const bw = w / 32;
         am.slice(0, 32).forEach((a: number, i: number) => {
-          g.fillStyle = "#7fd3cc";
+          g.fillStyle = ecol("--se-wave");
           g.fillRect(i * bw, h - a * (h - 2), Math.max(1, bw - 1), a * (h - 2));
         });
       });
@@ -675,11 +675,11 @@ const ADD: any = {
         for (let k = 1; k <= K; k++) {
           const hill = mode === "hz" ? Math.exp(-0.5 * Math.pow(Math.log2((k * f0) / 2000) / 0.2, 2)) : Math.exp(-0.5 * Math.pow((k - kc) / 1.1, 2));
           const a = Math.min(1, (1 / Math.pow(k, 0.7)) * (1 + 2.2 * hill));
-          g.fillStyle = hill > 0.3 ? css("--human") : "#4a8f8a";
+          g.fillStyle = hill > 0.3 ? css("--human") : ecol("--se-bar");
           g.fillRect(4 + (k - 1) * bw + 1, y0 + hh - a * hh, bw - 2, a * hh);
         }
         const x = 4 + (kc - 0.5) * bw;
-        g.strokeStyle = "#fff";
+        g.strokeStyle = ecol("--white");
         g.setLineDash([3, 3]);
         g.beginPath();
         g.moveTo(x, y0);
@@ -760,7 +760,7 @@ const ADD: any = {
     let lastDbY = -1e9;
     [0, -6, -12, -24].forEach((db) => {
       const y = G.bot - Math.pow(10, db / 20) * (G.bot - G.top);
-      g.strokeStyle = "#262626";
+      g.strokeStyle = ecol("--grid");
       g.beginPath();
       g.moveTo(G.x0, y);
       g.lineTo(w, y);
@@ -776,16 +776,16 @@ const ADD: any = {
       const audible = ADD.freqOf(d, k, f0) < 20000,
         audibleHi = ADD.freqOf(d, k, f1) < 20000;
       if ((tool === "harm" || tool === "erase") && k < d.partials) {
-        g.fillStyle = ADD.hoverK === k ? "rgba(93,162,232,0.22)" : "rgba(255,255,255,0.035)";
+        g.fillStyle = ADD.hoverK === k ? ecol("--human", 0.22) : ecol("--white", 0.035);
         g.fillRect(x + 1, G.top, bwid, G.bot - G.top);
       }
       if (k >= d.partials) continue;
       const edited = ADD.isEdited(d, k),
         v = Math.min(am[k], 1);
-      g.fillStyle = !audible ? "#3a3a3a" : edited ? css("--human") : ADD.hoverK === k ? "#6fb3ad" : !audibleHi ? stripe(g, "#4a8f8a") : "#4a8f8a";
+      g.fillStyle = !audible ? ecol("--se-bar-off") : edited ? css("--human") : ADD.hoverK === k ? ecol("--se-bar-hover") : !audibleHi ? stripe(g, ecol("--se-bar")) : ecol("--se-bar");
       g.fillRect(x + 1, G.bot - v * (G.bot - G.top), bwid, v * (G.bot - G.top));
       if (edited) {
-        g.strokeStyle = "rgba(230,230,230,0.6)";
+        g.strokeStyle = ecol("--text", 0.6);
         g.setLineDash([2, 2]);
         g.strokeRect(x + 1.5, G.bot - base[k] * (G.bot - G.top), bwid - 1, base[k] * (G.bot - G.top));
         g.setLineDash([]);
@@ -794,7 +794,7 @@ const ADD: any = {
     // 音域の高い端で弾いたときの強さ(輪郭の棒)
     if (ADD.hiDiffers(d)) {
       const amHi = ADD.amps({ ...d, previewNote: Rg.hi });
-      g.strokeStyle = "rgba(240,200,120,0.95)";
+      g.strokeStyle = ecol("--se-gold-light", 0.95);
       g.lineWidth = 1.2;
       for (let k = 0; k < d.partials; k++) {
         if (ADD.freqOf(d, k, f1) >= 20000) continue;
@@ -811,9 +811,9 @@ const ADD: any = {
       const pad = d.drawTo === "idx" ? 0.5 : 0.5 + (hh.hi + 1) * (Math.pow(2, 2 / 12) - 1);
       const a = G.x0 + clamp((hh.lo + 0.5 - pad) * G.bw, 0, P_MAX * G.bw),
         b2 = G.x0 + clamp((hh.hi + 0.5 + pad) * G.bw, 0, P_MAX * G.bw);
-      g.fillStyle = ADD.hoverHill === hh.g || ADD.hillDrag?.g === hh.g ? "rgba(93,162,232,0.2)" : "rgba(93,162,232,0.09)";
+      g.fillStyle = ADD.hoverHill === hh.g || ADD.hillDrag?.g === hh.g ? ecol("--human", 0.2) : ecol("--human", 0.09);
       g.fillRect(a, G.top, Math.max(2, b2 - a), G.bot - G.top);
-      g.fillStyle = "rgba(93,162,232,0.9)";
+      g.fillStyle = ecol("--human", 0.9);
       g.fillRect(a, G.bot + 1, Math.max(2, b2 - a), 3);
     });
     // 鳴らさない所(倍音の数より右)と「ここまで鳴らす」の線
@@ -823,7 +823,7 @@ const ADD: any = {
       g.beginPath();
       g.rect(lx, G.top, w - lx, G.bot - G.top);
       g.clip();
-      g.strokeStyle = "rgba(255,255,255,0.06)";
+      g.strokeStyle = ecol("--white", 0.06);
       for (let i = lx - h; i < w; i += 8) {
         g.beginPath();
         g.moveTo(i, G.bot);
@@ -844,7 +844,7 @@ const ADD: any = {
     if (grabbable) {
       g.fillStyle = hot ? css("--human") : css("--accent");
       g.fillRect(lx - 5, G.top - 10, 10, 14);
-      g.fillStyle = "#062523";
+      g.fillStyle = ecol("--se-on-accent");
       g.fillRect(lx - 2, G.top - 7, 1, 8);
       g.fillRect(lx + 1, G.top - 7, 1, 8);
     }
@@ -878,10 +878,10 @@ const ADD: any = {
       const xOfHz = (hz: number) => G.x0 + clamp((ADD.kOfHz(d, hz, f0) + 0.5) * G.bw, 0, P_MAX * G.bw);
       const xl = xOfHz(200),
         xr = xOfHz(5000);
-      g.fillStyle = "rgba(0,0,0,0.45)";
+      g.fillStyle = ecol("--black", 0.45);
       g.fillRect(G.x0, G.top, xl - G.x0, G.bot - G.top);
       g.fillRect(xr, G.top, G.x0 + P_MAX * G.bw - xr, G.bot - G.top);
-      g.strokeStyle = "rgba(93,162,232,0.7)";
+      g.strokeStyle = ecol("--human", 0.7);
       g.setLineDash([3, 3]);
       [xl, xr].forEach((x) => {
         if (x > G.x0 + 1 && x < G.x0 + P_MAX * G.bw - 1) {
@@ -902,14 +902,14 @@ const ADD: any = {
       let lastFy = 1e9;
       [0, 6, 12, 18, 24].forEach((db) => {
         const y = ADD.formantY({ fDb: db }, G);
-        g.strokeStyle = "rgba(93,162,232,0.5)";
+        g.strokeStyle = ecol("--human", 0.5);
         g.beginPath();
         g.moveTo(w - 6, y);
         g.lineTo(w - 1, y);
         g.stroke();
         if (lastFy - y < 11) return;
         lastFy = y;
-        g.fillStyle = "rgba(93,162,232,0.85)";
+        g.fillStyle = ecol("--human", 0.85);
         g.fillText(`+${db}`, w - 8, y + 3);
       });
       g.fillText(tr("◆ の強さ(dB)", "◆ strength (dB)"), w - 4, G.top - 6);
@@ -929,7 +929,7 @@ const ADD: any = {
       fkHi = ADD.formantK({ ...d, previewNote: rangeOf(d).hi });
     if (fkHi < fk - 0.5) {
       const fxh = ADD.formantX({ ...d, previewNote: rangeOf(d).hi }, G);
-      g.strokeStyle = "rgba(37,189,177,0.45)";
+      g.strokeStyle = ecol("--accent", 0.45);
       g.lineWidth = 2;
       g.beginPath();
       g.moveTo(fxh, fy);
@@ -971,7 +971,7 @@ const ADD: any = {
         g.lineTo(hh.x, hh.y + 8);
         g.lineTo(hh.x - 8, hh.y);
         g.closePath();
-        g.fillStyle = on ? css("--human") : "#141414";
+        g.fillStyle = on ? css("--human") : ecol("--bg");
         g.fill();
         g.strokeStyle = css("--human");
         g.lineWidth = 2;
@@ -1029,12 +1029,12 @@ const ADD: any = {
         for (let x = 0; x < cols; x++) {
           const v = lev(k, (x / cols) * T);
           const al = clamp((20 * Math.log10(Math.max(v, 1e-5)) + 48) / 48, 0, 1);
-          g2.fillStyle = ADD.isEdited(d, k) ? `rgba(93,162,232,${al})` : `rgba(37,189,177,${al})`;
+          g2.fillStyle = ADD.isEdited(d, k) ? ecol("--human", al) : ecol("--accent", al);
           g2.fillRect((x / cols) * w2, h2 - 12 - ((k + 1) / P) * (h2 - 12), w2 / cols + 1, (h2 - 12) / P + 1);
         }
       if (ADD.hoverK != null && ADD.hoverK < P) {
         const k = ADD.hoverK;
-        g2.strokeStyle = "#fff";
+        g2.strokeStyle = ecol("--white");
         g2.lineWidth = 1.5;
         g2.strokeRect(1, h2 - 12 - ((k + 1) / P) * (h2 - 12), w2 - 2, Math.max(2, (h2 - 12) / P));
       }
@@ -1060,12 +1060,12 @@ const ADD: any = {
       const K = Math.min(d.partials, 24),
         xs = (r: number) => 8 + (r / (K + 1)) * (w3 - 16);
       for (let k = 1; k <= K; k++) {
-        g3.fillStyle = "#333";
+        g3.fillStyle = ecol("--se-line");
         g3.fillRect(xs(k), 6, 1, h3 - 22);
         const r = ADD.freqOf(d, k - 1, 1);
         const x = xs(r);
         if (x < w3) {
-          g3.fillStyle = ADD.hoverK === k - 1 ? "#fff" : ADD.isEdited(d, k - 1) ? css("--human") : css("--accent");
+          g3.fillStyle = ADD.hoverK === k - 1 ? ecol("--white") : ADD.isEdited(d, k - 1) ? css("--human") : css("--accent");
           const a = Math.min(am[k - 1], 1);
           g3.fillRect(x - 1, 6 + (1 - a) * (h3 - 22), 2.5, a * (h3 - 22));
         }

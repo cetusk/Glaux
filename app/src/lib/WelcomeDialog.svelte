@@ -226,7 +226,7 @@
     position: fixed;
     inset: 0;
     z-index: 39;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--shade-50);
   }
 
   .panel {
@@ -242,7 +242,7 @@
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 10px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 12px 40px var(--shade-50);
     padding: 16px 18px;
     display: flex;
     flex-direction: column;

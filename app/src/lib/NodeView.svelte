@@ -986,8 +986,8 @@
     user-select: none;
     outline: none;
     background:
-      radial-gradient(circle at 1px 1px, #2b2b2b 1px, transparent 1.4px) 0 0 / 20px 20px,
-      #121212;
+      radial-gradient(circle at 1px 1px, var(--node-dot) 1px, transparent 1.4px) 0 0 / 20px 20px,
+      var(--node-bg);
   }
 
   .space {
@@ -1024,25 +1024,25 @@
   }
 
   .hit:hover + .wire {
-    stroke: #cfcfcf;
+    stroke: var(--wire-hover);
   }
 
   .wire {
     fill: none;
-    stroke: #6b6b6b;
+    stroke: var(--wire);
     stroke-width: 2.5;
     pointer-events: none;
   }
 
   .wire.flow {
-    stroke: #a0a0a0;
+    stroke: var(--wire-flow);
     stroke-dasharray: 2 10;
     stroke-linecap: round;
     animation: flow 1.2s linear infinite;
   }
 
   .wire.dead {
-    stroke: #4a4a4a;
+    stroke: var(--wire-dead);
     stroke-dasharray: 5 5;
   }
 
@@ -1080,7 +1080,7 @@
     font-size: 10px;
     font-family: var(--mono);
     color: var(--text-dim);
-    background: #181818;
+    background: var(--node-part-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0 5px;
@@ -1093,7 +1093,7 @@
     padding: 8px;
     border-radius: 10px;
     border: 1px solid var(--border-strong);
-    background: #1a1a1a;
+    background: var(--node-io-bg);
     text-align: center;
     color: var(--text-dim);
     display: flex;
@@ -1111,7 +1111,7 @@
     cursor: grabbing;
     z-index: 4;
     border-color: var(--accent);
-    box-shadow: 0 16px 30px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 16px 30px var(--shade-60);
   }
 
   .io.target {
@@ -1138,8 +1138,8 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: #2a2a2a;
-    border: 2px solid #9a9a9a;
+    background: var(--port-bg);
+    border: 2px solid var(--port-edge);
     cursor: crosshair;
     z-index: 3;
   }
@@ -1148,7 +1148,7 @@
   .card.target .port.in,
   .io.target .port.in {
     border-color: var(--accent);
-    background: #173;
+    background: var(--port-target);
   }
 
   .io .port {
@@ -1169,7 +1169,7 @@
     top: 13px;
     font-size: 9px;
     color: var(--text-dim);
-    background: #181818;
+    background: var(--node-part-bg);
     border: 1px solid var(--border);
     border-radius: 7px;
     padding: 0 3px;
@@ -1198,7 +1198,7 @@
     border-radius: 10px;
     background: var(--bg-panel);
     border: 1px solid var(--border-strong);
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 6px 16px var(--shade-45);
     cursor: grab;
     z-index: 1;
   }
@@ -1207,7 +1207,7 @@
     z-index: 4;
     cursor: grabbing;
     border-color: var(--accent);
-    box-shadow: 0 20px 36px rgba(0, 0, 0, 0.7);
+    box-shadow: 0 20px 36px var(--shade-70);
   }
 
   .card.target,
@@ -1215,23 +1215,23 @@
     border-color: var(--accent);
     box-shadow:
       0 0 0 1px var(--accent),
-      0 6px 16px rgba(0, 0, 0, 0.45);
+      0 6px 16px var(--shade-45);
   }
 
   .card.mute {
     border-style: dashed;
-    border-color: #5a5a5a;
-    background: #181818;
+    border-color: var(--card-mute-edge);
+    background: var(--node-part-bg);
     box-shadow: none;
   }
 
   .card.mute .bar {
-    background: #1f1f1f;
+    background: var(--card-mute-bar);
   }
 
   .card.mute .port {
-    border-color: #555;
-    background: #151515;
+    border-color: var(--card-mute-port-edge);
+    background: var(--card-mute-port-bg);
   }
 
   .card.mute .body {
@@ -1389,7 +1389,7 @@
     padding: 0 8px;
     border: 1px dashed var(--accent);
     border-radius: 10px;
-    background: rgba(10, 30, 28, 0.6);
+    background: var(--drop-ghost);
     color: var(--accent);
     font-size: var(--fs-xs);
     text-align: center;
@@ -1401,7 +1401,7 @@
     z-index: 7;
     font-size: var(--fs-xs);
     color: var(--accent);
-    background: rgba(10, 30, 28, 0.94);
+    background: var(--node-tip-bg);
     border: 1px solid var(--accent-dim);
     border-radius: var(--r-md);
     padding: 3px 8px;
@@ -1412,7 +1412,7 @@
   .tip.bad {
     color: var(--danger-text);
     border-color: var(--danger);
-    background: rgba(40, 14, 18, 0.94);
+    background: var(--node-tip-bad-bg);
   }
 
   .pop {

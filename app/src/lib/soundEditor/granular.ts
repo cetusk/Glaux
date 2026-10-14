@@ -6,7 +6,7 @@ import * as api from "../api";
 import { tr } from "../i18n.svelte";
 import { showToast } from "../toast.svelte";
 import { draw as drawAll, register, type Data, type Loaded } from "./core.svelte";
-import { axisRow, byId, clamp, css, ctx2d, drawAudio, el, ico, noteName, seeded, tag, timeRuler } from "./dom";
+import { axisRow, byId, clamp, css, ctx2d, drawAudio, el, ico, noteName, seeded, tag, timeRuler, ecol } from "./dom";
 import {
   canEdit,
   cur,
@@ -594,7 +594,7 @@ const GRAN: any = {
           g.fillText(tr("素材(白い線の所から切り出す)", "Source (cut from the white line)"), 4, 11);
           drawAudio(g, x, w, 16, 58);
           const px = w * 0.42;
-          g.fillStyle = "#fff";
+          g.fillStyle = ecol("--white");
           g.fillRect(px - 1, 14, 2, 46);
           g.fillStyle = css("--dim");
           g.fillText(tr("粒を少しずつずらして重ねる", "Grains overlap, slightly offset"), 4, 80);
@@ -602,7 +602,7 @@ const GRAN: any = {
             const gx = 10 + i * ((w - 80) / 6),
               gy = 90 + (i % 3) * 18,
               gw = 60;
-            g.strokeStyle = "rgba(232,196,106,0.9)";
+            g.strokeStyle = ecol("--new", 0.9);
             g.beginPath();
             g.moveTo(gx, gy + 16);
             for (let k = 0; k <= 30; k++) {
@@ -610,7 +610,7 @@ const GRAN: any = {
               g.lineTo(gx + t * gw, gy + 16 - Math.sin(Math.PI * t) ** 2 * 14);
             }
             g.stroke();
-            g.strokeStyle = "rgba(232,196,106,0.35)";
+            g.strokeStyle = ecol("--new", 0.35);
             g.beginPath();
             g.moveTo(px, 60);
             g.lineTo(gx + gw / 2, gy);
@@ -645,7 +645,7 @@ const GRAN: any = {
     g.beginPath();
     g.rect(pos - spr, top, spr * 2, bot - top);
     g.clip();
-    g.strokeStyle = "rgba(37,189,177,0.28)";
+    g.strokeStyle = ecol("--accent", 0.28);
     for (let i = -h; i < w; i += 7) {
       g.beginPath();
       g.moveTo(i, bot);
@@ -668,11 +668,11 @@ const GRAN: any = {
     GRAN.grains = GRAN.grains.filter((gr: any) => now - gr.t0 < d.grain);
     GRAN.grains.forEach((gr: any) => {
       const age = (now - gr.t0) / d.grain;
-      g.fillStyle = `rgba(232,196,106,${0.85 * (1 - age)})`;
+      g.fillStyle = ecol("--new", 0.85 * (1 - age));
       g.fillRect(gr.x * w, (top + bot) / 2 - 18 + gr.y, Math.max(3, (d.grain / 1000 / len) * w), 36);
     });
     // 位置(白)と進む速さの矢印。矢印の先 = 押さえて 1 秒後の位置(時間の物差しと同じ尺度)
-    g.fillStyle = "#fff";
+    g.fillStyle = ecol("--white");
     g.fillRect(pos - 1, 4, 2, h - 8);
     if (d.scan) {
       const ex = pos + (d.scan / len) * w;
@@ -710,7 +710,7 @@ const GRAN: any = {
         gx = x0 + (d.grain / 500) * xw,
         t2 = 14,
         b2 = h2 - 16;
-      g2.strokeStyle = "#262626";
+      g2.strokeStyle = ecol("--grid");
       g2.fillStyle = css("--faint");
       g2.font = "10px sans-serif";
       [0, 100, 200, 300, 400, 500].forEach((ms) => {
@@ -723,15 +723,15 @@ const GRAN: any = {
       axisRow(g2, [0, 100, 200, 300, 400, 500].map((ms) => [ms === 500 ? "500 ms" : `${ms}`, x0 + (ms / 500) * xw - 6] as [string, number]), h2 - 3, w2);
       if (GRAN.hoverOne != null) {
         const xx = x0 + GRAN.hoverOne * xw;
-        g2.strokeStyle = "rgba(255,255,255,0.25)";
+        g2.strokeStyle = ecol("--white", 0.25);
         g2.beginPath();
         g2.moveTo(xx, t2);
         g2.lineTo(xx, b2);
         g2.stroke();
       }
       // 形(音量の付け方)の山
-      g2.fillStyle = "rgba(37,189,177,0.10)";
-      g2.strokeStyle = "rgba(37,189,177,0.55)";
+      g2.fillStyle = ecol("--accent", 0.10);
+      g2.strokeStyle = ecol("--accent", 0.55);
       g2.lineWidth = 1.5;
       g2.setLineDash([4, 3]);
       g2.beginPath();
@@ -751,7 +751,7 @@ const GRAN: any = {
       if (sl && sl.length) {
         const peak = Math.max(1e-3, ...sl.map((v: number) => Math.abs(v)));
         const sAt = (ms: number) => clamp(sl[clamp(Math.floor((ms / 500) * sl.length), 0, sl.length - 1)] / peak, -1, 1);
-        ([["rgba(160,160,160,0.45)", false], [css("--accent"), true]] as [string, boolean][]).forEach(([col, shaped]) => {
+        ([[ecol("--se-gray", 0.45), false], [css("--accent"), true]] as [string, boolean][]).forEach(([col, shaped]) => {
           g2.strokeStyle = col;
           g2.lineWidth = shaped ? 1.6 : 1;
           g2.beginPath();
@@ -788,7 +788,7 @@ const GRAN: any = {
     if (cc) {
       const { g: g3, w: w3, h: h3 } = ctx2d(cc);
       const G = GRAN.cloudLayout(w3, h3);
-      g3.strokeStyle = "#2a2a2a";
+      g3.strokeStyle = ecol("--se-line-dim");
       g3.beginPath();
       g3.moveTo(0, G.cy);
       g3.lineTo(w3, G.cy);
@@ -797,7 +797,7 @@ const GRAN: any = {
       g3.stroke();
       const rx = G.xOf(d.spray),
         ry = G.yOf(d.pitchRand);
-      g3.strokeStyle = "rgba(37,189,177,0.6)";
+      g3.strokeStyle = ecol("--accent", 0.6);
       g3.setLineDash([3, 3]);
       g3.strokeRect(G.cx - rx, G.cy - ry, rx * 2, ry * 2 || 1);
       g3.setLineDash([]);
@@ -805,7 +805,7 @@ const GRAN: any = {
       // 目盛り(平方根の間隔): 横 = ±100・500・2000 ms、縦 = ±1・4・12 半音
       g3.fillStyle = css("--faint");
       g3.font = "9px sans-serif";
-      g3.strokeStyle = "#3a3a3a";
+      g3.strokeStyle = ecol("--se-bar-off");
       let lastX = -1e9;
       [100, 500, 2000].forEach((ms) =>
         [-1, 1].forEach((sg) => {
@@ -843,7 +843,7 @@ const GRAN: any = {
           v = rnd() * 2 - 1;
         const px = G.cx + Math.sign(u) * G.xOf(Math.abs(u) * d.spray),
           py = G.cy - Math.sign(v) * G.yOf(Math.abs(v) * d.pitchRand);
-        g3.fillStyle = "rgba(232,196,106,0.85)";
+        g3.fillStyle = ecol("--new", 0.85);
         g3.beginPath();
         g3.arc(px, py, 2.5, 0, Math.PI * 2);
         g3.fill();
@@ -865,7 +865,7 @@ const GRAN: any = {
       g3.fillText(low, G.cx - 8 - g3.measureText(low).width, h3 - 4);
       if (GRAN.hoverCloud) {
         const [hx, hy] = GRAN.hoverCloud;
-        g3.strokeStyle = "rgba(255,255,255,0.2)";
+        g3.strokeStyle = ecol("--white", 0.2);
         g3.beginPath();
         g3.moveTo(hx, 0);
         g3.lineTo(hx, h3);
@@ -896,7 +896,7 @@ const GRAN: any = {
         cx5 = w5 / 2,
         half = w5 / 2 - 24,
         my = h5 / 2;
-      g5.strokeStyle = "#3a3a3a";
+      g5.strokeStyle = ecol("--se-bar-off");
       g5.beginPath();
       g5.moveTo(cx5 - half, my);
       g5.lineTo(cx5 + half, my);
@@ -904,11 +904,11 @@ const GRAN: any = {
       g5.lineTo(cx5, h5 - 3);
       g5.stroke();
       // 散る幅
-      g5.fillStyle = "rgba(37,189,177,0.15)";
+      g5.fillStyle = ecol("--accent", 0.15);
       g5.fillRect(cx5 - half * d.spread, 3, half * d.spread * 2, h5 - 6);
       const rp = seeded(11 + Math.round(d.density)),
         n5 = clamp(Math.round(d.density * 1.5), 6, 150);
-      g5.fillStyle = "rgba(232,196,106,0.85)";
+      g5.fillStyle = ecol("--new", 0.85);
       for (let i = 0; i < n5; i++) {
         const xx = cx5 + (rp() * 2 - 1) * d.spread * half,
           y = my + (rp() * 2 - 1) * (h5 / 2 - 5);

@@ -245,7 +245,7 @@
   });
 
   // パートの色(タイムラインで付けた色。無ければ既定の灰色)
-  const colorOf = (i: number) => d?.parts[i]?.color ?? "#9a9a9a";
+  const colorOf = (i: number) => d?.parts[i]?.color ?? "var(--part-default)";
   // 強いパートどうしの重なり(参考)
   const overlaps = $derived.by(() => {
     if (!d || !showOverlap) return [];

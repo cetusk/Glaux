@@ -4,7 +4,7 @@
 import * as api from "../api";
 import { tr } from "../i18n.svelte";
 import { draw as drawAll, register, setSel, type Data, type Loaded } from "./core.svelte";
-import { axisRow, byId, clamp, css, ctx2d, el, envAt, hzRange, ico, midiHz, stripe, tag } from "./dom";
+import { axisRow, byId, clamp, css, ctx2d, el, envAt, hzRange, ico, midiHz, stripe, tag, ecol } from "./dom";
 import {
   canEdit,
   cur,
@@ -570,8 +570,8 @@ const FM4: any = {
       const sel = !mini && d.sel === b.i,
         car = al.car.includes(b.i),
         hov = !mini && FM4.hoverOp === b.i;
-      g.fillStyle = sel ? "rgba(255,255,255,0.08)" : hov ? "#303030" : "#262626";
-      g.strokeStyle = sel ? "#ffffff" : car ? css("--accent") : css("--human");
+      g.fillStyle = sel ? ecol("--white", 0.08) : hov ? ecol("--border") : ecol("--grid");
+      g.strokeStyle = sel ? ecol("--white") : car ? css("--accent") : css("--human");
       g.lineWidth = sel ? 2.5 : 1;
       g.fillRect(b.x, b.y, b.w, b.h);
       g.strokeRect(b.x, b.y, b.w, b.h);
@@ -698,7 +698,7 @@ const FM4: any = {
       // 低い絵でも下の数字が入るように
       const xs = (r: number) => 8 + FM4.ratioX(r) * (w - 16),
         mid = Math.min(h / 2, h - 24);
-      g.strokeStyle = "#3a3a3a";
+      g.strokeStyle = ecol("--se-bar-off");
       g.lineWidth = 1;
       g.beginPath();
       g.moveTo(8, mid);
@@ -707,7 +707,7 @@ const FM4: any = {
       g.font = "10px sans-serif";
       for (let r = 1; r <= 16; r++) {
         const x = xs(r);
-        g.fillStyle = "#555";
+        g.fillStyle = ecol("--se-mute");
         g.fillRect(x, mid - (r % 2 ? 6 : 4), 1, r % 2 ? 12 : 8);
       }
       g.fillStyle = css("--faint");
@@ -720,7 +720,7 @@ const FM4: any = {
       );
       if (FM4.hoverR != null) {
         const x = 8 + FM4.ratioX(FM4.hoverR) * (w - 16);
-        g.strokeStyle = toolOf("ratio") === "points" ? "rgba(93,162,232,0.5)" : "rgba(255,255,255,0.18)";
+        g.strokeStyle = toolOf("ratio") === "points" ? ecol("--human", 0.5) : ecol("--white", 0.18);
         g.beginPath();
         g.moveTo(x, 6);
         g.lineTo(x, h - 6);
@@ -776,7 +776,7 @@ const FM4: any = {
         };
         // 横 = 何倍か(1〜40)。整数倍は太い棒、半整数倍(7.5 倍など)は細い棒。棒の真ん中がその倍数
         const cx = (hm: number) => (hm - 0.5) * bw;
-        g.strokeStyle = "#262626";
+        g.strokeStyle = ecol("--grid");
         g.fillStyle = css("--faint");
         g.font = "9.5px sans-serif";
         const dbY = (db: number) => h - 14 - ((db + 48) / 48) * (h - 20);
@@ -796,12 +796,12 @@ const FM4: any = {
             audibleHi = f1 * hm < 20000,
             hov = FM4.hoverH === j;
           // 音域の高い端で鳴らない倍音は縞
-          g.fillStyle = !audible ? "#3a3a3a" : hov ? "#6fb3ad" : !audibleHi ? stripe(g, whole ? "#4a8f8a" : css("--warn")) : whole ? "#4a8f8a" : css("--warn");
+          g.fillStyle = !audible ? ecol("--se-bar-off") : hov ? ecol("--se-bar-hover") : !audibleHi ? stripe(g, whole ? ecol("--se-bar") : css("--warn")) : whole ? ecol("--se-bar") : css("--warn");
           const y = yOf(a);
           g.fillRect(cx(hm) - bwid / 2, y, bwid, h - 14 - y);
           if (am0) {
             const y0 = yOf(am0[j]);
-            g.strokeStyle = "rgba(230,230,230,0.5)";
+            g.strokeStyle = ecol("--text", 0.5);
             g.setLineDash([2, 2]);
             g.strokeRect(cx(hm) - bwid / 2 + 0.5, y0, bwid - 1, h - 14 - y0);
             g.setLineDash([]);
@@ -820,7 +820,7 @@ const FM4: any = {
           lastY = ty;
           const txt = `${db} dB`,
             tw = g.measureText(txt).width;
-          g.fillStyle = "rgba(0,0,0,0.6)";
+          g.fillStyle = ecol("--black", 0.6);
           g.fillRect(1, ty - 9, tw + 4, 11);
           g.fillStyle = css("--faint");
           g.fillText(txt, 3, ty);

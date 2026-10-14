@@ -397,7 +397,7 @@
   }
 
   .game-report .warn {
-    color: var(--warn, #e0b050);
+    color: var(--warn);
   }
 
   .pick-list {
@@ -424,7 +424,7 @@
     position: fixed;
     inset: 0;
     z-index: 29;
-    background: rgba(0, 0, 0, 0.45);
+    background: var(--shade-45);
   }
 
   .panel {
@@ -439,7 +439,7 @@
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 10px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 12px 40px var(--shade-50);
     padding: 14px 16px;
     display: flex;
     flex-direction: column;

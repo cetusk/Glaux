@@ -19,7 +19,7 @@ import {
   ui,
   type Data,
 } from "./core.svelte";
-import { axisRow, byId, clamp, css, ctx2d, el, fmtS, ico, noteName, tag } from "./dom";
+import { axisRow, byId, clamp, css, ctx2d, el, fmtS, ico, noteName, tag, ecol } from "./dom";
 
 // ---- つまみ ----
 /** つまみの名前 → アイコン(何を変えるつまみか)。名前が一致しないものは付けない */
@@ -242,7 +242,7 @@ export function drawSpectrum(bands: number[], db: number[] | null) {
   }
   const fmin = 30,
     fmax = 16000;
-  g.strokeStyle = "#262626";
+  g.strokeStyle = ecol("--grid");
   g.fillStyle = css("--faint");
   g.font = "9.5px sans-serif";
   const hzX = (hz: number) => (Math.log(hz / fmin) / Math.log(fmax / fmin)) * w;
@@ -420,9 +420,9 @@ export function envPane(
     const G = geo();
     g.font = "9.5px sans-serif";
     const ruler = (xof: (t: number) => number, x0: number, x1: number, label: string) => {
-      g.fillStyle = "rgba(255,255,255,0.025)";
+      g.fillStyle = ecol("--white", 0.025);
       g.fillRect(x0, G.top, x1 - x0, G.bot - G.top);
-      g.strokeStyle = "#2a2a2a";
+      g.strokeStyle = ecol("--se-line-dim");
       g.fillStyle = css("--faint");
       const ts = [0, ...TICKS.filter((t) => t <= T)];
       ts.forEach((t) => {
@@ -439,7 +439,7 @@ export function envPane(
     };
     ruler(G.xp, 12, 12 + G.Wp, tr("押してから(秒)", "After press (s)"));
     ruler(G.xr, G.xr0, G.xr0 + G.Wr, tr("離してから", "After release"));
-    g.strokeStyle = "#262626";
+    g.strokeStyle = ecol("--grid");
     [0, 0.5, 1].forEach((v) => {
       const y = G.bot - (G.bot - G.top) * v;
       g.beginPath();
@@ -467,7 +467,7 @@ export function envPane(
     };
     path();
     g.lineTo(12, G.bot);
-    g.fillStyle = col.startsWith("#") ? col + "22" : "rgba(37,189,177,0.12)";
+    g.fillStyle = col.startsWith("#") ? col + "22" : ecol("--accent", 0.12);
     g.fill();
     path();
     g.strokeStyle = col;
@@ -478,7 +478,7 @@ export function envPane(
       G.pts.forEach(([x, y], i) => {
         g.beginPath();
         g.arc(x, y, hover === i || drag === i ? 7 : 5, 0, Math.PI * 2);
-        g.fillStyle = hover === i || drag === i ? css("--human") : "#141414";
+        g.fillStyle = hover === i || drag === i ? css("--human") : ecol("--bg");
         g.fill();
         g.strokeStyle = css("--human");
         g.lineWidth = 2;
@@ -637,7 +637,7 @@ export function filterPane(id: string, { get, set, below }: { get: () => Filter;
     if (!c.isConnected) return;
     const { g, w, h } = ctx2d(c);
     const f = get();
-    g.strokeStyle = "#262626";
+    g.strokeStyle = ecol("--grid");
     g.fillStyle = css("--faint");
     g.font = "9.5px sans-serif";
     [100, 1000, 10000].forEach((hz) => {
@@ -652,7 +652,7 @@ export function filterPane(id: string, { get, set, below }: { get: () => Filter;
     let lastY = -Infinity;
     [12, 0, -12, -24].forEach((db) => {
       const y = yOf(Math.pow(10, db / 20), h);
-      g.strokeStyle = "#262626";
+      g.strokeStyle = ecol("--grid");
       if (db === 0) g.setLineDash([2, 3]);
       g.beginPath();
       g.moveTo(0, y);
@@ -678,7 +678,7 @@ export function filterPane(id: string, { get, set, below }: { get: () => Filter;
         y = yOf(resp(f, f.cutoff), h);
       g.beginPath();
       g.arc(x, y, hover || drag ? 7 : 5, 0, Math.PI * 2);
-      g.fillStyle = hover || drag ? css("--human") : "#141414";
+      g.fillStyle = hover || drag ? css("--human") : ecol("--bg");
       g.fill();
       g.strokeStyle = css("--human");
       g.lineWidth = 2;

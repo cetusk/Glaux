@@ -7,7 +7,7 @@ import * as api from "../api";
 import { tr } from "../i18n.svelte";
 import { showToast } from "../toast.svelte";
 import { draw as drawAll, register, setSel, toast, type Data, type Loaded } from "./core.svelte";
-import { axisRow, byId, clamp, css, ctx2d, el, hzRange, ico, midiHz, noteSpan, stripe } from "./dom";
+import { axisRow, byId, clamp, css, ctx2d, el, hzRange, ico, midiHz, noteSpan, stripe, ecol } from "./dom";
 import { canEdit, cur, knob, legendRow, pitchPick, pushHist, rangeOf, rerender, rerenderWhenIdle, shown, specBox, state, ui } from "./parts";
 import { listen } from "./core.svelte";
 
@@ -262,8 +262,9 @@ const audibleHarmonics = (midi: number) => {
   return clamp(1023 >> lv, 1, HK);
 };
 /** 段の色(低い段から): 波形の線・凡例・倍音の「ここまで」の線で同じ色 */
-const WT_STEP_COLORS = ["#25bdb1", "#8fd16a", "#e8c46a", "#e88a4a", "#d4508a", "#9a7ae8"];
-const wtStepColor = (i: number) => WT_STEP_COLORS[Math.min(i, WT_STEP_COLORS.length - 1)];
+// 加工の段ごとの色(app.css の .sound-editor の配色。描くときに読む)
+const WT_STEP_COLORS = ["--accent", "--se-green", "--new", "--se-orange", "--se-magenta", "--se-violet"];
+const wtStepColor = (i: number) => ecol(WT_STEP_COLORS[Math.min(i, WT_STEP_COLORS.length - 1)]);
 /** 音域の中の段: 同じ倍音の数で鳴る鍵盤のまとまり(低い方から) */
 const wtSteps = (lo: number, hi: number) => {
   const out: { from: number; to: number; k: number }[] = [];
@@ -472,7 +473,7 @@ const WT: any = {
         const th = WT.thumb(src);
         if (!th || !c.isConnected) return;
         const { g, w, h } = ctx2d(c);
-        g.strokeStyle = "#7fd3cc";
+        g.strokeStyle = ecol("--se-wave");
         g.lineWidth = 1;
         const parts = audio ? 1 : th.length;
         for (let j = 0; j < parts; j++) {
@@ -1299,7 +1300,7 @@ const WT: any = {
           const o = wtOutPos(d, k.pos);
           return o != null && Math.abs(o - tt) < 0.5 / show;
         });
-      g.strokeStyle = near ? "#ffffff" : playing ? "#e8c46a" : edited ? css("--accent") : kind === "auto" ? `rgba(37,189,177,${0.18 + 0.3 * (1 - f)})` : `rgba(200,200,200,${0.15 + 0.5 * (1 - f)})`;
+      g.strokeStyle = near ? ecol("--white") : playing ? ecol("--new") : edited ? css("--accent") : kind === "auto" ? ecol("--accent", 0.18 + 0.3 * (1 - f)) : ecol("--se-light-gray", 0.15 + 0.5 * (1 - f));
       g.lineWidth = near || edited || playing ? 2 : 1;
       g.beginPath();
       const x = t[j];
@@ -1319,10 +1320,10 @@ const WT: any = {
         x0 = 10 + dx * f;
       const tw0 = tr("鳴っている所(LFO で動く)", "Now playing (moves with the LFO)");
       g.font = "11px sans-serif";
-      g.fillStyle = "rgba(0,0,0,0.78)";
+      g.fillStyle = ecol("--black", 0.78);
       const lw0 = g.measureText(tw0).width;
       g.fillRect(x0 - 7, y0 - 21, lw0 + 6, 15);
-      g.fillStyle = "#e8c46a";
+      g.fillStyle = ecol("--new");
       g.fillText(tw0, x0 - 4, y0 - 10);
     }
     {
@@ -1333,9 +1334,9 @@ const WT: any = {
       g.font = "11px sans-serif";
       const lw = g.measureText(label).width,
         lx = Math.min(x0 + 4, w - lw - 6);
-      g.fillStyle = "rgba(0,0,0,0.75)";
+      g.fillStyle = ecol("--black", 0.75);
       g.fillRect(lx - 3, y0 - 8, lw + 6, 16);
-      g.fillStyle = "#ffffff";
+      g.fillStyle = ecol("--white");
       g.fillText(label, lx, y0 + 4);
     }
     g.fillStyle = css("--dim");
@@ -1360,7 +1361,7 @@ const WT: any = {
     const { g, w, h } = ctx2d(c);
     const v = WT.view(d);
     const yOf = (val: number) => h / 2 - val * h * 0.45;
-    g.strokeStyle = "#2a2a2a";
+    g.strokeStyle = ecol("--se-line-dim");
     g.lineWidth = 1;
     [-1, -0.5, 0, 0.5, 1].forEach((val) => {
       g.beginPath();
@@ -1418,7 +1419,7 @@ const WT: any = {
           y = yOf(val);
         g.beginPath();
         g.arc(xx, y, WT.hoverPt === i ? 7 : 5, 0, Math.PI * 2);
-        g.fillStyle = WT.hoverPt === i ? css("--human") : "#141414";
+        g.fillStyle = WT.hoverPt === i ? css("--human") : ecol("--bg");
         g.fill();
         g.strokeStyle = css("--human");
         g.lineWidth = 2;
@@ -1459,7 +1460,7 @@ const WT: any = {
     let lastDbY = -1e9;
     [0, -6, -12, -24].forEach((db) => {
       const y = L.bot - Math.pow(10, db / 20) * (L.bot - L.top);
-      g.strokeStyle = "#262626";
+      g.strokeStyle = ecol("--grid");
       g.beginPath();
       g.moveTo(L.x0, y);
       g.lineTo(w, y);
@@ -1473,19 +1474,19 @@ const WT: any = {
       const x = L.x0 + k * L.bw;
       // 棒の置き場(空の枠)。描くときに、どの倍音に描くかが分かるように
       if (d.tool === "harm") {
-        g.fillStyle = WT.hoverK === k ? "rgba(93,162,232,0.22)" : "rgba(255,255,255,0.035)";
+        g.fillStyle = WT.hoverK === k ? ecol("--human", 0.22) : ecol("--white", 0.035);
         g.fillRect(x + 0.5, L.top, Math.max(1, L.bw - 1), L.bot - L.top);
       }
       const val = (amps[k] ?? 0) / m;
       // 間の倍音は「音域の高い鍵盤では鳴らない」で縞
-      g.fillStyle = k >= kmax ? "#3a3a3a" : WT.hoverK === k ? css("--human") : k >= kHi ? stripe(g, "#4a8f8a") : d.tool === "harm" ? "#5d8fc8" : "#4a8f8a";
+      g.fillStyle = k >= kmax ? ecol("--se-bar-off") : WT.hoverK === k ? css("--human") : k >= kHi ? stripe(g, ecol("--se-bar")) : d.tool === "harm" ? ecol("--se-blue-dim") : ecol("--se-bar");
       g.fillRect(x + 0.5, L.bot - val * (L.bot - L.top), Math.max(1, L.bw - 1), val * (L.bot - L.top));
     }
     // 聞こえる上限: 音域の中の段ごとに線(階段)。いちばん高い段より上は「範囲の中の高い鍵盤では鳴らない」帯
     const limX = (k: number) => L.x0 + k * L.bw,
       steps = wtSteps(R.lo, R.hi);
     if (kHi < kmax && kHi < HB) {
-      g.fillStyle = "rgba(232,163,58,0.08)";
+      g.fillStyle = ecol("--se-amber", 0.08);
       g.fillRect(limX(kHi), L.top, Math.min(limX(kmax), L.x0 + HB * L.bw) - limX(kHi), L.bot - L.top);
     }
     let lastTy = L.top - 2;

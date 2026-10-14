@@ -73,6 +73,7 @@
   import { flip } from "svelte/animate";
   import { deviceIcon, deviceName } from "./instruments";
   import type { Clip, Project, Track } from "./types";
+  import { color } from "./palette";
 
   let {
     project,
@@ -115,7 +116,7 @@
     const lines = barList
       .map((b) => `<rect x='${Math.round(b.tick * pxPerTick)}' width='1' height='1'/>`)
       .join("");
-    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='1' viewBox='0 0 ${w} 1' preserveAspectRatio='none' shape-rendering='crispEdges'><g fill='rgba(255,255,255,0.05)'>${lines}</g></svg>`;
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='1' viewBox='0 0 ${w} 1' preserveAspectRatio='none' shape-rendering='crispEdges'><g fill='${color("--lane-bar-line")}'>${lines}</g></svg>`;
     return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
   });
 
@@ -1901,8 +1902,8 @@
     height: 9px;
     margin-left: -4px;
     border-radius: 50%;
-    background: #ff5252;
-    border: 1px solid color-mix(in srgb, #ff5252 40%, #000);
+    background: var(--clash-warn);
+    border: 1px solid color-mix(in srgb, var(--clash-warn) 40%, var(--black));
     cursor: pointer;
     z-index: 1;
   }
@@ -2007,7 +2008,7 @@
 
   .track-block.lifted {
     z-index: 6;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 8px 24px var(--shade-55);
     opacity: 0.96;
   }
 
@@ -2027,13 +2028,13 @@
   .letter.m-on {
     background: var(--mute);
     border-color: var(--mute);
-    color: #1a1a1a;
+    color: var(--text-on-color);
   }
 
   .letter.s-on {
     background: var(--solo);
     border-color: var(--solo);
-    color: #1a1a1a;
+    color: var(--text-on-color);
   }
 
   .btn.arm.on {
@@ -2261,7 +2262,7 @@
     bottom: 6px;
     border-radius: 5px;
     overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border: 1px solid var(--light-25);
     padding: 2px 6px;
     cursor: grab;
     touch-action: none;
@@ -2302,14 +2303,14 @@
     align-items: center;
     justify-content: center;
     font-size: 11px;
-    color: #fff;
-    background: rgba(0, 0, 0, 0.45);
+    color: var(--white);
+    background: var(--shade-45);
     z-index: 4;
     pointer-events: none;
   }
 
   .lane.drop-target {
-    outline: 2px dashed var(--accent, #7aa2f7);
+    outline: 2px dashed var(--accent);
     outline-offset: -2px;
   }
 

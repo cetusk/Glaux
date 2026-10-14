@@ -3,6 +3,7 @@
   // 以前は SVG rect をノート数ぶん DOM に並べていたが、ノートが数千になると
   // 変更のたびの DOM 再構築が最大のボトルネックになるため Canvas に置き換えた。
   import type { MidiClip } from "./types";
+  import { color } from "./palette";
 
   let { clip, widthPx }: { clip: MidiClip; widthPx: number } = $props();
 
@@ -71,7 +72,7 @@
     const reps = loopLen > 0 ? Math.ceil(clip.length / loopLen) : 1;
     for (let k = 0; k < reps; k++) {
       const offset = k * loopLen;
-      g.fillStyle = k === 0 ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.45)";
+      g.fillStyle = k === 0 ? color("--white", 0.85) : color("--white", 0.45);
       for (const n of notes) {
         if (loopLen > 0 && n.pos >= loopLen) continue;
         const pos = n.pos + offset;
@@ -87,7 +88,7 @@
       }
       if (k > 0) {
         // 繰り返しの境目
-        g.fillStyle = "rgba(255,255,255,0.35)";
+        g.fillStyle = color("--white", 0.35);
         g.fillRect(offset * scaleX, 0, 1, H);
       }
     }

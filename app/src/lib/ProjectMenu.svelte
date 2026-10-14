@@ -501,7 +501,7 @@
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 8px;
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 8px 28px var(--shade-50);
     padding: 10px;
     display: flex;
     flex-direction: column;
@@ -622,7 +622,7 @@
 
   .move-warn {
     font-size: 11px;
-    color: var(--warn, #e0a030);
+    color: var(--warn);
     line-height: 1.5;
     white-space: normal;
     overflow-wrap: anywhere;

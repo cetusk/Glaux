@@ -29,6 +29,7 @@
   import { noteClipboard, pianoRollStore, selectionStore } from "./selection.svelte";
   import type { Articulation, CurveShape, MidiClip, Note, Project, Track } from "./types";
   import { applyCurveShape } from "./types";
+  import { color } from "./palette";
 
   let {
     project,
@@ -395,15 +396,15 @@
     const scale = isDrum ? [] : (harmonyStore.view?.scale ?? []);
     for (let pitch = 0; pitch < 128; pitch++) {
       const y = (127 - pitch) * rowH;
-      g.fillStyle = BLACK.has(pitch % 12) ? "#1b1b1b" : "#232323";
+      g.fillStyle = BLACK.has(pitch % 12) ? color("--roll-row-black") : color("--roll-row-white");
       g.fillRect(0, y, contentW, rowH);
       if (scale.length > 0 && !scale.includes(pitch % 12)) {
-        g.fillStyle = "rgba(0, 0, 0, 0.28)";
+        g.fillStyle = color("--roll-row-off-scale");
         g.fillRect(0, y, contentW, rowH);
       }
       if (pitch % 12 === 0) {
         // C の行の下線を強調
-        g.fillStyle = "#3a3a3a";
+        g.fillStyle = color("--roll-c-line");
         g.fillRect(0, y + rowH - 1, contentW, 1);
       }
     }
@@ -419,7 +420,7 @@
     const clipEnd = clipStart + lenOf(currentClip);
     for (const bar of songBars) {
       if (bar.tick >= clipStart) {
-        g.fillStyle = "#4a4a4a";
+        g.fillStyle = color("--roll-bar-line");
         g.fillRect((bar.tick - clipStart) * pxPerTick, 0, 1, contentH);
       }
       // 拍線(分母の音価 = 1 拍)。変拍子のまとまりの頭(7/8 の 2+2+3 など)は少し明るく
@@ -427,7 +428,7 @@
       const heads = bar.grouping.some((x) => x !== 1) ? new Set(groupHeads(bar, project.ppq)) : null;
       for (let t = bar.tick + beatLen; t < bar.tick + bar.len; t += beatLen) {
         if (t <= clipStart || t >= clipEnd) continue;
-        g.fillStyle = heads?.has(t - bar.tick) ? "#404040" : "#333333";
+        g.fillStyle = heads?.has(t - bar.tick) ? color("--roll-beat-head") : color("--roll-beat-line");
         g.fillRect((t - clipStart) * pxPerTick, 0, 1, contentH);
       }
     }
@@ -435,7 +436,7 @@
     if (snapTicks < 960) {
       let step = snapTicks;
       while (step * pxPerTick < 5 && step * 2 < 960) step *= 2;
-      g.fillStyle = "#2a2a2a";
+      g.fillStyle = color("--roll-snap-line");
       for (let t = 0; t <= lenOf(currentClip); t += step) {
         if (t % 960 !== 0) g.fillRect(t * pxPerTick, 0, 1, contentH);
       }
@@ -443,8 +444,8 @@
 
     // ほかのパート(聞こえているトラック)の音を薄く。クリップの範囲の分だけ(ループは展開しない近似: 鳴る音の位置で描く)
     if (showOthers && !isDrum) {
-      g.fillStyle = "rgba(210, 210, 210, 0.13)";
-      g.strokeStyle = "rgba(210, 210, 210, 0.22)";
+      g.fillStyle = color("--roll-other-fill");
+      g.strokeStyle = color("--roll-other-edge");
       g.lineWidth = 1;
       for (const o of otherSounding) {
         const x = o.start * pxPerTick;
@@ -465,27 +466,27 @@
       const w = Math.max(n.dur * pxPerTick, 4);
       const isSel = selected.has(n.id);
       const alpha = 0.45 + (n.vel / 127) * 0.55;
-      g.fillStyle = isSel ? `rgba(${accentRgb()}, ${alpha})` : `rgba(94, 156, 224, ${alpha})`;
+      g.fillStyle = isSel ? `rgba(${accentRgb()}, ${alpha})` : color("--note", alpha);
       g.beginPath();
       g.roundRect(x, y + 1.5, w, rowH - 3, 3);
       g.fill();
       // 直前のチャットのターンで AI が足した・変えたノートは AI の色で縁取る
       const byAi = aiHighlight.notes.has(n.id);
-      g.strokeStyle = isSel ? "#ffd98a" : byAi ? aiColor() : "rgba(255,255,255,0.25)";
+      g.strokeStyle = isSel ? color("--note-sel-edge") : byAi ? aiColor() : color("--note-edge");
       g.lineWidth = byAi && !isSel ? 2 : 1;
       g.stroke();
       // 固定の音(AI が変えない音)は白い点線で縁取り、幅があれば頭に鍵の印
       if (n.locked) {
         g.save();
         g.setLineDash([3, 2]);
-        g.strokeStyle = "rgba(255,255,255,0.9)";
+        g.strokeStyle = color("--note-locked", 0.9);
         g.lineWidth = 1.5;
         g.beginPath();
         g.roundRect(x + 1, y + 2.5, w - 2, rowH - 5, 2);
         g.stroke();
         g.restore();
         if (w >= 14 && rowH >= 9) {
-          g.fillStyle = "rgba(255,255,255,0.95)";
+          g.fillStyle = color("--note-locked", 0.95);
           g.font = `${Math.min(10, rowH - 2)}px sans-serif`;
           g.textBaseline = "middle";
           g.fillText("🔒", x + 2, y + rowH / 2);
@@ -525,7 +526,7 @@
             if (p.shape === "hold") at(next.tick, p.cents);
           }
         }
-        g.strokeStyle = "rgba(255, 120, 200, 0.95)";
+        g.strokeStyle = color("--note-curve", 0.95);
         g.lineWidth = 1.5;
         g.stroke();
       }
@@ -546,7 +547,7 @@
                     : art === "portamento"
                       ? "/"
                       : "↑";
-        g.fillStyle = "rgba(12, 12, 12, 0.85)";
+        g.fillStyle = color("--note-mark");
         g.font = `bold ${Math.min(rowH - 4, 10)}px sans-serif`;
         g.textBaseline = "middle";
         g.fillText(label, x + 3, y + rowH / 2 + 0.5);
@@ -562,7 +563,7 @@
       const w = Math.max((m.end - m.start) * pxPerTick, 4);
       const warn = m.item.severity === "warn";
       g.save();
-      g.strokeStyle = warn ? "rgba(255, 82, 82, 0.95)" : "rgba(255, 170, 60, 0.9)";
+      g.strokeStyle = warn ? color("--clash-warn", 0.95) : color("--clash-info", 0.9);
       g.lineWidth = warn ? 2 : 1.5;
       if (!warn) g.setLineDash([3, 2]);
       for (const p of [m.mine, m.other]) {
@@ -593,7 +594,7 @@
       if (n) {
         const cy = (127 - n.pitch) * rowH + rowH / 2;
         const pts = [...curveDraw.pts].sort((a, b) => a.t - b.t);
-        g.strokeStyle = "rgba(255, 120, 200, 0.95)";
+        g.strokeStyle = color("--note-curve", 0.95);
         g.lineWidth = 2;
         g.beginPath();
         pts.forEach((p, i) => {
@@ -609,7 +610,7 @@
     // ドラッグ中の移動/リサイズゴースト
     if (drag?.mode === "move" && (drag.dt !== 0 || drag.dp !== 0)) {
       const ids = new Set(drag.ids);
-      g.strokeStyle = "#ffd98a";
+      g.strokeStyle = color("--note-sel-edge");
       g.fillStyle = `rgba(${accentRgb()}, 0.35)`;
       g.lineWidth = 1;
       for (const n of currentClip.notes) {
@@ -624,7 +625,7 @@
     }
     if (drag?.mode === "resize" && drag.dt !== 0) {
       const ids = new Set(drag.ids);
-      g.strokeStyle = "#ffd98a";
+      g.strokeStyle = color("--note-sel-edge");
       g.fillStyle = `rgba(${accentRgb()}, 0.35)`;
       for (const n of currentClip.notes) {
         if (!ids.has(n.id)) continue;
@@ -651,7 +652,7 @@
     // 挿入カーソル(クリックで固定。ドラム打ち込み先)
     if (insertTick <= lenOf(currentClip)) {
       const ix = insertTick * pxPerTick;
-      g.fillStyle = "#5da2e8";
+      g.fillStyle = color("--insert-cursor");
       g.fillRect(ix, 0, 1.5, contentH);
       g.beginPath();
       g.moveTo(ix - 5, 0);
@@ -1764,11 +1765,11 @@
     align-items: center;
     justify-content: flex-end;
     padding-right: 4px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--roll-key-line);
   }
 
   .key.black {
-    background: rgba(0, 0, 0, 0.35);
+    background: var(--roll-key-black);
   }
 
   .key.drum-key {
