@@ -961,6 +961,29 @@ impl GlauxPlayer {
             .unwrap_or(0.0)
     }
 
+    /// 音の処理の重さ(前に呼んでから今までの、音の長さに対する処理時間の割合 %)。
+    /// `avg` = 平均、`max` = いちばん重かった 1 回。100 に近いと音が途切れる。重さを調べるとき用
+    #[func]
+    fn get_load(&self) -> VarDictionary {
+        let st = self
+            .song
+            .as_ref()
+            .map(|s| s.shared.stats.take())
+            .unwrap_or_default();
+        dict_of(&[
+            ("avg", (st.avg_pct as f64).to_variant()),
+            ("max", (st.max_pct as f64).to_variant()),
+        ])
+    }
+
+    /// いま鳴っている効果音(`play_note` など)と MIDI キーボードの声の数(同時に 32 まで。超えると古い音から止まる)
+    #[func]
+    fn get_voice_count(&self) -> i64 {
+        self.song.as_ref().map_or(0, |s| {
+            s.shared.live_voice_count.load(Ordering::Relaxed) as i64
+        })
+    }
+
     /// 音声スレッドが動いているか(デバッグ用。ミックスした回数)
     #[func]
     fn get_mix_count(&self) -> i64 {

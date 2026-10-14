@@ -148,6 +148,8 @@ pub struct Shared {
     pub live: LiveQueue,
     /// 時刻指定のノート(ゲームの効果音など。積む側は任意のスレッド、取り出しはレンダラ)
     pub notes: crate::midi::NoteQueue,
+    /// いま鳴っているライブの声(MIDI キーボード・ゲームの効果音)の数。レンダラが毎回書く(上限 MAX_LIVE_VOICES)
+    pub live_voice_count: AtomicU32,
     /// ライブ演奏の送り先トラック index(`LIVE_NO_TRACK` なら既定音色)
     pub live_track: AtomicU32,
     /// 時刻の基準(`pos_nanos` や MIDI 受信時刻の起点)
@@ -409,6 +411,7 @@ impl Shared {
             stats: StatsCounters::default(),
             live: LiveQueue::default(),
             notes: Default::default(),
+            live_voice_count: AtomicU32::new(0),
             live_track: AtomicU32::new(LIVE_NO_TRACK),
             epoch: std::time::Instant::now(),
             block_frames: AtomicU32::new(0),
@@ -1264,6 +1267,9 @@ impl Renderer {
         if self.offline.is_none() {
             self.mix_listen(out, channels);
         }
+        self.shared
+            .live_voice_count
+            .store(self.live_voices.len() as u32, Ordering::Relaxed);
 
         // 負荷統計(ロック・アロケーションなし)
         let sr = self.shared.data.load().sample_rate.max(1.0);

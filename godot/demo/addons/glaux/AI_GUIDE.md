@@ -53,6 +53,8 @@ signal jumped(from: float, to: float)                # 再生位置が飛んだ�
 | `load_song(path: String)` | `bool` | `.glaux` フォルダのパス(例 `"res://songs/Stage1.glaux"`)。読むと停止状態。失敗理由は `get_last_error()` |
 | `get_last_error()` | `String` | 直前の失敗理由 |
 | `get_warnings()` | `PackedStringArray` | 読み込み時の注意(CLAP の音源は鳴らない・読めない音声や SoundFont・外したソロ等) |
+| `get_load()` | `Dictionary` | 音の処理の重さ `{avg, max}`(前に呼んでから今までの %。100 に近いと途切れる) |
+| `get_voice_count()` | `int` | いま鳴っている効果音の数(32 まで) |
 | `play()` | − | 曲頭から再生 |
 | `play_from(sec: float)` | − | `sec` 秒から再生 |
 | `pause()` / `resume()` | − | 一時停止 / 続きから(`pause` → `play` は曲頭から) |
@@ -333,6 +335,10 @@ func _on_power_up() -> void:
 - `play_note` で鳴らせるのは内蔵音源・SoundFont・サンプラーのトラックだけ(CLAP のトラックは false が返る。
   `get_warnings()` に出る)。効果音用の曲でミュートにしたトラックは鳴らない(ソロは読み込むときに外す)
 - 1 つの `GlauxPlayer` で同時に鳴る音は 32 まで(超えると古い音から止まる)、予約は一度に 512 まで
+- 効果音のプレイヤーは種類ごとに分けず 1 つでよい(BGM 用 1 つ + 効果音用 1 つが基本)。重さは `get_load()` で確かめる
+  (目安: 曲のプレイヤー 1 個で約 1%、効果音 32 音で約 6%。パソコンによる)
+- `play_note` の遅れは、Glaux の分が最大 512 サンプル(≒ 11 ms)+ Godot の出力の遅れ(既定 15 ms)。
+  拍に合わせる音は `play_note_at` で、時刻を指定して鳴らす
 - コードは 1 小節に 1 つの推定。キーの `confidence` が低い(0.3 未満など)曲では、キーよりコードに合わせる方が安全
 - 終了時の「ObjectDB instances leaked at exit」、初回の「Native class "GlauxPlayer" not found」は無害
 

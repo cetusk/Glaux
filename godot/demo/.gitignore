@@ -1,3 +1,4 @@
 # ビルドした拡張(各自の環境でビルドしてここに置く)
 /addons/glaux/bin/
 .godot/
+/.check/

@@ -74,6 +74,20 @@ Godot_v4.3-stable_win64.exe --headless --path godot\demo -- --check
 `RESULT ... beats=10 kicks=10 sections=["intro", "サビ"] peak=0.298 ... errors=0` のようになれば正常です
 (ヘッドレスでは出力の遅れが 0 として扱われます)。
 
+### アプリと同じ音になるかの確かめ(Linux)
+
+```sh
+GODOT=/path/to/Godot_v4.3-stable_linux.x86_64 godot/check_render.sh [曲のフォルダ ...]
+```
+
+拡張をビルドしてデモに置き、各曲を Godot で画面なしで鳴らして録り(`godot/demo/tools/record_song.gd`)、
+アプリの書き出しと同じ描き出しと比べます(`cargo run -p glaux-engine --example render_compare`)。
+差が -40 dB 以下なら `RESULT ok`。最後に、ノートの表情とゲームの中で曲を変える関数も確かめます
+(`godot/demo/tools/check_expression.gd`)。曲を省くとデモの曲です。
+
+効果音の速さ・同時に鳴らせる数・重さは `godot --headless --path godot/demo -s res://tools/measure_sfx.gd` で測れます
+(画面なしの仮の出口は音をまとめて作るので、遅れは時計ではなく音を作る区切りの長さで出します)。
+
 ## 4. 開発メモ
 
 - 実装: `crates/glaux-godot`(`GlauxPlayer` = `player.rs`、音声スレッド = `stream.rs`、読み込み = `song.rs`)、
