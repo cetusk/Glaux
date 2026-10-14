@@ -345,6 +345,8 @@ export interface TransportState {
     xruns?: number;
     /** OS がリアルタイム優先度を認めなかった */
     realtime_denied?: boolean;
+    /** 音の処理の途中で問題が起きて、出力を無音にして止めた(出力を開き直すと戻る) */
+    audio_panicked?: boolean;
   };
   tick: number;
   /** ループ区間 [開始tick, 終了tick]。null ならループなし */

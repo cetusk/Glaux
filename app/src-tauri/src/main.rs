@@ -114,113 +114,131 @@ fn strip_plugin_state_typed(
 /// 曲の全体。`serde_json::Value` の木を作らずに直接 JSON の文字列にして返す(大きな曲で軽い)
 #[tauri::command]
 async fn get_project(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String> {
-    let (project, version) = state.handle.get_project_shared().await?;
-    tokio::task::spawn_blocking(move || {
-        let has_state = project.tracks.iter().any(|t| {
-            t.device
-                .as_ref()
-                .is_some_and(|d| has_plugin_state(&d.source))
-                || t.effects.iter().any(|e| has_plugin_state(&e.source))
-        }) || project
-            .master
-            .effects
-            .iter()
-            .any(|e| has_plugin_state(&e.source));
-        // CLAP の状態があるときだけ複製して省く(無ければそのまま直列化する)
-        let stripped;
-        let p: &glaux_core::Project = if has_state {
-            let mut c = (*project).clone();
-            for t in &mut c.tracks {
-                strip_plugin_state_typed(t.device.as_mut(), &mut t.effects);
+    guard::catching("get_project", async move {
+        let (project, version) = state.handle.get_project_shared().await?;
+        tokio::task::spawn_blocking(move || {
+            let has_state = project.tracks.iter().any(|t| {
+                t.device
+                    .as_ref()
+                    .is_some_and(|d| has_plugin_state(&d.source))
+                    || t.effects.iter().any(|e| has_plugin_state(&e.source))
+            }) || project
+                .master
+                .effects
+                .iter()
+                .any(|e| has_plugin_state(&e.source));
+            // CLAP の状態があるときだけ複製して省く(無ければそのまま直列化する)
+            let stripped;
+            let p: &glaux_core::Project = if has_state {
+                let mut c = (*project).clone();
+                for t in &mut c.tracks {
+                    strip_plugin_state_typed(t.device.as_mut(), &mut t.effects);
+                }
+                strip_plugin_state_typed(None, &mut c.master.effects);
+                stripped = c;
+                &stripped
+            } else {
+                &project
+            };
+            #[derive(serde::Serialize)]
+            struct Out<'a> {
+                project_version: usize,
+                project: &'a glaux_core::Project,
             }
-            strip_plugin_state_typed(None, &mut c.master.effects);
-            stripped = c;
-            &stripped
-        } else {
-            &project
-        };
-        #[derive(serde::Serialize)]
-        struct Out<'a> {
-            project_version: usize,
-            project: &'a glaux_core::Project,
-        }
-        serde_json::to_string(&Out {
-            project_version: version,
-            project: p,
+            serde_json::to_string(&Out {
+                project_version: version,
+                project: p,
+            })
+            .map(tauri::ipc::Response::new)
+            .map_err(|e| e.to_string())
         })
-        .map(tauri::ipc::Response::new)
-        .map_err(|e| e.to_string())
+        .await
+        .map_err(|e| e.to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// トラックを複製して、元のすぐ下に置く(CLAP の状態・エフェクトのつながり・変調・マクロも写す)
 #[tauri::command]
 async fn duplicate_track(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
-    let (project, _) = state.handle.get_project_shared().await?;
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let index = project
-        .tracks
-        .iter()
-        .position(|t| t.id == tid)
-        .ok_or_else(|| t("トラックが見つかりません", "Track not found").to_owned())?;
-    let src = &project.tracks[index];
-    let copy = glaux_mcp::server::duplicate_track(
-        src,
-        glaux_core::tr!("{} のコピー", "{} copy", src.name),
-    );
-    let label = glaux_core::tr!("{} を複製", "Duplicate {}", src.name);
-    let command = Command::AddTrack {
-        track: copy,
-        index: Some(index + 1),
-    };
-    let (entry_id, m) = state
-        .handle
-        .apply(command, Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "entry_id": entry_id, "project_version": m.project_version }))
+    guard::catching("duplicate_track", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let index = project
+            .tracks
+            .iter()
+            .position(|t| t.id == tid)
+            .ok_or_else(|| t("トラックが見つかりません", "Track not found").to_owned())?;
+        let src = &project.tracks[index];
+        let copy = glaux_mcp::server::duplicate_track(
+            src,
+            glaux_core::tr!("{} のコピー", "{} copy", src.name),
+        );
+        let label = glaux_core::tr!("{} を複製", "Duplicate {}", src.name);
+        let command = Command::AddTrack {
+            track: copy,
+            index: Some(index + 1),
+        };
+        let (entry_id, m) = state
+            .handle
+            .apply(command, Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "entry_id": entry_id, "project_version": m.project_version }))
+    })
+    .await
 }
 
 /// 指定したトラックだけを返す(変更がトラックの中だけのとき、画面が全体を取り直さずに済むように)。
 /// 見つからない ID は含めない(画面はそのとき全体を取り直す)。
 #[tauri::command]
 async fn get_tracks(state: State<'_, AppState>, ids: Vec<String>) -> Result<Value, String> {
-    let (project, version) = state.handle.get_project_shared().await?;
-    let tracks: Vec<Value> = project
-        .tracks
-        .iter()
-        .filter(|t| ids.iter().any(|i| i == t.id.as_str()))
-        .filter_map(|t| serde_json::to_value(t).ok())
-        .map(|mut v| {
-            strip_plugin_state(&mut v);
-            v
-        })
-        .collect();
-    Ok(json!({ "project_version": version, "tracks": tracks }))
+    guard::catching("get_tracks", async move {
+        let (project, version) = state.handle.get_project_shared().await?;
+        let tracks: Vec<Value> = project
+            .tracks
+            .iter()
+            .filter(|t| ids.iter().any(|i| i == t.id.as_str()))
+            .filter_map(|t| serde_json::to_value(t).ok())
+            .map(|mut v| {
+                strip_plugin_state(&mut v);
+                v
+            })
+            .collect();
+        Ok(json!({ "project_version": version, "tracks": tracks }))
+    })
+    .await
 }
 
 #[tauri::command]
 async fn get_history(state: State<'_, AppState>, limit: Option<usize>) -> Result<Value, String> {
-    let page = state
-        .handle
-        .get_history(None, None, limit)
-        .await?
-        .map_err(|e| e.to_string())?;
-    serde_json::to_value(page).map_err(|e| e.to_string())
+    guard::catching("get_history", async move {
+        let page = state
+            .handle
+            .get_history(None, None, limit)
+            .await?
+            .map_err(|e| e.to_string())?;
+        serde_json::to_value(page).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
 async fn undo(state: State<'_, AppState>) -> Result<Value, String> {
-    let (undone, m) = state.handle.undo(1).await?.map_err(|e| e.to_string())?;
-    Ok(json!({ "undone": undone, "project_version": m.project_version }))
+    guard::catching("undo", async move {
+        let (undone, m) = state.handle.undo(1).await?.map_err(|e| e.to_string())?;
+        Ok(json!({ "undone": undone, "project_version": m.project_version }))
+    })
+    .await
 }
 
 #[tauri::command]
 async fn redo(state: State<'_, AppState>) -> Result<Value, String> {
-    let (redone, m) = state.handle.redo(1).await?.map_err(|e| e.to_string())?;
-    Ok(json!({ "redone": redone, "project_version": m.project_version }))
+    guard::catching("redo", async move {
+        let (redone, m) = state.handle.redo(1).await?.map_err(|e| e.to_string())?;
+        Ok(json!({ "redone": redone, "project_version": m.project_version }))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -269,7 +287,10 @@ async fn off_thread<T: Send + 'static>(
 /// (曲の project.json を最大 50 個読む。別のスレッドで)
 #[tauri::command]
 async fn find_projects(dir: String) -> Result<Value, String> {
-    off_thread(move || json!({ "projects": projects::find_projects(&dir) })).await
+    guard::catching("find_projects", async move {
+        off_thread(move || json!({ "projects": projects::find_projects(&dir) })).await
+    })
+    .await
 }
 
 /// 既定の作業フォルダ(新規プロジェクトの作成先)を変更する。
@@ -301,23 +322,26 @@ async fn asset_peaks(
     from_sec: Option<f64>,
     to_sec: Option<f64>,
 ) -> Result<Value, String> {
-    let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let buckets = buckets.clamp(1, 8192) as usize;
-    let (peaks, secs) = tokio::task::spawn_blocking(move || {
-        glaux_mcp::assets::asset_peaks(
-            &project,
-            std::path::Path::new(&dir),
-            &id,
-            buckets,
-            from_sec.zip(to_sec),
-        )
+    guard::catching("asset_peaks", async move {
+        let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let buckets = buckets.clamp(1, 8192) as usize;
+        let (peaks, secs) = tokio::task::spawn_blocking(move || {
+            glaux_mcp::assets::asset_peaks(
+                &project,
+                std::path::Path::new(&dir),
+                &id,
+                buckets,
+                from_sec.zip(to_sec),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let flat: Vec<f32> = peaks.into_iter().flat_map(|(lo, hi)| [lo, hi]).collect();
+        Ok(json!({ "peaks": flat, "seconds": secs }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let flat: Vec<f32> = peaks.into_iter().flat_map(|(lo, hi)| [lo, hi]).collect();
-    Ok(json!({ "peaks": flat, "seconds": secs }))
 }
 
 /// SFZ の楽器の中身(鍵盤ごとの強さの段・ラウンドロビン・効く CC と、調整つまみ)。音色エディタの SFZ
@@ -326,11 +350,14 @@ async fn sfz_inspect(
     instrument: String,
     cc: std::collections::BTreeMap<u8, u8>,
 ) -> Result<glaux_engine::sfz::Inspect, String> {
-    tokio::task::spawn_blocking(move || {
-        glaux_engine::sfz::inspect(&glaux_engine::sfz::default_dir(), &instrument, &cc)
+    guard::catching("sfz_inspect", async move {
+        tokio::task::spawn_blocking(move || {
+            glaux_engine::sfz::inspect(&glaux_engine::sfz::default_dir(), &instrument, &cc)
+        })
+        .await
+        .map_err(|e| e.to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// SFZ の鍵盤をその強さで弾いたとき(rr 回目。0 始まり)に鳴る録音の波形。音色エディタの SFZ
@@ -343,19 +370,22 @@ async fn sfz_key_wave(
     rr: u8,
     buckets: usize,
 ) -> Result<glaux_engine::sfz::KeyWave, String> {
-    tokio::task::spawn_blocking(move || {
-        glaux_engine::sfz::key_wave(
-            &glaux_engine::sfz::default_dir(),
-            &instrument,
-            &cc,
-            key,
-            vel,
-            rr,
-            buckets,
-        )
+    guard::catching("sfz_key_wave", async move {
+        tokio::task::spawn_blocking(move || {
+            glaux_engine::sfz::key_wave(
+                &glaux_engine::sfz::default_dir(),
+                &instrument,
+                &cc,
+                key,
+                vel,
+                rr,
+                buckets,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 音の頭で自動に引く区分の線(長さの割合。使う所の中だけ、区分 1 の頭を除く)。音色エディタのサンプラー
@@ -366,21 +396,24 @@ async fn sampler_auto_cuts(
     start: f64,
     end: f64,
 ) -> Result<Vec<f64>, String> {
-    let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    tokio::task::spawn_blocking(move || {
-        glaux_mcp::assets::auto_slice_points(
-            &project,
-            std::path::Path::new(&dir),
-            &id,
-            start,
-            end,
-            64,
-        )
+    guard::catching("sampler_auto_cuts", async move {
+        let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        tokio::task::spawn_blocking(move || {
+            glaux_mcp::assets::auto_slice_points(
+                &project,
+                std::path::Path::new(&dir),
+                &id,
+                start,
+                end,
+                64,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// WAV をプロジェクトに取り込み、トラックの音源を sampler にする(音作りビュー用)。
@@ -392,37 +425,68 @@ async fn import_sample(
     path: String,
     instrument: Option<String>,
 ) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let track = project.track(&tid).ok_or_else(|| {
-        glaux_core::tr!(
-            "トラックが見つかりません: {track_id}",
-            "Track not found: {track_id}"
-        )
-    })?;
-    let dir = state.project_dir();
-    let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
+    guard::catching("import_sample", async move {
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let track = project.track(&tid).ok_or_else(|| {
+            glaux_core::tr!(
+                "トラックが見つかりません: {track_id}",
+                "Track not found: {track_id}"
+            )
+        })?;
+        let dir = state.project_dir();
+        let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
 
-    let mut cmds = Vec::new();
-    if !project.assets.contains_key(&imported.id) {
-        cmds.push(Command::AddAsset {
-            id: imported.id.clone(),
-            asset: imported.asset.clone(),
-        });
-    }
-    if instrument.as_deref() == Some("granular") {
-        cmds.push(Command::SetParam {
-            track: tid.clone(),
-            path: glaux_core::ParamPath::parse("device/sample").map_err(|e| e.to_string())?,
-            value: glaux_core::ParamValue::Enum(imported.id.to_string()),
+        let mut cmds = Vec::new();
+        if !project.assets.contains_key(&imported.id) {
+            cmds.push(Command::AddAsset {
+                id: imported.id.clone(),
+                asset: imported.asset.clone(),
+            });
+        }
+        if instrument.as_deref() == Some("granular") {
+            cmds.push(Command::SetParam {
+                track: tid.clone(),
+                path: glaux_core::ParamPath::parse("device/sample").map_err(|e| e.to_string())?,
+                value: glaux_core::ParamValue::Enum(imported.id.to_string()),
+            });
+            let file_name = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "sample".to_owned());
+            let label = glaux_core::tr!(
+                "{} の素材を「{file_name}」に",
+                "Set the source of {} to \"{file_name}\"",
+                track.name
+            );
+            let (_, m) = state
+                .handle
+                .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+                .await?
+                .map_err(|e| e.to_string())?;
+            return Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }));
+        }
+        // ステレオの素材は左右のまま鳴らす(つまみの既定はモノラルに合算 = 以前に取り込んだ音源の音を変えない)
+        let mut params = glaux_core::ParamMap::new();
+        if imported.asset.channels >= 2 {
+            params.insert("stereo".to_owned(), glaux_core::ParamValue::Bool(true));
+        }
+        cmds.push(Command::SetDevice {
+            track: tid,
+            device: Some(glaux_core::Device {
+                source: glaux_core::PluginSource::Sampler {
+                    asset: imported.id.clone(),
+                },
+                params,
+            }),
         });
         let file_name = std::path::Path::new(&path)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "sample".to_owned());
         let label = glaux_core::tr!(
-            "{} の素材を「{file_name}」に",
-            "Set the source of {} to \"{file_name}\"",
+            "{} にサンプル「{file_name}」を設定",
+            "Set sample \"{file_name}\" on {}",
             track.name
         );
         let (_, m) = state
@@ -430,37 +494,9 @@ async fn import_sample(
             .apply(Command::batch(label.clone(), cmds), Author::Human, label)
             .await?
             .map_err(|e| e.to_string())?;
-        return Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }));
-    }
-    // ステレオの素材は左右のまま鳴らす(つまみの既定はモノラルに合算 = 以前に取り込んだ音源の音を変えない)
-    let mut params = glaux_core::ParamMap::new();
-    if imported.asset.channels >= 2 {
-        params.insert("stereo".to_owned(), glaux_core::ParamValue::Bool(true));
-    }
-    cmds.push(Command::SetDevice {
-        track: tid,
-        device: Some(glaux_core::Device {
-            source: glaux_core::PluginSource::Sampler {
-                asset: imported.id.clone(),
-            },
-            params,
-        }),
-    });
-    let file_name = std::path::Path::new(&path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "sample".to_owned());
-    let label = glaux_core::tr!(
-        "{} にサンプル「{file_name}」を設定",
-        "Set sample \"{file_name}\" on {}",
-        track.name
-    );
-    let (_, m) = state
-        .handle
-        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }))
+        Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }))
+    })
+    .await
 }
 
 /// 畳み込みリバーブの響き(IR)を音声ファイルから取り込み、そのエフェクトの ir に設定する(履歴 1 件)。
@@ -472,41 +508,44 @@ async fn import_ir(
     fx_id: String,
     path: String,
 ) -> Result<Value, String> {
-    let fx = glaux_core::FxId::parse(&fx_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
-    let mut cmds = Vec::new();
-    if !project.assets.contains_key(&imported.id) {
-        cmds.push(Command::AddAsset {
-            id: imported.id.clone(),
-            asset: imported.asset.clone(),
+    guard::catching("import_ir", async move {
+        let fx = glaux_core::FxId::parse(&fx_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
+        let mut cmds = Vec::new();
+        if !project.assets.contains_key(&imported.id) {
+            cmds.push(Command::AddAsset {
+                id: imported.id.clone(),
+                asset: imported.asset.clone(),
+            });
+        }
+        let param = glaux_core::ParamPath::effect(fx, "ir");
+        let value = glaux_core::ParamValue::Enum(imported.id.to_string());
+        cmds.push(match &track_id {
+            Some(t) => Command::SetParam {
+                track: glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?,
+                path: param,
+                value,
+            },
+            None => Command::SetMasterParam { path: param, value },
         });
-    }
-    let param = glaux_core::ParamPath::effect(fx, "ir");
-    let value = glaux_core::ParamValue::Enum(imported.id.to_string());
-    cmds.push(match &track_id {
-        Some(t) => Command::SetParam {
-            track: glaux_core::TrackId::parse(t).map_err(|e| e.to_string())?,
-            path: param,
-            value,
-        },
-        None => Command::SetMasterParam { path: param, value },
-    });
-    let file_name = std::path::Path::new(&path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "IR".to_owned());
-    let label = glaux_core::tr!(
-        "畳み込みリバーブの響きを「{file_name}」に",
-        "Set convolution reverb IR to \"{file_name}\""
-    );
-    let (_, m) = state
-        .handle
-        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }))
+        let file_name = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "IR".to_owned());
+        let label = glaux_core::tr!(
+            "畳み込みリバーブの響きを「{file_name}」に",
+            "Set convolution reverb IR to \"{file_name}\""
+        );
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "asset_id": imported.id, "project_version": m.project_version }))
+    })
+    .await
 }
 
 /// WAV を音声クリップとして音声トラックに置く(履歴 1 件)。
@@ -517,37 +556,40 @@ async fn import_audio_clip(
     path: String,
     start_tick: Option<u64>,
 ) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
-    let name = std::path::Path::new(&path)
-        .file_stem()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "audio".to_owned());
-    let clip_id = glaux_core::ClipId::new();
-    let cmds = glaux_mcp::assets::audio_clip_commands(
-        &project,
-        &tid,
-        &imported,
-        clip_id.clone(),
-        Tick(start_tick.unwrap_or(0)),
-        &name,
-    )?;
-    let track_name = project
-        .track(&tid)
-        .map(|t| t.name.clone())
-        .unwrap_or_default();
-    let label = glaux_core::tr!(
-        "{track_name} に音声クリップ「{name}」を配置",
-        "Place audio clip \"{name}\" on {track_name}"
-    );
-    let (_, m) = state
-        .handle
-        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "clip_id": clip_id, "asset_id": imported.id, "project_version": m.project_version }))
+    guard::catching("import_audio_clip", async move {
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let imported = import_audio_off_thread(dir.clone(), path.clone()).await?;
+        let name = std::path::Path::new(&path)
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "audio".to_owned());
+        let clip_id = glaux_core::ClipId::new();
+        let cmds = glaux_mcp::assets::audio_clip_commands(
+            &project,
+            &tid,
+            &imported,
+            clip_id.clone(),
+            Tick(start_tick.unwrap_or(0)),
+            &name,
+        )?;
+        let track_name = project
+            .track(&tid)
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        let label = glaux_core::tr!(
+            "{track_name} に音声クリップ「{name}」を配置",
+            "Place audio clip \"{name}\" on {track_name}"
+        );
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "clip_id": clip_id, "asset_id": imported.id, "project_version": m.project_version }))
+    })
+    .await
 }
 
 /// 音声クリップの波形ピーク(表示用)。
@@ -557,48 +599,54 @@ async fn clip_peaks(
     clip_id: String,
     buckets: u32,
 ) -> Result<Value, String> {
-    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let buckets = buckets.clamp(1, 4096) as usize;
-    let peaks = tokio::task::spawn_blocking(move || {
-        glaux_mcp::transcribe::clip_peaks(&project, std::path::Path::new(&dir), &cid, buckets)
+    guard::catching("clip_peaks", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let buckets = buckets.clamp(1, 4096) as usize;
+        let peaks = tokio::task::spawn_blocking(move || {
+            glaux_mcp::transcribe::clip_peaks(&project, std::path::Path::new(&dir), &cid, buckets)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(json!({ "peaks": peaks }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    Ok(json!({ "peaks": peaks }))
 }
 
 /// 音声クリップの音に似せた内蔵シンセ(subtractive)のトラックを作る(つまみは自動で探す。履歴 1 件)。
 #[tauri::command]
 async fn match_clip_sound(state: State<'_, AppState>, clip_id: String) -> Result<Value, String> {
-    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let m = tokio::task::spawn_blocking(move || {
-        glaux_mcp::sound::match_clip_commands(&project, std::path::Path::new(&dir), &cid, 30.0)
+    guard::catching("match_clip_sound", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let m = tokio::task::spawn_blocking(move || {
+            glaux_mcp::sound::match_clip_commands(&project, std::path::Path::new(&dir), &cid, 30.0)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let label = glaux_core::tr!(
+            "「{}」を作る(音色を自動で合わせる)",
+            "Create \"{}\" (auto-matched sound)",
+            m.track_name
+        );
+        let (_, applied) = state
+            .handle
+            .apply(
+                Command::batch(label.clone(), m.commands),
+                Author::Human,
+                label,
+            )
+            .await?
+            .map_err(|e| e.to_string())?;
+        let mut v = glaux_mcp::sound::match_json(&m.outcome);
+        v["track_id"] = json!(m.track_id.to_string());
+        v["track_name"] = json!(m.track_name);
+        v["project_version"] = json!(applied.project_version);
+        Ok(v)
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let label = glaux_core::tr!(
-        "「{}」を作る(音色を自動で合わせる)",
-        "Create \"{}\" (auto-matched sound)",
-        m.track_name
-    );
-    let (_, applied) = state
-        .handle
-        .apply(
-            Command::batch(label.clone(), m.commands),
-            Author::Human,
-            label,
-        )
-        .await?
-        .map_err(|e| e.to_string())?;
-    let mut v = glaux_mcp::sound::match_json(&m.outcome);
-    v["track_id"] = json!(m.track_id.to_string());
-    v["track_name"] = json!(m.track_name);
-    v["project_version"] = json!(applied.project_version);
-    Ok(v)
 }
 
 /// 音声クリップの音に近い CLAP 音源のプリセットを探す(track_id の CLAP 音源のプリセットから)。
@@ -613,26 +661,29 @@ async fn find_similar_clap_presets(
     category: Option<String>,
     index_seconds: Option<u64>,
 ) -> Result<Value, String> {
-    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    tokio::task::spawn_blocking(move || {
-        glaux_mcp::preset_index::similar_json(
-            &project,
-            std::path::Path::new(&dir),
-            &glaux_mcp::sound::SoundSource::Clip(cid),
-            &tid,
-            category.as_deref(),
-            8,
-            std::time::Duration::from_secs(index_seconds.unwrap_or(90).min(600)),
-            &mut |p| {
-                let _ = app.emit("preset-index", &p);
-            },
-        )
+    guard::catching("find_similar_clap_presets", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        tokio::task::spawn_blocking(move || {
+            glaux_mcp::preset_index::similar_json(
+                &project,
+                std::path::Path::new(&dir),
+                &glaux_mcp::sound::SoundSource::Clip(cid),
+                &tid,
+                category.as_deref(),
+                8,
+                std::time::Duration::from_secs(index_seconds.unwrap_or(90).min(600)),
+                &mut |p| {
+                    let _ = app.emit("preset-index", &p);
+                },
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// CLAP 音源のつまみを音声クリップの音に自動で合わせる(今の音色から出発。履歴 1 件)。
@@ -643,47 +694,50 @@ async fn refine_clap_params(
     track_id: String,
     max_seconds: Option<f32>,
 ) -> Result<Value, String> {
-    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let refined = tokio::task::spawn_blocking(move || {
-        let target = glaux_mcp::sound::load(
-            &project,
-            std::path::Path::new(&dir),
-            &glaux_mcp::sound::SoundSource::Clip(cid),
-        )?;
-        glaux_mcp::preset_index::refine_params(
-            &project,
-            &tid,
-            &target,
-            &[],
-            max_seconds.unwrap_or(20.0).clamp(5.0, 120.0),
-        )
+    guard::catching("refine_clap_params", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let refined = tokio::task::spawn_blocking(move || {
+            let target = glaux_mcp::sound::load(
+                &project,
+                std::path::Path::new(&dir),
+                &glaux_mcp::sound::SoundSource::Clip(cid),
+            )?;
+            glaux_mcp::preset_index::refine_params(
+                &project,
+                &tid,
+                &target,
+                &[],
+                max_seconds.unwrap_or(20.0).clamp(5.0, 120.0),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let mut v = refined.json;
+        if refined.commands.is_empty() {
+            return Ok(v);
+        }
+        let label = glaux_core::tr!(
+            "「{}」の CLAP のつまみを音声クリップの音に合わせる({} 個)",
+            "Match CLAP parameters of \"{}\" to the audio clip ({})",
+            v["track"].as_str().unwrap_or(""),
+            refined.commands.len()
+        );
+        let (_, applied) = state
+            .handle
+            .apply(
+                Command::batch(label.clone(), refined.commands),
+                Author::Human,
+                label,
+            )
+            .await?
+            .map_err(|e| e.to_string())?;
+        v["project_version"] = json!(applied.project_version);
+        Ok(v)
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let mut v = refined.json;
-    if refined.commands.is_empty() {
-        return Ok(v);
-    }
-    let label = glaux_core::tr!(
-        "「{}」の CLAP のつまみを音声クリップの音に合わせる({} 個)",
-        "Match CLAP parameters of \"{}\" to the audio clip ({})",
-        v["track"].as_str().unwrap_or(""),
-        refined.commands.len()
-    );
-    let (_, applied) = state
-        .handle
-        .apply(
-            Command::batch(label.clone(), refined.commands),
-            Author::Human,
-            label,
-        )
-        .await?
-        .map_err(|e| e.to_string())?;
-    v["project_version"] = json!(applied.project_version);
-    Ok(v)
 }
 
 /// 追加モデル(CLAP の音声側)の状態。
@@ -695,14 +749,17 @@ fn model_status() -> Value {
 /// CLAP の音声側モデル(約 280MB)を取得する。進捗は `model-download` イベント({got, total})で届く。
 #[tauri::command]
 async fn download_clap_model(app: tauri::AppHandle) -> Result<Value, String> {
-    let path = tokio::task::spawn_blocking(move || {
-        glaux_mcp::models::download_clap(&mut |got, total| {
-            let _ = app.emit("model-download", json!({ "got": got, "total": total }));
+    guard::catching("download_clap_model", async move {
+        let path = tokio::task::spawn_blocking(move || {
+            glaux_mcp::models::download_clap(&mut |got, total| {
+                let _ = app.emit("model-download", json!({ "got": got, "total": total }));
+            })
         })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(json!({ "path": path.to_string_lossy() }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    Ok(json!({ "path": path.to_string_lossy() }))
 }
 
 /// 初回の案内の確認: 音の出力・AI の CLI(Claude Code / Codex CLI)・SoundFont のライブラリ。
@@ -720,14 +777,17 @@ fn setup_status(state: State<'_, AppState>) -> Value {
 /// 進捗は `soundfont-download` イベント({got, total})で届く。
 #[tauri::command]
 async fn download_soundfont(app: tauri::AppHandle) -> Result<Value, String> {
-    let path = tokio::task::spawn_blocking(move || {
-        glaux_mcp::models::download_soundfont(&mut |got, total| {
-            let _ = app.emit("soundfont-download", json!({ "got": got, "total": total }));
+    guard::catching("download_soundfont", async move {
+        let path = tokio::task::spawn_blocking(move || {
+            glaux_mcp::models::download_soundfont(&mut |got, total| {
+                let _ = app.emit("soundfont-download", json!({ "got": got, "total": total }));
+            })
         })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(json!({ "path": path.to_string_lossy() }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    Ok(json!({ "path": path.to_string_lossy() }))
 }
 
 /// 同梱のデモ曲(CyberNeon。内蔵の音源とエフェクトだけで鳴る)を、曲のフォルダに写して開く。
@@ -737,33 +797,41 @@ async fn open_demo_song(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    const DEMO: &str = include_str!("../demo/CyberNeon.json");
-    let project: glaux_core::Project = serde_json::from_str(DEMO)
-        .map_err(|e| glaux_core::tr!("デモ曲を読めません: {e}", "Can't read the demo song: {e}"))?;
-    let parent = projects::default_projects_dir();
-    let dir = glaux_mcp::store::unique_project_dir(
-        std::path::Path::new(&parent),
-        &glaux_mcp::store::folder_name(&project.meta.title),
-    );
-    glaux_mcp::store::create_project_from(&dir, project).map_err(|e| e.to_string())?;
-    open_project(app, state, dir.to_string_lossy().into_owned(), false).await
+    guard::catching("open_demo_song", async move {
+        const DEMO: &str = include_str!("../demo/CyberNeon.json");
+        let project: glaux_core::Project = serde_json::from_str(DEMO).map_err(|e| {
+            glaux_core::tr!("デモ曲を読めません: {e}", "Can't read the demo song: {e}")
+        })?;
+        let parent = projects::default_projects_dir();
+        let dir = glaux_mcp::store::unique_project_dir(
+            std::path::Path::new(&parent),
+            &glaux_mcp::store::folder_name(&project.meta.title),
+        );
+        glaux_mcp::store::create_project_from(&dir, project).map_err(|e| e.to_string())?;
+        open_project(app, state, dir.to_string_lossy().into_owned(), false).await
+    })
+    .await
 }
 
 /// 音声クリップの元のテンポ・拍子を検出する(テンポ追従の original_bpm 用。速さのため先頭 60 秒)。
 #[tauri::command]
 async fn detect_clip_tempo(state: State<'_, AppState>, clip_id: String) -> Result<Value, String> {
-    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let r = tokio::task::spawn_blocking(move || {
-        let mut sound = glaux_mcp::sound::load_clip(&project, std::path::Path::new(&dir), &cid)?;
-        let max = (60.0 * sound.sample_rate) as usize;
-        sound.frames.truncate(max);
-        glaux_mcp::sound::beats(&sound)
+    guard::catching("detect_clip_tempo", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let r = tokio::task::spawn_blocking(move || {
+            let mut sound =
+                glaux_mcp::sound::load_clip(&project, std::path::Path::new(&dir), &cid)?;
+            let max = (60.0 * sound.sample_rate) as usize;
+            sound.frames.truncate(max);
+            glaux_mcp::sound::beats(&sound)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        serde_json::to_value(r).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())??;
-    serde_json::to_value(r).map_err(|e| e.to_string())
 }
 
 /// MIDI クリップのノートにスウィングを掛ける(`note_ids` 省略で全ノート。履歴 1 件)。
@@ -776,57 +844,60 @@ async fn swing_clip(
     grid: u64,
     swing: f64,
 ) -> Result<Value, String> {
-    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let (_, clip) = project.clip(&cid).ok_or_else(|| {
-        glaux_core::tr!(
-            "クリップが見つかりません: {clip_id}",
-            "Clip not found: {clip_id}"
+    guard::catching("swing_clip", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let (_, clip) = project.clip(&cid).ok_or_else(|| {
+            glaux_core::tr!(
+                "クリップが見つかりません: {clip_id}",
+                "Clip not found: {clip_id}"
+            )
+        })?;
+        let notes = clip
+            .notes()
+            .ok_or_else(|| t("MIDI クリップではありません", "Not a MIDI clip").to_owned())?;
+        let chosen: Vec<glaux_core::Note> = match &note_ids {
+            Some(ids) if !ids.is_empty() => notes
+                .iter()
+                .filter(|n| ids.iter().any(|i| i == n.id.as_str()))
+                .cloned()
+                .collect(),
+            _ => notes.to_vec(),
+        };
+        let changes: Vec<glaux_core::NoteChange> = glaux_core::rhythm::swing_positions(
+            &chosen,
+            clip.start.0,
+            clip.length.0,
+            grid.max(60),
+            swing,
+            1.0,
+            &glaux_core::meter::bar_meters(&project, clip.start.0 + clip.length.0),
         )
-    })?;
-    let notes = clip
-        .notes()
-        .ok_or_else(|| t("MIDI クリップではありません", "Not a MIDI clip").to_owned())?;
-    let chosen: Vec<glaux_core::Note> = match &note_ids {
-        Some(ids) if !ids.is_empty() => notes
-            .iter()
-            .filter(|n| ids.iter().any(|i| i == n.id.as_str()))
-            .cloned()
-            .collect(),
-        _ => notes.to_vec(),
-    };
-    let changes: Vec<glaux_core::NoteChange> = glaux_core::rhythm::swing_positions(
-        &chosen,
-        clip.start.0,
-        clip.length.0,
-        grid.max(60),
-        swing,
-        1.0,
-        &glaux_core::meter::bar_meters(&project, clip.start.0 + clip.length.0),
-    )
-    .into_iter()
-    .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(Tick(pos)))
-    .collect();
-    let n = changes.len();
-    if n == 0 {
-        return Ok(json!({ "changed": 0 }));
-    }
-    let label = glaux_core::tr!(
-        "スウィング {:.0}%(1/{}、{n} ノート)",
-        "Swing {:.0}% (1/{}, {n} notes)",
-        swing * 100.0,
-        3840 / grid.max(60)
-    );
-    let (_, m) = state
-        .handle
-        .apply(
-            Command::UpdateNotes { clip: cid, changes },
-            Author::Human,
-            label,
-        )
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "changed": n, "project_version": m.project_version }))
+        .into_iter()
+        .map(|(id, pos)| glaux_core::NoteChange::new(id).pos(Tick(pos)))
+        .collect();
+        let n = changes.len();
+        if n == 0 {
+            return Ok(json!({ "changed": 0 }));
+        }
+        let label = glaux_core::tr!(
+            "スウィング {:.0}%(1/{}、{n} ノート)",
+            "Swing {:.0}% (1/{}, {n} notes)",
+            swing * 100.0,
+            3840 / grid.max(60)
+        );
+        let (_, m) = state
+            .handle
+            .apply(
+                Command::UpdateNotes { clip: cid, changes },
+                Author::Human,
+                label,
+            )
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "changed": n, "project_version": m.project_version }))
+    })
+    .await
 }
 
 /// 音声クリップ(単旋律)を譜起こしして MIDI クリップを作る(履歴 1 件)。
@@ -838,49 +909,52 @@ async fn transcribe_clip(
     quantize_ticks: Option<u64>,
     mode: Option<String>,
 ) -> Result<Value, String> {
-    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
-    let mode = glaux_mcp::transcribe::TranscribeMode::parse(mode.as_deref())?;
-    let dest = match dest_track_id {
-        Some(id) => Some(glaux_core::TrackId::parse(&id).map_err(|e| e.to_string())?),
-        None => None,
-    };
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let q = quantize_ticks.unwrap_or(240);
-    let t = tokio::task::spawn_blocking(move || {
-        glaux_mcp::transcribe::transcribe_clip_commands(
-            &project,
-            std::path::Path::new(&dir),
-            &cid,
-            dest.as_ref(),
-            q,
-            &glaux_engine::transcribe::TranscribeOptions::default(),
-            mode,
-        )
+    guard::catching("transcribe_clip", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let mode = glaux_mcp::transcribe::TranscribeMode::parse(mode.as_deref())?;
+        let dest = match dest_track_id {
+            Some(id) => Some(glaux_core::TrackId::parse(&id).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let q = quantize_ticks.unwrap_or(240);
+        let t = tokio::task::spawn_blocking(move || {
+            glaux_mcp::transcribe::transcribe_clip_commands(
+                &project,
+                std::path::Path::new(&dir),
+                &cid,
+                dest.as_ref(),
+                q,
+                &glaux_engine::transcribe::TranscribeOptions::default(),
+                mode,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let label = glaux_core::tr!(
+            "音声クリップを譜起こし({} ノート)",
+            "Transcribe audio clip ({} notes)",
+            t.note_count
+        );
+        let (_, m) = state
+            .handle
+            .apply(
+                Command::batch(label.clone(), t.commands),
+                Author::Human,
+                label,
+            )
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "clip_id": t.clip_id,
+            "track_id": t.track_id,
+            "note_count": t.note_count,
+            "created_track": t.created_track,
+            "project_version": m.project_version,
+        }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let label = glaux_core::tr!(
-        "音声クリップを譜起こし({} ノート)",
-        "Transcribe audio clip ({} notes)",
-        t.note_count
-    );
-    let (_, m) = state
-        .handle
-        .apply(
-            Command::batch(label.clone(), t.commands),
-            Author::Human,
-            label,
-        )
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({
-        "clip_id": t.clip_id,
-        "track_id": t.track_id,
-        "note_count": t.note_count,
-        "created_track": t.created_track,
-        "project_version": m.project_version,
-    }))
 }
 
 // ---- 録音 ------------------------------------------------------------------
@@ -897,26 +971,30 @@ async fn record_start(
     metronome: Option<bool>,
     stereo: Option<bool>,
 ) -> Result<Value, String> {
-    let engine = state.engine()?.clone();
-    let dir = state.project_dir();
-    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let path = std::path::PathBuf::from(&dir).join(format!("audio/rec_{stamp}.wav"));
-    // カウントインの長さ: 現在位置の拍子で bars 小節
-    let (project, _) = state.handle.get_project_shared().await?;
-    let count_in =
-        Tick(bar_ticks_at(&project, engine.playhead_tick()) * count_in_bars.unwrap_or(1) as u64);
-    let clip_start = engine
-        .start_recording(
-            path,
-            count_in,
-            latency_ms.unwrap_or(0.0).clamp(0.0, 1000.0) / 1000.0,
-            metronome.unwrap_or(true),
-            stereo.unwrap_or(false),
-        )
-        .map_err(|e| e.to_string())?;
-    engine.play();
-    engine.mark_play_started();
-    Ok(json!({ "clip_start": clip_start, "count_in_ticks": count_in }))
+    guard::catching("record_start", async move {
+        let engine = state.engine()?.clone();
+        let dir = state.project_dir();
+        let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let path = std::path::PathBuf::from(&dir).join(format!("audio/rec_{stamp}.wav"));
+        // カウントインの長さ: 現在位置の拍子で bars 小節
+        let (project, _) = state.handle.get_project_shared().await?;
+        let count_in = Tick(
+            bar_ticks_at(&project, engine.playhead_tick()) * count_in_bars.unwrap_or(1) as u64,
+        );
+        let clip_start = engine
+            .start_recording(
+                path,
+                count_in,
+                latency_ms.unwrap_or(0.0).clamp(0.0, 1000.0) / 1000.0,
+                metronome.unwrap_or(true),
+                stereo.unwrap_or(false),
+            )
+            .map_err(|e| e.to_string())?;
+        engine.play();
+        engine.mark_play_started();
+        Ok(json!({ "clip_start": clip_start, "count_in_ticks": count_in }))
+    })
+    .await
 }
 
 /// 音声クリップをパートに分離し、パートごとの音声トラックに置く(履歴 1 件)。
@@ -927,31 +1005,39 @@ async fn separate_clip(
     clip_id: String,
     method: Option<String>,
 ) -> Result<Value, String> {
-    let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
-    let method = glaux_mcp::stems::SeparateMethod::parse(method.as_deref())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let s = tokio::task::spawn_blocking(move || {
-        glaux_mcp::stems::separate_clip_commands(&project, std::path::Path::new(&dir), &cid, method)
+    guard::catching("separate_clip", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let method = glaux_mcp::stems::SeparateMethod::parse(method.as_deref())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let s = tokio::task::spawn_blocking(move || {
+            glaux_mcp::stems::separate_clip_commands(
+                &project,
+                std::path::Path::new(&dir),
+                &cid,
+                method,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let names: Vec<String> = s.tracks.iter().map(|(n, _)| n.clone()).collect();
+        let label = glaux_core::tr!(
+            "音声クリップをパートに分離({})",
+            "Separate audio clip into parts ({})",
+            names.join(" / ")
+        );
+        let (_, m) = state
+            .handle
+            .apply(
+                Command::batch(label.clone(), s.commands),
+                Author::Human,
+                label,
+            )
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "parts": names, "project_version": m.project_version }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let names: Vec<String> = s.tracks.iter().map(|(n, _)| n.clone()).collect();
-    let label = glaux_core::tr!(
-        "音声クリップをパートに分離({})",
-        "Separate audio clip into parts ({})",
-        names.join(" / ")
-    );
-    let (_, m) = state
-        .handle
-        .apply(
-            Command::batch(label.clone(), s.commands),
-            Author::Human,
-            label,
-        )
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "parts": names, "project_version": m.project_version }))
 }
 
 // ---- CLAP プラグイン ----
@@ -959,34 +1045,37 @@ async fn separate_clip(
 /// インストール済みの CLAP プラグイン一覧(rescan で探し直す)と、探している場所。
 #[tauri::command]
 async fn clap_plugins(rescan: Option<bool>) -> Result<Value, String> {
-    let list = tokio::task::spawn_blocking(move || {
-        if rescan.unwrap_or(false) {
-            glaux_engine::plugins::rescan()
-        } else {
-            glaux_engine::plugins::catalog()
-        }
+    guard::catching("clap_plugins", async move {
+        let list = tokio::task::spawn_blocking(move || {
+            if rescan.unwrap_or(false) {
+                glaux_engine::plugins::rescan()
+            } else {
+                glaux_engine::plugins::catalog()
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let plugins: Vec<Value> = list
+            .iter()
+            .map(|p| {
+                json!({
+                    "id": p.id,
+                    "name": p.name,
+                    "vendor": p.vendor,
+                    "version": p.version,
+                    "path": p.path.to_string_lossy(),
+                    "instrument": p.is_instrument(),
+                    "effect": p.is_effect(),
+                })
+            })
+            .collect();
+        let dirs: Vec<String> = glaux_engine::plugins::search_paths()
+            .iter()
+            .map(|d| d.to_string_lossy().into_owned())
+            .collect();
+        Ok(json!({ "plugins": plugins, "dirs": dirs }))
     })
     .await
-    .map_err(|e| e.to_string())?;
-    let plugins: Vec<Value> = list
-        .iter()
-        .map(|p| {
-            json!({
-                "id": p.id,
-                "name": p.name,
-                "vendor": p.vendor,
-                "version": p.version,
-                "path": p.path.to_string_lossy(),
-                "instrument": p.is_instrument(),
-                "effect": p.is_effect(),
-            })
-        })
-        .collect();
-    let dirs: Vec<String> = glaux_engine::plugins::search_paths()
-        .iter()
-        .map(|d| d.to_string_lossy().into_owned())
-        .collect();
-    Ok(json!({ "plugins": plugins, "dirs": dirs }))
 }
 
 /// CLAP プラグインの持ち主(トラックの音源なら track_id、エフェクトなら fx_id)。
@@ -1017,7 +1106,10 @@ async fn clap_save_state(
     track_id: Option<String>,
     fx_id: Option<String>,
 ) -> Result<Value, String> {
-    save_clap_state(&state, plugin_owner(track_id, fx_id)?).await
+    guard::catching("clap_save_state", async move {
+        save_clap_state(&state, plugin_owner(track_id, fx_id)?).await
+    })
+    .await
 }
 
 /// CLAP プラグイン(音源は track_id、エフェクトは fx_id)のプリセット一覧(UI 用に全件)。
@@ -1028,20 +1120,23 @@ async fn clap_presets(
     fx_id: Option<String>,
     rescan: Option<bool>,
 ) -> Result<Value, String> {
-    let owner = plugin_owner(track_id, fx_id)?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    tokio::task::spawn_blocking(move || {
-        glaux_mcp::clap_presets::list(
-            &project,
-            &owner,
-            None,
-            None,
-            usize::MAX,
-            rescan.unwrap_or(false),
-        )
+    guard::catching("clap_presets", async move {
+        let owner = plugin_owner(track_id, fx_id)?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        tokio::task::spawn_blocking(move || {
+            glaux_mcp::clap_presets::list(
+                &project,
+                &owner,
+                None,
+                None,
+                usize::MAX,
+                rescan.unwrap_or(false),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// CLAP プラグイン(音源は track_id、エフェクトは fx_id)にプリセットを読み込む(履歴 1 件)。
@@ -1052,19 +1147,22 @@ async fn clap_load_preset(
     fx_id: Option<String>,
     preset: String,
 ) -> Result<Value, String> {
-    let owner = plugin_owner(track_id, fx_id)?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let (command, label, name) = tokio::task::spawn_blocking(move || {
-        glaux_mcp::clap_presets::load_command(&project, &owner, &preset)
+    guard::catching("clap_load_preset", async move {
+        let owner = plugin_owner(track_id, fx_id)?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let (command, label, name) = tokio::task::spawn_blocking(move || {
+            glaux_mcp::clap_presets::load_command(&project, &owner, &preset)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let (_, m) = state
+            .handle
+            .apply(command, Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "preset": name, "project_version": m.project_version }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let (_, m) = state
-        .handle
-        .apply(command, Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "preset": name, "project_version": m.project_version }))
 }
 
 /// プラグインの画面を開く(開いていれば前面へ)。音源なら track_id、エフェクトなら fx_id。
@@ -1074,37 +1172,40 @@ async fn clap_open_gui(
     track_id: Option<String>,
     fx_id: Option<String>,
 ) -> Result<(), String> {
-    use glaux_engine::plugins::PluginOwner;
-    let owner = plugin_owner(track_id, fx_id)?;
-    let engine = state.engine()?.clone();
-    let (project, _) = state.handle.get_project_shared().await?;
-    let (source, place) = match &owner {
-        PluginOwner::Track(tid) => {
-            let track = project.track(tid).ok_or_else(|| {
-                glaux_core::tr!("トラックが見つかりません: {tid}", "Track not found: {tid}")
-            })?;
-            (
-                track.device.as_ref().map(|d| d.source.clone()),
-                track.name.clone(),
-            )
-        }
-        PluginOwner::Effect(fx) => {
-            let (effect, place) = find_effect(&project, fx)?;
-            (Some(effect.source.clone()), place)
-        }
-    };
-    let plugin_name = match source {
-        Some(glaux_core::PluginSource::Clap { plugin_id, .. }) => {
-            glaux_engine::plugins::find(&plugin_id)
-                .map(|p| p.name)
-                .unwrap_or(plugin_id)
-        }
-        _ => return Err(t("CLAP プラグインではありません", "Not a CLAP plugin").to_owned()),
-    };
-    let title = format!("{plugin_name} — {place}");
-    tokio::task::spawn_blocking(move || engine.open_plugin_gui(&owner, &title))
-        .await
-        .map_err(|e| e.to_string())?
+    guard::catching("clap_open_gui", async move {
+        use glaux_engine::plugins::PluginOwner;
+        let owner = plugin_owner(track_id, fx_id)?;
+        let engine = state.engine()?.clone();
+        let (project, _) = state.handle.get_project_shared().await?;
+        let (source, place) = match &owner {
+            PluginOwner::Track(tid) => {
+                let track = project.track(tid).ok_or_else(|| {
+                    glaux_core::tr!("トラックが見つかりません: {tid}", "Track not found: {tid}")
+                })?;
+                (
+                    track.device.as_ref().map(|d| d.source.clone()),
+                    track.name.clone(),
+                )
+            }
+            PluginOwner::Effect(fx) => {
+                let (effect, place) = find_effect(&project, fx)?;
+                (Some(effect.source.clone()), place)
+            }
+        };
+        let plugin_name = match source {
+            Some(glaux_core::PluginSource::Clap { plugin_id, .. }) => {
+                glaux_engine::plugins::find(&plugin_id)
+                    .map(|p| p.name)
+                    .unwrap_or(plugin_id)
+            }
+            _ => return Err(t("CLAP プラグインではありません", "Not a CLAP plugin").to_owned()),
+        };
+        let title = format!("{plugin_name} — {place}");
+        tokio::task::spawn_blocking(move || engine.open_plugin_gui(&owner, &title))
+            .await
+            .map_err(|e| e.to_string())?
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1306,15 +1407,19 @@ async fn midi_record_start(
     count_in_bars: Option<u32>,
     metronome: Option<bool>,
 ) -> Result<Value, String> {
-    let engine = state.engine()?.clone();
-    let (project, _) = state.handle.get_project_shared().await?;
-    let count_in =
-        Tick(bar_ticks_at(&project, engine.playhead_tick()) * count_in_bars.unwrap_or(1) as u64);
-    let clip_start = engine
-        .start_midi_recording(count_in, metronome.unwrap_or(true))
-        .map_err(|e| e.to_string())?;
-    engine.play();
-    Ok(json!({ "clip_start": clip_start, "count_in_ticks": count_in }))
+    guard::catching("midi_record_start", async move {
+        let engine = state.engine()?.clone();
+        let (project, _) = state.handle.get_project_shared().await?;
+        let count_in = Tick(
+            bar_ticks_at(&project, engine.playhead_tick()) * count_in_bars.unwrap_or(1) as u64,
+        );
+        let clip_start = engine
+            .start_midi_recording(count_in, metronome.unwrap_or(true))
+            .map_err(|e| e.to_string())?;
+        engine.play();
+        Ok(json!({ "clip_start": clip_start, "count_in_ticks": count_in }))
+    })
+    .await
 }
 
 /// MIDI 録音を止めて、弾いたノートを MIDI クリップとして置く(履歴 1 件)。
@@ -1326,93 +1431,96 @@ async fn midi_record_stop(
     track_id: Option<String>,
     quantize_ticks: Option<u64>,
 ) -> Result<Value, String> {
-    let engine = state.engine()?.clone();
-    engine.pause();
-    let outcome = engine.stop_midi_recording().map_err(|e| e.to_string())?;
-    let notes = glaux_engine::midi::take_to_notes(
-        &outcome.notes,
-        outcome.clip_start,
-        quantize_ticks.unwrap_or(0),
-    );
-    if notes.is_empty() {
-        return Err(t(
-            "カウントインより後に弾かれたノートがありませんでした",
-            "No notes were played after the count-in",
-        )
-        .to_owned());
-    }
-    let (project, _) = state.handle.get_project_shared().await?;
-    let is_midi = |id: &glaux_core::TrackId| {
-        project
-            .tracks
-            .iter()
-            .any(|t| &t.id == id && t.kind == glaux_core::TrackKind::Midi)
-    };
-    let mut cmds = Vec::new();
-    let requested = track_id
-        .filter(|s| !s.is_empty())
-        .map(|s| glaux_core::TrackId::parse(&s).map_err(|e| e.to_string()))
-        .transpose()?;
-    let tid = match requested
-        .or_else(|| engine.live_target())
-        .filter(|id| is_midi(id))
-        .or_else(|| {
+    guard::catching("midi_record_stop", async move {
+        let engine = state.engine()?.clone();
+        engine.pause();
+        let outcome = engine.stop_midi_recording().map_err(|e| e.to_string())?;
+        let notes = glaux_engine::midi::take_to_notes(
+            &outcome.notes,
+            outcome.clip_start,
+            quantize_ticks.unwrap_or(0),
+        );
+        if notes.is_empty() {
+            return Err(t(
+                "カウントインより後に弾かれたノートがありませんでした",
+                "No notes were played after the count-in",
+            )
+            .to_owned());
+        }
+        let (project, _) = state.handle.get_project_shared().await?;
+        let is_midi = |id: &glaux_core::TrackId| {
             project
                 .tracks
                 .iter()
-                .find(|t| t.kind == glaux_core::TrackKind::Midi)
-                .map(|t| t.id.clone())
-        }) {
-        Some(id) => id,
-        None => {
-            let id = glaux_core::TrackId::new();
-            cmds.push(Command::AddTrack {
-                track: glaux_core::Track::new(
-                    id.clone(),
-                    t("MIDI 録音", "MIDI Recording"),
-                    glaux_core::TrackKind::Midi,
-                ),
-                index: None,
-            });
-            id
+                .any(|t| &t.id == id && t.kind == glaux_core::TrackKind::Midi)
+        };
+        let mut cmds = Vec::new();
+        let requested = track_id
+            .filter(|s| !s.is_empty())
+            .map(|s| glaux_core::TrackId::parse(&s).map_err(|e| e.to_string()))
+            .transpose()?;
+        let tid = match requested
+            .or_else(|| engine.live_target())
+            .filter(|id| is_midi(id))
+            .or_else(|| {
+                project
+                    .tracks
+                    .iter()
+                    .find(|t| t.kind == glaux_core::TrackKind::Midi)
+                    .map(|t| t.id.clone())
+            }) {
+            Some(id) => id,
+            None => {
+                let id = glaux_core::TrackId::new();
+                cmds.push(Command::AddTrack {
+                    track: glaux_core::Track::new(
+                        id.clone(),
+                        t("MIDI 録音", "MIDI Recording"),
+                        glaux_core::TrackKind::Midi,
+                    ),
+                    index: None,
+                });
+                id
+            }
+        };
+        // クリップ長: 最後のノートの終わり(と停止位置)を小節単位に切り上げ
+        let bar = bar_ticks_at(&project, outcome.clip_start).max(1);
+        let last_end = notes.iter().map(|n| n.end().0).max().unwrap_or(0);
+        let played = outcome.stop_tick.0.saturating_sub(outcome.clip_start.0);
+        let length = Tick(last_end.max(played).div_ceil(bar).max(1) * bar);
+        let clip_id = glaux_core::ClipId::new();
+        let name = glaux_core::tr!(
+            "MIDI 録音 {}",
+            "MIDI Recording {}",
+            chrono::Local::now().format("%H:%M")
+        );
+        let count = notes.len();
+        let mut clip =
+            glaux_core::Clip::new_midi(clip_id.clone(), name.clone(), outcome.clip_start, length);
+        if let Some(ns) = clip.notes_mut() {
+            *ns = notes;
         }
-    };
-    // クリップ長: 最後のノートの終わり(と停止位置)を小節単位に切り上げ
-    let bar = bar_ticks_at(&project, outcome.clip_start).max(1);
-    let last_end = notes.iter().map(|n| n.end().0).max().unwrap_or(0);
-    let played = outcome.stop_tick.0.saturating_sub(outcome.clip_start.0);
-    let length = Tick(last_end.max(played).div_ceil(bar).max(1) * bar);
-    let clip_id = glaux_core::ClipId::new();
-    let name = glaux_core::tr!(
-        "MIDI 録音 {}",
-        "MIDI Recording {}",
-        chrono::Local::now().format("%H:%M")
-    );
-    let count = notes.len();
-    let mut clip =
-        glaux_core::Clip::new_midi(clip_id.clone(), name.clone(), outcome.clip_start, length);
-    if let Some(ns) = clip.notes_mut() {
-        *ns = notes;
-    }
-    cmds.push(Command::AddClip {
-        track: tid.clone(),
-        clip,
-    });
-    let label = glaux_core::tr!(
-        "{name}(ノート {count} 個)を配置",
-        "Place {name} ({count} notes)"
-    );
-    let (_, m) = state
-        .handle
-        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({
-        "clip_id": clip_id,
-        "track_id": tid,
-        "notes": count,
-        "project_version": m.project_version,
-    }))
+        cmds.push(Command::AddClip {
+            track: tid.clone(),
+            clip,
+        });
+        let label = glaux_core::tr!(
+            "{name}(ノート {count} 個)を配置",
+            "Place {name} ({count} notes)"
+        );
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "clip_id": clip_id,
+            "track_id": tid,
+            "notes": count,
+            "project_version": m.project_version,
+        }))
+    })
+    .await
 }
 
 /// 録音を止めて WAV を確定し、音声トラックのクリップとして置く(履歴 1 件)。
@@ -1423,131 +1531,135 @@ async fn record_stop(
     track_id: Option<String>,
     auto_gain: Option<bool>,
 ) -> Result<Value, String> {
-    let engine = state.engine()?.clone();
-    engine.pause();
-    let outcome = engine.stop_recording().map_err(|e| e.to_string())?;
-    let (result, start_tick, offset) = (outcome.result, outcome.clip_start, outcome.offset_samples);
-    if result.frames <= offset {
-        let _ = std::fs::remove_file(&result.path);
-        return Err(t(
-            "カウントインより後に録音データがありません",
-            "No recorded audio after the count-in",
-        )
-        .to_owned());
-    }
-    if result.frames == 0 {
-        let _ = std::fs::remove_file(&result.path);
-        return Err(t(
-            "録音データが空でした(入力デバイスの設定を確認してください)",
-            "The recording was empty (check the input device settings)",
-        )
-        .to_owned());
-    }
-    let dir = state.project_dir();
-    // 取り込み(ハッシュとコピー。1 分で約 23MB)は画面の応答を止めないよう別のスレッドで
-    let imported = {
-        let (dir, tmp) = (dir.clone(), result.path.clone());
-        tokio::task::spawn_blocking(move || {
-            let r = glaux_mcp::assets::import_wav(std::path::Path::new(&dir), &tmp);
-            // 一時ファイルはハッシュ名でコピー済みなので消す
-            let _ = std::fs::remove_file(&tmp);
-            r
-        })
-        .await
-        .map_err(|e| e.to_string())??
-    };
-
-    let (project, _) = state.handle.get_project_shared().await?;
-    let mut cmds = Vec::new();
-    let tid = match track_id {
-        Some(id) => glaux_core::TrackId::parse(&id).map_err(|e| e.to_string())?,
-        None => match project
-            .tracks
-            .iter()
-            .find(|t| t.kind == glaux_core::TrackKind::Audio)
-        {
-            Some(t) => t.id.clone(),
-            None => {
-                let id = glaux_core::TrackId::new();
-                cmds.push(Command::AddTrack {
-                    track: glaux_core::Track::new(
-                        id.clone(),
-                        t("録音", "Recording"),
-                        glaux_core::TrackKind::Audio,
-                    ),
-                    index: None,
-                });
-                id
-            }
-        },
-    };
-    // 新設トラックはまだ project に無いので、仮に足したコピーでコマンドを組む
-    let mut project_view = (*project).clone();
-    if let Some(Command::AddTrack { track, .. }) = cmds.first() {
-        project_view.tracks.push(track.clone());
-    }
-    let clip_id = glaux_core::ClipId::new();
-    let name = glaux_core::tr!(
-        "録音 {}",
-        "Recording {}",
-        chrono::Local::now().format("%H:%M")
-    );
-    cmds.extend(glaux_mcp::assets::audio_clip_commands_with_offset(
-        &project_view,
-        &tid,
-        &imported,
-        clip_id.clone(),
-        start_tick,
-        &name,
-        offset,
-    )?);
-    // 自動音量調整: 使う範囲のピークが -6dBFS になるようクリップの音量で持ち上げる
-    // (元の波形は変えない。下げはしない)
-    let mut gain_db = 0.0f32;
-    if auto_gain.unwrap_or(true) {
-        let wav = std::path::Path::new(&dir).join(&imported.asset.path);
-        // 録った音を全部読んでピークを測る(長い録音では重いので別のスレッドで)
-        let peak = tokio::task::spawn_blocking(move || {
-            let data = glaux_engine::load_wav(&wav).ok()?;
-            // ステレオは左右それぞれのピーク
-            let (l, r) = data.left_right();
-            let from = (offset as usize).min(l.len());
-            Some(
-                l[from..]
-                    .iter()
-                    .chain(&r[from..])
-                    .fold(0.0f32, |m, v| m.max(v.abs())),
+    guard::catching("record_stop", async move {
+        let engine = state.engine()?.clone();
+        engine.pause();
+        let outcome = engine.stop_recording().map_err(|e| e.to_string())?;
+        let (result, start_tick, offset) =
+            (outcome.result, outcome.clip_start, outcome.offset_samples);
+        if result.frames <= offset {
+            let _ = std::fs::remove_file(&result.path);
+            return Err(t(
+                "カウントインより後に録音データがありません",
+                "No recorded audio after the count-in",
             )
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        if let Some(peak) = peak.filter(|p| *p > 1e-4) {
-            gain_db = (-6.0 - 20.0 * peak.log10()).clamp(0.0, 30.0);
+            .to_owned());
         }
-        for c in &mut cmds {
-            if let Command::AddClip { clip, .. } = c {
-                if let glaux_core::ClipContent::Audio { gain_db: g, .. } = &mut clip.content {
-                    *g = gain_db;
+        if result.frames == 0 {
+            let _ = std::fs::remove_file(&result.path);
+            return Err(t(
+                "録音データが空でした(入力デバイスの設定を確認してください)",
+                "The recording was empty (check the input device settings)",
+            )
+            .to_owned());
+        }
+        let dir = state.project_dir();
+        // 取り込み(ハッシュとコピー。1 分で約 23MB)は画面の応答を止めないよう別のスレッドで
+        let imported = {
+            let (dir, tmp) = (dir.clone(), result.path.clone());
+            tokio::task::spawn_blocking(move || {
+                let r = glaux_mcp::assets::import_wav(std::path::Path::new(&dir), &tmp);
+                // 一時ファイルはハッシュ名でコピー済みなので消す
+                let _ = std::fs::remove_file(&tmp);
+                r
+            })
+            .await
+            .map_err(|e| e.to_string())??
+        };
+
+        let (project, _) = state.handle.get_project_shared().await?;
+        let mut cmds = Vec::new();
+        let tid = match track_id {
+            Some(id) => glaux_core::TrackId::parse(&id).map_err(|e| e.to_string())?,
+            None => match project
+                .tracks
+                .iter()
+                .find(|t| t.kind == glaux_core::TrackKind::Audio)
+            {
+                Some(t) => t.id.clone(),
+                None => {
+                    let id = glaux_core::TrackId::new();
+                    cmds.push(Command::AddTrack {
+                        track: glaux_core::Track::new(
+                            id.clone(),
+                            t("録音", "Recording"),
+                            glaux_core::TrackKind::Audio,
+                        ),
+                        index: None,
+                    });
+                    id
+                }
+            },
+        };
+        // 新設トラックはまだ project に無いので、仮に足したコピーでコマンドを組む
+        let mut project_view = (*project).clone();
+        if let Some(Command::AddTrack { track, .. }) = cmds.first() {
+            project_view.tracks.push(track.clone());
+        }
+        let clip_id = glaux_core::ClipId::new();
+        let name = glaux_core::tr!(
+            "録音 {}",
+            "Recording {}",
+            chrono::Local::now().format("%H:%M")
+        );
+        cmds.extend(glaux_mcp::assets::audio_clip_commands_with_offset(
+            &project_view,
+            &tid,
+            &imported,
+            clip_id.clone(),
+            start_tick,
+            &name,
+            offset,
+        )?);
+        // 自動音量調整: 使う範囲のピークが -6dBFS になるようクリップの音量で持ち上げる
+        // (元の波形は変えない。下げはしない)
+        let mut gain_db = 0.0f32;
+        if auto_gain.unwrap_or(true) {
+            let wav = std::path::Path::new(&dir).join(&imported.asset.path);
+            // 録った音を全部読んでピークを測る(長い録音では重いので別のスレッドで)
+            let peak = tokio::task::spawn_blocking(move || {
+                let data = glaux_engine::load_wav(&wav).ok()?;
+                // ステレオは左右それぞれのピーク
+                let (l, r) = data.left_right();
+                let from = (offset as usize).min(l.len());
+                Some(
+                    l[from..]
+                        .iter()
+                        .chain(&r[from..])
+                        .fold(0.0f32, |m, v| m.max(v.abs())),
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            if let Some(peak) = peak.filter(|p| *p > 1e-4) {
+                gain_db = (-6.0 - 20.0 * peak.log10()).clamp(0.0, 30.0);
+            }
+            for c in &mut cmds {
+                if let Command::AddClip { clip, .. } = c {
+                    if let glaux_core::ClipContent::Audio { gain_db: g, .. } = &mut clip.content {
+                        *g = gain_db;
+                    }
                 }
             }
         }
-    }
-    let label = glaux_core::tr!("{name}(録音)を配置", "Place {name} (recording)");
-    let (_, m) = state
-        .handle
-        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({
-        "clip_id": clip_id,
-        "track_id": tid,
-        "seconds": (result.frames - offset) as f64 / result.sample_rate as f64,
-        "channels": result.channels,
-        "clipped": result.clipped,
-        "dropped": result.dropped,
-        "gain_db": gain_db,
-        "project_version": m.project_version,
-    }))
+        let label = glaux_core::tr!("{name}(録音)を配置", "Place {name} (recording)");
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "clip_id": clip_id,
+            "track_id": tid,
+            "seconds": (result.frames - offset) as f64 / result.sample_rate as f64,
+            "channels": result.channels,
+            "clipped": result.clipped,
+            "dropped": result.dropped,
+            "gain_db": gain_db,
+            "project_version": m.project_version,
+        }))
+    })
+    .await
 }
 
 // ---- オーディオデバイス ----------------------------------------------------
@@ -1589,46 +1701,52 @@ async fn set_output_device(
     state: State<'_, AppState>,
     name: Option<String>,
 ) -> Result<Value, String> {
-    let engine = state.engine()?.clone();
-    let name = name.filter(|n| !n.is_empty());
-    let result = {
-        let engine = engine.clone();
-        tokio::task::spawn_blocking(move || engine.set_output_device(name))
+    guard::catching("set_output_device", async move {
+        let engine = state.engine()?.clone();
+        let name = name.filter(|n| !n.is_empty());
+        let result = {
+            let engine = engine.clone();
+            tokio::task::spawn_blocking(move || engine.set_output_device(name))
+                .await
+                .map_err(|e| e.to_string())?
+        };
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        {
+            let engine = engine.clone();
+            tokio::task::spawn_blocking(move || {
+                engine.set_project(&project, std::path::Path::new(&dir))
+            })
             .await
-            .map_err(|e| e.to_string())?
-    };
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    {
-        let engine = engine.clone();
-        tokio::task::spawn_blocking(move || {
-            engine.set_project(&project, std::path::Path::new(&dir))
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    }
-    result.map_err(|e| e.to_string())?;
-    Ok(json!({ "current_output": engine.output_device(), "sample_rate": engine.sample_rate() }))
+            .map_err(|e| e.to_string())?;
+        }
+        result.map_err(|e| e.to_string())?;
+        Ok(json!({ "current_output": engine.output_device(), "sample_rate": engine.sample_rate() }))
+    })
+    .await
 }
 
 /// 出力バッファの大きさ(フレーム)を変えて開き直す。0 なら既定(1024)
 #[tauri::command]
 async fn set_buffer_size(state: State<'_, AppState>, frames: u32) -> Result<Value, String> {
-    let engine = state.engine()?.clone();
-    let frames = if frames == 0 {
-        glaux_engine::output::DEFAULT_BUFFER_FRAMES
-    } else {
-        frames
-    };
-    {
-        let engine = engine.clone();
-        tokio::task::spawn_blocking(move || engine.set_buffer_frames(frames))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-    }
-    let b = engine.buffer_info();
-    Ok(json!({ "requested": b.requested, "applied": b.applied, "min": b.min, "max": b.max }))
+    guard::catching("set_buffer_size", async move {
+        let engine = state.engine()?.clone();
+        let frames = if frames == 0 {
+            glaux_engine::output::DEFAULT_BUFFER_FRAMES
+        } else {
+            frames
+        };
+        {
+            let engine = engine.clone();
+            tokio::task::spawn_blocking(move || engine.set_buffer_frames(frames))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+        }
+        let b = engine.buffer_info();
+        Ok(json!({ "requested": b.requested, "applied": b.applied, "min": b.min, "max": b.max }))
+    })
+    .await
 }
 
 /// 録音に使う入力デバイス(name 省略 = OS 既定)。
@@ -1654,97 +1772,106 @@ fn input_monitor(state: State<'_, AppState>, on: bool) -> Result<(), String> {
 /// 8 拍を録音する。戻り値の秒数が経ったら calibrate_stop を呼ぶ。
 #[tauri::command]
 async fn calibrate_start(state: State<'_, AppState>) -> Result<Value, String> {
-    let engine = state.engine()?.clone();
-    if engine.is_recording() {
-        return Err(t("録音中は較正できません", "Can't calibrate while recording").to_owned());
-    }
-    let (project, _) = state.handle.get_project_shared().await?;
-    let saved = engine.playhead_tick();
-    engine.pause();
-    engine.seek_tick(Tick(0));
-    engine.set_click_only(true);
-    let sig = project.time_sig_map.first();
-    let (num, den) = sig
-        .map(|e| (e.num as u64, e.den.max(1) as u64))
-        .unwrap_or((4, 4));
-    let beat_ticks = 3840 / den;
-    let count_in = Tick(beat_ticks * num);
-    let path = std::env::temp_dir().join(format!(
-        "glaux_calib_{}.wav",
-        chrono::Local::now().format("%H%M%S")
-    ));
-    let clip_start = match engine.start_recording(path, count_in, 0.0, true, false) {
-        Ok(t) => t,
-        Err(e) => {
-            engine.set_click_only(false);
-            engine.seek_tick(saved);
-            return Err(e.to_string());
+    guard::catching("calibrate_start", async move {
+        let engine = state.engine()?.clone();
+        if engine.is_recording() {
+            return Err(t("録音中は較正できません", "Can't calibrate while recording").to_owned());
         }
-    };
-    const BEATS: u64 = 8;
-    let tempo = &project.tempo_map;
-    let base = tempo.tick_to_seconds(clip_start);
-    let beats: Vec<f64> = (0..BEATS)
-        .map(|k| tempo.tick_to_seconds(clip_start + Tick(k * beat_ticks)) - base)
-        .collect();
-    let total = tempo.tick_to_seconds(clip_start + Tick(BEATS * beat_ticks)) + 0.4;
-    *state.calib.lock().expect("calib lock") = Some((saved, beats));
-    engine.play();
-    engine.mark_play_started();
-    Ok(json!({
-        "total_secs": total,
-        "count_in_secs": tempo.tick_to_seconds(count_in),
-        "beats": BEATS,
-    }))
+        let (project, _) = state.handle.get_project_shared().await?;
+        let saved = engine.playhead_tick();
+        engine.pause();
+        engine.seek_tick(Tick(0));
+        engine.set_click_only(true);
+        let sig = project.time_sig_map.first();
+        let (num, den) = sig
+            .map(|e| (e.num as u64, e.den.max(1) as u64))
+            .unwrap_or((4, 4));
+        let beat_ticks = 3840 / den;
+        let count_in = Tick(beat_ticks * num);
+        let path = std::env::temp_dir().join(format!(
+            "glaux_calib_{}.wav",
+            chrono::Local::now().format("%H%M%S")
+        ));
+        let clip_start = match engine.start_recording(path, count_in, 0.0, true, false) {
+            Ok(t) => t,
+            Err(e) => {
+                engine.set_click_only(false);
+                engine.seek_tick(saved);
+                return Err(e.to_string());
+            }
+        };
+        const BEATS: u64 = 8;
+        let tempo = &project.tempo_map;
+        let base = tempo.tick_to_seconds(clip_start);
+        let beats: Vec<f64> = (0..BEATS)
+            .map(|k| tempo.tick_to_seconds(clip_start + Tick(k * beat_ticks)) - base)
+            .collect();
+        let total = tempo.tick_to_seconds(clip_start + Tick(BEATS * beat_ticks)) + 0.4;
+        *state.calib.lock().expect("calib lock") = Some((saved, beats));
+        engine.play();
+        engine.mark_play_started();
+        Ok(json!({
+            "total_secs": total,
+            "count_in_secs": tempo.tick_to_seconds(count_in),
+            "beats": BEATS,
+        }))
+    })
+    .await
 }
 
 /// 較正を終えて遅延を推定する(失敗しても再生状態は元に戻す)。
 #[tauri::command]
 async fn calibrate_stop(state: State<'_, AppState>) -> Result<Value, String> {
-    let engine = state.engine()?.clone();
-    engine.pause();
-    let taken = state.calib.lock().expect("calib lock").take();
-    let outcome = engine.stop_recording();
-    engine.set_click_only(false);
-    let Some((saved, beats)) = taken else {
-        return Err(t("較正を開始していません", "Calibration hasn't started").to_owned());
-    };
-    engine.seek_tick(saved);
-    let outcome = outcome.map_err(|e| e.to_string())?;
-    let path = outcome.result.path.clone();
-    let est = tokio::task::spawn_blocking(move || {
-        let mut data = glaux_engine::load_wav_mono(&path)?;
-        let from = (outcome.offset_samples as usize).min(data.frames.len());
-        data.frames.drain(..from);
-        let _ = std::fs::remove_file(&path);
-        glaux_engine::calibrate::estimate_latency(&data, &beats)
+    guard::catching("calibrate_stop", async move {
+        let engine = state.engine()?.clone();
+        engine.pause();
+        let taken = state.calib.lock().expect("calib lock").take();
+        let outcome = engine.stop_recording();
+        engine.set_click_only(false);
+        let Some((saved, beats)) = taken else {
+            return Err(t("較正を開始していません", "Calibration hasn't started").to_owned());
+        };
+        engine.seek_tick(saved);
+        let outcome = outcome.map_err(|e| e.to_string())?;
+        let path = outcome.result.path.clone();
+        let est = tokio::task::spawn_blocking(move || {
+            let mut data = glaux_engine::load_wav_mono(&path)?;
+            let from = (outcome.offset_samples as usize).min(data.frames.len());
+            data.frames.drain(..from);
+            let _ = std::fs::remove_file(&path);
+            glaux_engine::calibrate::estimate_latency(&data, &beats)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(json!(est))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    Ok(json!(est))
 }
 
 /// 音作りビュー用: トラックの音源・エフェクトの spec + 現在値 + path。
 /// 追加できるエフェクトのカタログは [`get_effect_catalog`] で別に取る。
 #[tauri::command]
 async fn get_track_params(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, version) = state.handle.get_project_shared().await?;
-    if project.track(&tid).is_none() {
-        return Err(glaux_core::tr!(
-            "トラックが見つかりません: {track_id}",
-            "Track not found: {track_id}"
-        ));
-    }
-    // CLAP のつまみは初めてのとき、プラグインを読み込んで一覧を作るので別のスレッドで
-    let mut v = off_thread(move || {
-        let track = project.track(&tid).expect("確かめ済み");
-        glaux_mcp::server::track_params_json(track)
+    guard::catching("get_track_params", async move {
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, version) = state.handle.get_project_shared().await?;
+        if project.track(&tid).is_none() {
+            return Err(glaux_core::tr!(
+                "トラックが見つかりません: {track_id}",
+                "Track not found: {track_id}"
+            ));
+        }
+        // CLAP のつまみは初めてのとき、プラグインを読み込んで一覧を作るので別のスレッドで
+        let mut v = off_thread(move || {
+            let track = project.track(&tid).expect("確かめ済み");
+            glaux_mcp::server::track_params_json(track)
+        })
+        .await??;
+        v["project_version"] = json!(version);
+        v["track_id"] = json!(track_id);
+        Ok(v)
     })
-    .await??;
-    v["project_version"] = json!(version);
-    v["track_id"] = json!(track_id);
-    Ok(v)
+    .await
 }
 
 /// 追加できるエフェクトのカタログ(変わらないので、作るのは 1 回だけ。フロントも 1 回だけ取る)
@@ -1759,17 +1886,20 @@ fn get_effect_catalog() -> Value {
 /// 音作りビュー(マスター)用: マスターバスのエフェクトチェーン。
 #[tauri::command]
 async fn get_master_params(state: State<'_, AppState>) -> Result<Value, String> {
-    let (project, version) = state.handle.get_project_shared().await?;
-    // CLAP のエフェクトのつまみは初めてのとき、プラグインを読み込んで一覧を作るので別のスレッドで
-    off_thread(move || {
-        json!({
-            "track_id": "__master__",
-            "device": { "name": "master", "is_default_fallback": false },
-            "params": [],
-            "effects": glaux_mcp::server::effects_json(&project.master.effects, project.master.fx_links.as_deref()),
-            "fx_links": project.master.fx_links,
-            "project_version": version,
+    guard::catching("get_master_params", async move {
+        let (project, version) = state.handle.get_project_shared().await?;
+        // CLAP のエフェクトのつまみは初めてのとき、プラグインを読み込んで一覧を作るので別のスレッドで
+        off_thread(move || {
+            json!({
+                "track_id": "__master__",
+                "device": { "name": "master", "is_default_fallback": false },
+                "params": [],
+                "effects": glaux_mcp::server::effects_json(&project.master.effects, project.master.fx_links.as_deref()),
+                "fx_links": project.master.fx_links,
+                "project_version": version,
+            })
         })
+        .await
     })
     .await
 }
@@ -1779,16 +1909,19 @@ async fn get_master_params(state: State<'_, AppState>) -> Result<Value, String> 
 /// SoundFont・SFZ の一覧(SFZ のフォルダを 4 段まで見て回るので、別のスレッドで)
 #[tauri::command]
 async fn list_soundfonts() -> Result<Value, String> {
-    off_thread(|| {
-        let dir = glaux_engine::sf2::default_dir();
-        let sfz_dir = glaux_engine::sfz::default_dir();
-        json!({
-            "dir": dir.to_string_lossy(),
-            "files": glaux_engine::sf2::list_files(&dir),
-            "sfz_dir": sfz_dir.to_string_lossy(),
-            "sfz": glaux_engine::sfz::list_files(&sfz_dir),
-            "packs": glaux_mcp::sfz_packs::status(&sfz_dir),
+    guard::catching("list_soundfonts", async move {
+        off_thread(|| {
+            let dir = glaux_engine::sf2::default_dir();
+            let sfz_dir = glaux_engine::sfz::default_dir();
+            json!({
+                "dir": dir.to_string_lossy(),
+                "files": glaux_engine::sf2::list_files(&dir),
+                "sfz_dir": sfz_dir.to_string_lossy(),
+                "sfz": glaux_engine::sfz::list_files(&sfz_dir),
+                "packs": glaux_mcp::sfz_packs::status(&sfz_dir),
+            })
         })
+        .await
     })
     .await
 }
@@ -1797,53 +1930,62 @@ async fn list_soundfonts() -> Result<Value, String> {
 /// 進捗は `sfz-download` イベント({id, got, total})で届く。
 #[tauri::command]
 async fn download_sfz_pack(app: tauri::AppHandle, id: String) -> Result<Value, String> {
-    let instruments = tokio::task::spawn_blocking(move || {
-        let lib = glaux_engine::sfz::default_dir();
-        glaux_mcp::sfz_packs::download(&id, &lib, &mut |got, total| {
-            let _ = app.emit(
-                "sfz-download",
-                json!({ "id": id, "got": got, "total": total }),
-            );
+    guard::catching("download_sfz_pack", async move {
+        let instruments = tokio::task::spawn_blocking(move || {
+            let lib = glaux_engine::sfz::default_dir();
+            glaux_mcp::sfz_packs::download(&id, &lib, &mut |got, total| {
+                let _ = app.emit(
+                    "sfz-download",
+                    json!({ "id": id, "got": got, "total": total }),
+                );
+            })
         })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(json!({ "instruments": instruments }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    Ok(json!({ "instruments": instruments }))
 }
 
 /// .sf2 のプリセット一覧(重いのでブロッキングスレッドで)。
 #[tauri::command]
 async fn list_soundfont_presets(file: String) -> Result<Value, String> {
-    let path = glaux_engine::sf2::default_dir().join(&file);
-    let presets = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
-        let font = glaux_engine::sf2::load_font(&path)?;
-        Ok(glaux_engine::sf2::list_presets(&font))
+    guard::catching("list_soundfont_presets", async move {
+        let path = glaux_engine::sf2::default_dir().join(&file);
+        let presets = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let font = glaux_engine::sf2::load_font(&path)?;
+            Ok(glaux_engine::sf2::list_presets(&font))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(json!({ "file": file, "presets": presets }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    Ok(json!({ "file": file, "presets": presets }))
 }
 
 /// .sf2 をライブラリフォルダへコピーして登録する。
 #[tauri::command]
 async fn add_soundfont(path: String) -> Result<Value, String> {
-    let src = std::path::PathBuf::from(&path);
-    let name = src
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| t("ファイル名が取れません", "Can't get the file name").to_owned())?;
-    let dir = glaux_engine::sf2::default_dir();
-    let dest = dir.join(&name);
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        // 検証を兼ねて一度パースする
-        glaux_engine::sf2::load_font(&src)?;
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
-        Ok(())
+    guard::catching("add_soundfont", async move {
+        let src = std::path::PathBuf::from(&path);
+        let name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| t("ファイル名が取れません", "Can't get the file name").to_owned())?;
+        let dir = glaux_engine::sf2::default_dir();
+        let dest = dir.join(&name);
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            // 検証を兼ねて一度パースする
+            glaux_engine::sf2::load_font(&src)?;
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(json!({ "file": name }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    Ok(json!({ "file": name }))
 }
 
 // ---- 音色プリセット(glaux-mcp の presets モジュールを共用) ---------------
@@ -1851,9 +1993,12 @@ async fn add_soundfont(path: String) -> Result<Value, String> {
 /// 音色プリセットの一覧(プリセットのファイルを全部読むので、別のスレッドで)
 #[tauri::command]
 async fn list_presets() -> Result<Value, String> {
-    off_thread(
-        || json!({ "presets": glaux_mcp::presets::list(&glaux_mcp::presets::default_dir()) }),
-    )
+    guard::catching("list_presets", async move {
+        off_thread(
+            || json!({ "presets": glaux_mcp::presets::list(&glaux_mcp::presets::default_dir()) }),
+        )
+        .await
+    })
     .await
 }
 
@@ -1865,22 +2010,25 @@ async fn save_preset(
     name: String,
     overwrite: bool,
 ) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let track = project.track(&tid).ok_or_else(|| {
-        glaux_core::tr!(
-            "トラックが見つかりません: {track_id}",
-            "Track not found: {track_id}"
-        )
-    })?;
-    let preset = glaux_mcp::presets::save(
-        &glaux_mcp::presets::default_dir(),
-        track,
-        &name,
-        None,
-        overwrite,
-    )?;
-    Ok(json!({ "saved": preset.name }))
+    guard::catching("save_preset", async move {
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let track = project.track(&tid).ok_or_else(|| {
+            glaux_core::tr!(
+                "トラックが見つかりません: {track_id}",
+                "Track not found: {track_id}"
+            )
+        })?;
+        let preset = glaux_mcp::presets::save(
+            &glaux_mcp::presets::default_dir(),
+            track,
+            &name,
+            None,
+            overwrite,
+        )?;
+        Ok(json!({ "saved": preset.name }))
+    })
+    .await
 }
 
 /// プリセットをトラックに適用する(音源差し替え + エフェクト置換。1 undo)。
@@ -1890,40 +2038,46 @@ async fn load_preset(
     track_id: String,
     name: String,
 ) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let track = project.track(&tid).ok_or_else(|| {
-        glaux_core::tr!(
-            "トラックが見つかりません: {track_id}",
-            "Track not found: {track_id}"
-        )
-    })?;
-    let preset = glaux_mcp::presets::load(&glaux_mcp::presets::default_dir(), &name)?;
-    let label = glaux_core::tr!(
-        "{} にプリセット「{}」を適用",
-        "Apply preset \"{1}\" to {0}",
-        track.name,
-        preset.name
-    );
-    let cmds = glaux_mcp::presets::apply_commands(track, &preset);
-    let (_, m) = state
-        .handle
-        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "applied": preset.name, "project_version": m.project_version }))
+    guard::catching("load_preset", async move {
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let track = project.track(&tid).ok_or_else(|| {
+            glaux_core::tr!(
+                "トラックが見つかりません: {track_id}",
+                "Track not found: {track_id}"
+            )
+        })?;
+        let preset = glaux_mcp::presets::load(&glaux_mcp::presets::default_dir(), &name)?;
+        let label = glaux_core::tr!(
+            "{} にプリセット「{}」を適用",
+            "Apply preset \"{1}\" to {0}",
+            track.name,
+            preset.name
+        );
+        let cmds = glaux_mcp::presets::apply_commands(track, &preset);
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "applied": preset.name, "project_version": m.project_version }))
+    })
+    .await
 }
 
 // ---- エフェクトのプリセット(glaux-mcp の fx_presets モジュールを共用) -------
 
 #[tauri::command]
 async fn list_fx_presets() -> Result<Value, String> {
-    // ファイルを読むので、メインスレッドを止めないよう別のスレッドで
-    tokio::task::spawn_blocking(
-        || json!({ "presets": glaux_mcp::fx_presets::list(&glaux_mcp::fx_presets::default_dir()) }),
-    )
+    guard::catching("list_fx_presets", async move {
+        // ファイルを読むので、メインスレッドを止めないよう別のスレッドで
+        tokio::task::spawn_blocking(
+            || json!({ "presets": glaux_mcp::fx_presets::list(&glaux_mcp::fx_presets::default_dir()) }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    })
     .await
-    .map_err(|e| e.to_string())
 }
 
 /// エフェクト 1 つを名前を付けて保存する。`target` はトラック ID か "master"
@@ -1936,19 +2090,22 @@ async fn save_fx_preset(
     note: Option<String>,
     overwrite: bool,
 ) -> Result<Value, String> {
-    let target = glaux_mcp::fx_presets::Target::parse(&target)?;
-    let fx_id = glaux_core::FxId::parse(&fx_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let (effect, owner) = glaux_mcp::fx_presets::find_effect(&project, &target, &fx_id)?;
-    let preset = glaux_mcp::fx_presets::save(
-        &glaux_mcp::fx_presets::default_dir(),
-        effect,
-        &name,
-        note,
-        Some(owner),
-        overwrite,
-    )?;
-    Ok(json!({ "saved": preset.name }))
+    guard::catching("save_fx_preset", async move {
+        let target = glaux_mcp::fx_presets::Target::parse(&target)?;
+        let fx_id = glaux_core::FxId::parse(&fx_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let (effect, owner) = glaux_mcp::fx_presets::find_effect(&project, &target, &fx_id)?;
+        let preset = glaux_mcp::fx_presets::save(
+            &glaux_mcp::fx_presets::default_dir(),
+            effect,
+            &name,
+            note,
+            Some(owner),
+            overwrite,
+        )?;
+        Ok(json!({ "saved": preset.name }))
+    })
+    .await
 }
 
 /// エフェクトのプリセットを足す。`parked` なら、つながずに `pos` に置く。
@@ -1964,34 +2121,37 @@ async fn apply_fx_preset(
     pos: Option<[f32; 2]>,
     split: Option<[String; 2]>,
 ) -> Result<Value, String> {
-    let target = glaux_mcp::fx_presets::Target::parse(&target)?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let preset = glaux_mcp::fx_presets::load(&glaux_mcp::fx_presets::default_dir(), &name)?;
-    let (command, fx_id) = glaux_mcp::fx_presets::add_command(
-        &project,
-        &target,
-        &preset,
-        index,
-        parked || split.is_some(),
-        pos,
-    )?;
-    let command = match split {
-        None => command,
-        Some([from, to]) => {
-            glaux_mcp::fx_presets::split_command(&project, &target, command, &fx_id, &from, &to)?
-        }
-    };
-    let label = glaux_core::tr!(
-        "エフェクトのプリセット「{}」を追加",
-        "Add effect preset \"{}\"",
-        preset.name
-    );
-    let (_, m) = state
-        .handle
-        .apply(command, Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "fx_id": fx_id, "project_version": m.project_version }))
+    guard::catching("apply_fx_preset", async move {
+        let target = glaux_mcp::fx_presets::Target::parse(&target)?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let preset = glaux_mcp::fx_presets::load(&glaux_mcp::fx_presets::default_dir(), &name)?;
+        let (command, fx_id) = glaux_mcp::fx_presets::add_command(
+            &project,
+            &target,
+            &preset,
+            index,
+            parked || split.is_some(),
+            pos,
+        )?;
+        let command = match split {
+            None => command,
+            Some([from, to]) => glaux_mcp::fx_presets::split_command(
+                &project, &target, command, &fx_id, &from, &to,
+            )?,
+        };
+        let label = glaux_core::tr!(
+            "エフェクトのプリセット「{}」を追加",
+            "Add effect preset \"{}\"",
+            preset.name
+        );
+        let (_, m) = state
+            .handle
+            .apply(command, Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "fx_id": fx_id, "project_version": m.project_version }))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2016,31 +2176,34 @@ async fn open_project(
     path: String,
     create: bool,
 ) -> Result<Value, String> {
-    let path = path.trim().trim_end_matches(['/', '\\']).to_owned();
-    if path.is_empty() {
-        return Err(t("パスが空です", "The path is empty").to_owned());
-    }
-    let p = std::path::Path::new(&path);
-    if !create && !p.join("project.json").exists() {
-        return Err(glaux_core::tr!(
-            "Glaux の曲のフォルダではありません(project.json が見つかりません): {path}\n\
-             曲のフォルダ(例 MySong.glaux)そのものを選んでください",
-            "Not a Glaux song folder (project.json not found): {path}\n\
-             Select the song folder itself (e.g. MySong.glaux)"
-        ));
-    }
+    guard::catching("open_project", async move {
+        let path = path.trim().trim_end_matches(['/', '\\']).to_owned();
+        if path.is_empty() {
+            return Err(t("パスが空です", "The path is empty").to_owned());
+        }
+        let p = std::path::Path::new(&path);
+        if !create && !p.join("project.json").exists() {
+            return Err(glaux_core::tr!(
+                "Glaux の曲のフォルダではありません(project.json が見つかりません): {path}\n\
+                 曲のフォルダ(例 MySong.glaux)そのものを選んでください",
+                "Not a Glaux song folder (project.json not found): {path}\n\
+                 Select the song folder itself (e.g. MySong.glaux)"
+            ));
+        }
 
-    if let Some(engine) = &state.engine {
-        engine.stop();
-        engine.clear_loop(); // ループ区間は前のプロジェクトの tick なので持ち越さない
-        engine.set_ab_clip(None); // 聴き比べも前のプロジェクトのもの
-    }
-    let (title, version) = state.handle.switch_project(path.clone()).await?;
-    state.chat.switch_project(path.clone());
-    *state.project_dir.lock().expect("project_dir lock") = path.clone();
-    projects::push_recent(&path, &title);
-    set_window_title(&app, &title);
-    Ok(json!({ "title": title, "project_version": version, "path": path }))
+        if let Some(engine) = &state.engine {
+            engine.stop();
+            engine.clear_loop(); // ループ区間は前のプロジェクトの tick なので持ち越さない
+            engine.set_ab_clip(None); // 聴き比べも前のプロジェクトのもの
+        }
+        let (title, version) = state.handle.switch_project(path.clone()).await?;
+        state.chat.switch_project(path.clone());
+        *state.project_dir.lock().expect("project_dir lock") = path.clone();
+        projects::push_recent(&path, &title);
+        set_window_title(&app, &title);
+        Ok(json!({ "title": title, "project_version": version, "path": path }))
+    })
+    .await
 }
 
 /// 現在のプロジェクトを移動 / 曲名を変更する(フォルダ名は曲名から作る)。
@@ -2053,110 +2216,113 @@ async fn move_project(
     dest_parent: Option<String>,
     new_name: Option<String>,
 ) -> Result<Value, String> {
-    if state.chat.is_running() {
-        return Err(t(
-            "AI が作業中は移動できません。完了を待つか停止してください",
-            "Can't move while the AI is working. Wait for it to finish or stop it",
-        )
-        .to_owned());
-    }
-    let current = state.project_dir();
-    let cur = std::path::PathBuf::from(&current);
-    let cur_stem = cur
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let cur_stem = cur_stem
-        .strip_suffix(".glaux")
-        .unwrap_or(&cur_stem)
-        .to_owned();
-
-    let parent = match dest_parent
-        .map(|s| s.trim().trim_end_matches(['/', '\\']).to_owned())
-        .filter(|s| !s.is_empty())
-    {
-        Some(p) => std::path::PathBuf::from(p),
-        None => cur.parent().map(|p| p.to_path_buf()).ok_or_else(|| {
-            t(
-                "現在のプロジェクトの親フォルダが分かりません",
-                "Can't determine the current project's parent folder",
+    guard::catching("move_project", async move {
+        if state.chat.is_running() {
+            return Err(t(
+                "AI が作業中は移動できません。完了を待つか停止してください",
+                "Can't move while the AI is working. Wait for it to finish or stop it",
             )
-            .to_owned()
-        })?,
-    };
-    // new_name は曲名。フォルダ名は曲名から作る(空白は _ など。同じ名前があれば -2 …)
-    let new_title = new_name
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
-    let folder = new_title
-        .as_deref()
-        .map(glaux_mcp::store::folder_name)
-        .unwrap_or_else(|| cur_stem.clone());
-    let same_place = cur.parent() == Some(parent.as_path()) && folder == cur_stem;
-    if !same_place {
-        // 自分の中や、別の曲のフォルダの中へは移さない(自分の中へ移すと複製が止まらず入れ子になった)
-        glaux_mcp::store::check_project_parent(&parent)?;
-    }
-    let dest = if same_place {
-        cur.clone()
-    } else {
-        glaux_mcp::store::unique_project_dir(&parent, &folder)
-    };
-    let dest_str = dest.to_string_lossy().into_owned();
-    let (cur_title, _) = {
-        let (p, v) = state.handle.get_project_shared().await?;
-        (p.meta.title.clone(), v)
-    };
-    let retitle = new_title.as_ref().filter(|t| **t != cur_title).cloned();
-    if dest == cur && retitle.is_none() {
-        return Ok(json!({ "path": current, "moved": false }));
-    }
-
-    let moved = dest != cur;
-    // 同一プロジェクトの移動なのでループ区間はそのまま有効
-    let (mut title, mut version) = if moved {
-        if let Some(engine) = &state.engine {
-            engine.stop();
+            .to_owned());
         }
-        state.handle.move_project(dest_str.clone()).await?
-    } else {
-        (cur_title, 0)
-    };
+        let current = state.project_dir();
+        let cur = std::path::PathBuf::from(&current);
+        let cur_stem = cur
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let cur_stem = cur_stem
+            .strip_suffix(".glaux")
+            .unwrap_or(&cur_stem)
+            .to_owned();
 
-    // 曲名を変えたらタイトルを変える(履歴に載るので undo 可)
-    if let Some(name) = retitle {
-        let cmd = glaux_core::Command::SetTitle {
-            title: name.clone(),
-        };
-        match state
-            .handle
-            .apply(
-                cmd,
-                glaux_core::Author::System,
-                glaux_core::tr!(
-                    "プロジェクト名を「{name}」に変更",
-                    "Rename project to \"{name}\""
-                ),
-            )
-            .await
+        let parent = match dest_parent
+            .map(|s| s.trim().trim_end_matches(['/', '\\']).to_owned())
+            .filter(|s| !s.is_empty())
         {
-            Ok(Ok((_, m))) => {
-                title = name.clone();
-                version = m.project_version;
-            }
-            Ok(Err(e)) => tracing::warn!("タイトル変更に失敗: {e}"),
-            Err(e) => tracing::warn!("タイトル変更に失敗: {e}"),
+            Some(p) => std::path::PathBuf::from(p),
+            None => cur.parent().map(|p| p.to_path_buf()).ok_or_else(|| {
+                t(
+                    "現在のプロジェクトの親フォルダが分かりません",
+                    "Can't determine the current project's parent folder",
+                )
+                .to_owned()
+            })?,
+        };
+        // new_name は曲名。フォルダ名は曲名から作る(空白は _ など。同じ名前があれば -2 …)
+        let new_title = new_name
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let folder = new_title
+            .as_deref()
+            .map(glaux_mcp::store::folder_name)
+            .unwrap_or_else(|| cur_stem.clone());
+        let same_place = cur.parent() == Some(parent.as_path()) && folder == cur_stem;
+        if !same_place {
+            // 自分の中や、別の曲のフォルダの中へは移さない(自分の中へ移すと複製が止まらず入れ子になった)
+            glaux_mcp::store::check_project_parent(&parent)?;
         }
-    }
+        let dest = if same_place {
+            cur.clone()
+        } else {
+            glaux_mcp::store::unique_project_dir(&parent, &folder)
+        };
+        let dest_str = dest.to_string_lossy().into_owned();
+        let (cur_title, _) = {
+            let (p, v) = state.handle.get_project_shared().await?;
+            (p.meta.title.clone(), v)
+        };
+        let retitle = new_title.as_ref().filter(|t| **t != cur_title).cloned();
+        if dest == cur && retitle.is_none() {
+            return Ok(json!({ "path": current, "moved": false }));
+        }
 
-    if moved {
-        state.chat.switch_project(dest_str.clone());
-        *state.project_dir.lock().expect("project_dir lock") = dest_str.clone();
-        projects::remove_recent(&current);
-    }
-    projects::push_recent(&dest_str, &title);
-    set_window_title(&app, &title);
-    Ok(json!({ "path": dest_str, "title": title, "project_version": version, "moved": moved }))
+        let moved = dest != cur;
+        // 同一プロジェクトの移動なのでループ区間はそのまま有効
+        let (mut title, mut version) = if moved {
+            if let Some(engine) = &state.engine {
+                engine.stop();
+            }
+            state.handle.move_project(dest_str.clone()).await?
+        } else {
+            (cur_title, 0)
+        };
+
+        // 曲名を変えたらタイトルを変える(履歴に載るので undo 可)
+        if let Some(name) = retitle {
+            let cmd = glaux_core::Command::SetTitle {
+                title: name.clone(),
+            };
+            match state
+                .handle
+                .apply(
+                    cmd,
+                    glaux_core::Author::System,
+                    glaux_core::tr!(
+                        "プロジェクト名を「{name}」に変更",
+                        "Rename project to \"{name}\""
+                    ),
+                )
+                .await
+            {
+                Ok(Ok((_, m))) => {
+                    title = name.clone();
+                    version = m.project_version;
+                }
+                Ok(Err(e)) => tracing::warn!("タイトル変更に失敗: {e}"),
+                Err(e) => tracing::warn!("タイトル変更に失敗: {e}"),
+            }
+        }
+
+        if moved {
+            state.chat.switch_project(dest_str.clone());
+            *state.project_dir.lock().expect("project_dir lock") = dest_str.clone();
+            projects::remove_recent(&current);
+        }
+        projects::push_recent(&dest_str, &title);
+        set_window_title(&app, &title);
+        Ok(json!({ "path": dest_str, "title": title, "project_version": version, "moved": moved }))
+    })
+    .await
 }
 
 /// 新しい曲(または移動)で作られるフォルダを前もって返す(画面で「-2 になります」「ここには作れません」を先に見せる)。
@@ -2196,23 +2362,26 @@ async fn create_project(
     parent_dir: String,
     name: String,
 ) -> Result<Value, String> {
-    let title = name.trim();
-    if title.is_empty() {
-        return Err(t("曲名が空です", "The song name is empty").to_owned());
-    }
-    let parent = if parent_dir.trim().is_empty() {
-        projects::default_projects_dir()
-    } else {
-        parent_dir.trim().to_owned()
-    };
-    glaux_mcp::store::check_project_parent(std::path::Path::new(&parent))?;
-    // 曲名はそのまま、フォルダ名だけファイル名として整える(空白は _ など。同じ名前があれば -2 …)
-    let dir = glaux_mcp::store::unique_project_dir(
-        std::path::Path::new(&parent),
-        &glaux_mcp::store::folder_name(title),
-    );
-    glaux_mcp::store::create_project(&dir, title).map_err(|e| e.to_string())?;
-    open_project(app, state, dir.to_string_lossy().into_owned(), false).await
+    guard::catching("create_project", async move {
+        let title = name.trim();
+        if title.is_empty() {
+            return Err(t("曲名が空です", "The song name is empty").to_owned());
+        }
+        let parent = if parent_dir.trim().is_empty() {
+            projects::default_projects_dir()
+        } else {
+            parent_dir.trim().to_owned()
+        };
+        glaux_mcp::store::check_project_parent(std::path::Path::new(&parent))?;
+        // 曲名はそのまま、フォルダ名だけファイル名として整える(空白は _ など。同じ名前があれば -2 …)
+        let dir = glaux_mcp::store::unique_project_dir(
+            std::path::Path::new(&parent),
+            &glaux_mcp::store::folder_name(title),
+        );
+        glaux_mcp::store::create_project(&dir, title).map_err(|e| e.to_string())?;
+        open_project(app, state, dir.to_string_lossy().into_owned(), false).await
+    })
+    .await
 }
 
 /// UI からの編集。MCP と同じく `Command` JSON を受け、author を `human` として適用する。
@@ -2224,52 +2393,58 @@ async fn apply_edit(
     commands: Vec<Value>,
     label: String,
 ) -> Result<Value, String> {
-    if commands.is_empty() {
-        return Err(t("commands が空です", "commands is empty").to_owned());
-    }
-    let mut parsed = Vec::with_capacity(commands.len());
-    for (i, value) in commands.into_iter().enumerate() {
-        let cmd: Command = serde_json::from_value(value).map_err(|e| {
-            glaux_core::tr!(
-                "commands[{i}] を Command として解釈できません: {e}",
-                "Can't parse commands[{i}] as a Command: {e}"
-            )
-        })?;
-        parsed.push(cmd);
-    }
-    let command = if parsed.len() == 1 {
-        parsed.pop().expect("len checked")
-    } else {
-        Command::batch(label.clone(), parsed)
-    };
-    let (entry_id, m) = state
-        .handle
-        .apply(command, Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "entry_id": entry_id, "project_version": m.project_version }))
+    guard::catching("apply_edit", async move {
+        if commands.is_empty() {
+            return Err(t("commands が空です", "commands is empty").to_owned());
+        }
+        let mut parsed = Vec::with_capacity(commands.len());
+        for (i, value) in commands.into_iter().enumerate() {
+            let cmd: Command = serde_json::from_value(value).map_err(|e| {
+                glaux_core::tr!(
+                    "commands[{i}] を Command として解釈できません: {e}",
+                    "Can't parse commands[{i}] as a Command: {e}"
+                )
+            })?;
+            parsed.push(cmd);
+        }
+        let command = if parsed.len() == 1 {
+            parsed.pop().expect("len checked")
+        } else {
+            Command::batch(label.clone(), parsed)
+        };
+        let (entry_id, m) = state
+            .handle
+            .apply(command, Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "entry_id": entry_id, "project_version": m.project_version }))
+    })
+    .await
 }
 
 /// 画面のミュート・ソロのボタン: 聴き方なので履歴に積まずに変える(いくつか undo してソロで聴き直してから redo できる)。
 /// `commands` は set_track_prop の mute / solo だけ
 #[tauri::command]
 async fn set_listen(state: State<'_, AppState>, commands: Vec<Value>) -> Result<Value, String> {
-    let mut parsed = Vec::with_capacity(commands.len());
-    for (i, value) in commands.into_iter().enumerate() {
-        let cmd: Command = serde_json::from_value(value).map_err(|e| {
-            glaux_core::tr!(
-                "commands[{i}] を Command として解釈できません: {e}",
-                "Can't parse commands[{i}] as a Command: {e}"
-            )
-        })?;
-        parsed.push(cmd);
-    }
-    let m = state
-        .handle
-        .set_listen(parsed)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "project_version": m.project_version }))
+    guard::catching("set_listen", async move {
+        let mut parsed = Vec::with_capacity(commands.len());
+        for (i, value) in commands.into_iter().enumerate() {
+            let cmd: Command = serde_json::from_value(value).map_err(|e| {
+                glaux_core::tr!(
+                    "commands[{i}] を Command として解釈できません: {e}",
+                    "Can't parse commands[{i}] as a Command: {e}"
+                )
+            })?;
+            parsed.push(cmd);
+        }
+        let m = state
+            .handle
+            .set_listen(parsed)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "project_version": m.project_version }))
+    })
+    .await
 }
 
 /// スライダーをドラッグしている間の試聴: いまのプロジェクトの複製にコマンドを当てて、エンジンにだけ渡す。
@@ -2277,38 +2452,46 @@ async fn set_listen(state: State<'_, AppState>, commands: Vec<Value>) -> Result<
 /// 確定すると、いつもどおりプロジェクトの変更としてエンジンが作り直される)。
 #[tauri::command]
 async fn preview_edit(state: State<'_, AppState>, commands: Vec<Value>) -> Result<(), String> {
-    let engine = state.engine()?.clone();
-    let (mut project, _) = state.handle.get_project().await?;
-    for (i, value) in commands.into_iter().enumerate() {
-        let cmd: Command = serde_json::from_value(value).map_err(|e| {
-            glaux_core::tr!(
-                "commands[{i}] を Command として解釈できません: {e}",
-                "Can't parse commands[{i}] as a Command: {e}"
-            )
-        })?;
-        project.apply(&cmd).map_err(|e| e.to_string())?;
-    }
-    let dir = state.project_dir();
-    tokio::task::spawn_blocking(move || engine.set_project(&project, std::path::Path::new(&dir)))
+    guard::catching("preview_edit", async move {
+        let engine = state.engine()?.clone();
+        let (mut project, _) = state.handle.get_project().await?;
+        for (i, value) in commands.into_iter().enumerate() {
+            let cmd: Command = serde_json::from_value(value).map_err(|e| {
+                glaux_core::tr!(
+                    "commands[{i}] を Command として解釈できません: {e}",
+                    "Can't parse commands[{i}] as a Command: {e}"
+                )
+            })?;
+            project.apply(&cmd).map_err(|e| e.to_string())?;
+        }
+        let dir = state.project_dir();
+        tokio::task::spawn_blocking(move || {
+            engine.set_project(&project, std::path::Path::new(&dir))
+        })
         .await
         .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// 履歴の途中のエントリを 1 件だけ取り消す(`git revert` 相当)。
 /// 逆コマンドが新エントリとして積まれるので、取り消し自体も undo できる。
 #[tauri::command]
 async fn revert_entry(state: State<'_, AppState>, entry_id: String) -> Result<Value, String> {
-    let id = EntryId::parse(&entry_id).map_err(|e| e.to_string())?;
-    let (entry, conflicts, m) = state
-        .handle
-        .revert_entry(id, Author::Human)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({
-        "entry_id": entry,
-        "conflicts": conflicts,
-        "project_version": m.project_version,
-    }))
+    guard::catching("revert_entry", async move {
+        let id = EntryId::parse(&entry_id).map_err(|e| e.to_string())?;
+        let (entry, conflicts, m) = state
+            .handle
+            .revert_entry(id, Author::Human)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "entry_id": entry,
+            "conflicts": conflicts,
+            "project_version": m.project_version,
+        }))
+    })
+    .await
 }
 
 /// 書き出し(形式・範囲・音量の目標・トラックごとを選べる)。結果は書いたファイルと測定値
@@ -2317,15 +2500,18 @@ async fn export_audio(
     state: State<'_, AppState>,
     request: glaux_mcp::export::ExportRequest,
 ) -> Result<Value, String> {
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    tauri::async_runtime::spawn_blocking(move || {
-        let dir = std::path::Path::new(&dir);
-        let bank = glaux_engine::SampleBank::for_offline(&project, dir);
-        glaux_mcp::export::run(&project, dir, &request, &bank)
+    guard::catching("export_audio", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        tauri::async_runtime::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+            glaux_mcp::export::run(&project, dir, &request, &bank)
+        })
+        .await
+        .map_err(|e| e.to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// MIDI ファイル・MusicXML を読み込む(パートごとに新しいトラック。1 件の履歴)
@@ -2334,64 +2520,73 @@ async fn import_midi(
     state: State<'_, AppState>,
     request: glaux_mcp::midi::ImportMidiRequest,
 ) -> Result<Value, String> {
-    let (project, _) = state.handle.get_project_shared().await?;
-    // 楽譜(MusicXML / .mxl)なら MusicXML として読む(強弱・奏法・パート名なども移る)
-    let (imp, report) = tauri::async_runtime::spawn_blocking(move || {
-        if glaux_mcp::musicxml_in::is_score_file(&request.path) {
-            glaux_mcp::musicxml_in::import_file(&project, &request)
-        } else {
-            glaux_mcp::midi::import_file(&project, &request).map(|i| (i, vec![]))
-        }
+    guard::catching("import_midi", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        // 楽譜(MusicXML / .mxl)なら MusicXML として読む(強弱・奏法・パート名なども移る)
+        let (imp, report) = tauri::async_runtime::spawn_blocking(move || {
+            if glaux_mcp::musicxml_in::is_score_file(&request.path) {
+                glaux_mcp::musicxml_in::import_file(&project, &request)
+            } else {
+                glaux_mcp::midi::import_file(&project, &request).map(|i| (i, vec![]))
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let (entry_id, m) = state
+            .handle
+            .apply(
+                Command::batch(imp.label.clone(), imp.commands),
+                Author::Human,
+                imp.label,
+            )
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "entry_id": entry_id,
+            "tracks": imp.tracks.len(),
+            "notes": imp.tracks.iter().map(|t| t.2).sum::<usize>(),
+            "tempo_set": imp.tempo_set,
+            "report": report,
+            "project_version": m.project_version,
+        }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let (entry_id, m) = state
-        .handle
-        .apply(
-            Command::batch(imp.label.clone(), imp.commands),
-            Author::Human,
-            imp.label,
-        )
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({
-        "entry_id": entry_id,
-        "tracks": imp.tracks.len(),
-        "notes": imp.tracks.iter().map(|t| t.2).sum::<usize>(),
-        "tempo_set": imp.tempo_set,
-        "report": report,
-        "project_version": m.project_version,
-    }))
 }
 
 /// MIDI ファイルに書き出す(`path` 省略でプロジェクトの export/)
 #[tauri::command]
 async fn export_midi(state: State<'_, AppState>, path: Option<String>) -> Result<Value, String> {
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    off_thread(move || {
-        glaux_mcp::midi::export_file(&project, std::path::Path::new(&dir), path.as_deref())
+    guard::catching("export_midi", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        off_thread(move || {
+            glaux_mcp::midi::export_file(&project, std::path::Path::new(&dir), path.as_deref())
+        })
+        .await?
     })
-    .await?
+    .await
 }
 
 /// キーと小節ごとのコード(ノートからの推定)と、キーのスケールの音(ピッチクラス)。画面の表示用
 #[tauri::command]
 async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
-    let (project, _) = state.handle.get_project_shared().await?;
-    // 曲全体の和音の推定(編集のたびに画面から呼ばれる。大きな曲では重いので別のスレッドで)
-    off_thread(move || {
-        let a = glaux_core::harmony::analyze(&project, None, None);
-        let scale = a
-            .key
-            .as_ref()
-            .map(|k| glaux_core::harmony::scale_pitch_classes(k.tonic, k.mode))
-            .unwrap_or_default();
-        let mut v = serde_json::to_value(&a).map_err(|e| e.to_string())?;
-        v["scale"] = json!(scale);
-        Ok(v)
+    guard::catching("harmony", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        // 曲全体の和音の推定(編集のたびに画面から呼ばれる。大きな曲では重いので別のスレッドで)
+        off_thread(move || {
+            let a = glaux_core::harmony::analyze(&project, None, None);
+            let scale = a
+                .key
+                .as_ref()
+                .map(|k| glaux_core::harmony::scale_pitch_classes(k.tonic, k.mode))
+                .unwrap_or_default();
+            let mut v = serde_json::to_value(&a).map_err(|e| e.to_string())?;
+            v["scale"] = json!(scale);
+            Ok(v)
+        })
+        .await?
     })
-    .await?
+    .await
 }
 
 /// AI にいつも守らせる指示(設定 → AI)。チャットは毎ターン、外の MCP クライアントはつないだときに読む
@@ -2432,21 +2627,28 @@ fn set_standing_instructions(text: String) -> Result<(), String> {
 /// パートどうしの音のぶつかり(ピアノロール・タイムラインの印)。聞こえている(ミュートでない)トラックだけ
 #[tauri::command]
 async fn check_clashes(state: State<'_, AppState>) -> Result<Value, String> {
-    let (project, _) = state.handle.get_project_shared().await?;
-    off_thread(move || {
-        let opts = glaux_core::clash::ClashOptions {
-            spans: true,
-            ..Default::default()
-        };
-        serde_json::to_value(glaux_core::clash::check(&project, &opts)).map_err(|e| e.to_string())
+    guard::catching("check_clashes", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        off_thread(move || {
+            let opts = glaux_core::clash::ClashOptions {
+                spans: true,
+                ..Default::default()
+            };
+            serde_json::to_value(glaux_core::clash::check(&project, &opts))
+                .map_err(|e| e.to_string())
+        })
+        .await?
     })
-    .await?
+    .await
 }
 
 /// 設計画面の中身: 曲の計画と実際の音(区間の盛り上がり・パート × 区間・ずれ・クリップの状態)、計画の一覧と計画の履歴
 #[tauri::command]
 async fn get_design(state: State<'_, AppState>, limit: Option<usize>) -> Result<Value, String> {
-    glaux_mcp::plan_view::design(&state.handle, limit.unwrap_or(100)).await
+    guard::catching("get_design", async move {
+        glaux_mcp::plan_view::design(&state.handle, limit.unwrap_or(100)).await
+    })
+    .await
 }
 
 /// 画面から計画を保存する(作る・丸ごと置き換える。人の操作として計画の履歴に残る)
@@ -2461,15 +2663,18 @@ async fn plan_save(
     plan_state: Option<String>,
     label: String,
 ) -> Result<Value, String> {
-    glaux_mcp::plan_view::save(
-        &state.handle,
-        plan_id.as_deref(),
-        name.as_deref(),
-        &kind,
-        body,
-        plan_state.as_deref(),
-        &label,
-    )
+    guard::catching("plan_save", async move {
+        glaux_mcp::plan_view::save(
+            &state.handle,
+            plan_id.as_deref(),
+            name.as_deref(),
+            &kind,
+            body,
+            plan_state.as_deref(),
+            &label,
+        )
+        .await
+    })
     .await
 }
 
@@ -2479,7 +2684,10 @@ async fn plan_delete(
     plan_id: String,
     label: String,
 ) -> Result<Value, String> {
-    glaux_mcp::plan_view::delete(&state.handle, &plan_id, &label).await
+    guard::catching("plan_delete", async move {
+        glaux_mcp::plan_view::delete(&state.handle, &plan_id, &label).await
+    })
+    .await
 }
 
 /// 計画の取り消し・やり直し
@@ -2489,13 +2697,19 @@ async fn plan_step(
     n: Option<usize>,
     redo: bool,
 ) -> Result<Value, String> {
-    glaux_mcp::plan_view::step(&state.handle, n.unwrap_or(1), redo).await
+    guard::catching("plan_step", async move {
+        glaux_mcp::plan_view::step(&state.handle, n.unwrap_or(1), redo).await
+    })
+    .await
 }
 
 /// 計画の途中の変更だけを取り消す
 #[tauri::command]
 async fn plan_revert(state: State<'_, AppState>, entry_id: String) -> Result<Value, String> {
-    glaux_mcp::plan_view::revert(&state.handle, &entry_id).await
+    guard::catching("plan_revert", async move {
+        glaux_mcp::plan_view::revert(&state.handle, &entry_id).await
+    })
+    .await
 }
 
 /// 計画を前の版の中身に戻す
@@ -2505,49 +2719,61 @@ async fn plan_restore(
     plan_id: String,
     rev: u64,
 ) -> Result<Value, String> {
-    glaux_mcp::plan_view::restore(&state.handle, &plan_id, rev).await
+    guard::catching("plan_restore", async move {
+        glaux_mcp::plan_view::restore(&state.handle, &plan_id, rev).await
+    })
+    .await
 }
 
 /// 推定した計画をまとめて採用する・捨てる
 #[tauri::command]
 async fn plan_settle_estimated(state: State<'_, AppState>, adopt: bool) -> Result<Value, String> {
-    glaux_mcp::plan_view::settle_estimated(&state.handle, adopt).await
+    guard::catching("plan_settle_estimated", async move {
+        glaux_mcp::plan_view::settle_estimated(&state.handle, adopt).await
+    })
+    .await
 }
 
 /// タイムラインのクリップの印(計画どおり / 計画が先に進んだ・手で直した小節・固定の音の数)
 #[tauri::command]
 async fn clip_states(state: State<'_, AppState>) -> Result<Value, String> {
-    glaux_mcp::plan_view::clip_states(&state.handle).await
+    guard::catching("clip_states", async move {
+        glaux_mcp::plan_view::clip_states(&state.handle).await
+    })
+    .await
 }
 
 /// トラックを音声にする(フリーズ)。描き出して直後に音声トラックとして置き、元はミュート(1 件の履歴)
 #[tauri::command]
 async fn bounce_track(state: State<'_, AppState>, track_id: String) -> Result<Value, String> {
-    let id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    let b = tauri::async_runtime::spawn_blocking(move || {
-        let dir = std::path::Path::new(&dir);
-        let bank = glaux_engine::SampleBank::for_offline(&project, dir);
-        glaux_mcp::bounce::bounce_track(&project, dir, &id, &bank)
+    guard::catching("bounce_track", async move {
+        let id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let b = tauri::async_runtime::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+            glaux_mcp::bounce::bounce_track(&project, dir, &id, &bank)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let (entry_id, m) = state
+            .handle
+            .apply(
+                Command::batch(b.label.clone(), b.commands),
+                Author::Human,
+                b.label,
+            )
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "entry_id": entry_id,
+            "new_track": b.new_track,
+            "seconds": b.seconds,
+            "project_version": m.project_version,
+        }))
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let (entry_id, m) = state
-        .handle
-        .apply(
-            Command::batch(b.label.clone(), b.commands),
-            Author::Human,
-            b.label,
-        )
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({
-        "entry_id": entry_id,
-        "new_track": b.new_track,
-        "seconds": b.seconds,
-        "project_version": m.project_version,
-    }))
 }
 
 // ---- チャットの 1 ターン分の編集 ------------------------------------------
@@ -2576,12 +2802,15 @@ async fn ai_entries_since(
 /// 画面で「このターンを取り消す」を出し、変わった所を縁取りするのに使う
 #[tauri::command]
 async fn turn_changes(state: State<'_, AppState>, since: Option<String>) -> Result<Value, String> {
-    let entries = ai_entries_since(&state, since).await?;
-    let refs: Vec<&glaux_core::HistoryEntry> = entries.iter().collect();
-    let (project, _) = state.handle.get_project_shared().await?;
-    let mut v = glaux_mcp::changes::summarize(&refs, &project);
-    v["entry_ids"] = json!(entries.iter().map(|e| e.id.to_string()).collect::<Vec<_>>());
-    Ok(v)
+    guard::catching("turn_changes", async move {
+        let entries = ai_entries_since(&state, since).await?;
+        let refs: Vec<&glaux_core::HistoryEntry> = entries.iter().collect();
+        let (project, _) = state.handle.get_project_shared().await?;
+        let mut v = glaux_mcp::changes::summarize(&refs, &project);
+        v["entry_ids"] = json!(entries.iter().map(|e| e.id.to_string()).collect::<Vec<_>>());
+        Ok(v)
+    })
+    .await
 }
 
 /// 送った指示を直して送り直すときに戻す所: 曲の履歴の `since` より後の項目(AI も人も)と、計画の履歴のうち
@@ -2634,13 +2863,16 @@ async fn chat_rewind_preview(
     since: Option<String>,
     after_ms: Option<f64>,
 ) -> Result<Value, String> {
-    let (song, plan) = rewind_targets(&state, since, after_ms).await?;
-    let human = song
-        .iter()
-        .filter(|e| matches!(e.author, Author::Human))
-        .count()
-        + plan.iter().filter(|(_, h)| *h).count();
-    Ok(json!({ "song": song.len(), "plan": plan.len(), "human": human }))
+    guard::catching("chat_rewind_preview", async move {
+        let (song, plan) = rewind_targets(&state, since, after_ms).await?;
+        let human = song
+            .iter()
+            .filter(|e| matches!(e.author, Author::Human))
+            .count()
+            + plan.iter().filter(|(_, h)| *h).count();
+        Ok(json!({ "song": song.len(), "plan": plan.len(), "human": human }))
+    })
+    .await
 }
 
 /// 送った指示を直して送り直す: その指示より後の編集を、AI も人も新しい順に取り消し(取り消しも履歴に残る)、
@@ -2652,79 +2884,85 @@ async fn chat_rewind(
     after_ms: Option<f64>,
     chain_end: Option<String>,
 ) -> Result<Value, String> {
-    if state.chat.is_running() {
-        return Err(glaux_core::i18n::t(
-            "AI が作業中です。止めてから送り直してください",
-            "The AI is working. Stop it before resending",
-        )
-        .to_owned());
-    }
-    // 計画は先に数えておく(曲を戻すと、一組の計画の変更が新しい項目として積まれるため)
-    let (song, plan) = rewind_targets(&state, since, after_ms).await?;
-    for e in song.iter().rev() {
-        state
+    guard::catching("chat_rewind", async move {
+        if state.chat.is_running() {
+            return Err(glaux_core::i18n::t(
+                "AI が作業中です。止めてから送り直してください",
+                "The AI is working. Stop it before resending",
+            )
+            .to_owned());
+        }
+        // 計画は先に数えておく(曲を戻すと、一組の計画の変更が新しい項目として積まれるため)
+        let (song, plan) = rewind_targets(&state, since, after_ms).await?;
+        for e in song.iter().rev() {
+            state
+                .handle
+                .revert_entry(e.id.clone(), Author::Human)
+                .await?
+                .map_err(|err| {
+                    glaux_core::tr!(
+                        "「{}」を取り消せませんでした: {err}",
+                        "Couldn't undo \"{}\": {err}",
+                        e.label
+                    )
+                })?;
+        }
+        let note = glaux_core::EntryNote {
+            why: glaux_core::i18n::t(
+                "送った指示を直して送り直すため、その指示より後の変更を戻す",
+                "Rewinding to resend an edited instruction",
+            )
+            .to_owned(),
+            ..Default::default()
+        };
+        for (id, _) in plan.iter().rev() {
+            // 前に戻した項目などで取り消せないものは飛ばす
+            let _ = state
+                .handle
+                .revert_plan(id.clone(), Author::Human, note.clone())
+                .await;
+        }
+        // 会話を巻き戻す。戻した編集(人の取り消し)は AI に「人の編集」として見せない
+        state.chat.rewind(chain_end);
+        let latest = state
             .handle
-            .revert_entry(e.id.clone(), Author::Human)
+            .get_entries(None, 100_000)
             .await?
-            .map_err(|err| {
-                glaux_core::tr!(
-                    "「{}」を取り消せませんでした: {err}",
-                    "Couldn't undo \"{}\": {err}",
-                    e.label
-                )
-            })?;
-    }
-    let note = glaux_core::EntryNote {
-        why: glaux_core::i18n::t(
-            "送った指示を直して送り直すため、その指示より後の変更を戻す",
-            "Rewinding to resend an edited instruction",
-        )
-        .to_owned(),
-        ..Default::default()
-    };
-    for (id, _) in plan.iter().rev() {
-        // 前に戻した項目などで取り消せないものは飛ばす
-        let _ = state
-            .handle
-            .revert_plan(id.clone(), Author::Human, note.clone())
-            .await;
-    }
-    // 会話を巻き戻す。戻した編集(人の取り消し)は AI に「人の編集」として見せない
-    state.chat.rewind(chain_end);
-    let latest = state
-        .handle
-        .get_entries(None, 100_000)
-        .await?
-        .map_err(|e| e.to_string())?
-        .last()
-        .map(|e| e.id.to_string());
-    state.chat.set_last_seen_entry(latest);
-    Ok(json!({ "song": song.len(), "plan": plan.len() }))
+            .map_err(|e| e.to_string())?
+            .last()
+            .map(|e| e.id.to_string());
+        state.chat.set_last_seen_entry(latest);
+        Ok(json!({ "song": song.len(), "plan": plan.len() }))
+    })
+    .await
 }
 
 /// チャットの 1 ターンで AI が行った編集を、新しい順に取り消す(revert。途中の人間の編集は残る)。
 /// 取り消し自体も履歴に載るので undo できる
 #[tauri::command]
 async fn revert_turn(state: State<'_, AppState>, since: Option<String>) -> Result<Value, String> {
-    let entries = ai_entries_since(&state, since).await?;
-    let mut reverted = 0usize;
-    let mut conflicts: Vec<String> = Vec::new();
-    for e in entries.iter().rev() {
-        let (_, c, _) = state
-            .handle
-            .revert_entry(e.id.clone(), Author::Human)
-            .await?
-            .map_err(|err| {
-                glaux_core::tr!(
-                    "「{}」を取り消せませんでした: {err}",
-                    "Couldn't undo \"{}\": {err}",
-                    e.label
-                )
-            })?;
-        conflicts.extend(c.into_iter().map(|x| x.to_string()));
-        reverted += 1;
-    }
-    Ok(json!({ "reverted": reverted, "conflicts": conflicts }))
+    guard::catching("revert_turn", async move {
+        let entries = ai_entries_since(&state, since).await?;
+        let mut reverted = 0usize;
+        let mut conflicts: Vec<String> = Vec::new();
+        for e in entries.iter().rev() {
+            let (_, c, _) = state
+                .handle
+                .revert_entry(e.id.clone(), Author::Human)
+                .await?
+                .map_err(|err| {
+                    glaux_core::tr!(
+                        "「{}」を取り消せませんでした: {err}",
+                        "Couldn't undo \"{}\": {err}",
+                        e.label
+                    )
+                })?;
+            conflicts.extend(c.into_iter().map(|x| x.to_string()));
+            reverted += 1;
+        }
+        Ok(json!({ "reverted": reverted, "conflicts": conflicts }))
+    })
+    .await
 }
 
 // ---- トランスポート(再生) ----------------------------------------------
@@ -2823,58 +3061,64 @@ async fn ab_prepare_proposals(
     start_tick: u64,
     end_tick: u64,
 ) -> Result<Value, String> {
-    if end_tick <= start_tick {
-        return Err(t("聴き比べる範囲がありません", "No range to compare").into());
-    }
-    if plan_ids.is_empty() || plan_ids.len() >= glaux_engine::ab::MAX_TAKES {
-        return Err(glaux_core::tr!(
-            "いっしょに聴き比べられる案は 1〜{} 個です",
-            "You can compare 1 to {} proposals at once",
-            glaux_engine::ab::MAX_TAKES - 1
-        ));
-    }
-    // 曲は 1 回だけ取り、どの案も同じ曲に当てる(取る合間に曲が変わって、A と B・C の元が食い違わないように)
-    let (now, alts) =
-        glaux_mcp::plan_view::proposal_projects_many(&state.handle, &plan_ids).await?;
-    let engine = state.engine()?.clone();
-    let sr = engine.sample_rate();
-    let dir = state.handle.project_dir().await?;
-    let from = now.tempo_map.tick_to_seconds(Tick(start_tick));
-    let to = now
-        .tempo_map
-        .tick_to_seconds(Tick(end_tick))
-        .min(from + AB_MAX_SECS);
-    let end_tick = now.tempo_map.seconds_to_tick(to).0;
-    let (clip, info) = tokio::task::spawn_blocking(move || {
-        let dir = std::path::Path::new(&dir);
-        let songs: Vec<glaux_core::Project> = std::iter::once(now).chain(alts).collect();
-        let banks: Vec<glaux_engine::SampleBank> = songs
-            .iter()
-            .map(|p| glaux_engine::SampleBank::for_offline(p, dir))
-            .collect();
-        let pairs: Vec<_> = songs.iter().zip(banks.iter()).collect();
-        glaux_engine::ab::prepare_many(&pairs, sr, from, to)
+    guard::catching("ab_prepare_proposals", async move {
+        if end_tick <= start_tick {
+            return Err(t("聴き比べる範囲がありません", "No range to compare").into());
+        }
+        if plan_ids.is_empty() || plan_ids.len() >= glaux_engine::ab::MAX_TAKES {
+            return Err(glaux_core::tr!(
+                "いっしょに聴き比べられる案は 1〜{} 個です",
+                "You can compare 1 to {} proposals at once",
+                glaux_engine::ab::MAX_TAKES - 1
+            ));
+        }
+        // 曲は 1 回だけ取り、どの案も同じ曲に当てる(取る合間に曲が変わって、A と B・C の元が食い違わないように)
+        let (now, alts) =
+            glaux_mcp::plan_view::proposal_projects_many(&state.handle, &plan_ids).await?;
+        let engine = state.engine()?.clone();
+        let sr = engine.sample_rate();
+        let dir = state.handle.project_dir().await?;
+        let from = now.tempo_map.tick_to_seconds(Tick(start_tick));
+        let to = now
+            .tempo_map
+            .tick_to_seconds(Tick(end_tick))
+            .min(from + AB_MAX_SECS);
+        let end_tick = now.tempo_map.seconds_to_tick(to).0;
+        let (clip, info) = tokio::task::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let songs: Vec<glaux_core::Project> = std::iter::once(now).chain(alts).collect();
+            let banks: Vec<glaux_engine::SampleBank> = songs
+                .iter()
+                .map(|p| glaux_engine::SampleBank::for_offline(p, dir))
+                .collect();
+            let pairs: Vec<_> = songs.iter().zip(banks.iter()).collect();
+            glaux_engine::ab::prepare_many(&pairs, sr, from, to)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| {
+            glaux_core::tr!(
+                "聴き比べを用意できません: {e}",
+                "Can't prepare the comparison: {e}"
+            )
+        })?;
+        engine.set_ab_clip(Some(clip));
+        engine.set_ab_side(glaux_engine::ab::AbSide::B);
+        let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
+        v["end_tick"] = json!(end_tick);
+        v["plan_ids"] = json!(plan_ids);
+        Ok(v)
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| {
-        glaux_core::tr!(
-            "聴き比べを用意できません: {e}",
-            "Can't prepare the comparison: {e}"
-        )
-    })?;
-    engine.set_ab_clip(Some(clip));
-    engine.set_ab_side(glaux_engine::ab::AbSide::B);
-    let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
-    v["end_tick"] = json!(end_tick);
-    v["plan_ids"] = json!(plan_ids);
-    Ok(v)
 }
 
 /// 計画の無い所を、今の音から推定して保存する(推定 = 未確認)
 #[tauri::command]
 async fn plan_estimate(state: State<'_, AppState>) -> Result<Value, String> {
-    glaux_mcp::plan_view::estimate(&state.handle).await
+    guard::catching("plan_estimate", async move {
+        glaux_mcp::plan_view::estimate(&state.handle).await
+    })
+    .await
 }
 
 /// 計画の履歴のいちばん新しい側の項目の ID と、やり直せる項目の ID(設計画面の Ctrl+Z の確かめ)
@@ -2884,7 +3128,11 @@ async fn plan_head(
     n: usize,
     ids: Option<Vec<String>>,
 ) -> Result<Value, String> {
-    glaux_mcp::plan_view::plan_head(&state.handle, n.clamp(1, 64), &ids.unwrap_or_default()).await
+    guard::catching("plan_head", async move {
+        glaux_mcp::plan_view::plan_head(&state.handle, n.clamp(1, 64), &ids.unwrap_or_default())
+            .await
+    })
+    .await
 }
 
 /// 案を採用する(案の音を曲に当て、案の計画を今の計画にする)
@@ -2894,8 +3142,15 @@ async fn plan_adopt_proposal(
     plan_id: String,
     also_discard: Option<Vec<String>>,
 ) -> Result<Value, String> {
-    glaux_mcp::plan_view::adopt_proposal(&state.handle, &plan_id, &also_discard.unwrap_or_default())
+    guard::catching("plan_adopt_proposal", async move {
+        glaux_mcp::plan_view::adopt_proposal(
+            &state.handle,
+            &plan_id,
+            &also_discard.unwrap_or_default(),
+        )
         .await
+    })
+    .await
 }
 
 /// 人に見せる文(履歴の名前・計画と実際のずれの説明・エラーなど、裏側で作る文)の言語を設定する(設定の「言語」)
@@ -2929,30 +3184,37 @@ async fn design_edit_sections(
     sections: Vec<glaux_core::SectionMarker>,
     label: String,
 ) -> Result<Value, String> {
-    let (song, plan) = glaux_mcp::plan_view::edit_sections(
-        &state.handle,
-        glaux_core::Author::Human,
-        sections,
-        &label,
-    )
-    .await?;
-    Ok(json!({ "entry_id": song, "plan_entry_id": plan }))
+    guard::catching("design_edit_sections", async move {
+        let (song, plan) = glaux_mcp::plan_view::edit_sections(
+            &state.handle,
+            glaux_core::Author::Human,
+            sections,
+            &label,
+        )
+        .await?;
+        Ok(json!({ "entry_id": song, "plan_entry_id": plan }))
+    })
+    .await
 }
 
 /// 履歴の編集 `before_entry` の前と今の、音の違う範囲(tick)と、曲全体に効く違いがあるか(チャットのターンを聴き比べる範囲)
 #[tauri::command]
 async fn change_ranges(state: State<'_, AppState>, before_entry: String) -> Result<Value, String> {
-    let id = EntryId::parse(&before_entry).map_err(|e| e.to_string())?;
-    let (before, after, _, _) = state
-        .handle
-        .project_at(glaux_core::HistoryPoint::BeforeEntry(id))
-        .await?
-        .map_err(|e| e.to_string())?;
-    let d =
-        tokio::task::spawn_blocking(move || glaux_core::designcheck::song_diff(&before, &after))
-            .await
+    guard::catching("change_ranges", async move {
+        let id = EntryId::parse(&before_entry).map_err(|e| e.to_string())?;
+        let (before, after, _, _) = state
+            .handle
+            .project_at(glaux_core::HistoryPoint::BeforeEntry(id))
+            .await?
             .map_err(|e| e.to_string())?;
-    Ok(json!({ "ranges": d.ranges, "whole": d.whole, "silent_only": d.silent_only }))
+        let d = tokio::task::spawn_blocking(move || {
+            glaux_core::designcheck::song_diff(&before, &after)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(json!({ "ranges": d.ranges, "whole": d.whole, "silent_only": d.silent_only }))
+    })
+    .await
 }
 
 /// 音量をそろえた A/B の聴き比べを用意する: 履歴のある地点(既定は 1 つ前の編集の前)と今の、
@@ -2965,57 +3227,60 @@ async fn ab_prepare(
     start_tick: u64,
     end_tick: u64,
 ) -> Result<Value, String> {
-    let point = match (checkpoint, before_entry) {
-        (Some(c), _) => glaux_core::HistoryPoint::Checkpoint(c),
-        (None, Some(e)) => {
-            glaux_core::HistoryPoint::BeforeEntry(EntryId::parse(&e).map_err(|e| e.to_string())?)
+    guard::catching("ab_prepare", async move {
+        let point = match (checkpoint, before_entry) {
+            (Some(c), _) => glaux_core::HistoryPoint::Checkpoint(c),
+            (None, Some(e)) => glaux_core::HistoryPoint::BeforeEntry(
+                EntryId::parse(&e).map_err(|e| e.to_string())?,
+            ),
+            (None, None) => glaux_core::HistoryPoint::Back(1),
+        };
+        if end_tick <= start_tick {
+            return Err(t("聴き比べる範囲がありません", "No range to compare").into());
         }
-        (None, None) => glaux_core::HistoryPoint::Back(1),
-    };
-    if end_tick <= start_tick {
-        return Err(t("聴き比べる範囲がありません", "No range to compare").into());
-    }
-    let (before, after, _version, back) = state
-        .handle
-        .project_at(point)
-        .await?
-        .map_err(|e| e.to_string())?;
-    if back == 0 {
-        return Err(t(
-            "比べる編集がありません(その地点は今と同じです)",
-            "No edits to compare (that point is the same as now)",
-        )
-        .into());
-    }
-    let engine = state.engine()?.clone();
-    let sr = engine.sample_rate();
-    let dir = state.handle.project_dir().await?;
-    let from = after.tempo_map.tick_to_seconds(Tick(start_tick));
-    let to = after
-        .tempo_map
-        .tick_to_seconds(Tick(end_tick))
-        .min(from + AB_MAX_SECS);
-    let end_tick = after.tempo_map.seconds_to_tick(to).0;
-    let (clip, info) = tokio::task::spawn_blocking(move || {
-        let dir = std::path::Path::new(&dir);
-        let bank_a = glaux_engine::SampleBank::for_offline(&before, dir);
-        let bank_b = glaux_engine::SampleBank::for_offline(&after, dir);
-        glaux_engine::ab::prepare(&before, &bank_a, &after, &bank_b, sr, from, to)
+        let (before, after, _version, back) = state
+            .handle
+            .project_at(point)
+            .await?
+            .map_err(|e| e.to_string())?;
+        if back == 0 {
+            return Err(t(
+                "比べる編集がありません(その地点は今と同じです)",
+                "No edits to compare (that point is the same as now)",
+            )
+            .into());
+        }
+        let engine = state.engine()?.clone();
+        let sr = engine.sample_rate();
+        let dir = state.handle.project_dir().await?;
+        let from = after.tempo_map.tick_to_seconds(Tick(start_tick));
+        let to = after
+            .tempo_map
+            .tick_to_seconds(Tick(end_tick))
+            .min(from + AB_MAX_SECS);
+        let end_tick = after.tempo_map.seconds_to_tick(to).0;
+        let (clip, info) = tokio::task::spawn_blocking(move || {
+            let dir = std::path::Path::new(&dir);
+            let bank_a = glaux_engine::SampleBank::for_offline(&before, dir);
+            let bank_b = glaux_engine::SampleBank::for_offline(&after, dir);
+            glaux_engine::ab::prepare(&before, &bank_a, &after, &bank_b, sr, from, to)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| {
+            glaux_core::tr!(
+                "聴き比べを用意できません: {e}",
+                "Can't prepare the comparison: {e}"
+            )
+        })?;
+        engine.set_ab_clip(Some(clip));
+        engine.set_ab_side(glaux_engine::ab::AbSide::B);
+        let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
+        v["edits_compared"] = json!(back);
+        v["end_tick"] = json!(end_tick);
+        Ok(v)
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| {
-        glaux_core::tr!(
-            "聴き比べを用意できません: {e}",
-            "Can't prepare the comparison: {e}"
-        )
-    })?;
-    engine.set_ab_clip(Some(clip));
-    engine.set_ab_side(glaux_engine::ab::AbSide::B);
-    let mut v = serde_json::to_value(&info).map_err(|e| e.to_string())?;
-    v["edits_compared"] = json!(back);
-    v["end_tick"] = json!(end_tick);
-    Ok(v)
 }
 
 /// 聴き比べでどれを鳴らすか("a" = 前・今、"b"〜"e" = 後・案、"off" = ふつうの再生)
@@ -3112,14 +3377,17 @@ async fn preview_note(
     track_id: String,
     pitch: u8,
 ) -> Result<(), String> {
-    let engine = state.engine()?.clone();
-    let track_id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let index = project
-        .track_index(&track_id)
-        .ok_or_else(|| format!("track not found: {track_id}"))?;
-    engine.preview_note(index, pitch.min(127), 100, 250);
-    Ok(())
+    guard::catching("preview_note", async move {
+        let engine = state.engine()?.clone();
+        let track_id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let index = project
+            .track_index(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+        engine.preview_note(index, pitch.min(127), 100, 250);
+        Ok(())
+    })
+    .await
 }
 
 /// 音色エディタの試しの鍵盤: 押している間だけ鳴らす(離すのは live_note_off)。`vel` は 1〜127(既定 100)
@@ -3130,14 +3398,17 @@ async fn live_note_on(
     pitch: u8,
     vel: Option<u8>,
 ) -> Result<(), String> {
-    let engine = state.engine()?.clone();
-    let track_id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let index = project
-        .track_index(&track_id)
-        .ok_or_else(|| format!("track not found: {track_id}"))?;
-    engine.live_note_on(index, pitch, vel.unwrap_or(100));
-    Ok(())
+    guard::catching("live_note_on", async move {
+        let engine = state.engine()?.clone();
+        let track_id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let index = project
+            .track_index(&track_id)
+            .ok_or_else(|| format!("track not found: {track_id}"))?;
+        engine.live_note_on(index, pitch, vel.unwrap_or(100));
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3167,64 +3438,67 @@ async fn render_note_harmonics(
     step: Option<f64>,
     max_mult: Option<f64>,
 ) -> Result<Vec<Vec<f32>>, String> {
-    let track_id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let (shared, _) = state.handle.get_project_shared().await?;
-    let mut project = (*shared).clone();
-    let device: Option<glaux_core::Device> = device
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    {
-        let t = project
-            .tracks
-            .iter_mut()
-            .find(|t| t.id == track_id)
-            .ok_or_else(|| format!("track not found: {track_id}"))?;
-        if let Some(d) = device {
-            t.device = Some(d);
+    guard::catching("render_note_harmonics", async move {
+        let track_id = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let (shared, _) = state.handle.get_project_shared().await?;
+        let mut project = (*shared).clone();
+        let device: Option<glaux_core::Device> = device
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        {
+            let t = project
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == track_id)
+                .ok_or_else(|| format!("track not found: {track_id}"))?;
+            if let Some(d) = device {
+                t.device = Some(d);
+            }
+            t.effects.clear();
+            t.fx_links = None;
         }
-        t.effects.clear();
-        t.fx_links = None;
-    }
-    let dir = state.project_dir();
-    let pitch = pitch.min(127);
-    // 測る時刻は 16 個・各 0〜10 秒まで(巨大な値で、描き出しの確保に失敗して落ちていた)
-    let mut times = times;
-    times.truncate(16);
-    times.iter_mut().for_each(|t| {
-        *t = if t.is_finite() {
-            t.clamp(0.0, 10.0)
-        } else {
-            0.0
-        }
-    });
-    tauri::async_runtime::spawn_blocking(move || {
-        const RATE: f64 = 48_000.0;
-        let dir = std::path::Path::new(&dir);
-        let bank = glaux_engine::SampleBank::for_offline(&project, dir);
-        let longest = times.iter().cloned().fold(0.0f64, f64::max);
-        let x = glaux_engine::render_track_note(
-            &project,
-            &track_id,
-            pitch,
-            vel.unwrap_or(100),
-            longest + 1.0,
-            RATE,
-            &bank,
-        )
-        .map_err(|e| e.to_string())?;
-        let f0 = 440.0 * 2f64.powf((pitch as f64 - 69.0) / 12.0);
-        Ok(glaux_engine::note_harmonics(
-            &x,
-            RATE,
-            f0,
-            &times,
-            step.unwrap_or(0.5),
-            max_mult.unwrap_or(40.0),
-        ))
+        let dir = state.project_dir();
+        let pitch = pitch.min(127);
+        // 測る時刻は 16 個・各 0〜10 秒まで(巨大な値で、描き出しの確保に失敗して落ちていた)
+        let mut times = times;
+        times.truncate(16);
+        times.iter_mut().for_each(|t| {
+            *t = if t.is_finite() {
+                t.clamp(0.0, 10.0)
+            } else {
+                0.0
+            }
+        });
+        tauri::async_runtime::spawn_blocking(move || {
+            const RATE: f64 = 48_000.0;
+            let dir = std::path::Path::new(&dir);
+            let bank = glaux_engine::SampleBank::for_offline(&project, dir);
+            let longest = times.iter().cloned().fold(0.0f64, f64::max);
+            let x = glaux_engine::render_track_note(
+                &project,
+                &track_id,
+                pitch,
+                vel.unwrap_or(100),
+                longest + 1.0,
+                RATE,
+                &bank,
+            )
+            .map_err(|e| e.to_string())?;
+            let f0 = 440.0 * 2f64.powf((pitch as f64 - 69.0) / 12.0);
+            Ok(glaux_engine::note_harmonics(
+                &x,
+                RATE,
+                f0,
+                &times,
+                step.unwrap_or(0.5),
+                max_mult.unwrap_or(40.0),
+            ))
+        })
+        .await
+        .map_err(|e| e.to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 // ---- 音色エディタのウェーブテーブル --------------------------------------
@@ -3266,17 +3540,20 @@ async fn wavetable_view(
     points: Option<usize>,
     harm: Option<usize>,
 ) -> Result<Value, String> {
-    wt_run(&state, &track_id, move |ctx, _| {
-        glaux_mcp::wavetables::view(
-            &recipe,
-            ctx,
-            pos_out,
-            pos_src,
-            stack.unwrap_or(40),
-            stack_points.unwrap_or(128),
-            points.unwrap_or(512),
-            harm.unwrap_or(256),
-        )
+    guard::catching("wavetable_view", async move {
+        wt_run(&state, &track_id, move |ctx, _| {
+            glaux_mcp::wavetables::view(
+                &recipe,
+                ctx,
+                pos_out,
+                pos_src,
+                stack.unwrap_or(40),
+                stack_points.unwrap_or(128),
+                points.unwrap_or(512),
+                harm.unwrap_or(256),
+            )
+        })
+        .await
     })
     .await
 }
@@ -3288,16 +3565,21 @@ async fn wavetable_preview(
     track_id: String,
     recipe: Value,
 ) -> Result<Value, String> {
-    let tid = track_id.clone();
-    wt_run(&state, &track_id, move |ctx, dir| {
-        let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
-        let (id, asset) = glaux_mcp::wavetables::write_preview(dir, &cycles)?;
-        let mut cmds = vec![];
-        if !ctx.project.assets.contains_key(&id) {
-            cmds.push(json!({ "op": "add_asset", "id": id, "asset": asset }));
-        }
-        cmds.push(json!({ "op": "set_param", "track": tid, "path": "device/table", "value": id }));
-        Ok(json!(cmds))
+    guard::catching("wavetable_preview", async move {
+        let tid = track_id.clone();
+        wt_run(&state, &track_id, move |ctx, dir| {
+            let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
+            let (id, asset) = glaux_mcp::wavetables::write_preview(dir, &cycles)?;
+            let mut cmds = vec![];
+            if !ctx.project.assets.contains_key(&id) {
+                cmds.push(json!({ "op": "add_asset", "id": id, "asset": asset }));
+            }
+            cmds.push(
+                json!({ "op": "set_param", "track": tid, "path": "device/table", "value": id }),
+            );
+            Ok(json!(cmds))
+        })
+        .await
     })
     .await
 }
@@ -3311,53 +3593,59 @@ async fn wavetable_commit(
     label: String,
     extra: Option<Vec<Value>>,
 ) -> Result<Value, String> {
-    let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
-    let r2 = recipe.clone();
-    let (imported, has) = wt_run(&state, &track_id, move |ctx, dir| {
-        let cycles = glaux_mcp::wavetables::build(&r2, ctx)?;
-        let imported = glaux_mcp::wavetables::write_asset(dir, &cycles, Some(&r2))?;
-        let has = ctx.project.assets.contains_key(&imported.id);
-        Ok((imported, has))
-    })
-    .await?;
-    let mut cmds = Vec::new();
-    if !has {
-        cmds.push(Command::AddAsset {
-            id: imported.id.clone(),
-            asset: imported.asset.clone(),
+    guard::catching("wavetable_commit", async move {
+        let tid = glaux_core::TrackId::parse(&track_id).map_err(|e| e.to_string())?;
+        let r2 = recipe.clone();
+        let (imported, has) = wt_run(&state, &track_id, move |ctx, dir| {
+            let cycles = glaux_mcp::wavetables::build(&r2, ctx)?;
+            let imported = glaux_mcp::wavetables::write_asset(dir, &cycles, Some(&r2))?;
+            let has = ctx.project.assets.contains_key(&imported.id);
+            Ok((imported, has))
+        })
+        .await?;
+        let mut cmds = Vec::new();
+        if !has {
+            cmds.push(Command::AddAsset {
+                id: imported.id.clone(),
+                asset: imported.asset.clone(),
+            });
+        }
+        cmds.push(Command::SetParam {
+            track: tid,
+            path: glaux_core::ParamPath::parse("device/table").map_err(|e| e.to_string())?,
+            value: glaux_core::ParamValue::Enum(imported.id.to_string()),
         });
-    }
-    cmds.push(Command::SetParam {
-        track: tid,
-        path: glaux_core::ParamPath::parse("device/table").map_err(|e| e.to_string())?,
-        value: glaux_core::ParamValue::Enum(imported.id.to_string()),
-    });
-    for (i, v) in extra.unwrap_or_default().into_iter().enumerate() {
-        cmds.push(serde_json::from_value(v).map_err(|e| {
-            glaux_core::tr!(
-                "extra[{i}] を Command として解釈できません: {e}",
-                "Can't parse extra[{i}] as a Command: {e}"
-            )
-        })?);
-    }
-    let (entry, m) = state
-        .handle
-        .apply(Command::batch(label.clone(), cmds), Author::Human, label)
-        .await?
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "entry_id": entry, "asset_id": imported.id, "project_version": m.project_version }))
+        for (i, v) in extra.unwrap_or_default().into_iter().enumerate() {
+            cmds.push(serde_json::from_value(v).map_err(|e| {
+                glaux_core::tr!(
+                    "extra[{i}] を Command として解釈できません: {e}",
+                    "Can't parse extra[{i}] as a Command: {e}"
+                )
+            })?);
+        }
+        let (entry, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "entry_id": entry, "asset_id": imported.id, "project_version": m.project_version }))
+    })
+    .await
 }
 
 /// 素材のテーブルの作り方の手順(残っていれば)
 #[tauri::command]
 async fn wavetable_recipe(state: State<'_, AppState>, asset_id: String) -> Result<Value, String> {
-    let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
-    let (project, _) = state.handle.get_project_shared().await?;
-    let dir = state.project_dir();
-    Ok(
-        glaux_mcp::wavetables::asset_recipe(&project, std::path::Path::new(&dir), &id)
-            .unwrap_or(Value::Null),
-    )
+    guard::catching("wavetable_recipe", async move {
+        let id = glaux_core::AssetId::parse(&asset_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        Ok(
+            glaux_mcp::wavetables::asset_recipe(&project, std::path::Path::new(&dir), &id)
+                .unwrap_or(Value::Null),
+        )
+    })
+    .await
 }
 
 /// 左の列の小さな絵: 元ごとの位置 0・0.5・1 の 3 周期(`points` 点に間引く)
@@ -3368,29 +3656,32 @@ async fn wavetable_thumbs(
     sources: Vec<Value>,
     points: Option<usize>,
 ) -> Result<Value, String> {
-    let n = points.unwrap_or(64).clamp(8, 512);
-    wt_run(&state, &track_id, move |ctx, _| {
-        let out: Vec<Value> = sources
-            .iter()
-            .map(
-                |src| match glaux_mcp::wavetables::resolve_source(src, 3, ctx) {
-                    Ok(c) => json!((0..3)
-                        .map(|k| {
-                            let f = glaux_dsp::wtedit::frame_count(&c).max(1);
-                            let i = (k * (f - 1) / 2).min(f - 1);
-                            let cyc = &c
-                                [i * glaux_dsp::wtedit::CYCLE..(i + 1) * glaux_dsp::wtedit::CYCLE];
-                            let peak = cyc.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
-                            (0..n)
-                                .map(|j| cyc[j * glaux_dsp::wtedit::CYCLE / n] / peak)
-                                .collect::<Vec<f32>>()
-                        })
-                        .collect::<Vec<_>>()),
-                    Err(_) => Value::Null,
-                },
-            )
-            .collect();
-        Ok(json!(out))
+    guard::catching("wavetable_thumbs", async move {
+        let n = points.unwrap_or(64).clamp(8, 512);
+        wt_run(&state, &track_id, move |ctx, _| {
+            let out: Vec<Value> = sources
+                .iter()
+                .map(
+                    |src| match glaux_mcp::wavetables::resolve_source(src, 3, ctx) {
+                        Ok(c) => json!((0..3)
+                            .map(|k| {
+                                let f = glaux_dsp::wtedit::frame_count(&c).max(1);
+                                let i = (k * (f - 1) / 2).min(f - 1);
+                                let cyc = &c[i * glaux_dsp::wtedit::CYCLE
+                                    ..(i + 1) * glaux_dsp::wtedit::CYCLE];
+                                let peak = cyc.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+                                (0..n)
+                                    .map(|j| cyc[j * glaux_dsp::wtedit::CYCLE / n] / peak)
+                                    .collect::<Vec<f32>>()
+                            })
+                            .collect::<Vec<_>>()),
+                        Err(_) => Value::Null,
+                    },
+                )
+                .collect();
+            Ok(json!(out))
+        })
+        .await
     })
     .await
 }
@@ -3398,7 +3689,10 @@ async fn wavetable_thumbs(
 /// 保存した波形(全部の曲で使える棚)の一覧
 #[tauri::command]
 async fn wavetable_library() -> Result<Value, String> {
-    off_thread(|| json!(glaux_mcp::wavetables::list_library())).await
+    guard::catching("wavetable_library", async move {
+        off_thread(|| json!(glaux_mcp::wavetables::list_library())).await
+    })
+    .await
 }
 
 /// 棚に保存する(作り方の手順も一緒に)
@@ -3409,10 +3703,13 @@ async fn wavetable_library_save(
     name: String,
     recipe: Value,
 ) -> Result<Value, String> {
-    wt_run(&state, &track_id, move |ctx, _| {
-        let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
-        glaux_mcp::wavetables::save_library(&name, &cycles, "", Some(recipe))?;
-        Ok(json!({ "saved": name }))
+    guard::catching("wavetable_library_save", async move {
+        wt_run(&state, &track_id, move |ctx, _| {
+            let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
+            glaux_mcp::wavetables::save_library(&name, &cycles, "", Some(recipe))?;
+            Ok(json!({ "saved": name }))
+        })
+        .await
     })
     .await
 }
@@ -3425,10 +3722,13 @@ async fn wavetable_export(
     recipe: Value,
     path: String,
 ) -> Result<Value, String> {
-    wt_run(&state, &track_id, move |ctx, _| {
-        let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
-        glaux_mcp::wavetables::export_wav(&cycles, std::path::Path::new(&path))?;
-        Ok(json!({ "path": path }))
+    guard::catching("wavetable_export", async move {
+        wt_run(&state, &track_id, move |ctx, _| {
+            let cycles = glaux_mcp::wavetables::build(&recipe, ctx)?;
+            glaux_mcp::wavetables::export_wav(&cycles, std::path::Path::new(&path))?;
+            Ok(json!({ "path": path }))
+        })
+        .await
     })
     .await
 }
@@ -3545,38 +3845,44 @@ async fn send_chat(
     effort: Option<String>,
     language: Option<String>,
 ) -> Result<(), String> {
-    let provider = chat::Provider::parse(provider.as_deref())?;
-    let prompt = prompt.trim().to_owned();
-    if prompt.is_empty() {
-        return Err(t("指示が空です", "The instruction is empty").to_owned());
-    }
-    if state.chat.is_running() {
-        return Err(t(
-            "前の指示がまだ実行中です",
-            "The previous instruction is still running",
-        )
-        .to_owned());
-    }
-    state.chat.set_model(model)?;
-    state.chat.set_effort(effort)?;
-    state.chat.set_provider(provider);
-    state
-        .chat
-        .set_language(chat::ReplyLang::parse(language.as_deref()));
-    let full_prompt = match build_chat_context(&state).await {
-        Some(ctx) => format!("{ctx}\n{prompt}"),
-        None => prompt,
-    };
-    let mgr = state.chat.clone();
-    tauri::async_runtime::spawn(chat::run_turn(app, mgr, full_prompt));
-    Ok(())
+    guard::catching("send_chat", async move {
+        let provider = chat::Provider::parse(provider.as_deref())?;
+        let prompt = prompt.trim().to_owned();
+        if prompt.is_empty() {
+            return Err(t("指示が空です", "The instruction is empty").to_owned());
+        }
+        if state.chat.is_running() {
+            return Err(t(
+                "前の指示がまだ実行中です",
+                "The previous instruction is still running",
+            )
+            .to_owned());
+        }
+        state.chat.set_model(model)?;
+        state.chat.set_effort(effort)?;
+        state.chat.set_provider(provider);
+        state
+            .chat
+            .set_language(chat::ReplyLang::parse(language.as_deref()));
+        let full_prompt = match build_chat_context(&state).await {
+            Some(ctx) => format!("{ctx}\n{prompt}"),
+            None => prompt,
+        };
+        let mgr = state.chat.clone();
+        tauri::async_runtime::spawn(chat::run_turn(app, mgr, full_prompt));
+        Ok(())
+    })
+    .await
 }
 
 /// (Windows ではプロセスツリーを止める taskkill の終わりを待つので、別のスレッドで)
 #[tauri::command]
 async fn cancel_chat(state: State<'_, AppState>) -> Result<(), String> {
-    let chat = state.chat.clone();
-    off_thread(move || chat.cancel()).await
+    guard::catching("cancel_chat", async move {
+        let chat = state.chat.clone();
+        off_thread(move || chat.cancel()).await
+    })
+    .await
 }
 
 /// 会話をリセットする(次の送信が新しいセッションになる)。
@@ -3595,10 +3901,13 @@ struct ChatLog {
 
 #[tauri::command]
 async fn load_chat_log(state: State<'_, AppState>) -> Result<ChatLog, String> {
-    let chat = state.chat.clone();
-    off_thread(move || {
-        let (dir, log) = chat.load_log();
-        ChatLog { dir, log }
+    guard::catching("load_chat_log", async move {
+        let chat = state.chat.clone();
+        off_thread(move || {
+            let (dir, log) = chat.load_log();
+            ChatLog { dir, log }
+        })
+        .await
     })
     .await
 }
@@ -3611,8 +3920,11 @@ async fn save_chat_log(
     dir: String,
     log: String,
 ) -> Result<bool, String> {
-    let chat = state.chat.clone();
-    off_thread(move || chat.save_log(&dir, &log)).await
+    guard::catching("save_chat_log", async move {
+        let chat = state.chat.clone();
+        off_thread(move || chat.save_log(&dir, &log)).await
+    })
+    .await
 }
 
 // ---- 起動 -----------------------------------------------------------------

@@ -1068,11 +1068,14 @@ fn open_stream(
     let mut stream_config = config.config();
     stream_config.buffer_size = cpal::BufferSize::Fixed(want);
     let mut applied = Some(want);
+    // 開き直したら、前の出力で止めた知らせを消す
+    shared.stats.audio_panicked.store(false, Ordering::Release);
     let stream = match device.build_output_stream(
         stream_config,
         {
             let mut r = Renderer::new(shared.clone()).with_retire(crate::render::retire_channel());
-            move |out: &mut [f32], _| r.process(out, channels)
+            let mut cb = guarded_callback(move |out| r.process(out, channels), shared);
+            move |out: &mut [f32], _: &cpal::OutputCallbackInfo| cb(out)
         },
         stream_error_handler(shared),
         None,
@@ -1085,7 +1088,10 @@ fn open_stream(
             device
                 .build_output_stream(
                     config.config(),
-                    move |out: &mut [f32], _| r.process(out, channels),
+                    {
+                        let mut cb = guarded_callback(move |out| r.process(out, channels), shared);
+                        move |out: &mut [f32], _: &cpal::OutputCallbackInfo| cb(out)
+                    },
                     stream_error_handler(shared),
                     None,
                 )
@@ -1106,6 +1112,30 @@ fn open_stream(
             max,
         },
     })
+}
+
+/// オーディオスレッドの処理を包む(#69)。中で panic したら、その回から出力を無音にして止め、
+/// 画面に知らせる(`audio_panicked`)。止めずに呼び続けると、壊れた状態で毎回 panic して
+/// そのたびに記録を書く(オーディオスレッドでファイルを書く)ことになるため。出力を開き直すと戻る。
+/// panic しない間は catch_unwind の費用はかからない
+fn guarded_callback(
+    mut process: impl FnMut(&mut [f32]) + Send + 'static,
+    shared: &Arc<Shared>,
+) -> impl FnMut(&mut [f32]) + Send + 'static {
+    let shared = shared.clone();
+    let mut broken = false;
+    move |out: &mut [f32]| {
+        if !broken {
+            let ok =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process(out))).is_ok();
+            if ok {
+                return;
+            }
+            broken = true;
+            shared.stats.audio_panicked.store(true, Ordering::Release);
+        }
+        out.fill(0.0);
+    }
 }
 
 /// ストリームのエラーの受け口。音切れ(xrun)とリアルタイム優先度の拒否は数えて UI に出す
@@ -1155,5 +1185,35 @@ fn disable_power_throttling() {
         if ok == 0 {
             tracing::warn!("電力抑制(EcoQoS)を外せませんでした");
         }
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_callback_goes_silent_and_reports_once() {
+        let shared = Arc::new(Shared::new(crate::data::PlaybackData::default()));
+        let mut calls = 0;
+        let mut cb = guarded_callback(
+            move |out: &mut [f32]| {
+                calls += 1;
+                out.fill(0.5);
+                if calls == 2 {
+                    panic!("テスト用の panic");
+                }
+            },
+            &shared,
+        );
+        let mut buf = [0.0f32; 8];
+        cb(&mut buf);
+        assert_eq!(buf, [0.5; 8]);
+        assert!(!shared.stats.audio_panicked.load(Ordering::Acquire));
+        cb(&mut buf);
+        assert_eq!(buf, [0.0; 8], "panic した回は無音");
+        assert!(shared.stats.audio_panicked.load(Ordering::Acquire));
+        cb(&mut buf);
+        assert_eq!(buf, [0.0; 8], "その後も呼ばずに無音");
     }
 }

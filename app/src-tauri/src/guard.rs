@@ -32,6 +32,22 @@ pub fn guarded<R: Runtime>(
     }
 }
 
+/// async のコマンドの本体を包む。tauri は async のコマンドを tokio に spawn するので、中で panic すると
+/// 返事をする係ごと捨てられ、画面の invoke が永久に返らない(#66)。panic を受け止めて「内部エラー」で返す
+pub async fn catching<T>(
+    cmd: &'static str,
+    fut: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    use futures::FutureExt;
+    match AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(r) => r,
+        Err(p) => {
+            tracing::error!("コマンド {cmd} で panic: {}", panic_message(&*p));
+            Err(format!("内部エラー({cmd})。ログ: {}", log_path().display()))
+        }
+    }
+}
+
 fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>()
         .map(|s| s.to_string())
@@ -74,4 +90,44 @@ pub fn install_panic_log() {
             writeln!(f, "{}", std::backtrace::Backtrace::force_capture())
         })();
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn catching_turns_a_panic_into_an_error() {
+        let r: Result<u32, String> = catching("x", async { panic!("壊れた") }).await;
+        assert!(r.unwrap_err().starts_with("内部エラー(x)"));
+        assert_eq!(catching("y", async { Ok::<_, String>(3) }).await, Ok(3));
+    }
+
+    /// 画面の async のコマンドは、どれも catching で包む(包み忘れると、panic で画面の待ちが終わらない)
+    #[test]
+    fn every_async_command_is_wrapped() {
+        let src = include_str!("main.rs");
+        let mut n = 0;
+        for (i, _) in src.match_indices("#[tauri::command]") {
+            let rest = &src[i..];
+            let head = &rest[..rest.find('{').unwrap_or(0) + 1];
+            if !head.contains("async fn") {
+                continue;
+            }
+            let name = head
+                .split("async fn ")
+                .nth(1)
+                .unwrap()
+                .split('(')
+                .next()
+                .unwrap();
+            let body = rest[head.len()..].trim_start();
+            assert!(
+                body.starts_with(&format!("guard::catching(\"{name}\", async move {{")),
+                "{name} が guard::catching で包まれていない"
+            );
+            n += 1;
+        }
+        assert!(n > 50, "{n}");
+    }
 }

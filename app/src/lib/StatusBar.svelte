@@ -3,7 +3,8 @@
   import Icon from "./Icon.svelte";
   import { APP_VERSION, appVersionDetail } from "./appVersion";
   import { tr } from "./i18n.svelte";
-  import { openSettings } from "./settings.svelte";
+  import * as api from "./api";
+  import { openSettings, settings } from "./settings.svelte";
   import { transportStore } from "./transport.svelte";
   import type { AppInfo } from "./types";
 
@@ -81,6 +82,17 @@
         )}
         ><Icon name="cpu" size={12} />{dspAvg.toFixed(0)}%{#if dspDrops > 0}
           <Icon name="triangle-alert" size={12} />{dspDrops}{/if}</span
+      >
+    {/if}
+    {#if transport.dsp?.audio_panicked}
+      <!-- 音の処理の途中で問題が起きて無音で止めた(エンジンの guarded_callback)。出力を開き直すと戻る -->
+      <button
+        class="it warn"
+        onclick={() => api.setBufferSize(settings.bufferFrames || 512).catch(() => openSettings("audio"))}
+        title={tr(
+          "音の処理の途中で問題が起きたので、音を止めました。押すと出力を開き直して戻します",
+          "A problem occurred while processing audio, so the sound was stopped. Click to reopen the output and restore it",
+        )}><Icon name="triangle-alert" size={12} />{tr("音を止めました(押すと戻す)", "Audio stopped (click to restore)")}</button
       >
     {/if}
     {#if audioDev}

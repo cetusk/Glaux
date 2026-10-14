@@ -9,6 +9,7 @@
 //! Tauri アプリからも同じ [`actor::SessionHandle`] を使う想定。
 
 pub mod actor;
+pub mod argcheck;
 pub mod assets;
 pub mod bounce;
 pub mod changes;

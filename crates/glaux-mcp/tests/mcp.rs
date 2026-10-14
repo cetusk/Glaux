@@ -8549,3 +8549,45 @@ async fn make_wavetable_continues_the_recipe_with_point_keys() {
     .await;
     assert!(r.is_error.unwrap_or(false), "{r:?}");
 }
+
+/// 数の引数の範囲は道具の入口で確かめる(とても大きな移調・小節数で桁あふれさせない。#68)
+#[tokio::test]
+async fn huge_numeric_arguments_are_rejected_at_the_entrance() {
+    let fx = setup().await;
+    ok_json(&call(&fx, "apply_commands", add_track_args("trk_keys01", "Keys")).await);
+    let w = ok_json(
+        &call(
+            &fx,
+            "write_chords",
+            json!({ "track_id": "trk_keys01", "chords": "C F G C" }),
+        )
+        .await,
+    );
+    let clip = w["clip_id"].as_str().expect("clip_id").to_owned();
+    for (tool, args) in [
+        (
+            "transpose_notes",
+            json!({ "clip_id": clip, "semitones": 2147483647 }),
+        ),
+        ("plan_melody", json!({ "bars": 4294967295u64 })),
+        ("change_meter", json!({ "bar": 1, "beats": 2147483647 })),
+        (
+            "shift_notes",
+            json!({ "clip_id": clip, "delta_ticks": 9223372036854775807i64 }),
+        ),
+    ] {
+        let r = call(&fx, tool, args).await;
+        assert_eq!(r.is_error, Some(true), "{tool}");
+        let text = r.content[0].as_text().expect("text").text.clone();
+        assert!(text.contains("範囲の外"), "{tool}: {text}");
+    }
+    // 範囲の中なら今までどおり動く
+    ok_json(
+        &call(
+            &fx,
+            "transpose_notes",
+            json!({ "clip_id": clip, "semitones": 12 }),
+        )
+        .await,
+    );
+}

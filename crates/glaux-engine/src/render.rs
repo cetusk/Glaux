@@ -269,6 +269,8 @@ pub struct StatsCounters {
     pub xruns: AtomicU64,
     /// OS がオーディオスレッドのリアルタイム優先度を認めなかった
     pub realtime_denied: std::sync::atomic::AtomicBool,
+    /// 音の処理の途中で panic して、出力を無音にして止めた(出力を開き直すと戻る)
+    pub audio_panicked: std::sync::atomic::AtomicBool,
     /// トラックごと・マスターの処理時間(ns)と、その間の予算(ns)。[`StatsCounters::take_loads`] で読んでリセット
     track_ns: [AtomicU64; MAX_TRACKS],
     master_ns: AtomicU64,
@@ -287,6 +289,7 @@ pub struct DspStats {
     pub swaps: u64,
     pub xruns: u64,
     pub realtime_denied: bool,
+    pub audio_panicked: bool,
 }
 
 impl Default for StatsCounters {
@@ -300,6 +303,7 @@ impl Default for StatsCounters {
             swaps: AtomicU64::new(0),
             xruns: AtomicU64::new(0),
             realtime_denied: AtomicBool::new(false),
+            audio_panicked: AtomicBool::new(false),
             track_ns: std::array::from_fn(|_| AtomicU64::new(0)),
             master_ns: AtomicU64::new(0),
             load_budget_ns: AtomicU64::new(0),
@@ -339,6 +343,7 @@ impl StatsCounters {
             swaps: self.swaps.load(Ordering::Acquire),
             xruns: self.xruns.load(Ordering::Acquire),
             realtime_denied: self.realtime_denied.load(Ordering::Acquire),
+            audio_panicked: self.audio_panicked.load(Ordering::Acquire),
         }
     }
 }

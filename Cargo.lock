@@ -1662,6 +1662,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "futures",
  "glaux-core",
  "glaux-dsp",
  "glaux-engine",

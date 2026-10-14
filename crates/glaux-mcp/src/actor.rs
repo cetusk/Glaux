@@ -861,8 +861,17 @@ fn actor_loop(
     let mut plans: Option<Plans> = None;
     let mut overlay_cache: Option<Overlaid> = None;
     while let Some(req) = rx.blocking_recv() {
-        // 曲のフォルダの計画を開き、古い曲なら区間の設計を計画へ移す(フォルダごとに 1 回)
-        if open_plans(&mut plans, store.dir()).is_ok() {
+        // 曲のフォルダの計画を開き、古い曲なら区間の設計を計画へ移す(フォルダごとに 1 回)。
+        // 開く途中の panic(壊れた計画のファイルなど)でアクターごと止めない(#69)
+        let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            open_plans(&mut plans, store.dir()).is_ok()
+        }))
+        .unwrap_or_else(|_| {
+            tracing::error!("計画を開く途中で panic しました。次の要求で開き直します");
+            plans = None;
+            false
+        });
+        if opened {
             if let Some(p) = plans.as_mut().filter(|p| !p.migrated) {
                 let moved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     migrate_section_design(p, &mut session, &store, &events)
@@ -883,8 +892,17 @@ fn actor_loop(
             }
         }
         if let Request::GetProject { reply } = req {
-            let out = overlaid_project(&store, &session, plans.as_ref(), &mut overlay_cache);
-            let _ = reply.send((out, version(&session, &store)));
+            // 計画を重ねる途中の panic も受け止める(応答は届かず、呼び出し側には actor_gone() のエラー)
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                overlaid_project(&store, &session, plans.as_ref(), &mut overlay_cache)
+            }));
+            match out {
+                Ok(out) => drop(reply.send((out, version(&session, &store)))),
+                Err(_) => {
+                    tracing::error!("曲の全体を作る途中で panic しました");
+                    overlay_cache = None;
+                }
+            }
             continue;
         }
         if let Request::Plan(req) = req {

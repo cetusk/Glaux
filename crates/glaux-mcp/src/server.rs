@@ -15526,6 +15526,16 @@ impl ServerHandler for GlauxServer {
                 .arguments
                 .as_ref()
                 .is_some_and(|a| a.get("__glaux_test_panic") == Some(&Value::Bool(true)));
+        // 数の引数の範囲を、道具を動かす前に確かめる(とても大きな値で桁あふれ・壊れた音にしない。#68)
+        if let Some(Err(msg)) = request
+            .arguments
+            .as_ref()
+            .map(|a| crate::argcheck::check(&name, a))
+        {
+            return Ok(rmcp::model::CallToolResponse::Complete(
+                rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(msg)]),
+            ));
+        }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let call = async move {
             if test_panic {
