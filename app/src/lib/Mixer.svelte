@@ -4,7 +4,6 @@
   // 列のエフェクト名を押すと、下の同じカードが光る。すべての編集は Command を通る。
   import { untrack } from "svelte";
   import AllTracksBar from "./AllTracksBar.svelte";
-  import AllTracksItems from "./AllTracksItems.svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { effectiveLinks, fxColor, fxName, processingOrder, serialOrder } from "./fx";
@@ -13,8 +12,7 @@
   import NodeView from "./NodeView.svelte";
   import FxPresetShelf from "./FxPresetShelf.svelte";
   import MonitorStrip from "./MonitorStrip.svelte";
-  import TimelineMenu from "./TimelineMenu.svelte";
-  import { removeTracks, setAllListen, type AllAction } from "./trackActions";
+  import { removeTracks } from "./trackActions";
   import { instrumentPickerStore, MASTER_FOCUS_ID, soundDesignStore, viewStore } from "./selection.svelte";
   import { requestFastPolling, transportStore } from "./transport.svelte";
   import type { EffectView, FxLink, Project, ProjectEffect, Track } from "./types";
@@ -116,21 +114,8 @@
     api.setListen([{ op: "set_track_prop", id: t.id, prop, value: !t[prop] }]).catch(() => {});
   }
 
-  // ---- すべてのトラックへの操作(列の右クリック。タイムラインのトラックのメニューと同じ項目) ----
-  let allMenu = $state<{ x: number; y: number } | null>(null);
-  function openAllMenu(e: MouseEvent) {
-    // 数を打つ欄・選択欄の右クリックはそのまま(コピー・貼り付けなど)
-    if ((e.target as HTMLElement).closest("input[type=text], input[type=number], textarea, select")) return;
-    e.preventDefault();
-    allMenu = { x: e.clientX, y: e.clientY };
-  }
-  function allTracks(action: AllAction) {
-    allMenu = null;
-    if (action === "delete") removeTracks(project.tracks);
-    else if (action !== "select") setAllListen(project.tracks, action);
-  }
-  const M_TITLE = $derived(tr("ミュート(右クリックで、すべてのトラックをまとめて)", "Mute (right-click for all tracks)"));
-  const S_TITLE = $derived(tr("ソロ(右クリックで、すべてのトラックをまとめて)", "Solo (right-click for all tracks)"));
+  const M_TITLE = $derived(tr("ミュート", "Mute"));
+  const S_TITLE = $derived(tr("ソロ", "Solo"));
   let dragSend = $state<Record<string, number>>({});
   function setSend(t: Track, bus: Track, v: number) {
     delete dragSend[`${t.id}>${bus.id}`];
@@ -350,8 +335,7 @@
 {/snippet}
 
 <div class="mixer" bind:this={rootEl} bind:clientHeight={rootH}>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="strips" style="height:{shownTop}px" oncontextmenu={openAllMenu}>
+  <div class="strips" style="height:{shownTop}px">
     <!-- すべてのトラックをまとめて(M・S・入れ替え・削除) -->
     <div class="all-col"><AllTracksBar {project} vertical onDeleteAll={() => removeTracks(project.tracks)} /></div>
     {#each plain as t (t.id)}
@@ -477,12 +461,6 @@
     </div>
   </div>
 </div>
-
-{#if allMenu}
-  <TimelineMenu x={allMenu.x} y={allMenu.y} onClose={() => (allMenu = null)}>
-    <AllTracksItems {project} onAll={allTracks} canSelect={false} />
-  </TimelineMenu>
-{/if}
 
 <style>
   .mixer {
