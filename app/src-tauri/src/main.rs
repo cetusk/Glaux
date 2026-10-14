@@ -2617,6 +2617,54 @@ async fn export_for_game(
     .await
 }
 
+/// 効果音用の曲(Glaux for Godot の play_note で鳴らす音色を並べた曲)を作る。`track_ids` は今の曲から入れるトラック、
+/// `presets` は棚のプリセットの名前。`dest`(省略でプロジェクトの export/)に `<name>.glaux` を作る
+#[tauri::command]
+async fn make_sfx_song(
+    state: State<'_, AppState>,
+    track_ids: Vec<String>,
+    presets: Vec<String>,
+    dest: Option<String>,
+    name: String,
+) -> Result<Value, String> {
+    guard::catching("make_sfx_song", async move {
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        off_thread(move || {
+            let dir = std::path::Path::new(&dir);
+            let ids = track_ids
+                .iter()
+                .map(|s| glaux_core::TrackId::parse(s).map_err(|e| e.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let shelf = glaux_mcp::presets::default_dir();
+            let presets = presets
+                .iter()
+                .map(|n| glaux_mcp::presets::load(&shelf, n))
+                .collect::<Result<Vec<_>, _>>()?;
+            let dest = dest
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| dir.join("export"));
+            let name = if name.trim().is_empty() {
+                "SFX".to_owned()
+            } else {
+                name
+            };
+            let r = glaux_mcp::game_export::make_sfx_song(
+                &project,
+                dir,
+                &ids,
+                &presets,
+                &dest,
+                &name,
+                &glaux_engine::sf2::default_dir(),
+            )?;
+            serde_json::to_value(&r).map_err(|e| e.to_string())
+        })
+        .await?
+    })
+    .await
+}
+
 /// キーと小節ごとのコード(ノートからの推定)と、キーのスケールの音(ピッチクラス)。画面の表示用
 #[tauri::command]
 async fn harmony(state: State<'_, AppState>) -> Result<Value, String> {
@@ -4361,6 +4409,7 @@ fn main() -> Result<()> {
             import_midi,
             export_midi,
             export_for_game,
+            make_sfx_song,
             harmony,
             check_clashes,
             get_standing_instructions,

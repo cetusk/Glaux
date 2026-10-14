@@ -1004,6 +1004,21 @@ export type GameExport = {
   plugins: string[];
 };
 
+/** 効果音用の曲を作った結果 */
+export type SfxSong = {
+  dir: string;
+  tracks: string[];
+  skipped: string[];
+  removed_effects: string[];
+  soundfonts: string[];
+  missing_soundfonts: string[];
+};
+
+/** 効果音用の曲を作る(今の曲のトラックと棚のプリセットを並べる。dest 省略でプロジェクトの export/) */
+export function makeSfxSong(trackIds: string[], presets: string[], name: string, dest?: string): Promise<SfxSong> {
+  return invoke("make_sfx_song", { trackIds, presets, name, dest: dest ?? null });
+}
+
 /** ゲーム用に書き出す(CLAP・SFZ を音声に、SoundFont を同梱、ソロを外す。dest 省略でプロジェクトの export/) */
 export function exportForGame(dest?: string): Promise<GameExport> {
   return invoke("export_for_game", { dest: dest ?? null });

@@ -255,7 +255,8 @@ func _on_jumped(from: float, to: float) -> void:
 
 ### 3-8. 効果音を曲のコードに合わせ、拍にぴったり鳴らす(WAV 不要)
 
-効果音は、効果音用の曲(例 `SEKit.glaux`。トラックごとに音色を作ってある)を読み込んだ**別の** `GlauxPlayer` で、
+効果音は、効果音用の曲(例 `SEKit.glaux`。トラックごとに音色を作ってある。人間が Glaux の「書き出し → 効果音用の曲」で
+作れる)を読み込んだ**別の** `GlauxPlayer` で、
 1 音ずつ鳴らす。音程は BGM の `GlauxPlayer` に問い合わせて決める。
 
 ```gdscript

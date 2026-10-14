@@ -1235,7 +1235,7 @@
     <WelcomeDialog />
   {/if}
   {#if showExport}
-    <ExportDialog onClose={() => (showExport = false)} loop={transport.loop ?? null} />
+    <ExportDialog onClose={() => (showExport = false)} loop={transport.loop ?? null} {project} />
   {/if}
 
   <StatusBar {info} {audioDev} {projectVersion} />

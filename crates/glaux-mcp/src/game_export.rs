@@ -5,6 +5,8 @@
 //! 使っている SoundFont を写しの `soundfonts/` に入れ、ソロを外す。元の曲は変えない。
 //! バス・マスターに挿した CLAP のエフェクトは音声にできないので、知らせるだけにする。
 //! 配るときに約束(ライセンス)を確かめられるよう、使ったプラグインと SoundFont も一覧にする。
+//!
+//! [`make_sfx_song`] は効果音用の曲(ゲームの `play_note` で鳴らす音色を並べた、クリップの無い曲)を作る。
 
 use glaux_core::{PluginSource, Project, Track, TrackKind};
 use std::path::{Path, PathBuf};
@@ -63,16 +65,10 @@ fn folder_name(title: &str) -> String {
     }
 }
 
-/// `project`(フォルダ `project_dir`)のゲーム用の写しを `dest` の中に `<曲名>.glaux` として作る。
-/// 同じ名前の曲のフォルダが既にあれば作り直す(`project.json` の無いフォルダは消さずにエラー)。
-/// `sf2_dir` は SoundFont のライブラリのフォルダ
-pub fn export_for_game(
-    project: &Project,
-    project_dir: &Path,
-    dest: &Path,
-    sf2_dir: &Path,
-) -> Result<GameExport, String> {
-    let out = dest.join(format!("{}.glaux", folder_name(&project.meta.title)));
+/// 書き出し先の曲のフォルダ `dest/<name>.glaux` を空で用意する。同じ名前の曲のフォルダがあれば作り直す
+/// (`project.json` の無いフォルダと、元の曲のフォルダは消さずにエラー)
+fn prepare_out(dest: &Path, name: &str, project_dir: &Path) -> Result<PathBuf, String> {
+    let out = dest.join(format!("{}.glaux", folder_name(name)));
     if out.exists() {
         if !out.join("project.json").is_file() {
             return Err(glaux_core::tr!(
@@ -90,6 +86,54 @@ pub fn export_for_game(
         std::fs::remove_dir_all(&out).map_err(|e| e.to_string())?;
     }
     std::fs::create_dir_all(out.join("audio")).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// 曲の SoundFont(鳴らすトラックが使っているもの)を `out/soundfonts/` に写す。(入れたもの, 見つからないもの)
+fn copy_soundfonts(
+    p: &Project,
+    out: &Path,
+    sf2_dir: &Path,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut fonts: Vec<String> = p
+        .tracks
+        .iter()
+        .filter(|t| !t.mute)
+        .flat_map(|t| t.device.iter().chain(t.layers.iter().map(|l| &l.device)))
+        .filter_map(|d| match &d.source {
+            PluginSource::Sf2 { soundfont, .. } => Some(soundfont.clone()),
+            _ => None,
+        })
+        .collect();
+    fonts.sort();
+    fonts.dedup();
+    let (mut ok, mut missing) = (Vec::new(), Vec::new());
+    for f in fonts {
+        let src = sf2_dir.join(&f);
+        if src.is_file() {
+            let to = out.join("soundfonts").join(&f);
+            if let Some(dir) = to.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::copy(&src, &to).map_err(|e| e.to_string())?;
+            ok.push(f);
+        } else {
+            missing.push(f);
+        }
+    }
+    Ok((ok, missing))
+}
+
+/// `project`(フォルダ `project_dir`)のゲーム用の写しを `dest` の中に `<曲名>.glaux` として作る。
+/// 同じ名前の曲のフォルダが既にあれば作り直す(`project.json` の無いフォルダは消さずにエラー)。
+/// `sf2_dir` は SoundFont のライブラリのフォルダ
+pub fn export_for_game(
+    project: &Project,
+    project_dir: &Path,
+    dest: &Path,
+    sf2_dir: &Path,
+) -> Result<GameExport, String> {
+    let out = prepare_out(dest, &project.meta.title, project_dir)?;
 
     let mut report = GameExport {
         dir: out.clone(),
@@ -171,36 +215,160 @@ pub fn export_for_game(
     }
 
     // 使っている SoundFont を写しに入れる(ゲームは曲のフォルダの soundfonts/ から読む)
-    let mut fonts: Vec<String> = p
-        .tracks
-        .iter()
-        .filter(|t| !t.mute)
-        .flat_map(|t| t.device.iter().chain(t.layers.iter().map(|l| &l.device)))
-        .filter_map(|d| match &d.source {
-            PluginSource::Sf2 { soundfont, .. } => Some(soundfont.clone()),
-            _ => None,
-        })
-        .collect();
-    fonts.sort();
-    fonts.dedup();
-    for f in fonts {
-        let src = sf2_dir.join(&f);
-        if src.is_file() {
-            let to = out.join("soundfonts").join(&f);
-            if let Some(dir) = to.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            }
-            std::fs::copy(&src, &to).map_err(|e| e.to_string())?;
-            report.soundfonts.push(f);
-        } else {
-            report.missing_soundfonts.push(f);
-        }
-    }
+    let (ok, missing) = copy_soundfonts(&p, &out, sf2_dir)?;
+    report.soundfonts = ok;
+    report.missing_soundfonts = missing;
 
     // 描き出しの途中のファイルは入れない
     let _ = std::fs::remove_dir_all(out.join("cache"));
     let json = p.to_json().map_err(|e| e.to_string())?;
     std::fs::write(out.join("project.json"), json).map_err(|e| e.to_string())?;
+    Ok(report)
+}
+
+/// 効果音用の曲を作った結果。
+#[derive(Debug, Default, serde::Serialize)]
+pub struct SfxSong {
+    pub dir: PathBuf,
+    /// 作ったトラックの名前(ゲームの `play_note` で指定する名前)
+    pub tracks: Vec<String>,
+    /// 入れなかったもの(名前と理由)
+    pub skipped: Vec<String>,
+    /// 外した CLAP のエフェクト(トラックの名前)
+    pub removed_effects: Vec<String>,
+    pub soundfonts: Vec<String>,
+    pub missing_soundfonts: Vec<String>,
+}
+
+/// ゲームで `play_note` で鳴らせない音源(遊ぶ人のパソコンに無い)
+fn game_unplayable(d: &glaux_core::Device) -> bool {
+    matches!(
+        d.source,
+        PluginSource::Clap { .. } | PluginSource::Sfz { .. }
+    )
+}
+
+/// 同じ名前があれば「名前 2」「名前 3」…にする(ゲームはトラックを名前で選ぶ)
+fn unique_name(p: &Project, name: &str) -> String {
+    let taken = |n: &str| p.tracks.iter().any(|t| t.name == n);
+    if !taken(name) {
+        return name.to_owned();
+    }
+    (2..)
+        .map(|i| format!("{name} {i}"))
+        .find(|n| !taken(n))
+        .unwrap_or_else(|| name.to_owned())
+}
+
+/// 効果音用の曲(Glaux for Godot の `play_note` で鳴らす音色を並べた曲。クリップは無い)を `dest/<name>.glaux` に作る。
+/// `tracks` は今の曲から入れるトラック(音源・エフェクト・音量・パンを写す)、`presets` は棚のプリセット。
+/// CLAP・SFZ の音源のトラックはゲームで鳴らないので入れず、CLAP のエフェクトは外す。
+/// トラックが使う音声(サンプラー・ウェーブテーブルなど)と SoundFont も写す
+pub fn make_sfx_song(
+    project: &Project,
+    project_dir: &Path,
+    tracks: &[glaux_core::TrackId],
+    presets: &[crate::presets::Preset],
+    dest: &Path,
+    name: &str,
+    sf2_dir: &Path,
+) -> Result<SfxSong, String> {
+    let out = prepare_out(dest, name, project_dir)?;
+    let mut report = SfxSong {
+        dir: out.clone(),
+        ..Default::default()
+    };
+    let mut p = Project::new(name);
+    for id in tracks {
+        let Some(src) = project.track(id) else {
+            continue;
+        };
+        if src.kind != TrackKind::Midi {
+            report.skipped.push(glaux_core::tr!(
+                "「{}」(音源の無いトラック)",
+                "\"{}\" (no instrument)",
+                src.name
+            ));
+            continue;
+        }
+        if src
+            .device
+            .iter()
+            .chain(src.layers.iter().map(|l| &l.device))
+            .any(game_unplayable)
+        {
+            report.skipped.push(glaux_core::tr!(
+                "「{}」(CLAP・SFZ の音源はゲームで鳴らない)",
+                "\"{}\" (CLAP/SFZ instruments don't play in games)",
+                src.name
+            ));
+            continue;
+        }
+        let mut t = src.clone();
+        t.id = glaux_core::TrackId::new();
+        t.name = unique_name(&p, &src.name);
+        t.clips.clear();
+        t.automation.clear();
+        t.sends.clear();
+        t.output = None;
+        t.mute = false;
+        t.solo = false;
+        if t.effects
+            .iter()
+            .any(|e| matches!(e.source, PluginSource::Clap { .. }))
+        {
+            t.effects
+                .retain(|e| !matches!(e.source, PluginSource::Clap { .. }));
+            t.fx_links = None;
+            report.removed_effects.push(t.name.clone());
+        }
+        report.tracks.push(t.name.clone());
+        p.tracks.push(t);
+    }
+    for preset in presets {
+        let t = Track::new(
+            glaux_core::TrackId::new(),
+            unique_name(&p, &preset.name),
+            TrackKind::Midi,
+        );
+        let name = t.name.clone();
+        p.tracks.push(t.clone());
+        for c in crate::presets::apply_commands(&t, preset) {
+            p.apply(&c).map_err(|e| e.to_string())?;
+        }
+        report.tracks.push(name);
+    }
+    if p.tracks.is_empty() {
+        let _ = std::fs::remove_dir_all(&out);
+        return Err(glaux_core::tr!(
+            "入れられるトラック・プリセットがありません",
+            "Nothing to include (no playable tracks or presets)"
+        ));
+    }
+    // トラックが使う音声(サンプラー・ウェーブテーブル・IR など。ID が書かれているもの)を写す
+    let json = serde_json::to_string(&p.tracks).map_err(|e| e.to_string())?;
+    for (id, asset) in &project.assets {
+        if !json.contains(&id.to_string()) {
+            continue;
+        }
+        let src = project_dir.join(&asset.path);
+        if src.is_file() {
+            let to = out.join(&asset.path);
+            if let Some(dir) = to.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::copy(&src, &to).map_err(|e| e.to_string())?;
+            p.assets.insert(id.clone(), asset.clone());
+        }
+    }
+    let (ok, missing) = copy_soundfonts(&p, &out, sf2_dir)?;
+    report.soundfonts = ok;
+    report.missing_soundfonts = missing;
+    std::fs::write(
+        out.join("project.json"),
+        p.to_json().map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(report)
 }
 
@@ -323,5 +491,113 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(other.path().join("Stage1.glaux")).unwrap();
         assert!(export_for_game(&p, src.path(), other.path(), fonts.path()).is_err());
+    }
+
+    #[test]
+    fn sfx_song_has_playable_sounds_only() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let fonts = tempfile::tempdir().unwrap();
+        let mut p = Project::new("Stage1");
+        // ベル(CLAP のエフェクトは外す)
+        let mut bell = Track::new(TrackId::new(), "Bell", TrackKind::Midi);
+        bell.device = Some(Device::builtin("fm"));
+        let mut fx = Effect::builtin(FxId::new(), "eq");
+        fx.source = PluginSource::Clap {
+            plugin_id: "org.example.eq".into(),
+            state: None,
+        };
+        bell.effects.push(fx);
+        bell.effects.push(Effect::builtin(FxId::new(), "reverb"));
+        bell.solo = true;
+        // サンプラー(音声を写す)
+        let asset = glaux_core::AssetId::parse("sha256:ab12").unwrap();
+        std::fs::create_dir_all(src.path().join("audio")).unwrap();
+        std::fs::write(src.path().join("audio/hit.wav"), b"RIFF").unwrap();
+        p.assets.insert(
+            asset.clone(),
+            glaux_core::Asset {
+                path: "audio/hit.wav".into(),
+                sample_rate: 48000,
+                channels: 1,
+                frames: 10,
+            },
+        );
+        let mut hit = Track::new(TrackId::new(), "Hit", TrackKind::Midi);
+        hit.device = Some(Device {
+            source: PluginSource::Sampler {
+                asset: asset.clone(),
+            },
+            params: Default::default(),
+        });
+        // SFZ と音声のトラックは入れない
+        let mut piano = Track::new(TrackId::new(), "Piano", TrackKind::Midi);
+        piano.device = Some(Device {
+            source: PluginSource::Sfz {
+                instrument: "Piano/p.sfz".into(),
+                cc: Default::default(),
+            },
+            params: Default::default(),
+        });
+        let vox = Track::new(TrackId::new(), "Vox", TrackKind::Audio);
+        let ids: Vec<TrackId> = [&bell, &hit, &piano, &vox]
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        p.tracks.extend([bell, hit, piano, vox]);
+        let preset = crate::presets::Preset {
+            format: crate::presets::PRESET_FORMAT.into(),
+            version: crate::presets::PRESET_VERSION,
+            name: "Bell".into(),
+            description: None,
+            device: Device::builtin("subtractive"),
+            effects: vec![],
+            layers: vec![],
+            macros: vec![],
+            created: String::new(),
+        };
+        let r = make_sfx_song(
+            &p,
+            src.path(),
+            &ids,
+            &[preset],
+            dest.path(),
+            "SFX",
+            fonts.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            r.tracks,
+            vec!["Bell", "Hit", "Bell 2"],
+            "同じ名前は番号を付ける"
+        );
+        assert_eq!(r.skipped.len(), 2, "{:?}", r.skipped);
+        assert_eq!(r.removed_effects, vec!["Bell".to_owned()]);
+        assert!(r.dir.join("audio/hit.wav").is_file());
+        let song =
+            Project::from_json(&std::fs::read_to_string(r.dir.join("project.json")).unwrap())
+                .unwrap();
+        assert_eq!(song.meta.title, "SFX");
+        assert!(song.assets.contains_key(&asset));
+        let b = &song.tracks[0];
+        assert_eq!(b.effects.len(), 1, "CLAP を外して内蔵のリバーブは残す");
+        assert!(!b.solo && b.clips.is_empty());
+        assert!(matches!(
+            song.tracks[2].device.as_ref().unwrap().source,
+            PluginSource::Builtin { .. }
+        ));
+        // 入れられるものが無ければエラー(フォルダも残さない)
+        let only_sfz = vec![ids[2].clone()];
+        assert!(make_sfx_song(
+            &p,
+            src.path(),
+            &only_sfz,
+            &[],
+            dest.path(),
+            "None",
+            fonts.path()
+        )
+        .is_err());
+        assert!(!dest.path().join("None.glaux").exists());
     }
 }

@@ -6,17 +6,49 @@
   import { selectionStore } from "./selection.svelte";
   import { showError, showToast } from "./toast.svelte";
   import { plural, tr } from "./i18n.svelte";
+  import type { PresetInfo, Project, Track } from "./types";
 
   let {
     onClose,
     loop,
+    project,
   }: {
     onClose: () => void;
     /** ループ区間 [開始 tick, 終了 tick](無ければ null) */
     loop: [number, number] | null;
+    project: Project | null;
   } = $props();
 
-  let target = $state<"mix" | "stems" | "midi" | "game">("mix");
+  let target = $state<"mix" | "stems" | "midi" | "game" | "sfx">("mix");
+
+  // ---- 効果音用の曲(ゲームの play_note で鳴らす音色を並べた曲) ----
+  let sfxName = $state("SFX");
+  let sfxTracks = $state<Set<string>>(new Set());
+  let sfxPresets = $state<Set<string>>(new Set());
+  let shelf = $state<PresetInfo[]>([]);
+  let sfx = $state<api.SfxSong | null>(null);
+  /** ゲームで鳴らせない理由(無ければ null) */
+  function unplayable(t: Track): string | null {
+    if (t.kind !== "midi") return tr("音源が無い", "no instrument");
+    // 重ねた音源(層)も見る(画面の型には無いので、そのまま読む)
+    const layers = (t as Track & { layers?: { device?: Track["device"] }[] }).layers ?? [];
+    const devs = [t.device, ...layers.map((l) => l.device)];
+    if (devs.some((d) => d?.type === "clap" || d?.type === "sfz")) return tr("CLAP・SFZ はゲームで鳴らない", "CLAP/SFZ don't play in games");
+    return null;
+  }
+  $effect(() => {
+    if (target !== "sfx" || shelf.length) return;
+    api
+      .listPresets()
+      .then((r) => (shelf = r.presets))
+      .catch(() => {});
+  });
+  function toggleIn(set: Set<string>, key: string): Set<string> {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  }
   /** ゲーム用に書き出した結果(一覧で見せる) */
   let game = $state<api.GameExport | null>(null);
   let range = $state<"all" | "loop" | "selection">("all");
@@ -40,6 +72,7 @@
     path = null;
     result = null;
     game = null;
+    sfx = null;
   });
 
   const LOUDNESS = $derived([
@@ -52,7 +85,7 @@
   async function choosePath() {
     try {
       const p =
-        target === "game"
+        target === "game" || target === "sfx"
           ? await pickDir({ directory: true, title: tr("ゲーム用の曲を置くフォルダ(Godot の songs など)", "Folder for the game song (e.g. your Godot songs folder)") })
           : target === "stems"
           ? await pickDir({ directory: true, title: tr(`トラックごとの ${format.toUpperCase()} を書き出すフォルダ`, `Folder for per-track ${format.toUpperCase()} files`) })
@@ -69,6 +102,21 @@
 
   async function run() {
     if (busy) return;
+    if (target === "sfx") {
+      busy = true;
+      result = null;
+      sfx = null;
+      try {
+        sfx = await api.makeSfxSong([...sfxTracks], [...sfxPresets], sfxName, path ?? undefined);
+        result = tr(`効果音用の曲を作りました: ${sfx.dir}`, `Made a sound-effects song: ${sfx.dir}`);
+        showToast("ok", result);
+      } catch (e) {
+        showError(tr("作れませんでした", "Couldn't make it"), e);
+      } finally {
+        busy = false;
+      }
+      return;
+    }
     if (target === "game") {
       busy = true;
       result = null;
@@ -174,9 +222,48 @@
         "For games (Glaux for Godot: a copy with CLAP/SFZ tracks rendered to audio and SoundFonts included; the original is unchanged)",
       )}</label
     >
+    <label class="row"
+      ><input type="radio" bind:group={target} value="sfx" />
+      {tr(
+        "効果音用の曲(ゲーム。音色を並べた曲を作り、ゲームの play_note でトラックの名前を指定して鳴らす)",
+        "Sound-effects song (for games: a song of sounds you play by track name with play_note)",
+      )}</label
+    >
   </div>
 
-  {#if target !== "midi" && target !== "game"}
+  {#if target === "sfx"}
+    <div class="section">
+      <div class="section-title">{tr("曲の名前", "Song name")}</div>
+      <input class="sfx-name" bind:value={sfxName} aria-label={tr("効果音用の曲の名前", "Sound-effects song name")} />
+    </div>
+    <div class="section">
+      <div class="section-title">{tr("この曲のトラックから", "From this song's tracks")}</div>
+      <div class="pick-list">
+        {#each project?.tracks ?? [] as t (t.id)}
+          {@const why = unplayable(t)}
+          <label class="row" class:off={!!why} title={why ?? ""}
+            ><input type="checkbox" disabled={!!why} checked={sfxTracks.has(t.id)} onchange={() => (sfxTracks = toggleIn(sfxTracks, t.id))} />
+            {t.name}{#if why}<span class="why">({why})</span>{/if}</label
+          >
+        {/each}
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">{tr("音色の棚(プリセット)から", "From the preset shelf")}</div>
+      <div class="pick-list">
+        {#each shelf as pr (pr.name)}
+          <label class="row"
+            ><input type="checkbox" checked={sfxPresets.has(pr.name)} onchange={() => (sfxPresets = toggleIn(sfxPresets, pr.name))} />
+            {pr.name}<span class="why">{pr.instrument}</span></label
+          >
+        {:else}
+          <div class="note">{tr("棚にプリセットがありません", "No presets on the shelf")}</div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  {#if target !== "midi" && target !== "game" && target !== "sfx"}
     <div class="section">
       <div class="section-title">{tr("範囲", "Range")}</div>
       <label class="row"><input type="radio" bind:group={range} value="all" /> {tr("曲全体", "Whole song")}</label>
@@ -249,7 +336,7 @@
     <div class="row">
       <code class="path" title={path ?? ""}
         >{path ??
-          (target === "game"
+          (target === "game" || target === "sfx"
             ? tr("プロジェクトの export フォルダ(曲名.glaux)", "Project export folder (title.glaux)")
             : tr("プロジェクトの export フォルダ(日時付きの名前)", "Project export folder (timestamped name)"))}</code
       >
@@ -260,8 +347,17 @@
     </div>
   </div>
 
-  <button class="go" onclick={run} disabled={busy}>{busy ? tr("書き出し中…", "Exporting…") : tr("書き出す", "Export")}</button>
+  <button class="go" onclick={run} disabled={busy || (target === "sfx" && sfxTracks.size + sfxPresets.size === 0)}>{busy ? tr("書き出し中…", "Exporting…") : tr("書き出す", "Export")}</button>
   {#if result}<div class="note result">{result}</div>{/if}
+  {#if sfx}
+    <div class="game-report">
+      <div>{tr("トラック(play_note で指定する名前)", "Tracks (names for play_note)")}: {sfx.tracks.join(tr("・", ", "))}</div>
+      {#if sfx.soundfonts.length}<div>{tr("入れた SoundFont", "SoundFonts included")}: {sfx.soundfonts.join(tr("・", ", "))}</div>{/if}
+      {#if sfx.removed_effects.length}<div class="warn">{tr("CLAP のエフェクトを外したトラック", "CLAP effects removed from")}: {sfx.removed_effects.join(tr("・", ", "))}</div>{/if}
+      {#if sfx.missing_soundfonts.length}<div class="warn">{tr("見つからなかった SoundFont", "SoundFonts not found")}: {sfx.missing_soundfonts.join(tr("・", ", "))}</div>{/if}
+      {#if sfx.skipped.length}<div class="dim">{tr("入れなかったもの", "Not included")}: {sfx.skipped.join(tr("・", ", "))}</div>{/if}
+    </div>
+  {/if}
   {#if game}
     <!-- ゲーム用に書き出した中身。配る前に確かめること(プラグイン・SoundFont の約束)も出す -->
     <div class="game-report">
@@ -302,6 +398,21 @@
 
   .game-report .warn {
     color: var(--warn, #e0b050);
+  }
+
+  .pick-list {
+    max-height: 160px;
+    overflow-y: auto;
+  }
+
+  .why {
+    margin-left: 6px;
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+  }
+
+  .sfx-name {
+    width: 100%;
   }
 
   .game-report .dim {
