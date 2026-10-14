@@ -2124,6 +2124,16 @@
     background: var(--grid) 0 0 / var(--grid-w) 100% no-repeat, var(--bg-lane);
   }
 
+  /* 小節線をクリップの上にも薄く重ねる(クリップの中でも小節の区切りが分かる。押す操作は下へ素通し) */
+  .track-row:not(.master-row) .lane::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--grid) 0 0 / var(--grid-w) 100% no-repeat;
+    pointer-events: none;
+    z-index: 2;
+  }
+
   .track-row.master-row .lane {
     background: var(--bg-lane);
   }
@@ -2315,11 +2325,11 @@
   }
 
   .clip.midi {
-    background: color-mix(in srgb, var(--clip-midi) 45%, var(--bg));
+    background: color-mix(in srgb, color-mix(in srgb, var(--clip-midi) 45%, var(--bg)) var(--clip-alpha), transparent);
   }
 
   .clip.audio {
-    background: color-mix(in srgb, var(--clip-audio) 45%, var(--bg));
+    background: color-mix(in srgb, color-mix(in srgb, var(--clip-audio) 45%, var(--bg)) var(--clip-alpha), transparent);
   }
 
   .clip-marks {
