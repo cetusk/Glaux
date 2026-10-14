@@ -39,6 +39,16 @@ export function setAllListen(tracks: Track[], action: "mute" | "unmute" | "inver
   if (cmds.length) api.setListen(cmds).catch(() => {});
 }
 
+/// トラックをまとめて消す(1 回の Ctrl+Z で戻る)
+export function removeTracks(tracks: Track[]) {
+  if (!tracks.length) return;
+  const label =
+    tracks.length === 1
+      ? tr(`${tracks[0].name} を削除`, `Delete ${tracks[0].name}`)
+      : tr(`${tracks.length} トラックを削除`, `Delete ${plural(tracks.length, "track")}`);
+  api.applyEdit(tracks.map((t) => ({ op: "remove_track", id: t.id })), label).catch(() => {});
+}
+
 export function renameTrack(track: Track, value: string) {
   const name = value.trim();
   if (!name || name === track.name) return;
