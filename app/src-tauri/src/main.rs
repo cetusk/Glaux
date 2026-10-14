@@ -1042,6 +1042,95 @@ async fn separate_clip(
 
 // ---- CLAP プラグイン ----
 
+/// 無料のプラグインの入手の一覧(取得して入れられるもの・配布ページを開くもの)
+#[tauri::command]
+fn plugin_store() -> Value {
+    use glaux_mcp::plugin_catalog::{self as cat, How};
+    let root = cat::install_root();
+    let en = glaux_core::i18n::is_en();
+    let entries: Vec<Value> = cat::CATALOG
+        .iter()
+        .map(|e| {
+            let (version, bytes) = match e.how {
+                How::Archive { version, bytes, .. } => (Some(version), Some(bytes)),
+                How::Page => (None, None),
+            };
+            json!({
+                "id": e.id,
+                "name": e.name,
+                "kind": e.kind,
+                "author": e.author,
+                "license": e.license,
+                "homepage": e.homepage,
+                "about": if en { e.about_en } else { e.about_ja },
+                "names": e.names,
+                "install": cat::installable(e),
+                "version": version,
+                "bytes": bytes,
+                "installed": root.as_deref().is_some_and(|r| cat::installed_by_glaux(e, r)),
+            })
+        })
+        .collect();
+    json!({ "entries": entries, "root": root.map(|r| r.to_string_lossy().into_owned()) })
+}
+
+/// 無料のプラグインを公式の配布から取得して入れ、プラグインを探し直す。進捗は `plugin-download`({id, got, total})
+#[tauri::command]
+async fn install_plugin(app: tauri::AppHandle, id: String) -> Result<Value, String> {
+    guard::catching("install_plugin", async move {
+        let dir = tokio::task::spawn_blocking(move || {
+            let dir = glaux_mcp::plugin_catalog::install(&id, &mut |got, total| {
+                let _ = app.emit(
+                    "plugin-download",
+                    json!({ "id": id, "got": got, "total": total }),
+                );
+            })?;
+            glaux_engine::plugins::rescan();
+            Ok::<_, String>(dir)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(json!({ "dir": dir.to_string_lossy() }))
+    })
+    .await
+}
+
+/// Glaux が入れたプラグインを外し、探し直す
+#[tauri::command]
+async fn remove_plugin(id: String) -> Result<(), String> {
+    guard::catching("remove_plugin", async move {
+        tokio::task::spawn_blocking(move || {
+            glaux_mcp::plugin_catalog::remove(&id)?;
+            glaux_engine::plugins::rescan();
+            Ok::<_, String>(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    })
+    .await
+}
+
+/// プラグインの配布ページを既定のブラウザで開く(入手の一覧にあるページだけ)
+#[tauri::command]
+fn open_plugin_page(id: String) -> Result<(), String> {
+    let e = glaux_mcp::plugin_catalog::entry(&id).ok_or("知らないプラグインです")?;
+    let url = e.homepage;
+    #[cfg(windows)]
+    let r = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer")
+            .arg(url)
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn()
+    };
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(url).spawn();
+    r.map(|_| ())
+        .map_err(|err| format!("ページを開けませんでした({url}): {err}"))
+}
+
 /// インストール済みの CLAP プラグイン一覧(rescan で探し直す)と、探している場所。
 #[tauri::command]
 async fn clap_plugins(rescan: Option<bool>) -> Result<Value, String> {
@@ -4474,6 +4563,10 @@ fn main() -> Result<()> {
             midi_inputs,
             separate_clip,
             clap_plugins,
+            plugin_store,
+            install_plugin,
+            remove_plugin,
+            open_plugin_page,
             clap_save_state,
             clap_open_gui,
             clap_close_gui,

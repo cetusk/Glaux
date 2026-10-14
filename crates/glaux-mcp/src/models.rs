@@ -105,7 +105,7 @@ pub fn mark_soundfont_auto_installed() {
 
 /// `url` を `path` へ取得する(すでにあれば何もしない)。一時ファイル(`.part`)に書き、
 /// SHA-256 が `sha256` と一致したら置き換える。`progress(受信済み, 全体)` を 1MB ごとに呼ぶ
-fn download_verified(
+pub(crate) fn download_verified(
     url: &str,
     path: &std::path::Path,
     bytes: u64,

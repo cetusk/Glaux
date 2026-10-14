@@ -427,6 +427,50 @@ export interface ClapPluginInfo {
   effect: boolean;
 }
 
+/** 無料のプラグインの入手の一覧の 1 つ */
+export interface PluginStoreEntry {
+  id: string;
+  name: string;
+  /** instrument / effect / both */
+  kind: string;
+  author: string;
+  license: string;
+  homepage: string;
+  about: string;
+  /** すでに入っているかを見分ける名前(プラグインの一覧の名前) */
+  names: string[];
+  /** この OS で取得して入れられるか(false なら配布ページを開く) */
+  install: boolean;
+  version: string | null;
+  bytes: number | null;
+  /** Glaux が入れたか */
+  installed: boolean;
+}
+
+/** 無料のプラグインの入手の一覧と、入れる場所 */
+export function pluginStore(): Promise<{ entries: PluginStoreEntry[]; root: string | null }> {
+  return invoke("plugin_store");
+}
+
+/** 公式の配布から取得して入れ、探し直す。進捗は onPluginDownload で届く */
+export function installPlugin(id: string): Promise<{ dir: string }> {
+  return invoke("install_plugin", { id });
+}
+
+/** Glaux が入れたプラグインを外す */
+export function removePlugin(id: string): Promise<void> {
+  return invoke("remove_plugin", { id });
+}
+
+/** 配布ページを既定のブラウザで開く */
+export function openPluginPage(id: string): Promise<void> {
+  return invoke("open_plugin_page", { id });
+}
+
+export function onPluginDownload(cb: (p: { id: string; got: number; total: number }) => void): Promise<UnlistenFn> {
+  return listen<{ id: string; got: number; total: number }>("plugin-download", (e) => cb(e.payload));
+}
+
 /** インストール済みの CLAP プラグイン(rescan で探し直す)。dirs は探している場所 */
 export function clapPlugins(rescan = false): Promise<{ plugins: ClapPluginInfo[]; dirs: string[] }> {
   return invoke("clap_plugins", { rescan });

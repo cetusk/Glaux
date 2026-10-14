@@ -524,6 +524,8 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
         "clap",
         "CLAP プラグイン",
         "- list_plugins で一覧(Surge XT などの音源、effect: true はエフェクト)。音源は set_device {type: \"clap\", plugin_id}。\n\
+- 入っていなければ、ユーザーに「音源を選ぶ → CLAP →『無料のプラグインを入手』」を案内する(Surge XT・Dexed・OB-Xf・Six Sines・\n\
+  Dragonfly Reverb は作者の公式の配布から取得して入れられる。Vital・OTT・Valhalla Supermassive・Kontakt Player などは配布ページを開く)。\n\
 - 音色の大枠はプラグイン自身の画面で人間が作る。つまみは list_params(filter で絞る。例 \"cutoff\")で探し、\n\
   set_param {path: \"device/clap:<id>\"} や set_automation_points で動かす(値はプラグインの単位、current_text が画面の表示)。\n\
 - 音色の土台は list_plugin_presets(filter・category で絞る)→ load_plugin_preset。プリセットにはつまみで触れない設定\n\

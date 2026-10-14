@@ -39,6 +39,53 @@
   let sfPresets = $state<{ bank: number; preset: number; name: string }[]>([]);
   let sfBusy = $state(false);
   let clapList = $state<api.ClapPluginInfo[] | null>(null);
+  /** 音源もエフェクトも含めた、見つかったプラグインの名前(入手の一覧で「入っています」を見分ける) */
+  let clapNames = $state<Set<string>>(new Set());
+  // ---- 無料のプラグインの入手(公式の配布から取得して入れる・配布ページを開く) ----
+  let store = $state<api.PluginStoreEntry[]>([]);
+  let storeBusy = $state<{ id: string; ratio: number } | null>(null);
+  async function loadStore() {
+    try {
+      store = (await api.pluginStore()).entries;
+    } catch {
+      store = [];
+    }
+  }
+  /** 入っているか(Glaux が入れた・ほかの方法で入れた) */
+  const haveIt = (e: api.PluginStoreEntry) => e.installed || e.names.some((n) => clapNames.has(n));
+  async function getPlugin(e: api.PluginStoreEntry) {
+    if (storeBusy) return;
+    storeBusy = { id: e.id, ratio: 0 };
+    const un = await api
+      .onPluginDownload((p) => {
+        if (storeBusy && p.id === storeBusy.id && p.total > 0) storeBusy = { id: p.id, ratio: p.got / p.total };
+      })
+      .catch(() => undefined);
+    try {
+      await api.installPlugin(e.id);
+      await loadClap(false);
+      await loadStore();
+      showToast("ok", tr(`${e.name} を入れました`, `Installed ${e.name}`));
+    } catch (err) {
+      showError(tr(`${e.name} を入れられませんでした`, `Couldn't install ${e.name}`), err);
+    } finally {
+      storeBusy = null;
+      un?.();
+    }
+  }
+  async function dropPlugin(e: api.PluginStoreEntry) {
+    try {
+      await api.removePlugin(e.id);
+      await loadClap(false);
+      await loadStore();
+      showToast("ok", tr(`${e.name} を外しました`, `Removed ${e.name}`));
+    } catch (err) {
+      showError(tr(`${e.name} を外せませんでした`, `Couldn't remove ${e.name}`), err);
+    }
+  }
+  const kindLabel = (k: string) =>
+    k === "effect" ? tr("エフェクト", "Effect") : k === "both" ? tr("音源・エフェクト", "Instrument + effects") : tr("音源", "Instrument");
+  const mbOf = (b: number | null) => (b ? `${Math.round(b / 1_000_000)} MB` : "");
   let clapDirs = $state<string[]>([]);
   let clapBusy = $state(false);
 
@@ -72,7 +119,10 @@
           packs = r.packs ?? [];
         })
         .catch(() => (sfFiles = []));
-    if (tab === "clap" && clapList === null) loadClap(false);
+    if (tab === "clap" && clapList === null) {
+      loadClap(false);
+      loadStore();
+    }
   });
 
   async function loadClap(rescan: boolean) {
@@ -80,6 +130,7 @@
     try {
       const r = await api.clapPlugins(rescan);
       clapList = r.plugins.filter((p) => p.instrument);
+      clapNames = new Set(r.plugins.map((p) => p.name));
       clapDirs = r.dirs;
     } catch {
       clapList = [];
@@ -368,6 +419,43 @@
               </button>
             {/each}
           {/if}
+          {#if store.length > 0}
+            <div class="note store-head">
+              {tr(
+                "無料のプラグインを入手(作者の公式の配布から取得します。Glaux には入っていません。ゲームでは鳴らないので「書き出し → ゲーム用」で音声に。曲を渡す相手も同じプラグインが要ります)",
+                "Get free plugins (downloaded from the authors' official releases; not bundled with Glaux. They don't play in games, so use Export → For games. Anyone you share the song with needs them too)",
+              )}
+            </div>
+            {#each store.filter((e) => hit(e.name) || hit(e.author) || hit(e.about)) as e (e.id)}
+              <div class="pack">
+                <span class="grow"
+                  ><b>{e.name}</b><small>{kindLabel(e.kind)}・{e.author}・{e.license}{e.version ? `・v${e.version}` : ""}{e.bytes ? `・${mbOf(e.bytes)}` : ""}</small><small class="about"
+                    >{e.about}</small
+                  ></span
+                >
+                {#if storeBusy?.id === e.id}
+                  <span class="pct">{Math.round(storeBusy.ratio * 100)}%</span>
+                {:else if haveIt(e)}
+                  <span class="have"><Icon name="check" size={13} />{tr("入っています", "Installed")}</span>
+                  {#if e.installed}
+                    <button class="btn sm ghost" onclick={() => dropPlugin(e)} title={tr("Glaux が入れたものを外す", "Remove the copy Glaux installed")}>{tr("外す", "Remove")}</button>
+                  {/if}
+                {:else if e.install}
+                  <button
+                    class="btn sm"
+                    disabled={storeBusy !== null}
+                    onclick={() => getPlugin(e)}
+                    title={tr(`${e.homepage} の公式の配布から取得して入れる(${e.license})`, `Download from the official release (${e.homepage}, ${e.license}) and install`)}
+                    ><Icon name="download" />{tr("入れる", "Install")}</button
+                  >
+                {:else}
+                  <button class="btn sm" onclick={() => api.openPluginPage(e.id).catch((err) => showError(tr("ページを開けませんでした", "Couldn't open the page"), err))} title={e.homepage}
+                    ><Icon name="link" />{tr("配布ページ", "Website")}</button
+                  >
+                {/if}
+              </div>
+            {/each}
+          {/if}
         {:else}
           <div class="note">
             {tr(
@@ -575,6 +663,25 @@
   .pack small {
     font-size: var(--fs-xs);
     color: var(--text-dim);
+  }
+
+  .pack .about {
+    white-space: normal;
+  }
+
+  .pack .have {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 3px;
+    color: var(--ok);
+    font-size: var(--fs-xs);
+    flex-shrink: 0;
+  }
+
+  .store-head {
+    margin-top: 10px;
+    white-space: normal;
   }
 
   .pack .pct {
