@@ -542,6 +542,8 @@ export function recordStop(
   seconds: number;
   clipped: number;
   dropped: number;
+  /** 入力の音切れの回数(パソコンが忙しく、入力を取りこぼした) */
+  xruns: number;
   gain_db: number;
   project_version: number;
 }> {

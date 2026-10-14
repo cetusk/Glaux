@@ -26,6 +26,8 @@ pub struct Ring {
     tail: AtomicUsize,
     /// 溢れて捨てたサンプル数
     dropped: AtomicU64,
+    /// OS が知らせた入力の音切れ(バッファのあふれ・不足)の回数
+    xruns: AtomicU64,
     /// 直近のピーク(絶対値、f32 のビット列)。正の f32 はビット列の大小と値の大小が
     /// 一致するので fetch_max で最大を取れる
     peak_bits: AtomicU32,
@@ -38,6 +40,7 @@ impl Ring {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             dropped: AtomicU64::new(0),
+            xruns: AtomicU64::new(0),
             peak_bits: AtomicU32::new(0),
         }
     }
@@ -98,6 +101,11 @@ impl Ring {
         self.dropped.load(Ordering::Relaxed)
     }
 
+    /// 入力の音切れの回数
+    pub fn xruns(&self) -> u64 {
+        self.xruns.load(Ordering::Relaxed)
+    }
+
     /// consumer。1 サンプル取り出す(空なら None。オーディオスレッドで使える: ロック・確保なし)
     pub fn pop(&self) -> Option<f32> {
         let cap = self.buf.len();
@@ -139,6 +147,8 @@ pub struct RecordResult {
     pub clipped: u64,
     /// リングバッファ溢れで失ったサンプル数(0 が正常)
     pub dropped: u64,
+    /// OS が知らせた入力の音切れの回数(パソコンが忙しく、入力を取りこぼした。0 が正常)
+    pub xruns: u64,
 }
 
 /// 聴く用に入力の音を写す小さなリング(約 1.4 秒 @48kHz。出力側が 40ms ほどの遅れで読む)
@@ -267,6 +277,7 @@ fn discard_loop(
         channels: 1,
         clipped: 0,
         dropped: ring.dropped(),
+        xruns: ring.xruns(),
     })
 }
 
@@ -290,7 +301,17 @@ fn open_input(
     let channels = config.channels().max(1) as usize;
     let out_ch: u16 = if stereo && channels >= 2 { 2 } else { 1 };
     let ring = Arc::new(Ring::new(RING_CAP));
-    let err_fn = |e| tracing::error!("録音ストリームエラー: {e}");
+    // 音切れ(バッファのあふれ・不足)はよくあることなので数えるだけにする(出力と同じ)。録音なら結果で知らせる
+    let err_fn = {
+        let ring = ring.clone();
+        move |e: cpal::Error| match e.kind() {
+            cpal::ErrorKind::Xrun => {
+                ring.xruns.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!("入力の音切れ: {e}");
+            }
+            _ => tracing::error!("録音ストリームエラー: {e}"),
+        }
+    };
     let stream_config = config.config();
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
@@ -433,6 +454,7 @@ fn write_loop(
         channels: out_ch,
         clipped,
         dropped: ring.dropped(),
+        xruns: ring.xruns(),
     })
 }
 

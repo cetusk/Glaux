@@ -604,11 +604,19 @@
             ` (${plural(r.clipped, "sample")} clipped. Lower the input level)`,
           )
         : "";
+    // 入力の音切れ(パソコンが忙しく取りこぼした)があれば、その所で音が欠けているかもしれない
+    const gaps =
+      r.xruns > 0
+        ? tr(
+            `(入力が ${r.xruns} 回途切れました。その所で音が欠けているかもしれません。設定 → オーディオでバッファを大きくするか、ほかのアプリを閉じてください)`,
+            ` (input dropped out ${plural(r.xruns, "time")}; audio may be missing there. Increase the buffer in Settings → Audio or close other apps)`,
+          )
+        : "";
     const gain = r.gain_db > 0.5 ? tr(`、音量 +${r.gain_db.toFixed(0)}dB`, `, gain +${r.gain_db.toFixed(0)} dB`) : "";
     const target = { clipId: r.clip_id, trackId: r.track_id };
     showToast(
-      r.clipped > 0 ? "warn" : "ok",
-      tr(`録音を配置しました: ${r.seconds.toFixed(1)} 秒${gain}${warn}`, `Recording placed: ${r.seconds.toFixed(1)} s${gain}${warn}`),
+      r.clipped > 0 || r.xruns > 0 ? "warn" : "ok",
+      tr(`録音を配置しました: ${r.seconds.toFixed(1)} 秒${gain}${warn}${gaps}`, `Recording placed: ${r.seconds.toFixed(1)} s${gain}${warn}${gaps}`),
       {
         action: { label: tr("MIDI にする", "To MIDI"), run: () => transcribeRecorded(target) },
         ms: 20000,

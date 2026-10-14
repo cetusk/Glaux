@@ -1655,6 +1655,7 @@ async fn record_stop(
             "channels": result.channels,
             "clipped": result.clipped,
             "dropped": result.dropped,
+            "xruns": result.xruns,
             "gain_db": gain_db,
             "project_version": m.project_version,
         }))
