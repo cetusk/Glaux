@@ -1,5 +1,6 @@
 <script lang="ts">
   import { DRUM_PIECES, type DrumPiece } from "./drumMap";
+  import { tr } from "./i18n.svelte";
 
   let {
     highlight = null,
@@ -46,6 +47,7 @@
         onpointerdown={() => onHit(p.pitch)}
         role="button"
         tabindex="-1"
+        aria-label={tr(`${p.name}(ノート ${p.pitch})`, `${p.name} (note ${p.pitch})`)}
       >
         {#if p.kind === "cymbal"}
           <!-- シンバル: 金属光沢 + 溝 + ベル。ハイハットは二枚重ねに見せる -->
@@ -91,7 +93,9 @@
           {/each}
           <text class={p.pitch === 36 ? "" : "t-dark"} x={p.cx} y={p.cy + 4}>{p.short}</text>
         {/if}
-        <title>{p.name}(ノート {p.pitch})— クリックで挿入カーソル位置に打ち込み</title>
+        <title
+          >{tr(`${p.name}(ノート ${p.pitch})— クリックで挿入カーソル位置に打ち込み`, `${p.name} (note ${p.pitch}) — click to enter at the insert cursor`)}</title
+        >
       </g>
     {/each}
   </svg>

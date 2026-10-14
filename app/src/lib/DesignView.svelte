@@ -766,7 +766,7 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="lanehead main-head" onclick={(e) => toggleFold("song", e)}>
-            <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} aria-expanded={!folded.song}
+            <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} title={folded.song ? tr("開く", "Expand") : tr("折りたたむ", "Collapse")} aria-expanded={!folded.song}
               ><Icon name="chevron-down" size={14} /></button
             >
             <h2>{tr("曲全体", "Whole song")}</h2>
@@ -990,7 +990,7 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="lanehead main-head" onclick={(e) => toggleFold("curve", e)}>
-              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} aria-expanded={!folded.curve}
+              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} title={folded.curve ? tr("開く", "Expand") : tr("折りたたむ", "Collapse")} aria-expanded={!folded.curve}
                 ><Icon name="chevron-down" size={14} /></button
               >
               <h2>{tr("盛り上がり", "Energy")}</h2>
@@ -1140,7 +1140,7 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="lanehead main-head" onclick={(e) => toggleFold("band", e)}>
-              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} aria-expanded={!folded.band}
+              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} title={folded.band ? tr("開く", "Expand") : tr("折りたたむ", "Collapse")} aria-expanded={!folded.band}
                 ><Icon name="chevron-down" size={14} /></button
               >
               <h2>{tr("パートごとの音域", "Register by part")}</h2>
@@ -1292,7 +1292,7 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="lanehead main-head" onclick={(e) => toggleFold("table", e)}>
-              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} aria-expanded={!folded.table}
+              <button class="fold" type="button" aria-label={tr("折りたたむ・開く", "Collapse / expand")} title={folded.table ? tr("開く", "Expand") : tr("折りたたむ", "Collapse")} aria-expanded={!folded.table}
                 ><Icon name="chevron-down" size={14} /></button
               >
               <h2>{tr("パートの役割", "Part roles")}</h2>
@@ -1340,6 +1340,11 @@
                           {#each p.cells as c, i (i)}
                             {@const planned = lvOf(pi, i)}
                             {@const lv = planned ?? c.measured}
+                            {@const cellLabel = `${p.name} / ${d.sections[i]?.name}: ${
+                              planned != null
+                                ? presenceNames[planned]
+                                : tr(`計画なし(実測 ${presenceNames[c.measured]})`, `No plan (measured: ${presenceNames[c.measured]})`)
+                            }`}
                             <!-- svelte-ignore a11y_no_static_element_interactions -->
                             <div
                               class="cell"
@@ -1349,9 +1354,8 @@
                               style="left:{x0(i)}px;width:{xw(i)}px;height:{rowH - 1}px"
                               role="button"
                               tabindex="0"
-                              aria-label="{p.name} / {d.sections[i]?.name}: {planned != null
-                                ? presenceNames[planned]
-                                : tr(`計画なし(実測 ${presenceNames[c.measured]})`, `No plan (measured: ${presenceNames[c.measured]})`)}"
+                              aria-label={cellLabel}
+                              title={cellLabel}
                               onclick={() => pick({ kind: "cell", p: pi, i })}
                               onkeydown={(e) => {
                                 if (e.key === "Enter" || e.key === " ") {

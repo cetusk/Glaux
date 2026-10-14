@@ -128,7 +128,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="phead" onclick={toggleStrip}>
-      <button class="fold" type="button" aria-label={tr("案を折りたたむ・開く", "Collapse / expand proposals")} aria-expanded={!stripFolded}
+      <button class="fold" type="button" aria-label={tr("案を折りたたむ・開く", "Collapse / expand proposals")} title={stripFolded ? tr("案を開く", "Expand proposals") : tr("案を折りたたむ", "Collapse proposals")} aria-expanded={!stripFolded}
         ><Icon name="chevron-down" size={14} /></button
       >
       <b>{tr(`AI の案(${propList.length})`, `AI proposals (${propList.length})`)}</b>
@@ -219,7 +219,7 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="prow ptitle" onclick={(e) => toggleProp(pr.plan_id, e)}>
-          <button class="fold" type="button" aria-label={tr("この案を折りたたむ・開く", "Collapse / expand this proposal")} aria-expanded={open}
+          <button class="fold" type="button" aria-label={tr("この案を折りたたむ・開く", "Collapse / expand this proposal")} title={open ? tr("この案を折りたたむ", "Collapse this proposal") : tr("この案を開く", "Expand this proposal")} aria-expanded={open}
             ><Icon name="chevron-down" size={13} /></button
           >
           {#if letter}<span class="pletter" class:cur={proposalAb.side === proposalAb.planIds.indexOf(pr.plan_id) + 1}>{letter}</span>{/if}
