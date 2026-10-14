@@ -169,7 +169,7 @@ func on_boss_defeated() -> void:
 | `get_beats(from, to)` | `[from, to)` 秒の拍の一覧 `{time, bar, beat, beats_in_bar}` |
 | `get_sections()` | マーカーの一覧 `{time, name}` |
 | `get_track_names()` / `get_length()` | トラック名の一覧 / 曲の長さ(秒) |
-| `get_warnings()` | 読み込みで気づいた注意(CLAP の音源など) |
+| `get_warnings()` | 読み込みで気づいた注意(CLAP の音源・読めない音声や SoundFont・外したソロなど) |
 
 ### 和声(効果音の音程を曲に合わせる)
 
@@ -245,7 +245,9 @@ func _process(_delta: float) -> void:
 
 - 使える: 内蔵音源(subtractive / fm / wavetable / drum / pluck / sampler)、内蔵エフェクト、音声クリップ、
   テンポ・拍子の変化、オートメーション、センド / バス、レガート / ポルタメント
-- SoundFont(sf2): `.sf2` ファイルを曲フォルダの `soundfonts/` か `res://soundfonts/` に置けば鳴ります
+- SoundFont(sf2): `.sf2` ファイルを曲フォルダの `soundfonts/` か `res://soundfonts/` に置けば鳴ります。
+  見つからない・読めない音声や SoundFont は、その音だけ鳴らず、`get_warnings()` にトラックとファイルの名前が出ます
+- ソロのまま保存した曲は、読み込むときにソロを外して曲の全体を鳴らします(ミュートはそのまま)
 - 使えない: CLAP プラグイン(Surge XT 等)。その音源のトラックは無音になり、`get_warnings()` に理由が出ます。
   ゲームで使うには、Glaux でそのトラックの見出しを右クリック →「🧊 音声にする(フリーズ)」を選びます。
   エフェクト・音量・パン・センドの響きまで込みで音声トラックになり、元のトラックはミュートされます

@@ -52,7 +52,7 @@ signal jumped(from: float, to: float)                # 再生位置が飛んだ�
 |---|---|---|
 | `load_song(path: String)` | `bool` | `.glaux` フォルダのパス(例 `"res://songs/Stage1.glaux"`)。読むと停止状態。失敗理由は `get_last_error()` |
 | `get_last_error()` | `String` | 直前の失敗理由 |
-| `get_warnings()` | `PackedStringArray` | 読み込み時の注意(CLAP の音源は鳴らない等) |
+| `get_warnings()` | `PackedStringArray` | 読み込み時の注意(CLAP の音源は鳴らない・読めない音声や SoundFont・外したソロ等) |
 | `play()` | − | 曲頭から再生 |
 | `play_from(sec: float)` | − | `sec` 秒から再生 |
 | `pause()` / `resume()` | − | 一時停止 / 続きから(`pause` → `play` は曲頭から) |
@@ -331,7 +331,7 @@ func _on_power_up() -> void:
 - 効果音は WAV の `pitch_scale` で音程を変えず、`play_note` / `play_note_at` で鳴らす(音色が崩れない)。
   効果音用の `GlauxPlayer` には `sync_to` に BGM の `GlauxPlayer` を設定する。効果音用のプレイヤーでは `play()` を呼ばない
 - `play_note` で鳴らせるのは内蔵音源・SoundFont・サンプラーのトラックだけ(CLAP のトラックは false が返る。
-  `get_warnings()` に出る)。効果音用の曲でミュート・ソロにしたトラックは鳴らない
+  `get_warnings()` に出る)。効果音用の曲でミュートにしたトラックは鳴らない(ソロは読み込むときに外す)
 - 1 つの `GlauxPlayer` で同時に鳴る音は 32 まで(超えると古い音から止まる)、予約は一度に 512 まで
 - コードは 1 小節に 1 つの推定。キーの `confidence` が低い(0.3 未満など)曲では、キーよりコードに合わせる方が安全
 - 終了時の「ObjectDB instances leaked at exit」、初回の「Native class "GlauxPlayer" not found」は無害

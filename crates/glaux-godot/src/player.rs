@@ -1190,7 +1190,15 @@ impl GlauxPlayer {
             let msg = format!("曲を変えられません: {e}");
             return self.fail(msg);
         }
-        let (data, timeline) = song::rebuild(&s.dir, &s.project, &mut s.bank, s.sample_rate);
+        let (data, timeline, missing) =
+            song::rebuild(&s.dir, &s.project, &mut s.bank, s.sample_rate);
+        // 変えたことで新しく読めなくなった素材だけ知らせる(同じ注意を重ねない)
+        for w in missing {
+            if !s.warnings.contains(&w) {
+                godot_warn!("Glaux: {w}");
+                s.warnings.push(w);
+            }
+        }
         let old = s.shared.data.swap(Arc::new(data));
         s.timeline = timeline;
         // トラックが増えた・減ったときは、ゲームが足した音量の欄も合わせる
