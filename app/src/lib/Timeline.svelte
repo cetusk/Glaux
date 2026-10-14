@@ -1524,6 +1524,14 @@
     />
   {/if}
 
+  {#if project.tracks.length > 0}
+    <!-- すべてのトラックをまとめて(M・S・入れ替え・削除。見出しの右クリックのメニューと同じ)。トラックの並びの一番上 -->
+    <div class="all-tracks-row">
+      <div class="track-head all-head"><AllTracksBar {project} onDeleteAll={() => deleteTracks(project.tracks)} /></div>
+      <div class="all-lane" style="width:{totalPx}px"></div>
+    </div>
+  {/if}
+
   {#if project.tracks.length === 0}
     <div class="empty">
       {tr("トラックがありません。AI に「トラックを追加して」と頼んでみてください。", "No tracks yet. Try asking the AI to \"add a track\".")}
@@ -1830,10 +1838,6 @@
     <button class="btn add-track" onclick={openAddMenu} title={tr("トラックを追加(MIDI・音声・バス・MIDI ファイル)", "Add track (MIDI, audio, bus, MIDI file)")}
       ><Icon name="plus" />{tr("トラックを追加", "Add track")}<Icon name="chevron-down" size={14} /></button
     >
-    {#if project.tracks.length > 0}
-      <!-- すべてのトラックをまとめて(M・S・入れ替え・削除。見出しの右クリックのメニューと同じ) -->
-      <div class="all-row"><AllTracksBar {project} onDeleteAll={() => deleteTracks(project.tracks)} /></div>
-    {/if}
   </div>
 </div>
 
@@ -2374,9 +2378,22 @@
     width: var(--head-w, 200px);
   }
 
-  .all-row {
-    margin-top: 6px;
-    padding-left: 2px;
+  /* すべてのトラックのボタンの行(マスターの行の下、トラックの並びの一番上) */
+  .all-tracks-row {
+    display: flex;
+    height: 28px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .all-head {
+    display: flex;
+    align-items: center;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .all-lane {
+    background: var(--bg-lane);
   }
 
   .add-track {

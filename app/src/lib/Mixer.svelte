@@ -504,10 +504,9 @@
   .all-col {
     flex-shrink: 0;
     display: flex;
-    align-items: flex-end;
-    padding: 0 2px 34px;
+    align-items: flex-start;
+    padding: 6px 8px 0 2px;
     border-right: 1px solid var(--border);
-    padding-right: 8px;
   }
 
   .grp-label {
