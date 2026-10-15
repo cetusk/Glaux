@@ -1086,6 +1086,34 @@ pub struct PartSpec {
     /// GM の音色の番号(GM 音源があれば使う)
     #[serde(default)]
     pub program: Option<u16>,
+    /// 電子音楽の役割(伸ばす・刻む・線)。あれば、楽器の譜起こしの代わりに役割を見分けて組み立て、役割の内蔵の音色で鳴らす
+    #[serde(default)]
+    pub role: Option<crate::roles::Role>,
+}
+
+/// パートの音色: 役割があれば役割の内蔵の音色、GM の SoundFont と音色の番号があればその音色、無ければ内蔵の音源
+fn part_device(part: &PartSpec, soundfont: Option<&str>) -> glaux_core::Device {
+    use glaux_core::{Device, PluginSource};
+    if let Some(r) = part.role {
+        return crate::roles::role_device(r);
+    }
+    match (soundfont, part.program) {
+        (Some(sf), Some(p)) => Device {
+            source: PluginSource::Sf2 {
+                soundfont: sf.to_owned(),
+                // ドラムは GM のドラムの音色(バンク 128)
+                bank: if part.kind == PartKind::Drums { 128 } else { 0 },
+                preset: p,
+            },
+            params: Default::default(),
+        },
+        _ => Device::builtin(match part.kind {
+            PartKind::Bass => "subtractive",
+            PartKind::Melody => "fm",
+            PartKind::Poly => "pluck",
+            PartKind::Drums => "drum",
+        }),
+    }
 }
 
 /// パートのトラックを作るコマンド。音符の時刻(音声の秒)を格子で tick にし、`quantize`(0〜1)の強さで 16 分の格子へ寄せる。
@@ -1098,8 +1126,7 @@ pub fn part_track_commands(
     soundfont: Option<&str>,
 ) -> Vec<glaux_core::Command> {
     use glaux_core::{
-        Clip, ClipContent, ClipId, Command, Device, Note, NoteId, PluginSource, Tick, Track,
-        TrackId, TrackKind,
+        Clip, ClipContent, ClipId, Command, Note, NoteId, Tick, Track, TrackId, TrackKind,
     };
     let ppq = glaux_core::time::PPQ as f64;
     let map = plan.tempo_map();
@@ -1143,23 +1170,7 @@ pub fn part_track_commands(
     let length = ((last / bar).ceil().max(1.0) * bar) as u64;
     let tid = TrackId::new();
     let mut track = Track::new(tid.clone(), part.name.clone(), TrackKind::Midi);
-    track.device = Some(match (soundfont, part.program) {
-        (Some(sf), Some(p)) => Device {
-            source: PluginSource::Sf2 {
-                soundfont: sf.to_owned(),
-                // ドラムは GM のドラムの音色(バンク 128)
-                bank: if part.kind == PartKind::Drums { 128 } else { 0 },
-                preset: p,
-            },
-            params: Default::default(),
-        },
-        _ => Device::builtin(match part.kind {
-            PartKind::Bass => "subtractive",
-            PartKind::Melody => "fm",
-            PartKind::Poly => "pluck",
-            PartKind::Drums => "drum",
-        }),
-    });
+    track.device = Some(part_device(part, soundfont));
     let mut clip = Clip::new_midi(ClipId::new(), part.name.clone(), Tick(0), Tick(length));
     if let ClipContent::Midi { notes: n, .. } = &mut clip.content {
         *n = out;
@@ -1424,6 +1435,10 @@ pub fn transcribe_commands(
     let mut counts = Vec::new();
     for (p, notes) in parts.iter().zip(&notes) {
         counts.push((p.spec.name.clone(), notes.len()));
+        // 見つからなかったパート(曲に無い役割など)はトラックを作らない
+        if notes.is_empty() {
+            continue;
+        }
         cmds.extend(part_track_commands(
             &plan, &p.spec, notes, quantize, soundfont,
         ));
@@ -1440,9 +1455,12 @@ pub fn transcribe_requests(
     parts: &[PartRequest],
 ) -> Result<Vec<Vec<RawNote>>, String> {
     let chords_only = |p: &PartRequest| p.from_chords && p.spec.kind == PartKind::Poly;
+    let by_role = |p: &PartRequest| p.spec.role.is_some();
     let from_mix: Vec<PartKind> = parts
         .iter()
-        .filter(|p| p.source.is_none() && p.spec.kind != PartKind::Drums && !chords_only(p))
+        .filter(|p| {
+            p.source.is_none() && p.spec.kind != PartKind::Drums && !chords_only(p) && !by_role(p)
+        })
         .map(|p| p.spec.kind)
         .collect();
     let mut mix_parts = if from_mix.is_empty() {
@@ -1455,6 +1473,17 @@ pub fn transcribe_requests(
         .iter()
         .map(|p| match &p.source {
             _ if chords_only(p) => Ok(chord_part_notes(sk)),
+            _ if by_role(p) => {
+                let role = p.spec.role.unwrap_or(crate::roles::Role::Sustain);
+                match &p.source {
+                    Some(path) => {
+                        let s = crate::sound::load_file(std::path::Path::new(path))?;
+                        crate::roles::transcribe_role(role, &s.frames, s.sample_rate, sk, false)
+                            .map(|x| x.1)
+                    }
+                    None => crate::roles::transcribe_role(role, mix, sr, sk, true).map(|x| x.1),
+                }
+            }
             None if p.spec.kind == PartKind::Drums => {
                 transcribe_part(mix, sr, PartKind::Drums, NoteMethod::DrumsMix, 0.0)
             }
@@ -1545,9 +1574,7 @@ pub fn import_commands(
     quantize: f64,
     import: &ImportOptions,
 ) -> Result<ImportedParts, String> {
-    use glaux_core::{
-        Clip, ClipContent, ClipId, Command, Device, PluginSource, Tick, Track, TrackId, TrackKind,
-    };
+    use glaux_core::{Clip, ClipContent, ClipId, Command, Tick, Track, TrackId, TrackKind};
     if import.to_bar < import.from_bar || import.from_bar == 0 || import.at_bar == 0 {
         return Err("小節の範囲が正しくありません(from_bar ≦ to_bar、1 始まり)".to_owned());
     }
@@ -1625,6 +1652,10 @@ pub fn import_commands(
         out.sort_by_key(|n| (n.pos, n.pitch));
         out.dedup_by(|b, a| a.pos == b.pos && a.pitch == b.pitch);
         counts.push((p.spec.name.clone(), out.len()));
+        // 見つからなかったパート(曲に無い役割、範囲に音が無いなど)は置かない
+        if out.is_empty() {
+            continue;
+        }
         let name = glaux_core::tr!(
             "{}(参考曲 {}〜{} 小節)",
             "{} (reference bars {}–{})",
@@ -1646,26 +1677,7 @@ pub fn import_commands(
             None => {
                 let tid = TrackId::new();
                 let mut track = Track::new(tid.clone(), p.spec.name.clone(), TrackKind::Midi);
-                track.device = Some(match (soundfont, p.spec.program) {
-                    (Some(sf), Some(pr)) => Device {
-                        source: PluginSource::Sf2 {
-                            soundfont: sf.to_owned(),
-                            bank: if p.spec.kind == PartKind::Drums {
-                                128
-                            } else {
-                                0
-                            },
-                            preset: pr,
-                        },
-                        params: Default::default(),
-                    },
-                    _ => Device::builtin(match p.spec.kind {
-                        PartKind::Bass => "subtractive",
-                        PartKind::Melody => "fm",
-                        PartKind::Poly => "pluck",
-                        PartKind::Drums => "drum",
-                    }),
-                });
+                track.device = Some(part_device(&p.spec, soundfont));
                 cmds.push(Command::AddTrack { track, index: None });
                 tid
             }
@@ -2261,6 +2273,7 @@ mod tests {
             name: "Melody".into(),
             kind: PartKind::Melody,
             program: Some(0),
+            role: None,
         };
         let cmds = part_track_commands(&plan, &part, &notes, 1.0, Some("GeneralUser-GS.sf2"));
         let glaux_core::Command::AddClip { clip, .. } = &cmds[1] else {

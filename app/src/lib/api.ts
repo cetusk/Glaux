@@ -380,6 +380,9 @@ export function reconSeparate(clipId: string): Promise<{ vocals?: string; drums?
   return invoke("recon_separate", { clipId });
 }
 
+/** 電子音楽の役割: sustain = 伸ばす(パッド・ストリングス・ドローン)、stab = 刻む和音、line = 線(アルペジオ・旋律・ベル) */
+export type ReconRole = "sustain" | "stab" | "line";
+
 /** 起こすパート(source: 省略で参考曲そのもの、パスならそのパートだけを分けた音のファイル) */
 export interface ReconPart {
   name: string;
@@ -388,6 +391,8 @@ export interface ReconPart {
   source?: string | null;
   /** 和音のパートを、音符を起こさず推定した和音から組み立てる(poly のときだけ) */
   from_chords?: boolean;
+  /** 電子音楽の役割(伸ばす・刻む・線)。あれば役割を見分けて組み立て、役割の内蔵の音色で鳴らす(曲に無ければトラックを作らない) */
+  role?: ReconRole | null;
 }
 
 /** 参考曲からパートを起こしてトラックにする(格子も合わせる。履歴 1 件)。quantize は 16 分の格子へ寄せる強さ(0〜1) */

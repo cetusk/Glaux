@@ -23,7 +23,8 @@
 //!                    も同じ方法で採点する(方式の名前は Ext。音程のある音は Glaux と同じく声部に分ける)
 //!   --labels FILE    (--separate と)楽器の見分けも測る。FILE はトラックの楽器の種類の正解({"曲": {"トラック": "pad", ...}})。
 //!                    分けた「その他」から旋律・和音の楽器を、「歌」から声を、区間(10 秒)ごとに当てる。
-//!                    --protos FILE で、楽器の見本(instrument_protos で作る)と比べる方式も測る
+//!                    --protos FILE で、楽器の見本(instrument_protos で作る)と比べる方式も測る。
+//!   --roles          (--labels・--separate と)楽器の名前の代わりに、役割(伸ばす・刻む・線)が鳴っている区間を当てる
 //!   --save DIR       組み立てた曲の音声(wav)と正解(json)を書き出す(聴いて確かめる用)
 //!   --json FILE      曲ごとの結果を JSON で書き出す
 //! ```
@@ -1534,7 +1535,18 @@ fn main() {
         analysis_secs / audio_secs.max(1e-9) * 100.0
     );
 
-    if let (Some(labels), Some(sep)) = (arg("--labels"), arg("--separate")) {
+    if let (Some(labels), Some(sep), true) = (
+        arg("--labels"),
+        arg("--separate"),
+        args.iter().any(|a| a == "--roles"),
+    ) {
+        eval_roles(&cases, Path::new(&sep), Path::new(&labels));
+    }
+    if let (Some(labels), Some(sep), false) = (
+        arg("--labels"),
+        arg("--separate"),
+        args.iter().any(|a| a == "--roles"),
+    ) {
         eval_instruments(
             &cases,
             Path::new(&sep),
@@ -1765,6 +1777,234 @@ fn eval_instruments(cases: &[Case], sep: &Path, labels: &Path, protos: Option<&P
                 }
                 println!();
             }
+        }
+    }
+}
+
+/// 正解のトラックの役割: 楽器の種類(ドラム・ベース・効果音は除く)と、音符の並び方から
+fn track_role(class: &str, notes: &[NoteSpan], beat: f64) -> Option<glaux_mcp::roles::Role> {
+    use glaux_mcp::roles::Role;
+    if matches!(class, "drums" | "bass" | "fx") || notes.is_empty() {
+        return None;
+    }
+    let mut ns: Vec<&NoteSpan> = notes.iter().collect();
+    ns.sort_by(|a, b| a.onset.total_cmp(&b.onset));
+    let chord = ns
+        .windows(2)
+        .filter(|w| w[1].onset - w[0].onset <= 0.03)
+        .count() as f64
+        / ns.len() as f64;
+    let mut d: Vec<f64> = ns.iter().map(|n| n.offset - n.onset).collect();
+    d.sort_by(f64::total_cmp);
+    let dur = d[d.len() / 2];
+    let mut p: Vec<u8> = ns.iter().map(|n| n.pitch).collect();
+    p.sort();
+    let pitch = p[p.len() / 2];
+    Some(if chord > 0.3 {
+        if dur >= 1.5 * beat {
+            Role::Sustain
+        } else {
+            Role::Stab
+        }
+    } else if pitch < 60 && dur >= 1.5 * beat {
+        Role::Sustain
+    } else {
+        Role::Line
+    })
+}
+
+/// 役割の見分けと組み立てを測る(小節ごと)。分けた「その他」と曲全体のそれぞれから:
+/// - 見分け: 小節ごとに、正解のその役割の音が小節の 1/4 以上鳴っているか、2 つ以上立ち上がっているかと比べた F 値
+/// - 組み立て: 役割ごとに組み立てた音符と、正解のその役割の音符の、和声の一致と立ち上がり(音の高さは見ない)の F 値
+fn eval_roles(cases: &[Case], sep: &Path, labels: &Path) {
+    use glaux_mcp::roles::{self, Role, RoleOptions};
+    use recon::{NoteMethod, PartKind};
+    let labels: serde_json::Value = std::fs::read_to_string(labels)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let all_roles = [Role::Sustain, Role::Stab, Role::Line];
+    // 見分け: (役割, 音の素) → (当たり, 推定, 正解)
+    let mut det: BTreeMap<(Role, &str), (usize, usize, usize)> = BTreeMap::new();
+    // しきい値を振ったときの見分け: (役割, 音の素, しきい値) → (当たり, 推定, 正解)
+    let sweep: [(Role, [f64; 6]); 3] = [
+        (Role::Sustain, [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]),
+        (Role::Stab, [2.0, 3.0, 4.0, 6.0, 8.0, 12.0]),
+        (Role::Line, [3.0, 4.0, 6.0, 8.0, 12.0, 16.0]),
+    ];
+    let mut det_sweep: BTreeMap<(Role, &str, usize), (usize, usize, usize)> = BTreeMap::new();
+    // 組み立て: (役割, 音の素) → (和声の一致, 立ち上がり) の並び
+    let mut gen: BTreeMap<(Role, &str), Vec<(f64, f64)>> = BTreeMap::new();
+    for c in cases {
+        let Some(lab) = labels.get(&c.name) else {
+            continue;
+        };
+        let work = sep.join(format!("{}-{}", c.name, c.frames.len()));
+        let Ok(other) = glaux_engine::load_wav_mono(&work.join("other.wav")) else {
+            eprintln!("{}: 分けた音がありません", c.name);
+            continue;
+        };
+        let Ok(sk) = recon::analyze(&c.frames, c.sample_rate, Default::default()) else {
+            continue;
+        };
+        let beat = 60.0 / sk.bpm.unwrap_or(120.0);
+        let mut truth: BTreeMap<Role, Vec<NoteSpan>> = BTreeMap::new();
+        for (name, notes) in &c.tracks {
+            let Some(cls) = lab.get(name).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(r) = track_role(cls, notes, beat) {
+                truth.entry(r).or_default().extend(notes.iter().copied());
+            }
+        }
+        let mut row = format!("{}:", c.name);
+        for (src, audio, sr) in [
+            ("その他", &other.frames, other.sample_rate),
+            ("曲全体", &c.frames, c.sample_rate),
+        ] {
+            let Ok(mut est) = recon::transcribe_part(
+                audio,
+                sr,
+                PartKind::Poly,
+                NoteMethod::BasicPitch,
+                sk.tuning_cents,
+            ) else {
+                continue;
+            };
+            if src == "曲全体" {
+                // ベースの音域(C3 未満)を除く
+                est.retain(|n| n.pitch >= 48);
+            }
+            let bars = roles::detect(audio, sr, &sk, &est, &RoleOptions::default());
+            for r in all_roles {
+                let tn = truth.get(&r).cloned().unwrap_or_default();
+                let mut hit = (0, 0, 0);
+                for b in &bars {
+                    let secs: f64 = tn
+                        .iter()
+                        .map(|n| (n.offset.min(b.end) - n.onset.max(b.start)).max(0.0))
+                        .sum();
+                    let ons = tn
+                        .iter()
+                        .filter(|n| n.onset >= b.start && n.onset < b.end)
+                        .count();
+                    let t = secs >= 0.25 * (b.end - b.start) || ons >= 2;
+                    let e = b.has(r);
+                    hit.0 += (t && e) as usize;
+                    hit.1 += e as usize;
+                    hit.2 += t as usize;
+                }
+                let s = det.entry((r, src)).or_default();
+                s.0 += hit.0;
+                s.1 += hit.1;
+                s.2 += hit.2;
+                let ths = sweep
+                    .iter()
+                    .find(|x| x.0 == r)
+                    .map(|x| x.1)
+                    .unwrap_or_default();
+                for (k, th) in ths.iter().enumerate() {
+                    for b in &bars {
+                        let secs: f64 = tn
+                            .iter()
+                            .map(|n| (n.offset.min(b.end) - n.onset.max(b.start)).max(0.0))
+                            .sum();
+                        let ons = tn
+                            .iter()
+                            .filter(|n| n.onset >= b.start && n.onset < b.end)
+                            .count();
+                        let t = secs >= 0.25 * (b.end - b.start) || ons >= 2;
+                        let v = match r {
+                            Role::Sustain => b.sustain_ratio,
+                            Role::Stab => b.stabs as f64,
+                            Role::Line => b.line_notes as f64,
+                        };
+                        let e = v >= *th;
+                        let s = det_sweep.entry((r, src, k)).or_default();
+                        s.0 += (t && e) as usize;
+                        s.1 += e as usize;
+                        s.2 += t as usize;
+                    }
+                }
+                let f_det = if hit.1 + hit.2 == 0 {
+                    1.0
+                } else {
+                    2.0 * hit.0 as f64 / (hit.1 + hit.2) as f64
+                };
+                row += &format!(" {src}:{r:?} {:.2}({}/{})", f_det, hit.1, hit.2);
+                if tn.is_empty() {
+                    continue;
+                }
+                let made = roles::role_notes(r, &sk, &bars, &est);
+                let made_spans: Vec<NoteSpan> = made
+                    .iter()
+                    .map(|n| NoteSpan {
+                        onset: n.start,
+                        offset: n.end,
+                        pitch: n.pitch,
+                    })
+                    .collect();
+                let h = mir_eval::chroma_f(&tn, &made_spans).f;
+                let mut t_on: Vec<f64> = tn.iter().map(|n| n.onset).collect();
+                t_on.sort_by(f64::total_cmp);
+                t_on.dedup_by(|a, b| (*a - *b).abs() < 0.03);
+                let mut e_on: Vec<f64> = made.iter().map(|n| n.start).collect();
+                e_on.sort_by(f64::total_cmp);
+                e_on.dedup_by(|a, b| (*a - *b).abs() < 0.03);
+                let m = mir_eval::match_events(&t_on, &e_on, 0.05);
+                let f_on = if t_on.len() + e_on.len() == 0 {
+                    0.0
+                } else {
+                    2.0 * m as f64 / (t_on.len() + e_on.len()) as f64
+                };
+                gen.entry((r, src)).or_default().push((h, f_on));
+            }
+        }
+        eprintln!("{row}");
+    }
+    println!("\n== 役割の見分け(小節ごと、しきい値を振る。F 値 / 推定の小節の数)==");
+    for (r, ths) in &sweep {
+        for src in ["その他", "曲全体"] {
+            print!("{:<10}{:<8}", format!("{r:?}"), src);
+            for (k, th) in ths.iter().enumerate() {
+                let (h, e, t) = det_sweep.get(&(*r, src, k)).copied().unwrap_or_default();
+                let f = if e + t == 0 {
+                    0.0
+                } else {
+                    2.0 * h as f64 / (e + t) as f64
+                };
+                print!("  {th:>5}:{f:.2}/{e:<4}");
+            }
+            println!();
+        }
+    }
+    println!("\n== 役割(小節ごと)==");
+    println!(
+        "{:<10}{:<8}{:>10}{:>8}{:>8}{:>14}{:>12}",
+        "役割", "音の素", "見分け F", "推定", "正解", "和声の一致", "立ち上がり"
+    );
+    for r in all_roles {
+        for src in ["その他", "曲全体"] {
+            let Some(&(h, e, t)) = det.get(&(r, src)) else {
+                continue;
+            };
+            let f = if e + t == 0 {
+                0.0
+            } else {
+                2.0 * h as f64 / (e + t) as f64
+            };
+            let g = gen.get(&(r, src)).cloned().unwrap_or_default();
+            let n = g.len().max(1) as f64;
+            println!(
+                "{:<10}{:<8}{:>10.2}{:>8}{:>8}{:>14.2}{:>12.2}",
+                format!("{r:?}"),
+                src,
+                f,
+                e,
+                t,
+                g.iter().map(|x| x.0).sum::<f64>() / n,
+                g.iter().map(|x| x.1).sum::<f64>() / n
+            );
         }
     }
 }

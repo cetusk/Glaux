@@ -6937,6 +6937,7 @@ impl GlauxServer {
                     name: n.to_owned(),
                     kind: k,
                     program: Some(pr),
+                    role: None,
                 },
                 source: None,
                 // 和音は推定した和音から組み立てる(実際の曲で、音符を起こすより和声が合った)

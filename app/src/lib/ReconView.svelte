@@ -216,16 +216,37 @@
   });
 
   // ---- 2. パート ----
-  /** chords: 和音のパートを、音符を起こさず推定した和音から組み立てる */
-  type PartRow = { on: boolean; name: string; kind: api.ReconPart["kind"]; program: number; source: string | null; chords: boolean; label: string; hint: string };
-  let rows = $state<PartRow[]>([
-    { on: true, name: tr("歌・旋律", "Melody"), kind: "melody", program: 53, source: null, chords: false, label: tr("歌・旋律", "Vocal / melody"), hint: tr("単音。いちばん目立つ旋律", "Monophonic; the most prominent line") },
-    { on: true, name: tr("ベース", "Bass"), kind: "bass", program: 33, source: null, chords: false, label: tr("ベース", "Bass"), hint: tr("単音。いちばん低い音", "Monophonic; the lowest line") },
-    { on: true, name: tr("ピアノ", "Piano"), kind: "poly", program: 0, source: null, chords: true, label: tr("ピアノ", "Piano"), hint: tr("和音", "Chords") },
-    { on: true, name: tr("ドラム", "Drums"), kind: "drums", program: 0, source: null, chords: false, label: tr("ドラム", "Drums"), hint: tr("キック・スネア・ハイハット・シンバル", "Kick, snare, hi-hat, cymbal") },
-    { on: false, name: tr("ギター", "Guitar"), kind: "poly", program: 25, source: null, chords: false, label: tr("ギター", "Guitar"), hint: tr("和音", "Chords") },
-    { on: false, name: tr("その他", "Other"), kind: "poly", program: 48, source: null, chords: false, label: tr("その他(和音)", "Other (chords)"), hint: tr("弦・パッドなど", "Strings, pads, etc.") },
+  /** chords: 和音のパートを、音符を起こさず推定した和音から組み立てる。role: 電子音楽の役割(役割を見分けて組み立てる) */
+  type PartRow = {
+    on: boolean;
+    name: string;
+    kind: api.ReconPart["kind"];
+    program: number;
+    source: string | null;
+    chords: boolean;
+    role: api.ReconRole | null;
+    label: string;
+    hint: string;
+  };
+  /** パートの組み方: 電子音楽(役割ごと)/ 楽器ごと */
+  let layout = $state<"electronic" | "instruments">("electronic");
+  // 電子音楽: 楽器の名前ではなく役割で起こす(混ざったシンセの音は名前では見分けられないため)。曲に無い役割はトラックにならない
+  const electronicRows = $state<PartRow[]>([
+    { on: true, name: tr("ドラム", "Drums"), kind: "drums", program: 0, source: null, chords: false, role: null, label: tr("ドラム", "Drums"), hint: tr("キック・スネア・ハイハット・シンバル", "Kick, snare, hi-hat, cymbal") },
+    { on: true, name: tr("ベース", "Bass"), kind: "bass", program: 38, source: null, chords: false, role: null, label: tr("ベース", "Bass"), hint: tr("単音。いちばん低い音", "Monophonic; the lowest line") },
+    { on: true, name: tr("パッド", "Pad"), kind: "poly", program: 89, source: null, chords: false, role: "sustain", label: tr("パッド(伸ばす)", "Pad (sustained)"), hint: tr("伸ばす和音・持続音(パッド・ストリングス・ドローン)", "Held chords and drones (pads, strings)") },
+    { on: true, name: tr("スタブ", "Stab"), kind: "poly", program: 81, source: null, chords: false, role: "stab", label: tr("スタブ(刻む)", "Stab (rhythmic)"), hint: tr("短く刻む和音", "Short rhythmic chords") },
+    { on: true, name: tr("アルペジオ・旋律", "Arp / lead"), kind: "poly", program: 80, source: null, chords: false, role: "line", label: tr("アルペジオ・旋律(線)", "Arp / lead (line)"), hint: tr("単音の分散和音・旋律・ベル", "Single-note arpeggios, leads, bells") },
   ]);
+  const instrumentRows = $state<PartRow[]>([
+    { on: true, name: tr("歌・旋律", "Melody"), kind: "melody", program: 53, source: null, chords: false, role: null, label: tr("歌・旋律", "Vocal / melody"), hint: tr("単音。いちばん目立つ旋律", "Monophonic; the most prominent line") },
+    { on: true, name: tr("ベース", "Bass"), kind: "bass", program: 33, source: null, chords: false, role: null, label: tr("ベース", "Bass"), hint: tr("単音。いちばん低い音", "Monophonic; the lowest line") },
+    { on: true, name: tr("ピアノ", "Piano"), kind: "poly", program: 0, source: null, chords: true, role: null, label: tr("ピアノ", "Piano"), hint: tr("和音", "Chords") },
+    { on: true, name: tr("ドラム", "Drums"), kind: "drums", program: 0, source: null, chords: false, role: null, label: tr("ドラム", "Drums"), hint: tr("キック・スネア・ハイハット・シンバル", "Kick, snare, hi-hat, cymbal") },
+    { on: false, name: tr("ギター", "Guitar"), kind: "poly", program: 25, source: null, chords: false, role: null, label: tr("ギター", "Guitar"), hint: tr("和音", "Chords") },
+    { on: false, name: tr("その他", "Other"), kind: "poly", program: 48, source: null, chords: false, role: null, label: tr("その他(和音)", "Other (chords)"), hint: tr("弦・パッドなど", "Strings, pads, etc.") },
+  ]);
+  const rows = $derived(layout === "electronic" ? electronicRows : instrumentRows);
   let quantize = $state(0.5);
   let transcribing = $state(false);
 
@@ -238,19 +259,13 @@
   });
   async function importParts() {
     if (!clipId) return;
-    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source, from_chords: r.chords }));
+    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source, from_chords: r.chords, role: r.role }));
     if (!parts.length) return;
     transcribing = true;
     try {
       const res = await api.reconImport(clipId, $state.snapshot(opts), parts, quantize, $state.snapshot(imp));
       const t = res.transpose === 0 ? tr("移調なし", "no transposition") : tr(`${res.transpose > 0 ? "+" : ""}${res.transpose} 半音移調`, `transposed ${res.transpose > 0 ? "+" : ""}${res.transpose} semitones`);
-      showToast(
-        "ok",
-        tr(
-          `取り込みました(${t}): ${res.parts.map((p) => `${p.name} ${p.notes} 音`).join("・")}(取り消しで戻せます)`,
-          `Imported (${t}): ${res.parts.map((p) => `${p.name} ${plural(p.notes, "note")}`).join(", ")} (undo to revert)`,
-        ),
-      );
+      showToast("ok", resultText(res.parts, tr(`取り込みました(${t})`, `Imported (${t})`)));
       step = 3;
     } catch (e) {
       showError(tr("取り込めませんでした", "Couldn't import"), e);
@@ -274,7 +289,7 @@
     separating = true;
     try {
       const f = await api.reconSeparate(clipId);
-      for (const r of rows) {
+      for (const r of [...electronicRows, ...instrumentRows]) {
         if (r.chords) continue;
         r.source = (r.kind === "melody" ? (f.melody ?? f.vocals) : r.kind === "bass" ? f.bass : r.kind === "drums" ? f.drums : f.other) ?? null;
       }
@@ -299,20 +314,28 @@
 
   const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
+  /** 起こした結果の知らせ(音の無かったパートは「見つかりませんでした」。トラックは作られない) */
+  function resultText(parts: { name: string; notes: number }[], head: string): string {
+    const found = parts.filter((p) => p.notes > 0);
+    const missing = parts.filter((p) => p.notes === 0);
+    let s = `${head}: ${found.map((p) => tr(`${p.name} ${p.notes} 音`, `${p.name} ${plural(p.notes, "note")}`)).join(tr("・", ", ")) || tr("なし", "none")}`;
+    if (missing.length) {
+      s += tr(
+        `。見つからなかったパート(トラックは作りません): ${missing.map((p) => p.name).join("・")}`,
+        `. Not found (no track made): ${missing.map((p) => p.name).join(", ")}`,
+      );
+    }
+    return s + tr("(取り消しで戻せます)", " (undo to revert)");
+  }
+
   async function transcribe() {
     if (!clipId) return;
-    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source, from_chords: r.chords }));
+    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source, from_chords: r.chords, role: r.role }));
     if (!parts.length) return;
     transcribing = true;
     try {
       const res = await api.reconTranscribe(clipId, $state.snapshot(opts), parts, quantize);
-      showToast(
-        "ok",
-        tr(
-          `起こしました: ${res.parts.map((p) => `${p.name} ${p.notes} 音`).join("・")}(取り消しで戻せます)`,
-          `Transcribed: ${res.parts.map((p) => `${p.name} ${plural(p.notes, "note")}`).join(", ")} (undo to revert)`,
-        ),
-      );
+      showToast("ok", resultText(res.parts, tr("起こしました", "Transcribed")));
       step = 3;
     } catch (e) {
       showError(tr("起こせませんでした", "Couldn't transcribe"), e);
@@ -496,12 +519,32 @@
           </p>
         {/if}
       </div>
+      <div class="modes layout" role="group" aria-label={tr("パートの組み方", "How to split the parts")}>
+        <button
+          class="btn sm"
+          class:on={layout === "electronic"}
+          aria-pressed={layout === "electronic"}
+          onclick={() => (layout = "electronic")}
+          title={tr(
+            "電子音楽向け: 楽器の名前ではなく役割(伸ばす・刻む・線)を曲から見分けて起こします。曲に無い役割はトラックになりません",
+            "For electronic music: detects roles (sustained, rhythmic, line) instead of instrument names. Roles not in the song get no track",
+          )}>{tr("電子音楽(役割ごと)", "Electronic (by role)")}</button
+        >
+        <button
+          class="btn sm"
+          class:on={layout === "instruments"}
+          aria-pressed={layout === "instruments"}
+          onclick={() => (layout = "instruments")}
+          title={tr("歌・ベース・ピアノ・ギターなど、楽器ごとに起こします", "Transcribe by instrument: vocals, bass, piano, guitar…")}
+          >{tr("楽器ごと", "By instrument")}</button
+        >
+      </div>
       <table class="parts">
         <thead>
           <tr><th></th><th>{tr("パート", "Part")}</th><th>{tr("音の素", "Source")}</th><th>{tr("トラックの名前", "Track name")}</th></tr>
         </thead>
         <tbody>
-          {#each rows as r (r.kind + r.program)}
+          {#each rows as r (r.kind + r.program + (r.role ?? ""))}
             <tr class:off={!r.on}>
               <td><input type="checkbox" bind:checked={r.on} aria-label={r.label} /></td>
               <td><span class="pname">{r.label}</span><small>{r.hint}</small></td>
@@ -520,7 +563,7 @@
                   <button class="btn sm" class:on={!!r.source && !r.chords} onclick={() => pickSource(r)} disabled={!r.on} title={r.source ?? tr("このパートだけを分けた音のファイルを選ぶ", "Choose a file with only this part")}
                     ><Icon name="file-audio" size={13} />{r.source ? baseName(r.source) : tr("分けた音…", "Separated audio…")}</button
                   >
-                  {#if r.kind === "poly"}
+                  {#if r.kind === "poly" && !r.role}
                     <button
                       class="btn sm"
                       class:on={r.chords}
@@ -850,6 +893,10 @@
   .modes {
     display: flex;
     gap: 4px;
+  }
+
+  .modes.layout {
+    margin: 4px 0 8px;
   }
 
   .import-box {
