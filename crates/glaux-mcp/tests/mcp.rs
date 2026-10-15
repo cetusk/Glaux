@@ -6690,6 +6690,38 @@ async fn transcribe_reference_fits_the_grid_and_adds_part_tracks() {
             >= notes.len() * 8
     );
     assert!(notes.iter().all(|n| n.pos.0 + n.dur.0 <= 2 * 3840));
+
+    // ドラムを取り込む: 移調を指定しても、打楽器の番号は移さない
+    let v = ok_json(
+        &call(
+            &fx,
+            "transcribe_reference",
+            json!({
+                "clip_id": clip_id,
+                "parts": [{"name": "Drums", "kind": "drums"}],
+                "quantize": 1.0,
+                "into_song": { "from_bar": 2, "to_bar": 5, "at_bar": 9, "transpose": 2 },
+            }),
+        )
+        .await,
+    );
+    assert_eq!(v["parts"][0]["name"], "Drums", "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let drums = project
+        .tracks
+        .iter()
+        .find(|t| t.name == "Drums")
+        .expect("Drums");
+    let notes = drums.clips[0].notes().unwrap();
+    assert!(notes.len() >= 8, "{}", notes.len());
+    assert!(
+        notes
+            .iter()
+            .all(|n| [36, 38, 42, 46, 49].contains(&n.pitch)),
+        "{:?}",
+        notes.iter().map(|n| n.pitch).collect::<Vec<_>>()
+    );
+    assert!(notes.iter().any(|n| n.pitch == 36));
 }
 
 #[tokio::test]

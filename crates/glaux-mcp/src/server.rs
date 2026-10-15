@@ -607,8 +607,9 @@ pub struct AnalyzeBeatsParams {
 pub struct TranscribeReferenceParams {
     /// 参考曲の音声クリップ ID(参考曲のトラックのクリップ)
     pub clip_id: String,
-    /// 起こすパート。name(トラックの名前)・kind("melody" / "bass" / "poly")・program(GM の音色の番号、省略可)・
-    /// source(そのパートだけを分けた音のファイルのパス。省略で参考曲そのもの)。省略で歌・ベース・ピアノ
+    /// 起こすパート。name(トラックの名前)・kind("melody" / "bass" / "poly" / "drums")・program(GM の音色の番号、省略可。
+    /// drums は GM のドラムの番号 36/38/42/46/49 で書く)・source(そのパートだけを分けた音のファイルのパス。省略で参考曲そのもの)。
+    /// 省略で歌・ベース・ピアノ・ドラム
     #[serde(default)]
     #[schemars(with = "Option<Vec<serde_json::Value>>")]
     pub parts: Option<Vec<crate::recon::PartRequest>>,
@@ -6928,6 +6929,7 @@ impl GlauxServer {
                 ("歌・旋律", crate::recon::PartKind::Melody, 53),
                 ("ベース", crate::recon::PartKind::Bass, 33),
                 ("ピアノ", crate::recon::PartKind::Poly, 0),
+                ("ドラム", crate::recon::PartKind::Drums, 0),
             ]
             .into_iter()
             .map(|(n, k, pr)| crate::recon::PartRequest {

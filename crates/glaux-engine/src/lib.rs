@@ -23,6 +23,7 @@ pub mod analyze;
 pub mod calibrate;
 pub mod data;
 pub mod distortion;
+pub mod drum_transcribe;
 pub mod export;
 pub mod feel;
 pub mod loudness;

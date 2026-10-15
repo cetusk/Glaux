@@ -215,6 +215,8 @@ pub enum PartKind {
     Bass,
     /// ピアノ・ギター・その他(和音)
     Poly,
+    /// ドラム(キック・スネア・ハイハット・シンバル。GM のドラムの番号で)
+    Drums,
 }
 
 /// 譜起こしの方式
@@ -228,6 +230,10 @@ pub enum NoteMethod {
     Yin,
     /// 和音: basic-pitch
     BasicPitch,
+    /// ドラム: 打楽器の成分を取り出し、帯域ごとの立ち上がりでキック・スネア・ハイハット・シンバルに分ける(分けたドラムの音から)
+    Drums,
+    /// ドラム: 分けていない曲そのものから(弱い立ち上がりを候補にしない設定で)
+    DrumsMix,
 }
 
 impl PartKind {
@@ -235,6 +241,7 @@ impl PartKind {
         match self {
             PartKind::Melody | PartKind::Bass => NoteMethod::Auto,
             PartKind::Poly => NoteMethod::BasicPitch,
+            PartKind::Drums => NoteMethod::Drums,
         }
     }
 
@@ -244,6 +251,7 @@ impl PartKind {
             PartKind::Melody => (40.0, 96.0),
             PartKind::Bass => (24.0, 64.0),
             PartKind::Poly => (21.0, 108.0),
+            PartKind::Drums => (35.0, 81.0),
         }
     }
 }
@@ -309,7 +317,7 @@ pub fn transcribe_part(
             })
             .collect())
     };
-    let mono = kind != PartKind::Poly;
+    let mono = matches!(kind, PartKind::Melody | PartKind::Bass);
     let mut notes = match method {
         NoteMethod::Auto => {
             let a = to_mono(basic()?, kind == PartKind::Bass);
@@ -322,6 +330,24 @@ pub fn transcribe_part(
             } else {
                 a
             }
+        }
+        NoteMethod::Drums | NoteMethod::DrumsMix => {
+            // 打楽器の成分(分けたドラムの音でも、ほかの楽器の持続音の残りを除ける)
+            let perc = glaux_engine::separate::hpss(&audio).percussive;
+            let opts = if method == NoteMethod::DrumsMix {
+                glaux_engine::drum_transcribe::DrumOptions::mixed()
+            } else {
+                Default::default()
+            };
+            glaux_engine::drum_transcribe::transcribe(&perc, sr, &opts)
+                .into_iter()
+                .map(|h| RawNote {
+                    start: h.time,
+                    end: h.time + 0.1,
+                    pitch: h.kind.gm_note(),
+                    vel: h.vel,
+                })
+                .collect()
         }
         NoteMethod::SwiftF0 => swift()?,
         NoteMethod::Yin => {
@@ -404,13 +430,14 @@ pub fn transcribe_mix_parts(
                 PartKind::Poly => 0,
                 PartKind::Melody => 1,
                 PartKind::Bass => 2,
+                PartKind::Drums => return Vec::new(),
             };
             if std::mem::replace(&mut used[r as usize], true) {
                 return Vec::new();
             }
             let v = pick(r);
             match k {
-                PartKind::Poly => v,
+                PartKind::Poly | PartKind::Drums => v,
                 PartKind::Melody => to_mono(v, false),
                 PartKind::Bass => to_mono(v, true),
             }
@@ -1020,7 +1047,8 @@ pub fn part_track_commands(
         (Some(sf), Some(p)) => Device {
             source: PluginSource::Sf2 {
                 soundfont: sf.to_owned(),
-                bank: 0,
+                // ドラムは GM のドラムの音色(バンク 128)
+                bank: if part.kind == PartKind::Drums { 128 } else { 0 },
                 preset: p,
             },
             params: Default::default(),
@@ -1029,6 +1057,7 @@ pub fn part_track_commands(
             PartKind::Bass => "subtractive",
             PartKind::Melody => "fm",
             PartKind::Poly => "pluck",
+            PartKind::Drums => "drum",
         }),
     });
     let mut clip = Clip::new_midi(ClipId::new(), part.name.clone(), Tick(0), Tick(length));
@@ -1281,7 +1310,7 @@ pub fn transcribe_requests(
 ) -> Result<Vec<Vec<RawNote>>, String> {
     let from_mix: Vec<PartKind> = parts
         .iter()
-        .filter(|p| p.source.is_none())
+        .filter(|p| p.source.is_none() && p.spec.kind != PartKind::Drums)
         .map(|p| p.spec.kind)
         .collect();
     let mut mix_parts = if from_mix.is_empty() {
@@ -1293,6 +1322,9 @@ pub fn transcribe_requests(
     parts
         .iter()
         .map(|p| match &p.source {
+            None if p.spec.kind == PartKind::Drums => {
+                transcribe_part(mix, sr, PartKind::Drums, NoteMethod::DrumsMix, 0.0)
+            }
             Some(path) => {
                 let s = crate::sound::load_file(std::path::Path::new(path))?;
                 transcribe_part(
@@ -1423,6 +1455,12 @@ pub fn import_commands(
     let mut cmds = Vec::new();
     let mut counts = Vec::new();
     for (p, raw) in parts.iter().zip(&notes) {
+        // ドラムの音の番号は打楽器の種類なので移調しない
+        let shift = if p.spec.kind == PartKind::Drums {
+            0
+        } else {
+            transpose
+        };
         let mut out: Vec<glaux_core::Note> = raw
             .iter()
             .filter_map(|n| {
@@ -1433,7 +1471,7 @@ pub fn import_commands(
                 }
                 let pos = snap((a - b0).max(0.0) * ppq);
                 let end = snap((e.min(b1) - b0) * ppq).max(pos + if q > 0.5 { step } else { 30.0 });
-                let pitch = (n.pitch as i32 + transpose).clamp(0, 127) as u8;
+                let pitch = (n.pitch as i32 + shift).clamp(0, 127) as u8;
                 Some(glaux_core::Note {
                     locked: false,
                     id: glaux_core::NoteId::new(),
@@ -1479,7 +1517,11 @@ pub fn import_commands(
                     (Some(sf), Some(pr)) => Device {
                         source: PluginSource::Sf2 {
                             soundfont: sf.to_owned(),
-                            bank: 0,
+                            bank: if p.spec.kind == PartKind::Drums {
+                                128
+                            } else {
+                                0
+                            },
                             preset: pr,
                         },
                         params: Default::default(),
@@ -1488,6 +1530,7 @@ pub fn import_commands(
                         PartKind::Bass => "subtractive",
                         PartKind::Melody => "fm",
                         PartKind::Poly => "pluck",
+                        PartKind::Drums => "drum",
                     }),
                 });
                 cmds.push(Command::AddTrack { track, index: None });

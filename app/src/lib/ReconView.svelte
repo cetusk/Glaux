@@ -221,6 +221,7 @@
     { on: true, name: tr("歌・旋律", "Melody"), kind: "melody", program: 53, source: null, label: tr("歌・旋律", "Vocal / melody"), hint: tr("単音。いちばん目立つ旋律", "Monophonic; the most prominent line") },
     { on: true, name: tr("ベース", "Bass"), kind: "bass", program: 33, source: null, label: tr("ベース", "Bass"), hint: tr("単音。いちばん低い音", "Monophonic; the lowest line") },
     { on: true, name: tr("ピアノ", "Piano"), kind: "poly", program: 0, source: null, label: tr("ピアノ", "Piano"), hint: tr("和音", "Chords") },
+    { on: true, name: tr("ドラム", "Drums"), kind: "drums", program: 0, source: null, label: tr("ドラム", "Drums"), hint: tr("キック・スネア・ハイハット・シンバル", "Kick, snare, hi-hat, cymbal") },
     { on: false, name: tr("ギター", "Guitar"), kind: "poly", program: 25, source: null, label: tr("ギター", "Guitar"), hint: tr("和音", "Chords") },
     { on: false, name: tr("その他", "Other"), kind: "poly", program: 48, source: null, label: tr("その他(和音)", "Other (chords)"), hint: tr("弦・パッドなど", "Strings, pads, etc.") },
   ]);
@@ -273,9 +274,9 @@
     try {
       const f = await api.reconSeparate(clipId);
       for (const r of rows) {
-        r.source = (r.kind === "melody" ? f.vocals : r.kind === "bass" ? f.bass : f.other) ?? null;
+        r.source = (r.kind === "melody" ? f.vocals : r.kind === "bass" ? f.bass : r.kind === "drums" ? f.drums : f.other) ?? null;
       }
-      showToast("ok", tr("参考曲を歌・ベース・その他に分けました。それぞれの分けた音から起こします", "Separated the reference into vocals, bass and other; parts will be transcribed from them"));
+      showToast("ok", tr("参考曲を歌・ドラム・ベース・その他に分けました。それぞれの分けた音から起こします", "Separated the reference into vocals, drums, bass and other; parts will be transcribed from them"));
     } catch (e) {
       showError(tr("分けられませんでした", "Couldn't separate"), e);
     } finally {
@@ -480,7 +481,7 @@
                 name="split"
               />{tr("分離ツール(Demucs)で分ける", "Separate with Demucs")}{/if}</button
           >
-          <span class="dim">{tr("歌・ベース・その他に分けて、それぞれから起こします(精度が大きく上がります)", "Splits into vocals, bass and other and transcribes each (much more accurate)")}</span>
+          <span class="dim">{tr("歌・ドラム・ベース・その他に分けて、それぞれから起こします(精度が大きく上がります)", "Splits into vocals, drums, bass and other and transcribes each (much more accurate)")}</span>
         {:else}
           <p class="dim">
             {tr(

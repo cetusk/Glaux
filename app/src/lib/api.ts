@@ -382,7 +382,7 @@ export function reconSeparate(clipId: string): Promise<{ vocals?: string; drums?
 /** 起こすパート(source: 省略で参考曲そのもの、パスならそのパートだけを分けた音のファイル) */
 export interface ReconPart {
   name: string;
-  kind: "melody" | "bass" | "poly";
+  kind: "melody" | "bass" | "poly" | "drums";
   program: number | null;
   source?: string | null;
 }

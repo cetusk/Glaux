@@ -667,6 +667,9 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
     if let Some(dir) = sf2.and_then(|p| p.parent()) {
         bank = bank.with_sf2_dir(dir);
     }
+    // SoundFont を読み込む(読まないと、SoundFont の音色は内蔵の subtractive で代わりに鳴る。
+    // 2026-10-15 まではこれが無く、「GM の SoundFont で鳴らした曲」は実際には subtractive で鳴っていた)
+    bank.sync(&song.project, std::path::Path::new("."));
     let sr = 48_000.0;
     let stereo = glaux_engine::export::render_project(&song.project, sr, &bank).expect("書き出し");
     let mut frames: Vec<f32> = stereo.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
@@ -706,6 +709,7 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
             ("Lead", recon::PartKind::Melody),
             ("Bass", recon::PartKind::Bass),
             ("Chords", recon::PartKind::Poly),
+            ("Drums", recon::PartKind::Drums),
         ] {
             let Some(track) = song.project.tracks.iter().find(|t| t.name == name) else {
                 continue;
@@ -1020,6 +1024,38 @@ impl Scores {
     }
 }
 
+/// 調整用: 推定した小節頭が正解の拍の何拍目に乗ったか(正解の小節頭 = 0)の数
+fn down_debug(name: &str, tags: &[String], truth: &Truth, est: &recon::Skeleton) {
+    let Some(bpb) = truth.beats_per_bar else {
+        return;
+    };
+    let near = |t: f64| -> Option<usize> {
+        let (j, d) = truth
+            .beats
+            .iter()
+            .enumerate()
+            .map(|(j, b)| (j, (b - t).abs()))
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        (d <= 0.07).then_some(j)
+    };
+    let Some(d0) = truth.downbeats.first().and_then(|&d| near(d)) else {
+        return;
+    };
+    let mut hist = vec![0usize; bpb as usize + 1];
+    for &d in &est.downbeats {
+        match near(d) {
+            Some(j) => hist[(j + bpb as usize * 64 - d0) % bpb as usize] += 1,
+            None => hist[bpb as usize] += 1,
+        }
+    }
+    println!(
+        "小節頭 {name} {} 拍子 正解 {bpb} 推定 {:?} 何拍目 {:?}(最後は拍に乗らない数)",
+        tags.join(","),
+        est.beats_per_bar,
+        hist
+    );
+}
+
 fn score(truth: &Truth, est: &recon::Skeleton, frames: &[f32], sr: f32) -> Scores {
     let mut s = Scores::default();
     if let (Some(&d), Some((plan, _))) = (
@@ -1218,6 +1254,9 @@ fn main() {
         analysis_secs += t0.elapsed().as_secs_f64();
         audio_secs += c.frames.len() as f64 / c.sample_rate as f64;
         let s = score(&c.truth, &est, &c.frames, c.sample_rate);
+        if std::env::var("RECON_DOWN_DEBUG").is_ok() {
+            down_debug(&c.name, &c.tags, &c.truth, &est);
+        }
         results.push((c.name.clone(), c.tags.clone(), s, est));
     }
 
@@ -1270,6 +1309,14 @@ fn main() {
     }
 }
 
+/// ドラムの種類と GM の番号
+const DRUM_CLASSES: [(&str, &[u8]); 4] = [
+    ("kick", &[35, 36]),
+    ("snare", &[37, 38, 39, 40]),
+    ("hihat", &[42, 44, 46]),
+    ("cymbal", &[49, 51, 52, 55, 57, 59]),
+];
+
 /// パートの譜起こしを方式ごとに比べる(分けた音から = 分離が完全なときの上限、ミックスから直接)
 fn eval_parts(cases: &[Case]) {
     use recon::{NoteMethod, PartKind};
@@ -1296,14 +1343,88 @@ fn eval_parts(cases: &[Case]) {
             .find(|t| t.starts_with("sound:"))
             .cloned()
             .unwrap_or_default();
-        for p in &c.parts {
+        for p in c.parts.iter().filter(|p| p.kind == PartKind::Drums) {
+            // 調整用: ドラムの分けた音と正解を書き出す(RECON_DRUMS=フォルダ)
+            if let Ok(dir) = std::env::var("RECON_DRUMS") {
+                let dir = std::path::Path::new(&dir);
+                std::fs::create_dir_all(dir).ok();
+                let spec = hound::WavSpec {
+                    channels: 1,
+                    sample_rate: c.sample_rate as u32,
+                    bits_per_sample: 32,
+                    sample_format: hound::SampleFormat::Float,
+                };
+                // ドラムだけの音(<名前>.wav)と、曲そのもの(<名前>.mix.wav)
+                for (file, frames) in [
+                    (format!("{}.wav", c.name), &p.frames),
+                    (format!("{}.mix.wav", c.name), &c.frames),
+                ] {
+                    if let Ok(mut w) = hound::WavWriter::create(dir.join(file), spec) {
+                        for &x in frames {
+                            w.write_sample(x).ok();
+                        }
+                        w.finalize().ok();
+                    }
+                }
+                std::fs::write(
+                    dir.join(format!("{}.json", c.name)),
+                    serde_json::json!({"truth": p.truth, "device": p.device}).to_string(),
+                )
+                .ok();
+            }
+            // ドラム: 分けた音から / 分けずに参考曲そのものから、種類ごと(キック・スネア・ハイハット・シンバル)の立ち上がりの F 値
+            for (src, audio, method) in [
+                ("stem", &p.frames, NoteMethod::Drums),
+                ("mix", &c.frames, NoteMethod::DrumsMix),
+            ] {
+                let Ok(est) =
+                    recon::transcribe_part(audio, c.sample_rate, PartKind::Drums, method, 0.0)
+                else {
+                    continue;
+                };
+                for (class, pitches) in DRUM_CLASSES {
+                    let t: Vec<f64> = p
+                        .truth
+                        .iter()
+                        .filter(|n| pitches.contains(&n.pitch))
+                        .map(|n| n.onset)
+                        .collect();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    let mut e: Vec<f64> = est
+                        .iter()
+                        .filter(|n| pitches.contains(&n.pitch))
+                        .map(|n| n.start)
+                        .collect();
+                    e.sort_by(f64::total_cmp);
+                    let mut t = t;
+                    t.sort_by(f64::total_cmp);
+                    let hit = mir_eval::match_events(&t, &e, 0.05);
+                    let f = if t.is_empty() && e.is_empty() {
+                        1.0
+                    } else {
+                        2.0 * hit as f64 / (t.len() + e.len()) as f64
+                    };
+                    for key in [
+                        format!("Drums {class} all"),
+                        format!("Drums {class} {sound}"),
+                    ] {
+                        rows.entry((key, format!("Drums-{src}")))
+                            .or_default()
+                            .push((f, f));
+                    }
+                }
+            }
+        }
+        for p in c.parts.iter().filter(|p| p.kind != PartKind::Drums) {
             let methods: &[NoteMethod] = match p.kind {
                 PartKind::Melody | PartKind::Bass => &[
                     NoteMethod::Auto,
                     NoteMethod::SwiftF0,
                     NoteMethod::BasicPitch,
                 ],
-                PartKind::Poly => &[NoteMethod::BasicPitch],
+                PartKind::Poly | PartKind::Drums => &[NoteMethod::BasicPitch],
             };
             for &m in methods {
                 let t0 = std::time::Instant::now();
@@ -1328,10 +1449,20 @@ fn eval_parts(cases: &[Case]) {
             }
         }
         // 分けずに参考曲そのままから、そのパートを起こしたとき(作業場の「参考曲そのまま」)
-        let kinds: Vec<PartKind> = c.parts.iter().map(|p| p.kind).collect();
+        let kinds: Vec<PartKind> = c
+            .parts
+            .iter()
+            .filter(|p| p.kind != PartKind::Drums)
+            .map(|p| p.kind)
+            .collect();
         let from_mix = recon::transcribe_mix_parts(&c.frames, c.sample_rate, &kinds, tuning)
             .unwrap_or_default();
-        for (p, est) in c.parts.iter().zip(&from_mix) {
+        for (p, est) in c
+            .parts
+            .iter()
+            .filter(|p| p.kind != PartKind::Drums)
+            .zip(&from_mix)
+        {
             let est = to_spans(est);
             let f1 = mir_eval::note_f(&p.truth, &est, false).f;
             let f2 = mir_eval::note_f(&p.truth, &est, true).f;
@@ -1345,6 +1476,7 @@ fn eval_parts(cases: &[Case]) {
         let truth: Vec<NoteSpan> = c
             .parts
             .iter()
+            .filter(|p| p.kind != PartKind::Drums)
             .flat_map(|p| p.truth.iter().copied())
             .collect();
         if let Ok(est) = recon::transcribe_part(
