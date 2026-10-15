@@ -10,7 +10,7 @@
 //!   --seed N         乱数の種(既定 1)
 //!   --sf2 FILE       GM の SoundFont で鳴らす曲も混ぜる(ピアノ・ギター・弦・ドラムキット)
 //!   --dataset DIR    実在の録音の評価セット(音声と同じ名前の .beats / .lab / .key)
-//!   --project DIR    Glaux の曲(.glaux のフォルダ)を書き出して、曲の中身(テンポ・拍子・音符)を正解に測る。
+//!   --project DIR    Glaux の曲(.glaux のフォルダ。それを並べたフォルダでもよい)を書き出して、曲の中身(テンポ・拍子・音符)を正解に測る。
 //!                    調・和音の正解は曲の音符から求めた小節ごとの和音。パートの正解はトラックごと(ドラムはまとめて 1 つ)。
 //!                    --cases 0 と組み合わせるとその曲だけ
 //!   --beat M         拍の求め方(dbn〈既定〉/ minimal)
@@ -119,7 +119,6 @@ struct Case {
 /// それで測った点は使い方の再現にならず、いずれその点で満足してしまうため、評価に使うことを禁じている
 /// (2026-10-15、ユーザーと決定。調査文書 13.12 節)。分けて起こす経路は、曲から分離ツールで分けた音で測る
 struct PartCase {
-    name: String,
     /// 鳴らした音源(調べる用)
     device: String,
     kind: recon::PartKind,
@@ -749,7 +748,6 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
                 _ => String::new(),
             };
             parts.push(PartCase {
-                name: name.to_owned(),
                 device,
                 kind,
                 truth,
@@ -949,7 +947,6 @@ fn project_case(dir: &Path, with_parts: bool) -> Result<Case, String> {
                 .unwrap_or_default();
             eprintln!("  パート {pname}: {kind:?}・音符 {}", truth.len());
             parts.push(PartCase {
-                name: pname,
                 device,
                 kind,
                 truth,
@@ -957,8 +954,8 @@ fn project_case(dir: &Path, with_parts: bool) -> Result<Case, String> {
         }
     }
     Ok(Case {
+        tags: vec!["sound:project".into(), format!("song:{name}")],
         name,
-        tags: vec!["sound:project".into()],
         frames,
         side: Some(side),
         sample_rate: sr,
@@ -1411,9 +1408,22 @@ fn main() {
         cases.extend(dataset_cases(Path::new(&d)));
     }
     if let Some(d) = arg("--project") {
-        match project_case(Path::new(&d), with_parts) {
-            Ok(c) => cases.push(c),
-            Err(e) => eprintln!("{d}: 曲を読めません: {e}"),
+        // 曲のフォルダ 1 つか、曲のフォルダ(*.glaux)を並べたフォルダ
+        let d = PathBuf::from(d);
+        let mut dirs: Vec<PathBuf> = if d.join("project.json").is_file() {
+            vec![d]
+        } else {
+            std::fs::read_dir(&d)
+                .map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).collect())
+                .unwrap_or_default()
+        };
+        dirs.retain(|p| p.join("project.json").is_file());
+        dirs.sort();
+        for p in dirs {
+            match project_case(&p, with_parts) {
+                Ok(c) => cases.push(c),
+                Err(e) => eprintln!("{}: 曲を読めません: {e}", p.display()),
+            }
         }
     }
     eprintln!(
@@ -1508,6 +1518,17 @@ fn main() {
     }
 }
 
+/// パートの種類の表の名前(評価用の曲のトラックの名前と同じ)
+fn kind_label(k: &recon::PartKind) -> String {
+    match k {
+        recon::PartKind::Melody => "Lead",
+        recon::PartKind::Bass => "Bass",
+        recon::PartKind::Poly => "Chords",
+        recon::PartKind::Drums => "Drums",
+    }
+    .to_owned()
+}
+
 /// ドラムの種類と GM の番号
 const DRUM_CLASSES: [(&str, &[u8]); 4] = [
     ("kick", &[35, 36]),
@@ -1538,12 +1559,12 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
         }
         let t0 = std::time::Instant::now();
         let tuning = glaux_engine::tonal::estimate_tuning(&c.frames, c.sample_rate);
-        let sound = c
-            .tags
-            .iter()
-            .find(|t| t.starts_with("sound:"))
-            .cloned()
-            .unwrap_or_default();
+        // 集計の切り口: 全体と、曲の分類(音源・曲名など)ごと
+        let keys = |label: &str| -> Vec<String> {
+            std::iter::once(format!("{label} all"))
+                .chain(c.tags.iter().map(|t| format!("{label} {t}")))
+                .collect()
+        };
         for p in c.parts.iter().filter(|p| p.kind == PartKind::Drums) {
             // 調整用: 曲そのものとドラムの正解を書き出す(RECON_DRUMS=フォルダ。drum_tune で使う)
             if let Ok(dir) = std::env::var("RECON_DRUMS") {
@@ -1598,10 +1619,7 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
                 t.sort_by(f64::total_cmp);
                 let hit = mir_eval::match_events(&t, &e, 0.05);
                 let f = 2.0 * hit as f64 / (t.len() + e.len()) as f64;
-                for key in [
-                    format!("Drums {class} all"),
-                    format!("Drums {class} {sound}"),
-                ] {
+                for key in keys(&format!("Drums {class}")) {
                     rows.entry((key, "FromMix".into()))
                         .or_default()
                         .push((f, f));
@@ -1620,11 +1638,7 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
             .unwrap_or_default();
         for (k, est) in kinds.iter().zip(&from_mix) {
             let same: Vec<&PartCase> = c.parts.iter().filter(|p| p.kind == *k).collect();
-            let label = if same.len() == 1 {
-                same[0].name.clone()
-            } else {
-                format!("{k:?}(まとめ)")
-            };
+            let label = kind_label(k);
             let truth: Vec<NoteSpan> = same.iter().flat_map(|p| p.truth.iter().copied()).collect();
             let est = to_spans(est);
             if let Ok(dir) = std::env::var("RECON_DUMP") {
@@ -1637,7 +1651,7 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
             }
             let f1 = mir_eval::note_f(&truth, &est, false).f;
             let f2 = mir_eval::note_f(&truth, &est, true).f;
-            for key in [format!("{label} all"), format!("{label} {sound}")] {
+            for key in keys(&label) {
                 rows.entry((key, "FromMix".into()))
                     .or_default()
                     .push((f1, f2));
@@ -1660,7 +1674,7 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
             let est = to_spans(&est);
             let f1 = mir_eval::note_f(&truth, &est, false).f;
             let f2 = mir_eval::note_f(&truth, &est, true).f;
-            for key in ["Mix all".to_owned(), format!("Mix {sound}")] {
+            for key in keys("Mix") {
                 rows.entry((key, "BasicPitch".into()))
                     .or_default()
                     .push((f1, f2));
@@ -1726,11 +1740,7 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
                 }
                 for (k, src, method) in jobs {
                     let same: Vec<&PartCase> = c.parts.iter().filter(|p| p.kind == k).collect();
-                    let label = if same.len() == 1 {
-                        same[0].name.clone()
-                    } else {
-                        format!("{k:?}(まとめ)")
-                    };
+                    let label = kind_label(&k);
                     let truth: Vec<NoteSpan> =
                         same.iter().flat_map(|p| p.truth.iter().copied()).collect();
                     let Ok(est) = recon::transcribe_part(
@@ -1745,7 +1755,7 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
                     let est = to_spans(&est);
                     let f1 = mir_eval::note_f(&truth, &est, false).f;
                     let f2 = mir_eval::note_f(&truth, &est, true).f;
-                    for key in [format!("{label} all"), format!("{label} {sound}")] {
+                    for key in keys(&label) {
                         rows.entry((key, method.clone()))
                             .or_default()
                             .push((f1, f2));
@@ -1779,10 +1789,7 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
                             t.sort_by(f64::total_cmp);
                             let hit = mir_eval::match_events(&t, &e, 0.05);
                             let f = 2.0 * hit as f64 / (t.len() + e.len()) as f64;
-                            for key in [
-                                format!("Drums {class} all"),
-                                format!("Drums {class} {sound}"),
-                            ] {
+                            for key in keys(&format!("Drums {class}")) {
                                 rows.entry((key, "Sep".into())).or_default().push((f, f));
                             }
                         }
