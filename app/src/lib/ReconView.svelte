@@ -3,7 +3,7 @@
   // 1. 格子: 参考曲の波形に推定した拍・小節線・和音を重ね、ずれていれば小節頭・拍の取り方・拍子を直して曲に使う
   // 2. パート: 起こすパート(歌・ベース・ピアノ・ギター・その他)と音の素(参考曲そのまま / 分けた音のファイル)を選んで起こす
   // 3. 確かめる: 重ねて聴く・遅く聴く・タイムラインで直す。小節ごとの和音(コード譜)も見られる
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
   import * as api from "./api";
@@ -25,8 +25,13 @@
   const refTrack = $derived(referenceTrack(project));
   const clipId = $derived(referenceClipId(project));
 
-  // ---- 手順 ----
+  // ---- 手順と起こし方 ----
   let step = $state<1 | 2 | 3>(1);
+  /** new = 白紙から(曲のテンポ・拍子を参考曲に合わせて起こす)、import = 今の曲に一部を取り込む(今の曲のテンポのまま) */
+  const songHasNotes = (p: Project) =>
+    p.tracks.some((t) => !t.reference && t.clips.some((c) => c.kind === "midi" && c.notes.length > 0));
+  // 開いたときの曲で決める(音のある曲なら取り込む)
+  let mode = $state<"new" | "import">(untrack(() => (songHasNotes(project) ? "import" : "new")));
 
   // ---- 1. 格子 ----
   let opts = $state<api.GridOptions>({ downbeat_shift: 0, tempo_factor: 1, beats_per_bar: null, no_pickup: null });
@@ -222,6 +227,36 @@
   let quantize = $state(0.5);
   let transcribing = $state(false);
 
+  // ---- 今の曲に取り込む ----
+  let imp = $state<api.ReconImport>({ from_bar: 1, to_bar: 8, at_bar: 1, transpose: null, track_id: null });
+  const midiTracks = $derived(project.tracks.filter((t) => t.kind === "midi"));
+  const onePart = $derived(rows.filter((r) => r.on).length === 1);
+  $effect(() => {
+    if (!onePart && imp.track_id) imp.track_id = null;
+  });
+  async function importParts() {
+    if (!clipId) return;
+    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source }));
+    if (!parts.length) return;
+    transcribing = true;
+    try {
+      const res = await api.reconImport(clipId, $state.snapshot(opts), parts, quantize, $state.snapshot(imp));
+      const t = res.transpose === 0 ? tr("移調なし", "no transposition") : tr(`${res.transpose > 0 ? "+" : ""}${res.transpose} 半音移調`, `transposed ${res.transpose > 0 ? "+" : ""}${res.transpose} semitones`);
+      showToast(
+        "ok",
+        tr(
+          `取り込みました(${t}): ${res.parts.map((p) => `${p.name} ${p.notes} 音`).join("・")}(取り消しで戻せます)`,
+          `Imported (${t}): ${res.parts.map((p) => `${p.name} ${plural(p.notes, "note")}`).join(", ")} (undo to revert)`,
+        ),
+      );
+      step = 3;
+    } catch (e) {
+      showError(tr("取り込めませんでした", "Couldn't import"), e);
+    } finally {
+      transcribing = false;
+    }
+  }
+
   // ---- 分離ツール(利用者が入れた Demucs) ----
   let sepAvailable = $state<boolean | null>(null);
   let separating = $state(false);
@@ -293,6 +328,24 @@
     </div>
     {#if refTrack}
       <span class="rv-ref" title={ws?.summary ?? ""}><Icon name="disc-3" size={14} />{refTrack.name}</span>
+      <div class="modes" role="group" aria-label={tr("起こし方", "Mode")}>
+        <button
+          class="btn sm"
+          class:on={mode === "new"}
+          aria-pressed={mode === "new"}
+          onclick={() => (mode = "new")}
+          title={tr("曲のテンポ・拍子を参考曲に合わせて、パートを丸ごと起こす(白紙から作るとき)", "Fit the song's tempo and meter to the reference and transcribe whole parts (starting from scratch)")}
+          >{tr("曲を合わせて起こす", "Fit the song")}</button
+        >
+        <button
+          class="btn sm"
+          class:on={mode === "import"}
+          aria-pressed={mode === "import"}
+          onclick={() => (mode = "import")}
+          title={tr("今の曲のテンポ・拍子・調のまま、参考曲の一部の小節・パートを取り込む(作曲の途中で)", "Import some bars and parts of the reference into the current song, keeping its tempo, meter and key")}
+          >{tr("今の曲に取り込む", "Import into this song")}</button
+        >
+      </div>
       <div class="steps" role="tablist" aria-label={tr("手順", "Steps")}>
         {#each [[1, tr("格子", "Grid")], [2, tr("パート", "Parts")], [3, tr("確かめる", "Check")]] as [n, label] (n)}
           <button role="tab" class:on={step === n} aria-selected={step === n} onclick={() => (step = n as 1 | 2 | 3)}
@@ -395,9 +448,19 @@
           >
         </div>
         <label class="check"><input type="checkbox" bind:checked={withSections} />{tr("区間の印(イントロ・サビなど)も置く", "Also place section markers (intro, chorus…)")}</label>
-        <button class="btn primary go" onclick={applyGrid} disabled={!ws || applying || loading}
-          >{#if applying}<Icon name="loader-circle" />{:else}<Icon name="check" />{/if}{tr("この格子を曲に使う", "Use this grid for the song")}</button
-        >
+        {#if mode === "new"}
+          <button class="btn primary go" onclick={applyGrid} disabled={!ws || applying || loading}
+            >{#if applying}<Icon name="loader-circle" />{:else}<Icon name="check" />{/if}{tr("この格子を曲に使う", "Use this grid for the song")}</button
+          >
+        {:else}
+          <button
+            class="btn primary go"
+            onclick={() => (step = 2)}
+            disabled={!ws || loading}
+            title={tr("今の曲のテンポ・拍子は変えません。小節の番号を取り込む範囲の指定に使います", "The song's tempo and meter stay as they are; bar numbers are used to choose what to import")}
+            ><Icon name="check" />{tr("この格子で次へ", "Next with this grid")}</button
+          >
+        {/if}
       </div>
     </div>
   {:else if step === 2}
@@ -449,6 +512,58 @@
           {/each}
         </tbody>
       </table>
+      {#if mode === "import"}
+        <div class="import-box">
+          <label
+            >{tr("参考曲の", "Reference bars")}
+            <input type="number" min="1" bind:value={imp.from_bar} aria-label={tr("参考曲の最初の小節", "First reference bar")} />〜<input
+              type="number"
+              min="1"
+              bind:value={imp.to_bar}
+              aria-label={tr("参考曲の最後の小節", "Last reference bar")}
+            />{tr("小節を", "")}</label
+          >
+          <label
+            >{tr("今の曲の", "to bar")}
+            <input type="number" min="1" bind:value={imp.at_bar} aria-label={tr("置き始める小節", "Bar to place at")} />{tr("小節目から", "of this song")}</label
+          >
+          <label
+            >{tr("移調", "Transpose")}
+            <select
+              value={imp.transpose === null ? "auto" : String(imp.transpose)}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                imp.transpose = v === "auto" ? null : Number(v);
+              }}
+              aria-label={tr("移調", "Transpose")}
+            >
+              <option value="auto">{tr("今の曲の調へ(自動)", "To this song's key (auto)")}</option>
+              {#each [-6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6] as n (n)}
+                <option value={String(n)}>{n === 0 ? tr("そのまま", "None") : `${n > 0 ? "+" : ""}${n}`}</option>
+              {/each}
+            </select></label
+          >
+          <label
+            >{tr("置き先", "Destination")}
+            <select
+              value={imp.track_id ?? ""}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                imp.track_id = v || null;
+              }}
+              disabled={!onePart}
+              title={onePart ? "" : tr("パートを 1 つにすると、今あるトラックに置けます", "Choose one part to place it on an existing track")}
+              aria-label={tr("置き先", "Destination")}
+            >
+              <option value="">{tr("新しいトラック", "New track")}</option>
+              {#each midiTracks as t (t.id)}
+                <option value={t.id}>{t.name}</option>
+              {/each}
+            </select></label
+          >
+          <span class="dim">{tr("今の曲のテンポ・拍子は変えず、拍の位置で写します", "The song's tempo and meter stay; notes are placed by beat position")}</span>
+        </div>
+      {/if}
       <div class="controls">
         <div class="group seg" role="group" aria-label={tr("格子への寄せ方", "Snap to grid")}>
           <span class="glabel">{tr("16 分の格子へ", "Snap to 16ths")}</span>
@@ -456,9 +571,15 @@
           <button class="btn sm" class:on={quantize === 0.5} onclick={() => (quantize = 0.5)} title={tr("半分だけ寄せる(揺れを少し残す)", "Halfway (keeps some feel)")}>{tr("半分", "Half")}</button>
           <button class="btn sm" class:on={quantize === 1} onclick={() => (quantize = 1)} title={tr("格子にそろえる", "Fully on the grid")}>{tr("そろえる", "Full")}</button>
         </div>
-        <button class="btn primary go" onclick={transcribe} disabled={transcribing || !rows.some((r) => r.on)}
-          >{#if transcribing}<Icon name="loader-circle" />{tr("起こしています…", "Transcribing…")}{:else}<Icon name="wand-sparkles" />{tr("起こす", "Transcribe")}{/if}</button
-        >
+        {#if mode === "new"}
+          <button class="btn primary go" onclick={transcribe} disabled={transcribing || !rows.some((r) => r.on)}
+            >{#if transcribing}<Icon name="loader-circle" />{tr("起こしています…", "Transcribing…")}{:else}<Icon name="wand-sparkles" />{tr("起こす", "Transcribe")}{/if}</button
+          >
+        {:else}
+          <button class="btn primary go" onclick={importParts} disabled={transcribing || !rows.some((r) => r.on) || imp.to_bar < imp.from_bar}
+            >{#if transcribing}<Icon name="loader-circle" />{tr("取り込んでいます…", "Importing…")}{:else}<Icon name="wand-sparkles" />{tr("取り込む", "Import")}{/if}</button
+          >
+        {/if}
       </div>
     </div>
   {:else}
@@ -697,6 +818,29 @@
 
   .go {
     margin-left: auto;
+  }
+
+  .modes {
+    display: flex;
+    gap: 4px;
+  }
+
+  .import-box {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+    font-size: var(--fs-sm);
+  }
+
+  .import-box label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .import-box input[type="number"] {
+    width: 64px;
   }
 
   .sep-box {

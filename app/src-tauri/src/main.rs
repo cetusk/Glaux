@@ -714,7 +714,11 @@ async fn reference_skeleton(state: State<'_, AppState>, clip_id: String) -> Resu
             )?;
             let sk =
                 glaux_mcp::recon::analyze(&sound.frames, sound.sample_rate, Default::default())?;
-            Ok(glaux_mcp::recon::skeleton_json(&sk, &sound.label))
+            Ok(glaux_mcp::recon::skeleton_json(
+                &sk,
+                &sound.label,
+                Some((&sound.frames, sound.sample_rate)),
+            ))
         })
         .await
         .map_err(|e| e.to_string())?
@@ -796,6 +800,52 @@ async fn recon_apply_grid(
             .await?
             .map_err(|e| e.to_string())?;
         Ok(json!({ "project_version": m.project_version }))
+    })
+    .await
+}
+
+/// 作業場: 参考曲の一部のパートを今の曲に取り込む(今の曲のテンポ・拍子は変えず、拍の位置で写す。履歴 1 件)
+#[tauri::command]
+async fn recon_import(
+    state: State<'_, AppState>,
+    clip_id: String,
+    opts: Option<glaux_mcp::recon::GridOptions>,
+    parts: Vec<glaux_mcp::recon::PartRequest>,
+    quantize: Option<f64>,
+    import: glaux_mcp::recon::ImportOptions,
+) -> Result<Value, String> {
+    guard::catching("recon_import", async move {
+        if parts.is_empty() {
+            return Err(t("取り込むパートを選んでください", "Choose the parts to import").into());
+        }
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let n = parts.len();
+        let (cmds, counts, transpose) = tokio::task::spawn_blocking(move || {
+            glaux_mcp::recon::import_commands(
+                &project,
+                std::path::Path::new(&dir),
+                &cid,
+                &opts.unwrap_or_default(),
+                &parts,
+                quantize.unwrap_or(0.5),
+                &import,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let label = glaux_core::tr!("参考曲から {n} パートを取り込む", "Import {n} parts from the reference");
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "project_version": m.project_version,
+            "transpose": transpose,
+            "parts": counts.iter().map(|(name, notes)| json!({"name": name, "notes": notes})).collect::<Vec<_>>(),
+        }))
     })
     .await
 }
@@ -4904,6 +4954,7 @@ fn main() -> Result<()> {
             recon_apply_grid,
             recon_transcribe,
             recon_separator_available,
+            recon_import,
             recon_separate,
             ab_prepare,
             ab_set_side,

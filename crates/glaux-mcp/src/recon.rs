@@ -1137,7 +1137,7 @@ pub fn workspace_json(sk: &Skeleton, plan: &GridPlan, no_pickup: bool) -> serde_
         "key": sk.key,
         "tuning_cents": sk.tuning_cents,
         "groove": sk.groove,
-        "summary": skeleton_json(sk, "")["summary"],
+        "summary": skeleton_json(sk, "", None)["summary"],
     })
 }
 
@@ -1260,8 +1260,25 @@ pub fn transcribe_commands(
     let mut cmds = grid_commands(project, &plan)?;
     let sf = glaux_engine::sf2::default_dir().join(crate::models::SOUNDFONT_FILE);
     let soundfont = sf.is_file().then_some(crate::models::SOUNDFONT_FILE);
+    let notes = transcribe_requests(&sk, &mix, sr, parts)?;
     let mut counts = Vec::new();
-    // 参考曲そのものから起こすパートは、1 回の譜起こしを声部に分ける(旋律 = 上、ベース = 下、和音 = 残り)
+    for (p, notes) in parts.iter().zip(&notes) {
+        counts.push((p.spec.name.clone(), notes.len()));
+        cmds.extend(part_track_commands(
+            &plan, &p.spec, notes, quantize, soundfont,
+        ));
+    }
+    Ok((cmds, counts))
+}
+
+/// 頼まれたパートを起こす(音の素ごとに)。参考曲そのものから起こすパートは、1 回の譜起こしを声部に分ける
+/// (旋律 = 上、ベース = 下、和音 = 残り)。時刻は参考曲の素材の秒
+pub fn transcribe_requests(
+    sk: &Skeleton,
+    mix: &[f32],
+    sr: f32,
+    parts: &[PartRequest],
+) -> Result<Vec<Vec<RawNote>>, String> {
     let from_mix: Vec<PartKind> = parts
         .iter()
         .filter(|p| p.source.is_none())
@@ -1270,11 +1287,12 @@ pub fn transcribe_commands(
     let mut mix_parts = if from_mix.is_empty() {
         Vec::new()
     } else {
-        transcribe_mix_parts(&mix, sr, &from_mix, sk.tuning_cents)?
+        transcribe_mix_parts(mix, sr, &from_mix, sk.tuning_cents)?
     }
     .into_iter();
-    for p in parts {
-        let notes = match &p.source {
+    parts
+        .iter()
+        .map(|p| match &p.source {
             Some(path) => {
                 let s = crate::sound::load_file(std::path::Path::new(path))?;
                 transcribe_part(
@@ -1283,16 +1301,199 @@ pub fn transcribe_commands(
                     p.spec.kind,
                     p.spec.kind.default_method(),
                     sk.tuning_cents,
-                )?
+                )
             }
-            None => mix_parts.next().unwrap_or_default(),
-        };
-        counts.push((p.spec.name.clone(), notes.len()));
-        cmds.extend(part_track_commands(
-            &plan, &p.spec, &notes, quantize, soundfont,
-        ));
+            None => Ok(mix_parts.next().unwrap_or_default()),
+        })
+        .collect()
+}
+
+// ---- 今の曲に取り込む(段階 3) -------------------------------------------------
+
+/// 取り込み方
+#[derive(Clone, Debug, serde::Deserialize, Serialize)]
+pub struct ImportOptions {
+    /// 参考曲の小節の範囲(1 始まり、両端を含む。格子の小節の番号)
+    pub from_bar: u32,
+    pub to_bar: u32,
+    /// 今の曲のどの小節から置くか(1 始まり)
+    pub at_bar: u32,
+    /// 移調(半音)。None なら今の曲の調へ合わせる(今の曲に音が無ければそのまま)
+    #[serde(default)]
+    pub transpose: Option<i32>,
+    /// 置き先のトラック(パートが 1 つのとき。None なら新しいトラック)
+    #[serde(default)]
+    pub track_id: Option<glaux_core::TrackId>,
+}
+
+/// 参考曲の素材の秒 → 曲の拍(1 小節目の頭を 0。格子の拍を線形にたどり、端の外は端の拍の長さで延ばす)
+fn song_beat(plan: &GridPlan, t: f64) -> f64 {
+    let b = &plan.beats;
+    let n = b.len();
+    let idx = if n < 2 {
+        0.0
+    } else if t <= b[0] {
+        (t - b[0]) / (b[1] - b[0])
+    } else if t >= b[n - 1] {
+        (n - 1) as f64 + (t - b[n - 1]) / (b[n - 1] - b[n - 2])
+    } else {
+        let i = b.partition_point(|x| *x <= t) - 1;
+        i as f64 + (t - b[i]) / (b[i + 1] - b[i])
+    };
+    idx + plan.lead_beats as f64
+}
+
+/// 参考曲の調を今の曲の調へ移す半音(-5〜+6)。長調と短調が違えば、平行調(短調なら 3 半音下が長調の主音)で合わせる
+pub fn auto_transpose(sk: &Skeleton, project: &glaux_core::Project) -> i32 {
+    let (Some(r), Some(k)) = (
+        sk.key.as_ref(),
+        glaux_core::harmony::analyze(project, None, None).key,
+    ) else {
+        return 0;
+    };
+    let song_minor = k.mode == "minor";
+    // 今の曲の、参考曲と同じ旋法の主音
+    let target = match (r.minor, song_minor) {
+        (true, false) => (k.tonic + 9) % 12,
+        (false, true) => (k.tonic + 3) % 12,
+        _ => k.tonic,
+    };
+    let d = (target as i32 - r.tonic as i32).rem_euclid(12);
+    if d > 6 {
+        d - 12
+    } else {
+        d
     }
-    Ok((cmds, counts))
+}
+
+/// 参考曲の一部のパートを今の曲に取り込むコマンド(今の曲のテンポ・拍子は変えない。拍の位置で写す)。
+/// (コマンド, パートごとの (名前, 音符の数), 移調した半音)
+pub fn import_commands(
+    project: &glaux_core::Project,
+    dir: &std::path::Path,
+    clip_id: &glaux_core::ClipId,
+    grid: &GridOptions,
+    parts: &[PartRequest],
+    quantize: f64,
+    import: &ImportOptions,
+) -> Result<(Vec<glaux_core::Command>, Vec<(String, usize)>, i32), String> {
+    use glaux_core::{
+        Clip, ClipContent, ClipId, Command, Device, PluginSource, Tick, Track, TrackId, TrackKind,
+    };
+    if import.to_bar < import.from_bar || import.from_bar == 0 || import.at_bar == 0 {
+        return Err("小節の範囲が正しくありません(from_bar ≦ to_bar、1 始まり)".to_owned());
+    }
+    if import.track_id.is_some() && parts.len() != 1 {
+        return Err("置き先のトラックを指定するときは、パートを 1 つにしてください".to_owned());
+    }
+    let (sk, mix, sr) = clip_skeleton(project, dir, clip_id)?;
+    let (plan, _) = resolve_grid(&sk, &mix, sr, grid).ok_or("拍が少なすぎて格子を作れません")?;
+    let bpb = plan.beats_per_bar as f64;
+    let (b0, b1) = (
+        (import.from_bar - 1) as f64 * bpb,
+        import.to_bar as f64 * bpb,
+    );
+    // 置き先の小節の頭(今の曲の拍子で。曲の終わりより先は最後の小節の長さで延ばす)
+    let ppq = glaux_core::time::PPQ as f64;
+    let grid_bars =
+        glaux_core::arrange::bar_grid(project, (import.at_bar as u64 + 1) * 4 * 4 * ppq as u64);
+    let at = match grid_bars.get(import.at_bar as usize - 1) {
+        Some(&(t, _)) => t,
+        None => {
+            let (t, len) = grid_bars.last().copied().unwrap_or((0, 4 * ppq as u64));
+            t + len * (import.at_bar as u64 - grid_bars.len() as u64)
+        }
+    };
+    let transpose = import
+        .transpose
+        .unwrap_or_else(|| auto_transpose(&sk, project));
+    let length = ((b1 - b0) * ppq).round() as u64;
+    let q = quantize.clamp(0.0, 1.0);
+    let step = ppq / 4.0;
+    let snap = |t: f64| -> f64 {
+        let g = (t / step).round() * step;
+        t + (g - t) * q
+    };
+    let sf = glaux_engine::sf2::default_dir().join(crate::models::SOUNDFONT_FILE);
+    let soundfont = sf.is_file().then_some(crate::models::SOUNDFONT_FILE);
+    let notes = transcribe_requests(&sk, &mix, sr, parts)?;
+    let mut cmds = Vec::new();
+    let mut counts = Vec::new();
+    for (p, raw) in parts.iter().zip(&notes) {
+        let mut out: Vec<glaux_core::Note> = raw
+            .iter()
+            .filter_map(|n| {
+                let (a, e) = (song_beat(&plan, n.start), song_beat(&plan, n.end));
+                // 範囲の頭より前に始まる音は除き、範囲の終わりで切る
+                if a < b0 - 0.05 || a >= b1 {
+                    return None;
+                }
+                let pos = snap((a - b0).max(0.0) * ppq);
+                let end = snap((e.min(b1) - b0) * ppq).max(pos + if q > 0.5 { step } else { 30.0 });
+                let pitch = (n.pitch as i32 + transpose).clamp(0, 127) as u8;
+                Some(glaux_core::Note {
+                    locked: false,
+                    id: glaux_core::NoteId::new(),
+                    pos: Tick(pos.round() as u64),
+                    dur: Tick((end - pos).round().max(1.0) as u64),
+                    pitch,
+                    vel: n.vel.clamp(1, 127),
+                    articulation: Default::default(),
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                    vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
+                    condition: None,
+                })
+            })
+            .collect();
+        out.sort_by_key(|n| (n.pos, n.pitch));
+        out.dedup_by(|b, a| a.pos == b.pos && a.pitch == b.pitch);
+        counts.push((p.spec.name.clone(), out.len()));
+        let name = glaux_core::tr!(
+            "{}(参考曲 {}〜{} 小節)",
+            "{} (reference bars {}–{})",
+            p.spec.name,
+            import.from_bar,
+            import.to_bar
+        );
+        let mut clip = Clip::new_midi(ClipId::new(), name.clone(), Tick(at), Tick(length.max(1)));
+        if let ClipContent::Midi { notes, .. } = &mut clip.content {
+            *notes = out;
+        }
+        let tid = match &import.track_id {
+            Some(t) => {
+                if project.track(t).is_none_or(|t| t.kind != TrackKind::Midi) {
+                    return Err(format!("置き先は MIDI トラックにしてください: {t}"));
+                }
+                t.clone()
+            }
+            None => {
+                let tid = TrackId::new();
+                let mut track = Track::new(tid.clone(), p.spec.name.clone(), TrackKind::Midi);
+                track.device = Some(match (soundfont, p.spec.program) {
+                    (Some(sf), Some(pr)) => Device {
+                        source: PluginSource::Sf2 {
+                            soundfont: sf.to_owned(),
+                            bank: 0,
+                            preset: pr,
+                        },
+                        params: Default::default(),
+                    },
+                    _ => Device::builtin(match p.spec.kind {
+                        PartKind::Bass => "subtractive",
+                        PartKind::Melody => "fm",
+                        PartKind::Poly => "pluck",
+                    }),
+                });
+                cmds.push(Command::AddTrack { track, index: None });
+                tid
+            }
+        };
+        cmds.push(Command::AddClip { track: tid, clip });
+    }
+    Ok((cmds, counts, transpose))
 }
 
 /// 小節(`bounds` の (開始, 終了) 秒)ごとの和音の名前(区間に 1/8 以上かかる和音を順に。"C G/B")。和音が無ければ "N.C."
@@ -1340,11 +1541,29 @@ fn bars_of(sk: &Skeleton) -> Vec<(usize, f64, f64)> {
 }
 
 /// 曲の骨組みを AI 向けの JSON にする(小節ごとの和音・テンポの変化を小節と拍の位置で)
-pub fn skeleton_json(sk: &Skeleton, source: &str) -> serde_json::Value {
+/// `audio`(解析した音)を渡すと、小節の番号を作業場の格子と同じ数え方にする(弱起の有無を音から決める)
+pub fn skeleton_json(
+    sk: &Skeleton,
+    source: &str,
+    audio: Option<(&[f32], f32)>,
+) -> serde_json::Value {
     use serde_json::json;
     let r2 = |v: f64| (v * 100.0).round() / 100.0;
     let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
-    let bars = bars_of(sk);
+    let grid = audio.and_then(|(f, sr)| resolve_grid(sk, f, sr, &GridOptions::default()));
+    let bars: Vec<(usize, f64, f64)> = match &grid {
+        Some((plan, _)) => {
+            let g = grid_bars(plan);
+            g.iter()
+                .enumerate()
+                .map(|(k, &(n, t))| {
+                    let end = g.get(k + 1).map_or(sk.duration_sec, |b| b.1);
+                    (n as usize, t.max(0.0), end)
+                })
+                .collect()
+        }
+        None => bars_of(sk),
+    };
     let bounds: Vec<(f64, f64)> = bars.iter().map(|b| (b.1, b.2)).collect();
     let names = bar_chord_names(&sk.chords, &bounds);
     // 時刻 → (小節, 拍)
@@ -1410,6 +1629,7 @@ pub fn skeleton_json(sk: &Skeleton, source: &str) -> serde_json::Value {
         "bpm": sk.bpm,
         "beats_per_bar": sk.beats_per_bar,
         "first_downbeat_sec": sk.downbeats.first().map(|d| r3(*d)),
+        "no_pickup": grid.as_ref().map(|g| g.1),
         "tuning_cents": sk.tuning_cents,
         "key": sk.key,
         "tempo_map": tempo,
@@ -1791,6 +2011,82 @@ mod tests {
         // 1 拍 = 960 tick。0.02〜0.49 秒は 1 拍目の 1 拍分、0.51〜0.74 秒は 2 拍目の 8 分音符
         assert_eq!((n[0].pos.0, n[0].dur.0), (0, 960));
         assert_eq!((n[1].pos.0, n[1].dur.0), (960, 480));
+    }
+
+    #[test]
+    fn reference_times_map_to_song_beats() {
+        let beats: Vec<f64> = (0..40).map(|i| 1.3 + i as f64 * 0.5).collect();
+        let sk = skeleton(beats, vec![2.3, 4.3]);
+        // 弱起なし: 2.3 秒(最初の小節頭)が 0 拍、2.55 秒は 0.5 拍
+        let plan = grid_plan(
+            &sk,
+            &GridOptions {
+                no_pickup: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(song_beat(&plan, 2.3).abs() < 1e-9);
+        assert!((song_beat(&plan, 2.55) - 0.5).abs() < 1e-9);
+        assert!((song_beat(&plan, 6.3) - 8.0).abs() < 1e-9);
+        // 前の拍の外側(1.3 秒より前)は最初の拍の長さで延ばす
+        assert!((song_beat(&plan, 1.05) - (-2.5)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn transpose_follows_the_song_key_and_mode() {
+        use glaux_core::{
+            Clip, ClipContent, ClipId, Note, NoteId, Tick, Track, TrackId, TrackKind,
+        };
+        // 今の曲: G 長調の音階
+        let mut p = glaux_core::Project::new("t");
+        let mut t = Track::new(TrackId::new(), "m", TrackKind::Midi);
+        let mut c = Clip::new_midi(ClipId::new(), "c", Tick(0), Tick(3840 * 4));
+        if let ClipContent::Midi { notes, .. } = &mut c.content {
+            for (i, pitch) in [
+                55u8, 59, 62, 67, 66, 64, 62, 60, 59, 57, 55, 62, 67, 71, 74, 79,
+            ]
+            .iter()
+            .enumerate()
+            {
+                notes.push(Note {
+                    locked: false,
+                    id: NoteId::new(),
+                    pos: Tick(i as u64 * 960),
+                    dur: Tick(900),
+                    pitch: *pitch,
+                    vel: 90,
+                    articulation: Default::default(),
+                    pitch_curve: vec![],
+                    glide_ms: None,
+                    vibrato: None,
+                    volume_curve: vec![],
+                    brightness_curve: vec![],
+                    condition: None,
+                });
+            }
+        }
+        t.clips.push(c);
+        p.tracks.push(t);
+        let mut sk = skeleton((0..10).map(|i| i as f64 * 0.5).collect(), vec![0.0]);
+        // 参考曲が C 長調 → 7 半音上(G)ではなく 5 半音下
+        sk.key = Some(KeyGuess {
+            tonic: 0,
+            minor: false,
+            name: "C major".into(),
+            confidence: 1.0,
+        });
+        assert_eq!(auto_transpose(&sk, &p), -5);
+        // 参考曲が A 短調 → G 長調の平行調(E 短調)へ: 5 半音下
+        sk.key = Some(KeyGuess {
+            tonic: 9,
+            minor: true,
+            name: "A minor".into(),
+            confidence: 1.0,
+        });
+        assert_eq!(auto_transpose(&sk, &p), -5);
+        // 今の曲に音が無ければそのまま
+        assert_eq!(auto_transpose(&sk, &glaux_core::Project::new("e")), 0);
     }
 
     #[test]

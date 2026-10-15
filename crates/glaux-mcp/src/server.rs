@@ -630,6 +630,11 @@ pub struct TranscribeReferenceParams {
     /// 区間の印(イントロ・サビなど)も置く(既定 true)
     #[serde(default)]
     pub sections: Option<bool>,
+    /// 今の曲に取り込む(曲のテンポ・拍子は変えず、拍の位置で写す): from_bar・to_bar(参考曲の小節、両端を含む)・
+    /// at_bar(今の曲の置き始めの小節)・transpose(半音。省略で今の曲の調へ)・track_id(パートが 1 つのときの置き先。省略で新しいトラック)
+    #[serde(default)]
+    #[schemars(with = "Option<serde_json::Value>")]
+    pub into_song: Option<crate::recon::ImportOptions>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -6895,7 +6900,11 @@ impl GlauxServer {
         let v = tokio::task::spawn_blocking(move || -> Result<Value, String> {
             let sound = crate::sound::load(&project, std::path::Path::new(&dir), &source)?;
             let sk = crate::recon::analyze(&sound.frames, sound.sample_rate, Default::default())?;
-            Ok(crate::recon::skeleton_json(&sk, &sound.label))
+            Ok(crate::recon::skeleton_json(
+                &sk,
+                &sound.label,
+                Some((&sound.frames, sound.sample_rate)),
+            ))
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -6946,24 +6955,40 @@ impl GlauxServer {
         let quantize = p.quantize.unwrap_or(0.5);
         let sections = p.sections.unwrap_or(true);
         let n = parts.len();
-        let (cmds, counts) = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            let dir = std::path::Path::new(&dir);
-            let (mut cmds, counts) =
-                crate::recon::transcribe_commands(&project, dir, &cid, &opts, &parts, quantize)?;
-            if sections {
-                let (sk, frames, sr) = crate::recon::clip_skeleton(&project, dir, &cid)?;
-                if let Some((plan, _)) = crate::recon::resolve_grid(&sk, &frames, sr, &opts) {
-                    cmds.extend(crate::recon::section_commands(&frames, sr, &plan));
+        let into = p.into_song;
+        let importing = into.is_some();
+        let (cmds, counts, transpose) =
+            tokio::task::spawn_blocking(move || -> Result<_, String> {
+                let dir = std::path::Path::new(&dir);
+                if let Some(imp) = &into {
+                    return crate::recon::import_commands(
+                        &project, dir, &cid, &opts, &parts, quantize, imp,
+                    );
                 }
-            }
-            Ok((cmds, counts))
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-        let label = glaux_core::tr!(
-            "参考曲から {n} パートを起こす",
-            "Transcribe {n} parts from the reference"
-        );
+                let (mut cmds, counts) = crate::recon::transcribe_commands(
+                    &project, dir, &cid, &opts, &parts, quantize,
+                )?;
+                if sections {
+                    let (sk, frames, sr) = crate::recon::clip_skeleton(&project, dir, &cid)?;
+                    if let Some((plan, _)) = crate::recon::resolve_grid(&sk, &frames, sr, &opts) {
+                        cmds.extend(crate::recon::section_commands(&frames, sr, &plan));
+                    }
+                }
+                Ok((cmds, counts, 0))
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+        let label = if importing {
+            glaux_core::tr!(
+                "参考曲から {n} パートを取り込む",
+                "Import {n} parts from the reference"
+            )
+        } else {
+            glaux_core::tr!(
+                "参考曲から {n} パートを起こす",
+                "Transcribe {n} parts from the reference"
+            )
+        };
         let author = self.author(&ctx);
         let (entry_id, m) = self
             .apply_checked(
@@ -6978,6 +7003,9 @@ impl GlauxServer {
             .iter()
             .map(|(name, notes)| json!({"name": name, "notes": notes}))
             .collect::<Vec<_>>());
+        if importing {
+            out["transpose"] = json!(transpose);
+        }
         Ok(JsonText(out))
     }
 

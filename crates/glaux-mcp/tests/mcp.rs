@@ -6640,6 +6640,56 @@ async fn transcribe_reference_fits_the_grid_and_adds_part_tracks() {
     )
     .await;
     assert_eq!(r.is_error, Some(true));
+
+    // 今の曲に取り込む: テンポは変えず、参考曲の 2〜3 小節を 5 小節目へ、2 半音上げて既存のトラックに
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "テンポ", "commands": [{ "op": "set_tempo", "events": [{ "tick": 0, "bpm": 140.0 }] }] }),
+        )
+        .await,
+    );
+    let bass_id = bass.id.to_string();
+    let v = ok_json(
+        &call(
+            &fx,
+            "transcribe_reference",
+            json!({
+                "clip_id": clip_id,
+                "parts": [{"name": "Bass", "kind": "bass"}],
+                "quantize": 1.0,
+                "into_song": { "from_bar": 2, "to_bar": 3, "at_bar": 5, "transpose": 2, "track_id": bass_id },
+            }),
+        )
+        .await,
+    );
+    assert_eq!(v["transpose"], 2, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    assert_eq!(project.tempo_map.events()[0].bpm, 140.0);
+    let t = project
+        .tracks
+        .iter()
+        .find(|t| t.id.to_string() == bass_id)
+        .unwrap();
+    let clip = t
+        .clips
+        .iter()
+        .find(|c| c.start.0 == 4 * 3840)
+        .expect("5 小節目のクリップ");
+    assert_eq!(clip.length.0, 2 * 3840);
+    let notes = clip.notes().unwrap();
+    assert!(notes.len() >= 6, "{}", notes.len());
+    // A2・E3 を 2 半音上げた B2(47)・F#3(54)
+    assert!(
+        notes
+            .iter()
+            .filter(|n| n.pitch == 47 || n.pitch == 54)
+            .count()
+            * 10
+            >= notes.len() * 8
+    );
+    assert!(notes.iter().all(|n| n.pos.0 + n.dur.0 <= 2 * 3840));
 }
 
 #[tokio::test]

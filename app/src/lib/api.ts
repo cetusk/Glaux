@@ -349,6 +349,26 @@ export function reconApplyGrid(clipId: string, opts: GridOptions, sections: bool
   return invoke("recon_apply_grid", { clipId, opts, sections });
 }
 
+/** 今の曲への取り込み方(参考曲の小節の範囲・置き始めの小節・移調〈null で今の曲の調へ〉・置き先のトラック) */
+export interface ReconImport {
+  from_bar: number;
+  to_bar: number;
+  at_bar: number;
+  transpose: number | null;
+  track_id: string | null;
+}
+
+/** 参考曲の一部のパートを今の曲に取り込む(今の曲のテンポ・拍子は変えない。履歴 1 件) */
+export function reconImport(
+  clipId: string,
+  opts: GridOptions,
+  parts: ReconPart[],
+  quantize: number,
+  imp: ReconImport,
+): Promise<{ project_version: number; transpose: number; parts: { name: string; notes: number }[] }> {
+  return invoke("recon_import", { clipId, opts, parts, quantize, import: imp });
+}
+
 /** 分離ツール(利用者が入れた Demucs)がこの PC にあるか */
 export function reconSeparatorAvailable(): Promise<boolean> {
   return invoke("recon_separator_available");

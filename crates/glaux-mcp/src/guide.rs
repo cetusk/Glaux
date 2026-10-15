@@ -540,6 +540,9 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   (downbeat_shift・tempo_factor・beats_per_bar で直せる)、parts(name・kind: melody / bass / poly・program: GM の音色・source: そのパートだけを\n\
   分けた音のファイル)をトラックにする。分けた音が無いと参考曲そのものから起こすので、ほかの楽器の音も拾う(結果を確かめて直す)。\n\
   人は画面の「起こす」(作業場)でも同じことができる。起こした譜面を公開するときは編曲などの許諾が別に要ると伝える。\n\
+  作曲中の曲に一部だけ取り込むとき(「参考曲の 9〜16 小節のベースを 17 小節目に」)は into_song(from_bar・to_bar・at_bar・transpose・\n\
+  track_id)を付ける: 曲のテンポ・拍子は変えず、拍の位置で写し、省略で今の曲の調へ移す(返り値の transpose)。小節の番号は\n\
+  analyze_reference_skeleton の bars と同じ数え方(弱起の有無は no_pickup)。\n\
 - 和音・調は音声からの推定(作り込んだ曲で根音がおよそ 9 割の拍で合う。実際の録音では下がる)。目安にして、\n\
   旋律や和音の並びをそのまま写さない(借りるのは感覚。公開する曲で問題にならないように)。\n\
 - compare_with_reference: before = 参考曲、after = 自分の曲。tonal_balance の diff_db がプラスなら自分の曲の方が多い、\n\
