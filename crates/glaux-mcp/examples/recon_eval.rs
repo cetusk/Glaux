@@ -17,6 +17,8 @@
 //!   --chord M        和音の求め方(nnls〈既定〉/ perbar)
 //!   --chord-sharp X / --chord-bass X / --chord-change 小節頭,中ほど,ほか / --triads / --no-inversions
 //!                    和音の認識の設定(`glaux_engine::tonal::ChordOptions`)を変えて比べる
+//!   --separate DIR   (--parts と)曲を Demucs で 歌・ドラム・ベース・その他 に分けて起こす経路も測る(作業場の「分離ツールで分ける」と同じ割り当て。
+//!                    分けた音は DIR に置き、次からは使い回す)。旋律は歌・「その他」のどちらかに決めて起こした場合も測る
 //!   --save DIR       組み立てた曲の音声(wav)と正解(json)を書き出す(聴いて確かめる用)
 //!   --json FILE      曲ごとの結果を JSON で書き出す
 //! ```
@@ -103,6 +105,8 @@ struct Case {
     /// 分類(集計の切り口)。"style:band" / "tempo:step" など
     tags: Vec<String>,
     frames: Vec<f32>,
+    /// 左右の差((L − R) / 2。ステレオのときだけ。分離ツールにはステレオで渡す)
+    side: Option<Vec<f32>>,
     sample_rate: f32,
     truth: Truth,
     /// パートごとの正解の音符(`--parts` のとき。曲そのものから起こして測る)
@@ -679,6 +683,7 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
     let sr = 48_000.0;
     let stereo = glaux_engine::export::render_project(&song.project, sr, &bank).expect("書き出し");
     let mut frames: Vec<f32> = stereo.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
+    let mut side: Vec<f32> = stereo.chunks(2).map(|c| (c[0] - c[1]) * 0.5).collect();
     let mut tags = song.tags.clone();
 
     // 冒頭の無音
@@ -692,6 +697,9 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
         let mut v = vec![0.0; pad];
         v.extend_from_slice(&frames);
         frames = v;
+        let mut v = vec![0.0; pad];
+        v.extend_from_slice(&side);
+        side = v;
     }
     // チューニングのずれ
     let cents = if rng.chance(0.35) {
@@ -699,6 +707,11 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
         rng.range(-40.0, 40.0)
     } else {
         0.0
+    };
+    let side = if cents != 0.0 {
+        shift_tuning(&side, cents).0
+    } else {
+        side
     };
     let (frames, scale) = if cents != 0.0 {
         shift_tuning(&frames, cents)
@@ -765,6 +778,7 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
         name: format!("synth-{i:02}"),
         tags,
         frames,
+        side: Some(side),
         sample_rate: sr as f32,
         truth: Truth {
             beats,
@@ -801,12 +815,10 @@ fn project_case(dir: &Path, with_parts: bool) -> Result<Case, String> {
         glaux_engine::data::SampleBank::default().with_sf2_dir(glaux_engine::sf2::default_dir());
     bank.sync(&project, dir);
     let sr = 48_000.0f32;
-    let mono = |p: &Project| -> Result<Vec<f32>, String> {
-        let st =
-            glaux_engine::export::render_project(p, sr as f64, &bank).map_err(|e| e.to_string())?;
-        Ok(st.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect())
-    };
-    let frames = mono(&project)?;
+    let st = glaux_engine::export::render_project(&project, sr as f64, &bank)
+        .map_err(|e| e.to_string())?;
+    let frames: Vec<f32> = st.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
+    let side: Vec<f32> = st.chunks(2).map(|c| (c[0] - c[1]) * 0.5).collect();
     let tm = &project.tempo_map;
     let sec = |tick: u64| tm.tick_to_seconds(Tick(tick));
 
@@ -948,6 +960,7 @@ fn project_case(dir: &Path, with_parts: bool) -> Result<Case, String> {
         name,
         tags: vec!["sound:project".into()],
         frames,
+        side: Some(side),
         sample_rate: sr,
         truth: Truth {
             beats,
@@ -1127,6 +1140,7 @@ fn dataset_cases(dir: &Path) -> Vec<Case> {
                 .unwrap_or_default(),
             tags: vec!["set:dataset".into()],
             frames: sound.frames,
+            side: None,
             sample_rate: sound.sample_rate,
             truth: Truth {
                 beats,
@@ -1482,7 +1496,7 @@ fn main() {
     );
 
     if with_parts {
-        eval_parts(&cases);
+        eval_parts(&cases, arg("--separate").as_deref().map(Path::new));
     }
 
     if let Some(path) = arg("--json") {
@@ -1504,7 +1518,7 @@ const DRUM_CLASSES: [(&str, &[u8]); 4] = [
 
 /// パートの譜起こしを、曲そのもの(作業場の「参考曲そのまま」)から起こして測る。
 /// トラックごとに書き出した音では測らない(`PartCase` の説明)
-fn eval_parts(cases: &[Case]) {
+fn eval_parts(cases: &[Case], separate: Option<&Path>) {
     use recon::{NoteMethod, PartKind};
     // (パート, 方式) → (立ち上がりの F 値, 終わりも見た F 値) の並び
     let mut rows: BTreeMap<(String, String), Vec<(f64, f64)>> = BTreeMap::new();
@@ -1650,6 +1664,130 @@ fn eval_parts(cases: &[Case]) {
                 rows.entry((key, "BasicPitch".into()))
                     .or_default()
                     .push((f1, f2));
+            }
+        }
+        // 曲から分離ツールで分けた音から起こす(入力は曲だけから作られているのでよい)
+        if let Some(cache) = separate {
+            let work = cache.join(format!("{}-{}", c.name, c.frames.len()));
+            let names = ["vocals", "drums", "bass", "other"];
+            let stems: Option<Vec<Vec<f32>>> = if names
+                .iter()
+                .all(|n| work.join(format!("{n}.wav")).is_file())
+            {
+                names
+                    .iter()
+                    .map(|n| {
+                        glaux_engine::load_wav_mono(&work.join(format!("{n}.wav")))
+                            .ok()
+                            .map(|d| d.frames)
+                    })
+                    .collect()
+            } else {
+                match glaux_mcp::stems::separate_mid(
+                    &c.frames,
+                    c.side.as_deref(),
+                    c.sample_rate,
+                    &work,
+                ) {
+                    Ok(v) => {
+                        for (n, m) in &v {
+                            write_wav(&work.join(format!("{n}.wav")), m, c.sample_rate);
+                        }
+                        let _ = std::fs::remove_dir_all(work.join("demucs_out"));
+                        Some(v.into_iter().map(|x| x.1).collect())
+                    }
+                    Err(e) => {
+                        eprintln!("{}: 分けられません: {e}", c.name);
+                        None
+                    }
+                }
+            };
+            if let Some(stems) = stems {
+                let stem = |n: &str| &stems[names.iter().position(|x| *x == n).unwrap_or(3)];
+                // (種類, 分けた音, 名前): 作業場と同じ割り当て(旋律は歌、楽器だけの曲なら「その他」)と、
+                // 旋律を歌・「その他」のどちらかに決めて起こした場合
+                let melody_src = if recon::melody_from_other(stem("vocals"), stem("other")) {
+                    "other"
+                } else {
+                    "vocals"
+                };
+                let mut jobs: Vec<(PartKind, &str, String)> = Vec::new();
+                for k in &kinds {
+                    let src = match k {
+                        PartKind::Melody => melody_src,
+                        PartKind::Bass => "bass",
+                        _ => "other",
+                    };
+                    jobs.push((*k, src, "Sep".into()));
+                    if *k == PartKind::Melody {
+                        jobs.push((*k, "vocals", "Sep(歌)".into()));
+                        jobs.push((*k, "other", "Sep(その他)".into()));
+                    }
+                }
+                for (k, src, method) in jobs {
+                    let same: Vec<&PartCase> = c.parts.iter().filter(|p| p.kind == k).collect();
+                    let label = if same.len() == 1 {
+                        same[0].name.clone()
+                    } else {
+                        format!("{k:?}(まとめ)")
+                    };
+                    let truth: Vec<NoteSpan> =
+                        same.iter().flat_map(|p| p.truth.iter().copied()).collect();
+                    let Ok(est) = recon::transcribe_part(
+                        stem(src),
+                        c.sample_rate,
+                        k,
+                        k.default_method(),
+                        tuning,
+                    ) else {
+                        continue;
+                    };
+                    let est = to_spans(&est);
+                    let f1 = mir_eval::note_f(&truth, &est, false).f;
+                    let f2 = mir_eval::note_f(&truth, &est, true).f;
+                    for key in [format!("{label} all"), format!("{label} {sound}")] {
+                        rows.entry((key, method.clone()))
+                            .or_default()
+                            .push((f1, f2));
+                    }
+                }
+                // ドラム
+                if let Some(p) = c.parts.iter().find(|p| p.kind == PartKind::Drums) {
+                    if let Ok(est) = recon::transcribe_part(
+                        stem("drums"),
+                        c.sample_rate,
+                        PartKind::Drums,
+                        NoteMethod::Drums,
+                        0.0,
+                    ) {
+                        for (class, pitches) in DRUM_CLASSES {
+                            let mut t: Vec<f64> = p
+                                .truth
+                                .iter()
+                                .filter(|n| pitches.contains(&n.pitch))
+                                .map(|n| n.onset)
+                                .collect();
+                            if t.is_empty() {
+                                continue;
+                            }
+                            let mut e: Vec<f64> = est
+                                .iter()
+                                .filter(|n| pitches.contains(&n.pitch))
+                                .map(|n| n.start)
+                                .collect();
+                            e.sort_by(f64::total_cmp);
+                            t.sort_by(f64::total_cmp);
+                            let hit = mir_eval::match_events(&t, &e, 0.05);
+                            let f = 2.0 * hit as f64 / (t.len() + e.len()) as f64;
+                            for key in [
+                                format!("Drums {class} all"),
+                                format!("Drums {class} {sound}"),
+                            ] {
+                                rows.entry((key, "Sep".into())).or_default().push((f, f));
+                            }
+                        }
+                    }
+                }
             }
         }
         secs += t0.elapsed().as_secs_f64();

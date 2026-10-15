@@ -274,7 +274,7 @@
     try {
       const f = await api.reconSeparate(clipId);
       for (const r of rows) {
-        r.source = (r.kind === "melody" ? f.vocals : r.kind === "bass" ? f.bass : r.kind === "drums" ? f.drums : f.other) ?? null;
+        r.source = (r.kind === "melody" ? (f.melody ?? f.vocals) : r.kind === "bass" ? f.bass : r.kind === "drums" ? f.drums : f.other) ?? null;
       }
       showToast("ok", tr("参考曲を歌・ドラム・ベース・その他に分けました。それぞれの分けた音から起こします", "Separated the reference into vocals, drums, bass and other; parts will be transcribed from them"));
     } catch (e) {

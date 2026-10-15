@@ -375,7 +375,8 @@ export function reconSeparatorAvailable(): Promise<boolean> {
 }
 
 /** 参考曲を分離ツールで 4 つ(歌・ドラム・ベース・その他)に分ける(数分かかる)。分けた音のファイルのパス */
-export function reconSeparate(clipId: string): Promise<{ vocals?: string; drums?: string; bass?: string; other?: string }> {
+/** melody: 旋律を起こす音(歌があれば歌、楽器だけの曲なら「その他」) */
+export function reconSeparate(clipId: string): Promise<{ vocals?: string; drums?: string; bass?: string; other?: string; melody?: string }> {
   return invoke("recon_separate", { clipId });
 }
 

@@ -238,6 +238,21 @@ pub(crate) fn write_wav_ms(
 }
 
 /// Demucs(htdemucs)で 4 パートに分ける(ステレオの素材はステレオのまま渡して受け取る)。
+/// 曲を Demucs で 歌・ドラム・ベース・その他 に分け、それぞれの真ん中の音(モノラル)を返す(評価用。`work` は作業用のフォルダ)
+pub fn separate_mid(
+    mid: &[f32],
+    side: Option<&[f32]>,
+    sample_rate: f32,
+    work: &Path,
+) -> Result<Vec<(String, Vec<f32>)>, String> {
+    std::fs::create_dir_all(work).map_err(|e| e.to_string())?;
+    Ok(run_demucs(mid, side, sample_rate, work)?
+        .into_iter()
+        .zip(["vocals", "drums", "bass", "other"])
+        .map(|((_, m, _), n)| (n.to_owned(), m))
+        .collect())
+}
+
 pub(crate) fn run_demucs(
     range: &[f32],
     side: Option<&[f32]>,

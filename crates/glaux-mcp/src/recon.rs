@@ -1243,6 +1243,20 @@ pub struct SeparatedFiles {
     pub drums: Option<String>,
     pub bass: Option<String>,
     pub other: Option<String>,
+    /// 旋律を起こす音: 歌があれば歌、ほぼ空(楽器だけの曲)なら「その他」(旋律の楽器はそこに入る)
+    pub melody: Option<String>,
+}
+
+/// 分けた歌が「その他」よりこれ以上小さければ、歌は無いとみなす(dB)
+const NO_VOCALS_DB: f32 = 20.0;
+
+/// 旋律を「その他」から起こすか(分けた歌が「その他」より NO_VOCALS_DB 以上小さい = 楽器だけの曲)
+pub fn melody_from_other(vocals: &[f32], other: &[f32]) -> bool {
+    let rms = |x: &[f32]| -> f32 {
+        let e = x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32;
+        10.0 * (e + 1e-12).log10()
+    };
+    rms(vocals) < rms(other) - NO_VOCALS_DB
 }
 
 /// 参考曲の素材(頭から最後まで)を Demucs で 4 つ(歌・ドラム・ベース・その他)に分け、曲のフォルダの
@@ -1270,11 +1284,25 @@ pub fn separate_reference(
         .join(asset.to_string().replace(':', "_"));
     let names = ["vocals", "drums", "bass", "other"];
     let path = |n: &str| out.join(format!("{n}.wav"));
-    let files = || SeparatedFiles {
-        vocals: Some(path("vocals").to_string_lossy().into_owned()),
-        drums: Some(path("drums").to_string_lossy().into_owned()),
-        bass: Some(path("bass").to_string_lossy().into_owned()),
-        other: Some(path("other").to_string_lossy().into_owned()),
+    let files = || -> SeparatedFiles {
+        let p = |n: &str| Some(path(n).to_string_lossy().into_owned());
+        let mono = |n: &str| {
+            glaux_engine::load_wav_mono(&path(n))
+                .map(|d| d.frames)
+                .unwrap_or_default()
+        };
+        let melody = if melody_from_other(&mono("vocals"), &mono("other")) {
+            p("other")
+        } else {
+            p("vocals")
+        };
+        SeparatedFiles {
+            vocals: p("vocals"),
+            drums: p("drums"),
+            bass: p("bass"),
+            other: p("other"),
+            melody,
+        }
     };
     if names.iter().all(|n| path(n).is_file()) {
         return Ok(files());
@@ -1933,6 +1961,16 @@ pub fn grid_beats(map: &[TempoSegment], count: usize) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn melody_comes_from_other_when_there_are_no_vocals() {
+        let tone =
+            |a: f32| -> Vec<f32> { (0..4800).map(|i| a * (i as f32 * 0.05).sin()).collect() };
+        // 楽器だけの曲: 歌はほぼ空
+        assert!(melody_from_other(&tone(0.001), &tone(0.3)));
+        // 歌のある曲
+        assert!(!melody_from_other(&tone(0.2), &tone(0.3)));
+    }
 
     #[test]
     fn note_ends_follow_the_sound() {
