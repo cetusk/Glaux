@@ -127,8 +127,8 @@
     }
   }
 
-  /* とても狭いときは「参考曲」だけを残す(押すたびに参考曲 ⇄ 自分の曲。重ねるは広い窓で) */
-  @media (max-width: 900px) {
+  /* 狭いときは「参考曲」だけを残す(押すたびに参考曲 ⇄ 自分の曲。重ねるは広い窓か、作業場の「確かめる」で) */
+  @media (max-width: 1100px) {
     .ref-switch .btn.mine,
     .ref-switch .btn.both {
       display: none;

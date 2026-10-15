@@ -428,7 +428,14 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
     (
         "mix",
         "ミックスとエフェクト",
-        "- 定番の手順は apply_recipe(send_reverb・send_delay・kick_bass・vocal_chain・supersaw・parallel_drums)で 1 回で組む。\n\
+        "- analyze_audio の読み方: streaming = Spotify / Apple Music / YouTube / AES77 で再生されたときの音量の調整の予測(gain_db が\n\
+  マイナスなら下げられる。大きく下げられるなら音圧を上げすぎ。正規化される配信では、潰して大きくしても得をしない)。\n\
+  stereo: correlation = 左右の相関(1 = モノラル、負 = 逆相で危険)、low_correlation = 250Hz 以下の相関(低域は 1 近くが望ましい)、\n\
+  side_to_mid_db = 広がり、balance_db = 左右の偏り、bands = 低・中・高の帯域ごとの相関と広がり(低いほど中央、高いほど広いのがふつう)、\n\
+  negative_correlation_ratio = 逆相だった時間の割合、mono_loudness_change_db = モノラルにしたときのラウドネスの変化(無相関で約 -3、\n\
+  それより大きく下がるならモノラルで音が消えている)。tonal_balance: third_octave = 1/3 オクターブごとの量、slope_db_per_oct = 傾き\n\
+  (0 = ピンクノイズと同じ・マイナスほど暗い)、deviations = 傾きの直線から ±3dB 以上ずれた帯域(プラスはこもり・刺さりの候補。EQ で直す場所の目星に)。\n\
+- 定番の手順は apply_recipe(send_reverb・send_delay・kick_bass・vocal_chain・supersaw・parallel_drums)で 1 回で組む。\n\
 - 仕上げの前に critique_mix(低域の広がり・クリック・キックとベース・True Peak・モノ・刺さり・こもり・かぶり・止まった音)。\n\
   warn は fix の道具で直し、もう一度呼んで確かめる。\n\
 - エフェクト: add_effect(eq / eq8 / dynamic_eq / resonance / deesser / compressor / multiband / transient / gate / limiter / width / virtual_bass / reverb / convolution(import_ir で) / distortion / saturation / amp / sidechain / delay / chorus / tape /\n\
@@ -529,6 +536,10 @@ EDM のリード = 1〜2 小節の動機を繰り返し最後だけ変える、1
   groove: swing_8th_pct(8 分の裏の位置。50 = イーブン、58〜62 = 軽いハネ、67 = 3 連のハネ)・swing_16th_pct・\n\
   timing_spread_ms(格子からのずれ。8 未満 = 打ち込み的、15 以上 = ゆったりした演奏)・subdivision(8分 / 16分 / 3連)・\n\
   onsets_per_beat(低・中・高の帯域の 1 拍あたりの音の数 = 密度)。ハネは groove のテンプレートや音の置き方に、密度は打ち込みの細かさに写す。\n\
+- 参考曲からパートを起こす(人が「この曲のベースを起こして」と頼んだとき): transcribe_reference。曲のテンポ・拍子を参考曲の格子にし\n\
+  (downbeat_shift・tempo_factor・beats_per_bar で直せる)、parts(name・kind: melody / bass / poly・program: GM の音色・source: そのパートだけを\n\
+  分けた音のファイル)をトラックにする。分けた音が無いと参考曲そのものから起こすので、ほかの楽器の音も拾う(結果を確かめて直す)。\n\
+  人は画面の「起こす」(作業場)でも同じことができる。起こした譜面を公開するときは編曲などの許諾が別に要ると伝える。\n\
 - 和音・調は音声からの推定(作り込んだ曲で根音がおよそ 9 割の拍で合う。実際の録音では下がる)。目安にして、\n\
   旋律や和音の並びをそのまま写さない(借りるのは感覚。公開する曲で問題にならないように)。\n\
 - compare_with_reference: before = 参考曲、after = 自分の曲。tonal_balance の diff_db がプラスなら自分の曲の方が多い、\n\

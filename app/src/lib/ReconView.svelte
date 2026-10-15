@@ -1,0 +1,645 @@
+<script lang="ts">
+  // 曲から起こす作業場。参考曲(参考の印の音声トラック)から、格子(テンポ・小節頭・拍子)→ パート → 確かめる、の順に進む。
+  // 1. 格子: 参考曲の波形に推定した拍・小節線・和音を重ね、ずれていれば小節頭・拍の取り方・拍子を直して曲に使う
+  // 2. パート: 起こすパート(歌・ベース・ピアノ・ギター・その他)と音の素(参考曲そのまま / 分けた音のファイル)を選んで起こす
+  // 3. 確かめる: 重ねて聴く・遅く聴く・タイムラインで直す。小節ごとの和音(コード譜)も見られる
+  import { onMount } from "svelte";
+  import { open as pickFile } from "@tauri-apps/plugin-dialog";
+  import Icon from "./Icon.svelte";
+  import * as api from "./api";
+  import { color } from "./palette";
+  import { plural, tr } from "./i18n.svelte";
+  import { showError, showToast } from "./toast.svelte";
+  import { importReferenceFile, referenceClipId, referenceStore, referenceTrack, setReferenceMode, setSpeed } from "./reference.svelte";
+  import { viewStore } from "./selection.svelte";
+  import type { Project } from "./types";
+
+  let { project, projectVersion }: { project: Project; projectVersion: number } = $props();
+
+  const refTrack = $derived(referenceTrack(project));
+  const clipId = $derived(referenceClipId(project));
+
+  // ---- 手順 ----
+  let step = $state<1 | 2 | 3>(1);
+
+  // ---- 1. 格子 ----
+  let opts = $state<api.GridOptions>({ downbeat_shift: 0, tempo_factor: 1, beats_per_bar: null });
+  let ws = $state<api.ReconWorkspace | null>(null);
+  let loading = $state(false);
+  let loadErr = $state("");
+  let withSections = $state(true);
+  let applying = $state(false);
+  let peaks = $state<[number, number][]>([]);
+
+  async function load() {
+    if (!clipId) return;
+    loading = true;
+    loadErr = "";
+    try {
+      ws = await api.reconWorkspace(clipId, $state.snapshot(opts));
+    } catch (e) {
+      loadErr = String(e);
+      ws = null;
+    } finally {
+      loading = false;
+    }
+  }
+
+  // 参考曲が替わったら読み直す(格子の直しも戻す)
+  let loadedClip = "";
+  $effect(() => {
+    const id = clipId;
+    if (!id || id === loadedClip) return;
+    loadedClip = id;
+    opts = { downbeat_shift: 0, tempo_factor: 1, beats_per_bar: null };
+    void load();
+    api.clipPeaks(id, 2400)
+      .then((r) => (peaks = r.peaks))
+      .catch(() => (peaks = []));
+  });
+
+  function shiftDownbeat(d: number) {
+    opts.downbeat_shift += d;
+    void load();
+  }
+  function setFactor(f: number) {
+    opts.tempo_factor = f;
+    void load();
+  }
+  function setMeter(n: number | null) {
+    opts.beats_per_bar = n;
+    void load();
+  }
+
+  async function applyGrid() {
+    if (!clipId) return;
+    applying = true;
+    try {
+      await api.reconApplyGrid(clipId, $state.snapshot(opts), withSections);
+      showToast("ok", tr("曲のテンポと拍子を参考曲に合わせました(取り消しで戻せます)", "Fitted the song's tempo and meter to the reference (undo to revert)"));
+      step = 2;
+    } catch (e) {
+      showError(tr("格子を曲に使えませんでした", "Couldn't apply the grid"), e);
+    } finally {
+      applying = false;
+    }
+  }
+
+  // ---- 波形と格子の絵 ----
+  const PX_PER_SEC = 40;
+  const H = 150;
+  let canvas = $state<HTMLCanvasElement | null>(null);
+  const width = $derived(Math.max(600, Math.ceil((ws?.duration_sec ?? 60) * PX_PER_SEC)));
+
+  $effect(() => {
+    const c = canvas;
+    const w = ws;
+    const pk = peaks;
+    if (!c) return;
+    const dpr = window.devicePixelRatio || 1;
+    c.width = Math.round(width * dpr);
+    c.height = Math.round(H * dpr);
+    const g = c.getContext("2d");
+    if (!g) return;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, width, H);
+    const top = 22;
+    const mid = top + (H - top) / 2;
+    const half = (H - top) / 2 - 4;
+    // 波形
+    if (pk.length && w) {
+      g.fillStyle = color("--reference", 0.55, c);
+      const per = width / pk.length;
+      for (let i = 0; i < pk.length; i++) {
+        const [lo, hi] = pk[i];
+        const y0 = mid - hi * half;
+        const y1 = mid - lo * half;
+        g.fillRect(i * per, y0, Math.max(1, per), Math.max(1, y1 - y0));
+      }
+    }
+    if (!w) return;
+    // 拍(細い線)
+    g.strokeStyle = color("--text-dim", 0.35, c);
+    g.lineWidth = 1;
+    for (const b of w.beats) {
+      const x = Math.round(b * PX_PER_SEC) + 0.5;
+      g.beginPath();
+      g.moveTo(x, top);
+      g.lineTo(x, H);
+      g.stroke();
+    }
+    // 小節線と番号・和音
+    g.font = "11px sans-serif";
+    g.textBaseline = "top";
+    for (const bar of w.bars) {
+      const x = Math.round(bar.time * PX_PER_SEC) + 0.5;
+      g.strokeStyle = color("--accent", 0.9, c);
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.moveTo(x, top - 4);
+      g.lineTo(x, H);
+      g.stroke();
+      g.fillStyle = color("--accent", 1, c);
+      g.fillText(String(bar.bar), x + 3, 2);
+      if (bar.chords && bar.chords !== "N.C.") {
+        g.fillStyle = color("--text", 0.9, c);
+        g.fillText(bar.chords, x + 3, top - 2 + 2);
+      }
+    }
+  });
+
+  const tempoText = $derived.by(() => {
+    if (!ws) return "";
+    const bpms = ws.tempo.map((t) => t.bpm);
+    const lo = Math.min(...bpms);
+    const hi = Math.max(...bpms);
+    return Math.abs(hi - lo) < 0.5
+      ? `${lo.toFixed(1)} BPM`
+      : tr(`${lo.toFixed(0)}〜${hi.toFixed(0)} BPM(${ws.tempo.length} 区間)`, `${lo.toFixed(0)}–${hi.toFixed(0)} BPM (${ws.tempo.length} segments)`);
+  });
+
+  // ---- 2. パート ----
+  type PartRow = { on: boolean; name: string; kind: api.ReconPart["kind"]; program: number; source: string | null; label: string; hint: string };
+  let rows = $state<PartRow[]>([
+    { on: true, name: tr("歌・旋律", "Melody"), kind: "melody", program: 53, source: null, label: tr("歌・旋律", "Vocal / melody"), hint: tr("単音。いちばん目立つ旋律", "Monophonic; the most prominent line") },
+    { on: true, name: tr("ベース", "Bass"), kind: "bass", program: 33, source: null, label: tr("ベース", "Bass"), hint: tr("単音。いちばん低い音", "Monophonic; the lowest line") },
+    { on: true, name: tr("ピアノ", "Piano"), kind: "poly", program: 0, source: null, label: tr("ピアノ", "Piano"), hint: tr("和音", "Chords") },
+    { on: false, name: tr("ギター", "Guitar"), kind: "poly", program: 25, source: null, label: tr("ギター", "Guitar"), hint: tr("和音", "Chords") },
+    { on: false, name: tr("その他", "Other"), kind: "poly", program: 48, source: null, label: tr("その他(和音)", "Other (chords)"), hint: tr("弦・パッドなど", "Strings, pads, etc.") },
+  ]);
+  let quantize = $state(0.5);
+  let transcribing = $state(false);
+
+  async function pickSource(r: PartRow) {
+    const file = await pickFile({
+      title: tr(`「${r.label}」だけを分けた音`, `Audio with only “${r.label}”`),
+      filters: [{ name: tr("音声(WAV / MP3 / FLAC / OGG / M4A)", "Audio (WAV / MP3 / FLAC / OGG / M4A)"), extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
+    });
+    if (typeof file === "string") r.source = file;
+  }
+
+  const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
+
+  async function transcribe() {
+    if (!clipId) return;
+    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source }));
+    if (!parts.length) return;
+    transcribing = true;
+    try {
+      const res = await api.reconTranscribe(clipId, $state.snapshot(opts), parts, quantize);
+      showToast(
+        "ok",
+        tr(
+          `起こしました: ${res.parts.map((p) => `${p.name} ${p.notes} 音`).join("・")}(取り消しで戻せます)`,
+          `Transcribed: ${res.parts.map((p) => `${p.name} ${plural(p.notes, "note")}`).join(", ")} (undo to revert)`,
+        ),
+      );
+      step = 3;
+    } catch (e) {
+      showError(tr("起こせませんでした", "Couldn't transcribe"), e);
+    } finally {
+      transcribing = false;
+    }
+  }
+
+  onMount(() => {
+    if (clipId) void load();
+  });
+</script>
+
+<div class="recon">
+  <div class="rv-head">
+    <div class="rv-title">
+      <Icon name="audio-waveform" />
+      <span>{tr("曲から起こす", "Transcribe a song")}</span>
+    </div>
+    {#if refTrack}
+      <span class="rv-ref" title={ws?.summary ?? ""}><Icon name="disc-3" size={14} />{refTrack.name}</span>
+      <div class="steps" role="tablist" aria-label={tr("手順", "Steps")}>
+        {#each [[1, tr("格子", "Grid")], [2, tr("パート", "Parts")], [3, tr("確かめる", "Check")]] as [n, label] (n)}
+          <button role="tab" class:on={step === n} aria-selected={step === n} onclick={() => (step = n as 1 | 2 | 3)}
+            ><span class="num">{n}</span>{label}</button
+          >
+        {/each}
+      </div>
+    {/if}
+  </div>
+
+  {#if !refTrack || !clipId}
+    <div class="empty">
+      <p>{tr("まず参考曲を読み込みます。曲の音には混ぜず、テンポ・小節・和音を読み取ってから、パートを起こします。", "First load a reference song. It isn't mixed into your song; its tempo, bars and chords are read, then parts are transcribed.")}</p>
+      <p class="dim">
+        {tr(
+          "手元の音声ファイル(WAV / MP3 / FLAC / OGG / M4A)を使い、処理はこの PC の中だけで行います。起こした譜面を公開するときは、編曲などの許諾が別に要ります。",
+          "Uses an audio file on this PC and processes it locally. Publishing a transcription needs separate permission (arrangement rights, etc.).",
+        )}
+      </p>
+      <button class="btn primary" onclick={() => importReferenceFile()}><Icon name="disc-3" />{tr("参考曲を読み込む…", "Load a reference song…")}</button>
+    </div>
+  {:else if step === 1}
+    <div class="pane">
+      <p class="lead">
+        {tr(
+          "推定した小節線(番号の付いた線)と拍(細い線)が、参考曲の音の頭(ドラムの強い拍など)とそろっているか見てください。ずれていれば下のボタンで直します。小節の上の文字は推定した和音です。",
+          "Check that the estimated bar lines (numbered) and beats (thin lines) line up with the reference's attacks (e.g. strong drum beats). Fix them with the buttons below if not. The labels above the bars are estimated chords.",
+        )}
+      </p>
+      <div class="wave-scroll">
+        {#if loading && !ws}
+          <div class="busy"><Icon name="loader-circle" />{tr("参考曲を解析しています…", "Analyzing the reference…")}</div>
+        {/if}
+        <canvas bind:this={canvas} style="width:{width}px;height:{H}px"></canvas>
+      </div>
+      {#if loadErr}<p class="err">{loadErr}</p>{/if}
+      {#if ws}
+        <dl class="facts">
+          <div><dt>{tr("テンポ", "Tempo")}</dt><dd>{tempoText}</dd></div>
+          <div><dt>{tr("拍子", "Meter")}</dt><dd>{ws.beats_per_bar}/4</dd></div>
+          <div><dt>{tr("調(推定)", "Key (est.)")}</dt><dd>{ws.key?.name ?? "—"}</dd></div>
+          <div><dt>{tr("チューニング", "Tuning")}</dt><dd>{ws.tuning_cents >= 0 ? "+" : ""}{ws.tuning_cents.toFixed(0)} {tr("セント", "cents")}</dd></div>
+          <div><dt>{tr("弱起・前奏", "Pickup")}</dt><dd>{tr(`${ws.lead_beats} 拍`, plural(ws.lead_beats, "beat"))}</dd></div>
+        </dl>
+      {/if}
+      <div class="controls">
+        <div class="group" role="group" aria-label={tr("小節頭", "Downbeat")}>
+          <span class="glabel">{tr("小節頭", "Downbeat")}</span>
+          <button class="btn sm" onclick={() => shiftDownbeat(-1)} disabled={loading} title={tr("小節頭を 1 拍前へずらす", "Move the downbeat one beat earlier")}
+            >◀ {tr("1 拍前へ", "1 beat earlier")}</button
+          >
+          <button class="btn sm" onclick={() => shiftDownbeat(1)} disabled={loading} title={tr("小節頭を 1 拍後ろへずらす", "Move the downbeat one beat later")}
+            >{tr("1 拍後ろへ", "1 beat later")} ▶</button
+          >
+        </div>
+        <div class="group seg" role="group" aria-label={tr("拍の取り方", "Beat level")}>
+          <span class="glabel">{tr("拍の取り方", "Beat level")}</span>
+          <button class="btn sm" class:on={opts.tempo_factor < 1} onclick={() => setFactor(0.5)} disabled={loading} title={tr("拍を半分の速さに取り直す(テンポが倍に推定されたとき)", "Take beats at half speed (if the tempo was detected double)")}>{tr("半分", "Half")}</button>
+          <button class="btn sm" class:on={opts.tempo_factor === 1} onclick={() => setFactor(1)} disabled={loading} title={tr("推定のまま", "As detected")}>{tr("そのまま", "As is")}</button>
+          <button class="btn sm" class:on={opts.tempo_factor > 1} onclick={() => setFactor(2)} disabled={loading} title={tr("拍を倍の速さに取り直す(テンポが半分に推定されたとき)", "Take beats at double speed (if the tempo was detected half)")}>{tr("倍", "Double")}</button>
+        </div>
+        <div class="group seg" role="group" aria-label={tr("拍子", "Meter")}>
+          <span class="glabel">{tr("拍子", "Meter")}</span>
+          {#each [3, 4, 6] as n (n)}
+            <button class="btn sm" class:on={(opts.beats_per_bar ?? ws?.beats_per_bar) === n} onclick={() => setMeter(n)} disabled={loading} title={tr(`1 小節 ${n} 拍にする`, `${n} beats per bar`)}>{n}/4</button>
+          {/each}
+        </div>
+        <label class="check"><input type="checkbox" bind:checked={withSections} />{tr("区間の印(イントロ・サビなど)も置く", "Also place section markers (intro, chorus…)")}</label>
+        <button class="btn primary go" onclick={applyGrid} disabled={!ws || applying || loading}
+          >{#if applying}<Icon name="loader-circle" />{:else}<Icon name="check" />{/if}{tr("この格子を曲に使う", "Use this grid for the song")}</button
+        >
+      </div>
+    </div>
+  {:else if step === 2}
+    <div class="pane">
+      <p class="lead">
+        {tr(
+          "起こすパートを選びます。参考曲そのままから起こすと、ほかの楽器の音も拾います。そのパートだけを分けた音(分離ツールで作ったファイル)があれば選ぶと確かになります。",
+          "Choose the parts to transcribe. Transcribing from the full reference also picks up other instruments; choosing audio with only that part (made with a separation tool) is more accurate.",
+        )}
+      </p>
+      <table class="parts">
+        <thead>
+          <tr><th></th><th>{tr("パート", "Part")}</th><th>{tr("音の素", "Source")}</th><th>{tr("トラックの名前", "Track name")}</th></tr>
+        </thead>
+        <tbody>
+          {#each rows as r (r.kind + r.program)}
+            <tr class:off={!r.on}>
+              <td><input type="checkbox" bind:checked={r.on} aria-label={r.label} /></td>
+              <td><span class="pname">{r.label}</span><small>{r.hint}</small></td>
+              <td>
+                <div class="src">
+                  <button class="btn sm" class:on={!r.source} onclick={() => (r.source = null)} disabled={!r.on} title={tr("参考曲そのものから起こす", "Transcribe from the full reference")}>{tr("参考曲そのまま", "Full reference")}</button>
+                  <button class="btn sm" class:on={!!r.source} onclick={() => pickSource(r)} disabled={!r.on} title={r.source ?? tr("このパートだけを分けた音のファイルを選ぶ", "Choose a file with only this part")}
+                    ><Icon name="file-audio" size={13} />{r.source ? baseName(r.source) : tr("分けた音…", "Separated audio…")}</button
+                  >
+                </div>
+              </td>
+              <td><input class="tname" bind:value={r.name} disabled={!r.on} aria-label={tr("トラックの名前", "Track name")} /></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <div class="controls">
+        <div class="group seg" role="group" aria-label={tr("格子への寄せ方", "Snap to grid")}>
+          <span class="glabel">{tr("16 分の格子へ", "Snap to 16ths")}</span>
+          <button class="btn sm" class:on={quantize === 0} onclick={() => (quantize = 0)} title={tr("演奏の位置のまま", "Keep the played timing")}>{tr("寄せない", "None")}</button>
+          <button class="btn sm" class:on={quantize === 0.5} onclick={() => (quantize = 0.5)} title={tr("半分だけ寄せる(揺れを少し残す)", "Halfway (keeps some feel)")}>{tr("半分", "Half")}</button>
+          <button class="btn sm" class:on={quantize === 1} onclick={() => (quantize = 1)} title={tr("格子にそろえる", "Fully on the grid")}>{tr("そろえる", "Full")}</button>
+        </div>
+        <button class="btn primary go" onclick={transcribe} disabled={transcribing || !rows.some((r) => r.on)}
+          >{#if transcribing}<Icon name="loader-circle" />{tr("起こしています…", "Transcribing…")}{:else}<Icon name="wand-sparkles" />{tr("起こす", "Transcribe")}{/if}</button
+        >
+      </div>
+    </div>
+  {:else}
+    <div class="pane">
+      <p class="lead">
+        {tr(
+          "起こしたパートはトラックとして入りました。参考曲と重ねたり、遅くしたりして聴き比べ、タイムラインとピアノロールで直します。",
+          "The transcribed parts are now tracks. Compare with the reference by overlaying or slowing down, and fix them in the timeline and piano roll.",
+        )}
+      </p>
+      <div class="controls">
+        <button class="btn" class:on={referenceStore.mode === "both"} onclick={() => setReferenceMode(referenceStore.mode === "both" ? "song" : "both", projectVersion)}
+          ><Icon name="layers" />{tr("参考曲と重ねて聴く", "Overlay the reference")}</button
+        >
+        <button class="btn" class:on={referenceStore.mode === "reference"} onclick={() => setReferenceMode(referenceStore.mode === "reference" ? "song" : "reference", projectVersion)}
+          ><Icon name="disc-3" />{tr("参考曲だけ", "Reference only")}</button
+        >
+        <div class="group seg" role="group" aria-label={tr("再生の速さ", "Playback speed")}>
+          <span class="glabel">{tr("速さ", "Speed")}</span>
+          {#each [1, 0.75, 0.5] as sp (sp)}
+            <button class="btn sm" class:on={referenceStore.speed === sp} onclick={() => setSpeed(sp)}>{Math.round(sp * 100)}%</button>
+          {/each}
+        </div>
+        <button class="btn primary" onclick={() => (viewStore.main = "timeline")}><Icon name="rows-2" />{tr("タイムラインで直す", "Edit in the timeline")}</button>
+      </div>
+      <p class="dim">
+        {tr(
+          "ルーラーで範囲を選んでループ(L)にすると、その区間を繰り返し聴けます。",
+          "Select a range on the ruler and turn on Loop (L) to repeat it.",
+        )}
+      </p>
+      {#if ws}
+        <h3>{tr("小節ごとの和音(推定)", "Chords per bar (estimated)")}</h3>
+        <div class="chart">
+          {#each ws.bars as b (b.bar)}
+            <div class="cell"><span class="bn">{b.bar}</span><span class="ch">{b.chords === "N.C." ? "—" : b.chords}</span></div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+</div>
+
+<style>
+  .recon {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  .rv-head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+    margin-bottom: var(--sp-3);
+  }
+
+  .rv-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-lg);
+    font-weight: 600;
+  }
+
+  .rv-ref {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--reference);
+    font-size: var(--fs-sm);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+  }
+
+  .steps {
+    display: flex;
+    margin-left: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+  }
+
+  .steps button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+  }
+
+  .steps button + button {
+    border-left: 1px solid var(--border);
+  }
+
+  .steps button.on {
+    background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+    color: var(--accent);
+  }
+
+  .num {
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    font-size: var(--fs-xs);
+  }
+
+  .empty {
+    max-width: 560px;
+    margin: 48px auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    align-items: flex-start;
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+  }
+
+  .lead {
+    margin: 0;
+    color: var(--text);
+    font-size: var(--fs-sm);
+  }
+
+  .dim {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+  }
+
+  .err {
+    color: var(--danger-text);
+    font-size: var(--fs-sm);
+  }
+
+  .wave-scroll {
+    position: relative;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg-inset);
+  }
+
+  .wave-scroll canvas {
+    display: block;
+  }
+
+  .busy {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+  }
+
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-4);
+    margin: 0;
+  }
+
+  .facts div {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .facts dt {
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+  }
+
+  .facts dd {
+    margin: 0;
+    font-size: var(--fs-md);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+  }
+
+  .group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .glabel {
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+    margin-right: 2px;
+  }
+
+  .check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-sm);
+    color: var(--text);
+  }
+
+  .go {
+    margin-left: auto;
+  }
+
+  .parts {
+    /* 縦に並べる欄の中で横に伸ばされないように */
+    align-self: flex-start;
+    border-collapse: collapse;
+    font-size: var(--fs-sm);
+  }
+
+  .parts th {
+    text-align: left;
+    color: var(--text-dim);
+    font-weight: normal;
+    font-size: var(--fs-xs);
+    padding: 4px 8px;
+  }
+
+  .parts td {
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  .parts tr.off td {
+    color: var(--text-dim);
+  }
+
+  .pname {
+    display: block;
+  }
+
+  .parts small {
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+  }
+
+  .src {
+    display: flex;
+    gap: 4px;
+  }
+
+  .src .btn {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tname {
+    width: 140px;
+  }
+
+  h3 {
+    margin: var(--sp-2) 0 0;
+    font-size: var(--fs-md);
+    font-weight: 600;
+  }
+
+  .chart {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+    gap: 4px;
+  }
+
+  .cell {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg-panel);
+    min-width: 0;
+  }
+
+  .bn {
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+  }
+
+  .ch {
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>

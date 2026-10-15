@@ -722,6 +722,125 @@ async fn reference_skeleton(state: State<'_, AppState>, clip_id: String) -> Resu
     .await
 }
 
+/// 曲から起こす作業場: 参考曲の骨組みと格子(拍・小節頭・小節ごとの和音・テンポ)。`opts` は格子の直し
+#[tauri::command]
+async fn recon_workspace(
+    state: State<'_, AppState>,
+    clip_id: String,
+    opts: Option<glaux_mcp::recon::GridOptions>,
+) -> Result<Value, String> {
+    guard::catching("recon_workspace", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        tokio::task::spawn_blocking(move || -> Result<Value, String> {
+            let (sk, _, _) =
+                glaux_mcp::recon::clip_skeleton(&project, std::path::Path::new(&dir), &cid)?;
+            let plan =
+                glaux_mcp::recon::grid_plan(&sk, &opts.unwrap_or_default()).ok_or_else(|| {
+                    t(
+                        "拍が少なすぎて格子を作れません",
+                        "Too few beats to build a grid",
+                    )
+                    .to_owned()
+                })?;
+            Ok(glaux_mcp::recon::workspace_json(&sk, &plan))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    })
+    .await
+}
+
+/// 作業場の「格子」: 曲のテンポ・拍子を参考曲の格子にし、参考曲のクリップを合わせ、区間の印も置く(履歴 1 件)
+#[tauri::command]
+async fn recon_apply_grid(
+    state: State<'_, AppState>,
+    clip_id: String,
+    opts: Option<glaux_mcp::recon::GridOptions>,
+    sections: Option<bool>,
+) -> Result<Value, String> {
+    guard::catching("recon_apply_grid", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let cmds = tokio::task::spawn_blocking(move || -> Result<Vec<Command>, String> {
+            let dir = std::path::Path::new(&dir);
+            let (sk, frames, sr) = glaux_mcp::recon::clip_skeleton(&project, dir, &cid)?;
+            let plan =
+                glaux_mcp::recon::grid_plan(&sk, &opts.unwrap_or_default()).ok_or_else(|| {
+                    t(
+                        "拍が少なすぎて格子を作れません",
+                        "Too few beats to build a grid",
+                    )
+                    .to_owned()
+                })?;
+            let mut cmds = glaux_mcp::recon::grid_commands(&project, &plan)?;
+            if sections.unwrap_or(true) {
+                cmds.extend(glaux_mcp::recon::section_commands(&frames, sr, &plan));
+            }
+            Ok(cmds)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let label = t(
+            "曲の格子(テンポ・拍子)を参考曲に合わせる",
+            "Fit the song grid (tempo, meter) to the reference",
+        )
+        .to_owned();
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "project_version": m.project_version }))
+    })
+    .await
+}
+
+/// 作業場の「パート」: 参考曲(か、パートだけを分けた音のファイル)からパートを起こしてトラックにする(格子も合わせる。履歴 1 件)
+#[tauri::command]
+async fn recon_transcribe(
+    state: State<'_, AppState>,
+    clip_id: String,
+    opts: Option<glaux_mcp::recon::GridOptions>,
+    parts: Vec<glaux_mcp::recon::PartRequest>,
+    quantize: Option<f64>,
+) -> Result<Value, String> {
+    guard::catching("recon_transcribe", async move {
+        if parts.is_empty() {
+            return Err(t("起こすパートを選んでください", "Choose the parts to transcribe").into());
+        }
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let n = parts.len();
+        let (cmds, counts) = tokio::task::spawn_blocking(move || {
+            glaux_mcp::recon::transcribe_commands(
+                &project,
+                std::path::Path::new(&dir),
+                &cid,
+                &opts.unwrap_or_default(),
+                &parts,
+                quantize.unwrap_or(0.5),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let label = glaux_core::tr!("参考曲から {n} パートを起こす", "Transcribe {n} parts from the reference");
+        let (_, m) = state
+            .handle
+            .apply(Command::batch(label.clone(), cmds), Author::Human, label)
+            .await?
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "project_version": m.project_version,
+            "parts": counts.iter().map(|(name, notes)| json!({"name": name, "notes": notes})).collect::<Vec<_>>(),
+        }))
+    })
+    .await
+}
+
 /// 音声クリップの波形ピーク(表示用)。
 #[tauri::command]
 async fn clip_peaks(
@@ -4751,6 +4870,9 @@ fn main() -> Result<()> {
             reference_set_mode,
             reference_match_loudness,
             reference_skeleton,
+            recon_workspace,
+            recon_apply_grid,
+            recon_transcribe,
             ab_prepare,
             ab_set_side,
             ab_clear,

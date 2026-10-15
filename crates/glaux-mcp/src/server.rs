@@ -604,6 +604,32 @@ pub struct AnalyzeBeatsParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct TranscribeReferenceParams {
+    /// 参考曲の音声クリップ ID(参考曲のトラックのクリップ)
+    pub clip_id: String,
+    /// 起こすパート。name(トラックの名前)・kind("melody" / "bass" / "poly")・program(GM の音色の番号、省略可)・
+    /// source(そのパートだけを分けた音のファイルのパス。省略で参考曲そのもの)。省略で歌・ベース・ピアノ
+    #[serde(default)]
+    #[schemars(with = "Option<Vec<serde_json::Value>>")]
+    pub parts: Option<Vec<crate::recon::PartRequest>>,
+    /// 小節頭を何拍ずらすか(推定が半小節ずれていたとき)
+    #[serde(default)]
+    pub downbeat_shift: Option<i32>,
+    /// 拍の取り方(2 = 倍の速さ、0.5 = 半分)
+    #[serde(default)]
+    pub tempo_factor: Option<f64>,
+    /// 1 小節の拍数(省略で推定)
+    #[serde(default)]
+    pub beats_per_bar: Option<u32>,
+    /// 16 分の格子へ寄せる強さ(0〜1。既定 0.5)
+    #[serde(default)]
+    pub quantize: Option<f64>,
+    /// 区間の印(イントロ・サビなど)も置く(既定 true)
+    #[serde(default)]
+    pub sections: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct CompareWithReferenceParams {
     /// 参考曲の音声クリップ ID(`clp_xxxxxx`、kind: "audio")。
     #[serde(default)]
@@ -5604,14 +5630,7 @@ impl GlauxServer {
         loudness_range_lu=曲中の音量の起伏(小さいと平板)、true_peak_dbtp=サンプル間のピーク(配信は -1 以下が目安)、\
         short_term_lufs=1 秒ごとの短期ラウドネスの推移(展開・盛り上がりの確認)、\
         plr_db=True Peak − 統合ラウドネス(小さいほど潰れている)、psr_min_db=いちばん詰まった所のピークと短期ラウドネスの差(実務の目安は 8 以上)、\
-        streaming=Spotify / Apple Music / YouTube / AES77 で再生されたときの音量の調整の予測(gain_db がマイナスなら下げられる。\
-        大きく下げられるなら音圧を上げすぎ。正規化される配信では、潰して大きくしても得をしない)、\
-        stereo(correlation=左右の相関。1=モノラル、負=逆相で危険 / low_correlation=250Hz 以下の相関。低域は 1 近くが望ましい /\
-        side_to_mid_db=広がり / balance_db=左右の偏り / bands=低・中・高の帯域ごとの相関と広がり(低いほど中央、高いほど広いのがふつう) /\
-        negative_correlation_ratio=逆相だった時間の割合 / mono_loudness_change_db=モノラルにしたときのラウドネスの変化。\
-        無相関で約 -3、それより大きく下がるならモノラルで音が消えている)、\
-        tonal_balance(third_octave=1/3 オクターブごとの量、slope_db_per_oct=傾き。0 = ピンクノイズと同じ・マイナスほど暗い、\
-        deviations=傾きの直線から ±3dB 以上ずれた帯域。プラスはこもり・刺さりの候補。EQ で直す場所の目星に)。\
+        streaming(配信での音量の調整の予測)・stereo(広がり・相関・逆相)・tonal_balance(1/3 オクターブの釣り合い)の読み方は get_guide mix。\
         【ミックスバランスの診断】per_track: true で各トラック(曲の中で聞こえるとおりにソロで鳴らす。マスターのエフェクトは外す)の loudness/band_energy/crest_factor_db/plr_db\
         (クレスト・PLR が小さいほど潰れている。打楽器 15 以上・持続音 8〜12 がふつう、6 以下は潰れ気味)/sections(区間ごとの rms_db とクレスト)の一覧と、\
         masking(トラック間の周波数のかぶり。心理音響モデル(広がり・純音か雑音か・聞こえる最小の音・直後の残り)で、\
@@ -6878,6 +6897,83 @@ impl GlauxServer {
         .await
         .map_err(|e| e.to_string())??;
         Ok(JsonText(v))
+    }
+
+    #[tool(
+        description = "参考曲(参考曲のトラックの音声クリップ)からパートを音符に起こしてトラックにする。曲のテンポ・拍子を参考曲の格子にして\
+        区間の印も置く(履歴 1 件、取り消し可)。人が起こすよう頼んだときだけ使う。使い方は get_guide reference。"
+    )]
+    async fn transcribe_reference(
+        &self,
+        params: Parameters<TranscribeReferenceParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let _activity = self.handle.begin_activity("transcribe_reference");
+        let p = params.0;
+        let cid = glaux_core::ClipId::parse(&p.clip_id).map_err(|e| e.to_string())?;
+        let parts = p.parts.unwrap_or_else(|| {
+            [
+                ("歌・旋律", crate::recon::PartKind::Melody, 53),
+                ("ベース", crate::recon::PartKind::Bass, 33),
+                ("ピアノ", crate::recon::PartKind::Poly, 0),
+            ]
+            .into_iter()
+            .map(|(n, k, pr)| crate::recon::PartRequest {
+                spec: crate::recon::PartSpec {
+                    name: n.to_owned(),
+                    kind: k,
+                    program: Some(pr),
+                },
+                source: None,
+            })
+            .collect()
+        });
+        if parts.is_empty() {
+            return Err("parts が空です".to_owned());
+        }
+        let opts = crate::recon::GridOptions {
+            downbeat_shift: p.downbeat_shift.unwrap_or(0),
+            tempo_factor: p.tempo_factor.unwrap_or(1.0),
+            beats_per_bar: p.beats_per_bar,
+        };
+        let (project, _) = self.handle.get_project_shared().await?;
+        let dir = self.handle.project_dir().await?;
+        let quantize = p.quantize.unwrap_or(0.5);
+        let sections = p.sections.unwrap_or(true);
+        let n = parts.len();
+        let (cmds, counts) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let dir = std::path::Path::new(&dir);
+            let (mut cmds, counts) =
+                crate::recon::transcribe_commands(&project, dir, &cid, &opts, &parts, quantize)?;
+            if sections {
+                let (sk, frames, sr) = crate::recon::clip_skeleton(&project, dir, &cid)?;
+                if let Some(plan) = crate::recon::grid_plan(&sk, &opts) {
+                    cmds.extend(crate::recon::section_commands(&frames, sr, &plan));
+                }
+            }
+            Ok((cmds, counts))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let label = glaux_core::tr!(
+            "参考曲から {n} パートを起こす",
+            "Transcribe {n} parts from the reference"
+        );
+        let author = self.author(&ctx);
+        let (entry_id, m) = self
+            .apply_checked(
+                glaux_core::Command::batch(label.clone(), cmds),
+                author,
+                label,
+            )
+            .await?;
+        let mut out = mutated_json(&m);
+        out["entry_id"] = json!(entry_id);
+        out["parts"] = json!(counts
+            .iter()
+            .map(|(name, notes)| json!({"name": name, "notes": notes}))
+            .collect::<Vec<_>>());
+        Ok(JsonText(out))
     }
 
     #[tool(

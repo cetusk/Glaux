@@ -311,6 +311,58 @@ export function referenceSkeleton(clipId: string): Promise<{
   return invoke("reference_skeleton", { clipId });
 }
 
+/** 格子の直し(作業場の「格子」の手順) */
+export interface GridOptions {
+  /** 小節頭を何拍ずらすか(正 = 後ろへ) */
+  downbeat_shift: number;
+  /** 拍の取り方: 1 = そのまま、2 = 倍の速さ、0.5 = 半分 */
+  tempo_factor: number;
+  /** 1 小節の拍数(null で推定のまま) */
+  beats_per_bar: number | null;
+}
+
+/** 作業場に出す参考曲の骨組みと格子 */
+export interface ReconWorkspace {
+  duration_sec: number;
+  beats: number[];
+  bars: { bar: number; time: number; chords: string }[];
+  beats_per_bar: number;
+  lead_beats: number;
+  audio_start_sec: number;
+  tempo: { tick: number; bpm: number }[];
+  bpm: number | null;
+  key: { name: string; confidence: number } | null;
+  tuning_cents: number;
+  summary: string;
+}
+
+export function reconWorkspace(clipId: string, opts: GridOptions): Promise<ReconWorkspace> {
+  return invoke("recon_workspace", { clipId, opts });
+}
+
+/** 曲のテンポ・拍子を参考曲の格子にし、参考曲のクリップを合わせる(区間の印も置ける。履歴 1 件) */
+export function reconApplyGrid(clipId: string, opts: GridOptions, sections: boolean): Promise<{ project_version: number }> {
+  return invoke("recon_apply_grid", { clipId, opts, sections });
+}
+
+/** 起こすパート(source: 省略で参考曲そのもの、パスならそのパートだけを分けた音のファイル) */
+export interface ReconPart {
+  name: string;
+  kind: "melody" | "bass" | "poly";
+  program: number | null;
+  source?: string | null;
+}
+
+/** 参考曲からパートを起こしてトラックにする(格子も合わせる。履歴 1 件)。quantize は 16 分の格子へ寄せる強さ(0〜1) */
+export function reconTranscribe(
+  clipId: string,
+  opts: GridOptions,
+  parts: ReconPart[],
+  quantize: number,
+): Promise<{ project_version: number; parts: { name: string; notes: number }[] }> {
+  return invoke("recon_transcribe", { clipId, opts, parts, quantize });
+}
+
 /** 再生の速さ(1 = ふつう、0.75・0.5。音程は変えない。書き出しには効かない) */
 export function transportSetSpeed(speed: number): Promise<void> {
   return invoke("transport_set_speed", { speed });

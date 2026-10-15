@@ -6556,6 +6556,92 @@ async fn analyze_reference_skeleton_reads_tempo_meter_and_feel() {
     assert_eq!(r.is_error, Some(true));
 }
 
+/// 参考曲から起こす: 曲のテンポが参考曲の格子になり、パートのトラックが入る(1 回で取り消せる)
+#[tokio::test]
+async fn transcribe_reference_fits_the_grid_and_adds_part_tracks() {
+    let fx = setup().await;
+    // 100 BPM のドラムに、拍ごとに A2・E3 を交互に鳴らすベースを重ねた 16 小節
+    let path = fx.dir.join("ref.wav");
+    write_drum_wav(&path, 100.0, 16, 44_100);
+    let mut r = hound::WavReader::open(&path).unwrap();
+    let mut x: Vec<f32> = r
+        .samples::<i16>()
+        .map(|v| v.unwrap() as f32 / 32768.0)
+        .collect();
+    let beat = 44_100.0 * 60.0 / 100.0;
+    for (i, v) in x.iter_mut().enumerate() {
+        let k = (i as f64 / beat) as usize;
+        let f = if k.is_multiple_of(2) { 110.0 } else { 164.81 };
+        let ph = (i as f64 - k as f64 * beat) / 44_100.0;
+        *v += (0.3 * (std::f64::consts::TAU * f * i as f64 / 44_100.0).sin() * (-ph * 3.0).exp())
+            as f32;
+    }
+    write_mono_wav(&path, &x, 44_100);
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "参考曲", "commands": [{ "op": "add_track", "track": { "id": "trk_ref001", "name": "Ref", "kind": "audio" } }] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "import_audio_clip",
+            json!({ "track_id": "trk_ref001", "path": path.to_string_lossy(), "start_tick": 0 }),
+        )
+        .await,
+    );
+    let clip_id = v["clip_id"].as_str().unwrap().to_owned();
+    ok_json(
+        &call(
+            &fx,
+            "apply_commands",
+            json!({ "label": "参考曲の印", "commands": [{"op": "set_track_prop", "id": "trk_ref001", "prop": "reference", "value": true}] }),
+        )
+        .await,
+    );
+    let v = ok_json(
+        &call(
+            &fx,
+            "transcribe_reference",
+            json!({ "clip_id": clip_id, "parts": [{"name": "Bass", "kind": "bass", "program": 33}], "quantize": 1.0 }),
+        )
+        .await,
+    );
+    assert_eq!(v["parts"][0]["name"], "Bass", "{v}");
+    assert!(v["parts"][0]["notes"].as_u64().unwrap() >= 20, "{v}");
+    let (project, _) = fx.handle.get_project().await.unwrap();
+    let bpm = project.tempo_map.events()[0].bpm;
+    assert!((bpm - 100.0).abs() < 2.0, "{bpm}");
+    let bass = project
+        .tracks
+        .iter()
+        .find(|t| t.name == "Bass")
+        .expect("Bass");
+    let notes = bass.clips[0].notes().unwrap();
+    // A2(45)と E3(52)が交互に、拍の格子(960 tick)の上に
+    assert!(
+        notes
+            .iter()
+            .filter(|n| n.pitch == 45 || n.pitch == 52)
+            .count()
+            * 10
+            >= notes.len() * 8,
+        "{:?}",
+        notes.iter().map(|n| n.pitch).collect::<Vec<_>>()
+    );
+    assert!(notes.iter().all(|n| n.pos.0 % 240 == 0));
+    let r = call(
+        &fx,
+        "transcribe_reference",
+        json!({ "clip_id": "clp_nope00" }),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+}
+
 #[tokio::test]
 async fn compare_with_reference_measures_both_sides() {
     let fx = setup().await;

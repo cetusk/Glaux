@@ -203,6 +203,959 @@ pub fn analyze(
     })
 }
 
+// ---- パートの譜起こし(段階 2) ----------------------------------------------
+
+/// パートの種類(譜起こしの方式の既定を決める)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartKind {
+    /// 歌・旋律(単音)
+    Melody,
+    /// ベース(単音・低い)
+    Bass,
+    /// ピアノ・ギター・その他(和音)
+    Poly,
+}
+
+/// 譜起こしの方式
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteMethod {
+    /// 単音: basic-pitch(単音にまとめる)を基本に、SwiftF0 の方が鳴っている所をはっきり多く覆うときは SwiftF0
+    Auto,
+    /// 単音: SwiftF0 の音程の列を音符に区切る
+    SwiftF0,
+    /// 単音: YIN(鼻歌の譜起こしと同じ)
+    Yin,
+    /// 和音: basic-pitch
+    BasicPitch,
+}
+
+impl PartKind {
+    pub fn default_method(self) -> NoteMethod {
+        match self {
+            PartKind::Melody | PartKind::Bass => NoteMethod::Auto,
+            PartKind::Poly => NoteMethod::BasicPitch,
+        }
+    }
+
+    /// 音域(MIDI)
+    fn range(self) -> (f32, f32) {
+        match self {
+            PartKind::Melody => (40.0, 96.0),
+            PartKind::Bass => (24.0, 64.0),
+            PartKind::Poly => (21.0, 108.0),
+        }
+    }
+}
+
+/// 起こした音符(秒)
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct RawNote {
+    pub start: f64,
+    pub end: f64,
+    pub pitch: u8,
+    pub vel: u8,
+}
+
+/// チューニングのずれを打ち消すように音声の高さを変える(長さも少し変わる)。(音声, 新しい時刻 → 元の時刻の倍率)
+fn untune(frames: &[f32], sr: f32, cents: f64) -> (Vec<f32>, f64) {
+    if cents.abs() < 3.0 {
+        return (frames.to_vec(), 1.0);
+    }
+    // 高さを r 倍にする: 元の 1 サンプルを 1/r サンプルに伸ばす(r < 1 で低く)
+    let r = 2f64.powf(-cents / 1200.0);
+    let out = glaux_ml::resample(frames, sr, (sr as f64 / r) as f32);
+    (out, r)
+}
+
+/// パートの音声(分けた音か、ミックス)から音符を起こす。`tuning_cents` は曲のチューニングのずれ(骨組みの解析から)
+pub fn transcribe_part(
+    frames: &[f32],
+    sr: f32,
+    kind: PartKind,
+    method: NoteMethod,
+    tuning_cents: f64,
+) -> Result<Vec<RawNote>, String> {
+    let (audio, scale) = untune(frames, sr, tuning_cents);
+    let (lo, hi) = kind.range();
+    let onsets = || -> Vec<f64> {
+        glaux_engine::feel::onsets(&audio, sr)
+            .iter()
+            .filter(|o| o.strength >= 0.15)
+            .map(|o| o.time)
+            .collect()
+    };
+    let swift = || -> Result<Vec<RawNote>, String> {
+        let pitch = glaux_ml::pitch::track(&audio, sr).map_err(|e| e.to_string())?;
+        let on = onsets();
+        let mut v = mono_notes(&pitch, &on, &audio, sr, lo, hi);
+        snap_to_onsets(&mut v, &on);
+        Ok(v)
+    };
+    let basic = || -> Result<Vec<RawNote>, String> {
+        let opts = glaux_ml::PolyOptions {
+            min_pitch: lo as u8,
+            max_pitch: hi as u8,
+            ..Default::default()
+        };
+        Ok(glaux_ml::transcribe_poly(&audio, sr, &opts)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|n| RawNote {
+                start: n.start_sec,
+                end: n.end_sec,
+                pitch: n.pitch,
+                vel: (40.0 + n.amplitude.clamp(0.0, 1.0) * 87.0) as u8,
+            })
+            .collect())
+    };
+    let mono = kind != PartKind::Poly;
+    let mut notes = match method {
+        NoteMethod::Auto => {
+            let a = to_mono(basic()?, kind == PartKind::Bass);
+            let b = swift()?;
+            // 鳴っている所(音量が最大から 35dB 以内)をどれだけ音符が覆うか。basic-pitch を基本にし、
+            // SwiftF0 の方がはっきり多く覆うときだけ替える(basic-pitch が音を拾えない音色)
+            let (ca, cb) = (coverage(&a, &audio, sr), coverage(&b, &audio, sr));
+            if cb > ca + 0.1 {
+                b
+            } else {
+                a
+            }
+        }
+        NoteMethod::SwiftF0 => swift()?,
+        NoteMethod::Yin => {
+            let data = glaux_dsp::SampleData::mono(audio.clone(), sr);
+            let opts = glaux_engine::transcribe::TranscribeOptions {
+                pitch_lo_hz: 440.0 * 2f32.powf((lo - 69.0) / 12.0),
+                pitch_hi_hz: 440.0 * 2f32.powf((hi - 69.0) / 12.0),
+                ..Default::default()
+            };
+            glaux_engine::transcribe::transcribe_mono(&data, &opts)
+                .into_iter()
+                .map(|n| RawNote {
+                    start: n.start_sec,
+                    end: n.end_sec,
+                    pitch: n.pitch,
+                    vel: n.vel,
+                })
+                .collect()
+        }
+        NoteMethod::BasicPitch => {
+            let v = basic()?;
+            if mono {
+                to_mono(v, kind == PartKind::Bass)
+            } else {
+                v
+            }
+        }
+    };
+    for n in notes.iter_mut() {
+        n.start *= scale;
+        n.end *= scale;
+    }
+    Ok(notes)
+}
+
+/// 分けていない曲(ミックス)から、複数のパートをまとめて起こす。basic-pitch で 1 回起こし、声部に分ける:
+/// 旋律 = 重なっている音のうちいちばん上(G3 以上)、ベース = いちばん下(C4 以下)、和音 = 旋律・ベースに取られなかった残り。
+/// `kinds` の順に音符の並びを返す(同じ種類が 2 つあれば、残りを最初の 1 つに入れ、ほかは空)
+pub fn transcribe_mix_parts(
+    mix: &[f32],
+    sr: f32,
+    kinds: &[PartKind],
+    tuning_cents: f64,
+) -> Result<Vec<Vec<RawNote>>, String> {
+    let all = transcribe_part(
+        mix,
+        sr,
+        PartKind::Poly,
+        NoteMethod::BasicPitch,
+        tuning_cents,
+    )?;
+    let overlaps = |a: &RawNote, b: &RawNote| -> bool {
+        let ov = a.end.min(b.end) - a.start.max(b.start);
+        ov > 0.5 * (a.end - a.start).min(0.25)
+    };
+    let want_melody = kinds.contains(&PartKind::Melody);
+    let want_bass = kinds.contains(&PartKind::Bass);
+    let mut role = vec![0u8; all.len()]; // 0 = 和音, 1 = 旋律, 2 = ベース
+    for (i, n) in all.iter().enumerate() {
+        let higher = all.iter().any(|m| m.pitch > n.pitch && overlaps(n, m));
+        let lower = all.iter().any(|m| m.pitch < n.pitch && overlaps(n, m));
+        if want_bass && !lower && n.pitch <= 60 {
+            role[i] = 2;
+        } else if want_melody && !higher && n.pitch >= 55 {
+            role[i] = 1;
+        }
+    }
+    let pick = |r: u8| -> Vec<RawNote> {
+        all.iter()
+            .zip(&role)
+            .filter(|(_, x)| **x == r)
+            .map(|(n, _)| *n)
+            .collect()
+    };
+    let mut used = [false; 3];
+    Ok(kinds
+        .iter()
+        .map(|k| {
+            let r = match k {
+                PartKind::Poly => 0,
+                PartKind::Melody => 1,
+                PartKind::Bass => 2,
+            };
+            if std::mem::replace(&mut used[r as usize], true) {
+                return Vec::new();
+            }
+            let v = pick(r);
+            match k {
+                PartKind::Poly => v,
+                PartKind::Melody => to_mono(v, false),
+                PartKind::Bass => to_mono(v, true),
+            }
+        })
+        .collect())
+}
+
+/// 和音で起こした音符を単音にまとめる: 立ち上がりが 50ms 以内に重なった音は、ベースなら一番低い音、
+/// 旋律なら一番強い音だけを残す(倍音を別の音と取り違えた分を捨てる)。前の音は次の音の頭で切る
+fn to_mono(mut notes: Vec<RawNote>, lowest: bool) -> Vec<RawNote> {
+    notes.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let mut out: Vec<RawNote> = Vec::new();
+    let mut i = 0;
+    while i < notes.len() {
+        let mut j = i + 1;
+        while j < notes.len() && notes[j].start - notes[i].start <= 0.05 {
+            j += 1;
+        }
+        let pick = notes[i..j]
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                if lowest {
+                    a.pitch.cmp(&b.pitch)
+                } else {
+                    b.vel.cmp(&a.vel)
+                }
+            })
+            .unwrap_or(notes[i]);
+        // 長く伸びた前の音の中で鳴った、前の音の倍音(オクターブ・5 度上)は捨てる
+        if let Some(prev) = out.last() {
+            let iv = pick.pitch as i32 - prev.pitch as i32;
+            if pick.start < prev.end - 0.05 && (iv == 12 || iv == 19 || iv == 24) {
+                i = j;
+                continue;
+            }
+        }
+        if let Some(prev) = out.last_mut() {
+            if prev.end > pick.start {
+                prev.end = pick.start;
+            }
+        }
+        if pick.end - pick.start >= 0.04 {
+            out.push(pick);
+        }
+        i = j;
+    }
+    out
+}
+
+/// 音符の頭を、すぐ前(120ms 以内)の立ち上がりへ寄せる(音程が落ち着くまでの遅れを取り戻す)
+fn snap_to_onsets(notes: &mut [RawNote], onsets: &[f64]) {
+    let mut prev_end = f64::NEG_INFINITY;
+    for n in notes.iter_mut() {
+        let best = onsets
+            .iter()
+            .copied()
+            .filter(|&o| o <= n.start + 0.02 && o >= n.start - 0.12 && o >= prev_end - 0.01)
+            .max_by(|a, b| a.total_cmp(b));
+        if let Some(o) = best {
+            n.start = o.min(n.start);
+        }
+        prev_end = n.end;
+    }
+}
+
+/// 音が鳴っている所(20ms ごとの音量が最大から 35dB 以内)のうち、どれかの音符が覆っている割合
+fn coverage(notes: &[RawNote], audio: &[f32], sr: f32) -> f64 {
+    let hop = (0.02 * sr) as usize;
+    if hop == 0 || audio.len() < hop {
+        return 0.0;
+    }
+    let db: Vec<f32> = audio
+        .chunks(hop)
+        .map(|c| {
+            10.0 * (c.iter().map(|x| x * x).sum::<f32>() / c.len() as f32)
+                .max(1e-12)
+                .log10()
+        })
+        .collect();
+    let max = db.iter().cloned().fold(f32::MIN, f32::max);
+    let (mut active, mut covered) = (0usize, 0usize);
+    for (i, d) in db.iter().enumerate() {
+        if *d < max - 35.0 {
+            continue;
+        }
+        active += 1;
+        let t = (i as f64 + 0.5) * 0.02;
+        if notes.iter().any(|n| n.start <= t && t < n.end) {
+            covered += 1;
+        }
+    }
+    if active == 0 {
+        0.0
+    } else {
+        covered as f64 / active as f64
+    }
+}
+
+/// SwiftF0 の音程の列(16ms ごと)を音符に区切る。
+/// 有声のフレームの音程(MIDI、前後 5 フレームの中央値)が、今の音符の音程から 0.7 半音より離れて 2 フレーム続けば次の音符、
+/// 2 フレーム以上の無声で音符を閉じる。同じ音程のまま立ち上がり(`onsets`)があれば弾き直しとして分ける。
+/// 音程は区間の中央値を四捨五入、強さは立ち上がりの後 50ms の音量から
+fn mono_notes(
+    pitch: &[glaux_ml::pitch::PitchEstimate],
+    onsets: &[f64],
+    audio: &[f32],
+    sr: f32,
+    lo: f32,
+    hi: f32,
+) -> Vec<RawNote> {
+    const HOP: f64 = 0.016;
+    const MIN_LEN: f64 = 0.05;
+    let raw: Vec<Option<f32>> = pitch
+        .iter()
+        .map(|p| {
+            (p.confidence >= 0.5 && p.f0 > 0.0)
+                .then(|| 69.0 + 12.0 * (p.f0 / 440.0).log2())
+                .filter(|m| (lo..=hi).contains(m))
+        })
+        .collect();
+    // 有声のフレームだけで中央値(オクターブの飛びを抑える)
+    let smooth: Vec<Option<f32>> = (0..raw.len())
+        .map(|i| {
+            raw[i]?;
+            let mut w: Vec<f32> = raw[i.saturating_sub(2)..(i + 3).min(raw.len())]
+                .iter()
+                .flatten()
+                .copied()
+                .collect();
+            w.sort_by(f32::total_cmp);
+            Some(w[w.len() / 2])
+        })
+        .collect();
+    let time = |i: usize| -> f64 { pitch.get(i).map_or(i as f64 * HOP, |p| p.time as f64) };
+    // 区切り
+    let mut spans: Vec<(usize, usize)> = Vec::new(); // [開始, 終了) フレーム
+    let mut cur: Option<(usize, Vec<f32>)> = None;
+    let mut gap = 0;
+    let mut away = 0;
+    for (i, m) in smooth.iter().enumerate() {
+        match (m, cur.as_mut()) {
+            (None, Some(_)) => {
+                gap += 1;
+                if gap >= 2 {
+                    if let Some((s, _)) = cur.take() {
+                        spans.push((s, i + 1 - gap));
+                    }
+                    gap = 0;
+                }
+            }
+            (None, None) => {}
+            (Some(m), None) => {
+                cur = Some((i, vec![*m]));
+                gap = 0;
+                away = 0;
+            }
+            (Some(m), Some((s, ps))) => {
+                gap = 0;
+                let mut sorted = ps.clone();
+                sorted.sort_by(f32::total_cmp);
+                let med = sorted[sorted.len() / 2];
+                if (m - med).abs() > 0.7 {
+                    away += 1;
+                    if away >= 2 {
+                        let start = *s;
+                        spans.push((start, i - 1));
+                        cur = Some((i - 1, vec![*m]));
+                        away = 0;
+                        continue;
+                    }
+                } else {
+                    away = 0;
+                }
+                ps.push(*m);
+            }
+        }
+    }
+    if let Some((s, _)) = cur {
+        spans.push((s, smooth.len()));
+    }
+    // 区間 [t, t + 30ms) の音量(dB)
+    let level = |t: f64| -> f32 {
+        let a = ((t.max(0.0) * sr as f64) as usize).min(audio.len());
+        let b = (a + (0.03 * sr) as usize).min(audio.len());
+        if b <= a {
+            return -90.0;
+        }
+        let e = audio[a..b].iter().map(|x| x * x).sum::<f32>() / (b - a) as f32;
+        10.0 * e.max(1e-12).log10()
+    };
+    // 立ち上がりで弾き直しを分ける。音符の終わりの近く(約 100ms)の立ち上がりは次の音符のものなので分けない。
+    // 分けた後ろが前の頭より 6dB 以上小さい・立ち上がりの所で音量が下がっていくなら、弾き直しではなく音を離したときの
+    // 音色の変化なので分けない
+    // (開始, 終了, 頭が立ち上がりか)
+    let mut split: Vec<(usize, usize, bool)> = Vec::new();
+    for (s, mut e) in spans {
+        let mut start = s;
+        let mut attack = true;
+        let mut head = level(time(s));
+        for &o in onsets {
+            let k = ((o / HOP).round() as usize).min(e);
+            if k > start + 4 && k + 6 < e {
+                let l = level(time(k));
+                // 立ち上がりの所で音量が下がっていく = 音を離した所。残りが短ければ余韻なので、音符をそこで終える
+                if level(o + 0.01) < level(o - 0.04) - 1.8 {
+                    if e - k <= 16 {
+                        e = k;
+                        break;
+                    }
+                    continue;
+                }
+                // 頭より大きく小さい(余韻の中の揺れ)なら分けない
+                if l < head - 6.0 {
+                    continue;
+                }
+                split.push((start, k, attack));
+                start = k;
+                attack = true;
+                head = l;
+            }
+        }
+        split.push((start, e, attack));
+    }
+    // 音程の揺れで分かれた、すき間なく続く同じ音程の区間は 1 つにする(頭が立ち上がりなら弾き直しとして残す)
+    let med = |a: usize, b: usize| -> Option<u8> {
+        let mut ps: Vec<f32> = smooth[a..b].iter().flatten().copied().collect();
+        if ps.is_empty() {
+            return None;
+        }
+        ps.sort_by(f32::total_cmp);
+        Some(ps[ps.len() / 2].round().clamp(0.0, 127.0) as u8)
+    };
+    let onset_at = |k: usize| {
+        onsets
+            .iter()
+            .any(|&o| ((o / HOP).round() as i64 - k as i64).abs() <= 2)
+    };
+    let mut merged: Vec<(usize, usize, bool)> = Vec::new();
+    for seg in split {
+        if let Some(last) = merged.last_mut() {
+            if last.1 + 1 >= seg.0 && !onset_at(seg.0) && med(last.0, last.1) == med(seg.0, seg.1) {
+                last.1 = seg.1;
+                continue;
+            }
+        }
+        merged.push(seg);
+    }
+    let split: Vec<(usize, usize)> = merged.into_iter().map(|(a, b, _)| (a, b)).collect();
+    let rms_db = |t: f64| -> f32 {
+        let a = ((t * sr as f64) as usize).min(audio.len());
+        let b = (a + (0.05 * sr) as usize).min(audio.len());
+        if b <= a {
+            return -90.0;
+        }
+        let e = audio[a..b].iter().map(|x| x * x).sum::<f32>() / (b - a) as f32;
+        10.0 * e.max(1e-12).log10()
+    };
+    split
+        .into_iter()
+        .filter_map(|(s, e)| {
+            let mut ps: Vec<f32> = smooth[s..e].iter().flatten().copied().collect();
+            if ps.is_empty() {
+                return None;
+            }
+            ps.sort_by(f32::total_cmp);
+            let pitch = ps[ps.len() / 2].round().clamp(0.0, 127.0) as u8;
+            let (start, end) = (time(s), time(e.saturating_sub(1)) + HOP);
+            (end - start >= MIN_LEN).then(|| RawNote {
+                start,
+                end,
+                pitch,
+                vel: ((rms_db(start) + 45.0) * 2.2 + 40.0).clamp(20.0, 127.0) as u8,
+            })
+        })
+        .collect()
+}
+
+// ---- 格子を曲に写す(段階 2) ---------------------------------------------------
+
+/// 格子を合わせるときの直し(作業場の「格子」の手順のボタン)
+#[derive(Clone, Copy, Debug, serde::Deserialize, Serialize)]
+pub struct GridOptions {
+    /// 小節頭を何拍ずらすか(正 = 後ろへ)
+    #[serde(default)]
+    pub downbeat_shift: i32,
+    /// 拍の取り方: 1 = そのまま、2 = 倍の速さ(拍の間に拍を足す)、0.5 = 半分(1 つおき)
+    #[serde(default = "one")]
+    pub tempo_factor: f64,
+    /// 1 小節の拍数(省略で推定のまま)
+    #[serde(default)]
+    pub beats_per_bar: Option<u32>,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+impl Default for GridOptions {
+    fn default() -> Self {
+        GridOptions {
+            downbeat_shift: 0,
+            tempo_factor: 1.0,
+            beats_per_bar: None,
+        }
+    }
+}
+
+/// 曲に写す格子
+#[derive(Clone, Debug, Serialize)]
+pub struct GridPlan {
+    /// 直した後の拍(音声の秒)
+    pub beats: Vec<f64>,
+    /// 1 小節の拍数
+    pub beats_per_bar: u32,
+    /// 最初の拍の前に置く拍の数(弱起・前奏を小節に収める分)
+    pub lead_beats: u32,
+    /// 音声の頭(0 秒)が曲のどの時刻に来るか(秒)
+    pub audio_start_sec: f64,
+    pub tempo: Vec<glaux_core::time::TempoEvent>,
+}
+
+impl GridPlan {
+    pub fn tempo_map(&self) -> glaux_core::TempoMap {
+        glaux_core::TempoMap::new(self.tempo.clone()).unwrap_or_default()
+    }
+
+    /// 音声の時刻(秒)→ 曲の tick
+    pub fn tick_of(&self, map: &glaux_core::TempoMap, audio_sec: f64) -> f64 {
+        map.seconds_to_tick_f64(self.audio_start_sec + audio_sec)
+    }
+}
+
+/// 骨組みの拍から、曲のテンポ・拍子の格子を作る。最初の小節頭が小節の頭に来て、音声の頭が曲の 0 秒以降に入るように、
+/// 前に拍を足す。拍が 8 つに満たなければ None
+pub fn grid_plan(sk: &Skeleton, opts: &GridOptions) -> Option<GridPlan> {
+    let ppq = glaux_core::time::PPQ;
+    // 拍の取り方
+    let mut beats = sk.beats.clone();
+    let first_down = sk
+        .downbeats
+        .first()
+        .and_then(|d| beats.iter().position(|b| (b - d).abs() < 1e-3))
+        .unwrap_or(0);
+    let mut down_idx = first_down;
+    if opts.tempo_factor >= 1.5 {
+        let mut v = Vec::with_capacity(beats.len() * 2);
+        for w in beats.windows(2) {
+            v.push(w[0]);
+            v.push((w[0] + w[1]) / 2.0);
+        }
+        if let Some(l) = beats.last() {
+            v.push(*l);
+        }
+        beats = v;
+        down_idx *= 2;
+    } else if opts.tempo_factor <= 0.75 {
+        beats = beats
+            .iter()
+            .skip(down_idx % 2)
+            .step_by(2)
+            .copied()
+            .collect();
+        down_idx /= 2;
+    }
+    if beats.len() < 8 {
+        return None;
+    }
+    let bpb = opts
+        .beats_per_bar
+        .or(sk.beats_per_bar)
+        .unwrap_or(4)
+        .clamp(1, 16);
+    // 小節頭をずらす(手で直す)
+    let down = (down_idx as i64 + opts.downbeat_shift as i64).rem_euclid(bpb as i64) as u32;
+    let map = tempo_map(&beats);
+    let first = map.first()?;
+    let bpm0 = first.bpm;
+    // 最初の拍(beats[0])の前の拍: 最初の小節頭(down 番目の拍)を小節の頭にそろえる
+    let mut lead = (bpb - down % bpb) % bpb;
+    // 音声の頭が曲の 0 秒より前に来るなら、1 小節ずつ足す
+    while (lead as f64) * 60.0 / bpm0 < first.time {
+        lead += bpb;
+    }
+    let audio_start_sec = lead as f64 * 60.0 / bpm0 - first.time;
+    let mut tempo = vec![glaux_core::time::TempoEvent {
+        tick: glaux_core::Tick(0),
+        bpm: bpm0,
+    }];
+    for seg in map.iter().skip(1) {
+        tempo.push(glaux_core::time::TempoEvent {
+            tick: glaux_core::Tick((seg.beat as u64 + lead as u64) * ppq),
+            bpm: seg.bpm,
+        });
+    }
+    Some(GridPlan {
+        beats,
+        beats_per_bar: bpb,
+        lead_beats: lead,
+        audio_start_sec,
+        tempo,
+    })
+}
+
+/// 格子を曲に写すコマンド: テンポ・拍子を置き換え、参考曲のクリップを格子に合う位置・長さへ動かす
+pub fn grid_commands(
+    project: &glaux_core::Project,
+    plan: &GridPlan,
+) -> Result<Vec<glaux_core::Command>, String> {
+    use glaux_core::{ClipContent, Command, Tick};
+    let map = plan.tempo_map();
+    let mut cmds = vec![
+        Command::SetTempo {
+            events: plan.tempo.clone(),
+        },
+        Command::SetTimeSig {
+            events: vec![glaux_core::time::TimeSigEvent::new(
+                Tick(0),
+                plan.beats_per_bar as u8,
+                4,
+            )],
+        },
+    ];
+    for t in project.tracks.iter().filter(|t| t.reference) {
+        for c in &t.clips {
+            // 骨組みはクリップが参照している範囲(素材の offset_samples から)で解析している
+            let ClipContent::Audio {
+                asset,
+                offset_samples,
+                ..
+            } = &c.content
+            else {
+                continue;
+            };
+            let Some(meta) = project.assets.get(asset) else {
+                continue;
+            };
+            let secs =
+                meta.frames.saturating_sub(*offset_samples) as f64 / meta.sample_rate.max(1) as f64;
+            let start = map.seconds_to_tick(plan.audio_start_sec);
+            let end = map.seconds_to_tick(plan.audio_start_sec + secs);
+            let mut clip = c.clone();
+            clip.start = start;
+            clip.length = Tick(end.0.saturating_sub(start.0).max(1));
+            cmds.push(Command::ReplaceClip {
+                id: c.id.clone(),
+                clip,
+            });
+        }
+    }
+    Ok(cmds)
+}
+
+/// 起こすパート(作業場の「パート」の手順)
+#[derive(Clone, Debug, serde::Deserialize, Serialize)]
+pub struct PartSpec {
+    /// トラックの名前
+    pub name: String,
+    pub kind: PartKind,
+    /// GM の音色の番号(GM 音源があれば使う)
+    #[serde(default)]
+    pub program: Option<u16>,
+}
+
+/// パートのトラックを作るコマンド。音符の時刻(音声の秒)を格子で tick にし、`quantize`(0〜1)の強さで 16 分の格子へ寄せる。
+/// `soundfont` があればその GM の音色、無ければ内蔵の音源で鳴らす
+pub fn part_track_commands(
+    plan: &GridPlan,
+    part: &PartSpec,
+    notes: &[RawNote],
+    quantize: f64,
+    soundfont: Option<&str>,
+) -> Vec<glaux_core::Command> {
+    use glaux_core::{
+        Clip, ClipContent, ClipId, Command, Device, Note, NoteId, PluginSource, Tick, Track,
+        TrackId, TrackKind,
+    };
+    let ppq = glaux_core::time::PPQ as f64;
+    let map = plan.tempo_map();
+    let grid = ppq / 4.0;
+    let q = quantize.clamp(0.0, 1.0);
+    let snap = |t: f64| -> f64 {
+        let g = (t / grid).round() * grid;
+        t + (g - t) * q
+    };
+    let mut out: Vec<Note> = notes
+        .iter()
+        .filter_map(|n| {
+            let a = snap(plan.tick_of(&map, n.start)).max(0.0);
+            let b = snap(plan.tick_of(&map, n.end)).max(a + if q > 0.5 { grid } else { 30.0 });
+            (b > a).then(|| Note {
+                locked: false,
+                id: NoteId::new(),
+                pos: Tick(a.round() as u64),
+                dur: Tick((b - a).round().max(1.0) as u64),
+                pitch: n.pitch,
+                vel: n.vel.clamp(1, 127),
+                articulation: Default::default(),
+                pitch_curve: vec![],
+                glide_ms: None,
+                vibrato: None,
+                volume_curve: vec![],
+                brightness_curve: vec![],
+                condition: None,
+            })
+        })
+        .collect();
+    out.sort_by_key(|n| (n.pos, n.pitch));
+    // 同じ位置・同じ高さの重なりは 1 つに
+    out.dedup_by(|b, a| a.pos == b.pos && a.pitch == b.pitch);
+    let bar = ppq * plan.beats_per_bar as f64;
+    let last = out.iter().map(|n| n.pos.0 + n.dur.0).max().unwrap_or(0) as f64;
+    let length = ((last / bar).ceil().max(1.0) * bar) as u64;
+    let tid = TrackId::new();
+    let mut track = Track::new(tid.clone(), part.name.clone(), TrackKind::Midi);
+    track.device = Some(match (soundfont, part.program) {
+        (Some(sf), Some(p)) => Device {
+            source: PluginSource::Sf2 {
+                soundfont: sf.to_owned(),
+                bank: 0,
+                preset: p,
+            },
+            params: Default::default(),
+        },
+        _ => Device::builtin(match part.kind {
+            PartKind::Bass => "subtractive",
+            PartKind::Melody => "fm",
+            PartKind::Poly => "pluck",
+        }),
+    });
+    let mut clip = Clip::new_midi(ClipId::new(), part.name.clone(), Tick(0), Tick(length));
+    if let ClipContent::Midi { notes: n, .. } = &mut clip.content {
+        *n = out;
+    }
+    vec![
+        Command::AddTrack { track, index: None },
+        Command::AddClip { track: tid, clip },
+    ]
+}
+
+// ---- 作業場(画面と AI の道具が共用) ------------------------------------------
+
+/// 参考曲のクリップの骨組み。同じクリップ(素材・読み始め・長さが同じ)は解析し直さない
+pub fn clip_skeleton(
+    project: &glaux_core::Project,
+    dir: &std::path::Path,
+    clip_id: &glaux_core::ClipId,
+) -> Result<(std::sync::Arc<Skeleton>, Vec<f32>, f32), String> {
+    use std::sync::{Arc, Mutex};
+    type Entry = (String, Arc<Skeleton>, Arc<Vec<f32>>, f32);
+    static CACHE: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+    let clip = project
+        .tracks
+        .iter()
+        .find_map(|t| t.clips.iter().find(|c| &c.id == clip_id))
+        .ok_or_else(|| format!("クリップが見つかりません: {clip_id}"))?;
+    let key = match &clip.content {
+        glaux_core::ClipContent::Audio {
+            asset,
+            offset_samples,
+            ..
+        } => format!("{asset}:{offset_samples}:{}", clip.length.0),
+        _ => return Err(format!("{clip_id} は音声クリップではありません")),
+    };
+    if let Some((_, sk, frames, sr)) = CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|e| e.0 == key)
+    {
+        return Ok((sk.clone(), frames.to_vec(), *sr));
+    }
+    // 骨組みは素材の読み始めから最後まで(クリップの長さは今の曲のテンポで決まっているので使わない)
+    let sound = crate::sound::load(
+        project,
+        dir,
+        &crate::sound::SoundSource::Clip(clip_id.clone()),
+    )?;
+    let full = full_clip_audio(project, dir, clip).unwrap_or(sound.frames);
+    let sk = Arc::new(analyze(&full, sound.sample_rate, Default::default())?);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.insert(
+        0,
+        (key, sk.clone(), Arc::new(full.clone()), sound.sample_rate),
+    );
+    cache.truncate(3);
+    Ok((sk, full, sound.sample_rate))
+}
+
+/// 音声クリップの素材を、読み始め(offset_samples)から最後まで(モノラル)
+fn full_clip_audio(
+    project: &glaux_core::Project,
+    dir: &std::path::Path,
+    clip: &glaux_core::Clip,
+) -> Option<Vec<f32>> {
+    let glaux_core::ClipContent::Audio {
+        asset,
+        offset_samples,
+        ..
+    } = &clip.content
+    else {
+        return None;
+    };
+    let meta = project.assets.get(asset)?;
+    let data = glaux_engine::load_wav_mono(&dir.join(&meta.path)).ok()?;
+    let from = (*offset_samples as usize).min(data.frames.len());
+    Some(data.frames[from..].to_vec())
+}
+
+/// 格子の小節頭の音声の時刻(秒)と小節の番号
+pub fn grid_bars(plan: &GridPlan) -> Vec<(u32, f64)> {
+    let bpb = plan.beats_per_bar.max(1);
+    plan.beats
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| (*i as u32 + plan.lead_beats).is_multiple_of(bpb))
+        .map(|(i, t)| ((i as u32 + plan.lead_beats) / bpb + 1, *t))
+        .collect()
+}
+
+/// 作業場の画面に出す骨組みと格子(拍・小節頭・小節ごとの和音・テンポ)
+pub fn workspace_json(sk: &Skeleton, plan: &GridPlan) -> serde_json::Value {
+    use serde_json::json;
+    let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+    let bars = grid_bars(plan);
+    let bounds: Vec<(f64, f64)> = bars
+        .iter()
+        .enumerate()
+        .map(|(k, &(_, t))| {
+            let end = bars.get(k + 1).map_or(sk.duration_sec, |b| b.1);
+            (t, end)
+        })
+        .collect();
+    let names = bar_chord_names(&sk.chords, &bounds);
+    json!({
+        "duration_sec": r3(sk.duration_sec),
+        "beats": plan.beats.iter().take(4000).map(|b| r3(*b)).collect::<Vec<_>>(),
+        "bars": bars.iter().zip(&names).take(1000).map(|(&(n, t), c)| json!({"bar": n, "time": r3(t), "chords": c})).collect::<Vec<_>>(),
+        "beats_per_bar": plan.beats_per_bar,
+        "lead_beats": plan.lead_beats,
+        "audio_start_sec": r3(plan.audio_start_sec),
+        "tempo": plan.tempo.iter().map(|e| json!({"tick": e.tick.0, "bpm": e.bpm})).collect::<Vec<_>>(),
+        "bpm": sk.bpm,
+        "key": sk.key,
+        "tuning_cents": sk.tuning_cents,
+        "groove": sk.groove,
+        "summary": skeleton_json(sk, "")["summary"],
+    })
+}
+
+/// 区間の印(構成の解析から): 格子の小節頭で区切って、区間の頭に役割の名前を置く
+pub fn section_commands(frames: &[f32], sr: f32, plan: &GridPlan) -> Vec<glaux_core::Command> {
+    let bars = grid_bars(plan);
+    let downs: Vec<f64> = bars.iter().map(|b| b.1).collect();
+    let Ok(st) = glaux_engine::structure::analyze(frames, sr, &downs) else {
+        return Vec::new();
+    };
+    let map = plan.tempo_map();
+    let sections = st
+        .sections
+        .iter()
+        .filter_map(|s| {
+            let t = st.bar_bounds.get(s.start_bar - 1)?.0;
+            let tick = plan.tick_of(&map, t).round().max(0.0) as u64;
+            // 小節の頭へ寄せる
+            let bar = glaux_core::time::PPQ * plan.beats_per_bar as u64;
+            let tick = (tick + bar / 2) / bar * bar;
+            Some(glaux_core::SectionMarker {
+                tick: glaux_core::Tick(tick),
+                name: if s.role_ja.is_empty() {
+                    s.label.clone()
+                } else {
+                    s.role_ja.to_owned()
+                },
+                ..Default::default()
+            })
+        })
+        .collect::<Vec<_>>();
+    if sections.is_empty() {
+        return Vec::new();
+    }
+    vec![glaux_core::Command::SetSections { sections }]
+}
+
+/// 起こすパートの頼み(音の素: None なら参考曲そのもの、Some ならそのパートだけを分けた音のファイル)
+#[derive(Clone, Debug, serde::Deserialize, Serialize)]
+pub struct PartRequest {
+    #[serde(flatten)]
+    pub spec: PartSpec,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// 起こした結果: (コマンド, パートごとの (名前, 音符の数))
+pub type TranscribedParts = (Vec<glaux_core::Command>, Vec<(String, usize)>);
+
+/// 参考曲からパートを起こし、格子とトラックを置くコマンドにする。(コマンド, パートごとの音符の数)
+pub fn transcribe_commands(
+    project: &glaux_core::Project,
+    dir: &std::path::Path,
+    clip_id: &glaux_core::ClipId,
+    opts: &GridOptions,
+    parts: &[PartRequest],
+    quantize: f64,
+) -> Result<TranscribedParts, String> {
+    let (sk, mix, sr) = clip_skeleton(project, dir, clip_id)?;
+    let plan = grid_plan(&sk, opts).ok_or("拍が少なすぎて格子を作れません")?;
+    let mut cmds = grid_commands(project, &plan)?;
+    let sf = glaux_engine::sf2::default_dir().join(crate::models::SOUNDFONT_FILE);
+    let soundfont = sf.is_file().then_some(crate::models::SOUNDFONT_FILE);
+    let mut counts = Vec::new();
+    // 参考曲そのものから起こすパートは、1 回の譜起こしを声部に分ける(旋律 = 上、ベース = 下、和音 = 残り)
+    let from_mix: Vec<PartKind> = parts
+        .iter()
+        .filter(|p| p.source.is_none())
+        .map(|p| p.spec.kind)
+        .collect();
+    let mut mix_parts = if from_mix.is_empty() {
+        Vec::new()
+    } else {
+        transcribe_mix_parts(&mix, sr, &from_mix, sk.tuning_cents)?
+    }
+    .into_iter();
+    for p in parts {
+        let notes = match &p.source {
+            Some(path) => {
+                let s = crate::sound::load_file(std::path::Path::new(path))?;
+                transcribe_part(
+                    &s.frames,
+                    s.sample_rate,
+                    p.spec.kind,
+                    p.spec.kind.default_method(),
+                    sk.tuning_cents,
+                )?
+            }
+            None => mix_parts.next().unwrap_or_default(),
+        };
+        counts.push((p.spec.name.clone(), notes.len()));
+        cmds.extend(part_track_commands(
+            &plan, &p.spec, &notes, quantize, soundfont,
+        ));
+    }
+    Ok((cmds, counts))
+}
+
 /// 小節(`bounds` の (開始, 終了) 秒)ごとの和音の名前(区間に 1/8 以上かかる和音を順に。"C G/B")。和音が無ければ "N.C."
 pub fn bar_chord_names(chords: &[ChordSpan], bounds: &[(f64, f64)]) -> Vec<String> {
     bounds
@@ -574,6 +1527,95 @@ mod tests {
         for (x, y) in g.iter().zip(&b) {
             assert!((x - y).abs() < 0.04, "{x} {y}");
         }
+    }
+
+    fn skeleton(beats: Vec<f64>, downbeats: Vec<f64>) -> Skeleton {
+        Skeleton {
+            duration_sec: beats.last().copied().unwrap_or(0.0) + 1.0,
+            tempo_map: tempo_map(&beats),
+            beats,
+            downbeats,
+            bpm: Some(120.0),
+            beats_per_bar: Some(4),
+            tuning_cents: 0.0,
+            key: None,
+            chords: vec![],
+            groove: None,
+        }
+    }
+
+    #[test]
+    fn grid_puts_the_first_downbeat_on_a_bar_and_the_audio_inside_the_song() {
+        // 120 BPM。音声の 1.3 秒から拍、3 拍目(2.3 秒)が最初の小節頭(弱起 2 拍)
+        let beats: Vec<f64> = (0..40).map(|i| 1.3 + i as f64 * 0.5).collect();
+        let sk = skeleton(beats.clone(), vec![2.3, 4.3]);
+        let plan = grid_plan(&sk, &GridOptions::default()).unwrap();
+        let map = plan.tempo_map();
+        // 最初の小節頭が小節の頭(tick が 1 小節の倍数)
+        let t = plan.tick_of(&map, 2.3);
+        assert!((t / 3840.0 - (t / 3840.0).round()).abs() < 0.01, "{t}");
+        // 音声の頭は曲の 0 秒以降
+        assert!(plan.audio_start_sec >= 0.0, "{}", plan.audio_start_sec);
+        // 拍はどれも拍の格子に乗る
+        for b in &beats {
+            let t = plan.tick_of(&map, *b);
+            assert!((t / 960.0 - (t / 960.0).round()).abs() < 0.03, "{b} → {t}");
+        }
+        // 小節頭を 1 拍ずらすと、2.8 秒が小節の頭
+        let plan = grid_plan(
+            &sk,
+            &GridOptions {
+                downbeat_shift: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let t = plan.tick_of(&plan.tempo_map(), 2.8);
+        assert!((t / 3840.0 - (t / 3840.0).round()).abs() < 0.01, "{t}");
+        // 倍の速さに取り直すと 240 BPM
+        let plan = grid_plan(
+            &sk,
+            &GridOptions {
+                tempo_factor: 2.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!((plan.tempo[0].bpm - 240.0).abs() < 1.0, "{:?}", plan.tempo);
+    }
+
+    #[test]
+    fn notes_become_a_track_on_the_grid() {
+        let beats: Vec<f64> = (0..40).map(|i| i as f64 * 0.5).collect();
+        let sk = skeleton(beats, vec![0.0, 2.0]);
+        let plan = grid_plan(&sk, &GridOptions::default()).unwrap();
+        let notes = vec![
+            RawNote {
+                start: 0.02,
+                end: 0.49,
+                pitch: 60,
+                vel: 90,
+            },
+            RawNote {
+                start: 0.51,
+                end: 0.74,
+                pitch: 62,
+                vel: 90,
+            },
+        ];
+        let part = PartSpec {
+            name: "Melody".into(),
+            kind: PartKind::Melody,
+            program: Some(0),
+        };
+        let cmds = part_track_commands(&plan, &part, &notes, 1.0, Some("GeneralUser-GS.sf2"));
+        let glaux_core::Command::AddClip { clip, .. } = &cmds[1] else {
+            panic!("{cmds:?}");
+        };
+        let n = clip.notes().unwrap();
+        // 1 拍 = 960 tick。0.02〜0.49 秒は 1 拍目の 1 拍分、0.51〜0.74 秒は 2 拍目の 8 分音符
+        assert_eq!((n[0].pos.0, n[0].dur.0), (0, 960));
+        assert_eq!((n[1].pos.0, n[1].dur.0), (960, 480));
     }
 
     #[test]

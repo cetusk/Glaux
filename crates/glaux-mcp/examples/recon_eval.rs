@@ -27,7 +27,7 @@ use glaux_core::{
     chord, Clip, ClipContent, ClipId, Device, Note, NoteId, PluginSource, Project, Tick, Track,
     TrackId, TrackKind,
 };
-use glaux_engine::mir_eval::{self, ChordSpan, ChordVocab};
+use glaux_engine::mir_eval::{self, ChordSpan, ChordVocab, NoteSpan};
 use glaux_mcp::recon::{self, BeatMethod, ChordMethod, SkeletonOptions};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -102,6 +102,18 @@ struct Case {
     frames: Vec<f32>,
     sample_rate: f32,
     truth: Truth,
+    /// パートごとの分けた音と正解の音符(`--parts` のとき。分離が完全にできたときの上限を測る)
+    parts: Vec<PartCase>,
+}
+
+/// パート 1 つ(分けた音と正解の音符)
+struct PartCase {
+    name: &'static str,
+    /// 鳴らした音源(調べる用)
+    device: String,
+    kind: recon::PartKind,
+    frames: Vec<f32>,
+    truth: Vec<NoteSpan>,
 }
 
 // ---- 曲の組み立て ------------------------------------------------------
@@ -645,7 +657,7 @@ fn shift_tuning(frames: &[f32], cents: f64) -> (Vec<f32>, f64) {
     (out, 1.0 / r)
 }
 
-fn synth_case(i: usize, seed: u64, sf2: Option<&Path>) -> Case {
+fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case {
     let mut rng = Rng::new(seed * 1000 + i as u64);
     let sf2_name = sf2
         .and_then(|p| p.file_name())
@@ -687,6 +699,53 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>) -> Case {
 
     let tm = &song.project.tempo_map;
     let sec = |tick: u64| (tm.tick_to_seconds(Tick(tick)) + lead) * scale;
+    // パートごとの分けた音(同じ無音・チューニングのずれ)と正解の音符
+    let mut parts = Vec::new();
+    if with_parts {
+        for (name, kind) in [
+            ("Lead", recon::PartKind::Melody),
+            ("Bass", recon::PartKind::Bass),
+            ("Chords", recon::PartKind::Poly),
+        ] {
+            let Some(track) = song.project.tracks.iter().find(|t| t.name == name) else {
+                continue;
+            };
+            let mut solo = song.project.clone();
+            solo.tracks.retain(|t| t.name == name);
+            let Ok(st) = glaux_engine::export::render_project(&solo, sr, &bank) else {
+                continue;
+            };
+            let mut mono: Vec<f32> = vec![0.0; pad];
+            mono.extend(st.chunks(2).map(|c| (c[0] + c[1]) * 0.5));
+            let mono = if cents != 0.0 {
+                shift_tuning(&mono, cents).0
+            } else {
+                mono
+            };
+            let truth = track
+                .clips
+                .iter()
+                .flat_map(|c| c.notes().unwrap_or(&[]).iter().map(move |n| (c.start.0, n)))
+                .map(|(base, n)| NoteSpan {
+                    onset: sec(base + n.pos.0),
+                    offset: sec(base + n.pos.0 + n.dur.0),
+                    pitch: n.pitch,
+                })
+                .collect();
+            let device = match track.device.as_ref().map(|d| &d.source) {
+                Some(glaux_core::PluginSource::Builtin { name }) => name.clone(),
+                Some(glaux_core::PluginSource::Sf2 { preset, .. }) => format!("sf2:{preset}"),
+                _ => String::new(),
+            };
+            parts.push(PartCase {
+                name,
+                device,
+                kind,
+                frames: mono,
+                truth,
+            });
+        }
+    }
     let mut beats = Vec::new();
     let mut downbeats = Vec::new();
     for b in 0..(song.bars * song.bpb) as u64 {
@@ -726,6 +785,7 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>) -> Case {
             swing_8th_pct: (song.swing > 0.0).then_some(song.swing * 100.0),
             human: Some(song.human),
         },
+        parts,
     }
 }
 
@@ -888,6 +948,7 @@ fn dataset_cases(dir: &Path) -> Vec<Case> {
                 swing_8th_pct: None,
                 human: None,
             },
+            parts: Vec::new(),
         });
     }
     out
@@ -1089,13 +1150,14 @@ fn main() {
         },
     };
     let save = arg("--save").map(PathBuf::from);
+    let with_parts = args.iter().any(|a| a == "--parts");
 
     let started = std::time::Instant::now();
     let mut cases: Vec<Case> = Vec::new();
     for i in 0..n_cases {
         // SoundFont があれば半分をそれで鳴らす
         let use_sf2 = sf2.as_deref().filter(|_| i % 2 == 1);
-        cases.push(synth_case(i, seed, use_sf2));
+        cases.push(synth_case(i, seed, use_sf2, with_parts));
     }
     if let Some(d) = arg("--dataset") {
         cases.extend(dataset_cases(Path::new(&d)));
@@ -1183,6 +1245,10 @@ fn main() {
         analysis_secs / audio_secs.max(1e-9) * 100.0
     );
 
+    if with_parts {
+        eval_parts(&cases);
+    }
+
     if let Some(path) = arg("--json") {
         let v: Vec<serde_json::Value> = results
             .iter()
@@ -1190,4 +1256,112 @@ fn main() {
             .collect();
         std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default()).ok();
     }
+}
+
+/// パートの譜起こしを方式ごとに比べる(分けた音から = 分離が完全なときの上限、ミックスから直接)
+fn eval_parts(cases: &[Case]) {
+    use recon::{NoteMethod, PartKind};
+    // (パート, 方式, 音の素) → (立ち上がりの F 値, 終わりも見た F 値) の並び
+    let mut rows: BTreeMap<(String, String), Vec<(f64, f64)>> = BTreeMap::new();
+    let to_spans = |v: &[recon::RawNote]| -> Vec<NoteSpan> {
+        v.iter()
+            .map(|n| NoteSpan {
+                onset: n.start,
+                offset: n.end,
+                pitch: n.pitch,
+            })
+            .collect()
+    };
+    let mut secs = 0.0;
+    for c in cases {
+        if c.parts.is_empty() {
+            continue;
+        }
+        let tuning = glaux_engine::tonal::estimate_tuning(&c.frames, c.sample_rate);
+        let sound = c
+            .tags
+            .iter()
+            .find(|t| t.starts_with("sound:"))
+            .cloned()
+            .unwrap_or_default();
+        for p in &c.parts {
+            let methods: &[NoteMethod] = match p.kind {
+                PartKind::Melody | PartKind::Bass => &[
+                    NoteMethod::Auto,
+                    NoteMethod::SwiftF0,
+                    NoteMethod::BasicPitch,
+                ],
+                PartKind::Poly => &[NoteMethod::BasicPitch],
+            };
+            for &m in methods {
+                let t0 = std::time::Instant::now();
+                let Ok(est) = recon::transcribe_part(&p.frames, c.sample_rate, p.kind, m, tuning)
+                else {
+                    continue;
+                };
+                secs += t0.elapsed().as_secs_f64();
+                let est = to_spans(&est);
+                let f1 = mir_eval::note_f(&p.truth, &est, false).f;
+                let f2 = mir_eval::note_f(&p.truth, &est, true).f;
+                if let Ok(dir) = std::env::var("RECON_DUMP") {
+                    let path = std::path::Path::new(&dir)
+                        .join(format!("{}-{}-{m:?}.json", c.name, p.name));
+                    std::fs::write(path, serde_json::json!({"truth": p.truth, "est": est, "device": p.device, "tags": c.tags}).to_string()).ok();
+                }
+                for key in [format!("{} all", p.name), format!("{} {sound}", p.name)] {
+                    rows.entry((key, format!("{m:?}")))
+                        .or_default()
+                        .push((f1, f2));
+                }
+            }
+        }
+        // 分けずに参考曲そのままから、そのパートを起こしたとき(作業場の「参考曲そのまま」)
+        let kinds: Vec<PartKind> = c.parts.iter().map(|p| p.kind).collect();
+        let from_mix = recon::transcribe_mix_parts(&c.frames, c.sample_rate, &kinds, tuning)
+            .unwrap_or_default();
+        for (p, est) in c.parts.iter().zip(&from_mix) {
+            let est = to_spans(est);
+            let f1 = mir_eval::note_f(&p.truth, &est, false).f;
+            let f2 = mir_eval::note_f(&p.truth, &est, true).f;
+            for key in [format!("{} all", p.name), format!("{} {sound}", p.name)] {
+                rows.entry((key, "FromMix".into()))
+                    .or_default()
+                    .push((f1, f2));
+            }
+        }
+        // ミックスから直接(音程のあるパートを全部まとめて)
+        let truth: Vec<NoteSpan> = c
+            .parts
+            .iter()
+            .flat_map(|p| p.truth.iter().copied())
+            .collect();
+        if let Ok(est) = recon::transcribe_part(
+            &c.frames,
+            c.sample_rate,
+            PartKind::Poly,
+            NoteMethod::BasicPitch,
+            tuning,
+        ) {
+            let est = to_spans(&est);
+            let f1 = mir_eval::note_f(&truth, &est, false).f;
+            let f2 = mir_eval::note_f(&truth, &est, true).f;
+            for key in ["Mix all".to_owned(), format!("Mix {sound}")] {
+                rows.entry((key, "BasicPitch".into()))
+                    .or_default()
+                    .push((f1, f2));
+            }
+        }
+    }
+    println!("\n== パートの譜起こし(音符の F 値: 立ち上がり / 終わりも)==");
+    println!(
+        "{:<22}{:<12}{:>4}{:>9}{:>9}",
+        "パート", "方式", "n", "onset", "offset"
+    );
+    for ((part, m), v) in &rows {
+        let n = v.len() as f64;
+        let a = v.iter().map(|x| x.0).sum::<f64>() / n;
+        let b = v.iter().map(|x| x.1).sum::<f64>() / n;
+        println!("{part:<22}{m:<12}{:>4}{a:>9.3}{b:>9.3}", v.len());
+    }
+    println!("譜起こしにかかった時間: {secs:.1} 秒");
 }

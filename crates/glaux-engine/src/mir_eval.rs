@@ -241,6 +241,59 @@ pub fn chord_wcsr(
     (total > 0.0).then(|| hit / total)
 }
 
+/// 音符 1 つ(秒と MIDI の音高)
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NoteSpan {
+    pub onset: f64,
+    pub offset: f64,
+    pub pitch: u8,
+}
+
+/// 音符の当たりとみなす立ち上がりのずれ(秒)
+pub const NOTE_ONSET_TOL: f64 = 0.05;
+
+/// 音符の F 値(mir_eval の transcription と同じ考え方)。立ち上がりが ±50ms、音高が同じなら当たり。
+/// `with_offset` なら、終わりも「正解の長さの 20% か 50ms の大きい方」以内であること。
+/// 音高はチューニングを直した後の MIDI 番号で比べる(曲の中の音として合っているか)
+pub fn note_f(reference: &[NoteSpan], estimate: &[NoteSpan], with_offset: bool) -> Fmeasure {
+    let mut r: Vec<&NoteSpan> = reference.iter().collect();
+    r.sort_by(|a, b| a.onset.total_cmp(&b.onset));
+    let mut e: Vec<&NoteSpan> = estimate.iter().collect();
+    e.sort_by(|a, b| a.onset.total_cmp(&b.onset));
+    let mut used = vec![false; e.len()];
+    let mut hits = 0;
+    let mut lo = 0;
+    for rn in &r {
+        while lo < e.len() && e[lo].onset < rn.onset - NOTE_ONSET_TOL {
+            lo += 1;
+        }
+        let mut best: Option<(usize, f64)> = None;
+        for (j, en) in e.iter().enumerate().skip(lo) {
+            if en.onset > rn.onset + NOTE_ONSET_TOL {
+                break;
+            }
+            if used[j] || en.pitch != rn.pitch {
+                continue;
+            }
+            if with_offset {
+                let tol = (0.2 * (rn.offset - rn.onset)).max(0.05);
+                if (en.offset - rn.offset).abs() > tol {
+                    continue;
+                }
+            }
+            let d = (en.onset - rn.onset).abs();
+            if best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((j, d));
+            }
+        }
+        if let Some((j, _)) = best {
+            used[j] = true;
+            hits += 1;
+        }
+    }
+    Fmeasure::from_counts(hits, e.len(), r.len())
+}
+
 /// チューニングのずれ(セント)の誤差。±50 セントで折り返す(+45 と -45 は 10 セント違い)
 pub fn tuning_error_cents(reference: f64, estimate: f64) -> f64 {
     let d = (estimate - reference).rem_euclid(100.0);
@@ -327,6 +380,23 @@ mod tests {
         // 半分ずれた区間
         let e3 = vec![span(0.0, 1.0, "C"), span(1.0, 5.0, "F")];
         assert_eq!(chord_wcsr(&r, &e3, ChordVocab::Root), Some(0.2));
+    }
+
+    #[test]
+    fn notes_match_by_onset_and_pitch() {
+        let n = |on: f64, off: f64, p: u8| NoteSpan {
+            onset: on,
+            offset: off,
+            pitch: p,
+        };
+        let r = vec![n(0.0, 0.5, 60), n(0.5, 1.0, 62), n(1.0, 2.0, 64)];
+        // 1 つ目は 30ms ずれ(当たり)、2 つ目は音高違い、3 つ目は終わりが短すぎる
+        let e = vec![n(0.03, 0.5, 60), n(0.5, 1.0, 61), n(1.0, 1.3, 64)];
+        let f = note_f(&r, &e, false);
+        assert!((f.f - 2.0 / 3.0).abs() < 1e-9, "{f:?}");
+        let f = note_f(&r, &e, true);
+        assert!((f.f - 1.0 / 3.0).abs() < 1e-9, "{f:?}");
+        assert_eq!(note_f(&r, &r, true).f, 1.0);
     }
 
     #[test]

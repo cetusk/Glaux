@@ -30,6 +30,7 @@
   import { abLooping } from "./lib/abLoop";
   import StatusBar from "./lib/StatusBar.svelte";
   import ReferenceSwitch from "./lib/ReferenceSwitch.svelte";
+  import ReconView from "./lib/ReconView.svelte";
   import { analyzeReference, referenceClipId, referenceStore, referenceTrack, resetReference, setSpeed, SPEEDS } from "./lib/reference.svelte";
   import { applyTheme, openSettings, saveSettings, settings, settingsUi, welcomeUi } from "./lib/settings.svelte";
   import { chatStatus } from "./lib/aiStatus.svelte";
@@ -932,7 +933,7 @@
   <!-- ヘッダー: 左 = 曲・画面の切り替え / 再生と表示窓、右 = 取り消し・書き出し・設定 / 聴く音量
        (以前は 1 行にすべてを並べて横にはみ出していた。負荷・デバイス・MCP はステータスバーへ、
        マスターの音量とエフェクトはタイムラインのマスター行へ) -->
-  <header use:fitHeader>
+  <header use:fitHeader class:has-ref={hasReference}>
     <!-- 2 段: 上 = 曲と画面の切り替え・AI の作業表示・取り消し・書き出し・設定 / 下 = 再生と位置の表示・聴く音量。
          AI の作業表示が出入りしても高さが変わらないように、最初から 2 段にしている。
          2 段とも同じ左右の 2 列にそろえる(下の段だけ真ん中に寄せると、部品がばらばらに見えた) -->
@@ -967,6 +968,17 @@
               "設計(曲の計画と実際: 盛り上がり・パートごとの音域・パートの役割)",
               "Design (song plan vs. actual: energy, range per part, part roles)",
             )}><Icon name="spline" /><span class="lbl">{tr("設計", "Design")}</span></button
+          >
+          <button
+            role="tab"
+            aria-selected={viewStore.main === "recon"}
+            class:on={viewStore.main === "recon"}
+            onclick={() => (viewStore.main = "recon")}
+            aria-label={tr("起こす", "Transcribe")}
+            title={tr(
+              "曲から起こす(参考曲のテンポ・小節・和音を読み取り、パートを音符に起こす)",
+              "Transcribe a song (read a reference's tempo, bars and chords, and transcribe its parts into notes)",
+            )}><Icon name="audio-waveform" /><span class="lbl">{tr("起こす", "Transcribe")}</span></button
           >
         </div>
       </div>
@@ -1183,6 +1195,10 @@
         {:else if viewStore.main === "design"}
           <div class="mixer-host">
             <DesignView {project} />
+          </div>
+        {:else if viewStore.main === "recon"}
+          <div class="mixer-host">
+            <ReconView {project} {projectVersion} />
           </div>
         {:else}
         <div class="timeline-scroll" style={soundDesignStore.focus ? `margin-right:${inspectorStore.width}px` : ""}>
@@ -1447,6 +1463,13 @@
 
   .tp .play {
     width: 38px;
+  }
+
+  /* 参考曲の切り替えが出ていて狭いときは、前・次の小節のボタンをしまう(← → キーで動かせる)。再生の表示窓が詰まらないように */
+  @media (max-width: 1010px) {
+    header.has-ref .bar-step {
+      display: none;
+    }
   }
 
   /* 再生の速さ(100% 以外のときは目立たせる) */
