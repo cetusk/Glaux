@@ -1366,6 +1366,9 @@ pub fn auto_transpose(sk: &Skeleton, project: &glaux_core::Project) -> i32 {
     }
 }
 
+/// 取り込んだ結果: (コマンド, パートごとの (名前, 音符の数), 移調した半音)
+pub type ImportedParts = (Vec<glaux_core::Command>, Vec<(String, usize)>, i32);
+
 /// 参考曲の一部のパートを今の曲に取り込むコマンド(今の曲のテンポ・拍子は変えない。拍の位置で写す)。
 /// (コマンド, パートごとの (名前, 音符の数), 移調した半音)
 pub fn import_commands(
@@ -1376,7 +1379,7 @@ pub fn import_commands(
     parts: &[PartRequest],
     quantize: f64,
     import: &ImportOptions,
-) -> Result<(Vec<glaux_core::Command>, Vec<(String, usize)>, i32), String> {
+) -> Result<ImportedParts, String> {
     use glaux_core::{
         Clip, ClipContent, ClipId, Command, Device, PluginSource, Tick, Track, TrackId, TrackKind,
     };
