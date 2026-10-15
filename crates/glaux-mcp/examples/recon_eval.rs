@@ -19,6 +19,8 @@
 //!                    和音の認識の設定(`glaux_engine::tonal::ChordOptions`)を変えて比べる
 //!   --separate DIR   (--parts と)曲を Demucs で 歌・ドラム・ベース・その他 に分けて起こす経路も測る(作業場の「分離ツールで分ける」と同じ割り当て。
 //!                    分けた音は DIR に置き、次からは使い回す)。旋律は歌・「その他」のどちらかに決めて起こした場合も測る
+//!   --notes DIR      (--parts と)ほかの道具が曲全体から起こした音符(DIR/<曲の名前>.json。onset・offset・pitch・program・is_drum・velocity の並び)
+//!                    も同じ方法で採点する(方式の名前は Ext。音程のある音は Glaux と同じく声部に分ける)
 //!   --save DIR       組み立てた曲の音声(wav)と正解(json)を書き出す(聴いて確かめる用)
 //!   --json FILE      曲ごとの結果を JSON で書き出す
 //! ```
@@ -1506,7 +1508,11 @@ fn main() {
     );
 
     if with_parts {
-        eval_parts(&cases, arg("--separate").as_deref().map(Path::new));
+        eval_parts(
+            &cases,
+            arg("--separate").as_deref().map(Path::new),
+            arg("--notes").as_deref().map(Path::new),
+        );
     }
 
     if let Some(path) = arg("--json") {
@@ -1539,7 +1545,7 @@ const DRUM_CLASSES: [(&str, &[u8]); 4] = [
 
 /// パートの譜起こしを、曲そのもの(作業場の「参考曲そのまま」)から起こして測る。
 /// トラックごとに書き出した音では測らない(`PartCase` の説明)
-fn eval_parts(cases: &[Case], separate: Option<&Path>) {
+fn eval_parts(cases: &[Case], separate: Option<&Path>, ext_notes: Option<&Path>) {
     use recon::{NoteMethod, PartKind};
     // (パート, 方式) → (立ち上がりの F 値, 終わりも見た F 値) の並び
     let mut rows: BTreeMap<(String, String), Vec<(f64, f64)>> = BTreeMap::new();
@@ -1657,6 +1663,159 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
                     .push((f1, f2));
             }
         }
+        // 上の声部(旋律 + 和音)をまとめて(旋律と和音の分け方に左右されない比べ)
+        let upper_truth: Vec<NoteSpan> = c
+            .parts
+            .iter()
+            .filter(|p| matches!(p.kind, PartKind::Melody | PartKind::Poly))
+            .flat_map(|p| p.truth.iter().copied())
+            .collect();
+        let upper_of = |est: &[Vec<recon::RawNote>]| -> Vec<NoteSpan> {
+            kinds
+                .iter()
+                .zip(est)
+                .filter(|(k, _)| matches!(k, PartKind::Melody | PartKind::Poly))
+                .flat_map(|(_, v)| to_spans(v))
+                .collect()
+        };
+        if !upper_truth.is_empty() {
+            let est = upper_of(&from_mix);
+            let f1 = mir_eval::note_f(&upper_truth, &est, false).f;
+            let f2 = mir_eval::note_f(&upper_truth, &est, true).f;
+            for key in keys("Upper") {
+                rows.entry((key, "FromMix".into()))
+                    .or_default()
+                    .push((f1, f2));
+            }
+            // 和声の一致(鳴っている音名)。2 つの列に同じ値を入れる
+            let h = mir_eval::chroma_f(&upper_truth, &est).f;
+            for key in keys("Upper(和声)") {
+                rows.entry((key, "FromMix".into()))
+                    .or_default()
+                    .push((h, h));
+            }
+            // 推定した和音から伴奏を組み立てたとき(音符の一致と和声の一致)
+            if let Ok(sk) = recon::analyze(&c.frames, c.sample_rate, Default::default()) {
+                let est = to_spans(&recon::chord_part_notes(&sk));
+                let f1 = mir_eval::note_f(&upper_truth, &est, false).f;
+                let f2 = mir_eval::note_f(&upper_truth, &est, true).f;
+                for key in keys("Upper") {
+                    rows.entry((key, "FromChords".into()))
+                        .or_default()
+                        .push((f1, f2));
+                }
+                let h = mir_eval::chroma_f(&upper_truth, &est).f;
+                for key in keys("Upper(和声)") {
+                    rows.entry((key, "FromChords".into()))
+                        .or_default()
+                        .push((h, h));
+                }
+            }
+        }
+        // ほかの道具が曲全体から起こした音符(--notes)
+        if let Some(dir) = ext_notes {
+            let path = dir.join(format!("{}.json", c.name));
+            let ext: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default();
+            if !ext.is_empty() {
+                let note = |v: &serde_json::Value| recon::RawNote {
+                    start: v["onset"].as_f64().unwrap_or(0.0),
+                    end: v["offset"].as_f64().unwrap_or(0.0),
+                    pitch: v["pitch"].as_u64().unwrap_or(0) as u8,
+                    vel: v["velocity"].as_u64().unwrap_or(100) as u8,
+                };
+                let pitched: Vec<recon::RawNote> = ext
+                    .iter()
+                    .filter(|v| !v["is_drum"].as_bool().unwrap_or(false))
+                    .map(note)
+                    .collect();
+                let split = recon::split_voices(&pitched, &kinds);
+                let mut score = |label: String, truth: &[NoteSpan], est: &[NoteSpan], m: &str| {
+                    let f1 = mir_eval::note_f(truth, est, false).f;
+                    let f2 = mir_eval::note_f(truth, est, true).f;
+                    for key in keys(&label) {
+                        rows.entry((key, m.to_owned())).or_default().push((f1, f2));
+                    }
+                };
+                for (k, est) in kinds.iter().zip(&split) {
+                    let truth: Vec<NoteSpan> = c
+                        .parts
+                        .iter()
+                        .filter(|p| p.kind == *k)
+                        .flat_map(|p| p.truth.iter().copied())
+                        .collect();
+                    score(kind_label(k), &truth, &to_spans(est), "Ext");
+                }
+                // 和声の一致は score と同じ表に入れるので、ここでは値だけ求めて最後に入れる
+                let mut ext_harmony = None;
+                if !upper_truth.is_empty() {
+                    let est = upper_of(&split);
+                    score("Upper".into(), &upper_truth, &est, "Ext");
+                    ext_harmony = Some(mir_eval::chroma_f(&upper_truth, &est).f);
+                }
+                // ベースを楽器の番号(32〜39)で選んだとき
+                let bass_truth: Vec<NoteSpan> = c
+                    .parts
+                    .iter()
+                    .filter(|p| p.kind == PartKind::Bass)
+                    .flat_map(|p| p.truth.iter().copied())
+                    .collect();
+                if !bass_truth.is_empty() {
+                    let est: Vec<recon::RawNote> = ext
+                        .iter()
+                        .filter(|v| {
+                            !v["is_drum"].as_bool().unwrap_or(false)
+                                && (32..40).contains(&v["program"].as_u64().unwrap_or(0))
+                        })
+                        .map(note)
+                        .collect();
+                    score("Bass".into(), &bass_truth, &to_spans(&est), "Ext(楽器)");
+                }
+                let all_truth: Vec<NoteSpan> = c
+                    .parts
+                    .iter()
+                    .filter(|p| p.kind != PartKind::Drums)
+                    .flat_map(|p| p.truth.iter().copied())
+                    .collect();
+                score("Mix".into(), &all_truth, &to_spans(&pitched), "Ext");
+                if let Some(h) = ext_harmony {
+                    for key in keys("Upper(和声)") {
+                        rows.entry((key, "Ext".into())).or_default().push((h, h));
+                    }
+                }
+                // ドラム
+                if let Some(p) = c.parts.iter().find(|p| p.kind == PartKind::Drums) {
+                    for (class, pitches) in DRUM_CLASSES {
+                        let mut t: Vec<f64> = p
+                            .truth
+                            .iter()
+                            .filter(|n| pitches.contains(&n.pitch))
+                            .map(|n| n.onset)
+                            .collect();
+                        if t.is_empty() {
+                            continue;
+                        }
+                        let mut e: Vec<f64> = ext
+                            .iter()
+                            .filter(|v| {
+                                v["is_drum"].as_bool().unwrap_or(false)
+                                    && pitches.contains(&(v["pitch"].as_u64().unwrap_or(0) as u8))
+                            })
+                            .map(|v| v["onset"].as_f64().unwrap_or(0.0))
+                            .collect();
+                        e.sort_by(f64::total_cmp);
+                        t.sort_by(f64::total_cmp);
+                        let hit = mir_eval::match_events(&t, &e, 0.05);
+                        let f = 2.0 * hit as f64 / (t.len() + e.len()) as f64;
+                        for key in keys(&format!("Drums {class}")) {
+                            rows.entry((key, "Ext".into())).or_default().push((f, f));
+                        }
+                    }
+                }
+            }
+        }
         // 音程のあるパートを全部まとめて
         let truth: Vec<NoteSpan> = c
             .parts
@@ -1759,6 +1918,12 @@ fn eval_parts(cases: &[Case], separate: Option<&Path>) {
                         rows.entry((key, method.clone()))
                             .or_default()
                             .push((f1, f2));
+                    }
+                    if k == PartKind::Poly && method == "Sep" && !upper_truth.is_empty() {
+                        let h = mir_eval::chroma_f(&upper_truth, &est).f;
+                        for key in keys("Upper(和声)") {
+                            rows.entry((key, "Sep".into())).or_default().push((h, h));
+                        }
                     }
                 }
                 // ドラム

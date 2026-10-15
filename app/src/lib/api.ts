@@ -386,6 +386,8 @@ export interface ReconPart {
   kind: "melody" | "bass" | "poly" | "drums";
   program: number | null;
   source?: string | null;
+  /** 和音のパートを、音符を起こさず推定した和音から組み立てる(poly のときだけ) */
+  from_chords?: boolean;
 }
 
 /** 参考曲からパートを起こしてトラックにする(格子も合わせる。履歴 1 件)。quantize は 16 分の格子へ寄せる強さ(0〜1) */

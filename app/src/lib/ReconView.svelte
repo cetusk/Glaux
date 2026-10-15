@@ -216,14 +216,15 @@
   });
 
   // ---- 2. パート ----
-  type PartRow = { on: boolean; name: string; kind: api.ReconPart["kind"]; program: number; source: string | null; label: string; hint: string };
+  /** chords: 和音のパートを、音符を起こさず推定した和音から組み立てる */
+  type PartRow = { on: boolean; name: string; kind: api.ReconPart["kind"]; program: number; source: string | null; chords: boolean; label: string; hint: string };
   let rows = $state<PartRow[]>([
-    { on: true, name: tr("歌・旋律", "Melody"), kind: "melody", program: 53, source: null, label: tr("歌・旋律", "Vocal / melody"), hint: tr("単音。いちばん目立つ旋律", "Monophonic; the most prominent line") },
-    { on: true, name: tr("ベース", "Bass"), kind: "bass", program: 33, source: null, label: tr("ベース", "Bass"), hint: tr("単音。いちばん低い音", "Monophonic; the lowest line") },
-    { on: true, name: tr("ピアノ", "Piano"), kind: "poly", program: 0, source: null, label: tr("ピアノ", "Piano"), hint: tr("和音", "Chords") },
-    { on: true, name: tr("ドラム", "Drums"), kind: "drums", program: 0, source: null, label: tr("ドラム", "Drums"), hint: tr("キック・スネア・ハイハット・シンバル", "Kick, snare, hi-hat, cymbal") },
-    { on: false, name: tr("ギター", "Guitar"), kind: "poly", program: 25, source: null, label: tr("ギター", "Guitar"), hint: tr("和音", "Chords") },
-    { on: false, name: tr("その他", "Other"), kind: "poly", program: 48, source: null, label: tr("その他(和音)", "Other (chords)"), hint: tr("弦・パッドなど", "Strings, pads, etc.") },
+    { on: true, name: tr("歌・旋律", "Melody"), kind: "melody", program: 53, source: null, chords: false, label: tr("歌・旋律", "Vocal / melody"), hint: tr("単音。いちばん目立つ旋律", "Monophonic; the most prominent line") },
+    { on: true, name: tr("ベース", "Bass"), kind: "bass", program: 33, source: null, chords: false, label: tr("ベース", "Bass"), hint: tr("単音。いちばん低い音", "Monophonic; the lowest line") },
+    { on: true, name: tr("ピアノ", "Piano"), kind: "poly", program: 0, source: null, chords: true, label: tr("ピアノ", "Piano"), hint: tr("和音", "Chords") },
+    { on: true, name: tr("ドラム", "Drums"), kind: "drums", program: 0, source: null, chords: false, label: tr("ドラム", "Drums"), hint: tr("キック・スネア・ハイハット・シンバル", "Kick, snare, hi-hat, cymbal") },
+    { on: false, name: tr("ギター", "Guitar"), kind: "poly", program: 25, source: null, chords: false, label: tr("ギター", "Guitar"), hint: tr("和音", "Chords") },
+    { on: false, name: tr("その他", "Other"), kind: "poly", program: 48, source: null, chords: false, label: tr("その他(和音)", "Other (chords)"), hint: tr("弦・パッドなど", "Strings, pads, etc.") },
   ]);
   let quantize = $state(0.5);
   let transcribing = $state(false);
@@ -237,7 +238,7 @@
   });
   async function importParts() {
     if (!clipId) return;
-    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source }));
+    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source, from_chords: r.chords }));
     if (!parts.length) return;
     transcribing = true;
     try {
@@ -274,6 +275,7 @@
     try {
       const f = await api.reconSeparate(clipId);
       for (const r of rows) {
+        if (r.chords) continue;
         r.source = (r.kind === "melody" ? (f.melody ?? f.vocals) : r.kind === "bass" ? f.bass : r.kind === "drums" ? f.drums : f.other) ?? null;
       }
       showToast("ok", tr("参考曲を歌・ドラム・ベース・その他に分けました。それぞれの分けた音から起こします", "Separated the reference into vocals, drums, bass and other; parts will be transcribed from them"));
@@ -289,14 +291,17 @@
       title: tr(`「${r.label}」だけを分けた音`, `Audio with only “${r.label}”`),
       filters: [{ name: tr("音声(WAV / MP3 / FLAC / OGG / M4A)", "Audio (WAV / MP3 / FLAC / OGG / M4A)"), extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
     });
-    if (typeof file === "string") r.source = file;
+    if (typeof file === "string") {
+      r.source = file;
+      r.chords = false;
+    }
   }
 
   const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
   async function transcribe() {
     if (!clipId) return;
-    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source }));
+    const parts: api.ReconPart[] = rows.filter((r) => r.on).map((r) => ({ name: r.name, kind: r.kind, program: r.program, source: r.source, from_chords: r.chords }));
     if (!parts.length) return;
     transcribing = true;
     try {
@@ -502,10 +507,31 @@
               <td><span class="pname">{r.label}</span><small>{r.hint}</small></td>
               <td>
                 <div class="src">
-                  <button class="btn sm" class:on={!r.source} onclick={() => (r.source = null)} disabled={!r.on} title={tr("参考曲そのものから起こす", "Transcribe from the full reference")}>{tr("参考曲そのまま", "Full reference")}</button>
-                  <button class="btn sm" class:on={!!r.source} onclick={() => pickSource(r)} disabled={!r.on} title={r.source ?? tr("このパートだけを分けた音のファイルを選ぶ", "Choose a file with only this part")}
+                  <button
+                    class="btn sm"
+                    class:on={!r.source && !r.chords}
+                    onclick={() => {
+                      r.source = null;
+                      r.chords = false;
+                    }}
+                    disabled={!r.on}
+                    title={tr("参考曲そのものから起こす", "Transcribe from the full reference")}>{tr("参考曲そのまま", "Full reference")}</button
+                  >
+                  <button class="btn sm" class:on={!!r.source && !r.chords} onclick={() => pickSource(r)} disabled={!r.on} title={r.source ?? tr("このパートだけを分けた音のファイルを選ぶ", "Choose a file with only this part")}
                     ><Icon name="file-audio" size={13} />{r.source ? baseName(r.source) : tr("分けた音…", "Separated audio…")}</button
                   >
+                  {#if r.kind === "poly"}
+                    <button
+                      class="btn sm"
+                      class:on={r.chords}
+                      onclick={() => (r.chords = true)}
+                      disabled={!r.on}
+                      title={tr(
+                        "音符を起こさず、推定した和音(上の和音の並び)から積んで小節ごとに鳴らす。音色が複雑な曲でも和声が合いやすい",
+                        "Build the part from the estimated chords instead of transcribing notes (stacked, played each bar). Keeps the harmony right even with complex sounds",
+                      )}>{tr("和音から組み立てる", "Build from chords")}</button
+                    >
+                  {/if}
                 </div>
               </td>
               <td><input class="tname" bind:value={r.name} disabled={!r.on} aria-label={tr("トラックの名前", "Track name")} /></td>

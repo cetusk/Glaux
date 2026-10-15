@@ -401,6 +401,83 @@ pub fn transcribe_mix_parts(
         NoteMethod::BasicPitch,
         tuning_cents,
     )?;
+    Ok(split_voices(&all, kinds))
+}
+
+/// 推定した和音の並びから、和音のパートの音符を組み立てる(音符を写すのではなく、和音を積んで小節ごとに鳴らす)。
+/// 音色が複雑な曲(ウォブル・ドローン・効果音など)では、曲から音符を起こすより和声が合う。
+/// 同じ和音が続く所は 1 つにまとめ、密集の 3〜4 声(G3〜G5)を声部のつながりが滑らかになるよう積む。小節頭ごとに鳴らし直す
+pub fn chord_part_notes(sk: &Skeleton) -> Vec<RawNote> {
+    // 同じ和音が続く所をまとめる("N" は和音なし)
+    let mut spans: Vec<(f64, f64, String)> = Vec::new();
+    for c in &sk.chords {
+        match spans.last_mut() {
+            Some(last) if last.2 == c.symbol && (c.start - last.1).abs() < 0.05 => last.1 = c.end,
+            _ => spans.push((c.start, c.end, c.symbol.clone())),
+        }
+    }
+    let parsed: Vec<(f64, f64, glaux_core::chord::Chord)> = spans
+        .into_iter()
+        .filter_map(|(a, b, sym)| {
+            let c = glaux_core::chord::parse(&sym).ok()??;
+            Some((a, b, c))
+        })
+        .collect();
+    if parsed.is_empty() {
+        return Vec::new();
+    }
+    let opts = glaux_core::voicing::Options {
+        style: glaux_core::voicing::Style::Close,
+        voices: 4,
+        low: 55,
+        high: 79,
+        top: None,
+        bass: None,
+    };
+    // 推定した和音には、構成音に無い最低音の分数和音(F#maj7/F など)も出る。積めない和音があると進行全体が失敗するので、
+    // そのときは積めない和音を除いて積み直す
+    let ok: Vec<bool> = parsed
+        .iter()
+        .map(|x| glaux_core::voicing::voice_progression(std::slice::from_ref(&x.2), &opts).is_ok())
+        .collect();
+    let parsed: Vec<_> = parsed
+        .into_iter()
+        .zip(ok)
+        .filter(|(_, k)| *k)
+        .map(|(x, _)| x)
+        .collect();
+    let chords: Vec<glaux_core::chord::Chord> = parsed.iter().map(|x| x.2.clone()).collect();
+    let Ok(voiced) = glaux_core::voicing::voice_progression(&chords, &opts) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ((a, b, _), v) in parsed.iter().zip(&voiced) {
+        // 和音の中の小節頭で区切る
+        let mut cuts = vec![*a];
+        cuts.extend(
+            sk.downbeats
+                .iter()
+                .copied()
+                .filter(|d| *d > a + 0.05 && *d < b - 0.05),
+        );
+        cuts.push(*b);
+        for w in cuts.windows(2) {
+            for &p in &v.upper {
+                out.push(RawNote {
+                    start: w[0],
+                    end: w[1],
+                    pitch: p,
+                    vel: 80,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 曲全体から起こした音符を声部に分ける: 旋律 = 重なっている音のうちいちばん上(G3 以上)、ベース = いちばん下(C4 以下)、
+/// 和音 = 旋律・ベースに取られなかった残り。`kinds` の順に音符の並びを返す(同じ種類が 2 つあれば、残りを最初の 1 つに入れ、ほかは空)
+pub fn split_voices(all: &[RawNote], kinds: &[PartKind]) -> Vec<Vec<RawNote>> {
     let overlaps = |a: &RawNote, b: &RawNote| -> bool {
         let ov = a.end.min(b.end) - a.start.max(b.start);
         ov > 0.5 * (a.end - a.start).min(0.25)
@@ -425,7 +502,7 @@ pub fn transcribe_mix_parts(
             .collect()
     };
     let mut used = [false; 3];
-    Ok(kinds
+    kinds
         .iter()
         .map(|k| {
             let r = match k {
@@ -444,7 +521,7 @@ pub fn transcribe_mix_parts(
                 PartKind::Bass => to_mono(v, true),
             }
         })
-        .collect())
+        .collect()
 }
 
 /// 和音で起こした音符を単音にまとめる: 立ち上がりが 50ms 以内に重なった音は、ベースなら一番低い音、
@@ -1234,6 +1311,9 @@ pub struct PartRequest {
     pub spec: PartSpec,
     #[serde(default)]
     pub source: Option<String>,
+    /// 和音のパート(poly)を、音符を起こすのではなく、推定した和音から組み立てる(`chord_part_notes`)
+    #[serde(default)]
+    pub from_chords: bool,
 }
 
 /// 参考曲を分離ツール(利用者が入れた Demucs)で分けた音のファイル
@@ -1359,9 +1439,10 @@ pub fn transcribe_requests(
     sr: f32,
     parts: &[PartRequest],
 ) -> Result<Vec<Vec<RawNote>>, String> {
+    let chords_only = |p: &PartRequest| p.from_chords && p.spec.kind == PartKind::Poly;
     let from_mix: Vec<PartKind> = parts
         .iter()
-        .filter(|p| p.source.is_none() && p.spec.kind != PartKind::Drums)
+        .filter(|p| p.source.is_none() && p.spec.kind != PartKind::Drums && !chords_only(p))
         .map(|p| p.spec.kind)
         .collect();
     let mut mix_parts = if from_mix.is_empty() {
@@ -1373,6 +1454,7 @@ pub fn transcribe_requests(
     parts
         .iter()
         .map(|p| match &p.source {
+            _ if chords_only(p) => Ok(chord_part_notes(sk)),
             None if p.spec.kind == PartKind::Drums => {
                 transcribe_part(mix, sr, PartKind::Drums, NoteMethod::DrumsMix, 0.0)
             }
@@ -2043,6 +2125,41 @@ mod tests {
             chords: vec![],
             groove: None,
         }
+    }
+
+    #[test]
+    fn chord_part_follows_the_estimated_chords() {
+        // 2 秒ごとの小節。C が 2 小節(同じ和音が続く所は 1 つにまとめ、小節頭で鳴らし直す)、Am が 1 小節、和音なしが 1 小節
+        let beats: Vec<f64> = (0..16).map(|i| i as f64 * 0.5).collect();
+        let mut sk = skeleton(beats, vec![0.0, 2.0, 4.0, 6.0]);
+        let span = |a: f64, b: f64, s: &str| ChordSpan {
+            start: a,
+            end: b,
+            symbol: s.into(),
+        };
+        sk.chords = vec![
+            span(0.0, 1.0, "C"),
+            span(1.0, 4.0, "C"),
+            span(4.0, 6.0, "Am"),
+            span(6.0, 8.0, "N"),
+        ];
+        let notes = chord_part_notes(&sk);
+        let pcs = |a: f64| -> Vec<u8> {
+            let mut v: Vec<u8> = notes
+                .iter()
+                .filter(|n| (n.start - a).abs() < 1e-9)
+                .map(|n| n.pitch % 12)
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        assert_eq!(pcs(0.0), vec![0, 4, 7]);
+        assert_eq!(pcs(2.0), vec![0, 4, 7]);
+        assert_eq!(pcs(4.0), vec![0, 4, 9]);
+        // 和音なしの所は鳴らさない。音域は G3〜G5
+        assert!(notes.iter().all(|n| n.end <= 6.0 + 1e-9));
+        assert!(notes.iter().all(|n| (55..=79).contains(&n.pitch)));
     }
 
     #[test]

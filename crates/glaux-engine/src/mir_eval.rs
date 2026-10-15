@@ -252,6 +252,51 @@ pub struct NoteSpan {
 /// 音符の当たりとみなす立ち上がりのずれ(秒)
 pub const NOTE_ONSET_TOL: f64 = 0.05;
 
+/// 和声の一致の F 値: 50ms ごとに、鳴っている音名(ピッチクラス)の集まりを比べる。適合率 = 推定の音名のうち正解にもある割合、
+/// 再現率 = 正解の音名のうち推定にもある割合(どちらもフレームを通して数える)。リズム・音の高さ(オクターブ)・積み方が違っても、
+/// 同じ和声を鳴らしていれば高くなる(和音から組み立てた伴奏と、音符を起こした結果を比べるため)
+pub fn chroma_f(reference: &[NoteSpan], estimate: &[NoteSpan]) -> Fmeasure {
+    const HOP: f64 = 0.05;
+    let end = reference
+        .iter()
+        .chain(estimate)
+        .map(|n| n.offset)
+        .fold(0.0f64, f64::max);
+    let n = (end / HOP).ceil() as usize + 1;
+    let frames = |notes: &[NoteSpan]| -> Vec<u16> {
+        let mut v = vec![0u16; n];
+        for x in notes {
+            let (a, b) = (
+                (x.onset / HOP).ceil() as usize,
+                (x.offset / HOP).ceil() as usize,
+            );
+            for f in v.iter_mut().take(b.min(n)).skip(a) {
+                *f |= 1 << (x.pitch % 12);
+            }
+        }
+        v
+    };
+    let (r, e) = (frames(reference), frames(estimate));
+    let (mut hit, mut nr, mut ne) = (0u32, 0u32, 0u32);
+    for (a, b) in r.iter().zip(&e) {
+        hit += (a & b).count_ones();
+        nr += a.count_ones();
+        ne += b.count_ones();
+    }
+    let precision = if ne == 0 { 0.0 } else { hit as f64 / ne as f64 };
+    let recall = if nr == 0 { 0.0 } else { hit as f64 / nr as f64 };
+    let f = if precision + recall == 0.0 {
+        0.0
+    } else {
+        2.0 * precision * recall / (precision + recall)
+    };
+    Fmeasure {
+        precision,
+        recall,
+        f,
+    }
+}
+
 /// 音符の F 値(mir_eval の transcription と同じ考え方)。立ち上がりが ±50ms、音高が同じなら当たり。
 /// `with_offset` なら、終わりも「正解の長さの 20% か 50ms の大きい方」以内であること。
 /// 音高はチューニングを直した後の MIDI 番号で比べる(曲の中の音として合っているか)

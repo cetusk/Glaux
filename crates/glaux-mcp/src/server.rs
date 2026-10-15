@@ -609,7 +609,7 @@ pub struct TranscribeReferenceParams {
     pub clip_id: String,
     /// 起こすパート。name(トラックの名前)・kind("melody" / "bass" / "poly" / "drums")・program(GM の音色の番号、省略可。
     /// drums は GM のドラムの番号 36/38/42/46/49 で書く)・source(そのパートだけを分けた音のファイルのパス。省略で参考曲そのもの)。
-    /// 省略で歌・ベース・ピアノ・ドラム
+    /// 省略で歌・ベース・ピアノ(和音から組み立てる)・ドラム
     #[serde(default)]
     #[schemars(with = "Option<Vec<serde_json::Value>>")]
     pub parts: Option<Vec<crate::recon::PartRequest>>,
@@ -6939,6 +6939,8 @@ impl GlauxServer {
                     program: Some(pr),
                 },
                 source: None,
+                // 和音は推定した和音から組み立てる(実際の曲で、音符を起こすより和声が合った)
+                from_chords: k == crate::recon::PartKind::Poly,
             })
             .collect()
         });
