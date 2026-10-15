@@ -319,6 +319,8 @@ export interface GridOptions {
   tempo_factor: number;
   /** 1 小節の拍数(null で推定のまま) */
   beats_per_bar: number | null;
+  /** 弱起なし(最初の小節頭を 1 小節目にし、前を切る)。null なら前が静かなら切る */
+  no_pickup?: boolean | null;
 }
 
 /** 作業場に出す参考曲の骨組みと格子 */
@@ -328,6 +330,8 @@ export interface ReconWorkspace {
   bars: { bar: number; time: number; chords: string }[];
   beats_per_bar: number;
   lead_beats: number;
+  /** 弱起なしにしたか(最初の小節頭が 1 小節目) */
+  no_pickup: boolean;
   audio_start_sec: number;
   tempo: { tick: number; bpm: number }[];
   bpm: number | null;
@@ -343,6 +347,16 @@ export function reconWorkspace(clipId: string, opts: GridOptions): Promise<Recon
 /** 曲のテンポ・拍子を参考曲の格子にし、参考曲のクリップを合わせる(区間の印も置ける。履歴 1 件) */
 export function reconApplyGrid(clipId: string, opts: GridOptions, sections: boolean): Promise<{ project_version: number }> {
   return invoke("recon_apply_grid", { clipId, opts, sections });
+}
+
+/** 分離ツール(利用者が入れた Demucs)がこの PC にあるか */
+export function reconSeparatorAvailable(): Promise<boolean> {
+  return invoke("recon_separator_available");
+}
+
+/** 参考曲を分離ツールで 4 つ(歌・ドラム・ベース・その他)に分ける(数分かかる)。分けた音のファイルのパス */
+export function reconSeparate(clipId: string): Promise<{ vocals?: string; drums?: string; bass?: string; other?: string }> {
+  return invoke("recon_separate", { clipId });
 }
 
 /** 起こすパート(source: 省略で参考曲そのもの、パスならそのパートだけを分けた音のファイル) */

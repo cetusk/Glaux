@@ -1198,7 +1198,7 @@
           </div>
         {:else if viewStore.main === "recon"}
           <div class="mixer-host">
-            <ReconView {project} {projectVersion} />
+            <ReconView {project} {projectVersion} playheadTick={transport.tick} playing={transport.playing} />
           </div>
         {:else}
         <div class="timeline-scroll" style={soundDesignStore.focus ? `margin-right:${inspectorStore.width}px` : ""}>

@@ -12,9 +12,15 @@
   import { showError, showToast } from "./toast.svelte";
   import { importReferenceFile, referenceClipId, referenceStore, referenceTrack, setReferenceMode, setSpeed } from "./reference.svelte";
   import { viewStore } from "./selection.svelte";
+  import { secondsToTick, tickToSeconds } from "./barMap";
   import type { Project } from "./types";
 
-  let { project, projectVersion }: { project: Project; projectVersion: number } = $props();
+  let {
+    project,
+    projectVersion,
+    playheadTick,
+    playing,
+  }: { project: Project; projectVersion: number; playheadTick: number; playing: boolean } = $props();
 
   const refTrack = $derived(referenceTrack(project));
   const clipId = $derived(referenceClipId(project));
@@ -23,7 +29,7 @@
   let step = $state<1 | 2 | 3>(1);
 
   // ---- 1. 格子 ----
-  let opts = $state<api.GridOptions>({ downbeat_shift: 0, tempo_factor: 1, beats_per_bar: null });
+  let opts = $state<api.GridOptions>({ downbeat_shift: 0, tempo_factor: 1, beats_per_bar: null, no_pickup: null });
   let ws = $state<api.ReconWorkspace | null>(null);
   let loading = $state(false);
   let loadErr = $state("");
@@ -51,7 +57,7 @@
     const id = clipId;
     if (!id || id === loadedClip) return;
     loadedClip = id;
-    opts = { downbeat_shift: 0, tempo_factor: 1, beats_per_bar: null };
+    opts = { downbeat_shift: 0, tempo_factor: 1, beats_per_bar: null, no_pickup: null };
     void load();
     api.clipPeaks(id, 2400)
       .then((r) => (peaks = r.peaks))
@@ -68,6 +74,10 @@
   }
   function setMeter(n: number | null) {
     opts.beats_per_bar = n;
+    void load();
+  }
+  function setPickup(none: boolean) {
+    opts.no_pickup = none;
     void load();
   }
 
@@ -118,6 +128,11 @@
       }
     }
     if (!w) return;
+    // 弱起なしで切る所(1 小節目より前)は暗くする(曲に入らない)
+    if (w.no_pickup && w.bars.length && w.bars[0].time > 0) {
+      g.fillStyle = color("--bg", 0.6, c);
+      g.fillRect(0, 0, w.bars[0].time * PX_PER_SEC, H);
+    }
     // 拍(細い線)
     g.strokeStyle = color("--text-dim", 0.35, c);
     g.lineWidth = 1;
@@ -132,7 +147,8 @@
     g.font = "11px sans-serif";
     g.textBaseline = "top";
     for (const bar of w.bars) {
-      const x = Math.round(bar.time * PX_PER_SEC) + 0.5;
+      // 弱起の小節の頭が素材の頭より前なら、左端に寄せて番号だけ出す
+      const x = Math.round(Math.max(0, bar.time) * PX_PER_SEC) + 0.5;
       g.strokeStyle = color("--accent", 0.9, c);
       g.lineWidth = 1.5;
       g.beginPath();
@@ -147,6 +163,42 @@
       }
     }
   });
+
+  // ---- 再生位置(曲の tick → 参考曲の素材の秒)と、波形を押して移動 ----
+  const refClip = $derived.by(() => {
+    const c = refTrack?.clips.find((c) => c.kind === "audio");
+    return c && c.kind === "audio" ? c : undefined;
+  });
+  const assetRate = $derived(
+    refClip ? ((project.assets?.[refClip.asset] as { sample_rate?: number } | undefined)?.sample_rate ?? 48000) : 48000,
+  );
+  const ppq = $derived(project.ppq ?? 960);
+  /** 曲の tick → 素材の秒(クリップの外も素材の時間の延長として) */
+  function audioSecAt(tick: number): number {
+    if (!refClip) return 0;
+    const songSec = tickToSeconds(project.tempo_map, tick, ppq);
+    const clipSec = tickToSeconds(project.tempo_map, refClip.start, ppq);
+    return songSec - clipSec + (refClip.offset_samples ?? 0) / assetRate;
+  }
+  const playX = $derived(audioSecAt(playheadTick) * PX_PER_SEC);
+  let scroller = $state<HTMLDivElement | null>(null);
+  // 再生中は再生位置が見えるように横に送る
+  $effect(() => {
+    const el = scroller;
+    const x = playX;
+    if (!el || !playing) return;
+    if (x < el.scrollLeft + 20 || x > el.scrollLeft + el.clientWidth - 40) {
+      el.scrollLeft = Math.max(0, x - el.clientWidth * 0.25);
+    }
+  });
+  function seekAt(e: MouseEvent) {
+    if (!refClip || !canvas) return;
+    const r = canvas.getBoundingClientRect();
+    const sec = (e.clientX - r.left) / PX_PER_SEC;
+    const clipSec = tickToSeconds(project.tempo_map, refClip.start, ppq);
+    const songSec = sec - (refClip.offset_samples ?? 0) / assetRate + clipSec;
+    void api.transportSeek(Math.max(0, Math.round(secondsToTick(project.tempo_map, songSec, ppq))));
+  }
 
   const tempoText = $derived.by(() => {
     if (!ws) return "";
@@ -169,6 +221,32 @@
   ]);
   let quantize = $state(0.5);
   let transcribing = $state(false);
+
+  // ---- 分離ツール(利用者が入れた Demucs) ----
+  let sepAvailable = $state<boolean | null>(null);
+  let separating = $state(false);
+  $effect(() => {
+    if (step !== 2 || sepAvailable !== null) return;
+    api.reconSeparatorAvailable()
+      .then((v) => (sepAvailable = v))
+      .catch(() => (sepAvailable = false));
+  });
+
+  async function separate() {
+    if (!clipId) return;
+    separating = true;
+    try {
+      const f = await api.reconSeparate(clipId);
+      for (const r of rows) {
+        r.source = (r.kind === "melody" ? f.vocals : r.kind === "bass" ? f.bass : f.other) ?? null;
+      }
+      showToast("ok", tr("参考曲を歌・ベース・その他に分けました。それぞれの分けた音から起こします", "Separated the reference into vocals, bass and other; parts will be transcribed from them"));
+    } catch (e) {
+      showError(tr("分けられませんでした", "Couldn't separate"), e);
+    } finally {
+      separating = false;
+    }
+  }
 
   async function pickSource(r: PartRow) {
     const file = await pickFile({
@@ -244,11 +322,20 @@
           "Check that the estimated bar lines (numbered) and beats (thin lines) line up with the reference's attacks (e.g. strong drum beats). Fix them with the buttons below if not. The labels above the bars are estimated chords.",
         )}
       </p>
-      <div class="wave-scroll">
+      <div class="wave-scroll" bind:this={scroller}>
         {#if loading && !ws}
           <div class="busy"><Icon name="loader-circle" />{tr("参考曲を解析しています…", "Analyzing the reference…")}</div>
         {/if}
-        <canvas bind:this={canvas} style="width:{width}px;height:{H}px"></canvas>
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+        <canvas
+          bind:this={canvas}
+          style="width:{width}px;height:{H}px"
+          onclick={seekAt}
+          title={tr("押すとその位置から再生(上の帯の「参考曲」で参考曲を聴けます)", "Click to play from here (listen to the reference with “Reference” on the top bar)")}
+        ></canvas>
+        {#if playX >= 0 && playX <= width}
+          <div class="playhead" style="left:{playX}px;height:{H}px"></div>
+        {/if}
       </div>
       {#if loadErr}<p class="err">{loadErr}</p>{/if}
       {#if ws}
@@ -257,7 +344,15 @@
           <div><dt>{tr("拍子", "Meter")}</dt><dd>{ws.beats_per_bar}/4</dd></div>
           <div><dt>{tr("調(推定)", "Key (est.)")}</dt><dd>{ws.key?.name ?? "—"}</dd></div>
           <div><dt>{tr("チューニング", "Tuning")}</dt><dd>{ws.tuning_cents >= 0 ? "+" : ""}{ws.tuning_cents.toFixed(0)} {tr("セント", "cents")}</dd></div>
-          <div><dt>{tr("弱起・前奏", "Pickup")}</dt><dd>{tr(`${ws.lead_beats} 拍`, plural(ws.lead_beats, "beat"))}</dd></div>
+          <div>
+            <dt>{tr("弱起", "Pickup")}</dt>
+            <dd>
+              {#if ws.no_pickup}{tr("なし(最初の小節頭が 1 小節目)", "None (first downbeat is bar 1)")}{:else if ws.lead_beats > 0}{tr(
+                  `あり(1 小節目は ${ws.lead_beats % ws.beats_per_bar || ws.beats_per_bar} 拍)`,
+                  `Yes (bar 1 has ${ws.lead_beats % ws.beats_per_bar || ws.beats_per_bar} beats)`,
+                )}{:else}{tr("なし", "None")}{/if}
+            </dd>
+          </div>
         </dl>
       {/if}
       <div class="controls">
@@ -282,6 +377,23 @@
             <button class="btn sm" class:on={(opts.beats_per_bar ?? ws?.beats_per_bar) === n} onclick={() => setMeter(n)} disabled={loading} title={tr(`1 小節 ${n} 拍にする`, `${n} beats per bar`)}>{n}/4</button>
           {/each}
         </div>
+        <div class="group seg" role="group" aria-label={tr("弱起", "Pickup")}>
+          <span class="glabel">{tr("弱起", "Pickup")}</span>
+          <button
+            class="btn sm"
+            class:on={ws?.no_pickup === false}
+            onclick={() => setPickup(false)}
+            disabled={loading}
+            title={tr("最初の小節頭の前の拍を 1 小節目(弱起)にする", "Treat the beats before the first downbeat as bar 1 (pickup)")}>{tr("あり", "Yes")}</button
+          >
+          <button
+            class="btn sm"
+            class:on={ws?.no_pickup === true}
+            onclick={() => setPickup(true)}
+            disabled={loading}
+            title={tr("最初の小節頭を 1 小節目にする(その前の音は曲に入れない)", "Make the first downbeat bar 1 (audio before it is left out)")}>{tr("なし", "No")}</button
+          >
+        </div>
         <label class="check"><input type="checkbox" bind:checked={withSections} />{tr("区間の印(イントロ・サビなど)も置く", "Also place section markers (intro, chorus…)")}</label>
         <button class="btn primary go" onclick={applyGrid} disabled={!ws || applying || loading}
           >{#if applying}<Icon name="loader-circle" />{:else}<Icon name="check" />{/if}{tr("この格子を曲に使う", "Use this grid for the song")}</button
@@ -296,6 +408,25 @@
           "Choose the parts to transcribe. Transcribing from the full reference also picks up other instruments; choosing audio with only that part (made with a separation tool) is more accurate.",
         )}
       </p>
+      <div class="sep-box">
+        {#if sepAvailable === null}
+          <span class="dim">{tr("分離ツールを確かめています…", "Checking for a separation tool…")}</span>
+        {:else if sepAvailable}
+          <button class="btn" onclick={separate} disabled={separating}
+            >{#if separating}<Icon name="loader-circle" />{tr("分けています…(曲の長さによって数分かかります)", "Separating… (may take a few minutes)")}{:else}<Icon
+                name="split"
+              />{tr("分離ツール(Demucs)で分ける", "Separate with Demucs")}{/if}</button
+          >
+          <span class="dim">{tr("歌・ベース・その他に分けて、それぞれから起こします(精度が大きく上がります)", "Splits into vocals, bass and other and transcribes each (much more accurate)")}</span>
+        {:else}
+          <p class="dim">
+            {tr(
+              "分けた音から起こすと、精度が大きく上がります。分離ツールの Demucs をこの PC に入れると、ここから分けられます(Python で pip install demucs)。Demucs の学習済みの重みは、作者が研究目的での利用としています。条件を確かめてから使ってください。ほかの分離ツール(UVR など)で作ったファイルを「分けた音…」で選ぶこともできます。",
+              "Transcribing from separated audio is much more accurate. Install the Demucs separation tool on this PC (pip install demucs in Python) to separate from here. Its trained weights are released by the authors for research use; check the terms before using them. You can also choose files made with other tools (e.g. UVR) under “Separated audio…”.",
+            )}
+          </p>
+        {/if}
+      </div>
       <table class="parts">
         <thead>
           <tr><th></th><th>{tr("パート", "Part")}</th><th>{tr("音の素", "Source")}</th><th>{tr("トラックの名前", "Track name")}</th></tr>
@@ -491,6 +622,16 @@
 
   .wave-scroll canvas {
     display: block;
+    cursor: pointer;
+  }
+
+  .playhead {
+    position: absolute;
+    top: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--text);
+    pointer-events: none;
   }
 
   .busy {
@@ -556,6 +697,17 @@
 
   .go {
     margin-left: auto;
+  }
+
+  .sep-box {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg-panel);
   }
 
   .parts {

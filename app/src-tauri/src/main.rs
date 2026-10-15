@@ -734,17 +734,18 @@ async fn recon_workspace(
         let (project, _) = state.handle.get_project_shared().await?;
         let dir = state.project_dir();
         tokio::task::spawn_blocking(move || -> Result<Value, String> {
-            let (sk, _, _) =
+            let (sk, frames, sr) =
                 glaux_mcp::recon::clip_skeleton(&project, std::path::Path::new(&dir), &cid)?;
-            let plan =
-                glaux_mcp::recon::grid_plan(&sk, &opts.unwrap_or_default()).ok_or_else(|| {
-                    t(
-                        "拍が少なすぎて格子を作れません",
-                        "Too few beats to build a grid",
-                    )
-                    .to_owned()
-                })?;
-            Ok(glaux_mcp::recon::workspace_json(&sk, &plan))
+            let (plan, cut) =
+                glaux_mcp::recon::resolve_grid(&sk, &frames, sr, &opts.unwrap_or_default())
+                    .ok_or_else(|| {
+                        t(
+                            "拍が少なすぎて格子を作れません",
+                            "Too few beats to build a grid",
+                        )
+                        .to_owned()
+                    })?;
+            Ok(glaux_mcp::recon::workspace_json(&sk, &plan, cut))
         })
         .await
         .map_err(|e| e.to_string())?
@@ -767,14 +768,15 @@ async fn recon_apply_grid(
         let cmds = tokio::task::spawn_blocking(move || -> Result<Vec<Command>, String> {
             let dir = std::path::Path::new(&dir);
             let (sk, frames, sr) = glaux_mcp::recon::clip_skeleton(&project, dir, &cid)?;
-            let plan =
-                glaux_mcp::recon::grid_plan(&sk, &opts.unwrap_or_default()).ok_or_else(|| {
-                    t(
-                        "拍が少なすぎて格子を作れません",
-                        "Too few beats to build a grid",
-                    )
-                    .to_owned()
-                })?;
+            let (plan, _) =
+                glaux_mcp::recon::resolve_grid(&sk, &frames, sr, &opts.unwrap_or_default())
+                    .ok_or_else(|| {
+                        t(
+                            "拍が少なすぎて格子を作れません",
+                            "Too few beats to build a grid",
+                        )
+                        .to_owned()
+                    })?;
             let mut cmds = glaux_mcp::recon::grid_commands(&project, &plan)?;
             if sections.unwrap_or(true) {
                 cmds.extend(glaux_mcp::recon::section_commands(&frames, sr, &plan));
@@ -794,6 +796,34 @@ async fn recon_apply_grid(
             .await?
             .map_err(|e| e.to_string())?;
         Ok(json!({ "project_version": m.project_version }))
+    })
+    .await
+}
+
+/// 作業場: 分離ツール(利用者が入れた Demucs)があるか
+#[tauri::command]
+async fn recon_separator_available() -> Result<bool, String> {
+    guard::catching("recon_separator_available", async move {
+        tokio::task::spawn_blocking(glaux_mcp::recon::separator_available)
+            .await
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// 作業場: 参考曲を分離ツールで 4 つ(歌・ドラム・ベース・その他)に分ける(曲のフォルダの cache に置く。数分かかる)
+#[tauri::command]
+async fn recon_separate(state: State<'_, AppState>, clip_id: String) -> Result<Value, String> {
+    guard::catching("recon_separate", async move {
+        let cid = glaux_core::ClipId::parse(&clip_id).map_err(|e| e.to_string())?;
+        let (project, _) = state.handle.get_project_shared().await?;
+        let dir = state.project_dir();
+        let files = tokio::task::spawn_blocking(move || {
+            glaux_mcp::recon::separate_reference(&project, std::path::Path::new(&dir), &cid)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        serde_json::to_value(files).map_err(|e| e.to_string())
     })
     .await
 }
@@ -4873,6 +4903,8 @@ fn main() -> Result<()> {
             recon_workspace,
             recon_apply_grid,
             recon_transcribe,
+            recon_separator_available,
+            recon_separate,
             ab_prepare,
             ab_set_side,
             ab_clear,

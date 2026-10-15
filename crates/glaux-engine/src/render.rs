@@ -4597,6 +4597,60 @@ mod tests {
 
     /// 再生中にソロを切り替えると、聞こえなくなったトラックの鳴っている音は止まり、聞こえるトラックは鳴り続ける
     /// (以前は発音内容が同じとみなされ、ソロで外したトラックの音が音の終わりまで鳴り続けた)
+    /// 再生中にミュートすると、鳴っている音も消える
+    #[test]
+    fn mute_while_playing_silences_sounding_notes() {
+        let p = two_pads();
+        let mut q = p.clone();
+        q.tracks[0].mute = true;
+        q.tracks[1].mute = true;
+        let shared = Arc::new(Shared::new((*build(&p)).clone()));
+        shared.playing.store(true, Ordering::Release);
+        let mut r = Renderer::new(shared.clone());
+        let _ = render_block(&mut r, 4800);
+        assert!(rms(&render_block(&mut r, 2400)) > 0.01);
+        shared.data.store(build(&q));
+        let _ = render_block(&mut r, 4800);
+        let after = rms(&render_block(&mut r, 2400));
+        assert!(after < 1e-3, "ミュートしたのに鳴っている: {after}");
+    }
+
+    /// 止まっている間にミュート・ソロを変えてから初めて再生しても、変えたとおりに鳴る
+    #[test]
+    fn mute_and_solo_changed_before_the_first_play_take_effect() {
+        let p = two_pads();
+        let only_b = {
+            let mut q = p.clone();
+            q.tracks.remove(0);
+            let shared = Arc::new(Shared::new((*build(&q)).clone()));
+            shared.playing.store(true, Ordering::Release);
+            let mut r = Renderer::new(shared.clone());
+            let _ = render_block(&mut r, 4800);
+            rms(&render_block(&mut r, 4800))
+        };
+        for change in ["mute", "solo"] {
+            let mut q = p.clone();
+            if change == "mute" {
+                q.tracks[0].mute = true;
+            } else {
+                q.tracks[1].solo = true;
+            }
+            let shared = Arc::new(Shared::new((*build(&p)).clone()));
+            let mut r = Renderer::new(shared.clone());
+            // 起動してしばらく止まったまま(オーディオスレッドは回っている)
+            let _ = render_block(&mut r, 4800);
+            shared.data.store(build(&q));
+            let _ = render_block(&mut r, 960);
+            shared.playing.store(true, Ordering::Release);
+            let _ = render_block(&mut r, 4800);
+            let got = rms(&render_block(&mut r, 4800));
+            assert!(
+                (got / only_b - 1.0).abs() < 0.15,
+                "{change}: {got} / B だけ {only_b}"
+            );
+        }
+    }
+
     #[test]
     fn solo_while_playing_silences_sounding_notes_of_other_tracks() {
         let p = two_pads();

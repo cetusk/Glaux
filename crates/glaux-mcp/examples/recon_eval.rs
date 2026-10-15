@@ -975,9 +975,11 @@ struct Scores {
     swing_err: Option<f64>,
     /// 打ち込みか人の演奏かの見分けが合ったか
     human_ok: Option<f64>,
+    /// 格子を曲に写したとき、正解の最初の小節頭が 1 小節目の頭(±70ms)に来たか(評価用の曲に弱起は無い)
+    bar1_ok: Option<f64>,
 }
 
-const METRICS: [&str; 14] = [
+const METRICS: [&str; 15] = [
     "beat_f",
     "downbeat_f",
     "tempo_acc1",
@@ -992,6 +994,7 @@ const METRICS: [&str; 14] = [
     "tuning_err_cents",
     "swing_err",
     "human_ok",
+    "bar1_ok",
 ];
 
 impl Scores {
@@ -1011,13 +1014,22 @@ impl Scores {
             "tuning_err_cents" => self.tuning_err_cents,
             "swing_err" => self.swing_err,
             "human_ok" => self.human_ok,
+            "bar1_ok" => self.bar1_ok,
             _ => None,
         }
     }
 }
 
-fn score(truth: &Truth, est: &recon::Skeleton) -> Scores {
+fn score(truth: &Truth, est: &recon::Skeleton, frames: &[f32], sr: f32) -> Scores {
     let mut s = Scores::default();
+    if let (Some(&d), Some((plan, _))) = (
+        truth.downbeats.first(),
+        recon::resolve_grid(est, frames, sr, &Default::default()),
+    ) {
+        // 正解の最初の小節頭の、曲の中の時刻(1 小節目の頭 = 0 秒)
+        let secs = plan.audio_start_sec + d;
+        s.bar1_ok = Some((secs.abs() <= 0.07) as u8 as f64);
+    }
     if !truth.beats.is_empty() {
         s.beat_f = Some(mir_eval::beat_f(&truth.beats, &est.beats).f);
         if let (Some(r), Some(e)) = (truth.bpm(), est.bpm) {
@@ -1084,7 +1096,7 @@ fn mean(v: &[f64]) -> Option<f64> {
 fn print_table(rows: &[(String, Vec<&Scores>)]) {
     let short = [
         "beat", "down", "bpm1", "bpm2", "grid", "meter", "key", "root", "majmin", "inv", "7th",
-        "tune¢", "swing", "human",
+        "tune¢", "swing", "human", "bar1",
     ];
     print!("{:<22}{:>4}", "", "n");
     for s in short {
@@ -1205,7 +1217,7 @@ fn main() {
         };
         analysis_secs += t0.elapsed().as_secs_f64();
         audio_secs += c.frames.len() as f64 / c.sample_rate as f64;
-        let s = score(&c.truth, &est);
+        let s = score(&c.truth, &est, &c.frames, c.sample_rate);
         results.push((c.name.clone(), c.tags.clone(), s, est));
     }
 

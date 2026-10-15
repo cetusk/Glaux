@@ -703,6 +703,13 @@ pub struct GridOptions {
     /// 1 小節の拍数(省略で推定のまま)
     #[serde(default)]
     pub beats_per_bar: Option<u32>,
+    /// 弱起なし: 最初の小節頭を 1 小節目にし、その前の音は切る。None なら、前が静か(無音・ノイズ)なら切る
+    #[serde(default)]
+    pub no_pickup: Option<bool>,
+    /// 弱起の小節より前の音(前奏など)を残す(残すなら、その分の小節を前に足す)。None なら切る。
+    /// 作業場では、前に音があるかで決める([`resolve_grid`])
+    #[serde(default)]
+    pub keep_intro: Option<bool>,
 }
 
 fn one() -> f64 {
@@ -715,6 +722,8 @@ impl Default for GridOptions {
             downbeat_shift: 0,
             tempo_factor: 1.0,
             beats_per_bar: None,
+            no_pickup: None,
+            keep_intro: None,
         }
     }
 }
@@ -726,9 +735,9 @@ pub struct GridPlan {
     pub beats: Vec<f64>,
     /// 1 小節の拍数
     pub beats_per_bar: u32,
-    /// 最初の拍の前に置く拍の数(弱起・前奏を小節に収める分)
-    pub lead_beats: u32,
-    /// 音声の頭(0 秒)が曲のどの時刻に来るか(秒)
+    /// 最初の拍の前に置く拍の数(弱起・前奏を小節に収める分)。負なら、最初の小節頭の前の拍をその数だけ切った(弱起なし)
+    pub lead_beats: i64,
+    /// 音声の頭(0 秒)が曲のどの時刻に来るか(秒)。負なら音声の頭を切る
     pub audio_start_sec: f64,
     pub tempo: Vec<glaux_core::time::TempoEvent>,
 }
@@ -788,12 +797,37 @@ pub fn grid_plan(sk: &Skeleton, opts: &GridOptions) -> Option<GridPlan> {
     let down = (down_idx as i64 + opts.downbeat_shift as i64).rem_euclid(bpb as i64) as u32;
     let map = tempo_map(&beats);
     let first = map.first()?;
+    if opts.no_pickup == Some(true) && down > 0 {
+        // 弱起なし: 最初の小節頭(down 番目の拍)を曲の 0 にし、その前は切る
+        let k = map.iter().rposition(|seg| seg.beat <= down as usize)?;
+        let seg = &map[k];
+        let t0 = seg.time + (down as usize - seg.beat) as f64 * 60.0 / seg.bpm;
+        let mut tempo = vec![glaux_core::time::TempoEvent {
+            tick: glaux_core::Tick(0),
+            bpm: seg.bpm,
+        }];
+        for seg in map.iter().skip(k + 1) {
+            tempo.push(glaux_core::time::TempoEvent {
+                tick: glaux_core::Tick((seg.beat as u64 - down as u64) * ppq),
+                bpm: seg.bpm,
+            });
+        }
+        return Some(GridPlan {
+            beats,
+            beats_per_bar: bpb,
+            lead_beats: -(down as i64),
+            audio_start_sec: -t0,
+            tempo,
+        });
+    }
     let bpm0 = first.bpm;
     // 最初の拍(beats[0])の前の拍: 最初の小節頭(down 番目の拍)を小節の頭にそろえる
     let mut lead = (bpb - down % bpb) % bpb;
-    // 音声の頭が曲の 0 秒より前に来るなら、1 小節ずつ足す
-    while (lead as f64) * 60.0 / bpm0 < first.time {
-        lead += bpb;
+    // 弱起の小節より前にも音(前奏)があるなら、それが曲の 0 秒より後に入るよう 1 小節ずつ足す。無ければその前を切る
+    if opts.keep_intro == Some(true) {
+        while (lead as f64) * 60.0 / bpm0 < first.time {
+            lead += bpb;
+        }
     }
     let audio_start_sec = lead as f64 * 60.0 / bpm0 - first.time;
     let mut tempo = vec![glaux_core::time::TempoEvent {
@@ -806,6 +840,7 @@ pub fn grid_plan(sk: &Skeleton, opts: &GridOptions) -> Option<GridPlan> {
             bpm: seg.bpm,
         });
     }
+    let lead = lead as i64;
     Some(GridPlan {
         beats,
         beats_per_bar: bpb,
@@ -813,6 +848,57 @@ pub fn grid_plan(sk: &Skeleton, opts: &GridOptions) -> Option<GridPlan> {
         audio_start_sec,
         tempo,
     })
+}
+
+/// 最初の小節頭より前が静か(曲全体より 20dB 以上小さい: 無音・ノイズ・拍の推定のはみ出し)なら、弱起なしにする
+pub fn auto_no_pickup(sk: &Skeleton, mix: &[f32], sr: f32) -> bool {
+    let Some(&d) = sk.downbeats.first() else {
+        return false;
+    };
+    // 小節頭の拍の推定は 20ms 刻みで少し遅れることがあるので、小節頭の音の立ち上がりを含めないよう 60ms 手前まで
+    let n = (((d - 0.06).max(0.0) * sr as f64) as usize).min(mix.len());
+    if n < (0.05 * sr) as usize {
+        return false;
+    }
+    let db = |x: &[f32]| {
+        10.0 * (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32)
+            .max(1e-12)
+            .log10()
+    };
+    db(&mix[..n]) < db(mix) - 20.0
+}
+
+/// 格子を作る(弱起の有無が決まっていなければ、`auto_no_pickup` で決める)。決めた弱起の有無も返す
+pub fn resolve_grid(
+    sk: &Skeleton,
+    mix: &[f32],
+    sr: f32,
+    opts: &GridOptions,
+) -> Option<(GridPlan, bool)> {
+    let mut o = *opts;
+    if o.no_pickup.is_none() {
+        o.no_pickup = Some(auto_no_pickup(sk, mix, sr));
+    }
+    if o.keep_intro.is_none() {
+        // 弱起の小節の頭より前に音があるか(曲全体より 20dB 以上小さければ無いとみなす)
+        let p = grid_plan(
+            sk,
+            &GridOptions {
+                keep_intro: Some(false),
+                ..o
+            },
+        )?;
+        let n = ((((-p.audio_start_sec) - 0.06).max(0.0) * sr as f64) as usize).min(mix.len());
+        let db = |x: &[f32]| {
+            10.0 * (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32)
+                .max(1e-12)
+                .log10()
+        };
+        o.keep_intro = Some(n >= (0.05 * sr) as usize && db(&mix[..n]) >= db(mix) - 20.0);
+    }
+    let plan = grid_plan(sk, &o)?;
+    let cut = plan.lead_beats < 0;
+    Some((plan, cut))
 }
 
 /// 格子を曲に写すコマンド: テンポ・拍子を置き換え、参考曲のクリップを格子に合う位置・長さへ動かす
@@ -836,25 +922,25 @@ pub fn grid_commands(
     ];
     for t in project.tracks.iter().filter(|t| t.reference) {
         for c in &t.clips {
-            // 骨組みはクリップが参照している範囲(素材の offset_samples から)で解析している
-            let ClipContent::Audio {
-                asset,
-                offset_samples,
-                ..
-            } = &c.content
-            else {
+            // 骨組みは素材の頭(0 秒)から解析している。格子の前を切るときは、素材の読み始めをその分にする
+            let ClipContent::Audio { asset, .. } = &c.content else {
                 continue;
             };
             let Some(meta) = project.assets.get(asset) else {
                 continue;
             };
-            let secs =
-                meta.frames.saturating_sub(*offset_samples) as f64 / meta.sample_rate.max(1) as f64;
-            let start = map.seconds_to_tick(plan.audio_start_sec);
-            let end = map.seconds_to_tick(plan.audio_start_sec + secs);
+            let rate = meta.sample_rate.max(1) as f64;
+            let offset = (((-plan.audio_start_sec).max(0.0) * rate) as u64).min(meta.frames);
+            let secs = meta.frames.saturating_sub(offset) as f64 / rate;
+            let start_sec = plan.audio_start_sec.max(0.0);
+            let start = map.seconds_to_tick(start_sec);
+            let end = map.seconds_to_tick(start_sec + secs);
             let mut clip = c.clone();
             clip.start = start;
             clip.length = Tick(end.0.saturating_sub(start.0).max(1));
+            if let ClipContent::Audio { offset_samples, .. } = &mut clip.content {
+                *offset_samples = offset;
+            }
             cmds.push(Command::ReplaceClip {
                 id: c.id.clone(),
                 clip,
@@ -899,7 +985,11 @@ pub fn part_track_commands(
     let mut out: Vec<Note> = notes
         .iter()
         .filter_map(|n| {
-            let a = snap(plan.tick_of(&map, n.start)).max(0.0);
+            // 曲の頭より前(弱起なしで切った所)の音は捨て、またがる音は頭から
+            if plan.audio_start_sec + n.end <= 0.0 {
+                return None;
+            }
+            let a = snap(plan.tick_of(&map, n.start.max(-plan.audio_start_sec))).max(0.0);
             let b = snap(plan.tick_of(&map, n.end)).max(a + if q > 0.5 { grid } else { 30.0 });
             (b > a).then(|| Note {
                 locked: false,
@@ -953,7 +1043,8 @@ pub fn part_track_commands(
 
 // ---- 作業場(画面と AI の道具が共用) ------------------------------------------
 
-/// 参考曲のクリップの骨組み。同じクリップ(素材・読み始め・長さが同じ)は解析し直さない
+/// 参考曲のクリップの骨組み。素材の頭(0 秒)から最後までを解析する(時刻は素材の頭から。クリップの読み始めに左右されない)。
+/// 同じ素材は解析し直さない。(骨組み, 素材のモノラルの音, サンプルレート)
 pub fn clip_skeleton(
     project: &glaux_core::Project,
     dir: &std::path::Path,
@@ -967,14 +1058,10 @@ pub fn clip_skeleton(
         .iter()
         .find_map(|t| t.clips.iter().find(|c| &c.id == clip_id))
         .ok_or_else(|| format!("クリップが見つかりません: {clip_id}"))?;
-    let key = match &clip.content {
-        glaux_core::ClipContent::Audio {
-            asset,
-            offset_samples,
-            ..
-        } => format!("{asset}:{offset_samples}:{}", clip.length.0),
-        _ => return Err(format!("{clip_id} は音声クリップではありません")),
+    let glaux_core::ClipContent::Audio { asset, .. } = &clip.content else {
+        return Err(format!("{clip_id} は音声クリップではありません"));
     };
+    let key = asset.to_string();
     if let Some((_, sk, frames, sr)) = CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -983,56 +1070,48 @@ pub fn clip_skeleton(
     {
         return Ok((sk.clone(), frames.to_vec(), *sr));
     }
-    // 骨組みは素材の読み始めから最後まで(クリップの長さは今の曲のテンポで決まっているので使わない)
-    let sound = crate::sound::load(
-        project,
-        dir,
-        &crate::sound::SoundSource::Clip(clip_id.clone()),
-    )?;
-    let full = full_clip_audio(project, dir, clip).unwrap_or(sound.frames);
-    let sk = Arc::new(analyze(&full, sound.sample_rate, Default::default())?);
+    let meta = project
+        .assets
+        .get(asset)
+        .ok_or_else(|| format!("アセットが見つかりません: {asset}"))?;
+    let data = glaux_engine::load_wav_mono(&dir.join(&meta.path))?;
+    let sk = Arc::new(analyze(&data.frames, data.sample_rate, Default::default())?);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.insert(
         0,
-        (key, sk.clone(), Arc::new(full.clone()), sound.sample_rate),
+        (
+            key,
+            sk.clone(),
+            Arc::new(data.frames.clone()),
+            data.sample_rate,
+        ),
     );
     cache.truncate(3);
-    Ok((sk, full, sound.sample_rate))
+    Ok((sk, data.frames, data.sample_rate))
 }
 
-/// 音声クリップの素材を、読み始め(offset_samples)から最後まで(モノラル)
-fn full_clip_audio(
-    project: &glaux_core::Project,
-    dir: &std::path::Path,
-    clip: &glaux_core::Clip,
-) -> Option<Vec<f32>> {
-    let glaux_core::ClipContent::Audio {
-        asset,
-        offset_samples,
-        ..
-    } = &clip.content
-    else {
-        return None;
-    };
-    let meta = project.assets.get(asset)?;
-    let data = glaux_engine::load_wav_mono(&dir.join(&meta.path)).ok()?;
-    let from = (*offset_samples as usize).min(data.frames.len());
-    Some(data.frames[from..].to_vec())
-}
-
-/// 格子の小節頭の音声の時刻(秒)と小節の番号
+/// 格子の小節頭の音声の時刻(秒)と小節の番号(1 始まり)。弱起の小節(頭が音声の前にある小節)も含む
 pub fn grid_bars(plan: &GridPlan) -> Vec<(u32, f64)> {
-    let bpb = plan.beats_per_bar.max(1);
-    plan.beats
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| (*i as u32 + plan.lead_beats).is_multiple_of(bpb))
-        .map(|(i, t)| ((i as u32 + plan.lead_beats) / bpb + 1, *t))
-        .collect()
+    let map = plan.tempo_map();
+    let bar = glaux_core::time::PPQ * plan.beats_per_bar.max(1) as u64;
+    let end = plan.beats.last().copied().unwrap_or(0.0) + 1.0;
+    let mut out = Vec::new();
+    for n in 0u32.. {
+        let t = map.tick_to_seconds(glaux_core::Tick(n as u64 * bar)) - plan.audio_start_sec;
+        if t > end || n > 5000 {
+            break;
+        }
+        let next =
+            map.tick_to_seconds(glaux_core::Tick((n as u64 + 1) * bar)) - plan.audio_start_sec;
+        if next > 0.0 {
+            out.push((n + 1, t));
+        }
+    }
+    out
 }
 
 /// 作業場の画面に出す骨組みと格子(拍・小節頭・小節ごとの和音・テンポ)
-pub fn workspace_json(sk: &Skeleton, plan: &GridPlan) -> serde_json::Value {
+pub fn workspace_json(sk: &Skeleton, plan: &GridPlan, no_pickup: bool) -> serde_json::Value {
     use serde_json::json;
     let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
     let bars = grid_bars(plan);
@@ -1041,7 +1120,7 @@ pub fn workspace_json(sk: &Skeleton, plan: &GridPlan) -> serde_json::Value {
         .enumerate()
         .map(|(k, &(_, t))| {
             let end = bars.get(k + 1).map_or(sk.duration_sec, |b| b.1);
-            (t, end)
+            (t.max(0.0), end)
         })
         .collect();
     let names = bar_chord_names(&sk.chords, &bounds);
@@ -1051,6 +1130,7 @@ pub fn workspace_json(sk: &Skeleton, plan: &GridPlan) -> serde_json::Value {
         "bars": bars.iter().zip(&names).take(1000).map(|(&(n, t), c)| json!({"bar": n, "time": r3(t), "chords": c})).collect::<Vec<_>>(),
         "beats_per_bar": plan.beats_per_bar,
         "lead_beats": plan.lead_beats,
+        "no_pickup": no_pickup,
         "audio_start_sec": r3(plan.audio_start_sec),
         "tempo": plan.tempo.iter().map(|e| json!({"tick": e.tick.0, "bpm": e.bpm})).collect::<Vec<_>>(),
         "bpm": sk.bpm,
@@ -1064,7 +1144,7 @@ pub fn workspace_json(sk: &Skeleton, plan: &GridPlan) -> serde_json::Value {
 /// 区間の印(構成の解析から): 格子の小節頭で区切って、区間の頭に役割の名前を置く
 pub fn section_commands(frames: &[f32], sr: f32, plan: &GridPlan) -> Vec<glaux_core::Command> {
     let bars = grid_bars(plan);
-    let downs: Vec<f64> = bars.iter().map(|b| b.1).collect();
+    let downs: Vec<f64> = bars.iter().map(|b| b.1).filter(|t| *t >= 0.0).collect();
     let Ok(st) = glaux_engine::structure::analyze(frames, sr, &downs) else {
         return Vec::new();
     };
@@ -1095,13 +1175,72 @@ pub fn section_commands(frames: &[f32], sr: f32, plan: &GridPlan) -> Vec<glaux_c
     vec![glaux_core::Command::SetSections { sections }]
 }
 
-/// 起こすパートの頼み(音の素: None なら参考曲そのもの、Some ならそのパートだけを分けた音のファイル)
+/// 起こすパートの頼み(音の素: None なら参考曲そのもの、Some ならそのパートだけを分けた音のファイル。参考曲の素材と頭がそろっていること)
 #[derive(Clone, Debug, serde::Deserialize, Serialize)]
 pub struct PartRequest {
     #[serde(flatten)]
     pub spec: PartSpec,
     #[serde(default)]
     pub source: Option<String>,
+}
+
+/// 参考曲を分離ツール(利用者が入れた Demucs)で分けた音のファイル
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SeparatedFiles {
+    pub vocals: Option<String>,
+    pub drums: Option<String>,
+    pub bass: Option<String>,
+    pub other: Option<String>,
+}
+
+/// 参考曲の素材(頭から最後まで)を Demucs で 4 つ(歌・ドラム・ベース・その他)に分け、曲のフォルダの
+/// `cache/recon/<素材>/` に置く。一度分けた素材は分け直さない。Demucs が無ければエラー(入れ方の案内つき)
+pub fn separate_reference(
+    project: &glaux_core::Project,
+    dir: &std::path::Path,
+    clip_id: &glaux_core::ClipId,
+) -> Result<SeparatedFiles, String> {
+    let clip = project
+        .tracks
+        .iter()
+        .find_map(|t| t.clips.iter().find(|c| &c.id == clip_id))
+        .ok_or_else(|| format!("クリップが見つかりません: {clip_id}"))?;
+    let glaux_core::ClipContent::Audio { asset, .. } = &clip.content else {
+        return Err(format!("{clip_id} は音声クリップではありません"));
+    };
+    let meta = project
+        .assets
+        .get(asset)
+        .ok_or_else(|| format!("アセットが見つかりません: {asset}"))?;
+    let out = dir
+        .join("cache")
+        .join("recon")
+        .join(asset.to_string().replace(':', "_"));
+    let names = ["vocals", "drums", "bass", "other"];
+    let path = |n: &str| out.join(format!("{n}.wav"));
+    let files = || SeparatedFiles {
+        vocals: Some(path("vocals").to_string_lossy().into_owned()),
+        drums: Some(path("drums").to_string_lossy().into_owned()),
+        bass: Some(path("bass").to_string_lossy().into_owned()),
+        other: Some(path("other").to_string_lossy().into_owned()),
+    };
+    if names.iter().all(|n| path(n).is_file()) {
+        return Ok(files());
+    }
+    let data = glaux_engine::load_wav(&dir.join(&meta.path))?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let stems =
+        crate::stems::run_demucs(&data.frames, data.side.as_deref(), data.sample_rate, &out)?;
+    // run_demucs は 歌・ドラム・ベース・その他 の順
+    for (n, (_, mid, side)) in names.iter().zip(&stems) {
+        crate::stems::write_wav_ms(&path(n), mid, side.as_deref(), data.sample_rate as u32)?;
+    }
+    Ok(files())
+}
+
+/// 分離ツール(Demucs)がこの PC に入っているか
+pub fn separator_available() -> bool {
+    crate::stems::find_demucs().is_some()
 }
 
 /// 起こした結果: (コマンド, パートごとの (名前, 音符の数))
@@ -1117,7 +1256,7 @@ pub fn transcribe_commands(
     quantize: f64,
 ) -> Result<TranscribedParts, String> {
     let (sk, mix, sr) = clip_skeleton(project, dir, clip_id)?;
-    let plan = grid_plan(&sk, opts).ok_or("拍が少なすぎて格子を作れません")?;
+    let (plan, _) = resolve_grid(&sk, &mix, sr, opts).ok_or("拍が少なすぎて格子を作れません")?;
     let mut cmds = grid_commands(project, &plan)?;
     let sf = glaux_engine::sf2::default_dir().join(crate::models::SOUNDFONT_FILE);
     let soundfont = sf.is_file().then_some(crate::models::SOUNDFONT_FILE);
@@ -1554,13 +1693,49 @@ mod tests {
         // 最初の小節頭が小節の頭(tick が 1 小節の倍数)
         let t = plan.tick_of(&map, 2.3);
         assert!((t / 3840.0 - (t / 3840.0).round()).abs() < 0.01, "{t}");
-        // 音声の頭は曲の 0 秒以降
-        assert!(plan.audio_start_sec >= 0.0, "{}", plan.audio_start_sec);
+        // 弱起の小節(0.3 秒から)より前は切る(前奏を残すなら小節を足して、音声の頭が曲の 0 秒以降に入る)
+        assert!(
+            (plan.audio_start_sec + 0.3).abs() < 0.02,
+            "{}",
+            plan.audio_start_sec
+        );
+        let keep = grid_plan(
+            &sk,
+            &GridOptions {
+                keep_intro: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(keep.audio_start_sec >= 0.0, "{}", keep.audio_start_sec);
         // 拍はどれも拍の格子に乗る
         for b in &beats {
             let t = plan.tick_of(&map, *b);
             assert!((t / 960.0 - (t / 960.0).round()).abs() < 0.03, "{b} → {t}");
         }
+        // 弱起の小節(1 小節目)は最初の小節頭の 1 小節前から。番号は 1 から
+        let bars = grid_bars(&plan);
+        assert_eq!(bars[0].0, 1);
+        assert!((bars[0].1 - 0.3).abs() < 0.02, "{bars:?}");
+        assert!((bars[1].1 - 2.3).abs() < 0.02, "{bars:?}");
+        // 弱起なし: 最初の小節頭(2.3 秒)が曲の頭(1 小節目)。その前は切る
+        let cut = grid_plan(
+            &sk,
+            &GridOptions {
+                no_pickup: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            (cut.audio_start_sec + 2.3).abs() < 0.02,
+            "{}",
+            cut.audio_start_sec
+        );
+        assert!(cut.tick_of(&cut.tempo_map(), 2.3).abs() < 20.0);
+        let bars = grid_bars(&cut);
+        assert_eq!(bars[0].0, 1);
+        assert!((bars[0].1 - 2.3).abs() < 0.02, "{bars:?}");
         // 小節頭を 1 拍ずらすと、2.8 秒が小節の頭
         let plan = grid_plan(
             &sk,

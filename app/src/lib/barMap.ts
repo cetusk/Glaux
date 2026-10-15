@@ -179,6 +179,22 @@ export function tickToSeconds(tempoMap: { tick: number; bpm: number }[], tick: n
   return secs;
 }
 
+/** 秒を tick に(テンポの変化を考慮。tickToSeconds の逆) */
+export function secondsToTick(tempoMap: { tick: number; bpm: number }[], secs: number, ppq: number): number {
+  const events = tempoMap.length > 0 ? tempoMap : [{ tick: 0, bpm: 120 }];
+  let t = 0;
+  for (let i = 0; i < events.length; i++) {
+    const start = events[i].tick;
+    const next = events[i + 1]?.tick ?? Infinity;
+    const segSecs = ((next - start) / ppq) * (60 / events[i].bpm);
+    if (secs <= t + segSecs || next === Infinity) {
+      return start + ((secs - t) / (60 / events[i].bpm)) * ppq;
+    }
+    t += segSecs;
+  }
+  return 0;
+}
+
 /** 秒を「分:秒.1/10」に */
 export function formatSeconds(secs: number): string {
   const m = Math.floor(secs / 60);

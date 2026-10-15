@@ -211,10 +211,10 @@ fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<(), Strin
 }
 
 /// 分けた 1 パート: (名前, モノラル成分 M, 左右差成分 S(ステレオのとき))
-type Stem = (String, Vec<f32>, Option<Vec<f32>>);
+pub(crate) type Stem = (String, Vec<f32>, Option<Vec<f32>>);
 
 /// M(と S)を WAV に書く。S があればステレオ(L = M + S、R = M − S)。
-fn write_wav_ms(
+pub(crate) fn write_wav_ms(
     path: &Path,
     mid: &[f32],
     side: Option<&[f32]>,
@@ -238,7 +238,7 @@ fn write_wav_ms(
 }
 
 /// Demucs(htdemucs)で 4 パートに分ける(ステレオの素材はステレオのまま渡して受け取る)。
-fn run_demucs(
+pub(crate) fn run_demucs(
     range: &[f32],
     side: Option<&[f32]>,
     sample_rate: f32,

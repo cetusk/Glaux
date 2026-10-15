@@ -621,6 +621,9 @@ pub struct TranscribeReferenceParams {
     /// 1 小節の拍数(省略で推定)
     #[serde(default)]
     pub beats_per_bar: Option<u32>,
+    /// 弱起なし(最初の小節頭を 1 小節目にし、前は切る)。省略で、前が静かなら切る
+    #[serde(default)]
+    pub no_pickup: Option<bool>,
     /// 16 分の格子へ寄せる強さ(0〜1。既定 0.5)
     #[serde(default)]
     pub quantize: Option<f64>,
@@ -6935,6 +6938,8 @@ impl GlauxServer {
             downbeat_shift: p.downbeat_shift.unwrap_or(0),
             tempo_factor: p.tempo_factor.unwrap_or(1.0),
             beats_per_bar: p.beats_per_bar,
+            no_pickup: p.no_pickup,
+            keep_intro: None,
         };
         let (project, _) = self.handle.get_project_shared().await?;
         let dir = self.handle.project_dir().await?;
@@ -6947,7 +6952,7 @@ impl GlauxServer {
                 crate::recon::transcribe_commands(&project, dir, &cid, &opts, &parts, quantize)?;
             if sections {
                 let (sk, frames, sr) = crate::recon::clip_skeleton(&project, dir, &cid)?;
-                if let Some(plan) = crate::recon::grid_plan(&sk, &opts) {
+                if let Some((plan, _)) = crate::recon::resolve_grid(&sk, &frames, sr, &opts) {
                     cmds.extend(crate::recon::section_commands(&frames, sr, &plan));
                 }
             }
