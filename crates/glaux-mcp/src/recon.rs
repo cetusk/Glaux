@@ -317,6 +317,7 @@ pub fn transcribe_part(
             })
             .collect())
     };
+    let refine = |v: Vec<RawNote>| refine_note_ends(v, &audio, sr);
     let mono = matches!(kind, PartKind::Melody | PartKind::Bass);
     let mut notes = match method {
         NoteMethod::Auto => {
@@ -324,11 +325,12 @@ pub fn transcribe_part(
             let b = swift()?;
             // 鳴っている所(音量が最大から 35dB 以内)をどれだけ音符が覆うか。basic-pitch を基本にし、
             // SwiftF0 の方がはっきり多く覆うときだけ替える(basic-pitch が音を拾えない音色)
+            // (終わりを決め直す前の音符で比べる。決め直すと短くなり、覆う割合が下がるため)
             let (ca, cb) = (coverage(&a, &audio, sr), coverage(&b, &audio, sr));
             if cb > ca + 0.1 {
                 b
             } else {
-                a
+                refine(a)
             }
         }
         NoteMethod::Drums | NoteMethod::DrumsMix => {
@@ -368,7 +370,7 @@ pub fn transcribe_part(
                 .collect()
         }
         NoteMethod::BasicPitch => {
-            let v = basic()?;
+            let v = refine(basic()?);
             if mono {
                 to_mono(v, kind == PartKind::Bass)
             } else {
@@ -503,6 +505,27 @@ fn snap_to_onsets(notes: &mut [RawNote], onsets: &[f64]) {
         prev_end = n.end;
     }
 }
+
+/// basic-pitch の音符の終わりを、音の高さごとの大きさの動きから決め直す: 立ち上がりの直後の最大から
+/// END_DROP_DB 下がった所で終える(短くするだけ)。basic-pitch は残響・余韻・ディレイの響きで音符を長く伸ばし、
+/// 短く切った音(スタブ・アルペジオ・ベース)の終わりが合わない
+fn refine_note_ends(mut notes: Vec<RawNote>, audio: &[f32], sr: f32) -> Vec<RawNote> {
+    let pe = glaux_engine::tonal::pitch_energy(audio, sr, 0.0);
+    if pe.db.is_empty() {
+        return notes;
+    }
+    for n in notes.iter_mut() {
+        let peak = pe.max(n.pitch, n.start, n.start + 0.06);
+        let (i0, i1) = (pe.frame(n.start + 0.03), pe.frame(n.end));
+        if let Some(k) = (i0..i1).find(|&k| pe.db[k][n.pitch as usize] < peak - END_DROP_DB) {
+            n.end = (k as f64 * pe.hop).max(n.start + 0.03);
+        }
+    }
+    notes
+}
+
+/// 音符を終えるとみなす、立ち上がりの直後の最大からの下がり(dB)
+const END_DROP_DB: f32 = 12.0;
 
 /// 音が鳴っている所(20ms ごとの音量が最大から 35dB 以内)のうち、どれかの音符が覆っている割合
 fn coverage(notes: &[RawNote], audio: &[f32], sr: f32) -> f64 {
@@ -1910,6 +1933,41 @@ pub fn grid_beats(map: &[TempoSegment], count: usize) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn note_ends_follow_the_sound() {
+        // 0.1 秒で切れる A4 と、1 秒続く E4(basic-pitch が残響などで長く伸ばした想定で、どちらも終わりを長めに渡す)
+        let sr = 22_050.0f32;
+        let mut x = vec![0.0f32; (1.6 * sr) as usize];
+        for (i, v) in x.iter_mut().enumerate() {
+            let t = i as f32 / sr;
+            if t < 0.1 {
+                *v += 0.4 * (std::f32::consts::TAU * 440.0 * t).sin();
+            }
+            if (0.4..1.4).contains(&t) {
+                *v += 0.4 * (std::f32::consts::TAU * 329.63 * t).sin();
+            }
+        }
+        let notes = vec![
+            RawNote {
+                start: 0.0,
+                end: 0.5,
+                pitch: 69,
+                vel: 100,
+            },
+            RawNote {
+                start: 0.4,
+                end: 1.45,
+                pitch: 64,
+                vel: 100,
+            },
+        ];
+        let out = refine_note_ends(notes, &x, sr);
+        // 切れた音は鳴り止んだあたりで終わる
+        assert!(out[0].end > 0.08 && out[0].end < 0.2, "{:?}", out[0]);
+        // 続く音は鳴っている間は短くしない
+        assert!(out[1].end > 1.3, "{:?}", out[1]);
+    }
 
     #[test]
     fn steady_beats_make_one_segment_and_changes_split() {

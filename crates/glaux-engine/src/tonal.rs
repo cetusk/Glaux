@@ -497,6 +497,96 @@ pub fn estimate_key(notes: &[Vec<f32>], bounds: &[(f64, f64)]) -> Option<(u8, bo
     Some((k.tonic, k.mode == "minor", k.confidence))
 }
 
+/// 音の高さごとの大きさの動き(譜起こしの音符の終わり・つなぎを、音そのものから決め直すため)
+pub struct PitchEnergy {
+    /// 刻み(秒)
+    pub hop: f64,
+    /// フレームごとの、MIDI の番号 0〜127 の大きさ(dB。基音と 2〜4 倍音の振幅の和)
+    pub db: Vec<[f32; 128]>,
+}
+
+impl PitchEnergy {
+    /// 時刻のフレーム
+    pub fn frame(&self, t: f64) -> usize {
+        ((t / self.hop).round().max(0.0) as usize).min(self.db.len().saturating_sub(1))
+    }
+
+    /// 区間 [a, b) の最大(dB)
+    pub fn max(&self, pitch: u8, a: f64, b: f64) -> f32 {
+        let (i, j) = (self.frame(a), self.frame(b).max(self.frame(a) + 1));
+        self.db[i..j.min(self.db.len())]
+            .iter()
+            .map(|r| r[pitch as usize])
+            .fold(f32::MIN, f32::max)
+    }
+
+    /// 区間 [a, b) の最小(dB)
+    pub fn min(&self, pitch: u8, a: f64, b: f64) -> f32 {
+        let (i, j) = (self.frame(a), self.frame(b).max(self.frame(a) + 1));
+        self.db[i..j.min(self.db.len())]
+            .iter()
+            .map(|r| r[pitch as usize])
+            .fold(f32::MAX, f32::min)
+    }
+}
+
+/// 音の高さごとの大きさ(約 85ms の窓、10ms 刻み)。`tuning_cents` だけずらした音の高さで測る
+pub fn pitch_energy(frames: &[f32], sr: f32, tuning_cents: f64) -> PitchEnergy {
+    let n = ((sr as f64 * 0.085) as usize).next_power_of_two();
+    let hop_n = (sr as f64 * 0.01) as usize;
+    let hop = hop_n as f64 / sr as f64;
+    if frames.len() < n || hop_n == 0 {
+        return PitchEnergy {
+            hop,
+            db: Vec::new(),
+        };
+    }
+    let fft = FftPlanner::<f32>::new().plan_fft_forward(n);
+    let hann: Vec<f32> = (0..n)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos())
+        .collect();
+    let bin_hz = sr as f64 / n as f64;
+    // 音の高さごとの (ビン, 重み)。倍音ほど軽く、半音の 1/2 の幅に入るビン
+    let bins: Vec<Vec<(usize, f32)>> = (0..128u32)
+        .map(|p| {
+            let f0 = 440.0 * 2f64.powf((p as f64 - 69.0 + tuning_cents / 100.0) / 12.0);
+            let mut v = Vec::new();
+            for h in 1..=4u32 {
+                let f = f0 * h as f64;
+                if f >= sr as f64 / 2.0 - bin_hz {
+                    break;
+                }
+                let lo = (f * 2f64.powf(-0.25 / 12.0) / bin_hz).floor() as usize;
+                let hi = (f * 2f64.powf(0.25 / 12.0) / bin_hz).ceil() as usize;
+                for k in lo..=hi.max(lo) {
+                    v.push((k, 1.0 / h as f32));
+                }
+            }
+            v
+        })
+        .collect();
+    let mut buf = vec![Complex::new(0.0f32, 0.0); n];
+    let mut db = Vec::with_capacity(frames.len() / hop_n + 1);
+    // 窓の中心がフレームの時刻に来るように
+    let mut center = 0usize;
+    while center < frames.len() {
+        for (i, c) in buf.iter_mut().enumerate() {
+            let k = (center + i).checked_sub(n / 2);
+            let x = k.and_then(|k| frames.get(k)).copied().unwrap_or(0.0);
+            *c = Complex::new(x * hann[i], 0.0);
+        }
+        fft.process(&mut buf);
+        let mut row = [0.0f32; 128];
+        for (p, b) in bins.iter().enumerate() {
+            let a: f32 = b.iter().map(|&(k, w)| buf[k].norm() * w).sum();
+            row[p] = 20.0 * (a + 1e-6).log10();
+        }
+        db.push(row);
+        center += hop_n;
+    }
+    PitchEnergy { hop, db }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
