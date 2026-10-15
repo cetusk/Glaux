@@ -21,6 +21,7 @@ pub mod export;
 pub mod fx_presets;
 pub mod game_export;
 pub mod guide;
+pub mod instruments;
 pub mod midi;
 pub mod mixcritique;
 pub mod models;

@@ -21,6 +21,9 @@
 //!                    分けた音は DIR に置き、次からは使い回す)。旋律は歌・「その他」のどちらかに決めて起こした場合も測る
 //!   --notes DIR      (--parts と)ほかの道具が曲全体から起こした音符(DIR/<曲の名前>.json。onset・offset・pitch・program・is_drum・velocity の並び)
 //!                    も同じ方法で採点する(方式の名前は Ext。音程のある音は Glaux と同じく声部に分ける)
+//!   --labels FILE    (--separate と)楽器の見分けも測る。FILE はトラックの楽器の種類の正解({"曲": {"トラック": "pad", ...}})。
+//!                    分けた「その他」から旋律・和音の楽器を、「歌」から声を、区間(10 秒)ごとに当てる。
+//!                    --protos FILE で、楽器の見本(instrument_protos で作る)と比べる方式も測る
 //!   --save DIR       組み立てた曲の音声(wav)と正解(json)を書き出す(聴いて確かめる用)
 //!   --json FILE      曲ごとの結果を JSON で書き出す
 //! ```
@@ -113,6 +116,8 @@ struct Case {
     truth: Truth,
     /// パートごとの正解の音符(`--parts` のとき。曲そのものから起こして測る)
     parts: Vec<PartCase>,
+    /// トラックごとの正解の音符(Glaux の曲のとき。楽器の見分けの答え合わせに使う)
+    tracks: Vec<(String, Vec<NoteSpan>)>,
 }
 
 /// パート 1 つ(正解の音符)。
@@ -779,6 +784,7 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
         tags,
         frames,
         side: Some(side),
+        tracks: Vec::new(),
         sample_rate: sr as f32,
         truth: Truth {
             beats,
@@ -955,7 +961,27 @@ fn project_case(dir: &Path, with_parts: bool) -> Result<Case, String> {
             });
         }
     }
+    // トラックごとの正解の音符(鳴るトラックすべて)
+    let tracks: Vec<(String, Vec<NoteSpan>)> = project
+        .tracks
+        .iter()
+        .filter(|t| audible(t) && t.kind == TrackKind::Midi)
+        .map(|t| {
+            (
+                t.name.clone(),
+                notes_of(t)
+                    .into_iter()
+                    .map(|(a, b, p)| NoteSpan {
+                        onset: sec(a),
+                        offset: sec(b),
+                        pitch: p,
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
     Ok(Case {
+        tracks,
         tags: vec!["sound:project".into(), format!("song:{name}")],
         name,
         frames,
@@ -1140,6 +1166,7 @@ fn dataset_cases(dir: &Path) -> Vec<Case> {
             tags: vec!["set:dataset".into()],
             frames: sound.frames,
             side: None,
+            tracks: Vec::new(),
             sample_rate: sound.sample_rate,
             truth: Truth {
                 beats,
@@ -1507,6 +1534,14 @@ fn main() {
         analysis_secs / audio_secs.max(1e-9) * 100.0
     );
 
+    if let (Some(labels), Some(sep)) = (arg("--labels"), arg("--separate")) {
+        eval_instruments(
+            &cases,
+            Path::new(&sep),
+            Path::new(&labels),
+            arg("--protos").as_deref().map(Path::new),
+        );
+    }
     if with_parts {
         eval_parts(
             &cases,
@@ -1521,6 +1556,216 @@ fn main() {
             .map(|(n, tags, s, est)| serde_json::json!({"name": n, "tags": tags, "scores": s, "estimate": est}))
             .collect();
         std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default()).ok();
+    }
+}
+
+/// 楽器の見分けを測る: 区間ごとに、正解のトラックが鳴っている種類と、推定した種類を比べる。
+/// 方式は 2 つ: 言葉(音色語の辞書との近さの z 値がしきい値を超える)と、見本(--protos。GM の音色で鳴らしたフレーズの埋め込みに、
+/// 区間がいちばん近い種類から差がしきい値以内の種類)
+fn eval_instruments(cases: &[Case], sep: &Path, labels: &Path, protos: Option<&Path>) {
+    use glaux_mcp::instruments::{
+        prototype_scores, window_embeddings, word_scores, InstrumentClass as C, Prototype,
+        WindowEmbedding, WindowScores, CLASSES,
+    };
+    let labels: serde_json::Value = std::fs::read_to_string(labels)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let protos: Vec<Prototype> = protos
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let class_of = |s: &str| -> Option<C> { serde_json::from_value(serde_json::json!(s)).ok() };
+    // 分けた「その他」から当てる種類(歌は別に「歌」から)
+    let from_other = [
+        C::Pad,
+        C::Strings,
+        C::Piano,
+        C::Epiano,
+        C::Organ,
+        C::Pluck,
+        C::Bell,
+        C::Lead,
+        C::Guitar,
+        C::Brass,
+        C::Wind,
+        C::Fx,
+    ];
+    let word_th = [0.0f32, 1.0, 2.0, 3.0];
+    let proto_th = [0.0f32, 0.01, 0.02, 0.03, 0.05, 0.08];
+    // (方式, 種類, 音の素, しきい値の番号) → (当たり, 推定, 正解)
+    type Counts = BTreeMap<(&'static str, C, &'static str, usize), (usize, usize, usize)>;
+    let mut counts: Counts = BTreeMap::new();
+    let mut song_rows: Vec<String> = Vec::new();
+    for c in cases {
+        let Some(lab) = labels.get(&c.name) else {
+            continue;
+        };
+        let work = sep.join(format!("{}-{}", c.name, c.frames.len()));
+        // 区間の埋め込み(分けた音の置き場所に残して使い回す)
+        let emb = |src: &str| -> Option<Vec<WindowEmbedding>> {
+            let path = work.join(format!("emb-{src}.json"));
+            if let Some(v) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+            {
+                return Some(v);
+            }
+            let (frames, sr) = if src == "mix" {
+                (c.frames.clone(), c.sample_rate)
+            } else {
+                let d = glaux_engine::load_wav_mono(&work.join(format!("{src}.wav"))).ok()?;
+                (d.frames, d.sample_rate)
+            };
+            let v = window_embeddings(&frames, sr).ok()?;
+            std::fs::write(&path, serde_json::to_string(&v).ok()?).ok();
+            Some(v)
+        };
+        let (Some(e_other), Some(e_vocals), Some(e_mix)) =
+            (emb("other"), emb("vocals"), emb("mix"))
+        else {
+            eprintln!(
+                "{}: 分けた音か埋め込みがありません(先に --separate で分ける)",
+                c.name
+            );
+            continue;
+        };
+        // 正解: 区間に、その種類のトラックの音が合わせて 1 秒以上鳴っている
+        let active = |cls: C, a: f64, b: f64| -> bool {
+            let mut secs = 0.0;
+            for (name, notes) in &c.tracks {
+                if lab.get(name).and_then(|v| v.as_str()).and_then(class_of) != Some(cls) {
+                    continue;
+                }
+                for n in notes {
+                    secs += (n.offset.min(b) - n.onset.max(a)).max(0.0);
+                }
+            }
+            secs >= 1.0
+        };
+        let present: Vec<&str> = from_other
+            .iter()
+            .copied()
+            .chain([C::Voice])
+            .filter(|cls| {
+                c.tracks.iter().any(|(name, _)| {
+                    lab.get(name).and_then(|v| v.as_str()).and_then(class_of) == Some(*cls)
+                })
+            })
+            .map(|cls| cls.ja())
+            .collect();
+        // 推定: 方式ごとに、区間ごとの「鳴っている」と見なす種類
+        type Decide<'a> = Box<dyn Fn(&WindowScores, C, f32) -> bool + 'a>;
+        let by_word: Decide = Box::new(|w, cls, th| w.score(cls) > th);
+        let by_proto: Decide = Box::new(|w, cls, th| {
+            let best = from_other
+                .iter()
+                .map(|&k| w.score(k))
+                .fold(f32::MIN, f32::max);
+            best > f32::MIN && w.score(cls) >= best - th
+        });
+        // (方式, 「その他」の点数, 曲全体の点数, 決め方, しきい値)
+        type Method<'a, 'b> = (
+            &'static str,
+            Vec<WindowScores>,
+            Vec<WindowScores>,
+            &'a Decide<'b>,
+            &'a [f32],
+        );
+        let mut methods: Vec<Method> = vec![(
+            "言葉",
+            word_scores(&e_other),
+            word_scores(&e_mix),
+            &by_word,
+            &word_th[..],
+        )];
+        if !protos.is_empty() {
+            methods.push((
+                "見本",
+                prototype_scores(&e_other, &protos),
+                prototype_scores(&e_mix, &protos),
+                &by_proto,
+                &proto_th[..],
+            ));
+        }
+        for (m, w_other, w_mix, decide, ths) in &methods {
+            // 曲ごとに、推定した区間の割合が多い種類(中ほどのしきい値で)
+            let th_mid = ths[ths.len() / 2];
+            let mut top: Vec<(f32, &str)> = from_other
+                .iter()
+                .map(|&cls| {
+                    let n = w_other.iter().filter(|w| decide(w, cls, th_mid)).count();
+                    (n as f32 / w_other.len().max(1) as f32, cls.ja())
+                })
+                .collect();
+            top.sort_by(|a, b| b.0.total_cmp(&a.0));
+            song_rows.push(format!(
+                "{} [{m}]: 正解 [{}] / 推定の多い順 [{}]",
+                c.name,
+                present.join("・"),
+                top.iter()
+                    .filter(|x| x.0 > 0.0)
+                    .take(6)
+                    .map(|(r, n)| format!("{n} {:.0}%", r * 100.0))
+                    .collect::<Vec<_>>()
+                    .join("・")
+            ));
+            for (src, ws) in [("その他", w_other), ("曲全体", w_mix)] {
+                for w in ws.iter() {
+                    for &cls in &from_other {
+                        let t = active(cls, w.start, w.end);
+                        for (k, th) in ths.iter().enumerate() {
+                            let e = decide(w, cls, *th);
+                            let s = counts.entry((m, cls, src, k)).or_default();
+                            s.0 += (t && e) as usize;
+                            s.1 += e as usize;
+                            s.2 += t as usize;
+                        }
+                    }
+                }
+            }
+        }
+        // 声: 分けた「歌」から(言葉で)
+        for w in word_scores(&e_vocals) {
+            let t = active(C::Voice, w.start, w.end);
+            for (k, th) in word_th.iter().enumerate() {
+                let e = w.score(C::Voice) > *th;
+                let s = counts.entry(("言葉", C::Voice, "歌", k)).or_default();
+                s.0 += (t && e) as usize;
+                s.1 += e as usize;
+                s.2 += t as usize;
+            }
+        }
+    }
+    println!("\n== 楽器の見分け(区間ごと)==");
+    for r in &song_rows {
+        println!("{r}");
+    }
+    for (m, ths) in [("言葉", &word_th[..]), ("見本", &proto_th[..])] {
+        println!("\n-- {m}(F 値 / 推定の区間の数。しきい値ごと)--");
+        print!("{:<16}{:<8}{:>6}", "種類", "音の素", "正解");
+        for th in ths {
+            print!("{th:>13.2}");
+        }
+        println!();
+        for (cls, _, _) in CLASSES.iter() {
+            for src in ["その他", "曲全体", "歌"] {
+                let Some(&(_, _, n_true)) = counts.get(&(m, *cls, src, 0)) else {
+                    continue;
+                };
+                print!("{:<16}{:<8}{:>6}", cls.ja(), src, n_true);
+                for k in 0..ths.len() {
+                    let (hit, est, tru) = counts[&(m, *cls, src, k)];
+                    let f = if est + tru == 0 {
+                        0.0
+                    } else {
+                        2.0 * hit as f64 / (est + tru) as f64
+                    };
+                    print!("{:>8.2}/{est:<4}", f);
+                }
+                println!();
+            }
+        }
     }
 }
 
