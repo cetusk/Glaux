@@ -11,8 +11,8 @@
 //!   --sf2 FILE       GM の SoundFont で鳴らす曲も混ぜる(ピアノ・ギター・弦・ドラムキット)
 //!   --dataset DIR    実在の録音の評価セット(音声と同じ名前の .beats / .lab / .key)
 //!   --project DIR    Glaux の曲(.glaux のフォルダ)を書き出して、曲の中身(テンポ・拍子・音符)を正解に測る。
-//!                    調・和音の正解は曲の音符から求めた小節ごとの和音。パートはトラックごと(ドラムはまとめて 1 つ)。
-//!                    --cases 0 と組み合わせるとその曲だけ。--save DIR でトラックごとの音(<曲>-<トラック>.wav)も書き出す
+//!                    調・和音の正解は曲の音符から求めた小節ごとの和音。パートの正解はトラックごと(ドラムはまとめて 1 つ)。
+//!                    --cases 0 と組み合わせるとその曲だけ
 //!   --beat M         拍の求め方(dbn〈既定〉/ minimal)
 //!   --chord M        和音の求め方(nnls〈既定〉/ perbar)
 //!   --chord-sharp X / --chord-bass X / --chord-change 小節頭,中ほど,ほか / --triads / --no-inversions
@@ -105,17 +105,20 @@ struct Case {
     frames: Vec<f32>,
     sample_rate: f32,
     truth: Truth,
-    /// パートごとの分けた音と正解の音符(`--parts` のとき。分離が完全にできたときの上限を測る)
+    /// パートごとの正解の音符(`--parts` のとき。曲そのものから起こして測る)
     parts: Vec<PartCase>,
 }
 
-/// パート 1 つ(分けた音と正解の音符)
+/// パート 1 つ(正解の音符)。
+///
+/// トラックごとに書き出した音(分離が完全にできたときの音)は持たない。実際には曲しか無いので、
+/// それで測った点は使い方の再現にならず、いずれその点で満足してしまうため、評価に使うことを禁じている
+/// (2026-10-15、ユーザーと決定。調査文書 13.12 節)。分けて起こす経路は、曲から分離ツールで分けた音で測る
 struct PartCase {
     name: String,
     /// 鳴らした音源(調べる用)
     device: String,
     kind: recon::PartKind,
-    frames: Vec<f32>,
     truth: Vec<NoteSpan>,
 }
 
@@ -705,7 +708,7 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
 
     let tm = &song.project.tempo_map;
     let sec = |tick: u64| (tm.tick_to_seconds(Tick(tick)) + lead) * scale;
-    // パートごとの分けた音(同じ無音・チューニングのずれ)と正解の音符
+    // パートごとの正解の音符
     let mut parts = Vec::new();
     if with_parts {
         for (name, kind) in [
@@ -716,18 +719,6 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
         ] {
             let Some(track) = song.project.tracks.iter().find(|t| t.name == name) else {
                 continue;
-            };
-            let mut solo = song.project.clone();
-            solo.tracks.retain(|t| t.name == name);
-            let Ok(st) = glaux_engine::export::render_project(&solo, sr, &bank) else {
-                continue;
-            };
-            let mut mono: Vec<f32> = vec![0.0; pad];
-            mono.extend(st.chunks(2).map(|c| (c[0] + c[1]) * 0.5));
-            let mono = if cents != 0.0 {
-                shift_tuning(&mono, cents).0
-            } else {
-                mono
             };
             let truth = track
                 .clips
@@ -748,7 +739,6 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
                 name: name.to_owned(),
                 device,
                 kind,
-                frames: mono,
                 truth,
             });
         }
@@ -799,7 +789,7 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
 // ---- Glaux の曲 -----------------------------------------------------------
 
 /// Glaux の曲を書き出して、曲の中身を正解にした評価の材料にする
-fn project_case(dir: &Path, with_parts: bool, save: Option<&Path>) -> Result<Case, String> {
+fn project_case(dir: &Path, with_parts: bool) -> Result<Case, String> {
     use recon::PartKind;
     let json = std::fs::read_to_string(dir.join("project.json")).map_err(|e| e.to_string())?;
     let project = Project::from_json(&json).map_err(|e| e.to_string())?;
@@ -883,7 +873,7 @@ fn project_case(dir: &Path, with_parts: bool, save: Option<&Path>) -> Result<Cas
         })
         .collect();
 
-    // パート: ドラムのトラックはまとめて 1 つ、ほかはトラックごと(音符が少ないもの〈効果音など〉は除く)。
+    // パートの正解: ドラムのトラックはまとめて 1 つ、ほかはトラックごと(音符が少ないもの〈効果音など〉は除く)。
     // 重なる音が 2 割を超えれば和音、そうでなければ音の高さの中央値で旋律かベースか
     let mut parts = Vec::new();
     if with_parts {
@@ -923,14 +913,6 @@ fn project_case(dir: &Path, with_parts: bool, save: Option<&Path>) -> Result<Cas
             groups.push((t.name.clone(), kind, vec![t.id.clone()]));
         }
         for (pname, kind, ids) in groups {
-            // そのトラック(とバス: センドの残響・やまびこ)だけを鳴らす
-            let mut solo = project.clone();
-            solo.tracks
-                .retain(|t| ids.contains(&t.id) || t.kind == TrackKind::Bus);
-            for t in solo.tracks.iter_mut() {
-                t.solo = false;
-            }
-            let stem = mono(&solo)?;
             let truth: Vec<NoteSpan> = project
                 .tracks
                 .iter()
@@ -953,16 +935,11 @@ fn project_case(dir: &Path, with_parts: bool, save: Option<&Path>) -> Result<Cas
                     _ => "plugin".into(),
                 })
                 .unwrap_or_default();
-            if let Some(out) = save {
-                std::fs::create_dir_all(out).ok();
-                write_wav(&out.join(format!("{name}-{pname}.wav")), &stem, sr);
-            }
             eprintln!("  パート {pname}: {kind:?}・音符 {}", truth.len());
             parts.push(PartCase {
                 name: pname,
                 device,
                 kind,
-                frames: stem,
                 truth,
             });
         }
@@ -1420,7 +1397,7 @@ fn main() {
         cases.extend(dataset_cases(Path::new(&d)));
     }
     if let Some(d) = arg("--project") {
-        match project_case(Path::new(&d), with_parts, save.as_deref()) {
+        match project_case(Path::new(&d), with_parts) {
             Ok(c) => cases.push(c),
             Err(e) => eprintln!("{d}: 曲を読めません: {e}"),
         }
@@ -1525,10 +1502,11 @@ const DRUM_CLASSES: [(&str, &[u8]); 4] = [
     ("cymbal", &[49, 51, 52, 55, 57, 59]),
 ];
 
-/// パートの譜起こしを方式ごとに比べる(分けた音から = 分離が完全なときの上限、ミックスから直接)
+/// パートの譜起こしを、曲そのもの(作業場の「参考曲そのまま」)から起こして測る。
+/// トラックごとに書き出した音では測らない(`PartCase` の説明)
 fn eval_parts(cases: &[Case]) {
     use recon::{NoteMethod, PartKind};
-    // (パート, 方式, 音の素) → (立ち上がりの F 値, 終わりも見た F 値) の並び
+    // (パート, 方式) → (立ち上がりの F 値, 終わりも見た F 値) の並び
     let mut rows: BTreeMap<(String, String), Vec<(f64, f64)>> = BTreeMap::new();
     let to_spans = |v: &[recon::RawNote]| -> Vec<NoteSpan> {
         v.iter()
@@ -1544,6 +1522,7 @@ fn eval_parts(cases: &[Case]) {
         if c.parts.is_empty() {
             continue;
         }
+        let t0 = std::time::Instant::now();
         let tuning = glaux_engine::tonal::estimate_tuning(&c.frames, c.sample_rate);
         let sound = c
             .tags
@@ -1552,7 +1531,7 @@ fn eval_parts(cases: &[Case]) {
             .cloned()
             .unwrap_or_default();
         for p in c.parts.iter().filter(|p| p.kind == PartKind::Drums) {
-            // 調整用: ドラムの分けた音と正解を書き出す(RECON_DRUMS=フォルダ)
+            // 調整用: 曲そのものとドラムの正解を書き出す(RECON_DRUMS=フォルダ。drum_tune で使う)
             if let Ok(dir) = std::env::var("RECON_DRUMS") {
                 let dir = std::path::Path::new(&dir);
                 std::fs::create_dir_all(dir).ok();
@@ -1562,17 +1541,13 @@ fn eval_parts(cases: &[Case]) {
                     bits_per_sample: 32,
                     sample_format: hound::SampleFormat::Float,
                 };
-                // ドラムだけの音(<名前>.wav)と、曲そのもの(<名前>.mix.wav)
-                for (file, frames) in [
-                    (format!("{}.wav", c.name), &p.frames),
-                    (format!("{}.mix.wav", c.name), &c.frames),
-                ] {
-                    if let Ok(mut w) = hound::WavWriter::create(dir.join(file), spec) {
-                        for &x in frames {
-                            w.write_sample(x).ok();
-                        }
-                        w.finalize().ok();
+                if let Ok(mut w) =
+                    hound::WavWriter::create(dir.join(format!("{}.wav", c.name)), spec)
+                {
+                    for &x in &c.frames {
+                        w.write_sample(x).ok();
                     }
+                    w.finalize().ok();
                 }
                 std::fs::write(
                     dir.join(format!("{}.json", c.name)),
@@ -1580,84 +1555,47 @@ fn eval_parts(cases: &[Case]) {
                 )
                 .ok();
             }
-            // ドラム: 分けた音から / 分けずに参考曲そのものから、種類ごと(キック・スネア・ハイハット・シンバル)の立ち上がりの F 値
-            for (src, audio, method) in [
-                ("stem", &p.frames, NoteMethod::Drums),
-                ("mix", &c.frames, NoteMethod::DrumsMix),
-            ] {
-                let Ok(est) =
-                    recon::transcribe_part(audio, c.sample_rate, PartKind::Drums, method, 0.0)
-                else {
-                    continue;
-                };
-                for (class, pitches) in DRUM_CLASSES {
-                    let t: Vec<f64> = p
-                        .truth
-                        .iter()
-                        .filter(|n| pitches.contains(&n.pitch))
-                        .map(|n| n.onset)
-                        .collect();
-                    if t.is_empty() {
-                        continue;
-                    }
-                    let mut e: Vec<f64> = est
-                        .iter()
-                        .filter(|n| pitches.contains(&n.pitch))
-                        .map(|n| n.start)
-                        .collect();
-                    e.sort_by(f64::total_cmp);
-                    let mut t = t;
-                    t.sort_by(f64::total_cmp);
-                    let hit = mir_eval::match_events(&t, &e, 0.05);
-                    let f = if t.is_empty() && e.is_empty() {
-                        1.0
-                    } else {
-                        2.0 * hit as f64 / (t.len() + e.len()) as f64
-                    };
-                    for key in [
-                        format!("Drums {class} all"),
-                        format!("Drums {class} {sound}"),
-                    ] {
-                        rows.entry((key, format!("Drums-{src}")))
-                            .or_default()
-                            .push((f, f));
-                    }
-                }
-            }
-        }
-        for p in c.parts.iter().filter(|p| p.kind != PartKind::Drums) {
-            let methods: &[NoteMethod] = match p.kind {
-                PartKind::Melody | PartKind::Bass => &[
-                    NoteMethod::Auto,
-                    NoteMethod::SwiftF0,
-                    NoteMethod::BasicPitch,
-                ],
-                PartKind::Poly | PartKind::Drums => &[NoteMethod::BasicPitch],
+            // ドラム: 種類ごと(キック・スネア・ハイハット・シンバル)の立ち上がりの F 値
+            let Ok(est) = recon::transcribe_part(
+                &c.frames,
+                c.sample_rate,
+                PartKind::Drums,
+                NoteMethod::DrumsMix,
+                0.0,
+            ) else {
+                continue;
             };
-            for &m in methods {
-                let t0 = std::time::Instant::now();
-                let Ok(est) = recon::transcribe_part(&p.frames, c.sample_rate, p.kind, m, tuning)
-                else {
+            for (class, pitches) in DRUM_CLASSES {
+                let mut t: Vec<f64> = p
+                    .truth
+                    .iter()
+                    .filter(|n| pitches.contains(&n.pitch))
+                    .map(|n| n.onset)
+                    .collect();
+                if t.is_empty() {
                     continue;
-                };
-                secs += t0.elapsed().as_secs_f64();
-                let est = to_spans(&est);
-                let f1 = mir_eval::note_f(&p.truth, &est, false).f;
-                let f2 = mir_eval::note_f(&p.truth, &est, true).f;
-                if let Ok(dir) = std::env::var("RECON_DUMP") {
-                    let path = std::path::Path::new(&dir)
-                        .join(format!("{}-{}-{m:?}.json", c.name, p.name));
-                    std::fs::write(path, serde_json::json!({"truth": p.truth, "est": est, "device": p.device, "tags": c.tags}).to_string()).ok();
                 }
-                for key in [format!("{} all", p.name), format!("{} {sound}", p.name)] {
-                    rows.entry((key, format!("{m:?}")))
+                let mut e: Vec<f64> = est
+                    .iter()
+                    .filter(|n| pitches.contains(&n.pitch))
+                    .map(|n| n.start)
+                    .collect();
+                e.sort_by(f64::total_cmp);
+                t.sort_by(f64::total_cmp);
+                let hit = mir_eval::match_events(&t, &e, 0.05);
+                let f = 2.0 * hit as f64 / (t.len() + e.len()) as f64;
+                for key in [
+                    format!("Drums {class} all"),
+                    format!("Drums {class} {sound}"),
+                ] {
+                    rows.entry((key, "FromMix".into()))
                         .or_default()
-                        .push((f1, f2));
+                        .push((f, f));
                 }
             }
         }
-        // 分けずに参考曲そのままから、そのパートを起こしたとき(作業場の「参考曲そのまま」)。
-        // 声部に分けるので種類(旋律・ベース・和音)ごとに 1 つ。同じ種類のトラックが複数あれば正解をまとめる
+        // 音程のあるパート: 1 回の譜起こしを声部に分ける(作業場の「参考曲そのまま」)。
+        // 種類(旋律・ベース・和音)ごとに 1 つ。同じ種類のトラックが複数あれば正解をまとめる
         let mut kinds: Vec<PartKind> = Vec::new();
         for p in c.parts.iter().filter(|p| p.kind != PartKind::Drums) {
             if !kinds.contains(&p.kind) {
@@ -1675,6 +1613,14 @@ fn eval_parts(cases: &[Case]) {
             };
             let truth: Vec<NoteSpan> = same.iter().flat_map(|p| p.truth.iter().copied()).collect();
             let est = to_spans(est);
+            if let Ok(dir) = std::env::var("RECON_DUMP") {
+                let path = std::path::Path::new(&dir).join(format!("{}-{label}.json", c.name));
+                std::fs::write(
+                    path,
+                    serde_json::json!({"truth": truth, "est": est, "tags": c.tags}).to_string(),
+                )
+                .ok();
+            }
             let f1 = mir_eval::note_f(&truth, &est, false).f;
             let f2 = mir_eval::note_f(&truth, &est, true).f;
             for key in [format!("{label} all"), format!("{label} {sound}")] {
@@ -1683,7 +1629,7 @@ fn eval_parts(cases: &[Case]) {
                     .push((f1, f2));
             }
         }
-        // ミックスから直接(音程のあるパートを全部まとめて)
+        // 音程のあるパートを全部まとめて
         let truth: Vec<NoteSpan> = c
             .parts
             .iter()
@@ -1706,6 +1652,7 @@ fn eval_parts(cases: &[Case]) {
                     .push((f1, f2));
             }
         }
+        secs += t0.elapsed().as_secs_f64();
     }
     println!("\n== パートの譜起こし(音符の F 値: 立ち上がり / 終わりも)==");
     println!(

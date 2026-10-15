@@ -1,18 +1,14 @@
-//! ドラムの譜起こしの調整用: recon_eval が書き出したドラムの音(RECON_DRUMS)と正解で、種類ごとの F 値を出す。
+//! ドラムの譜起こしの調整用: recon_eval が書き出した曲そのものの音(RECON_DRUMS)から起こし、ドラムの正解と比べて種類ごとの F 値を出す。
 //! `cargo run --release -p glaux-engine --example drum_tune -- <フォルダ> [threshold] [snare_vs_hat_db] [cymbal_secs]`
-//! 環境変数 DRUM_MIX=1 で曲そのもの(分けていない音)から、DRUM_SHOW=曲名 で 1 曲の正解と推定を並べる。
+//! 環境変数 DRUM_SHOW=曲名 で 1 曲の正解と推定を並べる。
+//! 起こす元は曲全体だけ(トラックごとに書き出した音は使わない。recon_eval の PartCase の説明)。
 
 use glaux_engine::drum_transcribe::{transcribe, DrumKind, DrumOptions};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dir = std::path::PathBuf::from(&args[0]);
-    let mixed = std::env::var("DRUM_MIX").is_ok();
-    let mut opts = if mixed {
-        DrumOptions::mixed()
-    } else {
-        DrumOptions::default()
-    };
+    let mut opts = DrumOptions::mixed();
     if let Some(v) = args.get(1).and_then(|v| v.parse().ok()) {
         opts.threshold = v;
     }
@@ -37,9 +33,7 @@ fn main() {
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension().is_some_and(|e| e == "wav") && !p.to_string_lossy().ends_with(".mix.wav")
-        })
+        .filter(|p| p.extension().is_some_and(|e| e == "wav"))
         .collect();
     files.sort();
     for wav in files {
@@ -52,13 +46,7 @@ fn main() {
         } else {
             "builtin"
         };
-        // DRUM_MIX があれば、ドラムだけの音の代わりに曲そのもの(<名前>.mix.wav)から起こす
-        let src = if mixed {
-            wav.with_extension("mix.wav")
-        } else {
-            wav.clone()
-        };
-        let d = glaux_engine::load_wav_mono(&src).unwrap();
+        let d = glaux_engine::load_wav_mono(&wav).unwrap();
         // 本番と同じく、打楽器の成分を取り出してから
         let perc = glaux_engine::separate::hpss(&d.frames).percussive;
         let hits = transcribe(&perc, d.sample_rate, &opts);
