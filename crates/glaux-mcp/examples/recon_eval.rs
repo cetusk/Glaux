@@ -27,6 +27,8 @@
 //!   --roles          (--labels・--separate と)楽器の名前の代わりに、役割(伸ばす・刻む・線)が鳴っている区間を当てる
 //!   --tracks         (Glaux の曲で)トラック単位の採点: 方式ごとに、振り分ける前・後の音符の F 値とその比、楽器の漏れ、
 //!                    トラックの数、かかった時間を曲ごとに出す(--separate で分離ツールの経路、--notes でほかの道具も)
+//!   --diagnose       (Glaux の曲で)音符を取る段の失点の中身: 正解の音符を「当たり・立ち上がりのずれ・オクターブ違い・
+//!                    隣の半音・ほかの高さ・無し」に、余分な音符を「倍音・弾き直し・ドラム・そのほか」に分けて数える
 //!   --save DIR       組み立てた曲の音声(wav)と正解(json)を書き出す(聴いて確かめる用)
 //!   --json FILE      曲ごとの結果を JSON で書き出す
 //! ```
@@ -1554,6 +1556,13 @@ fn main() {
         analysis_secs / audio_secs.max(1e-9) * 100.0
     );
 
+    if args.iter().any(|a| a == "--diagnose") {
+        eval_diagnose(
+            &cases,
+            arg("--separate").as_deref().map(Path::new),
+            arg("--labels").as_deref().map(Path::new),
+        );
+    }
     if args.iter().any(|a| a == "--tracks") {
         eval_tracks(
             &cases,
@@ -1573,7 +1582,8 @@ fn main() {
     if let (Some(labels), Some(sep), false) = (
         arg("--labels"),
         arg("--separate"),
-        args.iter().any(|a| a == "--roles" || a == "--tracks"),
+        args.iter()
+            .any(|a| a == "--roles" || a == "--tracks" || a == "--diagnose"),
     ) {
         eval_instruments(
             &cases,
@@ -2034,6 +2044,257 @@ fn eval_roles(cases: &[Case], sep: &Path, labels: &Path) {
                 g.iter().map(|x| x.1).sum::<f64>() / n
             );
         }
+    }
+}
+
+/// 音符を取る段の失点の中身を数える(調査文書 13.20 節)。曲の音程のあるトラックの音符を正解に、
+/// 曲全体と、分離ツールのベース + その他 から basic-pitch(ベースは単音にまとめる)で起こした音符を調べる
+fn eval_diagnose(cases: &[Case], sep: Option<&Path>, labels: Option<&Path>) {
+    use recon::{NoteMethod, PartKind};
+    let labels: serde_json::Value = labels
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    // 正解の音符の分類
+    const T_CATS: [&str; 6] = [
+        "当たり",
+        "立ち上がりのずれ",
+        "オクターブ違い",
+        "隣の半音",
+        "ほかの高さ",
+        "無し",
+    ];
+    // 余分な音符の分類
+    const E_CATS: [&str; 4] = ["倍音", "弾き直し", "ドラム", "そのほか"];
+    // (音の素, 切り口) → 分類ごとの数
+    let mut tcount: BTreeMap<(String, String), [usize; 6]> = BTreeMap::new();
+    let mut ecount: BTreeMap<(String, String), [usize; 4]> = BTreeMap::new();
+    // 「ほかの高さ」の音程(推定 − 正解)の内訳
+    let mut other_iv: BTreeMap<String, BTreeMap<i32, usize>> = BTreeMap::new();
+    // 「立ち上がりのずれ」のずれ(推定 − 正解、10ms 刻み)の内訳
+    let mut shift: BTreeMap<String, BTreeMap<i32, usize>> = BTreeMap::new();
+    for c in cases {
+        if c.pitched.is_empty() {
+            continue;
+        }
+        let class = |n: &str| -> String {
+            labels
+                .get(&c.name)
+                .and_then(|l| l.get(n))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_owned()
+        };
+        // 正解: (音符, トラックの種類)
+        let truth: Vec<(NoteSpan, String)> = c
+            .pitched
+            .iter()
+            .filter_map(|n| c.tracks.iter().find(|t| &t.0 == n))
+            .flat_map(|(n, notes)| {
+                let cl = class(n);
+                notes.iter().map(move |x| (*x, cl.clone()))
+            })
+            .collect();
+        // ドラムの音の立ち上がり(余分な音符の分類用)
+        let drum_on: Vec<f64> = c
+            .tracks
+            .iter()
+            .filter(|(n, _)| !c.pitched.contains(n) && class(n) == "drums")
+            .flat_map(|(_, v)| v.iter().map(|x| x.onset))
+            .collect();
+        let Ok(sk) = recon::analyze(&c.frames, c.sample_rate, Default::default()) else {
+            continue;
+        };
+        let mut sources: Vec<(String, Vec<recon::RawNote>)> = Vec::new();
+        if let Ok(v) = recon::transcribe_part(
+            &c.frames,
+            c.sample_rate,
+            PartKind::Poly,
+            NoteMethod::BasicPitch,
+            sk.tuning_cents,
+        ) {
+            sources.push(("曲全体".into(), v));
+        }
+        if let Some(cache) = sep {
+            let work = cache.join(format!("{}-{}", c.name, c.frames.len()));
+            let load = |n: &str| glaux_engine::load_wav_mono(&work.join(format!("{n}.wav"))).ok();
+            if let (Some(b), Some(o)) = (load("bass"), load("other")) {
+                let mut v = recon::transcribe_part(
+                    &b.frames,
+                    b.sample_rate,
+                    PartKind::Bass,
+                    PartKind::Bass.default_method(),
+                    sk.tuning_cents,
+                )
+                .unwrap_or_default();
+                v.extend(
+                    recon::transcribe_part(
+                        &o.frames,
+                        o.sample_rate,
+                        PartKind::Poly,
+                        NoteMethod::BasicPitch,
+                        sk.tuning_cents,
+                    )
+                    .unwrap_or_default(),
+                );
+                sources.push(("分離".into(), v));
+            }
+        }
+        for (src, est) in sources {
+            let mut used = vec![false; est.len()];
+            // 1. 当たり(立ち上がり ±50ms・同じ高さ)を先に 1 対 1 で取る
+            let mut cat = vec![5usize; truth.len()];
+            for (i, (t, _)) in truth.iter().enumerate() {
+                let best = est
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, e)| {
+                        !used[*j] && e.pitch == t.pitch && (e.start - t.onset).abs() <= 0.05
+                    })
+                    .min_by(|a, b| {
+                        (a.1.start - t.onset)
+                            .abs()
+                            .total_cmp(&(b.1.start - t.onset).abs())
+                    });
+                if let Some((j, _)) = best {
+                    used[j] = true;
+                    cat[i] = 0;
+                }
+            }
+            // 2. 当たらなかった正解を、近くの推定で分ける
+            for (i, (t, _)) in truth.iter().enumerate() {
+                if cat[i] == 0 {
+                    continue;
+                }
+                let near = |tol: f64| est.iter().filter(move |e| (e.start - t.onset).abs() <= tol);
+                let iv = |e: &recon::RawNote| e.pitch as i32 - t.pitch as i32;
+                cat[i] = if let Some(e) =
+                    near(0.15).filter(|e| e.pitch == t.pitch).min_by(|a, b| {
+                        (a.start - t.onset)
+                            .abs()
+                            .total_cmp(&(b.start - t.onset).abs())
+                    }) {
+                    let d = ((e.start - t.onset) * 100.0).round() as i32;
+                    *shift
+                        .entry(src.clone())
+                        .or_default()
+                        .entry(d * 10)
+                        .or_default() += 1;
+                    1
+                } else if near(0.05).any(|e| iv(e).abs() % 12 == 0) {
+                    2
+                } else if near(0.05).any(|e| iv(e).abs() == 1) {
+                    3
+                } else if let Some(e) = near(0.05).min_by_key(|e| iv(e).abs()) {
+                    *other_iv
+                        .entry(src.clone())
+                        .or_default()
+                        .entry(iv(e))
+                        .or_default() += 1;
+                    4
+                } else {
+                    5
+                };
+            }
+            for (i, (t, cl)) in truth.iter().enumerate() {
+                let dur = t.offset - t.onset;
+                let len = if dur < 0.08 {
+                    "短い(<80ms)"
+                } else if dur < 0.5 {
+                    "中(80〜500ms)"
+                } else {
+                    "長い(≥500ms)"
+                };
+                for key in [
+                    "全体".to_owned(),
+                    format!("種類:{cl}"),
+                    format!("長さ:{len}"),
+                    format!("曲:{}", c.name),
+                ] {
+                    tcount.entry((src.clone(), key)).or_default()[cat[i]] += 1;
+                }
+            }
+            // 3. 当たらなかった推定(余分)を分ける
+            for (j, e) in est.iter().enumerate() {
+                if used[j] {
+                    continue;
+                }
+                let sounding: Vec<&NoteSpan> = truth
+                    .iter()
+                    .map(|x| &x.0)
+                    .filter(|t| t.onset - 0.05 <= e.start && e.start < t.offset)
+                    .collect();
+                let k = if sounding
+                    .iter()
+                    .any(|t| [12, 19, 24, 28, 31].contains(&(e.pitch as i32 - t.pitch as i32)))
+                {
+                    0
+                } else if sounding
+                    .iter()
+                    .any(|t| t.pitch == e.pitch && e.start > t.onset + 0.05)
+                {
+                    1
+                } else if drum_on.iter().any(|d| (d - e.start).abs() <= 0.03) {
+                    2
+                } else {
+                    3
+                };
+                for key in ["全体".to_owned(), format!("曲:{}", c.name)] {
+                    ecount.entry((src.clone(), key)).or_default()[k] += 1;
+                }
+            }
+        }
+    }
+    println!("\n== 音符を取る段の失点(正解の音符の分類。割合)==");
+    print!("{:<8}{:<26}{:>7}", "音の素", "切り口", "正解");
+    for c in T_CATS {
+        print!("{c:>14}");
+    }
+    println!();
+    for ((src, key), v) in &tcount {
+        let n: usize = v.iter().sum();
+        print!("{:<8}{:<26}{:>7}", src, key, n);
+        for x in v {
+            print!("{:>14.2}", *x as f64 / n.max(1) as f64);
+        }
+        println!();
+    }
+    println!("\n== 余分な音符の分類(割合)==");
+    print!("{:<8}{:<26}{:>7}", "音の素", "切り口", "余分");
+    for c in E_CATS {
+        print!("{c:>12}");
+    }
+    println!();
+    for ((src, key), v) in &ecount {
+        let n: usize = v.iter().sum();
+        print!("{:<8}{:<26}{:>7}", src, key, n);
+        for x in v {
+            print!("{:>12.2}", *x as f64 / n.max(1) as f64);
+        }
+        println!();
+    }
+    println!("\n== 「立ち上がりのずれ」のずれ(推定 − 正解、ms)==");
+    for (src, m) in &shift {
+        println!(
+            "{src}: {}",
+            m.iter()
+                .map(|(k, n)| format!("{k:+}:{n}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+    println!("\n== 「ほかの高さ」の音程(推定 − 正解、多い順)==");
+    for (src, m) in &other_iv {
+        let mut v: Vec<(&i32, &usize)> = m.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        println!(
+            "{src}: {}",
+            v.iter()
+                .take(12)
+                .map(|(k, n)| format!("{k:+}:{n}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
     }
 }
 
