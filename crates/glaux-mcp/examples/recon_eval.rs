@@ -29,6 +29,9 @@
 //!                    トラックの数、かかった時間を曲ごとに出す(--separate で分離ツールの経路、--notes でほかの道具も)
 //!   --diagnose       (Glaux の曲で)音符を取る段の失点の中身: 正解の音符を「当たり・立ち上がりのずれ・オクターブ違い・
 //!                    隣の半音・ほかの高さ・無し」に、余分な音符を「倍音・弾き直し・ドラム・そのほか」に分けて数える
+//!   --fit DIR        (Glaux の曲で、--separate と)曲の中で学ぶ音色の型で候補の音符を決め直し、トラックに振り分ける経路
+//!                    (`glaux_engine::notefit`、調査文書 13.23 節)を測る。分解の結果は DIR に置き、次からは使い回す。
+//!                    型を増やす重み・音符を残す重みの組を総当たりし、1 曲を抜いた交差検証で選んだ重みの結果も出す
 //!   --save DIR       組み立てた曲の音声(wav)と正解(json)を書き出す(聴いて確かめる用)
 //!   --json FILE      曲ごとの結果を JSON で書き出す
 //! ```
@@ -1563,6 +1566,9 @@ fn main() {
             arg("--labels").as_deref().map(Path::new),
         );
     }
+    if let (Some(dir), Some(sep)) = (arg("--fit"), arg("--separate")) {
+        eval_fit(&cases, Path::new(&sep), Path::new(&dir));
+    }
     if args.iter().any(|a| a == "--tracks") {
         eval_tracks(
             &cases,
@@ -1583,7 +1589,7 @@ fn main() {
         arg("--labels"),
         arg("--separate"),
         args.iter()
-            .any(|a| a == "--roles" || a == "--tracks" || a == "--diagnose"),
+            .any(|a| a == "--roles" || a == "--tracks" || a == "--diagnose" || a == "--fit"),
     ) {
         eval_instruments(
             &cases,
@@ -2496,6 +2502,418 @@ fn eval_tracks(
             m(&|s| s.leakage),
             v.len()
         );
+    }
+}
+
+/// 正解の音符と推定の音符を比べ、(当たりの数, 余分の分類ごとの数〈倍音・弾き直し・ドラム・そのほか〉)を返す
+/// (`eval_diagnose` と同じ分け方)
+fn note_classes(truth: &[NoteSpan], est: &[NoteSpan], drum_on: &[f64]) -> (usize, [usize; 4]) {
+    let mut used = vec![false; est.len()];
+    let mut hits = 0;
+    for t in truth {
+        let best = est
+            .iter()
+            .enumerate()
+            .filter(|(j, e)| !used[*j] && e.pitch == t.pitch && (e.onset - t.onset).abs() <= 0.05)
+            .min_by(|a, b| {
+                (a.1.onset - t.onset)
+                    .abs()
+                    .total_cmp(&(b.1.onset - t.onset).abs())
+            });
+        if let Some((j, _)) = best {
+            used[j] = true;
+            hits += 1;
+        }
+    }
+    let mut extra = [0usize; 4];
+    for (j, e) in est.iter().enumerate() {
+        if used[j] {
+            continue;
+        }
+        let sounding = truth
+            .iter()
+            .filter(|t| t.onset - 0.05 <= e.onset && e.onset < t.offset);
+        let mut k = 3;
+        for t in sounding {
+            let iv = e.pitch as i32 - t.pitch as i32;
+            if [12, 19, 24, 28, 31].contains(&iv) {
+                k = 0;
+                break;
+            }
+            if iv == 0 && e.onset > t.onset + 0.05 {
+                k = k.min(1);
+            }
+        }
+        if k == 3 && drum_on.iter().any(|d| (d - e.onset).abs() <= 0.03) {
+            k = 2;
+        }
+        extra[k] += 1;
+    }
+    (hits, extra)
+}
+
+/// 曲の中で学ぶ音色の型で候補の音符を決め直し、トラックに振り分ける経路を測る(調査文書 13.23 節)。
+/// 入力は分離ツールの ベース・その他 だけ。ベースは今の経路のまま 1 つのトラックにし、その他を分解する
+fn eval_fit(cases: &[Case], sep: &Path, dir: &Path) {
+    use glaux_engine::notefit;
+    use recon::{NoteMethod, PartKind};
+    std::fs::create_dir_all(dir).ok();
+    let span = |n: &notefit::Note| NoteSpan {
+        onset: n.start,
+        offset: n.end,
+        pitch: n.pitch,
+    };
+    let raw = |v: &[recon::RawNote]| -> Vec<NoteSpan> {
+        v.iter()
+            .map(|n| NoteSpan {
+                onset: n.start,
+                offset: n.end,
+                pitch: n.pitch,
+            })
+            .collect()
+    };
+    // 曲ごとの材料
+    struct Song {
+        name: String,
+        truth: Vec<Vec<NoteSpan>>,
+        drum_on: Vec<f64>,
+        bass: Vec<NoteSpan>,
+        current: Vec<NoteSpan>,
+        cands: Vec<notefit::Note>,
+        fit: notefit::Fit,
+    }
+    let mut songs: Vec<Song> = Vec::new();
+    for c in cases {
+        if c.pitched.is_empty() {
+            continue;
+        }
+        let work = sep.join(format!("{}-{}", c.name, c.frames.len()));
+        let load = |n: &str| glaux_engine::load_wav_mono(&work.join(format!("{n}.wav"))).ok();
+        let (Some(b), Some(o)) = (load("bass"), load("other")) else {
+            eprintln!("{}: 分けた音が無い({})", c.name, work.display());
+            continue;
+        };
+        let Ok(sk) = recon::analyze(&c.frames, c.sample_rate, Default::default()) else {
+            continue;
+        };
+        let truth: Vec<Vec<NoteSpan>> = c
+            .pitched
+            .iter()
+            .filter_map(|n| c.tracks.iter().find(|t| &t.0 == n).map(|t| t.1.clone()))
+            .collect();
+        let drum_on: Vec<f64> = c
+            .tracks
+            .iter()
+            .filter(|(n, _)| !c.pitched.contains(n))
+            .flat_map(|(_, v)| v.iter().map(|x| x.onset))
+            .collect();
+        let bass = recon::transcribe_part(
+            &b.frames,
+            b.sample_rate,
+            PartKind::Bass,
+            PartKind::Bass.default_method(),
+            sk.tuning_cents,
+        )
+        .unwrap_or_default();
+        let current = recon::transcribe_part(
+            &o.frames,
+            o.sample_rate,
+            PartKind::Poly,
+            NoteMethod::BasicPitch,
+            sk.tuning_cents,
+        )
+        .unwrap_or_default();
+        let cands = recon::transcribe_candidates(&o.frames, o.sample_rate, PartKind::Poly)
+            .unwrap_or_default();
+        let cache = dir.join(format!("{}.json", c.name));
+        let cached: Option<notefit::Fit> = std::fs::read_to_string(&cache)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .filter(|v| v["cands"].as_u64() == Some(cands.len() as u64))
+            .map(|v| notefit::Fit {
+                frames: v["frames"].as_u64().unwrap_or(0) as usize,
+                levels: v["levels"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|l| notefit::Level {
+                                k: l["k"].as_u64().unwrap_or(0) as usize,
+                                divergence: l["divergence"].as_f64().unwrap_or(0.0),
+                                source: l["source"]
+                                    .as_array()
+                                    .map(|x| {
+                                        x.iter()
+                                            .map(|y| y.as_u64().map_or(usize::MAX, |z| z as usize))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default(),
+                                gain: l["gain"]
+                                    .as_array()
+                                    .map(|x| {
+                                        x.iter().map(|y| y.as_f64().unwrap_or(0.0) as f32).collect()
+                                    })
+                                    .unwrap_or_default(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            });
+        let fit = match cached {
+            Some(f) => f,
+            None => {
+                let t0 = std::time::Instant::now();
+                let f = notefit::fit(
+                    &o.frames,
+                    o.sample_rate,
+                    sk.tuning_cents,
+                    &cands,
+                    &notefit::FitOptions::default(),
+                );
+                let dur = c.frames.len() as f64 / c.sample_rate as f64;
+                eprintln!(
+                    "{}: 分解 {:.1} 秒(曲の {:.1} 倍)候補 {}",
+                    c.name,
+                    t0.elapsed().as_secs_f64(),
+                    t0.elapsed().as_secs_f64() / dur,
+                    cands.len()
+                );
+                let v = serde_json::json!({
+                    "cands": cands.len(),
+                    "frames": f.frames,
+                    "levels": f.levels.iter().map(|l| serde_json::json!({
+                        "k": l.k,
+                        "divergence": l.divergence,
+                        "source": l.source.iter().map(|&z| if z == usize::MAX { serde_json::Value::Null } else { z.into() }).collect::<Vec<_>>(),
+                        "gain": l.gain,
+                    })).collect::<Vec<_>>(),
+                });
+                std::fs::write(&cache, v.to_string()).ok();
+                f
+            }
+        };
+        songs.push(Song {
+            name: c.name.clone(),
+            truth,
+            drum_on,
+            bass: raw(&bass),
+            current: raw(&current),
+            cands,
+            fit,
+        });
+    }
+    // 型の数ごとの説明の悪さと、音符の悪くなり方の分布
+    println!("\n== 型の数ごとの説明の悪さ(1 フレームあたり)と、音符を外したときの悪くなり方の分位(10・50・90%)==");
+    for s in &songs {
+        let mut g: Vec<f32> = s
+            .fit
+            .levels
+            .first()
+            .map(|l| l.gain.clone())
+            .unwrap_or_default();
+        g.sort_by(f32::total_cmp);
+        let q = |p: f64| {
+            g.get(((g.len() as f64 - 1.0) * p) as usize)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        println!(
+            "{:<16} 正解のトラック {:>2} 候補 {:>6} 悪さ {} 分位 {:.3} {:.3} {:.3}",
+            s.name,
+            s.truth.len(),
+            s.cands.len(),
+            s.fit
+                .levels
+                .iter()
+                .map(|l| format!("K{}:{:.2}", l.k, l.divergence))
+                .collect::<Vec<_>>()
+                .join(" "),
+            q(0.1),
+            q(0.5),
+            q(0.9)
+        );
+    }
+    // 1 曲・1 組の重みの採点
+    #[derive(Clone, Copy, Default)]
+    struct Row {
+        pre: f64,
+        post: f64,
+        hits: f64,
+        hit_n: usize,
+        truth_n: usize,
+        extras: usize,
+        over: usize,
+        retrig: usize,
+        k: usize,
+    }
+    let score = |s: &Song, tracks: Vec<Vec<NoteSpan>>| -> Row {
+        let m = mir_eval::multitrack_f(&s.truth, &tracks);
+        let all_t: Vec<NoteSpan> = s.truth.iter().flatten().copied().collect();
+        let all_e: Vec<NoteSpan> = tracks.iter().flatten().copied().collect();
+        let (h, ex) = note_classes(&all_t, &all_e, &s.drum_on);
+        Row {
+            pre: m.pre.f,
+            post: m.post.f,
+            hits: h as f64 / all_t.len().max(1) as f64,
+            hit_n: h,
+            truth_n: all_t.len(),
+            extras: ex.iter().sum(),
+            over: ex[0],
+            retrig: ex[1],
+            k: tracks.len(),
+        }
+    };
+    let print_rows = |name: &str, rows: &[Row]| {
+        let n = rows.len().max(1) as f64;
+        let ex: usize = rows.iter().map(|r| r.extras).sum();
+        println!(
+            "{:<34} 前 {:.3} 後 {:.3} 当たり {:.2}(まとめて {:.2}) 余分 {:>6}(倍音 {:.2}・弾き直し {:.2}) トラック {:.1}",
+            name,
+            rows.iter().map(|r| r.pre).sum::<f64>() / n,
+            rows.iter().map(|r| r.post).sum::<f64>() / n,
+            rows.iter().map(|r| r.hits).sum::<f64>() / n,
+            rows.iter().map(|r| r.hit_n).sum::<usize>() as f64
+                / rows.iter().map(|r| r.truth_n).sum::<usize>().max(1) as f64,
+            ex,
+            rows.iter().map(|r| r.over).sum::<usize>() as f64 / ex.max(1) as f64,
+            rows.iter().map(|r| r.retrig).sum::<usize>() as f64 / ex.max(1) as f64,
+            rows.iter().map(|r| r.k as f64).sum::<f64>() / n,
+        );
+    };
+    println!("\n== 7 曲の平均(前・後 = 振り分ける前・後の音符の F 値)==");
+    let base: Vec<Row> = songs
+        .iter()
+        .map(|s| score(s, vec![s.bass.clone(), s.current.clone()]))
+        .collect();
+    print_rows("今(ベース + その他)", &base);
+    let loose: Vec<Row> = songs
+        .iter()
+        .map(|s| score(s, vec![s.bass.clone(), s.cands.iter().map(span).collect()]))
+        .collect();
+    print_rows("緩い候補(ベース + その他)", &loose);
+    // 重みの組の総当たり。型を増やす重みは説明の悪さの単位(1 フレームあたり)、音符を残す重みは悪くなり方の単位
+    let source_costs = [0.0, 0.002, 0.005, 0.01, 0.015, 0.02, 0.03, 0.05, 1e9];
+    let note_costs = [0.0, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 5.0];
+    let mut grid: Vec<((f64, f32), Vec<Row>)> = Vec::new();
+    for &sc in &source_costs {
+        for &nc in &note_costs {
+            let rows: Vec<Row> = songs
+                .iter()
+                .map(|s| {
+                    let mut tr = vec![s.bass.clone()];
+                    tr.extend(
+                        s.fit
+                            .select(&s.cands, sc, nc)
+                            .iter()
+                            .map(|g| g.iter().map(span).collect::<Vec<_>>()),
+                    );
+                    score(s, tr)
+                })
+                .collect();
+            grid.push(((sc, nc), rows));
+        }
+    }
+    println!("\n-- 重みの組ごと(型を増やす重み, 音符を残す重み)--");
+    for ((sc, nc), rows) in &grid {
+        print_rows(&format!("型の分解 {sc},{nc}"), rows);
+    }
+    // 型の数ごとの振り分けの効き方(診断。音符を残す重み 0.3 で固定)
+    println!("\n-- 型の数ごとの 後 の F 値(診断、音符を残す重み 0.3)--");
+    for s in &songs {
+        let line: Vec<String> = s
+            .fit
+            .levels
+            .iter()
+            .map(|l| {
+                let one = notefit::Fit {
+                    levels: vec![l.clone()],
+                    frames: s.fit.frames,
+                };
+                let mut tr = vec![s.bass.clone()];
+                tr.extend(
+                    one.select(&s.cands, 0.0, 0.3)
+                        .iter()
+                        .map(|g| g.iter().map(span).collect::<Vec<_>>()),
+                );
+                let r = score(s, tr);
+                format!("K{}:{:.3}", l.k, r.post)
+            })
+            .collect();
+        println!(
+            "{:<16} 前 {:.3} {}",
+            s.name,
+            score(s, vec![s.bass.clone(), s.cands.iter().map(span).collect()]).pre,
+            line.join(" ")
+        );
+    }
+    // 型と正解のトラックの対応(診断): K = 2・3 で、型ごとの音符の数・平均の高さ・平均の長さと、当たった正解のトラックの内訳
+    println!("\n-- 型と正解のトラックの対応(診断、音符を残す重み 0.3)--");
+    for s in &songs {
+        for l in s.fit.levels.iter().filter(|l| l.k == 2 || l.k == 3) {
+            println!("{} K{}", s.name, l.k);
+            for k in 0..l.k {
+                let g: Vec<NoteSpan> = s
+                    .cands
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| l.source[*i] == k && l.gain[*i] >= 0.3)
+                    .map(|(_, c)| span(c))
+                    .collect();
+                let n = g.len().max(1) as f64;
+                let hits: Vec<usize> = s
+                    .truth
+                    .iter()
+                    .map(|t| mir_eval::note_hits(t, &g, false))
+                    .collect();
+                println!(
+                    "  型{k}: 音符 {:>5} 高さ {:>5.1} 長さ {:.2} 秒 当たり(正解のトラックごと) {:?}",
+                    g.len(),
+                    g.iter().map(|x| x.pitch as f64).sum::<f64>() / n,
+                    g.iter().map(|x| x.offset - x.onset).sum::<f64>() / n,
+                    hits
+                );
+            }
+        }
+        println!(
+            "  正解のトラックの音符の数 {:?} 平均の高さ {:?}",
+            s.truth.iter().map(|t| t.len()).collect::<Vec<_>>(),
+            s.truth
+                .iter()
+                .map(
+                    |t| (t.iter().map(|x| x.pitch as f64).sum::<f64>() / t.len().max(1) as f64)
+                        .round()
+                )
+                .collect::<Vec<_>>()
+        );
+    }
+    // 1 曲を抜いた交差検証: 残りの曲の「後」の平均がいちばん高い組を選び、抜いた曲で測る。
+    // 型の数を選ぶ場合と、型を 1 つに限る場合(型を増やす重みが無限大の組だけ)
+    for (title, only_one) in [("型の数も選ぶ", false), ("型 1 つ", true)] {
+        let mut held: Vec<Row> = Vec::new();
+        println!("\n-- 1 曲を抜いた交差検証(後の F 値で選ぶ、{title})--");
+        for (i, s) in songs.iter().enumerate() {
+            let best = grid
+                .iter()
+                .filter(|g| !only_one || g.0 .0 >= 1e9)
+                .max_by(|a, b| {
+                    let m = |r: &[Row]| {
+                        r.iter()
+                            .enumerate()
+                            .filter(|(j, _)| *j != i)
+                            .map(|(_, x)| x.post)
+                            .sum::<f64>()
+                    };
+                    m(&a.1).total_cmp(&m(&b.1))
+                })
+                .map(|g| (g.0, g.1[i]));
+            if let Some(((sc, nc), r)) = best {
+                println!(
+                    "{:<16} 重み {sc},{nc} 前 {:.3} 後 {:.3}(今 {:.3} → {:.3}) トラック {}",
+                    s.name, r.pre, r.post, base[i].pre, base[i].post, r.k
+                );
+                held.push(r);
+            }
+        }
+        print_rows(&format!("型の分解(交差検証、{title})"), &held);
     }
 }
 

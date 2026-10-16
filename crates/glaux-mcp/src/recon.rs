@@ -385,6 +385,32 @@ pub fn transcribe_part(
     Ok(notes)
 }
 
+/// 緩い候補: basic-pitch の最短の長さを 2 フレーム(約 23ms。basic-pitch の時間の分解能の下限)にして、取りこぼしを最小にする。
+/// 余分は後の分解(`glaux_engine::notefit`)で落とす前提
+pub fn transcribe_candidates(
+    frames: &[f32],
+    sr: f32,
+    kind: PartKind,
+) -> Result<Vec<glaux_engine::notefit::Note>, String> {
+    let (lo, hi) = kind.range();
+    let popts = glaux_ml::PolyOptions {
+        min_pitch: lo as u8,
+        max_pitch: hi as u8,
+        min_note_secs: 2.0 / 86.0,
+        ..Default::default()
+    };
+    Ok(glaux_ml::transcribe_poly(frames, sr, &popts)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|n| glaux_engine::notefit::Note {
+            start: n.start_sec,
+            end: n.end_sec,
+            pitch: n.pitch,
+            vel: (40.0 + n.amplitude.clamp(0.0, 1.0) * 87.0) as u8,
+        })
+        .collect())
+}
+
 /// 分けていない曲(ミックス)から、複数のパートをまとめて起こす。basic-pitch で 1 回起こし、声部に分ける:
 /// 旋律 = 重なっている音のうちいちばん上(G3 以上)、ベース = いちばん下(C4 以下)、和音 = 旋律・ベースに取られなかった残り。
 /// `kinds` の順に音符の並びを返す(同じ種類が 2 つあれば、残りを最初の 1 つに入れ、ほかは空)

@@ -32,6 +32,7 @@ pub mod midi;
 pub mod mir_eval;
 pub mod mixcheck;
 pub mod monitor;
+pub mod notefit;
 pub mod output;
 mod parallel;
 pub mod plugins;
