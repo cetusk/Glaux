@@ -301,6 +301,15 @@ pub fn chroma_f(reference: &[NoteSpan], estimate: &[NoteSpan]) -> Fmeasure {
 /// `with_offset` なら、終わりも「正解の長さの 20% か 50ms の大きい方」以内であること。
 /// 音高はチューニングを直した後の MIDI 番号で比べる(曲の中の音として合っているか)
 pub fn note_f(reference: &[NoteSpan], estimate: &[NoteSpan], with_offset: bool) -> Fmeasure {
+    Fmeasure::from_counts(
+        note_hits(reference, estimate, with_offset),
+        estimate.len(),
+        reference.len(),
+    )
+}
+
+/// 当たった音符の数(`note_f` と同じ当たりの決め方。1 つの音符は 1 回だけ当たる)
+pub fn note_hits(reference: &[NoteSpan], estimate: &[NoteSpan], with_offset: bool) -> usize {
     let mut r: Vec<&NoteSpan> = reference.iter().collect();
     r.sort_by(|a, b| a.onset.total_cmp(&b.onset));
     let mut e: Vec<&NoteSpan> = estimate.iter().collect();
@@ -336,7 +345,140 @@ pub fn note_f(reference: &[NoteSpan], estimate: &[NoteSpan], with_offset: bool) 
             hits += 1;
         }
     }
-    Fmeasure::from_counts(hits, e.len(), r.len())
+    hits
+}
+
+/// トラックに分けた音符の採点(曲から起こす機能で、音符をトラックへ振り分ける方式を比べるため)
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct MultiTrackScores {
+    /// 振り分ける前の F 値: すべてのトラックの音符をまとめ、トラックを問わずに比べる
+    pub pre: Fmeasure,
+    /// 振り分けた後の F 値: 推定のトラックと正解のトラックを、当たった音符の数の合計が最大になる 1 対 1 で結び、
+    /// 結ばれた組の中で当たった音符だけを数える
+    pub post: Fmeasure,
+    /// 振り分けた後 ÷ 前(振り分けで失わなければ 1)
+    pub ratio: f64,
+    /// 楽器の漏れ: 正解のトラック 1 つの音符が、いくつの推定のトラックに散ったか(そのトラックの当たりの 1 割以上を受けたトラックの数)の平均
+    pub leakage: f64,
+    pub k_truth: usize,
+    pub k_estimate: usize,
+    /// 結んだ組(正解の番号, 推定の番号, 当たった音符の数)
+    pub pairs: Vec<(usize, usize, usize)>,
+}
+
+/// トラックに分けた音符を採点する(`MultiTrackScores`)
+pub fn multitrack_f(truth: &[Vec<NoteSpan>], estimate: &[Vec<NoteSpan>]) -> MultiTrackScores {
+    let all_t: Vec<NoteSpan> = truth.iter().flatten().copied().collect();
+    let all_e: Vec<NoteSpan> = estimate.iter().flatten().copied().collect();
+    let pre = note_f(&all_t, &all_e, false);
+    // 組ごとの当たりの数
+    let hits: Vec<Vec<usize>> = truth
+        .iter()
+        .map(|t| estimate.iter().map(|e| note_hits(t, e, false)).collect())
+        .collect();
+    let pairs: Vec<(usize, usize, usize)> = max_assignment(&hits)
+        .into_iter()
+        .map(|(i, j)| (i, j, hits[i][j]))
+        .filter(|x| x.2 > 0)
+        .collect();
+    let post = Fmeasure::from_counts(pairs.iter().map(|x| x.2).sum(), all_e.len(), all_t.len());
+    let leak: Vec<f64> = hits
+        .iter()
+        .filter_map(|row| {
+            let total: usize = row.iter().sum();
+            (total > 0).then(|| {
+                row.iter()
+                    .filter(|h| **h as f64 >= 0.1 * total as f64)
+                    .count() as f64
+            })
+        })
+        .collect();
+    MultiTrackScores {
+        ratio: if pre.f > 0.0 { post.f / pre.f } else { 0.0 },
+        leakage: if leak.is_empty() {
+            0.0
+        } else {
+            leak.iter().sum::<f64>() / leak.len() as f64
+        },
+        pre,
+        post,
+        k_truth: truth.len(),
+        k_estimate: estimate.iter().filter(|e| !e.is_empty()).count(),
+        pairs,
+    }
+}
+
+/// 重みの合計が最大になる 1 対 1 の組(ハンガリー法。行と列の数は違ってよい)。返り値は (行, 列)
+pub fn max_assignment(w: &[Vec<usize>]) -> Vec<(usize, usize)> {
+    let rows = w.len();
+    let cols = w.first().map_or(0, |r| r.len());
+    let n = rows.max(cols);
+    if n == 0 {
+        return Vec::new();
+    }
+    let top = w.iter().flatten().copied().max().unwrap_or(0) as i64;
+    // 費用 = 最大 − 重み(足りない行・列は重み 0)
+    let cost = |i: usize, j: usize| -> i64 {
+        top - if i < rows && j < cols {
+            w[i][j] as i64
+        } else {
+            0
+        }
+    };
+    // 1 始まりの添字の標準の実装(u・v はポテンシャル、p[j] は列 j に結んだ行)
+    let inf = i64::MAX / 4;
+    let (mut u, mut v) = (vec![0i64; n + 1], vec![0i64; n + 1]);
+    let (mut p, mut way) = (vec![0usize; n + 1], vec![0usize; n + 1]);
+    for i in 1..=n {
+        p[0] = i;
+        let mut j0 = 0usize;
+        let mut minv = vec![inf; n + 1];
+        let mut used = vec![false; n + 1];
+        loop {
+            used[j0] = true;
+            let i0 = p[j0];
+            let mut delta = inf;
+            let mut j1 = 0usize;
+            for j in 1..=n {
+                if used[j] {
+                    continue;
+                }
+                let cur = cost(i0 - 1, j - 1) - u[i0] - v[j];
+                if cur < minv[j] {
+                    minv[j] = cur;
+                    way[j] = j0;
+                }
+                if minv[j] < delta {
+                    delta = minv[j];
+                    j1 = j;
+                }
+            }
+            for j in 0..=n {
+                if used[j] {
+                    u[p[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    minv[j] -= delta;
+                }
+            }
+            j0 = j1;
+            if p[j0] == 0 {
+                break;
+            }
+        }
+        loop {
+            let j1 = way[j0];
+            p[j0] = p[j1];
+            j0 = j1;
+            if j0 == 0 {
+                break;
+            }
+        }
+    }
+    (1..=n)
+        .filter(|&j| p[j] >= 1 && p[j] - 1 < rows && j - 1 < cols)
+        .map(|j| (p[j] - 1, j - 1))
+        .collect()
 }
 
 /// チューニングのずれ(セント)の誤差。±50 セントで折り返す(+45 と -45 は 10 セント違い)
@@ -348,6 +490,46 @@ pub fn tuning_error_cents(reference: f64, estimate: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn n(t: f64, p: u8) -> NoteSpan {
+        NoteSpan {
+            onset: t,
+            offset: t + 0.2,
+            pitch: p,
+        }
+    }
+
+    #[test]
+    fn assignment_picks_the_best_pairs() {
+        // 行 0 は列 1、行 1 は列 0 が良い(貪欲に行 0 から取ると 5 + 1 だが、最良は 4 + 4)
+        let w = vec![vec![5, 4], vec![4, 1]];
+        let mut a = max_assignment(&w);
+        a.sort();
+        assert_eq!(a, vec![(0, 1), (1, 0)]);
+        // 行と列の数が違う
+        let w = vec![vec![1, 9, 2]];
+        assert_eq!(max_assignment(&w), vec![(0, 1)]);
+    }
+
+    #[test]
+    fn multitrack_scores_separate_pitch_and_assignment() {
+        let a: Vec<NoteSpan> = (0..10).map(|i| n(i as f64, 60)).collect();
+        let b: Vec<NoteSpan> = (0..10).map(|i| n(i as f64 + 0.5, 72)).collect();
+        // 音はすべて当たり、トラックも正しく分かれている
+        let s = multitrack_f(&[a.clone(), b.clone()], &[b.clone(), a.clone()]);
+        assert!((s.pre.f - 1.0).abs() < 1e-9 && (s.post.f - 1.0).abs() < 1e-9);
+        assert!((s.leakage - 1.0).abs() < 1e-9);
+        // 音はすべて当たるが、1 つのトラックにまとめてしまった: 振り分けで半分失う
+        let mixed: Vec<NoteSpan> = a.iter().chain(&b).copied().collect();
+        let s = multitrack_f(&[a.clone(), b.clone()], &[mixed]);
+        assert!((s.pre.f - 1.0).abs() < 1e-9);
+        assert!((s.ratio - 0.5).abs() < 1e-9, "{s:?}");
+        // 1 つのトラックを 2 つに割った: 漏れが 2
+        let (a1, a2) = a.split_at(5);
+        let s = multitrack_f(std::slice::from_ref(&a), &[a1.to_vec(), a2.to_vec()]);
+        assert!((s.leakage - 2.0).abs() < 1e-9);
+        assert_eq!(s.k_estimate, 2);
+    }
 
     fn span(start: f64, end: f64, s: &str) -> ChordSpan {
         ChordSpan {

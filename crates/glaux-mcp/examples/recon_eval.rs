@@ -25,6 +25,8 @@
 //!                    分けた「その他」から旋律・和音の楽器を、「歌」から声を、区間(10 秒)ごとに当てる。
 //!                    --protos FILE で、楽器の見本(instrument_protos で作る)と比べる方式も測る。
 //!   --roles          (--labels・--separate と)楽器の名前の代わりに、役割(伸ばす・刻む・線)が鳴っている区間を当てる
+//!   --tracks         (Glaux の曲で)トラック単位の採点: 方式ごとに、振り分ける前・後の音符の F 値とその比、楽器の漏れ、
+//!                    トラックの数、かかった時間を曲ごとに出す(--separate で分離ツールの経路、--notes でほかの道具も)
 //!   --save DIR       組み立てた曲の音声(wav)と正解(json)を書き出す(聴いて確かめる用)
 //!   --json FILE      曲ごとの結果を JSON で書き出す
 //! ```
@@ -119,6 +121,8 @@ struct Case {
     parts: Vec<PartCase>,
     /// トラックごとの正解の音符(Glaux の曲のとき。楽器の見分けの答え合わせに使う)
     tracks: Vec<(String, Vec<NoteSpan>)>,
+    /// 音程のあるトラック(ドラムのキットを除き、音符が 16 以上)の名前。トラック単位の採点の正解(`--tracks`)
+    pitched: Vec<String>,
 }
 
 /// パート 1 つ(正解の音符)。
@@ -786,6 +790,7 @@ fn synth_case(i: usize, seed: u64, sf2: Option<&Path>, with_parts: bool) -> Case
         frames,
         side: Some(side),
         tracks: Vec::new(),
+        pitched: Vec::new(),
         sample_rate: sr as f32,
         truth: Truth {
             beats,
@@ -962,6 +967,18 @@ fn project_case(dir: &Path, with_parts: bool) -> Result<Case, String> {
             });
         }
     }
+    // 音程のあるトラック(ドラムのキットを除き、音符が 16 以上。効果音に近いトラックも含む)
+    let pitched: Vec<String> = project
+        .tracks
+        .iter()
+        .filter(|t| {
+            audible(t)
+                && t.kind == TrackKind::Midi
+                && !t.device.as_ref().is_some_and(|d| d.source.is_drum_kit())
+                && notes_of(t).len() >= 16
+        })
+        .map(|t| t.name.clone())
+        .collect();
     // トラックごとの正解の音符(鳴るトラックすべて)
     let tracks: Vec<(String, Vec<NoteSpan>)> = project
         .tracks
@@ -983,6 +1000,7 @@ fn project_case(dir: &Path, with_parts: bool) -> Result<Case, String> {
         .collect();
     Ok(Case {
         tracks,
+        pitched,
         tags: vec!["sound:project".into(), format!("song:{name}")],
         name,
         frames,
@@ -1168,6 +1186,7 @@ fn dataset_cases(dir: &Path) -> Vec<Case> {
             frames: sound.frames,
             side: None,
             tracks: Vec::new(),
+            pitched: Vec::new(),
             sample_rate: sound.sample_rate,
             truth: Truth {
                 beats,
@@ -1535,6 +1554,14 @@ fn main() {
         analysis_secs / audio_secs.max(1e-9) * 100.0
     );
 
+    if args.iter().any(|a| a == "--tracks") {
+        eval_tracks(
+            &cases,
+            arg("--separate").as_deref().map(Path::new),
+            arg("--notes").as_deref().map(Path::new),
+            arg("--labels").as_deref().map(Path::new),
+        );
+    }
     if let (Some(labels), Some(sep), true) = (
         arg("--labels"),
         arg("--separate"),
@@ -1542,10 +1569,11 @@ fn main() {
     ) {
         eval_roles(&cases, Path::new(&sep), Path::new(&labels));
     }
+    // 楽器の見分け(--roles・--tracks のときは測らない)
     if let (Some(labels), Some(sep), false) = (
         arg("--labels"),
         arg("--separate"),
-        args.iter().any(|a| a == "--roles"),
+        args.iter().any(|a| a == "--roles" || a == "--tracks"),
     ) {
         eval_instruments(
             &cases,
@@ -2006,6 +2034,207 @@ fn eval_roles(cases: &[Case], sep: &Path, labels: &Path) {
                 g.iter().map(|x| x.1).sum::<f64>() / n
             );
         }
+    }
+}
+
+/// トラック単位の採点(調査文書 13.19 節): 音程のあるトラックの音符を正解に、方式ごとに推定したトラックを
+/// `mir_eval::multitrack_f` で比べる。入力は曲全体(と、曲から分離ツールで分けた音)だけ
+fn eval_tracks(
+    cases: &[Case],
+    sep: Option<&Path>,
+    ext_notes: Option<&Path>,
+    labels: Option<&Path>,
+) {
+    // 楽器の種類の正解(あれば、効果音のトラックを除いた見方も出す)
+    let labels: serde_json::Value = labels
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    use glaux_mcp::roles::{self, Role};
+    use recon::{NoteMethod, PartKind};
+    type Tracks = Vec<Vec<NoteSpan>>;
+    let spans = |v: &[recon::RawNote]| -> Vec<NoteSpan> {
+        v.iter()
+            .map(|n| NoteSpan {
+                onset: n.start,
+                offset: n.end,
+                pitch: n.pitch,
+            })
+            .collect()
+    };
+    // (方式, 曲) → (採点, 時間の倍率)
+    let mut rows: Vec<(String, String, mir_eval::MultiTrackScores, f64)> = Vec::new();
+    for c in cases {
+        if c.pitched.is_empty() {
+            continue;
+        }
+        let truth: Tracks = c
+            .pitched
+            .iter()
+            .filter_map(|n| c.tracks.iter().find(|t| &t.0 == n).map(|t| t.1.clone()))
+            .collect();
+        // 効果音のトラック(正解の楽器の種類が fx)を除いた正解
+        let is_fx = |n: &String| {
+            labels
+                .get(&c.name)
+                .and_then(|l| l.get(n))
+                .and_then(|v| v.as_str())
+                == Some("fx")
+        };
+        let truth_nofx: Tracks = c
+            .pitched
+            .iter()
+            .filter(|n| !is_fx(n))
+            .filter_map(|n| c.tracks.iter().find(|t| &t.0 == n).map(|t| t.1.clone()))
+            .collect();
+        let dur = c.frames.len() as f64 / c.sample_rate as f64;
+        let Ok(sk) = recon::analyze(&c.frames, c.sample_rate, Default::default()) else {
+            continue;
+        };
+        let mut systems: Vec<(String, Tracks, f64)> = Vec::new();
+        // 曲全体を basic-pitch で起こした音符を 1 つのトラックに(振り分けない参考)
+        let t0 = std::time::Instant::now();
+        if let Ok(all) = recon::transcribe_part(
+            &c.frames,
+            c.sample_rate,
+            PartKind::Poly,
+            NoteMethod::BasicPitch,
+            sk.tuning_cents,
+        ) {
+            let secs = t0.elapsed().as_secs_f64();
+            systems.push(("曲全体・1 つ(参考)".into(), vec![spans(&all)], secs));
+            // 声部に分ける(旋律・ベース・和音)
+            let split =
+                recon::split_voices(&all, &[PartKind::Melody, PartKind::Bass, PartKind::Poly]);
+            systems.push((
+                "曲全体・声部".into(),
+                split.iter().map(|v| spans(v)).collect(),
+                secs,
+            ));
+        }
+        // 分離ツールの経路
+        if let Some(cache) = sep {
+            let work = cache.join(format!("{}-{}", c.name, c.frames.len()));
+            let load = |n: &str| glaux_engine::load_wav_mono(&work.join(format!("{n}.wav"))).ok();
+            if let (Some(bass), Some(other)) = (load("bass"), load("other")) {
+                let t0 = std::time::Instant::now();
+                let b = recon::transcribe_part(
+                    &bass.frames,
+                    bass.sample_rate,
+                    PartKind::Bass,
+                    PartKind::Bass.default_method(),
+                    sk.tuning_cents,
+                )
+                .unwrap_or_default();
+                let o = recon::transcribe_part(
+                    &other.frames,
+                    other.sample_rate,
+                    PartKind::Poly,
+                    NoteMethod::BasicPitch,
+                    sk.tuning_cents,
+                )
+                .unwrap_or_default();
+                let secs = t0.elapsed().as_secs_f64();
+                systems.push((
+                    "分離・ベース+その他(参考)".into(),
+                    vec![spans(&b), spans(&o)],
+                    secs,
+                ));
+                // 今の規則(役割): ベース + 伸ばす・刻む・線
+                let t1 = std::time::Instant::now();
+                let mut tr: Tracks = vec![spans(&b)];
+                for r in [Role::Sustain, Role::Stab, Role::Line] {
+                    let notes =
+                        roles::transcribe_role(r, &other.frames, other.sample_rate, &sk, false)
+                            .map(|x| x.1)
+                            .unwrap_or_default();
+                    tr.push(spans(&notes));
+                }
+                systems.push(("規則(役割)".into(), tr, secs + t1.elapsed().as_secs_f64()));
+            }
+        }
+        // ほかの道具(楽器の番号ごとのトラック)
+        if let Some(dir) = ext_notes {
+            let ext: Vec<serde_json::Value> =
+                std::fs::read_to_string(dir.join(format!("{}.json", c.name)))
+                    .ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default();
+            let mut by: BTreeMap<u64, Vec<NoteSpan>> = BTreeMap::new();
+            for v in ext
+                .iter()
+                .filter(|v| !v["is_drum"].as_bool().unwrap_or(false))
+            {
+                by.entry(v["program"].as_u64().unwrap_or(0))
+                    .or_default()
+                    .push(NoteSpan {
+                        onset: v["onset"].as_f64().unwrap_or(0.0),
+                        offset: v["offset"].as_f64().unwrap_or(0.0),
+                        pitch: v["pitch"].as_u64().unwrap_or(0) as u8,
+                    });
+            }
+            if !by.is_empty() {
+                systems.push((
+                    "YourMT3+(楽器番号)".into(),
+                    by.into_values().collect(),
+                    f64::NAN,
+                ));
+            }
+        }
+        for (name, est, secs) in systems {
+            let s = mir_eval::multitrack_f(&truth, &est);
+            rows.push((name.clone(), c.name.clone(), s, secs / dur));
+            if labels.get(&c.name).is_some() && truth_nofx.len() < truth.len() {
+                let s = mir_eval::multitrack_f(&truth_nofx, &est);
+                rows.push((format!("{name}・効果音除く"), c.name.clone(), s, secs / dur));
+            }
+        }
+    }
+    println!("\n== トラック単位の採点(音符の F 値: 振り分ける前 → 後。比 = 後 ÷ 前)==");
+    println!(
+        "{:<26}{:<18}{:>8}{:>8}{:>8}{:>8}{:>10}{:>10}",
+        "方式", "曲", "前", "後", "比", "漏れ", "K 正解/推定", "時間の倍率"
+    );
+    for (sys, song, s, t) in &rows {
+        println!(
+            "{:<26}{:<18}{:>8.3}{:>8.3}{:>8.2}{:>8.2}{:>10}{:>10.2}",
+            sys,
+            song,
+            s.pre.f,
+            s.post.f,
+            s.ratio,
+            s.leakage,
+            format!("{}/{}", s.k_truth, s.k_estimate),
+            t
+        );
+    }
+    println!("\n-- 方式ごと(平均 / 最低の曲)--");
+    let mut names: Vec<&String> = rows.iter().map(|r| &r.0).collect();
+    names.dedup();
+    names.sort();
+    names.dedup();
+    for n in names {
+        let v: Vec<&(String, String, mir_eval::MultiTrackScores, f64)> =
+            rows.iter().filter(|r| &r.0 == n).collect();
+        let m = |f: &dyn Fn(&mir_eval::MultiTrackScores) -> f64| {
+            v.iter().map(|r| f(&r.2)).sum::<f64>() / v.len() as f64
+        };
+        let lo = |f: &dyn Fn(&mir_eval::MultiTrackScores) -> f64| {
+            v.iter().map(|r| f(&r.2)).fold(f64::MAX, f64::min)
+        };
+        println!(
+            "{:<34} 前 {:.3}(最低 {:.3}、適合 {:.2}・再現 {:.2}) 後 {:.3}(最低 {:.3}) 比 {:.2} 漏れ {:.2} 曲数 {}",
+            n,
+            m(&|s| s.pre.f),
+            lo(&|s| s.pre.f),
+            m(&|s| s.pre.precision),
+            m(&|s| s.pre.recall),
+            m(&|s| s.post.f),
+            lo(&|s| s.post.f),
+            m(&|s| s.ratio),
+            m(&|s| s.leakage),
+            v.len()
+        );
     }
 }
 
