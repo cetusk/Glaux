@@ -20,6 +20,7 @@
 
 pub mod ab;
 pub mod analyze;
+pub mod bassline;
 pub mod calibrate;
 pub mod data;
 pub mod distortion;
@@ -33,6 +34,7 @@ pub mod mir_eval;
 pub mod mixcheck;
 pub mod monitor;
 pub mod notefit;
+pub mod notestream;
 pub mod output;
 mod parallel;
 pub mod plugins;

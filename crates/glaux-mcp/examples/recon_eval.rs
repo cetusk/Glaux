@@ -1567,7 +1567,14 @@ fn main() {
         );
     }
     if let (Some(dir), Some(sep)) = (arg("--fit"), arg("--separate")) {
-        eval_fit(&cases, Path::new(&sep), Path::new(&dir));
+        if args.iter().any(|a| a == "--stream") {
+            eval_stream(&cases, Path::new(&sep), Path::new(&dir));
+        } else {
+            eval_fit(&cases, Path::new(&sep), Path::new(&dir));
+        }
+    }
+    if let (Some(sep), true) = (arg("--separate"), args.iter().any(|a| a == "--bassdiag")) {
+        eval_bassdiag(&cases, Path::new(&sep));
     }
     if args.iter().any(|a| a == "--tracks") {
         eval_tracks(
@@ -2552,9 +2559,24 @@ fn note_classes(truth: &[NoteSpan], est: &[NoteSpan], drum_on: &[f64]) -> (usize
     (hits, extra)
 }
 
-/// 曲の中で学ぶ音色の型で候補の音符を決め直し、トラックに振り分ける経路を測る(調査文書 13.23 節)。
-/// 入力は分離ツールの ベース・その他 だけ。ベースは今の経路のまま 1 つのトラックにし、その他を分解する
-fn eval_fit(cases: &[Case], sep: &Path, dir: &Path) {
+/// 型の分解・並びの振り分けの評価に使う、曲ごとの材料
+struct FitSong {
+    name: String,
+    truth: Vec<Vec<NoteSpan>>,
+    drum_on: Vec<f64>,
+    /// 今の経路のベース
+    bass: Vec<NoteSpan>,
+    /// ベースの別経路(音の高さの候補と音符の HMM、13.24 節)
+    bass_hmm: Vec<NoteSpan>,
+    current: Vec<NoteSpan>,
+    cands: Vec<glaux_engine::notefit::Note>,
+    fit: glaux_engine::notefit::Fit,
+    beats: Vec<f64>,
+    downbeats: Vec<f64>,
+}
+
+/// 曲ごとの材料を用意する(分解はキャッシュがあれば読む)
+fn load_fit_songs(cases: &[Case], sep: &Path, dir: &Path) -> Vec<FitSong> {
     use glaux_engine::notefit;
     use recon::{NoteMethod, PartKind};
     std::fs::create_dir_all(dir).ok();
@@ -2572,17 +2594,7 @@ fn eval_fit(cases: &[Case], sep: &Path, dir: &Path) {
             })
             .collect()
     };
-    // 曲ごとの材料
-    struct Song {
-        name: String,
-        truth: Vec<Vec<NoteSpan>>,
-        drum_on: Vec<f64>,
-        bass: Vec<NoteSpan>,
-        current: Vec<NoteSpan>,
-        cands: Vec<notefit::Note>,
-        fit: notefit::Fit,
-    }
-    let mut songs: Vec<Song> = Vec::new();
+    let mut songs: Vec<FitSong> = Vec::new();
     for c in cases {
         if c.pitched.is_empty() {
             continue;
@@ -2691,16 +2703,302 @@ fn eval_fit(cases: &[Case], sep: &Path, dir: &Path) {
                 f
             }
         };
-        songs.push(Song {
+        let bass_hmm: Vec<NoteSpan> = glaux_engine::bassline::transcribe(
+            &b.frames,
+            b.sample_rate,
+            sk.tuning_cents,
+            &sk.beats,
+            &Default::default(),
+        )
+        .iter()
+        .map(span)
+        .collect();
+        songs.push(FitSong {
             name: c.name.clone(),
             truth,
             drum_on,
             bass: raw(&bass),
+            bass_hmm,
             current: raw(&current),
             cands,
             fit,
+            beats: sk.beats.clone(),
+            downbeats: sk.downbeats.clone(),
         });
     }
+    songs
+}
+
+/// 1 曲・1 つの組み立ての採点
+#[derive(Clone, Copy, Default)]
+struct FitRow {
+    pre: f64,
+    post: f64,
+    hits: f64,
+    hit_n: usize,
+    truth_n: usize,
+    extras: usize,
+    over: usize,
+    retrig: usize,
+    k: usize,
+}
+
+fn fit_score(s: &FitSong, tracks: Vec<Vec<NoteSpan>>) -> FitRow {
+    let m = mir_eval::multitrack_f(&s.truth, &tracks);
+    let all_t: Vec<NoteSpan> = s.truth.iter().flatten().copied().collect();
+    let all_e: Vec<NoteSpan> = tracks.iter().flatten().copied().collect();
+    let (h, ex) = note_classes(&all_t, &all_e, &s.drum_on);
+    FitRow {
+        pre: m.pre.f,
+        post: m.post.f,
+        hits: h as f64 / all_t.len().max(1) as f64,
+        hit_n: h,
+        truth_n: all_t.len(),
+        extras: ex.iter().sum(),
+        over: ex[0],
+        retrig: ex[1],
+        k: tracks.iter().filter(|t| !t.is_empty()).count(),
+    }
+}
+
+fn fit_print(name: &str, rows: &[FitRow]) {
+    let n = rows.len().max(1) as f64;
+    let ex: usize = rows.iter().map(|r| r.extras).sum();
+    println!(
+        "{:<34} 前 {:.3} 後 {:.3} 当たり {:.2}(まとめて {:.2}) 余分 {:>6}(倍音 {:.2}・弾き直し {:.2}) トラック {:.1}",
+        name,
+        rows.iter().map(|r| r.pre).sum::<f64>() / n,
+        rows.iter().map(|r| r.post).sum::<f64>() / n,
+        rows.iter().map(|r| r.hits).sum::<f64>() / n,
+        rows.iter().map(|r| r.hit_n).sum::<usize>() as f64
+            / rows.iter().map(|r| r.truth_n).sum::<usize>().max(1) as f64,
+        ex,
+        rows.iter().map(|r| r.over).sum::<usize>() as f64 / ex.max(1) as f64,
+        rows.iter().map(|r| r.retrig).sum::<usize>() as f64 / ex.max(1) as f64,
+        rows.iter().map(|r| r.k as f64).sum::<f64>() / n,
+    );
+}
+
+/// 音符の並び方で音源へ振り分ける経路と、ベースの別経路を測る(調査文書 13.24 節)。
+/// 入力は分離ツールの ベース・その他 だけ。候補の音符の「外したときの悪くなり方」は型 1 つの分解(13.23 節)から
+fn eval_stream(cases: &[Case], sep: &Path, dir: &Path) {
+    use glaux_engine::notefit;
+    use glaux_engine::notestream::{self, StreamNote, StreamOptions};
+    let songs = load_fit_songs(cases, sep, dir);
+    let span = |n: &notefit::Note| NoteSpan {
+        onset: n.start,
+        offset: n.end,
+        pitch: n.pitch,
+    };
+    println!("\n== 並び方の振り分けとベースの別経路(7 曲の平均)==");
+    let rows = |f: &dyn Fn(&FitSong) -> Vec<Vec<NoteSpan>>| -> Vec<FitRow> {
+        songs.iter().map(|s| fit_score(s, f(s))).collect()
+    };
+    let base = rows(&|s| vec![s.bass.clone(), s.current.clone()]);
+    fit_print("今(ベース + その他)", &base);
+    fit_print(
+        "ベース HMM + その他",
+        &rows(&|s| vec![s.bass_hmm.clone(), s.current.clone()]),
+    );
+    // 型 1 つの分解で音符を残す(13.23 節の最良)。音符を残す重みは 1 曲を抜いた交差検証で
+    let note_costs = [0.0f32, 0.2, 0.3, 0.5, 0.7, 1.0];
+    let k1 = |s: &FitSong, nc: f32| -> Vec<NoteSpan> {
+        let one = notefit::Fit {
+            levels: s.fit.levels.first().cloned().into_iter().collect(),
+            frames: s.fit.frames,
+        };
+        one.select(&s.cands, 0.0, nc)
+            .iter()
+            .flatten()
+            .map(span)
+            .collect()
+    };
+    let loo = |grid: &[(String, Vec<FitRow>)]| -> Vec<(String, FitRow)> {
+        (0..songs.len())
+            .filter_map(|i| {
+                grid.iter()
+                    .max_by(|a, b| {
+                        let m = |r: &[FitRow]| {
+                            r.iter()
+                                .enumerate()
+                                .filter(|(j, _)| *j != i)
+                                .map(|(_, x)| x.post)
+                                .sum::<f64>()
+                        };
+                        m(&a.1).total_cmp(&m(&b.1))
+                    })
+                    .map(|g| (g.0.clone(), g.1[i]))
+            })
+            .collect()
+    };
+    for (label, hmm) in [("今のベース", false), ("ベース HMM", true)] {
+        let grid: Vec<(String, Vec<FitRow>)> = note_costs
+            .iter()
+            .map(|&nc| {
+                (
+                    format!("{nc}"),
+                    rows(&|s| {
+                        vec![
+                            if hmm {
+                                s.bass_hmm.clone()
+                            } else {
+                                s.bass.clone()
+                            },
+                            k1(s, nc),
+                        ]
+                    }),
+                )
+            })
+            .collect();
+        let held = loo(&grid);
+        fit_print(
+            &format!("{label} + 型 1 つ(交差検証)"),
+            &held.iter().map(|x| x.1).collect::<Vec<_>>(),
+        );
+    }
+    // 並び方の振り分け
+    let notes_of = |s: &FitSong, with_bass: bool| -> Vec<StreamNote> {
+        let gain = s.fit.levels.first().map(|l| &l.gain);
+        let src = s.fit.levels.first().map(|l| &l.source);
+        let mut v: Vec<StreamNote> = Vec::new();
+        if with_bass {
+            v.extend(s.bass_hmm.iter().map(|n| StreamNote {
+                start: n.onset,
+                end: n.offset,
+                pitch: n.pitch,
+                stem: 0,
+                gain: None,
+            }));
+        }
+        for (i, c) in s.cands.iter().enumerate() {
+            if src.is_some_and(|z| z[i] == usize::MAX) {
+                continue;
+            }
+            v.push(StreamNote {
+                start: c.start,
+                end: c.end,
+                pitch: c.pitch,
+                stem: if with_bass { 1 } else { 0 },
+                gain: gain.map(|g| g[i]),
+            });
+        }
+        v
+    };
+    let configs: [(f64, f64); 5] = [(0.0, 0.0), (0.0, 1.0), (0.5, 1.0), (1.0, 1.0), (1.0, 0.0)];
+    for with_bass in [true, false] {
+        println!(
+            "\n-- 並び方の振り分け({})--",
+            if with_bass {
+                "ベース HMM の音符も一緒に振り分ける"
+            } else {
+                "その他だけを振り分け、ベース HMM は 1 つのトラック"
+            }
+        );
+        let mut grid: Vec<(String, Vec<FitRow>)> = Vec::new();
+        for &(ws, wa) in &configs {
+            let opts = StreamOptions {
+                sequence_weight: ws,
+                activity_weight: wa,
+                ..Default::default()
+            };
+            let mut per_k: Vec<String> = Vec::new();
+            let mut chosen: Vec<FitRow> = Vec::new();
+            let t0 = std::time::Instant::now();
+            for s in &songs {
+                let notes = notes_of(s, with_bass);
+                let levels = notestream::stream(&notes, &s.beats, &s.downbeats, &opts);
+                let tracks_of = |l: &notestream::StreamLevel| -> Vec<Vec<NoteSpan>> {
+                    let mut t = vec![Vec::new(); l.k];
+                    for (n, z) in notes.iter().zip(&l.source) {
+                        if let Some(z) = z {
+                            t[*z].push(NoteSpan {
+                                onset: n.start,
+                                offset: n.end,
+                                pitch: n.pitch,
+                            });
+                        }
+                    }
+                    if !with_bass {
+                        t.insert(0, s.bass_hmm.clone());
+                    }
+                    t
+                };
+                let best = levels
+                    .iter()
+                    .min_by(|a, b| a.bic(notes.len()).total_cmp(&b.bic(notes.len())));
+                if let Some(l) = best {
+                    chosen.push(fit_score(s, tracks_of(l)));
+                }
+                per_k.push(format!(
+                    "{:<16} {}",
+                    s.name,
+                    levels
+                        .iter()
+                        .map(|l| {
+                            let r = fit_score(s, tracks_of(l));
+                            format!(
+                                "K{}:{:.3}{}",
+                                l.k,
+                                r.post,
+                                if Some(l.k) == best.map(|b| b.k) {
+                                    "*"
+                                } else {
+                                    ""
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+            }
+            fit_print(&format!("並び {ws}・区間 {wa}(BIC で K)"), &chosen);
+            eprintln!("並び {ws}・区間 {wa}: {:.1} 秒", t0.elapsed().as_secs_f64());
+            if (ws, wa) == (1.0, 1.0) {
+                println!("  K ごとの 後 の F 値(* = BIC で選んだ K)");
+                for l in &per_k {
+                    println!("  {l}");
+                }
+            }
+            grid.push((format!("{ws},{wa}"), chosen));
+        }
+        let held = loo(&grid);
+        for (s, (cfg, r)) in songs.iter().zip(&held) {
+            println!(
+                "  {:<16} 重み {cfg} 前 {:.3} 後 {:.3}(今 {:.3} → {:.3}) トラック {}",
+                s.name,
+                r.pre,
+                r.post,
+                base.iter()
+                    .zip(&songs)
+                    .find(|x| x.1.name == s.name)
+                    .map_or(0.0, |x| x.0.pre),
+                base.iter()
+                    .zip(&songs)
+                    .find(|x| x.1.name == s.name)
+                    .map_or(0.0, |x| x.0.post),
+                r.k
+            );
+        }
+        fit_print(
+            "並び方の振り分け(交差検証)",
+            &held.iter().map(|x| x.1).collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// 曲の中で学ぶ音色の型で候補の音符を決め直し、トラックに振り分ける経路を測る(調査文書 13.23 節)。
+/// 入力は分離ツールの ベース・その他 だけ。ベースは今の経路のまま 1 つのトラックにし、その他を分解する
+fn eval_fit(cases: &[Case], sep: &Path, dir: &Path) {
+    use glaux_engine::notefit;
+    type Row = FitRow;
+    let score = fit_score;
+    let print_rows = fit_print;
+    let span = |n: &notefit::Note| NoteSpan {
+        onset: n.start,
+        offset: n.end,
+        pitch: n.pitch,
+    };
+    let songs = load_fit_songs(cases, sep, dir);
     // 型の数ごとの説明の悪さと、音符の悪くなり方の分布
     println!("\n== 型の数ごとの説明の悪さ(1 フレームあたり)と、音符を外したときの悪くなり方の分位(10・50・90%)==");
     for s in &songs {
@@ -2732,53 +3030,6 @@ fn eval_fit(cases: &[Case], sep: &Path, dir: &Path) {
             q(0.9)
         );
     }
-    // 1 曲・1 組の重みの採点
-    #[derive(Clone, Copy, Default)]
-    struct Row {
-        pre: f64,
-        post: f64,
-        hits: f64,
-        hit_n: usize,
-        truth_n: usize,
-        extras: usize,
-        over: usize,
-        retrig: usize,
-        k: usize,
-    }
-    let score = |s: &Song, tracks: Vec<Vec<NoteSpan>>| -> Row {
-        let m = mir_eval::multitrack_f(&s.truth, &tracks);
-        let all_t: Vec<NoteSpan> = s.truth.iter().flatten().copied().collect();
-        let all_e: Vec<NoteSpan> = tracks.iter().flatten().copied().collect();
-        let (h, ex) = note_classes(&all_t, &all_e, &s.drum_on);
-        Row {
-            pre: m.pre.f,
-            post: m.post.f,
-            hits: h as f64 / all_t.len().max(1) as f64,
-            hit_n: h,
-            truth_n: all_t.len(),
-            extras: ex.iter().sum(),
-            over: ex[0],
-            retrig: ex[1],
-            k: tracks.len(),
-        }
-    };
-    let print_rows = |name: &str, rows: &[Row]| {
-        let n = rows.len().max(1) as f64;
-        let ex: usize = rows.iter().map(|r| r.extras).sum();
-        println!(
-            "{:<34} 前 {:.3} 後 {:.3} 当たり {:.2}(まとめて {:.2}) 余分 {:>6}(倍音 {:.2}・弾き直し {:.2}) トラック {:.1}",
-            name,
-            rows.iter().map(|r| r.pre).sum::<f64>() / n,
-            rows.iter().map(|r| r.post).sum::<f64>() / n,
-            rows.iter().map(|r| r.hits).sum::<f64>() / n,
-            rows.iter().map(|r| r.hit_n).sum::<usize>() as f64
-                / rows.iter().map(|r| r.truth_n).sum::<usize>().max(1) as f64,
-            ex,
-            rows.iter().map(|r| r.over).sum::<usize>() as f64 / ex.max(1) as f64,
-            rows.iter().map(|r| r.retrig).sum::<usize>() as f64 / ex.max(1) as f64,
-            rows.iter().map(|r| r.k as f64).sum::<f64>() / n,
-        );
-    };
     println!("\n== 7 曲の平均(前・後 = 振り分ける前・後の音符の F 値)==");
     let base: Vec<Row> = songs
         .iter()
@@ -2914,6 +3165,273 @@ fn eval_fit(cases: &[Case], sep: &Path, dir: &Path) {
             }
         }
         print_rows(&format!("型の分解(交差検証、{title})"), &held);
+    }
+}
+
+/// ベースの診断: 正解のトラックの重なり方(同じ音を重ねているか)と、今のベースの音符の当たり方(音の高さ・オクターブ違い・頭だけ)
+fn eval_bassdiag(cases: &[Case], sep: &Path) {
+    use recon::PartKind;
+    println!("\n== ベースの診断 ==");
+    for c in cases {
+        let work = sep.join(format!("{}-{}", c.name, c.frames.len()));
+        let Ok(b) = glaux_engine::load_wav_mono(&work.join("bass.wav")) else {
+            continue;
+        };
+        let Ok(sk) = recon::analyze(&c.frames, c.sample_rate, Default::default()) else {
+            continue;
+        };
+        println!("{}", c.name);
+        let tr: Vec<&(String, Vec<NoteSpan>)> = c
+            .tracks
+            .iter()
+            .filter(|t| c.pitched.contains(&t.0))
+            .collect();
+        for (i, (name, v)) in tr.iter().enumerate() {
+            let mut d: Vec<f64> = v.iter().map(|x| x.offset - x.onset).collect();
+            d.sort_by(f64::total_cmp);
+            // 同じ頭・同じ音名の音符がほかのトラックにある割合
+            let uni = v
+                .iter()
+                .filter(|x| {
+                    tr.iter().enumerate().any(|(j, (_, w))| {
+                        j != i
+                            && w.iter().any(|y| {
+                                (y.onset - x.onset).abs() <= 0.05 && y.pitch % 12 == x.pitch % 12
+                            })
+                    })
+                })
+                .count();
+            let (lo, hi) = (
+                v.iter().map(|x| x.pitch).min().unwrap_or(0),
+                v.iter().map(|x| x.pitch).max().unwrap_or(0),
+            );
+            println!(
+                "  {i} {:<24} 音符 {:>4} 高さ {lo}-{hi} 平均 {:.1} 長さの中央 {:.3} 秒 同じ頭・音名がほかにある {:.2} 鳴っている時間 {:.0}-{:.0} 秒",
+                name,
+                v.len(),
+                v.iter().map(|x| x.pitch as f64).sum::<f64>() / v.len().max(1) as f64,
+                d.get(d.len() / 2).copied().unwrap_or(0.0),
+                uni as f64 / v.len().max(1) as f64,
+                v.iter().map(|x| x.onset).fold(f64::MAX, f64::min),
+                v.iter().map(|x| x.offset).fold(0.0, f64::max),
+            );
+        }
+        // 低いトラック(平均が 48 未満)の音符をまとめた正解
+        let mut pool: Vec<NoteSpan> = tr
+            .iter()
+            .filter(|t| {
+                t.1.iter().map(|x| x.pitch as f64).sum::<f64>() / (t.1.len().max(1) as f64) < 48.0
+            })
+            .flat_map(|t| t.1.iter().copied())
+            .collect();
+        pool.sort_by(|a, b| a.onset.total_cmp(&b.onset));
+        pool.dedup_by(|a, b| a.pitch == b.pitch && (a.onset - b.onset).abs() <= 0.02);
+        let part = |method: recon::NoteMethod| -> Vec<NoteSpan> {
+            recon::transcribe_part(
+                &b.frames,
+                b.sample_rate,
+                PartKind::Bass,
+                method,
+                sk.tuning_cents,
+            )
+            .unwrap_or_default()
+            .iter()
+            .map(|n| NoteSpan {
+                onset: n.start,
+                offset: n.end,
+                pitch: n.pitch,
+            })
+            .collect()
+        };
+        use glaux_engine::bassline::{self, BassOptions};
+        let hmm = |o: BassOptions| -> Vec<NoteSpan> {
+            let t0 = std::time::Instant::now();
+            let v: Vec<NoteSpan> =
+                bassline::transcribe(&b.frames, b.sample_rate, sk.tuning_cents, &sk.beats, &o)
+                    .iter()
+                    .map(|n| NoteSpan {
+                        onset: n.start,
+                        offset: n.end,
+                        pitch: n.pitch,
+                    })
+                    .collect();
+            eprintln!("{}: HMM {:.1} 秒", c.name, t0.elapsed().as_secs_f64());
+            v
+        };
+        if std::env::var("GLAUX_BASS_DEBUG").is_ok() {
+            let fr = bassline::debug_frames(&b.frames, b.sample_rate, &BassOptions::default());
+            // 正解の鳴っている所の、有声の確からしさの分布と、いちばん確からしい候補と正解の差の分布
+            let mut vh = [0usize; 10];
+            let mut dh: BTreeMap<i32, usize> = BTreeMap::new();
+            for (t, (v, m)) in fr.iter().enumerate() {
+                let time = t as f64 * 0.01;
+                if let Some(p) = pool
+                    .iter()
+                    .filter(|x| x.onset <= time && time < x.offset)
+                    .map(|x| x.pitch)
+                    .min()
+                {
+                    vh[((*v * 10.0) as usize).min(9)] += 1;
+                    if let Some(m) = m {
+                        *dh.entry((m - sk.tuning_cents as f32 / 100.0 - p as f32).round() as i32).or_default() += 1;
+                    }
+                }
+            }
+            println!("  有声の確からしさ(0.1 刻み) {vh:?}");
+            println!(
+                "  候補 − 正解(半音) {:?}",
+                dh.iter().filter(|x| *x.1 > 20).collect::<Vec<_>>()
+            );
+            // 正解の同じ高さの続く音符の間のすき間(秒)の分布
+            let mut low: Vec<&NoteSpan> = pool.iter().collect();
+            low.sort_by(|a, b| a.onset.total_cmp(&b.onset));
+            let mut gaps = [0usize; 6];
+            for w in low.windows(2) {
+                if w[0].pitch == w[1].pitch {
+                    let g = w[1].onset - w[0].offset;
+                    let k = if g < -0.001 {
+                        0
+                    } else if g < 0.005 {
+                        1
+                    } else if g < 0.03 {
+                        2
+                    } else if g < 0.1 {
+                        3
+                    } else if g < 0.3 {
+                        4
+                    } else {
+                        5
+                    };
+                    gaps[k] += 1;
+                }
+            }
+            println!("  正解の同じ高さの続く音符のすき間(重なる・0・<30ms・<100ms・<300ms・それ以上) {gaps:?}");
+        }
+        type Method<'a> = Box<dyn Fn() -> Vec<NoteSpan> + 'a>;
+        let methods: Vec<(&str, Method)> = vec![
+            ("自動", Box::new(|| part(PartKind::Bass.default_method()))),
+            (
+                "basic-pitch",
+                Box::new(|| part(recon::NoteMethod::BasicPitch)),
+            ),
+            ("SwiftF0", Box::new(|| part(recon::NoteMethod::SwiftF0))),
+            ("HMM", Box::new(|| hmm(BassOptions::default()))),
+            (
+                "HMM 拍なし",
+                Box::new(|| {
+                    hmm(BassOptions {
+                        grid: false,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            (
+                "HMM 上がりなし",
+                Box::new(|| {
+                    hmm(BassOptions {
+                        onset: false,
+                        ..Default::default()
+                    })
+                }),
+            ),
+        ];
+        for (label, method) in methods {
+            let est = method();
+            let fold = |v: &[NoteSpan]| -> Vec<NoteSpan> {
+                v.iter()
+                    .map(|x| NoteSpan {
+                        pitch: x.pitch % 12,
+                        ..*x
+                    })
+                    .collect()
+            };
+            let flat = |v: &[NoteSpan]| -> Vec<NoteSpan> {
+                v.iter().map(|x| NoteSpan { pitch: 0, ..*x }).collect()
+            };
+            let f = mir_eval::note_f(&pool, &est, false);
+            let fo = mir_eval::note_f(&fold(&pool), &fold(&est), false);
+            let fl = mir_eval::note_f(&flat(&pool), &flat(&est), false);
+            let mut d: Vec<f64> = est.iter().map(|x| x.offset - x.onset).collect();
+            d.sort_by(f64::total_cmp);
+            // フレーム(10ms)ごとの音の高さの一致(正解の鳴っているいちばん低い音と、推定の鳴っているいちばん低い音)
+            let low = |v: &[NoteSpan], t: f64| {
+                v.iter()
+                    .filter(|x| x.onset <= t && t < x.offset)
+                    .map(|x| x.pitch)
+                    .min()
+            };
+            let end = pool.iter().map(|x| x.offset).fold(0.0, f64::max);
+            let (mut voiced, mut same, mut class, mut covered) = (0, 0, 0, 0);
+            let mut t = 0.0;
+            while t < end {
+                if let Some(p) = low(&pool, t) {
+                    voiced += 1;
+                    if let Some(q) = low(&est, t) {
+                        covered += 1;
+                        same += (p == q) as usize;
+                        class += (p % 12 == q % 12) as usize;
+                    }
+                }
+                t += 0.01;
+            }
+            // 推定の頭と、いちばん近い正解の頭の差(±300ms 以内)の分布(50ms 刻み)
+            let mut hist = [0usize; 12];
+            for e in &est {
+                if let Some(dt) = pool
+                    .iter()
+                    .map(|x| e.onset - x.onset)
+                    .filter(|dt| dt.abs() < 0.3)
+                    .min_by(|a, b| a.abs().total_cmp(&b.abs()))
+                {
+                    hist[(((dt + 0.3) / 0.05) as usize).min(11)] += 1;
+                }
+            }
+            // 同じ正解の音符の中で、推定の音符が分かれた所: (音程の差, すき間あり) ごとの数
+            let mut splits: BTreeMap<(i32, bool), usize> = BTreeMap::new();
+            let mut sorted = est.clone();
+            sorted.sort_by(|a, b| a.onset.total_cmp(&b.onset));
+            for w in sorted.windows(2) {
+                let inside = pool.iter().any(|x| {
+                    x.onset - 0.03 <= w[0].onset
+                        && w[1].onset > x.onset + 0.05
+                        && w[1].onset < x.offset - 0.03
+                });
+                if inside {
+                    *splits
+                        .entry((
+                            w[1].pitch as i32 - w[0].pitch as i32,
+                            w[1].onset > w[0].offset + 0.005,
+                        ))
+                        .or_default() += 1;
+                }
+            }
+            if label.starts_with("HMM") && label.len() == 3 {
+                println!(
+                    "  {:<12} 分かれ方(音程の差, すき間) {:?}",
+                    "",
+                    splits.iter().filter(|x| *x.1 >= 5).collect::<Vec<_>>()
+                );
+            }
+            println!(
+                "  {:<12} フレーム: 覆う {:.2} 同じ高さ {:.2} 同じ音名 {:.2} 頭の差(-300〜300ms、50ms 刻み) {:?}",
+                "",
+                covered as f64 / voiced.max(1) as f64,
+                same as f64 / voiced.max(1) as f64,
+                class as f64 / voiced.max(1) as f64,
+                hist
+            );
+            println!(
+                "  {label:<12} 音符 {:>4}(正解 {}) F {:.3}(適合 {:.2} 再現 {:.2}) 音名で {:.3} 頭だけ {:.3} 長さの中央 {:.3}",
+                est.len(),
+                pool.len(),
+                f.f,
+                f.precision,
+                f.recall,
+                fo.f,
+                fl.f,
+                d.get(d.len() / 2).copied().unwrap_or(0.0)
+            );
+        }
     }
 }
 
