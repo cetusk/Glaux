@@ -354,6 +354,13 @@
     <div class="rv-title">
       <Icon name="audio-waveform" />
       <span>{tr("曲から起こす", "Transcribe a song")}</span>
+      <span
+        class="rv-exp"
+        title={tr(
+          "開発中の実験的な機能です。起こしたテンポ・小節・和音・音符には間違いが多く、方式もこれから変わります",
+          "An experimental feature in development. The transcribed tempo, bars, chords and notes often contain mistakes, and the method will change",
+        )}>{tr("開発中・実験的", "Experimental")}</span
+      >
     </div>
     {#if refTrack}
       <span class="rv-ref" title={ws?.summary ?? ""}><Icon name="disc-3" size={14} />{refTrack.name}</span>
@@ -717,6 +724,17 @@
     gap: 6px;
     font-size: var(--fs-lg);
     font-weight: 600;
+  }
+
+  /* 開発中の実験的な機能であることの但し書き */
+  .rv-exp {
+    padding: 1px 6px;
+    border: 1px solid var(--warn);
+    border-radius: var(--r-sm);
+    color: var(--warn);
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    white-space: nowrap;
   }
 
   .rv-ref {

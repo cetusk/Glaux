@@ -976,8 +976,8 @@
             onclick={() => (viewStore.main = "recon")}
             aria-label={tr("起こす", "Transcribe")}
             title={tr(
-              "曲から起こす(参考曲のテンポ・小節・和音を読み取り、パートを音符に起こす)",
-              "Transcribe a song (read a reference's tempo, bars and chords, and transcribe its parts into notes)",
+              "曲から起こす(開発中の実験的な機能。参考曲のテンポ・小節・和音を読み取り、パートを音符に起こす)",
+              "Transcribe a song (experimental, in development: read a reference's tempo, bars and chords, and transcribe its parts into notes)",
             )}><Icon name="audio-waveform" /><span class="lbl">{tr("起こす", "Transcribe")}</span></button
           >
         </div>
