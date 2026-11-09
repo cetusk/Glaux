@@ -4408,6 +4408,12 @@ async fn cancel_chat(state: State<'_, AppState>) -> Result<(), String> {
     .await
 }
 
+/// チャットの CLI のログインを、別のウィンドウ(端末)で始める(ログインが切れたとき)。
+#[tauri::command]
+fn open_chat_login(provider: Option<String>) -> Result<(), String> {
+    chat::open_login(chat::Provider::parse(provider.as_deref())?)
+}
+
 /// 会話をリセットする(次の送信が新しいセッションになる)。
 #[tauri::command]
 fn reset_chat(state: State<'_, AppState>) {
@@ -4961,6 +4967,7 @@ fn main() -> Result<()> {
             ab_clear,
             send_chat,
             cancel_chat,
+            open_chat_login,
             reset_chat,
             load_chat_log,
             save_chat_log,

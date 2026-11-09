@@ -388,5 +388,7 @@ export type ChatEvent =
   | { kind: "result"; ok: boolean; text: string; chain_end?: string }
   | { kind: "notice"; text: string }
   | { kind: "error"; message: string }
+  /** CLI のログインが切れた・していない。command は別のウィンドウで動かすログインの命令 */
+  | { kind: "login_needed"; provider: "claude" | "codex"; command: string }
   /** CLI のプロセスが終わり、次の指示を受け付けられる(result より後に届く) */
   | { kind: "idle" };

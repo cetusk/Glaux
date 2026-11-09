@@ -113,7 +113,7 @@
   const designTarget = $derived(designLabel && designSel.sel !== designDetached ? designLabel : null);
 
   interface Msg {
-    role: "user" | "assistant" | "tool" | "notice" | "error" | "turn" | "choices" | "question";
+    role: "user" | "assistant" | "tool" | "notice" | "error" | "turn" | "choices" | "question" | "login";
     text: string;
     /** role "turn": ターンの開始前の最後の履歴エントリ(取り消しの起点)と、取り消したか */
     since?: string | null;
@@ -135,6 +135,9 @@
     sent?: { since: string | null; at: number };
     /** role "user": このターンの会話の終わり(Claude のセッションの位置。巻き戻すときに使う) */
     chainEnd?: string;
+    /** role "login": ログインし直す相手と命令、もう一度送る指示(送り直したら消す) */
+    login?: { provider: "claude" | "codex"; command: string };
+    retry?: Pending;
   }
 
   /// 送信待ちの指示(実行中に書いたもの)。会話の下に並べ、前のターンが終わったら順に送る
@@ -602,7 +605,15 @@
     start(next.fullPrompt, user);
   }
 
+  /** 最後に送った指示(ログインが切れて失敗したとき、もう一度送るのに使う) */
+  let lastSent: Pending | null = null;
+
   async function start(fullPrompt: string, user: Msg) {
+    lastSent = {
+      text: user.text,
+      fullPrompt,
+      edit: user.raw != null && user.ctx ? { raw: user.raw, ctx: user.ctx } : undefined,
+    };
     chatStatus.running = true;
     backendIdle = false;
     clearAiHighlight();
@@ -624,6 +635,25 @@
       chatStatus.running = false;
       backendIdle = true;
     }
+  }
+
+  // ---- ログインし直す(CLI のログインが切れたとき)----
+  async function openLogin(m: Msg) {
+    if (!m.login) return;
+    try {
+      await api.openChatLogin(m.login.provider);
+    } catch (e) {
+      push({ role: "error", text: String(e) });
+    }
+  }
+
+  /** ログインし直した後に、失敗した指示をもう一度送る */
+  async function retrySend(m: Msg) {
+    const r = m.retry;
+    if (!r) return;
+    m.retry = undefined;
+    saveLog();
+    await sendPrompt(r.text, r.fullPrompt, r.edit);
   }
 
   // ---- 送った指示を直して送り直す(その指示より後の編集を人の分も戻し、会話もその前まで戻す) ----
@@ -805,6 +835,23 @@
             push({ role: "error", text: ev.message });
             playErrorChime();
             sendNext();
+            break;
+          case "login_needed":
+            push({
+              role: "login",
+              text:
+                ev.provider === "codex"
+                  ? tr(
+                      "Codex CLI のログインが切れているか、ログインしていません。",
+                      "The Codex CLI login has expired, or you aren't logged in.",
+                    )
+                  : tr(
+                      "Claude Code のログインの期限が切れたか、ログインしていません。",
+                      "The Claude Code login has expired, or you aren't logged in.",
+                    ),
+              login: { provider: ev.provider, command: ev.command },
+              retry: lastSent ?? undefined,
+            });
             break;
           case "idle":
             backendIdle = true;
@@ -1078,6 +1125,37 @@
             aria-label={tr("指示を直す", "Edit message")}
             onclick={() => beginEdit(m)}><Icon name="pencil" size={12} /></button
           >
+        </div>
+      {:else if m.role === "login" && m.login}
+        <div class="msg login">
+          <div>{m.text}</div>
+          <div class="login-how">
+            {tr(
+              "「ログインし直す」で開くウィンドウからブラウザでログインし、終わったらそのウィンドウを閉じて「もう一度送る」を押してください。",
+              "Log in in the browser from the window that \"Log in again\" opens, close that window when done, then press \"Send again\".",
+            )}
+            <code>{m.login.command}</code>
+          </div>
+          <div class="login-actions">
+            <button
+              class="btn sm"
+              type="button"
+              title={tr(
+                `別のウィンドウで ${m.login.command} を動かし、ブラウザでログインし直す`,
+                `Run ${m.login.command} in another window and log in again in the browser`,
+              )}
+              onclick={() => openLogin(m)}><Icon name="log-in" size={13} />{tr("ログインし直す", "Log in again")}</button
+            >
+            {#if m.retry}
+              <button
+                class="btn sm"
+                type="button"
+                disabled={chatStatus.running}
+                title={tr("ログインし直した後に、失敗した指示をもう一度送る", "Send the failed message again after logging in")}
+                onclick={() => retrySend(m)}><Icon name="rotate-ccw" size={13} />{tr("もう一度送る", "Send again")}</button
+              >
+            {/if}
+          </div>
         </div>
       {:else}
         <div class="msg {m.role}">{m.text}</div>
@@ -1599,6 +1677,41 @@
     background: var(--danger-bg);
     color: var(--danger-text);
     font-size: 12px;
+  }
+
+  /* ログインが切れたときの案内(ログインし直す・もう一度送る) */
+  .msg.login {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--bg-raised);
+    border: 1px solid var(--warn);
+    font-size: 12px;
+  }
+
+  .login-how {
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  .login-how code {
+    display: block;
+    margin-top: 3px;
+    font-family: var(--mono);
+    color: var(--text);
+  }
+
+  .login-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .login-actions .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .msg.thinking {

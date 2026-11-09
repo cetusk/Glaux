@@ -47,6 +47,9 @@ pub enum ChatEvent {
     Notice { text: String },
     /// 起動失敗・異常終了など
     Error { message: String },
+    /// CLI のログインが切れた・していない(認証の失敗)。画面は「ログインし直す」「もう一度送る」を出す。
+    /// `command` は別のウィンドウで動かすログインの命令
+    LoginNeeded { provider: String, command: String },
     /// 次の指示を受け付けられるようになった(CLI のプロセスが終わり、実行中の印を下ろした後に 1 回)。
     /// `Result` は CLI が終わる前に届くので、画面は送信待ちの次の指示をこれを受けてから送る
     Idle,
@@ -80,6 +83,19 @@ impl Provider {
         match self {
             Provider::Claude => "Claude",
             Provider::Codex => "GPT",
+        }
+    }
+
+    /// UI と同じ名前("claude" / "codex")
+    pub fn id(self) -> &'static str {
+        self.command_name()
+    }
+
+    /// ログインし直す命令(別のウィンドウで動かす)
+    pub fn login_command(self) -> &'static str {
+        match self {
+            Provider::Claude => "claude auth login",
+            Provider::Codex => "codex login",
         }
     }
 
@@ -163,6 +179,82 @@ pub fn parse_line(line: &str) -> (Vec<ChatEvent>, Option<String>) {
         _ => vec![],
     };
     (events, session_id)
+}
+
+/// 認証の失敗(ログインが切れた・していない)を表す文言か。
+/// Claude Code: 「Failed to authenticate: OAuth session expired and could not be refreshed」・「Not logged in」・
+/// 「Invalid API key」など。Codex: 「401 Unauthorized」など
+pub fn is_auth_failure(text: &str) -> bool {
+    let t = text.to_lowercase();
+    [
+        "failed to authenticate",
+        "oauth session",
+        "not logged in",
+        "please run /login",
+        "invalid api key",
+        "authentication_failed",
+        "401 unauthorized",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
+}
+
+/// stream-json の 1 行が、認証の失敗による再試行(`system` / `api_retry` の error が authentication_failed)か
+pub fn is_auth_retry(line: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+        return false;
+    };
+    v["type"] == "system"
+        && v["subtype"] == "api_retry"
+        && v["error"].as_str().is_some_and(is_auth_failure)
+}
+
+/// ログインの命令を、別のウィンドウ(端末)で動かす。ログインはブラウザで行い、Glaux は資格情報を扱わない
+pub fn open_login(provider: Provider) -> Result<(), String> {
+    let command = provider.login_command();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // cmd /c start "題" cmd /k <命令>: 新しいコンソールで動かし、終わっても結果が読めるよう開いたままにする。
+        // 外側の cmd は窓を出さない(CREATE_NO_WINDOW)
+        std::process::Command::new("cmd")
+            .raw_arg(format!("/c start \"Glaux - {command}\" cmd /k {command}"))
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| {
+                glaux_core::tr!(
+                    "ログインのウィンドウを開けません: {e}",
+                    "Can't open the login window: {e}"
+                )
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        // 端末で動かし、終わったら Enter で閉じる
+        let script =
+            format!("{command}; echo; read -r -p 'Enter で閉じます / Press Enter to close' _");
+        let terminals: [(&str, &[&str]); 4] = [
+            ("x-terminal-emulator", &["-e"]),
+            ("gnome-terminal", &["--"]),
+            ("konsole", &["-e"]),
+            ("xterm", &["-e"]),
+        ];
+        for (term, pre) in terminals {
+            let ok = std::process::Command::new(term)
+                .args(pre)
+                .args(["bash", "-c", &script])
+                .spawn()
+                .is_ok();
+            if ok {
+                return Ok(());
+            }
+        }
+        Err(glaux_core::tr!(
+            "端末を開けませんでした。端末で `{command}` を実行してください",
+            "Couldn't open a terminal. Run `{command}` in a terminal"
+        ))
+    }
 }
 
 /// stream-json の会話の行(user / assistant)の uuid。会話を途中から再開する目印
@@ -811,11 +903,15 @@ pub async fn run_turn(app: tauri::AppHandle, mgr: std::sync::Arc<ChatManager>, p
     }
     let had_resume = mgr.has_session();
     let mut saw_init = false;
-    let mut result = run_turn_inner(&app, &mgr, &prompt, &mut saw_init).await;
+    let mut auth_failed = false;
+    let mut result = run_turn_inner(&app, &mgr, &prompt, &mut saw_init, &mut auth_failed).await;
+    if let Err(message) = &result {
+        auth_failed |= is_auth_failure(message);
+    }
 
     // 保存していたセッションが claude 側に残っていない場合、init 前に失敗する。
-    // その場合だけ新しい会話にフォールバックして 1 回やり直す。
-    if result.is_err() && had_resume && !saw_init {
+    // その場合だけ新しい会話にフォールバックして 1 回やり直す(ログインが切れているだけなら会話はそのまま)。
+    if result.is_err() && had_resume && !saw_init && !auth_failed {
         mgr.reset();
         emit(
             &app,
@@ -827,7 +923,10 @@ pub async fn run_turn(app: tauri::AppHandle, mgr: std::sync::Arc<ChatManager>, p
                 .to_owned(),
             },
         );
-        result = run_turn_inner(&app, &mgr, &prompt, &mut saw_init).await;
+        result = run_turn_inner(&app, &mgr, &prompt, &mut saw_init, &mut auth_failed).await;
+        if let Err(message) = &result {
+            auth_failed |= is_auth_failure(message);
+        }
     }
 
     mgr.child.lock().expect("child lock").take();
@@ -835,6 +934,15 @@ pub async fn run_turn(app: tauri::AppHandle, mgr: std::sync::Arc<ChatManager>, p
 
     if let Err(message) = result {
         emit(&app, &ChatEvent::Error { message });
+    }
+    if auth_failed {
+        emit(
+            &app,
+            &ChatEvent::LoginNeeded {
+                provider: provider.id().to_owned(),
+                command: provider.login_command().to_owned(),
+            },
+        );
     }
     emit(&app, &ChatEvent::Idle);
 }
@@ -844,6 +952,7 @@ async fn run_turn_inner(
     mgr: &ChatManager,
     prompt: &str,
     saw_init: &mut bool,
+    auth_failed: &mut bool,
 ) -> Result<(), String> {
     let provider = mgr.provider();
     let command = provider.command_name();
@@ -906,6 +1015,9 @@ async fn run_turn_inner(
     let mut chain_end: Option<String> = None;
     while let Ok(Some(line)) = lines.next_line().await {
         let (mut events, session_id) = provider.parse_line(&line);
+        if is_auth_retry(&line) {
+            *auth_failed = true;
+        }
         if provider == Provider::Claude {
             if let Some(uuid) = chain_uuid(&line) {
                 chain_end = Some(uuid);
@@ -931,7 +1043,12 @@ async fn run_turn_inner(
                     // 巻き戻しての再開は 1 回だけ(以後はふつうに続ける)
                     *mgr.rewind_at.lock().expect("rewind lock") = None;
                 }
-                ChatEvent::Result { .. } => got_result = true,
+                ChatEvent::Result { ok, text, .. } => {
+                    got_result = true;
+                    if !ok && is_auth_failure(text) {
+                        *auth_failed = true;
+                    }
+                }
                 _ => {}
             }
             emit(app, ev);
@@ -978,6 +1095,23 @@ async fn run_turn_inner(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auth_failures_are_recognized() {
+        use super::{is_auth_failure, is_auth_retry};
+        assert!(is_auth_failure(
+            "Failed to authenticate: OAuth session expired and could not be refreshed"
+        ));
+        assert!(is_auth_failure("Not logged in · Please run /login"));
+        assert!(is_auth_failure("unexpected status 401 Unauthorized"));
+        assert!(!is_auth_failure("ツールの呼び出しに失敗しました"));
+        assert!(is_auth_retry(
+            r#"{"type":"system","subtype":"api_retry","attempt":1,"error":"authentication_failed"}"#
+        ));
+        assert!(!is_auth_retry(
+            r#"{"type":"system","subtype":"api_retry","attempt":1,"error":"rate_limit"}"#
+        ));
+    }
+
     use super::*;
 
     #[test]

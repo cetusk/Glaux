@@ -14,7 +14,7 @@ from pathlib import Path
 
 NAMES = """
 skip-back rewind play pause square fast-forward skip-forward repeat infinity metronome circle
-undo-2 redo-2 rotate-ccw download file-music settings volume-2 sliders-horizontal keyboard-music
+undo-2 redo-2 rotate-ccw log-in download file-music settings volume-2 sliders-horizontal keyboard-music
 spline pencil-line ellipsis x refresh-cw folder-open audio-lines merge plus minus snowflake scissors
 copy trash-2 sparkles history plug search wand-sparkles chevron-down chevron-right chevron-up
 grip-vertical power app-window save mic speaker cpu audio-waveform drum guitar bell waves library

@@ -1131,6 +1131,11 @@ export function cancelChat(): Promise<void> {
   return invoke("cancel_chat");
 }
 
+/** チャットの CLI のログインを、別のウィンドウ(端末)で始める(ログインが切れたとき) */
+export function openChatLogin(provider: "claude" | "codex"): Promise<void> {
+  return invoke("open_chat_login", { provider });
+}
+
 /** 書き出しの依頼(glaux-mcp の ExportRequest と同じ) */
 export interface ExportRequest {
   path?: string;
