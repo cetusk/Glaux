@@ -1131,8 +1131,8 @@
           <div>{m.text}</div>
           <div class="login-how">
             {tr(
-              "「ログインし直す」で開くウィンドウからブラウザでログインし、終わったらそのウィンドウを閉じて「もう一度送る」を押してください。",
-              "Log in in the browser from the window that \"Log in again\" opens, close that window when done, then press \"Send again\".",
+              "「ログインし直す」で開くウィンドウからブラウザでログインしてください。ログインできるとウィンドウは自動で閉じるので、「もう一度送る」を押してください(できなかったときはウィンドウが残り、理由が読めます)。",
+              "Log in in the browser from the window that \"Log in again\" opens. It closes by itself once you're logged in; then press \"Send again\" (if login fails, the window stays open so you can read why).",
             )}
             <code>{m.login.command}</code>
           </div>

@@ -215,10 +215,14 @@ pub fn open_login(provider: Provider) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // cmd /c start "題" cmd /k <命令>: 新しいコンソールで動かし、終わっても結果が読めるよう開いたままにする。
+        // cmd /c start "題" cmd /c "call <命令> || pause": 新しいコンソールで動かす。ログインできたら閉じ、
+        // できなかったら(終了コードが 0 でない)エラーが読めるよう、キーを押すまで開いたままにする。
+        // npm 版の claude は .cmd なので call で呼ぶ(終わった後に || の続きへ戻るため)。
         // 外側の cmd は窓を出さない(CREATE_NO_WINDOW)
         std::process::Command::new("cmd")
-            .raw_arg(format!("/c start \"Glaux - {command}\" cmd /k {command}"))
+            .raw_arg(format!(
+                "/c start \"Glaux - {command}\" cmd /c \"call {command} || pause\""
+            ))
             .creation_flags(0x0800_0000)
             .spawn()
             .map(|_| ())
@@ -231,9 +235,10 @@ pub fn open_login(provider: Provider) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        // 端末で動かし、終わったら Enter で閉じる
-        let script =
-            format!("{command}; echo; read -r -p 'Enter で閉じます / Press Enter to close' _");
+        // 端末で動かす。ログインできたら閉じ、できなかったら Enter を押すまで開いたままにする
+        let script = format!(
+            "{command} || {{ echo; read -r -p 'Enter で閉じます / Press Enter to close' _; }}"
+        );
         let terminals: [(&str, &[&str]); 4] = [
             ("x-terminal-emulator", &["-e"]),
             ("gnome-terminal", &["--"]),
